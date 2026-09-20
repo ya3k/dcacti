@@ -112,6 +112,10 @@ body {
  * Diagnostics panel styling. Kept out of the game surface flow: the panel is a
  * scroll-free overlay anchored to the shell, and it may itself scroll internally
  * without the document ever scrolling.
+ *
+ * The panel is the runtime status overlay (ui/components/StatusOverlay.tsx) —
+ * technical infrastructure UI only, never a gameplay HUD. It must never affect
+ * the game viewport dimensions.
  */
 .status-overlay-card {
   position: absolute;

@@ -108,6 +108,15 @@ Response 200:
 Response 400: { "error": "INVALID_LOADOUT" | "PET_NOT_OWNED" | "..." }
 ```
 
+This endpoint is **unchanged** by Battle State Foundation
+(`GAME_STATE.md` §0, §2.0). It remains the only documented way to create a
+battle, and it still requires the full gameplay loadout above — no
+gameplay-free variant of this endpoint exists, and none is introduced. The
+`initialState` it returns is a summary of the full `BattleState`
+(`GAME_STATE.md` §2); at the foundation stage no such battle can be created
+yet, because the loadout systems it validates do not exist (`ROADMAP.md` §1
+Phase 2).
+
 ---
 
 # 4. GET /api/battle/{battleId}/result

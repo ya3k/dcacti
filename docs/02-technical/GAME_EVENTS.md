@@ -54,6 +54,12 @@ Trigger:  Battle session created, before the first Turn
 Payload:  BattleId, PetId, BossId, initial BattleState summary
 ```
 
+`BattleStarted` is a **gameplay event** and requires a created battle with a
+Pet and a Boss. It is not the foundation-stage state delivery mechanism: the
+initial transmission of Battle State Foundation (`GAME_STATE.md` §2.0) is a
+state push on group join, defined in `SIGNALR_PROTOCOL.md` §4 — not an event
+on the `ReceiveEvents` path (`GAME_EVENTS.md` §1).
+
 ## TurnStarted / TurnEnded
 ```text
 Trigger:  Start/end of a Turn (GAME_RULES.md §2)

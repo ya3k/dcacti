@@ -50,9 +50,9 @@ broadcast, used exactly as `SIGNALR_PROTOCOL.md` specifies.
 ## Why
 
 SignalR's Hub/group model maps directly onto the battle's requirements:
-request/response Hub methods for actions (`SIGNALR_PROTOCOL.md` §2, §4) and
+request/response Hub methods for actions (`SIGNALR_PROTOCOL.md` §2, §5) and
 ordered group broadcast for Battle Events (`SIGNALR_PROTOCOL.md` §3), with
-built-in reconnection support that `SIGNALR_PROTOCOL.md` §6 builds on.
+built-in reconnection support that `SIGNALR_PROTOCOL.md` §7 builds on.
 
 ## Consequences
 

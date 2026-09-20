@@ -8,23 +8,23 @@
 A player may lose connection mid-battle (browser refresh, Discord
 reconnect, temporary network loss). The battle's authoritative state must
 be recoverable without corrupting the strict Event Resolution order defined
-in `GAME_RULES.md` §17. `SIGNALR_PROTOCOL.md` §6 and `REDIS_STATE.md` §3/§5
+in `GAME_RULES.md` §17. `SIGNALR_PROTOCOL.md` §7 and `REDIS_STATE.md` §3/§5
 already establish a concrete strategy for this.
 
 ## Decision
 
 On reconnect, the client calls a request/response `GetBattleState(battleId)`
 Hub method and receives the current authoritative `BattleState` snapshot
-plus its `Sequence` (`SIGNALR_PROTOCOL.md` §6.1). The client discards any
+plus its `Sequence` (`SIGNALR_PROTOCOL.md` §7.1). The client discards any
 local prediction and re-renders entirely from this snapshot — it does **not**
-replay individual missed events (`SIGNALR_PROTOCOL.md` §6.2). No event log
+replay individual missed events (`SIGNALR_PROTOCOL.md` §7.2). No event log
 is persisted for replay purposes (`ARCHITECTURE.md` §5.2: "no message queue
 / event sourcing infrastructure").
 
 If the battle's Redis key has expired or the Redis instance itself was lost
 before the battle completed, `GetBattleState` returns `BATTLE_NOT_FOUND`;
 the client treats the battle as ended and falls back to
-`GET /api/battle/{battleId}/result` (`SIGNALR_PROTOCOL.md` §6.3,
+`GET /api/battle/{battleId}/result` (`SIGNALR_PROTOCOL.md` §7.3,
 `REDIS_STATE.md` §5). This is an **accepted risk for MVP** — no Redis
 replication or write-behind persistence exists to prevent this loss
 (`REDIS_STATE.md` §5.2, explicitly flagged there as not implemented for
@@ -40,7 +40,7 @@ resync.
 
 ### Option B — No Recovery (Battle Ends on Disconnect)
 Treat any disconnect as an automatic loss/abandonment. Not the documented
-behavior: `SIGNALR_PROTOCOL.md` §6 explicitly defines a recovery path
+behavior: `SIGNALR_PROTOCOL.md` §7 explicitly defines a recovery path
 (`GetBattleState`) rather than immediate termination.
 
 ### Option C — Snapshot-Based Resync (Chosen)
@@ -78,7 +78,7 @@ it got there.
 ## Related Documents
 
 - `docs/01-game-design/GAME_RULES.md` (§17)
-- `docs/02-technical/SIGNALR_PROTOCOL.md` (§6)
+- `docs/02-technical/SIGNALR_PROTOCOL.md` (§7)
 - `docs/02-technical/REDIS_STATE.md` (§3, §5)
 - `docs/02-technical/GAME_STATE.md` (§5)
 - `docs/02-technical/ARCHITECTURE.md` (§5.2)

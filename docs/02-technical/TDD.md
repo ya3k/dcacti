@@ -140,7 +140,7 @@ document size. Game coordinates are logical and must not be derived from
 
 This is a **presentation** concern only. It must never alter the board's logical
 cell count or any game rule — responsive behavior scales the presentation, not
-the gameplay (`ARCHITECTURE.md` §2.2.1).
+the gameplay (`ARCHITECTURE.md` §2.2.2).
 
 ### Service Boundaries
 

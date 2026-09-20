@@ -1,7 +1,11 @@
 import React from 'react';
 import { PhaserGame } from '../game/PhaserGame';
+import { GameRuntimeProvider } from '../game/runtime/GameRuntimeContext';
+import type { GameRuntime } from '../game/runtime/GameRuntime';
 
 interface GameShellProps {
+  /** The shared game runtime, created and owned by the application shell. */
+  runtime: GameRuntime;
   /** Called once the Phaser game instance has been created. */
   onGameInitialized?: () => void;
   /**
@@ -24,19 +28,29 @@ interface GameShellProps {
  * clips anything that would otherwise overflow. It performs no resize handling
  * of its own: layout is driven by CSS, and Phaser's Scale Manager observes the
  * shell element directly.
+ *
+ * It also publishes the runtime to the React overlay through
+ * `GameRuntimeProvider`, so UI can read technical runtime status without
+ * reaching into Phaser internals (task §17).
  */
-export const GameShell: React.FC<GameShellProps> = ({ onGameInitialized, children }) => {
+export const GameShell: React.FC<GameShellProps> = ({
+  runtime,
+  onGameInitialized,
+  children,
+}) => {
   return (
-    <div className="game-shell" data-testid="game-shell">
-      <div className="game-shell__canvas" data-testid="game-shell-canvas">
-        <PhaserGame onInitialized={onGameInitialized} />
-      </div>
-
-      {children ? (
-        <div className="game-shell__overlay" data-testid="game-shell-overlay">
-          {children}
+    <GameRuntimeProvider runtime={runtime}>
+      <div className="game-shell" data-testid="game-shell">
+        <div className="game-shell__canvas" data-testid="game-shell-canvas">
+          <PhaserGame runtime={runtime} onInitialized={onGameInitialized} />
         </div>
-      ) : null}
-    </div>
+
+        {children ? (
+          <div className="game-shell__overlay" data-testid="game-shell-overlay">
+            {children}
+          </div>
+        ) : null}
+      </div>
+    </GameRuntimeProvider>
   );
 };

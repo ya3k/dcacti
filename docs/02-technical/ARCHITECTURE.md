@@ -56,6 +56,12 @@ client/
 │   │   ├── PhaserGame.tsx        # Canvas mount component (created once)
 │   │   ├── GameConfig.ts         # Phaser configuration (renderer, scale, scenes)
 │   │   ├── GameViewport.ts       # Logical resolution, safe area, fit calculation
+│   │   ├── runtime/              # Client runtime coordination boundary
+│   │   │   ├── GameRuntime.ts          # Coordinates Phaser, SignalR, state, events
+│   │   │   ├── GameRuntimeContext.tsx  # React bridge to the runtime (React never
+│   │   │   │                           #   touches Phaser internals)
+│   │   │   ├── GameRuntimeEvents.ts    # Runtime event contract & GameRuntimePort
+│   │   │   └── RuntimeRegistry.ts      # Publishes the runtime to Phaser scenes
 │   │   └── scenes/               # Phaser Scenes
 │   │       ├── BootScene.ts      # Technical init (scales, asset pre-setup)
 │   │       ├── PreloaderScene.ts # Asset loading & load progress presentation
@@ -68,7 +74,12 @@ client/
 │   │   ├── discord/              # Discord Embedded App SDK integration
 │   │   │   └── DiscordService.ts # Discord Activity SDK lifecycle, auth initiation
 │   │   ├── realtime/             # SignalR Hub client wrapper & event dispatcher
+│   │   │   └── SignalRService.ts # SignalR connection lifecycle — the only
+│   │   │                         #   SignalR implementation in the client
 │   │   └── api/                  # REST API client
+│   │
+│   ├── state/                    # Client runtime state contract
+│   │   └── GameRuntimeState.ts   # Technical/session state only — no gameplay state
 │   │
 │   └── ui/                       # React DOM UI components
 │       └── components/           # Menus, overlays, HUD dialogs, settings,
@@ -137,7 +148,75 @@ Backend (SignalR Hub / REST API)
    strictly presentation and runtime components; authoritative state, math,
    and rules remain exclusively on the server (`GAME_RULES.md` §18, ADR-001).
 
-### 2.2.1 Game Viewport & Scaling
+### 2.2.1 Game Runtime Coordination
+
+`game/runtime/GameRuntime.ts` is the client's runtime coordination boundary. It
+is the single place that couples the game presentation to the realtime
+transport, so neither React nor the Phaser scenes has to:
+
+```text
+BattleScene / React UI
+        │  (GameRuntimePort)
+        ▼
+    GameRuntime            connection state · runtime lifecycle ·
+        │                  server event subscription · scene coordination
+        ▼
+   SignalRService          the only SignalR implementation in the client
+        │
+        ▼
+     BattleHub             thin transport boundary (ARCHITECTURE.md §1)
+        │
+        ▼
+Application Runtime        connection lifecycle tracking only
+```
+
+**Rules:**
+
+1. **Scenes depend on the runtime port, never on the transport.** A Phaser scene
+   must not import the SignalR client or `HubConnection`; transport independence
+   is what allows the game presentation to be tested and changed without a live
+   hub.
+2. **React and Phaser do not reach into each other.** React reads runtime status
+   through `GameRuntimeContext`; Phaser reads the shared runtime from its
+   registry (`RuntimeRegistry.ts`). React never manipulates Phaser internals and
+   Phaser never manipulates React components.
+3. **The runtime coordinates; it does not compute.** It owns connection state,
+   runtime lifecycle, server event subscription and scene lifecycle
+   coordination only. It performs no gameplay calculation — no damage, match,
+   combo, cascade, passive, or power (`GAME_RULES.md` §18, ADR-001).
+4. **Battle events pass through unchanged.** `GameRuntime` forwards
+   `ReceiveEvents` batches exactly as the server sent them. It does not
+   reorder (which would break the resolution order guaranteed by
+   `SIGNALR_PROTOCOL.md` §3), filter, or interpret them.
+5. **Client runtime state is technical only.** `state/GameRuntimeState.ts`
+   carries connection, session, runtime and synchronization status. It carries
+   no gameplay state: authoritative `BattleState` is server-owned
+   (`GAME_STATE.md` §2, ADR-001, ADR-005) and is not modelled client-side.
+   The client holds a synchronized presentation copy of the server's state
+   (`GAME_STATE.md` §2.0, §4) and never authors, adjusts, or recomputes it.
+6. **One runtime, one connection.** `SignalRService` is a process-wide
+   singleton and `GameRuntime.initialize()` is idempotent, so React
+   StrictMode's development double-invocation cannot create a second SignalR
+   connection or a second Phaser instance.
+
+`GameRuntime` coordinates the initial state subscription
+(`SIGNALR_PROTOCOL.md` §4): it receives the server-pushed
+`BattleStateUpdated` payload and exposes it to the scenes through its port,
+exactly as it forwards `ReceiveEvents` (rule 4). The runtime does not derive,
+extend, or validate gameplay meaning from that payload.
+
+The runtime foundation establishes these boundaries. The initial
+state-delivery contract (`SIGNALR_PROTOCOL.md` §4) and the state it carries
+(Battle State Foundation — `GAME_STATE.md` §2.0) are implemented: joining a
+battle's group (`JoinBattle`, `SIGNALR_PROTOCOL.md` §1.2) triggers the server's
+`BattleStateUpdated` push, and `GameRuntime` stores that payload as the client's
+synchronized copy and exposes it through its port.
+
+Battle resolution, the client → server gameplay methods (`Swap`, `CardCast`,
+`PetSkillCast` — `SIGNALR_PROTOCOL.md` §2), and reconnect/resync snapshot
+recovery (`SIGNALR_PROTOCOL.md` §7, ADR-008) are not implemented yet.
+
+### 2.2.2 Game Viewport & Scaling
 
 The client behaves as a game, not as a scrollable web page. The document never
 scrolls; the available viewport *is* the game surface.
@@ -256,13 +335,18 @@ RelicTriggerEngine              Domain            RELIC_RULES.md
 BossController                  Domain            BOSS_RULES.md
 BattleEventBus                  Domain            GAME_EVENTS.md (definitions)
 BattleResolutionService          Application       GAME_RULES.md §17 sequencing
+RuntimeService                    Application       Hub connection lifecycle only —
+                                                    no gameplay (§2.2.1)
 BattleStateRepository (Redis)     Infrastructure    REDIS_STATE.md
 PersistenceRepository (Postgres)  Infrastructure    DATABASE.md
-BattleHub                         Api               SIGNALR_PROTOCOL.md
+BattleHub                         Api               SIGNALR_PROTOCOL.md (thin —
+                                                    no gameplay rules, §2.1)
 Collection/Result Controllers      Api               API_CONTRACTS.md
 PhaserGame / Scenes          Client (Game)     Canvas rendering & scene lifecycle
 GameConfig / GameViewport     Client (Game)     Scale Manager config; logical resolution
-                                                (1280×720), safe area (§2.2.1)
+                                                (1280×720), safe area (§2.2.2)
+GameRuntime                   Client (Game)     Coordinates Phaser, transport & runtime
+                                                state; no gameplay (§2.2.1)
 DiscordService                Client (Services) Discord SDK lifecycle & auth boundary
 RealtimeService               Client (Services) SignalR connection & event dispatch
 ApiService                    Client (Services) REST API communication

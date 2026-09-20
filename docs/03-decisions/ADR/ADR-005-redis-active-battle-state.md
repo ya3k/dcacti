@@ -8,7 +8,7 @@
 An in-progress battle's state (`BattleState` — `GAME_STATE.md` §2) must be
 readable/writable on every resolved Swap or Card Cast with low latency, and
 must survive a single server instance restart so a player can reconnect
-mid-battle (`SIGNALR_PROTOCOL.md` §6). This state is transient — it exists
+mid-battle (`SIGNALR_PROTOCOL.md` §7). This state is transient — it exists
 only for the lifetime of one battle (`GAME_STATE.md` §1) — unlike durable
 player/collection data.
 
@@ -25,7 +25,7 @@ of resolving a single action (`TDD.md` §4.3).
 ### Option A — In-Process Memory Only
 Keep `BattleState` in server memory for the duration of the connection.
 Rejected: cannot survive an instance restart or support the reconnect flow
-that `SIGNALR_PROTOCOL.md` §6 requires (`GetBattleState` must return a
+that `SIGNALR_PROTOCOL.md` §7 requires (`GetBattleState` must return a
 recoverable snapshot).
 
 ### Option B — PostgreSQL for Active State Too

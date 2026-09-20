@@ -8,6 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest",
+    "test:run": "vitest run",
+    "verify:runtime": "node scripts/runtime-smoke.mjs",
     "verify:viewport": "node scripts/viewport-check.mjs",
     "verify:viewport:overflow": "node scripts/viewport-overflow-check.mjs",
     "verify:viewport:shots": "node scripts/viewport-shots.mjs"

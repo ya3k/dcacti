@@ -1,8 +1,14 @@
 import React, { useEffect, useRef } from 'react';
 import * as Phaser from 'phaser';
 import { createGameConfig } from './GameConfig';
+import { GameRuntime } from './runtime/GameRuntime';
 
 interface PhaserGameProps {
+  /**
+   * The game runtime the scenes coordinate through. Created and owned by the
+   * application shell so React and Phaser share exactly one instance.
+   */
+  runtime: GameRuntime;
   onInitialized?: () => void;
 }
 
@@ -13,20 +19,33 @@ interface PhaserGameProps {
  * changes are handled by Phaser's Scale Manager, which observes this element —
  * the component installs no window resize listener and never resizes the canvas
  * or the document manually.
+ *
+ * React never reaches into Phaser internals: it mounts the canvas and hands the
+ * game the shared runtime. Phaser never touches React components. The
+ * `GameRuntime` is that integration boundary (task §17).
+ *
+ * React StrictMode intentionally double-invokes effects in development. The
+ * cleanup below destroys the game and clears the ref, so the second run creates
+ * exactly one new instance and no duplicate canvas is left behind (task §20).
  */
-export const PhaserGame: React.FC<PhaserGameProps> = ({ onInitialized }) => {
+export const PhaserGame: React.FC<PhaserGameProps> = ({ runtime, onInitialized }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const gameRef = useRef<Phaser.Game | null>(null);
 
+  // Kept in a ref so a changing callback identity never re-runs the effect and
+  // therefore never recreates the Phaser instance.
+  const onInitializedRef = useRef(onInitialized);
+  useEffect(() => {
+    onInitializedRef.current = onInitialized;
+  }, [onInitialized]);
+
   useEffect(() => {
     if (containerRef.current && !gameRef.current) {
-      const config = createGameConfig(containerRef.current);
+      const config = createGameConfig(containerRef.current, runtime);
       const game = new Phaser.Game(config);
       gameRef.current = game;
 
-      if (onInitialized) {
-        onInitialized();
-      }
+      onInitializedRef.current?.();
     }
 
     return () => {
@@ -35,7 +54,7 @@ export const PhaserGame: React.FC<PhaserGameProps> = ({ onInitialized }) => {
         gameRef.current = null;
       }
     };
-  }, [onInitialized]);
+  }, [runtime]);
 
   return (
     <div
