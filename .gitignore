@@ -1,0 +1,33 @@
+# =============================================================================
+# .gitignore for dcacti
+# =============================================================================
+
+# ─── Secrets / local config ──────────────────────────────────────────────────
+src/backend/GameServer.Api/appsettings.Development.json
+src/frontend/client/.env.local
+src/frontend/client/.env.*.local
+src/backend/.env
+
+# ─── Build outputs ───────────────────────────────────────────────────────────
+**/bin/
+**/obj/
+src/frontend/client/dist/
+
+# ─── Local verification artifacts ────────────────────────────────────────────
+# Screenshots produced by src/frontend/client/scripts/viewport-shots.mjs
+src/frontend/client/viewport-shots/
+
+# ─── Dependencies ────────────────────────────────────────────────────────────
+**/node_modules/
+
+# ─── IDE / OS ─────────────────────────────────────────────────────────────────
+.vs/
+.vscode/
+*.user
+.DS_Store
+Thumbs.db
+
+# ─── .NET ─────────────────────────────────────────────────────────────────────
+*.suo
+*.ncrunchproject
+launchSettings.json

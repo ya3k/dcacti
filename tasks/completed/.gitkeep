@@ -1,0 +1,8 @@
+# tasks/completed/
+
+Tasks in DONE status live here.
+
+Completed tasks are immutable. Do not edit a completed task's
+implementation decisions or acceptance criteria.
+
+Create a new task for follow-up work.

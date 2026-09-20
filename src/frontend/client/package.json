@@ -1,0 +1,34 @@
+{
+  "name": "dcacti-client",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "vitest",
+    "verify:viewport": "node scripts/viewport-check.mjs",
+    "verify:viewport:overflow": "node scripts/viewport-overflow-check.mjs",
+    "verify:viewport:shots": "node scripts/viewport-shots.mjs"
+  },
+  "dependencies": {
+    "@discord/embedded-app-sdk": "^1.2.0",
+    "@microsoft/signalr": "^8.0.7",
+    "phaser": "4.2.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.2.0",
+    "@types/node": "^22.13.9",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "jsdom": "^26.0.0",
+    "typescript": "^5.7.3",
+    "vite": "^6.2.0",
+    "vitest": "^3.0.7"
+  }
+}

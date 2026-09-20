@@ -1,0 +1,8 @@
+# tasks/blocked/
+
+Tasks in BLOCKED status live here.
+
+A task is moved here when a stop condition fires. It must contain a
+STOP CONDITION report in its Stop Conditions section.
+
+See `tasks/TASK_LIFECYCLE.md §3` (BLOCKED state) and `tasks/README.md §10`.

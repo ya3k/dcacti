@@ -1,0 +1,297 @@
+/*
+ * Global game viewport foundation.
+ *
+ * This application is a game running inside a Discord Activity iframe, not a
+ * scrollable web page. The document never scrolls: the viewport is the game
+ * surface. Do not add website-style containers (max-width / margin auto /
+ * large page padding) here.
+ */
+
+:root {
+  --bg-dark: #090d16;
+  --card-bg: #111827;
+  --card-border: #1f2937;
+  --text-primary: #f3f4f6;
+  --text-secondary: #9ca3af;
+  --primary-accent: #3b82f6;
+  --primary-accent-hover: #2563eb;
+  --success-color: #10b981;
+  --warning-color: #f59e0b;
+  --error-color: #ef4444;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+/* The document itself never scrolls — no horizontal, no vertical. */
+html,
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  background-color: var(--bg-dark);
+  color: var(--text-primary);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * GameShell — owns the full available viewport (never more than 100vw x 100vh)
+ * and is the positioning context for the Phaser canvas and the React overlay.
+ */
+.game-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* The Phaser mount point fills the shell; the Scale Manager fits inside it. */
+.game-shell__canvas {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* The React UI overlay never contributes to document size. */
+.game-shell__overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/*
+ * Overlay children opt back into pointer input explicitly, so a full-bleed
+ * overlay layer cannot swallow pointer events meant for the game canvas.
+ */
+.game-shell__overlay > * {
+  pointer-events: auto;
+}
+
+/*
+ * Developer-only viewport diagnostics (see ViewportDebugOverlay.tsx).
+ * Rendered only when import.meta.env.DEV is true.
+ */
+.viewport-debug {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 10;
+  padding: 6px 10px;
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  background-color: rgba(9, 13, 22, 0.82);
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+  pointer-events: none;
+}
+
+/*
+ * Diagnostics panel styling. Kept out of the game surface flow: the panel is a
+ * scroll-free overlay anchored to the shell, and it may itself scroll internally
+ * without the document ever scrolling.
+ */
+.status-overlay-card {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 5;
+  /* Never larger than the shell: the panel can never cause document overflow. */
+  max-width: min(420px, calc(100% - 24px));
+  max-height: calc(100% - 24px);
+  /* Hidden on the panel itself; the inner scroller below handles overflow. */
+  overflow: hidden;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+}
+
+/*
+ * The panel body is the scroll container. `min-height: 0` is what actually
+ * lets a flex item shrink below its content size, so at very small viewports
+ * the body becomes scrollable *inside* the panel rather than letting its
+ * children paint outside the panel box. The document still never scrolls.
+ */
+.status-body {
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.status-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid #1f293d;
+  padding-bottom: 8px;
+}
+
+.status-header h2 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #e5e7eb;
+}
+
+.platform-tag {
+  font-size: 11px;
+  padding: 3px 6px;
+  background-color: #1e293b;
+  color: #94a3b8;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+/*
+ * `minmax(0, 1fr)` rather than a fixed min column width: a hard minimum would
+ * force the grid wider than the panel on very small viewports and push its
+ * cells outside the panel box. The grid shrinks instead, and the panel scrolls
+ * internally if its content still does not fit.
+ */
+.status-grid {
+  flex-shrink: 1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.status-item {
+  background: #0f172a;
+  padding: 10px;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.status-label,
+.status-subtext {
+  overflow-wrap: anywhere;
+}
+
+.status-label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.status-subtext {
+  font-size: 10px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
+.status-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 6px;
+  border-radius: 4px;
+  width: fit-content;
+}
+
+.badge-success {
+  background-color: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+}
+
+.badge-warning {
+  background-color: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.badge-neutral {
+  background-color: rgba(156, 163, 175, 0.15);
+  color: #9ca3af;
+  border: 1px solid rgba(156, 163, 175, 0.3);
+}
+
+.badge-error {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.ping-info {
+  font-size: 11px;
+  color: #93c5fd;
+}
+
+.action-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.btn {
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: background-color 0.2s;
+}
+
+.btn-primary {
+  background-color: var(--primary-accent);
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background-color: var(--primary-accent-hover);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  background-color: #374151;
+  color: #e5e7eb;
+}
+
+.btn-secondary:hover {
+  background-color: #4b5563;
+}
