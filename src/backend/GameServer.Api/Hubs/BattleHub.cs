@@ -10,13 +10,14 @@ namespace GameServer.Api.Hubs;
 public record PingResponse(bool Accepted, string? ClientSequence, DateTimeOffset ServerTime);
 
 /// <summary>
-/// The initial-state push payload (<c>SIGNALR_PROTOCOL.md</c> §4, §4.1, §4.2).
+/// The initial-state push payload (<c>SIGNALR_PROTOCOL.md</c> §4, §4.1, §4.2,
+/// §4.3).
 ///
 /// It carries exactly the fields of the currently implemented
-/// <c>GAME_STATE.md</c> §0 stage — for the Match / Combo accounting stage that is
+/// <c>GAME_STATE.md</c> §0 stage — for the Pet / Passive stage that is
 /// <c>battleId</c>, <c>turn</c>, <c>sequence</c>, <c>board</c>, <c>rngSeed</c>,
-/// <c>rngState</c>, and <c>playerState</c> — and no others
-/// (§4.4, §4.1 item 1). No gameplay field beyond the stage's own is carried, and
+/// <c>rngState</c>, <c>playerState</c>, and <c>petState</c> — and no others
+/// (§4 item 4, §4.1 item 1). No gameplay field beyond the stage's own is carried, and
 /// no <c>Status</c>/lifecycle value is carried anywhere in the protocol (§8.3).
 ///
 /// <c>board</c> carries the server-generated <c>Cells[64]</c>
@@ -37,12 +38,22 @@ public record PingResponse(bool Accepted, string? ClientSequence, DateTimeOffset
 /// present, including at their documented <c>0</c> values — zero is a value here,
 /// not an absence (§4.2 item 4).
 ///
+/// <c>petState</c> carries the active Pet's Passive (<c>GAME_STATE.md</c> §2.3),
+/// projected per §4.3. It is delivered because it is a <c>BattleState</c> field
+/// and because <c>PASSIVE_RULES.md</c> §6 item 1 requires Passive progress to be
+/// exposed as a UI-facing value — §4 item 13 records that it is a client-facing
+/// field and that §4 item 12's exclusion of <c>LastCommittedSwapPair</c> is not
+/// the precedent for it. The value it reports is the <b>settled</b> progress
+/// under this payload's <c>sequence</c>, once per resolved action; the per-Match
+/// detail travels on the <c>ReceiveEvents</c> batch instead (§4.3 item 11).
+///
 /// This remains the only state-push method in the protocol at every stage. No
 /// board-specific message (<c>BoardCreated</c>, <c>BoardGenerated</c>,
 /// <c>BoardUpdated</c>, <c>BoardReady</c>, or similar) is part of this contract
 /// and none is introduced (§4 item 11, §8.5): the board is a field of the battle
-/// state, so extending that state is what delivers it. No Match-, Combo-, or
-/// progression-specific message is introduced either (§4.2 item 6).
+/// state, so extending that state is what delivers it. No Match-, Combo-,
+/// progression-, or Passive-specific message is introduced either (§4.2 item 6,
+/// §4.3 item 10).
 /// </summary>
 /// <param name="RngSeed">
 /// The battle's server-chosen PRNG seed (<c>GAME_STATE.md</c> §2.6.1), projected
@@ -62,6 +73,12 @@ public record PingResponse(bool Accepted, string? ClientSequence, DateTimeOffset
 /// the resolution's <c>MatchCount</c> and <c>Combo</c>, projected one-to-one from
 /// the authoritative state.
 /// </param>
+/// <param name="PetState">
+/// The authoritative <c>PetState</c> projection (<c>GAME_STATE.md</c> §2.3) — the
+/// active Pet's Passive identity, its progress pair, and its non-default Reset
+/// Behavior when it declares one, projected one-to-one from the authoritative
+/// state (<c>SIGNALR_PROTOCOL.md</c> §4.3).
+/// </param>
 public record BattleStateUpdated(
     string BattleId,
     int Turn,
@@ -69,7 +86,88 @@ public record BattleStateUpdated(
     ulong RngSeed,
     RngStatePayload RngState,
     BoardPayload Board,
-    PlayerStatePayload PlayerState);
+    PlayerStatePayload PlayerState,
+    PetStatePayload PetState);
+
+/// <summary>
+/// The wire projection of <c>PetState</c> (<c>GAME_STATE.md</c> §2.3,
+/// <c>SIGNALR_PROTOCOL.md</c> §4.3).
+///
+/// <code>
+/// petState
+/// ├── passiveId                 the active Pet's Passive identity   always present
+/// ├── passiveProgress            { threshold, current }             always present
+/// └── passiveResetOverride       "Partial" | "NoReset"              present only when
+///                                                                   non-default
+/// </code>
+///
+/// The members are exactly the three <c>PetState</c> fields this stage implements
+/// and nothing else (§4.3 item 2): the Passive's <c>Threshold</c>, <c>Trigger
+/// Type</c>, <c>Effect</c>, and <c>Reset Behavior</c> are its <b>definition</b>
+/// and are not members here (<c>PASSIVE_RULES.md</c> §1, §4.3 item 3), and the
+/// rest of §2.3 — <c>PetId</c>/Identity, <c>Element</c>,
+/// <c>Tier</c>/<c>Star</c>/<c>Level</c> — belongs to the Pet identity and
+/// progression stage and is not delivered.
+///
+/// The client renders what it receives and derives nothing: it does not charge a
+/// Passive, evaluate a Threshold, reset progress, or apply an overflow, and it
+/// never re-derives any of it from <c>board</c>, <c>turn</c>, <c>sequence</c>,
+/// <c>combo</c>, or <c>matchCount</c> (<c>GAME_RULES.md</c> §18, §4.3 item 9).
+/// </summary>
+/// <param name="PassiveId">
+/// The active Pet's Passive identity (<c>GAME_STATE.md</c> §2.3) — the same value
+/// <c>GAME_EVENTS.md</c> §2's <c>PassiveCharged</c>/<c>PassiveTriggered</c>
+/// report. It is always present and has no absent or null form: a battle always
+/// has its one active Pet and therefore its one Passive (§2.3 item 3, §4.3
+/// item 3).
+/// </param>
+/// <param name="PassiveProgress">
+/// The Passive's <c>{ threshold, current }</c> pair. It is one nested object
+/// rather than two flat members because the two travel together as one logical
+/// field: a reader renders the documented <c>current / threshold</c> pair without
+/// supplying either from elsewhere (<c>PASSIVE_RULES.md</c> §6 item 1's
+/// <c>7 / 10 Matches</c>).
+/// </param>
+/// <param name="PassiveResetOverride">
+/// The Passive's non-default Reset Behavior as its contract name —
+/// <c>"Partial"</c> or <c>"NoReset"</c> (<c>PASSIVE_RULES.md</c> §4 item 2), never
+/// a numeric enum ordinal.
+///
+/// It is <b>omitted, never <c>null</c>, when the reset is the default</b>
+/// (§4.3 item 7): the absence <i>is</i> the statement "this Passive uses the
+/// default reset", and no <c>null</c>, <c>"Default"</c> string, or empty value
+/// stands in for it — writing one would be a second spelling of one fact, which
+/// <c>GAME_STATE.md</c> §0 item 5 forbids.
+/// </param>
+public record PetStatePayload(
+    [property: JsonPropertyName("passiveId")] string PassiveId,
+    [property: JsonPropertyName("passiveProgress")] PassiveProgressPayload PassiveProgress,
+    [property: JsonPropertyName("passiveResetOverride")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PassiveResetOverride = null);
+
+/// <summary>
+/// The wire projection of <c>GAME_STATE.md</c> §2.5's <c>PassiveProgress</c>
+/// <c>(Threshold, Current)</c> pair (<c>SIGNALR_PROTOCOL.md</c> §4.3 item 4).
+///
+/// Both members are always present, neither is nullable and neither is omitted —
+/// <c>current = 0</c> is a real publishable value (it is what a battle begins with
+/// and what the <c>Default</c> reset writes), so absence is never used for it and
+/// a client must not read an absent member as zero (§4.3 item 4). It is the
+/// opposite of the absent-Special-Gem convention (<c>GAME_STATE.md</c> §2.1.7
+/// item 3), exactly as §4.2 item 3 states for <c>combo</c>/<c>matchCount</c>.
+/// </summary>
+/// <param name="Threshold">
+/// The Passive's own Threshold (<c>PASSIVE_RULES.md</c> §1) — the same value
+/// <c>GAME_EVENTS.md</c> §2 reports on <c>PassiveCharged</c>.
+/// </param>
+/// <param name="Current">
+/// The progress reached toward it (<c>GAME_STATE.md</c> §2.5) — the settled value
+/// after the resolution this push reports, not a per-Match intermediate
+/// (§4.3 item 11).
+/// </param>
+public record PassiveProgressPayload(
+    [property: JsonPropertyName("threshold")] int Threshold,
+    [property: JsonPropertyName("current")] int Current);
 
 /// <summary>
 /// The wire projection of <c>PlayerState</c> (<c>GAME_STATE.md</c> §2.2).
@@ -508,9 +606,10 @@ public class BattleHub : Hub
     /// Projects the domain state onto the §4 wire payload.
     ///
     /// A pure field mapping — no calculation is performed. The board, the seed,
-    /// the RNG state, and the player's Match/Combo state are projected one-to-one
-    /// from the authoritative server state (<c>SIGNALR_PROTOCOL.md</c> §4.4, §4.9);
-    /// the hub derives nothing, validates nothing, and generates nothing.
+    /// the RNG state, the player's Match/Combo state, and the Pet's Passive state
+    /// are projected one-to-one from the authoritative server state
+    /// (<c>SIGNALR_PROTOCOL.md</c> §4 item 4, §4.9); the hub derives nothing,
+    /// validates nothing, generates nothing, and computes no Passive value.
     /// </summary>
     private static BattleStateUpdated ToPayload(BattleState state) =>
         new(
@@ -530,7 +629,50 @@ public class BattleHub : Hub
             // GAME_STATE.md §2.2 / SIGNALR_PROTOCOL.md §4.2: the two implemented
             // PlayerState fields, projected one-to-one. Both are always present — a
             // zero is delivered as a zero, never omitted (MATCH3_RULES.md §6.5 item 4).
-            new PlayerStatePayload(state.PlayerState.Combo, state.PlayerState.MatchCount));
+            new PlayerStatePayload(state.PlayerState.Combo, state.PlayerState.MatchCount),
+            // GAME_STATE.md §2.3 / SIGNALR_PROTOCOL.md §4.3: the implemented
+            // PetState members, projected one-to-one. The progress pair is nested
+            // because the two values are read together (§4.3 item 4), and the reset
+            // override is carried only when the Passive declares a non-default
+            // behavior — §4.3 item 7 makes the member's absence the statement
+            // "default", so nothing is written in its place.
+            ToPetStatePayload(state.PetState));
+
+    /// <summary>
+    /// Projects the authoritative <c>PetState</c> onto the §4.3 <c>petState</c>
+    /// object — a pure field mapping.
+    ///
+    /// The Passive identity, the progress pair, and the non-default Reset Behavior
+    /// are carried across one-to-one; the rest of <c>GAME_STATE.md</c> §2.3
+    /// (<c>PetId</c>, <c>Element</c>, <c>Tier</c>/<c>Star</c>/<c>Level</c>) is not
+    /// part of this stage and is not projected (<c>SIGNALR_PROTOCOL.md</c> §4.3
+    /// item 2). Nothing is derived: the client renders the values it was sent and
+    /// never charges a Passive, evaluates a Threshold, or applies a reset
+    /// (<c>GAME_RULES.md</c> §18, §4.3 item 9).
+    /// </summary>
+    private static PetStatePayload ToPetStatePayload(PetState petState) =>
+        new(
+            // §4.3 item 3: the Passive's identity, always present. It is the value
+            // PetState holds — the same identity the PassiveCharged/PassiveTriggered
+            // events report (GAME_EVENTS.md §2 item 1) — and the Passive's
+            // definition (Threshold, Trigger Type, Effect, Reset Behavior) is not
+            // copied here (§2.3 item 1).
+            petState.PassiveId.Value,
+
+            // §4.3 item 4: the two members of the progress pair, both always
+            // present and both delivered at their real values, including 0.
+            new PassiveProgressPayload(
+                petState.PassiveProgress.Threshold,
+                petState.PassiveProgress.Current),
+
+            // §4.3 items 6–7: the Reset Behavior's contract name when — and only
+            // when — it is non-default. "Partial"/"NoReset" are the two non-default
+            // behaviors PASSIVE_RULES.md §4 item 2 defines, spelled as §3.2.4
+            // requires for every enum-valued wire member (never the ordinal); a
+            // default reset leaves the member null here, and the member's null
+            // condition omits it from the JSON entirely rather than writing
+            // `null` or a "Default" string.
+            petState.PassiveResetOverride?.ToString());
 
     /// <summary>
     /// Projects one cell entry onto the §4 wire shape — a pure field mapping.

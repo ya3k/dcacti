@@ -1,7 +1,8 @@
 # Game Events
 
-**Version:** 1.4 (§3 item 1 now delegates the event wire schema to the single
-owner, `SIGNALR_PROTOCOL.md` §3.2 — the former mutual deferral is resolved)
+**Version:** 1.5 (`PassiveCharged`/`PassiveTriggered` payload defined — §2:
+`PassiveId` added, carrying the identity `GAME_STATE.md` §2.3 names, and the
+`effect summary` member recorded as deferred to the Combat stage)
 **Status:** Draft
 
 > This document answers: **"What events exist during gameplay, and in what
@@ -317,9 +318,38 @@ Payload:  Delta, new Power value, source (Gem match / Card cost / Relic)
 ```text
 Trigger:  Passive progress increases / threshold reached
           (PASSIVE_RULES.md §2, §7)
-Payload:  PassiveCharged: new progress value, threshold
-          PassiveTriggered: effect summary
+Payload:  PassiveCharged: PassiveId, new progress value, threshold
+          PassiveTriggered: PassiveId, new progress value, threshold,
+                            effect summary (deferred — see note)
 ```
+
+1. **`PassiveId` identifies the Passive that charged or triggered.** A Pet has
+   exactly one Passive (`PASSIVE_RULES.md` §1, `GAME_RULES.md` §9), and
+   `PetState` names it (`GAME_STATE.md` §2.3): the field is the same value the
+   active Pet's `PetState.PassiveId` holds, read and reported — never
+   re-derived, re-numbered, or invented by the emitting stage. It is the
+   identity member the sibling trigger events already carry
+   (`RelicTriggered`'s `RelicId`, `CardCast`'s `CardId`, `BossSkillCast`'s
+   `SkillId`), and it is what lets the client attribute a charge or a trigger
+   to the Passive it belongs to.
+2. **`new progress value` is the progress the increment produced, and `threshold`
+   is the Passive's threshold** (`PASSIVE_RULES.md` §1, §2). Both are reported
+   as the values the track owns, so the client renders `Progress / Threshold`
+   without recomputing either (`PASSIVE_RULES.md` §6 item 1). On a
+   `PassiveTriggered`, the progress reported is the value at the moment the
+   threshold was crossed — **before** that trigger's own reset
+   (`PASSIVE_RULES.md` §2 item 4, §4).
+3. **`effect summary` is deferred, and its absence is not an omission.**
+   `PASSIVE_RULES.md` §7 defines `PassiveTriggered` as emitted "when the Passive
+   activates and its Effect resolves", and what the effect does is owned by the
+   Combat/Pet systems (`COMBAT_RULES.md`), not by the Passive tracker. Until
+   that stage exists this member is **not populated**, and the event's other
+   members are unaffected and fully decodable without it. A reader must not
+   treat a missing `effect summary` as "no effect occurred": it means "the
+   effect is not yet reported" (`GAME_STATE.md` §0 item 4's staging position,
+   applied to an event payload). This is a recorded sequencing position, not a
+   scope reduction — the member is added to the emitted value by the Combat
+   stage's own task, and the payload list above is not otherwise revised by it.
 
 ## RelicTriggered
 ```text

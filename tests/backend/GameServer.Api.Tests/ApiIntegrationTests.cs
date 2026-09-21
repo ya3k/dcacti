@@ -257,12 +257,17 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         // BattleId, Turn, Sequence, RngSeed, RngState, BoardState (GAME_STATE.md §2.0.5)
-        // plus PlayerState (§2.2, the Match / Combo accounting stage).
+        // plus PlayerState (§2.2, the Match / Combo accounting stage) and PetState
+        // (§2.3, the Pet / Passive stage).
         // SIGNALR_PROTOCOL.md §4 item 4: no other field may be added to this record.
         // §8.3: no Status/lifecycle value.
         var fields = payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal);
         Assert.Equal(
-            new[] { "battleId", "board", "playerState", "rngSeed", "rngState", "sequence", "turn" },
+            new[]
+            {
+                "battleId", "board", "petState", "playerState", "rngSeed", "rngState",
+                "sequence", "turn",
+            },
             fields);
 
         // §4.2: the nested PlayerState object carries exactly the two implemented §2.2
@@ -272,6 +277,29 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         Assert.Equal(
             new[] { "combo", "matchCount" },
             playerState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        // §4.3: the nested PetState object carries exactly the three members the Pet /
+        // Passive stage fixes — the Passive identity, its progress pair, and the
+        // conditional reset override. The rest of GAME_STATE §2.3 (PetId, Element,
+        // Tier/Star/Level) belongs to a later stage and is not delivered.
+        var petState = payload.GetProperty("petState");
+        var petFields = petState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal);
+
+        // `passiveResetOverride` is present only when the Passive declares a
+        // non-default reset (§4.3 item 6), and the battle created here uses the
+        // default (§4 item 1), so the member is omitted entirely — never written as
+        // JSON null and never spelled "Default" (§4.3 item 7).
+        Assert.Equal(new[] { "passiveId", "passiveProgress" }, petFields);
+        Assert.False(petState.TryGetProperty("passiveResetOverride", out _));
+
+        // `passiveProgress` is the `{ threshold, current }` pair, both always present
+        // (§4.3 item 4).
+        Assert.Equal(
+            new[] { "current", "threshold" },
+            petState.GetProperty("passiveProgress")
+                .EnumerateObject()
+                .Select(p => p.Name)
+                .OrderBy(n => n, StringComparer.Ordinal));
 
         await hubConnection.StopAsync();
     }
@@ -421,11 +449,12 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
         var serialized = payload.GetRawText();
 
-        // GAME_STATE.md §2.0.5.3 / §2.2: PetState and BossState are still absent and
-        // owned by later stages, and so is the rest of PlayerState (HP, Power, Status,
-        // Cards, Relics). The board, RNG, and PlayerState fields ARE part of the
-        // implemented stage — §2.0.5 for the first two and §2.2 for
-        // combo/matchCount — so they are not in this list.
+        // GAME_STATE.md §2.0.5.3 / §2.2 / §2.3: BossState is still absent and owned
+        // by a later stage, and so is the rest of PlayerState (HP, Power, Status,
+        // Cards, Relics) and the rest of PetState (PetId, Element, Tier). The board,
+        // RNG, PlayerState, and PetState fields ARE part of the implemented stage —
+        // §2.0.5 for the first two, §2.2 for combo/matchCount, and §2.3 for
+        // passiveId/passiveProgress — so they are not in this list.
         //
         // PendingSpecialGems[] is in the list for a different reason: it is not a
         // deferred field at all — it does not exist in any form
@@ -446,7 +475,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
 
         foreach (var laterStageField in new[]
                  {
-                     "petState", "bossState", "pendingSpecialGems",
+                     "bossState", "pendingSpecialGems",
                      "damage", "power", "hp", "maxHp", "atk", "def", "crit",
                      "status", "statusEffects", "equippedRelics", "equippedCards",
                      "specialGems",
@@ -465,11 +494,47 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // The stage's own fields are the only ones present, and PlayerState's own two
         // are the only fields of that object (§2.2 — this stage implements no others).
         Assert.Equal(
-            new[] { "battleId", "board", "playerState", "rngSeed", "rngState", "sequence", "turn" },
+            new[]
+            {
+                "battleId", "board", "petState", "playerState", "rngSeed", "rngState",
+                "sequence", "turn",
+            },
             fields.OrderBy(n => n, StringComparer.Ordinal));
         Assert.Equal(
             new[] { "combo", "matchCount" },
             playerStateFields.OrderBy(n => n, StringComparer.Ordinal));
+
+        // `petState` carries exactly the three members §4.3 fixes: the Passive
+        // identity, its progress pair, and the conditional reset override. The rest of
+        // PetState (PetId, Element, Tier/Star/Level) belongs to later stages and is not
+        // delivered (§2.3, SIGNALR_PROTOCOL.md §4.3 item 2).
+        //
+        // `passiveResetOverride` is omitted when the reset behavior is default
+        // (§4.3 item 6), so whether it appears depends on the created battle's Passive.
+        // The two always-present members are asserted here; the omission rule itself is
+        // covered by the §4.3 contract tests.
+        var petStateFields = payload.GetProperty("petState")
+            .EnumerateObject()
+            .Select(p => p.Name)
+            .ToArray();
+        Assert.Contains("passiveId", petStateFields);
+        Assert.Contains("passiveProgress", petStateFields);
+
+        // `passiveProgress` is the nested `{ threshold, current }` pair, both always
+        // present — neither is nullable and neither is omitted, so `current = 0` is
+        // delivered as `0` rather than by absence (§4.3 item 4).
+        var passiveProgress = payload.GetProperty("petState").GetProperty("passiveProgress");
+        Assert.Equal(
+            new[] { "current", "threshold" },
+            passiveProgress.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        // No Pet/Passive member is carried anywhere else: a second spelling would be the
+        // parallel representation GAME_STATE.md §0 item 5 forbids (§4.3 item 8).
+        foreach (var petField in new[] { "petId", "element", "tier", "star", "level" })
+        {
+            Assert.DoesNotContain(petField, petStateFields, StringComparer.OrdinalIgnoreCase);
+            Assert.DoesNotContain(petField, fields, StringComparer.OrdinalIgnoreCase);
+        }
 
         // The blocklist is scoped to the top level, and `board` is the one nested
         // object. It holds `cells` and nothing else — no parallel Special Gem
@@ -480,6 +545,263 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
             board.EnumerateObject().Select(p => p.Name).ToArray());
 
         await hubConnection.StopAsync();
+    }
+
+    // -----------------------------------------------------------------------
+    // Pet / Passive state delivery — SIGNALR_PROTOCOL.md §4.3
+    //
+    //   Server → PetState → SignalR → Client (the same §4 push)
+    //
+    // GAME_STATE.md §2.3 makes PetState a BattleState field present from battle
+    // creation, and §4 item 13 records that it is a client-facing field delivered by
+    // the existing push — PASSIVE_RULES.md §6 item 1 requires the Passive's progress
+    // to be exposed as a UI-facing value. These verify the documented §4.3 shape and
+    // that no new message, method, or subscription carries it (§4.3 item 10).
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public async Task BattleStateUpdated_ShouldCarryTheSettledPassiveProgress()
+    {
+        // §4.3 items 1–5: `petState` reports the Passive's identity and the
+        // `{ threshold, current }` pair the state holds. The pair is delivered at its
+        // real values, including the documented starting `current = 0` — absence is
+        // never used for it (§4.3 item 4).
+        const string battleId = "battle-petstate-shape";
+        CreateBattleOnServer(battleId);
+
+        var hubConnection = BuildHubConnection();
+        var received = new TaskCompletionSource<JsonElement>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        hubConnection.On<JsonElement>("BattleStateUpdated", payload => received.TrySetResult(payload));
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+        var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var petState = payload.GetProperty("petState");
+
+        // §4.3 item 3: `passiveId` is always present and carries the value
+        // PetState.PassiveId holds — the identity the PassiveCharged/PassiveTriggered
+        // events report (GAME_EVENTS.md §2 item 1). It is the identity, not the
+        // definition: no threshold/effect/reset copy is nested beside it.
+        Assert.Equal("xich-lang", petState.GetProperty("passiveId").GetString());
+
+        // §4.3 item 4: both members always present, both integers.
+        var progress = petState.GetProperty("passiveProgress");
+        Assert.Equal(PASSIVE_THRESHOLD, progress.GetProperty("threshold").GetInt32());
+        Assert.Equal(0, progress.GetProperty("current").GetInt32());
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task BattleStateUpdated_ShouldOmitTheResetOverrideForADefaultReset_AndNeverWriteNull()
+    {
+        // §4.3 items 6–7: `passiveResetOverride` is present if and only if the reset
+        // behavior is non-default, it carries the behavior's contract name as a
+        // string, and a default reset OMITS the member — it is never sent as JSON
+        // `null`, never as "Default", and never as a numeric enum ordinal.
+        const string battleId = "battle-petstate-default-reset";
+        CreateBattleOnServer(battleId);
+
+        var hubConnection = BuildHubConnection();
+        var received = new TaskCompletionSource<JsonElement>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        hubConnection.On<JsonElement>("BattleStateUpdated", payload => received.TrySetResult(payload));
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+        var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var petState = payload.GetProperty("petState");
+
+        Assert.False(
+            petState.TryGetProperty("passiveResetOverride", out var member),
+            "a default reset omits the member entirely (§4.3 item 7)");
+
+        // The member is genuinely absent, not present-and-null: the two are the same
+        // statement, but §4.3 item 7 forbids the null spelling.
+        _ = member;
+
+        var serialized = payload.GetRawText();
+        Assert.DoesNotContain("\"passiveResetOverride\"", serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"Default\"", serialized, StringComparison.Ordinal);
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task BattleStateUpdated_ShouldDeliverTheResetOverrideContractName_WhenThePassiveDeclaresOne()
+    {
+        // §4.3 item 6: when the Passive declares a non-default behavior the member is
+        // present, carrying `"Partial"` or `"NoReset"` — the contract name of
+        // PASSIVE_RULES.md §4 item 2, never a numeric enum ordinal (§3.2.4).
+        foreach (var (behavior, contractName) in new[]
+                 {
+                     (GameServer.Domain.Passives.PassiveResetBehavior.Partial, "Partial"),
+                     (GameServer.Domain.Passives.PassiveResetBehavior.NoReset, "NoReset"),
+                 })
+        {
+            var battleId = $"battle-petstate-{contractName.ToLowerInvariant()}";
+
+            using (var scope = _factory.Services.CreateScope())
+            {
+                scope.ServiceProvider.GetRequiredService<BattleStateService>().CreateBattle(
+                    battleId,
+                    new BattleStateService.PassiveConfiguration(
+                        new GameServer.Domain.Passives.PassiveId("xich-lang"),
+                        PassiveThreshold: PASSIVE_THRESHOLD,
+                        PassiveResetOverride: behavior));
+            }
+
+            var hubConnection = BuildHubConnection();
+            var received = new TaskCompletionSource<JsonElement>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            hubConnection.On<JsonElement>("BattleStateUpdated", payload => received.TrySetResult(payload));
+
+            await hubConnection.StartAsync();
+            await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+            var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Equal(
+                contractName,
+                payload.GetProperty("petState").GetProperty("passiveResetOverride").GetString());
+
+            // The identity and the always-present pair are unaffected by the member's
+            // presence (§4.3 items 3–4).
+            Assert.Equal("xich-lang", payload.GetProperty("petState").GetProperty("passiveId").GetString());
+            Assert.Equal(
+                new[] { "current", "passiveId", "passiveProgress", "passiveResetOverride", "threshold" },
+                EnumeratePetStateMemberPaths(payload).OrderBy(n => n, StringComparer.Ordinal));
+
+            await hubConnection.StopAsync();
+        }
+    }
+
+    [Fact]
+    public async Task Swap_ShouldPushTheSettledPassiveProgressInTheSameStatePush()
+    {
+        // §4.3 items 1 and 11: `petState` is delivered on every committed Swap's
+        // resolved-state push and reports the Passive's SETTLED position under the
+        // payload's `sequence` — once per resolved action, not a per-Match feed. The
+        // per-Match detail belongs to the §3 event batch instead.
+        const string battleId = "battle-petstate-after-swap";
+        var pair = CreateBattleOnServerWithValidPair(battleId);
+
+        var hubConnection = BuildHubConnection();
+        var received = new TaskCompletionSource<JsonElement>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        hubConnection.On<JsonElement>("BattleStateUpdated", payload => received.TrySetResult(payload));
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+        await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var updated = new TaskCompletionSource<JsonElement>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        hubConnection.On<JsonElement>("BattleStateUpdated", payload => updated.TrySetResult(payload));
+
+        var result = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, pair.From, pair.To, "client-seq-petstate");
+        Assert.True(result.Accepted);
+
+        var payload = await updated.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // The settled progress is the authoritative state's, read from the same
+        // post-resolution write-back the push reports (§4.3 item 1, §4 item 6).
+        int settled;
+        using (var scope = _factory.Services.CreateScope())
+        {
+            settled = scope.ServiceProvider
+                .GetRequiredService<BattleStateService>()
+                .GetBattle(battleId)!
+                .PetState.PassiveProgress.Current;
+        }
+
+        Assert.Equal(
+            settled,
+            payload.GetProperty("petState").GetProperty("passiveProgress").GetProperty("current").GetInt32());
+
+        // §4 item 12 / §4.3 item 8: no Pet or Passive member exists at the top level,
+        // on the board, or on any cell — a second spelling would be the parallel
+        // representation GAME_STATE.md §0 item 5 forbids.
+        var topLevel = payload.EnumerateObject().Select(p => p.Name).ToArray();
+        Assert.DoesNotContain("passiveId", topLevel, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("passiveProgress", topLevel, StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain("passiveResetOverride", topLevel, StringComparer.OrdinalIgnoreCase);
+        Assert.False(payload.GetProperty("board").TryGetProperty("passiveId", out _));
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task BattleStateUpdated_ShouldCarryPetStateAndNoPetSpecificMessage()
+    {
+        // §4.3 item 10 / §4 item 11: no `PassiveProgressUpdated`, `PetStateChanged`, or
+        // similar message exists. `BattleStateUpdated` remains the only state-push
+        // method, and the Passive EVENT stream travels on §3's existing path.
+        const string battleId = "battle-petstate-no-message";
+        CreateBattleOnServer(battleId);
+
+        var hubConnection = BuildHubConnection();
+        var received = new TaskCompletionSource<JsonElement>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        foreach (var message in new[]
+                 {
+                     "PassiveProgressUpdated", "PetStateChanged", "PetStateUpdated",
+                     "PassiveCharged", "PassiveTriggered",
+                 })
+        {
+            var name = message;
+            hubConnection.On<JsonElement>(name, _ => received.TrySetResult(
+                JsonDocument.Parse($$"""{"unexpected":"{{name}}"}""").RootElement));
+        }
+
+        hubConnection.On<JsonElement>("BattleStateUpdated", payload => received.TrySetResult(payload));
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+        var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // The Passive state arrived through BattleStateUpdated — no Passive-specific
+        // message was used to deliver it.
+        Assert.False(payload.TryGetProperty("unexpected", out _));
+        Assert.True(payload.TryGetProperty("petState", out _));
+
+        // And no Passive-specific *method* exists: the Passive events are Server →
+        // Client deliveries on the §3 batch, not invokable hub methods (§4.3 item 10).
+        foreach (var method in new[] { "PassiveCharged", "PassiveTriggered", "PetStateUpdated" })
+        {
+            await Assert.ThrowsAnyAsync<Exception>(() => hubConnection.InvokeAsync<object>(method));
+        }
+
+        await hubConnection.StopAsync();
+    }
+
+    /// <summary>
+    /// The dotted member paths of the pushed <c>petState</c> object, so a test can
+    /// assert its complete member set — including the nested progress pair — in one
+    /// comparison. A nested object contributes both its own name and its members'.
+    /// </summary>
+    private static IEnumerable<string> EnumeratePetStateMemberPaths(JsonElement payload)
+    {
+        var petState = payload.GetProperty("petState");
+
+        foreach (var member in petState.EnumerateObject())
+        {
+            yield return member.Name;
+
+            if (member.Value.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var nested in member.Value.EnumerateObject())
+                {
+                    yield return nested.Name;
+                }
+            }
+        }
     }
 
     [Fact]
@@ -503,6 +825,27 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     /// <summary>
+    /// The Passive the tests' battles carry.
+    ///
+    /// Pet selection and progression are not implemented (GAME_STATE.md §2.3,
+    /// SIGNALR_PROTOCOL.md §4.3 item 2), so a battle's Passive configuration is
+    /// supplied by its creator. This is the configuration these tests use: a real
+    /// MVP Pet's Threshold (PASSIVE_RULES.md §8 — Xích Lang, 5 Matches) with the
+    /// default reset, which is the behavior all five MVP Pet Passives declare
+    /// (§8).
+    /// </summary>
+    private static readonly BattleStateService.PassiveConfiguration PassiveConfiguration =
+        new(new GameServer.Domain.Passives.PassiveId("xich-lang"), PassiveThreshold: PASSIVE_THRESHOLD);
+
+    /// <summary>
+    /// The Passive identity and Threshold the tests' battles carry.
+    ///
+    /// The Threshold is a real MVP value — <c>PASSIVE_RULES.md</c> §8 lists Xích
+    /// Lang at 5 Matches — rather than a number chosen to make an assertion pass.
+    /// </summary>
+    private const int PASSIVE_THRESHOLD = 5;
+
+    /// <summary>
     /// Creates the authoritative foundation state server-side, exactly as the
     /// Application layer owns it. This is not a battle-creation contract: battle
     /// creation remains <c>POST /api/battle/start</c> (API_CONTRACTS.md §3),
@@ -511,7 +854,8 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     private void CreateBattleOnServer(string battleId)
     {
         using var scope = _factory.Services.CreateScope();
-        scope.ServiceProvider.GetRequiredService<BattleStateService>().CreateBattle(battleId);
+        scope.ServiceProvider.GetRequiredService<BattleStateService>()
+            .CreateBattle(battleId, PassiveConfiguration);
     }
 
     [Fact]
@@ -669,7 +1013,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         using (var scope = _factory.Services.CreateScope())
         {
             var service = scope.ServiceProvider.GetRequiredService<BattleStateService>();
-            service.CreateBattle(battleId);
+            service.CreateBattle(battleId, PassiveConfiguration);
         }
 
         var hubConnection = BuildHubConnection();
@@ -805,12 +1149,16 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // record is authoritative state that is deliberately NOT delivered. It is not
         // a member of this payload and no message carries it. The Swap delivers no
         // field of its own either: the resolved state travels through the same push,
-        // and `playerState` is the implemented stage's field (§4.2), not a
-        // swap-specific one.
+        // and `playerState` (§4.2) and `petState` (§4.3) are the implemented stages'
+        // own fields, not swap-specific ones.
         var fields = payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal);
 
         Assert.Equal(
-            new[] { "battleId", "board", "playerState", "rngSeed", "rngState", "sequence", "turn" },
+            new[]
+            {
+                "battleId", "board", "petState", "playerState", "rngSeed", "rngState",
+                "sequence", "turn",
+            },
             fields);
 
         Assert.DoesNotContain(
@@ -1212,24 +1560,50 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         var pair = CreateBattleOnServerWithValidPair(battleId);
 
         // The authoritative expectation, computed from the identical pre-swap state
-        // through the identical Domain entry point the hub calls.
+        // through the identical Application-layer entry point the hub calls — the
+        // board resolution's events AND the Passive stage's (GAME_RULES.md §17
+        // step 10), which are assembled into the one batch this Swap produces.
         //
-        // The expectation is the §3.2 wire representation, not BattleEvent's
+        // The expectation is the §3.2/§3.3 wire representation, not BattleEvent's
         // diagnostic ToString(): the wire schema is what the contract fixes, and it
         // is what the client actually receives.
+        //
+        // The fixture needs a second battle holding the SAME board, so the same pair
+        // is legal on both and both sides run the one deterministic pipeline
+        // (MATCH3_RULES.md §4.6). Rather than clone state, it records the board the
+        // hub's battle holds and selects the pair from it — and it builds the
+        // expectation from a Domain execution over an equivalent board, which is
+        // exactly what makes this an assertion on the contract instead of a
+        // self-comparison of the production path.
         JsonElement[] expected;
+
         using (var scope = _factory.Services.CreateScope())
         {
             var service = scope.ServiceProvider.GetRequiredService<BattleStateService>();
             var before = service.GetBattle(battleId)!;
 
-            var executed = GameServer.Domain.Match3.SwapExecutor.Execute(
+            // The Domain executor and the Passive tracker are the two stages the
+            // Application boundary sequences (GAME_RULES.md §17 steps 2–10). The
+            // expectation names their documented composition explicitly rather than
+            // calling the same Application method under test.
+            var committed = GameServer.Domain.Match3.SwapExecutor.Execute(
                 before,
                 new SwapRequest(pair.From, pair.To));
 
-            Assert.True(executed.IsAccepted);
+            Assert.True(committed.IsAccepted);
 
-            expected = ProjectToWireSchema(executed.Events);
+            var charged = GameServer.Domain.Passives.PassiveTracker.Charge(
+                before.PetState.PassiveProgress,
+                committed.Resolution.TotalMatches,
+                before.PetState.PassiveId,
+                before.PetState.ResetBehavior);
+
+            var expectedEvents = committed.Events
+                .Concat(charged.Charges.Select(BattleEvent.ForPassiveCharged))
+                .Concat(charged.Triggers.Select(BattleEvent.ForPassiveTriggered))
+                .ToArray();
+
+            expected = ProjectToWireSchema(expectedEvents);
             Assert.NotEmpty(expected);
         }
 
@@ -1288,6 +1662,28 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
             Assert.True(
                 precedingMatch >= 0,
                 "ComboChanged must follow the Match it reports (GAME_EVENTS.md §1.1 item 5).");
+        }
+
+        // §3.3 / PASSIVE_RULES.md §2 item 1: one PassiveCharged per Match, so the
+        // charge count equals the batch's Match total — and the charges follow the
+        // board cycle rather than being interleaved into it (GAME_RULES.md §17 step 10
+        // places "Charge Passive" after the board's steps).
+        var chargeCount = types.Count(t => t == "PassiveCharged");
+        Assert.Equal(types.Count(t => t == "MatchCreated"), chargeCount);
+        Assert.True(chargeCount >= 1);
+
+        // §2 item 3 / §5: at most one PassiveTriggered per Cascade, and — being the
+        // single evaluation after the whole batch — it is the last Passive event.
+        var triggered = Enumerable.Range(0, types.Length).Where(i => types[i] == "PassiveTriggered").ToArray();
+        Assert.True(triggered.Length <= 1, "the Passive triggers at most once per Cascade");
+
+        if (triggered.Length == 1)
+        {
+            var lastCharge = Array.LastIndexOf(types, "PassiveCharged");
+            Assert.True(
+                triggered[0] > lastCharge,
+                "PassiveTriggered follows the charges — the evaluation is after the batch.");
+            Assert.Equal(types.Length - 1, triggered[0]);
         }
 
         await hubConnection.StopAsync();
@@ -1903,7 +2299,14 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
             Assert.Equal(JsonValueKind.Object, e.ValueKind);
             Assert.Contains(
                 e.GetProperty("type").GetString(),
-                new[] { "MatchCreated", "CascadeCreated", "ComboChanged", "GemMatched" });
+                new[]
+                {
+                    "MatchCreated", "CascadeCreated", "ComboChanged", "GemMatched",
+                    // §3.3: the Passive stage's two events travel in this same batch on
+                    // this same path (§4.3 item 10), so they are valid discriminators
+                    // here — never a fifth or sixth *message*.
+                    "PassiveCharged", "PassiveTriggered",
+                });
 
             // §3.2.2 item 4 / §3.2.5 item 5: the discriminator is always present and
             // never omitted or null.
@@ -1921,7 +2324,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     [Fact]
     public async Task Swap_ReceiveEvents_ShouldCarryNoMemberOutsideTheDocumentedSchema()
     {
-        // SIGNALR_PROTOCOL.md §3.2.12: the four events carry exactly the tabulated
+        // SIGNALR_PROTOCOL.md §3.2.12 / §3.3: the events carry exactly the tabulated
         // members. No item carries a battleId, a serverSequence, a turn, a board, a
         // combo on a non-ComboChanged event, a matchCount, a timestamp, or a GUID.
         const string battleId = "battle-wire-no-extra-members";
@@ -1938,6 +2341,11 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
                 "CascadeCreated" => new[] { "type", "cascadeDepth" },
                 "ComboChanged" => new[] { "type", "combo" },
                 "GemMatched" => new[] { "type", "cellIndex", "gemType", "specialGem" },
+                // §3.3: the Passive identity, the progress value, and the Threshold —
+                // and no `effect summary`, whose absence GAME_EVENTS.md §2 item 3
+                // records as the deferred member rather than an omission.
+                "PassiveCharged" => new[] { "type", "passiveId", "progress", "threshold" },
+                "PassiveTriggered" => new[] { "type", "passiveId", "progress", "threshold" },
                 _ => throw new InvalidOperationException($"Undocumented event type on the wire: {type}."),
             };
 
@@ -1949,7 +2357,20 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
             // §3.2.12 item 1: no envelope member is duplicated inside an event.
             Assert.DoesNotContain(members, m => m is "battleId" or "serverSequence" or "turn"
                 or "board" or "matchCount" or "timestamp" or "id" or "guid");
+
+            // §3.2.12 item 3 / §3.3: no gameplay field §2 does not define. The
+            // `effect summary` GAME_EVENTS.md §2 item 3 records as deferred is not
+            // invented on the wire either.
+            Assert.DoesNotContain(members, m => m is "effect" or "effectSummary" or "petId" or "element");
         }
+
+        // The Passive events really were in this batch — otherwise the allowed-member
+        // table above would be asserting nothing about §3.3.
+        var types = payload.GetProperty("events").EnumerateArray()
+            .Select(e => e.GetProperty("type").GetString())
+            .ToArray();
+
+        Assert.Contains("PassiveCharged", types);
     }
 
     /// <summary>
@@ -2045,10 +2466,22 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
                 gemType,
                 e.Gem.ConsumedSpecialGem is { } consumed ? ToWire(consumed) : null),
 
+            // §3.3: the Passive stage's two events, with the members the contract
+            // gives them — the identity, the progress value, and the Threshold.
+            BattleEventType.PassiveCharged => BattleEventWireDto.PassiveCharged(
+                e.PassiveCharged.PassiveId.Value,
+                e.PassiveCharged.Progress,
+                e.PassiveCharged.Threshold),
+
+            BattleEventType.PassiveTriggered => BattleEventWireDto.PassiveTriggered(
+                e.PassiveTriggered.PassiveId.Value,
+                e.PassiveTriggered.Progress,
+                e.PassiveTriggered.Threshold),
+
             _ => throw new ArgumentOutOfRangeException(
                 nameof(e),
                 e.Type,
-                "Not one of the four documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2)."),
+                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.3)."),
         };
     }
 

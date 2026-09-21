@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using GameServer.Domain.Match3;
+using GameServer.Domain.Passives;
 
 namespace GameServer.Api.Hubs;
 
@@ -11,17 +12,20 @@ namespace GameServer.Api.Hubs;
 /// member plus that event's own payload members at the same level
 /// (<c>§3.2.2</c>). The discriminator is the documented string
 /// <c>MatchCreated</c> / <c>CascadeCreated</c> / <c>ComboChanged</c> /
-/// <c>GemMatched</c> — never the Domain enum's ordinal, which is a Domain
-/// identity and not part of the wire contract (<c>§3.2.2</c> item 3).
+/// <c>GemMatched</c> / <c>PassiveCharged</c> / <c>PassiveTriggered</c> — never
+/// the Domain enum's ordinal, which is a Domain identity and not part of the
+/// wire contract (<c>§3.2.2</c> item 3). The first four are the board
+/// resolution's events (<c>§3.2.6–§3.2.9</c>); the last two are the Passive
+/// stage's, whose wire schema <c>§3.3</c> fixes and which travel in this same
+/// <c>events[]</c> array on the same path (<c>§3.1</c>, <c>§4.3</c> item 10).
 ///
-/// <b>One type, four shapes.</b> The schema defines four flat objects, not a
+/// <b>One type, six shapes.</b> The schema defines a flat object per event, not a
 /// shared envelope: a <c>CascadeCreated</c> carries <c>cascadeDepth</c> and
 /// nothing else, and a <c>ComboChanged</c> carries <c>combo</c> and nothing
 /// else. A cross-product record would therefore have to emit members that do
-/// not belong to the event, which <c>§3.2.12</c> item 1 forbids. The four
-/// permitted member sets are modelled as the four one-of slots below and are
-/// enforced at construction, so no combination outside the contract can be
-/// built.
+/// not belong to the event, which <c>§3.2.12</c> item 1 forbids. The permitted
+/// member sets are modelled as the one-of slots below and are enforced at
+/// construction, so no combination outside the contract can be built.
 ///
 /// <b>Omission, never <c>null</c>.</b> A member that is not applicable to an
 /// event is <b>omitted entirely</b>: no member of any item is ever sent as JSON
@@ -79,6 +83,27 @@ namespace GameServer.Api.Hubs;
 /// cell, present exactly when the cleared cell held one. It is the transport
 /// representation of <c>§3.2.10</c>, never a <c>SpecialGemClaim</c>.
 /// </param>
+/// <param name="PassiveId">
+/// <c>PassiveCharged</c> and <c>PassiveTriggered</c> (<c>§3.3</c>): the identity
+/// of the Passive that charged or triggered, as the string
+/// <c>GAME_STATE.md</c> §2.3's <c>PetState.PassiveId</c> holds it. It is the
+/// sibling identity member <c>shape</c>/<c>cascadeDepth</c> are for their own
+/// events — one member shared by two events that report the same fact.
+/// </param>
+/// <param name="Progress">
+/// <c>PassiveCharged</c> and <c>PassiveTriggered</c> (<c>§3.3</c>): the progress
+/// value the event reports — the value this increment produced
+/// (<c>GAME_EVENTS.md</c> §2 item 2), or, on a trigger, the value at the moment
+/// the threshold was crossed, before that trigger's own reset. <c>0</c> is a real
+/// value where it occurs and is written as <c>0</c>, never omitted
+/// (<c>§3.2.5</c>).
+/// </param>
+/// <param name="Threshold">
+/// <c>PassiveCharged</c> and <c>PassiveTriggered</c> (<c>§3.3</c>): the Passive's
+/// Threshold, reported alongside so a consumer renders the documented
+/// <c>progress / threshold</c> pair without supplying either from elsewhere
+/// (<c>GAME_EVENTS.md</c> §2 item 2, <c>PASSIVE_RULES.md</c> §6 item 1).
+/// </param>
 public sealed record BattleEventWireDto(
     [property: JsonPropertyName("type")] string Type,
     [property: JsonPropertyName("shape")]
@@ -97,7 +122,13 @@ public sealed record BattleEventWireDto(
     [property: JsonPropertyName("cellIndex")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? CellIndex = null,
     [property: JsonPropertyName("specialGem")]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SpecialGemWireDto? SpecialGem = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SpecialGemWireDto? SpecialGem = null,
+    [property: JsonPropertyName("passiveId")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PassiveId = null,
+    [property: JsonPropertyName("progress")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Progress = null,
+    [property: JsonPropertyName("threshold")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Threshold = null)
 {
     /// <summary>
     /// The wire item for one <c>MatchCreated</c>
@@ -166,6 +197,56 @@ public sealed record BattleEventWireDto(
             GemType: gemType,
             CellIndex: cellIndex,
             SpecialGem: specialGem);
+
+    /// <summary>
+    /// The wire item for one <c>PassiveCharged</c> (<c>SIGNALR_PROTOCOL.md</c>
+    /// §3.3).
+    /// </summary>
+    /// <param name="passiveId">
+    /// The Passive's identity, carried as the string <c>PetState.PassiveId</c>
+    /// holds it (<c>GAME_STATE.md</c> §2.3) — reported, never re-derived
+    /// (<c>GAME_EVENTS.md</c> §2 item 1).
+    /// </param>
+    /// <param name="progress">
+    /// The progress value this increment produced (<c>GAME_EVENTS.md</c> §2
+    /// item 2). It is a plain integer: <c>0</c> is a value where it occurs and is
+    /// written as <c>0</c>, not omitted.
+    /// </param>
+    /// <param name="threshold">The Passive's Threshold (§2 item 2).</param>
+    public static BattleEventWireDto PassiveCharged(
+        string passiveId,
+        int progress,
+        int threshold) =>
+        new(
+            Type: "PassiveCharged",
+            PassiveId: passiveId,
+            Progress: progress,
+            Threshold: threshold);
+
+    /// <summary>
+    /// The wire item for one <c>PassiveTriggered</c> (<c>SIGNALR_PROTOCOL.md</c>
+    /// §3.3).
+    ///
+    /// It carries no <c>effect summary</c>: <c>GAME_EVENTS.md</c> §2 item 3 records
+    /// that member as <b>deferred</b> to the Combat stage, so omitting it here is
+    /// the documented sequencing position and not an omission of a required member.
+    /// A consumer must not read its absence as "no effect occurred".
+    /// </summary>
+    /// <param name="passiveId">The Passive's identity (§2 item 1).</param>
+    /// <param name="progress">
+    /// The progress at the moment the Threshold was crossed — <b>before</b> that
+    /// trigger's own reset (<c>GAME_EVENTS.md</c> §2 item 2).
+    /// </param>
+    /// <param name="threshold">The Passive's Threshold (§2 item 2).</param>
+    public static BattleEventWireDto PassiveTriggered(
+        string passiveId,
+        int progress,
+        int threshold) =>
+        new(
+            Type: "PassiveTriggered",
+            PassiveId: passiveId,
+            Progress: progress,
+            Threshold: threshold);
 }
 
 /// <summary>
@@ -235,14 +316,14 @@ public sealed record SpecialGemWireDto(
 /// <b>Why the projection exists.</b> <c>BattleEvent</c> is a Domain value, not
 /// a wire DTO, and must never become one (<c>§3.2.1</c> item 1). Its
 /// non-applicable payload accessors — <c>Match</c>, <c>CascadeDepth</c>,
-/// <c>Combo</c>, <c>Gem</c> — throw rather than return a default, so a
-/// serializer that reflects over its public members reads all four and aborts
-/// the send. Direct serialization of it is therefore invalid <b>by
-/// construction</b>, not merely discouraged: the order here is "read
-/// <see cref="BattleEvent.Type"/> first, then only that event's own payload"
-/// (<c>§3.2.1</c> item 2), which never touches an accessor that does not apply.
-/// The Domain type is unchanged by this: it stays a Domain type, and the
-/// transport layer owns serialization.
+/// <c>Combo</c>, <c>Gem</c>, <c>PassiveCharged</c>, <c>PassiveTriggered</c> —
+/// throw rather than return a default, so a serializer that reflects over its
+/// public members reads all of them and aborts the send. Direct serialization of
+/// it is therefore invalid <b>by construction</b>, not merely discouraged: the
+/// order here is "read <see cref="BattleEvent.Type"/> first, then only that
+/// event's own payload" (<c>§3.2.1</c> item 2), which never touches an accessor
+/// that does not apply. The Domain type is unchanged by this: it stays a Domain
+/// type, and the transport layer owns serialization.
 ///
 /// <b>Pure field mapping — the projection rules.</b>
 /// <list type="bullet">
@@ -316,11 +397,46 @@ public static class BattleEventWireProjection
             BattleEventType.CascadeCreated => BattleEventWireDto.CascadeCreated(battleEvent.CascadeDepth),
             BattleEventType.ComboChanged => BattleEventWireDto.ComboChanged(battleEvent.Combo),
             BattleEventType.GemMatched => ProjectGem(battleEvent.Gem),
+            BattleEventType.PassiveCharged => ProjectPassiveCharged(battleEvent.PassiveCharged),
+            BattleEventType.PassiveTriggered => ProjectPassiveTriggered(battleEvent.PassiveTriggered),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(battleEvent),
                 battleEvent.Type,
-                "Not one of the four documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2)."),
+                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.3)."),
         };
+
+    /// <summary>
+    /// Projects the <c>PassiveCharged</c> payload (<c>SIGNALR_PROTOCOL.md</c> §3.3).
+    /// </summary>
+    private static BattleEventWireDto ProjectPassiveCharged(PassiveChargedEvent charged) =>
+        BattleEventWireDto.PassiveCharged(
+            // §2 item 1: the identity the tracker read off PetState — reported, not
+            // re-derived, re-numbered, or invented here.
+            passiveId: charged.PassiveId.Value,
+
+            // §2 item 2: the progress this increment produced, passed through as the
+            // tracker's own value. It is never recomputed from the Threshold or from
+            // another charge.
+            progress: charged.Progress,
+
+            // §2 item 2: the Passive's Threshold, reported alongside so the client
+            // renders `progress / threshold` without recomputing either.
+            threshold: charged.Threshold);
+
+    /// <summary>
+    /// Projects the <c>PassiveTriggered</c> payload (<c>SIGNALR_PROTOCOL.md</c> §3.3).
+    /// </summary>
+    private static BattleEventWireDto ProjectPassiveTriggered(PassiveTriggeredEvent triggered) =>
+        BattleEventWireDto.PassiveTriggered(
+            // §2 item 1: the same identity member the charge reports.
+            passiveId: triggered.PassiveId.Value,
+
+            // §2 item 2: the progress at the crossing — before that trigger's own
+            // reset — which is the tracker's own reported value.
+            progress: triggered.Progress,
+
+            // §2 item 2: the Passive's Threshold.
+            threshold: triggered.Threshold);
 
     /// <summary>
     /// Projects the <c>MatchCreated</c> payload (<c>§3.2.6</c>).

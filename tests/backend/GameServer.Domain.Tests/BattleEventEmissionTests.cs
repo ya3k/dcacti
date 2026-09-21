@@ -1,5 +1,6 @@
 using GameServer.Domain.Battle;
 using GameServer.Domain.Match3;
+using GameServer.Domain.Passives;
 using Xunit;
 
 namespace GameServer.Domain.Tests;
@@ -50,7 +51,7 @@ public class BattleEventEmissionTests
 
     /// <summary>A battle whose board is the single-Match fixture.</summary>
     private static BattleState BattleWith(BoardState board, PlayerState? playerState = null) =>
-        BattleState.Create("battle-006", TestSeed) with
+        BattleState.CreateWith("battle-006", TestSeed) with
         {
             BoardState = board,
             PlayerState = playerState ?? PlayerState.Initial,
@@ -90,7 +91,7 @@ public class BattleEventEmissionTests
             "DDHAADAH");
 
     private static BattleState CascadeBattle(PlayerState? playerState = null) =>
-        BattleState.Create("battle-006-cascade", CascadeSeed) with
+        BattleState.CreateWith("battle-006-cascade", CascadeSeed) with
         {
             BoardState = CascadeBoard(),
             PlayerState = playerState ?? PlayerState.Initial,
@@ -197,7 +198,7 @@ public class BattleEventEmissionTests
     /// </summary>
     private static (BattleState State, SwapRequest Request, int MatchesInFirstPass) FindMultiMatchInOnePass()
     {
-        var state = BattleState.Create("battle-006-multi", TestSeed);
+        var state = BattleState.CreateWith("battle-006-multi", TestSeed);
 
         foreach (var (from, to) in AllAdjacentPairs())
         {
@@ -752,7 +753,7 @@ public class BattleEventEmissionTests
         // §3 item 6: "events are not state … An event is never a substitute for the
         // state write-back." Building them must therefore be a pure read: the input
         // state is unchanged, field for field.
-        var state = BattleWith(CascadeBoard(), new PlayerState(Combo: 3, MatchCount: 11));
+        var state = BattleWith(CascadeBoard(), PlayerState.Initial with { Combo = 3, MatchCount = 11 });
 
         var result = SwapExecutor.Execute(state, new SwapRequest(CascadeFrom, CascadeTo));
 
@@ -765,7 +766,7 @@ public class BattleEventEmissionTests
         Assert.Equal(BattleState.InitialTurn, state.Turn);
         Assert.Equal(BattleState.InitialSequence, state.Sequence);
         Assert.Equal(TestSeed, state.RngSeed);
-        Assert.Equal(new PlayerState(Combo: 3, MatchCount: 11), state.PlayerState);
+        Assert.Equal(PlayerState.Initial with { Combo = 3, MatchCount = 11 }, state.PlayerState);
         Assert.Null(state.LastCommittedSwapPair);
         Assert.True(state.BoardState.CellsEqual(CascadeBoard()));
 
@@ -913,7 +914,7 @@ public class BattleEventEmissionTests
         // The guarantee is not fixture-specific: for every adjacent pair of a
         // generated board, two executions of the same request produce the same
         // sequence and the same resulting state.
-        var state = BattleState.Create("battle-006-exhaustive", TestSeed);
+        var state = BattleState.CreateWith("battle-006-exhaustive", TestSeed);
         var committed = 0;
 
         foreach (var (from, to) in AllAdjacentPairs())
@@ -950,9 +951,16 @@ public class BattleEventEmissionTests
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToArray();
 
-        Assert.Equal(["CascadeDepth", "Combo", "Gem", "Match", "Type"], members);
+        Assert.Equal(
+            ["CascadeDepth", "Combo", "Gem", "Match", "PassiveCharged", "PassiveTriggered", "Type"],
+            members);
 
-        // And no nested payload carries one either.
+        // And no nested payload carries one either. The Passive payloads are
+        // deliberately not in this loop: they carry PassiveId, which is a documented
+        // identity (GAME_EVENTS.md §2 item 1, GAME_STATE.md §2.3) and not a generated
+        // identifier — the same kind of member RelicId / CardId / SkillId are for
+        // their own events. It is asserted directly instead: the identity is the
+        // caller-supplied PassiveId and nothing derived.
         foreach (var type in new[]
                  {
                      typeof(BattleEvent),
@@ -970,6 +978,25 @@ public class BattleEventEmissionTests
             Assert.DoesNotContain(names, n =>
                 n.Contains("Id", StringComparison.Ordinal)
                 || n.Contains("Time", StringComparison.Ordinal)
+                || n.Contains("Guid", StringComparison.Ordinal)
+                || n.Contains("Hash", StringComparison.Ordinal));
+        }
+
+        // The Passive payloads carry exactly the documented members — the identity the
+        // state already holds, the progress value, and the Threshold (GAME_EVENTS.md
+        // §2) — and no generated identifier beyond that identity.
+        foreach (var type in new[] { typeof(PassiveChargedEvent), typeof(PassiveTriggeredEvent) })
+        {
+            var names = type
+                .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+                .Select(p => p.Name)
+                .OrderBy(n => n, StringComparer.Ordinal)
+                .ToArray();
+
+            Assert.Equal(["PassiveId", "Progress", "Threshold"], names);
+
+            Assert.DoesNotContain(names, n =>
+                n.Contains("Time", StringComparison.Ordinal)
                 || n.Contains("Guid", StringComparison.Ordinal)
                 || n.Contains("Hash", StringComparison.Ordinal));
         }
@@ -1131,7 +1158,7 @@ public class BattleEventEmissionTests
         // is committed, so the loop always begins with at least one Match. A committed
         // Swap therefore always has at least one MatchCreated and one ComboChanged —
         // never an empty stream, and never a ComboChanged of 0 (§6.5 item 3).
-        var state = BattleState.Create("battle-006-floor", TestSeed);
+        var state = BattleState.CreateWith("battle-006-floor", TestSeed);
         var committed = 0;
 
         foreach (var (from, to) in AllAdjacentPairs())
@@ -1168,7 +1195,7 @@ public class BattleEventEmissionTests
         // to 0 before its first Match, so a later Swap's run starts at 1 again while
         // MatchCount keeps accumulating (§3) — the events report the new value, never
         // the accumulated one.
-        var state = BattleState.Create("battle-006-chain", TestSeed);
+        var state = BattleState.CreateWith("battle-006-chain", TestSeed);
 
         for (var turn = 0; turn < 4; turn++)
         {
@@ -1207,12 +1234,25 @@ public class BattleEventEmissionTests
         // GAME_RULES.md §16 is the canonical event-name list and GAME_EVENTS.md §2
         // owns the detail. The Match-3 resolution produces the four names its cycle
         // places on it — MatchCreated, CascadeCreated, ComboChanged, GemMatched — and
-        // no undocumented name may be added (AGENTS.md §7). In particular no
+        // the Passive stage adds the two names the same §16 list carries and
+        // PASSIVE_RULES.md §7 defines: PassiveCharged and PassiveTriggered. No
+        // undocumented name may be added (AGENTS.md §7). In particular no
         // MatchCountChanged, SpecialGemActivated, SpecialGemCreated, TurnChanged,
-        // SequenceChanged, or BoardChanged exists.
+        // SequenceChanged, or BoardChanged exists, and the stages that own
+        // PowerChanged, RelicTriggered, CardCast, PetSkillCast, the Damage events,
+        // and BattleWon/BattleLost have not added theirs here.
         var names = Enum.GetNames<BattleEventType>().OrderBy(n => n, StringComparer.Ordinal).ToArray();
 
-        Assert.Equal(["CascadeCreated", "ComboChanged", "GemMatched", "MatchCreated"], names);
+        Assert.Equal(
+            [
+                "CascadeCreated",
+                "ComboChanged",
+                "GemMatched",
+                "MatchCreated",
+                "PassiveCharged",
+                "PassiveTriggered",
+            ],
+            names);
     }
 
     [Fact]

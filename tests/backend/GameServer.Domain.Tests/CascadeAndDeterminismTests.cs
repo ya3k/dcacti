@@ -1,5 +1,6 @@
 using GameServer.Domain.Battle;
 using GameServer.Domain.Match3;
+using GameServer.Domain.Passives;
 using Xunit;
 
 namespace GameServer.Domain.Tests;
@@ -577,7 +578,7 @@ public class CascadeAndDeterminismTests
         // GAME_STATE.md §2.6.2 item 4 / §7.1 item 3: RngState is part of BattleState, so
         // a battle restored from a snapshot continues the stream exactly. The Special Gem
         // stage added no BattleState field.
-        var state = BattleState.Create("battle-special-gem", 4242UL);
+        var state = BattleState.CreateWith("battle-special-gem", 4242UL);
 
         Assert.Equal(0, state.Turn);
         Assert.Equal(0, state.Sequence);
@@ -587,9 +588,10 @@ public class CascadeAndDeterminismTests
 
         // The record gained no field for Special Gems: they live inside Cells[64], so the
         // shape this task touches is unchanged. (LastCommittedSwapPair is the Swap
-        // stage's field, documented in GAME_STATE.md §2.1.10, and PlayerState is the
-        // Match / Combo accounting stage's field, documented in §2.2 — neither is
-        // Special Gem state and neither was added here.)
+        // stage's field, documented in GAME_STATE.md §2.1.10; PlayerState is the
+        // Match / Combo accounting stage's field, documented in §2.2; and PetState is
+        // the Pet / Passive stage's field, documented in §2.3 — none of them is
+        // Special Gem state and none was added here.)
         var properties = typeof(BattleState)
             .GetProperties()
             .Where(p => p.GetIndexParameters().Length == 0)
@@ -600,8 +602,8 @@ public class CascadeAndDeterminismTests
         Assert.Equal(
             new[]
             {
-                "BattleId", "BoardState", "LastCommittedSwapPair", "PlayerState", "RngSeed",
-                "RngState", "Sequence", "Turn",
+                "BattleId", "BoardState", "LastCommittedSwapPair", "PetState", "PlayerState",
+                "RngSeed", "RngState", "Sequence", "Turn",
             },
             properties);
     }

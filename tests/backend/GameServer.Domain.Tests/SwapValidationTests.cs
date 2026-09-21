@@ -1,4 +1,5 @@
 using GameServer.Domain.Match3;
+using GameServer.Domain.Passives;
 using Xunit;
 
 namespace GameServer.Domain.Tests;
@@ -618,7 +619,7 @@ public class SwapValidationTests
         // task does not implement. The validator cannot advance either because it
         // receives neither: the BattleState it is given is read for its board
         // only and is never written back.
-        var battle = GameServer.Domain.Battle.BattleState.Create("battle-003", 20260815UL);
+        var battle = GameServer.Domain.Battle.BattleState.CreateWith("battle-003", 20260815UL);
 
         var turnBefore = battle.Turn;
         var sequenceBefore = battle.Sequence;

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using GameServer.Domain.Battle;
 using GameServer.Domain.Match3;
+using GameServer.Domain.Passives;
 using Xunit;
 
 namespace GameServer.Domain.Tests;
@@ -264,7 +265,7 @@ public class BoardStateSerializationTests
         // REDIS_STATE.md §2 item 1 / §7 item 10: the active battle record is BattleState
         // serialized exactly as GAME_STATE.md §2 defines it — no additional field and no
         // separate Special Gem key. The domain record is the contract's shape.
-        var state = BattleState.Create("battle-roundtrip", 987654UL);
+        var state = BattleState.CreateWith("battle-roundtrip", 987654UL);
 
         // The record carries the board and the RNG pair, so a snapshot taken between
         // resolutions is complete (§2.1.7 item 6).

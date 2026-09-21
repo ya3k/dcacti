@@ -1,6 +1,7 @@
 using GameServer.Application.Battle;
 using GameServer.Domain.Battle;
 using GameServer.Domain.Match3;
+using GameServer.Domain.Passives;
 using Xunit;
 
 namespace GameServer.Application.Tests;
@@ -16,12 +17,23 @@ namespace GameServer.Application.Tests;
 /// </summary>
 public class BattleStateServiceTests
 {
+    /// <summary>
+    /// The Passive the tests' battles carry.
+    ///
+    /// Pet selection and progression are not implemented (GAME_STATE.md §2.3,
+    /// SIGNALR_PROTOCOL.md §4.3 item 2), so a battle's Passive is supplied by its
+    /// caller. This is the configuration those calls pass: the identity and the
+    /// Threshold, with no Reset Behavior override — which is PASSIVE_RULES.md §4
+    /// item 1's default and the behavior of all five MVP Pet Passives (§8).
+    /// </summary>
+    private static readonly BattleStateService.PassiveConfiguration PassiveConfiguration =
+        new(new PassiveId("xich-lang"), PassiveThreshold: 5);
+
     [Fact]
     public void CreateBattle_ShouldProduceTheDocumentedInitialState()
     {
         var service = new BattleStateService();
-
-        var state = service.CreateBattle("battle-1");
+        var state = service.CreateBattle("battle-1", PassiveConfiguration);
 
         Assert.Equal("battle-1", state.BattleId);
         Assert.Equal(0, state.Turn);
@@ -34,7 +46,7 @@ public class BattleStateServiceTests
         // GAME_STATE.md §2.0.4.1: Foundation State is authoritative server
         // state, produced and held server-side.
         var service = new BattleStateService();
-        service.CreateBattle("battle-1");
+        service.CreateBattle("battle-1", PassiveConfiguration);
 
         var retrieved = service.GetBattle("battle-1");
 
@@ -58,7 +70,7 @@ public class BattleStateServiceTests
         // SIGNALR_PROTOCOL.md §4.1: the state delivered when the client joins
         // the battle group is the current authoritative state.
         var service = new BattleStateService();
-        service.CreateBattle("battle-1");
+        service.CreateBattle("battle-1", PassiveConfiguration);
 
         var delivered = service.GetInitialStateForGroup("battle-1");
 
@@ -82,7 +94,7 @@ public class BattleStateServiceTests
         // Foundation State has no resolutions (GAME_STATE.md §2.0.2), so no
         // read, join, or repeat delivery may change Turn or Sequence.
         var service = new BattleStateService();
-        service.CreateBattle("battle-1");
+        service.CreateBattle("battle-1", PassiveConfiguration);
 
         service.GetBattle("battle-1");
         service.GetInitialStateForGroup("battle-1");
@@ -98,8 +110,8 @@ public class BattleStateServiceTests
     {
         var service = new BattleStateService();
 
-        service.CreateBattle("battle-1");
-        service.CreateBattle("battle-2");
+        service.CreateBattle("battle-1", PassiveConfiguration);
+        service.CreateBattle("battle-2", PassiveConfiguration);
 
         Assert.Equal("battle-1", service.GetBattle("battle-1")!.BattleId);
         Assert.Equal("battle-2", service.GetBattle("battle-2")!.BattleId);
@@ -111,7 +123,7 @@ public class BattleStateServiceTests
     {
         var service = new BattleStateService();
 
-        Assert.Throws<ArgumentException>(() => service.CreateBattle(string.Empty));
+        Assert.Throws<ArgumentException>(() => service.CreateBattle(string.Empty, PassiveConfiguration));
     }
 
     [Fact]
@@ -133,7 +145,7 @@ public class BattleStateServiceTests
         // loop terminates immediately: no pass runs, nothing is removed, and Spawn —
         // the only gameplay RNG consumer (§7.2 item 1) — draws nothing.
         var service = new BattleStateService();
-        var created = service.CreateBattle("battle-stable");
+        var created = service.CreateBattle("battle-stable", PassiveConfiguration);
 
         var resolved = service.ResolveBoard("battle-stable");
 
@@ -157,7 +169,7 @@ public class BattleStateServiceTests
         // the server holds and delivers, so a subsequent read returns the resolved
         // values rather than the pre-resolution ones.
         var service = new BattleStateService();
-        service.CreateBattle("battle-resolved");
+        service.CreateBattle("battle-resolved", PassiveConfiguration);
 
         var resolved = service.ResolveBoard("battle-resolved");
         var reread = service.GetBattle("battle-resolved");
@@ -175,7 +187,7 @@ public class BattleStateServiceTests
         // Resolving a stable board is a no-op, so resolving it again changes nothing —
         // the determinism guarantee of MATCH3_RULES.md §4.6 applied at this boundary.
         var service = new BattleStateService();
-        service.CreateBattle("battle-idempotent");
+        service.CreateBattle("battle-idempotent", PassiveConfiguration);
 
         var first = service.ResolveBoard("battle-idempotent");
         var second = service.ResolveBoard("battle-idempotent");
@@ -232,7 +244,7 @@ public class BattleStateServiceTests
         // GAME_STATE.md §2.6.1 item 3: RngSeed records the battle's origin and is never
         // rewritten. Resolution advances RngState, not the seed.
         var service = new BattleStateService();
-        var created = service.CreateBattle("battle-seed");
+        var created = service.CreateBattle("battle-seed", PassiveConfiguration);
 
         var resolved = service.ResolveBoard("battle-seed");
 
@@ -252,7 +264,7 @@ public class BattleStateServiceTests
         // particular pair: whatever the generated board is, a request that produces no
         // Match is rejected and the authoritative state is left exactly as it was.
         var service = new BattleStateService();
-        var created = service.CreateBattle("battle-swap-reject");
+        var created = service.CreateBattle("battle-swap-reject", PassiveConfiguration);
 
         var result = service.ExecuteSwap("battle-swap-reject", new SwapRequest(99, 100));
 
@@ -275,7 +287,7 @@ public class BattleStateServiceTests
         // The service performs no validation of its own: the reason is the validator's,
         // reached through the Domain executor (ARCHITECTURE.md §2.1).
         var service = new BattleStateService();
-        var state = service.CreateBattle("battle-swap-nomatch");
+        var state = service.CreateBattle("battle-swap-nomatch", PassiveConfiguration);
 
         // Find an adjacent pair of the generated board that produces no Match. §1.4
         // guarantees at least one pair does produce one, so the complement is not
@@ -296,7 +308,7 @@ public class BattleStateServiceTests
         // state replaces the authoritative one in a single write-back, so a subsequent
         // read returns the resolved values.
         var service = new BattleStateService();
-        var created = service.CreateBattle("battle-swap-commit");
+        var created = service.CreateBattle("battle-swap-commit", PassiveConfiguration);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
         var result = service.ExecuteSwap("battle-swap-commit", pair);
@@ -318,7 +330,7 @@ public class BattleStateServiceTests
         // §8.1 item 1 / §8.2 item 1: one committed Swap begins one Turn and increments
         // Sequence by exactly 1, written together in the same write-back.
         var service = new BattleStateService();
-        var created = service.CreateBattle("battle-swap-counters");
+        var created = service.CreateBattle("battle-swap-counters", PassiveConfiguration);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
         var result = service.ExecuteSwap("battle-swap-counters", pair);
@@ -334,7 +346,7 @@ public class BattleStateServiceTests
         // GAME_STATE.md §2.1.10 item 5: the committed pair is written in the same
         // write-back as the counters, canonically (min, max).
         var service = new BattleStateService();
-        var created = service.CreateBattle("battle-swap-pair");
+        var created = service.CreateBattle("battle-swap-pair", PassiveConfiguration);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
         var result = service.ExecuteSwap("battle-swap-pair", pair);
@@ -351,7 +363,7 @@ public class BattleStateServiceTests
         // §2.1.4 item 2: replaying the pair just committed — in either order — is
         // rejected as already applied, and the state the commit produced is untouched.
         var service = new BattleStateService();
-        var created = service.CreateBattle("battle-swap-stale");
+        var created = service.CreateBattle("battle-swap-stale", PassiveConfiguration);
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
 
         var committed = service.ExecuteSwap("battle-swap-stale", pair);
@@ -399,7 +411,7 @@ public class BattleStateServiceTests
         // §4.3 item 1: the committed board is stable — a fresh detection pass finds
         // nothing — and the counters describe that finished resolution.
         var service = new BattleStateService();
-        var created = service.CreateBattle("battle-swap-stable");
+        var created = service.CreateBattle("battle-swap-stable", PassiveConfiguration);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
         var result = service.ExecuteSwap("battle-swap-stable", pair);
@@ -420,8 +432,7 @@ public class BattleStateServiceTests
         // GAME_STATE.md §2.2: MatchCount = 0 and Combo = 0 for a battle that has
         // resolved no action.
         var service = new BattleStateService();
-
-        var state = service.CreateBattle("battle-progression-initial");
+        var state = service.CreateBattle("battle-progression-initial", PassiveConfiguration);
 
         Assert.Equal(PlayerState.Initial, state.PlayerState);
         Assert.Equal(0, state.PlayerState.MatchCount);
@@ -435,7 +446,7 @@ public class BattleStateServiceTests
         // resolution's values, so a subsequent read returns them — not a value
         // derived from the board afterwards.
         var service = new BattleStateService();
-        var created = service.CreateBattle("battle-progression-commit");
+        var created = service.CreateBattle("battle-progression-commit", PassiveConfiguration);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
         var result = service.ExecuteSwap("battle-progression-commit", pair);
@@ -460,7 +471,7 @@ public class BattleStateServiceTests
         // nothing and increments nothing. The registry keeps the state object it
         // already held, so the progression values cannot have moved.
         var service = new BattleStateService();
-        var created = service.CreateBattle("battle-progression-rejected");
+        var created = service.CreateBattle("battle-progression-rejected", PassiveConfiguration);
 
         var result = service.ExecuteSwap("battle-progression-rejected", new SwapRequest(99, 100));
 
@@ -480,7 +491,7 @@ public class BattleStateServiceTests
         // action, so it starts no Turn, counts no Match, and resets no Combo. A
         // generated board holds no Match, so nothing resolves at all.
         var service = new BattleStateService();
-        var created = service.CreateBattle("battle-progression-resolution");
+        var created = service.CreateBattle("battle-progression-resolution", PassiveConfiguration);
 
         var resolved = service.ResolveBoard("battle-progression-resolution");
 
@@ -513,25 +524,438 @@ public class BattleStateServiceTests
     public void ExecuteSwap_ShouldNotPersistAnything()
     {
         // REDIS_STATE.md §7 item 8: the Match-3 resolution stage adds no key and no
-        // persistence. The service holds no repository and touches no store — the
-        // process-local registry is the same staged, safe-to-lose boundary it already
-        // had, and it gained no field for the resolution.
+        // persistence, and §7 leaves PetState's persistence equally unchanged
+        // (SIGNALR_PROTOCOL.md §4.3 item 12). The service holds no repository and
+        // touches no store — the process-local registry is the same staged,
+        // safe-to-lose boundary it already had.
+        //
+        // The two dictionaries are the battle's state and the battle's Passive
+        // loadout input; neither is a REDIS_STATE.md store, and no third field
+        // (repository, cache, bus, logger) was introduced.
         var fields = typeof(BattleStateService)
             .GetFields(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
             .Select(f => f.Name)
             .ToArray();
 
-        Assert.Equal(["_battles", "_seedSource"], fields.OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal(
+            ["_battles", "_passiveConfiguration", "_seedSource"],
+            fields.OrderBy(n => n, StringComparer.Ordinal));
+    }
+
+    // -----------------------------------------------------------------------
+    // Passive charge integration (GAME_RULES.md §17 step 10;
+    // PASSIVE_RULES.md §2, §4, §5; GAME_STATE.md §2.3;
+    // GAME_EVENTS.md §1, §1.1, §2)
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public void CreateBattle_ShouldInitializePetStateWithTheSuppliedPassive()
+    {
+        // GAME_STATE.md §2.3 item 3 / SIGNALR_PROTOCOL.md §4.3 item 4: PetState is
+        // present from battle creation, carrying the Passive identity and a
+        // progress at the start of its first charge.
+        var service = new BattleStateService();
+
+        var state = service.CreateBattle("battle-passive-initial", PassiveConfiguration);
+
+        Assert.Equal(PassiveConfiguration.PassiveId, state.PetState.PassiveId);
+        Assert.Equal(PassiveConfiguration.PassiveThreshold, state.PetState.PassiveProgress.Threshold);
+        Assert.Equal(0, state.PetState.PassiveProgress.Current);
+    }
+
+    [Fact]
+    public void ExecuteSwap_ShouldChargeThePassiveOncePerMatchAndWriteTheProgressBack()
+    {
+        // PASSIVE_RULES.md §2 item 1 / §5: every Match increases progress by 1, so a
+        // committed Swap's Cascade charges as many times as it produced Matches.
+        // GAME_STATE.md §2.3 / §5.1: the settled progress is written back into
+        // PetState in the same post-resolution write-back as the rest of the state.
+        var service = new BattleStateService();
+        var created = service.CreateBattle("battle-passive-charge", PassiveConfiguration);
+
+        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+        var result = service.ExecuteSwap("battle-passive-charge", pair);
+
+        Assert.True(result!.Value.IsAccepted);
+
+        // The expected number of charges is the resolution's own Match total — the
+        // rule-level value, not a number copied from the implementation
+        // (MATCH3_RULES.md §3 item 5: one Match is one detected shape).
+        var matches = result.Value.Resolution.TotalMatches;
+        Assert.True(matches >= 1);
+
+        var charges = result.Value.Events
+            .Where(e => e.Type == BattleEventType.PassiveCharged)
+            .ToArray();
+
+        Assert.Equal(matches, charges.Length);
+        Assert.Equal(
+            Enumerable.Range(1, matches),
+            charges.Select(c => c.PassiveCharged.Progress));
+
+        Assert.All(charges, c => Assert.Equal(PassiveConfiguration.PassiveThreshold, c.PassiveCharged.Threshold));
+
+        // PASSIVE_RULES.md §2 item 3 / §4 item 1: the Threshold is evaluated ONCE,
+        // after the whole batch. Whether this Cascade triggered — and therefore what
+        // the settled progress is — is decided by the documented comparison of the
+        // batch total against the Threshold, not by the implementation.
+        var triggers = result.Value.Events
+            .Where(e => e.Type == BattleEventType.PassiveTriggered)
+            .ToArray();
+
+        if (matches >= PassiveConfiguration.PassiveThreshold)
+        {
+            // §4 item 1: the default reset settles at 0.
+            Assert.Single(triggers);
+            Assert.Equal(0, result.Value.State.PetState.PassiveProgress.Current);
+        }
+        else
+        {
+            // §2 item 3: below the Threshold there is no trigger and "progress
+            // carries" — the accumulated total is the settled value.
+            Assert.Empty(triggers);
+            Assert.Equal(matches, result.Value.State.PetState.PassiveProgress.Current);
+        }
+
+        // The registry holds the same PetState the result reports (GAME_STATE.md §5.1).
+        Assert.Equal(
+            result.Value.State.PetState,
+            service.GetBattle("battle-passive-charge")!.PetState);
+    }
+
+    [Fact]
+    public void ExecuteSwap_ShouldReportEveryChargeWithTheBattlePassiveIdentity()
+    {
+        // GAME_EVENTS.md §2 item 1: PassiveId identifies the Passive that charged —
+        // the value PetState.PassiveId holds, read and reported, never re-derived.
+        var service = new BattleStateService();
+        var created = service.CreateBattle("battle-passive-identity", PassiveConfiguration);
+
+        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+        var result = service.ExecuteSwap("battle-passive-identity", pair);
+
+        Assert.True(result!.Value.IsAccepted);
+        Assert.All(
+            result.Value.Events.Where(e => e.Type == BattleEventType.PassiveCharged),
+            e => Assert.Equal(PassiveConfiguration.PassiveId, e.PassiveCharged.PassiveId));
+    }
+
+    [Fact]
+    public void ExecuteSwap_ShouldAppendThePassiveEventsAfterTheBoardResolutionEvents()
+    {
+        // GAME_EVENTS.md §1, §1.1 / GAME_RULES.md §17: the board cycle's events
+        // (MatchCreated … ComboChanged) come first and the Passive stage's reports
+        // follow them — one PassiveCharged per Match, and then the single
+        // PassiveTriggered when the Threshold was crossed. The assembled list keeps
+        // both stages' own order; nothing is re-sorted or interleaved.
+        var service = new BattleStateService();
+        var created = service.CreateBattle("battle-passive-order", PassiveConfiguration);
+
+        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+        var result = service.ExecuteSwap("battle-passive-order", pair);
+
+        Assert.True(result!.Value.IsAccepted);
+
+        var events = result.Value.Events;
+        var firstPassive = events
+            .Select((e, index) => (e.Type, index))
+            .First(t => t.Type is BattleEventType.PassiveCharged or BattleEventType.PassiveTriggered)
+            .index;
+
+        // Every event before the first Passive event belongs to the board
+        // resolution — no PassiveCharged is interleaved into the Match-3 cycle
+        // (GAME_EVENTS.md §1.1, the documented follow-up refinement).
+        Assert.DoesNotContain(
+            events.Take(firstPassive),
+            e => e.Type is BattleEventType.PassiveCharged or BattleEventType.PassiveTriggered);
+
+        // After it, the list is the tracker's own output in order: charges first
+        // (one per Match, ascending), then at most one trigger.
+        var passiveRun = events.Skip(firstPassive).ToArray();
+        var (chargeRun, triggerRun) = SplitAtFirstTrigger(passiveRun);
+
+        Assert.Equal(result.Value.Resolution.TotalMatches, chargeRun.Length);
+        Assert.True(triggerRun.Length <= 1);
+        Assert.All(chargeRun, e => Assert.Equal(BattleEventType.PassiveCharged, e.Type));
+        Assert.Equal(
+            Enumerable.Range(1, chargeRun.Length),
+            chargeRun.Select(e => e.PassiveCharged.Progress));
+    }
+
+    [Fact]
+    public void ExecuteSwap_ShouldNotWriteAnyPassiveEventForARejection()
+    {
+        // MATCH3_RULES.md §2.1.5 item 6 / GAME_EVENTS.md §1.2: a rejected action
+        // emits no Battle Event at all. The Passive stage is not reached either, so
+        // no charge and no trigger is produced.
+        var service = new BattleStateService();
+        var created = service.CreateBattle("battle-passive-rejected", PassiveConfiguration);
+
+        var pair = FindAdjacentPairThatProducesNoMatch(created.BoardState);
+        var result = service.ExecuteSwap("battle-passive-rejected", pair);
+
+        Assert.True(result!.Value.IsRejected);
+        Assert.Empty(result.Value.Events);
+
+        // PASSIVE_RULES.md §2 item 1 charges per Match and a rejected Swap produces
+        // none, so the Passive is not charged: the registry still holds the created
+        // state, unchanged, and its progress is exactly where creation left it.
+        var reread = service.GetBattle("battle-passive-rejected");
+        Assert.Same(created, reread);
+        Assert.Equal(0, reread!.PetState.PassiveProgress.Current);
+    }
+
+    [Fact]
+    public void ExecuteSwap_ShouldCarryProgressAcrossSwaps()
+    {
+        // GAME_STATE.md §2.3: PassiveProgress is state, so it accumulates across
+        // Swaps until the Threshold is reached. PASSIVE_RULES.md §2 item 1 adds each
+        // Match to the progress already held, so two Swaps of M1 and M2 Matches
+        // settle at min(M1 + M2, …) — and below the Threshold nothing resets.
+        var service = new BattleStateService();
+        var created = service.CreateBattle("battle-passive-carry", PassiveConfiguration);
+
+        var firstPair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+        var first = service.ExecuteSwap("battle-passive-carry", firstPair);
+        Assert.True(first!.Value.IsAccepted);
+
+        var afterFirst = service.GetBattle("battle-passive-carry")!;
+        var firstMatches = first.Value.Resolution.TotalMatches;
+
+        Assert.Equal(firstMatches, afterFirst.PetState.PassiveProgress.Current);
+
+        var secondPair = FindAdjacentPairThatProducesAMatch(afterFirst.BoardState, exclude: firstPair);
+        var second = service.ExecuteSwap("battle-passive-carry", secondPair);
+        Assert.True(second!.Value.IsAccepted);
+
+        var secondMatches = second.Value.Resolution.TotalMatches;
+        var afterSecond = service.GetBattle("battle-passive-carry")!;
+
+        // The second Swap's charges continue from the carried progress.
+        var charges = second.Value.Events
+            .Where(e => e.Type == BattleEventType.PassiveCharged)
+            .Select(e => e.PassiveCharged.Progress)
+            .ToArray();
+
+        Assert.Equal(
+            Enumerable.Range(firstMatches + 1, secondMatches),
+            charges);
+
+        // Below the Threshold (5) nothing triggered, so the settled value is the
+        // running total.
+        if (firstMatches + secondMatches < PassiveConfiguration.PassiveThreshold)
+        {
+            Assert.DoesNotContain(second.Value.Events, e => e.Type == BattleEventType.PassiveTriggered);
+            Assert.Equal(
+                firstMatches + secondMatches,
+                afterSecond.PetState.PassiveProgress.Current);
+        }
+    }
+
+    [Fact]
+    public void ExecuteSwap_ShouldTriggerAtMostOncePerCascadeAndApplyTheResetBehavior()
+    {
+        // PASSIVE_RULES.md §2 item 3 / §5: the Threshold is evaluated once, after
+        // the whole Cascade's Match batch, and the Passive triggers AT MOST ONCE per
+        // Cascade for every Reset Behavior. This drives a Threshold of 1, so any
+        // committed Swap — which always produces at least one Match
+        // (MATCH3_RULES.md §2.1.2 item 4) — crosses it and triggers exactly once.
+        var service = new BattleStateService();
+
+        var configuration = new BattleStateService.PassiveConfiguration(
+            new PassiveId("threshold-one"),
+            PassiveThreshold: 1);
+
+        var created = service.CreateBattle("battle-passive-trigger", configuration);
+        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+        var result = service.ExecuteSwap("battle-passive-trigger", pair);
+
+        Assert.True(result!.Value.IsAccepted);
+
+        var matches = result.Value.Resolution.TotalMatches;
+        Assert.True(matches >= 1);
+
+        var triggers = result.Value.Events
+            .Where(e => e.Type == BattleEventType.PassiveTriggered)
+            .ToArray();
+
+        // At most one trigger, whatever the Match count (the multi-crossing case).
+        Assert.Single(triggers);
+
+        // GAME_EVENTS.md §2 item 2: the trigger reports the progress at the crossing
+        // — the batch total, before that trigger's own reset.
+        Assert.Equal(matches, triggers[0].PassiveTriggered.Progress);
+        Assert.Equal(1, triggers[0].PassiveTriggered.Threshold);
+
+        // PASSIVE_RULES.md §4 item 1 / §2 item 4: the default reset settles progress
+        // at 0, and any overflow is not re-evaluated within the same Cascade.
+        Assert.Equal(0, result.Value.State.PetState.PassiveProgress.Current);
+    }
+
+    [Fact]
+    public void ExecuteSwap_ShouldCarryPartialResetOverflowIntoTheNextSwap()
+    {
+        // PASSIVE_RULES.md §4 item 2 / §5: Partial Reset reduces progress by the
+        // Threshold rather than to 0, so a Cascade that overshoots carries its
+        // overflow into the next charge.
+        var service = new BattleStateService();
+
+        var configuration = new BattleStateService.PassiveConfiguration(
+            new PassiveId("partial-reset"),
+            PassiveThreshold: 1,
+            PassiveResetOverride: PassiveResetBehavior.Partial);
+
+        var created = service.CreateBattle("battle-passive-partial", configuration);
+        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+        var result = service.ExecuteSwap("battle-passive-partial", pair);
+
+        Assert.True(result!.Value.IsAccepted);
+
+        var matches = result.Value.Resolution.TotalMatches;
+        Assert.Single(result.Value.Events, e => e.Type == BattleEventType.PassiveTriggered);
+
+        // §4 item 2: "progress reduces by Threshold rather than to 0" — the worked
+        // arithmetic is current − Threshold, which at Threshold 1 is matches − 1.
+        Assert.Equal(matches - 1, result.Value.State.PetState.PassiveProgress.Current);
+    }
+
+    [Fact]
+    public void ExecuteSwap_ShouldKeepProgressUnderNoReset()
+    {
+        // PASSIVE_RULES.md §4 item 2: "No reset / persistent" — the trigger does not
+        // reduce progress, so the batch total survives into the next Cascade.
+        var service = new BattleStateService();
+
+        var configuration = new BattleStateService.PassiveConfiguration(
+            new PassiveId("no-reset"),
+            PassiveThreshold: 1,
+            PassiveResetOverride: PassiveResetBehavior.NoReset);
+
+        var created = service.CreateBattle("battle-passive-no-reset", configuration);
+        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+        var result = service.ExecuteSwap("battle-passive-no-reset", pair);
+
+        Assert.True(result!.Value.IsAccepted);
+
+        var matches = result.Value.Resolution.TotalMatches;
+        Assert.Single(result.Value.Events, e => e.Type == BattleEventType.PassiveTriggered);
+
+        // §4 item 2: progress is left exactly as the trigger found it — the batch
+        // total, which at Threshold 1 is the Match count. It therefore still
+        // satisfies the Threshold, which §2 item 4 deliberately does not
+        // re-evaluate inside this Cascade.
+        Assert.Equal(matches, result.Value.State.PetState.PassiveProgress.Current);
+        Assert.True(result.Value.State.PetState.PassiveProgress.IsReady);
+    }
+
+    [Fact]
+    public void ExecuteSwap_ShouldRecordTheResetBehaviorTheBattleWasCreatedWith()
+    {
+        // GAME_STATE.md §2.3 item 2: the Passive's identity is set at battle creation
+        // and never changes; PASSIVE_RULES.md §4 makes the Reset Behavior a property
+        // of the Passive's definition. Neither is written by a resolution.
+        var service = new BattleStateService();
+
+        var configuration = new BattleStateService.PassiveConfiguration(
+            new PassiveId("partial-reset"),
+            PassiveThreshold: 5,
+            PassiveResetOverride: PassiveResetBehavior.Partial);
+
+        var created = service.CreateBattle("battle-passive-definition", configuration);
+        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+        var result = service.ExecuteSwap("battle-passive-definition", pair);
+
+        Assert.True(result!.Value.IsAccepted);
+
+        Assert.Equal(configuration.PassiveId, result.Value.State.PetState.PassiveId);
+        Assert.Equal(PassiveResetBehavior.Partial, result.Value.State.PetState.PassiveResetOverride);
+        Assert.Equal(configuration.PassiveThreshold, result.Value.State.PetState.PassiveProgress.Threshold);
+    }
+
+    [Fact]
+    public void ResolveBoard_ShouldNotChargeThePassive()
+    {
+        // Board resolution is not a Swap (MATCH3_RULES.md §8.1 item 4): it resolves
+        // no action and produces no Match on a generated board, so PASSIVE_RULES.md
+        // §2 item 1 has nothing to charge and the Passive state is untouched.
+        var service = new BattleStateService();
+        var created = service.CreateBattle("battle-passive-resolution", PassiveConfiguration);
+
+        var resolved = service.ResolveBoard("battle-passive-resolution");
+
+        Assert.NotNull(resolved);
+        Assert.Equal(created.PetState, resolved!.PetState);
+    }
+
+    [Fact]
+    public void ExecuteSwap_ShouldReturnTheSameWriteBackItStores()
+    {
+        // GAME_STATE.md §5.1: one action produces ONE post-resolution write-back. The
+        // result the caller receives must therefore carry the same state the registry
+        // holds — including the settled Passive progress — so a client rendering the
+        // batch's Passive events and a client reading the state cannot disagree
+        // (GAME_EVENTS.md §3 item 6: an event is never a substitute for the
+        // write-back, and the write-back is never replaced by an event).
+        var service = new BattleStateService();
+        var created = service.CreateBattle("battle-passive-writeback", PassiveConfiguration);
+
+        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+        var result = service.ExecuteSwap("battle-passive-writeback", pair);
+
+        Assert.True(result!.Value.IsAccepted);
+
+        var stored = service.GetBattle("battle-passive-writeback")!;
+
+        Assert.Same(result.Value.State, stored);
+        Assert.Equal(stored.PetState, result.Value.State.PetState);
+
+        // The last charge the batch reports and the settled progress are consistent:
+        // under Default reset a trigger settles at 0, otherwise the last charge is the
+        // settled value (PASSIVE_RULES.md §2 item 4, §4 item 1).
+        var lastCharge = result.Value.Events
+            .Where(e => e.Type == BattleEventType.PassiveCharged)
+            .Select(e => e.PassiveCharged.Progress)
+            .Last();
+
+        var triggered = result.Value.Events.Any(e => e.Type == BattleEventType.PassiveTriggered);
+
+        Assert.Equal(
+            triggered ? 0 : lastCharge,
+            result.Value.State.PetState.PassiveProgress.Current);
+    }
+
+    /// <summary>
+    /// Splits the tracker's reports at the single trigger: the charges that precede
+    /// it, and the trigger run itself (<c>PASSIVE_RULES.md</c> §2 item 3 evaluates
+    /// the Threshold once, after the whole batch, so the trigger is the Cascade's
+    /// last Passive event).
+    /// </summary>
+    private static (BattleEvent[] Charges, BattleEvent[] Triggers) SplitAtFirstTrigger(
+        BattleEvent[] passiveRun)
+    {
+        var triggerIndex = Array.FindIndex(passiveRun, e => e.Type == BattleEventType.PassiveTriggered);
+
+        return triggerIndex < 0
+            ? (passiveRun, [])
+            : (passiveRun[..triggerIndex], passiveRun[triggerIndex..]);
     }
 
     /// <summary>
     /// An adjacent pair of the board whose exchange produces a §3 Match — guaranteed
     /// to exist by <c>MATCH3_RULES.md</c> §1.4, and asserted found rather than assumed.
     /// </summary>
-    private static SwapRequest FindAdjacentPairThatProducesAMatch(BoardState board)
+    private static SwapRequest FindAdjacentPairThatProducesAMatch(
+        BoardState board,
+        SwapRequest? exclude = null)
     {
         foreach (var (from, to) in AllAdjacentPairs())
         {
+            if (exclude is { } excluded
+                && CommittedSwapPair.FromCells(from, to) == CommittedSwapPair.FromCells(excluded.From, excluded.To))
+            {
+                continue;
+            }
+
             if (MatchDetector.Detect(board.WithSwapped(from, to)).Count > 0)
             {
                 return new SwapRequest(from, to);

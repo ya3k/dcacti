@@ -1,6 +1,7 @@
 # Game State
 
-**Version:** 1.5 (PlayerState's Match/Combo stage recorded — §2.2, §2.0.5.3)
+**Version:** 1.6 (`PetState.PassiveId` added — §2.3; the Passive identity
+`GAME_EVENTS.md` §2's `PassiveCharged`/`PassiveTriggered` report)
 **Status:** Draft
 
 > This document answers: **"What state exists during a running battle?"**
@@ -787,9 +788,10 @@ PlayerState
                                     GAME_RULES.md §3)
 ```
 
-**Implemented so far: `Combo` and `MatchCount`.**
+**Implemented so far: `Combo`, `MatchCount`, and the combat stats
+`HP`/`MaxHP`, `ATK`/`DEF`, `Power`, and `Crit`.**
 
-The Match / Combo accounting stage implements exactly those two members, and
+The Match / Combo accounting stage implements the first two members, and
 `BattleState` therefore nests a `PlayerState` carrying them
 (`PlayerState(Combo, MatchCount)`, both `int`, both `0` at battle creation).
 They are written in the single post-resolution write-back of §5.1, for a
@@ -797,29 +799,53 @@ committed Swap only; their rule-level lifecycle is owned by
 `MATCH3_RULES.md` §6 and their cumulative/cumulative-vs-scoped distinction by
 `GAME_RULES.md` §3 and §5.
 
+The combat-stats stage then adds `HP`, `MaxHP`, `ATK`, `DEF`, `Power`, and
+`Crit` to the same type as `int` members, each initialized at battle creation
+to its `COMBAT_RULES.md` §1.1 MVP default (`HP` = `MaxHP` = 1000, `ATK` = 50,
+`DEF` = 25, `Power` = 0, `Crit` = 5). §1.1 owns those values and states that
+they are not permanent invariants — changing them is a configuration change,
+not a redesign of this field list. `Crit` is the percent §1.1 defines
+("critical hit chance (%)"), so the value is `5` and not `0.05`. `Power`'s
+0–100 range is a documented invariant of §1.1 and `GAME_RULES.md` §12 and is
+not enforced by the state. They are carried through the §5.1 write-back
+unchanged: this stage adds the fields and their initial values only, and the
+Damage Pipeline (`COMBAT_RULES.md` §3) and Resource Generation (§2) that will
+read and write them are not implemented.
+
 The remaining members above are **not yet implemented** — not **not
-required** (§0 item 4): `HP`/`MaxHP`, `ATK`/`DEF`/`Crit`, `Power`,
-`StatusEffects[]`, `EquippedRelics[]`, and `EquippedCards[]` each arrive with
-their owning Combat, Passive, Relic, or Card system, exactly as these two
-arrived with the Match / Combo stage. None of them is stubbed, defaulted, or
-represented by a placeholder collection, because a placeholder for a field no
-rule yet reads would be a representation of its own (§0 item 5).
+required** (§0 item 4): `StatusEffects[]`, `EquippedRelics[]`, and
+`EquippedCards[]` each arrive with their owning Passive, Relic, or Card
+system, exactly as the members above arrived with their own stages. None of
+them is stubbed, defaulted, or represented by a placeholder collection,
+because a placeholder for a field no rule yet reads would be a representation
+of its own (§0 item 5).
+
+**The combat stats are state, and they are not yet delivered on the wire.**
+`SIGNALR_PROTOCOL.md` §4.2 fixes the `playerState` payload member to exactly
+`combo` and `matchCount` and states that the rest of §2.2 is not delivered,
+per §4 item 4's rule that a payload carries only the implemented stage's own
+fields. These fields do not change that by themselves: as with
+`LastCommittedSwapPair` (§2.1.10 item 9, `SIGNALR_PROTOCOL.md` §4 item 12),
+adding state is not adding a wire member. Delivering them is a protocol
+change owned by its own task.
 
 Two consequences follow from `PlayerState` now existing, and both are
 deliberate rather than gaps:
 
-1. **Absence conventions do not apply to these two members.** Unlike
+1. **Absence conventions do not apply to these members.** Unlike
    `LastCommittedSwapPair` (§2.1.10 item 3) and the optional cell `SpecialGem`
-   (§2.1.7 item 3), `MatchCount` and `Combo` are defined from battle creation,
-   and `Combo = 0` is a real publishable value — the value read before the
-   battle's first committed Swap (`MATCH3_RULES.md` §6.5 item 4). Neither is
-   nullable, neither is omitted, and zero is never spelled by omission.
-2. **`PlayerState` now exists, and Redis persistence remains deferred.**
-   `PetState` (§2.3) and `BossState` (§2.4) still do not, so §2's full shape
-   still cannot be produced and `POST /api/battle/start` still cannot create a
-   battle. `REDIS_STATE.md` §7 items 4 and 8 and its new item 12 apply
-   unchanged: this field neither requires nor authorizes persistence, and adds
-   no key and no Redis-only field.
+   (§2.1.7 item 3), `MatchCount`, `Combo`, and the combat stats are defined
+   from battle creation, and `Combo = 0` and `Power = 0` are real publishable
+   values — the values read before the battle's first committed Swap and
+   before any Match generates Power (`MATCH3_RULES.md` §6.5 item 4,
+   `COMBAT_RULES.md` §2). None is nullable, none is omitted, and zero is never
+   spelled by omission.
+2. **`PlayerState` and `PetState` now exist, and Redis persistence remains
+   deferred.** `BossState` (§2.4) still does not, so §2's full shape still
+   cannot be produced and `POST /api/battle/start` still cannot create a
+   battle. `REDIS_STATE.md` §7 items 4 and 8 and its item 12 apply unchanged:
+   these fields neither require nor authorize persistence, and add no key and
+   no Redis-only field.
 
 ## 2.3 PetState
 
@@ -828,12 +854,46 @@ PetState
 ├── PetId / Identity
 ├── Element
 ├── Tier / Star / Level
+├── PassiveId                    (the Pet's one Passive — PASSIVE_RULES.md §1;
+│                                 the identity PassiveCharged/PassiveTriggered
+│                                 report, GAME_EVENTS.md §2)
 ├── PassiveProgress             (current count vs. threshold,
 │                                PASSIVE_RULES.md §2)
 └── PassiveResetOverride          (only present if this Pet's Passive uses
                                   non-default reset behavior,
                                   PASSIVE_RULES.md §4)
 ```
+
+**`PassiveId` is the Passive's identity, and it is a value, not a new
+concept.** A Pet has **exactly one** Passive (`PASSIVE_RULES.md` §1,
+`GAME_RULES.md` §9.2 item 2), so this field names which Passive definition the
+active Pet carries — it does not select among several, and there is no
+collection, slot, or ordering of Passives in `PetState`. It is what
+`GAME_EVENTS.md` §2's `PassiveCharged` and `PassiveTriggered` report as their
+`PassiveId`, and it is the same member shape the sibling identity fields
+elsewhere in state use (`BossState.BossId`, `PlayerState.EquippedRelics[]`,
+`EquippedCards[]`).
+
+1. **It is an identity, not a definition.** The field carries the identifier
+   only. The Passive's `Threshold`, `Trigger Type`, `Effect`, and
+   `Reset Behavior` (`PASSIVE_RULES.md` §1) are the definition those values are
+   read from; none of them is stored here, and no second copy of the definition
+   is introduced by this field.
+2. **It is set at battle creation and never changes.** Selecting a Pet locks in
+   that Pet's Passive for the duration of the battle
+   (`PET_RULES.md` §2 item 3; mid-battle Pet swapping is out of MVP scope), so
+   no resolution writes it and no event changes it.
+3. **It is present from battle creation** — a battle always has its one active
+   Pet and therefore its one Passive (`GAME_EVENTS.md` §2 `BattleStarted`
+   requires a created battle with a Pet and a Boss). It is **not** an
+   absent-when-unset convention and not written by the first charge: unlike
+   `LastCommittedSwapPair` (§2.1.10 item 3) and a cell's optional `SpecialGem`
+   (§2.1.7 item 3), there is no "no Passive yet" state for it to spell.
+4. **No gameplay behavior is introduced here.** This field records which
+   Passive the tracker charges; the charge, threshold, trigger, and reset rules
+   are owned by `PASSIVE_RULES.md` §2–§5 and are not restated, narrowed, or
+   extended by it. It carries no progress value (that is `PassiveProgress`)
+   and no reset policy (that is `PassiveResetOverride`).
 
 ## 2.4 BossState
 

@@ -14,14 +14,20 @@ resolve in favor of GAME_RULES.md.
 ## 1.1 Player / Pet Stats
 
 ```text
-HP        current health
-Max HP    maximum health
-ATK       attack power
-DEF       defense
+HP        current health                          MVP default: 1000
+Max HP    maximum health                          MVP default: 1000
+ATK       attack power                            MVP default: 50
+DEF       defense                                 MVP default: 25
 Power     resource for casting Cards / Skills, range 0–100
-Crit      critical hit chance (%), default base value: configuration
+Crit      critical hit chance (%)                 MVP default: 5%
 Status    active Status Effects (see §5)
 ```
+
+These are the MVP baseline configuration values. They are not permanent
+invariants — future Pet progression (Level, Star, Tier) may produce different
+actual Battle Stats. Combat formulas consume the current Battle Stats rather
+than assuming these exact numbers permanently. Changing balance values is a
+configuration change, not a combat pipeline redesign.
 
 ## 1.2 Boss Stats
 
@@ -41,9 +47,9 @@ Baseline generation per consumed Gem (MVP defaults, all configuration):
 ```text
 Gem Type   Base Output (per Gem, Match-3 tier)
 --------   -----------------------------------
-ATK Gem    contributes to next offensive action's Base Damage pool
-DEF Gem    contributes to temporary Defense / mitigation pool
-HP Gem     contributes to passive Heal pool
+ATK Gem    +10 Base Damage
+DEF Gem    +5 Defense pool
+HP Gem     +20 Heal pool
 POWER Gem  +10 Power (flat, per GDD example)
 ```
 
@@ -109,17 +115,14 @@ in RELIC_RULES.md §4, but step 4 as a whole always resolves before step 5
 
 ## 3.2 Defense Mitigation
 
-Conceptual formula (exact constants are configuration):
+Formula:
 
 ```text
 Mitigated Damage = Pre-Defense Damage × ( K / (K + DEF) )
 ```
 
 where `K` is a tunable constant controlling how quickly DEF diminishes
-incoming damage. This is a placeholder formula shape; the authoritative
-constant and any alternate formula (flat reduction vs. percentage) must be
-finalized in this file before implementation and must not be invented ad hoc
-by an implementer.
+incoming damage. MVP default: `K = 100` (configuration).
 
 ## 3.3 Critical Hits
 

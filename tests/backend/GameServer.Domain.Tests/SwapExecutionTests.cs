@@ -1,5 +1,6 @@
 using GameServer.Domain.Battle;
 using GameServer.Domain.Match3;
+using GameServer.Domain.Passives;
 using Xunit;
 
 namespace GameServer.Domain.Tests;
@@ -52,7 +53,7 @@ public class SwapExecutionTests
 
     /// <summary>A battle whose board is the completing-swap fixture.</summary>
     private static BattleState BattleWith(BoardState board, CommittedSwapPair? committed = null) =>
-        BattleState.Create("battle-004", TestSeed) with
+        BattleState.CreateWith("battle-004", TestSeed) with
         {
             BoardState = board,
             LastCommittedSwapPair = committed,
@@ -238,8 +239,8 @@ public class SwapExecutionTests
         var viaPrimitive = CascadeResolver.Resolve(
             expected,
             new Pcg32(
-                BattleState.Create("battle-004", TestSeed).RngState.State,
-                BattleState.Create("battle-004", TestSeed).RngState.Increment),
+                BattleState.CreateWith("battle-004", TestSeed).RngState.State,
+                BattleState.CreateWith("battle-004", TestSeed).RngState.Increment),
             swapOriginIndex: null);
 
         Assert.True(result.State.BoardState.CellsEqual(viaPrimitive.Board));
@@ -565,7 +566,7 @@ public class SwapExecutionTests
             // all, so there is nothing that could have changed.
             Assert.Equal(BattleState.InitialTurn, state.Turn);
             Assert.Equal(BattleState.InitialSequence, state.Sequence);
-            Assert.Equal(BattleState.Create("battle-004", TestSeed).RngState, state.RngState);
+            Assert.Equal(BattleState.CreateWith("battle-004", TestSeed).RngState, state.RngState);
             Assert.Equal(TestSeed, state.RngSeed);
             Assert.Equal(new CommittedSwapPair(0, 1), state.LastCommittedSwapPair);
 
@@ -827,7 +828,7 @@ public class SwapExecutionTests
         // the validator accepts, the committed board is stable and the counters moved
         // exactly once. This is the integration guarantee stated over the whole
         // board rather than one fixture.
-        var state = BattleState.Create("battle-004-exhaustive", TestSeed);
+        var state = BattleState.CreateWith("battle-004-exhaustive", TestSeed);
         var accepted = 0;
 
         foreach (var (from, to) in AllAdjacentPairs())
@@ -1049,6 +1050,125 @@ public class SwapExecutionTests
         Assert.NotEqual(
             SwapRejectionReason.InvalidCellIndex.ToString().ToUpperInvariant(),
             SwapRejectionCodes.ToContractCode(SwapRejectionReason.InvalidCellIndex));
+    }
+
+    // =======================================================================
+    // Result composition — SwapExecutionResult.WithEvents / WithState
+    // (GAME_RULES.md §17 step 10, GAME_EVENTS.md §1.1, §3 item 6)
+    // =======================================================================
+
+    [Fact]
+    public void WithEvents_ShouldReturnANewResultCarryingTheSuppliedEvents()
+    {
+        // The pipeline step that charges the Passive (GAME_RULES.md §17 step 10)
+        // appends its reports to the board resolution's list. The method is a pure
+        // factory: it replaces the event list and changes nothing else.
+        var committed = SwapExecutor.Execute(BattleWith(MatchingBoard()), new SwapRequest(From, To));
+        Assert.True(committed.IsAccepted);
+
+        var replacement = new[]
+        {
+            BattleEvent.ForPassiveCharged(new PassiveChargedEvent(new PassiveId("xich-lang"), 1, 5)),
+        };
+
+        var updated = committed.WithEvents(replacement);
+
+        // The supplied list is the result's event list.
+        Assert.Equal(replacement.Length, updated.Events.Count);
+        Assert.Equal(BattleEventType.PassiveCharged, updated.Events[0].Type);
+        Assert.Equal(1, updated.Events[0].PassiveCharged.Progress);
+
+        // Every other member is preserved: acceptance, reason, state, and resolution.
+        Assert.Equal(committed.IsAccepted, updated.IsAccepted);
+        Assert.Equal(committed.Reason, updated.Reason);
+        Assert.Same(committed.State, updated.State);
+        Assert.Equal(committed.Resolution, updated.Resolution);
+    }
+
+    [Fact]
+    public void WithEvents_ShouldNotMutateTheOriginalResult()
+    {
+        // The original is an immutable value: composing the Passive stage's events
+        // onto it must leave the board resolution's own list intact, so a caller
+        // holding the pre-charge result still sees exactly what the executor
+        // produced (GAME_EVENTS.md §3 item 6: events are outputs, not state).
+        var committed = SwapExecutor.Execute(BattleWith(MatchingBoard()), new SwapRequest(From, To));
+        var originalEvents = committed.Events.ToArray();
+
+        _ = committed.WithEvents([]);
+
+        Assert.Equal(originalEvents.Length, committed.Events.Count);
+        Assert.Equal(originalEvents, committed.Events);
+    }
+
+    [Fact]
+    public void WithEvents_ShouldRejectARejectionBecauseItHasNoEventListToReplace()
+    {
+        // MATCH3_RULES.md §2.1.5 item 6 / GAME_EVENTS.md §1.2: a rejected action emits
+        // no Battle Event at all, so there is nothing to replace — and the empty list
+        // it carries is the contract, not a gap.
+        var rejected = SwapExecutor.Execute(BattleWith(MatchingBoard()), new SwapRequest(0, 1));
+
+        Assert.True(rejected.IsRejected);
+        Assert.Empty(rejected.Events);
+        Assert.Throws<InvalidOperationException>(() => rejected.WithEvents([]));
+    }
+
+    [Fact]
+    public void WithEvents_ShouldRejectANullList()
+    {
+        // The absence of events is the empty list, never null.
+        var committed = SwapExecutor.Execute(BattleWith(MatchingBoard()), new SwapRequest(From, To));
+
+        Assert.Throws<ArgumentNullException>(() => committed.WithEvents(null!));
+    }
+
+    [Fact]
+    public void WithState_ShouldReturnANewResultCarryingTheSuppliedState()
+    {
+        // GAME_STATE.md §5.1: the state and the events a result carries must belong to
+        // the SAME single post-resolution write-back. The pipeline step that extends
+        // it therefore replaces the state too, and WithState is that pure factory.
+        var committed = SwapExecutor.Execute(BattleWith(MatchingBoard()), new SwapRequest(From, To));
+
+        var extended = committed.State with
+        {
+            PetState = committed.State.PetState with
+            {
+                PassiveProgress = new PassiveProgress(
+                    committed.State.PetState.PassiveProgress.Threshold,
+                    Current: 3),
+            },
+        };
+
+        var updated = committed.WithState(extended);
+
+        Assert.Same(extended, updated.State);
+        Assert.Equal(3, updated.State.PetState.PassiveProgress.Current);
+
+        // Every other member is preserved, including the original event list.
+        Assert.Equal(committed.IsAccepted, updated.IsAccepted);
+        Assert.Equal(committed.Reason, updated.Reason);
+        Assert.Equal(committed.Resolution, updated.Resolution);
+        Assert.Equal(committed.Events, updated.Events);
+    }
+
+    [Fact]
+    public void WithState_ShouldRejectARejectionBecauseItHasNoStateToReplace()
+    {
+        // MATCH3_RULES.md §2.1.5: a rejected action writes nothing, so a rejection has
+        // no resulting state and the caller keeps the one it passed in.
+        var rejected = SwapExecutor.Execute(BattleWith(MatchingBoard()), new SwapRequest(0, 1));
+
+        Assert.Throws<InvalidOperationException>(() => rejected.WithState(BattleWith(MatchingBoard())));
+    }
+
+    [Fact]
+    public void WithState_ShouldRejectANullState()
+    {
+        var committed = SwapExecutor.Execute(BattleWith(MatchingBoard()), new SwapRequest(From, To));
+
+        Assert.Throws<ArgumentNullException>(() => committed.WithState(null!));
     }
 
     // ------------------------------------------------------------- helpers ---

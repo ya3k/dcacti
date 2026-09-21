@@ -1,7 +1,7 @@
 # SignalR Protocol
 
-**Version:** 1.5 (§3.2 added: the exact wire schema of `events[]` — this
-document is its single owner)
+**Version:** 1.6 (§4.3 added: the `PetState` delivery contract — this
+document owns the `BattleStateUpdated` record's member set)
 **Status:** Draft — depends on TDD.md §0 assumption (ASP.NET Core backend)
 
 > This document answers: **"How does realtime communication work?"** It does
@@ -46,7 +46,9 @@ its resolution events through §3 (§3.1). Special Gem state is a property of th
 board rather than a stage field of its own (`GAME_STATE.md` §2.1), so it is
 delivered by that same push as well — see §4.1 items 5–6. `PlayerState` is a
 stage field of its own (`GAME_STATE.md` §2.2), so it is delivered by that same
-push as a payload member — see §4.2.
+push as a payload member — see §4.2. `PetState` is likewise a stage field of
+its own (`GAME_STATE.md` §2.3), so it is delivered by that same push as a
+payload member too — see §4.3.
 
 ---
 
@@ -600,7 +602,7 @@ be built before gameplay exists (`GAME_STATE.md` §0, §2.0).
 
 ```text
 BattleStateUpdated(battleId, turn, sequence, board, rngSeed, rngState,
-                   playerState)
+                   playerState, petState)
 ```
 
 Exactly the fields of the currently implemented `GAME_STATE.md` §0 stage,
@@ -615,6 +617,9 @@ Board Foundation State (GAME_STATE.md §2.0.5)
 
 Match / Combo accounting (GAME_STATE.md §2.2 — PlayerState)
     battleId, turn, sequence, board, rngSeed, rngState, playerState
+
+Pet / Passive state (GAME_STATE.md §2.3 — PetState)
+    battleId, turn, sequence, board, rngSeed, rngState, playerState, petState
 ```
 
 No gameplay field beyond the stage's own is carried, and no `Status`/lifecycle
@@ -694,6 +699,17 @@ action: it reports state (§4 item 6).
     adjust, or recompute it (`GAME_RULES.md` §18, `ADR-001`). No new message,
     method, subscription, or payload member is introduced by it
     (`GAME_STATE.md` §2.1.10 item 9).
+13. **`PetState` *is* delivered, and item 12 is not the precedent for it.**
+    `GAME_STATE.md` §2.3 adds `BattleState.PetState` to authoritative state,
+    present from battle creation. Unlike `LastCommittedSwapPair` (item 12), it
+    is a **client-facing** field: `PASSIVE_RULES.md` §6 item 1 requires the
+    active Pet's Passive progress to be exposed to the player as a UI-facing
+    value (e.g. `7 / 10 Matches`), and `PetState.PassiveProgress` is the state
+    that value is read from (`GAME_STATE.md` §2.3, §2.5). Item 4 therefore
+    applies to it in the ordinary way — it is a field of the implemented stage,
+    so it is delivered — and no exclusion is added for it. Its delivery
+    contract is §4.3; it adds no message, method, or subscription (§4 item 11),
+    and its arrival replaces nothing (item 12's record is unaffected).
 
 This method name is `BattleStateUpdated` for the `BattleState` it delivers,
 and is the only state-push method in this protocol. No second or parallel
@@ -790,6 +806,110 @@ an event:
    per-Match or per-step (`MATCH3_RULES.md` §8.3 item 2, `GAME_STATE.md`
    §5.1).
 
+## 4.3 Delivering the Pet / Passive Stage
+
+The Pet / Passive stage (`GAME_STATE.md` §2.3, `PetState`) extends this same
+push — it does not add a delivery path, a subscription, or an event:
+
+```text
+petState
+├── passiveId                 the active Pet's Passive identity   always present
+├── passiveProgress            { threshold, current }             always present
+└── passiveResetOverride       "Partial" | "NoReset"              present only when
+                                                                  non-default
+```
+
+1. The client receives `petState` together with `battleId`, `turn`, `sequence`,
+   `board`, `rngSeed`, `rngState`, and `playerState` in the single
+   `BattleStateUpdated` push. It is delivered on join (§4.1 trigger) and on
+   every committed Swap's resolved-state push (§2.1, §5).
+2. `petState` is the wire projection of `GAME_STATE.md` §2.3's implemented
+   fields, and carries **exactly three members**: `passiveId`,
+   `passiveProgress`, and the conditional `passiveResetOverride`. The rest of
+   §2.3 — `PetId`/Identity, `Element`, `Tier`/`Star`/`Level` — belongs to the
+   Pet identity and progression stage and is **not** delivered, because §4
+   item 4 admits only the implemented stage's own fields. Referring to
+   `petState` as a whole does not widen that rule.
+3. **`passiveId` is always present and is the Passive's identity, not its
+   definition.** It carries the same value `PetState.PassiveId` holds
+   (`GAME_STATE.md` §2.3) — the identity `GAME_EVENTS.md` §2's
+   `PassiveCharged`/`PassiveTriggered` already report. The Passive's
+   `Threshold`, `Trigger Type`, `Effect`, and `Reset Behavior`
+   (`PASSIVE_RULES.md` §1) are its definition and are **not** members here: no
+   second copy of the definition is introduced on the wire, exactly as §2.3
+   item 1 forbids one in the state. It is set at battle creation and never
+   changes (§2.3 item 2), and there is no absent or null form of it: a battle
+   always has its one active Pet and therefore its one Passive (§2.3 item 3).
+4. **`passiveProgress` is a nested object with exactly two members** —
+   `threshold` and `current`, both integers, both always present — following
+   the §3.2 flat-object convention. It is the wire projection of
+   `GAME_STATE.md` §2.5's `PassiveProgress` `(Threshold, Current)` pair, and
+   the two travel together as one logical field for the same reason
+   `RngState`'s two components do (§4.1 item 2): a reader renders the
+   documented `Current / Threshold` pair without supplying either from
+   elsewhere (`PASSIVE_RULES.md` §6 item 1's `7 / 10 Matches`). Neither member
+   is nullable and neither is omitted — `current = 0` is a real publishable
+   value (it is what a battle begins with and what `Default` reset writes), so
+   absence is never used for it and a client must not read an absent member as
+   zero. This is the absent-member convention's opposite, exactly as §4.2
+   item 3 states for `combo`/`matchCount`.
+5. **`threshold` is the Passive's own Threshold and `current` is the progress
+   reached** — the same two values `GAME_EVENTS.md` §2 reports on
+   `PassiveCharged`. The state is the authoritative source and the events
+   report it; neither is re-derived from the other, and the client recomputes
+   neither.
+6. **`passiveResetOverride` is present if and only if the Passive's reset
+   behavior is non-default** (`GAME_STATE.md` §2.3: "only present if this
+   Pet's Passive uses non-default reset behavior"; `PASSIVE_RULES.md` §4
+   item 1). When it is present it carries the behavior's contract name as a
+   **string** — `"Partial"` or `"NoReset"` (`PASSIVE_RULES.md` §4 item 2) —
+   and never a numeric enum ordinal, per §3.2.4's rule for every enum-valued
+   wire member.
+7. **A default reset omits the member; it is never sent as JSON `null`.** This
+   is §3.2.5's convention applied here, and it is the same statement
+   `GAME_STATE.md` §2.1.7 item 3 makes for an absent cell `SpecialGem`: the
+   absence *is* the statement "this Passive uses the default reset", and no
+   `null`, `"Default"` string, or empty value stands in for it. `"Default"` is
+   deliberately **not** a third permitted value of this member: it is what the
+   member's absence already means (`GAME_STATE.md` §2.3, `PASSIVE_RULES.md`
+   §4 item 1), so writing it would be a second spelling of one fact —
+   the parallel representation `GAME_STATE.md` §0 item 5 forbids. A consumer
+   tolerates absence and reads it as `Default`.
+8. **No Passive value is carried anywhere else.** No `passiveId`,
+   `passiveProgress`, `threshold`, `current`, or `passiveResetOverride` member
+   exists at the top level of the payload, on the board, or on any cell: they
+   are fields of `PetState`, and a second spelling would be the parallel
+   representation `GAME_STATE.md` §0 item 5 forbids. In particular
+   `playerState` gains nothing (§4.2 item 2) — Passive state is not Match /
+   Combo accounting.
+9. **The client neither computes nor derives any of it.** It renders the
+   `current / threshold` pair and the Passive identity it was sent. It does
+   not charge a Passive, evaluate a Threshold, reset progress, apply an
+   overflow, or re-derive any of those from `board`, `turn`, `sequence`,
+   `combo`, or `matchCount` — `PASSIVE_RULES.md` §2–§5 own all of them and the
+   server evaluates them (`GAME_RULES.md` §18, `ADR-001`). `PetState` is a
+   deliverable, not a client-authorable field.
+10. **No new message, method, or subscription is introduced.** There is no
+    `PassiveProgressUpdated`, `PetStateChanged`, `PassiveCharged`-style
+    *method*, or similar delivery: this is a state push, not an event (§4
+    item 6), and the values travel exactly as the board and the Combo/Match
+    counters do. `BattleStateUpdated` remains the only state-push method (§4
+    item 11), and the Passive Event system — `PassiveCharged`,
+    `PassiveTriggered` (`GAME_EVENTS.md` §2) — travels on §3's existing event
+    path and is not re-delivered by this section.
+11. **The state push and the events are not interchangeable.** `petState`
+    reports the Passive's **settled** position under the payload's `sequence`,
+    once per resolved action, exactly as the board and the counters do. It is
+    not a per-Match progress feed: `PassiveCharged` is emitted once per Match
+    within a Cascade (`GAME_EVENTS.md` §1.1, `PASSIVE_RULES.md` §2 item 3),
+    and that per-Match detail belongs to §3, not to this push. A client that
+    wants the intermediate steps reads the batch; a client that wants the
+    current position reads the state. Neither replaces the other (§4 item 6).
+12. **Persistence is not extended by this section.** `petState` is delivered
+    from whatever `BattleState` the server holds. Whether `PetState` is
+    written to Redis is owned by `REDIS_STATE.md` §7 and is unchanged here:
+    this section defines the payload member, not the storage contract.
+
 ---
 
 # 5. Request/Response Acknowledgement
@@ -883,7 +1003,7 @@ while §7 is a client-requested full-snapshot recovery per `ADR-008`.
    this item, which left the schema to the delivery stage; §3.2 now fixes it.
    What remains an implementation detail is only the *mechanics* of producing
    it (which serializer, which DTO type names) — never the resulting JSON.
-   The same applies to the `BattleStateUpdated` record (§4.4).
+   The same applies to the `BattleStateUpdated` record (§4 item 4).
 2. Any PvP or multi-client-divergent-state scenario — out of MVP scope
    (`MVP_SCOPE.md` §2).
 3. Any battle lifecycle / status message. `BattleStateUpdated` carries no

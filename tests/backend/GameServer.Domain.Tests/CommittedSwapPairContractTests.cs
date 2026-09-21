@@ -1,6 +1,7 @@
 using System.Text.Json;
 using GameServer.Domain.Battle;
 using GameServer.Domain.Match3;
+using GameServer.Domain.Passives;
 using Xunit;
 
 namespace GameServer.Domain.Tests;
@@ -101,7 +102,7 @@ public class CommittedSwapPairContractTests
         // GAME_STATE.md §2.1.10 item 3: before the first committed Swap the record is
         // ABSENT. Board generation commits no Swap and is not an action resolution
         // (§2.0.5.2 item 1), so a newly created battle has none.
-        var state = BattleState.Create("battle-1", TestSeed);
+        var state = BattleState.CreateWith("battle-1", TestSeed);
 
         Assert.Null(state.LastCommittedSwapPair);
     }
@@ -113,7 +114,7 @@ public class CommittedSwapPairContractTests
         // (0, 1) — absence is the representation of "no Swap has been committed".
         // A (0, 0) pair is not even representable, because a committed pair always
         // names two distinct cells (MATCH3_RULES.md §2.1.2 item 2).
-        var state = BattleState.Create("battle-1", TestSeed);
+        var state = BattleState.CreateWith("battle-1", TestSeed);
 
         Assert.False(state.LastCommittedSwapPair.HasValue);
 
@@ -126,7 +127,7 @@ public class CommittedSwapPairContractTests
     {
         // GAME_STATE.md §2.1.10 item 4: while the record is absent, check 3 can
         // never fail — no swap has been committed, so no swap is already applied.
-        var state = BattleState.Create("battle-1", TestSeed);
+        var state = BattleState.CreateWith("battle-1", TestSeed);
 
         // Every adjacent pair on a freshly generated board is "not already applied".
         for (var from = 0; from < BoardState.CellCount; from++)
@@ -243,7 +244,7 @@ public class CommittedSwapPairContractTests
         // Combo, Power, Passive, or Relic progression and consumes no randomness.
         // This test moves ONLY the commit record, and asserts nothing else was
         // dragged along with it.
-        var state = BattleState.Create("battle-1", TestSeed);
+        var state = BattleState.CreateWith("battle-1", TestSeed);
         var committed = RecordCommit(12, 13, state);
 
         Assert.True(state.BoardState.CellsEqual(committed.BoardState));
@@ -294,7 +295,7 @@ public class CommittedSwapPairContractTests
     {
         // A rejection before any commit leaves the record absent — it must not
         // fabricate a commit.
-        var state = BattleState.Create("battle-1", TestSeed);
+        var state = BattleState.CreateWith("battle-1", TestSeed);
         var afterRejection = ApplyRejection(state, SwapRejectionReason.NoMatchFromSwap);
 
         Assert.Null(afterRejection.LastCommittedSwapPair);
@@ -403,7 +404,7 @@ public class CommittedSwapPairContractTests
         // GAME_STATE.md §2.1.10 item 10 / §2.1.7 item 3: when absent it is OMITTED —
         // absence is the statement "no Swap has been committed", and no null pair,
         // sentinel index, or zero pair stands in for it.
-        var fresh = BattleState.Create("battle-1", TestSeed);
+        var fresh = BattleState.CreateWith("battle-1", TestSeed);
 
         var json = SerializePair(fresh.LastCommittedSwapPair);
 
@@ -431,7 +432,7 @@ public class CommittedSwapPairContractTests
     {
         // A store that materializes a sentinel pair for an absent record would invent
         // a commit the battle never made (GAME_STATE.md §2.1.10 item 10).
-        var fresh = BattleState.Create("battle-1", TestSeed);
+        var fresh = BattleState.CreateWith("battle-1", TestSeed);
 
         var restored = DeserializePair(SerializePair(fresh.LastCommittedSwapPair));
 
@@ -485,7 +486,7 @@ public class CommittedSwapPairContractTests
     /// </summary>
     private static BattleState RecordCommit(int fromCell, int toCell, BattleState? existing = null)
     {
-        var state = existing ?? BattleState.Create("battle-1", TestSeed);
+        var state = existing ?? BattleState.CreateWith("battle-1", TestSeed);
 
         return state with { LastCommittedSwapPair = CommittedSwapPair.FromCells(fromCell, toCell) };
     }

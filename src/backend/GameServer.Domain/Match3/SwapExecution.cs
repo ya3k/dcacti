@@ -124,6 +124,100 @@ public readonly record struct SwapExecutionResult
     public IReadOnlyList<BattleEvent> Events => _events ?? [];
 
     /// <summary>
+    /// The same committed result with its ordered event list replaced by
+    /// <paramref name="events"/> — a new immutable value; the original is not
+    /// mutated and its own list is unchanged.
+    ///
+    /// <b>Why it exists.</b> The Swap resolution is assembled from two stages
+    /// that produce events: the board resolution's own Match-3 events
+    /// (<see cref="BattleEventBuilder"/>, called inside
+    /// <see cref="SwapExecutor.Execute"/>) and the Passive stage's
+    /// <c>PassiveCharged</c>/<c>PassiveTriggered</c> reports, which
+    /// <c>GAME_RULES.md</c> §17 places at step 10 — <b>after</b> "Count Matches"
+    /// and before "Trigger Relics" (<c>GAME_EVENTS.md</c> §1.1). The latter belongs
+    /// to the Application-layer pipeline step, which calls
+    /// <see cref="GameServer.Domain.Passives.PassiveTracker.Charge"/> only for a
+    /// committed Swap, so the assembled list is not known when
+    /// <see cref="SwapExecutor"/> builds its result.
+    ///
+    /// This method is a pure factory over the value: it carries
+    /// <see cref="IsAccepted"/>, <see cref="Reason"/>, <see cref="State"/>, and
+    /// <see cref="Resolution"/> across unchanged and sets only the event list. It
+    /// computes no gameplay value, orders nothing, and adds no member — the order
+    /// of <paramref name="events"/> is the caller's, and the assembled list
+    /// <b>is</b> the resolution's order (<c>GAME_EVENTS.md</c> §1.1,
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.12 item 4).
+    /// </summary>
+    /// <param name="events">
+    /// The complete ordered event list for this resolution — the interface's
+    /// existing events followed by the events the later pipeline steps produced.
+    /// </param>
+    /// <exception cref="InvalidOperationException">
+    /// The Swap was rejected. A rejected action emits no Battle Event at all
+    /// (<c>MATCH3_RULES.md</c> §2.1.5 item 6, <c>GAME_EVENTS.md</c> §1.2), so a
+    /// rejection has no event list to replace and keeps the empty one it carries.
+    /// </exception>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="events"/> is <c>null</c>. A replacement list is a value; the
+    /// absence of events is the empty list, never <c>null</c>.
+    /// </exception>
+    public SwapExecutionResult WithEvents(IReadOnlyList<BattleEvent> events)
+    {
+        ArgumentNullException.ThrowIfNull(events);
+
+        if (!IsAccepted)
+        {
+            throw new InvalidOperationException(
+                "A rejected Swap emits no Battle Event, so it has no event list to replace "
+                + "(MATCH3_RULES.md §2.1.5 item 6, GAME_EVENTS.md §1.2).");
+        }
+
+        // Every other member is carried across unchanged: this replaces the event
+        // list and nothing else.
+        return new SwapExecutionResult(true, Reason, _state, _resolution, events);
+    }
+
+    /// <summary>
+    /// The same committed result with its authoritative state replaced by
+    /// <paramref name="state"/> — a new immutable value; the original is not
+    /// mutated.
+    ///
+    /// It exists so the Application-layer pipeline step that extends the
+    /// post-resolution write-back (the Passive stage's charge,
+    /// <c>GAME_RULES.md</c> §17 step 10) can carry BOTH the extended state and the
+    /// assembled event list in one result, without the state and the events
+    /// describing different write-backs (<c>GAME_STATE.md</c> §5.1: one action, one
+    /// write-back; <c>GAME_EVENTS.md</c> §3 item 6: an event is never a substitute
+    /// for the state write-back).
+    ///
+    /// It is a pure factory over the value: <see cref="IsAccepted"/>,
+    /// <see cref="Reason"/>, <see cref="Resolution"/>, and <see cref="Events"/> are
+    /// carried across unchanged. It computes no gameplay value.
+    /// </summary>
+    /// <param name="state">
+    /// The resolved authoritative state — the same single post-resolution value the
+    /// caller stores.
+    /// </param>
+    /// <exception cref="InvalidOperationException">
+    /// The Swap was rejected. A rejected action writes nothing, so a rejection has
+    /// no resulting state to replace (<c>MATCH3_RULES.md</c> §2.1.5).
+    /// </exception>
+    /// <exception cref="ArgumentNullException"><paramref name="state"/> is <c>null</c>.</exception>
+    public SwapExecutionResult WithState(BattleState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        if (!IsAccepted)
+        {
+            throw new InvalidOperationException(
+                "A rejected Swap produces no state: a rejected action writes nothing "
+                + "(MATCH3_RULES.md §2.1.5).");
+        }
+
+        return new SwapExecutionResult(true, Reason, state, _resolution, _events ?? []);
+    }
+
+    /// <summary>
     /// The rejection result for a request that failed a documented check
     /// (<c>MATCH3_RULES.md</c> §2.1.2).
     ///
@@ -137,6 +231,13 @@ public readonly record struct SwapExecutionResult
     /// <summary>
     /// The commit result for an accepted request: the resolved authoritative state,
     /// the resolution that produced it, and the ordered events describing it.
+    ///
+    /// It is <b>internal</b>: <see cref="SwapExecutor.Execute"/> is where a commit
+    /// originates, and the Application-layer pipeline step that extends the same
+    /// post-resolution write-back with the later stages' values composes
+    /// <see cref="WithEvents"/> and <see cref="WithState"/> over it rather than
+    /// constructing a result of its own — so the state it hands back is the state
+    /// it stays committed to.
     /// </summary>
     internal static SwapExecutionResult Committed(
         BattleState state,
@@ -164,6 +265,10 @@ public readonly record struct SwapExecutionResult
 ///         one write-back: board + RngState + Turn + Sequence
 ///                         + LastCommittedSwapPair + PlayerState
 ///                                                      §8.3, GAME_STATE.md §5.1
+///         ↓
+///         Charge Passive + PetState write-back  §17 step 10, PASSIVE_RULES.md §2
+///                                               — owned by the Application step,
+///                                                 composed via WithEvents/WithState
 /// </code>
 ///
 /// <b>No second pipeline.</b> Validation is <see cref="SwapValidator"/>'s, the
@@ -211,6 +316,17 @@ public readonly record struct SwapExecutionResult
 /// (<c>GAME_EVENTS.md</c> §3 item 6). They are carried on the result, so the
 /// caller publishes the events of the resolution it just committed without
 /// re-running anything.
+///
+/// <b>The Passive stage's events are not built here.</b> <c>GAME_RULES.md</c> §17
+/// places "Charge Passive" at step 10 — after "Count Matches" (step 9) and before
+/// "Trigger Relics" (step 11) — and charging belongs to the Passive domain
+/// (<c>ARCHITECTURE.md</c> §3 <c>PassiveTracker</c>), driven by the
+/// Application-layer pipeline step that owns the <c>§17</c> sequence. This type
+/// therefore builds no <c>PassiveCharged</c>/<c>PassiveTriggered</c> event and
+/// invents no ordering for it; the stage that charges the Passive hands the
+/// assembled list back through <see cref="SwapExecutionResult.WithEvents"/> and
+/// <see cref="SwapExecutionResult.WithState"/>, which replace the event list and
+/// the state and change nothing else.
 /// </summary>
 public static class SwapExecutor
 {
@@ -380,6 +496,16 @@ public static class SwapExecutor
     /// so at least one Match is walked. The transient <c>Combo = 0</c> between the
     /// reset and the first Match is internal to this calculation and is never
     /// written to the state or published (§5.1 item 2).
+    ///
+    /// <b>The combat stats are carried forward, not computed.</b>
+    /// <c>GAME_STATE.md</c> §2.2 puts <c>HP</c>/<c>MaxHP</c>, <c>ATK</c>/<c>DEF</c>/
+    /// <c>Crit</c>, and <c>Power</c> on the same state this method returns, and the
+    /// returned value replaces the previous one wholesale. The Match / Combo stage
+    /// owns only <c>Combo</c> and <c>MatchCount</c>, so the rest are copied from
+    /// <paramref name="previous"/> unchanged: this method neither re-derives them
+    /// (<c>COMBAT_RULES.md</c> §3's Damage Pipeline, §2's Resource Generation, and
+    /// §4's healing are all unimplemented) nor resets them. Resource Generation
+    /// (TASK-017) is the task that will change <c>Power</c> here.
     /// </summary>
     /// <param name="previous">
     /// The player's progression state before this Swap — the source of the
@@ -420,6 +546,20 @@ public static class SwapExecutor
             }
         }
 
-        return new PlayerState(combo, matchCount);
+        return new PlayerState(
+            // GAME_STATE.md §2.2 / COMBAT_RULES.md §1.1: resolving a Swap produces
+            // Match/Combo accounting only. The combat stats are not an input to this
+            // calculation and no Match, Cascade, or Special Gem changes them, so the
+            // committed Swap carries the previous values forward unchanged rather than
+            // reinitializing them — the write-back is a whole-state replacement, so a
+            // value not restated here would be silently reset to its default.
+            HP: previous.HP,
+            MaxHP: previous.MaxHP,
+            ATK: previous.ATK,
+            DEF: previous.DEF,
+            Power: previous.Power,
+            Crit: previous.Crit,
+            Combo: combo,
+            MatchCount: matchCount);
     }
 }

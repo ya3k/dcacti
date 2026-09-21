@@ -1,3 +1,5 @@
+using GameServer.Domain.Passives;
+
 namespace GameServer.Domain.Match3;
 
 /// <summary>
@@ -8,14 +10,13 @@ namespace GameServer.Domain.Match3;
 /// names <c>GAME_RULES.md</c> §16 lists and <c>GAME_EVENTS.md</c> §2 defines, and
 /// no member may be added for a name the documentation does not define
 /// (<c>AGENTS.md</c> §7). Events for later stages — <c>PowerChanged</c>,
-/// <c>PassiveCharged</c>, <c>RelicTriggered</c>, the Damage events,
-/// <c>BattleWon</c>/<c>BattleLost</c> — belong to their own owning tasks
-/// (<c>GAME_EVENTS.md</c> §3 item 7).
+/// <c>RelicTriggered</c>, the Damage events, <c>BattleWon</c>/<c>BattleLost</c> —
+/// belong to their own owning tasks (<c>GAME_EVENTS.md</c> §3 item 7).
 ///
-/// These three are the events the Match-3 resolution itself produces. They are
-/// listed in the order <c>GAME_EVENTS.md</c> §1.1 places them; the enumeration
-/// value is a stable identity and is not itself the ordering (ordering is owned
-/// by the assembled list, see <see cref="BattleEvent"/>).
+/// These five are the events the board resolution and its Passive stage produce.
+/// They are listed in the order <c>GAME_EVENTS.md</c> §1.1 places them; the
+/// enumeration value is a stable identity and is not itself the ordering
+/// (ordering is owned by the assembled list, see <see cref="BattleEvent"/>).
 ///
 /// <b>What is deliberately absent, and why.</b> A Special Gem activation is
 /// reported through <see cref="GemMatched"/> and the existing state push — no
@@ -26,7 +27,9 @@ namespace GameServer.Domain.Match3;
 /// (<c>GAME_STATE.md</c> §2.2, <c>GAME_EVENTS.md</c> §3 item 7). No
 /// <c>TurnChanged</c>/<c>SequenceChanged</c>/<c>BoardChanged</c> exists —
 /// <c>Turn</c>, <c>Sequence</c>, and the board are delivered as state
-/// (<c>SIGNALR_PROTOCOL.md</c> §3.1 item 3, §4).
+/// (<c>SIGNALR_PROTOCOL.md</c> §3.1 item 3, §4). No <c>RelicTriggered</c>,
+/// <c>CardCast</c>, <c>PetSkillCast</c>, or Damage event exists here — those are
+/// other owning stages (<c>GAME_EVENTS.md</c> §2).
 /// </summary>
 public enum BattleEventType
 {
@@ -62,6 +65,30 @@ public enum BattleEventType
     /// item 8).
     /// </summary>
     GemMatched = 3,
+
+    /// <summary>
+    /// Passive progress increased (<c>GAME_EVENTS.md</c> §2
+    /// <c>PassiveCharged</c>, <c>PASSIVE_RULES.md</c> §2 item 1, §7). Emitted
+    /// <b>once per Match</b> — every Match charges the active Pet's Passive by 1,
+    /// and a Special Gem detonation is not a Match and charges nothing (§2
+    /// item 2). It is an <b>informational</b> progress report (§6 item 1): it
+    /// triggers no threshold evaluation and no reset, and §2 item 3 evaluates the
+    /// Threshold once, after the Cascade's whole batch. Its payload is the
+    /// <c>PassiveId</c>, the new progress value, and the Threshold.
+    /// </summary>
+    PassiveCharged = 4,
+
+    /// <summary>
+    /// The Passive's Threshold was reached, so it became Ready and triggered
+    /// (<c>GAME_EVENTS.md</c> §2 <c>PassiveTriggered</c>, <c>PASSIVE_RULES.md</c>
+    /// §2 item 3, §7). Emitted <b>at most once per Cascade</b>: §2 item 3 and §5
+    /// evaluate the Threshold a single time, after all of the Cascade's Matches
+    /// have been counted, and §2 item 4 does not re-evaluate what a reset leaves
+    /// behind. Its payload is the <c>PassiveId</c>, the progress at the trigger
+    /// (the batch total, before the reset), and the Threshold; the effect
+    /// summary is deferred to the Combat stage (§2 item 3).
+    /// </summary>
+    PassiveTriggered = 5,
 }
 
 /// <summary>
@@ -70,20 +97,25 @@ public enum BattleEventType
 ///
 /// <code>
 /// BattleEvent
-/// ├── Type           which documented event this is
-/// ├── Match          the MatchCreated payload, when Type is MatchCreated
-/// ├── CascadeDepth   the CascadeCreated payload, when Type is CascadeCreated
-/// ├── Combo          the ComboChanged payload (the NEW value), when Type is
-/// │                  ComboChanged
-/// ── Gem            the GemMatched payload, when Type is GemMatched
+/// ├── Type               which documented event this is
+/// ├── Match              the MatchCreated payload, when Type is MatchCreated
+/// ├── CascadeDepth       the CascadeCreated payload, when Type is CascadeCreated
+/// ├── Combo              the ComboChanged payload (the NEW value), when Type is
+/// │                      ComboChanged
+/// ├── Gem                the GemMatched payload, when Type is GemMatched
+/// ├── PassiveCharged     the PassiveCharged payload, when Type is PassiveCharged
+/// ──── PassiveTriggered   the PassiveTriggered payload, when Type is
+///                        PassiveTriggered
 /// </code>
 ///
 /// <b>This is an output, never state.</b> Emitting, holding, or reading an event
 /// mutates nothing: it does not touch <c>BattleState</c>, <c>PlayerState</c>,
-/// <c>BoardState</c>, the RNG, <c>Turn</c>, <c>Sequence</c>, or
+/// <c>PetState</c>, <c>BoardState</c>, the RNG, <c>Turn</c>, <c>Sequence</c>, or
 /// <c>LastCommittedSwapPair</c> (<c>GAME_EVENTS.md</c> §3 item 6). An event is
 /// never a substitute for the state write-back
-/// (<c>SIGNALR_PROTOCOL.md</c> §4 item 6).
+/// (<c>SIGNALR_PROTOCOL.md</c> §4 item 6) — the charged progress an event reports
+/// is read back into <c>PetState.PassiveProgress</c> by the owning stage, not by
+/// the event.
 ///
 /// <b>The payloads are the existing Domain values, not re-derived ones.</b> The
 /// <c>MatchCreated</c> payload is the resolution's own
@@ -91,7 +123,8 @@ public enum BattleEventType
 /// Special Gems it created are the values the resolver already produced
 /// (<c>GAME_EVENTS.md</c> §2: "Match shape (cells), Gem type, tier (3/4/5/L-T),
 /// Special Gem created (if any)"). The <c>GemMatched</c> payload is the existing
-/// <see cref="GemMatchedEvent"/>. Nothing is recomputed, re-sorted, or read from
+/// <see cref="GemMatchedEvent"/>, and the two Passive payloads are the values
+/// <c>PassiveTracker</c> produced. Nothing is recomputed, re-sorted, or read from
 /// a second detection pass.
 ///
 /// <b>Only the members the event's own definition carries are populated.</b> The
@@ -113,19 +146,25 @@ public readonly record struct BattleEvent
         MatchResolution? match,
         int? cascadeDepth,
         int? combo,
-        GemMatchedEvent? gem)
+        GemMatchedEvent? gem,
+        PassiveChargedEvent? passiveCharged,
+        PassiveTriggeredEvent? passiveTriggered)
     {
         Type = type;
         _match = match;
         _cascadeDepth = cascadeDepth;
         _combo = combo;
         _gem = gem;
+        _passiveCharged = passiveCharged;
+        _passiveTriggered = passiveTriggered;
     }
 
     private readonly MatchResolution? _match;
     private readonly int? _cascadeDepth;
     private readonly int? _combo;
     private readonly GemMatchedEvent? _gem;
+    private readonly PassiveChargedEvent? _passiveCharged;
+    private readonly PassiveTriggeredEvent? _passiveTriggered;
 
     /// <summary>Which documented event this is.</summary>
     public BattleEventType Type { get; }
@@ -182,6 +221,31 @@ public readonly record struct BattleEvent
             + "Check Type before reading Gem.");
 
     /// <summary>
+    /// The <c>PassiveCharged</c> payload — the Passive that charged, the new
+    /// progress value, and its Threshold (<c>GAME_EVENTS.md</c> §2).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// This event is not a <see cref="BattleEventType.PassiveCharged"/>.
+    /// </exception>
+    public PassiveChargedEvent PassiveCharged =>
+        _passiveCharged ?? throw new InvalidOperationException(
+            $"A {Type} event carries no PassiveCharged payload (GAME_EVENTS.md §2). "
+            + "Check Type before reading PassiveCharged.");
+
+    /// <summary>
+    /// The <c>PassiveTriggered</c> payload — the Passive that triggered, the
+    /// progress at the threshold crossing (before that trigger's reset), and the
+    /// Threshold (<c>GAME_EVENTS.md</c> §2).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// This event is not a <see cref="BattleEventType.PassiveTriggered"/>.
+    /// </exception>
+    public PassiveTriggeredEvent PassiveTriggered =>
+        _passiveTriggered ?? throw new InvalidOperationException(
+            $"A {Type} event carries no PassiveTriggered payload (GAME_EVENTS.md §2). "
+            + "Check Type before reading PassiveTriggered.");
+
+    /// <summary>
     /// A <c>MatchCreated</c> event for one detected Match.
     /// </summary>
     /// <param name="match">
@@ -189,7 +253,7 @@ public readonly record struct BattleEvent
     /// (<c>GAME_EVENTS.md</c> §1.1 item 2, <c>MATCH3_RULES.md</c> §3.2).
     /// </param>
     internal static BattleEvent ForMatch(MatchResolution match) =>
-        new(BattleEventType.MatchCreated, match, null, null, null);
+        new(BattleEventType.MatchCreated, match, null, null, null, null, null);
 
     /// <summary>
     /// A <c>CascadeCreated</c> event for one Cascade pass.
@@ -199,7 +263,7 @@ public readonly record struct BattleEvent
     /// 1 for the Swap's second pass (<c>MATCH3_RULES.md</c> §4.2 item 2).
     /// </param>
     internal static BattleEvent ForCascade(int cascadeDepth) =>
-        new(BattleEventType.CascadeCreated, null, cascadeDepth, null, null);
+        new(BattleEventType.CascadeCreated, null, cascadeDepth, null, null, null, null);
 
     /// <summary>
     /// A <c>ComboChanged</c> event carrying the Combo value the Match it follows
@@ -210,7 +274,7 @@ public readonly record struct BattleEvent
     /// <c>MATCH3_RULES.md</c> §6.6 item 2).
     /// </param>
     internal static BattleEvent ForCombo(int combo) =>
-        new(BattleEventType.ComboChanged, null, null, combo, null);
+        new(BattleEventType.ComboChanged, null, null, combo, null, null, null);
 
     /// <summary>
     /// A <c>GemMatched</c> event for one consumed Gem.
@@ -220,7 +284,44 @@ public readonly record struct BattleEvent
     /// §1.0 cell-index enumeration order of <c>GAME_EVENTS.md</c> §1.3.
     /// </param>
     internal static BattleEvent ForGem(GemMatchedEvent gem) =>
-        new(BattleEventType.GemMatched, null, null, null, gem);
+        new(BattleEventType.GemMatched, null, null, null, gem, null, null);
+
+    /// <summary>
+    /// A <c>PassiveCharged</c> event for one Match's charge
+    /// (<c>GAME_EVENTS.md</c> §2, <c>PASSIVE_RULES.md</c> §2 item 1).
+    ///
+    /// It is <b>public</b>, unlike this type's Match-3 factories: the Passive
+    /// stage's events are produced by the Application-layer pipeline step that owns
+    /// <c>GAME_RULES.md</c> §17 step 10 "Charge Passive" (the board stages are
+    /// sequenced inside this assembly's own <see cref="SwapExecutor"/>, so their
+    /// factories can stay internal). The value it builds is the tracker's own
+    /// report carried unchanged — no field is added, reordered, or re-derived
+    /// here.
+    /// </summary>
+    /// <param name="charged">
+    /// The tracker's own charge report — the Passive identity, the progress this
+    /// increment produced, and the Threshold.
+    /// </param>
+    public static BattleEvent ForPassiveCharged(PassiveChargedEvent charged) =>
+        new(BattleEventType.PassiveCharged, null, null, null, null, charged, null);
+
+    /// <summary>
+    /// A <c>PassiveTriggered</c> event for one threshold crossing
+    /// (<c>GAME_EVENTS.md</c> §2, <c>PASSIVE_RULES.md</c> §2 item 3, §5).
+    ///
+    /// Public for the same reason as <see cref="ForPassiveCharged"/>: the stage
+    /// that charges the Passive hands the assembled list back through
+    /// <see cref="SwapExecutionResult.WithEvents"/>.
+    /// </summary>
+    /// <param name="triggered">
+    /// The tracker's own trigger report — the Passive identity, the progress at
+    /// the crossing (before that trigger's reset), and the Threshold. It carries
+    /// no effect summary: that member is deferred to the Combat stage
+    /// (<c>GAME_EVENTS.md</c> §2 item 3).
+    /// </param>
+    public static BattleEvent ForPassiveTriggered(
+        PassiveTriggeredEvent triggered) =>
+        new(BattleEventType.PassiveTriggered, null, null, null, null, null, triggered);
 
     /// <summary>"MatchCreated (Horizontal x3 at 25 (Atk))" — for test diagnostics only.</summary>
     public override string ToString() => Type switch
@@ -229,6 +330,8 @@ public readonly record struct BattleEvent
         BattleEventType.CascadeCreated => $"CascadeCreated (depth {CascadeDepth})",
         BattleEventType.ComboChanged => $"ComboChanged (combo {Combo})",
         BattleEventType.GemMatched => $"GemMatched (cell {Gem.CellIndex}, {Gem.GemType})",
+        BattleEventType.PassiveCharged => PassiveCharged.ToString(),
+        BattleEventType.PassiveTriggered => PassiveTriggered.ToString(),
         _ => Type.ToString(),
     };
 }

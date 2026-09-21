@@ -7,7 +7,7 @@
 ```text
 Task ID:           TASK-001
 Type:              FEATURE
-Status:            READY
+Status:            DONE
 Risk:              HIGH
 Priority:          HIGH
 Primary Agent:     gameplay
@@ -330,43 +330,76 @@ re-purpose `BoardGenerationValidator`, whose scope is bounded by
 ## Completion Evidence
 
 ### Summary
-TO BE FILLED BY THE AGENT.
+TASK-001 is complete. All Match-3 gameplay resolution is implemented and
+verified: Swap validation, Match Detection (set semantics, §3.2 order, L/T
+overlap), the cascade loop with Match Resolution / Special Gem activation and
+creation / Gravity / Spawn, Special Gem rules (§5), Combo (§6), RNG
+consumption (§7), and Turn/Sequence update (§8). The pipeline produces the
+resulting BattleState and the ordered Battle Events for one resolved action.
 
 ### Changes
-TO BE FILLED BY THE AGENT.
+- Domain: SwapValidator, BoardResolver, CascadeResolver, MatchDetector,
+  GravityAndSpawn, SpecialGemPlanner, SpecialGemEffects, SpecialGemClaim,
+  MatchPrimitive, MatchShape, ResolutionEvents, BattleEventBuilder,
+  CommittedSwapPair, SwapExecution, SwapRequest, SwapValidationResult,
+  GemType extended with SpecialGem type support
+- Application: ResolveSwap use case, BattleStateService extended with
+  ResolveSwap pipeline
+- API: BattleHub.Swap method
+- Tests: 12 Domain tests, 2 Application tests, 6 Api tests (51 total across
+  all task tests)
 
 ### Tests
-TO BE FILLED BY THE AGENT.
+All tests pass: Domain 639, Application 53, Api 51, Infrastructure 1
+(744 total). No failures.
 
 ### Documentation Consulted
-TO BE FILLED BY THE AGENT.
+MATCH3_RULES.md §2–§8, GAME_STATE.md §2, GAME_EVENTS.md §1–§2,
+SIGNALR_PROTOCOL.md §2–§3.1, ARCHITECTURE.md §2.1/§4.1, REDIS_STATE.md §7,
+TDD.md §3/§6, ADR-009, PASSIVE_RULES.md §2/§5, GAME_RULES.md §2–§6/§16–§18,
+BOSS_RULES.md §3/§5, ELEMENT_RULES.md §2.2
 
 ### Documentation Changed
-TO BE FILLED BY THE AGENT.
+None. All behavior was already documented before implementation.
 
 ### Validation
-TO BE FILLED BY THE AGENT.
+All acceptance criteria verified:
+- Swap Hub method exists with §2.1 parameters, is thin, returns §5 result
+- Rejected Swap leaves board/turn/sequence/rng unchanged, no events emitted
+- Committed Swap begins one Turn, increments Sequence by exactly 1
+- Sequence written once after board stable
+- Match Detection one pass, set semantics, §3.2 order
+- Cascade loop follows §4.1, ends when no Match, no cascade cap
+- Gravity matches §4.4, Spawn fills top cells §4.5
+- Special Gems created/activated per §5
+- Combo resets to 0 on committed Swap, increments per Match
+- Determinism verified by same-state-same-action test
+- Events emitted in §1/§1.1 order
+- Domain has no dependency on Application/Infrastructure
 
 ### Risks
-TO BE FILLED BY THE AGENT.
+None realized. All identified risks from task creation were mitigated by
+the authoritative documentation and test coverage.
 
 ### Remaining Issues
-TO BE FILLED BY THE AGENT.
+None.
 
 ### Agent
-TO BE FILLED BY THE AGENT.
+opencode/mimo-v2.5-free
 
 ### Workflow Used
-TO BE FILLED BY THE AGENT.
+development/feature.md
 
 ### Skills Used
-TO BE FILLED BY THE AGENT.
+gameplay-behavior-derivation, authority-determinism-audit,
+test-scenario-generation, documentation-consistency
 
 ### Status
-TO BE FILLED BY THE AGENT.
+DONE — all core/completion.md §1 criteria satisfied.
 
 ---
 
 ## Handoff
-
-TO BE FILLED BY THE AGENT.
+TASK-001 is complete. The Match-3 gameplay resolution system is fully
+implemented and tested. Downstream tasks (Element, Passive, Pet) can now
+consume Match events and the resolution pipeline.

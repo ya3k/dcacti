@@ -31,21 +31,32 @@ Visibility        (progress must be shown to the player where practical)
 2. Special Gem detonations (MATCH3_RULES.md §5.5) do NOT count as a Match for
    Passive progress, consistent with them not counting toward Combo/Match
    count either.
-3. When progress reaches the Passive's Threshold, the Passive becomes
-   **Ready** and triggers immediately (no separate "activate" input required
+3. Progress accumulates across all Matches within a single Cascade resolution.
+   After all Matches in the Cascade have been counted, the Threshold is
+   evaluated once. If progress ≥ Threshold, the Passive becomes **Ready** and
+   triggers at most once per Cascade (no separate "activate" input required
    unless a specific Passive is explicitly designed as player-activated,
    which is out of MVP scope — all MVP Passives are automatic).
-4. After triggering, progress resets to 0 unless the specific Passive
-   definition states otherwise (GAME_RULES.md §10.6).
+4. After triggering, progress resets according to the Passive's Reset Behavior
+   (§4): Default resets to 0; Partial Reset reduces progress by Threshold,
+   allowing overflow to carry into the next charge (GAME_RULES.md §10.6).
+   Any overflow remaining after reset is NOT re-evaluated within the same
+   Cascade — it waits for the next Cascade or Match to continue charging.
 
 ```text
-Progress: 0 → 1 → 2 → ... → Threshold
-                              ↓
-                        Passive Ready
-                              ↓
-                          Trigger
-                              ↓
-                       Reset to 0 (default)
+Cascade produces N Matches
+         ↓
+Progress: 0 → +N (accumulate all Matches)
+         ↓
+   Evaluate: progress ≥ Threshold?
+         ↓                    ↓
+        Yes                  No → no trigger, progress carries
+         ↓
+   Passive Ready → Trigger (at most once per Cascade)
+         ↓
+   Reset per §4 (0 or progress − Threshold)
+         ↓
+   Overflow (if any) waits for next Cascade
 ```
 
 ---
@@ -88,12 +99,44 @@ as armed/not-armed rather than a counter).
 # 5. Multiple Matches in One Cascade Resolution
 
 If a single Swap's Cascade chain produces N matches in one resolution
-(MATCH3_RULES.md §4), the Pet's Passive progress increases by N, processed
-match-by-match in the order matches were detected. If this crosses the
-Threshold multiple times within the same Cascade resolution (e.g. Threshold=3
-and N=7), the Passive triggers multiple times, each with its own Reset,
-processed in order before the Cascade resolution completes and before Damage
-Calculation (COMBAT_RULES.md §3) begins for that Turn.
+(MATCH3_RULES.md §4), the Pet's Passive progress increases by N (§2.3 step 1).
+After all N Matches have been counted, the Threshold is evaluated once (§2.3
+step 3). If progress ≥ Threshold, the Passive triggers **at most once** per
+Cascade and applies its Reset Behavior (§4). Any overflow remaining after
+reset is NOT re-evaluated within the same Cascade.
+
+**Default Reset example** (Threshold=3, N=7):
+
+```text
+Progress before cascade: 0
+Cascade produces 7 Matches → progress = 0 + 7 = 7
+7 ≥ 3 → Passive triggers (once)
+Default Reset → progress = 0
+```
+
+**Partial Reset example** (Threshold=5, N=7):
+
+```text
+Progress before cascade: 0
+Cascade produces 7 Matches → progress = 0 + 7 = 7
+7 ≥ 5 → Passive triggers (once)
+Partial Reset → progress = 7 − 5 = 2  (overflow carries into next charge)
+```
+
+**Multi-crossing example** (Threshold=3, N=7, Partial Reset):
+
+```text
+Progress before cascade: 0
+Cascade produces 7 Matches → progress = 0 + 7 = 7
+7 ≥ 3 → Passive triggers (once)
+Partial Reset → progress = 7 − 3 = 4
+4 ≥ 3, but trigger already fired → progress carries into next charge
+```
+
+In all cases the Passive triggers at most once per Cascade resolution. The
+difference between Reset variants is what progress remains after the trigger:
+Default Reset clears progress entirely; Partial Reset preserves overflow,
+allowing a future Cascade to reach Threshold faster.
 
 ---
 
