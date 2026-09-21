@@ -9,13 +9,19 @@
  * GAME_STATE.md §2 defines as `BattleState` (Persistent/Active Battle State,
  * ADR-001, ADR-005) and are not implemented yet:
  *
- *   player HP, boss HP, board/gem state, pet stats, power, combo, damage,
+ *   player HP, boss HP, board/gem state, pet stats, power, damage,
  *   combat state, turn number, RNG state.
  *
  * The client must never compute or hold those authoritatively (`GAME_RULES.md`
  * §18, ADR-001, `.ai/README.md` §15). When battle resolution is implemented,
  * authoritative `BattleState` arrives from the server and is rendered — it does
  * not become client-owned runtime state defined here.
+ *
+ * The board, the RNG values, and `PlayerState`'s `combo`/`matchCount` are
+ * delivered today and are held as a synchronized presentation copy on
+ * `RuntimeBattleState` (`SIGNALR_PROTOCOL.md` §4.1–§4.2) — deliberately *not*
+ * here, so that the technical state contract stays technical. Being rendered is
+ * not being owned: none of them is client-authored, and none is client-derived.
  */
 
 /** SignalR transport connection status (SIGNALR_PROTOCOL.md §1). */

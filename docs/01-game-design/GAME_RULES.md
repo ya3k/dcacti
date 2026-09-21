@@ -74,7 +74,9 @@ Exact cascade loop and edge cases: see `MATCH3_RULES.md` §4.
 2. Combo starts at 1 on the first Match and increases with each subsequent
    Cascade Match.
 3. Combo resets when a new Swap begins; it does not persist between
-   separate Swaps unless a future mechanic explicitly changes this.
+   separate Swaps unless a future mechanic explicitly changes this. A Swap
+   "begins" when it is committed — a rejected Swap never begins and therefore
+   never resets Combo (`MATCH3_RULES.md` §6.1, §2.1.5).
 4. Combo may modify damage and can activate Combo-threshold Relics.
 
 Default damage multipliers (**configurable**):

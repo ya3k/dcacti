@@ -193,7 +193,7 @@ Application Runtime        connection lifecycle tracking only
    no gameplay state: authoritative `BattleState` is server-owned
    (`GAME_STATE.md` §2, ADR-001, ADR-005) and is not modelled client-side.
    The client holds a synchronized presentation copy of the server's state
-   (`GAME_STATE.md` §2.0, §4) and never authors, adjusts, or recomputes it.
+   (`GAME_STATE.md` §2.0.5, §4) and never authors, adjusts, or recomputes it.
 6. **One runtime, one connection.** `SignalRService` is a process-wide
    singleton and `GameRuntime.initialize()` is idempotent, so React
    StrictMode's development double-invocation cannot create a second SignalR
@@ -206,15 +206,21 @@ exactly as it forwards `ReceiveEvents` (rule 4). The runtime does not derive,
 extend, or validate gameplay meaning from that payload.
 
 The runtime foundation establishes these boundaries. The initial
-state-delivery contract (`SIGNALR_PROTOCOL.md` §4) and the state it carries
-(Battle State Foundation — `GAME_STATE.md` §2.0) are implemented: joining a
-battle's group (`JoinBattle`, `SIGNALR_PROTOCOL.md` §1.2) triggers the server's
-`BattleStateUpdated` push, and `GameRuntime` stores that payload as the client's
-synchronized copy and exposes it through its port.
+state-delivery contract (`SIGNALR_PROTOCOL.md` §4) and the staged state it
+carries — Battle State Foundation (`GAME_STATE.md` §2.0) and the Board
+Foundation State that extends it (`GAME_STATE.md` §2.0.5) — are implemented:
+joining a battle's group (`JoinBattle`, `SIGNALR_PROTOCOL.md` §1.2) triggers
+the server's `BattleStateUpdated` push, and `GameRuntime` stores that payload
+as the client's synchronized copy and exposes it through its port. The board
+is delivered as a field of that same push and is rendered by `BattleScene`;
+the client never generates or validates it (`GAME_STATE.md` §2.0.5.4).
 
 Battle resolution, the client → server gameplay methods (`Swap`, `CardCast`,
 `PetSkillCast` — `SIGNALR_PROTOCOL.md` §2), and reconnect/resync snapshot
-recovery (`SIGNALR_PROTOCOL.md` §7, ADR-008) are not implemented yet.
+recovery (`SIGNALR_PROTOCOL.md` §7, ADR-008) are not implemented yet. The
+contract they implement is owned by `MATCH3_RULES.md` §2–§8 (board resolution)
+and `GAME_STATE.md` §5.1 (the state write-back); neither is restated in the
+client runtime.
 
 ### 2.2.2 Game Viewport & Scaling
 
@@ -372,6 +378,44 @@ GameShell / React Overlays    Client (UI)       Owns the viewport; HTML overlays
 No component other than `BattleResolutionService` writes to either
 repository during an active battle — this keeps the resolution order
 enforceable in one place.
+
+## 4.1 One Action Is One Resolution
+
+The shape of step 2 above, for a Swap:
+
+```text
+BattleHub.Swap(...)                    thin transport (no game logic)
+    ↓
+BattleResolutionService                Application — sequencing only
+    ├── Domain: validate the Swap                  MATCH3_RULES.md §2.1
+    ├── Domain: commit, detect, create Special Gems, activate, gravity,
+    │           spawn, repeat until stable         MATCH3_RULES.md §3–§5
+    ├── Domain: Combo, Match count, resources      MATCH3_RULES.md §6
+    ├── state: Turn / Sequence / RngState          GAME_STATE.md §5.1
+    ├── BattleStateRepository (one write-back)     REDIS_STATE.md §4
+    └── → ordered Battle Events                    GAME_EVENTS.md §1
+    ↓
+BattleHub → ReceiveEvents / state push             SIGNALR_PROTOCOL.md §3–§4
+```
+
+1. **The loop belongs to Domain, not to Application.** The cascade loop
+   (`MATCH3_RULES.md` §4) is board behaviour, so it lives in the Match-3 domain
+   module (`Match3Engine` §3); `BattleResolutionService` sequences the pipeline
+   steps of `GAME_RULES.md` §17 and does not implement or re-implement the
+   loop. This is the layer boundary of §2.1: Application orchestrates, Domain
+   decides.
+2. **One action produces one state write-back and one event batch.** The
+   intermediate states of `MATCH3_RULES.md` §4.1 remain inside the Domain call
+   and the `ResolutionContext` (`GAME_STATE.md` §3); they never reach the
+   repository, the Hub, or the wire.
+3. **A rejected action never reaches step 2's mutation stage.** Validation
+   returns, `BattleResolutionService` reports the rejection to the Hub, and no
+   repository write, no state change, and no event occurs
+   (`MATCH3_RULES.md` §2.1.5, `SIGNALR_PROTOCOL.md` §5).
+4. **`Match3Engine` owns no combat, Power, Passive, or Relic decision.** The
+   board stages produce the matches, cleared Gems, Combo, and Match count that
+   the later pipeline steps consume; those consumers are owned by their own
+   domains (`ARCHITECTURE.md` §3, `GAME_RULES.md` §17).
 
 ---
 

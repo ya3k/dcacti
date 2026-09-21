@@ -91,23 +91,69 @@ describe('Frontend architectural boundaries', () => {
     it.each(runtimeFiles)('%s declares no gameplay state or calculations', (file) => {
       const code = stripComments(readSource(file)).toLowerCase();
 
+      // The runtime carries the implemented stage's fields as a synchronized
+      // presentation copy — `board` from the Board Foundation stage
+      // (GAME_STATE.md §2.0.5) and `playerState`'s `matchCount`/`combo` from the
+      // Match / Combo accounting stage (§2.2) — so those names are part of the
+      // documented contract rather than violations. What remains forbidden is
+      // every *gameplay system* the stage does not implement — resolution,
+      // combat, and the later-stage systems (§2.0.5.3, §2.2).
+      //
+      // `matchcount` is deliberately NOT in this list, and `combo` is deliberately
+      // NOT either: both are documented GAME_STATE.md §2.2 fields, and the client
+      // carries them because they are `BattleState` fields. `MATCH3_RULES.md` §6.6
+      // item 3 makes rendering them the client's own job while computing them
+      // remains the server's (`GAME_RULES.md` §18). The tests below assert the
+      // stronger property that matters: the runtime never *derives* either value.
       const forbidden = [
         'damage',
         'match3',
         'cascade',
-        'combo',
         'passive',
-        'gem',
-        'board',
         'boss',
         'relic',
         'crit',
+        'gravity',
+        'detonate',
+        'hp',
+        'power',
       ];
 
       for (const term of forbidden) {
         // The term may appear in prose-adjacent identifiers only if it is part
         // of a negative assertion comment; comments are already stripped, so any
         // occurrence here is real code.
+        expect(code, `${file} must not reference "${term}"`).not.toContain(term);
+      }
+    });
+
+    it.each(runtimeFiles)('%s derives no Match or Combo value from anything', (file) => {
+      const code = stripComments(readSource(file));
+
+      // GAME_STATE.md §2.2 / GAME_RULES.md §18: `MatchCount` and `Combo` are
+      // authoritative server state. The client carries the delivered values and
+      // renders them; it never counts a Match, advances a Combo, resets one, or
+      // re-derives either from the board, `turn`, or `sequence`.
+      for (const term of [
+        'MatchCount++',
+        'matchCount++',
+        'combo++',
+        'combo = 0',
+        'Combo = 0',
+        'Passes',
+        'ClearCells',
+      ]) {
+        expect(code, `${file} must not reference "${term}"`).not.toContain(term);
+      }
+    });
+
+    it.each(runtimeFiles)('%s resolves no matches and generates no board', (file) => {
+      const code = stripComments(readSource(file));
+
+      // The runtime transports and stores the authoritative board; it never
+      // produces one and never evaluates a match over one
+      // (SIGNALR_PROTOCOL.md §4 item 10, GAME_RULES.md §18).
+      for (const term of ['Math.random', 'HasMatch', 'FindMatch', 'ResolveSwap', 'HasValidSwap']) {
         expect(code, `${file} must not reference "${term}"`).not.toContain(term);
       }
     });

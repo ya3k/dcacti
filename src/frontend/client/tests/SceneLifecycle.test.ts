@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { BattleScene } from '../src/game/scenes/BattleScene';
 import { BootScene } from '../src/game/scenes/BootScene';
 import { PreloaderScene } from '../src/game/scenes/PreloaderScene';
@@ -40,6 +42,11 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
   const listeners = new Set<(event: { state: GameRuntimeState }) => void>();
   const battleStateListeners = new Set<(state: RuntimeBattleState) => void>();
   const texts: Array<{ text: string; color?: string }> = [];
+  /**
+   * The board container's current children, in draw order. It models the real
+   * container: `removeAll` clears it, so a redraw reflects the latest push.
+   */
+  const boardCells: Array<{ kind: string; label?: string }> = [];
   const sceneStarted: Array<{ key: string; data?: unknown }> = [];
   const loadHandlers = new Map<string, () => void>();
   const setEngineStatus = vi.fn();
@@ -66,20 +73,59 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
 
   /** Builds the `this` context for a scene instance. */
   function context(scene: object, sceneKey: string): object {
-    const makeText = () => {
-      const record: { text: string; color?: string } = { text: '' };
-      texts.push(record);
+    /** A text object. When `into` is given, the object is a board child. */
+    const makeText = (value: string, into?: { kind: string; label: string }[]) => {
+      const entry = { text: value, color: undefined as string | undefined };
+      texts.push(entry);
+
       const obj = {
+        kind: 'label' as const,
+        label: value,
         setOrigin: () => obj,
-        setText: (value: string) => {
-          record.text = value;
+        setText: (next: string) => {
+          entry.text = next;
           return obj;
         },
-        setColor: (value: string) => {
-          record.color = value;
+        setColor: (next: string) => {
+          entry.color = next;
           return obj;
         },
       };
+
+      // Board labels are created through the same `add.text` factory as scene
+      // readouts, so the distinction is made at the call site in the scene: the
+      // scene adds board children to its container explicitly.
+      void into;
+      return obj;
+    };
+
+    /** A container that models child ownership, including `removeAll`. */
+    const makeContainer = () => {
+      let children: Array<{ kind: string; label?: string }> = [];
+
+      const obj = {
+        add: (added: unknown) => {
+          const list = Array.isArray(added) ? added : [added];
+          children = children.concat(list as Array<{ kind: string; label?: string }>);
+          syncBoard();
+          return obj;
+        },
+        removeAll: () => {
+          children = [];
+          syncBoard();
+          return obj;
+        },
+        destroy: () => {
+          children = [];
+          syncBoard();
+        },
+      };
+
+      const syncBoard = () => {
+        boardCells.length = 0;
+        boardCells.push(...children);
+      };
+
       return obj;
     };
 
@@ -88,8 +134,12 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         start: (key: string, data?: unknown) => sceneStarted.push({ key, data }),
       },
       add: {
-        rectangle: () => ({ setStrokeStyle: () => undefined }),
-        text: () => makeText(),
+        rectangle: () => {
+          const rect = { kind: 'tile', setStrokeStyle: () => rect };
+          return rect;
+        },
+        text: (_x: number, _y: number, value: string) => makeText(value),
+        container: () => makeContainer(),
       },
       load: {
         once: (event: string, handler: () => void) => {
@@ -111,6 +161,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     texts,
     listeners,
     battleStateListeners,
+    boardCells,
     sceneStarted,
     loadHandlers,
     setBattleState: (next: RuntimeBattleState) => {
@@ -327,20 +378,45 @@ describe('BattleScene', () => {
     expect(() => runScene(scene, ctx, 'shutdown')).not.toThrow();
   });
 
-  it('contains no gameplay presentation', () => {
+  it('contains no gameplay interaction or resolution presentation', () => {
     const { harness, scene, ctx } = createBattle();
 
     runScene(scene, ctx, 'create');
 
-    // Runtime shell only: no board, gems, HP, Power, damage, or boss readout.
+    // No gameplay: no swap interaction, match, cascade, combo, damage, or boss
+    // readout. (A board is presented once the server pushes one — see the Board
+    // Foundation block below — but the scene resolves nothing.)
     const rendered = harness.texts.map((t) => t.text).join(' ');
-    for (const forbidden of ['HP', 'Boss', 'Power', 'Combo', 'Damage', 'Gem', 'Board']) {
+    for (const forbidden of ['Boss', 'Combo', 'Damage', 'Cascade', 'Match ', 'Swap']) {
       expect(rendered).not.toMatch(new RegExp(forbidden, 'i'));
     }
   });
 });
 
-describe('BattleScene — Battle State Foundation presentation (GAME_STATE.md §2.0)', () => {
+describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)', () => {
+  /** The four documented Gem contract names (MATCH3_RULES.md §1.1). */
+  const GEM_NAMES = ['ATK', 'DEF', 'HP', 'POWER'];
+
+  /** A server-shaped board: exactly 64 cells in the documented order. */
+  function serverBoard(): string[] {
+    return Array.from({ length: 64 }, (_, index) => GEM_NAMES[index % GEM_NAMES.length]);
+  }
+
+  function serverState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+    return {
+      battleId: 'battle-1',
+      turn: 0,
+      sequence: 0,
+      rngSeed: 42,
+      rngState: { state: 123456789, increment: 1 },
+      board: { cells: serverBoard() },
+      // GAME_STATE.md §2.2: both values exist from battle creation and are always
+      // delivered — including at 0, which is a value, not an absence.
+      playerState: { combo: 0, matchCount: 0 },
+      ...overrides,
+    };
+  }
+
   function createBattle(
     state: GameRuntimeState = INITIAL_RUNTIME_STATE,
     withRuntime = true,
@@ -352,35 +428,79 @@ describe('BattleScene — Battle State Foundation presentation (GAME_STATE.md §
     return { harness, scene, ctx };
   }
 
-  it('renders the foundation state the server delivered', () => {
-    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, {
-      battleId: 'battle-1',
-      turn: 0,
-      sequence: 0,
-    });
+  it('renders the board foundation state the server delivered', () => {
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
 
     runScene(scene, ctx, 'create');
 
     const rendered = harness.texts.map((t) => t.text).join('\n');
     expect(rendered).toContain('BattleId: battle-1');
-    expect(rendered).toContain('Turn: 0');
-    expect(rendered).toContain('Sequence: 0');
+    expect(rendered).toMatch(/Turn: 0\b/);
+    expect(rendered).toMatch(/Sequence: 0\b/);
   });
 
   it('renders the documented initial values verbatim', () => {
-    // GAME_STATE.md §2.0.2: Turn = 0, Sequence = 0 for a battle with no
-    // resolved action.
-    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, {
-      battleId: 'battle-1',
-      turn: 0,
-      sequence: 0,
-    });
+    // GAME_STATE.md §2.0.5.2 item 1: board generation is not an action
+    // resolution, so Turn and Sequence stay 0.
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
 
     runScene(scene, ctx, 'create');
 
     const rendered = harness.texts.map((t) => t.text).join('\n');
     expect(rendered).toMatch(/Turn: 0\b/);
     expect(rendered).toMatch(/Sequence: 0\b/);
+  });
+
+  it('renders the 8x8 board as exactly 64 cells', () => {
+    // GAME_STATE.md §2.1.1 / MATCH3_RULES.md §1.0: 8 x 8 = 64 cells.
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
+
+    runScene(scene, ctx, 'create');
+
+    const labels = harness.boardCells.filter((c) => c.kind === 'label');
+    expect(labels).toHaveLength(64);
+  });
+
+  it('presents only the four documented Gem types', () => {
+    // MATCH3_RULES.md §1.1: ATK, DEF, HP, POWER. The scene maps each server Gem
+    // name to a placeholder — it never invents a type.
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
+
+    runScene(scene, ctx, 'create');
+
+    const labels = harness.boardCells.filter((c) => c.kind === 'label').map((c) => c.label);
+
+    // All four documented types are drawn (PWR is the placeholder abbreviation
+    // for POWER), and nothing outside the documented set appears.
+    expect(new Set(labels)).toEqual(new Set(['ATK', 'DEF', 'HP', 'PWR']));
+    expect(labels.every((label) => ['ATK', 'DEF', 'HP', 'PWR'].includes(label!))).toBe(true);
+  });
+
+  it('renders the gems the server sent, in the server order', () => {
+    // The scene presents `Cells[64]` verbatim: cell i is the i-th value of the
+    // payload. It reorders, substitutes, and generates nothing.
+    const cells = serverBoard();
+    cells[0] = 'POWER';
+    cells[63] = 'ATK';
+
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
+      board: { cells },
+    }));
+
+    runScene(scene, ctx, 'create');
+
+    const labels = harness.boardCells.filter((c) => c.kind === 'label').map((c) => c.label);
+    expect(labels[0]).toBe('PWR'); // POWER
+    expect(labels[63]).toBe('ATK');
+  });
+
+  it('draws one tile per cell', () => {
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
+
+    runScene(scene, ctx, 'create');
+
+    const tiles = harness.boardCells.filter((c) => c.kind === 'tile');
+    expect(tiles).toHaveLength(64);
   });
 
   it('renders nothing until the server pushes state', () => {
@@ -390,36 +510,52 @@ describe('BattleScene — Battle State Foundation presentation (GAME_STATE.md §
 
     const rendered = harness.texts.map((t) => t.text).join('\n');
     expect(rendered).not.toContain('BattleId:');
-    expect(rendered).not.toContain('Turn:');
-    expect(rendered).not.toContain('Sequence:');
+    expect(rendered).not.toMatch(/Turn:/);
+    expect(rendered).not.toMatch(/Sequence:/);
+
+    // And no board is drawn: the client never generates one to fill the gap
+    // (SIGNALR_PROTOCOL.md §4 item 10).
+    expect(harness.boardCells).toHaveLength(0);
   });
 
-  it('updates the readout when the runtime receives new state', () => {
+  it('updates the readout and board when the runtime receives new state', () => {
     const { harness, scene, ctx } = createBattle();
 
     runScene(scene, ctx, 'create');
-    harness.setBattleState({ battleId: 'battle-9', turn: 0, sequence: 0 });
+    harness.setBattleState(serverState({ battleId: 'battle-9' }));
 
     // The scene displays what the runtime received — it decides nothing.
     const rendered = harness.texts.map((t) => t.text).join('\n');
     expect(rendered).toContain('BattleId: battle-9');
+    expect(harness.boardCells.filter((c) => c.kind === 'label')).toHaveLength(64);
   });
 
-  it('does not own the state: it renders an unchanged server value', () => {
+  it('does not own the state: it renders unchanged server values', () => {
     // The scene never computes, adjusts, or recomputes these values
-    // (SIGNALR_PROTOCOL.md §4.9, ADR-001). A non-initial value is displayed
-    // exactly as received.
-    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, {
+    // (SIGNALR_PROTOCOL.md §4.9, ADR-001).
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
       battleId: 'battle-owned-by-server',
       turn: 7,
       sequence: 12,
-    });
+    }));
 
     runScene(scene, ctx, 'create');
 
     const rendered = harness.texts.map((t) => t.text).join('\n');
     expect(rendered).toContain('Turn: 7');
     expect(rendered).toContain('Sequence: 12');
+  });
+
+  it('does not mutate the board it was given', () => {
+    // The board is server-authored and the client never repairs it
+    // (GAME_STATE.md §2.0.5.4.1).
+    const state = serverState();
+    const before = [...state.board.cells];
+
+    const { scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, state);
+    runScene(scene, ctx, 'create');
+
+    expect(state.board.cells).toEqual(before);
   });
 
   it('subscribes to the battle-state push exactly once', () => {
@@ -441,22 +577,30 @@ describe('BattleScene — Battle State Foundation presentation (GAME_STATE.md §
     expect(harness.battleStateListeners.size).toBe(0);
   });
 
+  it('shutdown clears the rendered board', () => {
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
+
+    runScene(scene, ctx, 'create');
+    expect(harness.boardCells.length).toBeGreaterThan(0);
+
+    runScene(scene, ctx, 'shutdown');
+
+    expect(harness.boardCells).toHaveLength(0);
+  });
+
   it('survives a scene with no runtime supplied', () => {
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, false);
 
     expect(() => runScene(scene, ctx, 'create')).not.toThrow();
     const rendered = harness.texts.map((t) => t.text).join('\n');
     expect(rendered).not.toContain('BattleId:');
+    expect(harness.boardCells).toHaveLength(0);
   });
 
   it('presents no lifecycle or status value', () => {
     // GAME_STATE.md §2.0.3 / SIGNALR_PROTOCOL.md §8.3: no Status and no
     // READY/STARTING/ACTIVE/PAUSED/FINISHED/WON/LOST exists in this contract.
-    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, {
-      battleId: 'battle-1',
-      turn: 0,
-      sequence: 0,
-    });
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
 
     runScene(scene, ctx, 'create');
 
@@ -467,19 +611,28 @@ describe('BattleScene — Battle State Foundation presentation (GAME_STATE.md §
     }
   });
 
-  it('presents no gameplay state alongside the foundation readout', () => {
-    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, {
-      battleId: 'battle-1',
-      turn: 0,
-      sequence: 0,
-    });
+  it('presents no gameplay system state alongside the board', () => {
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
 
     runScene(scene, ctx, 'create');
 
-    // Foundation readout only: no board, gems, HP, Power, combo, or boss.
+    // The board and its four Gem types are part of this stage; the later-stage
+    // gameplay systems are not (GAME_STATE.md §2.0.5.3).
     const rendered = harness.texts.map((t) => t.text).join(' ');
-    for (const forbidden of ['HP', 'Boss', 'Power', 'Combo', 'Damage', 'Gem', 'Board', 'Pet', 'Card', 'Relic']) {
+    for (const forbidden of ['Boss', 'Combo', 'Damage', 'Pet', 'Card', 'Relic', 'PendingSpecial']) {
       expect(rendered).not.toMatch(new RegExp(forbidden, 'i'));
     }
+  });
+
+  it('contains no client-side randomness', () => {
+    // SIGNALR_PROTOCOL.md §4 item 10 / GAME_RULES.md §18: no client-side RNG
+    // participates in any part of the board.
+    const source = readFileSync(
+      resolve(__dirname, '../src/game/scenes/BattleScene.ts'),
+      'utf8'
+    );
+
+    expect(source).not.toMatch(/Math\.random/);
+    expect(source).not.toMatch(/crypto\./);
   });
 });

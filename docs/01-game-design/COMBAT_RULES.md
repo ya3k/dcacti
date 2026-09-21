@@ -57,6 +57,27 @@ Match 5   → 2.0×  (+ Special Gem, see MATCH3_RULES.md §5.3)
 L/T       → 1.25× (+ Special Gem, see MATCH3_RULES.md §5.4)
 ```
 
+**Scope of the tier multiplier — matched Gems only.** The table above applies to
+the Gems **consumed by a Match**, at the tier of the shape they formed. It is
+the sole source of truth for match-tier output, and it is the rate every other
+document references.
+
+1. **Special Gem activation clears are not a Match** and have **no match
+   tier**: the cells a Special Gem's effect clears generate at the **Match-3
+   base rate** (`1.0×`) above, because the effect is an explosion, not a match
+   (`MATCH3_RULES.md` §5.5.5 item 8, `PASSIVE_RULES.md` §2.2).
+2. **A Special Gem's creating Match still applies its own tier** to its own
+   consumed Gems (`1.5×` / `2.0×` / `1.25×`), once each
+   (`MATCH3_RULES.md` §5.5.4 item 5). The tier belongs to the shape, not to the
+   Special Gem, so it is never applied a second time when that Special Gem
+   later activates.
+3. **Which cells generate, and how often**, is owned by `MATCH3_RULES.md`
+   §5.7 and §5.8.2 (once per unique cleared cell, over the union). This
+   document owns only the **rates**.
+4. **Match 6+ has no multiplier of its own.** A run of 6 or more is a Match 5
+   (`MATCH3_RULES.md` §5.3 item 3) and uses the Match-5 rate above. No sixth
+   row exists in this table.
+
 These are default balance values owned by this document. They are
 configuration, not hardcoded constants, and are not required to match any
 flavor example elsewhere (GDD.md intentionally contains no exact numbers —

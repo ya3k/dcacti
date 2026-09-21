@@ -235,6 +235,14 @@ Render events
 This mirrors the Event Resolution Rules in `GAME_RULES.md` §17 exactly — the
 backend is not free to reorder those steps.
 
+The board-resolution half of that flow — Swap validation, the cascade loop,
+Match and Combo accounting, the RNG's single gameplay consumption point, and
+the `Turn`/`Sequence` write-back — is owned by `MATCH3_RULES.md` §2–§8 and
+`GAME_STATE.md` §5.1. Steps 1–2 and 3 of `GAME_RULES.md` §17 ("Validate Swap"
+→ "Resolve Board" with its Match / remove / gravity / spawn / cascade loop) are
+implemented as one Domain resolution inside a single Application action
+(`ARCHITECTURE.md` §4.1); the observable behaviour preserves that logical order.
+
 ---
 
 # 4. Persistence Strategy
@@ -270,10 +278,38 @@ see `SIGNALR_PROTOCOL.md`.
 # 6. Determinism & RNG
 
 1. Gem spawn randomness (`MATCH3_RULES.md` §7) uses a server-seeded RNG.
-2. The RNG seed is part of Active Battle State (`GAME_STATE.md`) so a
+2. The RNG seed is part of Active Battle State (`GAME_STATE.md` §2.6) so a
    recovered/reconnected session produces identical results if resolution
    is replayed.
 3. No gameplay-relevant randomness ever originates on the client.
+
+The RNG's seed source, state representation, and advancement semantics are
+owned by `GAME_STATE.md` §2.6; the choice of generator is recorded in
+`ADR-009`. Initial board generation consumes the same RNG
+(`MATCH3_RULES.md` §1.2.1) and is deterministic in the same sense.
+
+The initial fill is a **deterministic row-major constrained random fill**
+(`MATCH3_RULES.md` §1.2.1): each cell draws one selection from its valid
+candidate set (§1.2.1.2), so the fill is random but not an independent
+unrestricted draw per cell. That construction rule is owned by
+`MATCH3_RULES.md`; it consumes the same single PRNG and introduces no second
+randomization mechanism (`AGENTS.md` §11).
+
+4. **Gameplay resolution consumes the same PRNG, at one documented point.**
+   During a board resolution the only operation that draws is the cascade spawn
+   into empty cells — exactly one selection per spawned cell, in the fixed
+   column/top-to-bottom order of `MATCH3_RULES.md` §4.5. Validation, match
+   detection, Special Gem creation and activation, gravity, Combo calculation,
+   event creation, serialization, delivery, and client rendering draw nothing
+   (`MATCH3_RULES.md` §7.2 owns the full list). A rejected action draws nothing
+   at all (`MATCH3_RULES.md` §2.1.5 item 4), so `RngState` and `Sequence`
+   advance independently of each other and only the accepted actions of a
+   battle move either.
+5. **The reproducibility guarantee is stated in
+   `MATCH3_RULES.md` §7.1**: the same initial state plus the same ordered
+   sequence of accepted actions produces the same final board, the same
+   `RngState`, the same Match count, and the same Combo. This is the property
+   §6 item 2 relies on for recovery.
 
 ---
 

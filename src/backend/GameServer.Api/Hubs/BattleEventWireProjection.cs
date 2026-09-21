@@ -1,0 +1,426 @@
+using System.Text.Json.Serialization;
+using GameServer.Domain.Match3;
+
+namespace GameServer.Api.Hubs;
+
+/// <summary>
+/// The transport projection of one Battle Event — the wire item of
+/// <c>ReceiveEvents.events[]</c> (<c>SIGNALR_PROTOCOL.md</c> §3.2).
+///
+/// It is a <b>flat camelCase record</b> carrying exactly one discriminator
+/// member plus that event's own payload members at the same level
+/// (<c>§3.2.2</c>). The discriminator is the documented string
+/// <c>MatchCreated</c> / <c>CascadeCreated</c> / <c>ComboChanged</c> /
+/// <c>GemMatched</c> — never the Domain enum's ordinal, which is a Domain
+/// identity and not part of the wire contract (<c>§3.2.2</c> item 3).
+///
+/// <b>One type, four shapes.</b> The schema defines four flat objects, not a
+/// shared envelope: a <c>CascadeCreated</c> carries <c>cascadeDepth</c> and
+/// nothing else, and a <c>ComboChanged</c> carries <c>combo</c> and nothing
+/// else. A cross-product record would therefore have to emit members that do
+/// not belong to the event, which <c>§3.2.12</c> item 1 forbids. The four
+/// permitted member sets are modelled as the four one-of slots below and are
+/// enforced at construction, so no combination outside the contract can be
+/// built.
+///
+/// <b>Omission, never <c>null</c>.</b> A member that is not applicable to an
+/// event is <b>omitted entirely</b>: no member of any item is ever sent as JSON
+/// <c>null</c> (<c>§3.2.5</c>). Every inapplicable slot below therefore carries
+/// <see cref="JsonIgnoreCondition"/><c>.WhenWritingNull</c>, which is what
+/// turns the one-of construction into the omission the contract requires. The
+/// condition is declared per member rather than set as a serializer-wide null
+/// policy, so the rule travels with the contract instead of depending on a
+/// global option a future host could change.
+///
+/// <b>Casing is fixed here too.</b> <c>§3.2.3</c> fixes camelCase explicitly and
+/// warns that a serializer default (PascalCase) must not be relied on, so every
+/// member below is named with <see cref="JsonPropertyNameAttribute"/> rather
+/// than left to the host's naming policy.
+/// </summary>
+/// <param name="Type">
+/// The discriminator (<c>§3.2.2</c>): always present, one of the four
+/// documented event names.
+/// </param>
+/// <param name="Shape">
+/// <c>MatchCreated</c> only (<c>§3.2.6</c>): the Match's shape <b>identity</b>,
+/// <c>Straight</c> or <c>Lt</c>.
+/// </param>
+/// <param name="Cells">
+/// <c>MatchCreated</c> only (<c>§3.2.6</c>): the Match's cells, ascending §1.0
+/// index, each once.
+/// </param>
+/// <param name="GemType">
+/// <c>MatchCreated</c> and <c>GemMatched</c> (<c>§3.2.6</c>, <c>§3.2.9</c>):
+/// the Gem type, spelled per <c>§3.2.4</c>. It is a different member for a
+/// different event, which is why the one DTO cannot carry it as a single shared
+/// member with one presence rule.
+/// </param>
+/// <param name="CascadeDepth">
+/// <c>CascadeCreated</c> only (<c>§3.2.7</c>): the Cascade's depth index within
+/// this Swap. It is <b>not</b> <c>MatchCreated</c>'s pass depth — the two
+/// answer the same question with different documented values (<c>§3.2.6</c>
+/// item 4, <c>§3.2.7</c> item 2), which is why this DTO keeps them apart rather
+/// than sharing one member.
+/// </param>
+/// <param name="Combo">
+/// <c>ComboChanged</c> only (<c>§3.2.8</c>): the <b>new</b> Combo value, as
+/// produced by the accounting.
+/// </param>
+/// <param name="CreatedSpecialGems">
+/// <c>MatchCreated</c> only (<c>§3.2.6</c>): the Special Gems the Match
+/// created, in the §5.5.1 order. Omitted when empty; a present member is never
+/// an empty array.
+/// </param>
+/// <param name="CellIndex">
+/// <c>GemMatched</c> only (<c>§3.2.9</c>): the cleared cell's §1.0 index.
+/// </param>
+/// <param name="SpecialGem">
+/// <c>GemMatched</c> only (<c>§3.2.9</c>): the Special Gem consumed at that
+/// cell, present exactly when the cleared cell held one. It is the transport
+/// representation of <c>§3.2.10</c>, never a <c>SpecialGemClaim</c>.
+/// </param>
+public sealed record BattleEventWireDto(
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("shape")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Shape = null,
+    [property: JsonPropertyName("cells")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<int>? Cells = null,
+    [property: JsonPropertyName("gemType")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? GemType = null,
+    [property: JsonPropertyName("cascadeDepth")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? CascadeDepth = null,
+    [property: JsonPropertyName("combo")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Combo = null,
+    [property: JsonPropertyName("createdSpecialGems")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<CreatedSpecialGemWireDto>? CreatedSpecialGems = null,
+    [property: JsonPropertyName("cellIndex")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? CellIndex = null,
+    [property: JsonPropertyName("specialGem")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SpecialGemWireDto? SpecialGem = null)
+{
+    /// <summary>
+    /// The wire item for one <c>MatchCreated</c>
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.6).
+    /// </summary>
+    /// <param name="shape">
+    /// The shape identity — produced by <see cref="BattleEventWireProjection"/>,
+    /// which is the one place the <c>Straight</c>/<c>Lt</c> decision is made.
+    /// </param>
+    /// <param name="cells">The shape's cells, ascending §1.0 index, each once.</param>
+    /// <param name="gemType">The Match's Gem type, as a §3.2.4 contract name.</param>
+    /// <param name="cascadeDepth">The detection pass's own depth.</param>
+    /// <param name="createdSpecialGems">
+    /// The committed creations, or <c>null</c> to omit the member entirely when
+    /// the Match created none (§3.2.6 item 6). An empty array is never written:
+    /// it is normalized to the omission the contract requires.
+    /// </param>
+    public static BattleEventWireDto MatchCreated(
+        string shape,
+        IReadOnlyList<int> cells,
+        string gemType,
+        int cascadeDepth,
+        IReadOnlyList<CreatedSpecialGemWireDto>? createdSpecialGems) =>
+        new(
+            Type: "MatchCreated",
+            Shape: shape,
+            Cells: cells,
+            GemType: gemType,
+            CascadeDepth: cascadeDepth,
+            // §3.2.6 item 6: the member is omitted when the array would be empty,
+            // so a non-empty list is the only thing that can reach the wire.
+            CreatedSpecialGems: createdSpecialGems is { Count: > 0 } ? createdSpecialGems : null);
+
+    /// <summary>
+    /// The wire item for one <c>CascadeCreated</c>
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.7) — the depth index and nothing else.
+    /// </summary>
+    public static BattleEventWireDto CascadeCreated(int cascadeDepth) =>
+        new(Type: "CascadeCreated", CascadeDepth: cascadeDepth);
+
+    /// <summary>
+    /// The wire item for one <c>ComboChanged</c>
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.8) — the new Combo value and nothing
+    /// else.
+    /// </summary>
+    public static BattleEventWireDto ComboChanged(int combo) =>
+        new(Type: "ComboChanged", Combo: combo);
+
+    /// <summary>
+    /// The wire item for one <c>GemMatched</c>
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.9).
+    /// </summary>
+    /// <param name="cellIndex">The cleared cell's §1.0 index.</param>
+    /// <param name="gemType">The cleared cell's Gem type, as a §3.2.4 name.</param>
+    /// <param name="specialGem">
+    /// The consumed Special Gem, or <c>null</c> for an ordinary Gem — omitted
+    /// entirely, which is the only representation of "none was consumed"
+    /// (§3.2.5, §3.2.9 item 4).
+    /// </param>
+    public static BattleEventWireDto GemMatched(
+        int cellIndex,
+        string gemType,
+        SpecialGemWireDto? specialGem) =>
+        new(
+            Type: "GemMatched",
+            GemType: gemType,
+            CellIndex: cellIndex,
+            SpecialGem: specialGem);
+}
+
+/// <summary>
+/// One <c>createdSpecialGems</c> entry (<c>SIGNALR_PROTOCOL.md</c> §3.2.11).
+///
+/// <c>cellIndex</c> is always present here — unlike in <c>GemMatched</c>, where
+/// it is a sibling of the event, a creation entry is not itself an event and
+/// must state its cell (<c>§3.2.11</c> item 1) — and <c>specialGem</c> is
+/// always present, because a creation entry exists only because a Special Gem
+/// was created (<c>§3.2.11</c> item 2).
+/// </summary>
+public sealed record CreatedSpecialGemWireDto(
+    [property: JsonPropertyName("cellIndex")] int CellIndex,
+    [property: JsonPropertyName("specialGem")] SpecialGemWireDto SpecialGem);
+
+/// <summary>
+/// The transport representation of a created or consumed Special Gem
+/// (<c>SIGNALR_PROTOCOL.md</c> §3.2.10).
+///
+/// <code>
+/// specialGem
+/// ├── type            "LineClear" | "Burst" | "Area"     always present
+/// └── orientation     "Horizontal" | "Vertical"          present iff LineClear
+/// </code>
+///
+/// It carries no <c>cellIndex</c> and no <c>GemType</c>: the sibling
+/// <c>cellIndex</c> (or the event's own) already states the cell and the
+/// event's own <c>gemType</c> already states the type, so a nested copy would
+/// be a second spelling of one fact (<c>§3.2.10</c> items 3–4). It carries no
+/// identity, order, depth, or age either (<c>item 5</c>) — a Special Gem's
+/// behaviour is a pure function of its type, its orientation, and its cell.
+///
+/// <b>This is not <c>SpecialGemClaim</c>.</b> That type is Transient Resolution
+/// State and is never serialized (<c>§3.2.10</c> item 1, <c>GAME_STATE.md</c>
+/// §3): its <c>ShapeIndex</c>, <c>IntraShapeOrder</c>, and <c>Source</c> are the
+/// collision keys its own contract states are never serialized. Only the two
+/// facts any consumer needs are projected.
+/// </summary>
+/// <param name="Type">
+/// <c>LineClear</c>, <c>Burst</c>, or <c>Area</c> (<c>§3.2.4</c>).
+/// </param>
+/// <param name="Orientation">
+/// <c>Horizontal</c> or <c>Vertical</c>, present <b>if and only if</b>
+/// <see cref="Type"/> is <c>LineClear</c> (<c>§3.2.10</c> item 6). A
+/// <c>Burst</c> or <c>Area</c> entry omits it, because an orientation on those
+/// types is a value no rule reads.
+/// </param>
+public sealed record SpecialGemWireDto(
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("orientation")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Orientation = null);
+
+/// <summary>
+/// Projects Domain <c>BattleEvent</c> values onto the <c>ReceiveEvents.events[]</c>
+/// wire schema (<c>SIGNALR_PROTOCOL.md</c> §3.2 — the single authoritative owner
+/// of that schema).
+///
+/// <code>
+/// BattleEvent (Domain)                        GameServer.Domain.Match3
+///         ↓  this projection                  GameServer.Api — pure field mapping
+/// BattleEventWireDto
+///         ↓  ReceiveEventsPayload             §3 envelope
+///         ↓  SignalR JSON
+/// Frontend                                    opaque (ARCHITECTURE.md §2.2.1 rule 4)
+/// </code>
+///
+/// <b>Why the projection exists.</b> <c>BattleEvent</c> is a Domain value, not
+/// a wire DTO, and must never become one (<c>§3.2.1</c> item 1). Its
+/// non-applicable payload accessors — <c>Match</c>, <c>CascadeDepth</c>,
+/// <c>Combo</c>, <c>Gem</c> — throw rather than return a default, so a
+/// serializer that reflects over its public members reads all four and aborts
+/// the send. Direct serialization of it is therefore invalid <b>by
+/// construction</b>, not merely discouraged: the order here is "read
+/// <see cref="BattleEvent.Type"/> first, then only that event's own payload"
+/// (<c>§3.2.1</c> item 2), which never touches an accessor that does not apply.
+/// The Domain type is unchanged by this: it stays a Domain type, and the
+/// transport layer owns serialization.
+///
+/// <b>Pure field mapping — the projection rules.</b>
+/// <list type="bullet">
+/// <item><b>One-to-one and order-preserving.</b> N Domain events produce N wire
+/// events, in the same order. Nothing is filtered, reordered, merged, grouped,
+/// or invented (<c>§3.2.1</c> item 3, <c>§3.2.12</c> item 4) — the array
+/// <b>is</b> the executor's own list.</item>
+/// <item><b>Side-effect free.</b> It is a pure function of its input: it reads
+/// no <c>BattleState</c>, no board, and no RNG, and it writes none of them. It
+/// runs no detection pass and consults no second resolution, so it cannot change
+/// gameplay, event order, or any authoritative value
+/// (<c>GAME_EVENTS.md</c> §3 item 6).</item>
+/// <item><b>Derives no gameplay value.</b> <c>cascadeDepth</c> is read from the
+/// payload that carries it; <c>combo</c> is read as the already-accounted value
+/// and is never recomputed (<c>§3.2.8</c> item 1).</item>
+/// <item><b>Exposes no Domain geometry.</b> <c>MatchShape</c> is not serialized
+/// mechanically: its arms, arm lengths, <c>StartIndex</c>, <c>IntersectionIndex</c>,
+/// and <c>Step</c> stay Domain-side (<c>§3.2.6</c> item 3). Every fact
+/// <c>GAME_EVENTS.md</c> §2 requires is carried by <c>shape</c> + <c>cells</c> +
+/// <c>gemType</c> + <c>createdSpecialGems</c>.</item>
+/// </list>
+/// </summary>
+public static class BattleEventWireProjection
+{
+    /// <summary>
+    /// Projects the resolution's ordered Battle Events onto the §3.2 wire
+    /// schema, one-to-one and in order.
+    /// </summary>
+    /// <param name="events">
+    /// The resolution's own event list — <c>SwapExecutionResult.Events</c>,
+    /// already in the <c>GAME_RULES.md</c> §17 / <c>GAME_EVENTS.md</c> §1.1 order.
+    /// </param>
+    /// <returns>
+    /// The same number of wire items, in the same order, each carrying exactly
+    /// the members §3.2 gives its event.
+    /// </returns>
+    public static IReadOnlyList<BattleEventWireDto> Project(IReadOnlyList<BattleEvent> events)
+    {
+        ArgumentNullException.ThrowIfNull(events);
+
+        var wire = new BattleEventWireDto[events.Count];
+
+        for (var i = 0; i < events.Count; i++)
+        {
+            // Position-for-position: the wire array is the executor's list, so no
+            // sort, filter, merge, or re-group can occur here (§3.2.1 item 3).
+            wire[i] = Project(events[i]);
+        }
+
+        return wire;
+    }
+
+    /// <summary>
+    /// Projects one Battle Event onto its §3.2 wire item.
+    ///
+    /// The discriminator is read first, and only the matching event's own
+    /// payload is then read, so no non-applicable accessor is ever touched
+    /// (<c>§3.2.1</c> item 2).
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The event's <see cref="BattleEventType"/> is not one of the four
+    /// documented events. The set is closed (<c>§3.2.2</c> item 2), so an
+    /// unknown kind is a defect rather than a fifth event — it is never silently
+    /// dropped, because dropping one would break the one-to-one projection the
+    /// batch's atomicity depends on.
+    /// </exception>
+    private static BattleEventWireDto Project(BattleEvent battleEvent) =>
+        battleEvent.Type switch
+        {
+            BattleEventType.MatchCreated => ProjectMatch(battleEvent.Match),
+            BattleEventType.CascadeCreated => BattleEventWireDto.CascadeCreated(battleEvent.CascadeDepth),
+            BattleEventType.ComboChanged => BattleEventWireDto.ComboChanged(battleEvent.Combo),
+            BattleEventType.GemMatched => ProjectGem(battleEvent.Gem),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(battleEvent),
+                battleEvent.Type,
+                "Not one of the four documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2)."),
+        };
+
+    /// <summary>
+    /// Projects the <c>MatchCreated</c> payload (<c>§3.2.6</c>).
+    /// </summary>
+    private static BattleEventWireDto ProjectMatch(MatchResolution match) =>
+        BattleEventWireDto.MatchCreated(
+            // §3.2.6 item 1: the shape IDENTITY — the two values the game rules
+            // own. MatchShape's arms and geometry are Domain detail and are not
+            // projected (item 3); the shape's own Cells list is already the union
+            // of its arms, each cell once, ascending §1.0 index (item 2).
+            shape: match.Shape.IsLt ? "Lt" : "Straight",
+
+            // §3.2.6 item 2: the shape's cells, in the order MatchShape already
+            // holds them — stated explicitly rather than implied by position.
+            cells: match.Shape.Cells,
+
+            // §3.2.6 item 5: the Match's own Gem type, which both arms share.
+            gemType: GemTypes.ToContractName(match.Shape.GemType),
+
+            // §3.2.6 item 4: the DETECTION PASS's own depth — the same depth the
+            // Domain MatchResolution carries, and deliberately not the
+            // CascadeCreated depth of §3.2.7.
+            cascadeDepth: match.CascadeDepth,
+
+            // §3.2.6 items 6–7 / §3.2.11: the committed creations, in the §5.5.1
+            // order the resolution recorded. A collision-discarded claim is absent
+            // from that list already, and an empty list is omitted entirely.
+            createdSpecialGems: ProjectCreatedSpecialGems(match.CreatedSpecialGems));
+
+    /// <summary>
+    /// Projects the <c>GemMatched</c> payload (<c>§3.2.9</c>).
+    /// </summary>
+    private static BattleEventWireDto ProjectGem(GemMatchedEvent gem) =>
+        BattleEventWireDto.GemMatched(
+            // §3.2.9 item 1: the §1.0 cell index, stated explicitly.
+            cellIndex: gem.CellIndex,
+
+            // §3.2.9 item 2: always the cell's Gem type, including for a cell that
+            // held a Special Gem — a Special Gem adds metadata to an occupant and
+            // does not replace its type.
+            gemType: GemTypes.ToContractName(gem.GemType),
+
+            // §3.2.9 item 3: read from the pre-removal board, so a consumed Special
+            // Gem is reported for the cell that held it. Absent for an ordinary Gem
+            // (item 4), which omits the member rather than writing null.
+            specialGem: ProjectSpecialGem(gem.ConsumedSpecialGem));
+
+    /// <summary>
+    /// Projects the created Special Gems of a Match onto §3.2.11 entries.
+    ///
+    /// The claims are mapped in the order the resolution committed them — the
+    /// §5.5.1 creation order, which is the order the Domain list already holds.
+    /// Nothing is re-sorted and no claim is dropped here; a claim discarded by
+    /// collision resolution was never in the list
+    /// (<c>MATCH3_RULES.md</c> §5.5.4 item 3).
+    /// </summary>
+    private static IReadOnlyList<CreatedSpecialGemWireDto>? ProjectCreatedSpecialGems(
+        IReadOnlyList<SpecialGemClaim> claims)
+    {
+        if (claims.Count == 0)
+        {
+            // §3.2.6 item 6: omitted when the array would be empty, so the caller
+            // never has to write an empty array.
+            return null;
+        }
+
+        var entries = new CreatedSpecialGemWireDto[claims.Count];
+
+        for (var i = 0; i < claims.Count; i++)
+        {
+            entries[i] = new CreatedSpecialGemWireDto(
+                // §3.2.11 item 1: the cell the Special Gem was created at. Only the
+                // claim's CellIndex and its SpecialGem are projected — the claim's
+                // ShapeIndex, IntraShapeOrder, Source, and GemType are collision
+                // bookkeeping that is never serialized (§3.2.10 items 1, 4).
+                claims[i].CellIndex,
+                ToWire(claims[i].SpecialGem));
+        }
+
+        return entries;
+    }
+
+    /// <summary>
+    /// Projects a cell's optional Special Gem for the <c>GemMatched</c> payload,
+    /// or <c>null</c> to omit the member for an ordinary Gem
+    /// (<c>§3.2.9</c> item 4).
+    /// </summary>
+    private static SpecialGemWireDto? ProjectSpecialGem(SpecialGem? specialGem) =>
+        specialGem is { } gem ? ToWire(gem) : null;
+
+    /// <summary>
+    /// Projects one <c>SpecialGem</c> onto the §3.2.10 transport representation.
+    ///
+    /// A pure field mapping: the type and, for a Line Clear Gem only, the
+    /// orientation. The enum's documented name is used rather than its ordinal
+    /// (<c>§3.2.4</c> item 2), and nothing else is added.
+    /// </summary>
+    private static SpecialGemWireDto ToWire(SpecialGem specialGem) =>
+        // §3.2.10 item 3: no cellIndex — the sibling or the entry's own member
+        // already states the cell. Item 4: no GemType — the event's own gemType
+        // already states the type. Item 5: no identity, order, depth, or age.
+        new(specialGem.Type.ToString(), specialGem.Orientation?.ToString());
+}

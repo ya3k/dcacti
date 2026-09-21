@@ -73,19 +73,79 @@ export type RuntimeEventListener = (event: RuntimeEvent) => void;
 export type BattleEventsListener = (envelope: BattleEventsEnvelope) => void;
 
 /**
- * The client's synchronized copy of the authoritative Battle State Foundation
- * (`GAME_STATE.md` §2.0), as delivered by `BattleStateUpdated`
- * (SIGNALR_PROTOCOL.md §4).
+ * The client's synchronized copy of the authoritative battle state, as delivered
+ * by `BattleStateUpdated` (`SIGNALR_PROTOCOL.md` §4, §4.2).
  *
- * Exactly the §2.0 fields — `battleId`, `turn`, `sequence`. The client stores
+ * The implemented `GAME_STATE.md` §0 stage's fields — `battleId`, `turn`,
+ * `sequence`, `rngSeed`, `rngState`, `board`, `playerState`. The client stores
  * this and renders it; it never authors, adjusts, or recomputes it (§4.9,
- * `GAME_RULES.md` §18, ADR-001). No gameplay field is modelled here and no
- * `Status`/lifecycle value exists in the protocol (§8.3).
+ * `GAME_RULES.md` §18, ADR-001). No gameplay field beyond the stage's own is
+ * modelled here and no `Status`/lifecycle value exists in the protocol (§8.3).
+ *
+ * `board` is the server-generated `Cells[64]`. The client must not generate,
+ * fill, repair, validate, or re-derive it, and no client-side RNG participates
+ * in any part of it (§4 item 10, `GAME_STATE.md` §2.0.5.4.1).
+ *
+ * `rngSeed`/`rngState` are part of the authoritative state (`GAME_STATE.md`
+ * §2.6) and are carried because they are `BattleState` fields — not because the
+ * client uses them. The client never advances, re-seeds, or draws from the RNG
+ * and never uses it to produce a Gem value; a client that needs a board reads
+ * `board` (§4.1 item 2).
+ *
+ * `playerState` carries `MatchCount` and `Combo` (`GAME_STATE.md` §2.2). It is
+ * carried for the same reason: it is a `BattleState` field. The client renders
+ * both values and never computes them — it does not count Matches, advance a
+ * Combo, or reset one (`GAME_RULES.md` §18, `MATCH3_RULES.md` §6.6 item 3).
  */
 export interface RuntimeBattleState {
   readonly battleId: string;
   readonly turn: number;
   readonly sequence: number;
+  readonly rngSeed: number;
+  readonly rngState: RuntimeRngState;
+  readonly board: RuntimeBoard;
+  readonly playerState: RuntimePlayerState;
+}
+
+/**
+ * The client's synchronized copy of `PlayerState`'s implemented fields
+ * (`GAME_STATE.md` §2.2).
+ *
+ * Both are always present, including at `0`: `combo = 0` is the value the state
+ * reads before the battle's first committed Swap, and it is a value, not a gap
+ * (`MATCH3_RULES.md` §6.5 item 4). The client renders them and derives nothing
+ * from the board, the counters, or the resolution.
+ */
+export interface RuntimePlayerState {
+  /** The most recently committed Swap's Match total (`MATCH3_RULES.md` §6.3). */
+  readonly combo: number;
+  /** The battle's cumulative Match total (`GAME_RULES.md` §3). */
+  readonly matchCount: number;
+}
+
+/**
+ * The client's synchronized copy of `RngState` (`GAME_STATE.md` §2.6.2).
+ *
+ * One logical field with two components (§2.6.2 item 1). Opaque to the client:
+ * it is transported, never advanced or drawn from.
+ */
+export interface RuntimeRngState {
+  readonly state: number;
+  readonly increment: number;
+}
+
+/**
+ * The client's synchronized copy of the authoritative board
+ * (`GAME_STATE.md` §2.1.1).
+ *
+ * `cells` is exactly 64 Gem type names in row-major order —
+ * `index = row * 8 + column` (`MATCH3_RULES.md` §1.0). At the Board Foundation
+ * stage `Cells[64]` is the only part of `BoardState` that exists; rendering it at
+ * `row = floor(index / 8)`, `column = index % 8` is a presentation concern
+ * (`ARCHITECTURE.md` §2.2.2) and introduces no competing coordinate system.
+ */
+export interface RuntimeBoard {
+  readonly cells: readonly string[];
 }
 
 /** Listener signature for authoritative battle-state pushes. */
@@ -102,12 +162,12 @@ export interface GameRuntimePort {
   /** Current technical runtime state. */
   getState(): GameRuntimeState;
   /**
-   * The client's synchronized copy of the authoritative foundation battle state
-   * (`GAME_STATE.md` §2.0), or `null` before the server has pushed it.
+   * The client's synchronized copy of the authoritative battle state
+   * (`GAME_STATE.md` §2.2, §2.0.5), or `null` before the server has pushed it.
    *
-   * This is a synchronized presentation copy, not client-owned state: the
-   * client never authors `battleId`, `turn`, or `sequence`
-   * (SIGNALR_PROTOCOL.md §4.9).
+   * This is a synchronized presentation copy, not client-owned state: the client
+   * never authors any of its fields, and never generates or re-derives
+   * `board` (SIGNALR_PROTOCOL.md §4.9–§4.10).
    */
   getBattleState(): RuntimeBattleState | null;
   /** Subscribes to technical runtime lifecycle events. Returns an unsubscribe. */

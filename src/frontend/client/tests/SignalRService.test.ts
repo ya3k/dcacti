@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SignalRService } from '../src/services/realtime/SignalRService';
+import type { CellPayload } from '../src/services/realtime/SignalRService';
 import * as signalR from '@microsoft/signalr';
 
 /**
@@ -78,7 +79,7 @@ describe('SignalRService', () => {
     await expect(service.ping()).rejects.toThrow('SignalR connection is not established.');
   });
 
-  describe('Battle State Foundation transport (SIGNALR_PROTOCOL.md §4)', () => {
+  describe('Board Foundation State transport (SIGNALR_PROTOCOL.md §4, §4.1)', () => {
     it('subscribes to the documented BattleStateUpdated push', async () => {
       const hub = installFakeHub();
       await service.connect('/hubs/battle');
@@ -96,12 +97,62 @@ describe('SignalRService', () => {
       const received: unknown[] = [];
       service.on('BattleStateUpdated', (payload) => received.push(payload));
 
-      // The transport-level shape only: battleId, turn, sequence. No Status or
-      // lifecycle value exists in the protocol (§4.4, §8.3).
-      const payload = { battleId: 'battle-1', turn: 0, sequence: 0 };
+      // The transport-level shape of the Board Foundation State: battleId,
+      // turn, sequence, board, rngSeed, rngState. No Status or lifecycle value
+      // exists in the protocol (§4.4, §8.3).
+      //
+      // Each board cell is an entry carrying its Gem type plus an optional
+      // Special Gem (`GAME_STATE.md` §2.1.1, §4.1 item 5). A generated board
+      // holds no Special Gem, so the member is null (§2.1.7 item 8).
+      const payload = {
+        battleId: 'battle-1',
+        turn: 0,
+        sequence: 0,
+        rngSeed: 42,
+        rngState: { state: 123456789, increment: 1 },
+        board: {
+          cells: Array.from({ length: 64 }, () => ({ gemType: 'ATK', specialGem: null })),
+        },
+      };
       hub.handlers.get('BattleStateUpdated')?.(payload);
 
       expect(received).toEqual([payload]);
+    });
+
+    it('delivers cell entries carrying a Special Gem unchanged', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      const received: unknown[] = [];
+      service.on('BattleStateUpdated', (payload) => received.push(payload));
+
+      // A Line Clear Gem carries an orientation; a Burst and an Area Gem carry
+      // none (`GAME_STATE.md` §2.1.4 item 2). The service treats all of it as
+      // opaque transport data — it renders nothing and derives nothing
+      // (`SIGNALR_PROTOCOL.md` §4.1 item 6).
+      //
+      // Typed against the contract so the test also proves the declared shape
+      // accepts every documented cell entry.
+      const cells: CellPayload[] = Array.from(
+        { length: 64 },
+        (): CellPayload => ({ gemType: 'ATK', specialGem: null })
+      );
+      cells[5] = { gemType: 'ATK', specialGem: { type: 'LineClear', orientation: 'Horizontal' } };
+      cells[12] = { gemType: 'DEF', specialGem: { type: 'LineClear', orientation: 'Vertical' } };
+      cells[27] = { gemType: 'HP', specialGem: { type: 'Burst', orientation: null } };
+      cells[40] = { gemType: 'POWER', specialGem: { type: 'Area', orientation: null } };
+
+      const payload = {
+        battleId: 'battle-1',
+        turn: 1,
+        sequence: 1,
+        rngSeed: 42,
+        rngState: { state: 123456789, increment: 1 },
+        board: { cells },
+      };
+      hub.handlers.get('BattleStateUpdated')?.(payload);
+
+      expect(received[0]).toBe(payload);
     });
 
     it('does not derive or transform the payload', async () => {
@@ -111,12 +162,61 @@ describe('SignalRService', () => {
       const received: unknown[] = [];
       service.on('BattleStateUpdated', (payload) => received.push(payload));
 
-      const payload = { battleId: 'battle-1', turn: 3, sequence: 9 };
+      const payload = {
+        battleId: 'battle-1',
+        turn: 3,
+        sequence: 9,
+        rngSeed: 7,
+        rngState: { state: 1, increment: 1 },
+        board: {
+          cells: Array.from({ length: 64 }, (_, i) => ({
+            gemType: i % 2 ? 'ATK' : 'DEF',
+            specialGem: null,
+          })),
+        },
+      };
       hub.handlers.get('BattleStateUpdated')?.(payload);
 
       // The service stores no state and computes nothing: the object it hands
-      // on is the object it received.
+      // on is the object it received — board cells included.
       expect(received[0]).toBe(payload);
+    });
+
+    it('exposes no board request or re-roll method', async () => {
+      // SIGNALR_PROTOCOL.md §8.6: the client does not ask for a board, a cell,
+      // or a re-roll. It joins the group and receives the board with the rest
+      // of the state.
+      const surface = Object.getOwnPropertyNames(SignalRService.prototype);
+
+      for (const forbidden of ['getBoard', 'requestBoard', 'rerollBoard', 'rollBoard', 'getCell']) {
+        expect(surface).not.toContain(forbidden);
+      }
+    });
+
+    it('exposes no Special Gem gameplay method', async () => {
+      // SIGNALR_PROTOCOL.md §4.1 item 6 / GAME_RULES.md §18: the client renders
+      // the board it receives, including its Special Gems, and never computes
+      // one — it does not create, place, move, match, activate, chain, or clear
+      // a Special Gem, and never infers a type or orientation.
+      const surface = Object.getOwnPropertyNames(SignalRService.prototype);
+
+      for (const forbidden of [
+        'activateSpecialGem',
+        'detonateSpecialGem',
+        'createSpecialGem',
+        'resolveBoard',
+        'resolveSpecialGems',
+        'matchGems',
+        'applyGravity',
+        'spawnGems',
+      ]) {
+        expect(surface).not.toContain(forbidden);
+      }
+
+      // No gameplay message is registered or invoked by name either.
+      const source = SignalRService.prototype.joinBattle.toString();
+      expect(source).toContain('JoinBattle');
+      expect(source).not.toContain('SpecialGem');
     });
 
     it('unsubscribes cleanly', async () => {

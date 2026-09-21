@@ -36,6 +36,14 @@ No endpoint accepts Damage, HP, Power, Match, or Combo values from the
 client (`GAME_RULES.md` §18) — none of the above are write endpoints for
 gameplay values.
 
+**There is no REST endpoint for a player Swap.** Board actions are realtime
+only: `Swap` is a Hub method (`SIGNALR_PROTOCOL.md` §2), its validation is
+owned by `MATCH3_RULES.md` §2.1, and its resolution result reaches the client
+through the event batch and the state push, not through this document. No
+endpoint that submits a Swap, a cell pair, a board, a Match, a Cascade, or a
+board state is added here or may be added — this document's endpoint list is
+the complete REST surface of a battle.
+
 ---
 
 # 2. POST /api/auth/discord (Authentication Boundary)

@@ -64,6 +64,34 @@ function createRuntime() {
   return { runtime, transport };
 }
 
+/** The four documented Gem contract names (MATCH3_RULES.md §1.1). */
+const GEM_NAMES = ['ATK', 'DEF', 'HP', 'POWER'];
+
+/** A server-shaped board: exactly 64 cells (GAME_STATE.md §2.1.1). */
+function serverCells(): string[] {
+  return Array.from({ length: 64 }, (_, index) => GEM_NAMES[index % GEM_NAMES.length]);
+}
+
+/**
+ * A well-formed `BattleStateUpdated` payload — the implemented
+ * `GAME_STATE.md` §0 stage's fields: the §2.0.5 Board Foundation State fields
+ * plus §2.2's `playerState` (SIGNALR_PROTOCOL.md §4, §4.2).
+ */
+function payload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    battleId: 'battle-1',
+    turn: 0,
+    sequence: 0,
+    rngSeed: 42,
+    rngState: { state: 123456789, increment: 1 },
+    board: { cells: serverCells() },
+    // GAME_STATE.md §2.2: both values exist from battle creation and are always
+    // delivered — including at 0, which is a value, not an absence.
+    playerState: { combo: 0, matchCount: 0 },
+    ...overrides,
+  };
+}
+
 describe('GameRuntime', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -405,12 +433,38 @@ describe('GameRuntime', () => {
       const { runtime, transport } = createRuntime();
       await runtime.initialize();
 
-      transport.emit('BattleStateUpdated', { battleId: 'battle-1', turn: 0, sequence: 0 });
+      transport.emit('BattleStateUpdated', payload());
 
-      expect(runtime.getBattleState()).toEqual({
-        battleId: 'battle-1',
-        turn: 0,
-        sequence: 0,
+      expect(runtime.getBattleState()).toEqual(payload());
+    });
+
+    it('carries the authoritative board exactly as the server sent it', async () => {
+      // SIGNALR_PROTOCOL.md §4 item 10 / §4.1 item 3: the board is delivered —
+      // the client stores all 64 cells verbatim and derives nothing.
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const cells = serverCells();
+      cells[0] = 'POWER';
+      cells[63] = 'ATK';
+
+      transport.emit('BattleStateUpdated', payload({ board: { cells } }));
+
+      expect(runtime.getBattleState()!.board.cells).toEqual(cells);
+      expect(runtime.getBattleState()!.board.cells).toHaveLength(64);
+    });
+
+    it('does not mutate the board it received', async () => {
+      // The runtime holds a synchronized copy; it never repairs or rewrites it.
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const sent = payload();
+      transport.emit('BattleStateUpdated', sent);
+
+      const received = runtime.getBattleState()!;
+      received.board.cells.forEach((cell, index) => {
+        expect(cell).toBe((sent.board as { cells: string[] }).cells[index]);
       });
     });
 
@@ -421,9 +475,9 @@ describe('GameRuntime', () => {
       const received: unknown[] = [];
       runtime.onBattleState((state) => received.push(state));
 
-      transport.emit('BattleStateUpdated', { battleId: 'battle-1', turn: 0, sequence: 0 });
+      transport.emit('BattleStateUpdated', payload());
 
-      expect(received).toEqual([{ battleId: 'battle-1', turn: 0, sequence: 0 }]);
+      expect(received).toEqual([payload()]);
     });
 
     it('does not author, adjust, or recompute the state it receives', async () => {
@@ -432,13 +486,11 @@ describe('GameRuntime', () => {
 
       // Whatever the server says is what the runtime holds — the client owns
       // none of these values (§4.9, ADR-001).
-      transport.emit('BattleStateUpdated', { battleId: 'server-owned', turn: 4, sequence: 11 });
+      const sent = payload({ battleId: 'server-owned', turn: 4, sequence: 11 });
 
-      expect(runtime.getBattleState()).toEqual({
-        battleId: 'server-owned',
-        turn: 4,
-        sequence: 11,
-      });
+      transport.emit('BattleStateUpdated', sent);
+
+      expect(runtime.getBattleState()).toEqual(sent);
     });
 
     it('reports synchronization once the authoritative state arrives', async () => {
@@ -447,7 +499,7 @@ describe('GameRuntime', () => {
 
       expect(runtime.getState().sync).toBe('awaiting_battle');
 
-      transport.emit('BattleStateUpdated', { battleId: 'battle-1', turn: 0, sequence: 0 });
+      transport.emit('BattleStateUpdated', payload());
 
       expect(runtime.getState().sync).toBe('synchronized');
     });
@@ -459,7 +511,7 @@ describe('GameRuntime', () => {
       const events: string[] = [];
       runtime.onRuntimeEvent((e) => events.push(e.type));
 
-      transport.emit('BattleStateUpdated', { battleId: 'battle-1', turn: 0, sequence: 0 });
+      transport.emit('BattleStateUpdated', payload());
 
       expect(events).toContain('battle_state_changed');
     });
@@ -478,35 +530,122 @@ describe('GameRuntime', () => {
       expect(events).toContain('runtime_error');
     });
 
+    it('rejects a partial board rather than completing it', async () => {
+      // SIGNALR_PROTOCOL.md §4.1 item 3: "The client does not receive a partial
+      // board." A short board must not be padded with generated Gems — that
+      // would make the client authoritative (GAME_RULES.md §18).
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const events: string[] = [];
+      runtime.onRuntimeEvent((e) => events.push(e.type));
+
+      transport.emit('BattleStateUpdated', payload({ board: { cells: serverCells().slice(0, 63) } }));
+
+      expect(runtime.getBattleState()).toBeNull();
+      expect(events).toContain('runtime_error');
+    });
+
+    it('rejects a payload carrying only one half of the RngState pair', async () => {
+      // GAME_STATE.md §2.6.2 item 1: the two components are one logical field
+      // and are never split.
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const events: string[] = [];
+      runtime.onRuntimeEvent((e) => events.push(e.type));
+
+      transport.emit('BattleStateUpdated', payload({ rngState: { state: 123456789 } }));
+
+      expect(runtime.getBattleState()).toBeNull();
+      expect(events).toContain('runtime_error');
+    });
+
+    it('rejects a payload missing a PlayerState value rather than defaulting it', async () => {
+      // GAME_STATE.md §2.2 / MATCH3_RULES.md §6.5 item 4: both values are
+      // non-nullable and always present, and `Combo = 0` is a real value rather
+      // than an absence. A payload that omits one is therefore malformed — the
+      // client must not substitute a zero of its own, which would be a second,
+      // non-authoritative Match/Combo source (GAME_RULES.md §18).
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const events: string[] = [];
+      runtime.onRuntimeEvent((e) => events.push(e.type));
+
+      transport.emit('BattleStateUpdated', payload({ playerState: { combo: 0 } }));
+
+      expect(runtime.getBattleState()).toBeNull();
+      expect(events).toContain('runtime_error');
+    });
+
+    it('carries the delivered MatchCount and Combo unchanged', async () => {
+      // SIGNALR_PROTOCOL.md §4.2 / GAME_STATE.md §2.2: `playerState` is
+      // authoritative server state, carried because it is a BattleState field.
+      // The client renders it and derives nothing (MATCH3_RULES.md §6.6 item 3).
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const sent = payload({ playerState: { combo: 3, matchCount: 7 } });
+      transport.emit('BattleStateUpdated', sent);
+
+      expect(runtime.getBattleState()!.playerState).toEqual({ combo: 3, matchCount: 7 });
+
+      // Exactly what was sent — not recomputed from `turn`, `sequence`, or the
+      // board, none of which carry a Match or Combo value
+      // (GAME_STATE.md §5.2 item 2).
+      expect(runtime.getBattleState()!.playerState).toEqual(
+        (sent.playerState as { combo: number; matchCount: number })
+      );
+    });
+
     it('ignores a payload carrying an undocumented Status value', async () => {
       const { runtime, transport } = createRuntime();
       await runtime.initialize();
 
       // No Status/lifecycle value exists in the protocol (§8.3); an unexpected
       // field is not modelled and not carried into the runtime's copy.
-      transport.emit('BattleStateUpdated', {
-        battleId: 'battle-1',
-        turn: 0,
-        sequence: 0,
-        status: 'READY',
-      });
+      transport.emit('BattleStateUpdated', payload({ status: 'READY' }));
 
-      expect(runtime.getBattleState()).toEqual({
-        battleId: 'battle-1',
-        turn: 0,
-        sequence: 0,
-      });
-      expect(Object.keys(runtime.getBattleState()!)).toEqual(['battleId', 'turn', 'sequence']);
+      expect(runtime.getBattleState()).toEqual(payload());
+      expect(Object.keys(runtime.getBattleState()!)).toEqual([
+        'battleId',
+        'turn',
+        'sequence',
+        'rngSeed',
+        'rngState',
+        'board',
+        'playerState',
+      ]);
+    });
+
+    it('advances no RNG and derives no Gem on the client', async () => {
+      // SIGNALR_PROTOCOL.md §4.1 item 2: the RNG values are delivered because
+      // they are BattleState fields, not because the client uses them.
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const sent = payload();
+      transport.emit('BattleStateUpdated', sent);
+
+      // The rngState the client holds is exactly what the server sent — it was
+      // not advanced, re-seeded, or recomputed.
+      expect(runtime.getBattleState()!.rngState).toEqual(sent.rngState);
+
+      // And the board is exactly the delivered board, not a client-derived one.
+      expect(runtime.getBattleState()!.board.cells).toEqual(
+        (sent.board as { cells: string[] }).cells
+      );
     });
 
     it('holds no battle state fields in the technical runtime state', async () => {
       const { runtime, transport } = createRuntime();
       await runtime.initialize();
-      transport.emit('BattleStateUpdated', { battleId: 'battle-1', turn: 0, sequence: 0 });
+      transport.emit('BattleStateUpdated', payload());
 
       // The authoritative copy is exposed separately; the technical runtime
       // state contract stays technical (ARCHITECTURE.md §2.2.1 rule 5).
-      for (const key of ['battleId', 'turn', 'sequence']) {
+      for (const key of ['battleId', 'turn', 'sequence', 'board', 'rngSeed', 'rngState', 'playerState']) {
         expect(Object.keys(runtime.getState())).not.toContain(key);
       }
     });
@@ -519,7 +658,7 @@ describe('GameRuntime', () => {
       const unsubscribe = runtime.onBattleState(listener);
       unsubscribe();
 
-      transport.emit('BattleStateUpdated', { battleId: 'battle-1', turn: 0, sequence: 0 });
+      transport.emit('BattleStateUpdated', payload());
 
       expect(listener).not.toHaveBeenCalled();
     });
@@ -529,7 +668,7 @@ describe('GameRuntime', () => {
       await runtime.initialize();
       await runtime.dispose();
 
-      transport.emit('BattleStateUpdated', { battleId: 'battle-1', turn: 0, sequence: 0 });
+      transport.emit('BattleStateUpdated', payload());
 
       expect(runtime.getBattleState()).toBeNull();
     });

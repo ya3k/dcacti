@@ -11,9 +11,23 @@ import {
   type GameRuntimePort,
   type RuntimeActionRequest,
   type RuntimeBattleState,
+  type RuntimeBoard,
   type RuntimeEvent,
   type RuntimeEventListener,
+  type RuntimePlayerState,
+  type RuntimeRngState,
 } from './GameRuntimeEvents';
+
+/**
+ * The board's cell count — exactly 64 (`MATCH3_RULES.md` §1.0,
+ * `GAME_STATE.md` §2.1.1).
+ *
+ * Used only to reject a partial board payload (`SIGNALR_PROTOCOL.md` §4.1
+ * item 3). It is a shape check on received data, never a source of board
+ * geometry: the client does not lay the board out from this number and does not
+ * derive any game rule from it.
+ */
+const BOARD_CELL_COUNT = 64;
 
 /**
  * `GameRuntime` — the client runtime coordination boundary.
@@ -35,11 +49,13 @@ import {
  *   - calculate damage, match, combo, cascade, passive, or power,
  *   - interpret, filter, reorder, or synthesise Battle Events,
  *   - author, adjust, or recompute any battle state,
+ *   - generate, fill, repair, validate, or re-derive the board
+ *     (SIGNALR_PROTOCOL.md §4 item 10),
  *   - hold authoritative state of any kind.
  *
  * The battle state it exposes is a synchronized presentation copy of what the
- * server pushed (`GAME_STATE.md` §2.0, SIGNALR_PROTOCOL.md §4.9). The runtime
- * stores it and hands it to the scenes unchanged; it is not a second
+ * server pushed (`GAME_STATE.md` §2.0.5, `SIGNALR_PROTOCOL.md` §4.9). The
+ * runtime stores it and hands it to the scenes unchanged; it is not a second
  * authoritative game engine.
  *
  * Battle events are forwarded to subscribers exactly as the server sent them.
@@ -243,12 +259,13 @@ export class GameRuntime implements GameRuntimePort {
   }
 
   /**
-   * The client's synchronized copy of the authoritative Battle State Foundation
-   * (`GAME_STATE.md` §2.0), or `null` until the server pushes it
+   * The client's synchronized copy of the authoritative Board Foundation State
+   * (`GAME_STATE.md` §2.0.5), or `null` until the server pushes it
    * (SIGNALR_PROTOCOL.md §4).
    *
    * The runtime stores what the server sent and exposes it unchanged. It does
-   * not derive, extend, or validate gameplay meaning from it (§4.9).
+   * not derive, extend, or validate gameplay meaning from it (§4.9), and it never
+   * generates or repairs the board it carries (§4 item 10).
    */
   public getBattleState(): RuntimeBattleState | null {
     return this.battleState;
@@ -363,12 +380,16 @@ export class GameRuntime implements GameRuntimePort {
   }
 
   /**
-   * Receives the server's authoritative initial battle state push
+   * Receives the server's authoritative battle state push
    * (SIGNALR_PROTOCOL.md §4) and stores it as the runtime's synchronized copy.
    *
-   * The payload is stored exactly as sent — `battleId`, `turn`, `sequence`
-   * (`GAME_STATE.md` §2.0). Nothing is derived from it, and no gameplay
-   * meaning is inferred: the server owns these values (§4.9, ADR-001).
+   * The payload is stored exactly as sent — `battleId`, `turn`, `sequence`,
+   * `rngSeed`, `rngState`, `board`, `playerState` (`GAME_STATE.md` §2.2, §2.0.5).
+   * Nothing is derived from it, and no gameplay meaning is inferred: the server
+   * owns these values (§4.9, ADR-001). In particular the board is stored as
+   * received and is never generated, filled, repaired, or re-derived by the
+   * client (§4 item 10), and `playerState`'s Match/Combo values are rendered, never
+   * counted or recomputed (`MATCH3_RULES.md` §6.6 item 3).
    *
    * A malformed payload is reported as a technical runtime error and ignored —
    * the runtime never fabricates battle state to fill a gap.
@@ -393,10 +414,19 @@ export class GameRuntime implements GameRuntimePort {
   }
 
   /**
-   * Validates only the documented §4 shape: `battleId`, `turn`, `sequence`.
+   * Validates only the documented §4 shape — the `GAME_STATE.md` §2.2/§2.0.5
+   * fields `battleId`, `turn`, `sequence`, `rngSeed`, `rngState`, `board`,
+   * `playerState`.
    *
    * The record carries no other field and no `Status`/lifecycle value
    * (SIGNALR_PROTOCOL.md §4.4, §8.3), so nothing else is read or defaulted.
+   *
+   * This checks *shape*, not gameplay meaning: it does not know what a Gem is,
+   * does not validate the board against any game rule, and cannot repair one.
+   * Validating the board is the server's job (`MATCH3_RULES.md` §1.3–§1.4); a
+   * client-side check would be a second, non-authoritative implementation. The
+   * same applies to `playerState`: its values are read as sent and are never
+   * derived, clamped, or recomputed (`GAME_RULES.md` §18).
    */
   private readBattleState(payload: unknown): RuntimeBattleState | null {
     if (typeof payload !== 'object' || payload === null) {
@@ -414,12 +444,106 @@ export class GameRuntime implements GameRuntimePort {
     if (typeof candidate.sequence !== 'number') {
       return null;
     }
+    if (typeof candidate.rngSeed !== 'number') {
+      return null;
+    }
+
+    const rngState = this.readRngState(candidate.rngState);
+    if (rngState === null) {
+      return null;
+    }
+
+    const board = this.readBoard(candidate.board);
+    if (board === null) {
+      return null;
+    }
+
+    const playerState = this.readPlayerState(candidate.playerState);
+    if (playerState === null) {
+      return null;
+    }
 
     return {
       battleId: candidate.battleId,
       turn: candidate.turn,
       sequence: candidate.sequence,
+      rngSeed: candidate.rngSeed,
+      rngState,
+      board,
+      playerState,
     };
+  }
+
+  /**
+   * Reads `PlayerState`'s implemented fields (`GAME_STATE.md` §2.2).
+   *
+   * Both values are required: the state carries them from battle creation, both
+   * are non-nullable, and neither is omitted when it is `0` — zero is a value
+   * here, not an absence (`MATCH3_RULES.md` §6.5 item 4). A payload missing one is
+   * therefore malformed rather than implicitly zero.
+   *
+   * The values are read as sent. The runtime does not count Matches, advance a
+   * Combo, or reset one; it derives neither value from the board, the counters,
+   * or the resolution (`GAME_RULES.md` §18, `MATCH3_RULES.md` §6.6 item 3).
+   */
+  private readPlayerState(value: unknown): RuntimePlayerState | null {
+    if (typeof value !== 'object' || value === null) {
+      return null;
+    }
+
+    const candidate = value as Partial<RuntimePlayerState>;
+
+    if (typeof candidate.combo !== 'number' || typeof candidate.matchCount !== 'number') {
+      return null;
+    }
+
+    return { combo: candidate.combo, matchCount: candidate.matchCount };
+  }
+
+  /**
+   * Reads the `RngState` pair (`GAME_STATE.md` §2.6.2). Both components are
+   * required: the two are one logical field and are never split
+   * (§2.6.2 item 1), so a payload carrying only one is malformed.
+   */
+  private readRngState(value: unknown): RuntimeRngState | null {
+    if (typeof value !== 'object' || value === null) {
+      return null;
+    }
+
+    const candidate = value as Partial<RuntimeRngState>;
+
+    if (typeof candidate.state !== 'number' || typeof candidate.increment !== 'number') {
+      return null;
+    }
+
+    return { state: candidate.state, increment: candidate.increment };
+  }
+
+  /**
+   * Reads the board's cells (`GAME_STATE.md` §2.1.1).
+   *
+   * The runtime checks only that 64 cell entries arrived — the shape
+   * `SIGNALR_PROTOCOL.md` §4.1 item 3 guarantees ("the client does not receive a
+   * partial board"). It deliberately does not inspect the Gem types or evaluate
+   * any board rule: the board is server-authored and this is not a second
+   * generator or validator.
+   */
+  private readBoard(value: unknown): RuntimeBoard | null {
+    if (typeof value !== 'object' || value === null) {
+      return null;
+    }
+
+    const candidate = value as { cells?: unknown };
+
+    if (!Array.isArray(candidate.cells) || candidate.cells.length !== BOARD_CELL_COUNT) {
+      return null;
+    }
+
+    if (!candidate.cells.every((cell): cell is string => typeof cell === 'string')) {
+      return null;
+    }
+
+    return { cells: candidate.cells };
   }
 
   private describeError(error: unknown): string | null {

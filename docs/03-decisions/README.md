@@ -127,6 +127,8 @@ technical document.
 | ADR-006 | PostgreSQL for persistent data                              | Accepted |
 | ADR-007 | Discord SDK integration & server-side auth boundary    | Accepted |
 | ADR-008 | Snapshot-based battle reconnection                             | Accepted |
+| ADR-009 | Deterministic PRNG for server-authoritative gameplay randomness | Proposed |
+| ADR-010 | Committed-swap state for idempotent Swap rejection            | Accepted |
 
 ---
 
@@ -141,6 +143,11 @@ forgotten, per `AGENTS.md` §2.2:
   TDD.md §0, not an independently confirmed decision.
 - Card ownership persistence model (instance table vs. unlock-flag join
   table) is recorded only as an ASSUMPTION in DATABASE.md §2.
+- The deterministic PRNG algorithm (ADR-009, PCG32) is `Proposed`: it is
+  required by MATCH3_RULES.md §7 and TDD.md §6, which state "server-seeded
+  RNG" without naming an algorithm. Until a technical document owns the
+  algorithm, ADR-009 is the only place it is selected. Its state contract is
+  defined in GAME_STATE.md §2.6.
 ```
 
 When any of these is resolved, add a new ADR (next sequential number) rather
