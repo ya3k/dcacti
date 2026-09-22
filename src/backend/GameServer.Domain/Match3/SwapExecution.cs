@@ -33,18 +33,21 @@ public readonly record struct SwapExecutionResult
         SwapRejectionReason reason,
         BattleState? state,
         CascadeResolver.CascadeResult resolution,
-        IReadOnlyList<BattleEvent> events)
+        IReadOnlyList<BattleEvent> events,
+        ResourceGeneration? resources)
     {
         IsAccepted = isAccepted;
         Reason = reason;
         _state = state;
         _resolution = resolution;
         _events = events;
+        _resources = resources;
     }
 
     private readonly BattleState? _state;
     private readonly CascadeResolver.CascadeResult _resolution;
     private readonly IReadOnlyList<BattleEvent>? _events;
+    private readonly ResourceGeneration? _resources;
 
     /// <summary>
     /// True when the Swap was accepted, committed, and resolved
@@ -124,6 +127,38 @@ public readonly record struct SwapExecutionResult
     public IReadOnlyList<BattleEvent> Events => _events ?? [];
 
     /// <summary>
+    /// The resources this committed Swap's cleared Gems generated
+    /// (<c>GAME_RULES.md</c> §17 step 12, <c>COMBAT_RULES.md</c> §2).
+    ///
+    /// <b>The persistent half has already been applied.</b>
+    /// <see cref="State"/> carries the resulting <c>PlayerState.Power</c>, clamped
+    /// to the documented 0–100 range (<c>GAME_RULES.md</c> §12). This value reports
+    /// what the Swap generated, whose <c>Power</c> is the <b>unclamped</b> pool —
+    /// so a gain the cap absorbed is visible here as a larger number than the
+    /// change in the state.
+    ///
+    /// <b>The transient half is carried here and nowhere else.</b> Base Damage
+    /// Pool, Defense Pool, and Heal Pool are Transient Resolution State
+    /// (<c>GAME_STATE.md</c> §3): the downstream resolution steps of this same
+    /// Swap (15–17) consume them from this value, and they are not written into
+    /// <c>PlayerState</c> or <c>BattleState</c>, not persisted, and not delivered
+    /// on the wire. The Heal Pool is one of them even though its effect
+    /// <b>has been applied</b>: it is <i>consumed</i> by step 14
+    /// (<see cref="ResourceGenerator.ApplyHeal"/>, which wrote the resulting
+    /// <c>PlayerState.HP</c>) and is still <b>not stored</b> anywhere — reading it
+    /// does not make it state.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// The Swap was rejected. A rejected action generates nothing and writes
+    /// nothing (<c>MATCH3_RULES.md</c> §2.1.5 item 5: no Match, no Combo, no
+    /// Power, no Relic progression occurs).
+    /// </exception>
+    public ResourceGeneration Resources =>
+        _resources ?? throw new InvalidOperationException(
+            "A rejected Swap generates no resources (MATCH3_RULES.md §2.1.5 item 5). "
+            + "Check IsAccepted before reading Resources.");
+
+    /// <summary>
     /// The same committed result with its ordered event list replaced by
     /// <paramref name="events"/> — a new immutable value; the original is not
     /// mutated and its own list is unchanged.
@@ -174,7 +209,7 @@ public readonly record struct SwapExecutionResult
 
         // Every other member is carried across unchanged: this replaces the event
         // list and nothing else.
-        return new SwapExecutionResult(true, Reason, _state, _resolution, events);
+        return new SwapExecutionResult(true, Reason, _state, _resolution, events, _resources!.Value);
     }
 
     /// <summary>
@@ -214,23 +249,25 @@ public readonly record struct SwapExecutionResult
                 + "(MATCH3_RULES.md §2.1.5).");
         }
 
-        return new SwapExecutionResult(true, Reason, state, _resolution, _events ?? []);
+        return new SwapExecutionResult(true, Reason, state, _resolution, _events ?? [], _resources!.Value);
     }
 
     /// <summary>
     /// The rejection result for a request that failed a documented check
     /// (<c>MATCH3_RULES.md</c> §2.1.2).
     ///
-    /// It carries no state and no events: a rejected action writes nothing and
-    /// emits nothing (<c>MATCH3_RULES.md</c> §2.1.5 item 6).
+    /// It carries no state, no events, and no resources: a rejected action writes
+    /// nothing and emits nothing (<c>MATCH3_RULES.md</c> §2.1.5 items 5–6).
     /// </summary>
     /// <param name="reason">The failing check, as decided by the validator.</param>
     internal static SwapExecutionResult Rejected(SwapRejectionReason reason) =>
-        new(false, reason, null, default, []);
+        new(false, reason, null, default, [], null);
 
     /// <summary>
     /// The commit result for an accepted request: the resolved authoritative state,
-    /// the resolution that produced it, and the ordered events describing it.
+    /// the resolution that produced it, the ordered events describing it, and the
+    /// resources its cleared Gems generated
+    /// (<c>GAME_RULES.md</c> §17 step 12).
     ///
     /// It is <b>internal</b>: <see cref="SwapExecutor.Execute"/> is where a commit
     /// originates, and the Application-layer pipeline step that extends the same
@@ -242,8 +279,9 @@ public readonly record struct SwapExecutionResult
     internal static SwapExecutionResult Committed(
         BattleState state,
         CascadeResolver.CascadeResult resolution,
-        IReadOnlyList<BattleEvent> events) =>
-        new(true, SwapRejectionReason.None, state, resolution, events);
+        IReadOnlyList<BattleEvent> events,
+        ResourceGeneration resources) =>
+        new(true, SwapRejectionReason.None, state, resolution, events, resources);
 }
 
 /// <summary>
@@ -270,6 +308,15 @@ public readonly record struct SwapExecutionResult
 ///                                               — owned by the Application step,
 ///                                                 composed via WithEvents/WithState
 /// </code>
+///
+/// <b>The §17 steps this type owns.</b> The board stages (steps 1–9), the
+/// resource generation of step 12 in its two persistent halves — Power
+/// (<see cref="ResourceGenerator.ApplyPower"/>) and player-effect healing
+/// (<see cref="ResourceGenerator.ApplyHeal"/>, step 14) — and the single
+/// write-back. Steps 13 and 14 are state writes over the same <c>PlayerState</c>
+/// this type already builds, so they are applied here rather than split into a
+/// second write-back (<c>GAME_STATE.md</c> §5.1 item 2). The Damage Pipeline
+/// (steps 15–17) is a separate stage and is not implemented.
 ///
 /// <b>No second pipeline.</b> Validation is <see cref="SwapValidator"/>'s, the
 /// exchange is <see cref="BoardState.WithSwapped"/>, and the resolution is
@@ -405,7 +452,40 @@ public static class SwapExecutor
         // cumulative total forward.
         var playerState = AccountMatches(state.PlayerState, resolution);
 
-        // Step 6 (GAME_EVENTS.md §1, §1.1, §2): the ordered Battle Events that
+        // Step 6 (GAME_RULES.md §17 step 12, COMBAT_RULES.md §2): Generate
+        // Resources. The cleared Gems the resolution already recorded are converted
+        // into the documented pools — permanently for Power, transiently for the
+        // three pools the downstream steps of this same resolution consume.
+        //
+        // §17 places this after "Charge Passive" (step 10, owned by the
+        // Application-layer pipeline step) and before "Relics"/"Update Power". The
+        // board stages are sequenced inside this assembly, so the conversion runs
+        // here, in the same resolution and before the single write-back — it is not
+        // a second pass over the board, it reads the passes the resolution ran.
+        var generation = ResourceGenerator.Generate(resolution);
+
+        // COMBAT_RULES.md §2 / GAME_RULES.md §12: the generated Power is written
+        // into the persistent PlayerState, clamped to the documented 0–100 range.
+        // Base Damage Pool and Defense Pool have no persistent home and are carried
+        // on the result instead — they are Transient Resolution State
+        // (GAME_STATE.md §3) and are deliberately not written to PlayerState or
+        // BattleState. The HealPool is transient too, but it does have a documented
+        // consumer in this same resolution: §17 step 14, below.
+        playerState = ResourceGenerator.ApplyPower(playerState, generation);
+
+        // Step 6b (GAME_RULES.md §17 step 14, COMBAT_RULES.md §4 item 1): Resolve
+        // Player Effects. The HealPool this Swap's HP Gems generated is applied to
+        // the persistent HP, clamped to MaxHP — overheal is discarded. It is a pure
+        // state write with no event (GAME_EVENTS.md §2 has no heal event) and no
+        // RNG: reading the transient pool here does not move it off the result, and
+        // it is still not stored in PlayerState or BattleState (GAME_STATE.md §3).
+        //
+        // It runs in the same resolution, after the generation that produced the
+        // pool and before the single write-back below, so `playerState` carries
+        // Power and HP together in the one value that is written.
+        playerState = ResourceGenerator.ApplyHeal(playerState, generation);
+
+        // Step 7 (GAME_EVENTS.md §1, §1.1, §2): the ordered Battle Events that
         // describe the resolution just performed. They are produced from
         // `resolution` — the same passes the accounting walked — and from the
         // accounted Combo, so they report the committed resolution and nothing
@@ -451,7 +531,7 @@ public static class SwapExecutor
             LastCommittedSwapPair = CommittedSwapPair.FromCells(request.From, request.To),
         };
 
-        return SwapExecutionResult.Committed(resolved, resolution, events);
+        return SwapExecutionResult.Committed(resolved, resolution, events, generation);
     }
 
     /// <summary>
@@ -503,9 +583,11 @@ public static class SwapExecutor
     /// returned value replaces the previous one wholesale. The Match / Combo stage
     /// owns only <c>Combo</c> and <c>MatchCount</c>, so the rest are copied from
     /// <paramref name="previous"/> unchanged: this method neither re-derives them
-    /// (<c>COMBAT_RULES.md</c> §3's Damage Pipeline, §2's Resource Generation, and
-    /// §4's healing are all unimplemented) nor resets them. Resource Generation
-    /// (TASK-017) is the task that will change <c>Power</c> here.
+    /// (<c>COMBAT_RULES.md</c> §3's Damage Pipeline and §4's healing are still
+    /// unimplemented) nor resets them. <c>Power</c> is carried forward here and
+    /// then updated by the Resource Generation step that follows
+    /// (<c>GAME_RULES.md</c> §17 step 12, <see cref="ResourceGenerator.ApplyPower"/>),
+    /// which is the stage that owns it.
     /// </summary>
     /// <param name="previous">
     /// The player's progression state before this Swap — the source of the

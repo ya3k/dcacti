@@ -1,7 +1,8 @@
 # Game State
 
-**Version:** 1.6 (`PetState.PassiveId` added — §2.3; the Passive identity
-`GAME_EVENTS.md` §2's `PassiveCharged`/`PassiveTriggered` report)
+**Version:** 2.0 (Boss Response contract resolved — §2.4 BossState expanded
+with PassiveId, SkillCharge, SkillCooldown; Enrage/Stun clarification;
+boss skill timing defined per Boss)
 **Status:** Draft
 
 > This document answers: **"What state exists during a running battle?"**
@@ -283,9 +284,10 @@ LastCommittedSwapPair
 ### 2.0.5.3 What This Stage Does Not Add
 
 Owned by later stages: `PetState` (§2.3) and `BossState` (§2.4), and the
-remainder of `PlayerState` (§2.2 — HP/MaxHP, ATK/DEF/Crit, Power,
-StatusEffects, EquippedRelics, EquippedCards). `PlayerState`'s `Combo` and
-`MatchCount` are now implemented and are no longer absent — see §2.2.
+remainder of `PlayerState` (§2.2 — StatusEffects, EquippedRelics,
+EquippedCards). `PlayerState`'s `Combo` and `MatchCount` are now implemented
+and are no longer absent — see §2.2 — and the combat stats `HP`/`MaxHP`,
+`ATK`/`DEF`/`Crit`, and `Power` are now implemented there as well.
 Special Gem *state* arrives with
 the Special Gem implementation stage (`MATCH3_RULES.md` §5); nothing about
 Special Gems is implemented here.
@@ -774,22 +776,35 @@ BattleState
 
 ```text
 PlayerState
-├── HP / MaxHP
-├── ATK / DEF / Crit          (base + active modifiers)
-├── Power                      (0–100, GAME_RULES.md §12)
-├── Combo                       (current Combo for the in-progress Swap,
-│                                resets to 0 between Swaps, GAME_RULES.md §5)
+├── HP / MaxHP                 (implemented in the Domain model)
+├── ATK / DEF / Crit          (base + active modifiers — implemented in the
+│                              Domain model)
+├── Power                      (0–100, GAME_RULES.md §12 — implemented in
+│                              the Domain model)
+├── Combo                       (current Combo for the Swap that just
+│                                committed and resolved, resets to 0 when a
+│                                new Swap begins, GAME_RULES.md §5 —
+│                                implemented in the Domain model)
 ├── StatusEffects[]              (Burn/Shield/Buff-Debuff instances,
-│                                COMBAT_RULES.md §5)
+│                                COMBAT_RULES.md §5 — not yet implemented)
 ├── EquippedRelics[]              (3–5, slot order fixed at battle start,
-│                                RELIC_RULES.md §4)
-├── EquippedCards[]                (3 Basic Cards + 1 Pet Skill Card)
+│                                RELIC_RULES.md §4 — not yet implemented)
+├── EquippedCards[]                (3 Basic Cards + 1 Pet Skill Card —
+│                                 not yet implemented)
 └── MatchCount                      (cumulative Matches this battle,
-                                    GAME_RULES.md §3)
+                                    GAME_RULES.md §3 — implemented in the
+                                    Domain model)
 ```
 
-**Implemented so far: `Combo`, `MatchCount`, and the combat stats
-`HP`/`MaxHP`, `ATK`/`DEF`, `Power`, and `Crit`.**
+**Implemented so far, in the Domain `PlayerState`: `MatchCount`, `Combo`, and
+the combat stats `HP`, `MaxHP`, `ATK`, `DEF`, `Power`, and `Crit`** — the eight
+members the type declares today. **The three collection members
+`StatusEffects[]`, `EquippedRelics[]`, and `EquippedCards[]` are not yet
+implemented.**
+
+**Domain state implemented is not the same as client wire delivery.** These
+eight members exist in `PlayerState`, but they are **not** all part of the
+`playerState` wire payload — see the wire paragraph below.
 
 The Match / Combo accounting stage implements the first two members, and
 `BattleState` therefore nests a `PlayerState` carrying them
@@ -822,9 +837,12 @@ of its own (§0 item 5).
 
 **The combat stats are state, and they are not yet delivered on the wire.**
 `SIGNALR_PROTOCOL.md` §4.2 fixes the `playerState` payload member to exactly
-`combo` and `matchCount` and states that the rest of §2.2 is not delivered,
-per §4 item 4's rule that a payload carries only the implemented stage's own
-fields. These fields do not change that by themselves: as with
+`combo` and `matchCount` — so of the eight implemented members above, only
+`Combo` and `MatchCount` reach the client — and states that the rest of §2.2
+(`HP`/`MaxHP`, `ATK`/`DEF`/`Crit`, `Power`, `StatusEffects`,
+`EquippedRelics`, `EquippedCards`) is not delivered, per §4 item 4's rule that
+a payload carries only the implemented stage's own fields. The combat stats do
+not change that by themselves: as with
 `LastCommittedSwapPair` (§2.1.10 item 9, `SIGNALR_PROTOCOL.md` §4 item 12),
 adding state is not adding a wire member. Delivering them is a protocol
 change owned by its own task.
@@ -902,12 +920,80 @@ BossState
 ├── BossId / Identity
 ├── Element
 ├── HP / MaxHP / ATK / DEF
-├── State                        (internal enum, e.g. Idle/Charging/
-│                                Enraged — BOSS_RULES.md §5)
-├── PassiveProgress                (shape depends on the Boss's declared
-│                                  trigger category, BOSS_RULES.md §3)
-└── StatusEffects[]                 (effects applied to the Boss)
+├── State                        (Idle/Charging/Enraged/Stunned — BOSS_RULES.md §1)
+├── PassiveId                    (the Boss's one Passive — BOSS_RULES.md §3;
+│                                 identity for PassiveCharged/PassiveTriggered
+│                                 events, GAME_EVENTS.md §2)
+├── PassiveProgress              (current count vs. threshold,
+│                                 BOSS_RULES.md §3, PASSIVE_RULES.md §2)
+├── SkillCharge                  (current charge vs. skill charge requirement,
+│                                 BOSS_RULES.md §4)
+├── SkillCooldown                (turns remaining before Skill can fire,
+│                                 BOSS_RULES.md §4)
+└── StatusEffects[]              (not yet implemented — owned by Status
+                                  Effects system)
 ```
+
+### 2.4.1 Staged BossState Fields
+
+```text
+Implement now:
+  BossId, Element, HP, MaxHP, ATK, DEF, State,
+  PassiveId, PassiveProgress, SkillCharge, SkillCooldown
+
+Deferred:
+  StatusEffects[] — owned by Status Effects system
+```
+
+### 2.4.2 Boss Passive
+
+Boss Passive is reactive and match-based, mirroring the Pet Passive structure
+(PASSIVE_RULES.md §1–§2) but triggered by the *player's* actions or battle
+state rather than the Boss's own Matches (Bosses do not match Gems).
+
+`PassiveId` identifies which Passive definition the Boss carries — the same
+identity pattern as `PetState.PassiveId` (§2.3). It is set at battle creation
+and never changes.
+
+`PassiveProgress` tracks progress toward the Passive's threshold, owned by
+BOSS_RULES.md §3 and PASSIVE_RULES.md §2.
+
+### 2.4.3 Boss Skill Charge and Cooldown
+
+`SkillCharge` tracks progress toward the Boss Skill's charge requirement.
+It increments per player match (same trigger as Passive charging, but
+independent counter). When `SkillCharge ≥ SkillChargeRequirement` (defined
+per Boss in BOSS_RULES.md §6), the Skill is eligible to fire.
+
+`SkillCooldown` tracks turns remaining before the Skill can fire again.
+It starts at the Boss's cooldown value after each Skill use, decrements by 1
+at each Turn increment (GAME_RULES.md §17 step 17), and blocks Skill use
+while `> 0`.
+
+The Skill fires when BOTH conditions are met:
+1. `SkillCharge ≥ SkillChargeRequirement`
+2. `SkillCooldown = 0`
+
+After the Skill fires: `SkillCharge` resets to 0, `SkillCooldown` resets to
+the Boss's cooldown value.
+
+### 2.4.4 Enrage
+
+Enrage is a permanent state transition triggered when `BossHP < EnrageThreshold`
+(defined per Boss in BOSS_RULES.md §6). Once Enraged, the Boss remains Enraged
+for the rest of the battle — there is no timer or duration field for MVP.
+The Enrage threshold and any Enrage-specific behavior changes are owned by
+BOSS_RULES.md §5.
+
+### 2.4.5 Stunned
+
+Stunned is a temporary state that prevents the Boss from acting (no Skill,
+no basic attack). Stun duration is measured in Turns and tracked by
+`StatusEffects[]` (not yet implemented). When Stun is applied, `State` becomes
+`Stunned`; when the duration expires, `State` reverts to `Idle`. For MVP,
+no content-defined Boss applies Stun — the state exists for future content.
+Full state machines are explicitly deferred to Future Expansion
+(BOSS_RULES.md §5 item 3).
 
 ## 2.6 RNG (`RngSeed` / `RngState`)
 

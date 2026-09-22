@@ -1,6 +1,7 @@
 # Combat Rules
 
-**Version:** 1.0
+**Version:** 1.1 (§3.2 Boss Damage — Boss basic attack and Skill use the
+same Damage Pipeline; Boss→Player damage events defined)
 **Status:** MVP Domain Rule
 **Parent:** GAME_RULES.md
 
@@ -35,8 +36,8 @@ configuration change, not a combat pipeline redesign.
 HP, Max HP, ATK, DEF, Element, Passive, Skill, State
 ```
 
-Boss "State" is an internal enum (e.g. Idle / ChargingSkill / Enraged) used by
-Boss mechanics; see BOSS_RULES.md.
+Boss "State" is an internal enum (Idle / Charging / Enraged / Stunned —
+BOSS_RULES.md §1) used by Boss mechanics; see BOSS_RULES.md.
 
 ---
 
@@ -112,6 +113,29 @@ Steps 1–6 must execute in this order for every damage instance. Modifiers with
 step 4 (multiple Relics/Buffs) apply in the deterministic trigger order defined
 in RELIC_RULES.md §4, but step 4 as a whole always resolves before step 5
 (Defense), and step 5 always resolves before Final Damage.
+
+## 3.2 Boss Damage
+
+Boss basic attacks and Boss Skills both use the same Damage Pipeline (steps 1–6):
+
+```text
+Boss Basic Attack:
+  Step 1 — Base Damage = Boss.ATK
+  Step 2 — Combo Modifier = 1 (Boss attacks are not part of a Combo chain)
+  Step 3 — Element Modifier = Boss.Element vs. Player Element (ELEMENT_RULES.md §2)
+  Step 4 — Other Modifiers = 1.0 (MVP: no Relic/Passive/Buff modifiers on Boss side)
+  Step 5 — Defense Mitigation = Player.DEF (COMBAT_RULES.md §3.3)
+  Step 6 — Final Damage applied to Player.HP
+
+Boss Skill:
+  Same pipeline as above, but Step 1 Base Damage is defined per Skill
+  (BOSS_RULES.md §6). Boss Skill damage may also include non-damage
+  effects (debuffs, resource drain) which are applied outside the pipeline.
+```
+
+The `DamageCalculated` event reports the full breakdown; `DamageDealt` and
+`DamageTaken` report the final amount with `source = "boss"` and
+`target = "player"`.
 
 ## 3.2 Defense Mitigation
 

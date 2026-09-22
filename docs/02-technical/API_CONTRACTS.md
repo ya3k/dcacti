@@ -99,6 +99,7 @@ Validation (delegates to domain rules, does not reimplement them):
 
 ```text
 petId must be owned by the player                        — PET_RULES.md §2
+bossId must be a valid MVP Boss                         — BOSS_RULES.md §6
 cardLoadout must be exactly 3 Basic Cards                  — CARD_RULES.md §1
 relicLoadout must be 3–5 Relics owned by the player          — RELIC_RULES.md §2
 ```

@@ -1,5 +1,8 @@
 using System.Collections.Concurrent;
 using GameServer.Domain.Battle;
+using GameServer.Domain.Bosses;
+using GameServer.Domain.Combat;
+using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
 
@@ -33,6 +36,10 @@ namespace GameServer.Application.Battle;
 ///         ↓
 /// Charge Passive            (GAME_RULES.md §17 step 10, PASSIVE_RULES.md §2)
 ///         ↓
+/// Damage Pipeline           (GAME_RULES.md §17 steps 15–17, COMBAT_RULES.md §3)
+///         ↓
+/// Boss HP update            (COMBAT_RULES.md §3 step 6, via Domain)
+///         ↓
 /// One write-back            (GAME_STATE.md §5.1)
 /// </code>
 ///
@@ -41,14 +48,17 @@ namespace GameServer.Application.Battle;
 /// (<c>SIGNALR_PROTOCOL.md</c> §1.2, §4.1) or when a Swap resolves. It performs
 /// sequencing and coordination only — no game rule logic
 /// (<c>ARCHITECTURE.md</c> §2.1). Board generation itself, the RNG, the initial-board
-/// constraints, swap validation, the whole board-resolution pipeline, and the
-/// Passive charge/threshold/reset rules all live in Domain; this service only
+/// constraints, swap validation, the whole board-resolution pipeline, the
+/// Passive charge/threshold/reset rules, and the Damage Pipeline's formula and
+/// Boss HP write all live in Domain; this service only
 /// orders the calls, supplies each engine the values the other produced, and
 /// records the result.
 ///
 /// It must never:
 /// <list type="bullet">
-/// <item>implement Match-3, Passive, combat, or any domain rule,</item>
+/// <item>implement Match-3, Passive, combat, or any domain rule — including the
+/// Damage Pipeline's formula (<c>COMBAT_RULES.md</c> §3), which it calls rather
+/// than reimplements,</item>
 /// <item>compute an authoritative gameplay value (<c>GAME_RULES.md</c> §18,
 /// <c>ADR-001</c>) — including Passive progress, which is
 /// <see cref="PassiveTracker"/>'s result and is written back unchanged,</item>
@@ -70,8 +80,8 @@ namespace GameServer.Application.Battle;
 /// The session registry here is deliberately not a battle-state store in the
 /// <c>REDIS_STATE.md</c> sense, and not an alternative to it. It holds the staged
 /// subset — no full <c>BattleState</c> (§2) can be expressed yet, because
-/// <c>BossState</c> does not exist, <c>PetState</c> carries only its Passive
-/// members (§2.3), and <c>PlayerState</c> carries only its Match / Combo members
+/// <c>PetState</c> carries only its Element and Passive
+/// members (§2.3) and <c>PlayerState</c> carries only its Match / Combo members
 /// (§2.2) — and it
 /// is process-local and safe to lose, exactly as §2.0.5.4 describes: Board
 /// Foundation State is not persisted to Redis or PostgreSQL.
@@ -79,17 +89,25 @@ namespace GameServer.Application.Battle;
 public sealed class BattleStateService
 {
     /// <summary>
-    /// The Passive configuration a battle's active Pet carries.
+    /// The Pet configuration a battle's active Pet carries — its Element
+    /// (<c>GAME_STATE.md</c> §2.3, <c>ELEMENT_RULES.md</c> §6) and the Passive it
+    /// carries (§2.3, <c>PASSIVE_RULES.md</c> §1).
     ///
     /// Pet selection and progression are not implemented (<c>GAME_STATE.md</c>
-    /// §2.3, <c>SIGNALR_PROTOCOL.md</c> §4.3 item 2), so the battle's Passive is
+    /// §2.3, <c>SIGNALR_PROTOCOL.md</c> §4.3 item 2), so the battle's Pet is
     /// supplied by the caller rather than resolved from a Pet definition. It is
-    /// exactly the three values <see cref="PetState"/> holds — the identity, the
-    /// Threshold, and the optional non-default Reset Behavior — and it introduces
-    /// no fourth: the Threshold is part of the documented progress pair
-    /// (<c>PASSIVE_RULES.md</c> §6 item 1) and is data-driven configuration, never
-    /// a value this layer invents (<c>ARCHITECTURE.md</c> §5 item 1).
+    /// exactly the values <see cref="PetState"/> holds — the Element, the Passive
+    /// identity, the Threshold, and the optional non-default Reset Behavior — and
+    /// it introduces no further member: the Threshold is part of the documented
+    /// progress pair (<c>PASSIVE_RULES.md</c> §6 item 1) and is data-driven
+    /// configuration, never a value this layer invents (<c>ARCHITECTURE.md</c> §5
+    /// item 1).
     /// </summary>
+    /// <param name="Element">
+    /// The active Pet's one Element (<c>GAME_STATE.md</c> §2.3,
+    /// <c>ELEMENT_RULES.md</c> §6). It is set at battle creation and never changes
+    /// (<c>PET_RULES.md</c> §2 item 3).
+    /// </param>
     /// <param name="PassiveId">
     /// The active Pet's Passive identity (<c>GAME_STATE.md</c> §2.3). It is set at
     /// battle creation and never changes (§2.3 item 2).
@@ -104,7 +122,8 @@ public sealed class BattleStateService
     /// default (<c>PASSIVE_RULES.md</c> §4 items 1–3). It must be declared on the
     /// Pet's Passive definition; it is never assumed (§4 item 3).
     /// </param>
-    public readonly record struct PassiveConfiguration(
+    public readonly record struct PetConfiguration(
+        Element Element,
         PassiveId PassiveId,
         int PassiveThreshold,
         PassiveResetBehavior? PassiveResetOverride = null)
@@ -112,24 +131,45 @@ public sealed class BattleStateService
         /// <summary>
         /// The <c>PetState</c> this configuration initializes a battle's
         /// <c>BattleState</c> with — progress at the Passive's start
-        /// (<c>GAME_STATE.md</c> §2.3 item 3).
+        /// (<c>GAME_STATE.md</c> §2.3 item 3) and the Pet's Element.
         /// </summary>
         public PetState ToPetState() =>
-            PetState.AtBattleCreation(PassiveId, PassiveThreshold, PassiveResetOverride);
+            PetState.AtBattleCreation(Element, PassiveId, PassiveThreshold, PassiveResetOverride);
+    }
+
+    /// <summary>
+    /// The Boss definition a battle is fought against (<c>GAME_STATE.md</c> §2.4,
+    /// <c>BOSS_RULES.md</c> §6).
+    ///
+    /// It is the documented <see cref="BossDefinition"/> itself — identity,
+    /// Element, and base stats — rather than a second copy of it: the definition
+    /// already is the configuration this layer needs, and restating its members
+    /// here would be the duplicate representation <c>GAME_STATE.md</c> §0 item 5
+    /// forbids. The MVP definitions are <see cref="BossDefinitions"/>.
+    /// </summary>
+    private readonly record struct BossConfiguration(BossDefinition Definition)
+    {
+        /// <summary>
+        /// The <c>BossState</c> this configuration initializes a battle's
+        /// <c>BattleState</c> with — the definition's stats at full health, in the
+        /// documented Initial State (<c>GAME_STATE.md</c> §2.4,
+        /// <c>BOSS_RULES.md</c> §6.1).
+        /// </summary>
+        public BossState ToBossState() => Definition.ToInitialState();
     }
 
     private readonly ConcurrentDictionary<string, BattleState> _battles = new(StringComparer.Ordinal);
     private readonly IRngSeedSource _seedSource;
 
     /// <summary>
-    /// The Active Pet's Passive for each battle, attached at creation
+    /// The Active Pet's configuration for each battle, attached at creation
     /// (<c>GAME_STATE.md</c> §2.3 item 2: <c>PassiveId</c> "is set at battle
     /// creation and never changes"). It is the battle's loadout input, not battle
     /// state: <c>PetState</c> in <see cref="BattleState"/> is the authoritative
     /// record and is what the resolution reads and writes, so this registry is not
     /// a second copy of any value it holds.
     /// </summary>
-    private readonly ConcurrentDictionary<string, PassiveConfiguration> _passiveConfiguration = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, PetConfiguration> _petConfiguration = new(StringComparer.Ordinal);
 
     public BattleStateService()
         : this(new SystemEntropyRngSeedSource())
@@ -143,20 +183,23 @@ public sealed class BattleStateService
 
     /// <summary>
     /// Creates the authoritative Board Foundation state for a new battle session
-    /// (<c>GAME_STATE.md</c> §2.0.5, §2.2, §2.3, §2.7.1).
+    /// (<c>GAME_STATE.md</c> §2.0.5, §2.2, §2.3, §2.4, §2.7.1).
     ///
     /// The server chooses the battle's seed from its own entropy (§2.6.1), then
     /// the board is generated deterministically from that seed
     /// (<c>MATCH3_RULES.md</c> §1.2.1), and the accepted board plus the retained
     /// resulting RNG state become the battle state (§2.7.1 steps 5–6). The
-    /// player's progression state and the active Pet's Passive state are created
-    /// with it at their documented starting values (§2.2, §2.3 item 3).
+    /// player's progression state, the active Pet's Element and Passive state, and
+    /// the battle's one Boss are created
+    /// with it at their documented starting values (§2.2, §2.3 item 3, §2.4).
     ///
     /// Generation is initialization, not resolution: it consumes no Turn and no
     /// <c>Sequence</c>, both of which remain <c>0</c> (§2.0.5.2 item 1), and it
     /// emits no Battle Event (§2.0.5.2 item 2). Nothing here increments,
     /// re-rolls, or repairs anything, and nothing here charges the Passive: no
-    /// Match has been produced (<c>PASSIVE_RULES.md</c> §2 item 1).
+    /// Match has been produced (<c>PASSIVE_RULES.md</c> §2 item 1). The Boss
+    /// likewise takes no damage and transitions no State
+    /// (<c>BOSS_RULES.md</c> §3–§5).
     ///
     /// This is not a battle-creation endpoint or hub method. Battle creation
     /// remains <c>POST /api/battle/start</c> (<c>API_CONTRACTS.md</c> §3), which
@@ -165,12 +208,21 @@ public sealed class BattleStateService
     /// (<c>REDIS_STATE.md</c> §7.3–§7.4, <c>ROADMAP.md</c> §1 Phase 2).
     /// </summary>
     /// <param name="battleId">Identity of the battle session.</param>
-    /// <param name="passiveConfiguration">
-    /// The active Pet's Passive — its identity, Threshold, and declared Reset
+    /// <param name="petConfiguration">
+    /// The active Pet's Element and Passive — its Element, the Passive's identity,
+    /// its Threshold, and its declared Reset
     /// Behavior. <c>PetState</c> is present from battle creation
     /// (<c>GAME_STATE.md</c> §2.3 item 3) and no value may be invented for it, so
-    /// this is required: Pet selection is not implemented and the battle's Passive
+    /// this is required: Pet selection is not implemented and the battle's Pet
     /// configuration is therefore supplied by the caller.
+    /// </param>
+    /// <param name="bossDefinition">
+    /// The definition of the Boss this battle is fought against
+    /// (<c>GAME_STATE.md</c> §2.4, <c>BOSS_RULES.md</c> §6.1). <c>BossState</c> is
+    /// present from battle creation (§2.4) and no value may be invented for its
+    /// identity, Element, or stats, so this is required: Boss selection is not
+    /// implemented and the battle's Boss definition is therefore supplied by the
+    /// caller — <see cref="BossDefinitions"/> holds the MVP set.
     /// </param>
     /// <exception cref="GameServer.Domain.Match3.BoardGenerationFailedException">
     /// No candidate board satisfied the documented initial-board constraints
@@ -178,34 +230,42 @@ public sealed class BattleStateService
     /// item 3). The battle creation is rejected as an error and no state is
     /// recorded; the seed is not changed and no fallback board is substituted.
     /// </exception>
-    public BattleState CreateBattle(string battleId, PassiveConfiguration passiveConfiguration)
+    public BattleState CreateBattle(
+        string battleId,
+        PetConfiguration petConfiguration,
+        BossDefinition bossDefinition)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
 
         var seed = _seedSource.CreateSeed();
 
-        // §2.3: the battle's PetState is built from the caller's Passive
-        // configuration with progress at the start of its first charge. It is
-        // never absent, never defaulted with an invented Threshold, and never
-        // created lazily on the first Swap.
-        var state = BattleState.Create(battleId, seed, passiveConfiguration.ToPetState());
+        // §2.3 / §2.4: the battle's PetState is built from the caller's Pet
+        // configuration with progress at the start of its first charge, and its
+        // BossState from the Boss definition at full health in the documented
+        // Initial State. Neither is absent, neither is defaulted with an invented
+        // value, and neither is created lazily on the first Swap.
+        var state = BattleState.Create(
+            battleId,
+            seed,
+            petConfiguration.ToPetState(),
+            new BossConfiguration(bossDefinition).ToBossState());
 
         _battles[battleId] = state;
-        _passiveConfiguration[battleId] = passiveConfiguration;
+        _petConfiguration[battleId] = petConfiguration;
 
         return state;
     }
 
     /// <summary>
-    /// Returns the Passive configuration the battle's active Pet carries, or
+    /// Returns the Pet configuration the battle's active Pet carries, or
     /// <c>null</c> when no session with that id exists.
     ///
     /// This is the battle's loadout input, attached at creation; the authoritative
     /// current progress is <c>BattleState.PetState</c>
     /// (<c>GAME_STATE.md</c> §2.3, §5.1) and is read from there.
     /// </summary>
-    internal PassiveConfiguration? GetPassiveConfiguration(string battleId) =>
-        _passiveConfiguration.TryGetValue(battleId, out var configuration) ? configuration : null;
+    internal PetConfiguration? GetPetConfiguration(string battleId) =>
+        _petConfiguration.TryGetValue(battleId, out var configuration) ? configuration : null;
 
     /// <summary>
     /// Returns the authoritative state for a battle, or <c>null</c> when no
@@ -322,8 +382,18 @@ public sealed class BattleStateService
     /// executor returns already carries the stable board, the advanced
     /// <c>RngState</c>, the begun <c>Turn</c>, the incremented <c>Sequence</c>,
     /// the recorded committed pair, and the resolution's Match/Combo values
-    /// together, so the store is only ever handed
-    /// a consistent post-resolution state (<c>GAME_STATE.md</c> §5.1).
+    /// together; this method extends that same value with the settled Passive
+    /// progress and the Boss's post-damage <c>HP</c>, so the store is only ever
+    /// handed a consistent post-resolution state (<c>GAME_STATE.md</c> §5.1).
+    ///
+    /// <b>The Damage Pipeline runs here, after the Passive charge.</b>
+    /// <c>GAME_RULES.md</c> §17 places "Calculate Damage" / "Apply Element
+    /// Modifier" / "Apply Final Damage" at steps 15–17, after "Charge Passive"
+    /// (step 10) and before "Resolve Boss Response" (step 18, not implemented).
+    /// This boundary calls <see cref="DamagePipeline.Calculate"/> with the values
+    /// the earlier stages produced and writes its returned <c>BossState</c> back
+    /// — the formula, the state transformation, and the HP clamp are Domain's
+    /// (<c>COMBAT_RULES.md</c> §3); this boundary decides none of them.
     ///
     /// <b>Scope.</b> This resolves one Swap and nothing else, and the Match/Combo
     /// accounting it records is the Domain executor's (<c>GAME_STATE.md</c> §2.2,
@@ -331,11 +401,18 @@ public sealed class BattleStateService
     /// Passive charge it records is the Domain tracker's
     /// (<c>GAME_STATE.md</c> §2.3, <c>PASSIVE_RULES.md</c> §2–§5) — this boundary
     /// computes no progress, evaluates no Threshold, and applies no reset. The
+    /// damage it records is the Domain pipeline's — this boundary computes no
+    /// Base Damage, modifier, mitigation, or Final Damage, performs no Crit roll,
+    /// and applies no additional damage of its own. Victory/Defeat
+    /// (<c>GAME_RULES.md</c> §17 step 19) and Boss Response (step 18) are
+    /// deliberately absent: a Boss HP of <c>0</c> is recorded as state and is not
+    /// read as an outcome here. The
     /// ordered Battle Events of the resolution travel on the returned result
     /// (<c>GAME_EVENTS.md</c> §1.1, <c>SwapExecutionResult.Events</c>), which
-    /// this boundary assembles only by appending the Passive stage's own reports
-    /// to the executor's list — it builds no event, and it reorders, filters,
-    /// regroups, and drops none. No event is delivered from here —
+    /// this boundary assembles only by appending the Passive stage's and the
+    /// Damage Pipeline's own reports to the executor's list in the documented
+    /// order — it builds no event, and it reorders, filters, regroups, and drops
+    /// none. No event is delivered from here —
     /// <c>ReceiveEvents</c> is the protocol's event path
     /// (<c>SIGNALR_PROTOCOL.md</c> §3) and remains unimplemented — and
     /// no state is persisted (<c>REDIS_STATE.md</c> §7 items 8 and 12). Recording the
@@ -412,18 +489,64 @@ public sealed class BattleStateService
         // PassiveTriggered. Nothing is sorted, filtered, or rebuilt — the assembled
         // list is the two stages' own output concatenated, and WithEvents carries
         // every other member of the result across unchanged.
-        var events = new List<BattleEvent>(result.Events.Count + charged.Charges.Count + charged.Triggers.Count);
+        var events = new List<BattleEvent>(result.Events.Count + charged.Charges.Count + charged.Triggers.Count + 3);
 
         events.AddRange(result.Events);
         events.AddRange(charged.Charges.Select(BattleEvent.ForPassiveCharged));
         events.AddRange(charged.Triggers.Select(BattleEvent.ForPassiveTriggered));
 
+        // §17 steps 15–17 / COMBAT_RULES.md §3: the Damage Pipeline. This boundary
+        // orders the call, supplies the values the earlier stages already produced,
+        // and writes back what the Domain pipeline returns — it decides no step of
+        // the formula and computes no gameplay value (ARCHITECTURE.md §2.1).
+        //
+        // The inputs are read from the states the resolution is already committed
+        // to, never re-derived:
+        //   - step 1's ATK      — PlayerState.ATK (GAME_STATE.md §2.2), the value
+        //                         the executor carried forward in `resolved`
+        //   - step 1's pool     — result.Resources.BaseDamagePool, the transient
+        //                         pool step 12 generated (GAME_STATE.md §3)
+        //   - step 2's selector — PlayerState.Combo, this Swap's Match total
+        //   - step 3's elements — PetState.Element (attacker) and
+        //                         BossState.Element (defender), both set at battle
+        //                         creation and never rewritten (ELEMENT_RULES.md §5)
+        //   - step 5's DEF      — BossState.DEF (GAME_STATE.md §2.4)
+        // The pipeline draws no RNG and performs no Crit roll, so no randomness is
+        // introduced here (COMBAT_RULES.md §3.3, ADR-009).
+        var damage = DamagePipeline.Calculate(
+            resolved.BossState,
+            new DamagePipeline.DamageInputs(
+                Attack: resolved.PlayerState.ATK,
+                BaseDamagePool: result.Resources.BaseDamagePool,
+                Combo: resolved.PlayerState.Combo,
+                AttackerElement: resolved.PetState.Element,
+                DefenderElement: resolved.BossState.Element,
+                DefenderDefense: resolved.BossState.DEF),
+            ComboModifiers.Default,
+            ElementModifiers.Default);
+
+        // §17 step 17 / GAME_STATE.md §5.1: the Boss's HP write is part of the SAME
+        // single post-resolution write-back as the board, the counters, the
+        // committed pair, the Match/Combo values, and the settled Passive progress
+        // — the pipeline returned the whole `BossState` as a new value, so
+        // assigning it here cannot split the write-back in two. Nothing else on the
+        // Boss changes: this stage transitions no State and fires no Boss mechanic
+        // (BOSS_RULES.md §3–§5, §17 steps 18–19 are out of scope).
+        resolved = resolved with { BossState = damage.BossState };
+
+        // GAME_EVENTS.md §1/§2: the three Damage events follow the Passive stage's
+        // reports, in the order §1 places them — DamageCalculated, DamageDealt,
+        // DamageTaken. They are the pipeline's own values, appended unchanged.
+        events.Add(BattleEvent.ForDamageCalculated(damage.Calculation));
+        events.Add(BattleEvent.ForDamageDealt(damage.DamageDealt));
+        events.Add(BattleEvent.ForDamageTaken(damage.DamageTaken));
+
         // GAME_STATE.md §5.1: the result carries the SAME single post-resolution
         // write-back that is stored — board, counters, committed pair, Match/Combo
-        // values, and now the settled Passive progress, all together. Handing back
-        // the executor's pre-charge state would split the write-back in two and let
-        // a caller observe a state in which the Passive has not been charged while
-        // the batch already reports its charges (§3 item 6: an event is never a
+        // values, the settled Passive progress, and now the Boss's HP, all
+        // together. Handing back the pre-damage state would split the write-back and
+        // let a caller observe a state in which the Boss's HP does not match the
+        // DamageDealt the batch already reports (§3 item 6: an event is never a
         // substitute for the state write-back).
         var committed = result
             .WithEvents(events)

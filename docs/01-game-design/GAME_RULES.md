@@ -1,6 +1,7 @@
 # Core Game Rules
 
-**Version:** 2.0 (standardized)
+**Version:** 2.1 (§17 step 18 expanded — Boss Response sub-steps: Passive,
+Skill, Attack; Boss→Player damage events defined)
 **Status:** MVP Source of Truth
 
 > This document answers: **"What are the fundamental rules of the game?"**
@@ -290,6 +291,26 @@ may expand individual steps but must not reorder them):
 17. Apply Final Damage
 18. Resolve Boss Response
 19. End Turn
+```
+
+Step 18 ("Resolve Boss Response") expands to:
+
+```text
+18a. Boss Passive — evaluate the Boss's Passive trigger condition against
+     the post-damage battle state. If the trigger is met, apply the
+     Passive effect and emit PassiveCharged/PassiveTriggered
+     (BOSS_RULES.md §3, GAME_EVENTS.md §2).
+18b. Boss Skill — evaluate Skill eligibility: SkillCharge ≥ Charge
+     Requirement AND SkillCooldown = 0 (BOSS_RULES.md §4,
+     GAME_STATE.md §2.4.3). If eligible, execute the Skill (damage
+     through Damage Pipeline, apply non-damage effects) and emit
+     BossSkillCast. Reset SkillCharge to 0, set SkillCooldown to the
+     Boss's cooldown value. If not eligible, skip to 18c.
+18c. Boss Attack — if the Boss Skill did not fire (step 18b skipped),
+     the Boss performs a basic attack: Base Damage = Boss.ATK, Element
+     = Boss.Element, through Damage Pipeline (COMBAT_RULES.md §3) to
+     Player. Emit DamageCalculated, DamageDealt (source=boss,
+     target=player), DamageTaken (source=boss, target=player).
 ```
 
 The implementation may split these into multiple internal steps, but

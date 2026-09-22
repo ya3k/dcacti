@@ -1,7 +1,8 @@
 # SignalR Protocol
 
-**Version:** 1.6 (§4.3 added: the `PetState` delivery contract — this
-document owns the `BattleStateUpdated` record's member set)
+**Version:** 2.0 (Boss Response wire contract — PassiveCharged/PassiveTriggered,
+BossSkillCast, BattleWon/BattleLost wire schemas added; discriminator
+expanded; Boss→Player damage events defined)
 **Status:** Draft — depends on TDD.md §0 assumption (ASP.NET Core backend)
 
 > This document answers: **"How does realtime communication work?"** It does
@@ -251,16 +252,16 @@ discriminator member and that event's own payload members at the same level.
 
 | Member | Type | Value |
 | --- | --- | --- |
-| `type` | string | one of `MatchCreated`, `CascadeCreated`, `ComboChanged`, `GemMatched` |
+| `type` | string | one of `MatchCreated`, `CascadeCreated`, `ComboChanged`, `GemMatched`, `DamageCalculated`, `DamageDealt`, `DamageTaken`, `PassiveCharged`, `PassiveTriggered`, `BossSkillCast`, `BattleWon`, `BattleLost` |
 
 1. **The property name is `type`.** The string spelling matches the event name
    `GAME_RULES.md` §16 lists and `GAME_EVENTS.md` §2 defines.
 2. **The encoding is the string**, never the numeric enum value and never a
-   camelCase variant. The four allowed values are exactly the four names above
-   — the set is closed. No `MatchResolved`, no `SpecialGemActivated`, no
-   `TurnChanged`, no `BoardChanged`, and no other name is a valid `type`: those
-   are either state (`SIGNALR_PROTOCOL.md` §3.1 item 3, §8 items 5–7) or
-   undefined (`GAME_EVENTS.md` §2 item 3).
+   camelCase variant. The allowed values are exactly the names in the
+   discriminator table above — the set is closed. No `MatchResolved`, no
+   `SpecialGemActivated`, no `TurnChanged`, no `BoardChanged`, and no other
+   name is a valid `type`: those are either state (`SIGNALR_PROTOCOL.md`
+   §3.1 item 3, §8 items 5–7) or undefined (`GAME_EVENTS.md` §2 item 3).
 3. **The enum is projected to its name, not to its ordinal.** The ordinal
    (`BattleEventType`) is a Domain identity and is not part of the wire
    contract; renumbering the enum must not change the wire.
@@ -576,7 +577,7 @@ specialGem
 
 ### 3.2.12 No Member Outside This Schema
 
-1. **The four events carry exactly the members tabulated above.** No event
+1. **The seven events carry exactly the members tabulated above.** No event
    carries a `battleId`, a `serverSequence`, a `turn`, a board, a `combo`, a
    `matchCount`, a timestamp, a GUID, or a generated id: the first two belong
    to the envelope (§3), and the rest are state (§3.1 item 3) or nonexistent
@@ -591,6 +592,248 @@ specialGem
    (`GAME_RULES.md` §17, `GAME_EVENTS.md` §1.1, §1.3).
 5. **The envelope is unchanged.** `ReceiveEvents(battleId, serverSequence,
    events[])` keeps exactly its three members (§3, §3.3).
+
+### 3.2.13 `DamageCalculated`
+
+```json
+{
+    "type": "DamageCalculated",
+    "base": 100,
+    "comboModifier": 1.5,
+    "elementModifier": 1.5,
+    "otherModifiers": 1.0,
+    "defense": 68.57142857142857,
+    "finalDamage": 68
+}
+```
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | always | `"DamageCalculated"` |
+| `base` | int | always | Step 1 — Base Damage: `PlayerState.ATK + ResourceGeneration.BaseDamagePool` (`COMBAT_RULES.md` §3 step 1) |
+| `comboModifier` | double | always | Step 2 — the factor the Swap's Combo selects (`COMBAT_RULES.md` §3 step 2) |
+| `elementModifier` | double | always | Step 3 — the factor the resolved element matchup assigns (`ELEMENT_RULES.md` §2.2, `COMBAT_RULES.md` §3 step 3) |
+| `otherModifiers` | double | always | Step 4 — the combined Relic / Passive / Buff / Debuff / Crit factor (pass-through `1.00` in MVP) |
+| `defense` | double | always | Step 5 — the damage after Defense Mitigation, before truncation: `Pre-Defense × (K / (K + DEF))` (`COMBAT_RULES.md` §3.2) |
+| `finalDamage` | int | always | Step 6 — the Final Damage: `defense` truncated toward zero, never negative (`COMBAT_RULES.md` §3 step 6) |
+
+1. **All six pipeline members are always present.** The pipeline always runs
+   steps 1–6 (`COMBAT_RULES.md` §3.1: "Steps 1–6 must execute in this order
+   for every damage instance"), so every member is populated regardless of
+   whether a later stage (Relic, Passive, Crit) has been implemented.
+2. **Modifiers are reported as the factors the pipeline applied, not as
+   deltas.** A `comboModifier` of `1.5` means "multiplied by 1.5", not
+   "+50%". This is the form the configuration types carry
+   (`ComboModifiers`, `ElementModifiers`) and what lets the client show the
+   pipeline the way `GDD`'s Design Philosophy asks — a number and the
+   multipliers that produced it.
+3. **`defense` is a `double` and may be fractional.** The mitigation formula
+   divides by `(K + DEF)` and the result is genuinely fractional
+   (`96 × 100/140 ≈ 68.57`). The report therefore presents the
+   intermediate value at the precision the pipeline computes it in.
+4. **`finalDamage` is an `int`: truncated, never negative.** §3 step 6
+   truncates toward zero and enforces a minimum of 0
+   (`COMBAT_RULES.md` §3 step 6). The wire carries the already-truncated
+   integer.
+5. **`otherModifiers` is `1.00` in MVP and the member is required even so.**
+   `GAME_EVENTS.md` §2 lists it in the payload, and `COMBAT_RULES.md` §3.1
+   makes step 4 a stage the pipeline always has. Omitting the member would
+   understate the breakdown the contract asks for, and would make a later
+   step-4 implementation a payload change rather than a value change.
+6. **This event precedes `DamageDealt` and `DamageTaken` for the same
+   instance** (`GAME_EVENTS.md` §1).
+
+### 3.2.14 `DamageDealt`
+
+```json
+{
+    "type": "DamageDealt",
+    "source": "player",
+    "target": "boss",
+    "amount": 68
+}
+```
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | always | `"DamageDealt"` |
+| `source` | string | always | the party that dealt the damage (`"player"` or `"boss"`) |
+| `target` | string | always | the party that received the damage (`"player"` or `"boss"`) |
+| `amount` | int | always | the Final Damage applied (`COMBAT_RULES.md` §3 step 6) |
+
+1. **`source` and `target` are the `DamageParty` enum projected to its
+   documented name.** The two allowed values are `"player"` and `"boss"`
+   (`DamageEvents.cs`). The ordinal is a Domain identity and is not part of
+   the wire contract (§3.2.2 item 3, §3.2.4 item 3).
+2. **`amount` is the same `FinalDamage` value `DamageCalculated` reports.**
+   It is the truncated integer damage applied to the target's HP. Boss HP is
+   reduced once, by the pipeline; these reports describe that reduction
+   (`GAME_EVENTS.md` §3 item 6).
+3. **This event always follows `DamageCalculated` for the same instance**
+   (`GAME_EVENTS.md` §1).
+
+### 3.2.15 `DamageTaken`
+
+```json
+{
+    "type": "DamageTaken",
+    "source": "player",
+    "target": "boss",
+    "amount": 68
+}
+```
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | always | `"DamageTaken"` |
+| `source` | string | always | the party that dealt the damage (`"player"` or `"boss"`) |
+| `target` | string | always | the party that received the damage (`"player"` or `"boss"`) |
+| `amount` | int | always | the Final Damage taken (`COMBAT_RULES.md` §3 step 6) |
+
+1. **Same members as `DamageDealt`, same instance.** The two events carry
+   identical payloads for the same damage instance — `DamageDealt` reports
+   from the dealer's side, `DamageTaken` from the receiver's side
+   (`GAME_EVENTS.md` §2). It is **not** a second application of damage:
+   Boss HP is reduced once, by the pipeline, and these two reports describe
+   that one reduction.
+2. **This event always follows `DamageDealt` for the same instance**
+   (`GAME_EVENTS.md` §1).
+3. **In MVP, `source` is always `"player"` and `target` is always `"boss"`**
+   for both events (`GAME_RULES.md` §17 steps 15–17). The `DamageParty`
+   enum is widen-able: when Boss-to-Player damage is implemented
+   (`BOSS_RULES.md` §4), the same two roles describe it with
+   `source = "boss"` and `target = "player"`.
+
+### 3.2.16 `PassiveCharged`
+
+```json
+{
+    "type": "PassiveCharged",
+    "passiveId": "boss-hoa-long-rage",
+    "source": "boss",
+    "sourceId": "hoa-long",
+    "progress": 3,
+    "threshold": 5
+}
+```
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | always | `"PassiveCharged"` |
+| `passiveId` | string | always | the Passive's identity (`GAME_STATE.md` §2.3 `PetState.PassiveId` or §2.4 `BossState.PassiveId`) |
+| `source` | string | always | `"pet"` or `"boss"` — which entity's Passive charged (`GAME_EVENTS.md` §2) |
+| `sourceId` | string | always | the identity of the owning entity (`PetState.PetId` or `BossState.BossId`) |
+| `progress` | int | always | the new progress value after the increment (`PASSIVE_RULES.md` §2) |
+| `threshold` | int | always | the Passive's threshold (`PASSIVE_RULES.md` §1) |
+
+1. **`source` discriminates Pet Passive from Boss Passive.** This event is
+   shared by both systems (`PASSIVE_RULES.md` §7, `BOSS_RULES.md` §3).
+   The string is `"pet"` or `"boss"`, matching the `DamageDealt`/`DamageTaken`
+   convention for party identifiers (§3.2.14 item 1).
+2. **`sourceId` identifies the specific entity.** For a Pet Passive, it is
+   `PetState.PetId`; for a Boss Passive, it is `BossState.BossId`. The client
+   uses both `source` and `sourceId` to attribute the event.
+3. **`passiveId` is the same value the owning entity's state holds.** It is
+   never re-derived or invented by the emitting stage (`GAME_EVENTS.md` §2
+   item 1).
+
+### 3.2.17 `PassiveTriggered`
+
+```json
+{
+    "type": "PassiveTriggered",
+    "passiveId": "boss-hoa-long-rage",
+    "source": "boss",
+    "sourceId": "hoa-long",
+    "progress": 5,
+    "threshold": 5
+}
+```
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | always | `"PassiveTriggered"` |
+| `passiveId` | string | always | the Passive's identity |
+| `source` | string | always | `"pet"` or `"boss"` |
+| `sourceId` | string | always | the identity of the owning entity |
+| `progress` | int | always | progress at the moment the threshold was crossed — before reset (`PASSIVE_RULES.md` §2 item 4, §4) |
+| `threshold` | int | always | the Passive's threshold |
+
+1. **Same members as `PassiveCharged`, same semantics.** The two events
+   carry identical payload shapes — `PassiveTriggered` is emitted when the
+   threshold is crossed, `PassiveCharged` when it is not
+   (`GAME_EVENTS.md` §2).
+2. **`progress` is the value before this trigger's own reset.** On a
+   `PassiveTriggered`, the progress reported is the value at the moment the
+   threshold was crossed — **before** that trigger's own reset
+   (`PASSIVE_RULES.md` §2 item 4, §4).
+3. **`effect summary` is deferred** per `GAME_EVENTS.md` §2 item 3 and is
+   not a wire member yet.
+
+### 3.2.18 `BossSkillCast`
+
+```json
+{
+    "type": "BossSkillCast",
+    "skillId": "flame-burst",
+    "sourceId": "hoa-long"
+}
+```
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | always | `"BossSkillCast"` |
+| `skillId` | string | always | the Boss Skill's identity (`BOSS_RULES.md` §4) |
+| `sourceId` | string | always | the Boss's identity (`BossState.BossId`) |
+
+1. **`skillId` identifies which Boss Skill was used.** It is the same
+   identity the boss definition carries — the client uses it to look up the
+   skill's visual and effect description (`BOSS_RULES.md` §4, §6).
+2. **`sourceId` identifies the Boss.** In MVP there is exactly one Boss per
+   battle, but the field is present for future-proofing and consistency with
+   `PassiveCharged`/`PassiveTriggered` (§3.2.16).
+3. **Effect details are carried by subsequent damage events.** The skill's
+   damage (if any) is reported by `DamageCalculated`/`DamageDealt`/
+   `DamageTaken` in the same `ReceiveEvents` batch, with `source = "boss"`
+   and `target = "player"`.
+
+### 3.2.19 `BattleWon` / `BattleLost`
+
+```json
+{
+    "type": "BattleWon",
+    "outcome": "victory",
+    "finalBossHp": 0,
+    "finalPlayerHp": 85
+}
+```
+
+```json
+{
+    "type": "BattleLost",
+    "outcome": "defeat",
+    "finalBossHp": 120,
+    "finalPlayerHp": 0
+}
+```
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | always | `"BattleWon"` or `"BattleLost"` |
+| `outcome` | string | always | `"victory"` or `"defeat"` |
+| `finalBossHp` | int | always | Boss HP at battle end (`GAME_STATE.md` §2.4) |
+| `finalPlayerHp` | int | always | Player HP at battle end (`GAME_STATE.md` §2.2) |
+
+1. **`outcome` is a string, not a boolean.** It carries `"victory"` or
+   `"defeat"` — the same names `GAME_EVENTS.md` §2 item 9 uses. The string
+   form is consistent with other discriminator-style wire members
+   (`source`, `gemType`).
+2. **`finalBossHp` and `finalPlayerHp` are the terminal HP values.** They
+   are the state values at the moment the battle ended, after all damage
+   from the final action has been applied. The client uses them for
+   end-of-battle display.
+3. **`reward summary` is deferred** per `GAME_EVENTS.md` §2 item 9 — it is
+   not a wire member yet. The data shape is owned by `DATABASE.md`.
 
 ---
 

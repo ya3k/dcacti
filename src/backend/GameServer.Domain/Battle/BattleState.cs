@@ -1,18 +1,21 @@
+using GameServer.Domain.Bosses;
+using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
 
 namespace GameServer.Domain.Battle;
 
 /// <summary>
-/// Active Battle State through the Pet / Passive stage — the authoritative battle
-/// state at the Board Foundation stage (<c>GAME_STATE.md</c> §2.0.5) plus the
-/// <c>PlayerState</c> fields of §2.2 and the <c>PetState</c> fields of §2.3.
+/// Active Battle State through the Boss stage — the authoritative battle state
+/// at the Board Foundation stage (<c>GAME_STATE.md</c> §2.0.5) plus the
+/// <c>PlayerState</c> fields of §2.2, the <c>PetState</c> fields of §2.3, and
+/// the <c>BossState</c> fields of §2.4.
 ///
 /// It is the Battle State Foundation (§2.0) <b>plus</b> the fields §2 already
 /// defines for the Match-3 board, the randomness that generates it, the commit
-/// record the staleness check reads, the player's Match/Combo progression, and the
-/// active Pet's Passive — nothing else is added, and nothing already in §2.0
-/// changes (§0 item 5):
+/// record the staleness check reads, the player's Match/Combo progression, the
+/// active Pet's Element and Passive, and the battle's one Boss — nothing else is
+/// added, and nothing already in §2.0 changes (§0 item 5):
 ///
 /// <code>
 /// BattleState
@@ -33,10 +36,16 @@ namespace GameServer.Domain.Battle;
 /// │   ├── MatchCount = 0
 /// │   └── Combo      = 0
 /// ├── PetState                       (§2.3)
+/// │   ├── Element
 /// │   ├── PassiveId
 /// │   ├── PassiveProgress           (Threshold, Current = 0)
 /// │   └── PassiveResetOverride?     (absent when Default)
-/// ── LastCommittedSwapPair         (§2.1.10; absent until the first
+/// ├── BossState                      (§2.4)
+/// │   ├── BossId
+/// │   ├── Element
+/// │   ├── HP / MaxHP / ATK / DEF
+/// │   └── State                     (Idle / Charging / Enraged / Stunned)
+/// └── LastCommittedSwapPair?         (§2.1.10; absent until the first
 ///                                    committed Swap)
 /// </code>
 ///
@@ -44,18 +53,21 @@ namespace GameServer.Domain.Battle;
 /// stage is where those §2 fields first come into existence (§2.0.5). The
 /// remaining §2 fields — the rest of <c>PlayerState</c> (§2.2:
 /// <c>StatusEffects</c>, <c>EquippedRelics</c>, <c>EquippedCards</c>), the rest
-/// of <c>PetState</c> (§2.3: <c>PetId</c>/Identity, <c>Element</c>,
-/// <c>Tier</c>/<c>Star</c>/<c>Level</c>), and <c>BossState</c> (§2.4) — are still
+/// of <c>PetState</c> (§2.3: <c>PetId</c>/Identity, <c>Tier</c>/<c>Star</c>/
+/// <c>Level</c>), and the rest of <c>BossState</c> (§2.4:
+/// <c>PassiveProgress</c>, <c>StatusEffects[]</c>) — are still
 /// absent and still owned by later stages (§2.0.5.3). Their absence is a staging
 /// position, not a scope reduction of §2: a field absent from a stage is <b>not
 /// yet implemented</b>, not <b>not required</b> (§0 item 4).
 ///
-/// <see cref="PlayerState"/> and <see cref="PetState"/> are the documented owners
-/// of the progression values they carry (§2.2, §2.3), which is why they appear
+/// <see cref="PlayerState"/>, <see cref="PetState"/>, and <see cref="BossState"/>
+/// are the documented owners of the values they carry (§2.2, §2.3, §2.4), which
+/// is why they appear
 /// here as nested fields rather than as flat members of this record: §0 item 5
 /// forbids a stage from introducing a parallel representation of a concept
-/// another stage owns, and a flat <c>BattleState.MatchCount</c> or
-/// <c>BattleState.PassiveProgress</c> would be a second owner.
+/// another stage owns, and a flat <c>BattleState.MatchCount</c>,
+/// <c>BattleState.PassiveProgress</c>, or <c>BattleState.BossHP</c> would be a
+/// second owner.
 ///
 /// <c>BoardState</c> carries Special Gem state inside its <c>Cells[64]</c>
 /// entries (<c>GAME_STATE.md</c> §2.1.1, §2.1.4). No field was added to this
@@ -162,6 +174,30 @@ namespace GameServer.Domain.Battle;
 /// UI-facing value (<c>SIGNALR_PROTOCOL.md</c> §4 item 13, §4.3). It adds no
 /// message, method, or subscription.
 /// </param>
+/// <param name="BossState">
+/// The battle's one Boss (<c>GAME_STATE.md</c> §2.4,
+/// <c>GAME_RULES.md</c> §1.1) — the documented owner of the Boss's identity,
+/// Element, <c>HP</c>/<c>MaxHP</c>, <c>ATK</c>, <c>DEF</c>, and <c>State</c>
+/// (<c>BOSS_RULES.md</c> §1, §6.1).
+///
+/// It is <b>not optional, not nullable, and never lazily initialized</b>: a
+/// battle has exactly one Boss (<c>GAME_RULES.md</c> §1.1), and
+/// <c>GAME_EVENTS.md</c> §2 makes <c>BattleStarted</c> "a gameplay event and
+/// requires a created battle with a Pet and a Boss". There is therefore no
+/// "no Boss yet" state for an absent value to spell — unlike
+/// <see cref="LastCommittedSwapPair"/>, whose absence is documented (§2.1.10
+/// item 3). It is a required field of this record, and a caller must supply the
+/// Boss's real definition (<see cref="Bosses.BossDefinition.ToInitialState"/>)
+/// rather than letting one be defaulted with an invented Element or
+/// <c>MaxHP</c>.
+///
+/// It is written in the same single post-resolution write-back as
+/// <see cref="Turn"/> and <see cref="Sequence"/> (§5.1). Nothing in this type
+/// changes it: damage application, Boss Passive, Boss Skill, Boss Response, the
+/// State machine, and Victory/Defeat are all unimplemented and remain owned by
+/// their own stages (<c>BOSS_RULES.md</c> §3–§5, <c>COMBAT_RULES.md</c> §3,
+/// <c>GAME_RULES.md</c> §17 steps 15–19).
+/// </param>
 /// <param name="LastCommittedSwapPair">
 /// The unordered pair most recently committed to the board
 /// (<c>GAME_STATE.md</c> §2.1.10) — the authoritative record
@@ -197,6 +233,7 @@ public sealed record BattleState(
     BoardState BoardState,
     PlayerState PlayerState,
     PetState PetState,
+    BossState BossState,
     CommittedSwapPair? LastCommittedSwapPair = null)
 {
     /// <summary>
@@ -213,11 +250,12 @@ public sealed record BattleState(
 
     /// <summary>
     /// The <c>PetState</c> a battle begins with when the caller supplies only the
-    /// two values the Passive's rule needs — its identity and its Threshold — and
+    /// values the Pet's own definition carries — its Element, the Passive's
+    /// identity, and the Passive's Threshold — and
     /// declares no non-default Reset Behavior.
     ///
-    /// <b>It is not a default for <see cref="PetState"/>.</b> The identity and the
-    /// Threshold are supplied by the caller, exactly as
+    /// <b>It is not a default for <see cref="PetState"/>.</b> The Element, the
+    /// identity, and the Threshold are supplied by the caller, exactly as
     /// <see cref="PetState.AtBattleCreation"/> requires, and the Reset Behavior is
     /// <see cref="PassiveResetBehavior.Default"/> — which is not an invented
     /// value but the documented reading of an absent override: §2.3 makes the
@@ -229,6 +267,10 @@ public sealed record BattleState(
     /// documented on the Passive's definition, and a caller declaring one supplies
     /// a <see cref="PetState"/> with the override set.
     /// </summary>
+    /// <param name="element">
+    /// The active Pet's one Element (<c>GAME_STATE.md</c> §2.3,
+    /// <c>ELEMENT_RULES.md</c> §6) — the Pet definition's own value.
+    /// </param>
     /// <param name="passiveId">
     /// The active Pet's Passive identity (<c>GAME_STATE.md</c> §2.3) — the same
     /// value <c>GAME_EVENTS.md</c> §2's <c>PassiveCharged</c>/<c>PassiveTriggered</c>
@@ -239,14 +281,15 @@ public sealed record BattleState(
     /// (<c>PASSIVE_RULES.md</c> §1). It is the Passive definition's own value, and
     /// no Threshold is invented here.
     /// </param>
-    public static PetState DefaultPassive(PassiveId passiveId, int passiveThreshold) =>
-        PetState.AtBattleCreation(passiveId, passiveThreshold);
+    public static PetState DefaultPassive(Element element, PassiveId passiveId, int passiveThreshold) =>
+        PetState.AtBattleCreation(element, passiveId, passiveThreshold);
 
     /// <summary>
     /// Creates the authoritative state for a newly created battle session: the
-    /// documented initial values, including the player's progression state and the
-    /// active Pet's Passive state, plus the generated board and the retained RNG
-    /// state (<c>GAME_STATE.md</c> §2.0.5, §2.2, §2.3, §2.7.1).
+    /// documented initial values, including the player's progression state, the
+    /// active Pet's state, and the battle's one Boss, plus the generated board and
+    /// the retained RNG state (<c>GAME_STATE.md</c> §2.0.5, §2.2, §2.3, §2.4,
+    /// §2.7.1).
     ///
     /// Board generation is not a resolution, so <c>Turn</c> and <c>Sequence</c>
     /// remain <c>0</c> (§2.0.5.2 item 1), and <c>MatchCount</c> and <c>Combo</c>
@@ -260,12 +303,21 @@ public sealed record BattleState(
     /// none and no pair is invented to stand for the absence.
     ///
     /// <c>PetState</c>, by contrast, <b>is</b> created here and is never absent
-    /// (§2.3 item 3): the battle's one active Pet carries its one Passive from
-    /// creation. Its progress starts at the Passive's own Threshold with
+    /// (§2.3 item 3): the battle's one active Pet carries its one Element and its
+    /// one Passive from creation. Its progress starts at the Passive's own
+    /// Threshold with
     /// <c>Current = 0</c>, and its Reset Behavior is the declared one or the
     /// default (§4 item 1) — generation does not charge it, reset it, or evaluate
     /// its Threshold, because nothing has been resolved
     /// (<c>PASSIVE_RULES.md</c> §2 item 1 counts Matches).
+    ///
+    /// <c>BossState</c> is likewise <b>created here</b> and is never absent
+    /// (§2.4): a battle has exactly one Boss (<c>GAME_RULES.md</c> §1.1) and
+    /// <c>BattleStarted</c> requires one (<c>GAME_EVENTS.md</c> §2). It begins at
+    /// the Boss definition's stats at full health and in the documented Initial
+    /// State, and creation changes none of them: generation applies no damage,
+    /// fires no Boss Passive or Skill, and transitions no State
+    /// (<c>BOSS_RULES.md</c> §3–§5).
     ///
     /// Authoritative state is server-produced (<c>GAME_RULES.md</c> §18,
     /// <c>ADR-001</c>); this factory is the only place a battle begins.
@@ -277,12 +329,21 @@ public sealed record BattleState(
     /// </param>
     /// <param name="petState">
     /// The active Pet's state (<c>GAME_STATE.md</c> §2.3) — required, because
-    /// <c>PassiveId</c> is present from battle creation (§2.3 item 3) and no
-    /// value may be invented for it. Pet selection and progression are not
-    /// implemented, so the caller supplies the battle's Passive configuration;
+    /// <c>Element</c> and <c>PassiveId</c> are present from battle creation
+    /// (§2.3 item 3) and no
+    /// value may be invented for them. Pet selection and progression are not
+    /// implemented, so the caller supplies the battle's Pet configuration;
     /// see <see cref="PetState.AtBattleCreation"/> for the documented initial
-    /// progress, or <see cref="Create(string, ulong, PassiveId, int, PassiveResetBehavior?)"/>
-    /// for the identity/threshold form.
+    /// progress, or <see cref="Create(string, ulong, Element, PassiveId, int, PassiveResetBehavior?)"/>
+    /// for the Element/identity/threshold form.
+    /// </param>
+    /// <param name="bossState">
+    /// The battle's one Boss (<c>GAME_STATE.md</c> §2.4) — required, because a
+    /// battle has exactly one Boss (<c>GAME_RULES.md</c> §1.1) and no value may be
+    /// invented for its Element, stats, or identity. Boss selection is not
+    /// implemented, so the caller supplies the Boss's configuration; see
+    /// <see cref="BossDefinition.ToInitialState"/> for the documented initial
+    /// state of an MVP Boss.
     /// </param>
     /// <exception cref="BoardGenerationFailedException">
     /// No candidate board satisfied the documented initial-board constraints
@@ -290,7 +351,11 @@ public sealed record BattleState(
     /// (<c>MATCH3_RULES.md</c> §1.5 item 3): the battle creation is rejected as an
     /// error.
     /// </exception>
-    public static BattleState Create(string battleId, ulong rngSeed, PetState petState)
+    public static BattleState Create(
+        string battleId,
+        ulong rngSeed,
+        PetState petState,
+        BossState bossState)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
 
@@ -315,7 +380,13 @@ public sealed record BattleState(
             // from battle creation" — with progress at the start of its first
             // charge. It is not optional, not defaulted, and not created lazily
             // on the first Swap.
-            petState);
+            petState,
+            // §2.4: BossState exists from creation too: a battle has exactly one
+            // Boss (GAME_RULES.md §1.1), which BattleStarted requires
+            // (GAME_EVENTS.md §2). It is likewise not optional, not defaulted, and
+            // not created lazily on the first Swap. Nothing here damages the Boss
+            // or changes its State.
+            bossState);
     }
 
     /// <summary>
@@ -324,38 +395,55 @@ public sealed record BattleState(
     ///
     /// <b>Test-only.</b> It exists because a battle cannot be created without a
     /// <c>PetState</c> (<c>GAME_STATE.md</c> §2.3 item 3: "it is present from
-    /// battle creation") and the suites for the earlier stages — board, Special
+    /// battle creation") and a <c>BossState</c> (§2.4, <c>GAME_RULES.md</c>
+    /// §1.1) and the suites for the earlier stages — board, Special
     /// Gems, Swap execution, Match/Combo accounting — need a battle to exercise
-    /// their own contract. The Passive they carry is irrelevant to what those
-    /// suites assert, so this helper supplies one fixture value in one place
-    /// instead of repeating it at every creation site.
+    /// their own contract. The Pet and the Boss they carry are irrelevant to what
+    /// those suites assert, so this helper supplies one fixture value each in one
+    /// place instead of repeating them at every creation site.
     ///
     /// It reaches production assemblies because the test project has
     /// <c>InternalsVisibleTo</c> and not the reverse;
-    /// <see cref="BattleStateService.CreateBattle(string, BattleStateService.PassiveConfiguration)"/>
-    /// remains the real creation path and takes the battle's actual Passive
+    /// <see cref="BattleStateService.CreateBattle(string, BattleStateService.PetConfiguration, BattleStateService.BossConfiguration)"/>
+    /// remains the real creation path and takes the battle's actual Pet and Boss
     /// configuration. It is not a product default and no production caller uses
     /// it — it exists only so the earlier stages' tests stay readable.
     /// </summary>
     /// <param name="battleId">Identity of the battle session.</param>
     /// <param name="rngSeed">The seed, so a test's board is deterministic.</param>
     public static BattleState CreateWith(string battleId, ulong rngSeed) =>
-        Create(battleId, rngSeed, DefaultPassive(new PassiveId("fixture-passive"), 5));
+        Create(
+            battleId,
+            rngSeed,
+            DefaultPassive(Element.Hoa, new PassiveId("fixture-passive"), 5),
+            BossState.Initial(new BossId("fixture-boss"), Element.Kim, maxHp: 5000, atk: 100, def: 50));
 
     /// <summary>
     /// Creates the authoritative state for a newly created battle session from the
-    /// battle's Passive configuration — the required identity and Threshold, plus
+    /// battle's Pet configuration — the required Element, Passive identity, and
+    /// Threshold, plus
     /// the optional non-default Reset Behavior
-    /// (<c>GAME_STATE.md</c> §2.3, <c>PASSIVE_RULES.md</c> §1, §4).
+    /// (<c>GAME_STATE.md</c> §2.3, <c>PASSIVE_RULES.md</c> §1, §4) — against the
+    /// Boss definition the battle is fought against (<c>GAME_STATE.md</c> §2.4,
+    /// <c>BOSS_RULES.md</c> §6.1).
     ///
-    /// This is the same creation as <see cref="Create(string, ulong, PetState)"/>
+    /// This is the same creation as
+    /// <see cref="Create(string, ulong, PetState, BossState)"/>
     /// with the documented starting progress applied: the Threshold is the
     /// Passive's own value and <c>Current</c> begins at <c>0</c>
-    /// (§2.3 item 3, <c>SIGNALR_PROTOCOL.md</c> §4.3 item 4). PetState is never
-    /// absent, never defaulted, and never created lazily.
+    /// (§2.3 item 3, <c>SIGNALR_PROTOCOL.md</c> §4.3 item 4), and the Boss begins
+    /// at its definition's stats at full health in the documented Initial State
+    /// (<see cref="BossDefinition.ToInitialState"/>). Neither <c>PetState</c> nor
+    /// <c>BossState</c> is
+    /// absent, defaulted, or created lazily.
     /// </summary>
     /// <param name="battleId">Identity of the battle session.</param>
     /// <param name="rngSeed">The server-chosen seed (<c>GAME_STATE.md</c> §2.6.1).</param>
+    /// <param name="element">
+    /// The active Pet's one Element (<c>GAME_STATE.md</c> §2.3,
+    /// <c>ELEMENT_RULES.md</c> §6) — set at battle creation and never changed
+    /// (<c>PET_RULES.md</c> §2 item 3).
+    /// </param>
     /// <param name="passiveId">
     /// The active Pet's Passive identity (<c>GAME_STATE.md</c> §2.3) — set at
     /// battle creation and never changed (§2.3 item 2).
@@ -363,6 +451,12 @@ public sealed record BattleState(
     /// <param name="passiveThreshold">
     /// The Passive's Threshold — "e.g. 'every 5 Matches'" (<c>PASSIVE_RULES.md</c>
     /// §1), the value the progress pair is measured against.
+    /// </param>
+    /// <param name="bossDefinition">
+    /// The definition of the Boss this battle is fought against
+    /// (<c>BOSS_RULES.md</c> §6, <see cref="BossDefinitions"/> for the MVP set).
+    /// Its identity, Element, and stats are the Boss's own values and none is
+    /// invented here.
     /// </param>
     /// <param name="passiveResetOverride">
     /// The Passive's declared non-default Reset Behavior, or <c>null</c> for the
@@ -377,11 +471,17 @@ public sealed record BattleState(
     public static BattleState Create(
         string battleId,
         ulong rngSeed,
+        Element element,
         PassiveId passiveId,
         int passiveThreshold,
+        BossDefinition bossDefinition,
         PassiveResetBehavior? passiveResetOverride = null) =>
         Create(
             battleId,
             rngSeed,
-            PetState.AtBattleCreation(passiveId, passiveThreshold, passiveResetOverride));
+            PetState.AtBattleCreation(element, passiveId, passiveThreshold, passiveResetOverride),
+            // §2.4 / BOSS_RULES.md §6.1: the Boss begins at its definition's stats
+            // at full health, in the documented Initial State. The definition owns
+            // every value; this factory chooses none of them.
+            bossDefinition.ToInitialState());
 }

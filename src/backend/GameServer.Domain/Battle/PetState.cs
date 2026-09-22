@@ -1,14 +1,17 @@
+using GameServer.Domain.Elements;
 using GameServer.Domain.Passives;
 
 namespace GameServer.Domain.Battle;
 
 /// <summary>
-/// The active Pet's battle state, through the Pet / Passive stage
+/// The active Pet's battle state, through the Pet / Passive / Element stage
 /// (<c>GAME_STATE.md</c> §2.3).
 ///
 /// <code>
 /// BattleState
 /// └── PetState
+///     ├── Element                the Pet's one Element (PET_RULES.md §1,
+///     │                          ELEMENT_RULES.md §1.1)                    (§2.3)
 ///     ├── PassiveId              the Pet's one Passive — the identity the
 ///     │                          Passive events report (PASSIVE_RULES.md §1)
 ///     ├── PassiveProgress        current count vs. threshold                (§2)
@@ -16,19 +19,19 @@ namespace GameServer.Domain.Battle;
 /// </code>
 ///
 /// <b>This is the documented owner, not a new decision.</b> <c>GAME_STATE.md</c>
-/// §2.3 places <c>PassiveId</c>, <c>PassiveProgress</c>, and
+/// §2.3 places <c>Element</c>, <c>PassiveId</c>, <c>PassiveProgress</c>, and
 /// <c>PassiveResetOverride</c> here, and §2 nests <c>PetState</c> inside
-/// <c>BattleState</c> (§2.3, §2). All three are therefore ordinary <b>Active
+/// <c>BattleState</c> (§2.3, §2). All four are therefore ordinary <b>Active
 /// Battle State</b>: authoritative, server-produced, and written in the same
 /// single post-resolution write-back as <c>Turn</c>, <c>Sequence</c>,
 /// <c>BoardState</c>, <c>RngState</c>, and <c>PlayerState</c> (§5.1).
 ///
 /// <b>Only the fields this stage requires exist.</b> §2.3 also lists
-/// <c>PetId</c>/Identity, <c>Element</c>, and <c>Tier</c>/<c>Star</c>/<c>Level</c>.
+/// <c>PetId</c>/Identity and <c>Tier</c>/<c>Star</c>/<c>Level</c>.
 /// Those belong to the Pet identity and progression stage and are <b>not yet
 /// implemented</b>, not <b>not required</b> (§0 item 4, §2.0.5.3,
 /// <c>SIGNALR_PROTOCOL.md</c> §4.3 item 2): each is added by its own owning task,
-/// exactly as this stage adds these three. They are not stubbed, defaulted, or
+/// exactly as this stage adds these four. They are not stubbed, defaulted, or
 /// represented by a placeholder, because a placeholder for a field no rule yet
 /// reads would be a representation of its own (§0 item 5).
 ///
@@ -49,6 +52,36 @@ namespace GameServer.Domain.Battle;
 /// (<c>ARCHITECTURE.md</c> §2.1): it references no ASP.NET Core, SignalR, EF
 /// Core, Redis, HTTP, Phaser, or Discord concern.
 /// </summary>
+/// <param name="Element">
+/// The active Pet's Element (<c>GAME_STATE.md</c> §2.3, <c>PET_RULES.md</c> §1)
+/// — the attacking Element the Element Modifier is resolved from
+/// (<c>ELEMENT_RULES.md</c> §2.1, §5; <c>COMBAT_RULES.md</c> §3 step 3).
+///
+/// Every Pet has <b>exactly one</b> Element and MVP supports no dual/multi
+/// element entity (<c>ELEMENT_RULES.md</c> §1.2, §7), so this is a single value
+/// and not a collection. It is a non-nullable <see cref="Element"/>: §1.1 lists
+/// "Pet" among the entities that carry an Element, so there is no elementless-Pet
+/// case for a nullable member to spell. (An elementless <i>damage source</i> is
+/// the absence <c>ElementMatchups.Resolve</c> accepts as <c>null</c> on its
+/// attacker side; §1.1 does not make a Pet such a source by omitting the field.)
+///
+/// The MVP Pet assignments are <c>ELEMENT_RULES.md</c> §6's (Thanh Xà = Mộc,
+/// Xích Lang = Hỏa, Sơn Hùng = Thổ, Bạch Hổ = Kim, Huyền Quy = Thủy) and are not
+/// restated or reassigned here.
+///
+/// It is <b>set at battle creation and never changes</b>: selecting a Pet locks
+/// in its Element for the duration of the battle (<c>PET_RULES.md</c> §2 item 3;
+/// mid-battle Pet swapping is out of MVP scope), so no resolution writes it and
+/// no event changes it.
+///
+/// <b>It does not restrict the Pet's build.</b> <c>ELEMENT_RULES.md</c> §4 makes
+/// Element purely a matchup system: it determines no Card, Relic, or Passive the
+/// Pet may use, and nothing here gates any of them.
+///
+/// This type performs no matchup resolution and applies no modifier:
+/// <see cref="ElementMatchups"/> owns the matchup and the Damage Pipeline owns
+/// the multiplication, and both remain unimplemented.
+/// </param>
 /// <param name="PassiveId">
 /// Which Passive definition the active Pet carries (<c>GAME_STATE.md</c> §2.3).
 /// A Pet has <b>exactly one</b> Passive (<c>PASSIVE_RULES.md</c> §1,
@@ -103,6 +136,7 @@ namespace GameServer.Domain.Battle;
 /// (<c>SIGNALR_PROTOCOL.md</c> §4.3 items 6–7).
 /// </param>
 public readonly record struct PetState(
+    Element Element,
     PassiveId PassiveId,
     PassiveProgress PassiveProgress,
     PassiveResetBehavior? PassiveResetOverride = null)
@@ -128,10 +162,16 @@ public readonly record struct PetState(
 
     /// <summary>
     /// The documented <c>PetState</c> of a newly created battle: the active Pet's
-    /// Passive identity, progress at the start of its first charge, and the
-    /// declared Reset Behavior (<c>GAME_STATE.md</c> §2.3;
+    /// Element, Passive identity, progress at the start of its first charge, and
+    /// the declared Reset Behavior (<c>GAME_STATE.md</c> §2.3;
     /// <c>SIGNALR_PROTOCOL.md</c> §4.3 item 4).
     /// </summary>
+    /// <param name="element">
+    /// The active Pet's one Element (<c>GAME_STATE.md</c> §2.3,
+    /// <c>PET_RULES.md</c> §1, <c>ELEMENT_RULES.md</c> §6). It comes from the
+    /// Pet's definition, which is why it is supplied by the battle-creation
+    /// caller rather than invented here.
+    /// </param>
     /// <param name="passiveId">The active Pet's Passive identity (§2.3 item 2).</param>
     /// <param name="passiveThreshold">
     /// The Passive's Threshold — "e.g. 'every 5 Matches'" (<c>PASSIVE_RULES.md</c>
@@ -143,11 +183,13 @@ public readonly record struct PetState(
     /// (§4 items 1–3).
     /// </param>
     public static PetState AtBattleCreation(
+        Element element,
         PassiveId passiveId,
         int passiveThreshold,
         PassiveResetBehavior? passiveResetOverride = null) =>
         // §2.3 item 3 / §4.3 item 4: progress begins at 0 against the Passive's own
         // Threshold. It is never absent, never lazily initialized, and never
-        // defaulted with an invented value.
-        new(passiveId, PassiveProgress.AtStart(passiveThreshold), passiveResetOverride);
+        // defaulted with an invented value. The Element is likewise the Pet's own
+        // value, carried across unchanged (§2.3, ELEMENT_RULES.md §1.2).
+        new(element, passiveId, PassiveProgress.AtStart(passiveThreshold), passiveResetOverride);
 }

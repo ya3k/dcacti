@@ -44,7 +44,25 @@ namespace GameServer.Domain.Match3;
 /// The union of every cell the pass cleared — matched cells plus every activation
 /// and chain — each cell once, ascending §1.0 index. This is the set resource
 /// generation is computed over (<c>MATCH3_RULES.md</c> §5.8.2 item 5, §5.7
-/// item 2); this task does not compute the resources themselves.
+/// item 2).
+/// </param>
+/// <param name="ClearedGems">
+/// The same union, each cell once, carrying the cell's Gem type and the match
+/// tier it generates at (<c>COMBAT_RULES.md</c> §2, <c>MATCH3_RULES.md</c> §5.7).
+/// This is the input resource generation consumes.
+///
+/// A cell consumed by a Match carries that shape's tier; a cell cleared by a
+/// Special Gem activation carries <see cref="MatchTier.Base"/>, because an
+/// activation is not a Match and has no tier (§5.7 item 6). A cell that is both —
+/// a Match consumed it and an activation's affected set named it — is a member of
+/// the Match and carries the Match's tier, and it appears here once
+/// (§5.8.2 items 2, 6).
+///
+/// The Gem type is read from the board the pass was resolved against, which is
+/// the state in which the cell was still present (<c>GAME_EVENTS.md</c> §2
+/// item 2). This is the pass's own record of what it cleared, so a consumer does
+/// not re-read the post-resolution board, where those cells no longer hold the
+/// Gems that were consumed.
 /// </param>
 public readonly record struct PassResult(
     BoardState Board,
@@ -54,7 +72,32 @@ public readonly record struct PassResult(
     IReadOnlyList<GemMatchedEvent> ActivationCellGemMatched,
     IReadOnlyList<ActivatedSpecialGem> ActivatedSpecialGems,
     IReadOnlyList<SpecialGemClaim> CreatedSpecialGems,
-    IReadOnlyList<int> ClearedCellUnion);
+    IReadOnlyList<int> ClearedCellUnion,
+    IReadOnlyList<ClearedGem> ClearedGems);
+
+/// <summary>
+/// One cell a pass cleared, with the Gem type it held and the match tier it
+/// generates at (<c>COMBAT_RULES.md</c> §2, <c>MATCH3_RULES.md</c> §5.7).
+///
+/// This is <b>Transient Resolution State</b> (<c>GAME_STATE.md</c> §3): it is
+/// pass-local accounting, is never a <c>BattleState</c> field, and is not
+/// serialized or delivered.
+/// </summary>
+/// <param name="CellIndex">The cleared cell's §1.0 index.</param>
+/// <param name="GemType">
+/// The Gem type the cell held when it was cleared — always one of the four §1.1
+/// types. A cell that held a Special Gem reports the Gem type that cell carried:
+/// a Special Gem adds metadata to a cell's occupant and does not replace its type
+/// (<c>GAME_STATE.md</c> §2.1.3 items 1–2).
+/// </param>
+/// <param name="Tier">
+/// The tier the cell generates at. For a cell consumed by a Match this is the
+/// tier of the shape that consumed it (<c>COMBAT_RULES.md</c> §2 item 2); for a
+/// cell cleared only by a Special Gem activation it is
+/// <see cref="MatchTier.Base"/> (<c>§2 item 1</c>, <c>MATCH3_RULES.md</c> §5.7
+/// item 6).
+/// </param>
+public readonly record struct ClearedGem(int CellIndex, GemType GemType, MatchTier Tier);
 
 /// <summary>
 /// A Special Gem the pass activated, recorded in activation order
@@ -261,6 +304,49 @@ public static class BoardResolver
         union.UnionWith(activation.ClearedCells);
         var clearedUnion = union.ToArray();
 
+        // --- Resource generation accounting (COMBAT_RULES.md §2, §5.7) ------
+        // The same union again, carrying each cell's Gem type and the tier it
+        // generates at. The type is read from `board` - the state the pass was
+        // resolved against, in which the cell still held the Gem that was consumed
+        // (GAME_EVENTS.md §2 item 2). The post-resolution board holds spawned Gems
+        // in those cells, so it is not a source for this.
+        //
+        // Tier: a cell consumed by a Match generates at THAT SHAPE's tier
+        // (COMBAT_RULES.md §2 item 2), and a cell cleared only by a Special Gem
+        // activation generates at the base rate, because an activation is not a
+        // Match and has no tier (§2 item 1, §5.7 item 6).
+        //
+        // A cell can be named by both sub-steps. It is then a member of the Match,
+        // so it takes the Match's tier and is recorded once: the matched sub-step is
+        // written first and an activation claiming a cell already accounted for at a
+        // Match tier does not overwrite it (§5.8.2 items 2, 6 - a cell generates
+        // once, and it is the Match that consumed it that generates for it).
+        var tiersByCell = new Dictionary<int, MatchTier>(matchedUnion.Count);
+
+        foreach (var shape in matchSet)
+        {
+            var tier = TierOf(shape);
+
+            foreach (var index in shape.Cells)
+            {
+                // §3.3 item 3: a shared cell is one cell for removal and for resource
+                // generation. An L/T's arms are one shape at one tier, so a shared
+                // cell cannot be given two different tiers by this loop.
+                tiersByCell[index] = tier;
+            }
+        }
+
+        var clearedGems = new List<ClearedGem>(clearedUnion.Length);
+
+        foreach (var index in clearedUnion)
+        {
+            var tier = tiersByCell.TryGetValue(index, out var matchTier)
+                ? matchTier
+                : MatchTier.Base;
+
+            clearedGems.Add(new ClearedGem(index, board[index], tier));
+        }
+
         return new PassResult(
             spawn.Board,
             rng.CurrentState,
@@ -269,7 +355,36 @@ public static class BoardResolver
             activationReports,
             activation.Activated,
             plan.CommittedClaims,
-            clearedUnion);
+            clearedUnion,
+            clearedGems);
+    }
+
+    /// <summary>
+    /// The tier a shape's consumed Gems generate at (<c>COMBAT_RULES.md</c> §2,
+    /// <c>MATCH3_RULES.md</c> §5.5.2).
+    ///
+    /// <code>
+    /// L/T                      → L/T        1.25×   (§5.4)
+    /// straight line of 4       → Match 4    1.5×    (§5.2)
+    /// straight line of 5+      → Match 5    2.0×    (§5.3; a run of 6+ is Match 5)
+    /// straight line of 3       → Match 3    1.0×    (§5.1)
+    /// </code>
+    ///
+    /// <b>The shape is one Match at one tier.</b> An L/T counts once at its own
+    /// tier however many Special Gems it creates and however long its arms are:
+    /// its arms' higher classifications decide which Special Gems are created, not
+    /// a second, higher multiplier for the cells they share with the pattern
+    /// (<c>MATCH3_RULES.md</c> §5.4 item 4 item 4, §5.4 item 6). Its tier is the
+    /// L/T row, which <c>COMBAT_RULES.md</c> §2 owns at <c>1.25×</c>.
+    /// </summary>
+    private static MatchTier TierOf(MatchShape shape)
+    {
+        if (shape.IsLt)
+        {
+            return MatchTier.Lt;
+        }
+
+        return MatchTierMultipliers.ForStraightRun((shape.HorizontalArm ?? shape.VerticalArm)!.Length);
     }
 
     /// <summary>

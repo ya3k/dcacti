@@ -648,10 +648,12 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
             {
                 scope.ServiceProvider.GetRequiredService<BattleStateService>().CreateBattle(
                     battleId,
-                    new BattleStateService.PassiveConfiguration(
+                    new BattleStateService.PetConfiguration(
+                        GameServer.Domain.Elements.Element.Hoa,
                         new GameServer.Domain.Passives.PassiveId("xich-lang"),
                         PassiveThreshold: PASSIVE_THRESHOLD,
-                        PassiveResetOverride: behavior));
+                        PassiveResetOverride: behavior),
+                    BossDefinition);
             }
 
             var hubConnection = BuildHubConnection();
@@ -825,17 +827,28 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     /// <summary>
-    /// The Passive the tests' battles carry.
+    /// The Pet the tests' battles carry.
     ///
     /// Pet selection and progression are not implemented (GAME_STATE.md §2.3,
-    /// SIGNALR_PROTOCOL.md §4.3 item 2), so a battle's Passive configuration is
-    /// supplied by its creator. This is the configuration these tests use: a real
-    /// MVP Pet's Threshold (PASSIVE_RULES.md §8 — Xích Lang, 5 Matches) with the
+    /// SIGNALR_PROTOCOL.md §4.3 item 2), so a battle's Pet configuration is
+    /// supplied by its creator. This is the configuration these tests use: Xích
+    /// Lang's MVP Element (ELEMENT_RULES.md §6 — Hỏa) and Threshold
+    /// (PASSIVE_RULES.md §8 — 5 Matches) with the
     /// default reset, which is the behavior all five MVP Pet Passives declare
     /// (§8).
     /// </summary>
-    private static readonly BattleStateService.PassiveConfiguration PassiveConfiguration =
-        new(new GameServer.Domain.Passives.PassiveId("xich-lang"), PassiveThreshold: PASSIVE_THRESHOLD);
+    private static readonly BattleStateService.PetConfiguration PetConfiguration =
+        new(
+            GameServer.Domain.Elements.Element.Hoa,
+            new GameServer.Domain.Passives.PassiveId("xich-lang"),
+            PassiveThreshold: PASSIVE_THRESHOLD);
+
+    /// <summary>
+    /// The Boss the tests' battles are fought against — Hỏa Long, an MVP Boss of
+    /// BOSS_RULES.md §6.1 (Hỏa, 5000 / 100 / 50).
+    /// </summary>
+    private static readonly GameServer.Domain.Bosses.BossDefinition BossDefinition =
+        GameServer.Domain.Bosses.BossDefinitions.HoaLong;
 
     /// <summary>
     /// The Passive identity and Threshold the tests' battles carry.
@@ -855,7 +868,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     {
         using var scope = _factory.Services.CreateScope();
         scope.ServiceProvider.GetRequiredService<BattleStateService>()
-            .CreateBattle(battleId, PassiveConfiguration);
+            .CreateBattle(battleId, PetConfiguration, BossDefinition);
     }
 
     [Fact]
@@ -1013,7 +1026,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         using (var scope = _factory.Services.CreateScope())
         {
             var service = scope.ServiceProvider.GetRequiredService<BattleStateService>();
-            service.CreateBattle(battleId, PassiveConfiguration);
+            service.CreateBattle(battleId, PetConfiguration, BossDefinition);
         }
 
         var hubConnection = BuildHubConnection();
@@ -1598,9 +1611,27 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
                 before.PetState.PassiveId,
                 before.PetState.ResetBehavior);
 
+            var damage = GameServer.Domain.Combat.DamagePipeline.Calculate(
+                before.BossState,
+                new GameServer.Domain.Combat.DamagePipeline.DamageInputs(
+                    Attack: committed.State.PlayerState.ATK,
+                    BaseDamagePool: committed.Resources.BaseDamagePool,
+                    Combo: committed.State.PlayerState.Combo,
+                    AttackerElement: before.PetState.Element,
+                    DefenderElement: before.BossState.Element,
+                    DefenderDefense: before.BossState.DEF),
+                GameServer.Domain.Combat.ComboModifiers.Default,
+                GameServer.Domain.Elements.ElementModifiers.Default);
+
             var expectedEvents = committed.Events
                 .Concat(charged.Charges.Select(BattleEvent.ForPassiveCharged))
                 .Concat(charged.Triggers.Select(BattleEvent.ForPassiveTriggered))
+                .Concat(new[]
+                {
+                    BattleEvent.ForDamageCalculated(damage.Calculation),
+                    BattleEvent.ForDamageDealt(damage.DamageDealt),
+                    BattleEvent.ForDamageTaken(damage.DamageTaken),
+                })
                 .ToArray();
 
             expected = ProjectToWireSchema(expectedEvents);
@@ -2306,6 +2337,9 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
                     // this same path (§4.3 item 10), so they are valid discriminators
                     // here — never a fifth or sixth *message*.
                     "PassiveCharged", "PassiveTriggered",
+                    // §1/§2: the three Damage events follow the Passive stage's reports
+                    // and travel in the same batch (GAME_EVENTS.md §1, §2).
+                    "DamageCalculated", "DamageDealt", "DamageTaken",
                 });
 
             // §3.2.2 item 4 / §3.2.5 item 5: the discriminator is always present and
@@ -2346,6 +2380,12 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
                 // records as the deferred member rather than an omission.
                 "PassiveCharged" => new[] { "type", "passiveId", "progress", "threshold" },
                 "PassiveTriggered" => new[] { "type", "passiveId", "progress", "threshold" },
+                // §1/§2: the Damage pipeline's three events, with the members the
+                // contract gives them (GAME_EVENTS.md §2, SIGNALR_PROTOCOL.md
+                // §3.2.13–§3.2.15).
+                "DamageCalculated" => new[] { "type", "base", "comboModifier", "elementModifier", "otherModifiers", "defense", "finalDamage" },
+                "DamageDealt" => new[] { "type", "source", "target", "amount" },
+                "DamageTaken" => new[] { "type", "source", "target", "amount" },
                 _ => throw new InvalidOperationException($"Undocumented event type on the wire: {type}."),
             };
 
@@ -2364,13 +2404,17 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
             Assert.DoesNotContain(members, m => m is "effect" or "effectSummary" or "petId" or "element");
         }
 
-        // The Passive events really were in this batch — otherwise the allowed-member
-        // table above would be asserting nothing about §3.3.
+        // The Passive events and the Damage events really were in this batch —
+        // otherwise the allowed-member table above would be asserting nothing
+        // about §3.3 and §1/§2.
         var types = payload.GetProperty("events").EnumerateArray()
             .Select(e => e.GetProperty("type").GetString())
             .ToArray();
 
         Assert.Contains("PassiveCharged", types);
+        Assert.Contains("DamageCalculated", types);
+        Assert.Contains("DamageDealt", types);
+        Assert.Contains("DamageTaken", types);
     }
 
     /// <summary>
@@ -2477,6 +2521,24 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
                 e.PassiveTriggered.PassiveId.Value,
                 e.PassiveTriggered.Progress,
                 e.PassiveTriggered.Threshold),
+
+            BattleEventType.DamageCalculated => BattleEventWireDto.DamageCalculated(
+                e.DamageCalculated.Base,
+                e.DamageCalculated.ComboModifier,
+                e.DamageCalculated.ElementModifier,
+                e.DamageCalculated.OtherModifiers,
+                e.DamageCalculated.Defense,
+                e.DamageCalculated.FinalDamage),
+
+            BattleEventType.DamageDealt => BattleEventWireDto.DamageDealt(
+                e.DamageDealt.Source.ToString().ToLowerInvariant(),
+                e.DamageDealt.Target.ToString().ToLowerInvariant(),
+                e.DamageDealt.Amount),
+
+            BattleEventType.DamageTaken => BattleEventWireDto.DamageTaken(
+                e.DamageTaken.Source.ToString().ToLowerInvariant(),
+                e.DamageTaken.Target.ToString().ToLowerInvariant(),
+                e.DamageTaken.Amount),
 
             _ => throw new ArgumentOutOfRangeException(
                 nameof(e),

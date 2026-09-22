@@ -22,14 +22,16 @@ Status: IN PROGRESS
 
 ## Phase 1 — Core Loop Vertical Slice
 ```text
-Goal: One playable battle, start to finish, against one Boss.
+Goal: One playable battle, start to finish, against Bosses.
 ```
 - Match-3 board (swap, match, cascade, combo) — `MATCH3_RULES.md`
 - One Pet fully implemented (Element, Passive, Signature Skill)
 - 3 Basic Cards
 - Damage pipeline incl. Element Modifier — `COMBAT_RULES.md`,
   `ELEMENT_RULES.md`
-- One Boss (Passive + Skill)
+- 3 MVP Bosses (Hỏa Long, Thủy Ma, Mộc Yêu — Passive + Skill each;
+  see `BOSS_RULES.md` §6)
+- Boss Response (Passive → Skill → Attack → Victory/Defeat)
 - Server-authoritative resolution over SignalR
 - No Relics yet, no rewards/persistence beyond a single battle
 
@@ -39,7 +41,8 @@ Goal: Full MVP scope, see MVP_SCOPE.md §1.
 ```
 - All 5 Pets (including the 2 Signature Skills not yet content-defined —
   see PET_RULES.md §8 note)
-- All 5 Bosses (2 not yet content-defined — see BOSS_RULES.md §6 note)
+- All 5 Bosses (2 not yet content-defined — see BOSS_RULES.md §6 note;
+  each requires Element, Passive, Skill, stats)
 - All ~10 Relics + trigger/stacking system
 - Pet Tier / Star / Level progression
 - Persistent storage: Pet Collection, Battle Results, Rewards

@@ -1,6 +1,8 @@
 # Boss Rules
 
-**Version:** 1.0
+**Version:** 2.0 (Boss Response contract resolved — §3.3 timing within
+resolution order, §4 Skill charge/cooldown, §5 Enrage/Stun clarification,
+§6 per-Boss Skill timing and Base Damage, §7 event definitions)
 **Status:** MVP Domain Rule
 **Parent:** GAME_RULES.md
 
@@ -74,6 +76,29 @@ To satisfy "not all Bosses use the same trigger pattern," each MVP Boss's
 Passive must use a different primary trigger category from §3.2's list than
 the other MVP Bosses where possible. See §6 for the MVP assignment.
 
+## 3.3 Timing Within the Resolution Order
+
+Boss Passive fires at Step 18 of GAME_RULES.md §17, after Player Damage
+(Steps 15–17) and before Boss Skill (Step 19) and Boss Attack (Step 20).
+
+1. **The Passive fires once per player action, after all player damage is
+   resolved.** This means the Passive sees the post-damage battle state
+   (Player HP, Boss HP, Combo, match count). A Boss Passive that triggers
+   on "Boss HP below threshold" evaluates against the HP after the player's
+   damage, not before.
+2. **The Passive fires before the Boss Skill.** The Boss Skill's timing
+   rule (charge requirement, cooldown) is evaluated after the Passive
+   resolves. If the Passive's effect changes the battle state (e.g. a
+   self-buff), the Boss Skill sees that updated state.
+3. **The Passive fires before the Boss Attack.** If the Boss Skill does
+   not fire (charge not met or cooldown active), the Boss performs a basic
+   attack (Step 20). The Passive's effect is already applied at that point.
+4. **Boss Skill damage does not re-trigger the Boss Passive.** The Passive
+   resolves once at Step 18 and does not re-evaluate after the Skill
+   (Step 19) or Attack (Step 20). If a Boss Passive triggers on "Boss HP
+   below threshold," it evaluates once against the post-player-damage state
+   — not again after the Boss's own actions.
+
 ---
 
 # 4. Boss Skill
@@ -103,18 +128,73 @@ the other MVP Bosses where possible. See §6 for the MVP assignment.
 3. MVP Bosses may use State minimally (e.g. a simple Idle/Casting toggle); a
    full multi-phase State machine is a Boss Phases feature explicitly
    deferred to Future Expansion (GDD §20), not required for MVP.
+4. **Enrage** is a permanent state transition triggered when `BossHP <
+   EnrageThreshold` (per-Boss value in §6.1). Once Enraged, the Boss remains
+   Enraged for the rest of the battle — no timer, no duration field. The
+   Enrage threshold and any Enrage-specific behavior changes (e.g. Skill
+   damage increase) are defined per Boss in §6.
+5. **Stun** is a temporary state that prevents the Boss from acting. Duration
+   is measured in Turns and tracked by `StatusEffects[]` (not yet
+   implemented). For MVP, no content-defined Boss applies Stun.
 
 ---
 
 # 6. MVP Boss Reference
 
 ```text
-Boss        Element   Passive (trigger)                          Skill
----------   -------   -----------------------------------------  --------------------------------
-Hỏa Long    Hỏa       Every 5 Player Matches → gain Rage          Flame Burst → Damage + Burn
-Thủy Ma     Thủy      Passive: Healing received reduced           Drain Power → Reduce Player Power
-Mộc Yêu     Mộc       Every 5 Matches → regenerate HP              Root → Reduce Player ATK
+Boss        Element   Passive (trigger)                          Skill                    Skill Timing
+---------   -------   -----------------------------------------  -----------------------  ----------------------
+Hỏa Long    Hỏa       Every 5 Player Matches → gain Rage          Flame Burst → Dmg+Burn  Charge: 5 matches, CD: 2T
+Thủy Ma     Thủy      Healing received reduced                    Drain Power → -PlayerPow Charge: 4 matches, CD: 3T
+Mộc Yêu     Mộc       Every 5 Player Matches → Regen HP           Root → -PlayerATK        Charge: 6 matches, CD: 2T
 ```
+
+### 6.1 MVP Boss Base Stats (Project-Owner Approved)
+
+```text
+Boss        Element   HP / MaxHP   ATK   DEF   EnrageThreshold   Initial State
+---------   -------   ----------   ---   ---   ---------------   -------------
+Hỏa Long    Hỏa       5000         100   50    1500 (30%)        Idle
+Thủy Ma     Thủy      5000         100   50    1500 (30%)        Idle
+Mộc Yêu     Mộc       5000         100   50    1500 (30%)        Idle
+```
+
+### 6.2 Boss Passive Details
+
+```text
+Boss        Passive Effect                                    Passive Trigger
+---------   -----------------------------------------------   ----------------------
+Hỏa Long    Gain +20% ATK (Rage) for 3 turns                  Every 5 Player Matches
+Thủy Ma     Player Healing reduced by 50% for 3 turns          Passive (always active)
+Mộc Yêu     Regenerate 5% MaxHP                               Every 5 Player Matches
+```
+
+### 6.3 Boss Skill Timing
+
+Each Boss Skill has two timing parameters:
+
+- **Charge Requirement**: number of player matches required before the Skill
+  is eligible to fire. Matches increment `BossState.SkillCharge`
+  (`GAME_STATE.md` §2.4.3). When `SkillCharge ≥ Charge Requirement` AND
+  `SkillCooldown = 0`, the Skill fires.
+- **Cooldown (CD)**: turns remaining after each Skill use before the Skill
+  can fire again. Decrements by 1 at each Turn increment
+  (`GAME_RULES.md` §17 step 17). The Skill is blocked while `CD > 0`.
+
+After the Skill fires: `SkillCharge` resets to 0, `SkillCooldown` resets to
+the Boss's cooldown value.
+
+```text
+Boss        Charge Req.   CD (T)   Skill Base Dmg   Notes
+---------   -----------   ------   --------------   -----
+Hỏa Long    5 matches     2        150              Aggressive, frequent
+Thủy Ma     4 matches     3        120              Strategic, less frequent
+Mộc Yêu     6 matches     2        100              Defensive, slower charge
+```
+
+These are **MVP base configuration** — not universal balance invariants. The
+project owner approved these values. They are configuration defaults used at
+battle creation; they do not represent formulas or scaling rules.
 
 Two additional MVP Bosses (5 total per GAME_RULES.md §19 scope) are not yet
 content-defined. When authored, each must:
@@ -134,14 +214,29 @@ content-defined. When authored, each must:
 # 7. Events
 
 ```text
-BossSkillCast   emitted when a Boss Skill resolves
+PassiveCharged     emitted when Boss Passive progress increments
+                   (shared event with Pet Passive — GAME_EVENTS.md §2,
+                    SIGNALR_PROTOCOL.md §3.2.16; source = "boss")
+
+PassiveTriggered   emitted when Boss Passive threshold is crossed
+                   (shared event with Pet Passive — GAME_EVENTS.md §2,
+                    SIGNALR_PROTOCOL.md §3.2.17; source = "boss")
+
+BossSkillCast      emitted when a Boss Skill resolves
+                   (SIGNALR_PROTOCOL.md §3.2.18)
+
+BattleWon          emitted when Boss HP reaches 0
+BattleLost         emitted when Player HP reaches 0
+                   (SIGNALR_PROTOCOL.md §3.2.19)
 ```
 
-Boss Passive triggers do not have a dedicated event name distinct from the
-general Passive events (PASSIVE_RULES.md §7) unless a Boss-specific event is
-introduced by a future rule change. Boss state changes should be inferable
-from the sequence of `DamageDealt`, `DamageTaken`, `BossSkillCast`, and other
-Battle Event Model events (GAME_RULES.md §16).
+Boss Passive triggers use the general Passive events (`PASSIVE_RULES.md` §7)
+with `source = "boss"` to distinguish from Pet Passives. No Boss-specific
+passive event name is needed.
+
+Boss state changes (Idle → Enraged, Idle → Stunned) are inferable from the
+sequence of `DamageDealt`, `DamageTaken`, `BossSkillCast`, and `PassiveTriggered`
+events — no dedicated `BossStateChanged` event exists.
 
 ---
 

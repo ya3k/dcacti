@@ -1,8 +1,8 @@
 # Game Events
 
-**Version:** 1.5 (`PassiveCharged`/`PassiveTriggered` payload defined — §2:
-`PassiveId` added, carrying the identity `GAME_STATE.md` §2.3 names, and the
-`effect summary` member recorded as deferred to the Combat stage)
+**Version:** 2.0 (Boss Response contract resolved — PassiveCharged/PassiveTriggered
+source field added, Boss Passive/Skill/Attack timing clarified, Boss→Player
+damage events defined)
 **Status:** Draft
 
 > This document answers: **"What events exist during gameplay, and in what
@@ -40,10 +40,15 @@ PassiveTriggered            (only when threshold crossed)
 RelicTriggered                (0..N, deterministic order, RELIC_RULES.md §4)
 CardCast                       (only for a Card Cast action, not a Swap)
 PetSkillCast                    (only when the cast Card is the Signature Skill)
-DamageCalculated
-DamageDealt
-DamageTaken
-BossSkillCast                    (only when the Boss's own timing fires it)
+DamageCalculated                (player→boss damage)
+DamageDealt                     (player→boss)
+DamageTaken                     (player→boss)
+  [Boss Response — GAME_RULES.md §17 step 18:]
+  PassiveCharged / PassiveTriggered   (Boss Passive, source="boss")
+  BossSkillCast                        (only when Skill fires)
+  DamageCalculated                     (boss→player, only if Skill or Attack fires)
+  DamageDealt                          (boss→player, source="boss", target="player")
+  DamageTaken                          (boss→player, source="boss", target="player")
 TurnEnded
 BattleWon / BattleLost              (only when a HP reaches 0)
 ```
@@ -317,21 +322,32 @@ Payload:  Delta, new Power value, source (Gem match / Card cost / Relic)
 ## PassiveCharged / PassiveTriggered
 ```text
 Trigger:  Passive progress increases / threshold reached
-          (PASSIVE_RULES.md §2, §7)
-Payload:  PassiveCharged: PassiveId, new progress value, threshold
-          PassiveTriggered: PassiveId, new progress value, threshold,
+          (PASSIVE_RULES.md §2, §7; BOSS_RULES.md §3)
+Payload:  PassiveCharged: PassiveId, Source (pet | boss),
+                          SourceId (PetId | BossId),
+                          new progress value, threshold
+          PassiveTriggered: PassiveId, Source (pet | boss),
+                            SourceId (PetId | BossId),
+                            new progress value, threshold,
                             effect summary (deferred — see note)
 ```
 
 1. **`PassiveId` identifies the Passive that charged or triggered.** A Pet has
    exactly one Passive (`PASSIVE_RULES.md` §1, `GAME_RULES.md` §9), and
-   `PetState` names it (`GAME_STATE.md` §2.3): the field is the same value the
-   active Pet's `PetState.PassiveId` holds, read and reported — never
-   re-derived, re-numbered, or invented by the emitting stage. It is the
-   identity member the sibling trigger events already carry
-   (`RelicTriggered`'s `RelicId`, `CardCast`'s `CardId`, `BossSkillCast`'s
-   `SkillId`), and it is what lets the client attribute a charge or a trigger
-   to the Passive it belongs to.
+   `PetState` names it (`GAME_STATE.md` §2.3). A Boss also has exactly one
+   Passive (`BOSS_RULES.md §3`), and `BossState` names it
+   (`GAME_STATE.md §2.4`). The field is the same value the owning entity's
+   state holds, read and reported — never re-derived, re-numbered, or
+   invented by the emitting stage. It is the identity member the sibling
+   trigger events already carry (`RelicTriggered`'s `RelicId`, `CardCast`'s
+   `CardId`, `BossSkillCast`'s `SkillId`), and it is what lets the client
+   attribute a charge or a trigger to the Passive it belongs to.
+2. **`Source` discriminates between Pet Passive and Boss Passive.** This
+   event is shared by both systems (`PASSIVE_RULES.md` §7, `BOSS_RULES.md`
+   §3 item 1). The    `Source` field is `"pet"` or `"boss"`, and `SourceId`
+   carries the corresponding identity (`PetState.PetId` or
+   `BossState.BossId`). Both fields are present in every emission — the
+   client uses them to attribute the event to the correct entity.
 2. **`new progress value` is the progress the increment produced, and `threshold`
    is the Passive's threshold** (`PASSIVE_RULES.md` §1, §2). Both are reported
    as the values the track owns, so the client renders `Progress / Threshold`
@@ -350,6 +366,12 @@ Payload:  PassiveCharged: PassiveId, new progress value, threshold
    applied to an event payload). This is a recorded sequencing position, not a
    scope reduction — the member is added to the emitted value by the Combat
    stage's own task, and the payload list above is not otherwise revised by it.
+4. **Boss Passive timing.** Boss Passive fires at Step 18a of
+   `GAME_RULES.md` §17, after Player Damage (Steps 15–17) and before Boss
+   Skill (Step 18b) and Boss Attack (Step 18c). The Passive evaluates
+   against the post-damage battle state. Boss Passive uses the same event
+   (`PassiveCharged`/`PassiveTriggered`) with `source = "boss"` — no
+   Boss-specific passive event exists (`BOSS_RULES.md` §7).
 
 ## RelicTriggered
 ```text
@@ -377,8 +399,13 @@ Payload:  DamageCalculated: Base, Combo Modifier, Element Modifier, Other
 ## BossSkillCast
 ```text
 Trigger:  Boss's own Skill timing rule fires (BOSS_RULES.md §4)
-Payload:  SkillId, effect summary
+          Charge ≥ Requirement AND Cooldown = 0 (GAME_STATE.md §2.4.3)
+Payload:  SkillId, SourceId (BossId), effect summary
 ```
+
+The Skill's damage (if any) is reported by separate `DamageCalculated`/
+`DamageDealt`/`DamageTaken` events in the same batch, with
+`source = "boss"` and `target = "player"`.
 
 ## BattleWon / BattleLost
 ```text

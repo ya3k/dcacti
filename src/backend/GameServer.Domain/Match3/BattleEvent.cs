@@ -1,3 +1,4 @@
+using GameServer.Domain.Combat;
 using GameServer.Domain.Passives;
 
 namespace GameServer.Domain.Match3;
@@ -6,17 +7,17 @@ namespace GameServer.Domain.Match3;
 /// The kind of one Battle Event emitted by a committed Swap's board resolution
 /// (<c>GAME_EVENTS.md</c> §1, §1.1, §2; <c>GAME_RULES.md</c> §16).
 ///
-/// The set is <b>closed and contract-owned</b>: it is exactly the Match-3 event
+/// The set is <b>closed and contract-owned</b>: it is exactly the event
 /// names <c>GAME_RULES.md</c> §16 lists and <c>GAME_EVENTS.md</c> §2 defines, and
 /// no member may be added for a name the documentation does not define
 /// (<c>AGENTS.md</c> §7). Events for later stages — <c>PowerChanged</c>,
-/// <c>RelicTriggered</c>, the Damage events, <c>BattleWon</c>/<c>BattleLost</c> —
-/// belong to their own owning tasks (<c>GAME_EVENTS.md</c> §3 item 7).
+/// <c>RelicTriggered</c>, <c>BossSkillCast</c>, <c>BattleWon</c>/<c>BattleLost</c>
+/// — belong to their own owning tasks (<c>GAME_EVENTS.md</c> §3 item 7).
 ///
-/// These five are the events the board resolution and its Passive stage produce.
-/// They are listed in the order <c>GAME_EVENTS.md</c> §1.1 places them; the
-/// enumeration value is a stable identity and is not itself the ordering
-/// (ordering is owned by the assembled list, see <see cref="BattleEvent"/>).
+/// These eight are the events the board resolution, its Passive stage, and the
+/// Damage Pipeline produce. They are listed in the order <c>GAME_EVENTS.md</c> §1
+/// places them; the enumeration value is a stable identity and is not itself the
+/// ordering (ordering is owned by the assembled list, see <see cref="BattleEvent"/>).
 ///
 /// <b>What is deliberately absent, and why.</b> A Special Gem activation is
 /// reported through <see cref="GemMatched"/> and the existing state push — no
@@ -28,8 +29,8 @@ namespace GameServer.Domain.Match3;
 /// <c>TurnChanged</c>/<c>SequenceChanged</c>/<c>BoardChanged</c> exists —
 /// <c>Turn</c>, <c>Sequence</c>, and the board are delivered as state
 /// (<c>SIGNALR_PROTOCOL.md</c> §3.1 item 3, §4). No <c>RelicTriggered</c>,
-/// <c>CardCast</c>, <c>PetSkillCast</c>, or Damage event exists here — those are
-/// other owning stages (<c>GAME_EVENTS.md</c> §2).
+/// <c>CardCast</c>, <c>PetSkillCast</c>, or <c>BossSkillCast</c> exists here —
+/// those are other owning stages (<c>GAME_EVENTS.md</c> §2).
 /// </summary>
 public enum BattleEventType
 {
@@ -89,6 +90,42 @@ public enum BattleEventType
     /// summary is deferred to the Combat stage (§2 item 3).
     /// </summary>
     PassiveTriggered = 5,
+
+    /// <summary>
+    /// The Damage Pipeline finished pricing one damage instance
+    /// (<c>GAME_EVENTS.md</c> §2 <c>DamageCalculated</c>,
+    /// <c>COMBAT_RULES.md</c> §3, <c>GAME_RULES.md</c> §17 steps 15–17).
+    ///
+    /// Its payload is the full documented breakdown — Base, Combo Modifier,
+    /// Element Modifier, Other Modifiers, Defense, Final Damage — reported "for
+    /// client feedback per GDD Design Philosophy" (§2). It is emitted
+    /// <b>once per damage instance</b>, after every step of §3 has run, and it
+    /// precedes <see cref="DamageDealt"/> and <see cref="DamageTaken"/> for the
+    /// same instance (<c>GAME_EVENTS.md</c> §1).
+    /// </summary>
+    DamageCalculated = 6,
+
+    /// <summary>
+    /// One damage instance's Final Damage was dealt by a source to a target
+    /// (<c>GAME_EVENTS.md</c> §2 <c>DamageDealt</c>).
+    ///
+    /// Its payload is source, target, and the Final Damage amount. It is emitted
+    /// for the same instance <see cref="DamageCalculated"/> reported, so the two
+    /// carry one <c>FinalDamage</c> value (<c>GAME_EVENTS.md</c> §1).
+    /// </summary>
+    DamageDealt = 7,
+
+    /// <summary>
+    /// One damage instance's Final Damage was taken by a target from a source
+    /// (<c>GAME_EVENTS.md</c> §2 <c>DamageTaken</c>).
+    ///
+    /// Its payload is source, target, and the Final Damage amount — the same
+    /// members and the same instance as <see cref="DamageDealt"/>, reported from
+    /// the receiving side. It is <b>not</b> a second application of damage: Boss
+    /// HP is reduced once, by the pipeline, and these two reports describe that
+    /// one reduction (<c>GAME_EVENTS.md</c> §3 item 6).
+    /// </summary>
+    DamageTaken = 8,
 }
 
 /// <summary>
@@ -104,8 +141,12 @@ public enum BattleEventType
 /// │                      ComboChanged
 /// ├── Gem                the GemMatched payload, when Type is GemMatched
 /// ├── PassiveCharged     the PassiveCharged payload, when Type is PassiveCharged
-/// ──── PassiveTriggered   the PassiveTriggered payload, when Type is
-///                        PassiveTriggered
+/// ├── PassiveTriggered   the PassiveTriggered payload, when Type is
+/// │                      PassiveTriggered
+/// ├── DamageCalculated   the DamageCalculated breakdown, when Type is
+/// │                      DamageCalculated          (GAME_EVENTS.md §2)
+/// ├── DamageDealt        the DamageDealt payload, when Type is DamageDealt
+/// └── DamageTaken        the DamageTaken payload, when Type is DamageTaken
 /// </code>
 ///
 /// <b>This is an output, never state.</b> Emitting, holding, or reading an event
@@ -148,7 +189,10 @@ public readonly record struct BattleEvent
         int? combo,
         GemMatchedEvent? gem,
         PassiveChargedEvent? passiveCharged,
-        PassiveTriggeredEvent? passiveTriggered)
+        PassiveTriggeredEvent? passiveTriggered,
+        DamageCalculation? damageCalculated,
+        DamageDealtEvent? damageDealt,
+        DamageTakenEvent? damageTaken)
     {
         Type = type;
         _match = match;
@@ -157,6 +201,9 @@ public readonly record struct BattleEvent
         _gem = gem;
         _passiveCharged = passiveCharged;
         _passiveTriggered = passiveTriggered;
+        _damageCalculated = damageCalculated;
+        _damageDealt = damageDealt;
+        _damageTaken = damageTaken;
     }
 
     private readonly MatchResolution? _match;
@@ -165,6 +212,9 @@ public readonly record struct BattleEvent
     private readonly GemMatchedEvent? _gem;
     private readonly PassiveChargedEvent? _passiveCharged;
     private readonly PassiveTriggeredEvent? _passiveTriggered;
+    private readonly DamageCalculation? _damageCalculated;
+    private readonly DamageDealtEvent? _damageDealt;
+    private readonly DamageTakenEvent? _damageTaken;
 
     /// <summary>Which documented event this is.</summary>
     public BattleEventType Type { get; }
@@ -246,6 +296,43 @@ public readonly record struct BattleEvent
             + "Check Type before reading PassiveTriggered.");
 
     /// <summary>
+    /// The <c>DamageCalculated</c> payload — the full pipeline breakdown: Base,
+    /// Combo Modifier, Element Modifier, Other Modifiers, Defense, Final Damage
+    /// (<c>GAME_EVENTS.md</c> §2).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// This event is not a <see cref="BattleEventType.DamageCalculated"/>.
+    /// </exception>
+    public DamageCalculation DamageCalculated =>
+        _damageCalculated ?? throw new InvalidOperationException(
+            $"A {Type} event carries no DamageCalculated breakdown (GAME_EVENTS.md §2). "
+            + "Check Type before reading DamageCalculated.");
+
+    /// <summary>
+    /// The <c>DamageDealt</c> payload — source, target, and the Final Damage
+    /// amount (<c>GAME_EVENTS.md</c> §2).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// This event is not a <see cref="BattleEventType.DamageDealt"/>.
+    /// </exception>
+    public DamageDealtEvent DamageDealt =>
+        _damageDealt ?? throw new InvalidOperationException(
+            $"A {Type} event carries no DamageDealt payload (GAME_EVENTS.md §2). "
+            + "Check Type before reading DamageDealt.");
+
+    /// <summary>
+    /// The <c>DamageTaken</c> payload — source, target, and the Final Damage
+    /// amount (<c>GAME_EVENTS.md</c> §2).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// This event is not a <see cref="BattleEventType.DamageTaken"/>.
+    /// </exception>
+    public DamageTakenEvent DamageTaken =>
+        _damageTaken ?? throw new InvalidOperationException(
+            $"A {Type} event carries no DamageTaken payload (GAME_EVENTS.md §2). "
+            + "Check Type before reading DamageTaken.");
+
+    /// <summary>
     /// A <c>MatchCreated</c> event for one detected Match.
     /// </summary>
     /// <param name="match">
@@ -253,7 +340,7 @@ public readonly record struct BattleEvent
     /// (<c>GAME_EVENTS.md</c> §1.1 item 2, <c>MATCH3_RULES.md</c> §3.2).
     /// </param>
     internal static BattleEvent ForMatch(MatchResolution match) =>
-        new(BattleEventType.MatchCreated, match, null, null, null, null, null);
+        new(BattleEventType.MatchCreated, match, null, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>CascadeCreated</c> event for one Cascade pass.
@@ -263,7 +350,7 @@ public readonly record struct BattleEvent
     /// 1 for the Swap's second pass (<c>MATCH3_RULES.md</c> §4.2 item 2).
     /// </param>
     internal static BattleEvent ForCascade(int cascadeDepth) =>
-        new(BattleEventType.CascadeCreated, null, cascadeDepth, null, null, null, null);
+        new(BattleEventType.CascadeCreated, null, cascadeDepth, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>ComboChanged</c> event carrying the Combo value the Match it follows
@@ -274,7 +361,7 @@ public readonly record struct BattleEvent
     /// <c>MATCH3_RULES.md</c> §6.6 item 2).
     /// </param>
     internal static BattleEvent ForCombo(int combo) =>
-        new(BattleEventType.ComboChanged, null, null, combo, null, null, null);
+        new(BattleEventType.ComboChanged, null, null, combo, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>GemMatched</c> event for one consumed Gem.
@@ -284,7 +371,7 @@ public readonly record struct BattleEvent
     /// §1.0 cell-index enumeration order of <c>GAME_EVENTS.md</c> §1.3.
     /// </param>
     internal static BattleEvent ForGem(GemMatchedEvent gem) =>
-        new(BattleEventType.GemMatched, null, null, null, gem, null, null);
+        new(BattleEventType.GemMatched, null, null, null, gem, null, null, null, null, null);
 
     /// <summary>
     /// A <c>PassiveCharged</c> event for one Match's charge
@@ -303,7 +390,7 @@ public readonly record struct BattleEvent
     /// increment produced, and the Threshold.
     /// </param>
     public static BattleEvent ForPassiveCharged(PassiveChargedEvent charged) =>
-        new(BattleEventType.PassiveCharged, null, null, null, null, charged, null);
+        new(BattleEventType.PassiveCharged, null, null, null, null, charged, null, null, null, null);
 
     /// <summary>
     /// A <c>PassiveTriggered</c> event for one threshold crossing
@@ -321,7 +408,49 @@ public readonly record struct BattleEvent
     /// </param>
     public static BattleEvent ForPassiveTriggered(
         PassiveTriggeredEvent triggered) =>
-        new(BattleEventType.PassiveTriggered, null, null, null, null, null, triggered);
+        new(BattleEventType.PassiveTriggered, null, null, null, null, null, triggered, null, null, null);
+
+    /// <summary>
+    /// A <c>DamageCalculated</c> event carrying the full pipeline breakdown
+    /// (<c>GAME_EVENTS.md</c> §2, <c>COMBAT_RULES.md</c> §3).
+    ///
+    /// It is <b>public</b>, like the two Passive factories: the Damage Pipeline is
+    /// <c>GAME_RULES.md</c> §17 steps 15–17 and the Application-layer pipeline
+    /// step that owns the <c>§17</c> sequence hands the assembled list back
+    /// through <see cref="SwapExecutionResult.WithEvents"/>. The breakdown is the
+    /// pipeline's own <see cref="DamageCalculation"/> carried unchanged — no
+    /// member is added, reordered, or re-derived here.
+    /// </summary>
+    /// <param name="calculation">
+    /// The pipeline's own result: Base, Combo Modifier, Element Modifier, Other
+    /// Modifiers, Defense, Final Damage.
+    /// </param>
+    public static BattleEvent ForDamageCalculated(DamageCalculation calculation) =>
+        new(BattleEventType.DamageCalculated, null, null, null, null, null, null, calculation, null, null);
+
+    /// <summary>
+    /// A <c>DamageDealt</c> event for one damage instance
+    /// (<c>GAME_EVENTS.md</c> §2).
+    ///
+    /// Public for the same reason as <see cref="ForDamageCalculated"/>.
+    /// </summary>
+    /// <param name="dealt">
+    /// The pipeline's own report — source, target, and the Final Damage amount.
+    /// </param>
+    public static BattleEvent ForDamageDealt(DamageDealtEvent dealt) =>
+        new(BattleEventType.DamageDealt, null, null, null, null, null, null, null, dealt, null);
+
+    /// <summary>
+    /// A <c>DamageTaken</c> event for one damage instance
+    /// (<c>GAME_EVENTS.md</c> §2).
+    ///
+    /// Public for the same reason as <see cref="ForDamageCalculated"/>.
+    /// </summary>
+    /// <param name="taken">
+    /// The pipeline's own report — source, target, and the Final Damage amount.
+    /// </param>
+    public static BattleEvent ForDamageTaken(DamageTakenEvent taken) =>
+        new(BattleEventType.DamageTaken, null, null, null, null, null, null, null, null, taken);
 
     /// <summary>"MatchCreated (Horizontal x3 at 25 (Atk))" — for test diagnostics only.</summary>
     public override string ToString() => Type switch
@@ -332,6 +461,10 @@ public readonly record struct BattleEvent
         BattleEventType.GemMatched => $"GemMatched (cell {Gem.CellIndex}, {Gem.GemType})",
         BattleEventType.PassiveCharged => PassiveCharged.ToString(),
         BattleEventType.PassiveTriggered => PassiveTriggered.ToString(),
+        BattleEventType.DamageCalculated =>
+            $"DamageCalculated (base {DamageCalculated.Base}, final {DamageCalculated.FinalDamage})",
+        BattleEventType.DamageDealt => DamageDealt.ToString(),
+        BattleEventType.DamageTaken => DamageTaken.ToString(),
         _ => Type.ToString(),
     };
 }

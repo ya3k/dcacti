@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using GameServer.Domain.Combat;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
 
@@ -12,14 +13,16 @@ namespace GameServer.Api.Hubs;
 /// member plus that event's own payload members at the same level
 /// (<c>§3.2.2</c>). The discriminator is the documented string
 /// <c>MatchCreated</c> / <c>CascadeCreated</c> / <c>ComboChanged</c> /
-/// <c>GemMatched</c> / <c>PassiveCharged</c> / <c>PassiveTriggered</c> — never
+/// <c>GemMatched</c> / <c>PassiveCharged</c> / <c>PassiveTriggered</c> /
+/// <c>DamageCalculated</c> / <c>DamageDealt</c> / <c>DamageTaken</c> — never
 /// the Domain enum's ordinal, which is a Domain identity and not part of the
 /// wire contract (<c>§3.2.2</c> item 3). The first four are the board
-/// resolution's events (<c>§3.2.6–§3.2.9</c>); the last two are the Passive
-/// stage's, whose wire schema <c>§3.3</c> fixes and which travel in this same
-/// <c>events[]</c> array on the same path (<c>§3.1</c>, <c>§4.3</c> item 10).
+/// resolution's events (<c>§3.2.6–§3.2.9</c>); the next two are the Passive
+/// stage's (<c>§3.3</c>); the last three are the Damage Pipeline's
+/// (<c>§3.2.13–§3.2.15</c>). All travel in this same <c>events[]</c> array
+/// on the same path (<c>§3.1</c>, <c>§4.3</c> item 10).
 ///
-/// <b>One type, six shapes.</b> The schema defines a flat object per event, not a
+/// <b>One type, nine shapes.</b> The schema defines a flat object per event, not a
 /// shared envelope: a <c>CascadeCreated</c> carries <c>cascadeDepth</c> and
 /// nothing else, and a <c>ComboChanged</c> carries <c>combo</c> and nothing
 /// else. A cross-product record would therefore have to emit members that do
@@ -104,6 +107,33 @@ namespace GameServer.Api.Hubs;
 /// <c>progress / threshold</c> pair without supplying either from elsewhere
 /// (<c>GAME_EVENTS.md</c> §2 item 2, <c>PASSIVE_RULES.md</c> §6 item 1).
 /// </param>
+/// <param name="Base">
+/// <c>DamageCalculated</c> only (<c>§3.2.13</c>): Step 1 — Base Damage.
+/// </param>
+/// <param name="ComboModifier">
+/// <c>DamageCalculated</c> only (<c>§3.2.13</c>): Step 2 — Combo Modifier factor.
+/// </param>
+/// <param name="ElementModifier">
+/// <c>DamageCalculated</c> only (<c>§3.2.13</c>): Step 3 — Element Modifier factor.
+/// </param>
+/// <param name="OtherModifiers">
+/// <c>DamageCalculated</c> only (<c>§3.2.13</c>): Step 4 — Other Modifiers factor.
+/// </param>
+/// <param name="Defense">
+/// <c>DamageCalculated</c> only (<c>§3.2.13</c>): Step 5 — damage after Defense Mitigation.
+/// </param>
+/// <param name="FinalDamage">
+/// <c>DamageCalculated</c> only (<c>§3.2.13</c>): Step 6 — Final Damage (truncated, never negative).
+/// </param>
+/// <param name="Source">
+/// <c>DamageDealt</c> and <c>DamageTaken</c> (<c>§3.2.14</c>, <c>§3.2.15</c>): the party that dealt the damage.
+/// </param>
+/// <param name="Target">
+/// <c>DamageDealt</c> and <c>DamageTaken</c> (<c>§3.2.14</c>, <c>§3.2.15</c>): the party that received the damage.
+/// </param>
+/// <param name="Amount">
+/// <c>DamageDealt</c> and <c>DamageTaken</c> (<c>§3.2.14</c>, <c>§3.2.15</c>): the Final Damage amount.
+/// </param>
 public sealed record BattleEventWireDto(
     [property: JsonPropertyName("type")] string Type,
     [property: JsonPropertyName("shape")]
@@ -128,7 +158,25 @@ public sealed record BattleEventWireDto(
     [property: JsonPropertyName("progress")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Progress = null,
     [property: JsonPropertyName("threshold")]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Threshold = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Threshold = null,
+    [property: JsonPropertyName("base")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Base = null,
+    [property: JsonPropertyName("comboModifier")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? ComboModifier = null,
+    [property: JsonPropertyName("elementModifier")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? ElementModifier = null,
+    [property: JsonPropertyName("otherModifiers")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? OtherModifiers = null,
+    [property: JsonPropertyName("defense")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] double? Defense = null,
+    [property: JsonPropertyName("finalDamage")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? FinalDamage = null,
+    [property: JsonPropertyName("source")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Source = null,
+    [property: JsonPropertyName("target")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Target = null,
+    [property: JsonPropertyName("amount")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Amount = null)
 {
     /// <summary>
     /// The wire item for one <c>MatchCreated</c>
@@ -247,6 +295,66 @@ public sealed record BattleEventWireDto(
             PassiveId: passiveId,
             Progress: progress,
             Threshold: threshold);
+
+    /// <summary>
+    /// The wire item for one <c>DamageCalculated</c>
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.13) — the full pipeline breakdown.
+    /// </summary>
+    /// <param name="baseDamage">Step 1 — Base Damage.</param>
+    /// <param name="comboModifier">Step 2 — Combo Modifier factor.</param>
+    /// <param name="elementModifier">Step 3 — Element Modifier factor.</param>
+    /// <param name="otherModifiers">Step 4 — Other Modifiers factor.</param>
+    /// <param name="defense">Step 5 — damage after Defense Mitigation.</param>
+    /// <param name="finalDamage">Step 6 — Final Damage (truncated, never negative).</param>
+    public static BattleEventWireDto DamageCalculated(
+        int baseDamage,
+        double comboModifier,
+        double elementModifier,
+        double otherModifiers,
+        double defense,
+        int finalDamage) =>
+        new(
+            Type: "DamageCalculated",
+            Base: baseDamage,
+            ComboModifier: comboModifier,
+            ElementModifier: elementModifier,
+            OtherModifiers: otherModifiers,
+            Defense: defense,
+            FinalDamage: finalDamage);
+
+    /// <summary>
+    /// The wire item for one <c>DamageDealt</c>
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.14) — source, target, amount.
+    /// </summary>
+    /// <param name="source">The party that dealt the damage.</param>
+    /// <param name="target">The party that received the damage.</param>
+    /// <param name="amount">The Final Damage applied.</param>
+    public static BattleEventWireDto DamageDealt(
+        string source,
+        string target,
+        int amount) =>
+        new(
+            Type: "DamageDealt",
+            Source: source,
+            Target: target,
+            Amount: amount);
+
+    /// <summary>
+    /// The wire item for one <c>DamageTaken</c>
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.15) — source, target, amount.
+    /// </summary>
+    /// <param name="source">The party that dealt the damage.</param>
+    /// <param name="target">The party that received the damage.</param>
+    /// <param name="amount">The Final Damage taken.</param>
+    public static BattleEventWireDto DamageTaken(
+        string source,
+        string target,
+        int amount) =>
+        new(
+            Type: "DamageTaken",
+            Source: source,
+            Target: target,
+            Amount: amount);
 }
 
 /// <summary>
@@ -399,10 +507,13 @@ public static class BattleEventWireProjection
             BattleEventType.GemMatched => ProjectGem(battleEvent.Gem),
             BattleEventType.PassiveCharged => ProjectPassiveCharged(battleEvent.PassiveCharged),
             BattleEventType.PassiveTriggered => ProjectPassiveTriggered(battleEvent.PassiveTriggered),
+            BattleEventType.DamageCalculated => ProjectDamageCalculated(battleEvent.DamageCalculated),
+            BattleEventType.DamageDealt => ProjectDamageDealt(battleEvent.DamageDealt),
+            BattleEventType.DamageTaken => ProjectDamageTaken(battleEvent.DamageTaken),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(battleEvent),
                 battleEvent.Type,
-                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.3)."),
+                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.15, §3.3)."),
         };
 
     /// <summary>
@@ -437,6 +548,39 @@ public static class BattleEventWireProjection
 
             // §2 item 2: the Passive's Threshold.
             threshold: triggered.Threshold);
+
+    /// <summary>
+    /// Projects the <c>DamageCalculated</c> payload (<c>SIGNALR_PROTOCOL.md</c>
+    /// §3.2.13) — the full pipeline breakdown.
+    /// </summary>
+    private static BattleEventWireDto ProjectDamageCalculated(DamageCalculation calc) =>
+        BattleEventWireDto.DamageCalculated(
+            baseDamage: calc.Base,
+            comboModifier: calc.ComboModifier,
+            elementModifier: calc.ElementModifier,
+            otherModifiers: calc.OtherModifiers,
+            defense: calc.Defense,
+            finalDamage: calc.FinalDamage);
+
+    /// <summary>
+    /// Projects the <c>DamageDealt</c> payload (<c>SIGNALR_PROTOCOL.md</c>
+    /// §3.2.14) — source, target, amount.
+    /// </summary>
+    private static BattleEventWireDto ProjectDamageDealt(DamageDealtEvent dealt) =>
+        BattleEventWireDto.DamageDealt(
+            source: dealt.Source.ToString().ToLowerInvariant(),
+            target: dealt.Target.ToString().ToLowerInvariant(),
+            amount: dealt.Amount);
+
+    /// <summary>
+    /// Projects the <c>DamageTaken</c> payload (<c>SIGNALR_PROTOCOL.md</c>
+    /// §3.2.15) — source, target, amount.
+    /// </summary>
+    private static BattleEventWireDto ProjectDamageTaken(DamageTakenEvent taken) =>
+        BattleEventWireDto.DamageTaken(
+            source: taken.Source.ToString().ToLowerInvariant(),
+            target: taken.Target.ToString().ToLowerInvariant(),
+            amount: taken.Amount);
 
     /// <summary>
     /// Projects the <c>MatchCreated</c> payload (<c>§3.2.6</c>).

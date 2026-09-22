@@ -79,9 +79,12 @@ namespace GameServer.Domain.Battle;
 /// begins at full health — and is the value the Damage Pipeline and healing
 /// effects read (<c>COMBAT_RULES.md</c> §3, §4).
 ///
-/// No damage, mitigation, healing, or Victory/Defeat rule is implemented here:
-/// <c>COMBAT_RULES.md</c> §3–§4 own all of them, and nothing in this type
-/// computes, clamps, or compares it.
+/// <b>Nothing in this type computes, clamps, or compares it.</b> The healing that
+/// writes it is <c>COMBAT_RULES.md</c> §4 item 1's rule, applied by
+/// <see cref="GameServer.Domain.Match3.ResourceGenerator.ApplyHeal"/> as
+/// <c>GAME_RULES.md</c> §17 step 14 and clamped there to this field's
+/// <c>MaxHP</c>. Damage and mitigation (§3) and Victory/Defeat are still
+/// unimplemented and remain owned by their own stages.
 /// </param>
 /// <param name="MaxHP">
 /// The player's maximum health (<c>COMBAT_RULES.md</c> §1.1,

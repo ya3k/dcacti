@@ -1,4 +1,5 @@
 using GameServer.Domain.Battle;
+using GameServer.Domain.Combat;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
 using Xunit;
@@ -952,7 +953,18 @@ public class BattleEventEmissionTests
             .ToArray();
 
         Assert.Equal(
-            ["CascadeDepth", "Combo", "Gem", "Match", "PassiveCharged", "PassiveTriggered", "Type"],
+            [
+                "CascadeDepth",
+                "Combo",
+                "DamageCalculated",
+                "DamageDealt",
+                "DamageTaken",
+                "Gem",
+                "Match",
+                "PassiveCharged",
+                "PassiveTriggered",
+                "Type",
+            ],
             members);
 
         // And no nested payload carries one either. The Passive payloads are
@@ -961,6 +973,11 @@ public class BattleEventEmissionTests
         // identifier — the same kind of member RelicId / CardId / SkillId are for
         // their own events. It is asserted directly instead: the identity is the
         // caller-supplied PassiveId and nothing derived.
+        //
+        // The Damage payloads are here because GAME_EVENTS.md §2 gives them no
+        // identity at all: the three members below plus the breakdown carry source,
+        // target, and amount, so a generated id, timestamp, or hash would be an
+        // undocumented member.
         foreach (var type in new[]
                  {
                      typeof(BattleEvent),
@@ -968,6 +985,11 @@ public class BattleEventEmissionTests
                      typeof(MatchResolution),
                      typeof(ActivatedSpecialGem),
                      typeof(SpecialGemClaim),
+                     typeof(GameServer.Domain.Combat.DamageCalculation),
+                     typeof(DamageDealtEvent),
+                     typeof(DamageTakenEvent),
+                     typeof(DamageEvents),
+                     typeof(DamageResult),
                  })
         {
             var names = type
@@ -1235,18 +1257,23 @@ public class BattleEventEmissionTests
         // owns the detail. The Match-3 resolution produces the four names its cycle
         // places on it — MatchCreated, CascadeCreated, ComboChanged, GemMatched — and
         // the Passive stage adds the two names the same §16 list carries and
-        // PASSIVE_RULES.md §7 defines: PassiveCharged and PassiveTriggered. No
+        // PASSIVE_RULES.md §7 defines: PassiveCharged and PassiveTriggered. The
+        // Damage Pipeline (TASK-021) adds the three GAME_RULES.md §16 / GAME_EVENTS.md
+        // §2 Damage names — DamageCalculated, DamageDealt, DamageTaken. No
         // undocumented name may be added (AGENTS.md §7). In particular no
         // MatchCountChanged, SpecialGemActivated, SpecialGemCreated, TurnChanged,
         // SequenceChanged, or BoardChanged exists, and the stages that own
-        // PowerChanged, RelicTriggered, CardCast, PetSkillCast, the Damage events,
-        // and BattleWon/BattleLost have not added theirs here.
+        // PowerChanged, RelicTriggered, CardCast, PetSkillCast, BossSkillCast, and
+        // BattleWon/BattleLost have not added theirs here.
         var names = Enum.GetNames<BattleEventType>().OrderBy(n => n, StringComparer.Ordinal).ToArray();
 
         Assert.Equal(
             [
                 "CascadeCreated",
                 "ComboChanged",
+                "DamageCalculated",
+                "DamageDealt",
+                "DamageTaken",
                 "GemMatched",
                 "MatchCreated",
                 "PassiveCharged",

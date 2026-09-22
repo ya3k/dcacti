@@ -1,4 +1,6 @@
 using GameServer.Domain.Battle;
+using GameServer.Domain.Bosses;
+using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
 using Xunit;
@@ -47,9 +49,9 @@ public class BattleStateTests
     {
         // GAME_STATE.md §2.0.5: BattleId, Turn, Sequence, RngSeed, RngState,
         // BoardState — nothing else, plus the Swap stage's LastCommittedSwapPair
-        // (§2.1.10), the Match / Combo stage's PlayerState (§2.2), and the Pet /
-        // Passive stage's PetState (§2.3), each added to this same record by its
-        // own owning stage.
+        // (§2.1.10), the Match / Combo stage's PlayerState (§2.2), the Pet /
+        // Passive stage's PetState (§2.3), and the Boss stage's BossState (§2.4),
+        // each added to this same record by its own owning stage.
         var properties = typeof(BattleState)
             .GetProperties()
             .Select(p => p.Name)
@@ -59,8 +61,8 @@ public class BattleStateTests
         Assert.Equal(
             new[]
             {
-                "BattleId", "BoardState", "LastCommittedSwapPair", "PetState", "PlayerState",
-                "RngSeed", "RngState", "Sequence", "Turn",
+                "BattleId", "BoardState", "BossState", "LastCommittedSwapPair", "PetState",
+                "PlayerState", "RngSeed", "RngState", "Sequence", "Turn",
             },
             properties);
     }
@@ -106,11 +108,12 @@ public class BattleStateTests
     [Fact]
     public void BoardFoundationState_ShouldStillDeclareNoLaterStageField()
     {
-        // GAME_STATE.md §2.0.5.3: BossState (§2.4) is still absent and still owned by
-        // a later stage, and the rest of PlayerState (§2.2) — StatusEffects,
-        // EquippedRelics, EquippedCards — is not implemented either. The rest of
-        // PetState (§2.3) — PetId/Identity, Element, Tier/Star/Level — is likewise
-        // still owned by the Pet identity and progression stage.
+        // GAME_STATE.md §2.0.5.3: the rest of PlayerState (§2.2) — StatusEffects,
+        // EquippedRelics, EquippedCards — is not implemented yet, the rest of
+        // PetState (§2.3) — PetId/Identity, Tier/Star/Level — is likewise still
+        // owned by the Pet identity and progression stage, and the rest of
+        // BossState (§2.4) — PassiveProgress, StatusEffects[] — is still owned by
+        // the Boss Passive and Status Effects systems.
         //
         // PendingSpecialGems is in the list for a different reason: it is not a deferred
         // field — the placeholder was removed and does not exist in any form
@@ -132,6 +135,13 @@ public class BattleStateTests
         // stats stage adds them to PlayerState with the COMBAT_RULES.md §1.1 MVP
         // defaults, exactly as each earlier stage added its own fields. The check
         // here is that no OTHER later-stage field appeared.
+        //
+        // BossState is NOT in the list, and neither is the Pet's Element: the Boss
+        // stage implements both — BossState as a field of this record (§2.4) and
+        // Element as a PetState field (§2.3) — exactly as each earlier stage added
+        // its own. Their own members are covered by the BossState contract tests.
+        // The Boss's own Element is a member of BossState, not of BattleState, so
+        // it is not a top-level field here either.
         var declared = typeof(BattleState)
             .GetProperties()
             .Select(p => p.Name)
@@ -139,15 +149,19 @@ public class BattleStateTests
             .Concat(typeof(BoardState).GetProperties().Select(p => p.Name))
             .Concat(typeof(PlayerState).GetProperties().Select(p => p.Name))
             .Concat(typeof(PetState).GetProperties().Select(p => p.Name))
+            .Concat(typeof(BossState).GetProperties().Select(p => p.Name))
             .ToArray();
 
         foreach (var laterStageField in new[]
                  {
-                     "BossState", "PendingSpecialGems",
+                     "PendingSpecialGems",
                      "StatusEffects", "EquippedRelics", "EquippedCards",
                      // The rest of §2.3, still owned by the Pet identity and
                      // progression stage (§2.3, SIGNALR_PROTOCOL.md §4.3 item 2).
-                     "PetId", "Element", "Tier", "Star", "Level",
+                     "PetId", "Tier", "Star", "Level",
+                     // The rest of §2.4, still owned by the Boss Passive and Status
+                     // Effects systems (§2.4, BOSS_RULES.md §3).
+                     "BossPassiveProgress", "BossStatusEffects",
                  })
         {
             Assert.DoesNotContain(laterStageField, declared);
@@ -249,13 +263,24 @@ public class BattleStateTests
     private static readonly PassiveId XichLang = new("xich-lang");
 
     /// <summary>
-    /// A battle created through the documented Passive configuration — the form
+    /// Xích Lang's MVP Element (<c>ELEMENT_RULES.md</c> §6 — Hỏa).
+    /// </summary>
+    private const Element XichLangElement = Element.Hoa;
+
+    /// <summary>
+    /// Hỏa Long, an MVP Boss of <c>BOSS_RULES.md</c> §6.1 (Hỏa, 5000 / 100 / 50),
+    /// used wherever a test needs a battle without asserting Boss values.
+    /// </summary>
+    private static readonly BossDefinition MvpBoss = BossDefinitions.HoaLong;
+
+    /// <summary>
+    /// A battle created through the documented Pet configuration — the form
     /// <c>BattleStateService.CreateBattle</c> uses.
     /// </summary>
     private static BattleState BattleWithPassive(
         PassiveResetBehavior? reset = null,
         int threshold = 5) =>
-        BattleState.Create("battle-pet", TestSeed, XichLang, threshold, reset);
+        BattleState.Create("battle-pet", TestSeed, XichLangElement, XichLang, threshold, MvpBoss, reset);
 
     [Fact]
     public void Create_ShouldInitializePetStateWithThePassiveAtProgressZero()
@@ -263,21 +288,24 @@ public class BattleStateTests
         // GAME_STATE.md §2.3 item 3: PetState is present from battle creation, and
         // §2.3 / SIGNALR_PROTOCOL.md §4.3 item 4 fix the progress it begins with —
         // the Passive's own Threshold with Current = 0.
-        var state = BattleState.Create("battle-pet", TestSeed, XichLang, passiveThreshold: 5);
+        var state = BattleState.Create(
+            "battle-pet", TestSeed, XichLangElement, XichLang, passiveThreshold: 5, MvpBoss);
 
         Assert.Equal(XichLang, state.PetState.PassiveId);
+        Assert.Equal(XichLangElement, state.PetState.Element);
         Assert.Equal(new PassiveProgress(5, 0), state.PetState.PassiveProgress);
         Assert.Equal(0, state.PetState.PassiveProgress.Current);
         Assert.Equal(5, state.PetState.PassiveProgress.Threshold);
     }
 
     [Fact]
-    public void Create_ShouldRequireThePassiveConfiguration()
+    public void Create_ShouldRequireThePetAndBossConfiguration()
     {
-        // §2.3 item 3: PetState is not optional, not defaulted, and not lazily
-        // initialized — there is no "no Passive yet" state for an absent value to
-        // spell. No creation overload therefore omits it: every one supplies either
-        // a PetState or the Passive identity + Threshold that build one.
+        // §2.3 item 3 and §2.4: PetState and BossState are not optional, not
+        // defaulted, and not lazily initialized — there is no "no Passive yet" and
+        // no "no Boss yet" state for an absent value to spell. No creation overload
+        // therefore omits them: every one supplies either a PetState/BossState pair
+        // or the Pet and Boss configuration that builds them.
         var overloads = typeof(BattleState)
             .GetMethods()
             .Where(m => m is { IsStatic: true, Name: "Create" })
@@ -285,7 +313,7 @@ public class BattleStateTests
             .OrderBy(n => n)
             .ToArray();
 
-        Assert.Equal([3, 5], overloads);
+        Assert.Equal([4, 7], overloads);
     }
 
     [Fact]
@@ -341,7 +369,7 @@ public class BattleStateTests
         // PASSIVE_RULES.md §2 item 1 charges per Match, and board generation is
         // not a Swap/Action and produces no Match (MATCH3_RULES.md §8.1 item 4,
         // GAME_STATE.md §2.0.5.2 item 1). Creation therefore leaves progress at 0.
-        var state = BattleState.Create("battle-pet", TestSeed, XichLang, passiveThreshold: 5);
+        var state = BattleState.Create("battle-pet", TestSeed, XichLangElement, XichLang, passiveThreshold: 5, MvpBoss);
 
         Assert.Equal(0, state.PetState.PassiveProgress.Current);
     }
@@ -349,8 +377,9 @@ public class BattleStateTests
     [Fact]
     public void PetState_ShouldCarryExactlyTheDocumentedFields()
     {
-        // GAME_STATE.md §2.3: PassiveId, PassiveProgress, PassiveResetOverride —
-        // the three fields this stage implements. PetId/Identity, Element, and
+        // GAME_STATE.md §2.3: Element, PassiveId, PassiveProgress,
+        // PassiveResetOverride — the four fields the Pet stages implement.
+        // PetId/Identity and
         // Tier/Star/Level belong to a later stage and are not stubbed here (§0
         // item 4, §0 item 5).
         var dataMembers = typeof(PetState)
@@ -359,10 +388,12 @@ public class BattleStateTests
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToArray();
 
-        Assert.Equal(new[] { "PassiveId", "PassiveProgress", "PassiveResetOverride" }, dataMembers);
+        Assert.Equal(
+            new[] { "Element", "PassiveId", "PassiveProgress", "PassiveResetOverride" },
+            dataMembers);
 
         // ResetBehavior and HasResetOverride are derived readings of the recorded
-        // override, not additional state: the three members above are the whole
+        // override, not additional state: the four members above are the whole
         // representation (§0 item 5).
         var declared = typeof(PetState)
             .GetProperties()
@@ -373,8 +404,8 @@ public class BattleStateTests
         Assert.Equal(
             new[]
             {
-                "HasResetOverride", "PassiveId", "PassiveProgress", "PassiveResetOverride",
-                "ResetBehavior",
+                "Element", "HasResetOverride", "PassiveId", "PassiveProgress",
+                "PassiveResetOverride", "ResetBehavior",
             },
             declared);
     }
@@ -385,7 +416,7 @@ public class BattleStateTests
         // GAME_EVENTS.md §2 item 1 / GAME_STATE.md §2.3: the identity is the same
         // value the PassiveCharged/PassiveTriggered payload reports — read and
         // reported, never re-derived or re-numbered.
-        var state = BattleState.Create("battle-pet", TestSeed, XichLang, passiveThreshold: 5);
+        var state = BattleState.Create("battle-pet", TestSeed, XichLangElement, XichLang, passiveThreshold: 5, MvpBoss);
 
         Assert.Equal("xich-lang", state.PetState.PassiveId.Value);
         Assert.Equal("xich-lang", state.PetState.PassiveId.ToString());
