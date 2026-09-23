@@ -10,12 +10,12 @@ namespace GameServer.Domain.Combat;
 /// <c>COMBAT_RULES.md</c> §3.
 ///
 /// <code>
-/// 1. Base Damage        PlayerState.ATK + ResourceGeneration.BaseDamagePool
-/// 2. × Combo Modifier   GAME_RULES.md §5's table, by PlayerState.Combo
+/// 1. Base Damage        Attacker ATK (+ Skill/Card base value) + BaseDamagePool
+/// 2. × Combo Modifier   GAME_RULES.md §5's table; Combo = 1 for a Boss attack
 /// 3. × Element Modifier ELEMENT_RULES.md §2.2, by the resolved matchup
 /// 4. × Other Modifiers  pass-through 1.00× in MVP (no Relic/Passive/Buff/Crit)
-/// 5. − Defense          × ( K / (K + Boss.DEF) ), K = 100   (COMBAT_RULES.md §3.2)
-/// 6. → Final Damage     truncated toward zero, minimum 0, applied to Boss HP
+/// 5. − Defense          × ( K / (K + Defender.DEF) ), K = 100  (COMBAT §3.2)
+/// 6. → Final Damage     truncated toward zero, minimum 0, applied to Target HP
 /// </code>
 ///
 /// <b>The order is fixed and is not an implementation choice.</b>
@@ -42,24 +42,25 @@ namespace GameServer.Domain.Combat;
 /// (<c>GAME_STATE.md</c> §3): it is read as step 1's input and remains on the
 /// resolution's result. <see cref="ResourceGeneration.DefensePool"/> is
 /// deliberately <b>not</b> read: <c>COMBAT_RULES.md</c> §3.2's formula consumes
-/// the <i>defending target's</i> DEF (<c>BossState.DEF</c>), not the attacker's
-/// generated pool, and no documented rule places the DEF pool in this pipeline.
-/// <c>PlayerState.DEF</c> is likewise not read — the pipeline's only DEF input in
-/// this stage is the Boss's.
+/// the <i>defending target's</i> DEF, not the attacker's generated pool, and no
+/// documented rule places the DEF pool in this pipeline. <c>PlayerState.DEF</c>
+/// is likewise not read directly — a caller supplying it does so as the
+/// defender's DEF, which is what §3.2 asks for.
 ///
-/// <b>One damage instance per committed Swap.</b> <c>GAME_RULES.md</c> §17 places
-/// steps 15–17 once in the resolution, and MVP has no multi-hit and no
-/// Damage-over-Time (<c>COMBAT_RULES.md</c> §5.3's Burn is a Status Effect and is
-/// not implemented). This type therefore performs one instance; a later stage
-/// that needs several calls it several times.
+/// <b>One damage instance per committed Swap, in each direction.</b>
+/// <c>GAME_RULES.md</c> §17 places steps 15–17 once (Player→Boss) and step 18b/18c
+/// once (Boss→Player), and MVP has no multi-hit and no Damage-over-Time
+/// (<c>COMBAT_RULES.md</c> §5.3's Burn is a Status Effect and is not
+/// implemented). This type therefore performs one instance per call; a stage that
+/// needs several calls it several times.
 ///
 /// <b>What it owns, and what it does not.</b> It owns the calculation and the
-/// resulting <c>BossState</c> HP write. It does <b>not</b> decide Victory or
-/// Defeat (<c>GAME_RULES.md</c> §17 step 19 — <c>GAME_RULES.md</c> §1.4's win
-/// condition is a later task's), it fires no Boss Response (step 18), it
-/// transitions no Boss State, and it applies no Shield
-/// (<c>COMBAT_RULES.md</c> §4 item 2 is not implemented). HP reaching 0 is
-/// simply HP reaching 0; nothing here reads it as an outcome.
+/// resulting target HP. It does <b>not</b> decide Victory or Defeat
+/// (<c>GAME_RULES.md</c> §1.4, §17 step 19 — the terminal checks belong to the
+/// resolution), it fires no Boss Response (step 18), it transitions no Boss
+/// State, and it applies no Shield (<c>COMBAT_RULES.md</c> §4 item 2 is not
+/// implemented). HP reaching 0 is simply HP reaching 0; nothing here reads it as
+/// an outcome.
 ///
 /// This type is deliberately minimal and framework-independent
 /// (<c>ARCHITECTURE.md</c> §2.1): it references no ASP.NET Core, SignalR, EF
@@ -150,7 +151,33 @@ public static class DamagePipeline
     /// <param name="DefenderDefense">
     /// Step 5's mitigation input — the defending target's DEF
     /// (<c>COMBAT_RULES.md</c> §3.2: <c>K / (K + DEF)</c>), which is
-    /// <c>BossState.DEF</c> (<c>GAME_STATE.md</c> §2.4).
+    /// <c>BossState.DEF</c> for Player→Boss damage and the active Pet's <c>DEF</c>
+    /// for Boss→Player damage (<c>COMBAT_RULES.md</c> §3.2, §3.4).
+    /// </param>
+    /// <param name="DefenderHp">
+    /// The defending target's current HP — the value Final Damage is applied to
+    /// (<c>COMBAT_RULES.md</c> §3 step 6). It is <c>BossState.HP</c> for
+    /// Player→Boss damage and <c>PlayerState.HP</c> for Boss→Player damage.
+    ///
+    /// <b>It is an input because the target's type differs by direction.</b>
+    /// <c>COMBAT_RULES.md</c> §3.4's Boss damage instance writes
+    /// <c>Player.HP</c>, which is a different state record from the
+    /// <c>BossState</c> the Player→Boss instance writes. Passing the value in —
+    /// rather than passing one of the two records — keeps this pipeline a single
+    /// calculation over both directions instead of two overloads or a second
+    /// pipeline. <see cref="DamageResult.TargetHp"/> carries the result back.
+    /// </param>
+    /// <param name="Source">
+    /// Which party is dealing this damage — the <c>source</c> member of the
+    /// <c>DamageDealt</c>/<c>DamageTaken</c> reports (<c>GAME_EVENTS.md</c> §2,
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.14). <see cref="DamageParty.Player"/> for
+    /// Player→Boss (steps 15–17), <see cref="DamageParty.Boss"/> for Boss→Player
+    /// (§3.4).
+    /// </param>
+    /// <param name="Target">
+    /// Which party is receiving this damage — the <c>target</c> member of the same
+    /// two reports. <see cref="DamageParty.Boss"/> for Player→Boss,
+    /// <see cref="DamageParty.Player"/> for Boss→Player.
     /// </param>
     public readonly record struct DamageInputs(
         int Attack,
@@ -158,7 +185,10 @@ public static class DamagePipeline
         int Combo,
         Element? AttackerElement,
         Element? DefenderElement,
-        int DefenderDefense);
+        int DefenderDefense,
+        int DefenderHp,
+        DamageParty Source,
+        DamageParty Target);
 
     /// <summary>
     /// Resolves one damage instance through the full pipeline and applies the
@@ -219,10 +249,39 @@ public static class DamagePipeline
     /// default set is <see cref="ElementModifiers.Default"/>, supplied explicitly
     /// for the same reason.
     /// </param>
+    /// <b>Both directions reach this one method.</b> <c>COMBAT_RULES.md</c> §3.4
+    /// makes the Boss's Basic Attack and Skill "the same Damage Pipeline (steps
+    /// 1–6)" as the player's, so Player→Boss and Boss→Player are one calculation
+    /// parameterized by <paramref name="inputs"/>'s source/target and by the
+    /// attacker/defender values the caller supplies. The steps below are written
+    /// once and are never duplicated per direction.
+    ///
+    /// <b>Everything else the target owns is the caller's to carry across.</b> The
+    /// pipeline returns only the updated HP
+    /// (<see cref="DamageResult.TargetHp"/>); the caller writes it onto whichever
+    /// state it owns — <c>BossState</c> or <c>PlayerState</c> — in the same single
+    /// post-resolution write-back (<c>GAME_STATE.md</c> §5.1). This stage
+    /// transitions no State, fires no Boss mechanic, and decides no outcome.
+    /// </summary>
+    /// <param name="inputs">
+    /// The damage-relevant inputs of this instance (see
+    /// <see cref="DamageInputs"/>), including the direction and the defending
+    /// target's current HP.
+    /// </param>
+    /// <param name="comboModifiers">
+    /// The <c>GAME_RULES.md</c> §5 table to read step 2's factor from. The
+    /// default table is <see cref="ComboModifiers.Default"/>; it is supplied
+    /// explicitly rather than reached for ambiently, so a resolution cannot be
+    /// affected by another resolution's balance edit.
+    /// </param>
+    /// <param name="elementModifiers">
+    /// The <c>ELEMENT_RULES.md</c> §2.2 factors to read step 3's factor from. The
+    /// default set is <see cref="ElementModifiers.Default"/>, supplied explicitly
+    /// for the same reason.
+    /// </param>
     /// <returns>
-    /// The <c>DamageCalculated</c> breakdown, the target state with the Final
-    /// Damage applied, and the <c>DamageDealt</c>/<c>DamageTaken</c> reports
-    /// (<c>GAME_EVENTS.md</c> §2).
+    /// The <c>DamageCalculated</c> breakdown, the target's post-damage HP, and the
+    /// <c>DamageDealt</c>/<c>DamageTaken</c> reports (<c>GAME_EVENTS.md</c> §2).
     /// </returns>
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="inputs"/> carries a Combo below
@@ -231,24 +290,28 @@ public static class DamagePipeline
     /// (<c>K + DEF ≤ 0</c>, below the division's domain).
     /// </exception>
     public static DamageResult Calculate(
-        BossState boss,
         DamageInputs inputs,
         ComboModifiers comboModifiers,
         ElementModifiers elementModifiers)
     {
         // §3 step 1 — Base Damage. COMBAT_RULES.md §3 step 1 names three
         // contributions: "ATK stat, Skill/Card base value, and any
-        // ATK-Gem-generated damage pool for this action". A Swap is not a Card
-        // cast and casts no Skill, so the middle term is absent here and the two
-        // that exist are summed: the persistent PlayerState.ATK and this Swap's
-        // transient BaseDamagePool. No Card/Skill base value is invented to fill
-        // the slot.
+        // ATK-Gem-generated damage pool for this action". The caller supplies the
+        // first two summed in `Attack` — for a Swap that is PlayerState.ATK alone,
+        // and for a Boss Skill it is Boss.ATK + SkillBaseDamage (§3.4, §6.3) — and
+        // the transient pool separately. No term is invented here and none is
+        // dropped: this step only sums what the direction's caller already
+        // determined.
         var baseDamage = inputs.Attack + inputs.BaseDamagePool;
 
         // §3 step 2 — Combo Modifier. GAME_RULES.md §5's table, selected by the
         // Swap's Combo. The factor is applied as its rational numerator over
         // ComboModifiers.Denominator, so the multiplication is exact for every
         // documented factor and no floating-point error enters before step 5.
+        //
+        // A Boss attack passes Combo = 1: §3.4 states "Combo Modifier = 1 (Boss
+        // attacks are not part of a Combo chain)", and §5's Combo 1 row is 1.00×.
+        // The caller states that; no branch on direction is needed here.
         var comboNumerator = comboModifiers.NumeratorFor(inputs.Combo);
         var afterCombo = (baseDamage * comboNumerator) / ComboModifiers.Denominator;
 
@@ -263,19 +326,20 @@ public static class DamagePipeline
         // §3 step 4 — Other Modifiers. COMBAT_RULES.md §3.1 makes step 4 a stage
         // the pipeline always has, so it runs here even though MVP has no Relic,
         // Passive damage bonus, Buff/Debuff, or Crit multiplier to contribute
-        // (§3.3, RELIC_RULES.md, COMBAT_RULES.md §5 are separate unimplemented
-        // systems). The identity factor is applied and reported, so the stage is
-        // visible in the breakdown rather than skipped.
+        // (§3.3, §3.4's "Other Modifiers = 1.0" for the Boss side, RELIC_RULES.md,
+        // COMBAT_RULES.md §5 are separate unimplemented systems). The identity
+        // factor is applied and reported, so the stage is visible in the breakdown
+        // rather than skipped.
         var afterOtherModifiers = afterElement * NoOtherModifiers;
 
         // §3 step 5 / §3.2 — Defense Mitigation:
         //     Mitigated Damage = Pre-Defense Damage × ( K / (K + DEF) )
-        // The DEF read is the DEFENDING TARGET's (Boss.DEF), which is what §3.2
-        // means by "target DEF". The divisor is guarded so the division's domain
-        // is explicit: K is 100 and DEF is a Boss stat, so K + DEF is positive as
-        // documented, and there is no "zero defense" special case to encode — at
-        // DEF = 0 the factor is exactly K/K = 1 and the step is a no-op by the
-        // formula, not by a branch.
+        // The DEF read is the DEFENDING TARGET's, which is what §3.2 means by
+        // "target DEF" — BossState.DEF for Player→Boss damage and the active Pet's
+        // DEF for Boss→Player damage (§3.2, §3.4). The divisor is guarded so the
+        // division's domain is explicit: there is no "zero defense" special case
+        // to encode — at DEF = 0 the factor is exactly K/K = 1 and the step is a
+        // no-op by the formula, not by a branch.
         var mitigationDivisor = DefenseMitigationConstant + inputs.DefenderDefense;
         if (mitigationDivisor <= 0)
         {
@@ -302,11 +366,11 @@ public static class DamagePipeline
         }
 
         // §3 step 6 / §17 step 17 / GAME_RULES.md §1.4 — apply the Final Damage to
-        // the target's HP, clamped so HP never becomes negative: overkill stops
-        // at 0. The write is expressed as a `with` over the target, so every other
-        // Boss field is carried across unchanged and this stage cannot
-        // accidentally transition the Boss's State or rewrite a stat.
-        var updatedHp = boss.HP - finalDamage;
+        // the target's HP, clamped so HP never becomes negative: overkill stops at
+        // 0. Only the HP is returned; the caller writes it onto the state record it
+        // owns, so this type cannot accidentally transition the Boss's State,
+        // rewrite a stat, or reach into a PlayerState it does not model.
+        var updatedHp = inputs.DefenderHp - finalDamage;
         if (updatedHp < 0)
         {
             updatedHp = 0;
@@ -321,22 +385,26 @@ public static class DamagePipeline
             FinalDamage: finalDamage);
 
         // GAME_EVENTS.md §2 gives DamageDealt and DamageTaken identical members,
-        // so both are built from the same source/target/amount. Boss HP is reduced
-        // once — above — and these two reports describe that one application
-        // rather than applying it a second time.
+        // so both are built from the same source/target/amount — the direction the
+        // caller stated, not a hardcoded one. §3.2.14 item 3 records that the
+        // Player→Boss instance reports source="player"/target="boss" and the
+        // Boss→Player instance (BOSS_RULES.md §4) reports source="boss"/
+        // target="player", which is exactly what these two carry. The target's HP
+        // is reduced once — above — and these two reports describe that one
+        // application rather than applying it a second time.
         var dealt = new DamageDealtEvent(
-            DamageParty.Player,
-            DamageParty.Boss,
+            inputs.Source,
+            inputs.Target,
             finalDamage);
 
         var taken = new DamageTakenEvent(
-            DamageParty.Player,
-            DamageParty.Boss,
+            inputs.Source,
+            inputs.Target,
             finalDamage);
 
         return new DamageResult(
             calculation,
-            boss with { HP = updatedHp },
+            updatedHp,
             dealt,
             taken);
     }

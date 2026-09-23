@@ -9,6 +9,8 @@ namespace GameServer.Domain.Passives;
 /// PassiveId     which Passive charged
 /// Progress      the progress the increment produced  (GAME_EVENTS.md §2)
 /// Threshold     the Passive's threshold              (GAME_EVENTS.md §2)
+/// Source        "pet" or "boss" — which entity's Passive  (GAME_EVENTS.md §2)
+/// SourceId      the owning entity's identity
 /// </code>
 ///
 /// <b>This is a Domain value, not a wire type.</b> It introduces no protocol
@@ -25,10 +27,17 @@ namespace GameServer.Domain.Passives;
 /// overshoot, §4 item 2, §5). A charge is emitted for every Match (§2 item 1:
 /// +1 per Match), so the charged values of a Cascade run <c>P+1 … P+N</c>
 /// regardless of where the single evaluation lands.
+///
+/// <b>The event is shared by the Pet and Boss Passive systems</b>
+/// (<c>PASSIVE_RULES.md</c> §7, <c>BOSS_RULES.md</c> §3, §7): <c>source</c>
+/// distinguishes them and <c>sourceId</c> names the owning entity.
+/// <c>BOSS_RULES.md</c> §7 is explicit that "no Boss-specific passive event name
+/// is needed", so there is no <c>BossPassiveCharged</c>.
 /// </summary>
 /// <param name="PassiveId">
 /// The identity of the Passive that charged — the active Pet's
-/// <c>PetState.PassiveId</c> (<c>GAME_STATE.md</c> §2.3).
+/// <c>PetState.PassiveId</c> (<c>GAME_STATE.md</c> §2.3) or the Boss's
+/// <c>BossState.PassiveId</c> (§2.4).
 /// </param>
 /// <param name="Progress">
 /// The progress value this increment produced (<c>GAME_EVENTS.md</c> §2:
@@ -39,14 +48,37 @@ namespace GameServer.Domain.Passives;
 /// <c>Progress / Threshold</c> without recomputing it (<c>GAME_EVENTS.md</c>
 /// §2 item 2, <c>PASSIVE_RULES.md</c> §6 item 1).
 /// </param>
+/// <param name="Source">
+/// Which entity's Passive charged — <c>"pet"</c> or <c>"boss"</c>
+/// (<c>GAME_EVENTS.md</c> §2, <c>SIGNALR_PROTOCOL.md</c> §3.2.16 item 1). The
+/// default is <c>"pet"</c>, which is the Pet Passive stage's value and keeps
+/// every existing Pet call site unchanged; the Boss Passive stage passes
+/// <c>"boss"</c> explicitly.
+/// </param>
+/// <param name="SourceId">
+/// The identity of the owning entity — <c>PetState.PetId</c> for a Pet, or
+/// <c>BossState.BossId</c> for a Boss (<c>SIGNALR_PROTOCOL.md</c> §3.2.16
+/// item 2). For a Boss it is the display-name BossId (e.g. <c>"Hỏa Long"</c>),
+/// never a slug (<c>BOSS_RULES.md</c> §6.4). <c>null</c> means the caller did not
+/// name the owner: <c>PetState</c> carries no <c>PetId</c> in this stage
+/// (<c>GAME_STATE.md</c> §2.3 — it belongs to the Pet identity stage), so the
+/// Pet Passive stage has no value to report yet and omits it rather than
+/// inventing one (<c>AGENTS.md</c> §7). The Boss Passive stage always supplies
+/// its BossId.
+/// </param>
 public readonly record struct PassiveChargedEvent(
     PassiveId PassiveId,
     int Progress,
-    int Threshold)
+    int Threshold,
+    string Source = PassiveEventSource.Pet,
+    string? SourceId = null)
 {
-    /// <summary>"PassiveCharged (xich-lang 3 / 5)" — for test diagnostics only.</summary>
+    /// <summary>
+    /// "PassiveCharged (boss:boss-hoa-long-rage 3 / 5)" — for test diagnostics
+    /// only.
+    /// </summary>
     public override string ToString() =>
-        $"PassiveCharged ({PassiveId} {Progress} / {Threshold})";
+        $"PassiveCharged ({Source}:{PassiveId} {Progress} / {Threshold})";
 }
 
 /// <summary>
@@ -58,6 +90,8 @@ public readonly record struct PassiveChargedEvent(
 /// PassiveId     which Passive triggered
 /// Progress      the progress at the moment the threshold was crossed
 /// Threshold     the Passive's threshold
+/// Source        "pet" or "boss" — which entity's Passive
+/// SourceId      the owning entity's identity
 /// </code>
 ///
 /// <b>The <c>effect summary</c> member is deliberately absent.</b>
@@ -83,7 +117,8 @@ public readonly record struct PassiveChargedEvent(
 /// <param name="PassiveId">
 /// The identity of the Passive that triggered — the active Pet's
 /// <c>PetState.PassiveId</c> (<c>GAME_STATE.md</c> §2.3,
-/// <c>GAME_EVENTS.md</c> §2 item 1).
+/// <c>GAME_EVENTS.md</c> §2 item 1) or the Boss's <c>BossState.PassiveId</c>
+/// (§2.4).
 /// </param>
 /// <param name="Progress">
 /// The progress at the moment the Threshold was crossed, before this trigger's
@@ -92,14 +127,62 @@ public readonly record struct PassiveChargedEvent(
 /// <param name="Threshold">
 /// The Passive's Threshold (<c>GAME_EVENTS.md</c> §2 item 2).
 /// </param>
+/// <param name="Source">
+/// Which entity's Passive triggered — <c>"pet"</c> or <c>"boss"</c>
+/// (<c>GAME_EVENTS.md</c> §2, <c>SIGNALR_PROTOCOL.md</c> §3.2.17). The default is
+/// <c>"pet"</c>, the Pet Passive stage's value; the Boss Passive stage passes
+/// <c>"boss"</c> explicitly.
+/// </param>
+/// <param name="SourceId">
+/// The identity of the owning entity — <c>PetState.PetId</c> or
+/// <c>BossState.BossId</c> (<c>SIGNALR_PROTOCOL.md</c> §3.2.17). For a Boss it is
+/// the display-name BossId (<c>BOSS_RULES.md</c> §6.4). <c>null</c> means the
+/// caller did not name the owner; see
+/// <see cref="PassiveChargedEvent"/>'s <c>SourceId</c> for why the Pet Passive
+/// stage has no such value in this stage.
+/// </param>
 public readonly record struct PassiveTriggeredEvent(
     PassiveId PassiveId,
     int Progress,
-    int Threshold)
+    int Threshold,
+    string Source = PassiveEventSource.Pet,
+    string? SourceId = null)
 {
-    /// <summary>"PassiveTriggered (xich-lang at 5 / 5)" — for test diagnostics only.</summary>
+    /// <summary>
+    /// "PassiveTriggered (boss:boss-hoa-long-rage at 5 / 5)" — for test
+    /// diagnostics only.
+    /// </summary>
     public override string ToString() =>
-        $"PassiveTriggered ({PassiveId} at {Progress} / {Threshold})";
+        $"PassiveTriggered ({Source}:{PassiveId} at {Progress} / {Threshold})";
+}
+
+/// <summary>
+/// The <c>source</c> member's two documented values — which entity's Passive a
+/// shared <c>PassiveCharged</c>/<c>PassiveTriggered</c> report belongs to
+/// (<c>GAME_EVENTS.md</c> §2, <c>SIGNALR_PROTOCOL.md</c> §3.2.16 item 1,
+/// <c>BOSS_RULES.md</c> §7).
+///
+/// <code>
+/// "pet"    the active Pet's Passive    (PASSIVE_RULES.md §7)
+/// "boss"   the Boss's Passive          (BOSS_RULES.md §3, §7)
+/// </code>
+///
+/// <b>They are constants, not an enum, because the wire member is a string.</b>
+/// <c>SIGNALR_PROTOCOL.md</c> §3.2.16 item 1 fixes the value as the string
+/// <c>"pet"</c> or <c>"boss"</c>, and the convention matches
+/// <c>DamageDealt</c>/<c>DamageTaken</c>'s party identifiers (§3.2.14 item 1).
+/// Naming the spellings once here keeps the two emitters — the Pet Passive stage
+/// and the Boss Passive stage — from each writing their own literal. This type
+/// defines no third value: <c>BOSS_RULES.md</c> §7 states the set is exactly
+/// these two.
+/// </summary>
+public static class PassiveEventSource
+{
+    /// <summary>The active Pet's Passive (<c>PASSIVE_RULES.md</c> §7).</summary>
+    public const string Pet = "pet";
+
+    /// <summary>The Boss's Passive (<c>BOSS_RULES.md</c> §3, §7).</summary>
+    public const string Boss = "boss";
 }
 
 /// <summary>

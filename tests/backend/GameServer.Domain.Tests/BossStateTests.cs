@@ -37,7 +37,9 @@ public class BossStateTests
             BossDefinitions.HoaLong.Element,
             maxHp: 5000,
             atk: 100,
-            def: 50);
+            def: 50,
+            passiveId: BossDefinitions.HoaLong.PassiveId,
+            passiveThreshold: BossDefinitions.HoaLong.PassiveThreshold);
 
         Assert.Equal(boss.MaxHP, boss.HP);
         Assert.Equal(5000, boss.HP);
@@ -49,7 +51,8 @@ public class BossStateTests
     {
         // BOSS_RULES.md §6.1: the Initial State of every MVP Boss is `Idle`.
         var boss = BossState.Initial(
-            BossDefinitions.HoaLong.BossId, Element.Hoa, maxHp: 5000, atk: 100, def: 50);
+            BossDefinitions.HoaLong.BossId, Element.Hoa, maxHp: 5000, atk: 100, def: 50,
+            passiveId: new PassiveId("boss-hoa-long-rage"), passiveThreshold: 5);
 
         Assert.Equal(BossStateKind.Idle, boss.State);
         Assert.Equal(BossState.InitialState, boss.State);
@@ -57,15 +60,64 @@ public class BossStateTests
     }
 
     [Fact]
+    public void Initial_ShouldStartThePassiveAtTheDefinitionThresholdAndZeroProgress()
+    {
+        // GAME_STATE.md §2.4.2 / §2.3 item 3 pattern: the Passive identity is set at
+        // battle creation and its progress begins at 0 against the Passive's own
+        // Threshold — never absent, never lazily initialized.
+        var boss = BossState.Initial(
+            new BossId("b"), Element.Hoa, maxHp: 5000, atk: 100, def: 50,
+            passiveId: new PassiveId("boss-hoa-long-rage"), passiveThreshold: 5);
+
+        Assert.Equal("boss-hoa-long-rage", boss.PassiveId.Value);
+        Assert.Equal(5, boss.PassiveProgress.Threshold);
+        Assert.Equal(0, boss.PassiveProgress.Current);
+    }
+
+    [Fact]
+    public void Initial_ShouldStartTheSkillUnchargedAndOffCooldown()
+    {
+        // GAME_STATE.md §2.4.3: SkillCharge counts Matches toward the charge
+        // requirement and SkillCooldown counts Turns until the Skill can fire again.
+        // No Match and no Turn has occurred at battle creation, so both begin at 0.
+        var boss = BossState.Initial(
+            new BossId("b"), Element.Hoa, maxHp: 5000, atk: 100, def: 50,
+            passiveId: new PassiveId("p"), passiveThreshold: 5);
+
+        Assert.Equal(0, boss.SkillCharge);
+        Assert.Equal(0, boss.SkillCooldown);
+    }
+
+    [Fact]
+    public void Initial_ShouldPreserveTheAlwaysActivePassiveMarker()
+    {
+        // BOSS_RULES.md §6.2: Thủy Ma's trigger is "Passive (always active)", so its
+        // stored PassiveThreshold is 0 as the Always-Active marker — NOT a threshold
+        // that is instantly reached. Initial must carry it through rather than
+        // substituting a default.
+        var boss = BossState.Initial(
+            BossDefinitions.ThuyMa.BossId, Element.Thuy, maxHp: 5000, atk: 100, def: 50,
+            passiveId: BossDefinitions.ThuyMa.PassiveId,
+            passiveThreshold: BossDefinitions.ThuyMa.PassiveThreshold);
+
+        Assert.Equal(0, boss.PassiveProgress.Threshold);
+        Assert.Equal(0, boss.PassiveProgress.Current);
+        Assert.Equal("boss-thuy-ma-heal", boss.PassiveId.Value);
+    }
+
+    [Fact]
     public void Initial_ShouldPreserveEverySuppliedValue()
     {
         // GAME_STATE.md §2.4 / BOSS_RULES.md §6.1: the identity, the Element, and
         // the stats come from the Boss's definition and are carried across
-        // unchanged. The factory applies exactly two documented initial values
-        // (HP = MaxHP, State = Idle) and decides nothing else.
+        // unchanged. The factory applies exactly the documented initial values
+        // (HP = MaxHP, State = Idle, progress = 0, Skill uncharged, cooldown 0) and
+        // decides nothing else.
         var bossId = new BossId("test-boss");
 
-        var boss = BossState.Initial(bossId, Element.Thuy, maxHp: 4321, atk: 321, def: 123);
+        var boss = BossState.Initial(
+            bossId, Element.Thuy, maxHp: 4321, atk: 321, def: 123,
+            passiveId: new PassiveId("test-passive"), passiveThreshold: 7);
 
         Assert.Equal(bossId, boss.BossId);
         Assert.Equal(Element.Thuy, boss.Element);
@@ -73,6 +125,11 @@ public class BossStateTests
         Assert.Equal(4321, boss.HP);
         Assert.Equal(321, boss.ATK);
         Assert.Equal(123, boss.DEF);
+        Assert.Equal("test-passive", boss.PassiveId.Value);
+        Assert.Equal(7, boss.PassiveProgress.Threshold);
+        Assert.Equal(0, boss.PassiveProgress.Current);
+        Assert.Equal(0, boss.SkillCharge);
+        Assert.Equal(0, boss.SkillCooldown);
     }
 
     [Fact]
@@ -85,7 +142,9 @@ public class BossStateTests
         // unmodified, whatever they are.
         foreach (var (maxHp, atk, def) in new[] { (1, 0, 0), (7, 3, 2), (99999, 12345, 6789) })
         {
-            var boss = BossState.Initial(new BossId("b"), Element.Kim, maxHp, atk, def);
+            var boss = BossState.Initial(
+                new BossId("b"), Element.Kim, maxHp, atk, def,
+                new PassiveId("p"), passiveThreshold: 5);
 
             Assert.Equal(maxHp, boss.HP);
             Assert.Equal(maxHp, boss.MaxHP);
@@ -101,7 +160,9 @@ public class BossStateTests
         // replaced by the post-resolution write-back, never mutated in place. It is
         // a readonly record struct, exactly like PlayerState and PetState, so
         // `with` produces a new value and the original is unchanged.
-        var boss = BossState.Initial(new BossId("b"), Element.Moc, 5000, 100, 50);
+        var boss = BossState.Initial(
+            new BossId("b"), Element.Moc, 5000, 100, 50,
+            new PassiveId("p"), passiveThreshold: 5);
 
         var damaged = boss with { HP = 10, State = BossStateKind.Enraged };
 
@@ -115,10 +176,10 @@ public class BossStateTests
     [Fact]
     public void BossState_ShouldCarryExactlyTheDocumentedFields()
     {
-        // GAME_STATE.md §2.4: BossId, Element, HP, MaxHP, ATK, DEF, State — the
-        // seven fields this stage implements. PassiveProgress and StatusEffects[]
-        // are listed by §2.4 but belong to the Boss Passive and Status Effects
-        // systems and are not stubbed here (§0 item 4, §0 item 5).
+        // GAME_STATE.md §2.4 / §2.4.1: BossId, Element, HP, MaxHP, ATK, DEF, State,
+        // PassiveId, PassiveProgress, SkillCharge, SkillCooldown — the eleven fields
+        // §2.4.1 marks "Implement now". StatusEffects[] is listed by §2.4 but belongs
+        // to the Status Effects system and is not stubbed here (§0 item 4, §0 item 5).
         var dataMembers = typeof(BossState)
             .GetConstructors()
             .SelectMany(c => c.GetParameters().Select(p => p.Name!))
@@ -126,12 +187,16 @@ public class BossStateTests
             .ToArray();
 
         Assert.Equal(
-            new[] { "ATK", "BossId", "DEF", "Element", "HP", "MaxHP", "State" },
+            new[]
+            {
+                "ATK", "BossId", "DEF", "Element", "HP", "MaxHP", "PassiveId",
+                "PassiveProgress", "SkillCharge", "SkillCooldown", "State",
+            },
             dataMembers);
 
         // IsIdle and InitialState are a derived reading and a documented constant,
-        // not additional state: the seven members above are the whole
-        // representation (§0 item 5).
+        // not additional state: the members above are the whole representation
+        // (§0 item 5).
         var declared = typeof(BossState)
             .GetProperties()
             .Select(p => p.Name)
@@ -141,7 +206,8 @@ public class BossStateTests
         Assert.Equal(
             new[]
             {
-                "ATK", "BossId", "DEF", "Element", "HP", "IsIdle", "MaxHP", "State",
+                "ATK", "BossId", "DEF", "Element", "HP", "IsIdle", "MaxHP",
+                "PassiveId", "PassiveProgress", "SkillCharge", "SkillCooldown", "State",
             },
             declared);
     }
@@ -149,18 +215,16 @@ public class BossStateTests
     [Fact]
     public void BossState_ShouldDeclareNoDeferredField()
     {
-        // GAME_STATE.md §2.4: PassiveProgress is owned by the Boss Passive system
-        // (BOSS_RULES.md §3) and StatusEffects[] by the Status Effects system
-        // (COMBAT_RULES.md §5). Both are "not yet implemented", not "not required"
-        // (§0 item 4), and neither is stubbed, defaulted, or represented by a
-        // placeholder collection (§0 item 5).
+        // GAME_STATE.md §2.4.1: StatusEffects[] is the one field §2.4 lists as
+        // "Deferred" — it is owned by the Status Effects system (COMBAT_RULES.md §5)
+        // and is "not yet implemented", not "not required" (§0 item 4). It is not
+        // stubbed, defaulted, or represented by a placeholder collection (§0 item 5).
         var declared = typeof(BossState)
             .GetProperties()
             .Select(p => p.Name)
             .Concat(typeof(BossState).GetFields().Select(f => f.Name))
             .ToArray();
 
-        Assert.DoesNotContain("PassiveProgress", declared);
         Assert.DoesNotContain("StatusEffects", declared);
 
         // No battle lifecycle value is introduced either (GAME_STATE.md §2.0.3):
@@ -172,10 +236,11 @@ public class BossStateTests
     public void BossState_ShouldNotImplementBossMechanics()
     {
         // BOSS_RULES.md §3–§5, COMBAT_RULES.md §3, GAME_RULES.md §17 steps 15–19:
-        // the Damage Pipeline, Boss Passive, Boss Skill, Boss Response, and
-        // Victory/Defeat are out of scope for this stage. Nothing on this type
-        // computes damage, mitigates DEF, applies an Element modifier, resolves a
-        // Passive/Skill, transitions State, or decides an outcome.
+        // the Passive's charge/threshold/reset, the Skill's cast, Enrage, Stun, the
+        // Damage Pipeline, and Victory/Defeat are the resolution's, not this type's.
+        // BossState carries the fields they read and write and nothing more, so no
+        // method on it computes damage, mitigates DEF, applies an Element modifier,
+        // charges a Passive, casts a Skill, transitions State, or decides an outcome.
         var methods = typeof(BossState)
             .GetMethods()
             .Where(m => m.DeclaringType == typeof(BossState))
@@ -321,6 +386,143 @@ public class BossStateTests
         Assert.Equal(Element.Moc, byId["Mộc Yêu"]);
     }
 
+    // =======================================================================
+    // Boss mechanic configuration — BOSS_RULES.md §6.2, §6.3, §6.4
+    // =======================================================================
+
+    [Theory]
+    // BOSS_RULES.md §6.4's identity contract, transcribed — the canonical values
+    // "fixed here so no task invents its own". BossId is the DISPLAY NAME, not a
+    // slug; PassiveId follows the Pet PassiveId kebab-case pattern; SkillId is the
+    // Skill's own name.
+    [InlineData("Hỏa Long", "boss-hoa-long-rage", "flame-burst")]
+    [InlineData("Thủy Ma", "boss-thuy-ma-heal", "drain-power")]
+    [InlineData("Mộc Yêu", "boss-moc-yeu-regen", "root")]
+    public void Definitions_ShouldCarryTheDocumentedIdentities(
+        string bossId,
+        string passiveId,
+        string skillId)
+    {
+        var boss = BossDefinitions.All.Single(b => b.BossId.Value == bossId);
+
+        Assert.Equal(bossId, boss.BossId.Value);
+        Assert.Equal(passiveId, boss.PassiveId.Value);
+        Assert.Equal(skillId, boss.SkillId);
+    }
+
+    [Theory]
+    // BOSS_RULES.md §6.2's Passive thresholds, with §6.2's Thủy Ma note: its trigger
+    // is "Passive (always active)" — an alternate trigger (PASSIVE_RULES.md §3), not
+    // a Match count — so 0 is stored as the Always-Active marker and it is never
+    // charged via PassiveTracker.Charge.
+    [InlineData("Hỏa Long", 5)]
+    [InlineData("Thủy Ma", 0)]
+    [InlineData("Mộc Yêu", 5)]
+    public void Definitions_ShouldCarryTheDocumentedPassiveThreshold(string bossId, int threshold)
+    {
+        var boss = BossDefinitions.All.Single(b => b.BossId.Value == bossId);
+
+        Assert.Equal(threshold, boss.PassiveThreshold);
+    }
+
+    [Theory]
+    // BOSS_RULES.md §6.3's Skill timing table: Charge Req. / CD / Skill Base Dmg.
+    [InlineData("Hỏa Long", 5, 2, 150)]
+    [InlineData("Thủy Ma", 4, 3, 120)]
+    [InlineData("Mộc Yêu", 6, 2, 100)]
+    public void Definitions_ShouldCarryTheDocumentedSkillTiming(
+        string bossId,
+        int chargeRequirement,
+        int cooldownTurns,
+        int skillBaseDamage)
+    {
+        var boss = BossDefinitions.All.Single(b => b.BossId.Value == bossId);
+
+        Assert.Equal(chargeRequirement, boss.SkillChargeRequirement);
+        Assert.Equal(cooldownTurns, boss.SkillCooldownTurns);
+        Assert.Equal(skillBaseDamage, boss.SkillBaseDamage);
+    }
+
+    [Fact]
+    public void Definitions_ShouldCarryTheDocumentedEnrageThreshold()
+    {
+        // BOSS_RULES.md §6.1 gives every content-defined MVP Boss "1500 (30%)" of
+        // MaxHP 5000 — the same fraction for all three, so no Boss receives a
+        // different Enrage threshold.
+        Assert.All(
+            BossDefinitions.All,
+            boss => Assert.Equal(0.30, boss.EnrageThreshold, precision: 9));
+
+        // 30% of 5000 is the 1500 §6.1 states, which is what makes the fraction and
+        // the absolute value in the table the same rule.
+        Assert.All(
+            BossDefinitions.All,
+            boss => Assert.Equal(1500d, boss.MaxHP * boss.EnrageThreshold, precision: 9));
+    }
+
+    [Fact]
+    public void Definitions_ShouldDeclareNoNonDefaultPassiveResetBehavior()
+    {
+        // BOSS_RULES.md §6.2 declares no non-default Reset Behavior for any MVP Boss,
+        // so each definition leaves it absent — which PASSIVE_RULES.md §4 item 1
+        // reads as the default (progress resets to 0 after the trigger). A
+        // non-default behavior would have to be declared here, never assumed.
+        Assert.All(BossDefinitions.All, boss => Assert.Null(boss.PassiveResetBehavior));
+    }
+
+    [Fact]
+    public void Definitions_ShouldGiveThuyMaTheAlwaysActiveMarkerAndNoMatchThreshold()
+    {
+        // BOSS_RULES.md §6.2 is explicit for Thủy Ma: its trigger "is never charged
+        // via PassiveTracker.Charge on Player Matches, and emits no
+        // PassiveCharged/PassiveTriggered from match progress". A stored
+        // PassiveThreshold of 0 is that Always-Active marker — it is NOT a threshold
+        // that is reached immediately, which is why the resolution skips the charge
+        // rather than calling the tracker with it.
+        //
+        // PassiveTracker itself rejects Threshold < 1 (PASSIVE_RULES.md §1 defines a
+        // Threshold as a Match count), which is the second, independent reason the
+        // call is skipped.
+        var thuyMa = BossDefinitions.ThuyMa;
+
+        Assert.Equal(0, thuyMa.PassiveThreshold);
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => PassiveTracker.Charge(
+                PassiveProgress.AtStart(thuyMa.PassiveThreshold),
+                matchCount: 3,
+                thuyMa.PassiveId));
+
+        // Its Skill timing is nonetheless fully declared — the Always-Active Passive
+        // is not an absent Passive.
+        Assert.Equal("drain-power", thuyMa.SkillId);
+        Assert.Equal(4, thuyMa.SkillChargeRequirement);
+        Assert.Equal(3, thuyMa.SkillCooldownTurns);
+        Assert.Equal(120, thuyMa.SkillBaseDamage);
+    }
+
+    [Fact]
+    public void Definitions_ShouldCarryThePassiveIntoTheInitialState()
+    {
+        // GAME_STATE.md §2.4.2: PassiveId "is set at battle creation and never
+        // changes" and PassiveProgress "tracks progress toward the Passive's
+        // threshold". ToInitialState is the path that sets both, so every MVP Boss's
+        // created state carries its own definition's identity and threshold.
+        Assert.All(
+            BossDefinitions.All,
+            boss =>
+            {
+                var state = boss.ToInitialState();
+
+                Assert.Equal(boss.PassiveId, state.PassiveId);
+                Assert.Equal(boss.PassiveThreshold, state.PassiveProgress.Threshold);
+                Assert.Equal(0, state.PassiveProgress.Current);
+                Assert.Equal(0, state.SkillCharge);
+                Assert.Equal(0, state.SkillCooldown);
+                Assert.Equal(BossStateKind.Idle, state.State);
+                Assert.Equal(boss.MaxHP, state.HP);
+            });
+    }
+
     [Fact]
     public void BossId_ShouldBeAnIdentityValueNotADefinition()
     {
@@ -361,7 +563,9 @@ public class BossStateTests
             BossDefinitions.MocYeu.Element,
             BossDefinitions.MocYeu.MaxHP,
             BossDefinitions.MocYeu.ATK,
-            BossDefinitions.MocYeu.DEF);
+            BossDefinitions.MocYeu.DEF,
+            BossDefinitions.MocYeu.PassiveId,
+            BossDefinitions.MocYeu.PassiveThreshold);
 
         var state = BattleState.Create(
             "battle-boss",
@@ -456,7 +660,9 @@ public class BossStateTests
         // PetState.Element and the defender's from BossState.Element (§5) — no new
         // Element rule is added by this stage, and Resolve is unchanged.
         var pet = PetState.AtBattleCreation(petElement, XichLang, 5);
-        var boss = BossState.Initial(new BossId("b"), bossElement, 5000, 100, 50);
+        var boss = BossState.Initial(
+            new BossId("b"), bossElement, 5000, 100, 50,
+            new PassiveId("p"), passiveThreshold: 5);
 
         Assert.Equal(expected, ElementMatchups.Resolve(pet.Element, boss.Element));
     }

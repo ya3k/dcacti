@@ -416,7 +416,18 @@ public sealed record BattleState(
             battleId,
             rngSeed,
             DefaultPassive(Element.Hoa, new PassiveId("fixture-passive"), 5),
-            BossState.Initial(new BossId("fixture-boss"), Element.Kim, maxHp: 5000, atk: 100, def: 50));
+            // GAME_STATE.md §2.4.1–§2.4.3: the fixture Boss carries a Passive identity
+            // and a Threshold too, because BossState's own field set requires them.
+            // They are fixture values for tests that assert something else, exactly
+            // as the fixture Passive above is.
+            BossState.Initial(
+                new BossId("fixture-boss"),
+                Element.Kim,
+                maxHp: 5000,
+                atk: 100,
+                def: 50,
+                passiveId: new PassiveId("fixture-boss-passive"),
+                passiveThreshold: 5));
 
     /// <summary>
     /// Creates the authoritative state for a newly created battle session from the

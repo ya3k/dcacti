@@ -816,16 +816,18 @@ public class PassiveTrackerTests
     {
         // GAME_EVENTS.md §2 item 3: the effect summary is DEFERRED to the Combat
         // stage — what Burn/Shield/Crit/Defense do is owned by COMBAT_RULES.md,
-        // not by this tracker. The trigger value therefore has exactly the three
-        // documented members and no effect-summary field of an invented shape
-        // (AGENTS.md §7: do not invent what the docs do not define).
+        // not by this tracker. The trigger value therefore carries the five
+        // documented members — the identity, the progress pair, and the shared
+        // event's source/sourceId (SIGNALR_PROTOCOL.md §3.2.17) — and no
+        // effect-summary field of an invented shape (AGENTS.md §7: do not invent
+        // what the docs do not define).
         var members = typeof(PassiveTriggeredEvent)
             .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
             .Select(p => p.Name)
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToArray();
 
-        Assert.Equal(["PassiveId", "Progress", "Threshold"], members);
+        Assert.Equal(["PassiveId", "Progress", "Source", "SourceId", "Threshold"], members);
     }
 
     [Fact]

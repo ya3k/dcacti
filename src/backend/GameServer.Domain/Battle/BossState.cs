@@ -1,5 +1,6 @@
 using GameServer.Domain.Bosses;
 using GameServer.Domain.Elements;
+using GameServer.Domain.Passives;
 
 namespace GameServer.Domain.Battle;
 
@@ -15,7 +16,11 @@ namespace GameServer.Domain.Battle;
 ///     ├── MaxHP        maximum health    (COMBAT_RULES.md §1.2)     (§2.4)
 ///     ├── ATK          attack power      (COMBAT_RULES.md §1.2)     (§2.4)
 ///     ├── DEF          defense           (COMBAT_RULES.md §1.2)     (§2.4)
-///     └── State        Idle / Charging / Enraged / Stunned          (§2.4)
+///     ├── State        Idle / Charging / Enraged / Stunned          (§2.4)
+///     ├── PassiveId    which Boss Passive (BOSS_RULES.md §3)        (§2.4)
+///     ├── PassiveProgress  charging position (§2.4, §2.5)           (§2.4)
+///     ├── SkillCharge  matches charged toward the Skill (§2.4.3)    (§2.4)
+///     └── SkillCooldown turns remaining before the Skill can fire    (§2.4)
 /// </code>
 ///
 /// <b>This is the documented owner, not a new decision.</b> <c>GAME_STATE.md</c>
@@ -40,13 +45,21 @@ namespace GameServer.Domain.Battle;
 /// configuration.
 ///
 /// <b>Only the fields this stage requires exist.</b> §2.4 also lists
-/// <c>PassiveProgress</c> and <c>StatusEffects[]</c>. Those belong to the Boss
-/// Passive system (<c>BOSS_RULES.md</c> §3) and the Status Effects system
-/// (<c>COMBAT_RULES.md</c> §5) and are <b>not yet implemented</b>, not <b>not
-/// required</b> (§0 item 4, §2.0.5.3): each is added by its own owning task,
-/// exactly as this stage adds these seven. They are not stubbed, defaulted, or
+/// <c>StatusEffects[]</c>. That belongs to the Status Effects system
+/// (<c>COMBAT_RULES.md</c> §5) and is <b>not yet implemented</b>, not <b>not
+/// required</b> (§0 item 4, §2.0.5.3): it is added by its own owning task,
+/// exactly as this stage adds the eleven above. It is not stubbed, defaulted, or
 /// represented by a placeholder, because a placeholder for a field no rule yet
 /// reads would be a representation of its own (§0 item 5).
+///
+/// <b>The Boss's Passive and Skill charging state are carried, not resolved.</b>
+/// §2.4.1 lists <c>PassiveId</c>, <c>PassiveProgress</c>, <c>SkillCharge</c>,
+/// and <c>SkillCooldown</c> as the fields implemented by the Boss Response
+/// stage, and §2.4.2/§2.4.3 give their meaning. This type holds them as state:
+/// it does not charge the Passive, evaluate its Threshold, increment
+/// <c>SkillCharge</c>, decrement <c>SkillCooldown</c>, or decide whether the
+/// Skill fires. Those are the resolution's steps, owned by
+/// <c>BattleStateService.ExecuteSwap</c> (<c>GAME_RULES.md</c> §17 step 18a–18c).
 ///
 /// <b>No Boss mechanic is implemented by this type.</b> <c>BOSS_RULES.md</c>
 /// §3's Passive, §4's Skill, §5's State transitions, the Damage Pipeline
@@ -146,11 +159,64 @@ namespace GameServer.Domain.Battle;
 /// It begins at <see cref="BossStateKind.Idle"/>, which is the documented
 /// <b>Initial State</b> of every MVP Boss (<c>BOSS_RULES.md</c> §6.1).
 ///
-/// It is <b>carried and never transitioned by this type</b>. §5 item 1 makes
-/// State what gates which Passive/Skill logic is active, §5 item 2 makes it
-/// entirely server-authoritative, and §5 item 3 defers a full multi-phase State
-/// machine to Future Expansion — no transition, Enrage, Stun, or Skill timing
-/// rule is implemented here (<c>BOSS_RULES.md</c> §3–§5 are out of scope).
+/// §5 item 3 defers a full multi-phase State machine to Future Expansion, so the
+/// only transition implemented is §5 item 4's Enrage — a permanent
+/// <c>Idle → Enraged</c> transition applied by the resolution when
+/// <c>BossHP &lt; MaxHP × EnrageThreshold</c>. That transition is not made by
+/// this type: it is applied by <c>BattleStateService.ExecuteSwap</c> in the
+/// documented order, after Player→Boss damage and before the Boss HP terminal
+/// check. No Stun rule is implemented (<c>BOSS_RULES.md</c> §5 item 5).
+/// </param>
+/// <param name="PassiveId">
+/// The identity of the Boss's one Passive (<c>GAME_STATE.md</c> §2.4, §2.4.2;
+/// <c>BOSS_RULES.md</c> §3) — the value the shared
+/// <c>PassiveCharged</c>/<c>PassiveTriggered</c> events report as
+/// <c>passiveId</c> (<c>GAME_EVENTS.md</c> §2, <c>SIGNALR_PROTOCOL.md</c>
+/// §3.2.16–§3.2.17).
+///
+/// It is set at battle creation from the Boss's definition
+/// (<see cref="BossDefinition.PassiveId"/>) and never changes, exactly as
+/// <see cref="PetState.PassiveId"/> is set from the Pet's Passive definition
+/// (§2.4.2, §2.3 item 2). The canonical MVP values are <c>BOSS_RULES.md</c>
+/// §6.4's (<c>"boss-hoa-long-rage"</c>, <c>"boss-thuy-ma-heal"</c>,
+/// <c>"boss-moc-yeu-regen"</c>).
+/// </param>
+/// <param name="PassiveProgress">
+/// The Boss Passive's charging position — the progress reached and the
+/// Threshold it is measured against (<c>GAME_STATE.md</c> §2.4, §2.4.2, §2.5).
+///
+/// It starts at <see cref="PassiveProgress.AtStart"/> with the Boss definition's
+/// <see cref="BossDefinition.PassiveThreshold"/> (§2.4.2) and is written after
+/// each committed Swap's Boss Passive step in the same single post-resolution
+/// write-back as the rest of the state (§5.1).
+///
+/// <b>A Threshold of <c>0</c> is the Always-Active marker, not a zero-Match
+/// threshold.</b> <c>BOSS_RULES.md</c> §6.2 gives Thủy Ma the trigger "Passive
+/// (always active)" — an alternate trigger (<c>PASSIVE_RULES.md</c> §3), not a
+/// match count. <c>PassiveTracker.Charge</c> rejects a Threshold below <c>1</c>,
+/// and the resolution skips charging entirely for such a Boss: no
+/// <c>PassiveCharged</c>/<c>PassiveTriggered</c> is emitted from match progress.
+/// This type holds the marker and applies no meaning to it.
+/// </param>
+/// <param name="SkillCharge">
+/// The matches charged toward the Boss Skill's charge requirement
+/// (<c>GAME_STATE.md</c> §2.4, §2.4.3; <c>BOSS_RULES.md</c> §6.3).
+///
+/// It starts at <c>0</c> — no Match has been counted at battle creation — and is
+/// incremented by the committed Swap's Player Match total. It is
+/// <b>independent</b> of <see cref="PassiveProgress"/>: neither resets the other.
+/// The Skill fires when this reaches <see cref="BossDefinition.SkillChargeRequirement"/>
+/// <b>and</b> <see cref="SkillCooldown"/> is <c>0</c>, at which point it resets
+/// to <c>0</c>. The firing decision is the resolution's, not this type's.
+/// </param>
+/// <param name="SkillCooldown">
+/// The turns remaining before the Boss Skill can fire again
+/// (<c>GAME_STATE.md</c> §2.4, §2.4.3; <c>BOSS_RULES.md</c> §6.3).
+///
+/// It starts at <c>0</c> — no Skill has been cast, so nothing is on cooldown —
+/// and decrements by 1 per Turn increment, blocked while <c>&gt; 0</c>. When the
+/// Skill fires it is set to <see cref="BossDefinition.SkillCooldownTurns"/>.
+/// The decrement and the reset are the resolution's, not this type's.
 /// </param>
 public readonly record struct BossState(
     BossId BossId,
@@ -159,7 +225,11 @@ public readonly record struct BossState(
     int MaxHP,
     int ATK,
     int DEF,
-    BossStateKind State)
+    BossStateKind State,
+    PassiveId PassiveId,
+    PassiveProgress PassiveProgress,
+    int SkillCharge,
+    int SkillCooldown)
 {
     /// <summary>
     /// The documented Initial State of every MVP Boss (<c>BOSS_RULES.md</c>
@@ -180,12 +250,18 @@ public readonly record struct BossState(
 
     /// <summary>
     /// The documented <c>BossState</c> of a newly created battle: the Boss's
-    /// identity, its Element, and its stats at full health, in the Initial State
-    /// (<c>GAME_STATE.md</c> §2.4, <c>BOSS_RULES.md</c> §6.1).
+    /// identity, its Element, and its stats at full health, in the Initial State,
+    /// with its Passive's identity and the start of that Passive's progress, and
+    /// no Skill charge or cooldown yet (<c>GAME_STATE.md</c> §2.4, §2.4.1–§2.4.3;
+    /// <c>BOSS_RULES.md</c> §6.1).
     ///
     /// <code>
-    /// HP    = MaxHP
-    /// State = Idle
+    /// HP            = MaxHP                          (§2.4 / BOSS §6.1)
+    /// State         = Idle                           (§2.4 / BOSS §6.1)
+    /// PassiveId     = passiveId                      (§2.4.2)
+    /// PassiveProgress = AtStart(passiveThreshold)    (§2.4.2)
+    /// SkillCharge   = 0                              (§2.4.3)
+    /// SkillCooldown = 0                              (§2.4.3)
     /// </code>
     ///
     /// <b>The Element and the stats are supplied, not invented.</b> They are the
@@ -194,7 +270,7 @@ public readonly record struct BossState(
     /// <c>PetState.AtBattleCreation</c> takes the Passive's identity and
     /// Threshold from the Passive's definition rather than choosing them. This
     /// factory therefore defines no stat formula and no per-Boss variation: it
-    /// applies the two documented initial values above and carries the rest
+    /// applies the documented initial values above and carries the rest
     /// across unchanged.
     ///
     /// It is the same shape as <see cref="PlayerState.Initial"/> —
@@ -205,7 +281,8 @@ public readonly record struct BossState(
     ///
     /// Battle creation is not a resolution and starts no Turn
     /// (<c>MATCH3_RULES.md</c> §8.1 item 4), so no Boss mechanic has run: the
-    /// returned State is <see cref="InitialState"/> and no event is emitted.
+    /// returned State is <see cref="InitialState"/>, the Skill is neither charged
+    /// nor cooling down, and no event is emitted.
     /// </summary>
     /// <param name="bossId">
     /// The Boss's identity (<c>GAME_STATE.md</c> §2.4) — the value the battle was
@@ -226,9 +303,38 @@ public readonly record struct BossState(
     /// <param name="def">
     /// The Boss's <c>DEF</c> from its definition (<c>BOSS_RULES.md</c> §6.1).
     /// </param>
-    public static BossState Initial(BossId bossId, Element element, int maxHp, int atk, int def) =>
+    /// <param name="passiveId">
+    /// The identity of the Boss's one Passive, from its definition
+    /// (<c>GAME_STATE.md</c> §2.4.2, <c>BOSS_RULES.md</c> §3, §6.4).
+    /// </param>
+    /// <param name="passiveThreshold">
+    /// The Boss Passive's Threshold — "every N Player Matches" for the
+    /// match-charged Bosses, and <c>0</c> as the Always-Active marker for Thủy Ma
+    /// (<c>BOSS_RULES.md</c> §6.2). Progress begins at <c>0</c> against it.
+    /// </param>
+    public static BossState Initial(
+        BossId bossId,
+        Element element,
+        int maxHp,
+        int atk,
+        int def,
+        PassiveId passiveId,
+        int passiveThreshold) =>
         // §2.4 / BOSS_RULES.md §6.1: a battle begins with the Boss at full health
-        // and in the Idle State. Both are the documented initial values, not
-        // chosen here, and nothing is derived from the player's stats.
-        new(bossId, element, maxHp, maxHp, atk, def, InitialState);
+        // and in the Idle State. §2.4.2–§2.4.3: the Passive's identity is set at
+        // creation with its progress at the start of its first charge, and the
+        // Skill is neither charged nor on cooldown. All are the documented initial
+        // values, not chosen here, and nothing is derived from the player's stats.
+        new(
+            bossId,
+            element,
+            maxHp,
+            maxHp,
+            atk,
+            def,
+            InitialState,
+            passiveId,
+            PassiveProgress.AtStart(passiveThreshold),
+            SkillCharge: 0,
+            SkillCooldown: 0);
 }

@@ -1595,8 +1595,10 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
             var service = scope.ServiceProvider.GetRequiredService<BattleStateService>();
             var before = service.GetBattle(battleId)!;
 
-            // The Domain executor and the Passive tracker are the two stages the
-            // Application boundary sequences (GAME_RULES.md §17 steps 2–10). The
+            // The Domain executor, the Passive tracker, the Damage Pipeline (both
+            // directions), and the Boss Response's conditional steps are the stages
+            // the Application boundary sequences (GAME_RULES.md §17 steps 2–19, with
+            // the corrected Boss Response order of BOSS_RULES.md §5 item 4). The
             // expectation names their documented composition explicitly rather than
             // calling the same Application method under test.
             var committed = GameServer.Domain.Match3.SwapExecutor.Execute(
@@ -1611,15 +1613,27 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
                 before.PetState.PassiveId,
                 before.PetState.ResetBehavior);
 
-            var damage = GameServer.Domain.Combat.DamagePipeline.Calculate(
-                before.BossState,
+            // The Boss configuration this battle was created with (BOSS_RULES.md
+            // §6.2–§6.4) — the values the Boss Response steps read.
+            var bossDefinition = GameServer.Domain.Bosses.BossDefinitions.HoaLong;
+
+            // §6.3: the cooldown decrements once per committed Swap, after the Turn
+            // the executor just began.
+            var bossSkillCooldown = before.BossState.SkillCooldown > 0
+                ? before.BossState.SkillCooldown - 1
+                : before.BossState.SkillCooldown;
+
+            var playerDamage = GameServer.Domain.Combat.DamagePipeline.Calculate(
                 new GameServer.Domain.Combat.DamagePipeline.DamageInputs(
                     Attack: committed.State.PlayerState.ATK,
                     BaseDamagePool: committed.Resources.BaseDamagePool,
                     Combo: committed.State.PlayerState.Combo,
                     AttackerElement: before.PetState.Element,
                     DefenderElement: before.BossState.Element,
-                    DefenderDefense: before.BossState.DEF),
+                    DefenderDefense: before.BossState.DEF,
+                    DefenderHp: before.BossState.HP,
+                    Source: GameServer.Domain.Combat.DamageParty.Player,
+                    Target: GameServer.Domain.Combat.DamageParty.Boss),
                 GameServer.Domain.Combat.ComboModifiers.Default,
                 GameServer.Domain.Elements.ElementModifiers.Default);
 
@@ -1628,13 +1642,85 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
                 .Concat(charged.Triggers.Select(BattleEvent.ForPassiveTriggered))
                 .Concat(new[]
                 {
-                    BattleEvent.ForDamageCalculated(damage.Calculation),
-                    BattleEvent.ForDamageDealt(damage.DamageDealt),
-                    BattleEvent.ForDamageTaken(damage.DamageTaken),
-                })
-                .ToArray();
+                    BattleEvent.ForDamageCalculated(playerDamage.Calculation),
+                    BattleEvent.ForDamageDealt(playerDamage.DamageDealt),
+                    BattleEvent.ForDamageTaken(playerDamage.DamageTaken),
+                });
 
-            expected = ProjectToWireSchema(expectedEvents);
+            // The fixture Boss has 5000 HP and this Swap deals far less, so the Boss
+            // survives and the full Boss Response runs. The branch is expressed from
+            // the documented condition rather than assumed, so the expectation stays
+            // correct if the fixture ever changes.
+            if (playerDamage.TargetHp > 0)
+            {
+                var bossMatches = committed.Resolution.TotalMatches;
+
+                var bossPassive = GameServer.Domain.Passives.PassiveTracker.Charge(
+                    before.BossState.PassiveProgress,
+                    bossMatches,
+                    before.BossState.PassiveId,
+                    bossDefinition.PassiveResetBehavior
+                        ?? GameServer.Domain.Passives.PassiveResetBehavior.Default);
+
+                // GAME_EVENTS.md §2 / SIGNALR_PROTOCOL.md §3.2.16: the Boss Passive's
+                // reports use the shared events with source="boss" and
+                // sourceId=BossState.BossId.
+                expectedEvents = expectedEvents
+                    .Concat(bossPassive.Charges.Select(c => BattleEvent.ForPassiveCharged(
+                        c with { Source = "boss", SourceId = before.BossState.BossId.Value })))
+                    .Concat(bossPassive.Triggers.Select(t => BattleEvent.ForPassiveTriggered(
+                        t with { Source = "boss", SourceId = before.BossState.BossId.Value })));
+
+                // BOSS_RULES.md §6.3 / GAME_STATE.md §2.4.3: the Skill fires only when
+                // both conditions hold.
+                var skillFires = before.BossState.SkillCharge + bossMatches
+                        >= bossDefinition.SkillChargeRequirement
+                    && bossSkillCooldown == 0;
+
+                var bossAttack = skillFires
+                    ? before.BossState.ATK + bossDefinition.SkillBaseDamage
+                    : before.BossState.ATK;
+
+                if (skillFires)
+                {
+                    expectedEvents = expectedEvents.Append(
+                        BattleEvent.ForBossSkillCast(bossDefinition.SkillId, before.BossState.BossId.Value));
+                }
+
+                var bossDamage = GameServer.Domain.Combat.DamagePipeline.Calculate(
+                    new GameServer.Domain.Combat.DamagePipeline.DamageInputs(
+                        Attack: bossAttack,
+                        BaseDamagePool: 0,
+                        Combo: 1,
+                        AttackerElement: before.BossState.Element,
+                        DefenderElement: before.PetState.Element,
+                        DefenderDefense: before.PlayerState.DEF,
+                        DefenderHp: before.PlayerState.HP,
+                        Source: GameServer.Domain.Combat.DamageParty.Boss,
+                        Target: GameServer.Domain.Combat.DamageParty.Player),
+                    GameServer.Domain.Combat.ComboModifiers.Default,
+                    GameServer.Domain.Elements.ElementModifiers.Default);
+
+                expectedEvents = expectedEvents
+                    .Append(BattleEvent.ForDamageCalculated(bossDamage.Calculation))
+                    .Append(BattleEvent.ForDamageDealt(bossDamage.DamageDealt))
+                    .Append(BattleEvent.ForDamageTaken(bossDamage.DamageTaken));
+
+                if (bossDamage.TargetHp <= 0)
+                {
+                    var bossHpAfterSkillReset = playerDamage.TargetHp;
+
+                    expectedEvents = expectedEvents.Append(
+                        BattleEvent.ForBattleLost(bossHpAfterSkillReset, bossDamage.TargetHp));
+                }
+            }
+            else
+            {
+                expectedEvents = expectedEvents.Append(
+                    BattleEvent.ForBattleWon(playerDamage.TargetHp, before.PlayerState.HP));
+            }
+
+            expected = ProjectToWireSchema(expectedEvents.ToArray());
             Assert.NotEmpty(expected);
         }
 
@@ -1695,26 +1781,52 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
                 "ComboChanged must follow the Match it reports (GAME_EVENTS.md §1.1 item 5).");
         }
 
-        // §3.3 / PASSIVE_RULES.md §2 item 1: one PassiveCharged per Match, so the
-        // charge count equals the batch's Match total — and the charges follow the
-        // board cycle rather than being interleaved into it (GAME_RULES.md §17 step 10
-        // places "Charge Passive" after the board's steps).
-        var chargeCount = types.Count(t => t == "PassiveCharged");
-        Assert.Equal(types.Count(t => t == "MatchCreated"), chargeCount);
-        Assert.True(chargeCount >= 1);
+        // §3.3 / PASSIVE_RULES.md §2 item 1: one PassiveCharged per Match PER PASSIVE
+        // SYSTEM, so the count equals the batch's Match total — and the charges follow
+        // the board cycle rather than being interleaved into it (GAME_RULES.md §17
+        // step 10 places "Charge Passive" after the board's steps).
+        //
+        // TASK-022 adds the Boss Passive, which charges over the same Player Matches
+        // and emits into this same batch with source="boss" (BOSS_RULES.md §7,
+        // SIGNALR_PROTOCOL.md §3.2.16 item 1). So the two systems are counted
+        // separately by their `source` discriminator rather than summed.
+        var wireEvents = payload.GetProperty("events").EnumerateArray().ToArray();
 
-        // §2 item 3 / §5: at most one PassiveTriggered per Cascade, and — being the
-        // single evaluation after the whole batch — it is the last Passive event.
-        var triggered = Enumerable.Range(0, types.Length).Where(i => types[i] == "PassiveTriggered").ToArray();
-        Assert.True(triggered.Length <= 1, "the Passive triggers at most once per Cascade");
+        var petCharges = wireEvents.Count(e =>
+            e.GetProperty("type").GetString() == "PassiveCharged"
+            && e.GetProperty("source").GetString() == "pet");
 
-        if (triggered.Length == 1)
+        Assert.Equal(types.Count(t => t == "MatchCreated"), petCharges);
+        Assert.True(petCharges >= 1);
+
+        // The Pet's Passive events all carry source="pet". The Boss's do not appear
+        // for this fixture's Hỏa Long only when its Threshold is 0; here it is 5, so
+        // the Boss charges alongside the Pet.
+        Assert.All(
+            wireEvents.Where(e => e.GetProperty("type").GetString() == "PassiveCharged"),
+            e => Assert.Contains(e.GetProperty("source").GetString(), new[] { "pet", "boss" }));
+
+        // §2 item 3 / §5: at most one PassiveTriggered per Cascade PER PASSIVE SYSTEM,
+        // and — being the single evaluation after the whole batch — it is the last
+        // Passive event of its own run.
+        var triggered = Enumerable.Range(0, types.Length)
+            .Where(i => types[i] == "PassiveTriggered")
+            .ToArray();
+
+        Assert.True(triggered.Length <= 2, "each of the two Passive systems triggers at most once per Cascade");
+
+        if (triggered.Length > 0)
         {
-            var lastCharge = Array.LastIndexOf(types, "PassiveCharged");
-            Assert.True(
-                triggered[0] > lastCharge,
-                "PassiveTriggered follows the charges — the evaluation is after the batch.");
-            Assert.Equal(types.Length - 1, triggered[0]);
+            // The whole Passive stage sits after the board cycle and before the
+            // damage instances: no Passive event precedes the first MatchCreated.
+            var firstMatch = Array.IndexOf(types, "MatchCreated");
+            Assert.True(triggered[0] > firstMatch);
+
+            // And every trigger is a Boss or Pet one, never an undocumented third
+            // source.
+            Assert.All(
+                triggered.Select(i => wireEvents[i].GetProperty("source").GetString()),
+                s => Assert.Contains(s, new[] { "pet", "boss" }));
         }
 
         await hubConnection.StopAsync();
@@ -2333,13 +2445,18 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
                 new[]
                 {
                     "MatchCreated", "CascadeCreated", "ComboChanged", "GemMatched",
-                    // §3.3: the Passive stage's two events travel in this same batch on
-                    // this same path (§4.3 item 10), so they are valid discriminators
-                    // here — never a fifth or sixth *message*.
+                    // §3.3/§3.2.16–§3.2.17: the Passive stage's two shared events travel
+                    // in this same batch on this same path (§4.3 item 10), so they are
+                    // valid discriminators here — never a fifth or sixth *message*.
                     "PassiveCharged", "PassiveTriggered",
                     // §1/§2: the three Damage events follow the Passive stage's reports
-                    // and travel in the same batch (GAME_EVENTS.md §1, §2).
+                    // and travel in the same batch (GAME_EVENTS.md §1, §2). Both
+                    // directions use these same three names (§3.4).
                     "DamageCalculated", "DamageDealt", "DamageTaken",
+                    // §3.2.18–§3.2.19: the Boss Response's Skill cast and the two
+                    // terminal outcomes, on the same batch (§3 item 1: the batch is
+                    // atomic).
+                    "BossSkillCast", "BattleWon", "BattleLost",
                 });
 
             // §3.2.2 item 4 / §3.2.5 item 5: the discriminator is always present and
@@ -2375,17 +2492,26 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
                 "CascadeCreated" => new[] { "type", "cascadeDepth" },
                 "ComboChanged" => new[] { "type", "combo" },
                 "GemMatched" => new[] { "type", "cellIndex", "gemType", "specialGem" },
-                // §3.3: the Passive identity, the progress value, and the Threshold —
-                // and no `effect summary`, whose absence GAME_EVENTS.md §2 item 3
-                // records as the deferred member rather than an omission.
-                "PassiveCharged" => new[] { "type", "passiveId", "progress", "threshold" },
-                "PassiveTriggered" => new[] { "type", "passiveId", "progress", "threshold" },
+                // §3.3/§3.2.16–§3.2.17: the Passive identity, the shared event's
+                // source/sourceId, the progress value, and the Threshold — and no
+                // `effect summary`, whose absence GAME_EVENTS.md §2 item 3 records as
+                // the deferred member rather than an omission.
+                "PassiveCharged" => new[] { "type", "passiveId", "source", "sourceId", "progress", "threshold" },
+                "PassiveTriggered" => new[] { "type", "passiveId", "source", "sourceId", "progress", "threshold" },
                 // §1/§2: the Damage pipeline's three events, with the members the
                 // contract gives them (GAME_EVENTS.md §2, SIGNALR_PROTOCOL.md
-                // §3.2.13–§3.2.15).
+                // §3.2.13–§3.2.15). Both directions travel here, so `source`/`target`
+                // carry either party pair.
                 "DamageCalculated" => new[] { "type", "base", "comboModifier", "elementModifier", "otherModifiers", "defense", "finalDamage" },
                 "DamageDealt" => new[] { "type", "source", "target", "amount" },
                 "DamageTaken" => new[] { "type", "source", "target", "amount" },
+                // §3.2.18: the Skill's identity and the Boss's identity, and nothing
+                // else — the Skill's damage travels on the damage events that follow.
+                "BossSkillCast" => new[] { "type", "skillId", "sourceId" },
+                // §3.2.19: the outcome constant and the two terminal HP values. No
+                // `reward summary`, whose absence item 3 records as deferred.
+                "BattleWon" => new[] { "type", "outcome", "finalBossHp", "finalPlayerHp" },
+                "BattleLost" => new[] { "type", "outcome", "finalBossHp", "finalPlayerHp" },
                 _ => throw new InvalidOperationException($"Undocumented event type on the wire: {type}."),
             };
 
@@ -2510,17 +2636,22 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
                 gemType,
                 e.Gem.ConsumedSpecialGem is { } consumed ? ToWire(consumed) : null),
 
-            // §3.3: the Passive stage's two events, with the members the contract
-            // gives them — the identity, the progress value, and the Threshold.
+            // §3.3/§3.2.16–§3.2.17: the Passive stage's two events, with the members
+            // the contract gives them — the identity, the progress value, the
+            // Threshold, and the shared event's source/sourceId.
             BattleEventType.PassiveCharged => BattleEventWireDto.PassiveCharged(
                 e.PassiveCharged.PassiveId.Value,
                 e.PassiveCharged.Progress,
-                e.PassiveCharged.Threshold),
+                e.PassiveCharged.Threshold,
+                e.PassiveCharged.Source,
+                e.PassiveCharged.SourceId),
 
             BattleEventType.PassiveTriggered => BattleEventWireDto.PassiveTriggered(
                 e.PassiveTriggered.PassiveId.Value,
                 e.PassiveTriggered.Progress,
-                e.PassiveTriggered.Threshold),
+                e.PassiveTriggered.Threshold,
+                e.PassiveTriggered.Source,
+                e.PassiveTriggered.SourceId),
 
             BattleEventType.DamageCalculated => BattleEventWireDto.DamageCalculated(
                 e.DamageCalculated.Base,
@@ -2540,10 +2671,25 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
                 e.DamageTaken.Target.ToString().ToLowerInvariant(),
                 e.DamageTaken.Amount),
 
+            // §3.2.18 / §3.2.19: the Boss Response's three events, with the members
+            // the contract gives them. `outcome` is the constant of the event's own
+            // type (item 1), not a value read off the payload.
+            BattleEventType.BossSkillCast => BattleEventWireDto.BossSkillCast(
+                e.BossSkillCast.SkillId,
+                e.BossSkillCast.SourceId),
+
+            BattleEventType.BattleWon => BattleEventWireDto.BattleWon(
+                e.BattleWon.FinalBossHp,
+                e.BattleWon.FinalPlayerHp),
+
+            BattleEventType.BattleLost => BattleEventWireDto.BattleLost(
+                e.BattleLost.FinalBossHp,
+                e.BattleLost.FinalPlayerHp),
+
             _ => throw new ArgumentOutOfRangeException(
                 nameof(e),
                 e.Type,
-                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.3)."),
+                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.19, §3.3)."),
         };
     }
 

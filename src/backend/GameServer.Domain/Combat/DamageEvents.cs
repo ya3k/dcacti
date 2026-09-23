@@ -14,20 +14,21 @@ namespace GameServer.Domain.Combat;
 /// members as "source, target, Final Damage amount" and does not define how a
 /// party is identified. What the pipeline must state is the <i>role</i> of each
 /// side — who dealt the damage and who took it — and in MVP that role is
-/// unambiguous: <c>COMBAT_RULES.md</c> §3's pipeline is built for the player's
-/// damage instance against the Boss (<c>GAME_RULES.md</c> §17 steps 15–17), the
-/// only damage this stage produces. A per-entity identity
-/// (<c>BossId</c>, a future Pet identity) is a content/loadout concern that
-/// §2 does not ask this payload for, and inventing one here would be a
-/// representation the documentation does not define (<c>GAME_STATE.md</c> §0
-/// item 5, <c>AGENTS.md</c> §7).
+/// unambiguous: <c>COMBAT_RULES.md</c> §3's pipeline serves exactly two
+/// directions, the player's damage instance against the Boss
+/// (<c>GAME_RULES.md</c> §17 steps 15–17) and the Boss's against the player
+/// (§17 step 18b–18c, §3.4), and each names its two sides from this set. A
+/// per-entity identity (<c>BossId</c>, a future Pet identity) is a
+/// content/loadout concern that §2 does not ask this payload for, and inventing
+/// one here would be a representation the documentation does not define
+/// (<c>GAME_STATE.md</c> §0 item 5, <c>AGENTS.md</c> §7).
 ///
-/// <b>It is widen-able without changing the payload shape.</b> When a later
-/// stage produces Boss-to-Player damage (<c>BOSS_RULES.md</c> §4, out of scope
-/// here) the same two roles already describe it, with <c>source = Boss</c> and
-/// <c>target = Player</c>. Nothing in this task's implementation assumes the
-/// Player is always the source: <see cref="DamagePipeline"/> takes both sides as
-/// parameters and reads no direction from a constant.
+/// <b>Both directions are represented.</b> Player→Boss damage carries
+/// <c>source = Player</c>, <c>target = Boss</c>; Boss→Player damage carries
+/// <c>source = Boss</c>, <c>target = Player</c> — which is exactly the
+/// widening §3.2.14 item 3 records for the Boss damage instance, and why
+/// <see cref="DamagePipeline"/> takes both sides from its caller rather than
+/// reading a direction from a constant.
 /// </summary>
 public enum DamageParty
 {
@@ -192,27 +193,36 @@ public readonly record struct DamageTakenEvent(
 }
 
 /// <summary>
-/// The result of one damage instance through the Damage Pipeline — the updated
-/// target state together with the three documented reports
-/// (<c>GAME_RULES.md</c> §17 steps 15–17, <c>COMBAT_RULES.md</c> §3,
+/// The result of one damage instance through the Damage Pipeline — the defending
+/// target's post-damage HP together with the three documented reports
+/// (<c>GAME_RULES.md</c> §17 steps 15–17, <c>COMBAT_RULES.md</c> §3, §3.4,
 /// <c>GAME_EVENTS.md</c> §2).
 ///
 /// <code>
 /// DamageResult
 /// ├── Calculation    the full DamageCalculated breakdown
-/// ├── BossState      the target state with Final Damage applied to HP
+/// ├── TargetHp       the target's HP after Final Damage was applied
 /// ├── DamageDealt    source, target, amount
 /// └── DamageTaken    source, target, amount
 /// </code>
 ///
-/// <b>The state and the events describe one instance.</b> The new
-/// <see cref="BossState"/> carries the applied damage and the reports carry the
-/// same number, so a consumer cannot observe a state whose HP moved by an amount
-/// no event explains (<c>GAME_EVENTS.md</c> §3 item 6: an event is never a
-/// substitute for the state write-back, and the write-back is never replaced by
-/// an event). <c>GAME_STATE.md</c> §5.1's single write-back is preserved: the
-/// caller writes <see cref="BossState"/> into <c>BattleState</c> in the same
-/// write-back the rest of the Swap's resolution uses.
+/// <b>The HP and the events describe one instance.</b> <see cref="TargetHp"/>
+/// carries the applied damage and the reports carry the same number, so a
+/// consumer cannot observe an HP that moved by an amount no event explains
+/// (<c>GAME_EVENTS.md</c> §3 item 6: an event is never a substitute for the state
+/// write-back, and the write-back is never replaced by an event).
+/// <c>GAME_STATE.md</c> §5.1's single write-back is preserved: the caller writes
+/// <see cref="TargetHp"/> onto the state record it owns — the Boss's
+/// <c>BossState</c> or the player's <c>PlayerState</c> — in the same write-back
+/// the rest of the Swap's resolution uses.
+///
+/// <b>It is an HP, not a state record, because the pipeline serves both
+/// directions.</b> <c>COMBAT_RULES.md</c> §3.4 puts Boss→Player damage through the
+/// same steps 1–6, and its target is a <c>PlayerState</c> rather than a
+/// <c>BossState</c>. Returning the one value both directions produce keeps this a
+/// single result type and a single pipeline; the direction-specific part — which
+/// record the value is written back onto — stays with the caller that owns that
+/// record.
 ///
 /// <b>The reports are always present, including when Final Damage is 0.</b>
 /// <c>GAME_EVENTS.md</c> §1 places the three events unconditionally on the
@@ -225,11 +235,11 @@ public readonly record struct DamageTakenEvent(
 /// The <c>DamageCalculated</c> payload — Base, Combo Modifier, Element Modifier,
 /// Other Modifiers, Defense, Final Damage (<c>GAME_EVENTS.md</c> §2).
 /// </param>
-/// <param name="BossState">
-/// The Boss state after the Final Damage was applied to its HP, clamped so HP is
+/// <param name="TargetHp">
+/// The defending target's HP after the Final Damage was applied, clamped so HP is
 /// never negative (<c>COMBAT_RULES.md</c> §3 step 6, <c>GAME_RULES.md</c> §1.4).
-/// Every other Boss field is carried across unchanged: this stage transitions no
-/// Boss State and fires no Boss mechanic.
+/// The caller writes it onto the target record it owns; this stage transitions no
+/// Boss State, fires no Boss mechanic, and touches no other field.
 /// </param>
 /// <param name="DamageDealt">
 /// The <c>DamageDealt</c> report — source, target, Final Damage amount.
@@ -239,7 +249,7 @@ public readonly record struct DamageTakenEvent(
 /// </param>
 public readonly record struct DamageResult(
     DamageCalculation Calculation,
-    Battle.BossState BossState,
+    int TargetHp,
     DamageDealtEvent DamageDealt,
     DamageTakenEvent DamageTaken)
 {

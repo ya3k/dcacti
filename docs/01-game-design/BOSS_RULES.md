@@ -1,8 +1,8 @@
 # Boss Rules
 
-**Version:** 2.0 (Boss Response contract resolved — §3.3 timing within
-resolution order, §4 Skill charge/cooldown, §5 Enrage/Stun clarification,
-§6 per-Boss Skill timing and Base Damage, §7 event definitions)
+**Version:** 2.1 (§3.3 sub-step citations corrected to 18b/18c; §5.4 Enrage
+ordering stated; §6.2 Thủy Ma Always-Active clarified; §6.3 Turn citation
+corrected; §6.4 identity contract added)
 **Status:** MVP Domain Rule
 **Parent:** GAME_RULES.md
 
@@ -79,7 +79,7 @@ the other MVP Bosses where possible. See §6 for the MVP assignment.
 ## 3.3 Timing Within the Resolution Order
 
 Boss Passive fires at Step 18 of GAME_RULES.md §17, after Player Damage
-(Steps 15–17) and before Boss Skill (Step 19) and Boss Attack (Step 20).
+(Steps 15–17) and before Boss Skill (step 18b) and Boss Attack (step 18c).
 
 1. **The Passive fires once per player action, after all player damage is
    resolved.** This means the Passive sees the post-damage battle state
@@ -92,10 +92,10 @@ Boss Passive fires at Step 18 of GAME_RULES.md §17, after Player Damage
    self-buff), the Boss Skill sees that updated state.
 3. **The Passive fires before the Boss Attack.** If the Boss Skill does
    not fire (charge not met or cooldown active), the Boss performs a basic
-   attack (Step 20). The Passive's effect is already applied at that point.
+   attack (step 18c). The Passive's effect is already applied at that point.
 4. **Boss Skill damage does not re-trigger the Boss Passive.** The Passive
    resolves once at Step 18 and does not re-evaluate after the Skill
-   (Step 19) or Attack (Step 20). If a Boss Passive triggers on "Boss HP
+   (step 18b) or Attack (step 18c). If a Boss Passive triggers on "Boss HP
    below threshold," it evaluates once against the post-player-damage state
    — not again after the Boss's own actions.
 
@@ -132,7 +132,13 @@ Boss Passive fires at Step 18 of GAME_RULES.md §17, after Player Damage
    EnrageThreshold` (per-Boss value in §6.1). Once Enraged, the Boss remains
    Enraged for the rest of the battle — no timer, no duration field. The
    Enrage threshold and any Enrage-specific behavior changes (e.g. Skill
-   damage increase) are defined per Boss in §6.
+   damage increase) are defined per Boss in §6. Enrage is evaluated after
+   Player→Boss damage (GAME_RULES.md §17 steps 15–17) and **before** the
+   Boss HP terminal check and Boss Response (step 18): the state transition
+   is applied whenever the HP condition holds, including when Player damage
+   has just reduced Boss HP to 0 (the terminal check then ends the battle
+   with no Boss Response). Order: Player→Boss Damage → Enrage → terminal
+   Boss HP check → Boss Response 18a–18c → terminal Player HP check.
 5. **Stun** is a temporary state that prevents the Boss from acting. Duration
    is measured in Turns and tracked by `StatusEffects[]` (not yet
    implemented). For MVP, no content-defined Boss applies Stun.
@@ -169,6 +175,16 @@ Thủy Ma     Player Healing reduced by 50% for 3 turns          Passive (always
 Mộc Yêu     Regenerate 5% MaxHP                               Every 5 Player Matches
 ```
 
+**PassiveThreshold (match-charged passives only):** Hỏa Long and Mộc Yêu
+use PassiveThreshold = 5 (PASSIVE_RULES.md §2 — progress increments per
+Player Match, Threshold evaluated once per Cascade batch). Thủy Ma's
+trigger is "Passive (always active)" — an alternate trigger
+(PASSIVE_RULES.md §3), **not** match-based: it has no PassiveThreshold for
+match counting, is never charged via `PassiveTracker.Charge` on Player
+Matches, and emits no `PassiveCharged`/`PassiveTriggered` from match
+progress. Its always-on effect application is a separate concern (TASK-022
+implements charging/events only, not effects).
+
 ### 6.3 Boss Skill Timing
 
 Each Boss Skill has two timing parameters:
@@ -179,7 +195,9 @@ Each Boss Skill has two timing parameters:
   `SkillCooldown = 0`, the Skill fires.
 - **Cooldown (CD)**: turns remaining after each Skill use before the Skill
   can fire again. Decrements by 1 at each Turn increment
-  (`GAME_RULES.md` §17 step 17). The Skill is blocked while `CD > 0`.
+  (`MATCH3_RULES.md` §8.1 — one committed Swap begins exactly one Turn;
+  the stored Turn advances once in that resolution's single write-back,
+  `GAME_STATE.md` §5.1). The Skill is blocked while `CD > 0`.
 
 After the Skill fires: `SkillCharge` resets to 0, `SkillCooldown` resets to
 the Boss's cooldown value.
@@ -208,6 +226,30 @@ content-defined. When authored, each must:
    possible (e.g. avoid a third "every N Player Matches" Passive if the
    other four Bosses already cover Match-count, HP-based, and Turn-based
    patterns).
+
+### 6.4 Identity Contract (BossId, PassiveId, SkillId)
+
+Canonical string identities for the three content-defined MVP Bosses. These
+are the values `BossDefinitions.cs` / `BossDefinition` carry and the values
+emitted on events (`PassiveCharged`/`PassiveTriggered.sourceId`,
+`BossSkillCast.skillId`). They are fixed here so no task invents its own.
+
+```text
+Boss        BossId (BossState.BossId)   PassiveId                      SkillId
+---------   --------------------------  -----------------------------  -------------
+Hỏa Long    "Hỏa Long"                  "boss-hoa-long-rage"           "flame-burst"
+Thủy Ma     "Thủy Ma"                   "boss-thuy-ma-heal"            "drain-power"
+Mộc Yêu     "Mộc Yêu"                   "boss-moc-yeu-regen"           "root"
+```
+
+- **BossId** is the display name already used by `BossDefinitions.cs`
+  (`BossId("Hỏa Long")`, etc.) — the boss's identity, not a slug.
+- **PassiveId** identifies the Boss Passive in `PassiveCharged`/
+  `PassiveTriggered` payloads (`source = "boss"`). Values follow the
+  kebab-case pattern of Pet PassiveIds (e.g. `PassiveId("xich-lang")`).
+- **SkillId** identifies the Boss Skill in `BossSkillCast.skillId`
+  (`SIGNALR_PROTOCOL.md` §3.2.18).
+- Examples in `SIGNALR_PROTOCOL.md` §3.2.16–§3.2.18 use these exact values.
 
 ---
 

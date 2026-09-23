@@ -1,8 +1,9 @@
 # SignalR Protocol
 
-**Version:** 2.0 (Boss Response wire contract — PassiveCharged/PassiveTriggered,
-BossSkillCast, BattleWon/BattleLost wire schemas added; discriminator
-expanded; Boss→Player damage events defined)
+**Version:** 2.1 (§3.2.16–§3.2.18 `sourceId` examples corrected to display-name
+BossId per `BOSS_RULES.md` §6.4; identity values documented; prior 2.0: Boss
+Response wire contract — PassiveCharged/PassiveTriggered, BossSkillCast,
+BattleWon/BattleLost; discriminator expanded; Boss→Player damage events)
 **Status:** Draft — depends on TDD.md §0 assumption (ASP.NET Core backend)
 
 > This document answers: **"How does realtime communication work?"** It does
@@ -711,7 +712,7 @@ specialGem
     "type": "PassiveCharged",
     "passiveId": "boss-hoa-long-rage",
     "source": "boss",
-    "sourceId": "hoa-long",
+    "sourceId": "Hỏa Long",
     "progress": 3,
     "threshold": 5
 }
@@ -731,8 +732,9 @@ specialGem
    The string is `"pet"` or `"boss"`, matching the `DamageDealt`/`DamageTaken`
    convention for party identifiers (§3.2.14 item 1).
 2. **`sourceId` identifies the specific entity.** For a Pet Passive, it is
-   `PetState.PetId`; for a Boss Passive, it is `BossState.BossId`. The client
-   uses both `source` and `sourceId` to attribute the event.
+   `PetState.PetId`; for a Boss Passive, it is `BossState.BossId` — the
+   Boss's display-name BossId (e.g. `"Hỏa Long"`), per `BOSS_RULES.md` §6.4.
+   The client uses both `source` and `sourceId` to attribute the event.
 3. **`passiveId` is the same value the owning entity's state holds.** It is
    never re-derived or invented by the emitting stage (`GAME_EVENTS.md` §2
    item 1).
@@ -744,7 +746,7 @@ specialGem
     "type": "PassiveTriggered",
     "passiveId": "boss-hoa-long-rage",
     "source": "boss",
-    "sourceId": "hoa-long",
+    "sourceId": "Hỏa Long",
     "progress": 5,
     "threshold": 5
 }
@@ -776,7 +778,7 @@ specialGem
 {
     "type": "BossSkillCast",
     "skillId": "flame-burst",
-    "sourceId": "hoa-long"
+    "sourceId": "Hỏa Long"
 }
 ```
 
@@ -787,11 +789,14 @@ specialGem
 | `sourceId` | string | always | the Boss's identity (`BossState.BossId`) |
 
 1. **`skillId` identifies which Boss Skill was used.** It is the same
-   identity the boss definition carries — the client uses it to look up the
+   identity the boss definition carries (`BOSS_RULES.md` §6.4 — e.g.
+   `"flame-burst"`) — the client uses it to look up the
    skill's visual and effect description (`BOSS_RULES.md` §4, §6).
 2. **`sourceId` identifies the Boss.** In MVP there is exactly one Boss per
    battle, but the field is present for future-proofing and consistency with
-   `PassiveCharged`/`PassiveTriggered` (§3.2.16).
+   `PassiveCharged`/`PassiveTriggered` (§3.2.16). The value is the Boss's
+   display-name BossId (`BossState.BossId`, e.g. `"Hỏa Long"`) per
+   `BOSS_RULES.md` §6.4.
 3. **Effect details are carried by subsequent damage events.** The skill's
    damage (if any) is reported by `DamageCalculated`/`DamageDealt`/
    `DamageTaken` in the same `ReceiveEvents` batch, with `source = "boss"`

@@ -223,7 +223,21 @@ public static class PassiveTracker
         for (var match = 0; match < matchCount; match++)
         {
             current++;
-            charges.Add(new PassiveChargedEvent(passiveId, current, threshold));
+
+            // §2 item 1 / §7 / BOSS_RULES.md §7: this tracker charges a Passive
+            // over Matches, and in this stage that Passive is always the active
+            // Pet's — the Boss's match-charged Passive is charged by the
+            // Application-layer Boss Response step over this same report shape.
+            // The source is therefore stated explicitly rather than left to the
+            // default, so the Pet/Boss distinction is visible at the emitting
+            // site. SourceId is not supplied: PetState carries no PetId in this
+            // stage (GAME_STATE.md §2.3 — it belongs to the Pet identity stage),
+            // and no value may be invented for it (AGENTS.md §7).
+            charges.Add(new PassiveChargedEvent(
+                passiveId,
+                current,
+                threshold,
+                PassiveEventSource.Pet));
         }
 
         // §2 item 3 / §5: "After all Matches in the Cascade have been counted, the
@@ -244,7 +258,11 @@ public static class PassiveTracker
             // Pre-reset progress is reported (GAME_EVENTS.md §2 item 2), so the
             // event is built before the reset below — §5 reports 7 and then
             // settles at 0 (Default) or 2 (Partial at Threshold 5).
-            var trigger = new PassiveTriggeredEvent(passiveId, current, threshold);
+            var trigger = new PassiveTriggeredEvent(
+                passiveId,
+                current,
+                threshold,
+                PassiveEventSource.Pet);
             current = Reset(current, threshold, reset);
 
             return new PassiveChargeResult(

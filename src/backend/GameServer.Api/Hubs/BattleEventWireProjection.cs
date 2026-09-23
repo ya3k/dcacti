@@ -14,21 +14,34 @@ namespace GameServer.Api.Hubs;
 /// (<c>§3.2.2</c>). The discriminator is the documented string
 /// <c>MatchCreated</c> / <c>CascadeCreated</c> / <c>ComboChanged</c> /
 /// <c>GemMatched</c> / <c>PassiveCharged</c> / <c>PassiveTriggered</c> /
-/// <c>DamageCalculated</c> / <c>DamageDealt</c> / <c>DamageTaken</c> — never
+/// <c>DamageCalculated</c> / <c>DamageDealt</c> / <c>DamageTaken</c> /
+/// <c>BossSkillCast</c> / <c>BattleWon</c> / <c>BattleLost</c> — never
 /// the Domain enum's ordinal, which is a Domain identity and not part of the
 /// wire contract (<c>§3.2.2</c> item 3). The first four are the board
 /// resolution's events (<c>§3.2.6–§3.2.9</c>); the next two are the Passive
-/// stage's (<c>§3.3</c>); the last three are the Damage Pipeline's
-/// (<c>§3.2.13–§3.2.15</c>). All travel in this same <c>events[]</c> array
+/// stage's (<c>§3.3</c>, the shared Pet/Boss events; <c>§3.2.16–§3.2.17</c>);
+/// the three after them are the Damage Pipeline's (<c>§3.2.13–§3.2.15</c>); and
+/// the last three are the Boss Response's and the outcome's
+/// (<c>§3.2.18–§3.2.19</c>). All travel in this same <c>events[]</c> array
 /// on the same path (<c>§3.1</c>, <c>§4.3</c> item 10).
 ///
-/// <b>One type, nine shapes.</b> The schema defines a flat object per event, not a
+/// <b>One type, twelve shapes.</b> The schema defines a flat object per event, not a
 /// shared envelope: a <c>CascadeCreated</c> carries <c>cascadeDepth</c> and
 /// nothing else, and a <c>ComboChanged</c> carries <c>combo</c> and nothing
 /// else. A cross-product record would therefore have to emit members that do
 /// not belong to the event, which <c>§3.2.12</c> item 1 forbids. The permitted
 /// member sets are modelled as the one-of slots below and are enforced at
 /// construction, so no combination outside the contract can be built.
+///
+/// <b>A wire name may be shared by two facts when the contract shares it.</b>
+/// <c>source</c> is <c>DamageDealt</c>/<c>DamageTaken</c>'s dealing party
+/// (<c>§3.2.14</c>) and also <c>PassiveCharged</c>/<c>PassiveTriggered</c>'s
+/// <c>"pet"</c>/<c>"boss"</c> discriminator (<c>§3.2.16</c> item 1) — the same
+/// spelling and the same string vocabulary, so one slot carries it and each event
+/// populates it from its own payload. <c>sourceId</c> is likewise shared by the
+/// two Passive events and <c>BossSkillCast</c> (<c>§3.2.16</c> item 2,
+/// <c>§3.2.18</c>), where it always means the same thing: the owning entity's
+/// identity.
 ///
 /// <b>Omission, never <c>null</c>.</b> A member that is not applicable to an
 /// event is <b>omitted entirely</b>: no member of any item is ever sent as JSON
@@ -126,13 +139,53 @@ namespace GameServer.Api.Hubs;
 /// <c>DamageCalculated</c> only (<c>§3.2.13</c>): Step 6 — Final Damage (truncated, never negative).
 /// </param>
 /// <param name="Source">
-/// <c>DamageDealt</c> and <c>DamageTaken</c> (<c>§3.2.14</c>, <c>§3.2.15</c>): the party that dealt the damage.
+/// <c>DamageDealt</c> and <c>DamageTaken</c> (<c>§3.2.14</c>, <c>§3.2.15</c>): the
+/// party that dealt the damage.
+///
+/// <b>It is also the shared event's <c>source</c> member.</b>
+/// <c>PassiveCharged</c> and <c>PassiveTriggered</c> (<c>§3.2.16</c> item 1,
+/// <c>§3.2.17</c>) carry a member of the same wire name and the same string
+/// vocabulary — <c>"pet"</c> or <c>"boss"</c> — for a different fact: which
+/// entity's Passive it is (<c>BOSS_RULES.md</c> §7). The contract fixes one wire
+/// member name per fact, and here the two facts share a name and a value set, so
+/// they share this one slot: an item carries <c>source</c> and only one of the
+/// events that has such a member produces it.
 /// </param>
 /// <param name="Target">
 /// <c>DamageDealt</c> and <c>DamageTaken</c> (<c>§3.2.14</c>, <c>§3.2.15</c>): the party that received the damage.
 /// </param>
 /// <param name="Amount">
 /// <c>DamageDealt</c> and <c>DamageTaken</c> (<c>§3.2.14</c>, <c>§3.2.15</c>): the Final Damage amount.
+/// </param>
+/// <param name="SourceId">
+/// <c>PassiveCharged</c>, <c>PassiveTriggered</c>, and <c>BossSkillCast</c>
+/// (<c>§3.2.16</c> item 2, <c>§3.2.17</c>, <c>§3.2.18</c>): the identity of the
+/// owning entity — <c>PetState.PetId</c> or <c>BossState.BossId</c>. It is the
+/// same fact — "which entity owns this event" — and the same wire name on all
+/// three events, so it is one member, and it is always present on each of them.
+/// For a Boss it is the display-name BossId (e.g. <c>"Hỏa Long"</c>), never a slug
+/// (<c>BOSS_RULES.md</c> §6.4). The damage events have no such member, so no
+/// <c>DamageDealt</c>/<c>DamageTaken</c> item writes it.
+/// </param>
+/// <param name="SkillId">
+/// <c>BossSkillCast</c> only (<c>§3.2.18</c>): the Boss Skill's identity
+/// (<c>BOSS_RULES.md</c> §4, §6.4).
+/// </param>
+/// <param name="Outcome">
+/// <c>BattleWon</c> and <c>BattleLost</c> only (<c>§3.2.19</c>): <c>"victory"</c>
+/// or <c>"defeat"</c>. It is a string and not a boolean (<c>§3.2.19</c> item 1),
+/// and it is the constant of whichever of the two events this is rather than a
+/// value recomputed from the HP pair.
+/// </param>
+/// <param name="FinalBossHp">
+/// <c>BattleWon</c> and <c>BattleLost</c> only (<c>§3.2.19</c>): the Boss's HP at
+/// battle end (<c>GAME_STATE.md</c> §2.4).
+/// </param>
+/// <param name="FinalPlayerHp">
+/// <c>BattleWon</c> and <c>BattleLost</c> only (<c>§3.2.19</c>): the player's HP at
+/// battle end (<c>GAME_STATE.md</c> §2.2). It is <b>not</b> omitted when it is
+/// <c>0</c>: a defeat's terminal player HP is a real value the client renders, and
+/// <c>§3.2.5</c> omits only members that do not belong to the event.
 /// </param>
 public sealed record BattleEventWireDto(
     [property: JsonPropertyName("type")] string Type,
@@ -176,7 +229,17 @@ public sealed record BattleEventWireDto(
     [property: JsonPropertyName("target")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Target = null,
     [property: JsonPropertyName("amount")]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Amount = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Amount = null,
+    [property: JsonPropertyName("sourceId")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SourceId = null,
+    [property: JsonPropertyName("skillId")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SkillId = null,
+    [property: JsonPropertyName("outcome")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Outcome = null,
+    [property: JsonPropertyName("finalBossHp")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? FinalBossHp = null,
+    [property: JsonPropertyName("finalPlayerHp")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? FinalPlayerHp = null)
 {
     /// <summary>
     /// The wire item for one <c>MatchCreated</c>
@@ -261,15 +324,27 @@ public sealed record BattleEventWireDto(
     /// written as <c>0</c>, not omitted.
     /// </param>
     /// <param name="threshold">The Passive's Threshold (§2 item 2).</param>
+    /// <param name="source">
+    /// <c>"pet"</c> or <c>"boss"</c> — which entity's Passive charged
+    /// (<c>§3.2.16</c> item 1, <c>BOSS_RULES.md</c> §7). Always present.
+    /// </param>
+    /// <param name="sourceId">
+    /// The identity of the owning entity (<c>§3.2.16</c> item 2) — the
+    /// display-name BossId for a Boss (<c>BOSS_RULES.md</c> §6.4).
+    /// </param>
     public static BattleEventWireDto PassiveCharged(
         string passiveId,
         int progress,
-        int threshold) =>
+        int threshold,
+        string source,
+        string? sourceId) =>
         new(
             Type: "PassiveCharged",
             PassiveId: passiveId,
             Progress: progress,
-            Threshold: threshold);
+            Threshold: threshold,
+            Source: source,
+            SourceId: sourceId);
 
     /// <summary>
     /// The wire item for one <c>PassiveTriggered</c> (<c>SIGNALR_PROTOCOL.md</c>
@@ -286,15 +361,82 @@ public sealed record BattleEventWireDto(
     /// trigger's own reset (<c>GAME_EVENTS.md</c> §2 item 2).
     /// </param>
     /// <param name="threshold">The Passive's Threshold (§2 item 2).</param>
+    /// <param name="source">
+    /// <c>"pet"</c> or <c>"boss"</c> — which entity's Passive triggered
+    /// (<c>§3.2.17</c>, <c>BOSS_RULES.md</c> §7). Always present.
+    /// </param>
+    /// <param name="sourceId">
+    /// The identity of the owning entity (<c>§3.2.17</c>) — the display-name
+    /// BossId for a Boss (<c>BOSS_RULES.md</c> §6.4).
+    /// </param>
     public static BattleEventWireDto PassiveTriggered(
         string passiveId,
         int progress,
-        int threshold) =>
+        int threshold,
+        string source,
+        string? sourceId) =>
         new(
             Type: "PassiveTriggered",
             PassiveId: passiveId,
             Progress: progress,
-            Threshold: threshold);
+            Threshold: threshold,
+            Source: source,
+            SourceId: sourceId);
+
+    /// <summary>
+    /// The wire item for one <c>BossSkillCast</c>
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.18) — the Skill's identity and the Boss's
+    /// identity, and nothing else.
+    /// </summary>
+    /// <param name="skillId">
+    /// The Boss Skill's identity (<c>BOSS_RULES.md</c> §4, §6.4) — the value the
+    /// definition carries, reported rather than re-derived (§3.2.18 item 1).
+    /// </param>
+    /// <param name="sourceId">
+    /// The Boss's identity — the display-name <c>BossState.BossId</c>
+    /// (<c>BOSS_RULES.md</c> §6.4, §3.2.18 item 2).
+    /// </param>
+    public static BattleEventWireDto BossSkillCast(string skillId, string sourceId) =>
+        new(
+            Type: "BossSkillCast",
+            SkillId: skillId,
+            SourceId: sourceId);
+
+    /// <summary>
+    /// The wire item for one <c>BattleWon</c> (<c>SIGNALR_PROTOCOL.md</c> §3.2.19).
+    /// </summary>
+    /// <param name="finalBossHp">
+    /// The Boss's HP at battle end (<c>GAME_STATE.md</c> §2.4) — <c>0</c> here.
+    /// </param>
+    /// <param name="finalPlayerHp">
+    /// The player's HP at battle end (<c>GAME_STATE.md</c> §2.2).
+    /// </param>
+    public static BattleEventWireDto BattleWon(int finalBossHp, int finalPlayerHp) =>
+        new(
+            Type: "BattleWon",
+            // §3.2.19 item 1: the outcome is the string constant of this event's own
+            // type. It is not read from the HP pair, which cannot distinguish an
+            // outcome on its own.
+            Outcome: "victory",
+            FinalBossHp: finalBossHp,
+            FinalPlayerHp: finalPlayerHp);
+
+    /// <summary>
+    /// The wire item for one <c>BattleLost</c> (<c>SIGNALR_PROTOCOL.md</c> §3.2.19).
+    /// </summary>
+    /// <param name="finalBossHp">
+    /// The Boss's HP at battle end (<c>GAME_STATE.md</c> §2.4).
+    /// </param>
+    /// <param name="finalPlayerHp">
+    /// The player's HP at battle end (<c>GAME_STATE.md</c> §2.2) — <c>0</c> here,
+    /// and written as <c>0</c> rather than omitted.
+    /// </param>
+    public static BattleEventWireDto BattleLost(int finalBossHp, int finalPlayerHp) =>
+        new(
+            Type: "BattleLost",
+            Outcome: "defeat",
+            FinalBossHp: finalBossHp,
+            FinalPlayerHp: finalPlayerHp);
 
     /// <summary>
     /// The wire item for one <c>DamageCalculated</c>
@@ -510,19 +652,23 @@ public static class BattleEventWireProjection
             BattleEventType.DamageCalculated => ProjectDamageCalculated(battleEvent.DamageCalculated),
             BattleEventType.DamageDealt => ProjectDamageDealt(battleEvent.DamageDealt),
             BattleEventType.DamageTaken => ProjectDamageTaken(battleEvent.DamageTaken),
+            BattleEventType.BossSkillCast => ProjectBossSkillCast(battleEvent.BossSkillCast),
+            BattleEventType.BattleWon => ProjectBattleWon(battleEvent.BattleWon),
+            BattleEventType.BattleLost => ProjectBattleLost(battleEvent.BattleLost),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(battleEvent),
                 battleEvent.Type,
-                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.15, §3.3)."),
+                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.19, §3.3)."),
         };
 
     /// <summary>
-    /// Projects the <c>PassiveCharged</c> payload (<c>SIGNALR_PROTOCOL.md</c> §3.3).
+    /// Projects the <c>PassiveCharged</c> payload (<c>SIGNALR_PROTOCOL.md</c> §3.3,
+    /// §3.2.16).
     /// </summary>
     private static BattleEventWireDto ProjectPassiveCharged(PassiveChargedEvent charged) =>
         BattleEventWireDto.PassiveCharged(
-            // §2 item 1: the identity the tracker read off PetState — reported, not
-            // re-derived, re-numbered, or invented here.
+            // §2 item 1: the identity the tracker read off PetState or BossState —
+            // reported, not re-derived, re-numbered, or invented here.
             passiveId: charged.PassiveId.Value,
 
             // §2 item 2: the progress this increment produced, passed through as the
@@ -532,10 +678,21 @@ public static class BattleEventWireProjection
 
             // §2 item 2: the Passive's Threshold, reported alongside so the client
             // renders `progress / threshold` without recomputing either.
-            threshold: charged.Threshold);
+            threshold: charged.Threshold,
+
+            // §3.2.16 item 1: "pet" or "boss" — the shared event's discriminator
+            // between the two Passive systems (BOSS_RULES.md §7). Carried through
+            // from the payload, which the emitting stage set.
+            source: charged.Source,
+
+            // §3.2.16 item 2: the owning entity's identity — the display-name
+            // BossId for a Boss (BOSS_RULES.md §6.4). Omitted when the emitter had
+            // none (the Pet Passive stage, whose PetState carries no PetId yet).
+            sourceId: charged.SourceId);
 
     /// <summary>
-    /// Projects the <c>PassiveTriggered</c> payload (<c>SIGNALR_PROTOCOL.md</c> §3.3).
+    /// Projects the <c>PassiveTriggered</c> payload (<c>SIGNALR_PROTOCOL.md</c> §3.3,
+    /// §3.2.17).
     /// </summary>
     private static BattleEventWireDto ProjectPassiveTriggered(PassiveTriggeredEvent triggered) =>
         BattleEventWireDto.PassiveTriggered(
@@ -547,7 +704,44 @@ public static class BattleEventWireProjection
             progress: triggered.Progress,
 
             // §2 item 2: the Passive's Threshold.
-            threshold: triggered.Threshold);
+            threshold: triggered.Threshold,
+
+            // §3.2.17: the same two members the charge carries, with the same
+            // semantics.
+            source: triggered.Source,
+            sourceId: triggered.SourceId);
+
+    /// <summary>
+    /// Projects the <c>BossSkillCast</c> payload (<c>SIGNALR_PROTOCOL.md</c>
+    /// §3.2.18) — the Skill's identity and the Boss's identity.
+    /// </summary>
+    private static BattleEventWireDto ProjectBossSkillCast(BossSkillCastEvent skill) =>
+        BattleEventWireDto.BossSkillCast(
+            // §3.2.18 item 1 / §3.2.18 item 2: both members are identities the
+            // resolution read off the Boss's definition and state. Neither is
+            // re-derived here, and no effect detail is added — §3.2.18 item 3 leaves
+            // the Skill's damage to the damage events that follow it in this batch.
+            skillId: skill.SkillId,
+            sourceId: skill.SourceId);
+
+    /// <summary>
+    /// Projects the <c>BattleWon</c> payload (<c>SIGNALR_PROTOCOL.md</c> §3.2.19).
+    /// </summary>
+    private static BattleEventWireDto ProjectBattleWon(BattleWonEvent won) =>
+        BattleEventWireDto.BattleWon(
+            // §3.2.19 item 2: the terminal HP pair, read from the resolution's own
+            // final state. `outcome` is fixed by the event type, not computed here.
+            // The reward summary is deferred (§3.2.19 item 3) and is not a member.
+            finalBossHp: won.FinalBossHp,
+            finalPlayerHp: won.FinalPlayerHp);
+
+    /// <summary>
+    /// Projects the <c>BattleLost</c> payload (<c>SIGNALR_PROTOCOL.md</c> §3.2.19).
+    /// </summary>
+    private static BattleEventWireDto ProjectBattleLost(BattleLostEvent lost) =>
+        BattleEventWireDto.BattleLost(
+            finalBossHp: lost.FinalBossHp,
+            finalPlayerHp: lost.FinalPlayerHp);
 
     /// <summary>
     /// Projects the <c>DamageCalculated</c> payload (<c>SIGNALR_PROTOCOL.md</c>

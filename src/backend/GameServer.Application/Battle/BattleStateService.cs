@@ -152,8 +152,9 @@ public sealed class BattleStateService
         /// <summary>
         /// The <c>BossState</c> this configuration initializes a battle's
         /// <c>BattleState</c> with — the definition's stats at full health, in the
-        /// documented Initial State (<c>GAME_STATE.md</c> §2.4,
-        /// <c>BOSS_RULES.md</c> §6.1).
+        /// documented Initial State, with its Passive identity and the start of its
+        /// Passive progress, and with no Skill charge or cooldown
+        /// (<c>GAME_STATE.md</c> §2.4, §2.4.1–§2.4.3; <c>BOSS_RULES.md</c> §6.1).
         /// </summary>
         public BossState ToBossState() => Definition.ToInitialState();
     }
@@ -170,6 +171,24 @@ public sealed class BattleStateService
     /// a second copy of any value it holds.
     /// </summary>
     private readonly ConcurrentDictionary<string, PetConfiguration> _petConfiguration = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The Boss definition for each battle, attached at creation
+    /// (<c>BOSS_RULES.md</c> §6.4: the identities and the Skill/Passive timing are
+    /// the Boss's <b>definition</b>, not its state). It is the battle's content
+    /// input, not battle state: <c>BossState</c> in <see cref="BattleState"/> owns
+    /// the current values, and this registry is not a second copy of them.
+    ///
+    /// <b>Why the resolution needs it.</b> The Boss Response steps read
+    /// configuration that <c>BossState</c> deliberately does not carry — the
+    /// Passive's Threshold and Reset Behavior, the Skill's identity, base damage,
+    /// charge requirement, and cooldown length, and the Enrage threshold
+    /// (<c>BOSS_RULES.md</c> §6.2–§6.4). Those are static content, so storing them
+    /// on the mutable state would be the duplicate representation
+    /// <c>GAME_STATE.md</c> §0 item 5 forbids. This is the same split, and the same
+    /// pattern, as <see cref="_petConfiguration"/>.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, BossConfiguration> _bossConfiguration = new(StringComparer.Ordinal);
 
     public BattleStateService()
         : this(new SystemEntropyRngSeedSource())
@@ -242,16 +261,20 @@ public sealed class BattleStateService
         // §2.3 / §2.4: the battle's PetState is built from the caller's Pet
         // configuration with progress at the start of its first charge, and its
         // BossState from the Boss definition at full health in the documented
-        // Initial State. Neither is absent, neither is defaulted with an invented
-        // value, and neither is created lazily on the first Swap.
+        // Initial State, carrying the Passive identity §2.4.2 sets at creation.
+        // Neither is absent, neither is defaulted with an invented value, and
+        // neither is created lazily on the first Swap.
+        var bossConfiguration = new BossConfiguration(bossDefinition);
+
         var state = BattleState.Create(
             battleId,
             seed,
             petConfiguration.ToPetState(),
-            new BossConfiguration(bossDefinition).ToBossState());
+            bossConfiguration.ToBossState());
 
         _battles[battleId] = state;
         _petConfiguration[battleId] = petConfiguration;
+        _bossConfiguration[battleId] = bossConfiguration;
 
         return state;
     }
@@ -266,6 +289,19 @@ public sealed class BattleStateService
     /// </summary>
     internal PetConfiguration? GetPetConfiguration(string battleId) =>
         _petConfiguration.TryGetValue(battleId, out var configuration) ? configuration : null;
+
+    /// <summary>
+    /// Returns the Boss definition the battle is fought against, or <c>null</c>
+    /// when no session with that id exists.
+    ///
+    /// This is the battle's content input, attached at creation; the authoritative
+    /// current Boss values are <c>BattleState.BossState</c>
+    /// (<c>GAME_STATE.md</c> §2.4, §5.1) and are read from there.
+    /// </summary>
+    internal BossDefinition? GetBossDefinition(string battleId) =>
+        _bossConfiguration.TryGetValue(battleId, out var configuration)
+            ? configuration.Definition
+            : null;
 
     /// <summary>
     /// Returns the authoritative state for a battle, or <c>null</c> when no
@@ -450,6 +486,27 @@ public sealed class BattleStateService
             return result;
         }
 
+        // ===================================================================
+        // Step 3 (BOSS_RULES.md §6.3, MATCH3_RULES.md §8.1): SkillCooldown--
+        // ===================================================================
+        // §6.3: Cooldown "decrements by 1 at each Turn increment", and
+        // MATCH3_RULES.md §8.1 makes one committed Swap begin exactly one Turn —
+        // whose stored number SwapExecutor already advanced, above, in its own
+        // write-back. The decrement therefore runs here, once per committed Swap,
+        // AFTER SwapExecutor returns and BEFORE the rest of the resolution. It is
+        // not a second Turn++: this boundary never writes Turn (see the class
+        // docs), and the cooldown's decrement is tied to the Turn the executor
+        // already began rather than to a second one.
+        //
+        // A rejected Swap returned above, so nothing here runs for one: a rejected
+        // action is not a Turn and cools nothing down (MATCH3_RULES.md §2.1.5).
+        var bossState = state.BossState;
+
+        if (bossState.SkillCooldown > 0)
+        {
+            bossState = bossState with { SkillCooldown = bossState.SkillCooldown - 1 };
+        }
+
         // §17 step 10 / PASSIVE_RULES.md §2, §4, §5: charge the active Pet's
         // Passive over the Matches this Cascade resolution produced. The tracker is
         // a pure Domain function — it reads no board and no RNG, and this call
@@ -487,18 +544,27 @@ public sealed class BattleStateService
         // ComboChanged; the tracker's reports follow it, one PassiveCharged per
         // Match in Match order and then, when the Threshold was crossed, the single
         // PassiveTriggered. Nothing is sorted, filtered, or rebuilt — the assembled
-        // list is the two stages' own output concatenated, and WithEvents carries
-        // every other member of the result across unchanged.
-        var events = new List<BattleEvent>(result.Events.Count + charged.Charges.Count + charged.Triggers.Count + 3);
+        // list is the stages' own output concatenated, and WithEvents carries every
+        // other member of the result across unchanged.
+        var events = new List<BattleEvent>(
+            result.Events.Count
+            + charged.Charges.Count
+            + charged.Triggers.Count
+            + 3   // Player→Boss damage
+            + 8   // Boss Passive charges + trigger (bounded by the Match total) + Boss response
+            + 1); // outcome
 
         events.AddRange(result.Events);
         events.AddRange(charged.Charges.Select(BattleEvent.ForPassiveCharged));
         events.AddRange(charged.Triggers.Select(BattleEvent.ForPassiveTriggered));
 
-        // §17 steps 15–17 / COMBAT_RULES.md §3: the Damage Pipeline. This boundary
-        // orders the call, supplies the values the earlier stages already produced,
-        // and writes back what the Domain pipeline returns — it decides no step of
-        // the formula and computes no gameplay value (ARCHITECTURE.md §2.1).
+        // ===================================================================
+        // Steps 6 (GAME_RULES.md §17 steps 15–17): Player → Boss Damage
+        // ===================================================================
+        // COMBAT_RULES.md §3: this boundary orders the call, supplies the values
+        // the earlier stages already produced, and writes back what the Domain
+        // pipeline returns — it decides no step of the formula and computes no
+        // gameplay value (ARCHITECTURE.md §2.1).
         //
         // The inputs are read from the states the resolution is already committed
         // to, never re-derived:
@@ -513,41 +579,277 @@ public sealed class BattleStateService
         //   - step 5's DEF      — BossState.DEF (GAME_STATE.md §2.4)
         // The pipeline draws no RNG and performs no Crit roll, so no randomness is
         // introduced here (COMBAT_RULES.md §3.3, ADR-009).
-        var damage = DamagePipeline.Calculate(
-            resolved.BossState,
+        var playerDamage = DamagePipeline.Calculate(
             new DamagePipeline.DamageInputs(
                 Attack: resolved.PlayerState.ATK,
                 BaseDamagePool: result.Resources.BaseDamagePool,
                 Combo: resolved.PlayerState.Combo,
                 AttackerElement: resolved.PetState.Element,
-                DefenderElement: resolved.BossState.Element,
-                DefenderDefense: resolved.BossState.DEF),
+                DefenderElement: bossState.Element,
+                DefenderDefense: bossState.DEF,
+                DefenderHp: bossState.HP,
+                Source: DamageParty.Player,
+                Target: DamageParty.Boss),
             ComboModifiers.Default,
             ElementModifiers.Default);
 
         // §17 step 17 / GAME_STATE.md §5.1: the Boss's HP write is part of the SAME
         // single post-resolution write-back as the board, the counters, the
-        // committed pair, the Match/Combo values, and the settled Passive progress
-        // — the pipeline returned the whole `BossState` as a new value, so
-        // assigning it here cannot split the write-back in two. Nothing else on the
-        // Boss changes: this stage transitions no State and fires no Boss mechanic
-        // (BOSS_RULES.md §3–§5, §17 steps 18–19 are out of scope).
-        resolved = resolved with { BossState = damage.BossState };
+        // committed pair, the Match/Combo values, the settled Passive progress, and
+        // the cooldown decrement. The pipeline returned the post-damage HP, written
+        // onto the Boss state here so the write-back is never split in two.
+        bossState = bossState with { HP = playerDamage.TargetHp };
 
         // GAME_EVENTS.md §1/§2: the three Damage events follow the Passive stage's
         // reports, in the order §1 places them — DamageCalculated, DamageDealt,
         // DamageTaken. They are the pipeline's own values, appended unchanged.
-        events.Add(BattleEvent.ForDamageCalculated(damage.Calculation));
-        events.Add(BattleEvent.ForDamageDealt(damage.DamageDealt));
-        events.Add(BattleEvent.ForDamageTaken(damage.DamageTaken));
+        events.Add(BattleEvent.ForDamageCalculated(playerDamage.Calculation));
+        events.Add(BattleEvent.ForDamageDealt(playerDamage.DamageDealt));
+        events.Add(BattleEvent.ForDamageTaken(playerDamage.DamageTaken));
 
-        // GAME_STATE.md §5.1: the result carries the SAME single post-resolution
-        // write-back that is stored — board, counters, committed pair, Match/Combo
-        // values, the settled Passive progress, and now the Boss's HP, all
-        // together. Handing back the pre-damage state would split the write-back and
-        // let a caller observe a state in which the Boss's HP does not match the
-        // DamageDealt the batch already reports (§3 item 6: an event is never a
-        // substitute for the state write-back).
+        // ===================================================================
+        // Step 7: Enrage (BOSS_RULES.md §5 item 4, §6.1)
+        // ===================================================================
+        // "Enrage is a permanent state transition triggered when BossHP <
+        // EnrageThreshold." The comparison is strict `<` per §5 item 4's wording,
+        // and the threshold is the Boss's own configuration (§6.1's "1500 (30%)" of
+        // MaxHP 5000).
+        //
+        // It is evaluated here — after Player→Boss damage, before the terminal check
+        // and before the Boss Response — because §5 item 4 orders it exactly so:
+        // "the state transition is applied whenever the HP condition holds,
+        // including when Player damage has just reduced Boss HP to 0 (the terminal
+        // check then ends the battle with no Boss Response)".
+        //
+        // No BossEnraged event exists (§5 item 4, GAME_EVENTS.md §2, BOSS_RULES.md
+        // §7): the transition is state, inferable from the event sequence. Once
+        // Enraged the Boss stays Enraged — §5 item 4 states "no timer, no duration
+        // field" — so an already-Enraged Boss does not transition (or re-announce
+        // anything) a second time.
+        var bossDefinition = _bossConfiguration[battleId].Definition;
+
+        if (bossState.State != BossStateKind.Enraged
+            && bossState.HP < bossState.MaxHP * bossDefinition.EnrageThreshold)
+        {
+            bossState = bossState with { State = BossStateKind.Enraged };
+        }
+
+        // ===================================================================
+        // Step 8: Boss HP terminal check (GAME_RULES.md §1.4, BOSS_RULES.md §7)
+        // ===================================================================
+        // §1.4: "a battle ends when either the Boss or Player reaches 0 HP". The
+        // Boss is checked FIRST — ahead of the Boss Response — because a Boss the
+        // player just killed cannot trigger its Passive, cast its Skill, or make a
+        // Basic Attack (BOSS_RULES.md §5 item 4's ordering explicitly ends the
+        // battle here "with no Boss Response"). Enrage has already been evaluated
+        // above, so the state transition is not skipped on this path.
+        if (bossState.HP == 0)
+        {
+            // SIGNALR_PROTOCOL.md §3.2.19: finalBossHp is the Boss HP at battle end
+            // (0 here) and finalPlayerHp the player's. Both are the resolution's own
+            // terminal values, read and reported.
+            events.Add(BattleEvent.ForBattleWon(bossState.HP, resolved.PlayerState.HP));
+
+            return Commit(battleId, result, resolved with { BossState = bossState }, events);
+        }
+
+        // ===================================================================
+        // Step 9: Boss Passive — GAME_RULES.md §17 step 18a
+        // ===================================================================
+        // BOSS_RULES.md §3.3 item 1: "The Passive fires once per player action,
+        // after all player damage is resolved" — so it sees the post-damage state.
+        //
+        // The charge uses the SAME shared PassiveTracker and the SAME shared
+        // PassiveCharged/PassiveTriggered events the Pet Passive uses; §7 states
+        // "no Boss-specific passive event name is needed". They carry
+        // source="boss" and sourceId=BossId — the display-name identity of
+        // BOSS_RULES.md §6.4, never a slug (SIGNALR_PROTOCOL.md §3.2.16 item 2).
+        //
+        // Thủy Ma is the documented exception: §6.2 gives it the trigger "Passive
+        // (always active)" — an alternate trigger (PASSIVE_RULES.md §3), not a Match
+        // count — and states it "is never charged via PassiveTracker.Charge on
+        // Player Matches, and emits no PassiveCharged/PassiveTriggered from match
+        // progress". Its PassiveThreshold is therefore the Always-Active marker 0
+        // rather than a threshold, and the charge is skipped entirely. Passive
+        // EFFECT application is out of this task's scope for every Boss
+        // (BOSS_RULES.md §3 item 3, §6.2): a trigger emits its event and applies
+        // nothing.
+        if (bossDefinition.PassiveThreshold > 0)
+        {
+            var bossPassive = PassiveTracker.Charge(
+                bossState.PassiveProgress,
+                result.Resolution.TotalMatches,
+                bossState.PassiveId,
+                bossDefinition.PassiveResetBehavior ?? PassiveResetBehavior.Default);
+
+            bossState = bossState with { PassiveProgress = bossPassive.Progress };
+
+            // The tracker builds its reports with source="pet" (it is the Pet
+            // Passive's caller in this stage), so the two members this direction
+            // owns — source and sourceId — are stated here rather than re-derived:
+            // the reports are otherwise carried through unchanged.
+            events.AddRange(bossPassive.Charges.Select(
+                charge => BattleEvent.ForPassiveCharged(
+                    charge with { Source = PassiveEventSource.Boss, SourceId = bossState.BossId.Value })));
+
+            events.AddRange(bossPassive.Triggers.Select(
+                trigger => BattleEvent.ForPassiveTriggered(
+                    trigger with { Source = PassiveEventSource.Boss, SourceId = bossState.BossId.Value })));
+        }
+
+        // ===================================================================
+        // Step 10: Boss Skill OR Boss Basic Attack — GAME_RULES.md §17 steps 18b–18c
+        // ===================================================================
+        // GAME_STATE.md §2.4.3 / BOSS_RULES.md §6.3: "Matches increment
+        // BossState.SkillCharge", so this action's Player Matches are added to the
+        // charge BEFORE eligibility is evaluated — the Swap that meets the
+        // requirement is the Swap the Skill fires on, exactly as the Passive's own
+        // batch is evaluated after its Matches are counted (PASSIVE_RULES.md §2
+        // item 3).
+        //
+        // The counter is independent of the Passive's progress (§2.4.3, TASK-022
+        // §3.7): this adds to it and neither resets the other.
+        bossState = bossState with
+        {
+            SkillCharge = bossState.SkillCharge + result.Resolution.TotalMatches,
+        };
+
+        // The two are mutually exclusive: §18b is taken when the Skill is eligible
+        // and §18c is the fallback whenever it is not, so exactly one Boss attack
+        // happens per action.
+        //
+        // The Skill is eligible on BOTH documented conditions
+        // (GAME_STATE.md §2.4.3, BOSS_RULES.md §6.3): SkillCharge has reached the
+        // requirement AND the cooldown has run out.
+        var skillFires = bossState.SkillCharge >= bossDefinition.SkillChargeRequirement
+            && bossState.SkillCooldown == 0;
+
+        // COMBAT_RULES.md §3.4: a Boss Skill's Step 1 base damage is "defined per
+        // Skill" — the SkillBaseDamage term — and a Boss Basic Attack's is Boss.ATK.
+        // Both pass Combo = 1 ("Boss attacks are not part of a Combo chain"), an
+        // empty BaseDamagePool (Bosses match no Gems, so no ATK-Gem pool exists for
+        // them), and the Boss's Element as the attacker.
+        //
+        // The defender side is the player's, per §3.4 ("Source = Boss, Target =
+        // Player"): the defending Element is the ACTIVE PET's (§3.4, §3.2 — "the
+        // defender is the Pet, not the Player", because a Player has no Element),
+        // and the defending DEF is the player's DEF (§3.2's "target DEF";
+        // COMBAT_RULES.md §1.1's MVP 25, GAME_STATE.md §2.2). PetState carries no
+        // DEF in this stage — GAME_STATE.md §2.3's field list has none, and the Pet
+        // stat/Tier/Star/Level stage that would own one is not implemented — so no
+        // Pet DEF value exists to read and none is invented here (AGENTS.md §7).
+        var bossAttack = skillFires
+            ? bossState.ATK + bossDefinition.SkillBaseDamage
+            : bossState.ATK;
+
+        if (skillFires)
+        {
+            // SIGNALR_PROTOCOL.md §3.2.18: the Skill is announced before its damage
+            // instance, which follows in the same batch with source="boss" and
+            // target="player" (item 3). Both identities are the Boss's own.
+            events.Add(BattleEvent.ForBossSkillCast(bossDefinition.SkillId, bossState.BossId.Value));
+        }
+
+        var bossDamage = DamagePipeline.Calculate(
+            new DamagePipeline.DamageInputs(
+                Attack: bossAttack,
+                BaseDamagePool: 0,
+                Combo: 1,
+                AttackerElement: bossState.Element,
+                DefenderElement: resolved.PetState.Element,
+                DefenderDefense: resolved.PlayerState.DEF,
+                DefenderHp: resolved.PlayerState.HP,
+                Source: DamageParty.Boss,
+                Target: DamageParty.Player),
+            ComboModifiers.Default,
+            ElementModifiers.Default);
+
+        // COMBAT_RULES.md §3.4 step 6 / GAME_STATE.md §5.1: "Final Damage applied to
+        // Player.HP". The write is explicit — the pipeline returned the post-damage
+        // HP and this boundary writes it onto PlayerState, in the same single
+        // write-back as every other value this action changed.
+        resolved = resolved with
+        {
+            PlayerState = resolved.PlayerState with { HP = bossDamage.TargetHp },
+        };
+
+        events.Add(BattleEvent.ForDamageCalculated(bossDamage.Calculation));
+        events.Add(BattleEvent.ForDamageDealt(bossDamage.DamageDealt));
+        events.Add(BattleEvent.ForDamageTaken(bossDamage.DamageTaken));
+
+        if (skillFires)
+        {
+            // BOSS_RULES.md §6.3 / GAME_STATE.md §2.4.3: "After the Skill fires:
+            // SkillCharge resets to 0, SkillCooldown resets to the Boss's cooldown
+            // value." The next committed Swap's post-SwapExecutor decrement performs
+            // the first cooldown tick, so a freshly-cast Skill blocks the following
+            // SkillCooldownTurns Turns.
+            //
+            // The reset discards this action's Matches along with the accumulated
+            // charge: the cast consumes them. It does not touch PassiveProgress —
+            // §2.4.3 makes the two independent counters, and TASK-022 §3.7 records
+            // that neither resets the other.
+            bossState = bossState with
+            {
+                SkillCharge = 0,
+                SkillCooldown = bossDefinition.SkillCooldownTurns,
+            };
+        }
+
+        // When the Skill did not fire, the charge simply carries what step 10 added
+        // above — the accumulating case BOSS_RULES.md §6.3 describes, where the Skill
+        // becomes eligible on a later Swap.
+
+        // ===================================================================
+        // Step 12: Outcome — GAME_RULES.md §1.4
+        // ===================================================================
+        // The Player HP terminal check runs after the Boss Response, because the
+        // Boss has just had its chance to reduce it. §1.4 ends the battle when
+        // either side reaches 0; the Boss was checked above, so what remains is the
+        // player.
+        //
+        // When BOTH sides are alive, NEITHER outcome event is emitted and the battle
+        // continues — the absence of an outcome is itself the documented statement
+        // that the action was not terminal.
+        if (resolved.PlayerState.HP <= 0)
+        {
+            events.Add(BattleEvent.ForBattleLost(bossState.HP, resolved.PlayerState.HP));
+        }
+
+        // ===================================================================
+        // Step 13: single final state write-back — GAME_STATE.md §5.1
+        // ===================================================================
+        return Commit(battleId, result, resolved with { BossState = bossState }, events);
+    }
+
+    /// <summary>
+    /// Performs the documented single post-resolution write-back
+    /// (<c>GAME_STATE.md</c> §5.1): stores the resolved authoritative state and
+    /// hands back the result carrying <b>that same</b> state and the assembled
+    /// event list.
+    ///
+    /// <b>It exists so the two terminal paths cannot drift.</b> <c>GAME_RULES.md</c>
+    /// §17's Boss-death path ends early and the surviving path runs to the end of
+    /// the method; both must still produce exactly one write-back, with the state
+    /// the caller receives being the state the registry holds. Routing both through
+    /// this one place makes that a single statement rather than a convention the
+    /// two paths have to repeat.
+    ///
+    /// It computes no gameplay value: it records the caller's finished state and
+    /// pairs it with the caller's finished event list
+    /// (<c>GAME_EVENTS.md</c> §3 item 6: an event is never a substitute for the
+    /// state write-back, and the write-back is never replaced by an event).
+    /// </summary>
+    /// <param name="battleId">The battle being recorded.</param>
+    /// <param name="result">The committed executor result whose events are extended.</param>
+    /// <param name="resolved">The finished post-resolution state.</param>
+    /// <param name="events">The ordered events of this resolution.</param>
+    private SwapExecutionResult Commit(
+        string battleId,
+        SwapExecutionResult result,
+        BattleState resolved,
+        List<BattleEvent> events)
+    {
         var committed = result
             .WithEvents(events)
             .WithState(resolved);

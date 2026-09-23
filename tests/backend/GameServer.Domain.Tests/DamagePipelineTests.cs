@@ -2,6 +2,7 @@ using GameServer.Domain.Battle;
 using GameServer.Domain.Bosses;
 using GameServer.Domain.Combat;
 using GameServer.Domain.Elements;
+using GameServer.Domain.Passives;
 using Xunit;
 
 namespace GameServer.Domain.Tests;
@@ -53,7 +54,13 @@ public class DamagePipelineTests
             element,
             maxHp: hp,
             atk: 100,
-            def: def) with { HP = hp };
+            def: def,
+            // GAME_STATE.md §2.4.1–§2.4.3: BossState carries the Passive identity and
+            // its progress too, and §2.4.3 the Skill counters. None of them is read
+            // by any §3 step, so the fixture supplies inert values — the same way it
+            // supplies an ATK no damage step reads.
+            passiveId: new PassiveId("fixture-boss-passive"),
+            passiveThreshold: 5) with { HP = hp };
 
     /// <summary>
     /// The documented inputs of the task's worked example, with only the
@@ -68,6 +75,13 @@ public class DamagePipelineTests
     /// that study §3.2 or the example pass <c>defense: 40</c> explicitly, and the
     /// <see cref="Boss"/> fixture's <c>def</c> is set to match so the state and
     /// the inputs never disagree.
+    ///
+    /// <b>It defaults to the Player→Boss direction.</b> Every scenario in this
+    /// suite except the §3.4 Boss-damage ones studies the player's damage instance
+    /// (<c>GAME_RULES.md</c> §17 steps 15–17), which is
+    /// <c>source = Player, target = Boss</c>. <paramref name="defenderHp"/> defaults
+    /// to the <see cref="Boss"/> fixture's 500 so the state and the input agree
+    /// there too.
     /// </summary>
     private static DamagePipeline.DamageInputs Inputs(
         int attack = 50,
@@ -75,14 +89,16 @@ public class DamagePipelineTests
         int combo = 3,
         Element? attacker = Element.Moc,
         Element? defender = Element.Tho,
-        int defense = 0) =>
-        new(attack, baseDamagePool, combo, attacker, defender, defense);
+        int defense = 0,
+        int defenderHp = 500,
+        DamageParty source = DamageParty.Player,
+        DamageParty target = DamageParty.Boss) =>
+        new(attack, baseDamagePool, combo, attacker, defender, defense, defenderHp, source, target);
 
     private static DamageResult Calculate(
         BossState boss,
         DamagePipeline.DamageInputs inputs) =>
         DamagePipeline.Calculate(
-            boss,
             inputs,
             ComboModifiers.Default,
             ElementModifiers.Default);
@@ -111,7 +127,7 @@ public class DamagePipelineTests
 
         Assert.Equal(0, result.Calculation.Base);
         Assert.Equal(0, result.Calculation.FinalDamage);
-        Assert.Equal(500, result.BossState.HP);
+        Assert.Equal(500, result.TargetHp);
     }
 
     [Fact]
@@ -454,7 +470,7 @@ public class DamagePipelineTests
             Inputs(combo: 3, attacker: Element.Moc, defender: Element.Moc, defense: 40));
 
         Assert.Equal(68, result.Calculation.FinalDamage);
-        Assert.Equal(432, result.BossState.HP);
+        Assert.Equal(432, result.TargetHp);
     }
 
     [Fact]
@@ -467,8 +483,8 @@ public class DamagePipelineTests
             Inputs(attack: 600, baseDamagePool: 0, combo: 1, attacker: Element.Moc, defender: Element.Moc));
 
         Assert.Equal(600, result.Calculation.FinalDamage);
-        Assert.Equal(0, result.BossState.HP);
-        Assert.True(result.BossState.HP >= 0);
+        Assert.Equal(0, result.TargetHp);
+        Assert.True(result.TargetHp >= 0);
     }
 
     [Fact]
@@ -479,28 +495,39 @@ public class DamagePipelineTests
             Boss(hp: 500, def: 0, element: Element.Moc),
             Inputs(attack: 500, baseDamagePool: 0, combo: 1, attacker: Element.Moc, defender: Element.Moc));
 
-        Assert.Equal(0, result.BossState.HP);
+        Assert.Equal(0, result.TargetHp);
     }
 
     [Fact]
     public void BossHp_ShouldCarryEveryOtherFieldAcrossUnchanged()
     {
-        // COMBAT_RULES.md §3 applies damage and nothing else. This stage transitions
-        // no Boss State, fires no Boss mechanic (BOSS_RULES.md §3–§5), and decides no
-        // Victory/Defeat (GAME_RULES.md §17 step 19) — so only HP may differ.
+        // COMBAT_RULES.md §3 applies damage and nothing else. The pipeline returns
+        // the post-damage HP and nothing else, so it cannot transition Boss State,
+        // fire a Boss mechanic (BOSS_RULES.md §3–§5), or decide Victory/Defeat
+        // (GAME_RULES.md §17 step 19): the caller writes the HP onto whatever record
+        // it owns and every other field is carried across untouched.
         var before = Boss(hp: 500, def: 40, element: Element.Moc);
 
         var result = Calculate(
             before,
             Inputs(combo: 3, attacker: Element.Moc, defender: Element.Moc, defense: 40));
 
-        Assert.Equal(before.BossId, result.BossState.BossId);
-        Assert.Equal(before.Element, result.BossState.Element);
-        Assert.Equal(before.MaxHP, result.BossState.MaxHP);
-        Assert.Equal(before.ATK, result.BossState.ATK);
-        Assert.Equal(before.DEF, result.BossState.DEF);
-        Assert.Equal(before.State, result.BossState.State);
-        Assert.Equal(432, result.BossState.HP);
+        // The result carries an HP only — the state the caller owns is unchanged
+        // except for the value the caller writes back.
+        Assert.Equal(432, result.TargetHp);
+
+        var writtenBack = before with { HP = result.TargetHp };
+
+        Assert.Equal(before.BossId, writtenBack.BossId);
+        Assert.Equal(before.Element, writtenBack.Element);
+        Assert.Equal(before.MaxHP, writtenBack.MaxHP);
+        Assert.Equal(before.ATK, writtenBack.ATK);
+        Assert.Equal(before.DEF, writtenBack.DEF);
+        Assert.Equal(before.State, writtenBack.State);
+        Assert.Equal(before.PassiveId, writtenBack.PassiveId);
+        Assert.Equal(before.PassiveProgress, writtenBack.PassiveProgress);
+        Assert.Equal(before.SkillCharge, writtenBack.SkillCharge);
+        Assert.Equal(before.SkillCooldown, writtenBack.SkillCooldown);
     }
 
     [Fact]
@@ -536,7 +563,7 @@ public class DamagePipelineTests
         var second = Calculate(boss, inputs);
 
         Assert.Equal(first.Calculation, second.Calculation);
-        Assert.Equal(first.BossState, second.BossState);
+        Assert.Equal(first.TargetHp, second.TargetHp);
         Assert.Equal(first.DamageDealt, second.DamageDealt);
         Assert.Equal(first.DamageTaken, second.DamageTaken);
     }
@@ -566,7 +593,7 @@ public class DamagePipelineTests
         Assert.Equal(1.00, result.Calculation.OtherModifiers);
         Assert.Equal(144d * (100d / 140d), result.Calculation.Defense, precision: 9);
         Assert.Equal(102, result.Calculation.FinalDamage);
-        Assert.Equal(398, result.BossState.HP);
+        Assert.Equal(398, result.TargetHp);
     }
 
     [Fact]
@@ -623,7 +650,7 @@ public class DamagePipelineTests
         Assert.Equal(result.DamageDealt.Target, result.DamageTaken.Target);
         Assert.Equal(result.DamageDealt.Amount, result.DamageTaken.Amount);
         Assert.Equal(result.Calculation.FinalDamage, result.DamageDealt.Amount);
-        Assert.Equal(before.HP - result.BossState.HP, result.DamageDealt.Amount);
+        Assert.Equal(before.HP - result.TargetHp, result.DamageDealt.Amount);
     }
 
     [Fact]
@@ -653,7 +680,7 @@ public class DamagePipelineTests
         Assert.Equal(0, result.Calculation.FinalDamage);
         Assert.Equal(0, result.DamageDealt.Amount);
         Assert.Equal(0, result.DamageTaken.Amount);
-        Assert.Equal(500, result.BossState.HP);
+        Assert.Equal(500, result.TargetHp);
     }
 
     // ---------------------------------------------------------------------
@@ -668,7 +695,6 @@ public class DamagePipelineTests
         var custom = new ElementModifiers(advantage: 2.00, neutral: 1.00, disadvantage: 0.50);
 
         var result = DamagePipeline.Calculate(
-            Boss(def: 0, element: Element.Tho),
             Inputs(attack: 50, baseDamagePool: 30, combo: 1, attacker: Element.Moc, defender: Element.Tho),
             ComboModifiers.Default,
             custom);
@@ -685,12 +711,233 @@ public class DamagePipelineTests
         var custom = new ComboModifiers(combo1: 100, combo2: 110, combo3: 200, combo4: 135, combo5Plus: 150);
 
         var result = DamagePipeline.Calculate(
-            Boss(def: 0, element: Element.Moc),
             Inputs(attack: 50, baseDamagePool: 30, combo: 3, attacker: Element.Moc, defender: Element.Moc),
             custom,
             ElementModifiers.Default);
 
         Assert.Equal(2.00, result.Calculation.ComboModifier);
         Assert.Equal(160, result.Calculation.FinalDamage);
+    }
+
+    // ---------------------------------------------------------------------
+    // Boss → Player direction (COMBAT_RULES.md §3.4)
+    //
+    // §3.4: "Boss basic attacks and Boss Skills both use the same Damage Pipeline
+    // (steps 1–6)". This is the SAME pipeline, not a second one — the only thing
+    // that differs is the direction the caller states and the values it supplies.
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// The Boss→Player instance's inputs, with the Boss's ATK as the attacker and
+    /// the player's DEF/Element on the defending side (<c>COMBAT_RULES.md</c> §3.4).
+    /// </summary>
+    private static DamagePipeline.DamageInputs BossAttackInputs(
+        int attack,
+        int baseDamagePool,
+        Element bossElement,
+        Element petElement,
+        int playerDefense,
+        int playerHp) =>
+        Inputs(
+            attack: attack,
+            baseDamagePool: baseDamagePool,
+            // §3.4 step 2: "Combo Modifier = 1 (Boss attacks are not part of a
+            // Combo chain)".
+            combo: 1,
+            attacker: bossElement,
+            defender: petElement,
+            defense: playerDefense,
+            defenderHp: playerHp,
+            source: DamageParty.Boss,
+            target: DamageParty.Player);
+
+    [Fact]
+    public void BossBasicAttack_BaseDamage_ShouldBeBossAtkWithNoPool()
+    {
+        // COMBAT_RULES.md §3.4: "Boss Basic Attack: Step 1 — Base Damage = Boss.ATK".
+        // Bosses match no Gems (BOSS_RULES.md §3 item 1), so there is no ATK-Gem pool
+        // for a Boss attack — 100 + 0 = 100.
+        var result = DamagePipeline.Calculate(
+            BossAttackInputs(
+                attack: 100, baseDamagePool: 0,
+                bossElement: Element.Hoa, petElement: Element.Hoa, playerDefense: 0, playerHp: 1000),
+            ComboModifiers.Default,
+            ElementModifiers.Default);
+
+        Assert.Equal(100, result.Calculation.Base);
+    }
+
+    [Fact]
+    public void BossSkill_BaseDamage_ShouldBeBossAtkPlusSkillBaseDamage()
+    {
+        // BOSS_RULES.md §6.3 / COMBAT_RULES.md §3 step 1: the Skill/Card base value is
+        // an ADDITIVE term — the Skill's Step 1 is "defined per Skill". Hỏa Long's
+        // Skill Base Dmg is 150 (§6.3) against ATK 100, so 250 — not 150, and not 100.
+        var boss = BossDefinitions.HoaLong;
+
+        var result = DamagePipeline.Calculate(
+            BossAttackInputs(
+                attack: boss.ATK + boss.SkillBaseDamage, baseDamagePool: 0,
+                bossElement: boss.Element, petElement: Element.Hoa, playerDefense: 0, playerHp: 1000),
+            ComboModifiers.Default,
+            ElementModifiers.Default);
+
+        Assert.Equal(150, boss.SkillBaseDamage);
+        Assert.Equal(250, result.Calculation.Base);
+    }
+
+    [Fact]
+    public void BossSkill_BaseDamage_ShouldDifferFromABasicAttackOfTheSameBoss()
+    {
+        // §3.4 defines the two instances separately: the Basic Attack's Step 1 is
+        // Boss.ATK and the Skill's adds the Skill's base value. Against an identical
+        // defending side the Skill must therefore deal strictly more.
+        var basic = DamagePipeline.Calculate(
+            BossAttackInputs(100, 0, Element.Hoa, Element.Hoa, playerDefense: 25, playerHp: 1000),
+            ComboModifiers.Default,
+            ElementModifiers.Default);
+
+        var skill = DamagePipeline.Calculate(
+            BossAttackInputs(100 + 150, 0, Element.Hoa, Element.Hoa, playerDefense: 25, playerHp: 1000),
+            ComboModifiers.Default,
+            ElementModifiers.Default);
+
+        Assert.Equal(100, basic.Calculation.Base);
+        Assert.Equal(250, skill.Calculation.Base);
+        Assert.True(skill.Calculation.FinalDamage > basic.Calculation.FinalDamage);
+    }
+
+    [Fact]
+    public void BossAttack_ComboModifier_ShouldBeTheOnePointZeroRow()
+    {
+        // COMBAT_RULES.md §3.4 step 2: "Combo Modifier = 1 (Boss attacks are not part
+        // of a Combo chain)". GAME_RULES.md §5's Combo 1 row is 1.00×, so a Boss
+        // attack is never scaled by the player's Combo — asserted by giving the
+        // instance the same Base at Combo 1 and at a Combo the player could have.
+        var atCombo1 = DamagePipeline.Calculate(
+            BossAttackInputs(100, 0, Element.Hoa, Element.Hoa, 0, 1000),
+            ComboModifiers.Default,
+            ElementModifiers.Default);
+
+        Assert.Equal(1.00, atCombo1.Calculation.ComboModifier);
+        Assert.Equal(100, atCombo1.Calculation.FinalDamage);
+    }
+
+    [Fact]
+    public void BossAttack_ShouldApplyTheDefendersDefenseMitigation()
+    {
+        // COMBAT_RULES.md §3.2/§3.4 step 5: "Defense Mitigation = Defender DEF", and
+        // for Boss→Player damage the defender is the player's side. 100 × 100/125 = 80
+        // exactly with DEF 25 (COMBAT_RULES.md §1.1's MVP player DEF).
+        var result = DamagePipeline.Calculate(
+            BossAttackInputs(100, 0, Element.Hoa, Element.Hoa, playerDefense: 25, playerHp: 1000),
+            ComboModifiers.Default,
+            ElementModifiers.Default);
+
+        Assert.Equal(80d, result.Calculation.Defense, precision: 9);
+        Assert.Equal(80, result.Calculation.FinalDamage);
+    }
+
+    [Fact]
+    public void BossAttack_ElementModifier_ShouldUseTheBossElementAgainstTheActivePet()
+    {
+        // COMBAT_RULES.md §3.4 step 3: "Element Modifier = Boss.Element vs. the
+        // Player's active Pet's Element (ELEMENT_RULES.md §2, §5 — the defender is the
+        // Pet, not the Player)". Hỏa → Kim is Advantage (ELEMENT_RULES.md §2's cycle
+        // Mộc → Thổ → Thủy → Hỏa → Kim → Mộc), so 100 × 1.50 = 150.
+        var advantage = DamagePipeline.Calculate(
+            BossAttackInputs(100, 0, Element.Hoa, Element.Kim, 0, 1000),
+            ComboModifiers.Default,
+            ElementModifiers.Default);
+
+        Assert.Equal(1.50, advantage.Calculation.ElementModifier);
+        Assert.Equal(150, advantage.Calculation.FinalDamage);
+
+        // The reverse pairing is Disadvantage: Kim is countered by Hỏa, so a Kim Boss
+        // against a Hỏa Pet is 100 × 0.75 = 75.
+        var disadvantage = DamagePipeline.Calculate(
+            BossAttackInputs(100, 0, Element.Kim, Element.Hoa, 0, 1000),
+            ComboModifiers.Default,
+            ElementModifiers.Default);
+
+        Assert.Equal(0.75, disadvantage.Calculation.ElementModifier);
+        Assert.Equal(75, disadvantage.Calculation.FinalDamage);
+    }
+
+    [Fact]
+    public void BossAttack_ShouldWriteThePlayersHp()
+    {
+        // COMBAT_RULES.md §3.4 step 6: "Final Damage applied to Player.HP". The
+        // pipeline returns the target's post-damage HP whichever direction it is, so
+        // 1000 − 80 = 920 with the player at full health and DEF 25.
+        var result = DamagePipeline.Calculate(
+            BossAttackInputs(100, 0, Element.Hoa, Element.Hoa, playerDefense: 25, playerHp: 1000),
+            ComboModifiers.Default,
+            ElementModifiers.Default);
+
+        Assert.Equal(80, result.Calculation.FinalDamage);
+        Assert.Equal(920, result.TargetHp);
+    }
+
+    [Fact]
+    public void BossAttack_ShouldClampThePlayersHpAtZeroOnOverkill()
+    {
+        // GAME_RULES.md §1.4 ends the battle at 0 HP, so overkill stops at 0 in this
+        // direction too — the clamp is the pipeline's, not the Boss direction's.
+        var result = DamagePipeline.Calculate(
+            BossAttackInputs(5000, 0, Element.Hoa, Element.Hoa, playerDefense: 0, playerHp: 50),
+            ComboModifiers.Default,
+            ElementModifiers.Default);
+
+        Assert.Equal(0, result.TargetHp);
+        Assert.True(result.TargetHp >= 0);
+    }
+
+    [Fact]
+    public void BossAttack_DamageEvents_ShouldReportBossToPlayer()
+    {
+        // SIGNALR_PROTOCOL.md §3.2.14 item 3 / COMBAT_RULES.md §3.4: the Boss→Player
+        // instance reports source="boss" and target="player" — the same two roles the
+        // Player→Boss instance uses, with the direction the caller stated. The
+        // pipeline reads no direction from a constant.
+        var result = DamagePipeline.Calculate(
+            BossAttackInputs(100, 0, Element.Hoa, Element.Hoa, playerDefense: 25, playerHp: 1000),
+            ComboModifiers.Default,
+            ElementModifiers.Default);
+
+        Assert.Equal(DamageParty.Boss, result.DamageDealt.Source);
+        Assert.Equal(DamageParty.Player, result.DamageDealt.Target);
+        Assert.Equal(result.DamageDealt.Source, result.DamageTaken.Source);
+        Assert.Equal(result.DamageDealt.Target, result.DamageTaken.Target);
+        Assert.Equal(result.Calculation.FinalDamage, result.DamageDealt.Amount);
+        Assert.Equal(80, result.DamageDealt.Amount);
+    }
+
+    [Fact]
+    public void BothDirections_ShouldUseTheSameSixSteps()
+    {
+        // COMBAT_RULES.md §3.4 makes the Boss's instance "the same Damage Pipeline
+        // (steps 1–6)". Symmetric inputs must therefore produce symmetric results:
+        // the same Base, Combo, Element, Defense and Final Damage come out whichever
+        // direction stated them — there is no second formula.
+        var playerToBoss = DamagePipeline.Calculate(
+            Inputs(
+                attack: 100, baseDamagePool: 0, combo: 1,
+                attacker: Element.Hoa, defender: Element.Kim, defense: 25, defenderHp: 1000,
+                source: DamageParty.Player, target: DamageParty.Boss),
+            ComboModifiers.Default,
+            ElementModifiers.Default);
+
+        var bossToPlayer = DamagePipeline.Calculate(
+            BossAttackInputs(100, 0, Element.Hoa, Element.Kim, playerDefense: 25, playerHp: 1000),
+            ComboModifiers.Default,
+            ElementModifiers.Default);
+
+        Assert.Equal(playerToBoss.Calculation, bossToPlayer.Calculation);
+        Assert.Equal(playerToBoss.TargetHp, bossToPlayer.TargetHp);
+
+        // Only the direction members differ.
+        Assert.Equal(DamageParty.Player, playerToBoss.DamageDealt.Source);
+        Assert.Equal(DamageParty.Boss, bossToPlayer.DamageDealt.Source);
     }
 }

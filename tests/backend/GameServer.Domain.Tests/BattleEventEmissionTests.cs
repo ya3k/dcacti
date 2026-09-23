@@ -954,6 +954,9 @@ public class BattleEventEmissionTests
 
         Assert.Equal(
             [
+                "BattleLost",
+                "BattleWon",
+                "BossSkillCast",
                 "CascadeDepth",
                 "Combo",
                 "DamageCalculated",
@@ -1005,8 +1008,12 @@ public class BattleEventEmissionTests
         }
 
         // The Passive payloads carry exactly the documented members — the identity the
-        // state already holds, the progress value, and the Threshold (GAME_EVENTS.md
-        // §2) — and no generated identifier beyond that identity.
+        // state already holds, the progress value, the Threshold, and the shared
+        // event's source/sourceId (GAME_EVENTS.md §2, SIGNALR_PROTOCOL.md §3.2.16)
+        // — and no generated identifier beyond those identities. SourceId is the
+        // owning entity's documented identity (PetState.PetId / BossState.BossId,
+        // §3.2.16 item 2), the same kind of member PassiveId is, so the `Id` filter
+        // above deliberately does not apply here; the time/guid/hash filter does.
         foreach (var type in new[] { typeof(PassiveChargedEvent), typeof(PassiveTriggeredEvent) })
         {
             var names = type
@@ -1015,7 +1022,47 @@ public class BattleEventEmissionTests
                 .OrderBy(n => n, StringComparer.Ordinal)
                 .ToArray();
 
-            Assert.Equal(["PassiveId", "Progress", "Threshold"], names);
+            Assert.Equal(["PassiveId", "Progress", "Source", "SourceId", "Threshold"], names);
+
+            Assert.DoesNotContain(names, n =>
+                n.Contains("Time", StringComparison.Ordinal)
+                || n.Contains("Guid", StringComparison.Ordinal)
+                || n.Contains("Hash", StringComparison.Ordinal));
+        }
+
+        // The Boss Response's payloads are here for the same reason the Damage
+        // payloads are: GAME_EVENTS.md §2 gives them documented identities and terminal
+        // values, and nothing generated. BossSkillCast's SourceId is the same
+        // documented BossId member the Passive events carry (SIGNALR_PROTOCOL.md
+        // §3.2.18), so it is asserted by name rather than through the `Id` filter.
+        foreach (var type in new[] { typeof(BossSkillCastEvent) })
+        {
+            var names = type
+                .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+                .Select(p => p.Name)
+                .OrderBy(n => n, StringComparer.Ordinal)
+                .ToArray();
+
+            Assert.Equal(["SkillId", "SourceId"], names);
+
+            Assert.DoesNotContain(names, n =>
+                n.Contains("Time", StringComparison.Ordinal)
+                || n.Contains("Guid", StringComparison.Ordinal)
+                || n.Contains("Hash", StringComparison.Ordinal));
+        }
+
+        foreach (var type in new[] { typeof(BattleWonEvent), typeof(BattleLostEvent) })
+        {
+            var names = type
+                .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+                .Select(p => p.Name)
+                .OrderBy(n => n, StringComparer.Ordinal)
+                .ToArray();
+
+            // SIGNALR_PROTOCOL.md §3.2.19: the two terminal HP values, and nothing
+            // else — the reward summary is deferred (item 3) and `outcome` is the
+            // wire constant of the event's own type rather than a stored member.
+            Assert.Equal(["FinalBossHp", "FinalPlayerHp"], names);
 
             Assert.DoesNotContain(names, n =>
                 n.Contains("Time", StringComparison.Ordinal)
@@ -1259,16 +1306,29 @@ public class BattleEventEmissionTests
         // the Passive stage adds the two names the same §16 list carries and
         // PASSIVE_RULES.md §7 defines: PassiveCharged and PassiveTriggered. The
         // Damage Pipeline (TASK-021) adds the three GAME_RULES.md §16 / GAME_EVENTS.md
-        // §2 Damage names — DamageCalculated, DamageDealt, DamageTaken. No
-        // undocumented name may be added (AGENTS.md §7). In particular no
-        // MatchCountChanged, SpecialGemActivated, SpecialGemCreated, TurnChanged,
-        // SequenceChanged, or BoardChanged exists, and the stages that own
-        // PowerChanged, RelicTriggered, CardCast, PetSkillCast, BossSkillCast, and
-        // BattleWon/BattleLost have not added theirs here.
+        // §2 Damage names — DamageCalculated, DamageDealt, DamageTaken. The Boss
+        // Response stage (TASK-022) adds the three BOSS_RULES.md §7 names —
+        // BossSkillCast, BattleWon, BattleLost. No undocumented name may be added
+        // (AGENTS.md §7). In particular no MatchCountChanged, SpecialGemActivated,
+        // SpecialGemCreated, TurnChanged, SequenceChanged, or BoardChanged exists,
+        // and the stages that own PowerChanged, RelicTriggered, CardCast, and
+        // PetSkillCast have not added theirs here.
+        //
+        // BOSS_RULES.md §7 is explicit about the three names the Boss stage did NOT
+        // add: Boss Passive triggers reuse the shared PassiveCharged/PassiveTriggered
+        // with source="boss" ("No Boss-specific passive event name is needed"), a Boss
+        // Basic Attack is reported by its damage instance, and Boss state changes are
+        // inferable from the event sequence. So BossPassiveCharged,
+        // BossPassiveTriggered, BossBasicAttack, and BossEnraged are all absent — and
+        // absent from this list by construction, which is what the assertions below
+        // state directly.
         var names = Enum.GetNames<BattleEventType>().OrderBy(n => n, StringComparer.Ordinal).ToArray();
 
         Assert.Equal(
             [
+                "BattleLost",
+                "BattleWon",
+                "BossSkillCast",
                 "CascadeCreated",
                 "ComboChanged",
                 "DamageCalculated",
@@ -1280,6 +1340,17 @@ public class BattleEventEmissionTests
                 "PassiveTriggered",
             ],
             names);
+
+        // The forbidden Boss-specific names are absent, stated explicitly rather than
+        // left to the set comparison above.
+        foreach (var forbidden in new[]
+                 {
+                     "BossPassiveCharged", "BossPassiveTriggered", "BossBasicAttack",
+                     "BossEnraged", "BossStateChanged",
+                 })
+        {
+            Assert.DoesNotContain(forbidden, names);
+        }
     }
 
     [Fact]

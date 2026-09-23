@@ -11,13 +11,27 @@ namespace GameServer.Domain.Match3;
 /// names <c>GAME_RULES.md</c> §16 lists and <c>GAME_EVENTS.md</c> §2 defines, and
 /// no member may be added for a name the documentation does not define
 /// (<c>AGENTS.md</c> §7). Events for later stages — <c>PowerChanged</c>,
-/// <c>RelicTriggered</c>, <c>BossSkillCast</c>, <c>BattleWon</c>/<c>BattleLost</c>
-/// — belong to their own owning tasks (<c>GAME_EVENTS.md</c> §3 item 7).
+/// <c>RelicTriggered</c> — belong to their own owning tasks
+/// (<c>GAME_EVENTS.md</c> §3 item 7).
 ///
-/// These eight are the events the board resolution, its Passive stage, and the
-/// Damage Pipeline produce. They are listed in the order <c>GAME_EVENTS.md</c> §1
-/// places them; the enumeration value is a stable identity and is not itself the
-/// ordering (ordering is owned by the assembled list, see <see cref="BattleEvent"/>).
+/// <b>It is deliberately twelve members, not fifteen.</b> The Boss Response stage
+/// adds <see cref="BossSkillCast"/>, <see cref="BattleWon"/>, and
+/// <see cref="BattleLost"/>, and <b>no</b> Boss-specific Passive or State event:
+/// <c>BOSS_RULES.md</c> §7 states that Boss Passive triggers "use the general
+/// Passive events (<c>PASSIVE_RULES.md</c> §7) with <c>source = "boss"</c>", that
+/// "no Boss-specific passive event name is needed", and that Boss state changes
+/// are inferable from the sequence <c>DamageDealt</c>, <c>DamageTaken</c>,
+/// <c>BossSkillCast</c>, and <c>PassiveTriggered</c>. There is therefore no
+/// <c>BossPassiveCharged</c>, <c>BossPassiveTriggered</c>, <c>BossBasicAttack</c>,
+/// or <c>BossEnraged</c>. A Boss Basic Attack is reported by its damage instance
+/// (<c>COMBAT_RULES.md</c> §3.4), and Enrage is state, not an event
+/// (<c>BOSS_RULES.md</c> §5 item 4).
+///
+/// These are the events the board resolution, its Passive stage, the Damage
+/// Pipeline, and the Boss Response produce. They are listed in the order
+/// <c>GAME_EVENTS.md</c> §1 places them; the enumeration value is a stable
+/// identity and is not itself the ordering (ordering is owned by the assembled
+/// list, see <see cref="BattleEvent"/>).
 ///
 /// <b>What is deliberately absent, and why.</b> A Special Gem activation is
 /// reported through <see cref="GemMatched"/> and the existing state push — no
@@ -121,11 +135,173 @@ public enum BattleEventType
     ///
     /// Its payload is source, target, and the Final Damage amount — the same
     /// members and the same instance as <see cref="DamageDealt"/>, reported from
-    /// the receiving side. It is <b>not</b> a second application of damage: Boss
-    /// HP is reduced once, by the pipeline, and these two reports describe that
-    /// one reduction (<c>GAME_EVENTS.md</c> §3 item 6).
+    /// the receiving side. It is <b>not</b> a second application of damage: the
+    /// target's HP is reduced once, by the pipeline, and these two reports
+    /// describe that one reduction (<c>GAME_EVENTS.md</c> §3 item 6).
     /// </summary>
     DamageTaken = 8,
+
+    /// <summary>
+    /// A Boss Skill resolved (<c>GAME_EVENTS.md</c> §2 <c>BossSkillCast</c>,
+    /// <c>BOSS_RULES.md</c> §4, §7; <c>SIGNALR_PROTOCOL.md</c> §3.2.18).
+    ///
+    /// Its payload is the Skill's identity and the Boss's identity. It is emitted
+    /// <b>only when the Skill actually fires</b> — when
+    /// <c>SkillCharge ≥ SkillChargeRequirement</c> and <c>SkillCooldown == 0</c>
+    /// (<c>GAME_STATE.md</c> §2.4.3, <c>BOSS_RULES.md</c> §6.3) — and it
+    /// <b>precedes</b> the damage instance the Skill produced, whose reports carry
+    /// <c>source = "boss"</c> and <c>target = "player"</c>
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.18 item 3). A Boss Basic Attack emits
+    /// <b>no</b> <c>BossSkillCast</c>: it is reported by its damage instance
+    /// alone, because no such event as <c>BossBasicAttack</c> exists
+    /// (<c>BOSS_RULES.md</c> §7).
+    /// </summary>
+    BossSkillCast = 9,
+
+    /// <summary>
+    /// The battle ended with the Boss defeated (<c>GAME_EVENTS.md</c> §2
+    /// <c>BattleWon</c>, <c>GAME_RULES.md</c> §1.4, <c>BOSS_RULES.md</c> §7;
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.19).
+    ///
+    /// Its payload is the terminal Boss HP and the terminal Player HP. It is
+    /// emitted at the Boss HP terminal check, <b>after</b> the Enrage evaluation
+    /// and <b>before</b> any Boss Response: a Boss reduced to 0 HP does not
+    /// trigger its Passive, cast its Skill, or make a Basic Attack, so this event
+    /// is the resolution's last
+    /// (<c>BOSS_RULES.md</c> §5 item 4).
+    ///
+    /// There is no separate <c>BossEnraged</c> event: Enrage is a state
+    /// transition and is inferred from the event sequence
+    /// (<c>BOSS_RULES.md</c> §5 item 4, §7).
+    /// </summary>
+    BattleWon = 10,
+
+    /// <summary>
+    /// The battle ended with the player defeated (<c>GAME_EVENTS.md</c> §2
+    /// <c>BattleLost</c>, <c>GAME_RULES.md</c> §1.4, <c>BOSS_RULES.md</c> §7;
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.19).
+    ///
+    /// Its payload is the terminal Boss HP and the terminal Player HP. It is
+    /// emitted at the post-response outcome check, after the Boss Response has
+    /// damaged the player, and is the resolution's last event. When both sides
+    /// survive, <b>neither</b> outcome event is emitted and the battle continues
+    /// (<c>GAME_RULES.md</c> §1.4).
+    /// </summary>
+    BattleLost = 11,
+}
+
+/// <summary>
+/// The <c>BossSkillCast</c> payload — the Boss Skill that resolved
+/// (<c>GAME_EVENTS.md</c> §2, <c>BOSS_RULES.md</c> §4, §7;
+/// <c>SIGNALR_PROTOCOL.md</c> §3.2.18).
+///
+/// <code>
+/// BossSkillCast: skillId, sourceId   (SIGNALR_PROTOCOL.md §3.2.18)
+/// </code>
+///
+/// <b>Both members are identities, and neither is re-derived.</b> <c>SkillId</c>
+/// is the value the Boss's definition carries (<c>BOSS_RULES.md</c> §6.4 — e.g.
+/// <c>"flame-burst"</c>), which the client uses to look up the Skill's visual and
+/// effect description; <c>SourceId</c> is the Boss's <c>BossState.BossId</c> —
+/// the display name (e.g. <c>"Hỏa Long"</c>), never a slug (<c>§6.4</c>,
+/// <c>SIGNALR_PROTOCOL.md</c> §3.2.18 item 2).
+///
+/// <b>It carries no effect detail.</b> §3.2.18 item 3 leaves the Skill's damage to
+/// the <c>DamageCalculated</c>/<c>DamageDealt</c>/<c>DamageTaken</c> events that
+/// follow it in the same batch, with <c>source = "boss"</c> and
+/// <c>target = "player"</c>. The Skill's non-damage effects are unimplemented
+/// (<c>BOSS_RULES.md</c> §4 item 4), so there is no effect summary member to
+/// populate.
+///
+/// <b>Domain value, not a wire type</b> (<c>GAME_EVENTS.md</c> §3 item 1): the
+/// transport layer owns serialization, exactly as for the other payloads here.
+/// </summary>
+/// <param name="SkillId">
+/// The Boss Skill's identity (<c>BOSS_RULES.md</c> §4, §6.4) — the definition's
+/// own <c>SkillId</c>, reported rather than recomputed.
+/// </param>
+/// <param name="SourceId">
+/// The Boss's identity (<c>BOSS_RULES.md</c> §6.4,
+/// <c>SIGNALR_PROTOCOL.md</c> §3.2.18 item 2) — the display-name
+/// <c>BossState.BossId</c>.
+/// </param>
+public readonly record struct BossSkillCastEvent(string SkillId, string SourceId)
+{
+    /// <summary>"BossSkillCast (Hỏa Long → flame-burst)" — for test diagnostics only.</summary>
+    public override string ToString() => $"BossSkillCast ({SourceId} -> {SkillId})";
+}
+
+/// <summary>
+/// The <c>BattleWon</c> payload — the battle ended with the Boss defeated
+/// (<c>GAME_EVENTS.md</c> §2, <c>GAME_RULES.md</c> §1.4, <c>BOSS_RULES.md</c> §7;
+/// <c>SIGNALR_PROTOCOL.md</c> §3.2.19).
+///
+/// <code>
+/// BattleWon: outcome, finalBossHp, finalPlayerHp   (SIGNALR_PROTOCOL.md §3.2.19)
+/// </code>
+///
+/// <b>The two HP values are the terminal ones.</b> <c>GAME_RULES.md</c> §1.4 ends
+/// the battle when either side reaches <c>0</c> HP, so this event is emitted at
+/// the Boss HP terminal check with the Boss at <c>0</c> and the player at
+/// whatever HP the action left. §3.2.19 item 2 makes them "the state values at
+/// the moment the battle ended, after all damage from the final action has been
+/// applied".
+///
+/// <b>The <c>outcome</c> member is not carried here.</b> §3.2.19 fixes it as the
+/// string <c>"victory"</c> for this event and <c>"defeat"</c> for
+/// <see cref="BattleLostEvent"/> — the same names <c>GAME_EVENTS.md</c> §2 item 9
+/// uses. Because it is a constant of the event's own type, the wire projection
+/// derives it from which event this is; storing it here would be a second
+/// spelling of the discriminator (<c>GAME_STATE.md</c> §0 item 5). The reward
+/// summary is deferred (§2 item 9) and is not a member.
+/// </summary>
+/// <param name="FinalBossHp">
+/// The Boss's HP at battle end (<c>GAME_STATE.md</c> §2.4) — <c>0</c> for a
+/// victory, since reaching <c>0</c> is what ended the battle.
+/// </param>
+/// <param name="FinalPlayerHp">
+/// The player's HP at battle end (<c>GAME_STATE.md</c> §2.2) — the post-action
+/// value, which is above <c>0</c> in a victory.
+/// </param>
+public readonly record struct BattleWonEvent(int FinalBossHp, int FinalPlayerHp)
+{
+    /// <summary>"BattleWon (boss 0, player 85)" — for test diagnostics only.</summary>
+    public override string ToString() => $"BattleWon (boss {FinalBossHp}, player {FinalPlayerHp})";
+}
+
+/// <summary>
+/// The <c>BattleLost</c> payload — the battle ended with the player defeated
+/// (<c>GAME_EVENTS.md</c> §2, <c>GAME_RULES.md</c> §1.4, <c>BOSS_RULES.md</c> §7;
+/// <c>SIGNALR_PROTOCOL.md</c> §3.2.19).
+///
+/// <code>
+/// BattleLost: outcome, finalBossHp, finalPlayerHp   (SIGNALR_PROTOCOL.md §3.2.19)
+/// </code>
+///
+/// <b>It is the same shape as <see cref="BattleWonEvent"/>, reported from the
+/// other terminal side.</b> §3.2.19 fixes both events' members identically and
+/// distinguishes them by <c>outcome</c>; here the player is at <c>0</c> and the
+/// Boss carries whatever HP the action left after the Boss Response.
+///
+/// <b>It is emitted only after the Boss Response.</b> <c>GAME_RULES.md</c> §1.4
+/// and <c>BOSS_RULES.md</c> §5 item 4 order the terminal checks as Boss first,
+/// then Player: a Boss killed by the player's damage ends the battle before it
+/// can respond, so this event cannot be produced on that path. When both sides
+/// survive, neither outcome event is emitted.
+/// </summary>
+/// <param name="FinalBossHp">
+/// The Boss's HP at battle end (<c>GAME_STATE.md</c> §2.4) — the post-action
+/// value, which is above <c>0</c> (a Boss at <c>0</c> would have ended the
+/// battle as a victory before it could respond).
+/// </param>
+/// <param name="FinalPlayerHp">
+/// The player's HP at battle end (<c>GAME_STATE.md</c> §2.2) — <c>0</c> for a
+/// defeat, since reaching <c>0</c> is what ended the battle.
+/// </param>
+public readonly record struct BattleLostEvent(int FinalBossHp, int FinalPlayerHp)
+{
+    /// <summary>"BattleLost (boss 120, player 0)" — for test diagnostics only.</summary>
+    public override string ToString() => $"BattleLost (boss {FinalBossHp}, player {FinalPlayerHp})";
 }
 
 /// <summary>
@@ -146,7 +322,10 @@ public enum BattleEventType
 /// ├── DamageCalculated   the DamageCalculated breakdown, when Type is
 /// │                      DamageCalculated          (GAME_EVENTS.md §2)
 /// ├── DamageDealt        the DamageDealt payload, when Type is DamageDealt
-/// └── DamageTaken        the DamageTaken payload, when Type is DamageTaken
+/// ├── DamageTaken        the DamageTaken payload, when Type is DamageTaken
+/// ├── BossSkillCast      the BossSkillCast payload, when Type is BossSkillCast
+/// ├── BattleWon          the BattleWon payload, when Type is BattleWon
+/// └── BattleLost         the BattleLost payload, when Type is BattleLost
 /// </code>
 ///
 /// <b>This is an output, never state.</b> Emitting, holding, or reading an event
@@ -192,7 +371,10 @@ public readonly record struct BattleEvent
         PassiveTriggeredEvent? passiveTriggered,
         DamageCalculation? damageCalculated,
         DamageDealtEvent? damageDealt,
-        DamageTakenEvent? damageTaken)
+        DamageTakenEvent? damageTaken,
+        BossSkillCastEvent? bossSkillCast,
+        BattleWonEvent? battleWon,
+        BattleLostEvent? battleLost)
     {
         Type = type;
         _match = match;
@@ -204,6 +386,9 @@ public readonly record struct BattleEvent
         _damageCalculated = damageCalculated;
         _damageDealt = damageDealt;
         _damageTaken = damageTaken;
+        _bossSkillCast = bossSkillCast;
+        _battleWon = battleWon;
+        _battleLost = battleLost;
     }
 
     private readonly MatchResolution? _match;
@@ -215,6 +400,9 @@ public readonly record struct BattleEvent
     private readonly DamageCalculation? _damageCalculated;
     private readonly DamageDealtEvent? _damageDealt;
     private readonly DamageTakenEvent? _damageTaken;
+    private readonly BossSkillCastEvent? _bossSkillCast;
+    private readonly BattleWonEvent? _battleWon;
+    private readonly BattleLostEvent? _battleLost;
 
     /// <summary>Which documented event this is.</summary>
     public BattleEventType Type { get; }
@@ -333,6 +521,42 @@ public readonly record struct BattleEvent
             + "Check Type before reading DamageTaken.");
 
     /// <summary>
+    /// The <c>BossSkillCast</c> payload — the Skill's identity and the Boss's
+    /// identity (<c>GAME_EVENTS.md</c> §2, <c>SIGNALR_PROTOCOL.md</c> §3.2.18).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// This event is not a <see cref="BattleEventType.BossSkillCast"/>.
+    /// </exception>
+    public BossSkillCastEvent BossSkillCast =>
+        _bossSkillCast ?? throw new InvalidOperationException(
+            $"A {Type} event carries no BossSkillCast payload (GAME_EVENTS.md §2). "
+            + "Check Type before reading BossSkillCast.");
+
+    /// <summary>
+    /// The <c>BattleWon</c> payload — the terminal Boss HP and Player HP
+    /// (<c>GAME_EVENTS.md</c> §2, <c>SIGNALR_PROTOCOL.md</c> §3.2.19).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// This event is not a <see cref="BattleEventType.BattleWon"/>.
+    /// </exception>
+    public BattleWonEvent BattleWon =>
+        _battleWon ?? throw new InvalidOperationException(
+            $"A {Type} event carries no BattleWon payload (GAME_EVENTS.md §2). "
+            + "Check Type before reading BattleWon.");
+
+    /// <summary>
+    /// The <c>BattleLost</c> payload — the terminal Boss HP and Player HP
+    /// (<c>GAME_EVENTS.md</c> §2, <c>SIGNALR_PROTOCOL.md</c> §3.2.19).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// This event is not a <see cref="BattleEventType.BattleLost"/>.
+    /// </exception>
+    public BattleLostEvent BattleLost =>
+        _battleLost ?? throw new InvalidOperationException(
+            $"A {Type} event carries no BattleLost payload (GAME_EVENTS.md §2). "
+            + "Check Type before reading BattleLost.");
+
+    /// <summary>
     /// A <c>MatchCreated</c> event for one detected Match.
     /// </summary>
     /// <param name="match">
@@ -340,7 +564,7 @@ public readonly record struct BattleEvent
     /// (<c>GAME_EVENTS.md</c> §1.1 item 2, <c>MATCH3_RULES.md</c> §3.2).
     /// </param>
     internal static BattleEvent ForMatch(MatchResolution match) =>
-        new(BattleEventType.MatchCreated, match, null, null, null, null, null, null, null, null);
+        new(BattleEventType.MatchCreated, match, null, null, null, null, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>CascadeCreated</c> event for one Cascade pass.
@@ -350,7 +574,7 @@ public readonly record struct BattleEvent
     /// 1 for the Swap's second pass (<c>MATCH3_RULES.md</c> §4.2 item 2).
     /// </param>
     internal static BattleEvent ForCascade(int cascadeDepth) =>
-        new(BattleEventType.CascadeCreated, null, cascadeDepth, null, null, null, null, null, null, null);
+        new(BattleEventType.CascadeCreated, null, cascadeDepth, null, null, null, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>ComboChanged</c> event carrying the Combo value the Match it follows
@@ -361,7 +585,7 @@ public readonly record struct BattleEvent
     /// <c>MATCH3_RULES.md</c> §6.6 item 2).
     /// </param>
     internal static BattleEvent ForCombo(int combo) =>
-        new(BattleEventType.ComboChanged, null, null, combo, null, null, null, null, null, null);
+        new(BattleEventType.ComboChanged, null, null, combo, null, null, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>GemMatched</c> event for one consumed Gem.
@@ -371,7 +595,7 @@ public readonly record struct BattleEvent
     /// §1.0 cell-index enumeration order of <c>GAME_EVENTS.md</c> §1.3.
     /// </param>
     internal static BattleEvent ForGem(GemMatchedEvent gem) =>
-        new(BattleEventType.GemMatched, null, null, null, gem, null, null, null, null, null);
+        new(BattleEventType.GemMatched, null, null, null, gem, null, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>PassiveCharged</c> event for one Match's charge
@@ -390,7 +614,7 @@ public readonly record struct BattleEvent
     /// increment produced, and the Threshold.
     /// </param>
     public static BattleEvent ForPassiveCharged(PassiveChargedEvent charged) =>
-        new(BattleEventType.PassiveCharged, null, null, null, null, charged, null, null, null, null);
+        new(BattleEventType.PassiveCharged, null, null, null, null, charged, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>PassiveTriggered</c> event for one threshold crossing
@@ -408,7 +632,7 @@ public readonly record struct BattleEvent
     /// </param>
     public static BattleEvent ForPassiveTriggered(
         PassiveTriggeredEvent triggered) =>
-        new(BattleEventType.PassiveTriggered, null, null, null, null, null, triggered, null, null, null);
+        new(BattleEventType.PassiveTriggered, null, null, null, null, null, triggered, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>DamageCalculated</c> event carrying the full pipeline breakdown
@@ -426,7 +650,7 @@ public readonly record struct BattleEvent
     /// Modifiers, Defense, Final Damage.
     /// </param>
     public static BattleEvent ForDamageCalculated(DamageCalculation calculation) =>
-        new(BattleEventType.DamageCalculated, null, null, null, null, null, null, calculation, null, null);
+        new(BattleEventType.DamageCalculated, null, null, null, null, null, null, calculation, null, null, null, null, null);
 
     /// <summary>
     /// A <c>DamageDealt</c> event for one damage instance
@@ -438,7 +662,7 @@ public readonly record struct BattleEvent
     /// The pipeline's own report — source, target, and the Final Damage amount.
     /// </param>
     public static BattleEvent ForDamageDealt(DamageDealtEvent dealt) =>
-        new(BattleEventType.DamageDealt, null, null, null, null, null, null, null, dealt, null);
+        new(BattleEventType.DamageDealt, null, null, null, null, null, null, null, dealt, null, null, null, null);
 
     /// <summary>
     /// A <c>DamageTaken</c> event for one damage instance
@@ -450,7 +674,82 @@ public readonly record struct BattleEvent
     /// The pipeline's own report — source, target, and the Final Damage amount.
     /// </param>
     public static BattleEvent ForDamageTaken(DamageTakenEvent taken) =>
-        new(BattleEventType.DamageTaken, null, null, null, null, null, null, null, null, taken);
+        new(BattleEventType.DamageTaken, null, null, null, null, null, null, null, null, taken, null, null, null);
+
+    /// <summary>
+    /// A <c>BossSkillCast</c> event for one Boss Skill that fired
+    /// (<c>GAME_EVENTS.md</c> §2, <c>BOSS_RULES.md</c> §4, §7,
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.18).
+    ///
+    /// Public for the same reason as the Damage factories: the Boss Response is the
+    /// Application-layer step that owns <c>GAME_RULES.md</c> §17 step 18b, and it
+    /// hands the assembled list back through
+    /// <see cref="SwapExecutionResult.WithEvents"/>. Both members are identities
+    /// carried unchanged from the Boss's configuration and state — neither is
+    /// derived here.
+    /// </summary>
+    /// <param name="skillId">
+    /// The Boss Skill's identity, from the Boss's definition
+    /// (<c>BOSS_RULES.md</c> §6.4).
+    /// </param>
+    /// <param name="sourceId">
+    /// The Boss's identity — the display-name <c>BossState.BossId</c>
+    /// (<c>BOSS_RULES.md</c> §6.4, <c>SIGNALR_PROTOCOL.md</c> §3.2.18 item 2).
+    /// </param>
+    public static BattleEvent ForBossSkillCast(string skillId, string sourceId) =>
+        new(
+            BattleEventType.BossSkillCast,
+            null, null, null, null, null, null, null, null, null,
+            new BossSkillCastEvent(skillId, sourceId),
+            null,
+            null);
+
+    /// <summary>
+    /// A <c>BattleWon</c> event for the Boss HP terminal check
+    /// (<c>GAME_EVENTS.md</c> §2, <c>GAME_RULES.md</c> §1.4,
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.19).
+    ///
+    /// Public for the same reason as the Damage factories: the outcome check is the
+    /// Application layer's, at the terminal step of the resolution. The two HP
+    /// values are the resolution's own terminal state, read and reported.
+    /// </summary>
+    /// <param name="finalBossHp">
+    /// The Boss's HP at battle end (<c>GAME_STATE.md</c> §2.4) — <c>0</c> on this
+    /// path.
+    /// </param>
+    /// <param name="finalPlayerHp">
+    /// The player's HP at battle end (<c>GAME_STATE.md</c> §2.2).
+    /// </param>
+    public static BattleEvent ForBattleWon(int finalBossHp, int finalPlayerHp) =>
+        new(
+            BattleEventType.BattleWon,
+            null, null, null, null, null, null, null, null, null, null,
+            new BattleWonEvent(finalBossHp, finalPlayerHp),
+            null);
+
+    /// <summary>
+    /// A <c>BattleLost</c> event for the post-response Player HP terminal check
+    /// (<c>GAME_EVENTS.md</c> §2, <c>GAME_RULES.md</c> §1.4,
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.19).
+    ///
+    /// Public for the same reason as <see cref="ForBattleWon"/>. It is emitted only
+    /// after the Boss Response has damaged the player
+    /// (<c>BOSS_RULES.md</c> §5 item 4's ordering), so the Boss HP it reports is the
+    /// post-response value.
+    /// </summary>
+    /// <param name="finalBossHp">
+    /// The Boss's HP at battle end (<c>GAME_STATE.md</c> §2.4) — above <c>0</c> on
+    /// this path.
+    /// </param>
+    /// <param name="finalPlayerHp">
+    /// The player's HP at battle end (<c>GAME_STATE.md</c> §2.2) — <c>0</c> on this
+    /// path.
+    /// </param>
+    public static BattleEvent ForBattleLost(int finalBossHp, int finalPlayerHp) =>
+        new(
+            BattleEventType.BattleLost,
+            null, null, null, null, null, null, null, null, null, null, null,
+            new BattleLostEvent(finalBossHp, finalPlayerHp));
 
     /// <summary>"MatchCreated (Horizontal x3 at 25 (Atk))" — for test diagnostics only.</summary>
     public override string ToString() => Type switch
@@ -465,6 +764,9 @@ public readonly record struct BattleEvent
             $"DamageCalculated (base {DamageCalculated.Base}, final {DamageCalculated.FinalDamage})",
         BattleEventType.DamageDealt => DamageDealt.ToString(),
         BattleEventType.DamageTaken => DamageTaken.ToString(),
+        BattleEventType.BossSkillCast => BossSkillCast.ToString(),
+        BattleEventType.BattleWon => BattleWon.ToString(),
+        BattleEventType.BattleLost => BattleLost.ToString(),
         _ => Type.ToString(),
     };
 }

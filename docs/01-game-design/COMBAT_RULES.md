@@ -1,7 +1,9 @@
 # Combat Rules
 
-**Version:** 1.1 (§3.2 Boss Damage — Boss basic attack and Skill use the
-same Damage Pipeline; Boss→Player damage events defined)
+**Version:** 1.2 (§3.2 Boss Damage — Element defender corrected to Player's
+active Pet; Boss Damage moved to §3.4 after Critical Hits to resolve the
+duplicate §3.2 heading — Defense Mitigation remains §3.2, Critical Hits
+remains §3.3)
 **Status:** MVP Domain Rule
 **Parent:** GAME_RULES.md
 
@@ -114,29 +116,6 @@ step 4 (multiple Relics/Buffs) apply in the deterministic trigger order defined
 in RELIC_RULES.md §4, but step 4 as a whole always resolves before step 5
 (Defense), and step 5 always resolves before Final Damage.
 
-## 3.2 Boss Damage
-
-Boss basic attacks and Boss Skills both use the same Damage Pipeline (steps 1–6):
-
-```text
-Boss Basic Attack:
-  Step 1 — Base Damage = Boss.ATK
-  Step 2 — Combo Modifier = 1 (Boss attacks are not part of a Combo chain)
-  Step 3 — Element Modifier = Boss.Element vs. Player Element (ELEMENT_RULES.md §2)
-  Step 4 — Other Modifiers = 1.0 (MVP: no Relic/Passive/Buff modifiers on Boss side)
-  Step 5 — Defense Mitigation = Player.DEF (COMBAT_RULES.md §3.3)
-  Step 6 — Final Damage applied to Player.HP
-
-Boss Skill:
-  Same pipeline as above, but Step 1 Base Damage is defined per Skill
-  (BOSS_RULES.md §6). Boss Skill damage may also include non-damage
-  effects (debuffs, resource drain) which are applied outside the pipeline.
-```
-
-The `DamageCalculated` event reports the full breakdown; `DamageDealt` and
-`DamageTaken` report the final amount with `source = "boss"` and
-`target = "player"`.
-
 ## 3.2 Defense Mitigation
 
 Formula:
@@ -148,6 +127,10 @@ Mitigated Damage = Pre-Defense Damage × ( K / (K + DEF) )
 where `K` is a tunable constant controlling how quickly DEF diminishes
 incoming damage. MVP default: `K = 100` (configuration).
 
+`DEF` is the **defending target's** Defense: `BossState.DEF` for
+Player→Boss damage, the active Pet's `DEF` for Boss→Player damage
+(`ELEMENT_RULES.md` §5).
+
 ## 3.3 Critical Hits
 
 1. Crit is evaluated once per damage instance, after Element Modifier and
@@ -157,6 +140,29 @@ incoming damage. MVP default: `K = 100` (configuration).
 3. Crit chance can be modified by Relics (e.g. "Assassin Eye": Combo ≥ 3 →
    increase Crit chance) and Pet Passives (e.g. Bạch Hổ: next attack gains
    increased Crit chance).
+
+## 3.4 Boss Damage
+
+Boss basic attacks and Boss Skills both use the same Damage Pipeline (steps 1–6):
+
+```text
+Boss Basic Attack:
+  Step 1 — Base Damage = Boss.ATK
+  Step 2 — Combo Modifier = 1 (Boss attacks are not part of a Combo chain)
+  Step 3 — Element Modifier = Boss.Element vs. the Player's active Pet's Element (ELEMENT_RULES.md §2, §5 — the defender is the Pet, not the Player)
+  Step 4 — Other Modifiers = 1.0 (MVP: no Relic/Passive/Buff modifiers on Boss side)
+  Step 5 — Defense Mitigation = Defender DEF (COMBAT_RULES.md §3.2)
+  Step 6 — Final Damage applied to Player.HP
+
+Boss Skill:
+  Same pipeline as above, but Step 1 Base Damage is defined per Skill
+  (BOSS_RULES.md §6). Boss Skill damage may also include non-damage
+  effects (debuffs, resource drain) which are applied outside the pipeline.
+```
+
+The `DamageCalculated` event reports the full breakdown; `DamageDealt` and
+`DamageTaken` report the final amount with `source = "boss"` and
+`target = "player"`.
 
 ---
 

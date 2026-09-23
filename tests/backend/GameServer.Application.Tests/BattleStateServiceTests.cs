@@ -539,16 +539,18 @@ public class BattleStateServiceTests
         // touches no store — the process-local registry is the same staged,
         // safe-to-lose boundary it already had.
         //
-        // The two dictionaries are the battle's state and the battle's Pet
-        // loadout input; neither is a REDIS_STATE.md store, and no third field
-        // (repository, cache, bus, logger) was introduced.
+        // The three dictionaries are the battle's state, the battle's Pet loadout
+        // input, and the battle's Boss definition (BOSS_RULES.md §6.2–§6.4's static
+        // content, which BossState deliberately does not duplicate); none is a
+        // REDIS_STATE.md store, and no fourth field (repository, cache, bus, logger)
+        // was introduced.
         var fields = typeof(BattleStateService)
             .GetFields(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
             .Select(f => f.Name)
             .ToArray();
 
         Assert.Equal(
-            ["_battles", "_petConfiguration", "_seedSource"],
+            ["_battles", "_bossConfiguration", "_petConfiguration", "_seedSource"],
             fields.OrderBy(n => n, StringComparer.Ordinal));
     }
 
@@ -594,8 +596,13 @@ public class BattleStateServiceTests
         var matches = result.Value.Resolution.TotalMatches;
         Assert.True(matches >= 1);
 
+        // GAME_EVENTS.md §2 / SIGNALR_PROTOCOL.md §3.2.16 item 1: the shared
+        // PassiveCharged event is emitted by BOTH Passive systems, discriminated by
+        // `source`. This stage is the Pet's, so the charges counted here are the
+        // `source="pet"` ones; the Boss Passive's are asserted separately.
         var charges = result.Value.Events
-            .Where(e => e.Type == BattleEventType.PassiveCharged)
+            .Where(e => e.Type == BattleEventType.PassiveCharged
+                && e.PassiveCharged.Source == PassiveEventSource.Pet)
             .ToArray();
 
         Assert.Equal(matches, charges.Length);
@@ -610,7 +617,8 @@ public class BattleStateServiceTests
         // the settled progress is — is decided by the documented comparison of the
         // batch total against the Threshold, not by the implementation.
         var triggers = result.Value.Events
-            .Where(e => e.Type == BattleEventType.PassiveTriggered)
+            .Where(e => e.Type == BattleEventType.PassiveTriggered
+                && e.PassiveTriggered.Source == PassiveEventSource.Pet)
             .ToArray();
 
         if (matches >= PetConfiguration.PassiveThreshold)
@@ -638,6 +646,7 @@ public class BattleStateServiceTests
     {
         // GAME_EVENTS.md §2 item 1: PassiveId identifies the Passive that charged —
         // the value PetState.PassiveId holds, read and reported, never re-derived.
+        // The Pet's own charges are the `source="pet"` ones.
         var service = new BattleStateService();
         var created = service.CreateBattle("battle-passive-identity", PetConfiguration, BossDefinition);
 
@@ -646,7 +655,8 @@ public class BattleStateServiceTests
 
         Assert.True(result!.Value.IsAccepted);
         Assert.All(
-            result.Value.Events.Where(e => e.Type == BattleEventType.PassiveCharged),
+            result.Value.Events.Where(e => e.Type == BattleEventType.PassiveCharged
+                && e.PassiveCharged.Source == PassiveEventSource.Pet),
             e => Assert.Equal(PetConfiguration.PassiveId, e.PassiveCharged.PassiveId));
     }
 
@@ -668,10 +678,11 @@ public class BattleStateServiceTests
 
         var events = result.Value.Events;
 
-        // GAME_EVENTS.md §1 places the three Damage events last on the resolution —
-        // after the Passive stage's reports and before TurnEnded. TASK-021 appends
-        // exactly those three, so the Passive run is the list up to the first
-        // DamageCalculated rather than to the end of the list.
+        // GAME_EVENTS.md §1 / §6 places the resolution's phases in the documented
+        // order: board resolution, Player Passive, Player→Boss damage, Boss Passive,
+        // Boss Response damage, outcome. This stage's assertion is on the Pet Passive
+        // run and the FIRST damage instance (the player's); the Boss Response that
+        // follows is asserted by the Boss Response tests.
         var firstDamage = events
             .Select((e, index) => (e.Type, index))
             .First(t => t.Type is BattleEventType.DamageCalculated
@@ -679,14 +690,9 @@ public class BattleStateServiceTests
                 or BattleEventType.DamageTaken)
             .index;
 
-        Assert.Equal(
-            [
-                BattleEventType.DamageCalculated,
-                BattleEventType.DamageDealt,
-                BattleEventType.DamageTaken,
-            ],
-            events.Skip(firstDamage).Select(e => e.Type));
-
+        // The Pet's Passive run precedes the player's damage instance, and the Boss's
+        // Passive events come after it (GAME_EVENTS.md §1, §6 step 6) — so the run
+        // between the board events and the first damage is exactly the Pet's.
         var firstPassive = events
             .Select((e, index) => (e.Type, index))
             .First(t => t.Type is BattleEventType.PassiveCharged or BattleEventType.PassiveTriggered)
@@ -701,7 +707,8 @@ public class BattleStateServiceTests
 
         // After it, the list is the tracker's own output in order — charges first
         // (one per Match, ascending), then at most one trigger — followed by the
-        // three Damage events.
+        // three Damage events. Both Passive systems emit into this window, so the
+        // Pet and Boss runs are separated by their documented `source` discriminators.
         var passiveRun = events.Skip(firstPassive).Take(firstDamage - firstPassive).ToArray();
         var (chargeRun, triggerRun) = SplitAtFirstTrigger(passiveRun);
 
@@ -711,6 +718,11 @@ public class BattleStateServiceTests
         Assert.Equal(
             Enumerable.Range(1, chargeRun.Length),
             chargeRun.Select(e => e.PassiveCharged.Progress));
+
+        // The run before the first damage instance is the PET's, because §6 step 6
+        // places the Boss Passive after the player's damage. Its charges all carry
+        // source="pet".
+        Assert.All(chargeRun, e => Assert.Equal(PassiveEventSource.Pet, e.PassiveCharged.Source));
     }
 
     [Fact]
@@ -762,9 +774,13 @@ public class BattleStateServiceTests
         var secondMatches = second.Value.Resolution.TotalMatches;
         var afterSecond = service.GetBattle("battle-passive-carry")!;
 
-        // The second Swap's charges continue from the carried progress.
+        // The second Swap's charges continue from the carried progress. Only the
+        // PET's charges are read here — the Boss Passive emits its own
+        // source="boss" charges into the same batch (GAME_EVENTS.md §2,
+        // SIGNALR_PROTOCOL.md §3.2.16 item 1).
         var charges = second.Value.Events
-            .Where(e => e.Type == BattleEventType.PassiveCharged)
+            .Where(e => e.Type == BattleEventType.PassiveCharged
+                && e.PassiveCharged.Source == PassiveEventSource.Pet)
             .Select(e => e.PassiveCharged.Progress)
             .ToArray();
 
@@ -776,7 +792,11 @@ public class BattleStateServiceTests
         // running total.
         if (firstMatches + secondMatches < PetConfiguration.PassiveThreshold)
         {
-            Assert.DoesNotContain(second.Value.Events, e => e.Type == BattleEventType.PassiveTriggered);
+            Assert.DoesNotContain(
+                second.Value.Events,
+                e => e.Type == BattleEventType.PassiveTriggered
+                    && e.PassiveTriggered.Source == PassiveEventSource.Pet);
+
             Assert.Equal(
                 firstMatches + secondMatches,
                 afterSecond.PetState.PassiveProgress.Current);
@@ -808,7 +828,8 @@ public class BattleStateServiceTests
         Assert.True(matches >= 1);
 
         var triggers = result.Value.Events
-            .Where(e => e.Type == BattleEventType.PassiveTriggered)
+            .Where(e => e.Type == BattleEventType.PassiveTriggered
+                && e.PassiveTriggered.Source == PassiveEventSource.Pet)
             .ToArray();
 
         // At most one trigger, whatever the Match count (the multi-crossing case).
@@ -845,7 +866,10 @@ public class BattleStateServiceTests
         Assert.True(result!.Value.IsAccepted);
 
         var matches = result.Value.Resolution.TotalMatches;
-        Assert.Single(result.Value.Events, e => e.Type == BattleEventType.PassiveTriggered);
+        Assert.Single(
+            result.Value.Events,
+            e => e.Type == BattleEventType.PassiveTriggered
+                && e.PassiveTriggered.Source == PassiveEventSource.Pet);
 
         // §4 item 2: "progress reduces by Threshold rather than to 0" — the worked
         // arithmetic is current − Threshold, which at Threshold 1 is matches − 1.
@@ -872,7 +896,10 @@ public class BattleStateServiceTests
         Assert.True(result!.Value.IsAccepted);
 
         var matches = result.Value.Resolution.TotalMatches;
-        Assert.Single(result.Value.Events, e => e.Type == BattleEventType.PassiveTriggered);
+        Assert.Single(
+            result.Value.Events,
+            e => e.Type == BattleEventType.PassiveTriggered
+                && e.PassiveTriggered.Source == PassiveEventSource.Pet);
 
         // §4 item 2: progress is left exactly as the trigger found it — the batch
         // total, which at Threshold 1 is the Match count. It therefore still
@@ -952,7 +979,8 @@ public class BattleStateServiceTests
             .Select(e => e.PassiveCharged.Progress)
             .Last();
 
-        var triggered = result.Value.Events.Any(e => e.Type == BattleEventType.PassiveTriggered);
+        var triggered = result.Value.Events.Any(e => e.Type == BattleEventType.PassiveTriggered
+            && e.PassiveTriggered.Source == PassiveEventSource.Pet);
 
         Assert.Equal(
             triggered ? 0 : lastCharge,
@@ -1009,10 +1037,11 @@ public class BattleStateServiceTests
     [Fact]
     public void ExecuteSwap_ShouldEmitTheThreeDamageEventsInTheDocumentedOrder()
     {
-        // GAME_EVENTS.md §1: DamageCalculated, DamageDealt, DamageTaken — after the
-        // Passive stage's reports and before TurnEnded (which this stage does not
-        // implement). Exactly one instance is produced per committed Swap
-        // (COMBAT_RULES.md §3, GAME_RULES.md §17).
+        // GAME_EVENTS.md §1: DamageCalculated, DamageDealt, DamageTaken — for each
+        // damage instance. GAME_RULES.md §17 / COMBAT_RULES.md §3.4 put TWO instances
+        // on one committed Swap now: the player's (steps 15–17) and the Boss's
+        // Response (step 18b/18c). Each instance emits its own three events in the
+        // documented order, and the player's precedes the Boss's.
         var service = new BattleStateService();
         var created = service.CreateBattle("battle-damage-events", PetConfiguration, BossDefinition);
 
@@ -1027,13 +1056,26 @@ public class BattleStateServiceTests
                 or BattleEventType.DamageTaken)
             .ToArray();
 
+        // Two instances of three events, in the documented per-instance order, with
+        // the player's instance first — the Boss Response runs only after the player's
+        // damage has been applied (BOSS_RULES.md §3.3 item 1).
         Assert.Equal(
             [
                 BattleEventType.DamageCalculated,
                 BattleEventType.DamageDealt,
                 BattleEventType.DamageTaken,
+                BattleEventType.DamageCalculated,
+                BattleEventType.DamageDealt,
+                BattleEventType.DamageTaken,
             ],
             damageEvents.Select(e => e.Type));
+
+        // The first instance is the player's and the second the Boss's, read from the
+        // source/target the events themselves carry (GAME_EVENTS.md §2).
+        Assert.Equal(DamageParty.Player, damageEvents[1].DamageDealt.Source);
+        Assert.Equal(DamageParty.Boss, damageEvents[1].DamageDealt.Target);
+        Assert.Equal(DamageParty.Boss, damageEvents[4].DamageDealt.Source);
+        Assert.Equal(DamageParty.Player, damageEvents[4].DamageDealt.Target);
     }
 
     [Fact]
@@ -1049,10 +1091,12 @@ public class BattleStateServiceTests
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
         var result = service.ExecuteSwap("battle-damage-breakdown", pair);
 
+        // The player's instance is the FIRST DamageCalculated — the Boss's Response
+        // instance follows it (GAME_RULES.md §17 steps 15–17 then 18b/18c).
         Assert.True(result!.Value.IsAccepted);
 
         var calculation = result.Value.Events
-            .Single(e => e.Type == BattleEventType.DamageCalculated)
+            .First(e => e.Type == BattleEventType.DamageCalculated)
             .DamageCalculated;
 
         var generation = result.Value.Resources;
@@ -1078,6 +1122,9 @@ public class BattleStateServiceTests
         // exactly the change the committed state shows — an event is never a
         // substitute for the write-back and never disagrees with it
         // (GAME_EVENTS.md §3 item 6, GAME_STATE.md §5.1).
+        //
+        // This is the PLAYER's instance: the first DamageDealt, whose source is the
+        // player (COMBAT_RULES.md §3). It must equal the Boss's HP loss.
         var service = new BattleStateService();
         var created = service.CreateBattle("battle-damage-agree", PetConfiguration, BossDefinition);
 
@@ -1086,8 +1133,11 @@ public class BattleStateServiceTests
 
         Assert.True(result!.Value.IsAccepted);
 
-        var dealt = result.Value.Events.Single(e => e.Type == BattleEventType.DamageDealt).DamageDealt;
-        var taken = result.Value.Events.Single(e => e.Type == BattleEventType.DamageTaken).DamageTaken;
+        var dealt = result.Value.Events.First(e => e.Type == BattleEventType.DamageDealt).DamageDealt;
+        var taken = result.Value.Events.First(e => e.Type == BattleEventType.DamageTaken).DamageTaken;
+
+        // The Boss's total HP loss across the action is the player's damage minus
+        // nothing — the Boss takes damage only from the player's instance.
         var applied = created.BossState.HP - result.Value.State.BossState.HP;
 
         Assert.Equal(DamageParty.Player, dealt.Source);
@@ -1142,12 +1192,14 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldCarryEveryOtherBossFieldAcrossUnchanged()
+    public void ExecuteSwap_ShouldCarryEveryUnrelatedBossFieldAcrossUnchanged()
     {
-        // COMBAT_RULES.md §3 applies damage and nothing else. No Boss State
-        // transition, Boss Passive, Boss Skill, or Victory/Defeat check exists in
-        // this stage (BOSS_RULES.md §3–§5, GAME_RULES.md §17 steps 18–19), so only HP
-        // may differ after a committed Swap.
+        // COMBAT_RULES.md §3 applies damage and nothing else; the Boss Response
+        // (BOSS_RULES.md §3–§5) additionally charges the Skill and may transition
+        // State on Enrage. What must NOT move is every field no step of this action
+        // owns: the Boss's identity, its Element, and its base stats are configuration
+        // set at battle creation (GAME_STATE.md §2.4, BOSS_RULES.md §6.1) and the
+        // resolution rewrites none of them.
         var service = new BattleStateService();
         var created = service.CreateBattle("battle-damage-bossfield", PetConfiguration, BossDefinition);
 
@@ -1163,7 +1215,43 @@ public class BattleStateServiceTests
         Assert.Equal(created.BossState.MaxHP, after.MaxHP);
         Assert.Equal(created.BossState.ATK, after.ATK);
         Assert.Equal(created.BossState.DEF, after.DEF);
-        Assert.Equal(created.BossState.State, after.State);
+        Assert.Equal(created.BossState.PassiveId, after.PassiveId);
+
+        // The HP fell by exactly the player's damage instance — the Boss takes damage
+        // from no other source in this action.
+        var playerDamage = result.Value.Events
+            .First(e => e.Type == BattleEventType.DamageDealt
+                && e.DamageDealt.Source == DamageParty.Player)
+            .DamageDealt.Amount;
+
+        Assert.Equal(created.BossState.HP - playerDamage, after.HP);
+
+        // And the Skill charge followed the documented rule (GAME_STATE.md §2.4.3 /
+        // BOSS_RULES.md §6.3), whichever branch this board's Match total lands on:
+        //
+        //   the Skill did not fire -> the charge accumulated this Swap's Matches
+        //   the Skill fired        -> the charge was reset to 0
+        //
+        // The branch is read from the events, not assumed, because the Match count
+        // depends on the generated board — and the rule is a rule for both cases.
+        var skillFired = result.Value.Events.Any(e => e.Type == BattleEventType.BossSkillCast);
+
+        var expectedSkillCharge = skillFired
+            ? 0
+            : created.BossState.SkillCharge + result.Value.Resolution.TotalMatches;
+
+        Assert.Equal(expectedSkillCharge, after.SkillCharge);
+
+        // A fired Skill must have met both documented conditions before it did
+        // (GAME_STATE.md §2.4.3).
+        if (skillFired)
+        {
+            Assert.True(
+                created.BossState.SkillCharge + result.Value.Resolution.TotalMatches
+                    >= BossDefinition.SkillChargeRequirement);
+
+            Assert.Equal(BossDefinition.SkillCooldownTurns, after.SkillCooldown);
+        }
     }
 
     [Fact]

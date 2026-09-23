@@ -1,8 +1,9 @@
 # Game State
 
-**Version:** 2.0 (Boss Response contract resolved — §2.4 BossState expanded
-with PassiveId, SkillCharge, SkillCooldown; Enrage/Stun clarification;
-boss skill timing defined per Boss)
+**Version:** 2.1 (§2.4.3 Turn-increment citation corrected to MATCH3_RULES
+§8.1 / §5.1 — was incorrectly GAME_RULES §17 step 17; prior 2.0: Boss
+Response contract — §2.4 BossState PassiveId/SkillCharge/SkillCooldown,
+Enrage/Stun clarification, per-Boss Skill timing)
 **Status:** Draft
 
 > This document answers: **"What state exists during a running battle?"**
@@ -967,7 +968,9 @@ per Boss in BOSS_RULES.md §6), the Skill is eligible to fire.
 
 `SkillCooldown` tracks turns remaining before the Skill can fire again.
 It starts at the Boss's cooldown value after each Skill use, decrements by 1
-at each Turn increment (GAME_RULES.md §17 step 17), and blocks Skill use
+at each Turn increment (`MATCH3_RULES.md` §8.1 — one committed Swap begins
+exactly one Turn; the stored Turn advances once in that resolution's single
+write-back, `GAME_STATE.md` §5.1), and blocks Skill use
 while `> 0`.
 
 The Skill fires when BOTH conditions are met:
