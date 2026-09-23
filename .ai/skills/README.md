@@ -92,36 +92,100 @@ Workflow ──selects──▶ Skill ──references──▶ Source-of-truth 
   **No skill is bound to a single agent or role.**
 - A skill contains no role language ("the backend agent must…"). It is
   written for whichever agent executes it.
-- Agents must not re-describe a skill's procedure; they reference the skill.
+- Agents must not re-d# 5. Skill Catalog and Master Registry
+
+Skills are organized into two tiers:
+1. **DCacti Architecture & Domain Skills** (`.ai/skills/<category>/`) — DCacti-specific procedures and technical boundaries.
+2. **Upstream Phaser Skills** (`.ai/skills/phaser/`) — Framework-level Phaser 4 API references.
+
+See [.ai/skills/SKILL_REGISTRY.md](file:///E:/dcacti/.ai/skills/SKILL_REGISTRY.md) for the master status classification of every skill (`ACTIVE`, `CONDITIONAL`, `DORMANT`, `NOT_REQUIRED`).
+
+| Skill | Path | Category | Capability |
+| --- | --- | --- | --- |
+| documentation-discovery | `discovery/documentation-discovery.md` | discovery | Find, read, and bound the authoritative documents for a task |
+| impact-analysis | `discovery/impact-analysis.md` | discovery | Trace a change along its real dependency chain |
+| gameplay-behavior-derivation | `gameplay/gameplay-behavior-derivation.md` | gameplay | Derive expected gameplay behavior (steps, state, events) from rule docs |
+| authority-determinism-audit | `gameplay/authority-determinism-audit.md` | gameplay | Audit state ownership, server authority, RNG, ordering |
+| react-phaser-boundary | `client/react-phaser-boundary/SKILL.md` | client | Coordinate React DOM UI and Phaser 4 Game Runtime boundaries |
+| phaser-architecture | `client/phaser-architecture/SKILL.md` | client | Scene lifecycle, GameRuntimePort, 1280x720 scaling & cleanup |
+| phaser-match3 | `client/phaser-match3/SKILL.md` | client | 8x8 Match-3 grid presentation, cell coordinates, gem visual lifecycle |
+| phaser-battle-presentation | `client/phaser-battle-presentation/SKILL.md` | client | BattleScene visual composition, view hierarchies, animation sequencing |
+| client-event-projection | `client/client-event-projection/SKILL.md` | client | Server event stream → client state projection → Phaser presentation |
+| client-state-authority | `client/client-state-authority/SKILL.md` | client | Server-authoritative enforcement; strictly prohibits client game logic |
+| api-contract-validation | `backend/api-contract-validation.md` | backend | Validate REST behavior against `API_CONTRACTS.md` |
+| persistence-analysis | `backend/persistence-analysis.md` | backend | Analyze Redis/PostgreSQL usage against storage docs |
+| realtime-protocol-validation | `realtime/realtime-protocol-validation.md` | realtime | Validate SignalR/event delivery, ordering, resync |
+| test-scenario-generation | `testing/test-scenario-generation.md` | testing | Derive doc-sourced test scenarios (incl. regression) |
+| scope-validation | `quality/scope-validation.md` | quality | Check MVP scope and task boundary |
+| documentation-consistency | `quality/documentation-consistency.md` | quality | Detect and classify docs↔docs and docs↔code discrepancies |
+| architecture-conformance | `quality/architecture-conformance.md` | quality | Check layering, module ownership, ADR consistency |
+| implementation-review | `quality/implementation-review.md` | quality | Perform a structured review and emit severity-rated findings |
 
 ---
 
-# 5. Skill Catalog and Workflow Mapping
+## 5.1 Skill Selection & Routing by Task Category
 
-Skills were derived **from the workflows**, not from a category list: each
-exists because at least two workflows (or one mandatory, load-bearing step)
-need the same capability.
+Task categories are aligned with `core/task-intake.md` §2 and `AGENTS.md` §6.
 
-| Skill | Path | Capability |
-| --- | --- | --- |
-| documentation-discovery | `discovery/documentation-discovery.md` | Find, read, and bound the authoritative documents for a task |
-| impact-analysis | `discovery/impact-analysis.md` | Trace a change along its real dependency chain |
-| gameplay-behavior-derivation | `gameplay/gameplay-behavior-derivation.md` | Derive expected gameplay behavior (steps, state, events) from the rule docs |
-| authority-determinism-audit | `gameplay/authority-determinism-audit.md` | Audit state ownership, server authority, RNG, ordering |
-| api-contract-validation | `backend/api-contract-validation.md` | Validate REST behavior against `API_CONTRACTS.md` |
-| persistence-analysis | `backend/persistence-analysis.md` | Analyze Redis/PostgreSQL usage against the storage docs |
-| realtime-protocol-validation | `realtime/realtime-protocol-validation.md` | Validate SignalR/event delivery, ordering, resync |
-| test-scenario-generation | `testing/test-scenario-generation.md` | Derive doc-sourced test scenarios (incl. regression) |
-| scope-validation | `quality/scope-validation.md` | Check MVP scope and task boundary |
-| documentation-consistency | `quality/documentation-consistency.md` | Detect and classify docs↔docs and docs↔code discrepancies |
-| architecture-conformance | `quality/architecture-conformance.md` | Check layering, module ownership, ADR consistency |
-| implementation-review | `quality/implementation-review.md` | Perform a structured review and emit severity-rated findings |
+```text
+GAMEPLAY               gameplay-behavior-derivation, authority-determinism-audit,
+                       test-scenario-generation
 
-## Workflow → Skill mapping
+FRONTEND / PHASER      client/react-phaser-boundary, client/phaser-architecture,
+(Scene / Lifecycle)    client/client-state-authority, phaser/scenes,
+                       phaser/game-setup-and-config
 
-Contract and gameplay skills are candidates selected by the task's domain
-(see the selection guide below); the mapping lists every workflow where a
-skill can legitimately be invoked. Depth still comes from `core/validation.md`.
+FRONTEND / MATCH-3     client/phaser-match3, client/client-state-authority,
+(Board & Gem UI)       phaser/scenes, phaser/input-keyboard-mouse-touch,
+                       phaser/tweens, (conditional: phaser/particles)
+
+FRONTEND / BATTLE      client/phaser-battle-presentation, client/client-event-projection,
+(Combat Presentation)  client/client-state-authority, phaser/scenes,
+                       phaser/tweens, phaser/animations,
+                       (conditional: phaser/cameras, phaser/particles)
+
+BACKEND                api-contract-validation, persistence-analysis,
+                       architecture-conformance, authority-determinism-audit
+
+REALTIME               realtime-protocol-validation, authority-determinism-audit,
+                       client/client-event-projection (for client realtime consumers)
+
+DATABASE               persistence-analysis, architecture-conformance
+
+TESTING                test-scenario-generation
+
+BUG FIX / REFACTOR     see workflow mapping below
+
+ARCHITECTURE CHANGE    architecture-conformance, impact-analysis
+
+DOCUMENTATION          documentation-consistency, documentation-discovery
+
+(all categories)       documentation-discovery first; scope-validation if new
+                       system/content
+```
+
+---
+
+## 5.2 Skill Count Budget & Limits
+
+To prevent cognitive overload and maintain concise task manifests, GenTask must enforce skill budgets:
+
+```text
+Simple Task (isolated UI / tween tweak / minor fix):
+  Budget: 2–4 skills (e.g. phaser/tweens, client/phaser-match3)
+
+Normal Task (standard feature / view component / event projection):
+  Budget: 3–5 skills (e.g. client/phaser-match3, phaser/scenes, phaser/input-keyboard-mouse-touch, client/client-state-authority)
+
+Complex Task (multi-view battle scene / full event playback):
+  Budget: 5–7 skills (e.g. client/phaser-battle-presentation, client/client-event-projection, client/client-state-authority, phaser/scenes, phaser/tweens, phaser/animations)
+```
+
+**Hard Rule:** If a single task appears to require **more than 7 skills**, GenTask must **NOT** dump all skills into the task. Instead, GenTask must **decompose the task** into independent sub-tasks (e.g. backend event emission → client event projection → Phaser presentation).
+
+---
+
+## 5.3 Workflow → Skill Mapping
 
 ```text
 core/task-intake.md            scope-validation (when the task adds any system/content)
@@ -129,25 +193,29 @@ core/context-discovery.md      documentation-discovery, documentation-consistenc
 core/planning.md               impact-analysis, scope-validation
 core/implementation.md         authority-determinism-audit (§4), architecture-conformance,
                                gameplay-behavior-derivation, scope-validation (§2 boundary),
-                               documentation-discovery (if the domain changes, §3)
+                               client/client-state-authority, documentation-discovery
 core/validation.md             architecture-conformance (the "architecture validation"
                                layer); depth selection itself uses no skill
 core/completion.md             (none — reporting only)
 
 development/feature.md         scope-validation, documentation-discovery, impact-analysis,
                                gameplay-behavior-derivation, authority-determinism-audit,
+                               client/react-phaser-boundary, client/phaser-architecture,
+                               client/phaser-match3, client/phaser-battle-presentation,
+                               client/client-event-projection, client/client-state-authority,
                                api-contract-validation, persistence-analysis,
                                realtime-protocol-validation, test-scenario-generation
-                               (contract/gameplay skills as the feature category requires)
+                               (selected per category skill budget)
 development/bug-fix.md         documentation-discovery, gameplay-behavior-derivation,
                                documentation-consistency, test-scenario-generation,
-                               authority-determinism-audit, api-contract-validation,
-                               realtime-protocol-validation, persistence-analysis
-                               (as the bug's domain requires)
+                               authority-determinism-audit, client/client-state-authority,
+                               api-contract-validation, realtime-protocol-validation,
+                               persistence-analysis (as the bug's domain requires)
 development/refactor.md        impact-analysis (must-not-change inventory),
                                gameplay-behavior-derivation, test-scenario-generation,
+                               client/react-phaser-boundary, client/phaser-architecture,
                                api-contract-validation, realtime-protocol-validation,
-                               persistence-analysis (whichever contracts §2 lists apply)
+                               persistence-analysis
 development/gameplay-change.md scope-validation, documentation-discovery,
                                gameplay-behavior-derivation, impact-analysis,
                                documentation-consistency, authority-determinism-audit,
@@ -155,7 +223,8 @@ development/gameplay-change.md scope-validation, documentation-discovery,
 
 architecture/architecture-change.md  documentation-discovery, architecture-conformance,
                                      impact-analysis, scope-validation,
-                                     persistence-analysis (persistence-strategy changes)
+                                     client/react-phaser-boundary,
+                                     persistence-analysis
 architecture/adr-change.md           architecture-conformance, documentation-consistency
 documentation/documentation-change.md  documentation-discovery (canonical owner),
                                        impact-analysis (documentation mode),
@@ -163,39 +232,9 @@ documentation/documentation-change.md  documentation-discovery (canonical owner)
 
 quality/testing.md             test-scenario-generation, gameplay-behavior-derivation,
                                api-contract-validation, realtime-protocol-validation,
-                               persistence-analysis (expected behavior for API /
-                               realtime / persistence tests)
-quality/review.md              implementation-review — which invokes, per checklist item:
-                               gameplay-behavior-derivation, authority-determinism-audit,
-                               api-contract-validation, realtime-protocol-validation,
-                               persistence-analysis, architecture-conformance,
-                               scope-validation, documentation-consistency,
-                               test-scenario-generation
-```
-
-## Selection guide by task category
-
-Task categories are the ones in `core/task-intake.md` §2. Depth still comes
-from `core/validation.md` — this table only says which skills are *candidates*.
-
-```text
-GAMEPLAY               gameplay-behavior-derivation, authority-determinism-audit,
-                       test-scenario-generation
-BACKEND                api-contract-validation, persistence-analysis,
-                       architecture-conformance, authority-determinism-audit
-REALTIME               realtime-protocol-validation, authority-determinism-audit
-DATABASE               persistence-analysis
-FRONTEND               authority-determinism-audit (client must not own state),
-                       realtime-protocol-validation (client side of the protocol)
-TESTING                test-scenario-generation
-BUG FIX / REFACTOR     see workflow mapping above
-ARCHITECTURE CHANGE    architecture-conformance, impact-analysis
-DOCUMENTATION          documentation-consistency, documentation-discovery
-GAME DESIGN /
-TECHNICAL DESIGN       documentation-discovery, documentation-consistency,
-                       impact-analysis, scope-validation
-(all categories)       documentation-discovery first; scope-validation if new
-                       system/content
+                               persistence-analysis
+quality/review.md              implementation-review — which invokes relevant domain
+                               and architecture skills from §5.1
 ```
 
 ---

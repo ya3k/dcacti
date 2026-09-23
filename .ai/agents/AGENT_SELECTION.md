@@ -13,7 +13,7 @@
 | --- | --- | --- | --- | --- |
 | Gameplay feature | Gameplay | Backend, Testing, Review | gameplay-behavior-derivation, authority-determinism-audit, test-scenario-generation | development/feature.md |
 | Backend feature | Backend | Testing, Review | api-contract-validation, architecture-conformance, persistence-analysis | development/feature.md |
-| Frontend feature | Client | Testing, Review | authority-determinism-audit, realtime-protocol-validation | development/feature.md |
+| Frontend feature | Client | Testing, Review | client/react-phaser-boundary, client/phaser-architecture, client/phaser-match3, client/phaser-battle-presentation, client/client-event-projection, client/client-state-authority, phaser/scenes, phaser/tweens (per skill budget) | development/feature.md |
 | Match-3 change | Gameplay | Backend, Testing, Review | gameplay-behavior-derivation, authority-determinism-audit, test-scenario-generation | development/gameplay-change.md |
 | Combat change | Gameplay | Backend, Testing, Review | gameplay-behavior-derivation, authority-determinism-audit, test-scenario-generation | development/gameplay-change.md |
 | Card change | Gameplay | Backend, Testing, Review | gameplay-behavior-derivation, authority-determinism-audit, test-scenario-generation | development/gameplay-change.md |

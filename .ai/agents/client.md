@@ -116,12 +116,24 @@ docs/AGENTS.md                          global contract
 ## Allowed Skills
 
 ```text
-authority-determinism-audit      (gameplay/authority-determinism-audit.md)
-  — used to verify the client does not own authoritative state
-realtime-protocol-validation     (realtime/realtime-protocol-validation.md)
-  — used for client-side protocol consumption correctness
-documentation-discovery          (discovery/documentation-discovery.md)
-scope-validation                 (quality/scope-validation.md)
+DCacti Custom Client Skills:
+- client/react-phaser-boundary      (client/react-phaser-boundary/SKILL.md)
+- client/phaser-architecture        (client/phaser-architecture/SKILL.md)
+- client/phaser-match3              (client/phaser-match3/SKILL.md)
+- client/phaser-battle-presentation (client/phaser-battle-presentation/SKILL.md)
+- client/client-event-projection    (client/client-event-projection/SKILL.md)
+- client/client-state-authority     (client/client-state-authority/SKILL.md)
+
+Upstream Phaser Skills:
+- phaser/scenes, phaser/sprites-and-images, phaser/input-keyboard-mouse-touch,
+  phaser/tweens, phaser/animations, phaser/loading-assets, phaser/events-system,
+  phaser/game-setup-and-config, phaser/cameras, phaser/particles, phaser/graphics-and-shapes
+
+Core & Verification Skills:
+- authority-determinism-audit       (gameplay/authority-determinism-audit.md)
+- realtime-protocol-validation      (realtime/realtime-protocol-validation.md)
+- documentation-discovery           (discovery/documentation-discovery.md)
+- scope-validation                  (quality/scope-validation.md)
 ```
 
 ---
