@@ -57,7 +57,7 @@ public class BossResponseTests
         var service = new BattleStateService(new FixedRngSeedSource());
         var created = service.CreateBattle("boss-passive-charge", Pet, BossDefinitions.HoaLong);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-passive-charge", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -95,7 +95,7 @@ public class BossResponseTests
         var service = new BattleStateService(new FixedRngSeedSource());
         var created = service.CreateBattle("boss-passive-identity", Pet, BossDefinitions.HoaLong);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-passive-identity", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -132,7 +132,7 @@ public class BossResponseTests
         var service = new BattleStateService(new FixedRngSeedSource());
         var created = service.CreateBattle("boss-passive-thuyma", Pet, BossDefinitions.ThuyMa);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-passive-thuyma", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -176,7 +176,7 @@ public class BossResponseTests
 
         var created = service.CreateBattle("boss-passive-trigger", Pet, boss);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-passive-trigger", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -211,7 +211,7 @@ public class BossResponseTests
 
         var created = service.CreateBattle("boss-passive-no-effect", Pet, boss);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-passive-no-effect", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -254,7 +254,7 @@ public class BossResponseTests
 
         Assert.Equal(0, created.BossState.SkillCooldown);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-skill-fires", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -278,7 +278,7 @@ public class BossResponseTests
 
         var created = service.CreateBattle("boss-skill-reset", Pet, boss);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-skill-reset", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -301,7 +301,7 @@ public class BossResponseTests
 
         var created = service.CreateBattle("boss-skill-damage", Pet, boss);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-skill-damage", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -349,11 +349,7 @@ public class BossResponseTests
 
         // MATCH3_RULES.md §2.1.4: the pair just committed is recorded as already
         // applied, so the next Swap must be a different one.
-        var pair = FindMatchProducingPair(
-            afterCast.BoardState,
-            exclude: afterCast.LastCommittedSwapPair is { } committed
-                ? new SwapRequest(committed.MinCellIndex, committed.MaxCellIndex)
-                : null);
+        var pair = FindMatchProducingPair(afterCast);
 
         var result = service.ExecuteSwap(battleId, pair);
 
@@ -381,7 +377,7 @@ public class BossResponseTests
 
         var created = service.CreateBattle("boss-skill-charge-short", Pet, boss);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-skill-charge-short", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -410,7 +406,7 @@ public class BossResponseTests
 
         var created = service.CreateBattle("boss-skill-charge-rate", Pet, boss);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-skill-charge-rate", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -434,7 +430,7 @@ public class BossResponseTests
 
         var created = service.CreateBattle("boss-skill-independent", Pet, boss);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-skill-independent", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -464,7 +460,7 @@ public class BossResponseTests
 
         var created = service.CreateBattle("boss-passive-independent", Pet, boss);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-passive-independent", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -498,7 +494,7 @@ public class BossResponseTests
 
         var created = service.CreateBattle("boss-basic-damage", Pet, boss);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-basic-damage", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -525,7 +521,7 @@ public class BossResponseTests
 
         var created = service.CreateBattle("boss-basic-defender", Pet, boss);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-basic-defender", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -559,7 +555,7 @@ public class BossResponseTests
 
         var created = service.CreateBattle("boss-basic-playerhp", Pet, boss);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-basic-playerhp", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -588,7 +584,7 @@ public class BossResponseTests
             var battleId = $"boss-mutual-{chargeRequirement}";
 
             var created = service.CreateBattle(battleId, Pet, boss);
-            var pair = FindMatchProducingPair(created.BoardState);
+            var pair = FindMatchProducingPair(created);
             var result = service.ExecuteSwap(battleId, pair);
 
             Assert.True(result!.Value.IsAccepted);
@@ -634,7 +630,7 @@ public class BossResponseTests
         var boss = BossDefinitions.HoaLong with { SkillChargeRequirement = 1 };
 
         var created = service.CreateBattle("boss-response-order", Pet, boss);
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-response-order", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -693,7 +689,7 @@ public class BossResponseTests
         var service = new BattleStateService(new FixedRngSeedSource());
         var created = service.CreateBattle("boss-turn-once", Pet, BossDefinitions.HoaLong);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-turn-once", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -714,12 +710,12 @@ public class BossResponseTests
         var service = new BattleStateService(new FixedRngSeedSource());
         var created = service.CreateBattle("boss-turn-twice", Pet, BossDefinitions.HoaLong);
 
-        var firstPair = FindMatchProducingPair(created.BoardState);
+        var firstPair = FindMatchProducingPair(created);
         var first = service.ExecuteSwap("boss-turn-twice", firstPair);
         Assert.True(first!.Value.IsAccepted);
 
         var afterFirst = service.GetBattle("boss-turn-twice")!;
-        var secondPair = FindMatchProducingPair(afterFirst.BoardState, exclude: firstPair);
+        var secondPair = FindMatchProducingPair(afterFirst);
         var second = service.ExecuteSwap("boss-turn-twice", secondPair);
         Assert.True(second!.Value.IsAccepted);
 
@@ -764,7 +760,7 @@ public class BossResponseTests
         var (battleId, _) = BattleWithACoolingBoss(service, "boss-cooldown-decrement");
 
         var before = service.GetBattle(battleId)!;
-        var pair = FindMatchProducingPair(before.BoardState);
+        var pair = FindMatchProducingPair(before);
         var result = service.ExecuteSwap(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -791,7 +787,7 @@ public class BossResponseTests
         var battleId = "boss-cooldown-lifecycle";
 
         var created = service.CreateBattle(battleId, Pet, boss);
-        var previousPair = FindMatchProducingPair(created.BoardState);
+        var previousPair = FindMatchProducingPair(created);
         var first = service.ExecuteSwap(battleId, previousPair);
 
         Assert.True(first!.Value.IsAccepted);
@@ -805,7 +801,7 @@ public class BossResponseTests
 
             Assert.Equal(boss.SkillCooldownTurns - (blocked - 1), current.BossState.SkillCooldown);
 
-            var nextPair = FindMatchProducingPair(current.BoardState, exclude: previousPair);
+            var nextPair = FindMatchProducingPair(current);
             var result = service.ExecuteSwap(battleId, nextPair);
 
             Assert.True(result!.Value.IsAccepted);
@@ -826,7 +822,7 @@ public class BossResponseTests
         var eligibleState = service.GetBattle(battleId)!;
         Assert.Equal(1, eligibleState.BossState.SkillCooldown);
 
-        var finalPair = FindMatchProducingPair(eligibleState.BoardState, exclude: previousPair);
+        var finalPair = FindMatchProducingPair(eligibleState);
         var recast = service.ExecuteSwap(battleId, finalPair);
 
         Assert.True(recast!.Value.IsAccepted);
@@ -850,7 +846,7 @@ public class BossResponseTests
 
         Assert.Equal(0, created.BossState.SkillCooldown);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap("boss-cooldown-floor", pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -878,7 +874,7 @@ public class BossResponseTests
     // =======================================================================
 
     /// <summary>
-    /// Runs committed Swaps until the battle's Boss carries a Skill cooldown, and
+    /// Commits one Swap on a fresh battle whose Boss casts its Skill immediately, and
     /// returns the battle id. The cooldown is reached through the real path — a Skill
     /// that fires and sets <c>SkillCooldownTurns</c> (<c>BOSS_RULES.md</c> §6.3) — so
     /// no test-only state write is introduced and the scenario starts from a state the
@@ -891,7 +887,7 @@ public class BossResponseTests
         var boss = BossDefinitions.HoaLong with { SkillChargeRequirement = 1 };
 
         var created = service.CreateBattle(battleId, Pet, boss);
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = FindMatchProducingPair(created);
         var result = service.ExecuteSwap(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -901,20 +897,63 @@ public class BossResponseTests
         return (battleId, boss);
     }
 
-    private static SwapRequest FindMatchProducingPair(
-        BoardState board,
-        SwapRequest? exclude = null)
+    /// <summary>
+    /// A match-producing adjacent pair that is legal on the battle's current board and
+    /// is not the pair already recorded as committed (<c>MATCH3_RULES.md</c> §2.1.4).
+    ///
+    /// It reads the committed pair from the authoritative state rather than taking a
+    /// caller-supplied exclusion, so a scenario cannot accidentally hand the executor
+    /// a replay and mistake the staleness rejection for a board problem.
+    /// </summary>
+    private static SwapRequest NextMatchProducingPair(BattleState state)
     {
+        var committed = state.LastCommittedSwapPair;
+
         foreach (var (from, to) in AllAdjacentPairs())
         {
-            if (exclude is { } excluded
+            if (committed is { } pair
                 && CommittedSwapPair.FromCells(from, to)
-                    == CommittedSwapPair.FromCells(excluded.From, excluded.To))
+                    == CommittedSwapPair.FromCells(pair.MinCellIndex, pair.MaxCellIndex))
             {
                 continue;
             }
 
-            if (MatchDetector.Detect(board.WithSwapped(from, to)).Count > 0)
+            if (MatchDetector.Detect(state.BoardState.WithSwapped(from, to)).Count > 0)
+            {
+                return new SwapRequest(from, to);
+            }
+        }
+
+        throw new InvalidOperationException(
+            "A generated board has at least one valid Swap (MATCH3_RULES.md §1.4).");
+    }
+
+    /// <summary>
+    /// A match-producing adjacent pair on <paramref name="state"/>'s board that is
+    /// <b>not</b> the pair already recorded as committed
+    /// (<c>MATCH3_RULES.md</c> §2.1.4).
+    ///
+    /// The committed pair is read from the authoritative state rather than taken from
+    /// the caller, so a scenario can never accidentally hand the executor a replay and
+    /// mistake the staleness rejection for a board problem.
+    /// </summary>
+    private static SwapRequest FindMatchProducingPair(BattleState state) =>
+        FindMatchProducingPair(state, state.LastCommittedSwapPair);
+
+    private static SwapRequest FindMatchProducingPair(
+        BattleState state,
+        CommittedSwapPair? committed)
+    {
+        foreach (var (from, to) in AllAdjacentPairs())
+        {
+            if (committed is { } pair
+                && CommittedSwapPair.FromCells(from, to)
+                    == CommittedSwapPair.FromCells(pair.MinCellIndex, pair.MaxCellIndex))
+            {
+                continue;
+            }
+
+            if (MatchDetector.Detect(state.BoardState.WithSwapped(from, to)).Count > 0)
             {
                 return new SwapRequest(from, to);
             }
@@ -943,3 +982,4 @@ public class BossResponseTests
         }
     }
 }
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        

@@ -765,7 +765,19 @@ public class BattleStateServiceTests
         var afterFirst = service.GetBattle("battle-passive-carry")!;
         var firstMatches = first.Value.Resolution.TotalMatches;
 
-        Assert.Equal(firstMatches, afterFirst.PetState.PassiveProgress.Current);
+        // The first Swap's own settled progress is the documented result of its batch:
+        // below the Threshold it carries M1, and at or above it the default reset
+        // settled it at 0 (PASSIVE_RULES.md §2 item 3, §4 item 1). Read from the state
+        // rather than assumed, because M1 depends on the generated board.
+        var firstPetTriggered = first.Value.Events.Any(
+            e => e.Type == BattleEventType.PassiveTriggered
+                && e.PassiveTriggered.Source == PassiveEventSource.Pet);
+
+        Assert.Equal(
+            firstPetTriggered ? 0 : firstMatches,
+            afterFirst.PetState.PassiveProgress.Current);
+
+        var carriedProgress = afterFirst.PetState.PassiveProgress.Current;
 
         var secondPair = FindAdjacentPairThatProducesAMatch(afterFirst.BoardState, exclude: firstPair);
         var second = service.ExecuteSwap("battle-passive-carry", secondPair);
@@ -774,10 +786,10 @@ public class BattleStateServiceTests
         var secondMatches = second.Value.Resolution.TotalMatches;
         var afterSecond = service.GetBattle("battle-passive-carry")!;
 
-        // The second Swap's charges continue from the carried progress. Only the
-        // PET's charges are read here — the Boss Passive emits its own
-        // source="boss" charges into the same batch (GAME_EVENTS.md §2,
-        // SIGNALR_PROTOCOL.md §3.2.16 item 1).
+        // The second Swap's charges continue from the CARRIED progress — they do not
+        // restart per Swap (PASSIVE_RULES.md §2 item 1). Only the PET's charges are
+        // read here; the Boss Passive emits its own source="boss" charges into the
+        // same batch (GAME_EVENTS.md §2, SIGNALR_PROTOCOL.md §3.2.16 item 1).
         var charges = second.Value.Events
             .Where(e => e.Type == BattleEventType.PassiveCharged
                 && e.PassiveCharged.Source == PassiveEventSource.Pet)
@@ -785,7 +797,7 @@ public class BattleStateServiceTests
             .ToArray();
 
         Assert.Equal(
-            Enumerable.Range(firstMatches + 1, secondMatches),
+            Enumerable.Range(carriedProgress + 1, secondMatches),
             charges);
 
         // Below the Threshold (5) nothing triggered, so the settled value is the
