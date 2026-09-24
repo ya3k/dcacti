@@ -1,6 +1,9 @@
 # Card Rules
 
-**Version:** 1.0
+**Version:** 1.2 (§1 ownership clarified — Player owns the Card
+collection; loadout is battle-scoped for the active Pet; no
+`Pet.CardInventory`; prior 1.1: Basic Card effects and Power cost
+clarify target = active Pet / PetState)
 **Status:** MVP Domain Rule
 **Parent:** GAME_RULES.md
 
@@ -19,6 +22,14 @@ Pet Skill Card    tied to the active Pet's Signature Skill (exactly one per Pet)
 A battle loadout always contains exactly 3 Basic Cards + 1 Pet Skill Card
 (GDD §3), for 4 total Cards available to cast.
 
+**Ownership vs. loadout.** The Player owns the Card *collection*
+(unlock rows in `DATABASE.md` §2 — `PlayerUnlockedCard`, ADR-012). The
+battle loadout is selected at `POST /api/battle/start` for the one active
+Pet and is snapshotted into `PetState.EquippedCards[]`
+(`GAME_STATE.md` §2.3) for that battle only. There is **no**
+`Pet.CardInventory` and no persistent per-Pet Card ownership: Cards are
+owned by the Player, equipped per battle for the active Pet.
+
 ---
 
 # 2. Basic Cards (MVP)
@@ -26,16 +37,19 @@ A battle loadout always contains exactly 3 Basic Cards + 1 Pet Skill Card
 ```text
 Heal
   Cost:   20 Power
-  Effect: Restore 20% Max HP
+  Effect: Restore the active Pet's HP by 20% of its Max HP
 
 Shield
   Cost:   20 Power
-  Effect: Gain Shield equal to 20% Max HP
+  Effect: Active Pet gains Shield equal to 20% of its Max HP
 
 Power Charge
   Cost:   0 Power
-  Effect: Gain 25 Power
+  Effect: Active Pet gains 25 Power
 ```
+
+Basic Card HP/Shield/Power effects target the **active Pet** (the combat
+character, `PetState`) — not a separate Player entity.
 
 Rules:
 
@@ -52,8 +66,8 @@ Rules:
 1. A Card cast is an explicit player action, distinct from a Swap
    (GAME_RULES.md §11.1, §11.4).
 2. On cast request, the server validates:
-   * The Card is in the player's current loadout for this battle.
-   * The player has sufficient Power (`current Power ≥ Card Cost`).
+   * The Card is in the active Pet's battle loadout for this battle.
+   * The active Pet has sufficient Power (`current Power ≥ Card Cost`).
    * Any additional Card-specific preconditions (none in MVP Basic Cards).
 3. If validation fails, the cast is rejected and no state changes occur (no
    Power spent, no Effect applied, no Event emitted beyond a rejection

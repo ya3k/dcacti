@@ -1,6 +1,8 @@
 # Architecture Decision Records (ADR)
 
-**Version:** 1.0
+**Version:** 1.3 (ADR-013 added — Discord authorization-code → identity
+exchange contract; prior 1.2: ADR-012 added — Player Level / Pet Level
+formula / ownership-equipment / MVP scope closure)
 **Status:** Active
 
 > This document answers: **"Why did we make this technical/design
@@ -129,6 +131,9 @@ technical document.
 | ADR-008 | Snapshot-based battle reconnection                             | Accepted |
 | ADR-009 | Deterministic PRNG for server-authoritative gameplay randomness | Proposed |
 | ADR-010 | Committed-swap state for idempotent Swap rejection            | Accepted |
+| ADR-011 | Player = account owner; Pet = combat character; PetState = battle combat runtime (no PlayerState) | Accepted |
+| ADR-012 | Player Level + Pet Level clamp formula; Relic/Card ownership vs battle equip; MVP scope closure; no Evolution | Accepted |
+| ADR-013 | Discord authorization-code → identity exchange contract (OAuth2 code grant, token endpoint, `/users/@me`, `DiscordUserId` source) | Accepted |
 
 ---
 
@@ -141,8 +146,6 @@ forgotten, per `AGENTS.md` §2.2:
 ```text
 - Backend runtime (ASP.NET Core / C#) is recorded only as an ASSUMPTION in
   TDD.md §0, not an independently confirmed decision.
-- Card ownership persistence model (instance table vs. unlock-flag join
-  table) is recorded only as an ASSUMPTION in DATABASE.md §2.
 - The deterministic PRNG algorithm (ADR-009, PCG32) is `Proposed`: it is
   required by MATCH3_RULES.md §7 and TDD.md §6, which state "server-seeded
   RNG" without naming an algorithm. Until a technical document owns the

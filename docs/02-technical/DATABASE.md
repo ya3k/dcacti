@@ -1,6 +1,11 @@
 # Database
 
-**Version:** 1.0
+**Version:** 1.3 (§3 initial Player.Level value added — a newly created
+Player starts at Level 1, per PET_RULES.md §5 item 8; prior 1.2: §1
+Player.Level added; §2 Card ownership ASSUMPTION resolved to
+`PlayerUnlockedCard` join table per ADR-012; prior 1.1: §3 ownership
+model note per ADR-011 — Player FKs = collection ownership; no
+combat-stat columns on Player; equip is battle-scoped)
 **Status:** Draft
 
 > This document answers: **"What persistent data exists and how is it
@@ -17,6 +22,9 @@
 Player
 ├── PlayerId (PK)
 ├── DiscordUserId (unique)
+├── Level                           (1–50 — PET_RULES.md §5, MVP_SCOPE.md §1;
+│                                    persistent account attribute, NO combat
+│                                    stats; ADR-012)
 └── CreatedAt
 
 Pet                              (a player's OWNED instance of a Pet)
@@ -25,13 +33,17 @@ Pet                              (a player's OWNED instance of a Pet)
 ├── PetDefinitionId (FK → PetDefinition)
 ├── Tier
 ├── Star
-├── Level
+├── Level                           (clamped result of Player.Level ×
+│                                    PetLevelMultiplier — PET_RULES.md §5;
+│                                    denormalized snapshot of the derived
+│                                    value, not an independent XP store)
 └── AcquiredAt
 
 PetDefinition                    (static content, one row per MVP Pet)
 ├── PetDefinitionId (PK)
 ├── Identity                      ("Thanh Xà", "Xích Lang", ...)
 ├── Element
+├── PetLevelMultiplier            (config — PET_RULES.md §5; never hard-coded)
 ├── PassiveDefinition              (threshold/effect reference —
 │                                  PASSIVE_RULES.md)
 └── SignatureSkillCardId (FK → CardDefinition)
@@ -42,6 +54,12 @@ CardDefinition                    (static content: 3 Basic + 5 Pet Skill)
 ├── Category                       ("Basic" | "PetSkill")
 ├── PowerCost
 └── EffectDefinition                 (CARD_RULES.md)
+
+PlayerUnlockedCard               (Player owns Card unlocks — ADR-012;
+│                                  MVP Cards have no Tier/Star/Level, so an
+│                                  unlock flag is sufficient)
+├── PlayerId (FK → Player)
+└── CardDefinitionId (FK → CardDefinition)
 
 RelicDefinition                    (static content: ~10 MVP Relics)
 ├── RelicDefinitionId (PK)
@@ -73,7 +91,10 @@ BattleResult
 ├── Outcome                            ("Won" | "Lost")
 ├── DurationTurns
 ├── CompletedAt
-└── RewardSummary                        (JSON — reward line items)
+└── RewardSummary                        (JSON — reward line items; may
+                                          include Player XP granting
+                                          Player Level — PET_RULES.md §5,
+                                          GDD §14)
 ```
 
 ---
@@ -83,26 +104,36 @@ BattleResult
 ```text
 Player          1 ── N   Pet
 Player          1 ── N   Relic (owned instances)
+Player          1 ── N   PlayerUnlockedCard
 Player          1 ── N   BattleResult
 Pet (instance)  N ── 1   PetDefinition
 Relic(instance) N ── 1   RelicDefinition
+PlayerUnlockedCard N ── 1 CardDefinition
 PetDefinition   1 ── 1   CardDefinition (SignatureSkillCardId)
 BattleResult    N ── 1   Pet (instance used)
 BattleResult    N ── 1   BossDefinition (opponent)
 ```
 
-Note: whether Cards need a per-player "owned instance" row (like Pet and
-Relic) or are simply unlocked flags on `Player` is not settled by any prior
-design document — MVP Cards have no progression (no Tier/Star/Level per
-`CARD_RULES.md`), so a simple `PlayerUnlockedCard(PlayerId, CardDefinitionId)`
-join table is assumed sufficient rather than a full instance table.
-**ASSUMPTION** — flag for confirmation if Card progression is later added.
+Note: **Card ownership is settled (ADR-012):** MVP Cards have no
+progression (no Tier/Star/Level per `CARD_RULES.md`), so ownership is a
+`PlayerUnlockedCard(PlayerId, CardDefinitionId)` join table of unlock
+flags — not a per-instance table. Battle equip of Cards is **not**
+persisted here; it is battle-scoped and snapshotted into
+`PetState.EquippedCards[]` at `POST /api/battle/start`
+(`CARD_RULES.md` §1, `GAME_STATE.md` §2.3). There is no
+`Pet.CardInventory` table.
+
+There is likewise **no persistent Relic-equip table**: Player owns Relic
+instances; which 3–5 are equipped for a given battle is request-time
+loadout only (`RELIC_RULES.md` §2, `API_CONTRACTS.md` §3).
 
 ---
 
 # 3. Constraints
 
 ```text
+Player.Level        ∈ [1, 50]                                      (PET_RULES.md §5)
+Player.Level        = 1 for a newly created Player                 (PET_RULES.md §5 item 8)
 Pet.Tier          ∈ {Common, Rare, Epic, Legendary, Mythic}      (PET_RULES.md §3)
 Pet.Star           ∈ [1, 5]                                       (PET_RULES.md §4)
 Pet.Level           ∈ [1, 50]                                      (PET_RULES.md §5)
@@ -111,6 +142,15 @@ Player.PlayerId (per battle) must own exactly one active Pet selection
   at battle start — enforced at the Application layer (ARCHITECTURE.md),
   not purely at the DB level, since it is a request-time rule
   (API_CONTRACTS.md §2), not a stored invariant.
+
+Ownership model (ADR-011, ADR-012): Player FKs on Pet/Relic (and
+PlayerUnlockedCard rows) are collection ownership only. There are no
+combat-stat columns on Player — HP/ATK/DEF/Crit/Power are battle-time
+`PetState` (GAME_STATE.md §2.3, REDIS_STATE.md). `Player.Level` is a
+persistent progression value (1–50), not a combat stat. Equipped
+Relic/Card loadout is battle-scoped, selected at POST /api/battle/start
+for the active Pet and snapshotted into PetState; it is not stored as
+Player-owned or Pet-owned equip slots.
 ```
 
 ---
@@ -120,6 +160,7 @@ Player.PlayerId (per battle) must own exactly one active Pet selection
 ```text
 Pet(PlayerId)              — list a player's Pets
 Relic(PlayerId)             — list a player's Relics
+PlayerUnlockedCard(PlayerId) — list a player's unlocked Cards
 BattleResult(PlayerId, CompletedAt DESC)  — battle history, most recent first
 ```
 

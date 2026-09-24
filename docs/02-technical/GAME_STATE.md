@@ -1,9 +1,10 @@
 # Game State
 
-**Version:** 2.1 (§2.4.3 Turn-increment citation corrected to MATCH3_RULES
-§8.1 / §5.1 — was incorrectly GAME_RULES §17 step 17; prior 2.0: Boss
-Response contract — §2.4 BossState PassiveId/SkillCharge/SkillCooldown,
-Enrage/Stun clarification, per-Boss Skill timing)
+**Version:** 2.2 (Player/Pet role model per ADR-011 — `PlayerState`
+removed from §2; Combo/MatchCount at BattleState root; combat stats +
+StatusEffects + EquippedRelics/EquippedCards moved to `PetState`; wire
+member name `playerState` retained as a fixed protocol label; prior 2.1:
+§2.4.3 Turn-increment citation corrected to MATCH3_RULES §8.1 / §5.1)
 **Status:** Draft
 
 > This document answers: **"What state exists during a running battle?"**
@@ -100,14 +101,25 @@ BattleState
 ├── LastCommittedSwapPair?  (the unordered pair most recently committed to
 │                            the board; absent before the first commit —
 │                            §2.1.10, MATCH3_RULES.md §2.1.4)
-├── PlayerState
-├── PetState                (the one active Pet for this battle)
+├── Combo                   (Match/Combo accounting — §2.2)
+├── MatchCount              (Match/Combo accounting — §2.2)
+├── PetState                (the one active Pet for this battle — combat
+│                            character; combat stats, loadout, Passive —
+│                            §2.3; ADR-011)
 ├── BossState
 └── Turn                    (current Turn number, GAME_RULES.md §2)
 ```
 
 `BattleId`, `Sequence`, and `Turn` are present from the start (§2.0). The
 remainder are added as their owning systems are implemented.
+
+There is no `PlayerState` member. The Player is the account/owner and has
+no authoritative battle-time combat pool; combat stats and the battle
+loadout live under `PetState` (§2.3), and Match/Combo accounting lives at
+the `BattleState` root (§2.2). The wire member name `playerState` used by
+`SIGNALR_PROTOCOL.md` §4.2 is a **fixed protocol label** for the Combo/
+MatchCount projection and does not reintroduce a state path of that name
+(ADR-011).
 
 ## 2.0 Battle State Foundation
 
@@ -188,8 +200,8 @@ adds no `Status` field and no lifecycle value, and
 3. If a battle lifecycle state machine is later required, it must be
    introduced by its own design/ADR task, not added here.
 
-The remaining §2 fields (`PetState` §2.3, `BossState` §2.4, and the rest of
-`PlayerState` §2.2) are likewise
+The remaining §2 fields (`Combo`/`MatchCount` §2.2, `PetState` §2.3, and
+`BossState` §2.4) are likewise
 not present in §2.0. They are gameplay systems that do not exist yet; that is
 not a scope reduction of §2.
 
@@ -284,11 +296,14 @@ LastCommittedSwapPair
 
 ### 2.0.5.3 What This Stage Does Not Add
 
-Owned by later stages: `PetState` (§2.3) and `BossState` (§2.4), and the
-remainder of `PlayerState` (§2.2 — StatusEffects, EquippedRelics,
-EquippedCards). `PlayerState`'s `Combo` and `MatchCount` are now implemented
-and are no longer absent — see §2.2 — and the combat stats `HP`/`MaxHP`,
-`ATK`/`DEF`/`Crit`, and `Power` are now implemented there as well.
+Owned by later stages: `PetState`'s combat and collection members (§2.3 —
+combat stats, StatusEffects, EquippedRelics, EquippedCards) and
+`BossState` (§2.4). `BattleState`'s `Combo` and `MatchCount` (§2.2) are now
+implemented and are no longer absent — see §2.2 — and the combat stats
+`HP`/`MaxHP`, `ATK`/`DEF`/`Crit`, and `Power` are now implemented as well
+(they belong to `PetState` §2.3 in this contract; the Domain type that
+currently holds them is an implementation mismatch recorded under ADR-011
+Implementation Impact, not a second state path).
 Special Gem *state* arrives with
 the Special Gem implementation stage (`MATCH3_RULES.md` §5); nothing about
 Special Gems is implemented here.
@@ -773,106 +788,94 @@ BattleState
     randomness. The field is written from the action the server already
     committed, and reads nothing else.
 
-## 2.2 PlayerState
+## 2.2 Match / Combo Accounting (`BattleState.Combo`, `BattleState.MatchCount`)
+
+Match/Combo accounting is two fields at the **`BattleState` root**. There
+is no nested `PlayerState` container: the Player is the account/owner and
+is not a battle-time combat state (§2 tree, ADR-011).
 
 ```text
-PlayerState
-├── HP / MaxHP                 (implemented in the Domain model)
-├── ATK / DEF / Crit          (base + active modifiers — implemented in the
-│                              Domain model)
-├── Power                      (0–100, GAME_RULES.md §12 — implemented in
-│                              the Domain model)
+BattleState
 ├── Combo                       (current Combo for the Swap that just
-│                                committed and resolved, resets to 0 when a
-│                                new Swap begins, GAME_RULES.md §5 —
-│                                implemented in the Domain model)
-├── StatusEffects[]              (Burn/Shield/Buff-Debuff instances,
-│                                COMBAT_RULES.md §5 — not yet implemented)
-├── EquippedRelics[]              (3–5, slot order fixed at battle start,
-│                                RELIC_RULES.md §4 — not yet implemented)
-├── EquippedCards[]                (3 Basic Cards + 1 Pet Skill Card —
-│                                 not yet implemented)
-└── MatchCount                      (cumulative Matches this battle,
-                                    GAME_RULES.md §3 — implemented in the
-                                    Domain model)
+│                                committed and resolved, resets to 0 when
+│                                a new Swap begins, GAME_RULES.md §5 —
+│                                implemented)
+└── MatchCount                  (cumulative Matches this battle,
+                                GAME_RULES.md §3 — implemented)
 ```
 
-**Implemented so far, in the Domain `PlayerState`: `MatchCount`, `Combo`, and
-the combat stats `HP`, `MaxHP`, `ATK`, `DEF`, `Power`, and `Crit`** — the eight
-members the type declares today. **The three collection members
-`StatusEffects[]`, `EquippedRelics[]`, and `EquippedCards[]` are not yet
-implemented.**
+**Both fields are implemented.** They are `int`, both `0` at battle
+creation. They are written in the single post-resolution write-back of
+§5.1, for a committed Swap only; their rule-level lifecycle is owned by
+`MATCH3_RULES.md` §6 and their cumulative/cumulative-vs-scoped distinction
+by `GAME_RULES.md` §3 and §5.
 
-**Domain state implemented is not the same as client wire delivery.** These
-eight members exist in `PlayerState`, but they are **not** all part of the
-`playerState` wire payload — see the wire paragraph below.
+**Wire label.** `SIGNALR_PROTOCOL.md` §4.2 delivers these two values under
+the fixed payload member name `playerState` (exactly `combo` and
+`matchCount`). That member name is a **protocol label** — it is not a
+state path, and this contract has no `PlayerState` node (§2 tree,
+ADR-011). See §2.2.1.
 
-The Match / Combo accounting stage implements the first two members, and
-`BattleState` therefore nests a `PlayerState` carrying them
-(`PlayerState(Combo, MatchCount)`, both `int`, both `0` at battle creation).
-They are written in the single post-resolution write-back of §5.1, for a
-committed Swap only; their rule-level lifecycle is owned by
-`MATCH3_RULES.md` §6 and their cumulative/cumulative-vs-scoped distinction by
-`GAME_RULES.md` §3 and §5.
+### 2.2.1 Delivery and Consequences
 
-The combat-stats stage then adds `HP`, `MaxHP`, `ATK`, `DEF`, `Power`, and
-`Crit` to the same type as `int` members, each initialized at battle creation
-to its `COMBAT_RULES.md` §1.1 MVP default (`HP` = `MaxHP` = 1000, `ATK` = 50,
-`DEF` = 25, `Power` = 0, `Crit` = 5). §1.1 owns those values and states that
-they are not permanent invariants — changing them is a configuration change,
-not a redesign of this field list. `Crit` is the percent §1.1 defines
-("critical hit chance (%)"), so the value is `5` and not `0.05`. `Power`'s
-0–100 range is a documented invariant of §1.1 and `GAME_RULES.md` §12 and is
-not enforced by the state. They are carried through the §5.1 write-back
-unchanged: this stage adds the fields and their initial values only, and the
-Damage Pipeline (`COMBAT_RULES.md` §3) and Resource Generation (§2) that will
-read and write them are not implemented.
+**The two fields are state, and they are the only Match/Combo members
+delivered on the wire.** `SIGNALR_PROTOCOL.md` §4.2 fixes the `playerState`
+payload member to exactly `combo` and `matchCount` — so of the §2 members
+in this section, only these two reach the client under that label. The
+combat stats and collection members live under `PetState` (§2.3) and are
+not part of `playerState` (§4 item 4's rule that a payload carries only
+the implemented stage's own fields). Adding state is not adding a wire
+member: as with `LastCommittedSwapPair` (§2.1.10 item 9,
+`SIGNALR_PROTOCOL.md` §4 item 12), delivering more is a protocol change
+owned by its own task.
 
-The remaining members above are **not yet implemented** — not **not
-required** (§0 item 4): `StatusEffects[]`, `EquippedRelics[]`, and
-`EquippedCards[]` each arrive with their owning Passive, Relic, or Card
-system, exactly as the members above arrived with their own stages. None of
-them is stubbed, defaulted, or represented by a placeholder collection,
-because a placeholder for a field no rule yet reads would be a representation
-of its own (§0 item 5).
-
-**The combat stats are state, and they are not yet delivered on the wire.**
-`SIGNALR_PROTOCOL.md` §4.2 fixes the `playerState` payload member to exactly
-`combo` and `matchCount` — so of the eight implemented members above, only
-`Combo` and `MatchCount` reach the client — and states that the rest of §2.2
-(`HP`/`MaxHP`, `ATK`/`DEF`/`Crit`, `Power`, `StatusEffects`,
-`EquippedRelics`, `EquippedCards`) is not delivered, per §4 item 4's rule that
-a payload carries only the implemented stage's own fields. The combat stats do
-not change that by themselves: as with
-`LastCommittedSwapPair` (§2.1.10 item 9, `SIGNALR_PROTOCOL.md` §4 item 12),
-adding state is not adding a wire member. Delivering them is a protocol
-change owned by its own task.
-
-Two consequences follow from `PlayerState` now existing, and both are
-deliberate rather than gaps:
+Two consequences follow, and both are deliberate rather than gaps:
 
 1. **Absence conventions do not apply to these members.** Unlike
-   `LastCommittedSwapPair` (§2.1.10 item 3) and the optional cell `SpecialGem`
-   (§2.1.7 item 3), `MatchCount`, `Combo`, and the combat stats are defined
-   from battle creation, and `Combo = 0` and `Power = 0` are real publishable
-   values — the values read before the battle's first committed Swap and
-   before any Match generates Power (`MATCH3_RULES.md` §6.5 item 4,
-   `COMBAT_RULES.md` §2). None is nullable, none is omitted, and zero is never
-   spelled by omission.
-2. **`PlayerState` and `PetState` now exist, and Redis persistence remains
-   deferred.** `BossState` (§2.4) still does not, so §2's full shape still
+   `LastCommittedSwapPair` (§2.1.10 item 3) and the optional cell
+   `SpecialGem` (§2.1.7 item 3), `MatchCount` and `Combo` are defined
+   from battle creation, and `Combo = 0` is a real publishable value —
+   the value read before the battle's first committed Swap
+   (`MATCH3_RULES.md` §6.5 item 4). Neither is nullable, neither is
+   omitted, and zero is never spelled by omission.
+2. **These fields exist, and Redis persistence remains deferred.**
+   `PetState`'s combat members (§2.3) are also now implemented, but
+   `BossState` (§2.4) still does not exist, so §2's full shape still
    cannot be produced and `POST /api/battle/start` still cannot create a
-   battle. `REDIS_STATE.md` §7 items 4 and 8 and its item 12 apply unchanged:
-   these fields neither require nor authorize persistence, and add no key and
-   no Redis-only field.
+   battle. `REDIS_STATE.md` §7 items 4 and 8 and its item 12 apply
+   unchanged: these fields neither require nor authorize persistence, and
+   add no key and no Redis-only field.
+
+**Implementation note (not a contract path).** The Domain model currently
+nests these two values under a type named `PlayerState`. That type name
+does not appear in this contract; it is an implementation-side mismatch
+recorded under ADR-011 Implementation Impact / `tasks/completed` impact,
+not a second authoritative path and not a wire rename.
 
 ## 2.3 PetState
+
+The one active Pet for this battle. The Pet is the **combat character**;
+the Player is the account/owner and has no authoritative battle-time
+combat pool (ADR-011). Combat stats, status, and the battle loadout live
+here — not under a Player state.
 
 ```text
 PetState
 ├── PetId / Identity
 ├── Element
 ├── Tier / Star / Level
+├── HP / MaxHP                 (combat stats — implemented in the Domain
+│                               model; COMBAT_RULES.md §1.1)
+├── ATK / DEF / Crit           (base + active modifiers — implemented in
+│                               the Domain model)
+├── Power                      (0–100, GAME_RULES.md §12 — implemented in
+│                               the Domain model)
+├── StatusEffects[]              (Burn/Shield/Buff-Debuff instances,
+│                                COMBAT_RULES.md §5 — not yet implemented)
+├── EquippedRelics[]              (3–5, slot order fixed at battle start,
+│                                RELIC_RULES.md §4 — not yet implemented)
+├── EquippedCards[]                (3 Basic Cards + 1 Pet Skill Card —
+│                                 not yet implemented)
 ├── PassiveId                    (the Pet's one Passive — PASSIVE_RULES.md §1;
 │                                 the identity PassiveCharged/PassiveTriggered
 │                                 report, GAME_EVENTS.md §2)
@@ -883,6 +886,70 @@ PetState
                                   PASSIVE_RULES.md §4)
 ```
 
+**Implemented so far: `HP`, `MaxHP`, `ATK`, `DEF`, `Power`, `Crit`, plus
+`PassiveId`/`PassiveProgress`/`PassiveResetOverride` and identity fields**
+as staged. **The three collection members `StatusEffects[]`,
+`EquippedRelics[]`, and `EquippedCards[]` are not yet implemented.**
+(The Domain model currently nests the combat stats under a type named
+`PlayerState`; that is an implementation mismatch — see §2.2 Implementation
+note and ADR-011 — not a second state path in this contract.)
+
+**Domain state implemented is not the same as client wire delivery.**
+Not all members here are part of any wire payload — see
+`SIGNALR_PROTOCOL.md` §4.2 (only `combo`/`matchCount` under the
+`playerState` label) and §4.3 (only the Passive trio under `petState`).
+
+The combat-stats stage owns `HP`, `MaxHP`, `ATK`, `DEF`, `Power`, and
+`Crit` as `int` members, each initialized at battle creation to its
+`COMBAT_RULES.md` §1.1 MVP default (`HP` = `MaxHP` = 1000, `ATK` = 50,
+`DEF` = 25, `Power` = 0, `Crit` = 5). §1.1 owns those values and states that
+they are not permanent invariants — changing them is a configuration change,
+not a redesign of this field list. `Crit` is the percent §1.1 defines
+("critical hit chance (%)"), so the value is `5` and not `0.05`. `Power`'s
+0–100 range is a documented invariant of §1.1 and `GAME_RULES.md` §12 and is
+not enforced by the state. They are carried through the §5.1 write-back
+unchanged: this stage adds the fields and their initial values only, and the
+Damage Pipeline (`COMBAT_RULES.md` §3) and Resource Generation (§2) that will
+read and write them are not implemented.
+
+These combat stats are the **active Pet's** stats. There is no separate
+Player HP/ATK/DEF/Power pool in §2; damage and healing apply to
+`PetState.HP` (or `BossState.HP`), per `COMBAT_RULES.md` §1.1 and
+`GAME_RULES.md` §14.
+
+The remaining collection members are **not yet implemented** — not **not
+required** (§0 item 4): `StatusEffects[]`, `EquippedRelics[]`, and
+`EquippedCards[]` each arrive with their owning Combat, Relic, or Card
+system, exactly as their own stages arrived. None of them is stubbed,
+defaulted, or represented by a placeholder collection, because a placeholder
+for a field no rule yet reads would be a representation of its own (§0 item 5).
+`EquippedRelics[]` and `EquippedCards[]` are the **battle-scoped loadout**
+copied from the Player's owned collection at battle start (3–5 Relics,
+exactly 3 Basic + 1 Pet Skill Card) — ownership of the underlying instances
+remains the Player's (`DATABASE.md` §2), while the equipped set is per-Pet
+(`RELIC_RULES.md` §2, `CARD_RULES.md` §3, ADR-011).
+
+**The combat stats are state, and they are not yet delivered on the wire.**
+`SIGNALR_PROTOCOL.md` §4.2 fixes the `playerState` payload member to exactly
+`combo` and `matchCount`, and §4.3 fixes `petState` to exactly the Passive
+trio — so no combat member of this section reaches the client today, per
+§4 item 4's rule that a payload carries only the implemented stage's own
+fields. The combat stats do not change that by themselves: as with
+`LastCommittedSwapPair` (§2.1.10 item 9, `SIGNALR_PROTOCOL.md` §4 item 12),
+adding state is not adding a wire member. Delivering them is a protocol
+change owned by its own task.
+
+Absence conventions do not apply to the combat stats: they are defined
+from battle creation, and `Power = 0` is a real publishable value —
+the value read before any Match generates Power (`COMBAT_RULES.md` §2).
+None is nullable, none is omitted, and zero is never spelled by omission.
+
+`PetState` now exists, and Redis persistence remains deferred. `BossState`
+(§2.4) still does not, so §2's full shape still cannot be produced and
+`POST /api/battle/start` still cannot create a battle. `REDIS_STATE.md`
+§7 items 4 and 8 and its item 12 apply unchanged: these fields neither
+require nor authorize persistence, and add no key and no Redis-only field.
+
 **`PassiveId` is the Passive's identity, and it is a value, not a new
 concept.** A Pet has **exactly one** Passive (`PASSIVE_RULES.md` §1,
 `GAME_RULES.md` §9.2 item 2), so this field names which Passive definition the
@@ -890,8 +957,8 @@ active Pet carries — it does not select among several, and there is no
 collection, slot, or ordering of Passives in `PetState`. It is what
 `GAME_EVENTS.md` §2's `PassiveCharged` and `PassiveTriggered` report as their
 `PassiveId`, and it is the same member shape the sibling identity fields
-elsewhere in state use (`BossState.BossId`, `PlayerState.EquippedRelics[]`,
-`EquippedCards[]`).
+elsewhere in state use (`BossState.BossId`, `PetState.EquippedRelics[]`,
+`PetState.EquippedCards[]`).
 
 1. **It is an identity, not a definition.** The field carries the identifier
    only. The Passive's `Threshold`, `Trigger Type`, `Effect`, and
@@ -1177,7 +1244,7 @@ pass-local board bookkeeping (never a field of BattleState)
 2. `MatchesThisResolution[]` and the Cascade depth it records are the board
    resolution's own bookkeeping, ordered as `MATCH3_RULES.md` §3.2 and §4.2
    define. They do not create a second Match-count field: the authoritative
-   cumulative total is `PlayerState.MatchCount` (§2.2).
+   cumulative total is `BattleState.MatchCount` (§2.2).
 3. It is not serialized, not delivered, and not recoverable — a snapshot is
    taken between resolutions, never inside one (§5.1 item 2, §5.3 item 3).
 4. **The pass-local board bookkeeping is a working set, not a representation.**
@@ -1296,10 +1363,10 @@ publish (SIGNALR_PROTOCOL.md §3, §4)
 1. Everything a committed Swap produces is `BattleState`:
    `BoardState.Cells[64]` — including every Special Gem it created and every
    Special Gem its activations consumed (§2.1.7) — `RngSeed`, `RngState`,
-   `Turn`, `Sequence`, and the resolution's values in `PlayerState`
-   (`Combo`, `MatchCount`). No resolve result lives outside those fields, so
-   no gameplay contract change is needed to snapshot a battle after a
-   resolution.
+   `Turn`, `Sequence`, and the resolution's values in `BattleState`
+   (`Combo`, `MatchCount`, §2.2). No resolve result lives outside those
+   fields, so no gameplay contract change is needed to snapshot a battle
+   after a resolution.
 2. Because `RngState` is stored rather than recomputed (§2.6.2 item 4), a
    snapshot taken after any resolution resumes the stream exactly
    (`MATCH3_RULES.md` §7.1 item 3, ADR-008).

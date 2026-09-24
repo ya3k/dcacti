@@ -1,6 +1,9 @@
 # Game Events
 
-**Version:** 2.0 (Boss Response contract resolved — PassiveCharged/PassiveTriggered
+**Version:** 2.1 (Player/Pet role model per ADR-011 — BattleWon/BattleLost
+trigger: active Pet HP not Player HP; Match/Combo accounting state refs →
+BattleState root; wire label `target="player"` documented; prior 2.0: Boss
+Response contract resolved — PassiveCharged/PassiveTriggered
 source field added, Boss Passive/Skill/Attack timing clarified, Boss→Player
 damage events defined)
 **Status:** Draft
@@ -405,11 +408,14 @@ Payload:  SkillId, SourceId (BossId), effect summary
 
 The Skill's damage (if any) is reported by separate `DamageCalculated`/
 `DamageDealt`/`DamageTaken` events in the same batch, with
-`source = "boss"` and `target = "player"`.
+`source = "boss"` and `target = "player"` (a fixed wire label meaning the
+player's side / active Pet — ADR-011).
 
 ## BattleWon / BattleLost
 ```text
-Trigger:  Boss HP or Player HP reaches 0 (GAME_RULES.md §1.4)
+Trigger:  Boss HP or active Pet HP reaches 0 (GAME_RULES.md §1.4 —
+          the Pet is the combat character; there is no Player HP pool,
+          ADR-011)
 Payload:  Outcome, final BattleState summary, reward summary (BattleWon
           only — exact reward data shape: DATABASE.md)
 ```
@@ -451,8 +457,8 @@ Payload:  Outcome, final BattleState summary, reward summary (BattleWon
    ADR-008).
 7. **Event emission itself.** The events of §2 are defined here; emitting them
    is a separate stage. The Match / Combo accounting stage
-   (`GAME_STATE.md` §2.2) computes and publishes `PlayerState.Combo` and
-   `PlayerState.MatchCount` as **state** and emits no event at all — no
+   (`GAME_STATE.md` §2.2) computes and publishes `BattleState.Combo` and
+   `BattleState.MatchCount` as **state** and emits no event at all — no
    `MatchCreated`, `MatchResolved`, `CascadeCreated`, or `ComboChanged` is
    produced by it. Nothing in §1.1 or §2 is weakened by that: an event this
    document defines becomes deliverable when the stage that owns emission is

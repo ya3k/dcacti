@@ -1,9 +1,10 @@
 # SignalR Protocol
 
-**Version:** 2.1 (§3.2.16–§3.2.18 `sourceId` examples corrected to display-name
-BossId per `BOSS_RULES.md` §6.4; identity values documented; prior 2.0: Boss
-Response wire contract — PassiveCharged/PassiveTriggered, BossSkillCast,
-BattleWon/BattleLost; discriminator expanded; Boss→Player damage events)
+**Version:** 2.2 (Player/Pet role model per ADR-011 — state-path references
+`PlayerState.*` corrected to `BattleState`/`PetState`; wire member names
+`playerState`, `finalPlayerHp`, and `target="player"` retained as fixed
+protocol labels; prior 2.1: §3.2.16–§3.2.18 `sourceId` examples corrected
+to display-name BossId per `BOSS_RULES.md` §6.4)
 **Status:** Draft — depends on TDD.md §0 assumption (ASP.NET Core backend)
 
 > This document answers: **"How does realtime communication work?"** It does
@@ -23,7 +24,7 @@ Battle State Foundation (GAME_STATE.md §2.0)
 Board Foundation State (GAME_STATE.md §2.0.5)
         ↓  delivered by the initial-state subscription (§4)
         ↓
-Match / Combo accounting (GAME_STATE.md §2.2 — PlayerState)
+Match / Combo accounting (GAME_STATE.md §2.2 — BattleState root; wire label `playerState`)
         ↓  delivered by the initial-state subscription (§4.2)
         ↓
 Battle Events (GAME_EVENTS.md)  — once resolution exists
@@ -46,11 +47,14 @@ not change §3 or §7, and no stage adds a second state-push method (§4 item 11
 so the Match-3 resolution stage delivers its board through this same push and
 its resolution events through §3 (§3.1). Special Gem state is a property of the
 board rather than a stage field of its own (`GAME_STATE.md` §2.1), so it is
-delivered by that same push as well — see §4.1 items 5–6. `PlayerState` is a
-stage field of its own (`GAME_STATE.md` §2.2), so it is delivered by that same
-push as a payload member — see §4.2. `PetState` is likewise a stage field of
+delivered by that same push as well — see §4.1 items 5–6. Match/Combo
+accounting (`GAME_STATE.md` §2.2) is a stage of its own and is delivered by
+that same push as a payload member under the fixed wire label `playerState` —
+see §4.2. `PetState` is likewise a stage field of
 its own (`GAME_STATE.md` §2.3), so it is delivered by that same push as a
-payload member too — see §4.3.
+payload member too — see §4.3. There is no `PlayerState` state path; the
+`playerState` wire name is a protocol label for the Combo/MatchCount
+projection only (ADR-011).
 
 ---
 
@@ -444,7 +448,7 @@ No member of an `events[]` item is ever sent as JSON `null`.
 
 1. **`combo` is the new value**, per `GAME_EVENTS.md` §2 ("Payload: New Combo
    value") — not a delta, not the previous value, and not the cumulative
-   `PlayerState.Combo` of an earlier Swap.
+   `BattleState.Combo` of an earlier Swap (`GAME_STATE.md` §2.2).
 2. **It is an integer, always present, and never omitted or null.** `0` is a
    real value where it occurs and is sent as `0`
    (`GAME_STATE.md` §2.2 item 1: absence is never used for these two members).
@@ -584,7 +588,7 @@ specialGem
    to the envelope (§3), and the rest are state (§3.1 item 3) or nonexistent
    (`AGENTS.md` §11).
 2. **No event carries a Match count.** The authoritative cumulative total is
-   `PlayerState.MatchCount`, delivered by the §4 push; `GAME_EVENTS.md` §3
+   `BattleState.MatchCount`, delivered by the §4 push; `GAME_EVENTS.md` §3
    item 7 has the accounting stage emit no event.
 3. **No event carries any gameplay field §2 does not define.** This section
    fixed a representation; it invented no payload.
@@ -611,7 +615,7 @@ specialGem
 | Member | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `type` | string | always | `"DamageCalculated"` |
-| `base` | int | always | Step 1 — Base Damage: `PlayerState.ATK + ResourceGeneration.BaseDamagePool` (`COMBAT_RULES.md` §3 step 1) |
+| `base` | int | always | Step 1 — Base Damage: `PetState.ATK + ResourceGeneration.BaseDamagePool` — the active Pet's ATK (`COMBAT_RULES.md` §3 step 1, `GAME_STATE.md` §2.3) |
 | `comboModifier` | double | always | Step 2 — the factor the Swap's Combo selects (`COMBAT_RULES.md` §3 step 2) |
 | `elementModifier` | double | always | Step 3 — the factor the resolved element matchup assigns (`ELEMENT_RULES.md` §2.2, `COMBAT_RULES.md` §3 step 3) |
 | `otherModifiers` | double | always | Step 4 — the combined Relic / Passive / Buff / Debuff / Crit factor (pass-through `1.00` in MVP) |
@@ -800,7 +804,8 @@ specialGem
 3. **Effect details are carried by subsequent damage events.** The skill's
    damage (if any) is reported by `DamageCalculated`/`DamageDealt`/
    `DamageTaken` in the same `ReceiveEvents` batch, with `source = "boss"`
-   and `target = "player"`.
+   and `target = "player"` (a fixed wire label meaning the player's side /
+active Pet — `GAME_EVENTS.md` §1, ADR-011).
 
 ### 3.2.19 `BattleWon` / `BattleLost`
 
@@ -827,7 +832,7 @@ specialGem
 | `type` | string | always | `"BattleWon"` or `"BattleLost"` |
 | `outcome` | string | always | `"victory"` or `"defeat"` |
 | `finalBossHp` | int | always | Boss HP at battle end (`GAME_STATE.md` §2.4) |
-| `finalPlayerHp` | int | always | Player HP at battle end (`GAME_STATE.md` §2.2) |
+| `finalPlayerHp` | int | always | Active Pet HP at battle end (`GAME_STATE.md` §2.3 `PetState.HP`) — the wire name `finalPlayerHp` is a fixed protocol label; there is no Player HP pool (ADR-011) |
 
 1. **`outcome` is a string, not a boolean.** It carries `"victory"` or
    `"defeat"` — the same names `GAME_EVENTS.md` §2 item 9 uses. The string
@@ -835,8 +840,10 @@ specialGem
    (`source`, `gemType`).
 2. **`finalBossHp` and `finalPlayerHp` are the terminal HP values.** They
    are the state values at the moment the battle ended, after all damage
-   from the final action has been applied. The client uses them for
-   end-of-battle display.
+   from the final action has been applied. `finalPlayerHp` carries the
+   **active Pet's** HP (`PetState.HP`); the wire member name is a fixed
+   protocol label and does not imply a Player HP pool (ADR-011). The client
+   uses them for end-of-battle display.
 3. **`reward summary` is deferred** per `GAME_EVENTS.md` §2 item 9 — it is
    not a wire member yet. The data shape is owned by `DATABASE.md`.
 
@@ -863,7 +870,7 @@ Battle State Foundation (GAME_STATE.md §2.0)
 Board Foundation State (GAME_STATE.md §2.0.5)
     battleId, turn, sequence, board, rngSeed, rngState
 
-Match / Combo accounting (GAME_STATE.md §2.2 — PlayerState)
+Match / Combo accounting (GAME_STATE.md §2.2 — BattleState root; wire label `playerState`)
     battleId, turn, sequence, board, rngSeed, rngState, playerState
 
 Pet / Passive state (GAME_STATE.md §2.3 — PetState)
@@ -1005,7 +1012,8 @@ it does not add a delivery path, a subscription, or an event:
 
 ## 4.2 Delivering the Match / Combo Accounting Stage
 
-The Match / Combo accounting stage (`GAME_STATE.md` §2.2, `PlayerState`)
+The Match / Combo accounting stage (`GAME_STATE.md` §2.2 —
+`BattleState.Combo`/`MatchCount` at the root; no `PlayerState` path)
 extends this same push — it does not add a delivery path, a subscription, or
 an event:
 
@@ -1015,11 +1023,14 @@ an event:
    every committed Swap's resolved-state push (§2.1, §5).
 2. `playerState` is the wire projection of `GAME_STATE.md` §2.2's implemented
    fields, and carries **exactly two members**: `combo` and `matchCount`. The
-   rest of §2.2 — HP/MaxHP, ATK/DEF/Crit, Power, StatusEffects,
-   EquippedRelics, EquippedCards — belongs to the Combat, Passive, Relic, and
-   Card stages and is **not** delivered, because §4 item 4 admits only the
-   implemented stage's own fields. Referring to `playerState` as a whole does
-   not widen that rule.
+   `playerState` name is a **fixed protocol label** for this Combo/MatchCount
+   projection; it is not a state path — this contract has no `PlayerState`
+   node (ADR-011). The rest of the battle-time combat and loadout state —
+   HP/MaxHP, ATK/DEF/Crit, Power, StatusEffects, EquippedRelics,
+   EquippedCards — lives under `PetState` (`GAME_STATE.md` §2.3), belongs to
+   the Combat, Passive, Relic, and Card stages, and is **not** delivered here,
+   because §4 item 4 admits only the implemented stage's own fields. Referring
+   to `playerState` as a whole does not widen that rule.
 3. **Both members are always present, and zero is delivered as zero.** Neither
    is nullable and neither is omitted, because both are defined from battle
    creation (`GAME_STATE.md` §2.2): `matchCount` starts at `0` and `combo`
@@ -1031,7 +1042,9 @@ an event:
    absent member as zero.
 4. **No Combo or Match shape is carried anywhere else.** No `combo` or
    `matchCount` member exists at the top level of the payload, on the board,
-   or on any cell: they are fields of `PlayerState`, and a second spelling
+   or on any cell: they are delivered only through the fixed `playerState`
+   wire label for `BattleState.Combo`/`MatchCount` (§4.2 item 2,
+   `GAME_STATE.md` §2.2), and a second spelling
    would be the parallel representation `GAME_STATE.md` §0 item 5 forbids.
 5. **The client neither computes nor derives either value.** It renders what it
    was sent (`MATCH3_RULES.md` §6.6 item 3). It does not count a Match, advance

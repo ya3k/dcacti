@@ -6,6 +6,16 @@
     <ProjectReference Include="..\GameServer.Shared\GameServer.Shared.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Design-time only: required by the EF Core tools to build migrations for
+         GameDbContext (DATABASE.md; ADR-006). PrivateAssets keeps it out of the
+         application's published output. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.12">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>

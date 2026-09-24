@@ -44,11 +44,25 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
 
         var response = await client.PostAsJsonAsync("/api/auth/discord", request);
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var body = await response.Content.ReadFromJsonAsync<DiscordAuthResponse>();
-        Assert.NotNull(body);
-        Assert.False(string.IsNullOrWhiteSpace(body.SessionToken));
-        Assert.Equal("player_dev", body.PlayerId);
+        // The Discord identity exchange client (API_CONTRACTS.md §2.2–§2.4) is
+        // the TASK-035 contract's downstream implementation and is not built
+        // here, so this factory has no exchange configured and the endpoint
+        // cannot obtain a verified DiscordUserId. A verified identity is
+        // required before any Player write (§2.6 rule 5, ADR-013 item 12), so
+        // the documented outcome is the §2.6 transient condition and no
+        // Player — never a fabricated identity and never the old
+        // `player_dev` placeholder.
+        //
+        // The match-or-create behaviour this endpoint owns is covered against
+        // a configured identity resolver in AuthPlayerOwnershipTests.
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        Assert.Equal("DISCORD_UNAVAILABLE", body.GetProperty("error").GetString());
+
+        // No Player is produced on a failure path, so no `playerId` is
+        // returned and the `player_dev` stub is gone for good.
+        Assert.False(body.TryGetProperty("playerId", out _));
     }
 
     [Fact]

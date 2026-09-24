@@ -1,6 +1,9 @@
 # Relic Rules
 
-**Version:** 1.0
+**Version:** 1.2 (§2 ownership vs. equipment restated with battle-start
+snapshot into `PetState.EquippedRelics[]`; prior 1.1: §2 equip ownership
+— Player owns collection, Relics are a per-active-Pet battle loadout;
+§3 trigger subjects corrected to active Pet)
 **Status:** MVP Domain Rule
 **Parent:** GAME_RULES.md
 
@@ -29,11 +32,25 @@ Element restriction (ELEMENT_RULES.md §4, GAME_RULES.md §13.5).
 
 # 2. Equip Rules
 
-1. A player equips 3–5 Relics per battle (GAME_RULES.md §13.3).
-2. Relics are equipped before battle start as part of the pre-battle loadout
-   (GDD §2: "Equip Relics" step), and are locked for the duration of the
-   battle — no mid-battle Relic swapping in MVP.
-3. Any Pet may equip any Relic; no Element or Tier gating in MVP
+1. **Ownership vs. equipment are two different things.**
+   * **Ownership (persistent):** the Player owns Relic *instances* in the
+     collection (`DATABASE.md` §1–§2, `Player 1─N Relic`). Ownership
+     survives across battles.
+   * **Equipment (battle-scoped):** the active Pet carries 3–5 of those
+     owned Relics for one battle (GAME_RULES.md §13.3). There is no
+     global Player Relic loadout and no persistent "which Pet has this
+     Relic equipped" column — equipment is selected at battle start and
+     exists only for that battle.
+2. Relics are equipped onto the active Pet before battle start as part of
+   the pre-battle loadout (`POST /api/battle/start`, `API_CONTRACTS.md`
+   §3; GDD §2 "Equip Relics" step), and are locked for the duration of
+   the battle — no mid-battle Relic swapping in MVP.
+3. At battle start the selected loadout is **snapshotted** into
+   `PetState.EquippedRelics[]` (`GAME_STATE.md` §2.3), slot order fixed
+   (§4). That battle-scoped array is the only equip representation inside
+   active battle state (`REDIS_STATE.md` §2 — serialized with
+   `BattleState`); it does not write back to PostgreSQL ownership rows.
+4. Any Pet may carry any Relic; no Element or Tier gating in MVP
    (GAME_RULES.md §13.5).
 
 ---
@@ -48,10 +65,11 @@ OnMatchCount       fires when cumulative Match count crosses a threshold
                     analogous to Passive charging — see PASSIVE_RULES.md §2)
 OnCombo            fires when Combo reaches/crosses a threshold within one Swap
 OnCascade          fires on each Cascade iteration (MATCH3_RULES.md §4)
-OnPowerGain        fires when the player's Power increases
-OnDamageDealt      fires when the player deals damage
-OnDamageTaken       fires when the player takes damage
-OnHpBelow          fires when HP crosses below a configured percentage
+OnPowerGain        fires when the active Pet's Power increases
+OnDamageDealt      fires when the active Pet deals damage
+OnDamageTaken      fires when the active Pet takes damage
+OnHpBelow          fires when the active Pet's HP crosses below a
+                   configured percentage
 OnCardCast          fires when any Card (Basic or Pet Skill) is cast
 OnTurnStart         fires at the start of a Turn
 OnTurnEnd           fires at the end of a Turn

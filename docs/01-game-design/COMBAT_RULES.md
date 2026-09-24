@@ -1,9 +1,12 @@
 # Combat Rules
 
-**Version:** 1.2 (§3.2 Boss Damage — Element defender corrected to Player's
-active Pet; Boss Damage moved to §3.4 after Critical Hits to resolve the
-duplicate §3.2 heading — Defense Mitigation remains §3.2, Critical Hits
-remains §3.3)
+**Version:** 1.3 (§1.1 renamed — combat stats are the active Pet's
+(PetState) stats, not a Player combat identity; §3.4 Final Damage target
+corrected to active Pet HP; wire `target="player"` documented as a fixed
+protocol label for the player's side — §3.2 Boss Damage — Element defender
+corrected to Player's active Pet; Boss Damage moved to §3.4 after Critical
+Hits to resolve the duplicate §3.2 heading — Defense Mitigation remains
+§3.2, Critical Hits remains §3.3)
 **Status:** MVP Domain Rule
 **Parent:** GAME_RULES.md
 
@@ -14,7 +17,7 @@ resolve in favor of GAME_RULES.md.
 
 # 1. Combat Stats
 
-## 1.1 Player / Pet Stats
+## 1.1 Active Pet Battle Stats (PetState)
 
 ```text
 HP        current health                          MVP default: 1000
@@ -25,6 +28,11 @@ Power     resource for casting Cards / Skills, range 0–100
 Crit      critical hit chance (%)                 MVP default: 5%
 Status    active Status Effects (see §5)
 ```
+
+These stats belong to the active Pet (the combat character) and are held
+in `PetState` during battle (`GAME_STATE.md` §2.3). The Player
+(account/owner) carries no separate combat stats — there is no parallel
+Player HP/ATK/DEF/Power pool.
 
 These are the MVP baseline configuration values. They are not permanent
 invariants — future Pet progression (Level, Star, Tier) may produce different
@@ -128,8 +136,9 @@ where `K` is a tunable constant controlling how quickly DEF diminishes
 incoming damage. MVP default: `K = 100` (configuration).
 
 `DEF` is the **defending target's** Defense: `BossState.DEF` for
-Player→Boss damage, the active Pet's `DEF` for Boss→Player damage
-(`ELEMENT_RULES.md` §5).
+player→Boss damage, the active Pet's `DEF` (in `PetState`) for
+Boss→player damage — the defender is always the active Pet, never a
+separate Player entity (`ELEMENT_RULES.md` §5).
 
 ## 3.3 Critical Hits
 
@@ -149,10 +158,10 @@ Boss basic attacks and Boss Skills both use the same Damage Pipeline (steps 1–
 Boss Basic Attack:
   Step 1 — Base Damage = Boss.ATK
   Step 2 — Combo Modifier = 1 (Boss attacks are not part of a Combo chain)
-  Step 3 — Element Modifier = Boss.Element vs. the Player's active Pet's Element (ELEMENT_RULES.md §2, §5 — the defender is the Pet, not the Player)
+  Step 3 — Element Modifier = Boss.Element vs. the active Pet's Element (ELEMENT_RULES.md §2, §5 — the defender is the Pet, not the Player)
   Step 4 — Other Modifiers = 1.0 (MVP: no Relic/Passive/Buff modifiers on Boss side)
   Step 5 — Defense Mitigation = Defender DEF (COMBAT_RULES.md §3.2)
-  Step 6 — Final Damage applied to Player.HP
+  Step 6 — Final Damage applied to active Pet HP (PetState.HP)
 
 Boss Skill:
   Same pipeline as above, but Step 1 Base Damage is defined per Skill
@@ -162,7 +171,9 @@ Boss Skill:
 
 The `DamageCalculated` event reports the full breakdown; `DamageDealt` and
 `DamageTaken` report the final amount with `source = "boss"` and
-`target = "player"`.
+`target = "player"`. The value `"player"` is a fixed wire label
+identifying the player's side (the active Pet) — it does not imply a
+separate Player HP pool (`SIGNALR_PROTOCOL.md` §3.2).
 
 ---
 

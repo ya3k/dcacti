@@ -1,6 +1,10 @@
 # Pet Rules
 
-**Version:** 1.0
+**Version:** 1.3 (§5 item 8 added — a newly created Player starts at
+Level 1; prior 1.2: §5 resolved — Player Level defined in MVP, Pet Level =
+clamp(Player Level × Pet Level Multiplier, 1, 50), Tier/Star remain
+independent, Evolution out of scope; §5.1 OPEN conflicts closed per
+ADR-012; prior 1.1: §2 ownership clarified)
 **Status:** MVP Domain Rule
 **Parent:** GAME_RULES.md
 
@@ -27,11 +31,20 @@ Pet
 
 # 2. Ownership & Selection
 
-1. A player may own an arbitrary number of Pets (collection).
+1. A player (the account/owner) may own an arbitrary number of Pets
+   (collection), Relics, and Cards.
 2. Exactly one Pet is selected as "active" per battle (GAME_RULES.md §9.2).
+   The Player is the owner; the active Pet is the combat character — its
+   HP, battle stats (ATK/DEF/Crit/Power), Status Effects, equipped Relics,
+   and equipped Cards are what the battle uses. Authoritative battle-time
+   values live in `PetState` (`GAME_STATE.md` §2.3); there is no separate
+   Player combat-state pool.
 3. Selecting a Pet locks in that Pet's Element, Passive, and Signature Skill
    for the duration of the battle. Mid-battle Pet swapping is out of MVP
    scope.
+4. Relic loadout: the Player equips 3–5 owned Relics onto the active Pet
+   before battle start (`RELIC_RULES.md` §2). Relics are a per-Pet loadout
+   for that battle, not a global Player loadout.
 
 ---
 
@@ -72,7 +85,7 @@ Range: 1–5
 2. Star may improve Pet power (stat growth and/or minor Passive/Skill
    magnitude increases), per GAME_RULES.md §9.6.
 3. Exact star-up costs, materials, and stat curves are Meta Progression
-   concerns (GDD §17) and are not defined in this Battle-facing rules
+   concerns (GDD §14) and are not defined in this Battle-facing rules
    document.
 
 ---
@@ -80,14 +93,74 @@ Range: 1–5
 # 5. Level
 
 ```text
-Range: 1–50
+Player Level range:  1–50   (persistent account attribute)
+Pet Level range:     1–50   (clamped result of the formula below)
 ```
 
-1. Level primarily scales base stats (HP/ATK/DEF) via a stat curve.
-2. Level does not change Element, Tier, Passive trigger type, or Signature
+1. Pet Level is derived from the account's Player Level:
+
+   ```text
+   Pet Level = clamp(Player Level × Pet Level Multiplier, 1, 50)
+   ```
+
+   `Pet Level Multiplier` is a per-Pet **configuration value** (never
+   hard-coded). The clamp bounds the *result* of the product to the
+   1–50 range above; it does not re-define Player Level's own 1–50 range
+   and does not supersede either range.
+
+2. Pets have no independent XP progression — there is no Pet XP bar, no
+   XP gain from battles, and no Pet-level-up action. Player Level itself
+   increases through Meta Progression battle Rewards (GDD §14,
+   `MVP_SCOPE.md` §1); the exact XP curve is a balance/config concern and
+   is not defined in this document.
+
+3. Player Level carries **no combat stats**. It is an account-level
+   progression value only; battle-time HP/ATK/DEF/Crit/Power live on
+   `PetState` (`GAME_STATE.md` §2.3, ADR-011).
+
+4. Level primarily scales base stats (HP/ATK/DEF) via a stat curve.
+5. Level does not change Element, Tier, Passive trigger type, or Signature
    Skill identity — only magnitude, where applicable.
-3. Exact level curve (linear/exponential/tabled) is a balance concern defined
+6. Exact level curve (linear/exponential/tabled) is a balance concern defined
    in COMBAT_RULES.md / config, not here.
+7. **Tier and Star remain independent progression axes.** They are not
+   derived from Player Level. Only Pet Level is account-derived
+   (resolution recorded in §5.1).
+8. **A newly created Player starts at Level 1.** This is the documented
+   initial value of the `Player.Level` attribute defined above — the
+   value a Player row carries when it is first created. It is an
+   initial-value rule only: it defines no XP amount, no XP curve, no
+   level-up threshold, and no rate of increase. How Player Level
+   increases is stated at the mechanism level in item 2, and the
+   increase curve remains undefined (item 2, §5.1 item 4).
+
+## 5.1 Former OPEN Conflicts — Resolved (ADR-012)
+
+The three conflicts previously reported under this heading are resolved
+as follows, and item 4 records the initial value added in version 1.3;
+this document no longer carries open items in §5:
+
+1. **Player Level is defined for MVP.** Range 1–50, persistent on the
+   Player account (`DATABASE.md` §1), listed IN in `MVP_SCOPE.md` §1,
+   increases via battle Rewards (Meta Progression). No combat stats
+   (§5 item 3).
+2. **The 1–50 level cap clamps the formula result.** `Pet Level =
+   clamp(Player Level × Multiplier, 1, 50)` (§5 item 1). Both
+   Player Level and Pet Level independently respect 1–50.
+3. **Tier and Star are not account-derived.** They remain independent
+   axes alongside the account-derived Level (§5 item 7);
+   `PET_RULES.md` §3–§4 are unchanged.
+4. **The initial Player Level is specified.** A newly created Player
+   starts at Level 1 (§5 item 8). This closes the one value the 1–50
+   range statement left open: a range defines the legal values an
+   attribute may hold, not the value it holds at creation. Item 8
+   records the initial value only; the increase curve remains a
+   balance/config concern and is not defined here (§5 item 2).
+
+**Evolution is out of scope.** No Evolution system exists in any rule
+document; if introduced later it must go through `GAME_RULES.md` §20 and
+`MVP_SCOPE.md` §4 (FUTURE by default). There is no Level/Evolution
+interaction to specify.
 
 ---
 
@@ -99,9 +172,11 @@ Final in-battle Pet stats are derived from all progression axes combined:
 Final Stat = f(Base Stat[Tier], Level Curve[Level], Star Bonus[Star])
 ```
 
-The exact function `f` is a balance/config concern. This document only fixes
-that all three axes (Tier, Level, Star) contribute, and that none of them
-alone is the sole source of power growth (reinforcing GAME_RULES.md §9.8).
+Here `Level` is the Pet Level defined in §5 (`clamp(Player Level × Pet
+Level Multiplier, 1, 50)`, config). The exact function `f` is a
+balance/config concern. This document only fixes that all three axes
+(Tier, Level, Star) contribute, and that none of them alone is the sole
+source of power growth (reinforcing GAME_RULES.md §9.8).
 
 ---
 

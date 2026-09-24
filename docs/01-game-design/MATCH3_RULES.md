@@ -1,7 +1,10 @@
 # Match-3 Rules
 
-**Version:** 1.4 (committed-swap state owner named for §2.1.4's
-already-applied check — see `GAME_STATE.md` §2.1.10; no gameplay rule changed)
+**Version:** 1.5 (§6.1/§8 citations updated — `PlayerState.Combo`/
+`PlayerState.MatchCount` replaced with `BattleState.Combo`/
+`BattleState.MatchCount` per Player-as-owner / Pet-as-combat redesign;
+no gameplay rule changed — committed-swap state owner named for §2.1.4's
+already-applied check — see `GAME_STATE.md` §2.1.10)
 **Status:** MVP Domain Rule
 **Parent:** GAME_RULES.md
 
@@ -2502,7 +2505,7 @@ owns the rule and its damage multipliers.
 
 ## 6.1 Starting Value and Reset
 
-1. `Combo` is a `BattleState` field (`GAME_STATE.md` §2.2, `PlayerState.Combo`)
+1. `Combo` is a `BattleState` field (`GAME_STATE.md` §2.2, `BattleState.Combo`)
    whose rule-level value starts at **0**.
 2. A **committed** Swap resets Combo to 0 before the first Match of that Swap is
    counted (§2 item 5). The reset is part of the committed Swap's resolution
@@ -2649,7 +2652,7 @@ Swap                                  (§2.1.6) – Combo reset to 0
 
 Turn    = 21        (this Swap is Turn 21 – GAME_RULES.md §2)
 Matches = 3         (this Swap's Match count; the battle total is
-                     PlayerState.MatchCount, GAME_STATE.md §2.2)
+                     BattleState.MatchCount, GAME_STATE.md §2.2)
 Combo   = 3         (consecutive Matches of this Swap, §6.3 item 1)
 ```
 
@@ -2657,7 +2660,7 @@ Combo   = 3         (consecutive Matches of this Swap, §6.3 item 1)
    `GAME_RULES.md` §2's example does; how the counter is stored and written is
    owned by `GAME_STATE.md` §2.0.2 / §5.1 and §8 below.
 2. **Matches** is the number of Matches produced by this Swap (3). The
-   cumulative battle total is `PlayerState.MatchCount` (`GAME_STATE.md` §2.2),
+   cumulative battle total is `BattleState.MatchCount` (`GAME_STATE.md` §2.2),
    owned by `GAME_RULES.md` §3.
 3. **Combo** is 3 – the number of consecutive Matches in this one Swap, which
    equals the Match count of this Swap by §6.3 item 1.

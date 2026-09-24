@@ -1,4 +1,8 @@
+using GameServer.Application.Identity;
+using GameServer.Application.Players;
+using GameServer.Infrastructure.Discord;
 using GameServer.Infrastructure.Postgres;
+using GameServer.Infrastructure.Postgres.Repositories;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -20,6 +24,23 @@ public static class DependencyInjection
             services.AddDbContext<GameDbContext>(options =>
                 options.UseNpgsql(pgConnectionString));
         }
+
+        // Player ownership persistence boundary (DATABASE.md §1).
+        //
+        // Registered unconditionally: the repository takes the scoped
+        // GameDbContext, so it is only resolvable where that context is
+        // registered (i.e. when a connection string is configured), while an
+        // unconfigured environment still composes cleanly.
+        services.AddScoped<IPlayerRepository, PlayerRepository>();
+
+        // Discord identity exchange boundary (API_CONTRACTS.md §2.2–§2.4).
+        //
+        // This is the registration point for the TASK-035 contract's exchange
+        // client, which is a separate downstream implementation and is not
+        // built by TASK-023. Until it is registered, the resolver reports the
+        // exchange as unavailable and produces no identity — so no Player is
+        // ever written for an unverified caller.
+        services.AddSingleton<IDiscordIdentityResolver, UnconfiguredDiscordIdentityResolver>();
 
         // Redis connection boundary
         var redisConnectionString = configuration.GetConnectionString("Redis");

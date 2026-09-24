@@ -1,6 +1,7 @@
 # MVP Scope
 
-**Version:** 1.0
+**Version:** 1.1 (§1 Player Level added — required by the Pet Level
+formula; PET_RULES.md §5, ADR-012)
 **Status:** Canonical — this document is the single source of truth for
 IN / OUT / FUTURE classification. `GAME_RULES.md` and `GDD.md` reference
 this document rather than repeating the list.
@@ -28,11 +29,22 @@ Tương Khắc relationship only
 Element damage modifiers (Advantage / Neutral / Disadvantage)
 ```
 
+## Player
+```text
+Player account (Discord identity, collection owner)
+Player Level (1–50) — persistent account attribute; no combat stats.
+  Source of Pet Level via PET_RULES.md §5. Increases through battle
+  Rewards (Meta Progression — GDD §14). Exact XP curve is a balance
+  concern, not a scope item.
+```
+
 ## Pets
 ```text
 5 Pets (Thanh Xà, Xích Lang, Sơn Hùng, Bạch Hổ, Huyền Quy)
 Pet Element, Passive, Signature Skill
 Tier, Star, Level progression
+  (Pet Level = clamp(Player Level × Pet Level Multiplier, 1, 50) —
+   PET_RULES.md §5; no Pet XP)
 ```
 
 ## Cards

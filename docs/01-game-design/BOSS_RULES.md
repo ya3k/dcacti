@@ -1,6 +1,8 @@
 # Boss Rules
 
-**Version:** 2.1 (§3.3 sub-step citations corrected to 18b/18c; §5.4 Enrage
+**Version:** 2.2 (Boss triggers and terminal checks reference active Pet HP/
+Power instead of a separate Player combat identity; wire `target`/`BattleLost`
+semantics clarified — §3.3 sub-step citations corrected to 18b/18c; §5.4 Enrage
 ordering stated; §6.2 Thủy Ma Always-Active clarified; §6.3 Turn citation
 corrected; §6.4 identity contract added)
 **Status:** MVP Domain Rule
@@ -53,10 +55,10 @@ Per GAME_RULES.md §15.1–15.3 and GDD §13:
    Turn
    Match Count (player's)
    Combo (player's)
-   Player Power
-   Player HP
+   Active Pet Power
+   Active Pet HP
    Boss HP
-   Status (on Boss or Player)
+   Status (on Boss or active Pet)
    ```
 3. Boss Passive effects are automatic — no player input required, and no Boss
    "casting" input required either; they resolve as part of normal battle
@@ -83,7 +85,7 @@ Boss Passive fires at Step 18 of GAME_RULES.md §17, after Player Damage
 
 1. **The Passive fires once per player action, after all player damage is
    resolved.** This means the Passive sees the post-damage battle state
-   (Player HP, Boss HP, Combo, match count). A Boss Passive that triggers
+   (active Pet HP, Boss HP, Combo, match count). A Boss Passive that triggers
    on "Boss HP below threshold" evaluates against the HP after the player's
    damage, not before.
 2. **The Passive fires before the Boss Skill.** The Boss Skill's timing
@@ -138,7 +140,7 @@ Boss Passive fires at Step 18 of GAME_RULES.md §17, after Player Damage
    is applied whenever the HP condition holds, including when Player damage
    has just reduced Boss HP to 0 (the terminal check then ends the battle
    with no Boss Response). Order: Player→Boss Damage → Enrage → terminal
-   Boss HP check → Boss Response 18a–18c → terminal Player HP check.
+   Boss HP check → Boss Response 18a–18c → terminal active Pet HP check.
 5. **Stun** is a temporary state that prevents the Boss from acting. Duration
    is measured in Turns and tracked by `StatusEffects[]` (not yet
    implemented). For MVP, no content-defined Boss applies Stun.
@@ -151,9 +153,12 @@ Boss Passive fires at Step 18 of GAME_RULES.md §17, after Player Damage
 Boss        Element   Passive (trigger)                          Skill                    Skill Timing
 ---------   -------   -----------------------------------------  -----------------------  ----------------------
 Hỏa Long    Hỏa       Every 5 Player Matches → gain Rage          Flame Burst → Dmg+Burn  Charge: 5 matches, CD: 2T
-Thủy Ma     Thủy      Healing received reduced                    Drain Power → -PlayerPow Charge: 4 matches, CD: 3T
-Mộc Yêu     Mộc       Every 5 Player Matches → Regen HP           Root → -PlayerATK        Charge: 6 matches, CD: 2T
+Thủy Ma     Thủy      Healing received reduced                    Drain Power → −Pet Power Charge: 4 matches, CD: 3T
+Mộc Yêu     Mộc       Every 5 Player Matches → Regen HP           Root → −Pet ATK         Charge: 6 matches, CD: 2T
 ```
+
+Skill effect targets (`−Pet Power`, `−Pet ATK`) are the active Pet's
+stats in `PetState` — not a separate Player entity.
 
 ### 6.1 MVP Boss Base Stats (Project-Owner Approved)
 
@@ -171,7 +176,7 @@ Mộc Yêu     Mộc       5000         100   50    1500 (30%)        Idle
 Boss        Passive Effect                                    Passive Trigger
 ---------   -----------------------------------------------   ----------------------
 Hỏa Long    Gain +20% ATK (Rage) for 3 turns                  Every 5 Player Matches
-Thủy Ma     Player Healing reduced by 50% for 3 turns          Passive (always active)
+Thủy Ma     Active Pet healing reduced by 50% for 3 turns     Passive (always active)
 Mộc Yêu     Regenerate 5% MaxHP                               Every 5 Player Matches
 ```
 
@@ -268,7 +273,7 @@ BossSkillCast      emitted when a Boss Skill resolves
                    (SIGNALR_PROTOCOL.md §3.2.18)
 
 BattleWon          emitted when Boss HP reaches 0
-BattleLost         emitted when Player HP reaches 0
+BattleLost         emitted when the active Pet's HP reaches 0
                    (SIGNALR_PROTOCOL.md §3.2.19)
 ```
 

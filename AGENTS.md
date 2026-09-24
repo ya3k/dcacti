@@ -102,7 +102,7 @@ docs/01-game-design/ GAME_RULES.md + 8 domain rule docs
 docs/02-technical/   TDD.md, ARCHITECTURE.md, GAME_STATE.md, GAME_EVENTS.md,
                       API_CONTRACTS.md, SIGNALR_PROTOCOL.md, REDIS_STATE.md,
                       DATABASE.md
-docs/03-decisions/   README.md (ADR index), ADR/ (9 ADRs)
+docs/03-decisions/   README.md (ADR index), ADR/ (12 ADRs)
 ```
 
 Do not assume any content beyond what these documents actually say. If a

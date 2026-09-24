@@ -1,6 +1,9 @@
 # Redis State
 
-**Version:** 1.3 (`LastCommittedSwapPair` persistence boundary stated in §7 item 11)
+**Version:** 1.4 (Player/Pet role model per ADR-011 — staged PlayerState
+narrative corrected to BattleState-root Combo/MatchCount + PetState combat
+members; prior 1.3: `LastCommittedSwapPair` persistence boundary stated in
+§7 item 11)
 **Status:** Draft
 
 > This document answers: **"How is active battle state represented in
@@ -130,8 +133,10 @@ Board Foundation state          Board Foundation State (GAME_STATE.md §2.0.5)
 Match-3 Resolution stage          Board Foundation State + board resolution
                                   (GAME_STATE.md §5.1, MATCH3_RULES.md §2–§8)
                                   → NOT stored in Redis (still a §2 subset —
-                                    §7 item 4 applies unchanged: PlayerState,
-                                    PetState, and BossState still do not exist)
+                                    §7 item 4 applies unchanged: Combo/
+                                    MatchCount at the BattleState root and
+                                    PetState combat members exist as fields,
+                                    but BossState does not)
 Full active battle state          Full BattleState (GAME_STATE.md §2)
                                   → Redis, battle:{battleId}:state (§1)
 ```
@@ -157,9 +162,10 @@ Full active battle state          Full BattleState (GAME_STATE.md §2)
      (`GAME_STATE.md` §2.0.5), so the Board Foundation stage is still a
      staged **subset** of §2 and still must not be written to
      `battle:{battleId}:state` (§7 items 1–2).
-   - It is still not a "real, playable battle" in §2's sense: `PlayerState`,
-     `PetState`, and `BossState` do not exist, so §2's full shape still
-     cannot be produced (`GAME_STATE.md` §2.0.5.3).
+   - It is still not a "real, playable battle" in §2's sense: `BossState`
+     (and later `PetState` loadout/status members) still do not
+     complete §2's full shape, which still cannot be produced
+     (`GAME_STATE.md` §2.0.5.3).
    - The deferral reason in §7 item 3 is unchanged: `POST /api/battle/start`
      still requires loadout data that does not exist, so no battle can be
      created for this key to hold.
@@ -187,9 +193,10 @@ Full active battle state          Full BattleState (GAME_STATE.md §2)
    `Sequence` (`GAME_STATE.md` §5.1) — all §2 fields that already exist — and
    adds exactly one further §2 field, `LastCommittedSwapPair`
    (`GAME_STATE.md` §2.1.10, §7 item 11 below). So §7 items 1–4 apply to it
-   unchanged: it is still a staged subset, it is still not a "real, playable
-   battle" without `PlayerState`/`PetState`/`BossState`, and
-   `POST /api/battle/start` still cannot create one. Resolving a board
+    unchanged: it is still a staged subset, it is still not a "real, playable
+    battle" without `BattleState.Combo`/`MatchCount` (§2.2),
+    `PetState`, and `BossState`, and
+    `POST /api/battle/start` still cannot create one. Resolving a board
    therefore **neither requires nor authorizes** Redis persistence, and adds
    no new key, no per-resolution key, and no board-specific key.
 9. **One serialization consequence, and it is not a gap.** Because the board
@@ -275,20 +282,25 @@ Full active battle state          Full BattleState (GAME_STATE.md §2)
 
     Like the Special Gem content change, this is a **content** change to the
     record rather than a **structure** change to the store.
-12. **`PlayerState` adds no key, no Redis-only field, and no persistence work at
-    this stage — and it does not end the deferral.** `GAME_STATE.md` §2.2 defines
-    `PlayerState`, the field §2 nests inside `BattleState`, and the Match /
-    Combo accounting stage implements two of its members: `MatchCount` and
-    `Combo`. Its consequences here are these, and nothing more:
+12. **Match/Combo accounting and `PetState` combat members add no key, no
+    Redis-only field, and no persistence work at
+    this stage — and they do not end the deferral.** `GAME_STATE.md` §2.2
+    defines `Combo` and `MatchCount` at the **`BattleState` root** (there is
+    no nested `PlayerState` node — ADR-011), and `GAME_STATE.md` §2.3's
+    `PetState` carries the active Pet's combat stats. The Match /
+    Combo accounting stage implements the two root members: `MatchCount` and
+    `Combo`. Their consequences here are these, and nothing more:
 
-    - **It is part of the §2 shape, so §2 item 1 covers it unchanged.**
+    - **They are part of the §2 shape, so §2 item 1 covers them unchanged.**
       `BattleState` is serialized as JSON matching `GAME_STATE.md` §2 exactly,
-      and `PlayerState` is a member of that tree. It introduces no Redis-only
+      and `Combo`/`MatchCount` are root members of that tree. They introduce no
+      Redis-only
       field, and §1's key structure is untouched: no
       `battle:{battleId}:progression` key, no per-player key, no hash field, and
-      no second record exists for it. A per-player key would in any case be a
+      no second record exists for them. A per-player key would in any case be a
       second representation of state §2 already carries inside the battle
-      record.
+      record. The wire label `playerState` (`SIGNALR_PROTOCOL.md` §4.2) is not
+      a stored path.
     - **Round-trip losslessness covers both members.** A record that drops,
       defaults, or recomputes either value does not round-trip
       (`GAME_STATE.md` §2.2, §2.1.7 item 5). Both are **state, not derived**:
@@ -317,8 +329,9 @@ Full active battle state          Full BattleState (GAME_STATE.md §2)
     - **Neither is a concurrency token.** `Sequence` remains the only one
       (§4 item 6, `GAME_STATE.md` §5).
     - **Nothing is stored here yet, and this stage does not change that.** §7
-      items 1–4 and item 8 apply unchanged: `PlayerState` now exists, but
-      `PetState` and `BossState` (`GAME_STATE.md` §2.3–§2.4) still do not, so
+      items 1–4 and item 8 apply unchanged: the accounting members and
+      `PetState` combat stats now exist as contract fields, but
+      `BossState` (`GAME_STATE.md` §2.4) still does not, so
       §2's full shape still cannot be produced and `POST /api/battle/start`
       still cannot create a real battle (§7 items 3, 7). Redis persistence
       therefore remains deferred, and this stage introduces no key and no record
