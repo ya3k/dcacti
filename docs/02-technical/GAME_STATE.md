@@ -1,6 +1,15 @@
 # Game State
 
-**Version:** 2.2 (Player/Pet role model per ADR-011 — `PlayerState`
+**Version:** 2.5 (§2.3 `PetState.EquippedCards[]` element representation
+stated as `CardDefinitionId` — definition-based, repeated entries repeat
+the same definition per the CARD_RULES.md §1 loadout copy limit, order
+non-semantic; card-side "underlying instances" wording corrected — Cards
+are unlocks, not instances; prior 2.4: `PetState.EquippedRelics[]` element representation stated as
+owned Relic instance identity, owned by `RELIC_RULES.md` §2.2, with the
+resolved slot-index source and duplicate-selection policy referenced from
+§2.3–§2.5; prior 2.3: two blocking OPEN records cited — equip slot index
+source and duplicate-selection policy; prior 2.2: Player/Pet role model per
+ADR-011 — `PlayerState`
 removed from §2; Combo/MatchCount at BattleState root; combat stats +
 StatusEffects + EquippedRelics/EquippedCards moved to `PetState`; wire
 member name `playerState` retained as a fixed protocol label; prior 2.1:
@@ -839,16 +848,17 @@ Two consequences follow, and both are deliberate rather than gaps:
    (`MATCH3_RULES.md` §6.5 item 4). Neither is nullable, neither is
    omitted, and zero is never spelled by omission.
 2. **These fields exist, and Redis persistence remains deferred.**
-   `PetState`'s combat members (§2.3) are also now implemented, but
-   `BossState` (§2.4) still does not exist, so §2's full shape still
-   cannot be produced and `POST /api/battle/start` still cannot create a
-   battle. `REDIS_STATE.md` §7 items 4 and 8 and its item 12 apply
-   unchanged: these fields neither require nor authorize persistence, and
+   `PetState`'s combat members (§2.3) and `BossState` (§2.4) are also
+   implemented, and `POST /api/battle/start` (TASK-030) creates a battle
+   carrying §2's shape — but that is a storage decision of its own
+   (`REDIS_STATE.md` §7), and no Redis record is written by this stage.
+   `REDIS_STATE.md` §7 items 4 and 8 and its item 12 apply unchanged:
+   these fields neither require nor authorize persistence, and
    add no key and no Redis-only field.
 
-**Implementation note (not a contract path).** The Domain model currently
-nests these two values under a type named `PlayerState`. That type name
-does not appear in this contract; it is an implementation-side mismatch
+**Implementation note (not a contract path).** The Domain model previously
+nested these two values under a type named `PlayerState`. That type name
+does not appear in this contract; it was an implementation-side mismatch
 recorded under ADR-011 Implementation Impact / `tasks/completed` impact,
 not a second authoritative path and not a wire rename.
 
@@ -872,8 +882,12 @@ PetState
 │                               the Domain model)
 ├── StatusEffects[]              (Burn/Shield/Buff-Debuff instances,
 │                                COMBAT_RULES.md §5 — not yet implemented)
-├── EquippedRelics[]              (3–5, slot order fixed at battle start,
-│                                RELIC_RULES.md §4 — not yet implemented)
+├── EquippedRelics[]              (3–5 owned Relic instance identities,
+│                                slot order fixed at battle start — the
+│                                slot index is the submitted `relicLoadout`
+│                                position + 1, and the array preserves that
+│                                order, RELIC_RULES.md §2.2–§2.5, §4 —
+│                                not yet implemented)
 ├── EquippedCards[]                (3 Basic Cards + 1 Pet Skill Card —
 │                                 not yet implemented)
 ├── PassiveId                    (the Pet's one Passive — PASSIVE_RULES.md §1;
@@ -888,11 +902,13 @@ PetState
 
 **Implemented so far: `HP`, `MaxHP`, `ATK`, `DEF`, `Power`, `Crit`, plus
 `PassiveId`/`PassiveProgress`/`PassiveResetOverride` and identity fields**
-as staged. **The three collection members `StatusEffects[]`,
-`EquippedRelics[]`, and `EquippedCards[]` are not yet implemented.**
-(The Domain model currently nests the combat stats under a type named
-`PlayerState`; that is an implementation mismatch — see §2.2 Implementation
-note and ADR-011 — not a second state path in this contract.)
+as staged, together with the two battle-loadout collections
+`EquippedRelics[]` and `EquippedCards[]`, which TASK-027/TASK-028
+implemented and `POST /api/battle/start` (TASK-030) populates at battle
+creation. **The remaining collection member `StatusEffects[]` is not yet
+implemented.** (The Domain model no longer nests the combat stats under a
+type named `PlayerState`; that implementation mismatch was corrected —
+see §2.2 Implementation note and ADR-011.)
 
 **Domain state implemented is not the same as client wire delivery.**
 Not all members here are part of any wire payload — see
@@ -917,17 +933,56 @@ Player HP/ATK/DEF/Power pool in §2; damage and healing apply to
 `PetState.HP` (or `BossState.HP`), per `COMBAT_RULES.md` §1.1 and
 `GAME_RULES.md` §14.
 
-The remaining collection members are **not yet implemented** — not **not
-required** (§0 item 4): `StatusEffects[]`, `EquippedRelics[]`, and
-`EquippedCards[]` each arrive with their owning Combat, Relic, or Card
-system, exactly as their own stages arrived. None of them is stubbed,
-defaulted, or represented by a placeholder collection, because a placeholder
-for a field no rule yet reads would be a representation of its own (§0 item 5).
+The remaining collection member is **not yet implemented** — not **not
+required** (§0 item 4): `StatusEffects[]` arrives with its owning Combat
+system, exactly as the Relic and Card stages arrived and added
+`EquippedRelics[]` and `EquippedCards[]`. It is not stubbed, defaulted, or
+represented by a placeholder collection, because a placeholder for a field
+no rule yet reads would be a representation of its own (§0 item 5).
 `EquippedRelics[]` and `EquippedCards[]` are the **battle-scoped loadout**
-copied from the Player's owned collection at battle start (3–5 Relics,
-exactly 3 Basic + 1 Pet Skill Card) — ownership of the underlying instances
-remains the Player's (`DATABASE.md` §2), while the equipped set is per-Pet
-(`RELIC_RULES.md` §2, `CARD_RULES.md` §3, ADR-011).
+fixed at battle start (3–5 Relics, exactly 3 Basic + 1 Pet Skill Card), and
+`POST /api/battle/start` (`API_CONTRACTS.md` §3) is the point at which they
+are snapshot from the submitted `relicLoadout` and `cardLoadout`.
+For Relics, ownership of the underlying owned instances remains the
+Player's (`DATABASE.md` §2); for Cards there are no instances — the
+Player's unlock rows (`PlayerUnlockedCard`) remain the Player's — while
+the equipped set is per-Pet (`RELIC_RULES.md` §2, `CARD_RULES.md` §1,
+ADR-011).
+
+**`EquippedRelics[]`'s element is an identity, not a definition.** Each
+element is one owned Relic **instance identity** — the same "identity, not
+a definition" member shape this section records for `PassiveId` and §2.4
+records for `BossId`, and the same identity `GAME_EVENTS.md` §2 reports as
+`RelicTriggered`'s `RelicId`. A Relic's `Trigger`/`Condition`/`Effect`/
+`Reset` are its definition on `RelicDefinition` (`DATABASE.md` §1) and are
+**not** copied into the element (§0 item 5). Which identity it is, why it
+is the instance and not `RelicDefinitionId`, and the evidence for that are
+owned by `RELIC_RULES.md` §2.2 and are not restated here.
+
+**The member's order is the submitted loadout order, and it is fixed.**
+`relicLoadout[0]` becomes slot 1 and therefore `EquippedRelics[0]`; the array
+is snapshotted once at battle start and does not change for that battle. The
+slot-index source, the 3–5 count and ownership validation, the
+duplicate-instance rule, and the resulting valid/invalid behavior are owned
+by `RELIC_RULES.md` §2.1–§2.5 and `API_CONTRACTS.md` §3, and are not
+restated here — this section states only where the values live and that
+their order is preserved as submitted.
+
+**`EquippedCards[]`'s element is a definition identity, not an instance.**
+Each element is one `CardDefinitionId` (`DATABASE.md` §1) — a definition
+identity, the same member shape this section records for `PassiveId` and
+§2.4 records for `BossId`, and the contrast of `EquippedRelics[]` above
+(instance identity). There are no Card instances (ADR-012 item 9): if
+the same `CardDefinitionId` appears more than once, the repeated
+elements are that same definition repeated — permitted only up to its
+per-CardDefinition loadout copy limit (`CARD_RULES.md` §1) — and never
+separate owned or persistent entities. The array holds exactly the four
+battle-scoped cards (the 3 submitted Basic CardDefinitionIds plus the
+active Pet's derived Signature Skill CardDefinitionId), is snapshotted
+once at battle start, and does not change for that battle. Element
+order carries no gameplay significance — no rule reads card array
+positions, unlike `EquippedRelics[]` above, whose order is the equip
+slot order.
 
 **The combat stats are state, and they are not yet delivered on the wire.**
 `SIGNALR_PROTOCOL.md` §4.2 fixes the `playerState` payload member to exactly
@@ -944,11 +999,13 @@ from battle creation, and `Power = 0` is a real publishable value —
 the value read before any Match generates Power (`COMBAT_RULES.md` §2).
 None is nullable, none is omitted, and zero is never spelled by omission.
 
-`PetState` now exists, and Redis persistence remains deferred. `BossState`
-(§2.4) still does not, so §2's full shape still cannot be produced and
-`POST /api/battle/start` still cannot create a battle. `REDIS_STATE.md`
-§7 items 4 and 8 and its item 12 apply unchanged: these fields neither
-require nor authorize persistence, and add no key and no Redis-only field.
+`PetState` and `BossState` (§2.4) both now exist, and `POST /api/battle/start`
+(TASK-030) creates an authoritative battle from the resolved Pet, Boss, and
+both loadout snapshots — so §2's shape is produced for a created battle. That
+does not itself authorize Redis persistence: `REDIS_STATE.md` §7's deferral
+gate is a storage decision with its own task, and this stage writes no Redis
+key. `REDIS_STATE.md` §7 items 4, 8 and 12 apply unchanged in the meantime:
+these fields add no key and no Redis-only field.
 
 **`PassiveId` is the Passive's identity, and it is a value, not a new
 concept.** A Pet has **exactly one** Passive (`PASSIVE_RULES.md` §1,

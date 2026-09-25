@@ -79,6 +79,18 @@ public sealed class PlayerRepository : IPlayerRepository
         }
     }
 
+    /// <inheritdoc />
+    public async Task<Player?> GetByIdAsync(
+        string playerId,
+        CancellationToken cancellationToken = default)
+    {
+        // A pure read of the persistent account row — used by the Pet Level
+        // recompute path (ADR-012 Consequences) to obtain Player.Level.
+        // It never creates a Player and never rewrites Level.
+        return await _dbContext.Players
+            .FirstOrDefaultAsync(player => player.PlayerId == playerId, cancellationToken);
+    }
+
     /// <summary>
     /// Whether a save failure is the <c>DiscordUserId</c> unique-constraint
     /// violation rather than an unrelated database error.

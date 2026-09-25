@@ -35,7 +35,7 @@ namespace GameServer.Domain.Tests;
 /// cases a board fixture cannot place exactly — is pinned without depending on what
 /// a cascade spawns. The <see cref="SwapExecutor"/> cases then prove the write is
 /// wired into the documented resolution position and that a real HP-Gem Match moves
-/// the persistent <c>PlayerState.HP</c>.
+/// the persistent <c>PetState.HP</c> (GAME_STATE.md §2.3, ADR-011 item 3).
 ///
 /// <b>HealPool is transient.</b> A HealPool that the Swap did not generate is
 /// supplied only as the input of a direct call; it is never stored on the state,
@@ -48,12 +48,24 @@ public class PlayerEffectHealingTests
 
     private static int I(int row, int column) => TestBoard.I(row, column);
 
-    private static BattleState BattleWith(BoardState board, PlayerState? player = null) =>
-        BattleState.CreateWith("battle-019", TestSeed) with
+    private static BattleState BattleWith(BoardState board, PetState? pet = null)
+    {
+        var created = BattleState.CreateWith("battle-019", TestSeed);
+
+        return created with
         {
             BoardState = board,
-            PlayerState = player ?? PlayerState.Initial,
+            PetState = pet ?? created.PetState,
         };
+    }
+
+    /// <summary>
+    /// The active Pet state a battle of this fixture starts with — the documented
+    /// combat-stat home (<c>GAME_STATE.md</c> §2.3, <c>COMBAT_RULES.md</c> §1.1,
+    /// <c>ADR-011</c> item 3): HP = MaxHP = 1000, ATK 50, DEF 25, Crit 5, Power 0.
+    /// </summary>
+    private static PetState DefaultPet() =>
+        BattleState.CreateWith("battle-019", TestSeed).PetState;
 
     /// <summary>
     /// A generation carrying only a HealPool — the transient input of the
@@ -73,7 +85,7 @@ public class PlayerEffectHealingTests
         // COMBAT_RULES.md §4 item 1: the pool is applied in full while HP stays
         // "up to Max HP". 600 + 150 = 750, strictly below the 1000 ceiling, so no
         // part of the pool is discarded.
-        var state = PlayerState.Initial with { HP = 600, MaxHP = 1000 };
+        var state = DefaultPet() with { HP = 600, MaxHP = 1000 };
 
         var updated = ResourceGenerator.ApplyHeal(state, HealOnly(150));
 
@@ -87,7 +99,7 @@ public class PlayerEffectHealingTests
         // The largest pool that still fits: 999 + 1 = 1000 = MaxHP. §4 item 1
         // restores HP "up to Max HP", so landing exactly on the ceiling is not
         // overheal and the pool is not trimmed.
-        var state = PlayerState.Initial with { HP = 999, MaxHP = 1000 };
+        var state = DefaultPet() with { HP = 999, MaxHP = 1000 };
 
         var updated = ResourceGenerator.ApplyHeal(state, HealOnly(1));
 
@@ -103,7 +115,7 @@ public class PlayerEffectHealingTests
     {
         // §4 item 1: 400 + 600 = 1000 = MaxHP. The boundary is inclusive — the
         // heal is not reduced to leave a point of room.
-        var state = PlayerState.Initial with { HP = 400, MaxHP = 1000 };
+        var state = DefaultPet() with { HP = 400, MaxHP = 1000 };
 
         var updated = ResourceGenerator.ApplyHeal(state, HealOnly(600));
 
@@ -118,15 +130,7 @@ public class PlayerEffectHealingTests
         // "are not permanent invariants — future Pet progression (Level, Star, Tier)
         // may produce different actual Battle Stats". The clamp therefore reads the
         // state's own MaxHP rather than any constant. 250 + 250 = 500 = MaxHP.
-        var state = new PlayerState(
-            HP: 250,
-            MaxHP: 500,
-            ATK: 50,
-            DEF: 25,
-            Power: 0,
-            Crit: 5,
-            Combo: 0,
-            MatchCount: 0);
+        var state = DefaultPet() with { HP = 250, MaxHP = 500 };
 
         var updated = ResourceGenerator.ApplyHeal(state, HealOnly(250));
 
@@ -144,7 +148,7 @@ public class PlayerEffectHealingTests
         // overheal/temp-HP". No Relic does in MVP, so 400 + 10000 stops at 1000 —
         // and the excess is stored nowhere: it is not carried forward, and no other
         // field of the state holds it.
-        var state = PlayerState.Initial with { HP = 400, MaxHP = 1000 };
+        var state = DefaultPet() with { HP = 400, MaxHP = 1000 };
 
         var updated = ResourceGenerator.ApplyHeal(state, HealOnly(10_000));
 
@@ -157,8 +161,10 @@ public class PlayerEffectHealingTests
         Assert.Equal(state.DEF, updated.DEF);
         Assert.Equal(state.Power, updated.Power);
         Assert.Equal(state.Crit, updated.Crit);
-        Assert.Equal(state.Combo, updated.Combo);
-        Assert.Equal(state.MatchCount, updated.MatchCount);
+        // Combo and MatchCount are not PetState members at all — GAME_STATE.md §2.2
+        // places them at the BattleState root — so this write cannot touch them.
+        Assert.Equal(typeof(int), typeof(BattleState).GetProperty("Combo")!.PropertyType);
+        Assert.Equal(typeof(int), typeof(BattleState).GetProperty("MatchCount")!.PropertyType);
 
         // And a second application of the same pool heals nothing, because there is
         // no stored overheal to spend.
@@ -170,7 +176,7 @@ public class PlayerEffectHealingTests
     public void ApplyHeal_ShouldClampToMaxHpWhenTheOverhealIsASinglePoint()
     {
         // The smallest overshoot: 999 + 2 = 1001, one point over the ceiling.
-        var state = PlayerState.Initial with { HP = 999, MaxHP = 1000 };
+        var state = DefaultPet() with { HP = 999, MaxHP = 1000 };
 
         var updated = ResourceGenerator.ApplyHeal(state, HealOnly(2));
 
@@ -187,7 +193,7 @@ public class PlayerEffectHealingTests
         // The ordinary case of a Swap that cleared no HP Gem: nothing was
         // generated, so nothing is applied. HP is unchanged — not reset, not
         // re-derived from MaxHP.
-        var state = PlayerState.Initial with { HP = 375, MaxHP = 1000 };
+        var state = DefaultPet() with { HP = 375, MaxHP = 1000 };
 
         var updated = ResourceGenerator.ApplyHeal(state, HealOnly(0));
 
@@ -200,7 +206,7 @@ public class PlayerEffectHealingTests
     {
         // The value a damage stage would have left (§3 owns damage, which is not
         // this stage) is carried across a Swap that heals nothing.
-        var state = PlayerState.Initial with { HP = 1, MaxHP = 1000 };
+        var state = DefaultPet() with { HP = 1, MaxHP = 1000 };
 
         var updated = ResourceGenerator.ApplyHeal(state, HealOnly(0));
 
@@ -216,7 +222,7 @@ public class PlayerEffectHealingTests
     {
         // §4 item 1's ceiling stated for a full-health player: HP is already "up to
         // Max HP", so a pool of any size changes nothing.
-        var state = PlayerState.Initial with { HP = 1000, MaxHP = 1000 };
+        var state = DefaultPet() with { HP = 1000, MaxHP = 1000 };
 
         Assert.Equal(1000, ResourceGenerator.ApplyHeal(state, HealOnly(0)).HP);
         Assert.Equal(1000, ResourceGenerator.ApplyHeal(state, HealOnly(20)).HP);
@@ -228,7 +234,7 @@ public class PlayerEffectHealingTests
     {
         // The whole state is unchanged, not only HP: the clamp returns the same
         // value rather than a rebuilt one.
-        var state = PlayerState.Initial with { HP = 1000, MaxHP = 1000 };
+        var state = DefaultPet() with { HP = 1000, MaxHP = 1000 };
 
         Assert.Equal(state, ResourceGenerator.ApplyHeal(state, HealOnly(500)));
     }
@@ -240,19 +246,19 @@ public class PlayerEffectHealingTests
     [Fact]
     public void ApplyHeal_ShouldChangeOnlyHp()
     {
-        // The write-back replaces PlayerState wholesale (GAME_STATE.md §5.1), so
+        // The write-back replaces PetState wholesale (GAME_STATE.md §5.1), so
         // every field this step does not own has to be carried across rather than
         // reinitialized. Power in particular belongs to the generation step that
         // ran before this one, and must survive it.
-        var state = new PlayerState(
-            HP: 777,
-            MaxHP: 900,
-            ATK: 61,
-            DEF: 33,
-            Power: 42,
-            Crit: 9,
-            Combo: 4,
-            MatchCount: 12);
+        var state = DefaultPet() with
+        {
+            HP = 777,
+            MaxHP = 900,
+            ATK = 61,
+            DEF = 33,
+            Power = 42,
+            Crit = 9,
+        };
 
         var updated = ResourceGenerator.ApplyHeal(state, HealOnly(100));
 
@@ -262,8 +268,12 @@ public class PlayerEffectHealingTests
         Assert.Equal(33, updated.DEF);
         Assert.Equal(42, updated.Power);
         Assert.Equal(9, updated.Crit);
-        Assert.Equal(4, updated.Combo);
-        Assert.Equal(12, updated.MatchCount);
+
+        // Combo and MatchCount are not PetState members at all: GAME_STATE.md §2.2
+        // places them at the BattleState root, so there is nothing here that could
+        // have been reset by this write.
+        Assert.Equal(typeof(int), typeof(BattleState).GetProperty("Combo")!.PropertyType);
+        Assert.Equal(typeof(int), typeof(BattleState).GetProperty("MatchCount")!.PropertyType);
     }
 
     [Fact]
@@ -272,7 +282,7 @@ public class PlayerEffectHealingTests
         // MATCH3_RULES.md §7.2 / AGENTS.md §11: healing is a pure function of the
         // previous state and the pool. It draws no RNG, reads no clock, and depends
         // on no enumeration order, so the same inputs always give the same state.
-        var state = PlayerState.Initial with { HP = 500, MaxHP = 1000 };
+        var state = DefaultPet() with { HP = 500, MaxHP = 1000 };
         var generation = HealOnly(120);
 
         Assert.Equal(
@@ -318,9 +328,9 @@ public class PlayerEffectHealingTests
         //
         // Three HP Gems at the Match-3 tier generate 3 × 20 × 1.0× = 60 into the
         // pool, so a player starting 200 below full ends at HP + 60.
-        var player = PlayerState.Initial with { HP = 800, MaxHP = 1000 };
+        var pet = DefaultPet() with { HP = 800, MaxHP = 1000 };
 
-        var result = SwapExecutor.Execute(BattleWith(HpMatch3Board(), player), new SwapRequest(From, To));
+        var result = SwapExecutor.Execute(BattleWith(HpMatch3Board(), pet), new SwapRequest(From, To));
 
         Assert.True(result.IsAccepted);
 
@@ -354,7 +364,7 @@ public class PlayerEffectHealingTests
         // part of it is discarded.
         Assert.Equal(
             Math.Min(800 + result.Resources.HealPool, 1000),
-            result.State.PlayerState.HP);
+            result.State.PetState.HP);
     }
 
     [Fact]
@@ -362,26 +372,26 @@ public class PlayerEffectHealingTests
     {
         // §4 item 1's ceiling inside the real resolution: a nearly full player who
         // clears HP Gems cannot pass MaxHP, whatever the cascade generated.
-        var player = PlayerState.Initial with { HP = 995, MaxHP = 1000 };
+        var pet = DefaultPet() with { HP = 995, MaxHP = 1000 };
 
-        var result = SwapExecutor.Execute(BattleWith(HpMatch3Board(), player), new SwapRequest(From, To));
+        var result = SwapExecutor.Execute(BattleWith(HpMatch3Board(), pet), new SwapRequest(From, To));
 
         Assert.True(result.IsAccepted);
         Assert.True(result.Resources.HealPool >= 60, "The swap generated healing to apply.");
-        Assert.Equal(1000, result.State.PlayerState.HP);
+        Assert.Equal(1000, result.State.PetState.HP);
     }
 
     [Fact]
     public void CommittedSwap_ShouldLeaveHpAtMaxHpWhenAlreadyFull()
     {
         // The state a battle starts in is at full health (COMBAT_RULES.md §1.1,
-        // PlayerState.Initial), so the very common case is that a heal has nothing
+        // the documented default), so the very common case is that a heal has nothing
         // to restore and HP stays exactly where it was.
         var result = SwapExecutor.Execute(BattleWith(HpMatch3Board()), new SwapRequest(From, To));
 
         Assert.True(result.IsAccepted);
-        Assert.Equal(PlayerState.Initial.HP, result.State.PlayerState.HP);
-        Assert.Equal(PlayerState.Initial.MaxHP, result.State.PlayerState.MaxHP);
+        Assert.Equal(PetState.DefaultHP, result.State.PetState.HP);
+        Assert.Equal(PetState.DefaultMaxHP, result.State.PetState.MaxHP);
     }
 
     [Fact]
@@ -404,13 +414,13 @@ public class PlayerEffectHealingTests
             "HPADHPAD",
             "PADHPADH");
 
-        var player = PlayerState.Initial with { HP = 640, MaxHP = 1000 };
+        var pet = DefaultPet() with { HP = 640, MaxHP = 1000 };
 
-        var result = SwapExecutor.Execute(BattleWith(board, player), new SwapRequest(From, To));
+        var result = SwapExecutor.Execute(BattleWith(board, pet), new SwapRequest(From, To));
 
         Assert.True(result.IsAccepted);
         Assert.Equal(0, result.Resources.HealPool);
-        Assert.Equal(640, result.State.PlayerState.HP);
+        Assert.Equal(640, result.State.PetState.HP);
     }
 
     [Fact]
@@ -418,9 +428,9 @@ public class PlayerEffectHealingTests
     {
         // MATCH3_RULES.md §2.1.5 item 5: a rejected action writes nothing — no
         // Match, no Combo, no Power, and therefore no healing either.
-        var player = PlayerState.Initial with { HP = 500, MaxHP = 1000 };
+        var pet = DefaultPet() with { HP = 500, MaxHP = 1000 };
 
-        var result = SwapExecutor.Execute(BattleWith(HpMatch3Board(), player), new SwapRequest(0, 63));
+        var result = SwapExecutor.Execute(BattleWith(HpMatch3Board(), pet), new SwapRequest(0, 63));
 
         Assert.True(result.IsRejected);
         Assert.Throws<InvalidOperationException>(() => result.Resources);
@@ -432,9 +442,9 @@ public class PlayerEffectHealingTests
         // GAME_STATE.md §5.1: one action, one write-back. HP is written in the same
         // state value as Power, the board, and the counters — there is no second
         // write and no state in which HP has been healed but Power has not.
-        var player = PlayerState.Initial with { HP = 700, MaxHP = 1000 };
+        var pet = DefaultPet() with { HP = 700, MaxHP = 1000 };
 
-        var result = SwapExecutor.Execute(BattleWith(HpMatch3Board(), player), new SwapRequest(From, To));
+        var result = SwapExecutor.Execute(BattleWith(HpMatch3Board(), pet), new SwapRequest(From, To));
 
         Assert.True(result.IsAccepted);
 
@@ -445,12 +455,12 @@ public class PlayerEffectHealingTests
         Assert.Equal(result.Resolution.RngState, result.State.RngState);
         Assert.Equal(
             Math.Min(700 + result.Resources.HealPool, 1000),
-            result.State.PlayerState.HP);
+            result.State.PetState.HP);
 
         // The result's own factories carry the healed state across unchanged, so a
         // later pipeline stage composing WithEvents/WithState cannot lose it.
-        Assert.Equal(result.State.PlayerState.HP, result.WithEvents([.. result.Events]).State.PlayerState.HP);
-        Assert.Equal(result.State.PlayerState.HP, result.WithState(result.State).State.PlayerState.HP);
+        Assert.Equal(result.State.PetState.HP, result.WithEvents([.. result.Events]).State.PetState.HP);
+        Assert.Equal(result.State.PetState.HP, result.WithState(result.State).State.PetState.HP);
     }
 
     [Fact]
@@ -476,10 +486,10 @@ public class PlayerEffectHealingTests
     {
         // GAME_STATE.md §3: the HealPool is Transient Resolution State. It is
         // consumed by the player-effects step but never stored — not on
-        // PlayerState, and not on BattleState.
-        var player = PlayerState.Initial with { HP = 900, MaxHP = 1000 };
+        // PetState, and not on BattleState.
+        var pet = DefaultPet() with { HP = 900, MaxHP = 1000 };
 
-        var result = SwapExecutor.Execute(BattleWith(HpMatch3Board(), player), new SwapRequest(From, To));
+        var result = SwapExecutor.Execute(BattleWith(HpMatch3Board(), pet), new SwapRequest(From, To));
 
         Assert.True(result.IsAccepted);
 
@@ -488,15 +498,15 @@ public class PlayerEffectHealingTests
 
         // ... and reaches no field of either state: the applied HP is bounded by
         // MaxHP, and every other player field is exactly what the battle started
-        // with. There is no member of PlayerState that could hold a pool of 60 or
+        // with. There is no member of PetState that could hold a pool of 60 or
         // more without one of these failing.
         Assert.Equal(
             Math.Min(900 + result.Resources.HealPool, 1000),
-            result.State.PlayerState.HP);
-        Assert.Equal(PlayerState.Initial.MaxHP, result.State.PlayerState.MaxHP);
-        Assert.Equal(PlayerState.Initial.ATK, result.State.PlayerState.ATK);
-        Assert.Equal(PlayerState.Initial.DEF, result.State.PlayerState.DEF);
-        Assert.Equal(PlayerState.Initial.Crit, result.State.PlayerState.Crit);
+            result.State.PetState.HP);
+        Assert.Equal(PetState.DefaultMaxHP, result.State.PetState.MaxHP);
+        Assert.Equal(PetState.DefaultATK, result.State.PetState.ATK);
+        Assert.Equal(PetState.DefaultDEF, result.State.PetState.DEF);
+        Assert.Equal(PetState.DefaultCrit, result.State.PetState.Crit);
     }
 
     [Fact]
@@ -523,15 +533,15 @@ public class PlayerEffectHealingTests
         // which Gems a spawn draws: the HP the committed Swap leaves is the starting
         // HP plus the Swap's whole HealPool, clamped — the pool the result reports,
         // applied exactly once.
-        var player = PlayerState.Initial with { HP = 0, MaxHP = 100_000 };
+        var pet = DefaultPet() with { HP = 0, MaxHP = 100_000 };
 
-        var result = SwapExecutor.Execute(BattleWith(HpMatch3Board(), player), new SwapRequest(From, To));
+        var result = SwapExecutor.Execute(BattleWith(HpMatch3Board(), pet), new SwapRequest(From, To));
 
         Assert.True(result.IsAccepted);
 
         // The 100000 ceiling cannot bind for a single Swap's cascade, so the pool is
         // applied in full and no part of it is discarded.
-        Assert.Equal(result.Resources.HealPool, result.State.PlayerState.HP);
+        Assert.Equal(result.Resources.HealPool, result.State.PetState.HP);
 
         // And the pool the result reports is the sum over every pass's cleared HP
         // Gems — the accumulation happens in generation, and healing reads the
@@ -549,11 +559,11 @@ public class PlayerEffectHealingTests
     public void PowerAndHp_ShouldBothBeWrittenByTheSameResolution()
     {
         // GAME_RULES.md §17 steps 13 and 14 sit next to each other over the same
-        // PlayerState: the generation step writes Power (step 13) and the
+        // PetState: the generation step writes Power (step 13) and the
         // player-effects step writes HP (step 14). Neither may overwrite the other —
         // they are applied in sequence over the same value and the single write-back
         // carries both.
-        var state = PlayerState.Initial with { Power = 20, HP = 500, MaxHP = 1000 };
+        var state = DefaultPet() with { Power = 20, HP = 500, MaxHP = 1000 };
 
         var generation = new ResourceGeneration(
             BaseDamagePool: 0,

@@ -49,4 +49,20 @@ public interface IPlayerRepository
     Task<Player> GetOrCreateByDiscordUserIdAsync(
         string discordUserId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the Player identified by <paramref name="playerId"/>, or
+    /// <c>null</c> when no such Player exists.
+    ///
+    /// The Pet Level recompute path reads <see cref="Player.Level"/> through
+    /// this lookup (<c>DATABASE.md</c> §1; ADR-012 Consequences) — it is a
+    /// read of the persistent account attribute, never a level-up step
+    /// (TASK-033 owns progression).
+    /// </summary>
+    /// <param name="playerId">The Player's identifier (the auth boundary's
+    /// <c>playerId</c>, <c>API_CONTRACTS.md</c> §2.5).</param>
+    /// <param name="cancellationToken">Cancels the query.</param>
+    Task<Player?> GetByIdAsync(
+        string playerId,
+        CancellationToken cancellationToken = default);
 }

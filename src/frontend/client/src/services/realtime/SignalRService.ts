@@ -8,13 +8,16 @@ export interface PingResult {
 
 /**
  * The authoritative battle state pushed on group join
- * (SIGNALR_PROTOCOL.md §4, §4.2).
+ * (SIGNALR_PROTOCOL.md §4, §4.2, §4.3).
  *
  * Exactly the currently implemented `GAME_STATE.md` §0 stage's fields —
  * `battleId`, `turn`, `sequence`, `board`, `rngSeed`, `rngState`,
- * `playerState` — and no others (§4.4). No gameplay field beyond the stage's own
- * is carried, and no `Status`/lifecycle value exists anywhere in the protocol
- * (§8.3). The values are server-authored (`GAME_RULES.md` §18, ADR-001).
+ * `playerState`, `petState` — and no others (§4 item 4: the record carries the
+ * implemented stage's own fields and nothing else; §8.1 leaves only the
+ * serializer's mechanics to the implementation, never the resulting member set).
+ * No gameplay field beyond the stage's own is carried, and no `Status`/lifecycle
+ * value exists anywhere in the protocol (§8.3). The values are server-authored
+ * (`GAME_RULES.md` §18, ADR-001).
  *
  * `board` carries the server-generated `Cells[64]` (`GAME_STATE.md` §2.1.1,
  * `MATCH3_RULES.md` §1.2). The client renders the received board and must not
@@ -24,6 +27,13 @@ export interface PingResult {
  * (`GAME_STATE.md` §2.2). Both are delivered because they are `BattleState`
  * fields, not because the client computes them: the client renders them and
  * never authors, adjusts, or recomputes either (§4.9, `GAME_RULES.md` §18).
+ *
+ * `petState` carries the active Pet's Passive (`GAME_STATE.md` §2.3, §4.3). It
+ * is delivered because it is a `BattleState` field and because
+ * `PASSIVE_RULES.md` §6 item 1 requires the Passive's progress to be exposed as
+ * a UI-facing value. The client renders the `current / threshold` pair and the
+ * Passive identity it was sent; it does not charge a Passive, evaluate a
+ * Threshold, or reset progress (§4.3 item 9).
  *
  * This is a transport-level shape only. The service does not interpret it,
  * derive from it, or recompute it; it hands it to the runtime unchanged.
@@ -47,10 +57,90 @@ export interface BattleStateUpdatedPayload {
   /** The authoritative board, exactly 64 cells (`SIGNALR_PROTOCOL.md` §4.1). */
   readonly board: BoardPayload;
   /**
-   * The authoritative `PlayerState` projection (`GAME_STATE.md` §2.2,
-   * `SIGNALR_PROTOCOL.md` §4.2).
+   * The authoritative `playerState` projection (`GAME_STATE.md` §2.2,
+   * `SIGNALR_PROTOCOL.md` §4.2). A fixed protocol label for the two
+   * `BattleState` root values, not a state path (ADR-011 item 6).
    */
   readonly playerState: PlayerStatePayload;
+  /**
+   * The authoritative `petState` projection (`GAME_STATE.md` §2.3,
+   * `SIGNALR_PROTOCOL.md` §4.3) — the active Pet's Passive trio and nothing
+   * else. The rest of §2.3 belongs to later stages and is not delivered.
+   */
+  readonly petState: PetStatePayload;
+}
+
+/**
+ * The wire projection of `PetState`'s delivered members (`GAME_STATE.md` §2.3,
+ * `SIGNALR_PROTOCOL.md` §4.3).
+ *
+ * `SIGNALR_PROTOCOL.md` §4.3 item 2 fixes this object to exactly three members —
+ * `passiveId`, `passiveProgress`, and the conditional `passiveResetOverride`:
+ *
+ * ```text
+ * petState
+ * ├── passiveId                 the active Pet's Passive identity   always present
+ * ├── passiveProgress            { threshold, current }             always present
+ * └── passiveResetOverride       "Partial" | "NoReset"              present only when
+ *                                                                   non-default
+ * ```
+ *
+ * The rest of `GAME_STATE.md` §2.3 — `PetId`/Identity, `Element`,
+ * `Tier`/`Star`/`Level`, the combat stats (`HP`/`MaxHP`/`ATK`/`DEF`/`Crit`/
+ * `Power`), and the `EquippedRelics[]`/`EquippedCards[]` loadout snapshots —
+ * belongs to other stages and is **not** delivered (§4.3 item 2: referring to
+ * `petState` as a whole does not widen §4 item 4's rule). Modelling those
+ * members here would be a second, undocumented wire shape.
+ */
+export interface PetStatePayload {
+  /**
+   * The active Pet's Passive identity (`GAME_STATE.md` §2.3) — the same value
+   * `GAME_EVENTS.md` §2's `PassiveCharged`/`PassiveTriggered` report. It is
+   * always present and has no absent or null form: a battle always has its one
+   * active Pet and therefore its one Passive (§4.3 item 3). It is the identity,
+   * not the definition — no Threshold, Trigger Type, Effect, or Reset Behavior
+   * is nested beside it.
+   */
+  readonly passiveId: string;
+  /**
+   * The Passive's `current / threshold` pair (`GAME_STATE.md` §2.5). Both
+   * members are always present: `current = 0` is a real publishable value — it
+   * is what a battle begins with — so absence is never used for it and a client
+   * must not read an absent member as zero (§4.3 item 4).
+   */
+  readonly passiveProgress: PassiveProgressPayload;
+  /**
+   * The Passive's non-default Reset Behavior, as its contract name — `"Partial"`
+   * or `"NoReset"` (`PASSIVE_RULES.md` §4 item 2), never a numeric enum ordinal
+   * (§3.2.4).
+   *
+   * It is **omitted, never `null`, when the reset is the default** (§4.3 item 7):
+   * the absence *is* the statement "this Passive uses the default reset", and no
+   * `null`, `"Default"` string, or empty value stands in for it. A consumer
+   * tolerates absence and reads it as `Default` — it must not invent a value for
+   * it, and `"Default"` is deliberately not a third permitted value (§4.3
+   * item 7).
+   */
+  readonly passiveResetOverride?: string;
+}
+
+/**
+ * The wire projection of `GAME_STATE.md` §2.5's `PassiveProgress`
+ * `(Threshold, Current)` pair (`SIGNALR_PROTOCOL.md` §4.3 item 4).
+ *
+ * Both members are always present, and neither is nullable or omitted. The pair
+ * travels as one nested object because the two are read together — a reader
+ * renders the documented `current / threshold` pair without supplying either
+ * from elsewhere (`PASSIVE_RULES.md` §6 item 1's `7 / 10 Matches`).
+ */
+export interface PassiveProgressPayload {
+  /** The Passive's own Threshold (`PASSIVE_RULES.md` §1). */
+  readonly threshold: number;
+  /**
+   * The progress reached toward it (`GAME_STATE.md` §2.5) — the settled value,
+   * never derived or advanced by the client (§4.3 item 9).
+   */
+  readonly current: number;
 }
 
 /**

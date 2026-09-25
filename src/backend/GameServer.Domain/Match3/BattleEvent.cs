@@ -38,7 +38,7 @@ namespace GameServer.Domain.Match3;
 /// <c>SpecialGemActivated</c> event exists (<c>GAME_EVENTS.md</c> §2 item 3,
 /// <c>SIGNALR_PROTOCOL.md</c> §8 item 7), and a creation is reported as part of
 /// the <c>MatchCreated</c> payload (§2). No <c>MatchCountChanged</c> exists —
-/// the Match count is <c>PlayerState.MatchCount</c>, state and not an event
+/// the Match count is <c>BattleState.MatchCount</c>, state and not an event
 /// (<c>GAME_STATE.md</c> §2.2, <c>GAME_EVENTS.md</c> §3 item 7). No
 /// <c>TurnChanged</c>/<c>SequenceChanged</c>/<c>BoardChanged</c> exists —
 /// <c>Turn</c>, <c>Sequence</c>, and the board are delivered as state
@@ -163,7 +163,9 @@ public enum BattleEventType
     /// <c>BattleWon</c>, <c>GAME_RULES.md</c> §1.4, <c>BOSS_RULES.md</c> §7;
     /// <c>SIGNALR_PROTOCOL.md</c> §3.2.19).
     ///
-    /// Its payload is the terminal Boss HP and the terminal Player HP. It is
+    /// Its payload is the terminal Boss HP and the terminal player-side HP — the
+    /// active Pet's (<c>GAME_STATE.md</c> §2.3, <c>ADR-011</c> items 3 and 5),
+    /// carried under the fixed protocol label <c>finalPlayerHp</c> — and it is
     /// emitted at the Boss HP terminal check, <b>after</b> the Enrage evaluation
     /// and <b>before</b> any Boss Response: a Boss reduced to 0 HP does not
     /// trigger its Passive, cast its Skill, or make a Basic Attack, so this event
@@ -181,9 +183,11 @@ public enum BattleEventType
     /// <c>BattleLost</c>, <c>GAME_RULES.md</c> §1.4, <c>BOSS_RULES.md</c> §7;
     /// <c>SIGNALR_PROTOCOL.md</c> §3.2.19).
     ///
-    /// Its payload is the terminal Boss HP and the terminal Player HP. It is
+    /// Its payload is the terminal Boss HP and the terminal player-side HP — the
+    /// active Pet's (<c>GAME_STATE.md</c> §2.3, <c>ADR-011</c> items 3 and 5),
+    /// carried under the fixed protocol label <c>finalPlayerHp</c>. It is
     /// emitted at the post-response outcome check, after the Boss Response has
-    /// damaged the player, and is the resolution's last event. When both sides
+    /// damaged the Pet, and is the resolution's last event. When both sides
     /// survive, <b>neither</b> outcome event is emitted and the battle continues
     /// (<c>GAME_RULES.md</c> §1.4).
     /// </summary>
@@ -260,8 +264,11 @@ public readonly record struct BossSkillCastEvent(string SkillId, string SourceId
 /// victory, since reaching <c>0</c> is what ended the battle.
 /// </param>
 /// <param name="FinalPlayerHp">
-/// The player's HP at battle end (<c>GAME_STATE.md</c> §2.2) — the post-action
-/// value, which is above <c>0</c> in a victory.
+/// The active Pet's HP at battle end (<c>GAME_STATE.md</c> §2.3, <c>ADR-011</c>
+/// items 3 and 5) — the post-action
+/// value, which is above <c>0</c> in a victory. The member keeps the fixed
+/// protocol label <c>finalPlayerHp</c> (<c>SIGNALR_PROTOCOL.md</c> §3.2.19),
+/// which names the Player side; the Pet is that side's combat character.
 /// </param>
 public readonly record struct BattleWonEvent(int FinalBossHp, int FinalPlayerHp)
 {
@@ -295,8 +302,12 @@ public readonly record struct BattleWonEvent(int FinalBossHp, int FinalPlayerHp)
 /// battle as a victory before it could respond).
 /// </param>
 /// <param name="FinalPlayerHp">
-/// The player's HP at battle end (<c>GAME_STATE.md</c> §2.2) — <c>0</c> for a
-/// defeat, since reaching <c>0</c> is what ended the battle.
+/// The active Pet's HP at battle end (<c>GAME_STATE.md</c> §2.3, <c>ADR-011</c>
+/// items 3 and 5) — <c>0</c> for a
+/// defeat, since reaching <c>0</c> is what ended the battle. The member keeps the
+/// fixed protocol label <c>finalPlayerHp</c> (<c>SIGNALR_PROTOCOL.md</c>
+/// §3.2.19), which names the Player side; the Pet is that side's combat
+/// character.
 /// </param>
 public readonly record struct BattleLostEvent(int FinalBossHp, int FinalPlayerHp)
 {
@@ -329,7 +340,7 @@ public readonly record struct BattleLostEvent(int FinalBossHp, int FinalPlayerHp
 /// </code>
 ///
 /// <b>This is an output, never state.</b> Emitting, holding, or reading an event
-/// mutates nothing: it does not touch <c>BattleState</c>, <c>PlayerState</c>,
+/// mutates nothing: it does not touch <c>BattleState</c>, <c>PetState</c>,
 /// <c>PetState</c>, <c>BoardState</c>, the RNG, <c>Turn</c>, <c>Sequence</c>, or
 /// <c>LastCommittedSwapPair</c> (<c>GAME_EVENTS.md</c> §3 item 6). An event is
 /// never a substitute for the state write-back
@@ -533,7 +544,7 @@ public readonly record struct BattleEvent
             + "Check Type before reading BossSkillCast.");
 
     /// <summary>
-    /// The <c>BattleWon</c> payload — the terminal Boss HP and Player HP
+    /// The <c>BattleWon</c> payload — the terminal Boss HP and the active Pet's HP
     /// (<c>GAME_EVENTS.md</c> §2, <c>SIGNALR_PROTOCOL.md</c> §3.2.19).
     /// </summary>
     /// <exception cref="InvalidOperationException">
@@ -545,7 +556,7 @@ public readonly record struct BattleEvent
             + "Check Type before reading BattleWon.");
 
     /// <summary>
-    /// The <c>BattleLost</c> payload — the terminal Boss HP and Player HP
+    /// The <c>BattleLost</c> payload — the terminal Boss HP and the active Pet's HP
     /// (<c>GAME_EVENTS.md</c> §2, <c>SIGNALR_PROTOCOL.md</c> §3.2.19).
     /// </summary>
     /// <exception cref="InvalidOperationException">
@@ -718,7 +729,9 @@ public readonly record struct BattleEvent
     /// path.
     /// </param>
     /// <param name="finalPlayerHp">
-    /// The player's HP at battle end (<c>GAME_STATE.md</c> §2.2).
+    /// The active Pet's HP at battle end (<c>GAME_STATE.md</c> §2.3, <c>ADR-011</c>
+    /// items 3 and 5), carried under the fixed protocol label
+    /// <c>finalPlayerHp</c>.
     /// </param>
     public static BattleEvent ForBattleWon(int finalBossHp, int finalPlayerHp) =>
         new(
@@ -728,12 +741,14 @@ public readonly record struct BattleEvent
             null);
 
     /// <summary>
-    /// A <c>BattleLost</c> event for the post-response Player HP terminal check
+    /// A <c>BattleLost</c> event for the post-response player-side HP terminal
+    /// check — the active Pet's <c>PetState.HP</c> (<c>GAME_STATE.md</c> §2.3,
+    /// <c>ADR-011</c> items 3 and 5)
     /// (<c>GAME_EVENTS.md</c> §2, <c>GAME_RULES.md</c> §1.4,
     /// <c>SIGNALR_PROTOCOL.md</c> §3.2.19).
     ///
     /// Public for the same reason as <see cref="ForBattleWon"/>. It is emitted only
-    /// after the Boss Response has damaged the player
+    /// after the Boss Response has damaged the Pet
     /// (<c>BOSS_RULES.md</c> §5 item 4's ordering), so the Boss HP it reports is the
     /// post-response value.
     /// </summary>
@@ -742,8 +757,9 @@ public readonly record struct BattleEvent
     /// this path.
     /// </param>
     /// <param name="finalPlayerHp">
-    /// The player's HP at battle end (<c>GAME_STATE.md</c> §2.2) — <c>0</c> on this
-    /// path.
+    /// The active Pet's HP at battle end (<c>GAME_STATE.md</c> §2.3, <c>ADR-011</c>
+    /// items 3 and 5) — <c>0</c> on this
+    /// path, carried under the fixed protocol label <c>finalPlayerHp</c>.
     /// </param>
     public static BattleEvent ForBattleLost(int finalBossHp, int finalPlayerHp) =>
         new(

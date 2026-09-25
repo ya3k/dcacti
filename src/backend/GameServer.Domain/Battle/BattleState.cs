@@ -8,14 +8,14 @@ namespace GameServer.Domain.Battle;
 /// <summary>
 /// Active Battle State through the Boss stage — the authoritative battle state
 /// at the Board Foundation stage (<c>GAME_STATE.md</c> §2.0.5) plus the
-/// <c>PlayerState</c> fields of §2.2, the <c>PetState</c> fields of §2.3, and
-/// the <c>BossState</c> fields of §2.4.
+/// Match/Combo accounting fields of §2.2 and the <c>PetState</c> fields of §2.3,
+/// and the <c>BossState</c> fields of §2.4.
 ///
 /// It is the Battle State Foundation (§2.0) <b>plus</b> the fields §2 already
 /// defines for the Match-3 board, the randomness that generates it, the commit
-/// record the staleness check reads, the player's Match/Combo progression, the
-/// active Pet's Element and Passive, and the battle's one Boss — nothing else is
-/// added, and nothing already in §2.0 changes (§0 item 5):
+/// record the staleness check reads, the battle's Match/Combo accounting, the
+/// active Pet's combat stats, Element, and Passive, and the battle's one Boss —
+/// nothing else is added, and nothing already in §2.0 changes (§0 item 5):
 ///
 /// <code>
 /// BattleState
@@ -26,16 +26,15 @@ namespace GameServer.Domain.Battle;
 /// ├── RngState                       (§2.6)
 /// ├── BoardState                     (§2.1)
 /// │   └── Cells[64]
-/// ├── PlayerState                    (§2.2)
+/// ├── Combo          = 0             (§2.2 — Match/Combo accounting at the
+/// ├── MatchCount     = 0             │   root; there is no PlayerState node)
+/// ├── PetState                       (§2.3)
 /// │   ├── HP         = 1000
 /// │   ├── MaxHP      = 1000
 /// │   ├── ATK        = 50
 /// │   ├── DEF        = 25
-/// │   ├── Power      = 0
 /// │   ├── Crit       = 5
-/// │   ├── MatchCount = 0
-/// │   └── Combo      = 0
-/// ├── PetState                       (§2.3)
+/// │   ├── Power      = 0
 /// │   ├── Element
 /// │   ├── PassiveId
 /// │   ├── PassiveProgress           (Threshold, Current = 0)
@@ -51,23 +50,36 @@ namespace GameServer.Domain.Battle;
 ///
 /// Each field has the same name, meaning, and rules as its §2 counterpart; each
 /// stage is where those §2 fields first come into existence (§2.0.5). The
-/// remaining §2 fields — the rest of <c>PlayerState</c> (§2.2:
-/// <c>StatusEffects</c>, <c>EquippedRelics</c>, <c>EquippedCards</c>), the rest
-/// of <c>PetState</c> (§2.3: <c>PetId</c>/Identity, <c>Tier</c>/<c>Star</c>/
-/// <c>Level</c>), and the rest of <c>BossState</c> (§2.4:
-/// <c>PassiveProgress</c>, <c>StatusEffects[]</c>) — are still
+/// remaining §2 fields — <c>PetState</c>'s <c>StatusEffects</c>,
+/// <c>EquippedRelics</c>, and <c>EquippedCards</c>, its
+/// <c>PetId</c>/Identity, <c>Tier</c>/<c>Star</c>/<c>Level</c>, and
+/// <c>BossState</c>'s <c>StatusEffects[]</c> — are still
 /// absent and still owned by later stages (§2.0.5.3). Their absence is a staging
 /// position, not a scope reduction of §2: a field absent from a stage is <b>not
 /// yet implemented</b>, not <b>not required</b> (§0 item 4).
 ///
-/// <see cref="PlayerState"/>, <see cref="PetState"/>, and <see cref="BossState"/>
-/// are the documented owners of the values they carry (§2.2, §2.3, §2.4), which
+/// <b>There is no <c>PlayerState</c> member.</b> §2 says so explicitly: the
+/// Player is the account/owner and has no authoritative battle-time combat pool.
+/// Match/Combo accounting lives at this root (§2.2 — a flat
+/// <c>BattleState.MatchCount</c> is the documented owner, not a second
+/// representation of a nested one), and the combat stats and the battle loadout
+/// live under <see cref="PetState"/> (§2.3, <c>ADR-011</c>).
+///
+/// The wire member name <c>playerState</c> used by <c>SIGNALR_PROTOCOL.md</c>
+/// §4.2 is a <b>fixed protocol label</b> for the Combo/MatchCount projection and
+/// does not reintroduce a state path of that name (§2.2, §2.2.1, <c>ADR-011</c>
+/// item 6). This type carries no such label either; the projection site supplies
+/// it (<c>GameServer.Api.Hubs.BattleHub</c>).
+///
+/// <see cref="PetState"/> and <see cref="BossState"/>
+/// are the documented owners of the values they carry (§2.3, §2.4), which
 /// is why they appear
 /// here as nested fields rather than as flat members of this record: §0 item 5
 /// forbids a stage from introducing a parallel representation of a concept
-/// another stage owns, and a flat <c>BattleState.MatchCount</c>,
-/// <c>BattleState.PassiveProgress</c>, or <c>BattleState.BossHP</c> would be a
-/// second owner.
+/// another stage owns, and a flat <c>BattleState.PassiveProgress</c> or
+/// <c>BattleState.BossHP</c> would be a second owner. <c>Combo</c> and
+/// <c>MatchCount</c> are flat for the opposite reason: §2.2 makes this root
+/// their only owner, so there is no nested node for them to duplicate.
 ///
 /// <c>BoardState</c> carries Special Gem state inside its <c>Cells[64]</c>
 /// entries (<c>GAME_STATE.md</c> §2.1.1, §2.1.4). No field was added to this
@@ -126,27 +138,71 @@ namespace GameServer.Domain.Battle;
 /// server-authored and the client never generates, fills, or repairs it
 /// (§2.1.1 item 4).
 /// </param>
-/// <param name="PlayerState">
-/// The player's battle progression and combat state (<c>GAME_STATE.md</c> §2.2) —
-/// the documented owner of <c>MatchCount</c>, <c>Combo</c>, and the combat stats
-/// <c>HP</c>/<c>MaxHP</c>, <c>ATK</c>/<c>DEF</c>/<c>Crit</c>, and <c>Power</c>. It
-/// exists from battle creation with every value at its documented starting point
-/// (<see cref="PlayerState.Initial"/>): the progression values at <c>0</c> and the
-/// combat stats at their <c>COMBAT_RULES.md</c> §1.1 MVP defaults, at full health
-/// with no Power yet generated. It is never <c>null</c> and is never created
-/// lazily on the first Swap.
+/// <param name="Combo">
+/// The Combo of the most recently <b>committed</b> Swap
+/// (<c>GAME_STATE.md</c> §2.2, <c>GAME_RULES.md</c> §5, <c>MATCH3_RULES.md</c>
+/// §6) — a <b>root</b> member of this record, not a field of a nested container
+/// (§2.2, <c>ADR-011</c> item 2).
+///
+/// Its rule-level value starts at <see cref="InitialCombo"/> and reads <c>0</c>
+/// only before the battle's first committed Swap
+/// (<c>MATCH3_RULES.md</c> §6.5 item 4). A committed Swap resets it to <c>0</c>
+/// before its first Match is counted and then increments it by exactly <b>1 per
+/// Match</b>, in the detection order of <c>MATCH3_RULES.md</c> §3.2 and §4.2,
+/// across every pass of the cascade loop (§6.2, §6.3). It is therefore equal to
+/// the number of Matches that Swap produced, and never <c>0</c> for a committed
+/// Swap (§6.5 item 3).
+///
+/// It is <b>not</b> turn-cumulative: it does not carry across a Turn boundary,
+/// and it does not accumulate over a battle (§6.1 item 4). Its next reset is the
+/// next committed Swap — nothing else resets it, and the terminating pass that
+/// detects no Match is not a Match and does not reset it (§6.4). A rejected Swap
+/// neither resets nor changes it (§6.1 item 3, §6.5 item 2), Special Gem
+/// activation, chaining, and creation never change it (§6.3.1), and no cleared
+/// cell and no cascade depth is ever converted into it (§6.2 item 2).
 ///
 /// It is written in the same single post-resolution write-back as
 /// <see cref="Turn"/> and <see cref="Sequence"/> (§5.1), for a <b>committed</b>
-/// Swap only: a rejected Swap writes nothing, so both values keep what they held
-/// (<c>MATCH3_RULES.md</c> §2.1.5 item 5). No intermediate value of either field
-/// is ever written or published (§5.1 item 2): the state only ever carries a
-/// finished resolution's result.
+/// Swap only: a rejected Swap writes nothing, so the value keeps what it held
+/// (<c>MATCH3_RULES.md</c> §2.1.5 item 5). No intermediate value is ever written
+/// or published (§5.1 item 2): the state only ever carries a finished
+/// resolution's result.
+///
+/// It is <b>delivered</b> to the client under the fixed wire label
+/// <c>playerState</c> (<c>SIGNALR_PROTOCOL.md</c> §4.2) — the label is a
+/// protocol member name, not an ownership path (§2.2 item 1, §2.2.1).
+/// </param>
+/// <param name="MatchCount">
+/// The cumulative number of Matches this battle has produced
+/// (<c>GAME_STATE.md</c> §2.2, <c>GAME_RULES.md</c> §3) — a <b>root</b> member of
+/// this record, on the same terms as <see cref="Combo"/>.
+///
+/// Its value starts at <see cref="InitialMatchCount"/> and is
+/// <b>battle-cumulative</b>: it increments by exactly <b>1 per Match</b> and
+/// never resets — not per Turn, not per Swap, and not per Cascade. Matches
+/// produced by cascades count, and several Matches produced by one Swap each
+/// count separately, because each distinct detected shape is one Match however
+/// many cells it spans (<c>MATCH3_RULES.md</c> §3 item 5, §6.2 item 3).
+///
+/// It counts <b>Matches only</b>: a Special Gem activation, chain, or the N
+/// cells one clears are not Matches and never increment it
+/// (<c>MATCH3_RULES.md</c> §5.5.5 item 8, §6.3.1), and it is not a cleared-cell
+/// total. It is independent of <c>Turn</c> and of <c>Sequence</c>: one committed
+/// Swap advances <c>Turn</c> and <c>Sequence</c> by exactly 1 each whatever its
+/// Match count is (<c>MATCH3_RULES.md</c> §8.1, §8.2). A rejected Swap does not
+/// change it (§2.1.5 item 5).
+///
+/// Neither member is nullable and neither is omitted when it is <c>0</c>:
+/// <c>Combo = 0</c> and <c>MatchCount = 0</c> are real publishable values at
+/// battle creation, not an absence convention (§2.2.1 item 1).
 /// </param>
 /// <param name="PetState">
 /// The active Pet's state (<c>GAME_STATE.md</c> §2.3) — the documented owner of
-/// the Passive identity, its progress, and its declared Reset Behavior
-/// (<c>PASSIVE_RULES.md</c> §1, §2, §4).
+/// the battle's <b>combat stats</b> (<c>HP</c>/<c>MaxHP</c>,
+/// <c>ATK</c>/<c>DEF</c>/<c>Crit</c>, <c>Power</c>), the Element, and the Passive
+/// identity, its progress, and its declared Reset Behavior
+/// (<c>COMBAT_RULES.md</c> §1.1, <c>PET_RULES.md</c> §1,
+/// <c>PASSIVE_RULES.md</c> §1, §2, §4; <c>ADR-011</c> item 3).
 ///
 /// It is <b>not optional, not nullable, and never lazily initialized</b>: §2.3
 /// item 3 makes <c>PassiveId</c> present from battle creation ("a battle always
@@ -154,8 +210,8 @@ namespace GameServer.Domain.Battle;
 /// Passive yet" state for an absent value to spell — unlike
 /// <see cref="LastCommittedSwapPair"/>, whose absence is documented (§2.1.10
 /// item 3). It is therefore a required field of this record, and a caller must
-/// supply the active Pet's Passive identity and Threshold rather than letting one
-/// be defaulted with an invented value.
+/// supply the active Pet's combat stats, Element, Passive identity, and Threshold
+/// rather than letting one be defaulted with an invented value.
 ///
 /// Its <c>PassiveProgress</c> starts at the Passive's own Threshold with
 /// <c>Current = 0</c> (§2.3 item 3, <c>SIGNALR_PROTOCOL.md</c> §4.3 item 4) and is
@@ -171,8 +227,9 @@ namespace GameServer.Domain.Battle;
 /// <c>BattleStateUpdated</c> push as the §4.3 <c>petState</c> object — unlike
 /// <see cref="LastCommittedSwapPair"/>, and because
 /// <c>PASSIVE_RULES.md</c> §6 item 1 requires the progress to be exposed as a
-/// UI-facing value (<c>SIGNALR_PROTOCOL.md</c> §4 item 13, §4.3). It adds no
-/// message, method, or subscription.
+/// UI-facing value (<c>SIGNALR_PROTOCOL.md</c> §4 item 13, §4.3). That payload
+/// carries the Passive trio only; the combat stats are state and are not wire
+/// members (§4.3 item 2). It adds no message, method, or subscription.
 /// </param>
 /// <param name="BossState">
 /// The battle's one Boss (<c>GAME_STATE.md</c> §2.4,
@@ -190,13 +247,6 @@ namespace GameServer.Domain.Battle;
 /// Boss's real definition (<see cref="Bosses.BossDefinition.ToInitialState"/>)
 /// rather than letting one be defaulted with an invented Element or
 /// <c>MaxHP</c>.
-///
-/// It is written in the same single post-resolution write-back as
-/// <see cref="Turn"/> and <see cref="Sequence"/> (§5.1). Nothing in this type
-/// changes it: damage application, Boss Passive, Boss Skill, Boss Response, the
-/// State machine, and Victory/Defeat are all unimplemented and remain owned by
-/// their own stages (<c>BOSS_RULES.md</c> §3–§5, <c>COMBAT_RULES.md</c> §3,
-/// <c>GAME_RULES.md</c> §17 steps 15–19).
 /// </param>
 /// <param name="LastCommittedSwapPair">
 /// The unordered pair most recently committed to the board
@@ -231,7 +281,8 @@ public sealed record BattleState(
     ulong RngSeed,
     RngState RngState,
     BoardState BoardState,
-    PlayerState PlayerState,
+    int Combo,
+    int MatchCount,
     PetState PetState,
     BossState BossState,
     CommittedSwapPair? LastCommittedSwapPair = null)
@@ -249,46 +300,27 @@ public sealed record BattleState(
     public const int InitialSequence = 0;
 
     /// <summary>
-    /// The <c>PetState</c> a battle begins with when the caller supplies only the
-    /// values the Pet's own definition carries — its Element, the Passive's
-    /// identity, and the Passive's Threshold — and
-    /// declares no non-default Reset Behavior.
-    ///
-    /// <b>It is not a default for <see cref="PetState"/>.</b> The Element, the
-    /// identity, and the Threshold are supplied by the caller, exactly as
-    /// <see cref="PetState.AtBattleCreation"/> requires, and the Reset Behavior is
-    /// <see cref="PassiveResetBehavior.Default"/> — which is not an invented
-    /// value but the documented reading of an absent override: §2.3 makes the
-    /// field "only present if this Pet's Passive uses non-default reset behavior",
-    /// and <c>PASSIVE_RULES.md</c> §4 item 1 defines the default as "progress
-    /// resets to <c>0</c> immediately after the Passive triggers". It is also the
-    /// behavior of all five MVP Pet Passives (§8). A Passive that declares a
-    /// non-default behavior is never silent about it: §4 item 3 requires it to be
-    /// documented on the Passive's definition, and a caller declaring one supplies
-    /// a <see cref="PetState"/> with the override set.
+    /// The initial <c>MatchCount</c> for a battle that has produced no Match
+    /// (<c>GAME_STATE.md</c> §2.2, <c>GAME_RULES.md</c> §3).
     /// </summary>
-    /// <param name="element">
-    /// The active Pet's one Element (<c>GAME_STATE.md</c> §2.3,
-    /// <c>ELEMENT_RULES.md</c> §6) — the Pet definition's own value.
-    /// </param>
-    /// <param name="passiveId">
-    /// The active Pet's Passive identity (<c>GAME_STATE.md</c> §2.3) — the same
-    /// value <c>GAME_EVENTS.md</c> §2's <c>PassiveCharged</c>/<c>PassiveTriggered</c>
-    /// report.
-    /// </param>
-    /// <param name="passiveThreshold">
-    /// The Passive's Threshold — "e.g. 'every 5 Matches'"
-    /// (<c>PASSIVE_RULES.md</c> §1). It is the Passive definition's own value, and
-    /// no Threshold is invented here.
-    /// </param>
-    public static PetState DefaultPassive(Element element, PassiveId passiveId, int passiveThreshold) =>
-        PetState.AtBattleCreation(element, passiveId, passiveThreshold);
+    public const int InitialMatchCount = 0;
+
+    /// <summary>
+    /// The initial <c>Combo</c> for a battle whose first Swap has not been
+    /// committed (<c>GAME_STATE.md</c> §2.2, <c>MATCH3_RULES.md</c> §6.1 item 1).
+    ///
+    /// <c>0</c> is a real, publishable value here — it is the value the state
+    /// reads before the first committed Swap — not an "absent" convention and
+    /// not an omitted field (<c>MATCH3_RULES.md</c> §6.5 item 4,
+    /// <c>GAME_STATE.md</c> §2.1.7 item 5).
+    /// </summary>
+    public const int InitialCombo = 0;
 
     /// <summary>
     /// Creates the authoritative state for a newly created battle session: the
-    /// documented initial values, including the player's progression state, the
-    /// active Pet's state, and the battle's one Boss, plus the generated board and
-    /// the retained RNG state (<c>GAME_STATE.md</c> §2.0.5, §2.2, §2.3, §2.4,
+    /// documented initial values, including the battle's Match/Combo accounting,
+    /// the active Pet's state, and the battle's one Boss, plus the generated board
+    /// and the retained RNG state (<c>GAME_STATE.md</c> §2.0.5, §2.2, §2.3, §2.4,
     /// §2.7.1).
     ///
     /// Board generation is not a resolution, so <c>Turn</c> and <c>Sequence</c>
@@ -303,7 +335,9 @@ public sealed record BattleState(
     /// none and no pair is invented to stand for the absence.
     ///
     /// <c>PetState</c>, by contrast, <b>is</b> created here and is never absent
-    /// (§2.3 item 3): the battle's one active Pet carries its one Element and its
+    /// (§2.3 item 3): the battle's one active Pet carries its combat stats at the
+    /// <c>COMBAT_RULES.md</c> §1.1 MVP defaults, at full health with no Power yet
+    /// generated, together with its one Element and its
     /// one Passive from creation. Its progress starts at the Passive's own
     /// Threshold with
     /// <c>Current = 0</c>, and its Reset Behavior is the declared one or the
@@ -328,13 +362,14 @@ public sealed record BattleState(
     /// server-side; this type neither generates nor influences it.
     /// </param>
     /// <param name="petState">
-    /// The active Pet's state (<c>GAME_STATE.md</c> §2.3) — required, because
-    /// <c>Element</c> and <c>PassiveId</c> are present from battle creation
-    /// (§2.3 item 3) and no
+    /// The active Pet's state (<c>GAME_STATE.md</c> §2.3) — required, because its
+    /// combat stats, <c>Element</c>, and <c>PassiveId</c> are present from battle
+    /// creation (§2.3 item 3) and no
     /// value may be invented for them. Pet selection and progression are not
     /// implemented, so the caller supplies the battle's Pet configuration;
     /// see <see cref="PetState.AtBattleCreation"/> for the documented initial
-    /// progress, or <see cref="Create(string, ulong, Element, PassiveId, int, PassiveResetBehavior?)"/>
+    /// progress and combat stats, or
+    /// <see cref="Create(string, ulong, Element, PassiveId, int, BossDefinition, PassiveResetBehavior?)"/>
     /// for the Element/identity/threshold form.
     /// </param>
     /// <param name="bossState">
@@ -371,15 +406,15 @@ public sealed record BattleState(
             rngSeed,
             generation.RngState,
             generation.Board!,
-            // §2.2: PlayerState exists from creation with MatchCount = 0 and
-            // Combo = 0 — no null, no sentinel, and no lazy creation on the
-            // first Swap — and with the combat stats at their COMBAT_RULES.md
-            // §1.1 MVP defaults at full health.
-            PlayerState.Initial,
+            // §2.2: MatchCount = 0 and Combo = 0 at creation — no null, no
+            // sentinel, and no lazy creation on the first Swap.
+            InitialCombo,
+            InitialMatchCount,
             // §2.3 item 3: PetState likewise exists from creation — "it is present
             // from battle creation" — with progress at the start of its first
-            // charge. It is not optional, not defaulted, and not created lazily
-            // on the first Swap.
+            // charge and its combat stats at their COMBAT_RULES.md §1.1 MVP
+            // defaults at full health. It is not optional, not defaulted, and not
+            // created lazily on the first Swap.
             petState,
             // §2.4: BossState exists from creation too: a battle has exactly one
             // Boss (GAME_RULES.md §1.1), which BattleStarted requires
@@ -404,7 +439,7 @@ public sealed record BattleState(
     ///
     /// It reaches production assemblies because the test project has
     /// <c>InternalsVisibleTo</c> and not the reverse;
-    /// <see cref="BattleStateService.CreateBattle(string, BattleStateService.PetConfiguration, BattleStateService.BossConfiguration)"/>
+    /// <see cref="BattleStateService.CreateBattle(string, BattleStateService.PetConfiguration, BossDefinition)"/>
     /// remains the real creation path and takes the battle's actual Pet and Boss
     /// configuration. It is not a product default and no production caller uses
     /// it — it exists only so the earlier stages' tests stay readable.
@@ -415,7 +450,7 @@ public sealed record BattleState(
         Create(
             battleId,
             rngSeed,
-            DefaultPassive(Element.Hoa, new PassiveId("fixture-passive"), 5),
+            PetState.AtBattleCreation(Element.Hoa, new PassiveId("fixture-passive"), 5),
             // GAME_STATE.md §2.4.1–§2.4.3: the fixture Boss carries a Passive identity
             // and a Threshold too, because BossState's own field set requires them.
             // They are fixture values for tests that assert something else, exactly
@@ -440,7 +475,8 @@ public sealed record BattleState(
     ///
     /// This is the same creation as
     /// <see cref="Create(string, ulong, PetState, BossState)"/>
-    /// with the documented starting progress applied: the Threshold is the
+    /// with the documented starting progress and combat stats applied: the
+    /// Threshold is the
     /// Passive's own value and <c>Current</c> begins at <c>0</c>
     /// (§2.3 item 3, <c>SIGNALR_PROTOCOL.md</c> §4.3 item 4), and the Boss begins
     /// at its definition's stats at full health in the documented Initial State

@@ -1,5 +1,8 @@
+using GameServer.Application.Cards;
 using GameServer.Application.Identity;
+using GameServer.Application.Pets;
 using GameServer.Application.Players;
+using GameServer.Application.Relics;
 using GameServer.Infrastructure.Discord;
 using GameServer.Infrastructure.Postgres;
 using GameServer.Infrastructure.Postgres.Repositories;
@@ -19,6 +22,7 @@ public static class DependencyInjection
     {
         // PostgreSQL DbContext boundary
         var pgConnectionString = configuration.GetConnectionString("DefaultConnection");
+
         if (!string.IsNullOrWhiteSpace(pgConnectionString))
         {
             services.AddDbContext<GameDbContext>(options =>
@@ -32,6 +36,28 @@ public static class DependencyInjection
         // registered (i.e. when a connection string is configured), while an
         // unconfigured environment still composes cleanly.
         services.AddScoped<IPlayerRepository, PlayerRepository>();
+
+        // Pet ownership persistence boundary (DATABASE.md §1–§2).
+        //
+        // Registered unconditionally for the same reason as IPlayerRepository:
+        // the repository takes the scoped GameDbContext.
+        services.AddScoped<IPetRepository, PetRepository>();
+
+        // Relic ownership persistence boundary (DATABASE.md §1–§2).
+        //
+        // Ownership rows and static content only — there is no persistent
+        // equip table (DATABASE.md §2, ADR-012 item 7). Registered
+        // unconditionally for the same reason as IPlayerRepository.
+        services.AddScoped<IRelicRepository, RelicRepository>();
+
+        // Card content and Player unlock persistence boundary
+        // (DATABASE.md §1–§2).
+        //
+        // Unlock rows and static content only — there is no persistent equip
+        // table and no inventory/quantity column (DATABASE.md §2, ADR-012
+        // items 9–10). Registered unconditionally for the same reason as
+        // IPlayerRepository.
+        services.AddScoped<ICardRepository, CardRepository>();
 
         // Discord identity exchange boundary (API_CONTRACTS.md §2.2–§2.4).
         //

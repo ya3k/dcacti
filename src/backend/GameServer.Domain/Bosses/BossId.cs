@@ -8,7 +8,7 @@ namespace GameServer.Domain.Bosses;
 /// <c>BOSS_RULES.md</c> §1), so this value does not select among several: it
 /// names which Boss the battle is fought against. <c>GAME_STATE.md</c> §2.4 owns
 /// that field, and it is the identity member the sibling identity fields use
-/// (<c>PetState.PassiveId</c> §2.3, <c>PlayerState.EquippedRelics[]</c>,
+/// (<c>PetState.PassiveId</c> §2.3, <c>PetState.EquippedRelics[]</c>,
 /// <c>EquippedCards[]</c>).
 ///
 /// <b>It is an identity, not a definition.</b> The Boss's Element, HP/MaxHP,

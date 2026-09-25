@@ -40,8 +40,9 @@ Authoritative role model and state ownership:
 Player   → account / owner (persistent collection: Pets, Cards, Relics;
            no battle-time combat stats)
 Pet      → combat character (equips Relic/Card loadout for battle;
-            Level = clamp(Player Level × Pet Level Multiplier, 1, 50)
-            — config; see ADR-012)
+             Level = clamp(floor(Player Level × Pet Level Multiplier), 1, 50)
+             — config `decimal > 0`, floor before clamp; see ADR-012 and
+             PET_RULES.md §5)
 PetState → authoritative battle-time combat runtime state under BattleState
            (HP/MaxHP, ATK/DEF/Crit, Power, StatusEffects,
             EquippedRelics, EquippedCards, Passive*)
@@ -71,14 +72,16 @@ BattleState
    `finalPlayerHp`, and `target="player"` remain fixed protocol labels; doc
    descriptions correct them to active-Pet / BattleState-root semantics.
    Renaming any of them is a future protocol-breaking task, not this ADR.
-7. **Pet Level formula** (design, not state): `Pet Level = clamp(Player
-   Level × Pet Level Multiplier, 1, 50)` (config, not hard-coded) — owned
-   by `PET_RULES.md` §5. OPEN conflicts previously reported there (Player
+7. **Pet Level formula** (design, not state): `Pet.Level = clamp(floor(Player
+   Level × Pet Level Multiplier), 1, 50)` (config `decimal > 0`, not
+   hard-coded; floor before clamp) — owned by `PET_RULES.md` §5. OPEN
+   conflicts previously reported there (Player
    Level undefined; interaction with the 1–50 clamp) are **resolved by
    ADR-012**: Player Level is an MVP persistent account attribute
-   (1–50, no combat stats), and the clamp bounds the formula result —
-   see `PET_RULES.md` §5.1. There is **no Pet XP system** and **no
-   Evolution system**.
+   (1–50, no combat stats), and the clamp bounds the floored formula
+   result — see `PET_RULES.md` §5.1. Multiplier type, range, rounding,
+   and clamp order are owned solely by `PET_RULES.md` §5. There is **no
+   Pet XP system** and **no Evolution system**.
 
 ## Consequences
 

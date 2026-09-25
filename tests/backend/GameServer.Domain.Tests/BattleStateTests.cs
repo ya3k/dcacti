@@ -49,7 +49,8 @@ public class BattleStateTests
     {
         // GAME_STATE.md §2.0.5: BattleId, Turn, Sequence, RngSeed, RngState,
         // BoardState — nothing else, plus the Swap stage's LastCommittedSwapPair
-        // (§2.1.10), the Match / Combo stage's PlayerState (§2.2), the Pet /
+        // (§2.1.10), the Match / Combo accounting the root owns (§2.2 — Combo and
+        // MatchCount, with no nested PlayerState node), the combat-stat / Pet /
         // Passive stage's PetState (§2.3), and the Boss stage's BossState (§2.4),
         // each added to this same record by its own owning stage.
         var properties = typeof(BattleState)
@@ -61,8 +62,8 @@ public class BattleStateTests
         Assert.Equal(
             new[]
             {
-                "BattleId", "BoardState", "BossState", "LastCommittedSwapPair", "PetState",
-                "PlayerState", "RngSeed", "RngState", "Sequence", "Turn",
+                "BattleId", "BoardState", "BossState", "Combo", "LastCommittedSwapPair",
+                "MatchCount", "PetState", "RngSeed", "RngState", "Sequence", "Turn",
             },
             properties);
     }
@@ -108,8 +109,8 @@ public class BattleStateTests
     [Fact]
     public void BoardFoundationState_ShouldStillDeclareNoLaterStageField()
     {
-        // GAME_STATE.md §2.0.5.3: the rest of PlayerState (§2.2) — StatusEffects,
-        // EquippedRelics, EquippedCards — is not implemented yet, the rest of
+        // GAME_STATE.md §2.0.5.3: the three collection members — StatusEffects,
+        // EquippedRelics, EquippedCards — are not implemented yet, the rest of
         // PetState (§2.3) — PetId/Identity, Tier/Star/Level — is likewise still
         // owned by the Pet identity and progression stage, and the rest of
         // BossState (§2.4) — PassiveProgress, StatusEffects[] — is still owned by
@@ -120,21 +121,26 @@ public class BattleStateTests
         // (GAME_STATE.md §2.1.2 item 1). Special Gem state is carried inside each
         // `Cells[64]` entry (§2.1.1), so no board-level collection for it may appear.
         //
-        // PlayerState is deliberately NOT in the list: it is the field the Match /
-        // Combo accounting stage implements (§2.2), and §2 nests it inside
-        // BattleState. Its own fields are covered by the PlayerState contract tests.
+        // Combo and MatchCount are deliberately NOT in the list: they are the fields
+        // the Match / Combo accounting stage implements, and §2.2 places them at the
+        // BattleState root. Their own contract is covered by
+        // MatchComboAccountingTests.
         // LastCommittedSwapPair is likewise NOT in the list: it is the one field the
         // Swap stage adds, and §2.1.10 documents it as required state, not a
-        // convenience. PetState is NOT in the list either: it is the field the Pet /
-        // Passive stage implements (§2.3), added to this same record by its own
-        // owning stage and delivered through BattleStateUpdated
+        // convenience. PetState is NOT in the list either: it is the field the combat
+        // stat / Pet / Passive stage implements (§2.3), added to this same record by
+        // its own owning stage and delivered through BattleStateUpdated
         // (SIGNALR_PROTOCOL.md §4.3). Its own members are covered by the PetState
         // contract tests below.
         //
+        // PlayerState is NOT a member of this record at all — §2 states it plainly
+        // ("There is no PlayerState member") and ADR-011 item 1 removes it from the
+        // contract — so it is asserted absent rather than listed as pending.
+        //
         // HP, MaxHP, ATK, DEF, Power, and Crit are NOT in the list either: the combat
-        // stats stage adds them to PlayerState with the COMBAT_RULES.md §1.1 MVP
-        // defaults, exactly as each earlier stage added its own fields. The check
-        // here is that no OTHER later-stage field appeared.
+        // stats stage places them on PetState (§2.3, ADR-011 item 3) with the
+        // COMBAT_RULES.md §1.1 MVP defaults, exactly as each earlier stage added its
+        // own fields. The check here is that no OTHER later-stage field appeared.
         //
         // BossState is NOT in the list, and neither is the Pet's Element: the Boss
         // stage implements both — BossState as a field of this record (§2.4) and
@@ -147,15 +153,21 @@ public class BattleStateTests
             .Select(p => p.Name)
             .Concat(typeof(BattleState).GetFields().Select(f => f.Name))
             .Concat(typeof(BoardState).GetProperties().Select(p => p.Name))
-            .Concat(typeof(PlayerState).GetProperties().Select(p => p.Name))
             .Concat(typeof(PetState).GetProperties().Select(p => p.Name))
             .Concat(typeof(BossState).GetProperties().Select(p => p.Name))
             .ToArray();
 
+        Assert.DoesNotContain("PlayerState", declared);
+
         foreach (var laterStageField in new[]
                  {
                      "PendingSpecialGems",
-                     "StatusEffects", "EquippedRelics", "EquippedCards",
+                     // EquippedRelics is NOT in this list any more: the Relic loadout
+                     // stage (TASK-027) implements it, exactly as each earlier stage
+                     // added its own field (§2.3, RELIC_RULES.md §2.2–§2.5).
+                     // EquippedCards is likewise implemented now, by the Card loadout
+                     // stage (TASK-028), the same way (§2.3, CARD_RULES.md §1).
+                     "StatusEffects",
                      // The rest of §2.3, still owned by the Pet identity and
                      // progression stage (§2.3, SIGNALR_PROTOCOL.md §4.3 item 2).
                      "PetId", "Tier", "Star", "Level",
@@ -377,11 +389,14 @@ public class BattleStateTests
     [Fact]
     public void PetState_ShouldCarryExactlyTheDocumentedFields()
     {
-        // GAME_STATE.md §2.3: Element, PassiveId, PassiveProgress,
-        // PassiveResetOverride — the four fields the Pet stages implement.
-        // PetId/Identity and
-        // Tier/Star/Level belong to a later stage and are not stubbed here (§0
-        // item 4, §0 item 5).
+        // GAME_STATE.md §2.3 / ADR-011 item 3: the combat stats HP, MaxHP, ATK, DEF,
+        // Crit, and Power, plus Element, PassiveId, PassiveProgress,
+        // PassiveResetOverride, and — since the Relic loadout stage (TASK-027) —
+        // EquippedRelics, the battle-scoped snapshot the Relic stage owns (§2.3,
+        // RELIC_RULES.md §2.2–§2.5). EquippedCards joined the representation with the
+        // Card loadout stage (TASK-028) (§2.3, CARD_RULES.md §1). The remaining
+        // collection (StatusEffects), PetId/Identity, and Tier/Star/Level belong to
+        // later stages and are not stubbed here (§0 item 4, §0 item 5).
         var dataMembers = typeof(PetState)
             .GetConstructors()
             .SelectMany(c => c.GetParameters().Select(p => p.Name!))
@@ -389,12 +404,18 @@ public class BattleStateTests
             .ToArray();
 
         Assert.Equal(
-            new[] { "Element", "PassiveId", "PassiveProgress", "PassiveResetOverride" },
+            new[]
+            {
+                "ATK", "Crit", "DEF", "Element", "EquippedCards", "EquippedRelics", "HP",
+                "MaxHP", "PassiveId", "PassiveProgress", "PassiveResetOverride", "Power",
+            },
             dataMembers);
 
         // ResetBehavior and HasResetOverride are derived readings of the recorded
-        // override, not additional state: the four members above are the whole
-        // representation (§0 item 5).
+        // override, not additional state: the listed members are the whole
+        // representation (§0 item 5). EquippedRelics is the Relic loadout stage's
+        // own field (§2.3, RELIC_RULES.md §2.2–§2.5), and EquippedCards is the Card
+        // loadout stage's (§2.3, CARD_RULES.md §1).
         var declared = typeof(PetState)
             .GetProperties()
             .Select(p => p.Name)
@@ -404,8 +425,10 @@ public class BattleStateTests
         Assert.Equal(
             new[]
             {
-                "Element", "HasResetOverride", "PassiveId", "PassiveProgress",
-                "PassiveResetOverride", "ResetBehavior",
+                "ATK", "Crit", "DEF", "Element", "EquippedCards", "EquippedRelics", "HP",
+                "HasResetOverride", "MaxHP",
+                "PassiveId", "PassiveProgress", "PassiveResetOverride", "Power",
+                "ResetBehavior",
             },
             declared);
     }

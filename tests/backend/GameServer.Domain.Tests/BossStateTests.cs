@@ -30,8 +30,8 @@ public class BossStateTests
     public void Initial_ShouldStartAtFullHealth()
     {
         // GAME_STATE.md §2.4 / BOSS_RULES.md §6.1: a battle begins with the Boss at
-        // its definition's MaxHP — HP == MaxHP — exactly as PlayerState.Initial
-        // starts the player at full health.
+        // its definition's MaxHP — HP == MaxHP — exactly as PetState.AtBattleCreation
+        // starts the active Pet at full health (GAME_STATE.md §2.3).
         var boss = BossState.Initial(
             BossDefinitions.HoaLong.BossId,
             BossDefinitions.HoaLong.Element,
@@ -136,8 +136,8 @@ public class BossStateTests
     public void Initial_ShouldNotDeriveStatsFromAnyOtherValue()
     {
         // BOSS_RULES.md §6.1: the values "do not represent formulas or scaling
-        // rules" — HP is not a multiple of the player's HP and ATK/DEF are not
-        // multiples of the player's ATK/DEF. There is no formula to assert
+        // rules" — HP is not a multiple of the active Pet's HP and ATK/DEF are not
+        // multiples of the active Pet's ATK/DEF. There is no formula to assert
         // against; what is asserted is that the supplied values survive
         // unmodified, whatever they are.
         foreach (var (maxHp, atk, def) in new[] { (1, 0, 0), (7, 3, 2), (99999, 12345, 6789) })
@@ -158,7 +158,9 @@ public class BossStateTests
     {
         // GAME_STATE.md §2.4 / §5.1: BossState is authoritative state, and state is
         // replaced by the post-resolution write-back, never mutated in place. It is
-        // a readonly record struct, exactly like PlayerState and PetState, so
+        // a readonly record struct, exactly like PetState — the active Pet's
+        // Player-side combat-stat home, after the PlayerState node was removed
+        // (ADR-011 items 1 and 3) — so
         // `with` produces a new value and the original is unchanged.
         var boss = BossState.Initial(
             new BossId("b"), Element.Moc, 5000, 100, 50,

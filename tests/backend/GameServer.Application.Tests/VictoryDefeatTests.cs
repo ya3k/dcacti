@@ -103,11 +103,13 @@ public class VictoryDefeatTests
         Assert.Equal(0, won.FinalBossHp);
         Assert.Equal(result.Value.State.BossState.HP, won.FinalBossHp);
 
-        // The Boss died before it could respond, so the player's HP is exactly what
-        // this Swap's own resolution left it — which, before the Boss Response, is the
-        // value the pre-swap state held.
-        Assert.Equal(created.PlayerState.HP, won.FinalPlayerHp);
-        Assert.Equal(result.Value.State.PlayerState.HP, won.FinalPlayerHp);
+        // The Boss died before it could respond, so the active Pet's HP is exactly
+        // what this Swap's own resolution left it — which, before the Boss Response,
+        // is the value the pre-swap state held. The payload member keeps the fixed
+        // protocol label `finalPlayerHp` while carrying that Pet HP (ADR-011 item 6,
+        // GAME_STATE.md §2.3).
+        Assert.Equal(created.PetState.HP, won.FinalPlayerHp);
+        Assert.Equal(result.Value.State.PetState.HP, won.FinalPlayerHp);
     }
 
     [Fact]
@@ -153,7 +155,7 @@ public class VictoryDefeatTests
                 && e.DamageDealt.Source == DamageParty.Boss);
 
         // The player took no damage at all: the only damage instance is the player's.
-        Assert.Equal(created.PlayerState.HP, result.Value.State.PlayerState.HP);
+        Assert.Equal(created.PetState.HP, result.Value.State.PetState.HP);
     }
 
     [Fact]
@@ -216,7 +218,7 @@ public class VictoryDefeatTests
         var lost = result.Value.Events.Where(e => e.Type == BattleEventType.BattleLost).ToArray();
 
         Assert.Single(lost);
-        Assert.Equal(0, result.Value.State.PlayerState.HP);
+        Assert.Equal(0, result.Value.State.PetState.HP);
     }
 
     [Fact]
@@ -237,7 +239,7 @@ public class VictoryDefeatTests
         var lost = result.Value.Events.Single(e => e.Type == BattleEventType.BattleLost).BattleLost;
 
         Assert.Equal(0, lost.FinalPlayerHp);
-        Assert.Equal(result.Value.State.PlayerState.HP, lost.FinalPlayerHp);
+        Assert.Equal(result.Value.State.PetState.HP, lost.FinalPlayerHp);
 
         Assert.Equal(result.Value.State.BossState.HP, lost.FinalBossHp);
         Assert.True(lost.FinalBossHp > 0);
@@ -246,7 +248,9 @@ public class VictoryDefeatTests
     [Fact]
     public void BattleLost_ShouldFollowTheBossResponseAndBeLast()
     {
-        // The Player HP terminal check runs AFTER the Boss Response (BOSS_RULES.md §5
+        // The Pet HP terminal check — the Player side's, since the Pet is its combat
+        // character (ADR-011 items 3 and 5) — runs AFTER the Boss Response
+        // (BOSS_RULES.md §5
         // item 4's order), because the Boss has just had its chance to reduce it — so
         // the Boss→Player damage instance precedes the BattleLost, and the outcome is
         // the resolution's last event.
@@ -344,7 +348,7 @@ public class VictoryDefeatTests
         Assert.True(result!.Value.IsAccepted);
 
         Assert.True(result.Value.State.BossState.HP > 0);
-        Assert.True(result.Value.State.PlayerState.HP > 0);
+        Assert.True(result.Value.State.PetState.HP > 0);
 
         Assert.DoesNotContain(result.Value.Events, e => e.Type == BattleEventType.BattleWon);
         Assert.DoesNotContain(result.Value.Events, e => e.Type == BattleEventType.BattleLost);
@@ -365,7 +369,7 @@ public class VictoryDefeatTests
         Assert.True(result!.Value.IsAccepted);
 
         Assert.True(result.Value.State.BossState.HP < created.BossState.HP);
-        Assert.True(result.Value.State.PlayerState.HP < created.PlayerState.HP);
+        Assert.True(result.Value.State.PetState.HP < created.PetState.HP);
 
         Assert.Contains(
             result.Value.Events,
@@ -405,8 +409,8 @@ public class VictoryDefeatTests
         Assert.DoesNotContain(result.Value.Events, e => e.Type == BattleEventType.BattleLost);
 
         // The player is untouched — the lethal Boss never acted.
-        Assert.Equal(created.PlayerState.HP, result.Value.State.PlayerState.HP);
-        Assert.True(result.Value.State.PlayerState.HP > 0);
+        Assert.Equal(created.PetState.HP, result.Value.State.PetState.HP);
+        Assert.True(result.Value.State.PetState.HP > 0);
     }
 
     [Fact]
@@ -434,7 +438,7 @@ public class VictoryDefeatTests
 
             Assert.Same(result.Value.State, stored);
             Assert.Equal(stored.BossState.HP, result.Value.State.BossState.HP);
-            Assert.Equal(stored.PlayerState.HP, result.Value.State.PlayerState.HP);
+            Assert.Equal(stored.PetState.HP, result.Value.State.PetState.HP);
 
             // The outcome event's two HP values are the stored state's own values.
             var outcome = result.Value.Events.Single(e => e.Type == outcomeType);
@@ -444,7 +448,7 @@ public class VictoryDefeatTests
                 : (outcome.BattleLost.FinalBossHp, outcome.BattleLost.FinalPlayerHp);
 
             Assert.Equal(stored.BossState.HP, finalBossHp);
-            Assert.Equal(stored.PlayerState.HP, finalPlayerHp);
+            Assert.Equal(stored.PetState.HP, finalPlayerHp);
         }
     }
 

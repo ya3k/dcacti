@@ -326,11 +326,13 @@ public class BossResponseTests
         // Step 4: the MVP pass-through.
         Assert.Equal(1.00, bossDamageCalculated.OtherModifiers);
 
-        // Step 5: the player's DEF (COMBAT_RULES.md §3.2's target DEF).
+        // Step 5: the active Pet's DEF (COMBAT_RULES.md §3.2's target DEF) — the Pet
+        // is the Player side's combat character (ADR-011 items 3 and 5), so
+        // GAME_STATE.md §2.3's PetState.DEF is the value read.
         var expectedDefense = (boss.ATK + boss.SkillBaseDamage)
             * bossDamageCalculated.ElementModifier
             * (DamagePipeline.DefenseMitigationConstant
-                / (double)(DamagePipeline.DefenseMitigationConstant + created.PlayerState.DEF));
+                / (double)(DamagePipeline.DefenseMitigationConstant + created.PetState.DEF));
 
         Assert.Equal(expectedDefense, bossDamageCalculated.Defense, precision: 9);
     }
@@ -514,7 +516,8 @@ public class BossResponseTests
     {
         // COMBAT_RULES.md §3.4 step 3 / §3.2: the defending Element is the ACTIVE
         // PET's ("the defender is the Pet, not the Player" — a Player has no Element),
-        // and the mitigation input is the player's DEF. The matchup the assertion
+        // and the mitigation input is the active Pet's DEF (GAME_STATE.md §2.3,
+        // ADR-011 items 3 and 5). The matchup the assertion
         // reads is resolved from the two documented Elements.
         var service = new BattleStateService(new FixedRngSeedSource());
         var boss = BossDefinitions.HoaLong with { SkillChargeRequirement = 1000 };
@@ -538,7 +541,7 @@ public class BossResponseTests
         var expectedDefense = boss.ATK
             * ElementModifiers.Default.For(expectedMatchup)
             * (DamagePipeline.DefenseMitigationConstant
-                / (double)(DamagePipeline.DefenseMitigationConstant + created.PlayerState.DEF));
+                / (double)(DamagePipeline.DefenseMitigationConstant + created.PetState.DEF));
 
         Assert.Equal(expectedDefense, bossDamage.Defense, precision: 9);
         Assert.Equal((int)Math.Truncate(expectedDefense), bossDamage.FinalDamage);
@@ -547,8 +550,11 @@ public class BossResponseTests
     [Fact]
     public void BossBasicAttack_ShouldWriteThePlayersHp()
     {
-        // COMBAT_RULES.md §3.4 step 6: "Final Damage applied to Player.HP". The
-        // player's HP must fall by exactly the amount the Boss→Player instance
+        // COMBAT_RULES.md §3.4 step 6: "Final Damage applied to Player.HP" names the
+        // Player side of the instance — and the Pet is that side's combat character
+        // (ADR-011 items 3 and 5), so the HP written is the active Pet's PetState.HP
+        // (GAME_STATE.md §2.3, §5.1). The
+        // Pet's HP must fall by exactly the amount the Boss→Player instance
         // reports, in the same write-back (GAME_STATE.md §5.1).
         var service = new BattleStateService(new FixedRngSeedSource());
         var boss = BossDefinitions.HoaLong with { SkillChargeRequirement = 1000 };
@@ -567,8 +573,8 @@ public class BossResponseTests
 
         Assert.Equal(DamageParty.Boss, bossDealt.Source);
         Assert.Equal(DamageParty.Player, bossDealt.Target);
-        Assert.Equal(created.PlayerState.HP - result.Value.State.PlayerState.HP, bossDealt.Amount);
-        Assert.True(result.Value.State.PlayerState.HP < created.PlayerState.HP);
+        Assert.Equal(created.PetState.HP - result.Value.State.PetState.HP, bossDealt.Amount);
+        Assert.True(result.Value.State.PetState.HP < created.PetState.HP);
     }
 
     [Fact]

@@ -1,6 +1,8 @@
 # MVP Scope
 
-**Version:** 1.1 (§1 Player Level added — required by the Pet Level
+**Version:** 1.2 (§1 Pets Pet Level formula synchronized with the
+completed derivation contract — floor before clamp — PET_RULES.md §5;
+prior 1.1: §1 Player Level added — required by the Pet Level
 formula; PET_RULES.md §5, ADR-012)
 **Status:** Canonical — this document is the single source of truth for
 IN / OUT / FUTURE classification. `GAME_RULES.md` and `GDD.md` reference
@@ -43,8 +45,9 @@ Player Level (1–50) — persistent account attribute; no combat stats.
 5 Pets (Thanh Xà, Xích Lang, Sơn Hùng, Bạch Hổ, Huyền Quy)
 Pet Element, Passive, Signature Skill
 Tier, Star, Level progression
-  (Pet Level = clamp(Player Level × Pet Level Multiplier, 1, 50) —
-   PET_RULES.md §5; no Pet XP)
+  (Pet Level = clamp(floor(Player Level × Pet Level Multiplier), 1, 50) —
+   PET_RULES.md §5; no Pet XP; concrete MVP multiplier values deferred
+   to balance/config)
 ```
 
 ## Cards

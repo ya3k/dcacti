@@ -22,6 +22,132 @@ namespace GameServer.Infrastructure.Postgres.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("GameServer.Domain.Cards.CardDefinition", b =>
+                {
+                    b.Property<string>("CardDefinitionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("Category")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("EffectDefinition")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<int>("LoadoutCopyLimit")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("PowerCost")
+                        .HasColumnType("integer");
+
+                    b.HasKey("CardDefinitionId");
+
+                    b.ToTable("CardDefinition", (string)null);
+                });
+
+            modelBuilder.Entity("GameServer.Domain.Cards.PlayerUnlockedCard", b =>
+                {
+                    b.Property<string>("PlayerId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("CardDefinitionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("PlayerId", "CardDefinitionId");
+
+                    b.HasIndex("PlayerId");
+
+                    b.ToTable("PlayerUnlockedCard", (string)null);
+                });
+
+            modelBuilder.Entity("GameServer.Domain.Pets.Pet", b =>
+                {
+                    b.Property<string>("PetInstanceId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset>("AcquiredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("Level")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("PetDefinitionId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("PlayerId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("Star")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("Tier")
+                        .HasColumnType("integer");
+
+                    b.HasKey("PetInstanceId");
+
+                    b.HasIndex("PlayerId");
+
+                    b.ToTable("Pet", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_Pet_Level_Range", "\"Level\" >= 1 AND \"Level\" <= 50");
+
+                            t.HasCheckConstraint("CK_Pet_Star_Range", "\"Star\" >= 1 AND \"Star\" <= 5");
+                        });
+                });
+
+            modelBuilder.Entity("GameServer.Domain.Pets.PetDefinition", b =>
+                {
+                    b.Property<string>("PetDefinitionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("Element")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Identity")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("PassiveId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<int>("PassiveThreshold")
+                        .HasColumnType("integer");
+
+                    b.Property<decimal>("PetLevelMultiplier")
+                        .HasPrecision(9, 4)
+                        .HasColumnType("numeric(9,4)");
+
+                    b.Property<string>("SignatureSkillCardId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("PetDefinitionId");
+
+                    b.ToTable("PetDefinition", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_PetDefinition_PetLevelMultiplier_Positive", "\"PetLevelMultiplier\" > 0");
+                        });
+                });
+
             modelBuilder.Entity("GameServer.Domain.Players.Player", b =>
                 {
                     b.Property<string>("PlayerId")
@@ -50,6 +176,116 @@ namespace GameServer.Infrastructure.Postgres.Migrations
                         {
                             t.HasCheckConstraint("CK_Player_Level_Range", "\"Level\" >= 1 AND \"Level\" <= 50");
                         });
+                });
+
+            modelBuilder.Entity("GameServer.Domain.Relics.Relic", b =>
+                {
+                    b.Property<string>("RelicInstanceId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTimeOffset>("AcquiredAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PlayerId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("RelicDefinitionId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("RelicInstanceId");
+
+                    b.HasIndex("PlayerId");
+
+                    b.ToTable("Relic", (string)null);
+                });
+
+            modelBuilder.Entity("GameServer.Domain.Relics.RelicDefinition", b =>
+                {
+                    b.Property<string>("RelicDefinitionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Condition")
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("EffectDefinition")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Trigger")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("RelicDefinitionId");
+
+                    b.ToTable("RelicDefinition", (string)null);
+                });
+
+            modelBuilder.Entity("GameServer.Domain.Cards.PlayerUnlockedCard", b =>
+                {
+                    b.HasOne("GameServer.Domain.Cards.CardDefinition", null)
+                        .WithMany()
+                        .HasForeignKey("CardDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("GameServer.Domain.Players.Player", null)
+                        .WithMany()
+                        .HasForeignKey("PlayerId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("GameServer.Domain.Pets.Pet", b =>
+                {
+                    b.HasOne("GameServer.Domain.Pets.PetDefinition", null)
+                        .WithMany()
+                        .HasForeignKey("PetDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("GameServer.Domain.Players.Player", null)
+                        .WithMany()
+                        .HasForeignKey("PlayerId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("GameServer.Domain.Pets.PetDefinition", b =>
+                {
+                    b.HasOne("GameServer.Domain.Cards.CardDefinition", null)
+                        .WithMany()
+                        .HasForeignKey("SignatureSkillCardId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("GameServer.Domain.Relics.Relic", b =>
+                {
+                    b.HasOne("GameServer.Domain.Players.Player", null)
+                        .WithMany()
+                        .HasForeignKey("PlayerId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("GameServer.Domain.Relics.RelicDefinition", null)
+                        .WithMany()
+                        .HasForeignKey("RelicDefinitionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 #pragma warning restore 612, 618
         }

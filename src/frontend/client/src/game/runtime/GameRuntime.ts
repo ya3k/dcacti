@@ -14,6 +14,8 @@ import {
   type RuntimeBoard,
   type RuntimeEvent,
   type RuntimeEventListener,
+  type RuntimePassiveProgress,
+  type RuntimePetState,
   type RuntimePlayerState,
   type RuntimeRngState,
 } from './GameRuntimeEvents';
@@ -259,13 +261,15 @@ export class GameRuntime implements GameRuntimePort {
   }
 
   /**
-   * The client's synchronized copy of the authoritative Board Foundation State
-   * (`GAME_STATE.md` §2.0.5), or `null` until the server pushes it
+   * The client's synchronized copy of the authoritative battle state
+   * (`GAME_STATE.md` §2.0.5, §2.2, §2.3), or `null` until the server pushes it
    * (SIGNALR_PROTOCOL.md §4).
    *
    * The runtime stores what the server sent and exposes it unchanged. It does
-   * not derive, extend, or validate gameplay meaning from it (§4.9), and it never
-   * generates or repairs the board it carries (§4 item 10).
+   * not derive, extend, or validate gameplay meaning from it (§4.9) — in
+   * particular it never generates or repairs the board it carries (§4 item 10)
+   * and never charges a Passive, evaluates a Threshold, or resets progress from
+   * the `petState` it carries (§4.3 item 9).
    */
   public getBattleState(): RuntimeBattleState | null {
     return this.battleState;
@@ -384,12 +388,15 @@ export class GameRuntime implements GameRuntimePort {
    * (SIGNALR_PROTOCOL.md §4) and stores it as the runtime's synchronized copy.
    *
    * The payload is stored exactly as sent — `battleId`, `turn`, `sequence`,
-   * `rngSeed`, `rngState`, `board`, `playerState` (`GAME_STATE.md` §2.2, §2.0.5).
+   * `rngSeed`, `rngState`, `board`, `playerState`, `petState` (`GAME_STATE.md`
+   * §2.2, §2.3, §2.0.5).
    * Nothing is derived from it, and no gameplay meaning is inferred: the server
    * owns these values (§4.9, ADR-001). In particular the board is stored as
    * received and is never generated, filled, repaired, or re-derived by the
-   * client (§4 item 10), and `playerState`'s Match/Combo values are rendered, never
-   * counted or recomputed (`MATCH3_RULES.md` §6.6 item 3).
+   * client (§4 item 10), `playerState`'s Match/Combo values are rendered, never
+   * counted or recomputed (`MATCH3_RULES.md` §6.6 item 3), and `petState`'s
+   * delivered members are stored verbatim — the runtime never charges a
+   * Passive, evaluates a Threshold, or resets progress (§4.3 item 9).
    *
    * A malformed payload is reported as a technical runtime error and ignored —
    * the runtime never fabricates battle state to fill a gap.
@@ -414,19 +421,21 @@ export class GameRuntime implements GameRuntimePort {
   }
 
   /**
-   * Validates only the documented §4 shape — the `GAME_STATE.md` §2.2/§2.0.5
+   * Validates only the documented §4 shape — the `GAME_STATE.md` §2.2/§2.3/§2.0.5
    * fields `battleId`, `turn`, `sequence`, `rngSeed`, `rngState`, `board`,
-   * `playerState`.
+   * `playerState`, `petState`.
    *
    * The record carries no other field and no `Status`/lifecycle value
-   * (SIGNALR_PROTOCOL.md §4.4, §8.3), so nothing else is read or defaulted.
+   * (SIGNALR_PROTOCOL.md §4 item 4 — the payload carries the implemented stage's
+   * own fields and no others, with the resulting member set part of the contract
+   * per §8.1 — and §8.3), so nothing else is read or defaulted.
    *
    * This checks *shape*, not gameplay meaning: it does not know what a Gem is,
    * does not validate the board against any game rule, and cannot repair one.
    * Validating the board is the server's job (`MATCH3_RULES.md` §1.3–§1.4); a
    * client-side check would be a second, non-authoritative implementation. The
-   * same applies to `playerState`: its values are read as sent and are never
-   * derived, clamped, or recomputed (`GAME_RULES.md` §18).
+   * same applies to `playerState` and `petState`: their values are read as sent
+   * and are never derived, clamped, or recomputed (`GAME_RULES.md` §18).
    */
   private readBattleState(payload: unknown): RuntimeBattleState | null {
     if (typeof payload !== 'object' || payload === null) {
@@ -463,6 +472,11 @@ export class GameRuntime implements GameRuntimePort {
       return null;
     }
 
+    const petState = this.readPetState(candidate.petState);
+    if (petState === null) {
+      return null;
+    }
+
     return {
       battleId: candidate.battleId,
       turn: candidate.turn,
@@ -471,6 +485,7 @@ export class GameRuntime implements GameRuntimePort {
       rngState,
       board,
       playerState,
+      petState,
     };
   }
 
@@ -498,6 +513,84 @@ export class GameRuntime implements GameRuntimePort {
     }
 
     return { combo: candidate.combo, matchCount: candidate.matchCount };
+  }
+
+  /**
+   * Reads `PetState`'s delivered members (`GAME_STATE.md` §2.3,
+   * `SIGNALR_PROTOCOL.md` §4.3).
+   *
+   * `passiveId` and `passiveProgress` are required, in the same way
+   * `playerState`'s two values are: both are defined from battle creation, both
+   * are non-nullable, and neither is omitted — so a payload missing one is
+   * malformed rather than implicitly empty, and the runtime must not invent a
+   * value to fill the gap (`GAME_RULES.md` §18). `current = 0` is a real value
+   * and is delivered as `0`, never by absence (§4.3 item 4).
+   *
+   * `passiveResetOverride` is the one optional member: it is present iff the
+   * Passive's reset behavior is non-default, and its absence *is* the statement
+   * "default" (§4.3 item 7). Absence is therefore tolerated and stored as
+   * absence — the runtime never substitutes `"Default"`, `null`, or any other
+   * value for it, because writing one would be a second spelling of one fact.
+   *
+   * Every value is read as sent. The runtime does not charge a Passive, evaluate
+   * a Threshold, reset progress, or apply an overflow (§4.3 item 9), and it does
+   * not widen the object to the rest of §2.3 — identity, progression, combat
+   * stats, and loadouts are not delivered (§4.3 item 2).
+   */
+  private readPetState(value: unknown): RuntimePetState | null {
+    if (typeof value !== 'object' || value === null) {
+      return null;
+    }
+
+    const candidate = value as Partial<RuntimePetState>;
+
+    if (typeof candidate.passiveId !== 'string' || candidate.passiveId.length === 0) {
+      return null;
+    }
+
+    const passiveProgress = this.readPassiveProgress(candidate.passiveProgress);
+    if (passiveProgress === null) {
+      return null;
+    }
+
+    // The conditional member: absent means the default reset, and only the two
+    // documented contract names are a non-default statement (§4.3 items 6–7).
+    if (
+      candidate.passiveResetOverride !== undefined &&
+      typeof candidate.passiveResetOverride !== 'string'
+    ) {
+      return null;
+    }
+
+    return candidate.passiveResetOverride === undefined
+      ? { passiveId: candidate.passiveId, passiveProgress }
+      : {
+          passiveId: candidate.passiveId,
+          passiveProgress,
+          passiveResetOverride: candidate.passiveResetOverride,
+        };
+  }
+
+  /**
+   * Reads the `PassiveProgress` pair (`GAME_STATE.md` §2.5).
+   *
+   * Both members are required: the two are one logical field read together to
+   * render the documented `current / threshold` pair (`PASSIVE_RULES.md` §6
+   * item 1), and `current = 0` is a real publishable value rather than an
+   * absence, so a payload carrying only one is malformed (§4.3 item 4).
+   */
+  private readPassiveProgress(value: unknown): RuntimePassiveProgress | null {
+    if (typeof value !== 'object' || value === null) {
+      return null;
+    }
+
+    const candidate = value as Partial<RuntimePassiveProgress>;
+
+    if (typeof candidate.threshold !== 'number' || typeof candidate.current !== 'number') {
+      return null;
+    }
+
+    return { threshold: candidate.threshold, current: candidate.current };
   }
 
   /**

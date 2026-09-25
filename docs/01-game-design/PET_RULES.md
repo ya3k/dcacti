@@ -1,6 +1,9 @@
 # Pet Rules
 
-**Version:** 1.3 (§5 item 8 added — a newly created Player starts at
+**Version:** 1.4 (§5 derivation contract completed — multiplier type
+`decimal`, range `> 0`, `floor` rounding, floor → clamp order, one
+canonical rule for stored and battle Pet Level, concrete MVP multipliers
+deferred; prior 1.3: §5 item 8 added — a newly created Player starts at
 Level 1; prior 1.2: §5 resolved — Player Level defined in MVP, Pet Level =
 clamp(Player Level × Pet Level Multiplier, 1, 50), Tier/Star remain
 independent, Evolution out of scope; §5.1 OPEN conflicts closed per
@@ -97,42 +100,97 @@ Player Level range:  1–50   (persistent account attribute)
 Pet Level range:     1–50   (clamped result of the formula below)
 ```
 
-1. Pet Level is derived from the account's Player Level:
+1. Pet Level is derived from the account's Player Level. The **canonical
+   rule** is exactly:
 
    ```text
-   Pet Level = clamp(Player Level × Pet Level Multiplier, 1, 50)
+   Pet.Level = clamp(
+       floor(Player.Level × PetDefinition.PetLevelMultiplier),
+       1,
+       50
+   )
    ```
 
-   `Pet Level Multiplier` is a per-Pet **configuration value** (never
-   hard-coded). The clamp bounds the *result* of the product to the
-   1–50 range above; it does not re-define Player Level's own 1–50 range
-   and does not supersede either range.
+   Operation order (this sequence and no other):
 
-2. Pets have no independent XP progression — there is no Pet XP bar, no
+   ```text
+   1. Calculate Player.Level × PetDefinition.PetLevelMultiplier
+   2. Apply floor to the product
+   3. Clamp the floored result to [1, 50]
+   4. Result is Pet.Level
+   ```
+
+   `Pet Level Multiplier` (`PetDefinition.PetLevelMultiplier`) is a
+   per-Pet **configuration value** owned by `PetDefinition` (never
+   hard-coded inside gameplay logic). Its semantics are:
+
+   ```text
+   Type:  decimal
+   Range: > 0        (values below 1 are legal — a Pet may lag its owner;
+                      zero and negative values are not)
+   ```
+
+   Rounding is **`floor`**, applied to the product **before** the clamp.
+   The clamp then bounds the floored result to the 1–50 range above; it
+   does not re-define Player Level's own 1–50 range and does not
+   supersede either range. There is no round-after-clamp step: clamp is
+   always the last operation.
+
+   Worked examples (authoritative):
+
+   ```text
+   Player.Level = 3,  Multiplier = 1.5  →  3 × 1.5 = 4.5  → floor = 4  → clamp = 4
+   Player.Level = 40, Multiplier = 2    →  40 × 2 = 80    → floor = 80 → clamp = 50
+   Player.Level = 1,  Multiplier = 0.5  →  1 × 0.5 = 0.5  → floor = 0  → clamp = 1
+   ```
+
+2. **One canonical rule for every representation of Pet.Level.** The
+   formula and operation order in item 1 are the single derivation rule
+   for Pet Level. They apply identically to:
+
+   ```text
+   persistent Pet representation   (Pet.Level stored with the Pet instance —
+                                    DATABASE.md §1)
+   BattleState.PetState.Level      (battle-time Level under BattleState —
+                                    GAME_STATE.md §2.3)
+   ```
+
+   Implementation must not define a different battle-time formula,
+   rounding rule, or clamp order. The battle-time Level is a snapshot of
+   the same derived value, not a second derivation path.
+
+3. **Concrete MVP Pet Level Multiplier values are deferred.** The
+   five MVP Pets' `PetLevelMultiplier` numbers are balance/configuration
+   values (same classification as the exact Player Level XP curve —
+   ROADMAP Phase 3 balance pass on all configurable values). They are
+   not defined in this document. Do not invent them in rules, tasks, or
+   code comments.
+
+4. Pets have no independent XP progression — there is no Pet XP bar, no
    XP gain from battles, and no Pet-level-up action. Player Level itself
    increases through Meta Progression battle Rewards (GDD §14,
    `MVP_SCOPE.md` §1); the exact XP curve is a balance/config concern and
    is not defined in this document.
 
-3. Player Level carries **no combat stats**. It is an account-level
+5. Player Level carries **no combat stats**. It is an account-level
    progression value only; battle-time HP/ATK/DEF/Crit/Power live on
    `PetState` (`GAME_STATE.md` §2.3, ADR-011).
 
-4. Level primarily scales base stats (HP/ATK/DEF) via a stat curve.
-5. Level does not change Element, Tier, Passive trigger type, or Signature
+6. Level primarily scales base stats (HP/ATK/DEF) via a stat curve.
+7. Level does not change Element, Tier, Passive trigger type, or Signature
    Skill identity — only magnitude, where applicable.
-6. Exact level curve (linear/exponential/tabled) is a balance concern defined
+8. Exact level curve (linear/exponential/tabled) is a balance concern defined
    in COMBAT_RULES.md / config, not here.
-7. **Tier and Star remain independent progression axes.** They are not
+9. **Tier and Star remain independent progression axes.** They are not
    derived from Player Level. Only Pet Level is account-derived
    (resolution recorded in §5.1).
-8. **A newly created Player starts at Level 1.** This is the documented
-   initial value of the `Player.Level` attribute defined above — the
-   value a Player row carries when it is first created. It is an
-   initial-value rule only: it defines no XP amount, no XP curve, no
-   level-up threshold, and no rate of increase. How Player Level
-   increases is stated at the mechanism level in item 2, and the
-   increase curve remains undefined (item 2, §5.1 item 4).
+10. **A newly created Player starts at Level 1.** This is the documented
+    initial value of the `Player.Level` attribute defined above — the
+    value a Player row carries when it is first created. It is an
+    initial-value rule only: it defines no XP amount, no XP curve, no
+    level-up threshold, and no rate of increase. How Player Level
+    increases is stated at the mechanism level in item 4, and the
+    increase curve remains undefined (item 4, §5.1 item 4).
 
 ## 5.1 Former OPEN Conflicts — Resolved (ADR-012)
 
@@ -143,19 +201,20 @@ this document no longer carries open items in §5:
 1. **Player Level is defined for MVP.** Range 1–50, persistent on the
    Player account (`DATABASE.md` §1), listed IN in `MVP_SCOPE.md` §1,
    increases via battle Rewards (Meta Progression). No combat stats
-   (§5 item 3).
-2. **The 1–50 level cap clamps the formula result.** `Pet Level =
-   clamp(Player Level × Multiplier, 1, 50)` (§5 item 1). Both
-   Player Level and Pet Level independently respect 1–50.
+   (§5 item 5).
+2. **The 1–50 level cap clamps the formula result.** `Pet.Level =
+   clamp(floor(Player.Level × PetDefinition.PetLevelMultiplier), 1, 50)`
+   (§5 item 1 — floor before clamp). Both Player Level and Pet Level
+   independently respect 1–50.
 3. **Tier and Star are not account-derived.** They remain independent
-   axes alongside the account-derived Level (§5 item 7);
+   axes alongside the account-derived Level (§5 item 9);
    `PET_RULES.md` §3–§4 are unchanged.
 4. **The initial Player Level is specified.** A newly created Player
-   starts at Level 1 (§5 item 8). This closes the one value the 1–50
+   starts at Level 1 (§5 item 10). This closes the one value the 1–50
    range statement left open: a range defines the legal values an
-   attribute may hold, not the value it holds at creation. Item 8
+   attribute may hold, not the value it holds at creation. Item 10
    records the initial value only; the increase curve remains a
-   balance/config concern and is not defined here (§5 item 2).
+   balance/config concern and is not defined here (§5 item 4).
 
 **Evolution is out of scope.** No Evolution system exists in any rule
 document; if introduced later it must go through `GAME_RULES.md` §20 and
@@ -172,8 +231,8 @@ Final in-battle Pet stats are derived from all progression axes combined:
 Final Stat = f(Base Stat[Tier], Level Curve[Level], Star Bonus[Star])
 ```
 
-Here `Level` is the Pet Level defined in §5 (`clamp(Player Level × Pet
-Level Multiplier, 1, 50)`, config). The exact function `f` is a
+Here `Level` is the Pet Level defined in §5 (`clamp(floor(Player Level × Pet
+Level Multiplier), 1, 50)`, config). The exact function `f` is a
 balance/config concern. This document only fixes that all three axes
 (Tier, Level, Star) contribute, and that none of them alone is the sole
 source of power growth (reinforcing GAME_RULES.md §9.8).

@@ -588,9 +588,10 @@ public class CascadeAndDeterminismTests
 
         // The record gained no field for Special Gems: they live inside Cells[64], so the
         // shape this task touches is unchanged. (LastCommittedSwapPair is the Swap
-        // stage's field, documented in GAME_STATE.md §2.1.10; PlayerState is the
-        // Match / Combo accounting stage's field, documented in §2.2; PetState is
-        // the Pet / Passive stage's field, documented in §2.3; and BossState is the
+        // stage's field, documented in GAME_STATE.md §2.1.10; Combo and MatchCount are
+        // the Match / Combo accounting values, documented as root members in §2.2 with
+        // no nested PlayerState node; PetState is the combat-stat / Pet / Passive
+        // stage's field, documented in §2.3; and BossState is the
         // Boss stage's field, documented in §2.4 — none of them is
         // Special Gem state and none was added here.)
         var properties = typeof(BattleState)
@@ -603,8 +604,8 @@ public class CascadeAndDeterminismTests
         Assert.Equal(
             new[]
             {
-                "BattleId", "BoardState", "BossState", "LastCommittedSwapPair", "PetState",
-                "PlayerState", "RngSeed", "RngState", "Sequence", "Turn",
+                "BattleId", "BoardState", "BossState", "Combo", "LastCommittedSwapPair",
+                "MatchCount", "PetState", "RngSeed", "RngState", "Sequence", "Turn",
             },
             properties);
     }

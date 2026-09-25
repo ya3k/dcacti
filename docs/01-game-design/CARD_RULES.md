@@ -1,9 +1,12 @@
 # Card Rules
 
-**Version:** 1.2 (§1 ownership clarified — Player owns the Card
-collection; loadout is battle-scoped for the active Pet; no
-`Pet.CardInventory`; prior 1.1: Basic Card effects and Power cost
-clarify target = active Pet / PetState)
+**Version:** 1.3 (§1 loadout copy limit — each CardDefinition's explicit
+`LoadoutCopyLimit` governs how many times it may appear in the submitted
+3-card Basic loadout; explicit value required, no default; concrete
+values are content/balance configuration; prior 1.2: §1 ownership
+clarified — Player owns the Card collection; loadout is battle-scoped
+for the active Pet; no `Pet.CardInventory`; prior 1.1: Basic Card
+effects and Power cost clarify target = active Pet / PetState)
 **Status:** MVP Domain Rule
 **Parent:** GAME_RULES.md
 
@@ -29,6 +32,36 @@ Pet and is snapshotted into `PetState.EquippedCards[]`
 (`GAME_STATE.md` §2.3) for that battle only. There is **no**
 `Pet.CardInventory` and no persistent per-Pet Card ownership: Cards are
 owned by the Player, equipped per battle for the active Pet.
+
+**Loadout copy limit (per CardDefinition).** The number of times one
+Basic `CardDefinition` may appear in the submitted 3-card loadout is
+governed by that CardDefinition's **loadout copy limit**
+(`LoadoutCopyLimit`, `DATABASE.md` §1):
+
+```text
+For each CardDefinitionId in cardLoadout:
+    occurrence count ≤  that CardDefinition's LoadoutCopyLimit
+```
+
+1. Duplicates are permitted up to the limit; a limit of 1 makes a
+   Basic Card loadout-unique. `cardLoadout = [A, A, B]` is valid only
+   if `LoadoutCopyLimit(A) ≥ 2`, and each entry independently satisfies
+   this section's count (exactly 3), category (all `Category = Basic`),
+   and ownership (unlocked `PlayerUnlockedCard` row) rules.
+2. Every CardDefinition must define its limit explicitly; a missing
+   value is invalid definition data. There is no default.
+3. The limit counts occurrences in **one submitted battle loadout**.
+   It is not inventory quantity, ownership quantity, or a collection
+   limit: ownership remains one unlock row per (`Player`,
+   `CardDefinition`) regardless of allowed copies (`PlayerUnlockedCard`,
+   ADR-012 item 9), and no Card instance exists at any time.
+4. The limit is read only for the submitted Basic loadout. The derived
+   Signature Skill Card (`PetDefinition.SignatureSkillCardId`) is not
+   submitted, never counted, and keeps its own composition slot (the
+   loadout remains 3 Basic + 1 Pet Skill); a `PetSkill` CardDefinition
+   can never satisfy this section's Basic-Card composition rule.
+5. Concrete limit values are content/balance configuration, owned by a
+   future balance/content task; this document defines no values.
 
 ---
 

@@ -149,13 +149,24 @@ Full active battle state          Full BattleState (GAME_STATE.md §2)
    requires that key to hold the full §2 shape exactly. Writing a subset
    there would make a foundation artifact indistinguishable from a real
    battle record.
-3. **Why: no real battle can exist yet.** §3 ties creation to
-   `POST /api/battle/start` (`API_CONTRACTS.md` §3), and that endpoint
-   requires Pet, Boss, Card, and Relic loadout data — systems not yet
-   implemented (`ROADMAP.md` §1 Phase 2). Until a battle can actually be
-   started, there is nothing for this key to hold, so Redis persistence is
-   deliberately deferred. This is a **sequencing** boundary, not a weakening
-   of the requirement.
+3. **Why the foundation stages wrote no record.** §3 ties creation to
+   `POST /api/battle/start` (`API_CONTRACTS.md` §3), and while the
+   foundation stages were being built that endpoint required Pet, Boss,
+   Card, and Relic loadout data — systems that did not exist yet
+   (`ROADMAP.md` §1 Phase 2). Until a battle could actually be
+   started, there was nothing for this key to hold, so Redis persistence
+   was deliberately deferred. This is a **sequencing** boundary, not a
+   weakening of the requirement.
+
+   **TASK-030 has since implemented `POST /api/battle/start`, and the
+   deferral is nonetheless still in force.** §7 item 7's condition — a
+   real battle can be created — is now met, but the Redis write is a
+   storage change with its own task: TASK-030's Scope records "Redis
+   persistence writes — `REDIS_STATE` §7 deferral gate is separate" as
+   explicitly out of scope, and the endpoint bootstraps its battle in the
+   existing process-local registry per the current runtime model. So a
+   created battle currently has **no** `battle:{battleId}:state` record.
+   The requirement below is unchanged and now becomes due.
 4. **The Board Foundation stage does not change this boundary.** §7 items 1–3
    apply to it unchanged:
    - `BoardState` and `RngSeed`/`RngState` are §2 fields
@@ -342,3 +353,11 @@ Full active battle state          Full BattleState (GAME_STATE.md §2)
 
     Like the Special Gem and commit-record changes, this is a **content** change
     to the record rather than a **structure** change to the store.
+
+    > **Status note (TASK-030).** Items 8 and 12 above record what the
+    > board-resolution and Match/Combo stages did, and the staging facts they
+    > state were true of those stages. `BossState` (`GAME_STATE.md` §2.4) has
+    > since been implemented, and `POST /api/battle/start` now creates a battle
+    > carrying §2's shape. The Redis record is still not written, for the reason
+    > given in §7 item 3: that write is TASK-030's out-of-scope storage change,
+    > and §7 item 7's requirement is now due rather than discharged.

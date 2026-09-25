@@ -19,8 +19,8 @@ namespace GameServer.Domain.Bosses;
 /// "MVP base configuration — not universal balance invariants. The project owner
 /// approved these values." §6.3 states the same for the Skill timing values
 /// below. This type therefore holds them as plain data. It defines no stat
-/// formula: HP is not derived from the player's HP, and ATK/DEF are not derived
-/// from the player's ATK/DEF — no such scaling rule exists in any document, and
+/// formula: HP is not derived from the active Pet's HP, and ATK/DEF are not derived
+/// from the active Pet's ATK/DEF — no such scaling rule exists in any document, and
 /// §6.1 states the values "do not represent formulas or scaling rules". Nothing
 /// here varies per Boss either: §6.1 gives all three content-defined Bosses the
 /// same base stats, and only their Elements and identities differ.

@@ -413,6 +413,14 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
       // GAME_STATE.md §2.2: both values exist from battle creation and are always
       // delivered — including at 0, which is a value, not an absence.
       playerState: { combo: 0, matchCount: 0 },
+      // SIGNALR_PROTOCOL.md §4.3: exactly the Passive trio. The delivered
+      // `current / threshold` pair is always present; `passiveResetOverride` is
+      // omitted for the default reset, which is the documented representation
+      // (§4.3 items 4, 7).
+      petState: {
+        passiveId: 'xich-lang',
+        passiveProgress: { threshold: 5, current: 0 },
+      },
       ...overrides,
     };
   }
@@ -449,6 +457,48 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     const rendered = harness.texts.map((t) => t.text).join('\n');
     expect(rendered).toMatch(/Turn: 0\b/);
     expect(rendered).toMatch(/Sequence: 0\b/);
+  });
+
+  it('renders the delivered Passive progress pair verbatim', () => {
+    // SIGNALR_PROTOCOL.md §4.3 / PASSIVE_RULES.md §6 item 1: the delivered
+    // `current / threshold` pair is presented as the UI-facing value. The scene
+    // prints both numbers as received — it charges nothing, evaluates no
+    // Threshold, and resets nothing (§4.3 item 9).
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
+      petState: {
+        passiveId: 'thanh-xa-poison',
+        passiveProgress: { threshold: 7, current: 3 },
+      },
+    }));
+
+    runScene(scene, ctx, 'create');
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+
+    expect(rendered).toContain('thanh-xa-poison');
+    expect(rendered).toContain('3 / 7');
+    // The member's absence is the documented spelling of the default reset
+    // (§4.3 item 7) — stated as such, with no value invented for it.
+    expect(rendered).toContain('reset: Default');
+  });
+
+  it('renders the delivered non-default reset override contract name', () => {
+    // §4.3 item 6: when the Passive declares a non-default behavior the wire
+    // member carries its contract name — `"Partial"` or `"NoReset"`.
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
+      petState: {
+        passiveId: 'xich-lang',
+        passiveProgress: { threshold: 5, current: 4 },
+        passiveResetOverride: 'Partial',
+      },
+    }));
+
+    runScene(scene, ctx, 'create');
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+
+    expect(rendered).toContain('4 / 5');
+    expect(rendered).toContain('reset: Partial');
   });
 
   it('renders the 8x8 board as exactly 64 cells', () => {

@@ -271,8 +271,8 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         // BattleId, Turn, Sequence, RngSeed, RngState, BoardState (GAME_STATE.md §2.0.5)
-        // plus PlayerState (§2.2, the Match / Combo accounting stage) and PetState
-        // (§2.3, the Pet / Passive stage).
+        // plus the root Combo/MatchCount accounting projected as `playerState` (§2.2)
+        // and PetState (§2.3, the combat-stat / Pet / Passive stage).
         // SIGNALR_PROTOCOL.md §4 item 4: no other field may be added to this record.
         // §8.3: no Status/lifecycle value.
         var fields = payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal);
@@ -284,9 +284,11 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
             },
             fields);
 
-        // §4.2: the nested PlayerState object carries exactly the two implemented §2.2
+        // §4.2: the `playerState` object carries exactly the two implemented §2.2
         // fields — no HP, Power, Status, Card, or Relic state, and no Match/Combo value
-        // outside it.
+        // outside it. `playerState` is a fixed protocol label, not a state path: the
+        // Domain has no PlayerState node (GAME_STATE.md §2, ADR-011 item 6) and the two
+        // values are BattleState root members (§2.2).
         var playerState = payload.GetProperty("playerState");
         Assert.Equal(
             new[] { "combo", "matchCount" },
@@ -464,9 +466,10 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         var serialized = payload.GetRawText();
 
         // GAME_STATE.md §2.0.5.3 / §2.2 / §2.3: BossState is still absent and owned
-        // by a later stage, and so is the rest of PlayerState (HP, Power, Status,
-        // Cards, Relics) and the rest of PetState (PetId, Element, Tier). The board,
-        // RNG, PlayerState, and PetState fields ARE part of the implemented stage —
+        // by a later stage, and so is the rest of PetState (HP, Power, Status,
+        // Cards, Relics as wire members, PetId, Element, Tier). The board,
+        // RNG, and the two state objects `playerState`/`petState` ARE part of the
+        // implemented stage —
         // §2.0.5 for the first two, §2.2 for combo/matchCount, and §2.3 for
         // passiveId/passiveProgress — so they are not in this list.
         //
@@ -505,7 +508,8 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
                 StringComparer.OrdinalIgnoreCase);
         }
 
-        // The stage's own fields are the only ones present, and PlayerState's own two
+        // The stage's own fields are the only ones present, and the `playerState`
+        // object's own two
         // are the only fields of that object (§2.2 — this stage implements no others).
         Assert.Equal(
             new[]
@@ -795,6 +799,314 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         }
 
         await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task BattleStateUpdated_PetState_ShouldCarryNoMemberOutsideTheDocumentedPassiveTrio()
+    {
+        // SIGNALR_PROTOCOL.md §4.3 item 2: `petState` carries EXACTLY the three
+        // members the Pet / Passive stage fixes — `passiveId`, `passiveProgress`,
+        // and the conditional `passiveResetOverride`. The rest of GAME_STATE.md
+        // §2.3 belongs to the Pet identity, progression, Combat, Relic, and Card
+        // stages and is NOT delivered: §4 item 4 admits only the implemented
+        // stage's own fields, and referring to `petState` as a whole does not
+        // widen that rule.
+        //
+        // This is the negative-contract guard for the `petState` scope. The
+        // battle created here carries EquippedRelics and EquippedCards in its
+        // authoritative PetState (TASK-027/TASK-028), so the Domain really holds
+        // the members this asserts are absent — their absence is a property of
+        // the projection, not of an empty Domain state.
+        const string battleId = "battle-petstate-no-extra-member";
+        CreateBattleOnServer(battleId);
+
+        var hubConnection = BuildHubConnection();
+        var received = new TaskCompletionSource<JsonElement>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        hubConnection.On<JsonElement>("BattleStateUpdated", payload => received.TrySetResult(payload));
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+        var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var petState = payload.GetProperty("petState");
+
+        // The complete permitted member set of the object, including the nested
+        // progress pair's members: `passiveId`, `passiveProgress`, `threshold`,
+        // `current`, and — only when the Passive declares a non-default reset —
+        // `passiveResetOverride` (§4.3 items 3–7).
+        var permitted = new[]
+        {
+            "passiveId", "passiveProgress", "threshold", "current", "passiveResetOverride",
+        };
+
+        Assert.All(
+            EnumeratePetStateMemberPaths(payload),
+            path => Assert.Contains(path, permitted));
+
+        // The three members §4.3 fixes are the only direct members of the object,
+        // and the progress pair's are the only members of the nested pair.
+        Assert.Equal(
+            new[] { "passiveId", "passiveProgress" },
+            petState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal(
+            new[] { "current", "threshold" },
+            petState.GetProperty("passiveProgress")
+                .EnumerateObject()
+                .Select(p => p.Name)
+                .OrderBy(n => n, StringComparer.Ordinal));
+
+        // The no-gameplay-system-field blocklist, scoped to `petState`. Every
+        // member below is authoritative Domain state at this stage — the combat
+        // stats, the status collection, and both loadout snapshots that
+        // TASK-027/TASK-028 implemented into PetState — and none of them is a
+        // §4.3 wire member (GAME_STATE.md §2.3: "Domain state implemented is not
+        // the same as client wire delivery").
+        foreach (var domainOnlyMember in new[]
+                 {
+                     "hp", "maxHp", "atk", "def", "crit", "power",
+                     "status", "statusEffects",
+                     "equippedRelics", "equippedCards",
+                     "petId", "identity", "element", "tier", "star", "level",
+                     "bossState", "resetBehavior", "hasResetOverride",
+                 })
+        {
+            Assert.False(
+                petState.TryGetProperty(domainOnlyMember, out _),
+                $"petState must not carry the Domain-only member '{domainOnlyMember}' (§4.3 item 2)");
+        }
+
+        // `passiveResetOverride` is the one conditional member, and this battle's
+        // Passive uses the default reset, so it is omitted rather than written
+        // (§4.3 items 6–7).
+        Assert.False(petState.TryGetProperty("passiveResetOverride", out _));
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task BattleStateUpdated_ShouldCarryNoPersistenceRuntimeOrAuthMember()
+    {
+        // SIGNALR_PROTOCOL.md §4 item 4 / §8.1: the serialized payload IS the
+        // contract, and it carries the implemented stage's own fields and nothing
+        // else. This is the raw-payload negative-contract guard: no persistence,
+        // runtime-serialization, or authentication member may appear at any depth.
+        //
+        // The names below are deliberately NOT wire shapes, whatever they are
+        // elsewhere in the system:
+        //   - `events` / `serverSequence` belong to the §3 `ReceiveEvents`
+        //     envelope, which carries events and no state (§3.1 item 3, §4 item 6)
+        //   - `lastCommittedSwapPair` is authoritative state the protocol
+        //     deliberately does not deliver (§4 item 12, GAME_STATE.md §2.1.10
+        //     item 9)
+        //   - `boardState` / `rngState.state`-style spellings are the TASK-029
+        //     RUNTIME JSON serialization's member names, which are explicitly not
+        //     the wire shapes (the wire member is `board`, not `boardState`)
+        //   - `discordUser`, `sessionToken`, `playerId`, `status` are
+        //     authentication/lifecycle values the protocol has no member for
+        //     (ADR-007, §8.3)
+        const string battleId = "battle-wire-negative-contract";
+        CreateBattleOnServer(battleId);
+
+        var hubConnection = BuildHubConnection();
+        var received = new TaskCompletionSource<JsonElement>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        hubConnection.On<JsonElement>("BattleStateUpdated", payload => received.TrySetResult(payload));
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+        var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // The member set at every depth, so a leak nested inside `board` or
+        // `petState` is caught as well as a top-level one.
+        var members = EnumerateMemberPaths(payload).ToArray();
+
+        foreach (var forbidden in new[]
+                 {
+                     // Persistence / runtime-serialization member names.
+                     "boardState", "cells.gemType.specialGem.shapeIndex",
+                     "lastCommittedSwapPair", "minCellIndex", "maxCellIndex",
+                     // The §3 envelope's members, which carry events and no state.
+                     "events", "serverSequence",
+                     // Authentication / session members.
+                     "discordUser", "discordUserId", "sessionToken", "playerId",
+                     // Lifecycle.
+                     "status",
+                 })
+        {
+            Assert.DoesNotContain(
+                forbidden,
+                members,
+                StringComparer.OrdinalIgnoreCase);
+        }
+
+        // The persistence/runtime-only values are absent as VALUES too, not merely
+        // as member names — a member renamed to smuggle one through would still
+        // fail here.
+        var serialized = payload.GetRawText();
+
+        foreach (var forbiddenValue in new[]
+                 {
+                     "sessionToken", "discordUser", "lastCommittedSwapPair",
+                 })
+        {
+            Assert.DoesNotContain(forbiddenValue, serialized, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // And the payload still carries the documented envelope — the guard above
+        // is not passing because the payload is empty or truncated.
+        Assert.Equal(
+            new[]
+            {
+                "battleId", "board", "petState", "playerState", "rngSeed", "rngState",
+                "sequence", "turn",
+            },
+            payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task JoinBattle_ShouldPushTheInitialStateToTheJoiningCallerOnly()
+    {
+        // SIGNALR_PROTOCOL.md §4 item 3: the initial state push is "sent to the
+        // joining caller only. Unlike ReceiveEvents (§3.3), it is not a group
+        // broadcast; the joining client is the only recipient that needs it."
+        //
+        // Two connections join the SAME battle group. Each receives its own push
+        // — and neither receives an additional push caused by the other's join.
+        // The scope boundary is what prevents a second client from being fed
+        // another caller's synchronization, and it is verified here without
+        // inventing any authentication: the callers are distinguished by their
+        // own connection identity, which is the model §1 uses.
+        const string battleId = "battle-caller-only-scope";
+        CreateBattleOnServer(battleId);
+
+        var firstConnection = BuildHubConnection();
+        var firstPushes = new List<JsonElement>();
+
+        firstConnection.On<JsonElement>("BattleStateUpdated", payload =>
+        {
+            lock (firstPushes)
+            {
+                firstPushes.Add(payload.Clone());
+            }
+        });
+
+        await firstConnection.StartAsync();
+        await firstConnection.InvokeAsync("JoinBattle", battleId);
+        await WaitForPushCount(firstPushes, 1);
+
+        // A second, independent connection joins the same battle.
+        var secondConnection = BuildHubConnection();
+        var secondPushes = new List<JsonElement>();
+
+        secondConnection.On<JsonElement>("BattleStateUpdated", payload =>
+        {
+            lock (secondPushes)
+            {
+                secondPushes.Add(payload.Clone());
+            }
+        });
+
+        await secondConnection.StartAsync();
+        await secondConnection.InvokeAsync("JoinBattle", battleId);
+        await WaitForPushCount(secondPushes, 1);
+
+        // The second caller received its own push of the same battle's state.
+        JsonElement secondPayload;
+        lock (secondPushes)
+        {
+            secondPayload = secondPushes[0];
+        }
+
+        Assert.Equal(battleId, secondPayload.GetProperty("battleId").GetString());
+
+        // Allow any erroneous extra push to arrive before asserting.
+        await Task.Delay(500);
+
+        // The first connection received exactly the one push its own join
+        // triggered — the second connection's join did NOT broadcast to it, which
+        // is the §4 item 3 caller-only scope. If this were a group broadcast, the
+        // second join would have produced a second push here.
+        lock (firstPushes)
+        {
+            Assert.Single(firstPushes);
+        }
+
+        lock (secondPushes)
+        {
+            Assert.Single(secondPushes);
+        }
+
+        await firstConnection.StopAsync();
+        await secondConnection.StopAsync();
+    }
+
+    /// <summary>
+    /// Waits for a push collector to reach <paramref name="count"/> entries.
+    ///
+    /// The server-initiated push is asynchronous relative to the client's
+    /// <c>JoinBattle</c> invocation, so the count is awaited rather than assumed.
+    /// </summary>
+    private static async Task WaitForPushCount(List<JsonElement> pushes, int count)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+
+        while (DateTime.UtcNow < deadline)
+        {
+            lock (pushes)
+            {
+                if (pushes.Count >= count)
+                {
+                    return;
+                }
+            }
+
+            await Task.Delay(25);
+        }
+
+        lock (pushes)
+        {
+            Assert.Fail($"Expected at least {count} BattleStateUpdated push(es); received {pushes.Count}.");
+        }
+    }
+
+    /// <summary>
+    /// Every member path of a JSON payload, at every depth — a nested object
+    /// contributes its own name and then its members' names. Used by the negative
+    /// contract guards so a leaked member is caught wherever it is nested, not
+    /// only at the top level.
+    /// </summary>
+    private static IEnumerable<string> EnumerateMemberPaths(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var member in element.EnumerateObject())
+                {
+                    yield return member.Name;
+
+                    foreach (var nested in EnumerateMemberPaths(member.Value))
+                    {
+                        yield return nested;
+                    }
+                }
+
+                break;
+
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                {
+                    foreach (var nested in EnumerateMemberPaths(item))
+                    {
+                        yield return nested;
+                    }
+                }
+
+                break;
+        }
     }
 
     /// <summary>
@@ -1197,6 +1509,189 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task WireContract_ShouldBeUnchangedByTheCombatStateOwnershipRefactor()
+    {
+        // ADR-011 items 1–6 / GAME_STATE.md §2.2 / SIGNALR_PROTOCOL.md §4.2–§4.3:
+        // the Domain moved Combo/MatchCount to the BattleState root and the combat
+        // stats onto PetState, and removed the PlayerState node — but the EXTERNAL
+        // SignalR contract must not move with it. This test proves the two are
+        // decoupled: new Domain ownership → the same external wire contract.
+        //
+        // The fixed protocol labels are asserted verbatim, because renaming any of
+        // them is a protocol-breaking change ADR-011 item 6 forbids:
+        //   - the payload member `playerState`
+        //   - the outcome members `finalPlayerHp` / `finalBossHp`
+        //   - the damage instance's `target` value "player"
+        const string battleId = "battle-wire-contract-refactor";
+        var pair = CreateBattleOnServerWithValidPair(battleId);
+
+        var hubConnection = BuildHubConnection();
+        var received = new TaskCompletionSource<JsonElement>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        hubConnection.On<JsonElement>("BattleStateUpdated", payload => received.TrySetResult(payload));
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+        var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // ---- 1. `playerState` is still exactly { combo, matchCount } -------------
+        // GAME_STATE.md §2.2.1: the member name is a protocol label for the two
+        // BattleState ROOT values; it is not a state path, and this payload must not
+        // widen to carry the combat stats the Pet now owns.
+        var playerState = payload.GetProperty("playerState");
+
+        Assert.Equal(
+            new[] { "combo", "matchCount" },
+            playerState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        // ---- 2. `petState` is still exactly the documented Passive trio ----------
+        // SIGNALR_PROTOCOL.md §4.3 item 2: not one combat stat may appear here merely
+        // because PetState now stores them (GAME_STATE.md §2.3).
+        var petState = payload.GetProperty("petState");
+
+        Assert.Equal(
+            new[] { "passiveId", "passiveProgress" },
+            petState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        Assert.Equal(
+            new[] { "current", "threshold" },
+            petState.GetProperty("passiveProgress")
+                .EnumerateObject()
+                .Select(p => p.Name)
+                .OrderBy(n => n, StringComparer.Ordinal));
+
+        // The Pet's combat stats exist in the Domain state now, so guard the wire
+        // against them leaking into either object.
+        foreach (var petCombatStat in new[] { "hp", "maxHp", "atk", "def", "crit", "power" })
+        {
+            Assert.False(petState.TryGetProperty(petCombatStat, out _));
+            Assert.False(playerState.TryGetProperty(petCombatStat, out _));
+        }
+
+        // ---- 3. The top-level envelope is unchanged ------------------------------
+        Assert.Equal(
+            new[]
+            {
+                "battleId", "board", "petState", "playerState", "rngSeed", "rngState",
+                "sequence", "turn",
+            },
+            payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        // No `PlayerState` node reappears under any other spelling: ADR-011 items 1
+        // and 5 forbid a second authoritative combat pool, and the wire has none.
+        Assert.DoesNotContain(
+            "playerHp",
+            payload.GetRawText(),
+            StringComparison.OrdinalIgnoreCase);
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task WireContract_FinalPlayerHp_ShouldCarryTheActivePetsHp()
+    {
+        // ADR-011 item 6 / SIGNALR_PROTOCOL.md §3.2.19: `finalPlayerHp` is a fixed
+        // protocol label and is NOT renamed — but the value it reports is the active
+        // Pet's HP (GAME_STATE.md §2.3), because the Pet is the Player side's combat
+        // character and a Player has no combat pool of its own.
+        //
+        // The battle is driven to a terminal outcome through the real hub on a real
+        // server, so the assertion covers the whole path: Domain Pet HP → the
+        // BattleEvent's FinalPlayerHp → the §3.2 wire member.
+        const string battleId = "battle-wire-final-player-hp";
+        var pair = CreateBattleOnServerWithValidPair(battleId);
+
+        var hubConnection = BuildHubConnection();
+        var events = new List<JsonElement>();
+
+        hubConnection.On<JsonElement>("ReceiveEvents", batch =>
+        {
+            lock (events)
+            {
+                events.AddRange(batch.GetProperty("events").EnumerateArray().Select(e => e.Clone()));
+            }
+        });
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+        // Swap until an outcome appears (or the bound is reached) — the outcome may
+        // legitimately take several committed Swaps.
+        SwapRequest? exclude = null;
+
+        for (var turn = 0; turn < 40; turn++)
+        {
+            SwapRequest swap;
+
+            try
+            {
+                swap = FindAdjacentPairThatProducesAMatch(battleId, exclude);
+            }
+            catch (InvalidOperationException)
+            {
+                break;
+            }
+
+            exclude = swap;
+
+            await hubConnection.InvokeAsync<SwapResponse>(
+                "Swap", battleId, swap.From, swap.To, $"client-seq-final-hp-{turn}");
+
+            lock (events)
+            {
+                if (events.Any(e => e.GetProperty("type").GetString() is "BattleWon" or "BattleLost"))
+                {
+                    break;
+                }
+            }
+        }
+
+        JsonElement[] outcomes;
+
+        lock (events)
+        {
+            outcomes = events
+                .Where(e => e.GetProperty("type").GetString() is "BattleWon" or "BattleLost")
+                .ToArray();
+        }
+
+        Assert.NotEmpty(outcomes);
+
+        var outcome = outcomes[^1];
+        var outcomeName = outcome.GetProperty("type").GetString();
+
+        // §3.2.19: the member names are exactly these, for both outcomes.
+        Assert.Equal(
+            new[] { "finalBossHp", "finalPlayerHp", "outcome", "type" },
+            outcome.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        var finalPlayerHp = outcome.GetProperty("finalPlayerHp").GetInt32();
+
+        // The value is the terminal Pet HP the authoritative state holds — not a
+        // separately tracked "player" pool, which no longer exists.
+        using var scope = _factory.Services.CreateScope();
+        var service = scope.ServiceProvider.GetRequiredService<BattleStateService>();
+        var stored = service.GetBattle(battleId);
+
+        Assert.NotNull(stored);
+
+        if (outcomeName == "BattleLost")
+        {
+            // GAME_RULES.md §1.4: the battle ends when the Player side reaches 0 HP.
+            Assert.Equal(0, stored!.PetState.HP);
+            Assert.Equal(stored.PetState.HP, finalPlayerHp);
+        }
+        else
+        {
+            Assert.Equal(stored!.PetState.HP, finalPlayerHp);
+            Assert.True(finalPlayerHp > 0);
+        }
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
     public async Task Swap_ShouldRejectWithoutChangingStateOrPushing()
     {
         const string battleId = "battle-swap-rejected";
@@ -1354,7 +1849,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
-    public async Task Swap_ForARejectedRequest_ShouldNotPushOrChangePlayerState()
+    public async Task Swap_ForARejectedRequest_ShouldNotPushOrChangeTheAccounting()
     {
         // MATCH3_RULES.md §2.1.5 item 5 / §6.1 item 3: a rejected Swap resets nothing,
         // increments nothing, and pushes nothing.
@@ -1379,7 +1874,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         using (var scope = _factory.Services.CreateScope())
         {
             var held = scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattle(battleId)!;
-            Assert.True(held.PlayerState.Combo >= 1);
+            Assert.True(held.Combo >= 1);
         }
 
         // Replaying the committed pair is STALE_ACTION — a rejection.
@@ -1396,8 +1891,8 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         using (var scope = _factory.Services.CreateScope())
         {
             var held = scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattle(battleId)!;
-            Assert.True(held.PlayerState.Combo >= 1);
-            Assert.True(held.PlayerState.MatchCount >= 1);
+            Assert.True(held.Combo >= 1);
+            Assert.True(held.MatchCount >= 1);
         }
 
         await hubConnection.StopAsync();
@@ -1639,9 +2134,9 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
 
             var playerDamage = GameServer.Domain.Combat.DamagePipeline.Calculate(
                 new GameServer.Domain.Combat.DamagePipeline.DamageInputs(
-                    Attack: committed.State.PlayerState.ATK,
+                    Attack: committed.State.PetState.ATK,
                     BaseDamagePool: committed.Resources.BaseDamagePool,
-                    Combo: committed.State.PlayerState.Combo,
+                    Combo: committed.State.Combo,
                     AttackerElement: before.PetState.Element,
                     DefenderElement: before.BossState.Element,
                     DefenderDefense: before.BossState.DEF,
@@ -1708,8 +2203,8 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
                         Combo: 1,
                         AttackerElement: before.BossState.Element,
                         DefenderElement: before.PetState.Element,
-                        DefenderDefense: before.PlayerState.DEF,
-                        DefenderHp: before.PlayerState.HP,
+                        DefenderDefense: before.PetState.DEF,
+                        DefenderHp: before.PetState.HP,
                         Source: GameServer.Domain.Combat.DamageParty.Boss,
                         Target: GameServer.Domain.Combat.DamageParty.Player),
                     GameServer.Domain.Combat.ComboModifiers.Default,
@@ -1731,7 +2226,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
             else
             {
                 expectedEvents = expectedEvents.Append(
-                    BattleEvent.ForBattleWon(playerDamage.TargetHp, before.PlayerState.HP));
+                    BattleEvent.ForBattleWon(playerDamage.TargetHp, before.PetState.HP));
             }
 
             expected = ProjectToWireSchema(expectedEvents.ToArray());
@@ -1869,7 +2364,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
             var held = scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattle(battleId)!;
 
             heldSequenceAtDelivery = held.Sequence;
-            heldMatchCountAtDelivery = held.PlayerState.MatchCount;
+            heldMatchCountAtDelivery = held.MatchCount;
         });
 
         await hubConnection.StartAsync();
@@ -2014,8 +2509,8 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
 
             Assert.Equal(0, held.Sequence);
             Assert.Equal(0, held.Turn);
-            Assert.Equal(0, held.PlayerState.MatchCount);
-            Assert.Equal(0, held.PlayerState.Combo);
+            Assert.Equal(0, held.MatchCount);
+            Assert.Equal(0, held.Combo);
             Assert.Null(held.LastCommittedSwapPair);
         }
 
@@ -2054,7 +2549,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
 
             Assert.Equal(0, held.Sequence);
             Assert.Equal(0, held.Turn);
-            Assert.Equal(0, held.PlayerState.MatchCount);
+            Assert.Equal(0, held.MatchCount);
         }
 
         await hubConnection.StopAsync();
@@ -2343,7 +2838,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // so the value is the accounting's, not the transport layer's (§3.2.8 item 1).
         using var scope = _factory.Services.CreateScope();
         var held = scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattle(battleId)!;
-        Assert.Equal(held.PlayerState.Combo, comboValues[^1]);
+        Assert.Equal(held.Combo, comboValues[^1]);
     }
 
     [Fact]

@@ -1,10 +1,12 @@
 using System.Collections.Concurrent;
 using GameServer.Domain.Battle;
 using GameServer.Domain.Bosses;
+using GameServer.Domain.Cards;
 using GameServer.Domain.Combat;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
+using GameServer.Domain.Relics;
 
 namespace GameServer.Application.Battle;
 
@@ -80,9 +82,7 @@ namespace GameServer.Application.Battle;
 /// The session registry here is deliberately not a battle-state store in the
 /// <c>REDIS_STATE.md</c> sense, and not an alternative to it. It holds the staged
 /// subset — no full <c>BattleState</c> (§2) can be expressed yet, because
-/// <c>PetState</c> carries only its Element and Passive
-/// members (§2.3) and <c>PlayerState</c> carries only its Match / Combo members
-/// (§2.2) — and it
+/// <c>BossState</c> carries only the Boss Response members (§2.4) — and it
 /// is process-local and safe to lose, exactly as §2.0.5.4 describes: Board
 /// Foundation State is not persisted to Redis or PostgreSQL.
 /// </summary>
@@ -122,19 +122,60 @@ public sealed class BattleStateService
     /// default (<c>PASSIVE_RULES.md</c> §4 items 1–3). It must be declared on the
     /// Pet's Passive definition; it is never assumed (§4 item 3).
     /// </param>
+    /// <param name="EquippedRelics">
+    /// The battle-scoped Relic loadout snapshot — 3–5 owned Relic instance
+    /// identities in equip-slot order (<c>RELIC_RULES.md</c> §2.2, §2.3, §2.5;
+    /// <c>GAME_STATE.md</c> §2.3). It is produced by the Relic loadout validator
+    /// (<c>GameServer.Application.Relics.RelicLoadoutService</c>) and is carried
+    /// into <c>PetState</c> unchanged, in the order given.
+    ///
+    /// It is <c>null</c> until the Relic loadout stage supplies it: Relic
+    /// selection is not implemented end-to-end and no value may be invented for
+    /// it, so the caller supplies it rather than this boundary defaulting one.
+    /// A <c>null</c> snapshot is the documented staging position (§0 item 4:
+    /// not yet implemented, not not-required) — it is not an empty loadout,
+    /// because the rules define no zero-Relic battle
+    /// (<c>RELIC_RULES.md</c> §2.1 item 1).
+    /// </param>
+    /// <param name="EquippedCards">
+    /// The battle-scoped Card loadout snapshot — exactly 4
+    /// <see cref="EquippedCardIdentity"/> values: the 3 submitted Basic Cards
+    /// plus the active Pet's derived Signature Skill Card
+    /// (<c>CARD_RULES.md</c> §1; <c>API_CONTRACTS.md</c> §3;
+    /// <c>GAME_STATE.md</c> §2.3). It is produced by the Card loadout validator
+    /// (<c>GameServer.Application.Cards.CardLoadoutService</c>), which also
+    /// derives the Signature Skill, and is carried into <c>PetState</c>
+    /// unchanged and in the order given.
+    ///
+    /// It is <c>null</c> until the Card loadout stage supplies it, on the same
+    /// documented staging basis as <paramref name="EquippedRelics"/>: a
+    /// <c>null</c> snapshot is "not yet implemented", never an invented empty
+    /// loadout — <c>CARD_RULES.md</c> §1 defines no zero-Card battle.
+    /// </param>
     public readonly record struct PetConfiguration(
         Element Element,
         PassiveId PassiveId,
         int PassiveThreshold,
-        PassiveResetBehavior? PassiveResetOverride = null)
+        PassiveResetBehavior? PassiveResetOverride = null,
+        EquippedRelicIdentity[]? EquippedRelics = null,
+        EquippedCardIdentity[]? EquippedCards = null)
     {
         /// <summary>
         /// The <c>PetState</c> this configuration initializes a battle's
         /// <c>BattleState</c> with — progress at the Passive's start
-        /// (<c>GAME_STATE.md</c> §2.3 item 3) and the Pet's Element.
+        /// (<c>GAME_STATE.md</c> §2.3 item 3), the Pet's Element, and both
+        /// battle-scoped loadout snapshots: the Relic instances in submitted
+        /// order (<c>RELIC_RULES.md</c> §2.5) and the 4 Cards the Card loadout
+        /// validator produced (<c>CARD_RULES.md</c> §1).
         /// </summary>
         public PetState ToPetState() =>
-            PetState.AtBattleCreation(Element, PassiveId, PassiveThreshold, PassiveResetOverride);
+            PetState.AtBattleCreation(
+                Element,
+                PassiveId,
+                PassiveThreshold,
+                PassiveResetOverride,
+                EquippedRelics,
+                EquippedCards);
     }
 
     /// <summary>
@@ -568,11 +609,13 @@ public sealed class BattleStateService
         //
         // The inputs are read from the states the resolution is already committed
         // to, never re-derived:
-        //   - step 1's ATK      — PlayerState.ATK (GAME_STATE.md §2.2), the value
-        //                         the executor carried forward in `resolved`
+        //   - step 1's ATK      — PetState.ATK (GAME_STATE.md §2.3, ADR-011 item 3),
+        //                         the combat-stat home of the attacking Pet; the
+        //                         executor carried it forward in `resolved`
         //   - step 1's pool     — result.Resources.BaseDamagePool, the transient
         //                         pool step 12 generated (GAME_STATE.md §3)
-        //   - step 2's selector — PlayerState.Combo, this Swap's Match total
+        //   - step 2's selector — BattleState.Combo (GAME_STATE.md §2.2), this
+        //                         Swap's Match total, a root member
         //   - step 3's elements — PetState.Element (attacker) and
         //                         BossState.Element (defender), both set at battle
         //                         creation and never rewritten (ELEMENT_RULES.md §5)
@@ -581,9 +624,9 @@ public sealed class BattleStateService
         // introduced here (COMBAT_RULES.md §3.3, ADR-009).
         var playerDamage = DamagePipeline.Calculate(
             new DamagePipeline.DamageInputs(
-                Attack: resolved.PlayerState.ATK,
+                Attack: resolved.PetState.ATK,
                 BaseDamagePool: result.Resources.BaseDamagePool,
-                Combo: resolved.PlayerState.Combo,
+                Combo: resolved.Combo,
                 AttackerElement: resolved.PetState.Element,
                 DefenderElement: bossState.Element,
                 DefenderDefense: bossState.DEF,
@@ -648,7 +691,12 @@ public sealed class BattleStateService
             // SIGNALR_PROTOCOL.md §3.2.19: finalBossHp is the Boss HP at battle end
             // (0 here) and finalPlayerHp the player's. Both are the resolution's own
             // terminal values, read and reported.
-            events.Add(BattleEvent.ForBattleWon(bossState.HP, resolved.PlayerState.HP));
+            //
+            // GAME_STATE.md §2.3 / ADR-011 item 6: finalPlayerHp is a fixed protocol
+            // label, and the value it carries is the ACTIVE PET's HP — the only
+            // Player-side HP the contract has, since a Player has no combat pool.
+            // The label is not renamed; only its source member is the documented one.
+            events.Add(BattleEvent.ForBattleWon(bossState.HP, resolved.PetState.HP));
 
             return Commit(battleId, result, resolved with { BossState = bossState }, events);
         }
@@ -733,11 +781,11 @@ public sealed class BattleStateService
         // The defender side is the player's, per §3.4 ("Source = Boss, Target =
         // Player"): the defending Element is the ACTIVE PET's (§3.4, §3.2 — "the
         // defender is the Pet, not the Player", because a Player has no Element),
-        // and the defending DEF is the player's DEF (§3.2's "target DEF";
-        // COMBAT_RULES.md §1.1's MVP 25, GAME_STATE.md §2.2). PetState carries no
-        // DEF in this stage — GAME_STATE.md §2.3's field list has none, and the Pet
-        // stat/Tier/Star/Level stage that would own one is not implemented — so no
-        // Pet DEF value exists to read and none is invented here (AGENTS.md §7).
+        // and the defending DEF and HP are the active Pet's too — PetState.DEF and
+        // PetState.HP (GAME_STATE.md §2.3, COMBAT_RULES.md §1.1's MVP 25 and 1000,
+        // ADR-011 item 5). The Pet is the combat character and the only Player-side
+        // combat-stat home; there is no separate Player DEF or HP pool of the
+        // values §3.2 and §3.4 name as the target's.
         var bossAttack = skillFires
             ? bossState.ATK + bossDefinition.SkillBaseDamage
             : bossState.ATK;
@@ -757,20 +805,26 @@ public sealed class BattleStateService
                 Combo: 1,
                 AttackerElement: bossState.Element,
                 DefenderElement: resolved.PetState.Element,
-                DefenderDefense: resolved.PlayerState.DEF,
-                DefenderHp: resolved.PlayerState.HP,
+                DefenderDefense: resolved.PetState.DEF,
+                DefenderHp: resolved.PetState.HP,
                 Source: DamageParty.Boss,
                 Target: DamageParty.Player),
             ComboModifiers.Default,
             ElementModifiers.Default);
 
         // COMBAT_RULES.md §3.4 step 6 / GAME_STATE.md §5.1: "Final Damage applied to
-        // Player.HP". The write is explicit — the pipeline returned the post-damage
-        // HP and this boundary writes it onto PlayerState, in the same single
-        // write-back as every other value this action changed.
+        // Player.HP" names the Player side of the instance, and the Pet is that
+        // side's combat character (ADR-011 items 3 and 5) — so the write is onto the
+        // active Pet's PetState.HP (GAME_STATE.md §2.3). The write is explicit — the
+        // pipeline returned the post-damage
+        // HP and this boundary writes it onto the active Pet's PetState, in the same
+        // single write-back as every other value this action changed. The wire label
+        // target="player" (SIGNALR_PROTOCOL.md §3.2 item 3) is unchanged: it names
+        // the Player side of the instance, and the Pet is that side's combat
+        // character (ADR-011 items 3 and 6).
         resolved = resolved with
         {
-            PlayerState = resolved.PlayerState with { HP = bossDamage.TargetHp },
+            PetState = resolved.PetState with { HP = bossDamage.TargetHp },
         };
 
         events.Add(BattleEvent.ForDamageCalculated(bossDamage.Calculation));
@@ -803,17 +857,22 @@ public sealed class BattleStateService
         // ===================================================================
         // Step 12: Outcome — GAME_RULES.md §1.4
         // ===================================================================
-        // The Player HP terminal check runs after the Boss Response, because the
+        // The Pet HP terminal check — the Player side's HP, since the Pet is that
+        // side's combat character (ADR-011 items 3 and 5) — runs after the Boss
+        // Response, because the
         // Boss has just had its chance to reduce it. §1.4 ends the battle when
         // either side reaches 0; the Boss was checked above, so what remains is the
-        // player.
+        // player's side — the active Pet's HP (GAME_STATE.md §2.3, ADR-011 item 5).
         //
         // When BOTH sides are alive, NEITHER outcome event is emitted and the battle
         // continues — the absence of an outcome is itself the documented statement
         // that the action was not terminal.
-        if (resolved.PlayerState.HP <= 0)
+        if (resolved.PetState.HP <= 0)
         {
-            events.Add(BattleEvent.ForBattleLost(bossState.HP, resolved.PlayerState.HP));
+            // SIGNALR_PROTOCOL.md §3.2.19: the wire member stays finalPlayerHp — a
+            // fixed protocol label — and carries this same Pet HP value
+            // (ADR-011 item 6: the label is not renamed).
+            events.Add(BattleEvent.ForBattleLost(bossState.HP, resolved.PetState.HP));
         }
 
         // ===================================================================

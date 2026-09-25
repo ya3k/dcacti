@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SignalRService } from '../src/services/realtime/SignalRService';
-import type { CellPayload } from '../src/services/realtime/SignalRService';
+import type {
+  BattleStateUpdatedPayload,
+  CellPayload,
+} from '../src/services/realtime/SignalRService';
 import * as signalR from '@microsoft/signalr';
 
 /**
@@ -97,26 +100,92 @@ describe('SignalRService', () => {
       const received: unknown[] = [];
       service.on('BattleStateUpdated', (payload) => received.push(payload));
 
-      // The transport-level shape of the Board Foundation State: battleId,
-      // turn, sequence, board, rngSeed, rngState. No Status or lifecycle value
-      // exists in the protocol (§4.4, §8.3).
+      // The transport-level shape of the implemented stage: battleId, turn,
+      // sequence, board, rngSeed, rngState, playerState, petState — and no other
+      // member (`SIGNALR_PROTOCOL.md` §4 item 4, §4.2, §4.3). No Status or
+      // lifecycle value exists in the protocol (§8.3).
       //
       // Each board cell is an entry carrying its Gem type plus an optional
       // Special Gem (`GAME_STATE.md` §2.1.1, §4.1 item 5). A generated board
       // holds no Special Gem, so the member is null (§2.1.7 item 8).
-      const payload = {
+      //
+      // Typed against the contract so the test also proves the declared payload
+      // shape accepts every documented member — including the delivered
+      // `petState` trio (§4.3) with its conditional reset override omitted for a
+      // default reset (§4.3 item 7).
+      const payload: BattleStateUpdatedPayload = {
         battleId: 'battle-1',
         turn: 0,
         sequence: 0,
         rngSeed: 42,
         rngState: { state: 123456789, increment: 1 },
         board: {
-          cells: Array.from({ length: 64 }, () => ({ gemType: 'ATK', specialGem: null })),
+          cells: Array.from({ length: 64 }, (): CellPayload => ({ gemType: 'ATK', specialGem: null })),
+        },
+        playerState: { combo: 0, matchCount: 0 },
+        petState: {
+          passiveId: 'xich-lang',
+          passiveProgress: { threshold: 5, current: 0 },
         },
       };
       hub.handlers.get('BattleStateUpdated')?.(payload);
 
       expect(received).toEqual([payload]);
+    });
+
+    it('accepts a delivered petState carrying a non-default reset override', async () => {
+      // §4.3 item 6: when the Passive declares a non-default Reset Behavior the
+      // member is present and carries the contract name — `"Partial"` or
+      // `"NoReset"` (PASSIVE_RULES.md §4 item 2) — never a numeric enum ordinal.
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      const received: BattleStateUpdatedPayload[] = [];
+      service.on<[BattleStateUpdatedPayload]>('BattleStateUpdated', (payload) =>
+        received.push(payload)
+      );
+
+      const payload: BattleStateUpdatedPayload = {
+        battleId: 'battle-1',
+        turn: 2,
+        sequence: 3,
+        rngSeed: 42,
+        rngState: { state: 123456789, increment: 1 },
+        board: {
+          cells: Array.from({ length: 64 }, (): CellPayload => ({ gemType: 'ATK', specialGem: null })),
+        },
+        playerState: { combo: 3, matchCount: 7 },
+        petState: {
+          passiveId: 'thanh-xa-poison',
+          passiveProgress: { threshold: 7, current: 5 },
+          passiveResetOverride: 'Partial',
+        },
+      };
+      hub.handlers.get('BattleStateUpdated')?.(payload);
+
+      // The service stores nothing and rewrites nothing: the payload it forwards
+      // is the payload it received, `petState` included.
+      expect(received[0]).toBe(payload);
+      expect(received[0].petState.passiveResetOverride).toBe('Partial');
+    });
+
+    it('carries no gameplay calculation for the delivered petState', () => {
+      // §4.3 item 9 / GAME_RULES.md §18: the service transports and forwards the
+      // Passive members. It does not charge a Passive, evaluate a Threshold,
+      // reset progress, or apply an overflow — that would be a second, client-side
+      // Passive system, and the service is a transport boundary only.
+      const surface = Object.getOwnPropertyNames(SignalRService.prototype);
+
+      for (const forbidden of [
+        'chargePassive',
+        'resetPassive',
+        'evaluateThreshold',
+        'applyPassiveEffect',
+        'applyOverflow',
+        'resolvePassive',
+      ]) {
+        expect(surface).not.toContain(forbidden);
+      }
     });
 
     it('delivers cell entries carrying a Special Gem unchanged', async () => {

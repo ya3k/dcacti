@@ -437,16 +437,18 @@ public class BattleStateServiceTests
     // -----------------------------------------------------------------------
 
     [Fact]
-    public void CreateBattle_ShouldStartPlayerStateAtZero()
+    public void CreateBattle_ShouldStartComboAndMatchCountAtZero()
     {
         // GAME_STATE.md §2.2: MatchCount = 0 and Combo = 0 for a battle that has
-        // resolved no action.
+        // resolved no action. Both are root members of the state; there is no nested
+        // PlayerState node (ADR-011 item 2).
         var service = new BattleStateService();
         var state = service.CreateBattle("battle-progression-initial", PetConfiguration, BossDefinition);
 
-        Assert.Equal(PlayerState.Initial, state.PlayerState);
-        Assert.Equal(0, state.PlayerState.MatchCount);
-        Assert.Equal(0, state.PlayerState.Combo);
+        Assert.Equal(0, state.Combo);
+        Assert.Equal(0, state.MatchCount);
+        Assert.Equal(BattleState.InitialCombo, state.Combo);
+        Assert.Equal(BattleState.InitialMatchCount, state.MatchCount);
     }
 
     [Fact]
@@ -466,16 +468,17 @@ public class BattleStateServiceTests
         var matches = result.Value.Resolution.Passes.Sum(pass => pass.Matches.Count);
 
         Assert.True(matches >= 1);
-        Assert.Equal(matches, result.Value.State.PlayerState.Combo);
-        Assert.Equal(matches, result.Value.State.PlayerState.MatchCount);
+        Assert.Equal(matches, result.Value.State.Combo);
+        Assert.Equal(matches, result.Value.State.MatchCount);
 
         // The registry holds the same value the result reports.
         var reread = service.GetBattle("battle-progression-commit");
-        Assert.Equal(result.Value.State.PlayerState, reread!.PlayerState);
+        Assert.Equal(result.Value.State.Combo, reread!.Combo);
+        Assert.Equal(result.Value.State.MatchCount, reread.MatchCount);
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldLeavePlayerStateUnchangedOnEveryRejection()
+    public void ExecuteSwap_ShouldLeaveComboAndMatchCountUnchangedOnEveryRejection()
     {
         // MATCH3_RULES.md §2.1.5 item 5 / §6.1 item 3: a rejected Swap resets
         // nothing and increments nothing. The registry keeps the state object it
@@ -489,9 +492,8 @@ public class BattleStateServiceTests
 
         var reread = service.GetBattle("battle-progression-rejected");
         Assert.Same(created, reread);
-        Assert.Equal(PlayerState.Initial, reread!.PlayerState);
-        Assert.Equal(0, reread.PlayerState.MatchCount);
-        Assert.Equal(0, reread.PlayerState.Combo);
+        Assert.Equal(0, reread!.Combo);
+        Assert.Equal(0, reread.MatchCount);
     }
 
     [Fact]
@@ -506,7 +508,9 @@ public class BattleStateServiceTests
         var resolved = service.ResolveBoard("battle-progression-resolution");
 
         Assert.NotNull(resolved);
-        Assert.Equal(created.PlayerState, resolved!.PlayerState);
+        Assert.Equal(created.Combo, resolved!.Combo);
+        Assert.Equal(created.MatchCount, resolved.MatchCount);
+        Assert.Equal(created.PetState, resolved.PetState);
     }
 
     [Fact]
@@ -1013,7 +1017,7 @@ public class BattleStateServiceTests
         //
         // The expected damage is derived from the documented formula and the values
         // the resolution itself reports — never from the pipeline's output:
-        //   Base  = PlayerState.ATK + Resources.BaseDamagePool
+        //   Base  = PetState.ATK + Resources.BaseDamagePool
         //   ×     ComboModifiers.Default for the accounted Combo   (GAME_RULES.md §5)
         //   ×     ElementModifiers.Default for the resolved matchup (ELEMENT_RULES.md §2.2)
         //   ×     1.00 (no Other Modifiers in MVP)
@@ -1030,8 +1034,8 @@ public class BattleStateServiceTests
         var state = result.Value.State;
         var generation = result.Value.Resources;
 
-        var baseDamage = created.PlayerState.ATK + generation.BaseDamagePool;
-        var comboFactor = ComboModifiers.Default.NumeratorFor(state.PlayerState.Combo) / 100d;
+        var baseDamage = created.PetState.ATK + generation.BaseDamagePool;
+        var comboFactor = ComboModifiers.Default.NumeratorFor(state.Combo) / 100d;
         var matchup = ElementMatchups.Resolve(
             created.PetState.Element,
             created.BossState.Element);
@@ -1113,9 +1117,9 @@ public class BattleStateServiceTests
 
         var generation = result.Value.Resources;
 
-        Assert.Equal(created.PlayerState.ATK + generation.BaseDamagePool, calculation.Base);
+        Assert.Equal(created.PetState.ATK + generation.BaseDamagePool, calculation.Base);
         Assert.Equal(
-            ComboModifiers.Default.NumeratorFor(result.Value.State.PlayerState.Combo) / 100d,
+            ComboModifiers.Default.NumeratorFor(result.Value.State.Combo) / 100d,
             calculation.ComboModifier);
         Assert.Equal(
             ElementModifiers.Default.For(

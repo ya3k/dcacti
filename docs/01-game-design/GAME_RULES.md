@@ -1,6 +1,8 @@
 # Core Game Rules
 
-**Version:** 2.3 (§9.3 Pet Level formula resolved with clamp per
+**Version:** 2.4 (§9.3 Pet Level formula synchronized with the completed
+derivation contract — floor before clamp — PET_RULES.md §5; prior 2.3:
+§9.3 Pet Level formula resolved with clamp per
 ADR-012 / PET_RULES.md §5.1; prior 2.2: Player = account/owner,
 Pet = combat character — battle-end condition, combat stats, Power,
 Relic loadout, and Boss triggers now reference the active Pet rather
@@ -146,8 +148,9 @@ Exact damage modifier values and matchup resolution: see `ELEMENT_RULES.md`.
    HP and battle stats determine the battle outcome (§1.4, §14).
 2. Every Pet has exactly one Element, one Passive, and one Signature Skill.
 3. Pets have Level, Star, and Tier progression. Pet Level is derived as
-   `clamp(Player Level × Pet Level Multiplier, 1, 50)` (config multiplier,
-   not hard-coded) — see `PET_RULES.md` §5. Player Level is a persistent
+   `clamp(floor(Player Level × Pet Level Multiplier), 1, 50)` (config
+   multiplier `decimal > 0`, not hard-coded; `floor` before clamp) — see
+   `PET_RULES.md` §5 (canonical owner). Player Level is a persistent
    account attribute (range 1–50, no combat stats) defined in
    `MVP_SCOPE.md` §1 and `PET_RULES.md` §5; former OPEN conflicts are
    resolved in `PET_RULES.md` §5.1 / ADR-012. There is no independent

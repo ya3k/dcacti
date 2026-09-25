@@ -92,7 +92,7 @@ public static class BattleEventBuilder
         // accounting walked reproduces the run of ComboChanged values without
         // recomputing the accounting: the value reported for a Match is its
         // position in the Swap's Match sequence, and the last one equals the
-        // accounted PlayerState.Combo.
+        // accounted BattleState.Combo.
         var comboSoFar = 0;
 
         foreach (var pass in resolution.Passes)

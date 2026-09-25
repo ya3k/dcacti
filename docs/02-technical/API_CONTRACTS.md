@@ -1,6 +1,12 @@
 # API Contracts
 
-**Version:** 1.2 (§2 Discord authorization-code → identity exchange contract
+**Version:** 1.4 (§3 `cardLoadout` made deterministic — 4-step validation
+(count, ownership, category, per-CardDefinition `LoadoutCopyLimit`),
+rejected with `INVALID_LOADOUT`; Signature Skill Card derived, not
+submitted; prior 1.3: §3 `relicLoadout` made deterministic — request
+array order is the equip slot order, duplicate instance selection
+rejected as `INVALID_LOADOUT`, per RELIC_RULES.md §2.3–§2.5. Prior 1.2: §2 Discord
+authorization-code → identity exchange contract
 defined — token endpoint, exchange request, identity request, `DiscordUserId`
 extraction, failure contract, security requirements; per ADR-013. Prior 1.1:
 §3 ownership vs. equip clarified per ADR-011 — Player owns collection; loadout
@@ -306,6 +312,8 @@ petId must be owned by the player                        — PET_RULES.md §2
 bossId must be a valid MVP Boss                         — BOSS_RULES.md §6
 cardLoadout must be exactly 3 Basic Cards                  — CARD_RULES.md §1
 relicLoadout must be 3–5 Relics owned by the player          — RELIC_RULES.md §2
+  with no repeated Relic instance, and its array order is
+  the equip slot order (slot = position + 1)               — RELIC_RULES.md §2.3–§2.4
 
 Ownership vs. equip: the Player owns the Pet, Card, and Relic collection
 (Player FKs in DATABASE.md §2); `cardLoadout`/`relicLoadout` select the
@@ -315,6 +323,55 @@ ownership of the selected instances and, for the Pet, that `petId` is the
 active Pet; combat stats for the battle are `PetState`, not `PlayerState`
 (GAME_STATE.md §2.3).
 ```
+
+**`relicLoadout` validation and slot order are determined.**
+`relicLoadout` is an **ordered** array, and its order is authoritative:
+position *i* (0-based) is equip slot *i + 1* (`RELIC_RULES.md` §2.3). The
+server must not re-sort the selection by any `RelicInstanceId`,
+`RelicDefinitionId`, acquisition date, or database order. Validation runs in
+this order:
+
+```text
+1. count        3–5 elements                             — RELIC_RULES.md §2.1
+2. ownership    every element is an owned Relic instance  — RELIC_RULES.md §2.1
+                of the requesting Player                  (DATABASE.md §2)
+3. distinctness no RelicInstanceId repeats in the array   — RELIC_RULES.md §2.4
+```
+
+A selection failing any of the three is rejected with `INVALID_LOADOUT`
+(below). The same Relic instance may occupy **at most one** slot; two
+**distinct** instances that reference the same `RelicDefinition` **may** be
+equipped together (`RELIC_RULES.md` §2.4 items 1–3). A rejected request
+equips nothing and writes no battle state. The selected instances are
+snapshotted into `PetState.EquippedRelics[]` in this same order
+(`RELIC_RULES.md` §2.5, `GAME_STATE.md` §2.3).
+
+**`cardLoadout` validation is determined.**
+`cardLoadout` is the array of exactly 3 submitted Basic Card
+`CardDefinitionId` values. The active Pet's Signature Skill Card is
+**derived**, not submitted, and is never part of this array
+(`CARD_RULES.md` §1, §4). Validation runs in this order:
+
+```text
+1. count        exactly 3 elements                          — CARD_RULES.md §1
+2. ownership    every CardDefinitionId has a                 — CARD_RULES.md §1
+                PlayerUnlockedCard row for the
+                requesting Player                          (DATABASE.md §2)
+3. category     every element is Category = Basic           — CARD_RULES.md §1
+4. copy limit   each element's occurrence count in the       — CARD_RULES.md §1
+                array ≤ that CardDefinition's
+                LoadoutCopyLimit (explicit value
+                required, no default)                      (DATABASE.md §1)
+```
+
+A selection failing any of the four is rejected with `INVALID_LOADOUT`
+(below — the same documented code this endpoint uses for
+`relicLoadout`). A rejected request equips nothing and writes no battle
+state. An accepted selection is snapshotted at battle start into
+`PetState.EquippedCards[]` as 4 `CardDefinitionId` entries — the 3
+submitted Basics plus the derived Signature Skill; repeated Basic
+entries repeat the same `CardDefinitionId` and are not instances
+(`GAME_STATE.md` §2.3).
 
 ```json
 Response 200:

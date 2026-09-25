@@ -17,7 +17,7 @@ using GameServer.Domain.Battle;
 /// A rejection carries no state. That is the contract, not an omission: a
 /// rejected Swap is a gameplay no-op (<c>MATCH3_RULES.md</c> §2.1.5) — the
 /// board, <c>Turn</c>, <c>Sequence</c>, <c>RngState</c>,
-/// <c>LastCommittedSwapPair</c>, and the player's <c>MatchCount</c> and
+/// <c>LastCommittedSwapPair</c>, and the battle's <c>MatchCount</c> and
 /// <c>Combo</c> are all unchanged — so there is no resulting
 /// state to hand back and the caller keeps the one it passed in. A rejection
 /// therefore cannot be mistaken for a commit that produced an empty board.
@@ -72,7 +72,7 @@ public readonly record struct SwapExecutionResult
     /// The authoritative state after the resolution — the committed board, the
     /// advanced <c>RngState</c>, the begun <c>Turn</c>, the incremented
     /// <c>Sequence</c>, the recorded <c>LastCommittedSwapPair</c>, and the
-    /// player's <c>MatchCount</c> and <c>Combo</c>, all
+    /// battle's <c>MatchCount</c> and <c>Combo</c>, all
     /// together in one value (<c>GAME_STATE.md</c> §5.1).
     ///
     /// It is the single post-resolution write-back: no partial state exists in
@@ -131,7 +131,7 @@ public readonly record struct SwapExecutionResult
     /// (<c>GAME_RULES.md</c> §17 step 12, <c>COMBAT_RULES.md</c> §2).
     ///
     /// <b>The persistent half has already been applied.</b>
-    /// <see cref="State"/> carries the resulting <c>PlayerState.Power</c>, clamped
+    /// <see cref="State"/> carries the resulting <c>PetState.Power</c>, clamped
     /// to the documented 0–100 range (<c>GAME_RULES.md</c> §12). This value reports
     /// what the Swap generated, whose <c>Power</c> is the <b>unclamped</b> pool —
     /// so a gain the cap absorbed is visible here as a larger number than the
@@ -141,11 +141,11 @@ public readonly record struct SwapExecutionResult
     /// Pool, Defense Pool, and Heal Pool are Transient Resolution State
     /// (<c>GAME_STATE.md</c> §3): the downstream resolution steps of this same
     /// Swap (15–17) consume them from this value, and they are not written into
-    /// <c>PlayerState</c> or <c>BattleState</c>, not persisted, and not delivered
+    /// <c>PetState</c> or <c>BattleState</c>, not persisted, and not delivered
     /// on the wire. The Heal Pool is one of them even though its effect
     /// <b>has been applied</b>: it is <i>consumed</i> by step 14
     /// (<see cref="ResourceGenerator.ApplyHeal"/>, which wrote the resulting
-    /// <c>PlayerState.HP</c>) and is still <b>not stored</b> anywhere — reading it
+    /// <c>PetState.HP</c>) and is still <b>not stored</b> anywhere — reading it
     /// does not make it state.
     /// </summary>
     /// <exception cref="InvalidOperationException">
@@ -301,7 +301,8 @@ public readonly record struct SwapExecutionResult
 ///         CascadeResolver.Resolve(...) §2.1.6 step 8 — §4 loop to stability
 ///             ↓
 ///         one write-back: board + RngState + Turn + Sequence
-///                         + LastCommittedSwapPair + PlayerState
+///                         + LastCommittedSwapPair + Combo/MatchCount
+///                         + PetState (Power/HP)
 ///                                                      §8.3, GAME_STATE.md §5.1
 ///         ↓
 ///         Charge Passive + PetState write-back  §17 step 10, PASSIVE_RULES.md §2
@@ -313,8 +314,9 @@ public readonly record struct SwapExecutionResult
 /// resource generation of step 12 in its two persistent halves — Power
 /// (<see cref="ResourceGenerator.ApplyPower"/>) and player-effect healing
 /// (<see cref="ResourceGenerator.ApplyHeal"/>, step 14) — and the single
-/// write-back. Steps 13 and 14 are state writes over the same <c>PlayerState</c>
-/// this type already builds, so they are applied here rather than split into a
+/// write-back. Steps 13 and 14 are state writes that land on the same
+/// <c>PetState</c> the resolution's write-back carries, so they are applied here
+/// rather than split into a
 /// second write-back (<c>GAME_STATE.md</c> §5.1 item 2). The Damage Pipeline
 /// (steps 15–17) is a separate stage and is not implemented.
 ///
@@ -450,7 +452,7 @@ public static class SwapExecutor
         // swap-scoped — it starts again from 0 for this Swap and ends at the number
         // of Matches this Swap produced — while MatchCount carries the battle's
         // cumulative total forward.
-        var playerState = AccountMatches(state.PlayerState, resolution);
+        var (combo, matchCount) = AccountMatches(state.MatchCount, resolution);
 
         // Step 6 (GAME_RULES.md §17 step 12, COMBAT_RULES.md §2): Generate
         // Resources. The cleared Gems the resolution already recorded are converted
@@ -465,25 +467,27 @@ public static class SwapExecutor
         var generation = ResourceGenerator.Generate(resolution);
 
         // COMBAT_RULES.md §2 / GAME_RULES.md §12: the generated Power is written
-        // into the persistent PlayerState, clamped to the documented 0–100 range.
+        // into the persistent state's combat-stat home — the active Pet's
+        // PetState (GAME_STATE.md §2.3, ADR-011 item 5) — clamped to the documented
+        // 0–100 range.
         // Base Damage Pool and Defense Pool have no persistent home and are carried
         // on the result instead — they are Transient Resolution State
-        // (GAME_STATE.md §3) and are deliberately not written to PlayerState or
+        // (GAME_STATE.md §3) and are deliberately not written to PetState or
         // BattleState. The HealPool is transient too, but it does have a documented
         // consumer in this same resolution: §17 step 14, below.
-        playerState = ResourceGenerator.ApplyPower(playerState, generation);
+        var petState = ResourceGenerator.ApplyPower(state.PetState, generation);
 
         // Step 6b (GAME_RULES.md §17 step 14, COMBAT_RULES.md §4 item 1): Resolve
         // Player Effects. The HealPool this Swap's HP Gems generated is applied to
         // the persistent HP, clamped to MaxHP — overheal is discarded. It is a pure
         // state write with no event (GAME_EVENTS.md §2 has no heal event) and no
         // RNG: reading the transient pool here does not move it off the result, and
-        // it is still not stored in PlayerState or BattleState (GAME_STATE.md §3).
+        // it is still not stored in PetState or BattleState (GAME_STATE.md §3).
         //
         // It runs in the same resolution, after the generation that produced the
-        // pool and before the single write-back below, so `playerState` carries
+        // pool and before the single write-back below, so `petState` carries
         // Power and HP together in the one value that is written.
-        playerState = ResourceGenerator.ApplyHeal(playerState, generation);
+        petState = ResourceGenerator.ApplyHeal(petState, generation);
 
         // Step 7 (GAME_EVENTS.md §1, §1.1, §2): the ordered Battle Events that
         // describe the resolution just performed. They are produced from
@@ -495,11 +499,12 @@ public static class SwapExecutor
         // They are built AFTER the board is stable and the accounting is complete,
         // so every value they report is a finished resolution's
         // (GAME_STATE.md §5.1 item 2, SIGNALR_PROTOCOL.md §3.1 item 1).
-        var events = BattleEventBuilder.Build(resolution, playerState.Combo);
+        var events = BattleEventBuilder.Build(resolution, combo);
 
         // Step 7 (§8.3 steps 3–4, 8 and GAME_STATE.md §5.1): the single
         // post-resolution write-back. Board, RngState, Turn, Sequence, the
-        // committed pair, and the player's Match/Combo state are written together,
+        // committed pair, the battle's Match/Combo accounting, and the Pet's
+        // combat stats are written together,
         // after the board is stable, so the new Sequence describes the finished
         // resolution and no reader can observe an in-progress one (§5.1 items 2–3,
         // §8.3 item 1).
@@ -522,8 +527,14 @@ public static class SwapExecutor
 
             // §2.2 / §5.3 item 1: the resolution's Match and Combo values, written in
             // the same write-back as the board and the counters — never mid-resolution
-            // (§5.1 item 2).
-            PlayerState = playerState,
+            // (§5.1 item 2). They are BattleState root members, not a nested node.
+            Combo = combo,
+            MatchCount = matchCount,
+
+            // §2.3 / §17 steps 12 and 14: the Pet's combat stats the resource stage
+            // wrote — Power and HP — carried in the same write-back. The rest of
+            // PetState is carried across unchanged by the `with` expression.
+            PetState = petState,
 
             // §2.1.6 step 4 / GAME_STATE.md §2.1.10 item 5: the committed pair,
             // canonically (min, max) so either argument order records one value
@@ -577,43 +588,44 @@ public static class SwapExecutor
     /// reset and the first Match is internal to this calculation and is never
     /// written to the state or published (§5.1 item 2).
     ///
-    /// <b>The combat stats are carried forward, not computed.</b>
-    /// <c>GAME_STATE.md</c> §2.2 puts <c>HP</c>/<c>MaxHP</c>, <c>ATK</c>/<c>DEF</c>/
-    /// <c>Crit</c>, and <c>Power</c> on the same state this method returns, and the
-    /// returned value replaces the previous one wholesale. The Match / Combo stage
-    /// owns only <c>Combo</c> and <c>MatchCount</c>, so the rest are copied from
-    /// <paramref name="previous"/> unchanged: this method neither re-derives them
-    /// (<c>COMBAT_RULES.md</c> §3's Damage Pipeline and §4's healing are still
-    /// unimplemented) nor resets them. <c>Power</c> is carried forward here and
-    /// then updated by the Resource Generation step that follows
-    /// (<c>GAME_RULES.md</c> §17 step 12, <see cref="ResourceGenerator.ApplyPower"/>),
-    /// which is the stage that owns it.
+    /// <b>The combat stats are not touched.</b> <c>GAME_STATE.md</c> §2.2 makes
+    /// this method the owner of the Match/Combo accounting only: it returns the
+    /// two <c>BattleState</c> root values and nothing else, so there is no
+    /// state-wide replacement to carry the combat stats through. The combat stats
+    /// live on the active Pet's <c>PetState</c> (§2.3, <c>ADR-011</c> item 3) and
+    /// are written by the stages that own them — the resource stage's
+    /// <c>Power</c>/<c>HP</c> writes (<c>GAME_RULES.md</c> §17 steps 12 and 14,
+    /// <see cref="ResourceGenerator.ApplyPower"/>,
+    /// <see cref="ResourceGenerator.ApplyHeal"/>) and the Damage Pipeline's
+    /// caller (<c>COMBAT_RULES.md</c> §3.4 step 6) — which this method neither
+    /// re-derives nor resets.
     /// </summary>
-    /// <param name="previous">
-    /// The player's progression state before this Swap — the source of the
-    /// cumulative <c>MatchCount</c> and of the Combo value a rejected Swap would
-    /// have left in place.
+    /// <param name="previousMatchCount">
+    /// The battle's cumulative <c>MatchCount</c> before this Swap
+    /// (<c>BattleState.MatchCount</c>, §2.2) — the value
+    /// <c>MATCH3_RULES.md</c> §3 makes battle-cumulative, and the value a rejected
+    /// Swap would have left in place.
     /// </param>
     /// <param name="resolution">
     /// The committed Swap's resolution, whose <c>Passes</c> are the authoritative
     /// Match boundaries (<c>GAME_STATE.md</c> §3 item 2, TASK-005A §6).
     /// </param>
     /// <returns>
-    /// The progression state the committed Swap leaves: this Swap's Match total in
+    /// The two root values the committed Swap leaves: this Swap's Match total in
     /// <c>Combo</c> and the battle's cumulative total in <c>MatchCount</c>.
     /// </returns>
-    private static PlayerState AccountMatches(
-        PlayerState previous,
+    private static (int Combo, int MatchCount) AccountMatches(
+        int previousMatchCount,
         CascadeResolver.CascadeResult resolution)
     {
         // §6.1 item 2: the reset belongs to the committed Swap and happens before
         // its first Match is counted. It is applied here — after validation has
         // accepted the action and after the board is resolved — so a rejected Swap
         // never reaches it (§2.1.5 item 5, §6.1 item 3).
-        var combo = PlayerState.InitialCombo;
+        var combo = BattleState.InitialCombo;
 
         // §3: MatchCount carries forward; it never resets within a battle.
-        var matchCount = previous.MatchCount;
+        var matchCount = previousMatchCount;
 
         // §3.2 / §4.2: the passes and their match sets are already in the documented
         // order, so one walk in that order is the authoritative traversal.
@@ -628,20 +640,6 @@ public static class SwapExecutor
             }
         }
 
-        return new PlayerState(
-            // GAME_STATE.md §2.2 / COMBAT_RULES.md §1.1: resolving a Swap produces
-            // Match/Combo accounting only. The combat stats are not an input to this
-            // calculation and no Match, Cascade, or Special Gem changes them, so the
-            // committed Swap carries the previous values forward unchanged rather than
-            // reinitializing them — the write-back is a whole-state replacement, so a
-            // value not restated here would be silently reset to its default.
-            HP: previous.HP,
-            MaxHP: previous.MaxHP,
-            ATK: previous.ATK,
-            DEF: previous.DEF,
-            Power: previous.Power,
-            Crit: previous.Crit,
-            Combo: combo,
-            MatchCount: matchCount);
+        return (combo, matchCount);
     }
 }

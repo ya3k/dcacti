@@ -31,7 +31,7 @@ namespace GameServer.Domain.Combat;
 /// mutable field, draws no RNG, reads no clock, and depends on no enumeration
 /// order, so one set of inputs always produces one result
 /// (<c>GAME_RULES.md</c> §17, <c>AGENTS.md</c> §11). In particular there is
-/// <b>no Crit roll</b>: <c>PlayerState.Crit</c> is deliberately not read here,
+/// <b>no Crit roll</b>: <c>PetState.Crit</c> is deliberately not read here,
 /// because <c>COMBAT_RULES.md</c> §3.3's roll and its RNG infrastructure do not
 /// exist in MVP and inventing one would introduce a second randomization
 /// mechanism beside the documented server-seeded stream (<c>ADR-009</c>,
@@ -43,7 +43,7 @@ namespace GameServer.Domain.Combat;
 /// resolution's result. <see cref="ResourceGeneration.DefensePool"/> is
 /// deliberately <b>not</b> read: <c>COMBAT_RULES.md</c> §3.2's formula consumes
 /// the <i>defending target's</i> DEF, not the attacker's generated pool, and no
-/// documented rule places the DEF pool in this pipeline. <c>PlayerState.DEF</c>
+/// documented rule places the DEF pool in this pipeline. <c>PetState.DEF</c>
 /// is likewise not read directly — a caller supplying it does so as the
 /// defender's DEF, which is what §3.2 asks for.
 ///
@@ -114,19 +114,19 @@ public static class DamagePipeline
     ///
     /// <b>It is a parameter group, not a new state type.</b> Every member is an
     /// existing documented value supplied by the caller:
-    /// <c>PlayerState.ATK</c> and <c>PlayerState.Combo</c>
+    /// <c>PetState.ATK</c> and <c>BattleState.Combo</c>
     /// (<c>GAME_STATE.md</c> §2.2), <c>ResourceGeneration.BaseDamagePool</c>
     /// (<c>GAME_STATE.md</c> §3), <c>PetState.Element</c> (§2.3),
     /// <c>BossState.Defense</c> and <c>BossState.Element</c> (§2.4). This type
-    /// stores no <c>BattleState</c>, no <c>PlayerState</c>, and no
+    /// stores no <c>BattleState</c>, no <c>PetState</c>, and no
     /// <c>BossState</c> — it is not a second representation of any of them
     /// (<c>GAME_STATE.md</c> §0 item 5); it is exactly the argument list of the
     /// calculation, named so the call site states which value fills which role.
     /// </summary>
     /// <param name="Attack">
-    /// Step 1's persistent half — <c>PlayerState.ATK</c>, "the stat the Damage
+    /// Step 1's persistent half — <c>PetState.ATK</c>, "the stat the Damage
     /// Pipeline's base damage is read from" (<c>COMBAT_RULES.md</c> §3 step 1,
-    /// <c>PlayerState.ATK</c>).
+    /// <c>PetState.ATK</c>).
     /// </param>
     /// <param name="BaseDamagePool">
     /// Step 1's transient half — the ATK Gems this Swap cleared converted to
@@ -157,11 +157,12 @@ public static class DamagePipeline
     /// <param name="DefenderHp">
     /// The defending target's current HP — the value Final Damage is applied to
     /// (<c>COMBAT_RULES.md</c> §3 step 6). It is <c>BossState.HP</c> for
-    /// Player→Boss damage and <c>PlayerState.HP</c> for Boss→Player damage.
+    /// Player→Boss damage and <c>PetState.HP</c> for Boss→Player damage.
     ///
     /// <b>It is an input because the target's type differs by direction.</b>
-    /// <c>COMBAT_RULES.md</c> §3.4's Boss damage instance writes
-    /// <c>Player.HP</c>, which is a different state record from the
+    /// <c>COMBAT_RULES.md</c> §3.4's Boss damage instance writes the active Pet's
+    /// HP — <c>PetState.HP</c> (<c>GAME_STATE.md</c> §2.3, <c>ADR-011</c> item 3) —
+    /// which is a different state record from the
     /// <c>BossState</c> the Player→Boss instance writes. Passing the value in —
     /// rather than passing one of the two records — keeps this pipeline a single
     /// calculation over both directions instead of two overloads or a second
@@ -259,7 +260,7 @@ public static class DamagePipeline
     /// <b>Everything else the target owns is the caller's to carry across.</b> The
     /// pipeline returns only the updated HP
     /// (<see cref="DamageResult.TargetHp"/>); the caller writes it onto whichever
-    /// state it owns — <c>BossState</c> or <c>PlayerState</c> — in the same single
+    /// state it owns — <c>BossState</c> or <c>PetState</c> — in the same single
     /// post-resolution write-back (<c>GAME_STATE.md</c> §5.1). This stage
     /// transitions no State, fires no Boss mechanic, and decides no outcome.
     /// </summary>
@@ -297,7 +298,7 @@ public static class DamagePipeline
         // §3 step 1 — Base Damage. COMBAT_RULES.md §3 step 1 names three
         // contributions: "ATK stat, Skill/Card base value, and any
         // ATK-Gem-generated damage pool for this action". The caller supplies the
-        // first two summed in `Attack` — for a Swap that is PlayerState.ATK alone,
+        // first two summed in `Attack` — for a Swap that is PetState.ATK alone,
         // and for a Boss Skill it is Boss.ATK + SkillBaseDamage (§3.4, §6.3) — and
         // the transient pool separately. No term is invented here and none is
         // dropped: this step only sums what the direction's caller already
@@ -369,7 +370,7 @@ public static class DamagePipeline
         // the target's HP, clamped so HP never becomes negative: overkill stops at
         // 0. Only the HP is returned; the caller writes it onto the state record it
         // owns, so this type cannot accidentally transition the Boss's State,
-        // rewrite a stat, or reach into a PlayerState it does not model.
+        // rewrite a stat, or reach into a PetState it does not model.
         var updatedHp = inputs.DefenderHp - finalDamage;
         if (updatedHp < 0)
         {

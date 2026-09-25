@@ -20,9 +20,7 @@ namespace GameServer.Infrastructure.Tests;
 public class PlayerMatchOrCreateTests
 {
     private static GameDbContext CreateContext(string storeName) =>
-        new(new DbContextOptionsBuilder<GameDbContext>()
-            .UseInMemoryDatabase(storeName)
-            .Options);
+        TestGameDbContextFactory.Create(storeName);
 
     [Fact]
     public async Task NewDiscordUserId_ShouldCreateAPlayerAtLevelOne()

@@ -234,6 +234,12 @@ export class BattleScene extends Phaser.Scene {
         // client never advances, re-seeds, or draws from the RNG
         // (SIGNALR_PROTOCOL.md §4.1 item 2) and never derives a Gem from it.
         `RngSeed: ${state.rngSeed}  RngState: ${state.rngState.state}/${state.rngState.increment}`,
+        // The Passive's delivered `current / threshold` pair and its identity
+        // (SIGNALR_PROTOCOL.md §4.3). Rendered verbatim: the scene does not
+        // charge a Passive, evaluate a Threshold, or reset progress (§4.3
+        // item 9, PASSIVE_RULES.md §6 item 1).
+        `Passive: ${state.petState.passiveId} ` +
+          `${describePassiveProgress(state.petState)}`,
       ].join('\n')
     );
 
@@ -314,6 +320,23 @@ export class BattleScene extends Phaser.Scene {
 
     this.boardLayer.add([tile, label]);
   }
+}
+
+/**
+ * Renders the delivered Passive progress pair as the documented
+ * `current / threshold` value (`PASSIVE_RULES.md` §6 item 1).
+ *
+ * Presentation only: both numbers come from the synchronized `petState` and are
+ * printed as received. The absence of `passiveResetOverride` means the default
+ * reset behavior (`SIGNALR_PROTOCOL.md` §4.3 item 7) and is shown as such
+ * without substituting a value for it.
+ */
+function describePassiveProgress(state: RuntimeBattleState['petState']): string {
+  const { current, threshold } = state.passiveProgress;
+
+  const reset = state.passiveResetOverride ?? 'Default';
+
+  return `(${current} / ${threshold} Matches, reset: ${reset})`;
 }
 
 /**

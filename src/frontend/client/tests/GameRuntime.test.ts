@@ -75,7 +75,8 @@ function serverCells(): string[] {
 /**
  * A well-formed `BattleStateUpdated` payload — the implemented
  * `GAME_STATE.md` §0 stage's fields: the §2.0.5 Board Foundation State fields
- * plus §2.2's `playerState` (SIGNALR_PROTOCOL.md §4, §4.2).
+ * plus §2.2's `playerState` and §2.3's `petState` (SIGNALR_PROTOCOL.md §4,
+ * §4.2, §4.3).
  */
 function payload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -88,6 +89,14 @@ function payload(overrides: Record<string, unknown> = {}): Record<string, unknow
     // GAME_STATE.md §2.2: both values exist from battle creation and are always
     // delivered — including at 0, which is a value, not an absence.
     playerState: { combo: 0, matchCount: 0 },
+    // SIGNALR_PROTOCOL.md §4.3: exactly the three delivered members. The
+    // `current / threshold` pair is always present; `passiveResetOverride` is
+    // omitted here because a default reset is spelled by its absence (§4.3
+    // item 7).
+    petState: {
+      passiveId: 'xich-lang',
+      passiveProgress: { threshold: 5, current: 0 },
+    },
     ...overrides,
   };
 }
@@ -599,6 +608,223 @@ describe('GameRuntime', () => {
       );
     });
 
+    it('carries the delivered Passive identity and progress pair unchanged', async () => {
+      // SIGNALR_PROTOCOL.md §4.3 / GAME_STATE.md §2.3, §2.5: `petState` is
+      // authoritative server state, carried because it is a BattleState field of
+      // the implemented stage and because PASSIVE_RULES.md §6 item 1 requires the
+      // pair to be exposed as a UI-facing value. The client renders it and
+      // derives nothing.
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const sent = payload({
+        petState: {
+          passiveId: 'thanh-xa-poison',
+          passiveProgress: { threshold: 7, current: 3 },
+        },
+      });
+
+      transport.emit('BattleStateUpdated', sent);
+
+      expect(runtime.getBattleState()!.petState).toEqual({
+        passiveId: 'thanh-xa-poison',
+        passiveProgress: { threshold: 7, current: 3 },
+      });
+
+      // Exactly what was sent — not derived from `board`, `turn`, `sequence`,
+      // `combo`, or `matchCount`, none of which carries a Passive value.
+      expect(runtime.getBattleState()!.petState).toEqual(sent.petState);
+    });
+
+    it('carries a delivered non-default reset override as the documented contract name', async () => {
+      // §4.3 item 6: when the Passive declares a non-default behavior the member
+      // is present, carrying `"Partial"` or `"NoReset"` — the contract name of
+      // PASSIVE_RULES.md §4 item 2, never a numeric enum ordinal (§3.2.4).
+      for (const contractName of ['Partial', 'NoReset']) {
+        const { runtime, transport } = createRuntime();
+        await runtime.initialize();
+
+        transport.emit(
+          'BattleStateUpdated',
+          payload({
+            petState: {
+              passiveId: 'xich-lang',
+              passiveProgress: { threshold: 5, current: 4 },
+              passiveResetOverride: contractName,
+            },
+          })
+        );
+
+        expect(runtime.getBattleState()!.petState.passiveResetOverride).toBe(contractName);
+      }
+    });
+
+    it('tolerates an omitted reset override without inventing one', async () => {
+      // §4.3 item 7: a default reset OMITS the member, and the absence *is* the
+      // statement "default". The runtime stores the absence as absence — it must
+      // not substitute `null`, `"Default"`, or any other value, because writing
+      // one would be a second spelling of one fact GAME_STATE.md §0 item 5
+      // forbids.
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      transport.emit('BattleStateUpdated', payload());
+
+      const petState = runtime.getBattleState()!.petState;
+
+      expect('passiveResetOverride' in petState).toBe(false);
+      expect(petState.passiveResetOverride).toBeUndefined();
+      expect(Object.keys(petState)).toEqual(['passiveId', 'passiveProgress']);
+    });
+
+    it('rejects a payload missing a PetState member rather than defaulting it', async () => {
+      // §4.3 items 3–4 / GAME_STATE.md §2.3 item 3: `passiveId` and both members
+      // of `passiveProgress` are non-nullable and always present, and
+      // `current = 0` is a real value rather than an absence. A payload that
+      // omits one is therefore malformed — the client must not substitute a
+      // value of its own, which would be a second, non-authoritative Passive
+      // source (GAME_RULES.md §18).
+      const malformed = [
+        // No `petState` at all.
+        { petState: undefined },
+        // No `passiveId`.
+        { petState: { passiveProgress: { threshold: 5, current: 0 } } },
+        // No `passiveProgress`.
+        { petState: { passiveId: 'xich-lang' } },
+        // Half of the progress pair.
+        { petState: { passiveId: 'xich-lang', passiveProgress: { threshold: 5 } } },
+        // Ill-typed members.
+        { petState: { passiveId: 'xich-lang', passiveProgress: { threshold: '5', current: 0 } } },
+        { petState: { passiveId: 7, passiveProgress: { threshold: 5, current: 0 } } },
+      ];
+
+      for (const override of malformed) {
+        const { runtime, transport } = createRuntime();
+        await runtime.initialize();
+
+        const events: string[] = [];
+        runtime.onRuntimeEvent((e) => events.push(e.type));
+
+        transport.emit('BattleStateUpdated', payload(override));
+
+        expect(runtime.getBattleState()).toBeNull();
+        expect(events).toContain('runtime_error');
+      }
+    });
+
+    it('models no undocumented PetState member', async () => {
+      // §4.3 item 2: `petState` carries exactly the Passive trio. The rest of
+      // GAME_STATE.md §2.3 — identity, progression, the combat stats, and both
+      // loadout snapshots — belongs to other stages and is not delivered, so a
+      // payload carrying one must not widen the runtime's copy into a second,
+      // undocumented wire shape.
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      transport.emit(
+        'BattleStateUpdated',
+        payload({
+          petState: {
+            passiveId: 'xich-lang',
+            passiveProgress: { threshold: 5, current: 0 },
+            petId: 'pet-1',
+            element: 'Hoa',
+            tier: 1,
+            star: 3,
+            level: 12,
+            hp: 1000,
+            maxHp: 1000,
+            atk: 50,
+            def: 25,
+            crit: 5,
+            power: 0,
+            statusEffects: [],
+            equippedRelics: ['relic-a'],
+            equippedCards: ['card-a'],
+          },
+        })
+      );
+
+      const petState = runtime.getBattleState()!.petState;
+
+      // Only the documented members are modelled; the rest are dropped rather
+      // than carried as an invented shape.
+      expect(Object.keys(petState)).toEqual(['passiveId', 'passiveProgress']);
+
+      for (const undocumented of [
+        'petId',
+        'element',
+        'tier',
+        'star',
+        'level',
+        'hp',
+        'maxHp',
+        'atk',
+        'def',
+        'crit',
+        'power',
+        'statusEffects',
+        'equippedRelics',
+        'equippedCards',
+      ]) {
+        expect(petState).not.toHaveProperty(undocumented);
+      }
+    });
+
+    it('rejects an explicit null reset override rather than reading it as a default', async () => {
+      // §4.3 item 7 / §3.2.5: the omission is the documented spelling of a
+      // default reset, and no member of this contract is ever sent as JSON
+      // `null`. A producer writing `null` is therefore outside the contract and
+      // the payload is malformed — the runtime must not quietly reinterpret it
+      // as "default", which would accept a second spelling of one fact.
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const events: string[] = [];
+      runtime.onRuntimeEvent((e) => events.push(e.type));
+
+      transport.emit(
+        'BattleStateUpdated',
+        payload({
+          petState: {
+            passiveId: 'xich-lang',
+            passiveProgress: { threshold: 5, current: 0 },
+            passiveResetOverride: null,
+          },
+        })
+      );
+
+      expect(runtime.getBattleState()).toBeNull();
+      expect(events).toContain('runtime_error');
+    });
+
+    it('derives no Passive value on the client', async () => {
+      // §4.3 item 9 / GAME_RULES.md §18: the client does not charge a Passive,
+      // evaluate a Threshold, reset progress, or apply an overflow. The stored
+      // pair is the delivered pair, whatever the surrounding state says.
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const sent = payload({
+        // A Combo, a Match total, a Turn, and a Sequence that carry no Passive
+        // meaning — none of them may influence the stored progress.
+        turn: 9,
+        sequence: 21,
+        playerState: { combo: 4, matchCount: 137 },
+        petState: {
+          passiveId: 'xich-lang',
+          passiveProgress: { threshold: 5, current: 3 },
+        },
+      });
+
+      transport.emit('BattleStateUpdated', sent);
+
+      expect(runtime.getBattleState()!.petState.passiveProgress).toEqual({
+        threshold: 5,
+        current: 3,
+      });
+    });
+
     it('ignores a payload carrying an undocumented Status value', async () => {
       const { runtime, transport } = createRuntime();
       await runtime.initialize();
@@ -616,6 +842,7 @@ describe('GameRuntime', () => {
         'rngState',
         'board',
         'playerState',
+        'petState',
       ]);
     });
 
@@ -645,7 +872,16 @@ describe('GameRuntime', () => {
 
       // The authoritative copy is exposed separately; the technical runtime
       // state contract stays technical (ARCHITECTURE.md §2.2.1 rule 5).
-      for (const key of ['battleId', 'turn', 'sequence', 'board', 'rngSeed', 'rngState', 'playerState']) {
+      for (const key of [
+        'battleId',
+        'turn',
+        'sequence',
+        'board',
+        'rngSeed',
+        'rngState',
+        'playerState',
+        'petState',
+      ]) {
         expect(Object.keys(runtime.getState())).not.toContain(key);
       }
     });

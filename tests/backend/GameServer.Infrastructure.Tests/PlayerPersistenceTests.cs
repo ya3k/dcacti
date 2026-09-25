@@ -24,9 +24,7 @@ public class PlayerPersistenceTests
     /// no test observes another's rows.
     /// </summary>
     private static GameDbContext CreateContext(string storeName) =>
-        new(new DbContextOptionsBuilder<GameDbContext>()
-            .UseInMemoryDatabase(storeName)
-            .Options);
+        TestGameDbContextFactory.Create(storeName);
 
     // -----------------------------------------------------------------------
     // DATABASE.md §1 — the Player field set

@@ -69,9 +69,12 @@ public record PingResponse(bool Accepted, string? ClientSequence, DateTimeOffset
 /// one-to-one from the authoritative state.
 /// </param>
 /// <param name="PlayerState">
-/// The authoritative <c>PlayerState</c> projection (<c>GAME_STATE.md</c> §2.2) —
+/// The authoritative Combo/MatchCount projection (<c>GAME_STATE.md</c> §2.2) —
 /// the resolution's <c>MatchCount</c> and <c>Combo</c>, projected one-to-one from
-/// the authoritative state.
+/// the authoritative state. <c>playerState</c> is a <b>fixed protocol label</b>
+/// for those two <c>BattleState</c> root members, not a state path: §2 nests no
+/// <c>PlayerState</c> node, and the Player is the account/owner with no
+/// battle-time combat pool (<c>ADR-011</c> items 1, 2, and 6).
 /// </param>
 /// <param name="PetState">
 /// The authoritative <c>PetState</c> projection (<c>GAME_STATE.md</c> §2.3) — the
@@ -170,12 +173,20 @@ public record PassiveProgressPayload(
     [property: JsonPropertyName("current")] int Current);
 
 /// <summary>
-/// The wire projection of <c>PlayerState</c> (<c>GAME_STATE.md</c> §2.2).
+/// The wire projection of the <c>BattleState</c> root's <c>Combo</c> and
+/// <c>MatchCount</c> (<c>GAME_STATE.md</c> §2.2), delivered under the fixed
+/// protocol label <c>playerState</c> (<c>SIGNALR_PROTOCOL.md</c> §4.2).
 ///
-/// The two members are the two <c>PlayerState</c> fields this stage implements —
+/// The type name and the wire member are <b>protocol labels, not an ownership
+/// path</b>: §2 nests no <c>PlayerState</c> node, and the Player is the
+/// account/owner with no battle-time combat pool (<c>ADR-011</c> items 1, 2, and
+/// 6). Renaming them is a protocol-breaking change that item 6 defers to its own
+/// task.
+///
+/// The two members are the two Match/Combo accounting values this stage implements —
 /// <c>Combo</c> and <c>MatchCount</c> (<c>MATCH3_RULES.md</c> §6.1 item 1,
-/// <c>GAME_RULES.md</c> §3) — and nothing else: the rest of §2.2 belongs to
-/// later stages and is not delivered.
+/// <c>GAME_RULES.md</c> §3) — and nothing else: the combat stats §2.2 no longer
+/// owns are the active Pet's and are not delivered (§2.3, §4.3 item 2).
 ///
 /// Both are always present and non-nullable, both default to <c>0</c>, and
 /// neither is omitted when it is <c>0</c>: <c>Combo = 0</c> is the value the
@@ -627,9 +638,13 @@ public class BattleHub : Hub
             // is projected, because none exists (§2.1.2 item 1).
             new BoardPayload(state.BoardState.Cells.Select(ToCellPayload).ToArray()),
             // GAME_STATE.md §2.2 / SIGNALR_PROTOCOL.md §4.2: the two implemented
-            // PlayerState fields, projected one-to-one. Both are always present — a
-            // zero is delivered as a zero, never omitted (MATCH3_RULES.md §6.5 item 4).
-            new PlayerStatePayload(state.PlayerState.Combo, state.PlayerState.MatchCount),
+            // Match/Combo values, projected one-to-one from their documented owner —
+            // the BattleState root, where §2.2 places them (there is no nested
+            // PlayerState node; the `playerState` member name below is a fixed
+            // protocol label, not a state path — §2.2.1, ADR-011 item 6). Both are
+            // always present — a zero is delivered as a zero, never omitted
+            // (MATCH3_RULES.md §6.5 item 4).
+            new PlayerStatePayload(state.Combo, state.MatchCount),
             // GAME_STATE.md §2.3 / SIGNALR_PROTOCOL.md §4.3: the implemented
             // PetState members, projected one-to-one. The progress pair is nested
             // because the two values are read together (§4.3 item 4), and the reset

@@ -32,7 +32,7 @@ namespace GameServer.Domain.Combat;
 /// </summary>
 public enum DamageParty
 {
-    /// <summary>The player's side — <c>PlayerState</c> and the active Pet.</summary>
+    /// <summary>The player's side — the active Pet and its <c>PetState</c>.</summary>
     Player = 0,
 
     /// <summary>The Boss — <c>BossState</c> (<c>GAME_STATE.md</c> §2.4).</summary>
@@ -82,7 +82,7 @@ public enum DamageParty
 /// its own task.
 /// </summary>
 /// <param name="Base">
-/// Step 1 — Base Damage: <c>PlayerState.ATK + ResourceGeneration.BaseDamagePool</c>
+/// Step 1 — Base Damage: <c>PetState.ATK + ResourceGeneration.BaseDamagePool</c>
 /// (<c>COMBAT_RULES.md</c> §3 step 1: "from ATK stat, Skill/Card base value, and
 /// any ATK-Gem-generated damage pool for this action").
 /// </param>
@@ -213,12 +213,12 @@ public readonly record struct DamageTakenEvent(
 /// write-back, and the write-back is never replaced by an event).
 /// <c>GAME_STATE.md</c> §5.1's single write-back is preserved: the caller writes
 /// <see cref="TargetHp"/> onto the state record it owns — the Boss's
-/// <c>BossState</c> or the player's <c>PlayerState</c> — in the same write-back
+/// <c>BossState</c> or the active Pet's <c>PetState</c> — in the same write-back
 /// the rest of the Swap's resolution uses.
 ///
 /// <b>It is an HP, not a state record, because the pipeline serves both
 /// directions.</b> <c>COMBAT_RULES.md</c> §3.4 puts Boss→Player damage through the
-/// same steps 1–6, and its target is a <c>PlayerState</c> rather than a
+/// same steps 1–6, and its target is the <c>PetState</c> rather than a
 /// <c>BossState</c>. Returning the one value both directions produce keeps this a
 /// single result type and a single pipeline; the direction-specific part — which
 /// record the value is written back onto — stays with the caller that owns that

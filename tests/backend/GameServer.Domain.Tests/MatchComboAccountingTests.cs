@@ -45,15 +45,39 @@ public class MatchComboAccountingTests
             (I(3, 1), GemType.Atk));
 
     /// <summary>
-    /// A battle whose board is the completing-swap fixture and whose progression
-    /// state is the one under test.
+    /// A battle whose board is the completing-swap fixture and whose Match/Combo
+    /// accounting is the one under test.
+    ///
+    /// GAME_STATE.md §2.2 places both values at the <c>BattleState</c> root and
+    /// GAME_STATE.md §2.3 places the combat stats on the active Pet's
+    /// <c>PetState</c> (ADR-011 items 2–3), so a test that needs a non-initial
+    /// value sets it at its documented owner. There is no <c>PlayerState</c> type
+    /// or node in the Domain at all (ADR-011 items 1 and 5).
     /// </summary>
-    private static BattleState BattleWith(BoardState board, PlayerState? playerState = null) =>
-        BattleState.CreateWith("battle-005", TestSeed) with
+    private static BattleState BattleWith(
+        BoardState board,
+        (int Combo, int MatchCount)? accounting = null,
+        PetState? petState = null)
+    {
+        var (combo, matchCount) = accounting ?? (BattleState.InitialCombo, BattleState.InitialMatchCount);
+        var created = BattleState.CreateWith("battle-005", TestSeed);
+
+        return created with
         {
             BoardState = board,
-            PlayerState = playerState ?? PlayerState.Initial,
+            Combo = combo,
+            MatchCount = matchCount,
+            PetState = petState ?? created.PetState,
         };
+    }
+
+    /// <summary>
+    /// The active Pet's state of a battle created by
+    /// <see cref="BattleState.CreateWith"/> — the documented combat-stat home
+    /// (<c>GAME_STATE.md</c> §2.3, <c>COMBAT_RULES.md</c> §1.1).
+    /// </summary>
+    private static PetState DefaultPet() =>
+        BattleState.CreateWith("battle-005", TestSeed).PetState;
 
     /// <summary>
     /// The Match total of a committed resolution — the rule-level value Combo must
@@ -107,25 +131,38 @@ public class MatchComboAccountingTests
     /// generated that board, so the Spawn draws the resolution makes are the
     /// deterministic continuation of the board it started from.
     /// </summary>
-    private static BattleState CascadeBattle(PlayerState? playerState = null) =>
-        BattleState.CreateWith("battle-005-cascade", CascadeSeed) with
+    private static BattleState CascadeBattle(
+        (int Combo, int MatchCount)? accounting = null,
+        PetState? petState = null)
+    {
+        var (combo, matchCount) = accounting ?? (BattleState.InitialCombo, BattleState.InitialMatchCount);
+        var created = BattleState.CreateWith("battle-005-cascade", CascadeSeed);
+
+        return created with
         {
             BoardState = CascadeBoard(),
-            PlayerState = playerState ?? PlayerState.Initial,
+            Combo = combo,
+            MatchCount = matchCount,
+            PetState = petState ?? created.PetState,
         };
+    }
 
     // =======================================================================
     // Initialization — GAME_STATE.md §2.2
     // =======================================================================
 
     [Fact]
-    public void NewBattleState_ShouldCarryPlayerState()
+    public void NewBattleState_ShouldPlaceComboAndMatchCountAtTheRoot()
     {
-        // GAME_STATE.md §2 nests PlayerState inside BattleState, so a created battle
-        // has one — not null and not created lazily on the first Swap.
+        // GAME_STATE.md §2.2 / ADR-011 item 2: the two accounting values are
+        // BattleState root members — there is no nested container holding them, and
+        // no PlayerState node in the contract at all (§2).
         var state = BattleState.CreateWith("battle-005", TestSeed);
 
-        Assert.Equal(PlayerState.Initial, state.PlayerState);
+        Assert.Equal(0, state.Combo);
+        Assert.Equal(0, state.MatchCount);
+        Assert.Equal(typeof(int), typeof(BattleState).GetProperty("Combo")!.PropertyType);
+        Assert.Equal(typeof(int), typeof(BattleState).GetProperty("MatchCount")!.PropertyType);
     }
 
     [Fact]
@@ -135,8 +172,8 @@ public class MatchComboAccountingTests
         // this battle has produced none.
         var state = BattleState.CreateWith("battle-005", TestSeed);
 
-        Assert.Equal(0, state.PlayerState.MatchCount);
-        Assert.Equal(PlayerState.InitialMatchCount, state.PlayerState.MatchCount);
+        Assert.Equal(0, state.MatchCount);
+        Assert.Equal(BattleState.InitialMatchCount, state.MatchCount);
     }
 
     [Fact]
@@ -147,72 +184,65 @@ public class MatchComboAccountingTests
         // first committed Swap (§6.5 item 4).
         var state = BattleState.CreateWith("battle-005", TestSeed);
 
-        Assert.Equal(0, state.PlayerState.Combo);
-        Assert.Equal(PlayerState.InitialCombo, state.PlayerState.Combo);
+        Assert.Equal(0, state.Combo);
+        Assert.Equal(BattleState.InitialCombo, state.Combo);
     }
 
     [Fact]
-    public void PlayerState_ShouldCarryTheDocumentedFieldsOfTheImplementedStages()
+    public void BattleState_ShouldExposeNoPlayerStateNode()
     {
-        // GAME_STATE.md §2.2: the Match / Combo stage implements MatchCount and Combo,
-        // and the combat-stats stage adds HP/MaxHP, ATK/DEF, Power, and Crit, each at
-        // the MVP default of COMBAT_RULES.md §1.1. Status, Cards, Relics, and every
-        // turn-local or derived value belong to later stages and are not declared
-        // here. Instance properties are the field set; the type's static members are
-        // its documented initial values, not state.
-        var fields = typeof(PlayerState)
-            .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
-            .Select(p => p.Name)
-            .OrderBy(n => n, StringComparer.Ordinal)
-            .ToArray();
-
-        Assert.Equal(
-            new[] { "ATK", "Combo", "Crit", "DEF", "HP", "MatchCount", "MaxHP", "Power" },
-            fields);
-    }
-
-    [Fact]
-    public void PlayerState_ShouldBeOwnedByBattleStateAndNotFlatOnIt()
-    {
-        // GAME_STATE.md §2 / §0 item 5: a flat BattleState.MatchCount would be a
-        // second owner of a concept §2.2 already owns, so the values live only under
-        // PlayerState. The combat stats are covered for the same reason: §2.2 owns
-        // them, so none may be spelled flat on BattleState.
+        // GAME_STATE.md §2: "There is no PlayerState member." The Player is the
+        // account/owner with no battle-time combat pool; the accounting lives at the
+        // root (§2.2) and the combat stats on the Pet (§2.3, ADR-011 items 1–3).
         var battleStateFields = typeof(BattleState)
             .GetProperties()
             .Select(p => p.Name)
             .ToArray();
 
-        Assert.Contains("PlayerState", battleStateFields);
+        Assert.DoesNotContain("PlayerState", battleStateFields);
 
-        foreach (var playerStateMember in new[]
-                 {
-                     "MatchCount", "Combo", "HP", "MaxHP", "ATK", "DEF", "Power", "Crit",
-                 })
+        // The wire label `playerState` is a protocol member name, not a state path
+        // (SIGNALR_PROTOCOL.md §4.2, ADR-011 item 6), so the Domain assembly must
+        // expose no type of that name either.
+        Assert.DoesNotContain(
+            "PlayerState",
+            typeof(BattleState).Assembly.GetTypes().Select(t => t.Name));
+    }
+
+    [Fact]
+    public void CombatStats_ShouldBeOwnedByPetStateAndNotFlatOnBattleState()
+    {
+        // GAME_STATE.md §2.3 / ADR-011 items 3 and 5: the active Pet is the combat
+        // character, so HP/MaxHP, ATK/DEF, Crit, and Power live on PetState — the one
+        // authoritative Player-side combat-stat home — and a flat
+        // BattleState.HP/MaxHP/ATK/DEF/Crit/Power would be a second owner.
+        Assert.Equal(typeof(PetState), typeof(BattleState).GetProperty("PetState")!.PropertyType);
+
+        var battleStateFields = typeof(BattleState).GetProperties().Select(p => p.Name).ToArray();
+
+        foreach (var combatStat in new[] { "HP", "MaxHP", "ATK", "DEF", "Power", "Crit" })
         {
-            Assert.DoesNotContain(playerStateMember, battleStateFields);
+            Assert.DoesNotContain(combatStat, battleStateFields);
         }
-
-        Assert.Equal(typeof(PlayerState), typeof(BattleState).GetProperty("PlayerState")!.PropertyType);
     }
 
     // =======================================================================
-    // Combat stats — COMBAT_RULES.md §1.1, GAME_STATE.md §2.2
+    // Combat stats — COMBAT_RULES.md §1.1, GAME_STATE.md §2.3
     // =======================================================================
 
     [Fact]
     public void NewBattleState_ShouldInitializeCombatStatsToTheDocumentedMvpDefaults()
     {
         // COMBAT_RULES.md §1.1: HP 1000, Max HP 1000, ATK 50, DEF 25, Crit 5%.
-        // GAME_STATE.md §2.2 places all of them on PlayerState, and a battle
+        // GAME_STATE.md §2.3 places all of them on PetState, and a battle
         // begins with them at those MVP defaults.
         var state = BattleState.CreateWith("battle-016", TestSeed);
 
-        Assert.Equal(1000, state.PlayerState.HP);
-        Assert.Equal(1000, state.PlayerState.MaxHP);
-        Assert.Equal(50, state.PlayerState.ATK);
-        Assert.Equal(25, state.PlayerState.DEF);
-        Assert.Equal(5, state.PlayerState.Crit);
+        Assert.Equal(1000, state.PetState.HP);
+        Assert.Equal(1000, state.PetState.MaxHP);
+        Assert.Equal(50, state.PetState.ATK);
+        Assert.Equal(25, state.PetState.DEF);
+        Assert.Equal(5, state.PetState.Crit);
     }
 
     [Fact]
@@ -223,8 +253,8 @@ public class MatchComboAccountingTests
         // floor of that range — not at the cap.
         var state = BattleState.CreateWith("battle-016", TestSeed);
 
-        Assert.Equal(0, state.PlayerState.Power);
-        Assert.NotEqual(100, state.PlayerState.Power);
+        Assert.Equal(0, state.PetState.Power);
+        Assert.NotEqual(100, state.PetState.Power);
     }
 
     [Fact]
@@ -234,56 +264,61 @@ public class MatchComboAccountingTests
         // damage begins with HP equal to MaxHP.
         var state = BattleState.CreateWith("battle-016", TestSeed);
 
-        Assert.Equal(state.PlayerState.MaxHP, state.PlayerState.HP);
+        Assert.Equal(state.PetState.MaxHP, state.PetState.HP);
     }
 
     [Fact]
-    public void PlayerState_ShouldExposeTheCombatDefaultsAsDocumentedConstants()
+    public void PetState_ShouldExposeTheCombatDefaultsAsDocumentedConstants()
     {
         // The MVP values are configuration (COMBAT_RULES.md §1.1 explicitly calls them
         // "not permanent invariants"), and each has exactly one spelling in the type:
         // the constant the initial state is built from.
-        Assert.Equal(1000, PlayerState.DefaultHP);
-        Assert.Equal(1000, PlayerState.DefaultMaxHP);
-        Assert.Equal(50, PlayerState.DefaultATK);
-        Assert.Equal(25, PlayerState.DefaultDEF);
-        Assert.Equal(0, PlayerState.DefaultPower);
-        Assert.Equal(5, PlayerState.DefaultCrit);
+        Assert.Equal(1000, PetState.DefaultHP);
+        Assert.Equal(1000, PetState.DefaultMaxHP);
+        Assert.Equal(50, PetState.DefaultATK);
+        Assert.Equal(25, PetState.DefaultDEF);
+        Assert.Equal(0, PetState.DefaultPower);
+        Assert.Equal(5, PetState.DefaultCrit);
 
-        Assert.Equal(PlayerState.DefaultHP, PlayerState.Initial.HP);
-        Assert.Equal(PlayerState.DefaultMaxHP, PlayerState.Initial.MaxHP);
-        Assert.Equal(PlayerState.DefaultATK, PlayerState.Initial.ATK);
-        Assert.Equal(PlayerState.DefaultDEF, PlayerState.Initial.DEF);
-        Assert.Equal(PlayerState.DefaultPower, PlayerState.Initial.Power);
-        Assert.Equal(PlayerState.DefaultCrit, PlayerState.Initial.Crit);
+        var initial = PetState.AtBattleCreation(
+            GameServer.Domain.Elements.Element.Hoa,
+            new PassiveId("test-passive"),
+            5);
+
+        Assert.Equal(PetState.DefaultHP, initial.HP);
+        Assert.Equal(PetState.DefaultMaxHP, initial.MaxHP);
+        Assert.Equal(PetState.DefaultATK, initial.ATK);
+        Assert.Equal(PetState.DefaultDEF, initial.DEF);
+        Assert.Equal(PetState.DefaultPower, initial.Power);
+        Assert.Equal(PetState.DefaultCrit, initial.Crit);
     }
 
     [Fact]
     public void CommittedSwap_ShouldCarryTheCombatStatsForwardUnchanged()
     {
         // GAME_STATE.md §5.1: the post-resolution write-back replaces the whole
-        // PlayerState. The Match / Combo stage computes only Combo and MatchCount, so
-        // the combat stats must survive the write-back rather than being reset to
+        // PetState. The Match / Combo stage computes only Combo and MatchCount, which
+        // live at the BattleState root (§2.2), so the combat stats on the Pet must
+        // survive the write-back rather than being reset to
         // their defaults — COMBAT_RULES.md §2's Resource Generation (which would
         // change Power) and §3's Damage Pipeline (which would change HP) are
         // unimplemented, so a committed Swap changes neither.
-        var state = BattleWith(
-            MatchingBoard(),
-            PlayerState.Initial with { HP = 812, Power = 40, Crit = 12 });
+        var pet = DefaultPet() with { HP = 812, Power = 40, Crit = 12 };
+        var state = BattleWith(MatchingBoard(), petState: pet);
 
         var result = SwapExecutor.Execute(state, new SwapRequest(From, To));
 
         Assert.True(result.IsAccepted);
-        Assert.Equal(812, result.State.PlayerState.HP);
-        Assert.Equal(40, result.State.PlayerState.Power);
-        Assert.Equal(12, result.State.PlayerState.Crit);
-        Assert.Equal(state.PlayerState.MaxHP, result.State.PlayerState.MaxHP);
-        Assert.Equal(state.PlayerState.ATK, result.State.PlayerState.ATK);
-        Assert.Equal(state.PlayerState.DEF, result.State.PlayerState.DEF);
+        Assert.Equal(812, result.State.PetState.HP);
+        Assert.Equal(40, result.State.PetState.Power);
+        Assert.Equal(12, result.State.PetState.Crit);
+        Assert.Equal(state.PetState.MaxHP, result.State.PetState.MaxHP);
+        Assert.Equal(state.PetState.ATK, result.State.PetState.ATK);
+        Assert.Equal(state.PetState.DEF, result.State.PetState.DEF);
 
         // The accounting this stage does own still moved.
-        Assert.Equal(1, result.State.PlayerState.Combo);
-        Assert.Equal(1, result.State.PlayerState.MatchCount);
+        Assert.Equal(1, result.State.Combo);
+        Assert.Equal(1, result.State.MatchCount);
     }
 
     [Fact]
@@ -293,16 +328,16 @@ public class MatchComboAccountingTests
         // writes nothing at all, so the state the caller still holds keeps every value
         // — including the combat stats — exactly as it was. A rejection carries no
         // state of its own, so the caller's own value is what is asserted.
-        var held = PlayerState.Initial with { HP = 500, ATK = 77, Power = 60 };
-        var state = BattleWith(MatchingBoard(), held);
+        var held = DefaultPet() with { HP = 500, ATK = 77, Power = 60 };
+        var state = BattleWith(MatchingBoard(), petState: held);
 
         var result = SwapExecutor.Execute(state, new SwapRequest(From, From));
 
         Assert.False(result.IsAccepted);
-        Assert.Equal(held, state.PlayerState);
-        Assert.Equal(500, state.PlayerState.HP);
-        Assert.Equal(77, state.PlayerState.ATK);
-        Assert.Equal(60, state.PlayerState.Power);
+        Assert.Equal(held, state.PetState);
+        Assert.Equal(500, state.PetState.HP);
+        Assert.Equal(77, state.PetState.ATK);
+        Assert.Equal(60, state.PetState.Power);
     }
 
     // =======================================================================
@@ -314,14 +349,14 @@ public class MatchComboAccountingTests
     {
         // Given MatchCount = 0 and Combo = 0, a committed Swap producing one Match
         // leaves MatchCount = 1 and Combo = 1 (GAME_RULES.md §3 item 2, §5 item 2).
-        var state = BattleWith(MatchingBoard(), PlayerState.Initial with { Combo = 0, MatchCount = 0 });
+        var state = BattleWith(MatchingBoard(), (Combo: 0, MatchCount: 0));
 
         var result = SwapExecutor.Execute(state, new SwapRequest(From, To));
 
         Assert.True(result.IsAccepted);
         Assert.Equal(1, MatchTotal(result));
-        Assert.Equal(1, result.State.PlayerState.MatchCount);
-        Assert.Equal(1, result.State.PlayerState.Combo);
+        Assert.Equal(1, result.State.MatchCount);
+        Assert.Equal(1, result.State.Combo);
     }
 
     [Fact]
@@ -332,8 +367,8 @@ public class MatchComboAccountingTests
         // never 0.
         var result = SwapExecutor.Execute(BattleWith(MatchingBoard()), new SwapRequest(From, To));
 
-        Assert.Equal(MatchTotal(result), result.State.PlayerState.Combo);
-        Assert.True(result.State.PlayerState.Combo >= 1);
+        Assert.Equal(MatchTotal(result), result.State.Combo);
+        Assert.True(result.State.Combo >= 1);
     }
 
     // =======================================================================
@@ -347,7 +382,7 @@ public class MatchComboAccountingTests
         // Match, cascade or not, increments both once. The fixture is a genuine
         // multi-pass resolution — asserted here rather than assumed — so the cascade
         // path is really exercised.
-        var state = CascadeBattle(PlayerState.Initial with { Combo = 0, MatchCount = 0 });
+        var state = CascadeBattle((Combo: 0, MatchCount: 0));
 
         // Guard the fixture: the board holds no Match before the Swap (§1.3) and the
         // pair produces one (§1.4), so the whole resolution belongs to this Swap.
@@ -361,8 +396,8 @@ public class MatchComboAccountingTests
         Assert.Single(result.Resolution.Passes[0].Matches);
 
         // Each cascade Match counts independently into both values.
-        Assert.Equal(3, result.State.PlayerState.MatchCount);
-        Assert.Equal(3, result.State.PlayerState.Combo);
+        Assert.Equal(3, result.State.MatchCount);
+        Assert.Equal(3, result.State.Combo);
 
         // And the identity holds at every pass boundary, not only at the end: the
         // running total of the passes walked so far is the accounted value.
@@ -370,10 +405,10 @@ public class MatchComboAccountingTests
         foreach (var pass in result.Resolution.Passes)
         {
             running += pass.Matches.Count;
-            Assert.True(running >= 1 && running <= result.State.PlayerState.Combo);
+            Assert.True(running >= 1 && running <= result.State.Combo);
         }
 
-        Assert.Equal(result.Resolution.TotalMatches, result.State.PlayerState.MatchCount);
+        Assert.Equal(result.Resolution.TotalMatches, result.State.MatchCount);
     }
 
     [Fact]
@@ -387,7 +422,7 @@ public class MatchComboAccountingTests
             (I(6, 0), GemType.Hp), (I(6, 1), GemType.Hp), (I(6, 2), GemType.Hp),
             (I(1, 0), GemType.Power), (I(1, 1), GemType.Power), (I(1, 2), GemType.Power));
 
-        var state = BattleWith(board, PlayerState.Initial with { Combo = 0, MatchCount = 0 });
+        var state = BattleWith(board, (Combo: 0, MatchCount: 0));
 
         // The Swap is used only as the resolution's entry point; the post-swap board
         // is what holds the three shapes, so the first pass detects all three at once
@@ -406,18 +441,18 @@ public class MatchComboAccountingTests
         Assert.True(result.Resolution.TotalMatches >= firstPass);
         Assert.Equal(
             result.Resolution.Passes.Sum(pass => pass.Matches.Count),
-            result.State.PlayerState.MatchCount);
-        Assert.Equal(result.State.PlayerState.MatchCount, result.State.PlayerState.Combo);
+            result.State.MatchCount);
+        Assert.Equal(result.State.MatchCount, result.State.Combo);
 
         // Not the pass count and not the cascade depth.
-        Assert.NotEqual(result.Resolution.Passes.Count, result.State.PlayerState.Combo);
-        Assert.NotEqual(result.Resolution.CascadeDepth + 1, result.State.PlayerState.Combo);
+        Assert.NotEqual(result.Resolution.Passes.Count, result.State.Combo);
+        Assert.NotEqual(result.Resolution.CascadeDepth + 1, result.State.Combo);
 
         // And not a cleared-cell total: the pass cleared strictly more cells than it
         // detected shapes.
         var clearedCells = result.Resolution.Passes.Sum(pass => pass.ClearedCellUnion.Count);
-        Assert.True(clearedCells > result.State.PlayerState.Combo);
-        Assert.NotEqual(clearedCells, result.State.PlayerState.MatchCount);
+        Assert.True(clearedCells > result.State.Combo);
+        Assert.NotEqual(clearedCells, result.State.MatchCount);
     }
 
     [Fact]
@@ -427,7 +462,7 @@ public class MatchComboAccountingTests
         // passes is neither three-passes-equals-three-coincidentally nor a
         // cleared-cell total. The identity is asserted against the resolution's own
         // report, per pass.
-        var state = CascadeBattle(PlayerState.Initial with { Combo = 0, MatchCount = 0 });
+        var state = CascadeBattle((Combo: 0, MatchCount: 0));
 
         var result = SwapExecutor.Execute(state, new SwapRequest(CascadeFrom, CascadeTo));
 
@@ -436,13 +471,13 @@ public class MatchComboAccountingTests
         var clearedCells = result.Resolution.Passes.Sum(pass => pass.ClearedCellUnion.Count);
         var matches = result.Resolution.Passes.Sum(pass => pass.Matches.Count);
 
-        Assert.Equal(matches, result.State.PlayerState.MatchCount);
-        Assert.Equal(matches, result.State.PlayerState.Combo);
+        Assert.Equal(matches, result.State.MatchCount);
+        Assert.Equal(matches, result.State.Combo);
 
         // The cleared-cell total is strictly larger here (each Match clears ≥ 3
         // cells), so a cleared-cell derivation would produce a different value.
         Assert.True(clearedCells > matches);
-        Assert.NotEqual(clearedCells, result.State.PlayerState.MatchCount);
+        Assert.NotEqual(clearedCells, result.State.MatchCount);
     }
 
     // =======================================================================
@@ -458,7 +493,7 @@ public class MatchComboAccountingTests
         //
         // The fixture is asserted through the resolution rather than hard-coded, so
         // the test states the contract and not a particular board's shape.
-        var state = BattleWith(MatchingBoard(), PlayerState.Initial with { Combo = 4, MatchCount = 7 });
+        var state = BattleWith(MatchingBoard(), (Combo: 4, MatchCount: 7));
 
         var result = SwapExecutor.Execute(state, new SwapRequest(From, To));
 
@@ -467,9 +502,9 @@ public class MatchComboAccountingTests
         var produced = MatchTotal(result);
         Assert.True(produced >= 1);
 
-        Assert.Equal(7 + produced, result.State.PlayerState.MatchCount);
-        Assert.Equal(produced, result.State.PlayerState.Combo);
-        Assert.NotEqual(4, result.State.PlayerState.Combo);
+        Assert.Equal(7 + produced, result.State.MatchCount);
+        Assert.Equal(produced, result.State.Combo);
+        Assert.NotEqual(4, result.State.Combo);
     }
 
     [Fact]
@@ -484,13 +519,13 @@ public class MatchComboAccountingTests
         // starts from the board Swap A committed and is the canonical single-Match
         // completion on that board, so both Swaps are genuine committed Swaps rather
         // than two independent states.
-        var state = CascadeBattle(PlayerState.Initial with { Combo = 0, MatchCount = 0 });
+        var state = CascadeBattle((Combo: 0, MatchCount: 0));
 
         var first = SwapExecutor.Execute(state, new SwapRequest(CascadeFrom, CascadeTo));
 
         Assert.True(first.IsAccepted);
-        Assert.Equal(3, first.State.PlayerState.Combo);
-        Assert.Equal(3, first.State.PlayerState.MatchCount);
+        Assert.Equal(3, first.State.Combo);
+        Assert.Equal(3, first.State.MatchCount);
 
         // The board Swap A left, completed by one Match. The completing swap is
         // derived from that board rather than assumed, and it must not be the pair
@@ -503,10 +538,10 @@ public class MatchComboAccountingTests
         Assert.Equal(1, second.Resolution.TotalMatches);
 
         // Combo was reset by the committed Swap and now counts only that Swap's Match.
-        Assert.Equal(1, second.State.PlayerState.Combo);
+        Assert.Equal(1, second.State.Combo);
 
         // MatchCount carried forward: 3 + 1 = 4.
-        Assert.Equal(4, second.State.PlayerState.MatchCount);
+        Assert.Equal(4, second.State.MatchCount);
     }
 
     [Fact]
@@ -530,9 +565,9 @@ public class MatchComboAccountingTests
 
             committed++;
 
-            Assert.True(result.State.PlayerState.Combo >= 1);
-            Assert.Equal(MatchTotal(result), result.State.PlayerState.Combo);
-            Assert.Equal(MatchTotal(result), result.State.PlayerState.MatchCount);
+            Assert.True(result.State.Combo >= 1);
+            Assert.Equal(MatchTotal(result), result.State.Combo);
+            Assert.Equal(MatchTotal(result), result.State.MatchCount);
         }
 
         Assert.True(committed > 0, "a generated board has at least one valid Swap (MATCH3_RULES.md §1.4)");
@@ -559,8 +594,8 @@ public class MatchComboAccountingTests
             expected += MatchTotal(result);
             current = result.State;
 
-            Assert.Equal(expected, current.PlayerState.MatchCount);
-            Assert.Equal(MatchTotal(result), current.PlayerState.Combo);
+            Assert.Equal(expected, current.MatchCount);
+            Assert.Equal(MatchTotal(result), current.Combo);
         }
 
         Assert.Equal(6, committed);
@@ -590,7 +625,7 @@ public class MatchComboAccountingTests
             (I(5, 3), GemType.Power),
             (I(4, 2), GemType.Power));
 
-        var state = BattleWith(board, PlayerState.Initial with { Combo = 0, MatchCount = 0 });
+        var state = BattleWith(board, (Combo: 0, MatchCount: 0));
 
         var result = SwapExecutor.Execute(state, new SwapRequest(I(4, 2), I(5, 2)));
 
@@ -607,12 +642,12 @@ public class MatchComboAccountingTests
         var activated = result.Resolution.Passes.Sum(pass => pass.ActivatedSpecialGems.Count);
         var clearedCells = result.Resolution.Passes.Sum(pass => pass.ClearedCellUnion.Count);
 
-        Assert.Equal(matchCount, result.State.PlayerState.MatchCount);
-        Assert.Equal(matchCount, result.State.PlayerState.Combo);
+        Assert.Equal(matchCount, result.State.MatchCount);
+        Assert.Equal(matchCount, result.State.Combo);
 
         // The identity that proves the wrong derivations are absent: a pass that
         // activated gems and cleared cells still reported only its Matches.
-        Assert.NotEqual(clearedCells, result.State.PlayerState.MatchCount);
+        Assert.NotEqual(clearedCells, result.State.MatchCount);
 
         // Activated or not, the excluded collections never reached the counters.
         _ = activated;
@@ -626,7 +661,7 @@ public class MatchComboAccountingTests
         // counts the Match.
         var board = MatchingBoard().WithSpecial((I(4, 2), SpecialGem.Burst()));
 
-        var state = BattleWith(board, PlayerState.Initial with { Combo = 0, MatchCount = 0 });
+        var state = BattleWith(board, (Combo: 0, MatchCount: 0));
 
         var result = SwapExecutor.Execute(state, new SwapRequest(From, To));
 
@@ -636,8 +671,8 @@ public class MatchComboAccountingTests
         var activated = result.Resolution.Passes.Sum(pass => pass.ActivatedSpecialGems.Count);
 
         Assert.True(activated > 0, "the fixture must activate the held Special Gem");
-        Assert.Equal(matches, result.State.PlayerState.Combo);
-        Assert.Equal(matches, result.State.PlayerState.MatchCount);
+        Assert.Equal(matches, result.State.Combo);
+        Assert.Equal(matches, result.State.MatchCount);
     }
 
     // =======================================================================
@@ -650,8 +685,8 @@ public class MatchComboAccountingTests
         // MATCH3_RULES.md §2.1.5 item 5 / §6.1 item 3 / §6.5 item 2 and
         // GAME_STATE.md §5.1 item 6: a rejected Swap neither resets nor increments
         // either value, for every rejection reason.
-        var playerState = PlayerState.Initial with { Combo = 4, MatchCount = 7 };
-        var state = BattleWith(MatchingBoard(), playerState) with
+        var accounting = (Combo: 4, MatchCount: 7);
+        var state = BattleWith(MatchingBoard(), accounting) with
         {
             LastCommittedSwapPair = CommittedSwapPair.FromCells(0, 1),
         };
@@ -677,9 +712,9 @@ public class MatchComboAccountingTests
 
             // Nothing moved: not the progression state, not the counters, not the
             // record, not the board, not the RNG.
-            Assert.Equal(7, state.PlayerState.MatchCount);
-            Assert.Equal(4, state.PlayerState.Combo);
-            Assert.Equal(playerState, state.PlayerState);
+            Assert.Equal(7, state.MatchCount);
+            Assert.Equal(4, state.Combo);
+            Assert.Equal(accounting.Combo, state.Combo);
 
             Assert.Equal(BattleState.InitialTurn, state.Turn);
             Assert.Equal(BattleState.InitialSequence, state.Sequence);
@@ -700,9 +735,9 @@ public class MatchComboAccountingTests
     public void RejectedSwap_ShouldNotExposeAnyStateAtAll()
     {
         // A rejection carries no state (MATCH3_RULES.md §2.1.5), so there is no
-        // post-rejection PlayerState a caller could read — proof that no accounting
+        // post-rejection state a caller could read — proof that no accounting
         // ran before validation succeeded.
-        var state = BattleWith(MatchingBoard(), PlayerState.Initial with { Combo = 4, MatchCount = 7 });
+        var state = BattleWith(MatchingBoard(), (Combo: 4, MatchCount: 7));
 
         var result = SwapExecutor.Execute(state, new SwapRequest(0, 9));
 
@@ -718,18 +753,18 @@ public class MatchComboAccountingTests
         // previous Swap's final value — the zeroing happens when a Swap begins,
         // which a rejection is not.
         var first = SwapExecutor.Execute(
-            BattleWith(MatchingBoard(), PlayerState.Initial with { Combo = 0, MatchCount = 0 }),
+            BattleWith(MatchingBoard(), (Combo: 0, MatchCount: 0)),
             new SwapRequest(From, To));
 
         Assert.True(first.IsAccepted);
         var afterCommit = first.State;
-        Assert.True(afterCommit.PlayerState.Combo >= 1);
+        Assert.True(afterCommit.Combo >= 1);
 
         var rejected = SwapExecutor.Execute(afterCommit, new SwapRequest(0, 9));
 
         Assert.True(rejected.IsRejected);
-        Assert.Equal(afterCommit.PlayerState.Combo, afterCommit.PlayerState.Combo);
-        Assert.Equal(afterCommit.PlayerState.MatchCount, afterCommit.PlayerState.MatchCount);
+        Assert.Equal(afterCommit.Combo, afterCommit.Combo);
+        Assert.Equal(afterCommit.MatchCount, afterCommit.MatchCount);
     }
 
     // =======================================================================
@@ -737,12 +772,12 @@ public class MatchComboAccountingTests
     // =======================================================================
 
     [Fact]
-    public void CommittedSwap_ShouldWritePlayerStateInTheSameWriteBackAsEverythingElse()
+    public void CommittedSwap_ShouldWriteTheAccountingInTheSameWriteBackAsEverythingElse()
     {
         // GAME_STATE.md §5.1 items 2–3 / §8.3: nothing is written mid-resolution. The
         // single result carries the stable board, the retained RngState, the
         // counters, the commit record, and the progression state together.
-        var state = BattleWith(MatchingBoard(), PlayerState.Initial with { Combo = 4, MatchCount = 7 });
+        var state = BattleWith(MatchingBoard(), (Combo: 4, MatchCount: 7));
 
         var result = SwapExecutor.Execute(state, new SwapRequest(From, To));
         var committed = result.State;
@@ -757,23 +792,23 @@ public class MatchComboAccountingTests
 
         // The progression values that accompany the new Sequence are the finished
         // resolution's values.
-        Assert.Equal(MatchTotal(result), committed.PlayerState.Combo);
-        Assert.Equal(7 + MatchTotal(result), committed.PlayerState.MatchCount);
+        Assert.Equal(MatchTotal(result), committed.Combo);
+        Assert.Equal(7 + MatchTotal(result), committed.MatchCount);
     }
 
     [Fact]
-    public void CommittedSwap_ShouldNotMutateTheInputPlayerState()
+    public void CommittedSwap_ShouldNotMutateTheInputAccounting()
     {
         // State is immutable and authoritative: the input snapshot cannot be rebound
         // by the call.
-        var playerState = PlayerState.Initial with { Combo = 4, MatchCount = 7 };
-        var state = BattleWith(MatchingBoard(), playerState);
+        var accounting = (Combo: 4, MatchCount: 7);
+        var state = BattleWith(MatchingBoard(), accounting);
 
         SwapExecutor.Execute(state, new SwapRequest(From, To));
 
-        Assert.Equal(playerState, state.PlayerState);
-        Assert.Equal(7, state.PlayerState.MatchCount);
-        Assert.Equal(4, state.PlayerState.Combo);
+        Assert.Equal(accounting.Combo, state.Combo);
+        Assert.Equal(7, state.MatchCount);
+        Assert.Equal(4, state.Combo);
     }
 
     [Fact]
@@ -782,7 +817,7 @@ public class MatchComboAccountingTests
         // MATCH3_RULES.md §7.2 item 1 / ADR-009: accounting is arithmetic over the
         // resolution's report. It draws nothing, so the committed RngState is exactly
         // what the resolution produced.
-        var state = BattleWith(MatchingBoard(), PlayerState.Initial with { Combo = 4, MatchCount = 7 });
+        var state = BattleWith(MatchingBoard(), (Combo: 4, MatchCount: 7));
 
         var result = SwapExecutor.Execute(state, new SwapRequest(From, To));
 
@@ -794,8 +829,8 @@ public class MatchComboAccountingTests
     public void Accounting_ShouldBeEntirelyDeterministic()
     {
         // MATCH3_RULES.md §4.6 / §7.1: the same BattleState and the same SwapRequest
-        // always produce the same PlayerState, BoardState, Turn, Sequence, and RngState.
-        var state = BattleWith(MatchingBoard(), PlayerState.Initial with { Combo = 4, MatchCount = 7 });
+        // always produce the same accounting, PetState, BoardState, Turn, Sequence, and RngState.
+        var state = BattleWith(MatchingBoard(), (Combo: 4, MatchCount: 7));
         var reference = SwapExecutor.Execute(state, new SwapRequest(From, To));
 
         for (var run = 0; run < 20; run++)
@@ -804,7 +839,7 @@ public class MatchComboAccountingTests
 
             Assert.Equal(reference.IsAccepted, again.IsAccepted);
             Assert.Equal(reference.Reason, again.Reason);
-            Assert.Equal(reference.State.PlayerState, again.State.PlayerState);
+            Assert.Equal(reference.State.PetState, again.State.PetState);
             Assert.True(reference.State.BoardState.CellsEqual(again.State.BoardState));
             Assert.Equal(reference.State.RngState, again.State.RngState);
             Assert.Equal(reference.State.Turn, again.State.Turn);
@@ -818,12 +853,12 @@ public class MatchComboAccountingTests
     {
         // MATCH3_RULES.md §2.1.1 item 2: the unordered pair is the Swap's identity, so
         // the two spellings account identically.
-        var state = BattleWith(MatchingBoard(), PlayerState.Initial with { Combo = 4, MatchCount = 7 });
+        var state = BattleWith(MatchingBoard(), (Combo: 4, MatchCount: 7));
 
         var forward = SwapExecutor.Execute(state, new SwapRequest(From, To));
         var reversed = SwapExecutor.Execute(state, new SwapRequest(To, From));
 
-        Assert.Equal(forward.State.PlayerState, reversed.State.PlayerState);
+        Assert.Equal(forward.State.Combo, reversed.State.Combo);
     }
 
     // =======================================================================
@@ -860,7 +895,7 @@ public class MatchComboAccountingTests
         // no event bus, broker, emitter, publisher, subscription framework, or
         // persistence — and no event name the contract does not define. The
         // resolution events that do exist are asserted in BattleEventEmissionTests.
-        var domainTypes = typeof(PlayerState).Assembly
+        var domainTypes = typeof(BattleState).Assembly
             .GetTypes()
             .Select(t => t.Name)
             .ToArray();

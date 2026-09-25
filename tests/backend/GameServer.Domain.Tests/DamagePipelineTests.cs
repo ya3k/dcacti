@@ -729,7 +729,9 @@ public class DamagePipelineTests
 
     /// <summary>
     /// The Boss→Player instance's inputs, with the Boss's ATK as the attacker and
-    /// the player's DEF/Element on the defending side (<c>COMBAT_RULES.md</c> §3.4).
+    /// the active Pet's DEF/Element on the defending side — the Pet is the Player
+    /// side's combat character (<c>COMBAT_RULES.md</c> §3.4, <c>ADR-011</c> items 3
+    /// and 5).
     /// </summary>
     private static DamagePipeline.DamageInputs BossAttackInputs(
         int attack,
@@ -867,9 +869,12 @@ public class DamagePipelineTests
     [Fact]
     public void BossAttack_ShouldWriteThePlayersHp()
     {
-        // COMBAT_RULES.md §3.4 step 6: "Final Damage applied to Player.HP". The
+        // COMBAT_RULES.md §3.4 step 6: "Final Damage applied to Player.HP" names the
+        // Player side of the instance — and the Pet is that side's combat character
+        // (ADR-011 items 3 and 5), so the HP written is the active Pet's PetState.HP
+        // (GAME_STATE.md §2.3). The
         // pipeline returns the target's post-damage HP whichever direction it is, so
-        // 1000 − 80 = 920 with the player at full health and DEF 25.
+        // 1000 − 80 = 920 with the player's Pet at full health and DEF 25.
         var result = DamagePipeline.Calculate(
             BossAttackInputs(100, 0, Element.Hoa, Element.Hoa, playerDefense: 25, playerHp: 1000),
             ComboModifiers.Default,

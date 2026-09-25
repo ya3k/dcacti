@@ -47,14 +47,21 @@ migrations in this change):
     (GDD §14). Exact XP amounts/curve are balance/config concerns and
     are not owned by this ADR or by PET_RULES.md §5.
 
-3.  Pet Level formula (resolved form):
-        Pet Level = clamp(Player Level × Pet Level Multiplier, 1, 50)
+3.  Pet Level formula (resolved form; operational semantics completed in
+    `PET_RULES.md` §5):
+        Pet.Level = clamp(
+            floor(Player.Level × PetDefinition.PetLevelMultiplier),
+            1,
+            50
+        )
     Pet Level Multiplier remains a per-Pet configuration value on
-    PetDefinition (DATABASE.md §1), never hard-coded.
+    PetDefinition (DATABASE.md §1), never hard-coded. Type `decimal`,
+    range `> 0`, `floor` rounding, floor before clamp — owned solely by
+    `PET_RULES.md` §5.
 
-4.  The historical 1–50 range clamps the FORMULA RESULT. Both Player
-    Level and Pet Level independently respect [1, 50]. Neither range
-    supersedes the other.
+4.  The historical 1–50 range clamps the FORMULA RESULT (after `floor`).
+    Both Player Level and Pet Level independently respect [1, 50].
+    Neither range supersedes the other.
 
 5.  Tier and Star remain INDEPENDENT progression axes. They are not
     derived from Player Level. PET_RULES.md §3–§4 are unchanged in

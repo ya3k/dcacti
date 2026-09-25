@@ -47,7 +47,7 @@ public readonly record struct GemMatchedEvent(
 /// This value is Domain-side and is <b>not</b> a Match count: a Special Gem
 /// activation is not a Match and is never added to a pass's match set
 /// (<c>MATCH3_RULES.md</c> §5.5.5 item 8, §3.4 item 2). The authoritative
-/// cumulative total is <c>PlayerState.MatchCount</c> (<c>GAME_STATE.md</c> §2.2),
+/// cumulative total is <c>BattleState.MatchCount</c> (<c>GAME_STATE.md</c> §2.2),
 /// and this value is what that total is counted from: one
 /// <see cref="MatchResolution"/> is exactly one Match, so the committed-Swap
 /// accounting walks the passes and counts one increment per instance.

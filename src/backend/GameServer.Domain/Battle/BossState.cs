@@ -28,7 +28,7 @@ namespace GameServer.Domain.Battle;
 /// <c>BattleState</c>. All of them are therefore ordinary <b>Active Battle
 /// State</b>: authoritative, server-produced, and written in the same single
 /// post-resolution write-back as <c>Turn</c>, <c>Sequence</c>,
-/// <c>BoardState</c>, <c>RngState</c>, <c>PlayerState</c>, and <c>PetState</c>
+/// <c>BoardState</c>, <c>RngState</c>, <c>PetState</c>, and the root <c>Combo</c>
 /// (§5.1). There is no second representation of any value — not on
 /// <c>BattleState</c>, and not on the transient <c>ResolutionContext</c>
 /// (§0 item 5).
@@ -38,11 +38,11 @@ namespace GameServer.Domain.Battle;
 /// balance invariants", approved by the project owner, and used as
 /// configuration defaults at battle creation. This type therefore holds the
 /// current values as data and defines no formula over them: it does not derive
-/// HP from the player's HP, or ATK/DEF from the player's ATK/DEF, and it does
+/// HP from the active Pet's HP, or ATK/DEF from the active Pet's ATK/DEF, and it does
 /// not give different Bosses different stats. The values come from the Boss's
 /// definition (<see cref="BossDefinition"/>), exactly as
-/// <c>PlayerState</c>'s combat stats come from <c>COMBAT_RULES.md</c> §1.1's
-/// configuration.
+/// <c>PetState</c>'s combat stats come from <c>COMBAT_RULES.md</c> §1.1's
+/// configuration (<c>GAME_STATE.md</c> §2.3, <c>ADR-011</c> item 3).
 ///
 /// <b>Only the fields this stage requires exist.</b> §2.4 also lists
 /// <c>StatusEffects[]</c>. That belongs to the Status Effects system
@@ -273,7 +273,7 @@ public readonly record struct BossState(
     /// applies the documented initial values above and carries the rest
     /// across unchanged.
     ///
-    /// It is the same shape as <see cref="PlayerState.Initial"/> —
+    /// It is the same shape as <see cref="PetState.AtBattleCreation"/> —
     /// <c>HP == MaxHP</c> at the start of a battle — and, like it, is a static
     /// factory rather than a defaulted parameter, so a caller must supply the
     /// Boss's real configuration rather than letting one be defaulted with an

@@ -182,10 +182,12 @@ namespace GameServer.Api.Hubs;
 /// battle end (<c>GAME_STATE.md</c> §2.4).
 /// </param>
 /// <param name="FinalPlayerHp">
-/// <c>BattleWon</c> and <c>BattleLost</c> only (<c>§3.2.19</c>): the player's HP at
-/// battle end (<c>GAME_STATE.md</c> §2.2). It is <b>not</b> omitted when it is
-/// <c>0</c>: a defeat's terminal player HP is a real value the client renders, and
-/// <c>§3.2.5</c> omits only members that do not belong to the event.
+/// <c>BattleWon</c> and <c>BattleLost</c> only (<c>§3.2.19</c>): the active Pet's HP
+/// at battle end (<c>GAME_STATE.md</c> §2.3, <c>ADR-011</c> items 3 and 5) — the
+/// Pet is the Player side's combat character, and this member keeps the fixed
+/// protocol label. It is <b>not</b> omitted when it is <c>0</c>: a defeat's
+/// terminal player-side HP is a real value the client renders, and <c>§3.2.5</c>
+/// omits only members that do not belong to the event.
 /// </param>
 public sealed record BattleEventWireDto(
     [property: JsonPropertyName("type")] string Type,
@@ -409,7 +411,8 @@ public sealed record BattleEventWireDto(
     /// The Boss's HP at battle end (<c>GAME_STATE.md</c> §2.4) — <c>0</c> here.
     /// </param>
     /// <param name="finalPlayerHp">
-    /// The player's HP at battle end (<c>GAME_STATE.md</c> §2.2).
+    /// The active Pet's HP at battle end (<c>GAME_STATE.md</c> §2.3,
+    /// <c>ADR-011</c> items 3 and 5), carried under this fixed protocol label.
     /// </param>
     public static BattleEventWireDto BattleWon(int finalBossHp, int finalPlayerHp) =>
         new(
@@ -428,8 +431,9 @@ public sealed record BattleEventWireDto(
     /// The Boss's HP at battle end (<c>GAME_STATE.md</c> §2.4).
     /// </param>
     /// <param name="finalPlayerHp">
-    /// The player's HP at battle end (<c>GAME_STATE.md</c> §2.2) — <c>0</c> here,
-    /// and written as <c>0</c> rather than omitted.
+    /// The active Pet's HP at battle end (<c>GAME_STATE.md</c> §2.3,
+    /// <c>ADR-011</c> items 3 and 5) — <c>0</c> here, carried under this fixed
+    /// protocol label and written as <c>0</c> rather than omitted.
     /// </param>
     public static BattleEventWireDto BattleLost(int finalBossHp, int finalPlayerHp) =>
         new(

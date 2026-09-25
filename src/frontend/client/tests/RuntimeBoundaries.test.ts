@@ -93,23 +93,27 @@ describe('Frontend architectural boundaries', () => {
 
       // The runtime carries the implemented stage's fields as a synchronized
       // presentation copy — `board` from the Board Foundation stage
-      // (GAME_STATE.md §2.0.5) and `playerState`'s `matchCount`/`combo` from the
-      // Match / Combo accounting stage (§2.2) — so those names are part of the
+      // (GAME_STATE.md §2.0.5), `playerState`'s `matchCount`/`combo` from the
+      // Match / Combo accounting stage (§2.2), and `petState`'s Passive trio from
+      // the Pet / Passive stage (§2.3) — so those names are part of the
       // documented contract rather than violations. What remains forbidden is
       // every *gameplay system* the stage does not implement — resolution,
-      // combat, and the later-stage systems (§2.0.5.3, §2.2).
+      // combat, and the later-stage systems (§2.0.5.3, §2.2, §2.3).
       //
       // `matchcount` is deliberately NOT in this list, and `combo` is deliberately
       // NOT either: both are documented GAME_STATE.md §2.2 fields, and the client
       // carries them because they are `BattleState` fields. `MATCH3_RULES.md` §6.6
       // item 3 makes rendering them the client's own job while computing them
-      // remains the server's (`GAME_RULES.md` §18). The tests below assert the
-      // stronger property that matters: the runtime never *derives* either value.
+      // remains the server's (`GAME_RULES.md` §18). `passiveid`, `passiveprogress`,
+      // and `passiveresetoverride` are likewise NOT in it: SIGNALR_PROTOCOL.md
+      // §4.3 makes exactly those three members the delivered `petState`, and
+      // PASSIVE_RULES.md §6 item 1 requires the progress pair to reach the client
+      // as a UI-facing value. The tests below assert the stronger property that
+      // matters: the runtime never *derives* any of these values.
       const forbidden = [
         'damage',
         'match3',
         'cascade',
-        'passive',
         'boss',
         'relic',
         'crit',
@@ -145,6 +149,42 @@ describe('Frontend architectural boundaries', () => {
       ]) {
         expect(code, `${file} must not reference "${term}"`).not.toContain(term);
       }
+    });
+
+    it.each(runtimeFiles)('%s charges, evaluates, and resets no Passive', (file) => {
+      const code = stripComments(readSource(file));
+
+      // SIGNALR_PROTOCOL.md §4.3 item 9 / PASSIVE_RULES.md §2–§5: the Passive's
+      // charge, threshold, trigger, and reset rules are the server's. The runtime
+      // stores and exposes the delivered `current / threshold` pair and the
+      // identity; it never charges a Passive, evaluates a Threshold, resets
+      // progress, or applies an overflow — that would be a second, client-side
+      // Passive system (GAME_RULES.md §18, ADR-001).
+      for (const term of [
+        'PassiveTracker',
+        'ChargePassive',
+        'chargePassive',
+        'passiveProgress.current++',
+        'passiveProgress.current =',
+        'current >= threshold',
+        'current > threshold',
+        'ResetPassive',
+        'resetPassive',
+        'ApplyOverflow',
+        'applyOverflow',
+        'PassiveTriggered(',
+      ]) {
+        expect(code, `${file} must not reference "${term}"`).not.toContain(term);
+      }
+
+      // The progress pair is only ever read, never written: no assignment to
+      // either member exists outside the reader that copies the delivered value.
+      expect(code, `${file} must not assign the delivered current`).not.toMatch(
+        /\.current\s*(\+\+|--|\+=|-=|=)/
+      );
+      expect(code, `${file} must not assign the delivered threshold`).not.toMatch(
+        /\.threshold\s*(\+\+|--|\+=|-=|=)/
+      );
     });
 
     it.each(runtimeFiles)('%s resolves no matches and generates no board', (file) => {

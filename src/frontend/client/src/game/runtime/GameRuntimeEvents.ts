@@ -74,13 +74,13 @@ export type BattleEventsListener = (envelope: BattleEventsEnvelope) => void;
 
 /**
  * The client's synchronized copy of the authoritative battle state, as delivered
- * by `BattleStateUpdated` (`SIGNALR_PROTOCOL.md` §4, §4.2).
+ * by `BattleStateUpdated` (`SIGNALR_PROTOCOL.md` §4, §4.2, §4.3).
  *
  * The implemented `GAME_STATE.md` §0 stage's fields — `battleId`, `turn`,
- * `sequence`, `rngSeed`, `rngState`, `board`, `playerState`. The client stores
- * this and renders it; it never authors, adjusts, or recomputes it (§4.9,
- * `GAME_RULES.md` §18, ADR-001). No gameplay field beyond the stage's own is
- * modelled here and no `Status`/lifecycle value exists in the protocol (§8.3).
+ * `sequence`, `rngSeed`, `rngState`, `board`, `playerState`, `petState`. The
+ * client stores this and renders it; it never authors, adjusts, or recomputes it
+ * (§4.9, `GAME_RULES.md` §18, ADR-001). No gameplay field beyond the stage's own
+ * is modelled here and no `Status`/lifecycle value exists in the protocol (§8.3).
  *
  * `board` is the server-generated `Cells[64]`. The client must not generate,
  * fill, repair, validate, or re-derive it, and no client-side RNG participates
@@ -96,6 +96,15 @@ export type BattleEventsListener = (envelope: BattleEventsEnvelope) => void;
  * carried for the same reason: it is a `BattleState` field. The client renders
  * both values and never computes them — it does not count Matches, advance a
  * Combo, or reset one (`GAME_RULES.md` §18, `MATCH3_RULES.md` §6.6 item 3).
+ *
+ * `petState` carries the active Pet's Passive trio (`GAME_STATE.md` §2.3,
+ * §4.3). It is carried because it is a `BattleState` field of the implemented
+ * stage and because `PASSIVE_RULES.md` §6 item 1 requires the progress to be
+ * exposed as a UI-facing value. The client renders the pair it was sent and
+ * derives nothing: it does not charge a Passive, evaluate a Threshold, reset
+ * progress, or apply an overflow, and it re-derives none of it from `board`,
+ * `turn`, `sequence`, `combo`, or `matchCount` (§4.3 item 9, `GAME_RULES.md`
+ * §18, ADR-001).
  */
 export interface RuntimeBattleState {
   readonly battleId: string;
@@ -105,6 +114,62 @@ export interface RuntimeBattleState {
   readonly rngState: RuntimeRngState;
   readonly board: RuntimeBoard;
   readonly playerState: RuntimePlayerState;
+  readonly petState: RuntimePetState;
+}
+
+/**
+ * The client's synchronized copy of the delivered `PetState` members
+ * (`GAME_STATE.md` §2.3, `SIGNALR_PROTOCOL.md` §4.3).
+ *
+ * Exactly the three members §4.3 item 2 fixes, mirroring the wire shape:
+ * `passiveId`, `passiveProgress`, and the conditional `passiveResetOverride`.
+ * The rest of §2.3 — identity, progression, the combat stats, and both loadout
+ * snapshots — is not delivered and is deliberately not modelled here
+ * (`GAME_STATE.md` §2.3: "Domain state implemented is not the same as client
+ * wire delivery").
+ *
+ * This is a synchronized presentation copy. Every value is read as sent and
+ * rendered; none is derived, advanced, or recomputed by the client
+ * (`PASSIVE_RULES.md` §2–§5 own the charging, threshold, trigger, and reset
+ * rules, and the server evaluates them — §4.3 item 9, ADR-001).
+ */
+export interface RuntimePetState {
+  /**
+   * The active Pet's Passive identity (`GAME_STATE.md` §2.3) — the same value
+   * the `PassiveCharged`/`PassiveTriggered` events report (`GAME_EVENTS.md`
+   * §2 item 1). Always present; it is the identity, not the definition
+   * (§4.3 item 3).
+   */
+  readonly passiveId: string;
+  /**
+   * The `current / threshold` pair (`GAME_STATE.md` §2.5). Both members are
+   * always present — `current = 0` is a real value, not an absence (§4.3
+   * item 4).
+   */
+  readonly passiveProgress: RuntimePassiveProgress;
+  /**
+   * The Passive's non-default Reset Behavior — `"Partial"` or `"NoReset"`
+   * (`PASSIVE_RULES.md` §4 item 2) — or absent for the default. Absence is the
+   * documented representation of `Default`; it is never `null`, never
+   * `"Default"`, and the client must not invent a value in its place (§4.3
+   * item 7).
+   */
+  readonly passiveResetOverride?: string;
+}
+
+/**
+ * The client's synchronized copy of `GAME_STATE.md` §2.5's `PassiveProgress`
+ * pair (`SIGNALR_PROTOCOL.md` §4.3 item 4).
+ *
+ * One logical field with two members, read together to render the documented
+ * `current / threshold` pair (`PASSIVE_RULES.md` §6 item 1). Neither is
+ * nullable and neither is omitted.
+ */
+export interface RuntimePassiveProgress {
+  /** The Passive's own Threshold (`PASSIVE_RULES.md` §1). */
+  readonly threshold: number;
+  /** The settled progress reached toward it (`GAME_STATE.md` §2.5). */
+  readonly current: number;
 }
 
 /**

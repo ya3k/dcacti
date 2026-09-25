@@ -129,7 +129,7 @@ public readonly record struct ComboModifiers
     /// </summary>
     /// <param name="combo">
     /// The Combo of the Swap whose damage instance is being priced — the
-    /// <c>PlayerState.Combo</c> this committed Swap produced
+    /// <c>BattleState.Combo</c> this committed Swap produced
     /// (<c>GAME_STATE.md</c> §2.2, <c>MATCH3_RULES.md</c> §6).
     /// </param>
     /// <returns>

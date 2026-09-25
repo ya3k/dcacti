@@ -50,13 +50,25 @@ public class BattleEventEmissionTests
             (I(4, 2), GemType.Atk),
             (I(3, 1), GemType.Atk));
 
-    /// <summary>A battle whose board is the single-Match fixture.</summary>
-    private static BattleState BattleWith(BoardState board, PlayerState? playerState = null) =>
-        BattleState.CreateWith("battle-006", TestSeed) with
+    /// <summary>
+    /// A battle whose board is the single-Match fixture and whose Match/Combo
+    /// accounting is the one under test — at the <c>BattleState</c> root, where
+    /// <c>GAME_STATE.md</c> §2.2 places it (ADR-011 item 2); there is no
+    /// <c>PlayerState</c> type or node in the Domain (ADR-011 items 1 and 5).
+    /// </summary>
+    private static BattleState BattleWith(
+        BoardState board,
+        (int Combo, int MatchCount)? accounting = null)
+    {
+        var (combo, matchCount) = accounting ?? (BattleState.InitialCombo, BattleState.InitialMatchCount);
+
+        return BattleState.CreateWith("battle-006", TestSeed) with
         {
             BoardState = board,
-            PlayerState = playerState ?? PlayerState.Initial,
+            Combo = combo,
+            MatchCount = matchCount,
         };
+    }
 
     /// <summary>
     /// A board — generated from <see cref="CascadeSeed"/> and quoted exactly as the
@@ -91,12 +103,17 @@ public class BattleEventEmissionTests
             "DDADDAHH",
             "DDHAADAH");
 
-    private static BattleState CascadeBattle(PlayerState? playerState = null) =>
-        BattleState.CreateWith("battle-006-cascade", CascadeSeed) with
+    private static BattleState CascadeBattle((int Combo, int MatchCount)? accounting = null)
+    {
+        var (combo, matchCount) = accounting ?? (BattleState.InitialCombo, BattleState.InitialMatchCount);
+
+        return BattleState.CreateWith("battle-006-cascade", CascadeSeed) with
         {
             BoardState = CascadeBoard(),
-            PlayerState = playerState ?? PlayerState.Initial,
+            Combo = combo,
+            MatchCount = matchCount,
         };
+    }
 
     /// <summary>
     /// A battle whose board is <see cref="MatchingBoard"/> with a horizontal Line
@@ -447,7 +464,7 @@ public class BattleEventEmissionTests
     {
         // §2: ComboChanged's payload is the new Combo value. §6.3 item 1: Combo is
         // the running total of Matches the Swap produced, so the last ComboChanged
-        // equals the accounted PlayerState.Combo — the already-updated authoritative
+        // equals the accounted BattleState.Combo — the already-updated authoritative
         // value, not a recomputed one (GAME_STATE.md §2.2).
         var result = SwapExecutor.Execute(CascadeBattle(), new SwapRequest(CascadeFrom, CascadeTo));
 
@@ -456,7 +473,7 @@ public class BattleEventEmissionTests
         var combos = result.Events.Where(e => e.Type == BattleEventType.ComboChanged).ToArray();
 
         Assert.NotEmpty(combos);
-        Assert.Equal(result.State.PlayerState.Combo, combos[^1].Combo);
+        Assert.Equal(result.State.Combo, combos[^1].Combo);
         Assert.Equal(
             result.Resolution.Passes.Sum(p => p.Matches.Count),
             combos[^1].Combo);
@@ -754,7 +771,7 @@ public class BattleEventEmissionTests
         // §3 item 6: "events are not state … An event is never a substitute for the
         // state write-back." Building them must therefore be a pure read: the input
         // state is unchanged, field for field.
-        var state = BattleWith(CascadeBoard(), PlayerState.Initial with { Combo = 3, MatchCount = 11 });
+        var state = BattleWith(CascadeBoard(), (Combo: 3, MatchCount: 11));
 
         var result = SwapExecutor.Execute(state, new SwapRequest(CascadeFrom, CascadeTo));
 
@@ -767,13 +784,13 @@ public class BattleEventEmissionTests
         Assert.Equal(BattleState.InitialTurn, state.Turn);
         Assert.Equal(BattleState.InitialSequence, state.Sequence);
         Assert.Equal(TestSeed, state.RngSeed);
-        Assert.Equal(PlayerState.Initial with { Combo = 3, MatchCount = 11 }, state.PlayerState);
+        Assert.Equal(3, state.Combo);
         Assert.Null(state.LastCommittedSwapPair);
         Assert.True(state.BoardState.CellsEqual(CascadeBoard()));
 
         // And the events describe the resulting state without being it: the state's
         // own accounted Combo is what the event run ends at.
-        Assert.Equal(ComboCount(result), result.State.PlayerState.Combo);
+        Assert.Equal(ComboCount(result), result.State.Combo);
     }
 
     [Fact]
@@ -1281,12 +1298,12 @@ public class BattleEventEmissionTests
                 Enumerable.Range(1, result.Resolution.Passes.Sum(p => p.Matches.Count)),
                 combos.Select(c => c.Combo));
 
-            Assert.Equal(result.State.PlayerState.Combo, combos[^1].Combo);
+            Assert.Equal(result.State.Combo, combos[^1].Combo);
 
             // The cumulative total is state, not an event value (§2.2, §3 item 7).
             if (turn > 0)
             {
-                Assert.True(result.State.PlayerState.MatchCount > result.State.PlayerState.Combo);
+                Assert.True(result.State.MatchCount > result.State.Combo);
             }
 
             state = result.State;
@@ -1505,7 +1522,7 @@ public class BattleEventEmissionTests
     /// </summary>
     private static string DescribeState(BattleState state) =>
         $"{state.BattleId}|{state.Turn}|{state.Sequence}|{state.RngSeed}|{state.RngState}"
-        + $"|{state.PlayerState}|{state.LastCommittedSwapPair}"
+        + $"|{state.Combo}|{state.MatchCount}|{state.PetState}|{state.LastCommittedSwapPair}"
         + $"|{string.Join(',', state.BoardState.Cells.Select(c => $"{c.GemType}:{c.SpecialGem?.Type.ToString() ?? "-"}"))}";
 
     /// <summary>The index of the first event of a kind, or <c>-1</c>.</summary>

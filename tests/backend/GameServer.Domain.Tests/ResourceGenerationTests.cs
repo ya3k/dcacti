@@ -42,12 +42,24 @@ public class ResourceGenerationTests
 
     private static int I(int row, int column) => TestBoard.I(row, column);
 
-    private static BattleState BattleWith(BoardState board, PlayerState? player = null) =>
-        BattleState.CreateWith("battle-018", TestSeed) with
+    private static BattleState BattleWith(BoardState board, PetState? pet = null)
+    {
+        var created = BattleState.CreateWith("battle-018", TestSeed);
+
+        return created with
         {
             BoardState = board,
-            PlayerState = player ?? PlayerState.Initial,
+            PetState = pet ?? created.PetState,
         };
+    }
+
+    /// <summary>
+    /// The active Pet state a battle of this fixture starts with — the documented
+    /// combat-stat home (<c>GAME_STATE.md</c> §2.3, <c>COMBAT_RULES.md</c> §1.1,
+    /// <c>ADR-011</c> item 3): HP = MaxHP = 1000, ATK 50, DEF 25, Crit 5, Power 0.
+    /// </summary>
+    private static PetState DefaultPet() =>
+        BattleState.CreateWith("battle-018", TestSeed).PetState;
 
     /// <summary>
     /// A board whose only Match is a horizontal run of exactly
@@ -285,10 +297,11 @@ public class ResourceGenerationTests
         Assert.Equal(0, first.DefensePool);
         Assert.Equal(0, first.HealPool);
 
-        // GAME_RULES.md §12 / GAME_STATE.md §2.2: Power is persistent, and it equals
+        // GAME_RULES.md §12 / GAME_STATE.md §2.3 (COMBAT_RULES.md §1.1): Power is a
+        // PetState member — the active Pet's — and it is persistent, and it equals
         // the Swap's generated Power when the cap does not bind (a battle starts at
-        // 0 — PlayerState.DefaultPower).
-        Assert.Equal(result.Resources.Power, result.State.PlayerState.Power);
+        // 0 — the documented default Power).
+        Assert.Equal(result.Resources.Power, result.State.PetState.Power);
     }
 
     // =======================================================================
@@ -647,14 +660,15 @@ public class ResourceGenerationTests
     [Fact]
     public void Power_ShouldAccumulateAcrossCommittedSwaps()
     {
-        // GAME_STATE.md §2.2: Power is persistent battle state. §5.1's single
+        // GAME_STATE.md §2.3 (COMBAT_RULES.md §1.1): Power is a PetState member —
+        // the active Pet's — and is persistent battle state. §5.1's single
         // write-back carries it forward, so successive committed Swaps accumulate
         // into it rather than replacing it.
         var battle = BattleWith(Match3Board(GemType.Power));
 
         var first = SwapExecutor.Execute(battle, new SwapRequest(From, To));
         Assert.True(first.IsAccepted);
-        var afterFirst = first.State.PlayerState.Power;
+        var afterFirst = first.State.PetState.Power;
 
         // The first Swap generates 30 Power at its Match-3, so the persistent value
         // is that amount (the cap does not bind at 30). Cascades may add more, so the
@@ -672,7 +686,7 @@ public class ResourceGenerationTests
         {
             Assert.Equal(
                 Math.Min(afterFirst + second.Resources.Power, ResourceGenerator.MaxPower),
-                second.State.PlayerState.Power);
+                second.State.PetState.Power);
         }
     }
 
@@ -684,14 +698,14 @@ public class ResourceGenerationTests
         // cap leaves the state at the cap, while the pool still reports what the
         // Swap generated — the pool is the amount generated, the state is the
         // amount in force.
-        var nearCap = PlayerState.Initial with { Power = 95 };
+        var nearCap = DefaultPet() with { Power = 95 };
         var battle = BattleWith(Match3Board(GemType.Power), nearCap);
 
         var result = SwapExecutor.Execute(battle, new SwapRequest(From, To));
 
         Assert.True(result.IsAccepted);
         Assert.True(result.Resources.Power >= 30, "The Swap's own Match-3 always generates.");
-        Assert.Equal(ResourceGenerator.MaxPower, result.State.PlayerState.Power); // clamped state
+        Assert.Equal(ResourceGenerator.MaxPower, result.State.PetState.Power); // clamped state
         Assert.True(
             result.Resources.Power > ResourceGenerator.MaxPower - 95,
             "The pool is the unclamped amount generated, so it exceeds the room the cap left.");
@@ -703,7 +717,7 @@ public class ResourceGenerationTests
         // A gain that lands exactly on the cap is not reduced: §12's ceiling is
         // inclusive of 100. Driven through the write itself so the generated amount
         // is exact rather than dependent on which Gems Spawn draws.
-        var state = PlayerState.Initial with { Power = 70 };
+        var state = DefaultPet() with { Power = 70 };
 
         var updated = ResourceGenerator.ApplyPower(
             state,
@@ -717,7 +731,7 @@ public class ResourceGenerationTests
             new SwapRequest(From, To));
 
         Assert.True(result.IsAccepted);
-        Assert.True(result.State.PlayerState.Power <= ResourceGenerator.MaxPower);
+        Assert.True(result.State.PetState.Power <= ResourceGenerator.MaxPower);
     }
 
     [Fact]
@@ -726,7 +740,7 @@ public class ResourceGenerationTests
         // GAME_RULES.md §12: the range is 0–100. Generation never decreases Power,
         // so the floor is not reached by a Swap, but the single operation that
         // writes the persistent value enforces the whole documented range.
-        var state = PlayerState.Initial with { Power = 40 };
+        var state = DefaultPet() with { Power = 40 };
 
         Assert.Equal(
             100,
@@ -740,17 +754,17 @@ public class ResourceGenerationTests
     [Fact]
     public void ApplyPower_ShouldChangeOnlyPower()
     {
-        // The write-back replaces PlayerState wholesale, so every field this stage
+        // The write-back replaces PetState wholesale, so every field this stage
         // does not own has to be carried across rather than reinitialized.
-        var state = new PlayerState(
-            HP: 777,
-            MaxHP: 900,
-            ATK: 61,
-            DEF: 33,
-            Power: 10,
-            Crit: 9,
-            Combo: 4,
-            MatchCount: 12);
+        var state = DefaultPet() with
+        {
+            HP = 777,
+            MaxHP = 900,
+            ATK = 61,
+            DEF = 33,
+            Power = 10,
+            Crit = 9,
+        };
 
         var updated = ResourceGenerator.ApplyPower(
             state,
@@ -762,17 +776,20 @@ public class ResourceGenerationTests
         Assert.Equal(61, updated.ATK);
         Assert.Equal(33, updated.DEF);
         Assert.Equal(9, updated.Crit);
-        Assert.Equal(4, updated.Combo);
-        Assert.Equal(12, updated.MatchCount);
+
+        // Combo and MatchCount are not PetState members: GAME_STATE.md §2.2 places
+        // them at the BattleState root, so this state write cannot touch them.
+        Assert.Equal(typeof(int), typeof(BattleState).GetProperty("Combo")!.PropertyType);
+        Assert.Equal(typeof(int), typeof(BattleState).GetProperty("MatchCount")!.PropertyType);
     }
 
     [Fact]
-    public void TransientPools_ShouldNotBeStoredInPlayerState()
+    public void TransientPools_ShouldNotBeStoredInPetState()
     {
         // The task's boundary: Base Damage Pool, Defense Pool, and Heal Pool are
         // Transient Resolution State (GAME_STATE.md §3). They live on the execution
         // result for the downstream steps of the same resolution and are never
-        // written into PlayerState or BattleState.
+        // written into PetState or BattleState.
         var result = SwapExecutor.Execute(
             BattleWith(Match3Board(GemType.Atk)),
             new SwapRequest(From, To));
@@ -785,21 +802,21 @@ public class ResourceGenerationTests
         // ATK Gems feed no persistent field, so the state's combat values are
         // exactly the ones the battle started with: the transient pools are not
         // stored as ATK, DEF, or HP.
-        Assert.Equal(PlayerState.Initial.Power, result.State.PlayerState.Power);
-        Assert.Equal(PlayerState.Initial.HP, result.State.PlayerState.HP);
-        Assert.Equal(PlayerState.Initial.MaxHP, result.State.PlayerState.MaxHP);
-        Assert.Equal(PlayerState.Initial.ATK, result.State.PlayerState.ATK);
-        Assert.Equal(PlayerState.Initial.DEF, result.State.PlayerState.DEF);
-        Assert.Equal(PlayerState.Initial.Crit, result.State.PlayerState.Crit);
+        Assert.Equal(PetState.DefaultPower, result.State.PetState.Power);
+        Assert.Equal(PetState.DefaultHP, result.State.PetState.HP);
+        Assert.Equal(PetState.DefaultMaxHP, result.State.PetState.MaxHP);
+        Assert.Equal(PetState.DefaultATK, result.State.PetState.ATK);
+        Assert.Equal(PetState.DefaultDEF, result.State.PetState.DEF);
+        Assert.Equal(PetState.DefaultCrit, result.State.PetState.Crit);
     }
 
     [Fact]
     public void DefAndHpPools_ShouldNotBeStoredInPersistentStats()
     {
         // The same boundary for the two other transient pools: DEF Gems add to the
-        // Defense pool, not to PlayerState.DEF (COMBAT_RULES.md §3.2 reads the
+        // Defense pool, not to PetState.DEF (COMBAT_RULES.md §3.2 reads the
         // persistent DEF for mitigation), and HP Gems add to the Heal pool, not to
-        // PlayerState.HP (healing is applied by §4's player-effects step, which is
+        // PetState.HP (healing is applied by §4's player-effects step, which is
         // not this stage).
         var defResult = SwapExecutor.Execute(
             BattleWith(Match3Board(GemType.Def)),
@@ -807,7 +824,7 @@ public class ResourceGenerationTests
 
         Assert.True(defResult.IsAccepted);
         Assert.Equal(15, FirstPassResources(defResult.Resolution).DefensePool);
-        Assert.Equal(PlayerState.Initial.DEF, defResult.State.PlayerState.DEF);
+        Assert.Equal(PetState.DefaultDEF, defResult.State.PetState.DEF);
 
         var hpResult = SwapExecutor.Execute(
             BattleWith(Match3Board(GemType.Hp)),
@@ -815,7 +832,7 @@ public class ResourceGenerationTests
 
         Assert.True(hpResult.IsAccepted);
         Assert.Equal(60, FirstPassResources(hpResult.Resolution).HealPool);
-        Assert.Equal(PlayerState.Initial.HP, hpResult.State.PlayerState.HP);
+        Assert.Equal(PetState.DefaultHP, hpResult.State.PetState.HP);
     }
 
     [Fact]
@@ -832,7 +849,7 @@ public class ResourceGenerationTests
         Assert.True(first.IsAccepted);
         Assert.True(second.IsAccepted);
         Assert.Equal(first.Resources, second.Resources);
-        Assert.Equal(first.State.PlayerState.Power, second.State.PlayerState.Power);
+        Assert.Equal(first.State.PetState.Power, second.State.PetState.Power);
     }
 
     [Fact]
@@ -897,8 +914,8 @@ public class ResourceGenerationTests
         Assert.True(result.IsAccepted);
 
         var matchTotal = result.Resolution.Passes.Sum(p => p.Matches.Count);
-        Assert.Equal(matchTotal, result.State.PlayerState.Combo);
-        Assert.Equal(matchTotal, result.State.PlayerState.MatchCount);
+        Assert.Equal(matchTotal, result.State.Combo);
+        Assert.Equal(matchTotal, result.State.MatchCount);
     }
 
     [Fact]

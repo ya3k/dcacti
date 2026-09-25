@@ -1,7 +1,13 @@
 # Database
 
-**Version:** 1.3 (§3 initial Player.Level value added — a newly created
-Player starts at Level 1, per PET_RULES.md §5 item 8; prior 1.2: §1
+**Version:** 1.5 (§1 CardDefinition.LoadoutCopyLimit added — required
+per-battle-loadout copy limit per CARD_RULES.md §1; explicit value
+required, no default; concrete values deferred to content/balance;
+prior 1.4: §1 PetLevelMultiplier type/range and Pet.Level floor
+semantics synchronized with PET_RULES.md §5 derivation contract;
+§3 item reference corrected to §5 item 10; prior 1.3: §3 initial
+Player.Level value added — a newly created
+Player starts at Level 1, per PET_RULES.md §5 item 10; prior 1.2: §1
 Player.Level added; §2 Card ownership ASSUMPTION resolved to
 `PlayerUnlockedCard` join table per ADR-012; prior 1.1: §3 ownership
 model note per ADR-011 — Player FKs = collection ownership; no
@@ -33,17 +39,21 @@ Pet                              (a player's OWNED instance of a Pet)
 ├── PetDefinitionId (FK → PetDefinition)
 ├── Tier
 ├── Star
-├── Level                           (clamped result of Player.Level ×
-│                                    PetLevelMultiplier — PET_RULES.md §5;
-│                                    denormalized snapshot of the derived
-│                                    value, not an independent XP store)
+├── Level                           (floor(Player.Level ×
+│                                    PetLevelMultiplier) clamped to 1–50 —
+│                                    PET_RULES.md §5; denormalized snapshot
+│                                    of the derived value, not an
+│                                    independent XP store; same canonical
+│                                    rule as BattleState.PetState.Level)
 └── AcquiredAt
 
 PetDefinition                    (static content, one row per MVP Pet)
 ├── PetDefinitionId (PK)
 ├── Identity                      ("Thanh Xà", "Xích Lang", ...)
 ├── Element
-├── PetLevelMultiplier            (config — PET_RULES.md §5; never hard-coded)
+├── PetLevelMultiplier            (decimal > 0 — PET_RULES.md §5; never
+│                                  hard-coded; concrete MVP values deferred
+│                                  to balance/config)
 ├── PassiveDefinition              (threshold/effect reference —
 │                                  PASSIVE_RULES.md)
 └── SignatureSkillCardId (FK → CardDefinition)
@@ -53,6 +63,11 @@ CardDefinition                    (static content: 3 Basic + 5 Pet Skill)
 ├── Name
 ├── Category                       ("Basic" | "PetSkill")
 ├── PowerCost
+├── LoadoutCopyLimit               (required — max occurrences of this
+│                                  CardDefinition in one submitted 3-card
+│                                  Basic loadout; CARD_RULES.md §1; explicit
+│                                  value required, no default; concrete
+│                                  values are content/balance configuration)
 └── EffectDefinition                 (CARD_RULES.md)
 
 PlayerUnlockedCard               (Player owns Card unlocks — ADR-012;
@@ -70,7 +85,14 @@ RelicDefinition                    (static content: ~10 MVP Relics)
 
 Relic                                (a player's OWNED instance, if Relics
 │                                     have per-instance state; otherwise
-│                                     ownership is a join table — see §2 note)
+│                                     ownership is a join table — see §2 note;
+│                                     see also: this storage-shape question
+│                                     remains OPEN and is NOT decided by
+│                                     RELIC_RULES.md §2.2–§2.5, which fix the
+│                                     battle-state element, the loadout
+│                                     validation, and the slot order — an
+│                                     owned Relic instance identity — not how
+│                                     ownership rows are stored)
 ├── RelicInstanceId (PK)
 ├── PlayerId (FK → Player)
 ├── RelicDefinitionId (FK → RelicDefinition)
@@ -133,10 +155,11 @@ loadout only (`RELIC_RULES.md` §2, `API_CONTRACTS.md` §3).
 
 ```text
 Player.Level        ∈ [1, 50]                                      (PET_RULES.md §5)
-Player.Level        = 1 for a newly created Player                 (PET_RULES.md §5 item 8)
+Player.Level        = 1 for a newly created Player                 (PET_RULES.md §5 item 10)
 Pet.Tier          ∈ {Common, Rare, Epic, Legendary, Mythic}      (PET_RULES.md §3)
 Pet.Star           ∈ [1, 5]                                       (PET_RULES.md §4)
 Pet.Level           ∈ [1, 50]                                      (PET_RULES.md §5)
+PetDefinition.PetLevelMultiplier > 0 (decimal)                    (PET_RULES.md §5)
 CardDefinition.Category  ∈ {Basic, PetSkill}                        (CARD_RULES.md §1)
 Player.PlayerId (per battle) must own exactly one active Pet selection
   at battle start — enforced at the Application layer (ARCHITECTURE.md),
