@@ -11,14 +11,20 @@ using Microsoft.EntityFrameworkCore.Metadata;
 namespace GameServer.Infrastructure.Tests;
 
 /// <summary>
-/// <c>BossDefinition</c> persistence — <c>DATABASE.md</c> §1, §3 (TASK-044).
+/// <c>BossDefinition</c> persistence — <c>DATABASE.md</c> §1, §3 (TASK-044),
+/// plus the migration-source contract of the provisioning migration
+/// (TASK-053).
 ///
 /// What is verified is the documented contract: the five persisted columns and
 /// their exact PK/constraint semantics, the caller-supplied (never generated)
 /// persistence key distinct from the canonical Identity, the two NOT NULL JSON
 /// documents and their fixed member lists — including <c>threshold: null</c> for
-/// an always-active Passive rather than the <c>0</c> sentinel — and the
-/// <b>absence</b> of the combat-definition columns and of any provisioning.
+/// an always-active Passive rather than the <c>0</c> sentinel — the
+/// <b>absence</b> of the combat-definition columns, and the provisioning
+/// contract's separation of concerns: the model still seeds nothing (no
+/// <c>HasData</c>/<c>GetSeedData()</c>) while
+/// <c>ProvisionBossDefinitions</c> owns the three canonical rows as
+/// migration-level <c>InsertData</c> (<c>DATABASE.md</c> §1 note item 5).
 ///
 /// Nothing here exercises Boss gameplay: no Skill fires, no Passive triggers,
 /// and no combat stat is read. The type under test is persistence only.
@@ -274,7 +280,10 @@ public class BossPersistenceTests
             Assert.DoesNotContain($"{forbidden} = table.Column", migration);
         }
 
-        // Schema only: no provisioning of any kind (§1 note item 5, §5 item 4).
+        // Schema only: this historical migration provisions nothing. The
+        // provisioning contract (DATABASE.md §1 note item 5) places the three
+        // rows in the separate later migration ProvisionBossDefinitions, so
+        // this file must stay byte-identical and free of any INSERT/seed.
         foreach (var forbidden in new[]
                  {
                      "InsertData", "HasData", "boss-def-hoa-long", "black-hoa-long",
@@ -286,11 +295,10 @@ public class BossPersistenceTests
     }
 
     /// <summary>
-    /// Reads the <c>AddBossPersistence</c> migration source from the
-    /// Infrastructure project so its generated schema can be asserted without a
-    /// relational provider.
+    /// Reads a migration source file from the Infrastructure project so its
+    /// generated schema/SQL can be asserted without a relational provider.
     /// </summary>
-    private static string ReadAddBossPersistenceMigration()
+    private static string ReadMigrationSource(string fileNameSuffix)
     {
         // Walk up from the test binary to the repository root, then into the
         // Infrastructure project's migrations folder.
@@ -315,11 +323,17 @@ public class BossPersistenceTests
         Assert.True(Directory.Exists(migrations), $"Migrations folder not found at {migrations}.");
 
         var migrationFile = Directory
-            .EnumerateFiles(migrations, "*_AddBossPersistence.cs")
+            .EnumerateFiles(migrations, $"*_{fileNameSuffix}.cs")
             .Single(file => !file.EndsWith(".Designer.cs", StringComparison.Ordinal));
 
         return File.ReadAllText(migrationFile);
     }
+
+    /// <summary>
+    /// Reads the <c>AddBossPersistence</c> migration source.
+    /// </summary>
+    private static string ReadAddBossPersistenceMigration() =>
+        ReadMigrationSource("AddBossPersistence");
 
     [Fact]
     public void Model_ShouldDeclareNoBossDefinitionIndexBeyondTheIdentityUnique()
@@ -655,9 +669,12 @@ public class BossPersistenceTests
     [Fact]
     public async Task BossDefinition_ShouldNeverBeProvisionedByTheModel()
     {
-        // DATABASE.md §1 note item 5 / §5 item 4: no provisioning mechanism is
-        // documented and none may be invented — no HasData, seed, startup
-        // loader, or migration-inserted production row.
+        // DATABASE.md §1 note item 5: the decided mechanism is a migration-level
+        // InsertData (ProvisionBossDefinitions), which is NOT model seed data.
+        // The model must still carry no seed of its own — no HasData, no
+        // startup loader — so a fresh context returns zero rows and
+        // GetSeedData() stays empty. That separation is exactly what this
+        // guard pins, and it must keep passing unmodified.
         var storeName = nameof(BossDefinition_ShouldNeverBeProvisionedByTheModel);
 
         await using (var context = CreateContext(storeName))
@@ -669,5 +686,288 @@ public class BossPersistenceTests
         var entity = model.FindEntityType(typeof(BossDefinition))!;
 
         Assert.Empty(entity.GetSeedData());
+    }
+
+    // -----------------------------------------------------------------------
+    // Provisioning migration source — DATABASE.md §1 note item 5, §5 item 4
+    // (TASK-053)
+    //
+    // The decided mechanism is migration-level InsertData, so the provisioning
+    // contract is asserted against the migration source — the same convention
+    // the AddBossPersistence schema pin above uses. Live applied-row
+    // verification is covered by BossDefinitionPostgresProvisioningTests, which
+    // is skipped when no PostgreSQL is reachable.
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// A migration's source with line and XML-documentation comments removed,
+    /// so an assertion targets the executable operations only. The provisioning
+    /// migration documents the contract (including the forbidden mechanism names
+    /// and the Boss rules it transcribes) in its comments, and a whole-file
+    /// substring scan would otherwise flag that documentation.
+    /// </summary>
+    private static string ReadMigrationOperations(string fileNameSuffix)
+    {
+        var source = ReadMigrationSource(fileNameSuffix);
+        var builder = new System.Text.StringBuilder();
+
+        foreach (var rawLine in source.Split('\n'))
+        {
+            var line = rawLine.TrimEnd('\r');
+
+            // Drop XML-documentation and ordinary comment lines. The migration
+            // bodies contain no string literal that begins with "///" or "//",
+            // so this cannot hide an operation.
+            if (line.TrimStart().StartsWith("///", StringComparison.Ordinal) ||
+                line.TrimStart().StartsWith("//", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            builder.AppendLine(line);
+        }
+
+        return builder.ToString();
+    }
+
+    /// <summary>
+    /// The three canonical <c>BossDefinitionId</c> values of
+    /// <c>DATABASE.md</c> §1 note item 2, taken from the Domain definitions so
+    /// the assertion cannot drift from the single authoritative source.
+    /// </summary>
+    private static readonly string[] CanonicalBossDefinitionIds =
+        BossDefinitions.All.Select(d => d.BossDefinitionId).ToArray();
+
+    /// <summary>
+    /// The three canonical <c>Identity</c> values of <c>BOSS_RULES.md</c> §6.4,
+    /// taken from the Domain definitions.
+    /// </summary>
+    private static readonly string[] CanonicalBossIdentities =
+        BossDefinitions.All.Select(d => d.BossId.Value).ToArray();
+
+    [Fact]
+    public void ProvisioningMigration_ShouldInsertExactlyTheThreeCanonicalRows()
+    {
+        // DATABASE.md §1 note item 5 "Row set — exactly three rows": the
+        // canonical BossDefinitionId values, each with its BOSS_RULES.md §6.4
+        // Identity. No fourth row, no placeholder.
+        var migration = ReadMigrationSource("ProvisionBossDefinitions");
+
+        Assert.Equal(
+            new[] { "boss-def-hoa-long", "boss-def-moc-yeu", "boss-def-thuy-ma" },
+            CanonicalBossDefinitionIds.OrderBy(v => v, StringComparer.Ordinal).ToArray());
+
+        foreach (var canonicalId in CanonicalBossDefinitionIds)
+        {
+            Assert.Contains(canonicalId, migration);
+        }
+
+        foreach (var canonicalIdentity in CanonicalBossIdentities)
+        {
+            Assert.Contains(canonicalIdentity, migration);
+        }
+
+        Assert.Equal(3, CountOccurrences(migration, "migrationBuilder.InsertData("));
+    }
+
+    [Fact]
+    public void ProvisioningMigration_ShouldProvisionNoFourthBossDefinition()
+    {
+        // DATABASE.md §1 note item 5 "Row set": "the 5-Boss figure is the MVP
+        // scope target (MVP_SCOPE.md §1), not permission to create placeholder
+        // rows for undefined content." The two remaining MVP Bosses are not
+        // content-defined, so no fourth boss-def-* literal may exist.
+        var migration = ReadMigrationOperations("ProvisionBossDefinitions");
+
+        // The three InsertData values plus the three Down DeleteData keys.
+        Assert.Equal(6, CountOccurrences(migration, "boss-def-"));
+
+        // No placeholder row for a Boss that has no content definition.
+        foreach (var forbidden in new[] { "placeholder", "boss-def-placeholder", "TODO" })
+        {
+            Assert.DoesNotContain(forbidden, migration, StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
+    public void ProvisioningMigration_ShouldContainNoSchemaOperation()
+    {
+        // DATABASE.md §1 note item 5 / §5 item 1: this migration is data only.
+        // The table, PK, unique Identity index, and all NOT NULL constraints
+        // were created by AddBossPersistence and are untouched — no column,
+        // index, or constraint change belongs here.
+        var migration = ReadMigrationOperations("ProvisionBossDefinitions");
+
+        foreach (var schemaOperation in new[]
+                 {
+                     "CreateTable", "DropTable", "AddColumn", "DropColumn",
+                     "AlterColumn", "CreateIndex", "DropIndex", "AddForeignKey",
+                     "DropForeignKey", "AddPrimaryKey", "DropPrimaryKey",
+                     "CreateSequence", "DropSequence", "RenameColumn",
+                     "RenameTable", "AddCheckConstraint", "DropCheckConstraint",
+                     "migrationBuilder.Sql(",
+                 })
+        {
+            Assert.DoesNotContain(schemaOperation, migration);
+        }
+
+        // The only operations present are the three inserts and three deletes.
+        Assert.Equal(6, CountOccurrences(migration, "migrationBuilder."));
+
+        // No model seeding either — that mechanism is forbidden outright.
+        Assert.DoesNotContain("HasData", migration);
+    }
+
+    [Fact]
+    public void ProvisioningMigration_ShouldMirrorEveryInsertWithADelete()
+    {
+        // DATABASE.md §1 note item 5: the migration inserts each row at most
+        // once and its Down must remove exactly those rows, keyed by the same
+        // canonical BossDefinitionId values (the PK).
+        var migration = ReadMigrationOperations("ProvisionBossDefinitions");
+
+        Assert.Equal(3, CountOccurrences(migration, "migrationBuilder.InsertData("));
+        Assert.Equal(3, CountOccurrences(migration, "migrationBuilder.DeleteData("));
+        Assert.Equal(6, CountOccurrences(migration, "table: \"BossDefinition\""));
+
+        // Every Down delete is keyed by one of the canonical PK values.
+        foreach (var canonicalId in CanonicalBossDefinitionIds)
+        {
+            Assert.Contains($"keyValue: \"{canonicalId}\"", migration);
+        }
+    }
+
+    [Fact]
+    public void ProvisioningMigration_ShouldWriteTheDocumentedPassiveAndSkillDocuments()
+    {
+        // DATABASE.md §1 note items 3–4 fix the JSON member lists, and note item
+        // 3 states the JSON/storage names are the contract. The inserted text is
+        // produced by BossDefinitionJson over the authoritative Domain
+        // definitions, so the migration and the converters cannot drift; this
+        // asserts the exact document each row must carry.
+        var migration = ReadMigrationOperations("ProvisionBossDefinitions");
+
+        foreach (var definition in BossDefinitions.All)
+        {
+            var passiveJson = BossDefinitionJson.WritePassive(definition.PassiveDefinition);
+            var skillJson = BossDefinitionJson.WriteSkill(definition.SkillDefinition);
+
+            Assert.Contains(PassAsCSharpStringLiteral(passiveJson), migration);
+            Assert.Contains(PassAsCSharpStringLiteral(skillJson), migration);
+        }
+    }
+
+    [Fact]
+    public void ProvisioningMigration_ShouldPreserveTheAlwaysActiveNullThreshold()
+    {
+        // DATABASE.md §1 note item 3 / §3: threshold = null ⇔ always-active, and
+        // "0 is never used as a 'no threshold' sentinel" (BOSS_RULES.md §6.2's
+        // Thủy Ma). The inserted document must carry JSON null, not 0 — and the
+        // two match-charged Bosses must still carry their real threshold 5.
+        var migration = ReadMigrationOperations("ProvisionBossDefinitions");
+
+        var alwaysActive = BossDefinitions.All
+            .Single(d => d.PassiveDefinition.Threshold is null);
+
+        Assert.Equal("boss-thuy-ma", alwaysActive.BossId.Value);
+
+        var alwaysActiveJson = BossDefinitionJson.WritePassive(alwaysActive.PassiveDefinition);
+        Assert.Contains("\"threshold\":null", alwaysActiveJson);
+        Assert.Contains(PassAsCSharpStringLiteral(alwaysActiveJson), migration);
+
+        // No row may encode the always-active case as `0`. Exactly the two
+        // match-charged Bosses (Hỏa Long, Mộc Yêu) carry the real threshold 5;
+        // only Thủy Ma carries null.
+        Assert.Equal(2, CountOccurrences(
+            migration,
+            PassAsCSharpStringLiteral("\"threshold\":5")));
+        Assert.Equal(1, CountOccurrences(
+            migration,
+            PassAsCSharpStringLiteral("\"threshold\":null")));
+        Assert.DoesNotContain(PassAsCSharpStringLiteral("\"threshold\":0"), migration);
+    }
+
+    [Fact]
+    public void ProvisioningMigration_ShouldWriteNoDisplayNameAndNoCombatStat()
+    {
+        // DATABASE.md §1 note items 1–2: the three-way contract
+        // BossDefinitionId ≠ Identity ≠ display name holds, and the display
+        // name is presentation content that is never a column and never
+        // written. MaxHP/ATK/DEF/EnrageThreshold are likewise not columns
+        // (BOSS_RULES.md §6.1).
+        var migration = ReadMigrationOperations("ProvisionBossDefinitions");
+
+        foreach (var displayName in new[] { "Hỏa Long", "Thủy Ma", "Mộc Yêu" })
+        {
+            Assert.DoesNotContain(displayName, migration);
+        }
+
+        foreach (var forbidden in new[] { "MaxHP", "\"ATK\"", "\"DEF\"", "EnrageThreshold", "DisplayName" })
+        {
+            Assert.DoesNotContain(forbidden, migration);
+        }
+
+        // Both non-display identities are present and distinct.
+        foreach (var definition in BossDefinitions.All)
+        {
+            Assert.Contains(definition.BossDefinitionId, migration);
+            Assert.Contains(definition.BossId.Value, migration);
+            Assert.NotEqual(definition.BossDefinitionId, definition.BossId.Value);
+        }
+
+        // The inserted column set is exactly the five documented columns.
+        Assert.Equal(
+            3,
+            CountOccurrences(
+                migration,
+                "columns: new[] { \"BossDefinitionId\", \"Identity\", \"Element\", \"PassiveDefinition\", \"SkillDefinition\" }"));
+    }
+
+    [Fact]
+    public void ProvisioningMigration_ShouldEncodeElementAsTheDomainEnumValue()
+    {
+        // DATABASE.md §1: Element is stored as the Domain Element enum's
+        // integer representation (BossDefinitionConfiguration's
+        // HasConversion<int>()), so the inserted integer must equal the enum
+        // value the Domain definitions carry — never a hand-guessed number.
+        var migration = ReadMigrationOperations("ProvisionBossDefinitions");
+
+        foreach (var definition in BossDefinitions.All)
+        {
+            var expectedValue = (int)definition.Element;
+
+            Assert.Contains(
+                $"\"{definition.BossDefinitionId}\", \"{definition.BossId.Value}\", {expectedValue},",
+                migration);
+        }
+
+        // The five documented Element members, for reference in case the enum
+        // is ever renumbered: Hỏa Long = Hỏa (3), Thủy Ma = Thủy (2),
+        // Mộc Yêu = Mộc (0).
+        Assert.Equal(3, (int)Element.Hoa);
+        Assert.Equal(2, (int)Element.Thuy);
+        Assert.Equal(0, (int)Element.Moc);
+    }
+
+    /// <summary>
+    /// The C# source form of a JSON document as it appears inside the
+    /// migration's <c>values:</c> array — every <c>"</c> escaped, exactly as
+    /// the literal is written.
+    /// </summary>
+    private static string PassAsCSharpStringLiteral(string json) =>
+        json.Replace("\"", "\\\"", StringComparison.Ordinal);
+
+    private static int CountOccurrences(string haystack, string needle)
+    {
+        var count = 0;
+        var index = haystack.IndexOf(needle, StringComparison.Ordinal);
+
+        while (index >= 0)
+        {
+            count++;
+            index = haystack.IndexOf(needle, index + needle.Length, StringComparison.Ordinal);
+        }
+
+        return count;
     }
 }

@@ -1,6 +1,10 @@
 # Game Events
 
-**Version:** 2.3 (§2 `BossId`/`SourceId` semantics fixed per TASK-046 —
+**Version:** 2.4 (§2 BattleWon/BattleLost `Outcome` value set defined —
+exactly `"victory"` (BattleWon) or `"defeat"` (BattleLost), the single
+battle-outcome vocabulary shared by `DATABASE.md` §1, `API_CONTRACTS.md`
+§4, and `SIGNALR_PROTOCOL.md` §3.2.19 per TASK-050 human Decision C;
+prior 2.3: §2 `BossId`/`SourceId` semantics fixed per TASK-046 —
 `BattleStarted.BossId`, `PassiveCharged`/`PassiveTriggered.SourceId` for
 `source = "boss"`, and `BossSkillCast.SourceId` carry the canonical technical
 Boss Identity (`BOSS_RULES.md` §6.4, e.g. `boss-hoa-long`), never a display
@@ -439,6 +443,13 @@ Payload:  Outcome, final BattleState summary, reward summary (BattleWon
           `rewards` field covers both outcomes — API_CONTRACTS.md §4;
           exact reward data shape: DATABASE.md)
 ```
+
+1. **`Outcome` carries exactly one of two values: `"victory"` (with
+   `BattleWon`) or `"defeat"` (with `BattleLost`).** This block owns the
+   battle-outcome value set: the persisted `BattleResult.Outcome`
+   (`DATABASE.md` §1), the REST `outcome` member (`API_CONTRACTS.md` §4),
+   and the SignalR `outcome` wire member (`SIGNALR_PROTOCOL.md` §3.2.19)
+   each use these same two values for the same battle.
 
 ---
 

@@ -1,6 +1,16 @@
 # SignalR Protocol
 
-**Version:** 2.4 (§3.2.16–§3.2.18 `sourceId` boss values corrected to the
+**Version:** 2.6 (§1 connection authentication made explicit per `ADR-015` —
+the application session is the self-contained signed JWT of
+`API_CONTRACTS.md` §2.8 supplied through SignalR's standard access-token
+mechanism, a Discord access token is never an accepted `BattleHub`
+credential, and a missing/invalid/tampered/expired session is rejected by
+the authentication/authorization boundary with no second mechanism inside
+the hub; prior 2.5: §3.2.19 notes 1 and 3 corrected — the false
+`GAME_EVENTS.md` §2 cross-citations replaced with the actual
+BattleWon/BattleLost block, and `outcome` confirmed as the single
+`victory`/`defeat` vocabulary that block owns per TASK-050 human
+Decision C; prior 2.4: §3.2.16–§3.2.18 `sourceId` boss values corrected to the
 canonical technical Boss Identity `"boss-hoa-long"` per `BOSS_RULES.md` §6.4 /
 TASK-046 — superseding the prior 2.1 display-name correction; prior 2.3:
 §7.1 snapshot projection excludes the non-wire
@@ -71,8 +81,16 @@ projection only (ADR-011).
    `battleId`.
 3. Connection is authenticated using the application session established
    during initial authentication (`POST /api/auth/discord`, `API_CONTRACTS.md` §2,
-   ADR-007).
-4. `BattleHub` and realtime game handlers deal exclusively with the
+   ADR-007): that session is the self-contained signed JWT defined by
+   `API_CONTRACTS.md` §2.8 (`ADR-015`), supplied through SignalR's standard
+   access-token mechanism.
+4. The Discord access token is never accepted as a `BattleHub`
+   authentication credential (`API_CONTRACTS.md` §2.7 item 4).
+5. A connection presenting a missing, invalid/tampered, or expired session
+   is rejected by the authentication/authorization boundary before the hub
+   is usable. `BattleHub` defines no second authentication mechanism of its
+   own — it remains transport-focused (`ADR-015` D6).
+6. `BattleHub` and realtime game handlers deal exclusively with the
    authenticated application player session, with zero direct dependency on
    Discord Embedded App SDK internals.
 
@@ -841,17 +859,20 @@ active Pet — `GAME_EVENTS.md` §1, ADR-011).
 | `finalPlayerHp` | int | always | Active Pet HP at battle end (`GAME_STATE.md` §2.3 `PetState.HP`) — the wire name `finalPlayerHp` is a fixed protocol label; there is no Player HP pool (ADR-011) |
 
 1. **`outcome` is a string, not a boolean.** It carries `"victory"` or
-   `"defeat"` — the same names `GAME_EVENTS.md` §2 item 9 uses. The string
-   form is consistent with other discriminator-style wire members
-   (`source`, `gemType`).
+   `"defeat"` — the two `Outcome` values defined by `GAME_EVENTS.md` §2
+   (BattleWon / BattleLost), which own the value set for this event and
+   for the same battle's persisted (`DATABASE.md` §1) and REST
+   (`API_CONTRACTS.md` §4) forms. The string form is consistent with
+   other discriminator-style wire members (`source`, `gemType`).
 2. **`finalBossHp` and `finalPlayerHp` are the terminal HP values.** They
    are the state values at the moment the battle ended, after all damage
    from the final action has been applied. `finalPlayerHp` carries the
    **active Pet's** HP (`PetState.HP`); the wire member name is a fixed
    protocol label and does not imply a Player HP pool (ADR-011). The client
    uses them for end-of-battle display.
-3. **`reward summary` is deferred** per `GAME_EVENTS.md` §2 item 9 — it is
-   not a wire member yet. The data shape is owned by `DATABASE.md`.
+3. **`reward summary` is not a wire member yet.** It is defined for the
+   `BattleWon` event payload only (`GAME_EVENTS.md` §2 BattleWon /
+   BattleLost); the data shape is owned by `DATABASE.md`.
 
 ---
 

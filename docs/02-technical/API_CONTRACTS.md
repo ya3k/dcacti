@@ -1,6 +1,27 @@
 # API Contracts
 
-**Version:** 1.6 (§3 `bossId` semantics fixed per TASK-046 — the request
+**Version:** 1.9 (§2.8 application session mechanism defined per `ADR-015`
+human decisions D1–D6 — self-contained signed JWT carrying the `player_id`
+claim, stateless (no session storage; `ADR-005`/`ADR-006` boundaries
+unchanged), `Authorization: Bearer <sessionToken>` on REST plus SignalR's
+standard access-token mechanism for `BattleHub`, 24h absolute expiry with no
+idle timeout, renewal, refresh, or revocation in MVP, and missing/invalid/
+tampered/expired sessions all → `401 UNAUTHENTICATED` under one public code;
+§1 preamble, §2.4, §2.5 and §4 note 6 references updated from the open
+TASK-034 decision to `ADR-015`; prior 1.8: §4 result-endpoint authorization
+made explicit per TASK-051 human decisions — the endpoint now documents
+`401 UNAUTHENTICATED` for a caller
+presenting no authenticated session, and note 7 fixes caller ownership: only the
+authenticated owner (`BattleResult.PlayerId`, sourced from `BattleState.PlayerId`)
+may read a result, a foreign or missing battle both returning the existing
+`404 BATTLE_NOT_FOUND`, and ownership never being established from
+client-supplied input. The session **mechanism** remains `ADR-007` item 4 /
+TASK-034's open decision and is not defined here; prior 1.7: §4 `outcome` vocabulary changed to `"victory" |
+"defeat"` per TASK-050 human Decision C — the single battle-outcome
+vocabulary owned by `GAME_EVENTS.md` §2 and shared with `DATABASE.md`
+§1 and `SIGNALR_PROTOCOL.md` §3.2.19; §4 contract notes added —
+`outcome` vocabulary reference and `durationTurns` derivation pointer;
+prior 1.6: §3 `bossId` semantics fixed per TASK-046 — the request
 member is the Boss's canonical technical Identity (e.g. `"boss-hoa-long"`),
 never a display name, per `BOSS_RULES.md` §6/§6.4; prior 1.5: §4 battle-result response contract notes — `rewards`
 present for both `"Won"`/`"Lost"` (staging value `{}` until TASK-033,
@@ -29,7 +50,7 @@ All endpoints (except `/api/auth/discord`) require an authenticated
 session established via Discord Activity authentication (`ADR-007`). The
 identity exchange that `POST /api/auth/discord` performs is specified in §2
 (mechanics decided in `ADR-013`); the application session mechanism itself
-remains undecided (`ADR-007` item 4, TASK-034).
+is specified in §2.8 (a self-contained signed JWT, decided in `ADR-015`).
 
 ---
 
@@ -208,7 +229,7 @@ substituted for it:**
 ```text
 DiscordUserId  ≠  the Discord authorization code     (short-lived, single-use)
 DiscordUserId  ≠  the Discord access token           (a credential, not an identity)
-DiscordUserId  ≠  the application session token      (ADR-007 item 4, TASK-034)
+DiscordUserId  ≠  the application session token      (ADR-007 item 4, ADR-015)
 ```
 
 ## 2.5 Response
@@ -224,12 +245,11 @@ Response 200:
 The response shape is unchanged. `playerId` is the matched-or-created Player's
 `PlayerId` (`DATABASE.md` §1).
 
-**The application session mechanism is not defined by this contract.** `ADR-007`
-item 4 requires an authenticated application session but decides no format,
-claims, lifetime, or validation strategy; that decision is owned by
-`TASK-034`. Until it exists, `sessionToken` remains an opaque, unvalidated
-placeholder. This section does not define, and must not be read as defining, a
-token format.
+`sessionToken` is the application session defined in §2.8 (`ADR-015`): a
+self-contained signed JWT issued by this endpoint only after §2's identity
+exchange succeeds. §2.5 fixes what the two response members are; §2.8 fixes
+the mechanism (identity claim, propagation, lifetime, failure behavior,
+coverage).
 
 ## 2.6 Failure contract
 
@@ -296,6 +316,89 @@ Rules:
    that fails §2.6's `DISCORD_BAD_RESPONSE` conditions produces no Player row.
 7. **Scope is minimal.** Only `identify` is requested.
 8. **The frontend never performs any part of §2.2 or §2.3** (`ADR-007` item 1).
+
+## 2.8 Application Session Mechanism (`ADR-015`)
+
+The application session issued by §2.5 is a **self-contained signed JWT**
+(`ADR-015`). This subsection is the authoritative wire/behavior contract for
+that session — why it was chosen is `ADR-015`, how it is implemented is
+TASK-034. Nothing here may be re-derived from client input.
+
+**Session artifact**
+
+```text
+application session  =  self-contained signed JWT, issued by the backend
+                        after §2's identity exchange succeeds
+session storage      =  none (stateless) — not in Redis (ADR-005), not in
+                        PostgreSQL (ADR-006), not in in-memory state
+```
+
+The Discord access token is not the session (§2.7 item 4).
+
+**Identity**
+
+```text
+claim:  player_id
+value:  PlayerId
+```
+
+Resolution: `verified DiscordUserId → Player match/create → PlayerId → JWT
+player_id → authenticated request → PlayerId`. The server treats this
+identity as authoritative; the client never supplies or overrides `PlayerId`
+or `DiscordUserId` for authentication or ownership (§4 note 7).
+`GameServer.PlayerId` may be used as the server-internal request-context
+representation of that identity; it is never a client input. `DiscordUserId`
+is not carried as an authoritative ownership claim (§2.4) — `PlayerId` is
+sufficient.
+
+**Transport**
+
+```text
+REST       Authorization: Bearer <sessionToken>
+SignalR    the same JWT via SignalR's standard access-token mechanism
+           (SIGNALR_PROTOCOL.md §1)
+```
+
+No application-session cookie. A Discord access token is never accepted as a
+`BattleHub` authentication credential.
+
+**Coverage**
+
+§1's global rule applies unchanged: every endpoint except
+`POST /api/auth/discord` requires an authenticated session;
+`/api/auth/discord` stays the unauthenticated exchange endpoint (§2.1).
+`BattleHub` requires the same session (`SIGNALR_PROTOCOL.md` §1).
+
+**Failure behavior**
+
+```text
+missing session  |  invalid/tampered session  |  expired session
+        →  401  +  { "error": "UNAUTHENTICATED" }   (§6 envelope)
+```
+
+All three conditions share this one public response: no distinct error code
+distinguishes them, and no token-validation detail is disclosed. This is the
+outcome §4 note 6 states, applied to every covered endpoint.
+
+**Lifecycle (MVP)**
+
+```text
+absolute expiry   24 hours
+idle timeout      none
+renewal/refresh   none
+revocation        none (no logout, no server-side revocation state)
+```
+
+A new successful §2 exchange may issue a new JWT; it does not invalidate
+previously issued tokens. No refresh-token persistence and no revocation
+store are introduced (`ADR-015` D2/D5).
+
+**Ownership (unchanged)**
+
+Authenticated owner → `200`; foreign or missing battle →
+`404 BATTLE_NOT_FOUND`; a `BattleResult` lookup happens only after ownership
+authorization (§4 notes 6–7). Authenticated identity is server-derived from
+this session; client input can never establish it.
 
 ---
 
@@ -410,7 +513,7 @@ Phase 2).
 Response 200:
 {
   "battleId": "string",
-  "outcome": "Won" | "Lost",
+  "outcome": "victory" | "defeat",
   "rewards": {},
   "durationTurns": 0
 }
@@ -420,22 +523,63 @@ Response 200:
 Response 404: { "error": "BATTLE_NOT_FOUND" }
 ```
 
+```json
+Response 401: { "error": "UNAUTHENTICATED" }
+```
+
 Only returns data for a battle that has already ended (`BattleWon` /
 `BattleLost` emitted — `GAME_EVENTS.md`). While a battle is active, its
 state is only available via the SignalR connection, not this endpoint.
 
 **Contract notes:**
 
-1. **`rewards` is always present** in this response — for both `"Won"`
-   and `"Lost"`, never absent or optional. Its value is
+1. **`rewards` is always present** in this response — for both `"victory"`
+   and `"defeat"`, never absent or optional. Its value is
    `BattleResult.RewardSummary` exactly as `DATABASE.md` §1 documents it
    (staging value `{}` with no reward line items until TASK-033 owns the
-   member list; a `"Lost"` outcome carries no line items).
+   member list; a `"defeat"` outcome carries no line items).
 2. **`battleId` is the result row's primary key** — `BattleResultId` is
    the battle's own `BattleId`, one row per battle (`DATABASE.md` §1).
 3. **Event vs REST:** `GAME_EVENTS.md` §2 documents the reward summary as
    `BattleWon`-only because that rule governs the **event payload**; this
    endpoint's `rewards` field covers both outcomes per note 1.
+4. **`outcome` values** — `"victory"` | `"defeat"`. The value set and its
+   semantics are owned by `GAME_EVENTS.md` §2 (BattleWon / BattleLost);
+   the persisted `BattleResult.Outcome` (`DATABASE.md` §1) and the
+   SignalR wire member (`SIGNALR_PROTOCOL.md` §3.2.19) use the same two
+   values for the same battle.
+5. **`durationTurns` is `BattleResult.DurationTurns`** — see `DATABASE.md`
+   §1, "Duration and completion sourcing for `BattleResult`", for the
+   derivation (source, terminal-Turn rule, and edge values).
+6. **Authentication is required, and the unauthenticated response is
+   explicit.** (TASK-051) This endpoint is subject to §1's global rule that
+   all endpoints except `/api/auth/discord` require an authenticated session
+   (ADR-007 item 4). A caller that presents no authenticated session receives
+   `401` with the §6 envelope and the error code `UNAUTHENTICATED` — **not**
+   `404 BATTLE_NOT_FOUND`. `BATTLE_NOT_FOUND` describes only the case of an
+   authenticated caller asking for a battle result that does not exist or is
+   not theirs (note 7); using it for an unauthenticated caller would make an
+   authorization failure indistinguishable from a missing row and would
+   confirm nothing about the battle's existence. The **mechanism** that
+   establishes and validates the session is defined in §2.8 (`ADR-015`):
+   a missing, invalid/tampered, or expired session all resolve to this same
+   `401 UNAUTHENTICATED` response, with no distinct code and no
+   token-validation detail disclosed. This note fixes the *outcome* for an
+   unauthenticated caller, and the invariant that such a caller never
+   receives `BattleResult` data.
+7. **Only the authenticated owner may read a result.** (TASK-051) The caller
+   may read a `BattleResult` only when the identity resolved from their
+   authenticated session equals `BattleResult.PlayerId` (whose value comes
+   from `BattleState.PlayerId` — `DATABASE.md` §1). A caller requesting a
+   battle they do not own receives the same `404 BATTLE_NOT_FOUND` as a
+   battle that does not exist, so the endpoint never discloses the existence
+   of another Player's battle. **Ownership is never established from
+   client-supplied input:** no `playerId` request member, query parameter,
+   header, or body field may select, override, or stand in for the caller's
+   identity (`GAME_RULES.md` §18, ADR-001, ADR-014). The authenticated
+   identity is derived server-side from the session (§1, ADR-007 item 4) and
+   is never re-derived from client input at read time (`API_CONTRACTS.md` §7
+   item 1).
 
 ---
 

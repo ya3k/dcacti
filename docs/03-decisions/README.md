@@ -1,6 +1,9 @@
 # Architecture Decision Records (ADR)
 
-**Version:** 1.4 (ADR-014 added — `BattleState.PlayerId` as the
+**Version:** 1.5 (ADR-015 added — application session authentication contract:
+signed JWT, stateless, `player_id` claim, Bearer + SignalR access-token
+propagation, 24h absolute expiry, JWT Bearer enforcement;
+prior 1.4: ADR-014 added — `BattleState.PlayerId` as the
 battle-end owner-identity source (server-only, not a wire member);
 `PetState.PetId` = owned Pet instance; `BattleResultId` = `BattleId`;
 prior 1.3: ADR-013 added — Discord authorization-code → identity
@@ -138,6 +141,7 @@ technical document.
 | ADR-012 | Player Level + Pet Level clamp formula; Relic/Card ownership vs battle equip; MVP scope closure; no Evolution | Accepted |
 | ADR-013 | Discord authorization-code → identity exchange contract (OAuth2 code grant, token endpoint, `/users/@me`, `DiscordUserId` source) | Accepted |
 | ADR-014 | `BattleState.PlayerId` = battle-end owner-identity source (not a wire member); `PetState.PetId` = owned Pet instance; `BattleResultId` = `BattleId` | Accepted |
+| ADR-015 | Application session authentication contract (signed JWT, stateless, `player_id` claim, Bearer + SignalR access-token propagation, 24h absolute expiry, ASP.NET Core JWT Bearer enforcement) | Accepted |
 
 ---
 

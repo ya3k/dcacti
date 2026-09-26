@@ -1,6 +1,38 @@
 # Database
 
-**Version:** 1.9 (§1 `BossDefinitionId` semantics fixed per TASK-049 — an
+**Version:** 1.13 (§1 `BossDefinition` provisioning **implementation
+complete** in TASK-053 — migration
+`20260926151112_ProvisionBossDefinitions` carries the three `InsertData`
+rows, is applied through the existing `dotnet ef database update` workflow,
+and the **three canonical rows are provisioned**; the TASK-052 provisioning
+contract itself is unchanged, and §1 note item 5 and §5 item 4 status
+wording updated; prior 1.12: §1 `BossDefinition` provisioning contract decided in
+TASK-052 — mechanism (human decision P1): an EF Core migration that INSERTs the
+three content-defined rows (`boss-def-hoa-long`, `boss-def-thuy-ma`,
+`boss-def-moc-yeu`), applied through the existing `dotnet ef database
+update` workflow; scope: every battle-capable environment, applied before
+that environment's first `BattleResult` write; no `HasData`, no seed, no
+startup loader, no separate manual-SQL deployment path, no runtime
+provisioning infrastructure; this document is the canonical owner of the
+contract and no ADR is required; §1 note item 5 and §5 item 4 updated;
+prior 1.11: §1 `BossDefinition` resolution, provisioning dependency,
+and missing-definition behaviour documented per TASK-051 human decisions —
+`Identity` → `BossDefinitionId` is a PostgreSQL lookup by `Identity` owned by
+the Infrastructure layer via the existing `PersistenceRepository (Postgres)`
+component, with `BattleState` unchanged; a separate BossDefinition
+provisioning/content task is a **prerequisite** for any `BattleResult` write
+because `BossDefinitionId` is an FK; and an unresolved `BossDefinition` fails
+the battle-end write **closed** — no `BattleResult` row, no
+`battle:{battleId}:state` delete, active state retained for recovery. §5
+item 4 updated: the provisioning dependency is decided, the mechanism still
+is not; prior 1.10: §1 `Outcome` vocabulary changed to `"victory" |
+"defeat"` per TASK-050 human Decision C — the single battle-outcome
+vocabulary owned by `GAME_EVENTS.md` §2 and shared with
+`API_CONTRACTS.md` §4 and `SIGNALR_PROTOCOL.md` §3.2.19; §1 contract
+notes added for `DurationTurns` (derived from `BattleState.Turn` at
+battle end, terminal Turn counted, `Sequence` never the source) and
+`CompletedAt` (server clock captured on the battle-end path, never
+client-sourced, no timezone asserted); prior 1.9: §1 `BossDefinitionId` semantics fixed per TASK-049 — an
 independent stable persistence key supplied by content/Domain
 (`required string BossDefinitionId`, stored as the PK), never
 database-generated and never derived from `Identity` or the display name;
@@ -161,7 +193,8 @@ BattleResult
 │                                      `Identity` = BattleState.BossState.BossId —
 │                                      GAME_STATE.md §2.4, BOSS_RULES.md §6.4,
 │                                      derived on the battle-end path)
-├── Outcome                            ("Won" | "Lost")
+├── Outcome                            ("victory" | "defeat" — value set
+│                                      owned by GAME_EVENTS.md §2)
 ├── DurationTurns
 ├── CompletedAt
 └── RewardSummary                        (JSON — member list owned by
@@ -211,9 +244,10 @@ BattleResult
      database-generated. The Domain `BossDefinition` record carries it
      explicitly as `required string BossDefinitionId`, and persistence
      stores that value as the primary key. No GUID, integer, provider-
-     generated, or database-generated key is used, and no `HasData`, seed,
-     startup loader, or migration-inserted production row is introduced by
-     this contract (note item 5 below; `§5` item 4).
+     generated, or database-generated key is used, and this key contract
+     introduces no seed of its own — no `HasData` and no startup loader
+     exists for this model; the provisioning contract (mechanism, row
+     set, ordering) is note item 5 below and `§5` item 4.
    - **Relationship to `Identity`:** the two are separate values serving
      separate purposes — `Identity` is the canonical technical Boss ID that
      battle state, events, the API, and the `BattleResult` FK *lookup*
@@ -222,6 +256,26 @@ BattleResult
      A caller resolves the row **by `Identity`** and then stores that row's
      `BossDefinitionId` as a foreign key; it must never substitute one value
      for the other.
+   - **Resolution mechanism and resolver owner.** (TASK-051) The resolution
+     `Identity` → `BossDefinitionId` is a **PostgreSQL lookup by `Identity`**,
+     performed on the battle-end path against the persisted `BossDefinition`
+     row whose `Identity` equals `BattleState.BossState.BossId`
+     (`§3` — `Identity NOT NULL, UNIQUE` is the unique target of that lookup).
+     The **`Infrastructure` layer owns the lookup**, expressed through the
+     `PersistenceRepository (Postgres)` component that `ARCHITECTURE.md` §3
+     already designates for `DATABASE.md` data; the Application layer
+     orchestrates the battle-end step and the Domain layer supplies the
+     Identity value but neither performs nor owns the query
+     (`ARCHITECTURE.md` §2.1 — layer direction, `TDD.md` §4 item 3 — Postgres
+     is touched only on the terminal path, never on the hot resolution path).
+     This introduces **no new abstraction, resolver service, registry, or
+     read model**: the lookup is a query on the existing persistence boundary
+     (`ARCHITECTURE.md` §5 item 3 — "no separate read-model store").
+     `BattleState` is **unchanged** by this contract: no
+     `BossDefinitionId` member is added to `BossState` or to `BattleState`,
+     so no Redis serialization, snapshot, or wire contract is affected
+     (`GAME_STATE.md` §2.4 — "No second identity field … is added to
+     `BossState`"; `REDIS_STATE.md` §2 item 1).
 3. **`PassiveDefinition` members** (JSON object, NOT NULL — every Boss
    carries exactly one Passive, `BOSS_RULES.md` §1/§6.4):
    ```json
@@ -264,14 +318,91 @@ BattleResult
 5. **Rows and provisioning.** Rows are static content derived from the
    canonical Boss definitions: provisioning must be deterministic, must
    be idempotent, and must never depend on a player's runtime battle.
-   **No provisioning mechanism is documented, and none may be invented**
-   (`AGENTS.md` §7/§9) — a future provisioning-contract decision is
-   required before any row exists. Only content-defined Bosses
+   Only content-defined Bosses
    (currently 3 — `BOSS_RULES.md` §6) may ever be provisioned; the
    5-Boss figure is the MVP scope target (`MVP_SCOPE.md` §1), not
    permission to create placeholder rows for undefined content. The
-   `BossDefinitionId` of item 2 changes nothing here: no `HasData`, seed,
-   startup loader, or migration-inserted production row is introduced.
+   `BossDefinitionId` of item 2 adds no seed of its own: no `HasData`,
+   seed, or startup loader exists for this model, and the only
+   provisioning path is the migration INSERT decided below.
+   - **Mechanism — decided.** (TASK-052) The three rows are provisioned
+     by an **EF Core migration that INSERTs them** into `BossDefinition`,
+     applied through the project's existing `dotnet ef database update`
+     workflow. `HasData`, a seed, a startup loader/upsert, a separate
+     manual-SQL deployment path, and any runtime provisioning
+     infrastructure are **not** used, and no fourth mechanism may be
+     introduced by any other task. The decision is scoped to
+     `BossDefinition`: no other content table's provisioning
+     (`PetDefinition`, `CardDefinition`, `RelicDefinition`, …) is decided
+     here, and each remains open (`§5` item 4).
+   - **Row set — exactly three rows.** The canonical `BossDefinitionId`
+     values of item 2 (`boss-def-hoa-long`, `boss-def-thuy-ma`,
+     `boss-def-moc-yeu`), each with its `Identity` from `BOSS_RULES.md`
+     §6.4 (`boss-hoa-long`, `boss-thuy-ma`, `boss-moc-yeu`). No
+     placeholder rows (first paragraph), and no rows for the two MVP
+     Bosses that are not yet content-defined.
+   - **Row content — transcribed, never invented.** Each row's five
+     columns are sourced per column, with no value computed or invented
+     at provisioning time: `BossDefinitionId` from item 2; `Identity`
+     from `BOSS_RULES.md` §6.4; `Element` from `BOSS_RULES.md` §6;
+     `PassiveDefinition` per item 3's member list with `passiveId` and
+     `threshold` from `BOSS_RULES.md` §6.2/§6.4 (including `null` for
+     Thủy Ma's always-active Passive — `§3`: `threshold = null` ⇔
+     always-active) and `resetBehavior` = `Default` (the documented
+     default when a rule states no override — no Boss Passive documents
+     one, `PASSIVE_RULES.md` §4 item 3); `SkillDefinition` per item 4's
+     member list with `skillId`, `baseDamage`, `chargeRequirement`, and
+     `cooldownTurns` from `BOSS_RULES.md` §6.3/§6.4. The authoritative
+     documents own the values and remain the only source for them —
+     nothing is duplicated here as a second source. Combat stats
+     (`BOSS_RULES.md` §6.1) and display names are **not** columns
+     (item 1) and are never written by provisioning; the storage
+     encoding of `Element` is an implementation detail (header, `§5`
+     item 1).
+   - **Idempotency and uniqueness.** The migration inserts each row at
+     most once and is tracked in EF's migration history, so re-running
+     `dotnet ef database update` inserts nothing further; the end state
+     is identical whether the migration ran once or was retried —
+     exactly three rows with identical content (first paragraph).
+     `§3`'s `BossDefinitionId` primary key and `Identity NOT NULL,
+     UNIQUE` are the database-level guarantee against duplicates.
+     Provisioning never updates, overwrites, or deletes an existing row.
+   - **Availability guarantee (ordering, every battle-capable
+     environment).** (TASK-052) The migration is applied in **every
+     battle-capable environment** — any environment in which a battle can
+     be started and ended — and within each such environment it is
+     applied **before that environment's first battle-end write**: the
+     three rows exist before any `BattleResult` insert can attempt the
+     FK. Until the migration has been applied in an environment, no
+     `BossDefinition` row exists there and the FK cannot be satisfied.
+   - **Missing provisioning surfaces only as the documented fail-closed
+     behaviour.** When the rows are absent, the failure occurs on the
+     battle-end path and is governed entirely by "Identity and reward
+     sourcing for `BattleResult`" item 3 (fail closed: no `BattleResult`
+     row, no `battle:{battleId}:state` delete, battle recoverable and
+     retryable, documented `404` until the write succeeds, no new error
+     code or wire contract). This contract adds **no** startup
+     validation, pre-battle gate, health check, retry worker, or
+     provisioning monitoring — none is documented, and inventing one
+     would violate `ARCHITECTURE.md` §5 / `AGENTS.md` §9
+     (anti-overengineering).
+   - **Provisioning precedes `BattleResult` persistence, and both the
+     decision and its implementation are now complete.** (TASK-051)
+     `BattleResult.BossDefinitionId` is a foreign key to `BossDefinition`
+     (`§1` entity block, `§2`), so resolving the *value* (item 2) does not
+     by itself satisfy the constraint — the referenced **row must already
+     exist** at insert time. The resolution mechanism (item 2) is a lookup
+     that only succeeds when a row is present. The separate documented
+     provisioning decision TASK-051 left open was made by TASK-052 (the
+     migration INSERT mechanism above); **its implementation is complete
+     (TASK-053)**: migration `20260926151112_ProvisionBossDefinitions`
+     applies through `dotnet ef database update`, and **the three canonical
+     rows are provisioned**, so the FK target exists in every environment
+     where the migration has been applied. In an environment where it has
+     not yet been applied, no row exists and the FK cannot be satisfied —
+     which surfaces only as the fail-closed behaviour above. No persistence
+     task may introduce a different mechanism: no `HasData`, no seed, no
+     startup loader, no manual SQL path, no runtime provisioning.
 
 **Identity and reward sourcing for `BattleResult`.**
 
@@ -293,12 +424,70 @@ BattleResult
    that path from battle state — not re-derived from client input at
    battle end, and never from a display name (uniqueness of `Identity`
    for this lookup: §3).
+3. **An unresolved `BossDefinition` fails the battle-end write closed.**
+   (TASK-051) If the lookup in item 2 finds **no** `BossDefinition` row whose
+   `Identity` equals `BattleState.BossState.BossId`, the battle-end path
+   treats it as a **server-side battle-resolution failure**:
+   - **No `BattleResult` row is written.** An absent definition must never
+     produce a fabricated, null, empty-string, fallback, or default
+     `BossDefinitionId`, and must never be written by skipping or disabling
+     the foreign key (`§2`, `§3`). The FK is never satisfied by anything other
+     than a real, provisioned `BossDefinition` row.
+   - **`battle:{battleId}:state` is NOT deleted.** The documented battle-end
+     ordering is result-write **then** active-state delete
+     (`ARCHITECTURE.md` §4 item 4, `REDIS_STATE.md` §3); because the result
+     write did not happen, the delete must not happen either. Deleting the
+     active state would destroy the only authoritative copy of the battle
+     (`REDIS_STATE.md` §2 item 2, §7 item 5) for a battle that was never
+     durably recorded.
+   - **The battle remains recoverable and the failure is repairable.** The
+     authoritative `BattleState` is still in Redis under its normal sliding
+     TTL (`REDIS_STATE.md` §3), so the still-unresolved battle is not lost.
+     Once the configuration/provisioning issue is resolved (a
+     `BossDefinition` row exists for that `Identity` — item 5), the battle-end
+     write can be retried from that authoritative state and complete normally.
+   - **No new error code, API response, or wire contract is introduced.** This
+     is an internal battle-end persistence outcome, not a client-facing
+     contract: `GET /api/battle/{battleId}/result` (`API_CONTRACTS.md` §4)
+     simply finds no row and returns its documented `404` until the write
+     succeeds. No `Status`/lifecycle field is added to `BattleState`
+     (`GAME_STATE.md` §2.0.3), and no retry worker, queue, or rollback policy
+     is introduced (`ARCHITECTURE.md` §5 — anti-overengineering).
+   - **This is the fail-closed counterpart of item 2.** Item 2 guarantees the
+     value is resolved from authoritative data; this item guarantees that a
+     missing definition can never corrupt the FK contract or destroy
+     recoverable state.
 3. **`RewardSummary`'s member list is owned by TASK-033** (reward
    magnitudes, XP, and line-item shape — `PET_RULES.md` §5,
    `MVP_SCOPE.md` §1). Until that task defines it, the documented staging
    value is the **empty JSON object `{}`** — a value that is always
-   present, never absent, for both `Outcome`s; a `Lost` battle carries no
-   line items.
+   present, never absent, for both `Outcome`s; a `"defeat"` battle carries
+   no line items.
+
+**Duration and completion sourcing for `BattleResult`.** (TASK-050)
+
+1. **`DurationTurns` is `BattleState.Turn` at terminal resolution** —
+   the battle's Turn count under `GAME_RULES.md` §2 item 1 (a Turn is a
+   successfully resolved player Swap/Action), captured on the battle-end
+   path. Under documented rules it equals the number of committed Swaps:
+   one committed Swap begins exactly one Turn, and a rejected Swap, board
+   generation, and a Card cast begin none (`MATCH3_RULES.md` §8.1 items
+   1–5, `CARD_RULES.md` §3 item 5). The terminal Turn **is** counted —
+   the resolution order places `TurnEnded` before `BattleWon` /
+   `BattleLost` (`GAME_EVENTS.md` §1). A battle reaching a terminal state
+   before any committed Swap records `0` (`GAME_STATE.md` §2.0.2).
+   `Sequence` is a different counter (`MATCH3_RULES.md` §8.2,
+   `GAME_STATE.md` §5.1) and is **never** the source; the source of
+   truth is `BattleState.Turn` at battle end, not an event count.
+2. **`CompletedAt` is the server clock reading captured on the
+   battle-end path when the durable result is written** — one value per
+   battle (`ARCHITECTURE.md` §4 item 4, `TDD.md` §4 item 2). It is
+   server-authoritative and never re-derived from client input or from a
+   session at battle end (`GAME_RULES.md` §18, ADR-001,
+   `API_CONTRACTS.md` §7 item 1), and it orders the battle-history index
+   (`§4` — `BattleResult(PlayerId, CompletedAt DESC)`). No timezone is
+   asserted here; the exact column type is an implementation detail
+   (header).
 
 ---
 
@@ -390,8 +579,20 @@ when a real query pattern requires them (anti-overengineering,
    `MVP_SCOPE.md` §2.
 3. Active battle state — lives in Redis only (`REDIS_STATE.md`), never
    written to PostgreSQL until the battle ends.
-4. Any seed/provisioning mechanism for static-content rows
-   (`BossDefinition`, `PetDefinition`, `CardDefinition`, …) — none is
-   documented; when rows become necessary, defining it is a separate
-   documented decision (see §1, `BossDefinition` persistence contract
-   item 5).
+4. Provisioning mechanisms for static-content rows **other than**
+   `BossDefinition` (`PetDefinition`, `CardDefinition`,
+   `RelicDefinition`, …) — none is defined here; each remains open
+   (`TASK-045` §6 issue 1). No `HasData`, seed, or startup loader exists
+   for any of them. For `BossDefinition` the mechanism **is** now defined
+   by this document (TASK-052): an EF Core migration that INSERTs the
+   three content-defined rows, applied through the existing
+   `dotnet ef database update` workflow in every battle-capable
+   environment before that environment's first `BattleResult` write —
+   no `HasData`, no seed, no startup loader, no separate manual-SQL
+   deployment path, no runtime provisioning (§1, `BossDefinition`
+    persistence contract item 5). The migration script itself remains an
+    implementation detail (item 1); that implementation is **complete**
+    (TASK-053) — migration `20260926151112_ProvisionBossDefinitions` was
+    applied through `dotnet ef database update`, so the three canonical
+    rows are provisioned and every `BattleResult` write's FK target exists
+    wherever the migration has been applied (TASK-051 decision A3).
