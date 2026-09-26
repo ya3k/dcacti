@@ -572,7 +572,7 @@ export class GameRuntime implements GameRuntimePort {
   }
 
   /**
-   * Reads the `PassiveProgress` pair (`GAME_STATE.md` §2.5).
+   * Reads the `PassiveProgress` pair (`GAME_STATE.md` §2.3).
    *
    * Both members are required: the two are one logical field read together to
    * render the documented `current / threshold` pair (`PASSIVE_RULES.md` §6

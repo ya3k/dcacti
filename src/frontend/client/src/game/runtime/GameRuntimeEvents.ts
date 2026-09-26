@@ -142,7 +142,7 @@ export interface RuntimePetState {
    */
   readonly passiveId: string;
   /**
-   * The `current / threshold` pair (`GAME_STATE.md` §2.5). Both members are
+   * The `current / threshold` pair (`GAME_STATE.md` §2.3). Both members are
    * always present — `current = 0` is a real value, not an absence (§4.3
    * item 4).
    */
@@ -158,7 +158,7 @@ export interface RuntimePetState {
 }
 
 /**
- * The client's synchronized copy of `GAME_STATE.md` §2.5's `PassiveProgress`
+ * The client's synchronized copy of `GAME_STATE.md` §2.3's `PassiveProgress`
  * pair (`SIGNALR_PROTOCOL.md` §4.3 item 4).
  *
  * One logical field with two members, read together to render the documented
@@ -168,7 +168,7 @@ export interface RuntimePetState {
 export interface RuntimePassiveProgress {
   /** The Passive's own Threshold (`PASSIVE_RULES.md` §1). */
   readonly threshold: number;
-  /** The settled progress reached toward it (`GAME_STATE.md` §2.5). */
+  /** The settled progress reached toward it (`GAME_STATE.md` §2.3). */
   readonly current: number;
 }
 

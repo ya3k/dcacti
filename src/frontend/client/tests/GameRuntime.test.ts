@@ -609,7 +609,7 @@ describe('GameRuntime', () => {
     });
 
     it('carries the delivered Passive identity and progress pair unchanged', async () => {
-      // SIGNALR_PROTOCOL.md §4.3 / GAME_STATE.md §2.3, §2.5: `petState` is
+      // SIGNALR_PROTOCOL.md §4.3 / GAME_STATE.md §2.3: `petState` is
       // authoritative server state, carried because it is a BattleState field of
       // the implemented stage and because PASSIVE_RULES.md §6 item 1 requires the
       // pair to be exposed as a UI-facing value. The client renders it and

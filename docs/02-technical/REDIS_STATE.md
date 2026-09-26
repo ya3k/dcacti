@@ -1,6 +1,10 @@
 # Redis State
 
-**Version:** 1.4 (Player/Pet role model per ADR-011 — staged PlayerState
+**Version:** 1.5 (§3 battle-end delete-failure behaviour: no retry, no
+worker/queue — the sliding TTL remains the cleanup path and the documented
+maximum lifetime of the active-state record; at-most-one-result-row
+guarantee via `BattleResultId` = `BattleId` (`DATABASE.md` §1); prior 1.4:
+Player/Pet role model per ADR-011 — staged PlayerState
 narrative corrected to BattleState-root Combo/MatchCount + PetState combat
 members; prior 1.3: `LastCommittedSwapPair` persistence boundary stated in
 §7 item 11)
@@ -60,6 +64,15 @@ If a battle's key expires from inactivity before completion, the battle is
 considered abandoned; the client's `GetBattleState` call
 (`SIGNALR_PROTOCOL.md` §7) will receive `BATTLE_NOT_FOUND`, and no partial
 result is written to PostgreSQL.
+
+If the explicit **battle-end delete fails after the result write**, no
+automatic retry is performed and no worker or queue exists for it: the
+sliding TTL above remains the cleanup path, so the TTL is the documented
+maximum lifetime of the active-state record in every case. The battle-end
+order itself is unchanged — the result is written first, then the key is
+deleted (`ARCHITECTURE.md` §4 item 4) — and a failed delete cannot produce
+a second result: `BattleResultId` is the battle's own `BattleId`, so **at
+most one `BattleResult` row can ever exist per battle** (`DATABASE.md` §1).
 
 ---
 
@@ -158,15 +171,14 @@ Full active battle state          Full BattleState (GAME_STATE.md §2)
    was deliberately deferred. This is a **sequencing** boundary, not a
    weakening of the requirement.
 
-   **TASK-030 has since implemented `POST /api/battle/start`, and the
-   deferral is nonetheless still in force.** §7 item 7's condition — a
-   real battle can be created — is now met, but the Redis write is a
-   storage change with its own task: TASK-030's Scope records "Redis
-   persistence writes — `REDIS_STATE` §7 deferral gate is separate" as
-   explicitly out of scope, and the endpoint bootstraps its battle in the
-   existing process-local registry per the current runtime model. So a
-   created battle currently has **no** `battle:{battleId}:state` record.
-   The requirement below is unchanged and now becomes due.
+   **TASK-030 implemented `POST /api/battle/start`, and TASK-040 has since
+   discharged the deferral.** §7 item 7's condition — a real battle can be
+   created and resolved — was met by TASK-030, and TASK-040 implemented the
+   storage this section defers: a created battle now **does** have its
+   `battle:{battleId}:state` record. See the status note at the end of this
+   section. The history above is retained because it is what §7 items 1–4 still
+   say about *staged subsets* — no foundation or board-foundation state is ever
+   written here, and adding a stage never authorized persistence on its own.
 4. **The Board Foundation stage does not change this boundary.** §7 items 1–3
    apply to it unchanged:
    - `BoardState` and `RngSeed`/`RngState` are §2 fields
@@ -354,10 +366,28 @@ Full active battle state          Full BattleState (GAME_STATE.md §2)
     Like the Special Gem and commit-record changes, this is a **content** change
     to the record rather than a **structure** change to the store.
 
-    > **Status note (TASK-030).** Items 8 and 12 above record what the
-    > board-resolution and Match/Combo stages did, and the staging facts they
-    > state were true of those stages. `BossState` (`GAME_STATE.md` §2.4) has
-    > since been implemented, and `POST /api/battle/start` now creates a battle
-    > carrying §2's shape. The Redis record is still not written, for the reason
-    > given in §7 item 3: that write is TASK-030's out-of-scope storage change,
-    > and §7 item 7's requirement is now due rather than discharged.
+    > **Status note (TASK-040).** The deferral recorded above is **discharged**.
+    > TASK-030 implemented `POST /api/battle/start` and the Boss stage, so a real,
+    > playable battle carrying §2's shape can be created and resolved — §7 item 7's
+    > precondition — and TASK-040 has implemented the storage §1–§4 specify:
+    >
+    > - the record is written to `battle:{battleId}:state` on successful battle
+    >   creation (`GameServer.Application.Battle.BattleStateService.CreateBattleAsync`
+    >   via `IBattleStateRepository`;
+    >   implementation `GameServer.Infrastructure.Redis.BattleStateRepository`),
+    > - each accepted action loads the record and performs exactly one write-back
+    >   guarded by the §4 `Sequence` compare-and-set, and
+    > - the §3 sliding 30-minute expiry is refreshed only on a successful
+    >   resolution; a rejected action writes nothing (§4 item 7).
+    >
+    > The value written is the authoritative `BattleState` JSON of §2 item 1 — the
+    > TASK-029 runtime mapping — and the server process holds no long-lived
+    > in-memory copy of it (§2 item 2). §7 items 1–2 and 4 remain in force for what
+    > they say about *staged subsets*: no foundation or board-foundation record is
+    > ever written here, and §1's key set is unchanged.
+    >
+    > `§3`'s explicit delete on battle end remains **not implemented**: it is
+    > conditioned on the `BattleResult` write to PostgreSQL (`DATABASE.md`), which
+    > does not exist yet. Until it does, the TTL governs the key's expiry, exactly
+    > as §3 and `TDD.md` §4.2 ("TTL or explicit delete") allow. This is a
+    > sequencing boundary of its own task, not a gap in the record's lifecycle.

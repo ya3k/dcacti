@@ -133,7 +133,10 @@ public class BattleController : ControllerBase
         return Ok(new BattleStartResponse(
             BattleId: result.BattleId!,
             SignalrHub: BattleHubPath,
-            InitialState: BattleStartStateSummary.For(result.BattleId!, _battles)));
+            InitialState: await BattleStartStateSummary.ForAsync(
+                result.BattleId!,
+                _battles,
+                cancellationToken)));
     }
 
     /// <summary>

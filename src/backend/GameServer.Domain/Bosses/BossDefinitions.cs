@@ -41,10 +41,22 @@ namespace GameServer.Domain.Bosses;
 /// <b>The identities are <c>BOSS_RULES.md</c> §6.4's, verbatim.</b> §6.4 is the
 /// identity contract for <c>BossId</c>, <c>PassiveId</c>, and <c>SkillId</c> —
 /// "they are fixed here so no task invents its own". The <c>BossId</c> is the
-/// display name (<c>"Hỏa Long"</c>), not a slug; the <c>PassiveId</c> values
-/// follow the kebab-case pattern of the Pet PassiveIds; and the <c>SkillId</c>
-/// values are the Skill names §6.4 fixes. No other spelling is used, and none is
-/// derived from the display name at run time.
+/// Boss's canonical technical Identity, following the §6.4 convention
+/// <c>boss-&lt;ascii-kebab-case-name&gt;</c> (ASCII, lowercase, kebab-case, no
+/// diacritics) — e.g. <c>"boss-hoa-long"</c>; it is <b>not</b> the display name,
+/// which is presentation-only content. The <c>PassiveId</c> values follow the
+/// kebab-case pattern of the Pet PassiveIds; and the <c>SkillId</c> values are
+/// the Skill names §6.4 fixes. No other spelling is used, and none is derived
+/// from the display name at run time.
+///
+/// <b>The persistence keys are <c>DATABASE.md</c> §1's, verbatim.</b> Each
+/// definition carries the independent <c>BossDefinitionId</c> that identifies
+/// its persisted <c>BossDefinition</c> row — the <c>boss-def-…</c> values §1
+/// fixes (TASK-049). They are a <b>third</b> distinct concept: neither the
+/// canonical technical Identity above nor the display name, never derived from
+/// either, and never database-generated. Only the identity/configuration subset
+/// is persisted; the combat stats remain Domain-only (<c>DATABASE.md</c> §1 note
+/// item 1).
 ///
 /// <b>The Passive/Skill mechanics are configuration; their effects are not
 /// implemented.</b> §6.2–§6.3 give each Boss a Passive trigger and a Skill
@@ -74,73 +86,95 @@ namespace GameServer.Domain.Bosses;
 public static class BossDefinitions
 {
     /// <summary>
-    /// Hỏa Long — <c>Element = Hỏa</c>, Passive <c>"boss-hoa-long-rage"</c> every
-    /// 5 Player Matches, Skill <c>"flame-burst"</c> at 5 Matches / 2 Turn cooldown
-    /// / 150 base damage (<c>BOSS_RULES.md</c> §6.1–§6.4).
+    /// Hỏa Long — persistence key <c>"boss-def-hoa-long"</c>, canonical technical
+    /// Identity <c>"boss-hoa-long"</c> (display name "Hỏa Long"),
+    /// <c>Element = Hỏa</c>, Passive <c>"boss-hoa-long-rage"</c> every 5 Player
+    /// Matches, Skill <c>"flame-burst"</c> at 5 Matches / 2 Turn cooldown / 150
+    /// base damage (<c>BOSS_RULES.md</c> §6.1–§6.4; <c>DATABASE.md</c> §1).
     /// </summary>
     public static readonly BossDefinition HoaLong = new(
-        new BossId("Hỏa Long"),
+        BossDefinitionId: "boss-def-hoa-long",
+        new BossId("boss-hoa-long"),
         Element.Hoa,
-        MaxHP: 5000,
-        ATK: 100,
-        DEF: 50,
-        PassiveId: new PassiveId("boss-hoa-long-rage"),
-        // §6.2: "Every 5 Player Matches" — a match-charged Passive.
-        PassiveThreshold: 5,
-        SkillId: "flame-burst",
-        // §6.3: Charge Req. 5, CD 2T, Skill Base Dmg 150.
-        SkillBaseDamage: 150,
-        SkillChargeRequirement: 5,
-        SkillCooldownTurns: 2,
-        // §6.1: "1500 (30%)" of MaxHP 5000.
-        EnrageThreshold: 0.30);
+        // §6.2/§6.4: "Every 5 Player Matches" — a match-charged Passive, so the
+        // stored threshold is 5 (never null) with the documented default reset.
+        PassiveDefinition: new BossPassiveDefinition(
+            new PassiveId("boss-hoa-long-rage"), 5, "Default"),
+        SkillDefinition: new BossSkillDefinition(
+            // §6.3: Charge Req. 5, CD 2T, Skill Base Dmg 150.
+            SkillId: "flame-burst",
+            BaseDamage: 150,
+            ChargeRequirement: 5,
+            CooldownTurns: 2))
+    {
+        // §6.1: MaxHP 5000, ATK 100, DEF 50, Enrage "1500 (30%)" — the shared
+        // MVP base configuration (the Domain defaults, not persisted columns).
+        MaxHP = 5000,
+        ATK = 100,
+        DEF = 50,
+        EnrageThreshold = 0.30,
+    };
 
     /// <summary>
-    /// Thủy Ma — <c>Element = Thủy</c>, Passive <c>"boss-thuy-ma-heal"</c> Always
-    /// Active (<c>PassiveThreshold = 0</c>), Skill <c>"drain-power"</c> at 4
-    /// Matches / 3 Turn cooldown / 120 base damage
-    /// (<c>BOSS_RULES.md</c> §6.1–§6.4).
+    /// Thủy Ma — persistence key <c>"boss-def-thuy-ma"</c>, canonical technical
+    /// Identity <c>"boss-thuy-ma"</c> (display name "Thủy Ma"),
+    /// <c>Element = Thủy</c>, Passive <c>"boss-thuy-ma-heal"</c> Always Active
+    /// (<c>PassiveThreshold = 0</c>), Skill <c>"drain-power"</c> at 4 Matches /
+    /// 3 Turn cooldown / 120 base damage (<c>BOSS_RULES.md</c> §6.1–§6.4;
+    /// <c>DATABASE.md</c> §1).
     /// </summary>
     public static readonly BossDefinition ThuyMa = new(
-        new BossId("Thủy Ma"),
+        BossDefinitionId: "boss-def-thuy-ma",
+        new BossId("boss-thuy-ma"),
         Element.Thuy,
-        MaxHP: 5000,
-        ATK: 100,
-        DEF: 50,
-        PassiveId: new PassiveId("boss-thuy-ma-heal"),
-        // §6.2: "Passive (always active)" — an alternate trigger, NOT match-based.
-        // 0 is the Always-Active marker; the resolution never calls
+        // §6.2: "Passive (always active)" — an alternate trigger, NOT
+        // match-based, so storage records the documented `null` threshold
+        // (never 0 — DATABASE.md §1 note item 3). The Domain reads that back as
+        // its Always-Active marker, so the resolution never calls
         // PassiveTracker.Charge for it and emits no match-driven Passive events.
-        PassiveThreshold: 0,
-        SkillId: "drain-power",
-        // §6.3: Charge Req. 4, CD 3T, Skill Base Dmg 120.
-        SkillBaseDamage: 120,
-        SkillChargeRequirement: 4,
-        SkillCooldownTurns: 3,
-        // §6.1: "1500 (30%)" of MaxHP 5000.
-        EnrageThreshold: 0.30);
+        PassiveDefinition: new BossPassiveDefinition(
+            new PassiveId("boss-thuy-ma-heal"), null, "Default"),
+        SkillDefinition: new BossSkillDefinition(
+            // §6.3: Charge Req. 4, CD 3T, Skill Base Dmg 120.
+            SkillId: "drain-power",
+            BaseDamage: 120,
+            ChargeRequirement: 4,
+            CooldownTurns: 3))
+    {
+        // §6.1 base stats — the shared MVP configuration.
+        MaxHP = 5000,
+        ATK = 100,
+        DEF = 50,
+        EnrageThreshold = 0.30,
+    };
 
     /// <summary>
-    /// Mộc Yêu — <c>Element = Mộc</c>, Passive <c>"boss-moc-yeu-regen"</c> every
-    /// 5 Player Matches, Skill <c>"root"</c> at 6 Matches / 2 Turn cooldown /
-    /// 100 base damage (<c>BOSS_RULES.md</c> §6.1–§6.4).
+    /// Mộc Yêu — persistence key <c>"boss-def-moc-yeu"</c>, canonical technical
+    /// Identity <c>"boss-moc-yeu"</c> (display name "Mộc Yêu"),
+    /// <c>Element = Mộc</c>, Passive <c>"boss-moc-yeu-regen"</c> every 5 Player
+    /// Matches, Skill <c>"root"</c> at 6 Matches / 2 Turn cooldown / 100 base
+    /// damage (<c>BOSS_RULES.md</c> §6.1–§6.4; <c>DATABASE.md</c> §1).
     /// </summary>
     public static readonly BossDefinition MocYeu = new(
-        new BossId("Mộc Yêu"),
+        BossDefinitionId: "boss-def-moc-yeu",
+        new BossId("boss-moc-yeu"),
         Element.Moc,
-        MaxHP: 5000,
-        ATK: 100,
-        DEF: 50,
-        PassiveId: new PassiveId("boss-moc-yeu-regen"),
-        // §6.2: "Every 5 Player Matches" — a match-charged Passive.
-        PassiveThreshold: 5,
-        SkillId: "root",
-        // §6.3: Charge Req. 6, CD 2T, Skill Base Dmg 100.
-        SkillBaseDamage: 100,
-        SkillChargeRequirement: 6,
-        SkillCooldownTurns: 2,
-        // §6.1: "1500 (30%)" of MaxHP 5000.
-        EnrageThreshold: 0.30);
+        // §6.2/§6.4: "Every 5 Player Matches" — a match-charged Passive.
+        PassiveDefinition: new BossPassiveDefinition(
+            new PassiveId("boss-moc-yeu-regen"), 5, "Default"),
+        SkillDefinition: new BossSkillDefinition(
+            // §6.3: Charge Req. 6, CD 2T, Skill Base Dmg 100.
+            SkillId: "root",
+            BaseDamage: 100,
+            ChargeRequirement: 6,
+            CooldownTurns: 2))
+    {
+        // §6.1 base stats — the shared MVP configuration.
+        MaxHP = 5000,
+        ATK = 100,
+        DEF = 50,
+        EnrageThreshold = 0.30,
+    };
 
     /// <summary>
     /// The three content-defined MVP Bosses of <c>BOSS_RULES.md</c> §6, in the

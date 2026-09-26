@@ -149,7 +149,7 @@ public record PetStatePayload(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PassiveResetOverride = null);
 
 /// <summary>
-/// The wire projection of <c>GAME_STATE.md</c> §2.5's <c>PassiveProgress</c>
+/// The wire projection of <c>GAME_STATE.md</c> §2.3's <c>PassiveProgress</c>
 /// <c>(Threshold, Current)</c> pair (<c>SIGNALR_PROTOCOL.md</c> §4.3 item 4).
 ///
 /// Both members are always present, neither is nullable and neither is omitted —
@@ -164,7 +164,7 @@ public record PetStatePayload(
 /// <c>GAME_EVENTS.md</c> §2 reports on <c>PassiveCharged</c>.
 /// </param>
 /// <param name="Current">
-/// The progress reached toward it (<c>GAME_STATE.md</c> §2.5) — the settled value
+/// The progress reached toward it (<c>GAME_STATE.md</c> §2.3) — the settled value
 /// after the resolution this push reports, not a per-Match intermediate
 /// (§4.3 item 11).
 /// </param>
@@ -454,7 +454,8 @@ public class BattleHub : Hub
     ///
     /// Scope (§4.3): the joining caller only — this is not a group broadcast.
     ///
-    /// The hub only delegates: the state comes from the Application layer, and
+    /// The hub only delegates: the state comes from the Application layer, which
+    /// reads it from the active-state store (<c>REDIS_STATE.md</c> §2 item 2), and
     /// no value is computed, derived, or adjusted here (§4.9, ARCHITECTURE.md
     /// §2.1).
     /// </summary>
@@ -464,7 +465,7 @@ public class BattleHub : Hub
 
         await Groups.AddToGroupAsync(Context.ConnectionId, battleId);
 
-        var state = _battles.GetInitialStateForGroup(battleId);
+        var state = await _battles.GetInitialStateForGroupAsync(battleId);
 
         // An unknown battle yields no push. The hub defines no error contract
         // for this path: SIGNALR_PROTOCOL.md §5 defines rejection shapes for
@@ -539,7 +540,7 @@ public class BattleHub : Hub
 
         _ = clientSequence;
 
-        var result = _battles.ExecuteSwap(battleId, new SwapRequest(fromCell, toCell));
+        var result = await _battles.ExecuteSwapAsync(battleId, new SwapRequest(fromCell, toCell));
 
         if (result is null)
         {

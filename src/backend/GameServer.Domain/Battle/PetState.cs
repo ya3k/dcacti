@@ -1,6 +1,7 @@
 using GameServer.Domain.Cards;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Passives;
+using GameServer.Domain.Pets;
 using GameServer.Domain.Relics;
 
 namespace GameServer.Domain.Battle;
@@ -12,6 +13,7 @@ namespace GameServer.Domain.Battle;
 /// <code>
 /// BattleState
 /// └── PetState
+///     ├── PetId                  the owned Pet instance (Pet.PetInstanceId)   (§2.3)
 ///     ├── HP                     current health (COMBAT_RULES.md §1.1)      (§2.3)
 ///     ├── MaxHP                  maximum health (COMBAT_RULES.md §1.1)
 ///     ├── ATK                    attack power (COMBAT_RULES.md §1.1)
@@ -29,9 +31,9 @@ namespace GameServer.Domain.Battle;
 /// </code>
 ///
 /// <b>This is the documented owner, not a new decision.</b> <c>GAME_STATE.md</c>
-/// §2.3 places the combat stats <c>HP</c>/<c>MaxHP</c>, <c>ATK</c>/<c>DEF</c>/
-/// <c>Crit</c>, and <c>Power</c> here together with <c>Element</c>,
-/// <c>PassiveId</c>, <c>PassiveProgress</c>, and
+/// §2.3 places <c>PetId</c> and the combat stats <c>HP</c>/<c>MaxHP</c>,
+/// <c>ATK</c>/<c>DEF</c>/<c>Crit</c>, and <c>Power</c> here together with
+/// <c>Element</c>, <c>PassiveId</c>, <c>PassiveProgress</c>, and
 /// <c>PassiveResetOverride</c>, and §2 nests <c>PetState</c> inside
 /// <c>BattleState</c> (§2.3, §2). The Pet is the combat character and the Player
 /// is the account/owner with no authoritative battle-time combat pool
@@ -42,10 +44,25 @@ namespace GameServer.Domain.Battle;
 /// <c>BoardState</c>, <c>RngState</c>, and <c>BattleState.Combo</c> /
 /// <c>BattleState.MatchCount</c> (§5.1).
 ///
+/// <b><c>PetId</c> is the owned Pet instance identity.</b> It is the same value
+/// as <see cref="GameServer.Domain.Pets.Pet.PetInstanceId"/> (<c>DATABASE.md</c>
+/// §1), the <c>petId</c> submitted to <c>POST /api/battle/start</c>
+/// (<c>API_CONTRACTS.md</c> §3), and <c>BattleResult.PetInstanceId</c> at battle
+/// end (<c>DATABASE.md</c> §1). It is <b>not</b> a Pet definition id and not the
+/// display <c>Identity</c> name (<c>PET_RULES.md</c> §2,
+/// <c>PetDefinition.Identity</c>) — those are persistent definition-side values,
+/// not battle state. It is <b>set once at battle creation and never changes</b>
+/// (§2.3 item 2): selecting a Pet locks it in for the duration of the battle
+/// (<c>PET_RULES.md</c> §2 item 3), so no resolution writes it and no event
+/// changes it. <c>ADR-014</c> decision 4 evaluated whether a separate
+/// <c>PetInstanceId</c> member was required and recorded that it is not: this
+/// member already is the instance, and a second member would duplicate a value
+/// the record already owns (<c>GAME_STATE.md</c> §0 item 5).
+///
 /// <b>Only the fields this stage requires exist.</b> §2.3 also lists
-/// <c>PetId</c>/Identity, <c>Tier</c>/<c>Star</c>/<c>Level</c> and the
+/// <c>Tier</c>/<c>Star</c>/<c>Level</c> and the
 /// <c>StatusEffects[]</c> collection.
-/// Those belong to the Pet identity and progression and Status Effect stages
+/// Those belong to the Pet progression and Status Effect stages
 /// and are <b>not yet
 /// implemented</b>, not <b>not required</b> (§0 item 4, §2.0.5.3,
 /// <c>SIGNALR_PROTOCOL.md</c> §4.3 item 2): each is added by its own owning task,
@@ -99,7 +116,7 @@ namespace GameServer.Domain.Battle;
 /// are its <b>definition</b> (<c>PASSIVE_RULES.md</c> §1) and are not stored
 /// beside it (§2.3 item 1). <see cref="PassiveProgress"/> carries the Threshold
 /// because the documented progress <i>pair</i> is "current count vs. threshold"
-/// (§2.3, §2.5) and <c>PASSIVE_RULES.md</c> §6 item 1 requires the pair to be
+/// (§2.3) and <c>PASSIVE_RULES.md</c> §6 item 1 requires the pair to be
 /// rendered together; the identity travels separately and names which definition
 /// the values are read from (§2.3: "it is an identity, not a definition").
 ///
@@ -234,7 +251,7 @@ namespace GameServer.Domain.Battle;
 /// </param>
 /// <param name="PassiveProgress">
 /// The Passive's charging position — the progress reached and the Threshold it is
-/// measured against (<c>GAME_STATE.md</c> §2.3, §2.5;
+/// measured against (<c>GAME_STATE.md</c> §2.3;
 /// <c>PASSIVE_RULES.md</c> §2).
 ///
 /// It starts at <see cref="PassiveProgress.AtStart"/> — the Passive's own
@@ -310,7 +327,28 @@ namespace GameServer.Domain.Battle;
 /// written back (<c>DATABASE.md</c> §2: "Battle equip of Cards is not persisted
 /// here").
 /// </param>
+/// <param name="PetId">
+/// The owned Pet instance this battle's active Pet is (<c>GAME_STATE.md</c>
+/// §2.3) — the same value as <see cref="GameServer.Domain.Pets.Pet.PetInstanceId"/>
+/// (<c>DATABASE.md</c> §1), the <c>petId</c> submitted to
+/// <c>POST /api/battle/start</c> (<c>API_CONTRACTS.md</c> §3), and
+/// <c>BattleResult.PetInstanceId</c> at battle end (<c>DATABASE.md</c> §1).
+///
+/// It is the <b>instance</b>, never <c>PetDefinitionId</c> and never the display
+/// <c>Identity</c> name (<c>PET_RULES.md</c> §2, <c>PetDefinition.Identity</c>):
+/// the instance is what the battle-end persistence path needs, and <c>ADR-014</c>
+/// decision 4 records that this member already is it — no second
+/// <c>PetInstanceId</c> member exists in this record (<c>GAME_STATE.md</c> §0
+/// item 5).
+///
+/// It is <b>not optional, not nullable, and never lazily initialized</b>: a
+/// battle always has its one active Pet, which was selected from the Player's
+/// owned collection at battle creation (§2.3 item 3). A caller therefore
+/// supplies the identity of the owned Pet it selected rather than letting one
+/// be defaulted with an invented value.
+/// </param>
 public readonly record struct PetState(
+    PetId PetId,
     int HP,
     int MaxHP,
     int ATK,
@@ -404,13 +442,23 @@ public readonly record struct PetState(
     public bool HasResetOverride => PassiveResetOverride is not null;
 
     /// <summary>
-    /// The documented <c>PetState</c> of a newly created battle: the active Pet's
+    /// The documented <c>PetState</c> of a newly created battle: the identity of
+    /// the owned Pet instance the battle selected, the active Pet's
     /// combat stats at their <c>COMBAT_RULES.md</c> §1.1 MVP defaults at full
     /// health with no Power generated, its Element, Passive identity, progress at
     /// the start of its first charge, and
     /// the declared Reset Behavior (<c>GAME_STATE.md</c> §2.3;
     /// <c>SIGNALR_PROTOCOL.md</c> §4.3 item 4).
     /// </summary>
+    /// <param name="petId">
+    /// The identity of the owned Pet instance the battle selected
+    /// (<c>GAME_STATE.md</c> §2.3, <c>DATABASE.md</c> §1) — the
+    /// <see cref="GameServer.Domain.Pets.Pet.PetInstanceId"/> the battle-start
+    /// path resolved from the Player's owned collection. It is supplied by the
+    /// battle-creation caller, which already holds the instance, so no value is
+    /// invented here and none is taken from client-supplied state
+    /// (<c>GAME_RULES.md</c> §18, <c>ADR-001</c>).
+    /// </param>
     /// <param name="element">
     /// The active Pet's one Element (<c>GAME_STATE.md</c> §2.3,
     /// <c>PET_RULES.md</c> §1, <c>ELEMENT_RULES.md</c> §6). It comes from the
@@ -449,6 +497,7 @@ public readonly record struct PetState(
     /// (<c>GAME_STATE.md</c> §2.3).
     /// </param>
     public static PetState AtBattleCreation(
+        PetId petId,
         Element element,
         PassiveId passiveId,
         int passiveThreshold,
@@ -465,6 +514,7 @@ public readonly record struct PetState(
         // generated. The values are read from the constants above and are not
         // restated, so §1.1's balance values have exactly one spelling.
         new(
+            PetId: petId,
             HP: DefaultHP,
             MaxHP: DefaultMaxHP,
             ATK: DefaultATK,

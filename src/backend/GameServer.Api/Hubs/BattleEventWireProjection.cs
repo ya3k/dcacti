@@ -163,7 +163,8 @@ namespace GameServer.Api.Hubs;
 /// owning entity — <c>PetState.PetId</c> or <c>BossState.BossId</c>. It is the
 /// same fact — "which entity owns this event" — and the same wire name on all
 /// three events, so it is one member, and it is always present on each of them.
-/// For a Boss it is the display-name BossId (e.g. <c>"Hỏa Long"</c>), never a slug
+/// For a Boss it is the canonical technical Identity <c>BossState.BossId</c>
+/// (e.g. <c>"boss-hoa-long"</c>), never a display name
 /// (<c>BOSS_RULES.md</c> §6.4). The damage events have no such member, so no
 /// <c>DamageDealt</c>/<c>DamageTaken</c> item writes it.
 /// </param>
@@ -332,7 +333,9 @@ public sealed record BattleEventWireDto(
     /// </param>
     /// <param name="sourceId">
     /// The identity of the owning entity (<c>§3.2.16</c> item 2) — the
-    /// display-name BossId for a Boss (<c>BOSS_RULES.md</c> §6.4).
+    /// canonical technical Identity <c>BossState.BossId</c> for a Boss
+    /// (<c>boss-&lt;ascii-kebab-case-name&gt;</c>, e.g. <c>"boss-hoa-long"</c>;
+    /// never a display name — <c>BOSS_RULES.md</c> §6.4).
     /// </param>
     public static BattleEventWireDto PassiveCharged(
         string passiveId,
@@ -368,8 +371,10 @@ public sealed record BattleEventWireDto(
     /// (<c>§3.2.17</c>, <c>BOSS_RULES.md</c> §7). Always present.
     /// </param>
     /// <param name="sourceId">
-    /// The identity of the owning entity (<c>§3.2.17</c>) — the display-name
-    /// BossId for a Boss (<c>BOSS_RULES.md</c> §6.4).
+    /// The identity of the owning entity (<c>§3.2.17</c>) — the canonical
+    /// technical Identity <c>BossState.BossId</c> for a Boss (e.g.
+    /// <c>"boss-hoa-long"</c>; never a display name — <c>BOSS_RULES.md</c>
+    /// §6.4).
     /// </param>
     public static BattleEventWireDto PassiveTriggered(
         string passiveId,
@@ -395,8 +400,9 @@ public sealed record BattleEventWireDto(
     /// definition carries, reported rather than re-derived (§3.2.18 item 1).
     /// </param>
     /// <param name="sourceId">
-    /// The Boss's identity — the display-name <c>BossState.BossId</c>
-    /// (<c>BOSS_RULES.md</c> §6.4, §3.2.18 item 2).
+    /// The Boss's identity — the canonical technical Identity
+    /// <c>BossState.BossId</c> (e.g. <c>"boss-hoa-long"</c>), never a display
+    /// name (<c>BOSS_RULES.md</c> §6.4, §3.2.18 item 2).
     /// </param>
     public static BattleEventWireDto BossSkillCast(string skillId, string sourceId) =>
         new(
@@ -689,8 +695,9 @@ public static class BattleEventWireProjection
             // from the payload, which the emitting stage set.
             source: charged.Source,
 
-            // §3.2.16 item 2: the owning entity's identity — the display-name
-            // BossId for a Boss (BOSS_RULES.md §6.4). Omitted when the emitter had
+            // §3.2.16 item 2: the owning entity's identity — the canonical
+            // technical Identity BossState.BossId for a Boss, never a display
+            // name (BOSS_RULES.md §6.4). Omitted when the emitter had
             // none (the Pet Passive stage, whose PetState carries no PetId yet).
             sourceId: charged.SourceId);
 

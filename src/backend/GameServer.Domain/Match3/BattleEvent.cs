@@ -207,8 +207,8 @@ public enum BattleEventType
 /// is the value the Boss's definition carries (<c>BOSS_RULES.md</c> §6.4 — e.g.
 /// <c>"flame-burst"</c>), which the client uses to look up the Skill's visual and
 /// effect description; <c>SourceId</c> is the Boss's <c>BossState.BossId</c> —
-/// the display name (e.g. <c>"Hỏa Long"</c>), never a slug (<c>§6.4</c>,
-/// <c>SIGNALR_PROTOCOL.md</c> §3.2.18 item 2).
+/// the canonical technical Identity (e.g. <c>"boss-hoa-long"</c>), never a
+/// display name (<c>§6.4</c>, <c>SIGNALR_PROTOCOL.md</c> §3.2.18 item 2).
 ///
 /// <b>It carries no effect detail.</b> §3.2.18 item 3 leaves the Skill's damage to
 /// the <c>DamageCalculated</c>/<c>DamageDealt</c>/<c>DamageTaken</c> events that
@@ -226,12 +226,13 @@ public enum BattleEventType
 /// </param>
 /// <param name="SourceId">
 /// The Boss's identity (<c>BOSS_RULES.md</c> §6.4,
-/// <c>SIGNALR_PROTOCOL.md</c> §3.2.18 item 2) — the display-name
-/// <c>BossState.BossId</c>.
+/// <c>SIGNALR_PROTOCOL.md</c> §3.2.18 item 2) — the canonical technical
+/// Identity <c>BossState.BossId</c> (e.g. <c>"boss-hoa-long"</c>), never a
+/// display name.
 /// </param>
 public readonly record struct BossSkillCastEvent(string SkillId, string SourceId)
 {
-    /// <summary>"BossSkillCast (Hỏa Long → flame-burst)" — for test diagnostics only.</summary>
+    /// <summary>"BossSkillCast (boss-hoa-long → flame-burst)" — for test diagnostics only.</summary>
     public override string ToString() => $"BossSkillCast ({SourceId} -> {SkillId})";
 }
 
@@ -704,8 +705,10 @@ public readonly record struct BattleEvent
     /// (<c>BOSS_RULES.md</c> §6.4).
     /// </param>
     /// <param name="sourceId">
-    /// The Boss's identity — the display-name <c>BossState.BossId</c>
-    /// (<c>BOSS_RULES.md</c> §6.4, <c>SIGNALR_PROTOCOL.md</c> §3.2.18 item 2).
+    /// The Boss's identity — the canonical technical Identity
+    /// <c>BossState.BossId</c> (e.g. <c>"boss-hoa-long"</c>), never a display
+    /// name (<c>BOSS_RULES.md</c> §6.4, <c>SIGNALR_PROTOCOL.md</c> §3.2.18
+    /// item 2).
     /// </param>
     public static BattleEvent ForBossSkillCast(string skillId, string sourceId) =>
         new(

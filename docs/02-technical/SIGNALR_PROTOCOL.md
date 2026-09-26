@@ -1,6 +1,11 @@
 # SignalR Protocol
 
-**Version:** 2.2 (Player/Pet role model per ADR-011 — state-path references
+**Version:** 2.4 (§3.2.16–§3.2.18 `sourceId` boss values corrected to the
+canonical technical Boss Identity `"boss-hoa-long"` per `BOSS_RULES.md` §6.4 /
+TASK-046 — superseding the prior 2.1 display-name correction; prior 2.3:
+§7.1 snapshot projection excludes the non-wire
+`BattleState.PlayerId` — GAME_STATE.md §2.8, ADR-014; prior 2.2:
+Player/Pet role model per ADR-011 — state-path references
 `PlayerState.*` corrected to `BattleState`/`PetState`; wire member names
 `playerState`, `finalPlayerHp`, and `target="player"` retained as fixed
 protocol labels; prior 2.1: §3.2.16–§3.2.18 `sourceId` examples corrected
@@ -716,7 +721,7 @@ specialGem
     "type": "PassiveCharged",
     "passiveId": "boss-hoa-long-rage",
     "source": "boss",
-    "sourceId": "Hỏa Long",
+    "sourceId": "boss-hoa-long",
     "progress": 3,
     "threshold": 5
 }
@@ -727,7 +732,7 @@ specialGem
 | `type` | string | always | `"PassiveCharged"` |
 | `passiveId` | string | always | the Passive's identity (`GAME_STATE.md` §2.3 `PetState.PassiveId` or §2.4 `BossState.PassiveId`) |
 | `source` | string | always | `"pet"` or `"boss"` — which entity's Passive charged (`GAME_EVENTS.md` §2) |
-| `sourceId` | string | always | the identity of the owning entity (`PetState.PetId` or `BossState.BossId`) |
+| `sourceId` | string | always | the identity of the owning entity — `PetState.PetId` (Pet instance identity) or `BossState.BossId` (canonical technical Boss Identity, `BOSS_RULES.md` §6.4; never a display name) |
 | `progress` | int | always | the new progress value after the increment (`PASSIVE_RULES.md` §2) |
 | `threshold` | int | always | the Passive's threshold (`PASSIVE_RULES.md` §1) |
 
@@ -736,9 +741,10 @@ specialGem
    The string is `"pet"` or `"boss"`, matching the `DamageDealt`/`DamageTaken`
    convention for party identifiers (§3.2.14 item 1).
 2. **`sourceId` identifies the specific entity.** For a Pet Passive, it is
-   `PetState.PetId`; for a Boss Passive, it is `BossState.BossId` — the
-   Boss's display-name BossId (e.g. `"Hỏa Long"`), per `BOSS_RULES.md` §6.4.
-   The client uses both `source` and `sourceId` to attribute the event.
+   `PetState.PetId` (the Pet instance identity); for a Boss Passive, it is
+   `BossState.BossId` — the canonical technical Boss Identity (e.g.
+   `"boss-hoa-long"`), per `BOSS_RULES.md` §6.4, never the Boss's display
+   name. The client uses both `source` and `sourceId` to attribute the event.
 3. **`passiveId` is the same value the owning entity's state holds.** It is
    never re-derived or invented by the emitting stage (`GAME_EVENTS.md` §2
    item 1).
@@ -750,7 +756,7 @@ specialGem
     "type": "PassiveTriggered",
     "passiveId": "boss-hoa-long-rage",
     "source": "boss",
-    "sourceId": "Hỏa Long",
+    "sourceId": "boss-hoa-long",
     "progress": 5,
     "threshold": 5
 }
@@ -761,7 +767,7 @@ specialGem
 | `type` | string | always | `"PassiveTriggered"` |
 | `passiveId` | string | always | the Passive's identity |
 | `source` | string | always | `"pet"` or `"boss"` |
-| `sourceId` | string | always | the identity of the owning entity |
+| `sourceId` | string | always | the identity of the owning entity (same semantics as §3.2.16) |
 | `progress` | int | always | progress at the moment the threshold was crossed — before reset (`PASSIVE_RULES.md` §2 item 4, §4) |
 | `threshold` | int | always | the Passive's threshold |
 
@@ -782,7 +788,7 @@ specialGem
 {
     "type": "BossSkillCast",
     "skillId": "flame-burst",
-    "sourceId": "Hỏa Long"
+    "sourceId": "boss-hoa-long"
 }
 ```
 
@@ -790,7 +796,7 @@ specialGem
 | --- | --- | --- | --- |
 | `type` | string | always | `"BossSkillCast"` |
 | `skillId` | string | always | the Boss Skill's identity (`BOSS_RULES.md` §4) |
-| `sourceId` | string | always | the Boss's identity (`BossState.BossId`) |
+| `sourceId` | string | always | the Boss's canonical technical Identity (`BossState.BossId` — `BOSS_RULES.md` §6.4; never a display name) |
 
 1. **`skillId` identifies which Boss Skill was used.** It is the same
    identity the boss definition carries (`BOSS_RULES.md` §6.4 — e.g.
@@ -799,8 +805,8 @@ specialGem
 2. **`sourceId` identifies the Boss.** In MVP there is exactly one Boss per
    battle, but the field is present for future-proofing and consistency with
    `PassiveCharged`/`PassiveTriggered` (§3.2.16). The value is the Boss's
-   display-name BossId (`BossState.BossId`, e.g. `"Hỏa Long"`) per
-   `BOSS_RULES.md` §6.4.
+   canonical technical Identity (`BossState.BossId`, e.g. `"boss-hoa-long"`)
+   per `BOSS_RULES.md` §6.4 — never the display name.
 3. **Effect details are carried by subsequent damage events.** The skill's
    damage (if any) is reported by `DamageCalculated`/`DamageDealt`/
    `DamageTaken` in the same `ReceiveEvents` batch, with `source = "boss"`
@@ -960,7 +966,7 @@ action: it reports state (§4 item 6).
     is a **client-facing** field: `PASSIVE_RULES.md` §6 item 1 requires the
     active Pet's Passive progress to be exposed to the player as a UI-facing
     value (e.g. `7 / 10 Matches`), and `PetState.PassiveProgress` is the state
-    that value is read from (`GAME_STATE.md` §2.3, §2.5). Item 4 therefore
+    that value is read from (`GAME_STATE.md` §2.3). Item 4 therefore
     applies to it in the ordinary way — it is a field of the implemented stage,
     so it is delivered — and no exclusion is added for it. Its delivery
     contract is §4.3; it adds no message, method, or subscription (§4 item 11),
@@ -1104,7 +1110,7 @@ petState
 4. **`passiveProgress` is a nested object with exactly two members** —
    `threshold` and `current`, both integers, both always present — following
    the §3.2 flat-object convention. It is the wire projection of
-   `GAME_STATE.md` §2.5's `PassiveProgress` `(Threshold, Current)` pair, and
+   `GAME_STATE.md` §2.3's `PassiveProgress` `(Threshold, Current)` pair, and
    the two travel together as one logical field for the same reason
    `RngState`'s two components do (§4.1 item 2): a reader renders the
    documented `Current / Threshold` pair without supplying either from
@@ -1237,7 +1243,9 @@ without waiting for/parsing the event broadcast.
 
 1. On reconnect, the client calls `GetBattleState(battleId)` (a request/
    response Hub method, not a broadcast) to fetch the current authoritative
-   `BattleState` snapshot (`GAME_STATE.md` §2) plus its `Sequence`.
+   `BattleState` snapshot (`GAME_STATE.md` §2, projected to the wire:
+   `BattleState.PlayerId` is server-only and excluded — `GAME_STATE.md`
+   §2.8) plus its `Sequence`.
 2. The client discards any local prediction and re-renders from this
    snapshot — it does not attempt to replay missed individual events.
 3. If `GetBattleState` returns `BATTLE_NOT_FOUND` (state expired/cleared,

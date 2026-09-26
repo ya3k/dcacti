@@ -18,15 +18,14 @@ public static class DependencyInjection
         // active battle state (REDIS_STATE.md) and stores no battle-scoped data.
         services.AddSingleton<RuntimeService>();
 
-        // Battle State Foundation / Board Foundation State lifecycle boundary
-        // (GAME_STATE.md §2.0, §2.0.5).
+        // Battle lifecycle boundary (GAME_STATE.md §2; REDIS_STATE.md §1–§4).
         //
-        // Holds the authoritative staged state (BattleId, Turn, Sequence,
-        // RngSeed, RngState, BoardState) for a battle session and serves it to
-        // the realtime boundary on group join (SIGNALR_PROTOCOL.md §4.1). It is
-        // process-local and safe to lose: this staged state is explicitly NOT
-        // persisted to Redis (REDIS_STATE.md §7.1, §7.4) or PostgreSQL
-        // (GAME_STATE.md §2.0.5.4).
+        // Creates a battle, loads it at the start of a resolution, runs the
+        // documented Domain pipeline, and stores the result under the Sequence
+        // compare-and-set. It holds no authoritative state of its own: that is
+        // the active-state record's, reached through IBattleStateRepository
+        // (REDIS_STATE.md §2 item 2), whose implementation is registered by the
+        // Infrastructure layer.
         //
         // The seed source is the server-side entropy source for RngSeed
         // (GAME_STATE.md §2.6.1); it is never supplied or influenced by the

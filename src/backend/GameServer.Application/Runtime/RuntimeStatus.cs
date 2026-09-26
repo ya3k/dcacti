@@ -4,9 +4,10 @@ namespace GameServer.Application.Runtime;
 /// Technical session/connection status reported to a client.
 ///
 /// This is runtime infrastructure only. It deliberately carries no gameplay
-/// state: authoritative battle state is <c>BattleState</c> (GAME_STATE.md §2,
-/// Redis per REDIS_STATE.md) and is not implemented yet. Nothing here is a
-/// substitute for it.
+/// state: authoritative battle state is <c>BattleState</c> (<c>GAME_STATE.md</c>
+/// §2), persisted as the active-state record <c>battle:{battleId}:state</c>
+/// (<c>REDIS_STATE.md</c> §1–§2) — a different boundary from this one, and
+/// nothing here is a substitute for it.
 /// </summary>
 public enum RuntimeConnectionStatus
 {
@@ -29,7 +30,8 @@ public enum RuntimeConnectionStatus
 /// <paramref name="Sequence"/> is the runtime connection sequence — a monotonic
 /// counter of technical lifecycle transitions. It is NOT
 /// <c>BattleState.Sequence</c> (GAME_STATE.md §5), which orders gameplay
-/// resolutions and does not exist until battle resolution is implemented.
+/// resolutions and is the active-state record's own concurrency token
+/// (<c>REDIS_STATE.md</c> §4 item 6).
 /// </summary>
 public sealed record RuntimeStatus(
     string ConnectionId,

@@ -17,10 +17,10 @@ namespace GameServer.Api.Controllers;
 /// are the fixed ones battle creation produced
 /// (<c>RELIC_RULES.md</c> §2.5, <c>CARD_RULES.md</c> §1, ADR-012 items 8 and 10).
 ///
-/// <b>It reads the state, it does not own it.</b> <see cref="BattleStateService"/>
-/// is the authoritative owner (<c>GAME_STATE.md</c> §5.1); this projection is the
-/// endpoint's read of it for the one response §3 defines. It keeps no copy and
-/// changes nothing — the same read-after-create boundary
+/// <b>It reads the state, it does not own it.</b> The active-state store is the
+/// record of truth (<c>REDIS_STATE.md</c> §2 item 2); this projection is the
+/// endpoint's read of the record battle creation just wrote. It keeps no copy
+/// and changes nothing — the same read-after-create boundary
 /// <c>SIGNALR_PROTOCOL.md</c> §4.1 uses to deliver state on group join.
 /// </summary>
 internal static class BattleStartStateSummary
@@ -31,19 +31,21 @@ internal static class BattleStartStateSummary
     /// </summary>
     /// <param name="battleId">The created battle's identity.</param>
     /// <param name="battles">The authoritative battle-state boundary.</param>
+    /// <param name="cancellationToken">Cancels the store read.</param>
     /// <exception cref="InvalidOperationException">
     /// The just-created battle does not resolve. <c>API_CONTRACTS.md</c> §3
     /// defines a success response for a created battle, and a created battle's
-    /// state is the value §2 requires it to carry, so a missing state is a
+    /// state is the value §2 requires it to carry, so a missing record is a
     /// server defect and is never reported as a partial or empty summary.
     /// </exception>
-    internal static BattleStartInitialState For(
+    internal static async Task<BattleStartInitialState> ForAsync(
         string battleId,
-        BattleStateService battles)
+        BattleStateService battles,
+        CancellationToken cancellationToken = default)
     {
-        var state = battles.GetBattle(battleId)
+        var state = await battles.GetBattleAsync(battleId, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException(
-                "The battle created by POST /api/battle/start did not resolve in the authoritative store.");
+                "The battle created by POST /api/battle/start did not resolve in the active-state store.");
 
         return new BattleStartInitialState(
             BattleId: state.BattleId,

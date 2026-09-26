@@ -44,7 +44,19 @@ public class BossResponseWireTests : IClassFixture<WebApplicationFactory<Program
     }
 
     private static readonly BattleStateService.PetConfiguration Pet =
-        new(Element.Hoa, new PassiveId("xich-lang"), PassiveThreshold: 5);
+        new(
+            new GameServer.Domain.Pets.PetId("pet_instance_wire_boss_1"),
+            Element.Hoa,
+            new PassiveId("xich-lang"),
+            PassiveThreshold: 5);
+
+    /// <summary>
+    /// The owning Player of the battles this suite creates
+    /// (<c>GAME_STATE.md</c> §2.8) — recorded at creation and, per §2.8 item 3,
+    /// excluded from every payload this suite asserts.
+    /// </summary>
+    private static readonly GameServer.Domain.Players.PlayerId Owner =
+        new("player_boss_response_wire_owner");
 
     private HubConnection BuildHubConnection() =>
         new HubConnectionBuilder()
@@ -58,12 +70,12 @@ public class BossResponseWireTests : IClassFixture<WebApplicationFactory<Program
     /// Creates a battle server-side against <paramref name="bossDefinition"/> and
     /// returns an adjacent pair of its generated board that produces a Match.
     /// </summary>
-    private SwapRequest CreateBattleWithPair(string battleId, BossDefinition bossDefinition)
+    private async Task<SwapRequest> CreateBattleWithPairAsync(string battleId, BossDefinition bossDefinition)
     {
         using var scope = _factory.Services.CreateScope();
         var service = scope.ServiceProvider.GetRequiredService<BattleStateService>();
 
-        var created = service.CreateBattle(battleId, Pet, bossDefinition);
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, bossDefinition);
 
         return FindMatchProducingPair(created.BoardState);
     }
@@ -102,7 +114,7 @@ public class BossResponseWireTests : IClassFixture<WebApplicationFactory<Program
         // §3.2.16: `source` and `sourceId` are ALWAYS present on both shared Passive
         // events, alongside the identity, the progress, and the Threshold.
         const string battleId = "wire-boss-passive-source";
-        var pair = CreateBattleWithPair(battleId, BossDefinitions.HoaLong);
+        var pair = await CreateBattleWithPairAsync(battleId, BossDefinitions.HoaLong);
 
         var payload = await SwapOnceAndReadTheBatch(battleId, pair);
 
@@ -123,9 +135,9 @@ public class BossResponseWireTests : IClassFixture<WebApplicationFactory<Program
             charges,
             c => Assert.Contains(c.GetProperty("source").GetString(), new[] { "pet", "boss" }));
 
-        // The Boss's charges name the Boss by its display-name BossId —
-        // BOSS_RULES.md §6.4 / §3.2.16 item 2 — and its Passive identity is the
-        // defined one.
+        // The Boss's charges name the Boss by its canonical technical Identity
+        // BossId — BOSS_RULES.md §6.4 / §3.2.16 item 2 — and its Passive identity
+        // is the defined one.
         var bossCharges = charges
             .Where(c => c.GetProperty("source").GetString() == "boss")
             .ToArray();
@@ -136,7 +148,7 @@ public class BossResponseWireTests : IClassFixture<WebApplicationFactory<Program
             bossCharges,
             c =>
             {
-                Assert.Equal("Hỏa Long", c.GetProperty("sourceId").GetString());
+                Assert.Equal("boss-hoa-long", c.GetProperty("sourceId").GetString());
                 Assert.Equal("boss-hoa-long-rage", c.GetProperty("passiveId").GetString());
                 Assert.Equal(5, c.GetProperty("threshold").GetInt32());
             });
@@ -154,7 +166,7 @@ public class BossResponseWireTests : IClassFixture<WebApplicationFactory<Program
         // Player Matches, and emitting no PassiveCharged/PassiveTriggered from match
         // progress. The Pet's own charging is unaffected.
         const string battleId = "wire-thuy-ma-no-charge";
-        var pair = CreateBattleWithPair(battleId, BossDefinitions.ThuyMa);
+        var pair = await CreateBattleWithPairAsync(battleId, BossDefinitions.ThuyMa);
 
         var payload = await SwapOnceAndReadTheBatch(battleId, pair);
 
@@ -180,8 +192,12 @@ public class BossResponseWireTests : IClassFixture<WebApplicationFactory<Program
         // definition whose requirement one Swap's Matches satisfy.
         const string battleId = "wire-boss-skill-cast";
 
-        var boss = BossDefinitions.HoaLong with { SkillChargeRequirement = 1 };
-        var pair = CreateBattleWithPair(battleId, boss);
+        var boss = BossDefinitions.HoaLong with
+        {
+            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition
+                with { ChargeRequirement = 1 },
+        };
+        var pair = await CreateBattleWithPairAsync(battleId, boss);
 
         var payload = await SwapOnceAndReadTheBatch(battleId, pair);
 
@@ -192,7 +208,7 @@ public class BossResponseWireTests : IClassFixture<WebApplicationFactory<Program
         Assert.Single(casts);
 
         Assert.Equal("flame-burst", casts[0].GetProperty("skillId").GetString());
-        Assert.Equal("Hỏa Long", casts[0].GetProperty("sourceId").GetString());
+        Assert.Equal("boss-hoa-long", casts[0].GetProperty("sourceId").GetString());
 
         // §3.2.18: the cast carries exactly the discriminator and its two members.
         Assert.Equal(
@@ -218,7 +234,7 @@ public class BossResponseWireTests : IClassFixture<WebApplicationFactory<Program
         // records for Boss→Player damage. Both damage directions now travel in one
         // batch, so the two pairs are distinguished by these members.
         const string battleId = "wire-boss-damage-direction";
-        var pair = CreateBattleWithPair(battleId, BossDefinitions.HoaLong);
+        var pair = await CreateBattleWithPairAsync(battleId, BossDefinitions.HoaLong);
 
         var payload = await SwapOnceAndReadTheBatch(battleId, pair);
 
@@ -252,7 +268,7 @@ public class BossResponseWireTests : IClassFixture<WebApplicationFactory<Program
         const string battleId = "wire-battle-won";
 
         var boss = BossDefinitions.HoaLong with { MaxHP = 1 };
-        var pair = CreateBattleWithPair(battleId, boss);
+        var pair = await CreateBattleWithPairAsync(battleId, boss);
 
         var payload = await SwapOnceAndReadTheBatch(battleId, pair);
 
@@ -292,11 +308,15 @@ public class BossResponseWireTests : IClassFixture<WebApplicationFactory<Program
         var boss = BossDefinitions.HoaLong with
         {
             ATK = 100_000,
-            SkillChargeRequirement = int.MaxValue,
-            PassiveThreshold = 0,
+            // Keep the Skill out of the way and the Passive inert so the
+            // instance under test is the Basic Attack.
+            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition
+                with { ChargeRequirement = int.MaxValue },
+            PassiveDefinition = BossDefinitions.HoaLong.PassiveDefinition
+                with { Threshold = null },
         };
 
-        var pair = CreateBattleWithPair(battleId, boss);
+        var pair = await CreateBattleWithPairAsync(battleId, boss);
         var payload = await SwapOnceAndReadTheBatch(battleId, pair);
 
         var events = payload.GetProperty("events").EnumerateArray().ToArray();
@@ -319,7 +339,7 @@ public class BossResponseWireTests : IClassFixture<WebApplicationFactory<Program
         // stats neither does in one Swap, so neither outcome event is emitted — the
         // absence is the documented statement that the action was not terminal.
         const string battleId = "wire-no-outcome";
-        var pair = CreateBattleWithPair(battleId, BossDefinitions.HoaLong);
+        var pair = await CreateBattleWithPairAsync(battleId, BossDefinitions.HoaLong);
 
         var payload = await SwapOnceAndReadTheBatch(battleId, pair);
 
@@ -341,7 +361,7 @@ public class BossResponseWireTests : IClassFixture<WebApplicationFactory<Program
         // Boss Basic Attack is reported by its damage instance, and Boss state changes
         // are inferred from the sequence — so none of these names exists on the wire.
         const string battleId = "wire-no-forbidden-boss-events";
-        var pair = CreateBattleWithPair(battleId, BossDefinitions.HoaLong);
+        var pair = await CreateBattleWithPairAsync(battleId, BossDefinitions.HoaLong);
 
         var payload = await SwapOnceAndReadTheBatch(battleId, pair);
 

@@ -5,6 +5,8 @@ using GameServer.Domain.Combat;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
+using GameServer.Domain.Pets;
+using GameServer.Domain.Players;
 using Xunit;
 
 namespace GameServer.Application.Tests;
@@ -32,7 +34,15 @@ namespace GameServer.Application.Tests;
 public class VictoryDefeatTests
 {
     private static readonly BattleStateService.PetConfiguration Pet =
-        new(Element.Hoa, new PassiveId("xich-lang"), PassiveThreshold: 5);
+        new(new PetId("pet_instance_1"), Element.Hoa, new PassiveId("xich-lang"), PassiveThreshold: 5);
+
+    /// <summary>
+    /// The owning Player of these battles (<c>GAME_STATE.md</c> §2.8) — the
+    /// identity the creation path records. This suite asserts outcome and the
+    /// terminal payload, not identity, so one fixture value is supplied in one
+    /// place.
+    /// </summary>
+    private static readonly PlayerId Owner = new("player_victory_defeat_owner");
 
     /// <summary>
     /// A Boss definition whose HP is low enough that one committed Swap's damage
@@ -52,9 +62,12 @@ public class VictoryDefeatTests
         {
             ATK = 100_000,
             // Keep the Skill out of the way so the instance under test is the Basic
-            // Attack, and keep the Passive inert so no other step changes the state.
-            SkillChargeRequirement = int.MaxValue,
-            PassiveThreshold = 0,
+            // Attack, and keep the Passive inert so no other step changes the state
+            // (a null Threshold is the always-active, non-charging marker).
+            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition
+                with { ChargeRequirement = int.MaxValue },
+            PassiveDefinition = BossDefinitions.HoaLong.PassiveDefinition
+                with { Threshold = null },
         };
 
     // =======================================================================
@@ -62,17 +75,17 @@ public class VictoryDefeatTests
     // =======================================================================
 
     [Fact]
-    public void BattleWon_ShouldBeEmittedWhenTheBossReachesZeroHp()
+    public async Task BattleWon_ShouldBeEmittedWhenTheBossReachesZeroHp()
     {
         // GAME_RULES.md §1.4: the battle ends when the Boss reaches 0 HP. A Boss with
         // 1 HP cannot survive any damage instance, and a committed Swap always deals a
         // positive amount at the documented MVP stats (COMBAT_RULES.md §3).
-        var service = new BattleStateService(new FixedRngSeedSource());
+        var service = NewService();
         var battleId = "victory-boss-dies";
-        var created = service.CreateBattle(battleId, Pet, FragileBoss(maxHp: 1));
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, FragileBoss(maxHp: 1));
 
         var pair = FindMatchProducingPair(created.BoardState);
-        var result = service.ExecuteSwap(battleId, pair);
+        var result = await service.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -83,18 +96,18 @@ public class VictoryDefeatTests
     }
 
     [Fact]
-    public void BattleWon_ShouldCarryTheTerminalHpValues()
+    public async Task BattleWon_ShouldCarryTheTerminalHpValues()
     {
         // SIGNALR_PROTOCOL.md §3.2.19 item 2: "finalBossHp and finalPlayerHp are the
         // terminal HP values ... the state values at the moment the battle ended,
         // after all damage from the final action has been applied". On this path the
         // Boss is at 0 and the player is untouched by any Boss Response.
-        var service = new BattleStateService(new FixedRngSeedSource());
+        var service = NewService();
         var battleId = "victory-hp-values";
-        var created = service.CreateBattle(battleId, Pet, FragileBoss(maxHp: 1));
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, FragileBoss(maxHp: 1));
 
         var pair = FindMatchProducingPair(created.BoardState);
-        var result = service.ExecuteSwap(battleId, pair);
+        var result = await service.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -113,17 +126,17 @@ public class VictoryDefeatTests
     }
 
     [Fact]
-    public void BattleWon_ShouldPreemptTheEntireBossResponse()
+    public async Task BattleWon_ShouldPreemptTheEntireBossResponse()
     {
         // BOSS_RULES.md §5 item 4 / §3.3: the battle ends "with no Boss Response". A
         // dead Boss must not trigger its Passive, cast its Skill, or make a Basic
         // Attack — so none of those events appears after the BattleWon.
-        var service = new BattleStateService(new FixedRngSeedSource());
+        var service = NewService();
         var battleId = "victory-no-response";
-        var created = service.CreateBattle(battleId, Pet, FragileBoss(maxHp: 1));
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, FragileBoss(maxHp: 1));
 
         var pair = FindMatchProducingPair(created.BoardState);
-        var result = service.ExecuteSwap(battleId, pair);
+        var result = await service.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -159,18 +172,18 @@ public class VictoryDefeatTests
     }
 
     [Fact]
-    public void BattleWon_ShouldStillEvaluateEnrageFirst()
+    public async Task BattleWon_ShouldStillEvaluateEnrageFirst()
     {
         // BOSS_RULES.md §5 item 4 / TASK-022 §3.6: "the state transition is applied
         // whenever the HP condition holds, including when Player damage has just
         // reduced Boss HP to 0". Enrage is NOT skipped on death — only the Boss
         // Response is. So the Boss ends at 0 HP AND Enraged.
-        var service = new BattleStateService(new FixedRngSeedSource());
+        var service = NewService();
         var battleId = "victory-enrage-first";
-        var created = service.CreateBattle(battleId, Pet, FragileBoss(maxHp: 1));
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, FragileBoss(maxHp: 1));
 
         var pair = FindMatchProducingPair(created.BoardState);
-        var result = service.ExecuteSwap(battleId, pair);
+        var result = await service.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -179,16 +192,16 @@ public class VictoryDefeatTests
     }
 
     [Fact]
-    public void BattleWon_ShouldBeTheOnlyOutcomeEvent()
+    public async Task BattleWon_ShouldBeTheOnlyOutcomeEvent()
     {
         // Both outcomes cannot occur on one action: the Boss check runs first and ends
         // the resolution, so a BattleLost can never accompany a BattleWon.
-        var service = new BattleStateService(new FixedRngSeedSource());
+        var service = NewService();
         var battleId = "victory-exclusive";
-        var created = service.CreateBattle(battleId, Pet, FragileBoss(maxHp: 1));
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, FragileBoss(maxHp: 1));
 
         var pair = FindMatchProducingPair(created.BoardState);
-        var result = service.ExecuteSwap(battleId, pair);
+        var result = await service.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -201,17 +214,17 @@ public class VictoryDefeatTests
     // =======================================================================
 
     [Fact]
-    public void BattleLost_ShouldBeEmittedWhenThePlayerReachesZeroHp()
+    public async Task BattleLost_ShouldBeEmittedWhenThePlayerReachesZeroHp()
     {
         // GAME_RULES.md §1.4: the battle also ends when the Player reaches 0 HP. With
         // a Boss whose Basic Attack exceeds the player's whole HP pool, the post-
         // response check fires.
-        var service = new BattleStateService(new FixedRngSeedSource());
+        var service = NewService();
         var battleId = "defeat-player-dies";
-        var created = service.CreateBattle(battleId, Pet, LethalBoss());
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, LethalBoss());
 
         var pair = FindMatchProducingPair(created.BoardState);
-        var result = service.ExecuteSwap(battleId, pair);
+        var result = await service.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -222,17 +235,17 @@ public class VictoryDefeatTests
     }
 
     [Fact]
-    public void BattleLost_ShouldCarryTheTerminalHpValues()
+    public async Task BattleLost_ShouldCarryTheTerminalHpValues()
     {
         // SIGNALR_PROTOCOL.md §3.2.19 item 2: both members are the terminal state
         // values. Here the player is at 0 and the Boss carries whatever the action left
         // — the boss survived, so it is above 0.
-        var service = new BattleStateService(new FixedRngSeedSource());
+        var service = NewService();
         var battleId = "defeat-hp-values";
-        var created = service.CreateBattle(battleId, Pet, LethalBoss());
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, LethalBoss());
 
         var pair = FindMatchProducingPair(created.BoardState);
-        var result = service.ExecuteSwap(battleId, pair);
+        var result = await service.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -246,7 +259,7 @@ public class VictoryDefeatTests
     }
 
     [Fact]
-    public void BattleLost_ShouldFollowTheBossResponseAndBeLast()
+    public async Task BattleLost_ShouldFollowTheBossResponseAndBeLast()
     {
         // The Pet HP terminal check — the Player side's, since the Pet is its combat
         // character (ADR-011 items 3 and 5) — runs AFTER the Boss Response
@@ -254,12 +267,12 @@ public class VictoryDefeatTests
         // item 4's order), because the Boss has just had its chance to reduce it — so
         // the Boss→Player damage instance precedes the BattleLost, and the outcome is
         // the resolution's last event.
-        var service = new BattleStateService(new FixedRngSeedSource());
+        var service = NewService();
         var battleId = "defeat-ordering";
-        var created = service.CreateBattle(battleId, Pet, LethalBoss());
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, LethalBoss());
 
         var pair = FindMatchProducingPair(created.BoardState);
-        var result = service.ExecuteSwap(battleId, pair);
+        var result = await service.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -281,16 +294,16 @@ public class VictoryDefeatTests
     }
 
     [Fact]
-    public void BattleLost_ShouldBeTheOnlyOutcomeEvent()
+    public async Task BattleLost_ShouldBeTheOnlyOutcomeEvent()
     {
         // A surviving Boss means the Boss terminal check did not fire, so no BattleWon
         // can accompany the defeat.
-        var service = new BattleStateService(new FixedRngSeedSource());
+        var service = NewService();
         var battleId = "defeat-exclusive";
-        var created = service.CreateBattle(battleId, Pet, LethalBoss());
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, LethalBoss());
 
         var pair = FindMatchProducingPair(created.BoardState);
-        var result = service.ExecuteSwap(battleId, pair);
+        var result = await service.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -299,17 +312,17 @@ public class VictoryDefeatTests
     }
 
     [Fact]
-    public void BattleLost_ShouldStillRunTheBossPassiveAndResponse()
+    public async Task BattleLost_ShouldStillRunTheBossPassiveAndResponse()
     {
         // Only the Boss-death path short-circuits. When the Boss survives it runs its
         // full Response — Passive then Basic Attack — and the defeat is the
         // consequence of that response, so the Boss's own events are present.
-        var service = new BattleStateService(new FixedRngSeedSource());
+        var service = NewService();
         var battleId = "defeat-full-response";
-        var created = service.CreateBattle(battleId, Pet, LethalBoss());
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, LethalBoss());
 
         var pair = FindMatchProducingPair(created.BoardState);
-        var result = service.ExecuteSwap(battleId, pair);
+        var result = await service.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -332,18 +345,18 @@ public class VictoryDefeatTests
     // =======================================================================
 
     [Fact]
-    public void BothAlive_ShouldEmitNoOutcomeEvent()
+    public async Task BothAlive_ShouldEmitNoOutcomeEvent()
     {
         // GAME_RULES.md §1.4: the battle ends only when a side reaches 0 HP. At the
         // documented MVP stats neither does in one Swap, so NEITHER outcome event is
         // emitted and the battle continues — the absence is the documented statement
         // that the action was not terminal.
-        var service = new BattleStateService(new FixedRngSeedSource());
+        var service = NewService();
         var battleId = "outcome-none";
-        var created = service.CreateBattle(battleId, Pet, BossDefinitions.HoaLong);
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, BossDefinitions.HoaLong);
 
         var pair = FindMatchProducingPair(created.BoardState);
-        var result = service.ExecuteSwap(battleId, pair);
+        var result = await service.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -355,16 +368,16 @@ public class VictoryDefeatTests
     }
 
     [Fact]
-    public void BothAlive_ShouldStillRunTheWholeResponse()
+    public async Task BothAlive_ShouldStillRunTheWholeResponse()
     {
         // The non-terminal path is the full documented loop: the player damages the
         // Boss, the Boss Passive runs, the Boss responds, and the player takes damage.
-        var service = new BattleStateService(new FixedRngSeedSource());
+        var service = NewService();
         var battleId = "outcome-none-full";
-        var created = service.CreateBattle(battleId, Pet, BossDefinitions.HoaLong);
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, BossDefinitions.HoaLong);
 
         var pair = FindMatchProducingPair(created.BoardState);
-        var result = service.ExecuteSwap(battleId, pair);
+        var result = await service.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -387,21 +400,21 @@ public class VictoryDefeatTests
     // =======================================================================
 
     [Fact]
-    public void BossDeath_ShouldWinEvenWhenTheBossWouldHaveKilledThePlayer()
+    public async Task BossDeath_ShouldWinEvenWhenTheBossWouldHaveKilledThePlayer()
     {
         // GAME_RULES.md §1.4 / BOSS_RULES.md §5 item 4: the Boss HP check precedes the
         // Boss Response, so a Boss killed by the player's damage never gets to attack.
         // This fixture's Boss is lethal AND fragile: if the order were reversed, the
         // player would die first. BattleWon is the documented outcome.
-        var service = new BattleStateService(new FixedRngSeedSource());
+        var service = NewService();
         var battleId = "outcome-boss-first";
 
         var boss = LethalBoss() with { MaxHP = 1 };
 
-        var created = service.CreateBattle(battleId, Pet, boss);
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, boss);
 
         var pair = FindMatchProducingPair(created.BoardState);
-        var result = service.ExecuteSwap(battleId, pair);
+        var result = await service.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -414,7 +427,7 @@ public class VictoryDefeatTests
     }
 
     [Fact]
-    public void Outcome_ShouldWriteExactlyOneStateIncludingTheTerminalHp()
+    public async Task Outcome_ShouldWriteExactlyOneStateIncludingTheTerminalHp()
     {
         // GAME_STATE.md §5.1: one action produces ONE post-resolution write-back. The
         // result the caller receives is the state the registry holds, and the terminal
@@ -426,17 +439,21 @@ public class VictoryDefeatTests
                      ("outcome-writeback-lost", LethalBoss(), BattleEventType.BattleLost),
                  })
         {
-            var service = new BattleStateService(new FixedRngSeedSource());
-            var created = service.CreateBattle(battleId, Pet, boss);
+            var service = NewService();
+            var created = await service.CreateBattleAsync(battleId, Owner, Pet, boss);
 
             var pair = FindMatchProducingPair(created.BoardState);
-            var result = service.ExecuteSwap(battleId, pair);
+            var result = await service.ExecuteSwapAsync(battleId, pair);
 
             Assert.True(result!.Value.IsAccepted);
 
-            var stored = service.GetBattle(battleId)!;
+            var stored = (await service.GetBattleAsync(battleId))!;
 
-            Assert.Same(result.Value.State, stored);
+            // The store's re-read is a separate deserialized record, so the equality
+            // asserted is the value equality of the written-back state (BattleState is
+            // a record, GAME_STATE.md §5.1's one write-back is what "the same state"
+            // means) — never object identity.
+            Assert.Equal(result.Value.State, stored);
             Assert.Equal(stored.BossState.HP, result.Value.State.BossState.HP);
             Assert.Equal(stored.PetState.HP, result.Value.State.PetState.HP);
 
@@ -453,17 +470,17 @@ public class VictoryDefeatTests
     }
 
     [Fact]
-    public void Outcome_ShouldBeReachableOnTheSameCommittedSwapContract()
+    public async Task Outcome_ShouldBeReachableOnTheSameCommittedSwapContract()
     {
         // A terminal action is still one committed Swap: Turn and Sequence advance by
         // exactly 1, so the outcome does not change the counter contract
         // (MATCH3_RULES.md §8.1–§8.2).
-        var service = new BattleStateService(new FixedRngSeedSource());
+        var service = NewService();
         var battleId = "outcome-counters";
-        var created = service.CreateBattle(battleId, Pet, FragileBoss(maxHp: 1));
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, FragileBoss(maxHp: 1));
 
         var pair = FindMatchProducingPair(created.BoardState);
-        var result = service.ExecuteSwap(battleId, pair);
+        var result = await service.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
         Assert.Equal(created.Turn + 1, result.Value.State.Turn);
@@ -473,6 +490,23 @@ public class VictoryDefeatTests
     // =======================================================================
     // Helpers
     // =======================================================================
+
+    /// <summary>
+    /// Builds the service under test over an <see cref="InMemoryBattleStateRepository"/>.
+    ///
+    /// <b>The repository is a TEST DOUBLE for the active-battle-state store.</b>
+    /// <c>REDIS_STATE.md</c> §1–§4 make Redis the owner of Active Battle State, and
+    /// §2 item 2 / §7 item 5 permit no in-process substitute for it in the running
+    /// server — the production composition registers
+    /// <c>GameServer.Infrastructure.Redis.BattleStateRepository</c> instead. This
+    /// helper exists only so a test that asserts a <i>gameplay</i> rule can run the
+    /// real <see cref="BattleStateService"/> pipeline without a live Redis instance;
+    /// the double still models the documented creation/absence and Sequence
+    /// compare-and-set semantics, so a test cannot pass against a more permissive
+    /// contract than the store actually offers.
+    /// </summary>
+    private static BattleStateService NewService() =>
+        new(new InMemoryBattleStateRepository(), new FixedRngSeedSource());
 
     private static SwapRequest FindMatchProducingPair(BoardState board)
     {

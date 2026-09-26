@@ -1,3 +1,4 @@
+using GameServer.Domain.Bosses;
 using GameServer.Domain.Cards;
 using GameServer.Domain.Pets;
 using GameServer.Domain.Players;
@@ -54,6 +55,17 @@ public class GameDbContext : DbContext
     /// quantity column (<c>DATABASE.md</c> §2, ADR-012 items 9–10).
     /// </summary>
     public DbSet<PlayerUnlockedCard> PlayerUnlockedCards => Set<PlayerUnlockedCard>();
+
+    /// <summary>
+    /// The persistent Boss definition table (<c>DATABASE.md</c> §1) — static
+    /// content only: the row's persistence key, its canonical technical
+    /// Identity, its Element, and its two JSON configuration objects. The
+    /// combat-definition values (MaxHP/ATK/DEF/EnrageThreshold) are not stored
+    /// here (<c>DATABASE.md</c> §1 note item 1, TASK-044). No row is
+    /// provisioned by this context: no seed mechanism is documented
+    /// (<c>DATABASE.md</c> §1 note item 5, §5 item 4).
+    /// </summary>
+    public DbSet<BossDefinition> BossDefinitions => Set<BossDefinition>();
 
     /// <summary>
     /// EF Core 7+ documented API for removing conventions.

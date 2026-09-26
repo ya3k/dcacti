@@ -6,6 +6,8 @@ using GameServer.Domain.Cards;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
+using GameServer.Domain.Pets;
+using GameServer.Domain.Players;
 using GameServer.Domain.Relics;
 using Xunit;
 
@@ -42,6 +44,20 @@ public class BattleStateSerializationTests
     // =======================================================================
 
     /// <summary>
+    /// The identity of the Player who owns the representative battle
+    /// (<c>GAME_STATE.md</c> §2.8) — a real, non-default value, so a round trip
+    /// that defaulted the member could not pass.
+    /// </summary>
+    private static readonly PlayerId Owner = new("player_9f3c1d7e");
+
+    /// <summary>
+    /// The owned Pet instance the representative battle selected
+    /// (<c>GAME_STATE.md</c> §2.3 — the <c>Pet.PetInstanceId</c>), likewise a real
+    /// non-default value.
+    /// </summary>
+    private static readonly PetId OwnedPet = new("pet-instance-4b81e0c2");
+
+    /// <summary>
     /// A board carrying every Special Gem shape, so the round trip exercises the
     /// conditional orientation member (<c>GAME_STATE.md</c> §2.1.4 item 2) as well
     /// as ordinary cells.
@@ -59,6 +75,7 @@ public class BattleStateSerializationTests
     /// </summary>
     private static PetState RepresentativePetState() =>
         new(
+            PetId: OwnedPet,
             HP: 723,
             MaxHP: 1042,
             ATK: 61,
@@ -102,7 +119,7 @@ public class BattleStateSerializationTests
     /// </summary>
     private static BossState RepresentativeBossState() =>
         new(
-            new BossId("Thủy Ma"),
+            new BossId("boss-thuy-ma"),
             Element.Thuy,
             HP: 3117,
             MaxHP: 5000,
@@ -121,6 +138,7 @@ public class BattleStateSerializationTests
     private static BattleState RepresentativeState() =>
         new(
             BattleId: "battle-9f3c1d7e",
+            PlayerId: Owner,
             Turn: 14,
             Sequence: 19,
             RngSeed: 0xFEDCBA9876543210UL,
@@ -147,6 +165,7 @@ public class BattleStateSerializationTests
         var restored = BattleStateSerializer.Deserialize(BattleStateSerializer.Serialize(original));
 
         Assert.Equal(original.BattleId, restored.BattleId);
+        Assert.Equal(original.PlayerId, restored.PlayerId);
         Assert.Equal(original.Turn, restored.Turn);
         Assert.Equal(original.Sequence, restored.Sequence);
         Assert.Equal(original.RngSeed, restored.RngSeed);
@@ -585,7 +604,7 @@ public class BattleStateSerializationTests
 
         var boss = restored.BossState;
 
-        Assert.Equal(new BossId("Thủy Ma"), boss.BossId);
+        Assert.Equal(new BossId("boss-thuy-ma"), boss.BossId);
         Assert.Equal(Element.Thuy, boss.Element);
         Assert.Equal(3117, boss.HP);
         Assert.Equal(5000, boss.MaxHP);
@@ -740,12 +759,129 @@ public class BattleStateSerializationTests
                 "lastCommittedSwapPair",
                 "matchCount",
                 "petState",
+                "playerId",
                 "rngSeed",
                 "rngState",
                 "sequence",
                 "turn",
             ],
             written);
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldPreserveTheOwningPlayerIdentity()
+    {
+        // GAME_STATE.md §2.8 item 2 / DATABASE.md §1 note 2 / ADR-014 decision 1:
+        // the owning Player's identity is a member of the state record and
+        // round-trips with it, so the battle-end persistence path can source
+        // BattleResult.PlayerId from the record rather than re-deriving it from a
+        // session. A record that dropped or defaulted the member would not
+        // round-trip — which is what the value assertions below establish, since
+        // the fixture's owner is not a default.
+        var original = RepresentativeState();
+
+        var json = BattleStateSerializer.Serialize(original);
+
+        // The member is genuinely written, and written under the serializer's own
+        // explicit camelCase name — not omitted and not renamed.
+        using (var document = JsonDocument.Parse(json))
+        {
+            Assert.True(document.RootElement.TryGetProperty("playerId", out var playerId));
+            Assert.Equal("player_9f3c1d7e", playerId.GetString());
+        }
+
+        var restored = BattleStateSerializer.Deserialize(json);
+
+        Assert.Equal(Owner, restored.PlayerId);
+        Assert.Equal("player_9f3c1d7e", restored.PlayerId.Value);
+        Assert.Equal(original.PlayerId, restored.PlayerId);
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldPreserveTheOwnedPetInstanceIdentity()
+    {
+        // GAME_STATE.md §2.3 / ADR-014 decision 4 / DATABASE.md §1 note 2: the
+        // PetState.PetId member IS the owned Pet instance (Pet.PetInstanceId) —
+        // the value BattleResult.PetInstanceId is sourced from. It is carried in
+        // the record and round-trips with it, so a later stage never has to re-read
+        // the Player's collection to learn which owned Pet fought.
+        //
+        // The fixture value is deliberately a distinct string from the Pet
+        // definition id, so a member mapped to the definition could not pass.
+        var original = RepresentativeState();
+
+        var json = BattleStateSerializer.Serialize(original);
+
+        using (var document = JsonDocument.Parse(json))
+        {
+            var pet = document.RootElement.GetProperty("petState");
+            Assert.True(pet.TryGetProperty("petId", out var petId));
+            Assert.Equal("pet-instance-4b81e0c2", petId.GetString());
+
+            // No second identity member is written beside it — ADR-014 decision 4
+            // rejected a separate PetInstanceId member as a duplicate of a value the
+            // record already owns (GAME_STATE.md §0 item 5).
+            Assert.False(pet.TryGetProperty("petInstanceId", out _));
+            Assert.False(pet.TryGetProperty("petDefinitionId", out _));
+        }
+
+        var restored = BattleStateSerializer.Deserialize(json);
+
+        Assert.Equal(OwnedPet, restored.PetState.PetId);
+        Assert.Equal("pet-instance-4b81e0c2", restored.PetState.PetId.Value);
+        Assert.Equal(original.PetState.PetId, restored.PetState.PetId);
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldPreserveBothIdentitiesAcrossRepeatedCycles()
+    {
+        // The identity members are state, not derived values (GAME_STATE.md §2.8
+        // item 4): re-serializing a restored record must reproduce them exactly, so
+        // a persisted record written twice from the same battle is identical and no
+        // cycle drifts — the property a recovered battle (ADR-008) depends on for
+        // the identity the result write needs.
+        var restored = BattleStateSerializer.Deserialize(
+            BattleStateSerializer.Serialize(RepresentativeState()));
+
+        var second = BattleStateSerializer.Serialize(restored);
+        var restoredAgain = BattleStateSerializer.Deserialize(second);
+
+        Assert.Equal(restored.PlayerId, restoredAgain.PlayerId);
+        Assert.Equal(restored.PetState.PetId, restoredAgain.PetState.PetId);
+        Assert.Equal("player_9f3c1d7e", restoredAgain.PlayerId.Value);
+        Assert.Equal("pet-instance-4b81e0c2", restoredAgain.PetState.PetId.Value);
+    }
+
+    [Fact]
+    public void Deserialize_ShouldRejectAMissingPlayerIdRatherThanDefaultingIt()
+    {
+        // GAME_STATE.md §2.8 item 4: the owner identity is never re-derived and
+        // must never be silently defaulted — a record without it cannot be shown to
+        // have an owner, so it is rejected as the contract violation it is rather
+        // than admitted with an invented (empty) identity.
+        var json = BattleStateSerializer.Serialize(RepresentativeState());
+
+        var withoutOwner = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+        withoutOwner.AsObject().Remove("playerId");
+
+        Assert.Throws<JsonException>(() =>
+            BattleStateSerializer.Deserialize(withoutOwner.ToJsonString()));
+    }
+
+    [Fact]
+    public void Deserialize_ShouldRejectAMissingPetIdRatherThanDefaultingIt()
+    {
+        // The same obligation for the Pet instance identity (GAME_STATE.md §2.3):
+        // a record that lost it cannot identify which owned Pet fought, so it is
+        // rejected rather than admitted with an empty instance id — which
+        // BattleResult.PetInstanceId would then carry.
+        var json = BattleStateSerializer.Serialize(RepresentativeState());
+
+        var withoutPet = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+        withoutPet["petState"]!.AsObject().Remove("petId");
+
+        Assert.Throws<JsonException>(() =>
+            BattleStateSerializer.Deserialize(withoutPet.ToJsonString()));
     }
 
     [Fact]
@@ -1001,6 +1137,7 @@ public class BattleStateSerializationTests
         var before = original.PetState;
         var after = restored.PetState;
 
+        Assert.Equal(before.PetId, after.PetId);
         Assert.Equal(before.HP, after.HP);
         Assert.Equal(before.MaxHP, after.MaxHP);
         Assert.Equal(before.ATK, after.ATK);

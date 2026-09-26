@@ -27,6 +27,7 @@ internal static class BattleStateJsonNames
 {
     // BattleState root (GAME_STATE.md §2).
     public const string BattleId = "battleId";
+    public const string PlayerId = "playerId";
     public const string Turn = "turn";
     public const string Sequence = "sequence";
     public const string RngSeed = "rngSeed";
@@ -54,6 +55,7 @@ internal static class BattleStateJsonNames
     public const string SpecialGemOrientation = "orientation";
 
     // PetState (GAME_STATE.md §2.3).
+    public const string PetId = "petId";
     public const string PetHP = "hp";
     public const string PetMaxHP = "maxHp";
     public const string PetATK = "atk";
@@ -116,6 +118,21 @@ internal sealed record BattleStateJson
 {
     [JsonPropertyName(BattleStateJsonNames.BattleId)]
     public required string BattleId { get; init; }
+
+    /// <summary>
+    /// The identity of the Player who created this battle
+    /// (<c>GAME_STATE.md</c> §2.8) — the account/owner identity, carried in the
+    /// record so the battle-end persistence path can source
+    /// <c>BattleResult.PlayerId</c> from authoritative state (<c>DATABASE.md</c>
+    /// §1, <c>ADR-014</c> decision 1). It is always present — a battle always has
+    /// its owner — so it has no absent form and no ignore condition.
+    ///
+    /// It is <b>not</b> a wire member: this mapping is the runtime persistence
+    /// representation, and the SignalR projection is a different, protocol-fixed
+    /// subset (<c>SIGNALR_PROTOCOL.md</c> §4 item 4, §7.1).
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.PlayerId)]
+    public required string PlayerId { get; init; }
 
     [JsonPropertyName(BattleStateJsonNames.Turn)]
     public required int Turn { get; init; }
@@ -256,8 +273,9 @@ internal sealed record SpecialGemJson
 }
 
 /// <summary>
-/// <c>PetState</c> (<c>GAME_STATE.md</c> §2.3) — the active Pet's combat stats,
-/// Element, Passive, and the battle-scoped loadout snapshots.
+/// <c>PetState</c> (<c>GAME_STATE.md</c> §2.3) — the owned Pet instance identity,
+/// the active Pet's combat stats, Element, Passive, and the battle-scoped loadout
+/// snapshots.
 ///
 /// There is no <c>PlayerState</c> node here or anywhere in this mapping: the Pet
 /// is the combat character and the Player is the account/owner with no
@@ -269,6 +287,22 @@ internal sealed record SpecialGemJson
 /// </summary>
 internal sealed record PetStateJson
 {
+    /// <summary>
+    /// The owned Pet instance this battle's active Pet is
+    /// (<c>GAME_STATE.md</c> §2.3) — the same value as
+    /// <c>Pet.PetInstanceId</c> (<c>DATABASE.md</c> §1) and the
+    /// <c>BattleResult.PetInstanceId</c> the battle-end persistence path writes.
+    /// It is the instance, never a definition id — <c>ADR-014</c> decision 4
+    /// records that this member already is the instance, so no second
+    /// <c>PetInstanceId</c> member is written.
+    ///
+    /// It is present from battle creation and has no absent form — a battle
+    /// always has its one active Pet, selected from the Player's owned collection
+    /// (§2.3 item 3) — so it carries no ignore condition.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.PetId)]
+    public required string PetId { get; init; }
+
     // The combat stats are never omitted and never null: they are defined from
     // battle creation and zero is a real value (§2.3). No ignore condition is
     // declared for any of them.
@@ -360,7 +394,7 @@ internal sealed record PetStateJson
 
 /// <summary>
 /// <c>PassiveProgress</c> — "current count vs. threshold" (<c>GAME_STATE.md</c>
-/// §2.3, §2.5). Both members are always present; <c>Current = 0</c> is a real
+/// §2.3). Both members are always present; <c>Current = 0</c> is a real
 /// publishable value, so absence is never used for it.
 /// </summary>
 internal sealed record PassiveProgressJson

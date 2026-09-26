@@ -3,6 +3,8 @@ using GameServer.Domain.Bosses;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
+using GameServer.Domain.Pets;
+using GameServer.Domain.Players;
 using Xunit;
 
 namespace GameServer.Domain.Tests;
@@ -51,8 +53,9 @@ public class BattleStateTests
         // BoardState — nothing else, plus the Swap stage's LastCommittedSwapPair
         // (§2.1.10), the Match / Combo accounting the root owns (§2.2 — Combo and
         // MatchCount, with no nested PlayerState node), the combat-stat / Pet /
-        // Passive stage's PetState (§2.3), and the Boss stage's BossState (§2.4),
-        // each added to this same record by its own owning stage.
+        // Passive stage's PetState (§2.3), the Boss stage's BossState (§2.4), and
+        // the Battle Identity member PlayerId (§2.8), each added to this same
+        // record by its own owning stage.
         var properties = typeof(BattleState)
             .GetProperties()
             .Select(p => p.Name)
@@ -63,7 +66,8 @@ public class BattleStateTests
             new[]
             {
                 "BattleId", "BoardState", "BossState", "Combo", "LastCommittedSwapPair",
-                "MatchCount", "PetState", "RngSeed", "RngState", "Sequence", "Turn",
+                "MatchCount", "PetState", "PlayerId", "RngSeed", "RngState",
+                "Sequence", "Turn",
             },
             properties);
     }
@@ -168,9 +172,15 @@ public class BattleStateTests
                      // EquippedCards is likewise implemented now, by the Card loadout
                      // stage (TASK-028), the same way (§2.3, CARD_RULES.md §1).
                      "StatusEffects",
-                     // The rest of §2.3, still owned by the Pet identity and
-                     // progression stage (§2.3, SIGNALR_PROTOCOL.md §4.3 item 2).
-                     "PetId", "Tier", "Star", "Level",
+                     // The rest of §2.3, still owned by the Pet progression stage
+                     // (§2.3, SIGNALR_PROTOCOL.md §4.3 item 2). PetId is NOT in this
+                     // list any more: the Battle Identity stage (TASK-043)
+                     // implements it, exactly as each earlier stage added its own
+                     // field — it is the owned Pet instance identity ADR-014
+                     // decision 4 fixed to that member (§2.3). PlayerId is likewise
+                     // implemented now (§2.8) and is asserted present by the
+                     // identity tests below rather than listed as pending.
+                     "Tier", "Star", "Level",
                      // The rest of §2.4, still owned by the Boss Passive and Status
                      // Effects systems (§2.4, BOSS_RULES.md §3).
                      "BossPassiveProgress", "BossStatusEffects",
@@ -286,13 +296,28 @@ public class BattleStateTests
     private static readonly BossDefinition MvpBoss = BossDefinitions.HoaLong;
 
     /// <summary>
+    /// The Player who owns the battles these tests create
+    /// (<c>GAME_STATE.md</c> §2.8, <c>ADR-014</c> decision 1). These tests assert
+    /// the Pet/Boss/PetState contract, not identity, so one fixture owner is
+    /// supplied in one place.
+    /// </summary>
+    private static readonly PlayerId Owner = new("player_battle_state_owner");
+
+    /// <summary>
+    /// The owned Pet instance the battles these tests create select
+    /// (<c>GAME_STATE.md</c> §2.3 — the <c>Pet.PetInstanceId</c>), for the same
+    /// reason as <see cref="Owner"/>.
+    /// </summary>
+    private static readonly PetId OwnedPet = new("pet_instance_owner_1");
+
+    /// <summary>
     /// A battle created through the documented Pet configuration — the form
     /// <c>BattleStateService.CreateBattle</c> uses.
     /// </summary>
     private static BattleState BattleWithPassive(
         PassiveResetBehavior? reset = null,
         int threshold = 5) =>
-        BattleState.Create("battle-pet", TestSeed, XichLangElement, XichLang, threshold, MvpBoss, reset);
+        BattleState.Create("battle-pet", TestSeed, Owner, OwnedPet, XichLangElement, XichLang, threshold, MvpBoss, reset);
 
     [Fact]
     public void Create_ShouldInitializePetStateWithThePassiveAtProgressZero()
@@ -301,7 +326,7 @@ public class BattleStateTests
         // §2.3 / SIGNALR_PROTOCOL.md §4.3 item 4 fix the progress it begins with —
         // the Passive's own Threshold with Current = 0.
         var state = BattleState.Create(
-            "battle-pet", TestSeed, XichLangElement, XichLang, passiveThreshold: 5, MvpBoss);
+            "battle-pet", TestSeed, Owner, OwnedPet, XichLangElement, XichLang, passiveThreshold: 5, MvpBoss);
 
         Assert.Equal(XichLang, state.PetState.PassiveId);
         Assert.Equal(XichLangElement, state.PetState.Element);
@@ -311,13 +336,15 @@ public class BattleStateTests
     }
 
     [Fact]
-    public void Create_ShouldRequireThePetAndBossConfiguration()
+    public void Create_ShouldRequireThePlayerPetAndBossConfiguration()
     {
-        // §2.3 item 3 and §2.4: PetState and BossState are not optional, not
+        // §2.3 item 3, §2.4, and §2.8: PetState and BossState are not optional, not
         // defaulted, and not lazily initialized — there is no "no Passive yet" and
-        // no "no Boss yet" state for an absent value to spell. No creation overload
-        // therefore omits them: every one supplies either a PetState/BossState pair
-        // or the Pet and Boss configuration that builds them.
+        // no "no Boss yet" state for an absent value to spell — and the battle's
+        // owner identity is recorded at creation too. No creation overload
+        // therefore omits them: every one supplies either a PlayerId and a
+        // PetState/BossState pair or the Player and Pet configuration that builds
+        // them.
         var overloads = typeof(BattleState)
             .GetMethods()
             .Where(m => m is { IsStatic: true, Name: "Create" })
@@ -325,7 +352,31 @@ public class BattleStateTests
             .OrderBy(n => n)
             .ToArray();
 
-        Assert.Equal([4, 7], overloads);
+        Assert.Equal([5, 9], overloads);
+    }
+
+    [Fact]
+    public void Create_ShouldRecordTheOwningPlayerAndTheSelectedOwnedPet()
+    {
+        // GAME_STATE.md §2.8 item 2 / §2.3 / ADR-014 decisions 1 and 4: both
+        // identities are recorded at creation from the caller's own server-side
+        // context — the owning Player's identity and the owned Pet INSTANCE the
+        // battle selected. Neither is a definition id, and both are carried by the
+        // state itself rather than re-derived later (§2.8 item 4).
+        var state = BattleState.Create(
+            "battle-identity",
+            TestSeed,
+            Owner,
+            OwnedPet,
+            XichLangElement,
+            XichLang,
+            passiveThreshold: 5,
+            MvpBoss);
+
+        Assert.Equal(Owner, state.PlayerId);
+        Assert.Equal("player_battle_state_owner", state.PlayerId.Value);
+        Assert.Equal(OwnedPet, state.PetState.PetId);
+        Assert.Equal("pet_instance_owner_1", state.PetState.PetId.Value);
     }
 
     [Fact]
@@ -381,7 +432,7 @@ public class BattleStateTests
         // PASSIVE_RULES.md §2 item 1 charges per Match, and board generation is
         // not a Swap/Action and produces no Match (MATCH3_RULES.md §8.1 item 4,
         // GAME_STATE.md §2.0.5.2 item 1). Creation therefore leaves progress at 0.
-        var state = BattleState.Create("battle-pet", TestSeed, XichLangElement, XichLang, passiveThreshold: 5, MvpBoss);
+        var state = BattleState.Create("battle-pet", TestSeed, Owner, OwnedPet, XichLangElement, XichLang, passiveThreshold: 5, MvpBoss);
 
         Assert.Equal(0, state.PetState.PassiveProgress.Current);
     }
@@ -389,13 +440,15 @@ public class BattleStateTests
     [Fact]
     public void PetState_ShouldCarryExactlyTheDocumentedFields()
     {
-        // GAME_STATE.md §2.3 / ADR-011 item 3: the combat stats HP, MaxHP, ATK, DEF,
+        // GAME_STATE.md §2.3 / ADR-011 item 3: the owned Pet instance identity
+        // PetId (the §2.3 `PetId / Identity` entry, fixed to the instance by
+        // ADR-014 decision 4), the combat stats HP, MaxHP, ATK, DEF,
         // Crit, and Power, plus Element, PassiveId, PassiveProgress,
         // PassiveResetOverride, and — since the Relic loadout stage (TASK-027) —
         // EquippedRelics, the battle-scoped snapshot the Relic stage owns (§2.3,
         // RELIC_RULES.md §2.2–§2.5). EquippedCards joined the representation with the
         // Card loadout stage (TASK-028) (§2.3, CARD_RULES.md §1). The remaining
-        // collection (StatusEffects), PetId/Identity, and Tier/Star/Level belong to
+        // collection (StatusEffects) and Tier/Star/Level belong to
         // later stages and are not stubbed here (§0 item 4, §0 item 5).
         var dataMembers = typeof(PetState)
             .GetConstructors()
@@ -407,7 +460,8 @@ public class BattleStateTests
             new[]
             {
                 "ATK", "Crit", "DEF", "Element", "EquippedCards", "EquippedRelics", "HP",
-                "MaxHP", "PassiveId", "PassiveProgress", "PassiveResetOverride", "Power",
+                "MaxHP", "PassiveId", "PassiveProgress", "PassiveResetOverride", "PetId",
+                "Power",
             },
             dataMembers);
 
@@ -415,7 +469,9 @@ public class BattleStateTests
         // override, not additional state: the listed members are the whole
         // representation (§0 item 5). EquippedRelics is the Relic loadout stage's
         // own field (§2.3, RELIC_RULES.md §2.2–§2.5), and EquippedCards is the Card
-        // loadout stage's (§2.3, CARD_RULES.md §1).
+        // loadout stage's (§2.3, CARD_RULES.md §1). PetId is the Pet identity
+        // member ADR-014 decision 4 fixed to the owned instance — there is no
+        // second PetId/PetInstanceId member beside it.
         var declared = typeof(PetState)
             .GetProperties()
             .Select(p => p.Name)
@@ -427,7 +483,8 @@ public class BattleStateTests
             {
                 "ATK", "Crit", "DEF", "Element", "EquippedCards", "EquippedRelics", "HP",
                 "HasResetOverride", "MaxHP",
-                "PassiveId", "PassiveProgress", "PassiveResetOverride", "Power",
+                "PassiveId", "PassiveProgress", "PassiveResetOverride", "PetId",
+                "Power",
                 "ResetBehavior",
             },
             declared);
@@ -439,7 +496,7 @@ public class BattleStateTests
         // GAME_EVENTS.md §2 item 1 / GAME_STATE.md §2.3: the identity is the same
         // value the PassiveCharged/PassiveTriggered payload reports — read and
         // reported, never re-derived or re-numbered.
-        var state = BattleState.Create("battle-pet", TestSeed, XichLangElement, XichLang, passiveThreshold: 5, MvpBoss);
+        var state = BattleState.Create("battle-pet", TestSeed, Owner, OwnedPet, XichLangElement, XichLang, passiveThreshold: 5, MvpBoss);
 
         Assert.Equal("xich-lang", state.PetState.PassiveId.Value);
         Assert.Equal("xich-lang", state.PetState.PassiveId.ToString());

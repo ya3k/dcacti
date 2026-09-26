@@ -58,8 +58,9 @@ namespace GameServer.Domain.Passives;
 /// <param name="SourceId">
 /// The identity of the owning entity — <c>PetState.PetId</c> for a Pet, or
 /// <c>BossState.BossId</c> for a Boss (<c>SIGNALR_PROTOCOL.md</c> §3.2.16
-/// item 2). For a Boss it is the display-name BossId (e.g. <c>"Hỏa Long"</c>),
-/// never a slug (<c>BOSS_RULES.md</c> §6.4). <c>null</c> means the caller did not
+/// item 2). For a Boss it is the canonical technical Identity of
+/// <c>BossState.BossId</c> (e.g. <c>"boss-hoa-long"</c>), never a display name
+/// (<c>BOSS_RULES.md</c> §6.4). <c>null</c> means the caller did not
 /// name the owner: <c>PetState</c> carries no <c>PetId</c> in this stage
 /// (<c>GAME_STATE.md</c> §2.3 — it belongs to the Pet identity stage), so the
 /// Pet Passive stage has no value to report yet and omits it rather than
@@ -136,7 +137,9 @@ public readonly record struct PassiveChargedEvent(
 /// <param name="SourceId">
 /// The identity of the owning entity — <c>PetState.PetId</c> or
 /// <c>BossState.BossId</c> (<c>SIGNALR_PROTOCOL.md</c> §3.2.17). For a Boss it is
-/// the display-name BossId (<c>BOSS_RULES.md</c> §6.4). <c>null</c> means the
+/// the canonical technical Identity of <c>BossState.BossId</c> (e.g.
+/// <c>"boss-hoa-long"</c>), never a display name (<c>BOSS_RULES.md</c> §6.4).
+/// <c>null</c> means the
 /// caller did not name the owner; see
 /// <see cref="PassiveChargedEvent"/>'s <c>SourceId</c> for why the Pet Passive
 /// stage has no such value in this stage.

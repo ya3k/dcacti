@@ -57,14 +57,14 @@ public class BossWireProjectionTests
             Progress: 3,
             Threshold: 5,
             Source: PassiveEventSource.Boss,
-            SourceId: "Hỏa Long");
+            SourceId: "boss-hoa-long");
 
         var wire = Serialize(BattleEvent.ForPassiveCharged(charged));
 
         Assert.Equal("PassiveCharged", wire.GetProperty("type").GetString());
         Assert.Equal("boss-hoa-long-rage", wire.GetProperty("passiveId").GetString());
         Assert.Equal("boss", wire.GetProperty("source").GetString());
-        Assert.Equal("Hỏa Long", wire.GetProperty("sourceId").GetString());
+        Assert.Equal("boss-hoa-long", wire.GetProperty("sourceId").GetString());
         Assert.Equal(3, wire.GetProperty("progress").GetInt32());
         Assert.Equal(5, wire.GetProperty("threshold").GetInt32());
     }
@@ -79,14 +79,14 @@ public class BossWireProjectionTests
             Progress: 4,
             Threshold: 4,
             Source: PassiveEventSource.Boss,
-            SourceId: "Thủy Ma");
+            SourceId: "boss-thuy-ma");
 
         var wire = Serialize(BattleEvent.ForPassiveTriggered(triggered));
 
         Assert.Equal("PassiveTriggered", wire.GetProperty("type").GetString());
         Assert.Equal("boss-thuy-ma-heal", wire.GetProperty("passiveId").GetString());
         Assert.Equal("boss", wire.GetProperty("source").GetString());
-        Assert.Equal("Thủy Ma", wire.GetProperty("sourceId").GetString());
+        Assert.Equal("boss-thuy-ma", wire.GetProperty("sourceId").GetString());
         Assert.Equal(4, wire.GetProperty("progress").GetInt32());
         Assert.Equal(4, wire.GetProperty("threshold").GetInt32());
     }
@@ -157,12 +157,12 @@ public class BossWireProjectionTests
     public void BossSkillCast_ShouldCarrySkillIdAndSourceId()
     {
         // §3.2.18: exactly two members plus the discriminator — the Skill's identity
-        // and the Boss's display-name identity (BOSS_RULES.md §6.4).
-        var wire = Serialize(BattleEvent.ForBossSkillCast("flame-burst", "Hỏa Long"));
+        // and the Boss's canonical technical Identity (BOSS_RULES.md §6.4).
+        var wire = Serialize(BattleEvent.ForBossSkillCast("flame-burst", "boss-hoa-long"));
 
         Assert.Equal("BossSkillCast", wire.GetProperty("type").GetString());
         Assert.Equal("flame-burst", wire.GetProperty("skillId").GetString());
-        Assert.Equal("Hỏa Long", wire.GetProperty("sourceId").GetString());
+        Assert.Equal("boss-hoa-long", wire.GetProperty("sourceId").GetString());
 
         Assert.Equal(["skillId", "sourceId", "type"], Members(wire));
     }
@@ -170,9 +170,9 @@ public class BossWireProjectionTests
     [Theory]
     // BOSS_RULES.md §6.4's identity contract, as the wire examples of
     // SIGNALR_PROTOCOL.md §3.2.18 use them.
-    [InlineData("flame-burst", "Hỏa Long")]
-    [InlineData("drain-power", "Thủy Ma")]
-    [InlineData("root", "Mộc Yêu")]
+    [InlineData("flame-burst", "boss-hoa-long")]
+    [InlineData("drain-power", "boss-thuy-ma")]
+    [InlineData("root", "boss-moc-yeu")]
     public void BossSkillCast_ShouldCarryTheDefinitionsIdentities(string skillId, string bossId)
     {
         var definition = BossDefinitions.All.Single(b => b.SkillId == skillId);
@@ -191,7 +191,7 @@ public class BossWireProjectionTests
         // §3.2.18 item 3: "Effect details are carried by subsequent damage events."
         // So the cast itself carries no amount, no element, and no effect summary —
         // and no `source` member, which belongs to the damage and Passive events.
-        var wire = Serialize(BattleEvent.ForBossSkillCast("flame-burst", "Hỏa Long"));
+        var wire = Serialize(BattleEvent.ForBossSkillCast("flame-burst", "boss-hoa-long"));
         var members = Members(wire);
 
         Assert.DoesNotContain(members, m => m is "amount" or "finalDamage" or "effect" or "effectSummary"
@@ -295,7 +295,7 @@ public class BossWireProjectionTests
         // the same order. The three new types must not be an exception.
         var events = new[]
         {
-            BattleEvent.ForBossSkillCast("flame-burst", "Hỏa Long"),
+            BattleEvent.ForBossSkillCast("flame-burst", "boss-hoa-long"),
             BattleEvent.ForBattleWon(0, 85),
             BattleEvent.ForBattleLost(120, 0),
         };
@@ -317,7 +317,7 @@ public class BossWireProjectionTests
         // carries no HP pair — asserted through the serializer, which would otherwise
         // have to read a throwing accessor.
         var won = Serialize(BattleEvent.ForBattleWon(0, 85));
-        var cast = Serialize(BattleEvent.ForBossSkillCast("flame-burst", "Hỏa Long"));
+        var cast = Serialize(BattleEvent.ForBossSkillCast("flame-burst", "boss-hoa-long"));
 
         Assert.False(won.TryGetProperty("skillId", out _));
         Assert.False(cast.TryGetProperty("finalBossHp", out _));
@@ -355,7 +355,7 @@ public class BossWireProjectionTests
         // its properties.
         foreach (var (wire, expected) in new (JsonElement Wire, string[] Expected)[]
                  {
-                     (Serialize(BattleEvent.ForBossSkillCast("flame-burst", "Hỏa Long")),
+                     (Serialize(BattleEvent.ForBossSkillCast("flame-burst", "boss-hoa-long")),
                          ["skillId", "sourceId"]),
                      (Serialize(BattleEvent.ForBattleWon(0, 85)),
                          ["outcome", "finalBossHp", "finalPlayerHp"]),
@@ -363,7 +363,7 @@ public class BossWireProjectionTests
                          ["outcome", "finalBossHp", "finalPlayerHp"]),
                      (Serialize(BattleEvent.ForPassiveCharged(
                          new PassiveChargedEvent(
-                             new PassiveId("p"), 1, 5, PassiveEventSource.Boss, "Hỏa Long"))),
+                             new PassiveId("p"), 1, 5, PassiveEventSource.Boss, "boss-hoa-long"))),
                          ["source", "sourceId"]),
                  })
         {
@@ -385,7 +385,7 @@ public class BossWireProjectionTests
         // JSON contains a null value at all.
         var items = new[]
         {
-            Serialize(BattleEvent.ForBossSkillCast("flame-burst", "Hỏa Long")),
+            Serialize(BattleEvent.ForBossSkillCast("flame-burst", "boss-hoa-long")),
             Serialize(BattleEvent.ForBattleWon(0, 85)),
             Serialize(BattleEvent.ForBattleLost(120, 0)),
             Serialize(BattleEvent.ForPassiveCharged(

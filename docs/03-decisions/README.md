@@ -1,6 +1,9 @@
 # Architecture Decision Records (ADR)
 
-**Version:** 1.3 (ADR-013 added — Discord authorization-code → identity
+**Version:** 1.4 (ADR-014 added — `BattleState.PlayerId` as the
+battle-end owner-identity source (server-only, not a wire member);
+`PetState.PetId` = owned Pet instance; `BattleResultId` = `BattleId`;
+prior 1.3: ADR-013 added — Discord authorization-code → identity
 exchange contract; prior 1.2: ADR-012 added — Player Level / Pet Level
 formula / ownership-equipment / MVP scope closure)
 **Status:** Active
@@ -134,6 +137,7 @@ technical document.
 | ADR-011 | Player = account owner; Pet = combat character; PetState = battle combat runtime (no PlayerState) | Accepted |
 | ADR-012 | Player Level + Pet Level clamp formula; Relic/Card ownership vs battle equip; MVP scope closure; no Evolution | Accepted |
 | ADR-013 | Discord authorization-code → identity exchange contract (OAuth2 code grant, token endpoint, `/users/@me`, `DiscordUserId` source) | Accepted |
+| ADR-014 | `BattleState.PlayerId` = battle-end owner-identity source (not a wire member); `PetState.PetId` = owned Pet instance; `BattleResultId` = `BattleId` | Accepted |
 
 ---
 

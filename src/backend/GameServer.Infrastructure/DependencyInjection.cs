@@ -1,3 +1,4 @@
+using GameServer.Application.Battle;
 using GameServer.Application.Cards;
 using GameServer.Application.Identity;
 using GameServer.Application.Pets;
@@ -6,6 +7,7 @@ using GameServer.Application.Relics;
 using GameServer.Infrastructure.Discord;
 using GameServer.Infrastructure.Postgres;
 using GameServer.Infrastructure.Postgres.Repositories;
+using GameServer.Infrastructure.Redis;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -74,6 +76,18 @@ public static class DependencyInjection
         {
             services.AddSingleton<IConnectionMultiplexer>(_ =>
                 ConnectionMultiplexer.Connect(redisConnectionString));
+
+            // Active battle state store (REDIS_STATE.md §1–§4;
+            // ARCHITECTURE.md §1, §3 `BattleStateRepository (Redis)`).
+            //
+            // It is the documented record of truth for an active battle's live
+            // state: battle creation writes it, each resolution loads it and
+            // saves it back under the Sequence compare-and-set, and the sliding
+            // 30-minute expiry is refreshed on a successful resolution. It is
+            // registered inside the connection-string branch because it cannot
+            // function without a connection, and REDIS_STATE.md §2 item 2 / §7
+            // item 5 permit no in-process substitute.
+            services.AddSingleton<IBattleStateRepository, BattleStateRepository>();
         }
 
         return services;

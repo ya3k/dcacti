@@ -1,10 +1,18 @@
 # Boss Rules
 
-**Version:** 2.2 (Boss triggers and terminal checks reference active Pet HP/
-Power instead of a separate Player combat identity; wire `target`/`BattleLost`
-semantics clarified — §3.3 sub-step citations corrected to 18b/18c; §5.4 Enrage
-ordering stated; §6.2 Thủy Ma Always-Active clarified; §6.3 Turn citation
-corrected; §6.4 identity contract added)
+**Version:** 2.4 (§6.4 identity contract completed per TASK-048 — the Thủy Ma
+and Mộc Yêu technical Identities, previously recorded `UNRESOLVED`, are now
+recorded as `"boss-thuy-ma"` and `"boss-moc-yeu"`; the code-alignment note is
+corrected now that source and tests carry the canonical Identities (TASK-047);
+prior 2.3: §6.4 identity contract resolved per TASK-046 — BossId =
+canonical technical Boss Identity (e.g. `"boss-hoa-long"`), display name =
+presentation-only content, `BossDefinitionId` = persistence PK (DATABASE.md);
+prior 2.2: Boss triggers and
+terminal checks reference active Pet HP/Power instead of a separate Player
+combat identity; wire `target`/`BattleLost` semantics clarified — §3.3
+sub-step citations corrected to 18b/18c; §5.4 Enrage ordering stated; §6.2
+Thủy Ma Always-Active clarified; §6.3 Turn citation corrected; §6.4 identity
+contract added)
 **Status:** MVP Domain Rule
 **Parent:** GAME_RULES.md
 
@@ -235,26 +243,59 @@ content-defined. When authored, each must:
 ### 6.4 Identity Contract (BossId, PassiveId, SkillId)
 
 Canonical string identities for the three content-defined MVP Bosses. These
-are the values `BossDefinitions.cs` / `BossDefinition` carry and the values
-emitted on events (`PassiveCharged`/`PassiveTriggered.sourceId`,
-`BossSkillCast.skillId`). They are fixed here so no task invents its own.
+are the values the Domain `BossDefinition` / `BossState` identity fields carry
+and the values emitted on events (`PassiveCharged`/`PassiveTriggered.sourceId`,
+`BossSkillCast.sourceId`, `BattleStarted.BossId`). They are fixed here so no
+task invents its own.
+
+Three distinct Boss identity concepts exist and are never collapsed
+(TASK-046):
+
+- **BossId (canonical technical Identity)** — the stable machine-readable
+  game-level Boss ID. Owned by this section. Used by `BossState.BossId`
+  (`GAME_STATE.md` §2.4), `BossDefinition.Identity` (`DATABASE.md` §1),
+  event `sourceId` when `source = "boss"` (`GAME_EVENTS.md` §2,
+  `SIGNALR_PROTOCOL.md` §3.2.16–§3.2.18), and `POST /api/battle/start`'s
+  `bossId` (`API_CONTRACTS.md` §3).
+- **Display name** — the human-readable content name (this document's §6
+  reference tables). Presentation only; never a technical identifier in
+  state, events, persistence, or the API.
+- **`BossDefinitionId`** — the persistence primary key of the
+  `BossDefinition` row (`DATABASE.md` §1). Owned there, not here.
+
+Naming convention for BossId (contract-level): `boss-<ascii-kebab-case-name>`
+— ASCII only, lowercase, kebab-case, stable, no Vietnamese diacritics, no
+display/localization text, no spaces, no runtime-generated or
+runtime-slugified identifiers.
 
 ```text
-Boss        BossId (BossState.BossId)   PassiveId                      SkillId
----------   --------------------------  -----------------------------  -------------
-Hỏa Long    "Hỏa Long"                  "boss-hoa-long-rage"           "flame-burst"
-Thủy Ma     "Thủy Ma"                   "boss-thuy-ma-heal"            "drain-power"
-Mộc Yêu     "Mộc Yêu"                   "boss-moc-yeu-regen"           "root"
+Boss        BossId (BossState.BossId)    Display Name   PassiveId                     SkillId
+---------   ---------------------------  -------------  ----------------------------  -------------
+Hỏa Long    "boss-hoa-long"              "Hỏa Long"     "boss-hoa-long-rage"         "flame-burst"
+Thủy Ma     "boss-thuy-ma"               "Thủy Ma"      "boss-thuy-ma-heal"          "drain-power"
+Mộc Yêu     "boss-moc-yeu"               "Mộc Yêu"      "boss-moc-yeu-regen"         "root"
 ```
 
-- **BossId** is the display name already used by `BossDefinitions.cs`
-  (`BossId("Hỏa Long")`, etc.) — the boss's identity, not a slug.
+- **BossId** is the canonical technical Identity — machine-readable, never
+  the display name. All three content-defined MVP Bosses have a recorded
+  technical Identity (`"boss-hoa-long"`, `"boss-thuy-ma"`, `"boss-moc-yeu"`),
+  following the convention above; neither the display name nor any
+  runtime-derived slug is used as a technical identifier.
+- **Display name** is content/presentation only — the human-readable name in
+  this document's §6 reference tables. It is never used as a technical
+  identifier in state, events, persistence, or the API.
+- **`BossDefinitionId`** is the stable persistence/database identity of the
+  `BossDefinition` row (`DATABASE.md` §1) — a persistence key, distinct from
+  both the canonical technical Identity above and the display name.
 - **PassiveId** identifies the Boss Passive in `PassiveCharged`/
   `PassiveTriggered` payloads (`source = "boss"`). Values follow the
   kebab-case pattern of Pet PassiveIds (e.g. `PassiveId("xich-lang")`).
 - **SkillId** identifies the Boss Skill in `BossSkillCast.skillId`
   (`SIGNALR_PROTOCOL.md` §3.2.18).
 - Examples in `SIGNALR_PROTOCOL.md` §3.2.16–§3.2.18 use these exact values.
+- Source and tests carry these exact values — the three Domain Boss
+  definitions use these canonical Identities and emit them as `sourceId`,
+  so source code, tests, and this contract are aligned (TASK-047).
 
 ---
 

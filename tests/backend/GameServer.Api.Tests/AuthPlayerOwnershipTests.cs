@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using GameServer.Api.Controllers;
+using GameServer.Application.Battle;
 using GameServer.Application.Identity;
 using GameServer.Domain.Players;
 using GameServer.Infrastructure.Postgres;
@@ -238,6 +239,13 @@ public class AuthPlayerOwnershipTests
                 services.RemoveAll<GameDbContext>();
                 services.AddDbContext<GameDbContext>(options =>
                     options.UseInMemoryDatabase(_storeName));
+
+                // The active-state store (REDIS_STATE.md §1–§4). Blanking
+                // ConnectionStrings:Redis above means the production composition
+                // registers no IBattleStateRepository at all, so this host supplies
+                // the isolated in-memory substitute, exactly as it does for
+                // GameDbContext.
+                services.AddSingleton<IBattleStateRepository, ApiTestBattleStateRepository>();
 
                 // Stand in for the TASK-035 exchange: it yields the verified
                 // identity this test controls, or the documented rejection.

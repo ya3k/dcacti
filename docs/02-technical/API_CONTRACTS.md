@@ -1,6 +1,12 @@
 # API Contracts
 
-**Version:** 1.4 (§3 `cardLoadout` made deterministic — 4-step validation
+**Version:** 1.6 (§3 `bossId` semantics fixed per TASK-046 — the request
+member is the Boss's canonical technical Identity (e.g. `"boss-hoa-long"`),
+never a display name, per `BOSS_RULES.md` §6/§6.4; prior 1.5: §4 battle-result response contract notes — `rewards`
+present for both `"Won"`/`"Lost"` (staging value `{}` until TASK-033,
+shape: DATABASE.md §1), `battleId` = result row key (`BattleResultId` =
+`BattleId`), event-vs-REST reward distinction per GAME_EVENTS.md §2
+(TASK-042, ADR-014); prior 1.4: §3 `cardLoadout` made deterministic — 4-step validation
 (count, ownership, category, per-CardDefinition `LoadoutCopyLimit`),
 rejected with `INVALID_LOADOUT`; Signature Skill Card derived, not
 submitted; prior 1.3: §3 `relicLoadout` made deterministic — request
@@ -299,7 +305,7 @@ Rules:
 Request:
 {
   "petId": "string",
-  "bossId": "string",
+  "bossId": "boss-hoa-long",
   "cardLoadout": ["heal", "shield", "power_charge"],
   "relicLoadout": ["relic_id_1", "relic_id_2", "relic_id_3"]
 }
@@ -309,7 +315,8 @@ Validation (delegates to domain rules, does not reimplement them):
 
 ```text
 petId must be owned by the player                        — PET_RULES.md §2
-bossId must be a valid MVP Boss                         — BOSS_RULES.md §6
+bossId must be a valid MVP Boss's canonical technical    — BOSS_RULES.md §6/§6.4
+  Identity (e.g. "boss-hoa-long"), never a display name
 cardLoadout must be exactly 3 Basic Cards                  — CARD_RULES.md §1
 relicLoadout must be 3–5 Relics owned by the player          — RELIC_RULES.md §2
   with no repeated Relic instance, and its array order is
@@ -404,7 +411,7 @@ Response 200:
 {
   "battleId": "string",
   "outcome": "Won" | "Lost",
-  "rewards": { "...": "see DATABASE.md for reward data shape" },
+  "rewards": {},
   "durationTurns": 0
 }
 ```
@@ -416,6 +423,19 @@ Response 404: { "error": "BATTLE_NOT_FOUND" }
 Only returns data for a battle that has already ended (`BattleWon` /
 `BattleLost` emitted — `GAME_EVENTS.md`). While a battle is active, its
 state is only available via the SignalR connection, not this endpoint.
+
+**Contract notes:**
+
+1. **`rewards` is always present** in this response — for both `"Won"`
+   and `"Lost"`, never absent or optional. Its value is
+   `BattleResult.RewardSummary` exactly as `DATABASE.md` §1 documents it
+   (staging value `{}` with no reward line items until TASK-033 owns the
+   member list; a `"Lost"` outcome carries no line items).
+2. **`battleId` is the result row's primary key** — `BattleResultId` is
+   the battle's own `BattleId`, one row per battle (`DATABASE.md` §1).
+3. **Event vs REST:** `GAME_EVENTS.md` §2 documents the reward summary as
+   `BattleWon`-only because that rule governs the **event payload**; this
+   endpoint's `rewards` field covers both outcomes per note 1.
 
 ---
 

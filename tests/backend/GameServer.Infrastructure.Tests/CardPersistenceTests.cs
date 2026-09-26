@@ -312,6 +312,10 @@ public class CardPersistenceTests
         // ADR-012 item 9: no Card instance table and no Pet.CardInventory.
         // ADR-012 item 10 / DATABASE.md §2: "Battle equip of Cards is not
         // persisted here". TASK-028 therefore adds exactly two tables.
+        //
+        // The list is exhaustive, so it also carries the tables added by later
+        // tasks: BossDefinition (TASK-044, DATABASE.md §1). Neither task
+        // introduces a Card instance/quantity/equip table.
         var model = CreateDesignTimeModel(nameof(Model_ShouldIntroduceNoCardInstanceQuantityOrEquipTable));
 
         var tables = model.GetEntityTypes()
@@ -323,6 +327,7 @@ public class CardPersistenceTests
         Assert.Equal(
             new[]
             {
+                "BossDefinition",
                 "CardDefinition",
                 "Pet",
                 "PetDefinition",

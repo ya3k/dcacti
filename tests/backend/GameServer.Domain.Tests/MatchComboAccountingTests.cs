@@ -281,6 +281,7 @@ public class MatchComboAccountingTests
         Assert.Equal(5, PetState.DefaultCrit);
 
         var initial = PetState.AtBattleCreation(
+            new GameServer.Domain.Pets.PetId("pet_instance_combo_1"),
             GameServer.Domain.Elements.Element.Hoa,
             new PassiveId("test-passive"),
             5);

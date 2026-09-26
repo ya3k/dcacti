@@ -230,6 +230,7 @@ public class RelicLoadoutSnapshotTests
         Assert.True(result.IsValid);
 
         var petState = GameServer.Domain.Battle.PetState.AtBattleCreation(
+            new GameServer.Domain.Pets.PetId("pet_instance_relic_loadout_1"),
             Element.Hoa,
             new PassiveId("passive_1"),
             passiveThreshold: 5,

@@ -3,6 +3,8 @@ using GameServer.Domain.Bosses;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
+using GameServer.Domain.Pets;
+using GameServer.Domain.Players;
 using Xunit;
 
 namespace GameServer.Domain.Tests;
@@ -21,6 +23,19 @@ public class BossStateTests
 {
     /// <summary>A fixed seed, so the generated board is deterministic in tests.</summary>
     private const ulong TestSeed = 42UL;
+
+    /// <summary>
+    /// The owning Player of the battles created in this suite
+    /// (<c>GAME_STATE.md</c> §2.8). These tests assert Boss values, not identity,
+    /// so one fixture owner is supplied in one place.
+    /// </summary>
+    private static readonly PlayerId Owner = new("player_boss_state_owner");
+
+    /// <summary>
+    /// The owned Pet instance the <c>PetState</c> fixtures describe
+    /// (<c>GAME_STATE.md</c> §2.3), for the same reason as <see cref="Owner"/>.
+    /// </summary>
+    private static readonly PetId OwnedPet = new("pet_instance_boss_state_1");
 
     // =======================================================================
     // BossState.Initial — GAME_STATE.md §2.4, BOSS_RULES.md §6.1
@@ -303,7 +318,7 @@ public class BossStateTests
         // BOSS_RULES.md §6.1: Hỏa Long — Hỏa — 5000 / 5000 / 100 / 50 — Idle.
         var boss = BossDefinitions.HoaLong;
 
-        Assert.Equal("Hỏa Long", boss.BossId.Value);
+        Assert.Equal("boss-hoa-long", boss.BossId.Value);
         Assert.Equal(Element.Hoa, boss.Element);
         Assert.Equal(5000, boss.MaxHP);
         Assert.Equal(100, boss.ATK);
@@ -320,7 +335,7 @@ public class BossStateTests
         // BOSS_RULES.md §6.1: Thủy Ma — Thủy — 5000 / 5000 / 100 / 50 — Idle.
         var boss = BossDefinitions.ThuyMa;
 
-        Assert.Equal("Thủy Ma", boss.BossId.Value);
+        Assert.Equal("boss-thuy-ma", boss.BossId.Value);
         Assert.Equal(Element.Thuy, boss.Element);
         Assert.Equal(5000, boss.MaxHP);
         Assert.Equal(100, boss.ATK);
@@ -337,7 +352,7 @@ public class BossStateTests
         // BOSS_RULES.md §6.1: Mộc Yêu — Mộc — 5000 / 5000 / 100 / 50 — Idle.
         var boss = BossDefinitions.MocYeu;
 
-        Assert.Equal("Mộc Yêu", boss.BossId.Value);
+        Assert.Equal("boss-moc-yeu", boss.BossId.Value);
         Assert.Equal(Element.Moc, boss.Element);
         Assert.Equal(5000, boss.MaxHP);
         Assert.Equal(100, boss.ATK);
@@ -356,7 +371,7 @@ public class BossStateTests
         // absent rather than invented to reach GAME_RULES.md §19's five-Boss scope.
         var ids = BossDefinitions.All.Select(b => b.BossId.Value).ToArray();
 
-        Assert.Equal(new[] { "Hỏa Long", "Thủy Ma", "Mộc Yêu" }, ids);
+        Assert.Equal(new[] { "boss-hoa-long", "boss-thuy-ma", "boss-moc-yeu" }, ids);
     }
 
     [Fact]
@@ -383,9 +398,9 @@ public class BossStateTests
         // one Element, and §7 defers dual-element entities to a future expansion.
         var byId = BossDefinitions.All.ToDictionary(b => b.BossId.Value, b => b.Element);
 
-        Assert.Equal(Element.Hoa, byId["Hỏa Long"]);
-        Assert.Equal(Element.Thuy, byId["Thủy Ma"]);
-        Assert.Equal(Element.Moc, byId["Mộc Yêu"]);
+        Assert.Equal(Element.Hoa, byId["boss-hoa-long"]);
+        Assert.Equal(Element.Thuy, byId["boss-thuy-ma"]);
+        Assert.Equal(Element.Moc, byId["boss-moc-yeu"]);
     }
 
     // =======================================================================
@@ -394,12 +409,13 @@ public class BossStateTests
 
     [Theory]
     // BOSS_RULES.md §6.4's identity contract, transcribed — the canonical values
-    // "fixed here so no task invents its own". BossId is the DISPLAY NAME, not a
-    // slug; PassiveId follows the Pet PassiveId kebab-case pattern; SkillId is the
-    // Skill's own name.
-    [InlineData("Hỏa Long", "boss-hoa-long-rage", "flame-burst")]
-    [InlineData("Thủy Ma", "boss-thuy-ma-heal", "drain-power")]
-    [InlineData("Mộc Yêu", "boss-moc-yeu-regen", "root")]
+    // "fixed here so no task invents its own". BossId is the canonical technical
+    // Identity (boss-<ascii-kebab-case-name>), never a display name; PassiveId
+    // follows the Pet PassiveId kebab-case pattern; SkillId is the Skill's own
+    // name.
+    [InlineData("boss-hoa-long", "boss-hoa-long-rage", "flame-burst")]
+    [InlineData("boss-thuy-ma", "boss-thuy-ma-heal", "drain-power")]
+    [InlineData("boss-moc-yeu", "boss-moc-yeu-regen", "root")]
     public void Definitions_ShouldCarryTheDocumentedIdentities(
         string bossId,
         string passiveId,
@@ -417,9 +433,9 @@ public class BossStateTests
     // is "Passive (always active)" — an alternate trigger (PASSIVE_RULES.md §3), not
     // a Match count — so 0 is stored as the Always-Active marker and it is never
     // charged via PassiveTracker.Charge.
-    [InlineData("Hỏa Long", 5)]
-    [InlineData("Thủy Ma", 0)]
-    [InlineData("Mộc Yêu", 5)]
+    [InlineData("boss-hoa-long", 5)]
+    [InlineData("boss-thuy-ma", 0)]
+    [InlineData("boss-moc-yeu", 5)]
     public void Definitions_ShouldCarryTheDocumentedPassiveThreshold(string bossId, int threshold)
     {
         var boss = BossDefinitions.All.Single(b => b.BossId.Value == bossId);
@@ -429,9 +445,9 @@ public class BossStateTests
 
     [Theory]
     // BOSS_RULES.md §6.3's Skill timing table: Charge Req. / CD / Skill Base Dmg.
-    [InlineData("Hỏa Long", 5, 2, 150)]
-    [InlineData("Thủy Ma", 4, 3, 120)]
-    [InlineData("Mộc Yêu", 6, 2, 100)]
+    [InlineData("boss-hoa-long", 5, 2, 150)]
+    [InlineData("boss-thuy-ma", 4, 3, 120)]
+    [InlineData("boss-moc-yeu", 6, 2, 100)]
     public void Definitions_ShouldCarryTheDocumentedSkillTiming(
         string bossId,
         int chargeRequirement,
@@ -531,11 +547,12 @@ public class BossStateTests
         // GAME_STATE.md §2.4 / §2.3 item 1: the identity carries the identifier
         // only; the Element, stats, and State are the definition's and live in
         // BossDefinition. Following the PassiveId pattern, the wrapper holds the
-        // string verbatim and imposes no format.
-        var id = new BossId("Hỏa Long");
+        // documented canonical technical Identity verbatim and imposes no format
+        // of its own (BOSS_RULES.md §6.4).
+        var id = new BossId("boss-hoa-long");
 
-        Assert.Equal("Hỏa Long", id.Value);
-        Assert.Equal("Hỏa Long", id.ToString());
+        Assert.Equal("boss-hoa-long", id.Value);
+        Assert.Equal("boss-hoa-long", id.ToString());
 
         var members = typeof(BossId)
             .GetProperties()
@@ -572,11 +589,12 @@ public class BossStateTests
         var state = BattleState.Create(
             "battle-boss",
             TestSeed,
-            PetState.AtBattleCreation(XichLangElement, XichLang, 5),
+            Owner,
+            PetState.AtBattleCreation(OwnedPet, XichLangElement, XichLang, 5),
             bossState);
 
         Assert.Equal(bossState, state.BossState);
-        Assert.Equal("Mộc Yêu", state.BossState.BossId.Value);
+        Assert.Equal("boss-moc-yeu", state.BossState.BossId.Value);
         Assert.Equal(Element.Moc, state.BossState.Element);
         Assert.Equal(5000, state.BossState.HP);
         Assert.Equal(5000, state.BossState.MaxHP);
@@ -595,6 +613,8 @@ public class BossStateTests
         var state = BattleState.Create(
             "battle-boss-definition",
             TestSeed,
+            Owner,
+            OwnedPet,
             XichLangElement,
             XichLang,
             passiveThreshold: 5,
@@ -612,6 +632,8 @@ public class BossStateTests
         var state = BattleState.Create(
             "battle-boss-intact",
             TestSeed,
+            Owner,
+            OwnedPet,
             XichLangElement,
             XichLang,
             passiveThreshold: 5,
@@ -661,7 +683,7 @@ public class BossStateTests
         // Disadvantage; ELSE → Neutral. The attacker's Element comes from
         // PetState.Element and the defender's from BossState.Element (§5) — no new
         // Element rule is added by this stage, and Resolve is unchanged.
-        var pet = PetState.AtBattleCreation(petElement, XichLang, 5);
+        var pet = PetState.AtBattleCreation(OwnedPet, petElement, XichLang, 5);
         var boss = BossState.Initial(
             new BossId("b"), bossElement, 5000, 100, 50,
             new PassiveId("p"), passiveThreshold: 5);
@@ -686,7 +708,7 @@ public class BossStateTests
         {
             foreach (var boss in BossDefinitions.All)
             {
-                var pet = PetState.AtBattleCreation(petElement, XichLang, 5);
+                var pet = PetState.AtBattleCreation(OwnedPet, petElement, XichLang, 5);
                 var bossState = boss.ToInitialState();
 
                 var matchup = ElementMatchups.Resolve(pet.Element, bossState.Element);
@@ -732,7 +754,7 @@ public class BossStateTests
         // and never changed (PET_RULES.md §2 item 3).
         foreach (var element in Enum.GetValues<Element>())
         {
-            var pet = PetState.AtBattleCreation(element, XichLang, 5);
+            var pet = PetState.AtBattleCreation(OwnedPet, element, XichLang, 5);
 
             Assert.Equal(element, pet.Element);
         }
@@ -746,7 +768,7 @@ public class BossStateTests
         // The Element is therefore carried beside the Passive values, not derived
         // from them.
         var pet = PetState.AtBattleCreation(
-            Element.Thuy,
+            OwnedPet, Element.Thuy,
             new PassiveId("bach-ho"),
             passiveThreshold: 4,
             PassiveResetBehavior.NoReset);

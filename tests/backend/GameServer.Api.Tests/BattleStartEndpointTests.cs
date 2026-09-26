@@ -12,6 +12,7 @@ using GameServer.Domain.Pets;
 using GameServer.Domain.Players;
 using GameServer.Domain.Relics;
 using GameServer.Infrastructure.Postgres;
+using GameServer.Domain.Bosses;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -67,7 +68,7 @@ public class BattleStartEndpointTests
         var client = factory.CreateClient();
         var playerId = await factory.SeedPlayerAsync(client);
 
-        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
@@ -89,7 +90,7 @@ public class BattleStartEndpointTests
         var client = factory.CreateClient();
         var playerId = await factory.SeedPlayerAsync(client);
 
-        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
 
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         var equippedCards = body
@@ -116,7 +117,7 @@ public class BattleStartEndpointTests
         var client = factory.CreateClient();
         var playerId = await factory.SeedPlayerAsync(client);
 
-        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = submitted }, playerId);
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = submitted }, playerId);
 
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         var equippedRelics = body
@@ -139,7 +140,7 @@ public class BattleStartEndpointTests
         var client = factory.CreateClient();
         var playerId = await factory.SeedPlayerAsync(client);
 
-        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
 
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         var state = body.GetProperty("initialState");
@@ -162,13 +163,13 @@ public class BattleStartEndpointTests
         var client = factory.CreateClient();
         var playerId = await factory.SeedPlayerAsync(client);
 
-        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "Mộc Yêu", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-moc-yeu", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
 
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         var boss = body.GetProperty("initialState").GetProperty("bossState");
 
         // BOSS_RULES.md §6.1 / GAME_STATE.md §2.4.
-        Assert.Equal("Mộc Yêu", boss.GetProperty("bossId").GetString());
+        Assert.Equal("boss-moc-yeu", boss.GetProperty("bossId").GetString());
         Assert.Equal(5000, boss.GetProperty("hp").GetInt32());
         Assert.Equal(5000, boss.GetProperty("maxHP").GetInt32());
         Assert.Equal("Idle", boss.GetProperty("state").GetString());
@@ -184,13 +185,13 @@ public class BattleStartEndpointTests
         var client = factory.CreateClient();
         var playerId = await factory.SeedPlayerAsync(client);
 
-        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
 
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         var battleId = body.GetProperty("battleId").GetString()!;
 
         var battles = factory.Services.GetRequiredService<BattleStateService>();
-        var state = battles.GetInitialStateForGroup(battleId);
+        var state = await battles.GetInitialStateForGroupAsync(battleId);
 
         Assert.NotNull(state);
         Assert.Equal(battleId, state!.BattleId);
@@ -213,7 +214,7 @@ public class BattleStartEndpointTests
 
         var cardLoadout = Enumerable.Range(0, count).Select(i => $"card_basic_{i}").ToArray();
 
-        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
@@ -229,7 +230,7 @@ public class BattleStartEndpointTests
         var client = factory.CreateClient();
         var playerId = await factory.SeedPlayerAsync(client);
 
-        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicB, "card_not_unlocked" }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, "card_not_unlocked" }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
@@ -247,7 +248,7 @@ public class BattleStartEndpointTests
         var playerId = await factory.SeedPlayerAsync(client);
 
         // The Signature Skill Card is unlocked but is a PetSkill Card.
-        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicB, SignatureSkillCardId }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, SignatureSkillCardId }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
@@ -263,7 +264,7 @@ public class BattleStartEndpointTests
         var client = factory.CreateClient();
         var playerId = await factory.SeedPlayerAsync(client);
 
-        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicA, BasicB }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicA, BasicB }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
@@ -286,7 +287,7 @@ public class BattleStartEndpointTests
 
         var relicLoadout = Enumerable.Range(1, count).Select(i => $"relic_{i}").ToArray();
 
-        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout }, playerId);
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout }, playerId);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
@@ -302,7 +303,7 @@ public class BattleStartEndpointTests
         var client = factory.CreateClient();
         var playerId = await factory.SeedPlayerAsync(client);
 
-        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_1", "relic_2" } }, playerId);
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_1", "relic_2" } }, playerId);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
@@ -318,7 +319,7 @@ public class BattleStartEndpointTests
         var client = factory.CreateClient();
         var playerId = await factory.SeedPlayerAsync(client);
 
-        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_99" } }, playerId);
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_99" } }, playerId);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
@@ -337,7 +338,7 @@ public class BattleStartEndpointTests
         var client = factory.CreateClient();
         var playerId = await factory.SeedPlayerAsync(client);
 
-        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
@@ -352,7 +353,7 @@ public class BattleStartEndpointTests
         var client = factory.CreateClient();
         var playerId = await factory.SeedPlayerAsync(client);
 
-        var response = await factory.PostStartAsync(client, new { petId = "pet_does_not_exist", bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
+        var response = await factory.PostStartAsync(client, new { petId = "pet_does_not_exist", bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
@@ -388,14 +389,20 @@ public class BattleStartEndpointTests
         var playerId = await factory.SeedPlayerAsync(client);
 
         var battles = factory.Services.GetRequiredService<BattleStateService>();
-        var before = battles.ActiveBattleCount;
+
+        // The active-state store's records are what "a battle exists" means
+        // (REDIS_STATE.md §3: the record is written as part of creation), so the
+        // count is taken from the store itself rather than from the service.
+        var store = (ApiTestBattleStateRepository)
+            factory.Services.GetRequiredService<IBattleStateRepository>();
+        var before = store.RecordCount;
 
         var rejections = new[]
         {
-            new { petId = "pet_does_not_exist", bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } },
+            new { petId = "pet_does_not_exist", bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } },
             new { petId = PetInstanceId, bossId = "nope", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } },
-            new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout = new[] { BasicA }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } },
-            new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1" } },
+            new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } },
+            new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1" } },
         };
 
         foreach (var rejection in rejections)
@@ -409,8 +416,8 @@ public class BattleStartEndpointTests
             Assert.False(body.TryGetProperty("battleId", out _));
         }
 
-        // …and none was registered.
-        Assert.Equal(before, battles.ActiveBattleCount);
+        // …and no record was written to the active-state store.
+        Assert.Equal(before, store.RecordCount);
     }
 
     // -----------------------------------------------------------------------
@@ -431,7 +438,7 @@ public class BattleStartEndpointTests
         var response = await factory.PostStartAsync(client, new
             {
                 petId = PetInstanceId,
-                bossId = "Hỏa Long",
+                bossId = "boss-hoa-long",
                 cardLoadout = new[] { BasicA, BasicB, BasicC },
                 relicLoadout = new[] { "relic_1", "relic_2", "relic_3" },
 
@@ -483,11 +490,11 @@ public class BattleStartEndpointTests
         using var factory = new BattleStartFactory();
         var client = factory.CreateClient();
 
-        var battleCountBefore = factory.Services
-            .GetRequiredService<BattleStateService>()
-            .ActiveBattleCount;
+        var battleCountBefore = ((ApiTestBattleStateRepository)factory.Services
+            .GetRequiredService<IBattleStateRepository>())
+            .RecordCount;
 
-        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId: null);
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId: null);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
 
@@ -496,7 +503,9 @@ public class BattleStartEndpointTests
 
         Assert.Equal(
             battleCountBefore,
-            factory.Services.GetRequiredService<BattleStateService>().ActiveBattleCount);
+            ((ApiTestBattleStateRepository)factory.Services
+                .GetRequiredService<IBattleStateRepository>())
+            .RecordCount);
     }
 
     // -----------------------------------------------------------------------
@@ -513,13 +522,13 @@ public class BattleStartEndpointTests
         var client = factory.CreateClient();
         var playerId = await factory.SeedPlayerAsync(client);
 
-        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
 
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
         var battleId = body.GetProperty("battleId").GetString()!;
 
         var battles = factory.Services.GetRequiredService<BattleStateService>();
-        var before = battles.GetBattle(battleId)!.PetState;
+        var before = (await battles.GetBattleAsync(battleId))!.PetState;
 
         // Revoke every unlock and delete every owned relic.
         using (var scope = factory.Services.CreateScope())
@@ -531,7 +540,7 @@ public class BattleStartEndpointTests
             await context.SaveChangesAsync();
         }
 
-        var after = battles.GetBattle(battleId)!.PetState;
+        var after = (await battles.GetBattleAsync(battleId))!.PetState;
 
         Assert.Equal(
             before.EquippedCards!.Select(c => c.Value).ToArray(),
@@ -560,7 +569,7 @@ public class BattleStartEndpointTests
             relicsBefore = await context.Relics.CountAsync();
         }
 
-        await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "Hỏa Long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
+        await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
 
         using (var scope = factory.Services.CreateScope())
         {
@@ -609,6 +618,13 @@ public class BattleStartEndpointTests
                 services.RemoveAll<GameDbContext>();
                 services.AddDbContext<GameDbContext>(options =>
                     options.UseInMemoryDatabase(_storeName));
+
+                // The active-state store (REDIS_STATE.md §1–§4). Blanking
+                // ConnectionStrings:Redis above means the production composition
+                // registers no IBattleStateRepository at all, so the same isolated
+                // in-memory substitution the host makes for GameDbContext is made
+                // for it here — the real BattleStateService pipeline runs over it.
+                services.AddSingleton<IBattleStateRepository, ApiTestBattleStateRepository>();
 
                 // Stand in for the session mechanism ADR-007 item 4 leaves to
                 // TASK-034: translate the test's identity header into the same

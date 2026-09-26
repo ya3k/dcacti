@@ -8,20 +8,66 @@ using GameServer.Application.Battle;
 using GameServer.Application.Runtime;
 using GameServer.Domain.Battle;
 using GameServer.Domain.Match3;
+using GameServer.Infrastructure.Postgres;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Xunit;
 
 namespace GameServer.Api.Tests;
 
-public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
+public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrationFactory>
 {
-    private readonly WebApplicationFactory<Program> _factory;
+    private readonly ApiIntegrationFactory _factory;
 
-    public ApiIntegrationTests(WebApplicationFactory<Program> factory)
+    public ApiIntegrationTests(ApiIntegrationFactory factory)
     {
         _factory = factory;
+    }
+
+    /// <summary>
+    /// The class's host: the real application pipeline with both connection
+    /// strings blanked, so it needs neither a live PostgreSQL instance nor a live
+    /// Redis one.
+    ///
+    /// The default <c>WebApplicationFactory&lt;Program&gt;</c> keeps whatever
+    /// connection strings the application's configuration supplies, so it would
+    /// resolve the real <c>GameDbContext</c> (Npgsql) and the real active-state
+    /// store (<c>GameServer.Infrastructure.Redis.BattleStateRepository</c>,
+    /// <c>REDIS_STATE.md</c> §1–§4). Both are external services, so this host
+    /// substitutes the isolated in-memory pair instead — the same pattern the
+    /// other API test hosts use — while leaving the production
+    /// <c>BattleStateService</c>/<c>BattleHub</c> pipeline under test.
+    /// </summary>
+    public sealed class ApiIntegrationFactory : WebApplicationFactory<Program>
+    {
+        private readonly string _storeName = $"api-integration-{Guid.NewGuid():N}";
+
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            // Blank the connection strings so AddInfrastructureServices registers
+            // neither the Npgsql provider nor the Redis active-state store; this
+            // host supplies the isolated in-memory stores below instead.
+            builder.UseSetting("ConnectionStrings:DefaultConnection", "");
+            builder.UseSetting("ConnectionStrings:Redis", "");
+
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<DbContextOptions<GameDbContext>>();
+                services.RemoveAll<GameDbContext>();
+                services.AddDbContext<GameDbContext>(options =>
+                    options.UseInMemoryDatabase(_storeName));
+
+                // The active-state store (REDIS_STATE.md §1–§4): blanking Redis
+                // above means the production composition registers no
+                // IBattleStateRepository at all, so it is substituted here.
+                services.AddSingleton<IBattleStateRepository, ApiTestBattleStateRepository>();
+            });
+        }
     }
 
     [Fact]
@@ -231,7 +277,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task JoinBattle_ShouldPushTheBoardFoundationState_WithDocumentedInitialValues()
     {
         const string battleId = "battle-foundation-1";
-        CreateBattleOnServer(battleId);
+        await CreateBattleOnServerAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var received = new TaskCompletionSource<JsonElement>(
@@ -258,7 +304,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task BattleStateUpdated_ShouldCarryExactlyTheDocumentedBoardFoundationFields()
     {
         const string battleId = "battle-foundation-2";
-        CreateBattleOnServer(battleId);
+        await CreateBattleOnServerAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var received = new TaskCompletionSource<JsonElement>(
@@ -324,7 +370,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task BattleStateUpdated_ShouldCarryTheAuthoritativeBoard()
     {
         const string battleId = "battle-foundation-board";
-        CreateBattleOnServer(battleId);
+        await CreateBattleOnServerAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var received = new TaskCompletionSource<JsonElement>(
@@ -383,7 +429,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task BattleStateUpdated_ShouldCarryTheBoardAsAPushAndNotABoardSpecificMessage()
     {
         const string battleId = "battle-foundation-no-board-event";
-        CreateBattleOnServer(battleId);
+        await CreateBattleOnServerAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var received = new TaskCompletionSource<JsonElement>(
@@ -421,7 +467,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task BattleStateUpdated_ShouldCarryNoStatusOrLifecycleValue()
     {
         const string battleId = "battle-foundation-3";
-        CreateBattleOnServer(battleId);
+        await CreateBattleOnServerAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var received = new TaskCompletionSource<JsonElement>(
@@ -452,7 +498,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task BattleStateUpdated_ShouldCarryNoGameplaySystemField()
     {
         const string battleId = "battle-foundation-4";
-        CreateBattleOnServer(battleId);
+        await CreateBattleOnServerAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var received = new TaskCompletionSource<JsonElement>(
@@ -585,7 +631,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // real values, including the documented starting `current = 0` — absence is
         // never used for it (§4.3 item 4).
         const string battleId = "battle-petstate-shape";
-        CreateBattleOnServer(battleId);
+        await CreateBattleOnServerAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var received = new TaskCompletionSource<JsonElement>(
@@ -620,7 +666,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // string, and a default reset OMITS the member — it is never sent as JSON
         // `null`, never as "Default", and never as a numeric enum ordinal.
         const string battleId = "battle-petstate-default-reset";
-        CreateBattleOnServer(battleId);
+        await CreateBattleOnServerAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var received = new TaskCompletionSource<JsonElement>(
@@ -664,9 +710,11 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
 
             using (var scope = _factory.Services.CreateScope())
             {
-                scope.ServiceProvider.GetRequiredService<BattleStateService>().CreateBattle(
+                await scope.ServiceProvider.GetRequiredService<BattleStateService>().CreateBattleAsync(
                     battleId,
+                    Owner,
                     new BattleStateService.PetConfiguration(
+                        new GameServer.Domain.Pets.PetId("pet_instance_wire_1"),
                         GameServer.Domain.Elements.Element.Hoa,
                         new GameServer.Domain.Passives.PassiveId("xich-lang"),
                         PassiveThreshold: PASSIVE_THRESHOLD,
@@ -707,7 +755,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // payload's `sequence` — once per resolved action, not a per-Match feed. The
         // per-Match detail belongs to the §3 event batch instead.
         const string battleId = "battle-petstate-after-swap";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var received = new TaskCompletionSource<JsonElement>(
@@ -733,9 +781,9 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         int settled;
         using (var scope = _factory.Services.CreateScope())
         {
-            settled = scope.ServiceProvider
+            settled = (await scope.ServiceProvider
                 .GetRequiredService<BattleStateService>()
-                .GetBattle(battleId)!
+                .GetBattleAsync(battleId))!
                 .PetState.PassiveProgress.Current;
         }
 
@@ -762,7 +810,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // similar message exists. `BattleStateUpdated` remains the only state-push
         // method, and the Passive EVENT stream travels on §3's existing path.
         const string battleId = "battle-petstate-no-message";
-        CreateBattleOnServer(battleId);
+        await CreateBattleOnServerAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var received = new TaskCompletionSource<JsonElement>(
@@ -818,7 +866,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // the members this asserts are absent — their absence is a property of
         // the projection, not of an empty Domain state.
         const string battleId = "battle-petstate-no-extra-member";
-        CreateBattleOnServer(battleId);
+        await CreateBattleOnServerAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var received = new TaskCompletionSource<JsonElement>(
@@ -906,7 +954,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         //     authentication/lifecycle values the protocol has no member for
         //     (ADR-007, §8.3)
         const string battleId = "battle-wire-negative-contract";
-        CreateBattleOnServer(battleId);
+        await CreateBattleOnServerAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var received = new TaskCompletionSource<JsonElement>(
@@ -968,6 +1016,120 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task BattleStateUpdated_ShouldExcludeBothBattleIdentitiesFromTheWire()
+    {
+        // GAME_STATE.md §2.8 item 3 / ADR-014 decisions 1–4 / SIGNALR_PROTOCOL.md
+        // §4 item 4, §7.1: adding identity to the authoritative state adds NO wire
+        // exposure. `PlayerId` is server state only — delivered by no stage
+        // projection, no Battle Event, and no snapshot — and the petState payload is
+        // fixed by §4.3 item 2 to the Passive trio, so the owned Pet instance
+        // identity is not a member either.
+        //
+        // This asserts the exclusion positively, at every depth of the real
+        // serialized payload: neither the member names nor the recorded values may
+        // appear, so renaming a member to smuggle an identity through would still
+        // fail.
+        const string battleId = "battle-identity-wire-exclusion";
+        await CreateBattleOnServerAsync(battleId);
+
+        var hubConnection = BuildHubConnection();
+        var received = new TaskCompletionSource<JsonElement>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        hubConnection.On<JsonElement>("BattleStateUpdated", payload => received.TrySetResult(payload));
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+        var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var members = EnumerateMemberPaths(payload).ToArray();
+
+        foreach (var forbidden in new[]
+                 {
+                     // The identity member names, at any depth.
+                     "playerId", "petId", "petInstanceId", "petDefinitionId",
+                     // The state-store's own names for the same values.
+                     "playerIdentity", "ownerId",
+                 })
+        {
+            Assert.DoesNotContain(forbidden, members, StringComparer.OrdinalIgnoreCase);
+        }
+
+        // The recorded VALUES are absent too, not merely the member names.
+        var serialized = payload.GetRawText();
+
+        Assert.DoesNotContain("player_api_integration_owner", serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain("pet_instance_wire_1", serialized, StringComparison.Ordinal);
+
+        // And no new undocumented wire field appeared: the payload is still exactly
+        // the §4 envelope, so the guard above is not passing because the payload is
+        // empty or truncated.
+        Assert.Equal(
+            new[]
+            {
+                "battleId", "board", "petState", "playerState", "rngSeed", "rngState",
+                "sequence", "turn",
+            },
+            payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        // The petState object is likewise still exactly the §4.3 payload — the
+        // Passive trio only.
+        Assert.Equal(
+            new[] { "passiveId", "passiveProgress" },
+            payload.GetProperty("petState")
+                .EnumerateObject()
+                .Select(p => p.Name)
+                .OrderBy(n => n, StringComparer.Ordinal));
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task ReceiveEvents_ShouldExcludeBothBattleIdentitiesFromTheWire()
+    {
+        // The same exclusion on the OTHER client-facing path: SIGNALR_PROTOCOL.md
+        // §3.1 item 3 makes the §3 envelope carry events and no state, so neither
+        // identity may reach a client through a committed Swap's event batch either
+        // (GAME_STATE.md §2.8 item 3, ADR-014 decision 3).
+        const string battleId = "battle-identity-events-exclusion";
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
+
+        var hubConnection = BuildHubConnection();
+        var received = new TaskCompletionSource<JsonElement>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        hubConnection.On<JsonElement>("ReceiveEvents", payload => received.TrySetResult(payload));
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+        var committed = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, pair.From, pair.To, "seq-identity-exclusion");
+        Assert.True(committed.Accepted);
+
+        var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        var members = EnumerateMemberPaths(payload).ToArray();
+
+        foreach (var forbidden in new[] { "playerId", "petId", "petInstanceId" })
+        {
+            Assert.DoesNotContain(forbidden, members, StringComparer.OrdinalIgnoreCase);
+        }
+
+        var serialized = payload.GetRawText();
+
+        Assert.DoesNotContain("player_api_integration_owner", serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain("pet_instance_wire_1", serialized, StringComparison.Ordinal);
+
+        // The envelope still carries the documented members, so the absence above is
+        // a real exclusion rather than an empty payload.
+        Assert.Equal(
+            new[] { "battleId", "events", "serverSequence" },
+            payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
     public async Task JoinBattle_ShouldPushTheInitialStateToTheJoiningCallerOnly()
     {
         // SIGNALR_PROTOCOL.md §4 item 3: the initial state push is "sent to the
@@ -981,7 +1143,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // inventing any authentication: the callers are distinguished by their
         // own connection identity, which is the model §1 uses.
         const string battleId = "battle-caller-only-scope";
-        CreateBattleOnServer(battleId);
+        await CreateBattleOnServerAsync(battleId);
 
         var firstConnection = BuildHubConnection();
         var firstPushes = new List<JsonElement>();
@@ -1165,9 +1327,20 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     /// </summary>
     private static readonly BattleStateService.PetConfiguration PetConfiguration =
         new(
+            new GameServer.Domain.Pets.PetId("pet_instance_wire_1"),
             GameServer.Domain.Elements.Element.Hoa,
             new GameServer.Domain.Passives.PassiveId("xich-lang"),
             PassiveThreshold: PASSIVE_THRESHOLD);
+
+    /// <summary>
+    /// The owning Player of the battles these tests create
+    /// (<c>GAME_STATE.md</c> §2.8) — the identity the creation path records. These
+    /// tests assert the wire projection, which excludes this member
+    /// (<c>SIGNALR_PROTOCOL.md</c> §4 item 4), so one fixture owner is supplied in
+    /// one place.
+    /// </summary>
+    private static readonly GameServer.Domain.Players.PlayerId Owner =
+        new("player_api_integration_owner");
 
     /// <summary>
     /// The Boss the tests' battles are fought against — Hỏa Long, an MVP Boss of
@@ -1190,11 +1363,11 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     /// creation remains <c>POST /api/battle/start</c> (API_CONTRACTS.md §3),
     /// unchanged by Battle State Foundation.
     /// </summary>
-    private void CreateBattleOnServer(string battleId)
+    private async Task CreateBattleOnServerAsync(string battleId)
     {
         using var scope = _factory.Services.CreateScope();
-        scope.ServiceProvider.GetRequiredService<BattleStateService>()
-            .CreateBattle(battleId, PetConfiguration, BossDefinition);
+        await scope.ServiceProvider.GetRequiredService<BattleStateService>()
+            .CreateBattleAsync(battleId, Owner, PetConfiguration, BossDefinition);
     }
 
     [Fact]
@@ -1209,7 +1382,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // resolved to stability, and the resulting authoritative state pushed. Nothing is
         // fabricated for the transport.
         const string battleId = "battle-special-gem-wire";
-        CreateBattleOnServer(battleId);
+        await CreateBattleOnServerAsync(battleId);
 
         using (var scope = _factory.Services.CreateScope())
         {
@@ -1218,7 +1391,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
             // Resolving a generated board is a no-op pass (a generated board holds no
             // Match — MATCH3_RULES.md §1.3), which is exactly what leaves the board in
             // its documented all-ordinary-Gems shape.
-            var resolved = service.ResolveBoard(battleId);
+            var resolved = await service.ResolveBoardAsync(battleId);
             Assert.NotNull(resolved);
             Assert.Empty(GameServer.Domain.Match3.MatchDetector.Detect(resolved!.BoardState));
         }
@@ -1352,7 +1525,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         using (var scope = _factory.Services.CreateScope())
         {
             var service = scope.ServiceProvider.GetRequiredService<BattleStateService>();
-            service.CreateBattle(battleId, PetConfiguration, BossDefinition);
+            await service.CreateBattleAsync(battleId, Owner, PetConfiguration, BossDefinition);
         }
 
         var hubConnection = BuildHubConnection();
@@ -1404,7 +1577,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task Swap_ShouldReturnTheDocumentedAcceptanceResult()
     {
         const string battleId = "battle-swap-accepted";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         await hubConnection.StartAsync();
@@ -1424,7 +1597,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task Swap_ShouldPushTheResolvedStateThroughTheExistingStatePush()
     {
         const string battleId = "battle-swap-push";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var received = new TaskCompletionSource<JsonElement>(
@@ -1465,7 +1638,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task Swap_ShouldDeliverNoNewFieldAndNoLastCommittedSwapPair()
     {
         const string battleId = "battle-swap-no-new-field";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var received = new TaskCompletionSource<JsonElement>(
@@ -1523,7 +1696,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         //   - the outcome members `finalPlayerHp` / `finalBossHp`
         //   - the damage instance's `target` value "player"
         const string battleId = "battle-wire-contract-refactor";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var received = new TaskCompletionSource<JsonElement>(
@@ -1600,7 +1773,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // server, so the assertion covers the whole path: Domain Pet HP → the
         // BattleEvent's FinalPlayerHp → the §3.2 wire member.
         const string battleId = "battle-wire-final-player-hp";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var events = new List<JsonElement>();
@@ -1626,7 +1799,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
 
             try
             {
-                swap = FindAdjacentPairThatProducesAMatch(battleId, exclude);
+                swap = await FindAdjacentPairThatProducesAMatchAsync(battleId, exclude);
             }
             catch (InvalidOperationException)
             {
@@ -1672,7 +1845,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // separately tracked "player" pool, which no longer exists.
         using var scope = _factory.Services.CreateScope();
         var service = scope.ServiceProvider.GetRequiredService<BattleStateService>();
-        var stored = service.GetBattle(battleId);
+        var stored = await service.GetBattleAsync(battleId);
 
         Assert.NotNull(stored);
 
@@ -1695,7 +1868,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task Swap_ShouldRejectWithoutChangingStateOrPushing()
     {
         const string battleId = "battle-swap-rejected";
-        CreateBattleOnServer(battleId);
+        await CreateBattleOnServerAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var pushed = 0;
@@ -1726,7 +1899,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task Swap_ShouldReportStaleActionForAReplayOfTheCommittedPair()
     {
         const string battleId = "battle-swap-stale";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         await hubConnection.StartAsync();
@@ -1753,7 +1926,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     public async Task Swap_ShouldNotUseClientSequenceForStalenessOrAcceptance()
     {
         const string battleId = "battle-swap-client-seq";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         await hubConnection.StartAsync();
@@ -1768,7 +1941,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
 
         // Reusing the identical clientSequence with a different, valid pair is not
         // stale — the server compares board pairs, not client numbers.
-        var secondPair = FindAdjacentPairThatProducesAMatch(battleId, exclude: pair);
+        var secondPair = await FindAdjacentPairThatProducesAMatchAsync(battleId, exclude: pair);
 
         var second = await hubConnection.InvokeAsync<SwapResponse>(
             "Swap", battleId, secondPair.From, secondPair.To, "same-sequence");
@@ -1793,7 +1966,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // such session.
         using var scope = _factory.Services.CreateScope();
         var service = scope.ServiceProvider.GetRequiredService<BattleStateService>();
-        Assert.Null(service.GetBattle("battle-that-does-not-exist"));
+        Assert.Null(await service.GetBattleAsync("battle-that-does-not-exist"));
 
         await hubConnection.StopAsync();
     }
@@ -1805,7 +1978,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // part of the authoritative state, projected one-to-one — the client never
         // computes either value (GAME_RULES.md §18).
         const string battleId = "battle-swap-progression";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var received = new TaskCompletionSource<JsonElement>(
@@ -1854,7 +2027,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // MATCH3_RULES.md §2.1.5 item 5 / §6.1 item 3: a rejected Swap resets nothing,
         // increments nothing, and pushes nothing.
         const string battleId = "battle-swap-progression-rejected";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var pushed = 0;
@@ -1873,7 +2046,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
 
         using (var scope = _factory.Services.CreateScope())
         {
-            var held = scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattle(battleId)!;
+            var held = (await scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattleAsync(battleId))!;
             Assert.True(held.Combo >= 1);
         }
 
@@ -1890,7 +2063,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // The authoritative values are exactly what the commit left.
         using (var scope = _factory.Services.CreateScope())
         {
-            var held = scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattle(battleId)!;
+            var held = (await scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattleAsync(battleId))!;
             Assert.True(held.Combo >= 1);
             Assert.True(held.MatchCount >= 1);
         }
@@ -1921,7 +2094,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // payload is exactly { battleId, serverSequence, events[] } — no fourth
         // member, no state, no board, no Status (§3.1 item 3, §8.3).
         const string battleId = "battle-events-accepted";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var batches = new List<JsonElement>();
@@ -1979,7 +2152,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // BattleState.Sequence AFTER this resolution — previous N, resolved N + 1 —
         // and it is the same transition BattleStateUpdated reports.
         const string battleId = "battle-events-sequence";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var batch = new TaskCompletionSource<JsonElement>(
@@ -2018,7 +2191,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // And the authoritative store holds that same committed value.
         using (var scope = _factory.Services.CreateScope())
         {
-            var held = scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattle(battleId)!;
+            var held = (await scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattleAsync(battleId))!;
             Assert.Equal(1, held.Sequence);
             Assert.Equal(held.Sequence, events.GetProperty("serverSequence").GetInt32());
         }
@@ -2033,7 +2206,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // produces exactly one serverSequence value, strictly increasing with no gaps,
         // however many Matches or Cascades it contained.
         const string battleId = "battle-events-sequence-per-action";
-        var firstPair = CreateBattleOnServerWithValidPair(battleId);
+        var firstPair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var sequences = new List<int>();
@@ -2052,7 +2225,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
             "Swap", battleId, firstPair.From, firstPair.To, "seq-1");
         Assert.True(first.Accepted);
 
-        var secondPair = FindAdjacentPairThatProducesAMatch(battleId, exclude: firstPair);
+        var secondPair = await FindAdjacentPairThatProducesAMatchAsync(battleId, exclude: firstPair);
 
         var second = await hubConnection.InvokeAsync<SwapResponse>(
             "Swap", battleId, secondPair.From, secondPair.To, "seq-2");
@@ -2079,7 +2252,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // produced by the same Domain pipeline the hub delegates to — no second
         // MatchDetector call and no event derivation from the final board.
         const string battleId = "battle-events-order";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         // The authoritative expectation, computed from the identical pre-swap state
         // through the identical Application-layer entry point the hub calls — the
@@ -2102,7 +2275,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         using (var scope = _factory.Services.CreateScope())
         {
             var service = scope.ServiceProvider.GetRequiredService<BattleStateService>();
-            var before = service.GetBattle(battleId)!;
+            var before = (await service.GetBattleAsync(battleId))!;
 
             // The Domain executor, the Passive tracker, the Damage Pipeline (both
             // directions), and the Boss Response's conditional steps are the stages
@@ -2349,19 +2522,25 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // requesting state sees the post-resolution state — never the pre-resolution
         // one. The store is therefore already advanced when the batch is observed.
         const string battleId = "battle-events-after-writeback";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
 
         // Read the authoritative store from *inside* the ReceiveEvents handler: at the
         // moment the batch is delivered, the write-back must already be visible.
+        //
+        // The read is asynchronous because the store is (REDIS_STATE.md §2 item 2:
+        // there is no in-process copy to serve it from), so the handler completes —
+        // and the SignalR callback returns — only once the record has been read. The
+        // assertions below therefore observe the store as it stood when the batch
+        // landed, not whenever a fire-and-forget read happened to finish.
         int? heldSequenceAtDelivery = null;
         int? heldMatchCountAtDelivery = null;
 
-        hubConnection.On<JsonElement>("ReceiveEvents", payload =>
+        hubConnection.On<JsonElement>("ReceiveEvents", async payload =>
         {
             using var scope = _factory.Services.CreateScope();
-            var held = scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattle(battleId)!;
+            var held = (await scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattleAsync(battleId))!;
 
             heldSequenceAtDelivery = held.Sequence;
             heldMatchCountAtDelivery = held.MatchCount;
@@ -2392,7 +2571,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // for the action, and the board and counters keep travelling in the existing
         // state push. Both are delivered for one accepted Swap.
         const string battleId = "battle-events-with-state-push";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var statePushes = 0;
@@ -2431,7 +2610,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // message is introduced. The only gameplay messages are BattleStateUpdated
         // and ReceiveEvents.
         const string battleId = "battle-events-no-extra-message";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var unexpected = new List<string>();
@@ -2480,7 +2659,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // action delivers nothing — no batch, no serverSequence change — and its result
         // is the direct §5 return only.
         const string battleId = "battle-events-rejected";
-        CreateBattleOnServer(battleId);
+        await CreateBattleOnServerAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var batches = 0;
@@ -2505,7 +2684,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // The authoritative state is untouched: no Sequence change, no Match recorded.
         using (var scope = _factory.Services.CreateScope())
         {
-            var held = scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattle(battleId)!;
+            var held = (await scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattleAsync(battleId))!;
 
             Assert.Equal(0, held.Sequence);
             Assert.Equal(0, held.Turn);
@@ -2523,9 +2702,9 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // MATCH3_RULES.md §2.1.2 item 4: a swap that produces no Match is rejected, so
         // it delivers nothing (SIGNALR_PROTOCOL.md §3.1 item 4).
         const string battleId = "battle-events-no-match";
-        CreateBattleOnServer(battleId);
+        await CreateBattleOnServerAsync(battleId);
 
-        var pair = FindAdjacentPairThatProducesNoMatch(battleId);
+        var pair = await FindAdjacentPairThatProducesNoMatchAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var batches = 0;
@@ -2545,7 +2724,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
 
         using (var scope = _factory.Services.CreateScope())
         {
-            var held = scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattle(battleId)!;
+            var held = (await scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattleAsync(battleId))!;
 
             Assert.Equal(0, held.Sequence);
             Assert.Equal(0, held.Turn);
@@ -2562,7 +2741,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // both spellings are the same stale action — and neither delivers a batch
         // (SIGNALR_PROTOCOL.md §3.1 item 4).
         const string battleId = "battle-events-stale";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var batches = 0;
@@ -2596,7 +2775,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // And the committed state is exactly what the single accepted Swap left.
         using (var scope = _factory.Services.CreateScope())
         {
-            var held = scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattle(battleId)!;
+            var held = (await scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattleAsync(battleId))!;
 
             Assert.Equal(1, held.Sequence);
             Assert.Equal(1, held.Turn);
@@ -2628,7 +2807,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
 
         using var scope = _factory.Services.CreateScope();
         var service = scope.ServiceProvider.GetRequiredService<BattleStateService>();
-        Assert.Null(service.GetBattle("battle-that-does-not-exist"));
+        Assert.Null(await service.GetBattleAsync("battle-that-does-not-exist"));
 
         await hubConnection.StopAsync();
     }
@@ -2837,7 +3016,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // The last ComboChanged equals the authoritative Combo the write-back stored,
         // so the value is the accounting's, not the transport layer's (§3.2.8 item 1).
         using var scope = _factory.Services.CreateScope();
-        var held = scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattle(battleId)!;
+        var held = (await scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattleAsync(battleId))!;
         Assert.Equal(held.Combo, comboValues[^1]);
     }
 
@@ -2898,7 +3077,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
         // is produced by the server, serialized by the SignalR client's own JSON, and
         // read back — not merely constructed in memory.
         const string battleId = "battle-wire-serialization";
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var batch = new TaskCompletionSource<JsonElement>(
@@ -3211,7 +3390,7 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     /// </summary>
     private async Task<JsonElement> SwapOnceAndReadTheBatch(string battleId, bool preferPlainMatchThree = false)
     {
-        var pair = CreateBattleOnServerWithValidPair(battleId);
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
         var hubConnection = BuildHubConnection();
         var batch = new TaskCompletionSource<JsonElement>(
@@ -3245,12 +3424,12 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     /// Match, so the Swap is rejected with <c>NO_MATCH_FROM_SWAP</c>
     /// (<c>MATCH3_RULES.md</c> §2.1.2 item 4).
     /// </summary>
-    private SwapRequest FindAdjacentPairThatProducesNoMatch(string battleId)
+    private async Task<SwapRequest> FindAdjacentPairThatProducesNoMatchAsync(string battleId)
     {
         using var scope = _factory.Services.CreateScope();
-        var board = scope.ServiceProvider
+        var board = (await scope.ServiceProvider
             .GetRequiredService<BattleStateService>()
-            .GetBattle(battleId)!
+            .GetBattleAsync(battleId))!
             .BoardState;
 
         for (var index = 0; index < BoardState.CellCount; index++)
@@ -3282,23 +3461,23 @@ public class ApiIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
     /// pair of its generated board whose exchange produces a §3 Match — guaranteed to
     /// exist by <c>MATCH3_RULES.md</c> §1.4.
     /// </summary>
-    private SwapRequest CreateBattleOnServerWithValidPair(string battleId)
+    private async Task<SwapRequest> CreateBattleOnServerWithValidPairAsync(string battleId)
     {
-        CreateBattleOnServer(battleId);
+        await CreateBattleOnServerAsync(battleId);
 
-        return FindAdjacentPairThatProducesAMatch(battleId);
+        return await FindAdjacentPairThatProducesAMatchAsync(battleId);
     }
 
     /// <summary>
     /// An adjacent pair of the battle's current board whose exchange produces a §3
     /// Match and which is not the excluded pair (<c>MATCH3_RULES.md</c> §1.4).
     /// </summary>
-    private SwapRequest FindAdjacentPairThatProducesAMatch(string battleId, SwapRequest? exclude = null)
+    private async Task<SwapRequest> FindAdjacentPairThatProducesAMatchAsync(string battleId, SwapRequest? exclude = null)
     {
         using var scope = _factory.Services.CreateScope();
-        var board = scope.ServiceProvider
+        var board = (await scope.ServiceProvider
             .GetRequiredService<BattleStateService>()
-            .GetBattle(battleId)!
+            .GetBattleAsync(battleId))!
             .BoardState;
 
         var excludedPair = exclude is { } excluded

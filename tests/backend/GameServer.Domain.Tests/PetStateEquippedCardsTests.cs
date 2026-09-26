@@ -2,6 +2,7 @@ using GameServer.Domain.Battle;
 using GameServer.Domain.Cards;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Passives;
+using GameServer.Domain.Pets;
 
 namespace GameServer.Domain.Tests;
 
@@ -22,6 +23,7 @@ public class PetStateEquippedCardsTests
 
     private static PetState CreatePet(EquippedCardIdentity[]? cards) =>
         PetState.AtBattleCreation(
+            new PetId("pet_instance_loadout_1"),
             Element.Hoa,
             new PassiveId("passive_1"),
             passiveThreshold: 5,

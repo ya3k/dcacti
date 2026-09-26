@@ -4,6 +4,8 @@ using GameServer.Domain.Cards;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
+using GameServer.Domain.Pets;
+using GameServer.Domain.Players;
 using GameServer.Domain.Relics;
 
 namespace GameServer.Domain.Battle.Serialization;
@@ -154,6 +156,15 @@ public static class BattleStateSerializer
         {
             // §2 root, present from the start (§2.0).
             BattleId = state.BattleId,
+
+            // §2.8: the owner identity is written as the state holds it — recorded
+            // once at battle creation and never re-derived here. It travels in the
+            // record so the battle-end persistence path can source
+            // BattleResult.PlayerId from authoritative state (DATABASE.md §1,
+            // ADR-014 decision 1). It is not a wire member (§2.8 item 3) — this
+            // mapping is the runtime record, not the SignalR projection.
+            PlayerId = state.PlayerId.Value,
+
             Turn = state.Turn,
             Sequence = state.Sequence,
 
@@ -228,6 +239,12 @@ public static class BattleStateSerializer
     private static PetStateJson ToPetStateJson(PetState petState) =>
         new()
         {
+            // §2.3 / ADR-014 decision 4: the owned Pet instance identity — the
+            // same value BattleResult.PetInstanceId will be sourced from. It is
+            // carried verbatim; the definition id and the display Identity name
+            // are definition-side values and are not written here.
+            PetId = petState.PetId.Value,
+
             HP = petState.HP,
             MaxHP = petState.MaxHP,
             ATK = petState.ATK,
@@ -296,6 +313,14 @@ public static class BattleStateSerializer
     private static BattleState FromJson(BattleStateJson dto) =>
         new(
             dto.BattleId,
+
+            // §2.8: the owner identity is restored as stored, so the value the
+            // battle-end persistence path reads is the one creation recorded —
+            // never a re-derived one. An absent member is a JsonException from the
+            // required member above rather than a defaulted identity, because
+            // silently substituting one would invent an owner the record never had.
+            new PlayerId(dto.PlayerId),
+
             dto.Turn,
             dto.Sequence,
             dto.RngSeed,
@@ -342,6 +367,11 @@ public static class BattleStateSerializer
     /// </summary>
     private static PetState FromPetStateJson(PetStateJson dto) =>
         new(
+            // §2.3: the owned Pet instance identity is restored as stored. It
+            // identifies the same owned instance the battle was created with, so
+            // the battle-end persistence path sources the documented value rather
+            // than one re-read from the Player's collection (ADR-012 item 8).
+            new PetId(dto.PetId),
             dto.HP,
             dto.MaxHP,
             dto.ATK,

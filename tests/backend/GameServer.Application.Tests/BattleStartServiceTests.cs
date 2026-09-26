@@ -49,8 +49,11 @@ public class BattleStartServiceTests
     private const string BasicB = "card_basic_b";
     private const string BasicC = "card_basic_c";
 
-    /// <summary>A valid MVP Boss identity (<c>BOSS_RULES.md</c> §6.4).</summary>
-    private const string ValidBossId = "Hỏa Long";
+    /// <summary>
+    /// A valid MVP Boss canonical technical Identity (<c>BOSS_RULES.md</c> §6.4) —
+    /// never the Boss's display name.
+    /// </summary>
+    private const string ValidBossId = "boss-hoa-long";
 
     // -----------------------------------------------------------------------
     // Success — API_CONTRACTS.md §3
@@ -69,7 +72,7 @@ public class BattleStartServiceTests
         Assert.False(string.IsNullOrWhiteSpace(result.BattleId));
 
         // The battle genuinely exists in the authoritative store.
-        var state = harness.Battles.GetBattle(result.BattleId!);
+        var state = await harness.Battles.GetBattleAsync(result.BattleId!);
         Assert.NotNull(state);
         Assert.Equal(result.BattleId, state!.BattleId);
     }
@@ -86,7 +89,7 @@ public class BattleStartServiceTests
             cardLoadout: [BasicA, BasicB, BasicC],
             relicLoadout: ["relic_1", "relic_2", "relic_3"]);
 
-        var petState = harness.Battles.GetBattle(result.BattleId!)!.PetState;
+        var petState = (await harness.Battles.GetBattleAsync(result.BattleId!))!.PetState;
 
         Assert.NotNull(petState.EquippedCards);
         Assert.Equal(4, petState.EquippedCards!.Length);
@@ -116,7 +119,7 @@ public class BattleStartServiceTests
             cardLoadout: [BasicA, BasicB, BasicC],
             relicLoadout: submitted);
 
-        var petState = harness.Battles.GetBattle(result.BattleId!)!.PetState;
+        var petState = (await harness.Battles.GetBattleAsync(result.BattleId!))!.PetState;
 
         Assert.NotNull(petState.EquippedRelics);
         Assert.Equal(submitted, petState.EquippedRelics!.Select(r => r.Value).ToArray());
@@ -140,7 +143,7 @@ public class BattleStartServiceTests
 
         Assert.True(result.Succeeded);
 
-        var petState = harness.Battles.GetBattle(result.BattleId!)!.PetState;
+        var petState = (await harness.Battles.GetBattleAsync(result.BattleId!))!.PetState;
         Assert.Equal(relicCount, petState.EquippedRelics!.Length);
     }
 
@@ -150,13 +153,13 @@ public class BattleStartServiceTests
         var harness = new Harness();
 
         var result = await harness.StartAsync(
-            bossId: "Thủy Ma",
+            bossId: "boss-thuy-ma",
             cardLoadout: [BasicA, BasicB, BasicC],
             relicLoadout: ["relic_1", "relic_2", "relic_3"]);
 
-        var state = harness.Battles.GetBattle(result.BattleId!)!;
+        var state = (await harness.Battles.GetBattleAsync(result.BattleId!))!;
 
-        Assert.Equal("Thủy Ma", state.BossState.BossId.Value);
+        Assert.Equal("boss-thuy-ma", state.BossState.BossId.Value);
 
         // GAME_STATE.md §2.4: created at full health in the Initial State.
         Assert.Equal(BossDefinitions.ThuyMa.MaxHP, state.BossState.HP);
@@ -172,7 +175,7 @@ public class BattleStartServiceTests
             cardLoadout: [BasicA, BasicB, BasicC],
             relicLoadout: ["relic_1", "relic_2", "relic_3"]);
 
-        var petState = harness.Battles.GetBattle(result.BattleId!)!.PetState;
+        var petState = (await harness.Battles.GetBattleAsync(result.BattleId!))!.PetState;
 
         // GAME_STATE.md §2.3: the Element and Passive come from the Pet's
         // DEFINITION, and progress starts at 0 against its own Threshold.
@@ -202,7 +205,7 @@ public class BattleStartServiceTests
             cardLoadout: [BasicA, BasicB, BasicC],
             relicLoadout: ["relic_1", "relic_2", "relic_3"]);
 
-        var state = harness.Battles.GetBattle(result.BattleId!)!;
+        var state = (await harness.Battles.GetBattleAsync(result.BattleId!))!;
 
         Assert.Equal(0, state.Turn);
         Assert.Equal(0, state.Sequence);
@@ -303,9 +306,9 @@ public class BattleStartServiceTests
     }
 
     [Theory]
-    [InlineData("Hỏa Long")]
-    [InlineData("Thủy Ma")]
-    [InlineData("Mộc Yêu")]
+    [InlineData("boss-hoa-long")]
+    [InlineData("boss-thuy-ma")]
+    [InlineData("boss-moc-yeu")]
     public async Task Start_ShouldAcceptEveryContentDefinedMvpBoss(string bossId)
     {
         // BOSS_RULES.md §6 defines exactly these three.
@@ -399,7 +402,7 @@ public class BattleStartServiceTests
 
         Assert.True(result.Succeeded);
 
-        var petState = harness.Battles.GetBattle(result.BattleId!)!.PetState;
+        var petState = (await harness.Battles.GetBattleAsync(result.BattleId!))!.PetState;
         Assert.Equal([BasicA, BasicA, BasicB, SignatureSkillCardId],
             petState.EquippedCards!.Select(c => c.Value).ToArray());
     }
@@ -530,8 +533,10 @@ public class BattleStartServiceTests
             Assert.False(result.Succeeded);
             Assert.Null(result.BattleId);
 
-            // Nothing was registered: no partial BattleState exists.
-            Assert.Equal(0, harness.Battles.ActiveBattleCount);
+            // No record exists: no partial BattleState was stored
+            // (REDIS_STATE.md §3 "Created" writes the record, so a rejected
+            // request leaves the store empty).
+            Assert.Equal(0, harness.ActiveStateStore.RecordCount);
         }
     }
 
@@ -548,7 +553,7 @@ public class BattleStartServiceTests
             relicLoadout: ["relic_1", "relic_2", "relic_3"]);
 
         Assert.Equal(BattleStartOutcome.InvalidLoadout, result.Outcome);
-        Assert.Equal(0, harness.Battles.ActiveBattleCount);
+        Assert.Equal(0, harness.ActiveStateStore.RecordCount);
     }
 
     // -----------------------------------------------------------------------
@@ -567,7 +572,7 @@ public class BattleStartServiceTests
             cardLoadout: [BasicA, BasicB, BasicC],
             relicLoadout: ["relic_1", "relic_2", "relic_3"]);
 
-        var before = harness.Battles.GetBattle(result.BattleId!)!.PetState;
+        var before = (await harness.Battles.GetBattleAsync(result.BattleId!))!.PetState;
 
         // Mutate the backing store: revoke unlocks, remove relics, change the
         // Signature Skill reference.
@@ -575,7 +580,7 @@ public class BattleStartServiceTests
         harness.OwnedRelics = [];
         harness.SignatureSkillCardId = "card_skill_replaced";
 
-        var after = harness.Battles.GetBattle(result.BattleId!)!.PetState;
+        var after = (await harness.Battles.GetBattleAsync(result.BattleId!))!.PetState;
 
         Assert.Equal(
             before.EquippedCards!.Select(c => c.Value).ToArray(),
@@ -614,7 +619,113 @@ public class BattleStartServiceTests
             cardLoadout: [BasicA, BasicB, BasicC],
             relicLoadout: ["relic_1", "relic_2", "relic_3"]);
 
-        Assert.Equal(1, harness.Battles.ActiveBattleCount);
+        Assert.Equal(1, harness.ActiveStateStore.RecordCount);
+    }
+
+    // -----------------------------------------------------------------------
+    // Identity carriage — GAME_STATE.md §2.8, §2.3, ADR-014
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public async Task Start_ShouldRecordTheRequestingPlayerAsTheBattleOwner()
+    {
+        // GAME_STATE.md §2.8 items 1–2 / ADR-014 decision 1: the battle's owner
+        // identity is recorded at creation from the authenticated battle-start
+        // context — the same `playerId` the orchestration was called with — and is
+        // carried in the created state so the battle-end persistence path can source
+        // BattleResult.PlayerId from it (DATABASE.md §1).
+        var harness = new Harness();
+
+        var result = await harness.StartAsync(
+            cardLoadout: [BasicA, BasicB, BasicC],
+            relicLoadout: ["relic_1", "relic_2", "relic_3"]);
+
+        var state = await harness.Battles.GetBattleAsync(result.BattleId!);
+
+        Assert.NotNull(state);
+        Assert.Equal(new PlayerId(Owner), state!.PlayerId);
+        Assert.Equal(Owner, state.PlayerId.Value);
+    }
+
+    [Fact]
+    public async Task Start_ShouldRecordTheOwnedPetInstanceAsPetStatePetId()
+    {
+        // GAME_STATE.md §2.3 / ADR-014 decision 4: PetState.PetId denotes the owned
+        // Pet INSTANCE — the same identity the request selected and whose ownership
+        // the orchestration validated — and not the Pet's definition id. The two are
+        // deliberately different strings here, so a member populated from the
+        // definition could not pass.
+        var harness = new Harness();
+
+        var result = await harness.StartAsync(
+            cardLoadout: [BasicA, BasicB, BasicC],
+            relicLoadout: ["relic_1", "relic_2", "relic_3"]);
+
+        var petState = (await harness.Battles.GetBattleAsync(result.BattleId!))!.PetState;
+
+        Assert.Equal(new PetId(PetInstanceId), petState.PetId);
+        Assert.Equal(PetInstanceId, petState.PetId.Value);
+        Assert.NotEqual(PetDefinitionId, petState.PetId.Value);
+    }
+
+    [Fact]
+    public async Task Start_ShouldRecordTheOwnerIdentityFromTheCaller_NotFromTheSubmittedPetId()
+    {
+        // GAME_RULES.md §18 / ADR-001 / AGENTS.md §10: the client supplies a
+        // selection, never an identity. The request body carries no owner at all, so
+        // the recorded owner can only have come from the server-side creation
+        // context — and the Pet the request selected belongs to exactly that Player
+        // (the ownership check the orchestration performed).
+        var harness = new Harness { PetOwner = OtherPlayer };
+
+        // A different Player submits the same Pet instance: ownership fails, so no
+        // battle — and therefore no identity — is created for it.
+        var rejected = await harness.StartAsync(
+            playerId: Owner,
+            cardLoadout: [BasicA, BasicB, BasicC],
+            relicLoadout: ["relic_1", "relic_2", "relic_3"]);
+
+        Assert.False(rejected.Succeeded);
+        Assert.Equal(0, harness.ActiveStateStore.RecordCount);
+
+        // The owning Player's own request creates the battle, and the recorded owner
+        // is that Player — read from the creation context, not re-derived from the
+        // Pet row it happens to own.
+        var accepted = await harness.StartAsync(
+            playerId: OtherPlayer,
+            cardLoadout: [BasicA, BasicB, BasicC],
+            relicLoadout: ["relic_1", "relic_2", "relic_3"]);
+
+        Assert.True(accepted.Succeeded);
+
+        var state = await harness.Battles.GetBattleAsync(accepted.BattleId!);
+
+        Assert.Equal(new PlayerId(OtherPlayer), state!.PlayerId);
+        Assert.Equal(new PetId(PetInstanceId), state.PetState.PetId);
+    }
+
+    [Fact]
+    public async Task Start_ShouldCarryBothIdentitiesThroughTheRuntimeSerialization()
+    {
+        // GAME_STATE.md §2.8 item 2 / §2.3 / REDIS_STATE.md §2 item 1: both
+        // identities are members of the state record and survive the runtime
+        // serialize → deserialize cycle unchanged, which is the precondition the
+        // active-state store's round trip relies on.
+        var harness = new Harness();
+
+        var result = await harness.StartAsync(
+            cardLoadout: [BasicA, BasicB, BasicC],
+            relicLoadout: ["relic_1", "relic_2", "relic_3"]);
+
+        var state = (await harness.Battles.GetBattleAsync(result.BattleId!))!;
+
+        var restored = GameServer.Domain.Battle.Serialization.BattleStateSerializer
+            .Deserialize(GameServer.Domain.Battle.Serialization.BattleStateSerializer.Serialize(state));
+
+        Assert.Equal(state.PlayerId, restored.PlayerId);
+        Assert.Equal(Owner, restored.PlayerId.Value);
+        Assert.Equal(state.PetState.PetId, restored.PetState.PetId);
+        Assert.Equal(PetInstanceId, restored.PetState.PetId.Value);
     }
 
     // -----------------------------------------------------------------------
@@ -646,13 +757,28 @@ public class BattleStartServiceTests
     {
         public Harness()
         {
-            Battles = new BattleStateService(new FixedRngSeedSource());
+            // The active-state store is a test double: the real store is the
+            // Redis repository (REDIS_STATE.md §1–§4), which needs a live Redis
+            // instance and is verified against one in the Infrastructure and
+            // smoke suites. This orchestrator test asserts the loadout
+            // composition, so the substitution keeps the real BattleStartService
+            // and the real BattleStateService pipeline while removing the
+            // infrastructure dependency.
+            ActiveStateStore = new InMemoryBattleStateRepository();
+            Battles = new BattleStateService(ActiveStateStore, new FixedRngSeedSource());
             Pets = new FakePetRepository(this);
             Cards = new FakeCardRepository(this);
             Relics = new FakeRelicRepository(this);
         }
 
         public BattleStateService Battles { get; }
+
+        /// <summary>
+        /// The store the orchestrator's battles are persisted to, so a test can
+        /// assert on the record itself rather than on a process-local copy
+        /// (<c>REDIS_STATE.md</c> §2 item 2).
+        /// </summary>
+        internal InMemoryBattleStateRepository ActiveStateStore { get; }
 
         internal FakePetRepository Pets { get; }
 

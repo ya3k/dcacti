@@ -77,7 +77,7 @@ public class BattleStartSmokeTest
         var request = new
         {
             petId = PetInstanceId,
-            bossId = "Hỏa Long",
+            bossId = "boss-hoa-long",
             cardLoadout = new[] { HealCardId, ShieldCardId, PowerChargeCardId },
             relicLoadout = new[] { "relic_a", "relic_b", "relic_c" },
         };
@@ -111,7 +111,7 @@ public class BattleStartSmokeTest
 
         // ---- The authoritative state the endpoint created --------------
         var battles = factory.Services.GetRequiredService<BattleStateService>();
-        var authoritative = battles.GetInitialStateForGroup(battleId);
+        var authoritative = await battles.GetInitialStateForGroupAsync(battleId);
 
         Assert.NotNull(authoritative);
 
@@ -164,7 +164,7 @@ public class BattleStartSmokeTest
         Assert.Equal(0, authoritative.Turn);
         Assert.Equal(0, authoritative.Sequence);
         Assert.Equal(64, authoritative.BoardState.Cells.Count);
-        Assert.Equal("Hỏa Long", authoritative.BossState.BossId.Value);
+        Assert.Equal("boss-hoa-long", authoritative.BossState.BossId.Value);
         Assert.Equal(5000, authoritative.BossState.HP);
         Assert.Equal(Element.Moc, authoritative.PetState.Element);
 
@@ -184,7 +184,7 @@ public class BattleStartSmokeTest
             await context.SaveChangesAsync();
         }
 
-        var afterMutation = battles.GetInitialStateForGroup(battleId)!;
+        var afterMutation = (await battles.GetInitialStateForGroupAsync(battleId))!;
 
         Assert.Equal(
             equippedCards.Select(c => c.Value).ToArray(),
@@ -217,6 +217,13 @@ public class BattleStartSmokeTest
                 services.RemoveAll<GameDbContext>();
                 services.AddDbContext<GameDbContext>(options =>
                     options.UseInMemoryDatabase(_storeName));
+
+                // The active-state store (REDIS_STATE.md §1–§4). Blanking
+                // ConnectionStrings:Redis above means the production composition
+                // registers no IBattleStateRepository at all, so this host supplies
+                // the isolated in-memory substitute, exactly as it does for
+                // GameDbContext.
+                services.AddSingleton<IBattleStateRepository, ApiTestBattleStateRepository>();
 
                 services.AddSingleton<IStartupFilter>(new SmokeIdentityStartupFilter());
             });

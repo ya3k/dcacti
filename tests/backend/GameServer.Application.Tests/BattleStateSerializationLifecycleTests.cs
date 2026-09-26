@@ -6,6 +6,8 @@ using GameServer.Domain.Cards;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
+using GameServer.Domain.Pets;
+using GameServer.Domain.Players;
 using GameServer.Domain.Relics;
 using Xunit;
 
@@ -30,14 +32,25 @@ namespace GameServer.Application.Tests;
 /// BattleState
 /// </code>
 ///
-/// <b>This test remains in memory and writes no Redis key.</b> No Redis client is
-/// constructed, no connection is opened, and no key is named: the mapping under
-/// test is a pure function of the state, so the lifecycle integration it verifies
-/// is exactly "the state the application actually creates can round-trip" — which
-/// is the precondition Redis persistence would later need, without performing that
-/// persistence (<c>REDIS_STATE.md</c> §7's deferral remains in force).
+/// <b>This test remains in memory.</b> TASK-029's mapping under test is a pure
+/// function of the state, so the lifecycle integration it verifies is exactly
+/// "the state the application actually creates can round-trip" — the
+/// precondition the active-state store relies on. The store used here is
+/// <see cref="InMemoryBattleStateRepository"/>, a test double: the Redis
+/// implementation of the same contract is
+/// <c>GameServer.Infrastructure.Redis.BattleStateRepository</c> and is verified
+/// against a live Redis in the Infrastructure and smoke suites, where the key,
+/// the document, the TTL, and the compare-and-set can actually be observed.
 ///
-/// The state is created through <see cref="BattleStateService.CreateBattle"/> — the
+/// <b>TASK-040 lifted the §7 deferral.</b> The former assertion that the
+/// lifecycle "writes no Redis key" encoded the <c>REDIS_STATE.md</c> §7 deferral,
+/// which §7's status note recorded as "due rather than deferred" once
+/// <c>POST /api/battle/start</c> could create a real battle. Creation now
+/// persists the documented record, so this suite asserts the mapping's
+/// round-trip property (its own subject) and leaves the store's key, TTL, and
+/// compare-and-set to the suites that own them.
+///
+/// The state is created through <see cref="BattleStateService.CreateBattleAsync"/> — the
 /// production bootstrap the documented <c>POST /api/battle/start</c> path composes
 /// — rather than through a hand-built fixture, so the test would fail if the
 /// lifecycle ever produced a state the mapping cannot represent.
@@ -45,12 +58,26 @@ namespace GameServer.Application.Tests;
 public class BattleStateSerializationLifecycleTests
 {
     /// <summary>
+    /// The owned Pet instance identity these battles select
+    /// (<c>GAME_STATE.md</c> §2.3 — the <c>Pet.PetInstanceId</c>).
+    /// </summary>
+    private const string OwnedPetInstanceId = "owned-pet-instance-1";
+
+    /// <summary>
+    /// The owning Player of these battles (<c>GAME_STATE.md</c> §2.8) — the
+    /// identity the production creation path records.
+    /// </summary>
+    private static readonly PlayerId Owner = new("player_lifecycle_owner");
+
+    /// <summary>
     /// The active Pet's configuration, supplied to the production creation path
-    /// exactly as the battle-start composition supplies it — including both
-    /// battle-scoped loadout snapshots (<c>GAME_STATE.md</c> §2.3).
+    /// exactly as the battle-start composition supplies it — the identity of the
+    /// owned Pet instance the battle selected (<c>GAME_STATE.md</c> §2.3) and both
+    /// battle-scoped loadout snapshots.
     /// </summary>
     private static BattleStateService.PetConfiguration RepresentativePetConfiguration() =>
         new(
+            PetId: new PetId(OwnedPetInstanceId),
             Element: Element.Hoa,
             PassiveId: new PassiveId("hoa-long-combo"),
             PassiveThreshold: 5,
@@ -71,22 +98,24 @@ public class BattleStateSerializationLifecycleTests
             ]);
 
     /// <summary>
-    /// A deterministically seeded service, so the created board is reproducible and
-    /// an assertion about the round trip cannot pass or fail by luck
-    /// (<c>GAME_STATE.md</c> §2.6.1 — the seed's origin is the server, and the
-    /// source is a replaceable dependency).
+    /// A deterministically seeded service over the in-memory store double, so the
+    /// created board is reproducible and an assertion about the round trip cannot
+    /// pass or fail by luck (<c>GAME_STATE.md</c> §2.6.1 — the seed's origin is
+    /// the server, and the source is a replaceable dependency).
     /// </summary>
-    private static BattleStateService SeededService() => new(new FixedRngSeedSource());
+    private static BattleStateService SeededService() =>
+        new(new InMemoryBattleStateRepository(), new FixedRngSeedSource());
 
     [Fact]
-    public void CreatedBattle_ShouldRoundTripThroughTheSerializer()
+    public async Task CreatedBattle_ShouldRoundTripThroughTheSerializer()
     {
         // The core integration obligation: the state the CURRENT application
         // lifecycle creates survives serialize → deserialize.
         var service = SeededService();
 
-        var created = service.CreateBattle(
+        var created = await service.CreateBattleAsync(
             "battle-lifecycle-roundtrip",
+            Owner,
             RepresentativePetConfiguration(),
             BossDefinitions.HoaLong);
 
@@ -104,15 +133,16 @@ public class BattleStateSerializationLifecycleTests
     }
 
     [Fact]
-    public void CreatedBattle_ShouldRoundTripBothLoadoutSnapshots()
+    public async Task CreatedBattle_ShouldRoundTripBothLoadoutSnapshots()
     {
         // The post-TASK-027/028 members: the state created by the lifecycle carries
         // both snapshots, and each survives with its count, identity, and order
         // intact (RELIC_RULES.md §2.3, §2.5; CARD_RULES.md §1).
         var service = SeededService();
 
-        var created = service.CreateBattle(
+        var created = await service.CreateBattleAsync(
             "battle-lifecycle-loadouts",
+            Owner,
             RepresentativePetConfiguration(),
             BossDefinitions.HoaLong);
 
@@ -140,15 +170,16 @@ public class BattleStateSerializationLifecycleTests
     }
 
     [Fact]
-    public void CreatedBattle_ShouldRoundTripEveryPetAndBossMember()
+    public async Task CreatedBattle_ShouldRoundTripEveryPetAndBossMember()
     {
         // The state the lifecycle produces is fully representable: no PetState or
         // BossState member is lost, defaulted, or re-derived on the way back
         // (GAME_STATE.md §2.3, §2.4).
         var service = SeededService();
 
-        var created = service.CreateBattle(
+        var created = await service.CreateBattleAsync(
             "battle-lifecycle-members",
+            Owner,
             RepresentativePetConfiguration(),
             BossDefinitions.HoaLong);
 
@@ -173,7 +204,7 @@ public class BattleStateSerializationLifecycleTests
     }
 
     [Fact]
-    public void CreatedBattle_ShouldRoundTripItsGeneratedBoardAndSpecialGems()
+    public async Task CreatedBattle_ShouldRoundTripItsGeneratedBoardAndSpecialGems()
     {
         // The board the lifecycle generated is restored cell for cell, with every
         // Special Gem's type and orientation at the same index (GAME_STATE.md §2.1.7
@@ -181,8 +212,9 @@ public class BattleStateSerializationLifecycleTests
         // to exercise the conditional member on real lifecycle state.
         var service = SeededService();
 
-        var created = service.CreateBattle(
+        var created = await service.CreateBattleAsync(
             "battle-lifecycle-board",
+            Owner,
             RepresentativePetConfiguration(),
             BossDefinitions.HoaLong);
 
@@ -205,7 +237,7 @@ public class BattleStateSerializationLifecycleTests
     }
 
     [Fact]
-    public void CreatedBattle_ShouldRoundTripAfterACommittedSwapAdvancesTheState()
+    public async Task CreatedBattle_ShouldRoundTripAfterACommittedSwapAdvancesTheState()
     {
         // The stronger lifecycle case: a battle that has actually been PLAYED. A
         // committed Swap advances Turn and Sequence, writes the commit record, and
@@ -218,12 +250,13 @@ public class BattleStateSerializationLifecycleTests
         // adjacent Swap drives the real resolution.
         var service = SeededService();
 
-        var created = service.CreateBattle(
+        var created = await service.CreateBattleAsync(
             "battle-lifecycle-played",
+            Owner,
             RepresentativePetConfiguration(),
             BossDefinitions.HoaLong);
 
-        var result = ExecuteFirstAcceptedSwap(service, created);
+        var result = await ExecuteFirstAcceptedSwapAsync(service, created);
 
         Assert.True(result.IsAccepted, "the fixture battle must accept at least one Swap");
 
@@ -249,36 +282,47 @@ public class BattleStateSerializationLifecycleTests
     }
 
     [Fact]
-    public void CreatedBattle_ShouldRoundTripWithoutWritingAnyRedisKey()
+    public async Task CreatedBattle_ShouldPersistTheDocumentedRecordAndRoundTripItThroughTheStore()
     {
-        // TASK-029 §15 / REDIS_STATE.md §7: this task prepares the mapping and writes
-        // no Redis state. The serializer is a pure function whose only inputs are the
-        // state and whose only output is a string, so the mapping cannot have a
-        // storage side effect. The assertion records that the created battle is still
-        // held by the Application's own boundary and that the round trip left it
-        // untouched.
-        var service = SeededService();
+        // TASK-040 / REDIS_STATE.md §2 item 1: the record the store holds IS the
+        // documented runtime JSON — the same TASK-029 mapping, with no
+        // Redis-only field added to it. The store is read back through the
+        // Application contract, so this asserts the mapping's contract at the
+        // persistence seam the real Redis implementation also uses.
+        var store = new InMemoryBattleStateRepository();
+        var service = new BattleStateService(store, new FixedRngSeedSource());
 
-        var created = service.CreateBattle(
-            "battle-lifecycle-no-redis",
+        var created = await service.CreateBattleAsync(
+            "battle-lifecycle-persisted",
+            Owner,
             RepresentativePetConfiguration(),
             BossDefinitions.HoaLong);
 
-        Assert.Equal(1, service.ActiveBattleCount);
+        // Creation persisted exactly one record (REDIS_STATE.md §3 "Created").
+        Assert.Equal(1, store.WriteCount);
 
+        var reloaded = await service.GetBattleAsync("battle-lifecycle-persisted");
+
+        Assert.NotNull(reloaded);
+        Assert.Equal(created.BattleId, reloaded!.BattleId);
+        Assert.Equal(created.PlayerId, reloaded.PlayerId);
+        Assert.Equal(created.Turn, reloaded.Turn);
+        Assert.Equal(created.Sequence, reloaded.Sequence);
+        Assert.Equal(created.RngSeed, reloaded.RngSeed);
+        Assert.Equal(created.RngState, reloaded.RngState);
+        Assert.Equal(created.Combo, reloaded.Combo);
+        Assert.Equal(created.MatchCount, reloaded.MatchCount);
+        Assert.True(created.BoardState.CellsEqual(reloaded.BoardState));
+        Assert.Equal(created.PetState.PetId, reloaded.PetState.PetId);
+        Assert.Equal(created.BossState, reloaded.BossState);
+
+        // The document is the state's own shape: it names no key, carries no TTL
+        // or lock, and holds no transport concern. Checked as JSON MEMBER NAMES
+        // rather than as raw substrings, because a battle id is arbitrary text
+        // and would otherwise produce a false positive against its own fixture
+        // value.
         var json = BattleStateSerializer.Serialize(created);
-        var restored = BattleStateSerializer.Deserialize(json);
 
-        // Serializing changed nothing about the service's held state, and the restored
-        // value is a separate, equal-by-contract state — not the same instance.
-        Assert.Equal(1, service.ActiveBattleCount);
-        Assert.Same(created, service.GetBattle("battle-lifecycle-no-redis"));
-        Assert.NotSame(created, restored);
-
-        // The document is the state's own shape: it names no key, carries no TTL or
-        // lock, and holds no transport concern. Checked as JSON MEMBER NAMES rather
-        // than as raw substrings, because a battle id is arbitrary text and would
-        // otherwise produce a false positive against its own fixture value.
         using var document = System.Text.Json.JsonDocument.Parse(json);
         var rootNames = document.RootElement.EnumerateObject().Select(p => p.Name).ToArray();
 
@@ -288,14 +332,14 @@ public class BattleStateSerializationLifecycleTests
         }
 
         // The record is exactly the GAME_STATE.md §2 root member set — no
-        // Redis-only field was added for this task (REDIS_STATE.md §2 item 1).
+        // Redis-only field was added (REDIS_STATE.md §2 item 1).
         // `lastCommittedSwapPair` is absent here because this is a NEWLY CREATED
         // battle: no Swap has been committed, and §2.1.10 item 3 makes that absence
         // the documented representation rather than a null or sentinel pair.
         Assert.Equal(
             [
-                "battleId", "turn", "sequence", "rngSeed", "rngState", "boardState",
-                "combo", "matchCount", "petState", "bossState",
+                "battleId", "playerId", "turn", "sequence", "rngSeed", "rngState",
+                "boardState", "combo", "matchCount", "petState", "bossState",
             ],
             rootNames);
         Assert.Null(created.LastCommittedSwapPair);
@@ -315,7 +359,7 @@ public class BattleStateSerializationLifecycleTests
     /// (<c>MATCH3_RULES.md</c> §2.1.5), so scanning until one is accepted does not
     /// alter state beyond the single committed Swap that is returned.
     /// </summary>
-    private static SwapExecutionResult ExecuteFirstAcceptedSwap(
+    private static async Task<SwapExecutionResult> ExecuteFirstAcceptedSwapAsync(
         BattleStateService service,
         BattleState state)
     {
@@ -341,7 +385,7 @@ public class BattleStateSerializationLifecycleTests
 
                 foreach (var to in candidates)
                 {
-                    var result = service.ExecuteSwap(state.BattleId, new SwapRequest(from, to));
+                    var result = await service.ExecuteSwapAsync(state.BattleId, new SwapRequest(from, to));
 
                     if (result is { IsAccepted: true })
                     {

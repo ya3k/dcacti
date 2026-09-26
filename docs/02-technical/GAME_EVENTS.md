@@ -1,6 +1,13 @@
 # Game Events
 
-**Version:** 2.1 (Player/Pet role model per ADR-011 — BattleWon/BattleLost
+**Version:** 2.3 (§2 `BossId`/`SourceId` semantics fixed per TASK-046 —
+`BattleStarted.BossId`, `PassiveCharged`/`PassiveTriggered.SourceId` for
+`source = "boss"`, and `BossSkillCast.SourceId` carry the canonical technical
+Boss Identity (`BOSS_RULES.md` §6.4, e.g. `boss-hoa-long`), never a display
+name; prior 2.2: §2 BattleWon/BattleLost reward line clarified:
+BattleWon-only is the event-payload rule; the REST `rewards` field covers
+both outcomes — API_CONTRACTS.md §4, DATABASE.md §1 (TASK-042, ADR-014);
+prior 2.1: Player/Pet role model per ADR-011 — BattleWon/BattleLost
 trigger: active Pet HP not Player HP; Match/Combo accounting state refs →
 BattleState root; wire label `target="player"` documented; prior 2.0: Boss
 Response contract resolved — PassiveCharged/PassiveTriggered
@@ -216,7 +223,10 @@ Payload:  BattleId, PetId, BossId, initial BattleState summary
 ```
 
 `BattleStarted` is a **gameplay event** and requires a created battle with a
-Pet and a Boss. It is not the foundation-stage state delivery mechanism: the
+Pet and a Boss; its `BossId` payload member is the canonical technical Boss
+Identity (`BOSS_RULES.md` §6.4, e.g. `boss-hoa-long`) — never the Boss's
+display name. `BattleStarted` is not the foundation-stage state delivery
+mechanism: the
 initial transmission of Battle State Foundation (`GAME_STATE.md` §2.0) is a
 state push on group join, defined in `SIGNALR_PROTOCOL.md` §4 — not an event
 on the `ReceiveEvents` path (`GAME_EVENTS.md` §1).
@@ -347,10 +357,14 @@ Payload:  PassiveCharged: PassiveId, Source (pet | boss),
    attribute a charge or a trigger to the Passive it belongs to.
 2. **`Source` discriminates between Pet Passive and Boss Passive.** This
    event is shared by both systems (`PASSIVE_RULES.md` §7, `BOSS_RULES.md`
-   §3 item 1). The    `Source` field is `"pet"` or `"boss"`, and `SourceId`
-   carries the corresponding identity (`PetState.PetId` or
-   `BossState.BossId`). Both fields are present in every emission — the
-   client uses them to attribute the event to the correct entity.
+   §3 item 1). The `Source` field is `"pet"` or `"boss"`, and `SourceId`
+   carries the corresponding identity: for `source = "pet"` the Pet
+   instance identity `PetState.PetId` (`GAME_STATE.md` §2.3); for
+   `source = "boss"` the canonical technical Boss Identity
+   `BossState.BossId` (`GAME_STATE.md` §2.4, `BOSS_RULES.md` §6.4 — e.g.
+   `boss-hoa-long`, never a display name). Both fields are present in
+   every emission — the client uses them to attribute the event to the
+   correct entity.
 2. **`new progress value` is the progress the increment produced, and `threshold`
    is the Passive's threshold** (`PASSIVE_RULES.md` §1, §2). Both are reported
    as the values the track owns, so the client renders `Progress / Threshold`
@@ -406,6 +420,10 @@ Trigger:  Boss's own Skill timing rule fires (BOSS_RULES.md §4)
 Payload:  SkillId, SourceId (BossId), effect summary
 ```
 
+`SourceId` carries the canonical technical Boss Identity (`BOSS_RULES.md`
+§6.4, e.g. `boss-hoa-long`), never the display name — `source` is always
+`"boss"` for this event.
+
 The Skill's damage (if any) is reported by separate `DamageCalculated`/
 `DamageDealt`/`DamageTaken` events in the same batch, with
 `source = "boss"` and `target = "player"` (a fixed wire label meaning the
@@ -417,7 +435,9 @@ Trigger:  Boss HP or active Pet HP reaches 0 (GAME_RULES.md §1.4 —
           the Pet is the combat character; there is no Player HP pool,
           ADR-011)
 Payload:  Outcome, final BattleState summary, reward summary (BattleWon
-          only — exact reward data shape: DATABASE.md)
+          only — this is the event-payload rule; the REST response's
+          `rewards` field covers both outcomes — API_CONTRACTS.md §4;
+          exact reward data shape: DATABASE.md)
 ```
 
 ---

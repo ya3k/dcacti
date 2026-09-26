@@ -5,6 +5,8 @@ using GameServer.Domain.Combat;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
+using GameServer.Domain.Pets;
+using GameServer.Domain.Players;
 using Xunit;
 
 namespace GameServer.Application.Tests;
@@ -25,13 +27,26 @@ public class BattleStateServiceTests
     ///
     /// Pet selection and progression are not implemented (GAME_STATE.md §2.3,
     /// SIGNALR_PROTOCOL.md §4.3 item 2), so a battle's Pet is supplied by its
-    /// caller. This is the configuration those calls pass: Xích Lang's MVP Element
+    /// caller. This is the configuration those calls pass: the identity of the
+    /// owned Pet instance the battle selected (GAME_STATE.md §2.3 — the
+    /// `Pet.PetInstanceId`), Xích Lang's MVP Element
     /// (ELEMENT_RULES.md §6 — Hỏa), its Passive identity, and the Threshold, with
     /// no Reset Behavior override — which is PASSIVE_RULES.md §4 item 1's default
     /// and the behavior of all five MVP Pet Passives (§8).
     /// </summary>
     private static readonly BattleStateService.PetConfiguration PetConfiguration =
-        new(Element.Hoa, new PassiveId("xich-lang"), PassiveThreshold: 5);
+        new(new PetId(PetInstanceId), Element.Hoa, new PassiveId("xich-lang"), PassiveThreshold: 5);
+
+    /// <summary>
+    /// The owning Player of the tests' battles (GAME_STATE.md §2.8) — the identity
+    /// the battle-start composition records at creation. It is deliberately not a
+    /// value any other fixture uses, so an assertion about the recorded owner
+    /// cannot pass against an unrelated member.
+    /// </summary>
+    private static readonly PlayerId Owner = new("player_owner_1");
+
+    /// <summary>The owned Pet instance identity the tests' battles select.</summary>
+    private const string PetInstanceId = "pet_instance_1";
 
     /// <summary>
     /// The Boss the tests' battles are fought against — Hỏa Long, an MVP Boss of
@@ -39,11 +54,39 @@ public class BattleStateServiceTests
     /// </summary>
     private static readonly BossDefinition BossDefinition = BossDefinitions.HoaLong;
 
+    /// <summary>
+    /// The service under test, composed over the in-memory active-state store
+    /// double and a deterministic seed source.
+    ///
+    /// The repository is a <b>test double standing in for the Redis active-state
+    /// store</b> (<c>REDIS_STATE.md</c> §1–§4), which is what the production
+    /// composition registers instead
+    /// (<c>GameServer.Infrastructure.Redis.BattleStateRepository</c>). The real
+    /// store needs a live Redis instance; <c>REDIS_STATE.md</c> §2 item 2 makes the
+    /// stored record the single source of truth for a battle's live state and §7
+    /// item 5 permits no in-process substitute in the running server, so the
+    /// substitution is confined to the tests — the real
+    /// <see cref="BattleStateService"/> pipeline runs unchanged over it.
+    ///
+    /// The seed source pins the battle's seed (<c>GAME_STATE.md</c> §2.6.1), so the
+    /// generated board — and therefore the Match count, the generated resources,
+    /// and the damage — is the same on every run.
+    /// </summary>
+    /// <param name="repository">
+    /// The store double to compose over, or <c>null</c> for a fresh one. A test that
+    /// asserts what the store received — the number of writes it applied
+    /// (<see cref="InMemoryBattleStateRepository.WriteCount"/>, counting creations
+    /// and accepted updates alike), or the presence and contents of a record —
+    /// keeps the reference it passed in.
+    /// </param>
+    private static BattleStateService NewService(InMemoryBattleStateRepository? repository = null) =>
+        new(repository ?? new InMemoryBattleStateRepository(), new FixedRngSeedSource());
+
     [Fact]
-    public void CreateBattle_ShouldProduceTheDocumentedInitialState()
+    public async Task CreateBattle_ShouldProduceTheDocumentedInitialState()
     {
-        var service = new BattleStateService();
-        var state = service.CreateBattle("battle-1", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var state = await service.CreateBattleAsync("battle-1", Owner, PetConfiguration, BossDefinition);
 
         Assert.Equal("battle-1", state.BattleId);
         Assert.Equal(0, state.Turn);
@@ -51,14 +94,14 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void CreatedState_ShouldBeOwnedAndRetrievableByTheServerRuntime()
+    public async Task CreatedState_ShouldBeOwnedAndRetrievableByTheServerRuntime()
     {
         // GAME_STATE.md §2.0.4.1: Foundation State is authoritative server
         // state, produced and held server-side.
-        var service = new BattleStateService();
-        service.CreateBattle("battle-1", PetConfiguration, BossDefinition);
+        var service = NewService();
+        await service.CreateBattleAsync("battle-1", Owner, PetConfiguration, BossDefinition);
 
-        var retrieved = service.GetBattle("battle-1");
+        var retrieved = await service.GetBattleAsync("battle-1");
 
         Assert.NotNull(retrieved);
         Assert.Equal("battle-1", retrieved!.BattleId);
@@ -67,22 +110,22 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void GetBattle_ForUnknownBattle_ShouldReturnNull()
+    public async Task GetBattle_ForUnknownBattle_ShouldReturnNull()
     {
-        var service = new BattleStateService();
+        var service = NewService();
 
-        Assert.Null(service.GetBattle("never-created"));
+        Assert.Null(await service.GetBattleAsync("never-created"));
     }
 
     [Fact]
-    public void GetInitialStateForGroup_ShouldReturnTheCreatedFoundationState()
+    public async Task GetInitialStateForGroup_ShouldReturnTheCreatedFoundationState()
     {
         // SIGNALR_PROTOCOL.md §4.1: the state delivered when the client joins
         // the battle group is the current authoritative state.
-        var service = new BattleStateService();
-        service.CreateBattle("battle-1", PetConfiguration, BossDefinition);
+        var service = NewService();
+        await service.CreateBattleAsync("battle-1", Owner, PetConfiguration, BossDefinition);
 
-        var delivered = service.GetInitialStateForGroup("battle-1");
+        var delivered = await service.GetInitialStateForGroupAsync("battle-1");
 
         Assert.NotNull(delivered);
         Assert.Equal("battle-1", delivered!.BattleId);
@@ -91,57 +134,59 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void GetInitialStateForGroup_ForUnknownBattle_ShouldReturnNull()
+    public async Task GetInitialStateForGroup_ForUnknownBattle_ShouldReturnNull()
     {
-        var service = new BattleStateService();
+        var service = NewService();
 
-        Assert.Null(service.GetInitialStateForGroup("never-created"));
+        Assert.Null(await service.GetInitialStateForGroupAsync("never-created"));
     }
 
     [Fact]
-    public void RepeatedReads_ShouldNotAlterTheAuthoritativeState()
+    public async Task RepeatedReads_ShouldNotAlterTheAuthoritativeState()
     {
         // Foundation State has no resolutions (GAME_STATE.md §2.0.2), so no
         // read, join, or repeat delivery may change Turn or Sequence.
-        var service = new BattleStateService();
-        service.CreateBattle("battle-1", PetConfiguration, BossDefinition);
+        var service = NewService();
+        await service.CreateBattleAsync("battle-1", Owner, PetConfiguration, BossDefinition);
 
-        service.GetBattle("battle-1");
-        service.GetInitialStateForGroup("battle-1");
-        var second = service.GetInitialStateForGroup("battle-1");
+        await service.GetBattleAsync("battle-1");
+        await service.GetInitialStateForGroupAsync("battle-1");
+        var second = await service.GetInitialStateForGroupAsync("battle-1");
 
         Assert.Equal(0, second!.Turn);
         Assert.Equal(0, second.Sequence);
-        Assert.Equal(1, service.ActiveBattleCount);
+        Assert.NotNull(await service.GetBattleAsync("battle-1"));
     }
 
     [Fact]
-    public void CreateBattle_ShouldTrackEachBattleIdSeparately()
+    public async Task CreateBattle_ShouldTrackEachBattleIdSeparately()
     {
-        var service = new BattleStateService();
+        var service = NewService();
 
-        service.CreateBattle("battle-1", PetConfiguration, BossDefinition);
-        service.CreateBattle("battle-2", PetConfiguration, BossDefinition);
+        await service.CreateBattleAsync("battle-1", Owner, PetConfiguration, BossDefinition);
+        await service.CreateBattleAsync("battle-2", Owner, PetConfiguration, BossDefinition);
 
-        Assert.Equal("battle-1", service.GetBattle("battle-1")!.BattleId);
-        Assert.Equal("battle-2", service.GetBattle("battle-2")!.BattleId);
-        Assert.Equal(2, service.ActiveBattleCount);
+        Assert.Equal("battle-1", (await service.GetBattleAsync("battle-1"))!.BattleId);
+        Assert.Equal("battle-2", (await service.GetBattleAsync("battle-2"))!.BattleId);
+        Assert.NotNull(await service.GetBattleAsync("battle-1"));
+        Assert.NotNull(await service.GetBattleAsync("battle-2"));
     }
 
     [Fact]
-    public void CreateBattle_ShouldRejectAnEmptyBattleId()
+    public async Task CreateBattle_ShouldRejectAnEmptyBattleId()
     {
-        var service = new BattleStateService();
+        var service = NewService();
 
-        Assert.Throws<ArgumentException>(() => service.CreateBattle(string.Empty, PetConfiguration, BossDefinition));
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => service.CreateBattleAsync(string.Empty, Owner, PetConfiguration, BossDefinition));
     }
 
     [Fact]
-    public void GetBattle_ShouldRejectAnEmptyBattleId()
+    public async Task GetBattle_ShouldRejectAnEmptyBattleId()
     {
-        var service = new BattleStateService();
+        var service = NewService();
 
-        Assert.Throws<ArgumentException>(() => service.GetBattle(string.Empty));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.GetBattleAsync(string.Empty));
     }
 
     // -----------------------------------------------------------------------
@@ -149,15 +194,15 @@ public class BattleStateServiceTests
     // -----------------------------------------------------------------------
 
     [Fact]
-    public void ResolveBoard_ShouldLeaveAStableBoardUnchangedAndConsumeNoRng()
+    public async Task ResolveBoard_ShouldLeaveAStableBoardUnchangedAndConsumeNoRng()
     {
         // A generated board holds no Match (MATCH3_RULES.md §1.3), so the resolution
         // loop terminates immediately: no pass runs, nothing is removed, and Spawn —
         // the only gameplay RNG consumer (§7.2 item 1) — draws nothing.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-stable", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-stable", Owner, PetConfiguration, BossDefinition);
 
-        var resolved = service.ResolveBoard("battle-stable");
+        var resolved = await service.ResolveBoardAsync("battle-stable");
 
         Assert.NotNull(resolved);
         Assert.True(created.BoardState.CellsEqual(resolved!.BoardState));
@@ -173,34 +218,41 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ResolveBoard_ShouldRecordTheResolvedStateAsAuthoritative()
+    public async Task ResolveBoard_ShouldRecordTheResolvedStateAsAuthoritative()
     {
         // GAME_STATE.md §5.1 / §2.0.4.1: the resolved board is the authoritative state
         // the server holds and delivers, so a subsequent read returns the resolved
         // values rather than the pre-resolution ones.
-        var service = new BattleStateService();
-        service.CreateBattle("battle-resolved", PetConfiguration, BossDefinition);
+        var service = NewService();
+        await service.CreateBattleAsync("battle-resolved", Owner, PetConfiguration, BossDefinition);
 
-        var resolved = service.ResolveBoard("battle-resolved");
-        var reread = service.GetBattle("battle-resolved");
+        var resolved = await service.ResolveBoardAsync("battle-resolved");
+        var reread = await service.GetBattleAsync("battle-resolved");
 
         Assert.NotNull(resolved);
         Assert.NotNull(reread);
-        Assert.Same(resolved, reread);
-        Assert.Equal(resolved!.RngState, reread!.RngState);
+
+        // The store holds the resolved values, member for member — it is the record
+        // of truth and not a copy the resolution kept (REDIS_STATE.md §2 item 2, §4
+        // item 5).
+        Assert.Equal(resolved!.Turn, reread!.Turn);
+        Assert.Equal(resolved.Sequence, reread.Sequence);
+        Assert.Equal(resolved.RngState, reread.RngState);
+        Assert.Equal(resolved.Combo, reread.Combo);
+        Assert.Equal(resolved.MatchCount, reread.MatchCount);
         Assert.True(resolved.BoardState.CellsEqual(reread.BoardState));
     }
 
     [Fact]
-    public void ResolveBoard_ShouldBeIdempotentOnAnAlreadyStableBoard()
+    public async Task ResolveBoard_ShouldBeIdempotentOnAnAlreadyStableBoard()
     {
         // Resolving a stable board is a no-op, so resolving it again changes nothing —
         // the determinism guarantee of MATCH3_RULES.md §4.6 applied at this boundary.
-        var service = new BattleStateService();
-        service.CreateBattle("battle-idempotent", PetConfiguration, BossDefinition);
+        var service = NewService();
+        await service.CreateBattleAsync("battle-idempotent", Owner, PetConfiguration, BossDefinition);
 
-        var first = service.ResolveBoard("battle-idempotent");
-        var second = service.ResolveBoard("battle-idempotent");
+        var first = await service.ResolveBoardAsync("battle-idempotent");
+        var second = await service.ResolveBoardAsync("battle-idempotent");
 
         Assert.NotNull(first);
         Assert.NotNull(second);
@@ -209,7 +261,7 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ResolveBoard_ShouldNotWriteAnyBattleEventOrAddAMessage()
+    public async Task ResolveBoard_ShouldNotWriteAnyBattleEventOrAddAMessage()
     {
         // GAME_EVENTS.md §1 / SIGNALR_PROTOCOL.md §8 item 7: this boundary returns state
         // and emits nothing. The service exposes no event surface at all — no
@@ -231,32 +283,32 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ResolveBoard_ShouldReturnNullForAnUnknownBattle()
+    public async Task ResolveBoard_ShouldReturnNullForAnUnknownBattle()
     {
         // Consistent with GetBattle: an unknown battle resolves nothing rather than
         // creating state.
-        var service = new BattleStateService();
+        var service = NewService();
 
-        Assert.Null(service.ResolveBoard("battle-that-does-not-exist"));
+        Assert.Null(await service.ResolveBoardAsync("battle-that-does-not-exist"));
     }
 
     [Fact]
-    public void ResolveBoard_ShouldRejectAnEmptyBattleId()
+    public async Task ResolveBoard_ShouldRejectAnEmptyBattleId()
     {
-        var service = new BattleStateService();
+        var service = NewService();
 
-        Assert.Throws<ArgumentException>(() => service.ResolveBoard(string.Empty));
+        await Assert.ThrowsAsync<ArgumentException>(() => service.ResolveBoardAsync(string.Empty));
     }
 
     [Fact]
-    public void ResolvedBattle_ShouldRetainTheSeedItWasCreatedWith()
+    public async Task ResolvedBattle_ShouldRetainTheSeedItWasCreatedWith()
     {
         // GAME_STATE.md §2.6.1 item 3: RngSeed records the battle's origin and is never
         // rewritten. Resolution advances RngState, not the seed.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-seed", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-seed", Owner, PetConfiguration, BossDefinition);
 
-        var resolved = service.ResolveBoard("battle-seed");
+        var resolved = await service.ResolveBoardAsync("battle-seed");
 
         Assert.NotNull(resolved);
         Assert.Equal(created.RngSeed, resolved!.RngSeed);
@@ -267,66 +319,95 @@ public class BattleStateServiceTests
     // -----------------------------------------------------------------------
 
     [Fact]
-    public void ExecuteSwap_ShouldRejectEveryRequestOnAFreshGeneratedBoard()
+    public async Task ExecuteSwap_ShouldRejectEveryRequestOnAFreshGeneratedBoard()
     {
         // A generated board holds no Match (MATCH3_RULES.md §1.3) and is guaranteed at
         // least one valid swap (§1.4), so this asserts the boundary rather than a
         // particular pair: whatever the generated board is, a request that produces no
         // Match is rejected and the authoritative state is left exactly as it was.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-swap-reject", PetConfiguration, BossDefinition);
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
+        var created = await service.CreateBattleAsync("battle-swap-reject", Owner, PetConfiguration, BossDefinition);
 
-        var result = service.ExecuteSwap("battle-swap-reject", new SwapRequest(99, 100));
+        var result = await service.ExecuteSwapAsync("battle-swap-reject", new SwapRequest(99, 100));
 
         Assert.NotNull(result);
         Assert.True(result!.Value.IsRejected);
         Assert.Equal(SwapRejectionReason.InvalidCellIndex, result.Value.Reason);
 
-        // §2.1.5: a rejected action writes nothing — the registry still holds the
-        // created state, unchanged.
-        var reread = service.GetBattle("battle-swap-reject");
-        Assert.Same(created, reread);
-        Assert.Equal(BattleState.InitialTurn, reread!.Turn);
+        // §2.1.5: a rejected action writes nothing — creation was the only write
+        // (REDIS_STATE.md §3), and the active-state store still holds the created
+        // record, unchanged.
+        Assert.Equal(1, repository.WriteCount);
+
+        var reread = await service.GetBattleAsync("battle-swap-reject");
+        Assert.NotNull(reread);
+        Assert.Equal(created.BattleId, reread!.BattleId);
+        Assert.Equal(created.Turn, reread.Turn);
+        Assert.Equal(created.Sequence, reread.Sequence);
+        Assert.Equal(created.RngSeed, reread.RngSeed);
+        Assert.Equal(created.RngState, reread.RngState);
+        Assert.Equal(created.Combo, reread.Combo);
+        Assert.Equal(created.MatchCount, reread.MatchCount);
+        Assert.True(created.BoardState.CellsEqual(reread.BoardState));
+        Assert.Equal(created.PetState, reread.PetState);
+        Assert.Equal(created.BossState, reread.BossState);
+        Assert.Equal(BattleState.InitialTurn, reread.Turn);
         Assert.Equal(BattleState.InitialSequence, reread.Sequence);
         Assert.Null(reread.LastCommittedSwapPair);
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldRejectARequestThatProducesNoMatch()
+    public async Task ExecuteSwap_ShouldRejectARequestThatProducesNoMatch()
     {
         // The service performs no validation of its own: the reason is the validator's,
         // reached through the Domain executor (ARCHITECTURE.md §2.1).
-        var service = new BattleStateService();
-        var state = service.CreateBattle("battle-swap-nomatch", PetConfiguration, BossDefinition);
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
+        var state = await service.CreateBattleAsync("battle-swap-nomatch", Owner, PetConfiguration, BossDefinition);
 
         // Find an adjacent pair of the generated board that produces no Match. §1.4
         // guarantees at least one pair does produce one, so the complement is not
         // empty either — the loop asserts it found one rather than assuming.
         var pair = FindAdjacentPairThatProducesNoMatch(state.BoardState);
 
-        var result = service.ExecuteSwap("battle-swap-nomatch", pair);
+        var result = await service.ExecuteSwapAsync("battle-swap-nomatch", pair);
 
         Assert.NotNull(result);
         Assert.Equal(SwapRejectionReason.NoMatchFromSwap, result!.Value.Reason);
-        Assert.Same(state, service.GetBattle("battle-swap-nomatch"));
+
+        // MATCH3_RULES.md §2.1.5: a rejected action writes nothing, so creation was
+        // the only write and the store still holds the created record unchanged.
+        Assert.Equal(1, repository.WriteCount);
+
+        var reread = await service.GetBattleAsync("battle-swap-nomatch");
+
+        Assert.NotNull(reread);
+        Assert.Equal(state.BattleId, reread!.BattleId);
+        Assert.Equal(state.Turn, reread.Turn);
+        Assert.Equal(state.Sequence, reread.Sequence);
+        Assert.Equal(state.RngState, reread.RngState);
+        Assert.True(state.BoardState.CellsEqual(reread.BoardState));
+        Assert.Equal(state.PetState, reread.PetState);
+        Assert.Equal(state.BossState, reread.BossState);
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldCommitAndRecordTheResolvedState()
+    public async Task ExecuteSwap_ShouldCommitAndRecordTheResolvedState()
     {
         // §2.1.6 / GAME_STATE.md §5.1: an accepted Swap is resolved and the resulting
         // state replaces the authoritative one in a single write-back, so a subsequent
         // read returns the resolved values.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-swap-commit", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-swap-commit", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-swap-commit", pair);
+        var result = await service.ExecuteSwapAsync("battle-swap-commit", pair);
 
         Assert.NotNull(result);
         Assert.True(result!.Value.IsAccepted);
 
-        var reread = service.GetBattle("battle-swap-commit");
+        var reread = await service.GetBattleAsync("battle-swap-commit");
 
         Assert.NotNull(reread);
         Assert.True(result.Value.State.BoardState.CellsEqual(reread!.BoardState));
@@ -335,15 +416,15 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldAdvanceTurnAndSequenceExactlyOnce()
+    public async Task ExecuteSwap_ShouldAdvanceTurnAndSequenceExactlyOnce()
     {
         // §8.1 item 1 / §8.2 item 1: one committed Swap begins one Turn and increments
         // Sequence by exactly 1, written together in the same write-back.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-swap-counters", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-swap-counters", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-swap-counters", pair);
+        var result = await service.ExecuteSwapAsync("battle-swap-counters", pair);
 
         Assert.True(result!.Value.IsAccepted);
         Assert.Equal(created.Turn + 1, result.Value.State.Turn);
@@ -351,34 +432,39 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldRecordTheCanonicalCommittedPair()
+    public async Task ExecuteSwap_ShouldRecordTheCanonicalCommittedPair()
     {
         // GAME_STATE.md §2.1.10 item 5: the committed pair is written in the same
         // write-back as the counters, canonically (min, max).
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-swap-pair", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-swap-pair", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-swap-pair", pair);
+        var result = await service.ExecuteSwapAsync("battle-swap-pair", pair);
 
         Assert.True(result!.Value.IsAccepted);
         Assert.Equal(
             CommittedSwapPair.FromCells(pair.From, pair.To),
-            service.GetBattle("battle-swap-pair")!.LastCommittedSwapPair);
+            (await service.GetBattleAsync("battle-swap-pair"))!.LastCommittedSwapPair);
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldRejectAReplayOfTheCommittedPairAsStale()
+    public async Task ExecuteSwap_ShouldRejectAReplayOfTheCommittedPairAsStale()
     {
         // §2.1.4 item 2: replaying the pair just committed — in either order — is
         // rejected as already applied, and the state the commit produced is untouched.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-swap-stale", PetConfiguration, BossDefinition);
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
+        var created = await service.CreateBattleAsync("battle-swap-stale", Owner, PetConfiguration, BossDefinition);
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
 
-        var committed = service.ExecuteSwap("battle-swap-stale", pair);
+        var committed = await service.ExecuteSwapAsync("battle-swap-stale", pair);
         Assert.True(committed!.Value.IsAccepted);
-        var afterCommit = service.GetBattle("battle-swap-stale");
+        var afterCommit = await service.GetBattleAsync("battle-swap-stale");
+
+        // Creation plus the one committed Swap: exactly two writes so far — the
+        // documented one write-back per action (REDIS_STATE.md §4 item 5).
+        Assert.Equal(2, repository.WriteCount);
 
         foreach (var replay in new[]
                  {
@@ -386,45 +472,55 @@ public class BattleStateServiceTests
                      new SwapRequest(pair.To, pair.From),
                  })
         {
-            var result = service.ExecuteSwap("battle-swap-stale", replay);
+            var result = await service.ExecuteSwapAsync("battle-swap-stale", replay);
 
             Assert.True(result!.Value.IsRejected);
             Assert.Equal(SwapRejectionReason.StaleAction, result.Value.Reason);
 
-            // §2.1.5: unchanged — including the record the rejection matched.
-            Assert.Same(afterCommit, service.GetBattle("battle-swap-stale"));
+            // §2.1.5: unchanged — the rejection performed no write at all, and the
+            // record it matched is still the one the commit produced.
+            Assert.Equal(2, repository.WriteCount);
+
+            var reread = await service.GetBattleAsync("battle-swap-stale");
+
+            Assert.NotNull(reread);
+            Assert.Equal(afterCommit!.Turn, reread!.Turn);
+            Assert.Equal(afterCommit.Sequence, reread.Sequence);
+            Assert.Equal(afterCommit.RngState, reread.RngState);
+            Assert.True(afterCommit.BoardState.CellsEqual(reread.BoardState));
+            Assert.Equal(afterCommit.LastCommittedSwapPair, reread.LastCommittedSwapPair);
         }
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldReturnNullForAnUnknownBattle()
+    public async Task ExecuteSwap_ShouldReturnNullForAnUnknownBattle()
     {
         // Consistent with GetBattle and ResolveBoard: an unknown battle resolves
         // nothing rather than creating state.
-        var service = new BattleStateService();
+        var service = NewService();
 
-        Assert.Null(service.ExecuteSwap("battle-that-does-not-exist", new SwapRequest(0, 1)));
+        Assert.Null(await service.ExecuteSwapAsync("battle-that-does-not-exist", new SwapRequest(0, 1)));
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldRejectAnEmptyBattleId()
+    public async Task ExecuteSwap_ShouldRejectAnEmptyBattleId()
     {
-        var service = new BattleStateService();
+        var service = NewService();
 
-        Assert.Throws<ArgumentException>(
-            () => service.ExecuteSwap(string.Empty, new SwapRequest(0, 1)));
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => service.ExecuteSwapAsync(string.Empty, new SwapRequest(0, 1)));
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldLeaveTheBoardStableAndConsistentWithTheResolution()
+    public async Task ExecuteSwap_ShouldLeaveTheBoardStableAndConsistentWithTheResolution()
     {
         // §4.3 item 1: the committed board is stable — a fresh detection pass finds
         // nothing — and the counters describe that finished resolution.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-swap-stable", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-swap-stable", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-swap-stable", pair);
+        var result = await service.ExecuteSwapAsync("battle-swap-stable", pair);
 
         Assert.True(result!.Value.IsAccepted);
         Assert.Empty(MatchDetector.Detect(result.Value.State.BoardState));
@@ -437,13 +533,13 @@ public class BattleStateServiceTests
     // -----------------------------------------------------------------------
 
     [Fact]
-    public void CreateBattle_ShouldStartComboAndMatchCountAtZero()
+    public async Task CreateBattle_ShouldStartComboAndMatchCountAtZero()
     {
         // GAME_STATE.md §2.2: MatchCount = 0 and Combo = 0 for a battle that has
         // resolved no action. Both are root members of the state; there is no nested
         // PlayerState node (ADR-011 item 2).
-        var service = new BattleStateService();
-        var state = service.CreateBattle("battle-progression-initial", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var state = await service.CreateBattleAsync("battle-progression-initial", Owner, PetConfiguration, BossDefinition);
 
         Assert.Equal(0, state.Combo);
         Assert.Equal(0, state.MatchCount);
@@ -452,16 +548,16 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldRecordTheResolutionMatchAndComboValues()
+    public async Task ExecuteSwap_ShouldRecordTheResolutionMatchAndComboValues()
     {
         // GAME_STATE.md §2.2 / §5.1 item 3: the recorded state carries the finished
         // resolution's values, so a subsequent read returns them — not a value
         // derived from the board afterwards.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-progression-commit", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-progression-commit", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-progression-commit", pair);
+        var result = await service.ExecuteSwapAsync("battle-progression-commit", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -471,41 +567,49 @@ public class BattleStateServiceTests
         Assert.Equal(matches, result.Value.State.Combo);
         Assert.Equal(matches, result.Value.State.MatchCount);
 
-        // The registry holds the same value the result reports.
-        var reread = service.GetBattle("battle-progression-commit");
+        // The active-state store holds the same value the result reports.
+        var reread = await service.GetBattleAsync("battle-progression-commit");
         Assert.Equal(result.Value.State.Combo, reread!.Combo);
         Assert.Equal(result.Value.State.MatchCount, reread.MatchCount);
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldLeaveComboAndMatchCountUnchangedOnEveryRejection()
+    public async Task ExecuteSwap_ShouldLeaveComboAndMatchCountUnchangedOnEveryRejection()
     {
         // MATCH3_RULES.md §2.1.5 item 5 / §6.1 item 3: a rejected Swap resets
-        // nothing and increments nothing. The registry keeps the state object it
-        // already held, so the progression values cannot have moved.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-progression-rejected", PetConfiguration, BossDefinition);
+        // nothing and increments nothing. The active-state store received no write,
+        // so it still holds the created record and the progression values cannot
+        // have moved.
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
+        var created = await service.CreateBattleAsync("battle-progression-rejected", Owner, PetConfiguration, BossDefinition);
 
-        var result = service.ExecuteSwap("battle-progression-rejected", new SwapRequest(99, 100));
+        var result = await service.ExecuteSwapAsync("battle-progression-rejected", new SwapRequest(99, 100));
 
         Assert.True(result!.Value.IsRejected);
 
-        var reread = service.GetBattle("battle-progression-rejected");
-        Assert.Same(created, reread);
-        Assert.Equal(0, reread!.Combo);
+        // Creation was the only write; the rejection added none.
+        Assert.Equal(1, repository.WriteCount);
+
+        var reread = await service.GetBattleAsync("battle-progression-rejected");
+
+        Assert.NotNull(reread);
+        Assert.Equal(created.Combo, reread!.Combo);
+        Assert.Equal(created.MatchCount, reread.MatchCount);
+        Assert.Equal(0, reread.Combo);
         Assert.Equal(0, reread.MatchCount);
     }
 
     [Fact]
-    public void ResolveBoard_ShouldNotChangeTheProgressionState()
+    public async Task ResolveBoard_ShouldNotChangeTheProgressionState()
     {
         // Board resolution is not a Swap (MATCH3_RULES.md §8.1 item 4): it resolves no
         // action, so it starts no Turn, counts no Match, and resets no Combo. A
         // generated board holds no Match, so nothing resolves at all.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-progression-resolution", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-progression-resolution", Owner, PetConfiguration, BossDefinition);
 
-        var resolved = service.ResolveBoard("battle-progression-resolution");
+        var resolved = await service.ResolveBoardAsync("battle-progression-resolution");
 
         Assert.NotNull(resolved);
         Assert.Equal(created.Combo, resolved!.Combo);
@@ -514,7 +618,7 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldNotWriteAnyBattleEventOrAddAMessage()
+    public async Task ExecuteSwap_ShouldNotWriteAnyBattleEventOrAddAMessage()
     {
         // GAME_EVENTS.md §1 / SIGNALR_PROTOCOL.md §8 item 7: this boundary returns
         // state and emits nothing. The service exposes no event surface at all.
@@ -535,26 +639,27 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldNotPersistAnything()
+    public async Task ExecuteSwap_ShouldNotPersistAnything()
     {
         // REDIS_STATE.md §7 item 8: the Match-3 resolution stage adds no key and no
         // persistence, and §7 leaves PetState's persistence equally unchanged
-        // (SIGNALR_PROTOCOL.md §4.3 item 12). The service holds no repository and
-        // touches no store — the process-local registry is the same staged,
-        // safe-to-lose boundary it already had.
+        // (SIGNALR_PROTOCOL.md §4.3 item 12). The service writes nothing but the one
+        // documented active-state record: §7 items 1–2 permit no partial state and no
+        // second key, and GAME_STATE.md §2.0.4 item 3 permits nothing to PostgreSQL.
         //
-        // The three dictionaries are the battle's state, the battle's Pet loadout
-        // input, and the battle's Boss definition (BOSS_RULES.md §6.2–§6.4's static
-        // content, which BossState deliberately does not duplicate); none is a
-        // REDIS_STATE.md store, and no fourth field (repository, cache, bus, logger)
-        // was introduced.
+        // The two dictionaries are the battle's Pet loadout input and the battle's
+        // Boss definition (BOSS_RULES.md §6.2–§6.4's static content, which BossState
+        // deliberately does not duplicate); neither is a REDIS_STATE.md store. The
+        // remaining two fields are the ONE documented store the active-state record
+        // is written through and the seed source; no fifth field (cache, bus, logger,
+        // or a second store) was introduced.
         var fields = typeof(BattleStateService)
             .GetFields(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
             .Select(f => f.Name)
             .ToArray();
 
         Assert.Equal(
-            ["_battles", "_bossConfiguration", "_petConfiguration", "_seedSource"],
+            ["_bossConfiguration", "_petConfiguration", "_repository", "_seedSource"],
             fields.OrderBy(n => n, StringComparer.Ordinal));
     }
 
@@ -565,14 +670,14 @@ public class BattleStateServiceTests
     // -----------------------------------------------------------------------
 
     [Fact]
-    public void CreateBattle_ShouldInitializePetStateWithTheSuppliedPassive()
+    public async Task CreateBattle_ShouldInitializePetStateWithTheSuppliedPassive()
     {
         // GAME_STATE.md §2.3 item 3 / SIGNALR_PROTOCOL.md §4.3 item 4: PetState is
         // present from battle creation, carrying the Passive identity and a
         // progress at the start of its first charge.
-        var service = new BattleStateService();
+        var service = NewService();
 
-        var state = service.CreateBattle("battle-passive-initial", PetConfiguration, BossDefinition);
+        var state = await service.CreateBattleAsync("battle-passive-initial", Owner, PetConfiguration, BossDefinition);
 
         Assert.Equal(PetConfiguration.PassiveId, state.PetState.PassiveId);
         Assert.Equal(PetConfiguration.PassiveThreshold, state.PetState.PassiveProgress.Threshold);
@@ -580,17 +685,17 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldChargeThePassiveOncePerMatchAndWriteTheProgressBack()
+    public async Task ExecuteSwap_ShouldChargeThePassiveOncePerMatchAndWriteTheProgressBack()
     {
         // PASSIVE_RULES.md §2 item 1 / §5: every Match increases progress by 1, so a
         // committed Swap's Cascade charges as many times as it produced Matches.
         // GAME_STATE.md §2.3 / §5.1: the settled progress is written back into
         // PetState in the same post-resolution write-back as the rest of the state.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-passive-charge", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-passive-charge", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-passive-charge", pair);
+        var result = await service.ExecuteSwapAsync("battle-passive-charge", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -639,23 +744,23 @@ public class BattleStateServiceTests
             Assert.Equal(matches, result.Value.State.PetState.PassiveProgress.Current);
         }
 
-        // The registry holds the same PetState the result reports (GAME_STATE.md §5.1).
+        // The active-state store holds the same PetState the result reports (GAME_STATE.md §5.1).
         Assert.Equal(
             result.Value.State.PetState,
-            service.GetBattle("battle-passive-charge")!.PetState);
+            (await service.GetBattleAsync("battle-passive-charge"))!.PetState);
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldReportEveryChargeWithTheBattlePassiveIdentity()
+    public async Task ExecuteSwap_ShouldReportEveryChargeWithTheBattlePassiveIdentity()
     {
         // GAME_EVENTS.md §2 item 1: PassiveId identifies the Passive that charged —
         // the value PetState.PassiveId holds, read and reported, never re-derived.
         // The Pet's own charges are the `source="pet"` ones.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-passive-identity", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-passive-identity", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-passive-identity", pair);
+        var result = await service.ExecuteSwapAsync("battle-passive-identity", pair);
 
         Assert.True(result!.Value.IsAccepted);
         Assert.All(
@@ -665,18 +770,18 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldAppendThePassiveEventsAfterTheBoardResolutionEvents()
+    public async Task ExecuteSwap_ShouldAppendThePassiveEventsAfterTheBoardResolutionEvents()
     {
         // GAME_EVENTS.md §1, §1.1 / GAME_RULES.md §17: the board cycle's events
         // (MatchCreated … ComboChanged) come first and the Passive stage's reports
         // follow them — one PassiveCharged per Match, and then the single
         // PassiveTriggered when the Threshold was crossed. The assembled list keeps
         // both stages' own order; nothing is re-sorted or interleaved.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-passive-order", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-passive-order", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-passive-order", pair);
+        var result = await service.ExecuteSwapAsync("battle-passive-order", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -730,43 +835,49 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldNotWriteAnyPassiveEventForARejection()
+    public async Task ExecuteSwap_ShouldNotWriteAnyPassiveEventForARejection()
     {
         // MATCH3_RULES.md §2.1.5 item 6 / GAME_EVENTS.md §1.2: a rejected action
         // emits no Battle Event at all. The Passive stage is not reached either, so
         // no charge and no trigger is produced.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-passive-rejected", PetConfiguration, BossDefinition);
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
+        var created = await service.CreateBattleAsync("battle-passive-rejected", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesNoMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-passive-rejected", pair);
+        var result = await service.ExecuteSwapAsync("battle-passive-rejected", pair);
 
         Assert.True(result!.Value.IsRejected);
         Assert.Empty(result.Value.Events);
 
         // PASSIVE_RULES.md §2 item 1 charges per Match and a rejected Swap produces
-        // none, so the Passive is not charged: the registry still holds the created
-        // state, unchanged, and its progress is exactly where creation left it.
-        var reread = service.GetBattle("battle-passive-rejected");
-        Assert.Same(created, reread);
-        Assert.Equal(0, reread!.PetState.PassiveProgress.Current);
+        // none, so the Passive is not charged: creation was the only write and the
+        // store still holds the created record, unchanged, with its progress exactly
+        // where creation left it.
+        Assert.Equal(1, repository.WriteCount);
+
+        var reread = await service.GetBattleAsync("battle-passive-rejected");
+
+        Assert.NotNull(reread);
+        Assert.Equal(created.PetState, reread!.PetState);
+        Assert.Equal(0, reread.PetState.PassiveProgress.Current);
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldCarryProgressAcrossSwaps()
+    public async Task ExecuteSwap_ShouldCarryProgressAcrossSwaps()
     {
         // GAME_STATE.md §2.3: PassiveProgress is state, so it accumulates across
         // Swaps until the Threshold is reached. PASSIVE_RULES.md §2 item 1 adds each
         // Match to the progress already held, so two Swaps of M1 and M2 Matches
         // settle at min(M1 + M2, …) — and below the Threshold nothing resets.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-passive-carry", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-passive-carry", Owner, PetConfiguration, BossDefinition);
 
         var firstPair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var first = service.ExecuteSwap("battle-passive-carry", firstPair);
+        var first = await service.ExecuteSwapAsync("battle-passive-carry", firstPair);
         Assert.True(first!.Value.IsAccepted);
 
-        var afterFirst = service.GetBattle("battle-passive-carry")!;
+        var afterFirst = await service.GetBattleAsync("battle-passive-carry")!;
         var firstMatches = first.Value.Resolution.TotalMatches;
 
         // The first Swap's own settled progress is the documented result of its batch:
@@ -784,11 +895,11 @@ public class BattleStateServiceTests
         var carriedProgress = afterFirst.PetState.PassiveProgress.Current;
 
         var secondPair = FindAdjacentPairThatProducesAMatch(afterFirst.BoardState, exclude: firstPair);
-        var second = service.ExecuteSwap("battle-passive-carry", secondPair);
+        var second = await service.ExecuteSwapAsync("battle-passive-carry", secondPair);
         Assert.True(second!.Value.IsAccepted);
 
         var secondMatches = second.Value.Resolution.TotalMatches;
-        var afterSecond = service.GetBattle("battle-passive-carry")!;
+        var afterSecond = await service.GetBattleAsync("battle-passive-carry")!;
 
         // The second Swap's charges continue from the CARRIED progress — they do not
         // restart per Swap (PASSIVE_RULES.md §2 item 1). Only the PET's charges are
@@ -820,23 +931,24 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldTriggerAtMostOncePerCascadeAndApplyTheResetBehavior()
+    public async Task ExecuteSwap_ShouldTriggerAtMostOncePerCascadeAndApplyTheResetBehavior()
     {
         // PASSIVE_RULES.md §2 item 3 / §5: the Threshold is evaluated once, after
         // the whole Cascade's Match batch, and the Passive triggers AT MOST ONCE per
         // Cascade for every Reset Behavior. This drives a Threshold of 1, so any
         // committed Swap — which always produces at least one Match
         // (MATCH3_RULES.md §2.1.2 item 4) — crosses it and triggers exactly once.
-        var service = new BattleStateService();
+        var service = NewService();
 
         var configuration = new BattleStateService.PetConfiguration(
+            new PetId(PetInstanceId),
             Element.Hoa,
             new PassiveId("threshold-one"),
             PassiveThreshold: 1);
 
-        var created = service.CreateBattle("battle-passive-trigger", configuration, BossDefinition);
+        var created = await service.CreateBattleAsync("battle-passive-trigger", Owner, configuration, BossDefinition);
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-passive-trigger", pair);
+        var result = await service.ExecuteSwapAsync("battle-passive-trigger", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -862,22 +974,23 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldCarryPartialResetOverflowIntoTheNextSwap()
+    public async Task ExecuteSwap_ShouldCarryPartialResetOverflowIntoTheNextSwap()
     {
         // PASSIVE_RULES.md §4 item 2 / §5: Partial Reset reduces progress by the
         // Threshold rather than to 0, so a Cascade that overshoots carries its
         // overflow into the next charge.
-        var service = new BattleStateService();
+        var service = NewService();
 
         var configuration = new BattleStateService.PetConfiguration(
+            new PetId(PetInstanceId),
             Element.Hoa,
             new PassiveId("partial-reset"),
             PassiveThreshold: 1,
             PassiveResetOverride: PassiveResetBehavior.Partial);
 
-        var created = service.CreateBattle("battle-passive-partial", configuration, BossDefinition);
+        var created = await service.CreateBattleAsync("battle-passive-partial", Owner, configuration, BossDefinition);
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-passive-partial", pair);
+        var result = await service.ExecuteSwapAsync("battle-passive-partial", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -893,21 +1006,22 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldKeepProgressUnderNoReset()
+    public async Task ExecuteSwap_ShouldKeepProgressUnderNoReset()
     {
         // PASSIVE_RULES.md §4 item 2: "No reset / persistent" — the trigger does not
         // reduce progress, so the batch total survives into the next Cascade.
-        var service = new BattleStateService();
+        var service = NewService();
 
         var configuration = new BattleStateService.PetConfiguration(
+            new PetId(PetInstanceId),
             Element.Hoa,
             new PassiveId("no-reset"),
             PassiveThreshold: 1,
             PassiveResetOverride: PassiveResetBehavior.NoReset);
 
-        var created = service.CreateBattle("battle-passive-no-reset", configuration, BossDefinition);
+        var created = await service.CreateBattleAsync("battle-passive-no-reset", Owner, configuration, BossDefinition);
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-passive-no-reset", pair);
+        var result = await service.ExecuteSwapAsync("battle-passive-no-reset", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -926,22 +1040,23 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldRecordTheResetBehaviorTheBattleWasCreatedWith()
+    public async Task ExecuteSwap_ShouldRecordTheResetBehaviorTheBattleWasCreatedWith()
     {
         // GAME_STATE.md §2.3 item 2: the Passive's identity is set at battle creation
         // and never changes; PASSIVE_RULES.md §4 makes the Reset Behavior a property
         // of the Passive's definition. Neither is written by a resolution.
-        var service = new BattleStateService();
+        var service = NewService();
 
         var configuration = new BattleStateService.PetConfiguration(
+            new PetId(PetInstanceId),
             Element.Hoa,
             new PassiveId("partial-reset"),
             PassiveThreshold: 5,
             PassiveResetOverride: PassiveResetBehavior.Partial);
 
-        var created = service.CreateBattle("battle-passive-definition", configuration, BossDefinition);
+        var created = await service.CreateBattleAsync("battle-passive-definition", Owner, configuration, BossDefinition);
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-passive-definition", pair);
+        var result = await service.ExecuteSwapAsync("battle-passive-definition", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -951,40 +1066,54 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ResolveBoard_ShouldNotChargeThePassive()
+    public async Task ResolveBoard_ShouldNotChargeThePassive()
     {
         // Board resolution is not a Swap (MATCH3_RULES.md §8.1 item 4): it resolves
         // no action and produces no Match on a generated board, so PASSIVE_RULES.md
         // §2 item 1 has nothing to charge and the Passive state is untouched.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-passive-resolution", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-passive-resolution", Owner, PetConfiguration, BossDefinition);
 
-        var resolved = service.ResolveBoard("battle-passive-resolution");
+        var resolved = await service.ResolveBoardAsync("battle-passive-resolution");
 
         Assert.NotNull(resolved);
         Assert.Equal(created.PetState, resolved!.PetState);
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldReturnTheSameWriteBackItStores()
+    public async Task ExecuteSwap_ShouldReturnTheSameWriteBackItStores()
     {
         // GAME_STATE.md §5.1: one action produces ONE post-resolution write-back. The
-        // result the caller receives must therefore carry the same state the registry
-        // holds — including the settled Passive progress — so a client rendering the
-        // batch's Passive events and a client reading the state cannot disagree
-        // (GAME_EVENTS.md §3 item 6: an event is never a substitute for the
-        // write-back, and the write-back is never replaced by an event).
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-passive-writeback", PetConfiguration, BossDefinition);
+        // result the caller receives must therefore carry the same state the
+        // active-state store holds — including the settled Passive progress — so a
+        // client rendering the batch's Passive events and a client reading the state
+        // cannot disagree (GAME_EVENTS.md §3 item 6: an event is never a substitute
+        // for the write-back, and the write-back is never replaced by an event).
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
+        var created = await service.CreateBattleAsync("battle-passive-writeback", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-passive-writeback", pair);
+        var result = await service.ExecuteSwapAsync("battle-passive-writeback", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
-        var stored = service.GetBattle("battle-passive-writeback")!;
+        // Creation plus the committed Swap's single write-back — no second write.
+        Assert.Equal(2, repository.WriteCount);
 
-        Assert.Same(result.Value.State, stored);
+        var stored = await service.GetBattleAsync("battle-passive-writeback");
+
+        Assert.NotNull(stored);
+        Assert.Equal(result.Value.State.BattleId, stored!.BattleId);
+        Assert.Equal(result.Value.State.Turn, stored.Turn);
+        Assert.Equal(result.Value.State.Sequence, stored.Sequence);
+        Assert.Equal(result.Value.State.RngSeed, stored.RngSeed);
+        Assert.Equal(result.Value.State.RngState, stored.RngState);
+        Assert.Equal(result.Value.State.Combo, stored.Combo);
+        Assert.Equal(result.Value.State.MatchCount, stored.MatchCount);
+        Assert.Equal(result.Value.State.LastCommittedSwapPair, stored.LastCommittedSwapPair);
+        Assert.True(result.Value.State.BoardState.CellsEqual(stored.BoardState));
+        Assert.Equal(result.Value.State.BossState, stored.BossState);
         Assert.Equal(stored.PetState, result.Value.State.PetState);
 
         // The last charge the batch reports and the settled progress are consistent:
@@ -1008,7 +1137,7 @@ public class BattleStateServiceTests
     // -------------------------------------------------------------------------
 
     [Fact]
-    public void ExecuteSwap_ShouldReduceBossHpThroughTheDamagePipeline()
+    public async Task ExecuteSwap_ShouldReduceBossHpThroughTheDamagePipeline()
     {
         // GAME_RULES.md §17 steps 15–17 / COMBAT_RULES.md §3: the Application
         // boundary invokes the Domain Damage Pipeline as part of the swap resolution,
@@ -1023,11 +1152,11 @@ public class BattleStateServiceTests
         //   ×     1.00 (no Other Modifiers in MVP)
         //   ×     K / (K + BossState.DEF), K = 100                 (COMBAT_RULES.md §3.2)
         //   truncate toward zero, minimum 0                        (COMBAT_RULES.md §3 step 6)
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-damage-hp", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-damage-hp", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-damage-hp", pair);
+        var result = await service.ExecuteSwapAsync("battle-damage-hp", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -1051,18 +1180,18 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldEmitTheThreeDamageEventsInTheDocumentedOrder()
+    public async Task ExecuteSwap_ShouldEmitTheThreeDamageEventsInTheDocumentedOrder()
     {
         // GAME_EVENTS.md §1: DamageCalculated, DamageDealt, DamageTaken — for each
         // damage instance. GAME_RULES.md §17 / COMBAT_RULES.md §3.4 put TWO instances
         // on one committed Swap now: the player's (steps 15–17) and the Boss's
         // Response (step 18b/18c). Each instance emits its own three events in the
         // documented order, and the player's precedes the Boss's.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-damage-events", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-damage-events", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-damage-events", pair);
+        var result = await service.ExecuteSwapAsync("battle-damage-events", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -1095,17 +1224,17 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_DamageCalculated_ShouldCarryTheFullDocumentedBreakdown()
+    public async Task ExecuteSwap_DamageCalculated_ShouldCarryTheFullDocumentedBreakdown()
     {
         // GAME_EVENTS.md §2: "DamageCalculated: Base, Combo Modifier, Element
         // Modifier, Other Modifiers, Defense, Final Damage (full breakdown, for
         // client feedback)". All six members must be reported, including the
         // pass-through Other Modifiers (COMBAT_RULES.md §3 step 4).
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-damage-breakdown", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-damage-breakdown", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-damage-breakdown", pair);
+        var result = await service.ExecuteSwapAsync("battle-damage-breakdown", pair);
 
         // The player's instance is the FIRST DamageCalculated — the Boss's Response
         // instance follows it (GAME_RULES.md §17 steps 15–17 then 18b/18c).
@@ -1131,7 +1260,7 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_DamageDealtAndTaken_ShouldAgreeWithTheAppliedHpChange()
+    public async Task ExecuteSwap_DamageDealtAndTaken_ShouldAgreeWithTheAppliedHpChange()
     {
         // GAME_EVENTS.md §2 gives both events "source, target, Final Damage amount".
         // They describe ONE application of damage, so the amount both report must be
@@ -1141,11 +1270,11 @@ public class BattleStateServiceTests
         //
         // This is the PLAYER's instance: the first DamageDealt, whose source is the
         // player (COMBAT_RULES.md §3). It must equal the Boss's HP loss.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-damage-agree", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-damage-agree", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-damage-agree", pair);
+        var result = await service.ExecuteSwapAsync("battle-damage-agree", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -1165,21 +1294,21 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldStoreTheBossHpItReportsInTheSameWriteBack()
+    public async Task ExecuteSwap_ShouldStoreTheBossHpItReportsInTheSameWriteBack()
     {
         // GAME_STATE.md §5.1: one action, one write-back. The Boss's post-damage HP is
-        // part of that single value, so the registry holds exactly the state the
-        // result carries — a client reading the DamageDealt event and a client reading
-        // the state cannot disagree.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-damage-writeback", PetConfiguration, BossDefinition);
+        // part of that single value, so the active-state store holds exactly the state
+        // the result carries — a client reading the DamageDealt event and a client
+        // reading the state cannot disagree.
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-damage-writeback", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-damage-writeback", pair);
+        var result = await service.ExecuteSwapAsync("battle-damage-writeback", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
-        var stored = service.GetBattle("battle-damage-writeback")!;
+        var stored = await service.GetBattleAsync("battle-damage-writeback")!;
 
         Assert.Equal(result.Value.State.BossState, stored.BossState);
         Assert.True(stored.BossState.HP < created.BossState.HP);
@@ -1187,28 +1316,28 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldNotDamageTheBossForARejectedSwap()
+    public async Task ExecuteSwap_ShouldNotDamageTheBossForARejectedSwap()
     {
         // MATCH3_RULES.md §2.1.5: a rejected action writes nothing and emits no Battle
         // Event (GAME_EVENTS.md §1.2). The Damage Pipeline is downstream of the commit,
         // so a rejected Swap deals no damage, produces no Damage event, and leaves the
         // Boss's HP exactly as it was.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-damage-rejected", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-damage-rejected", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesNoMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-damage-rejected", pair);
+        var result = await service.ExecuteSwapAsync("battle-damage-rejected", pair);
 
         Assert.True(result!.Value.IsRejected);
         Assert.Empty(result.Value.Events);
 
-        var stored = service.GetBattle("battle-damage-rejected")!;
+        var stored = await service.GetBattleAsync("battle-damage-rejected")!;
 
         Assert.Equal(created.BossState.HP, stored.BossState.HP);
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldCarryEveryUnrelatedBossFieldAcrossUnchanged()
+    public async Task ExecuteSwap_ShouldCarryEveryUnrelatedBossFieldAcrossUnchanged()
     {
         // COMBAT_RULES.md §3 applies damage and nothing else; the Boss Response
         // (BOSS_RULES.md §3–§5) additionally charges the Skill and may transition
@@ -1216,11 +1345,11 @@ public class BattleStateServiceTests
         // owns: the Boss's identity, its Element, and its base stats are configuration
         // set at battle creation (GAME_STATE.md §2.4, BOSS_RULES.md §6.1) and the
         // resolution rewrites none of them.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-damage-bossfield", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-damage-bossfield", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-damage-bossfield", pair);
+        var result = await service.ExecuteSwapAsync("battle-damage-bossfield", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -1271,18 +1400,18 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public void ExecuteSwap_ShouldDrawNoAdditionalRandomnessForDamage()
+    public async Task ExecuteSwap_ShouldDrawNoAdditionalRandomnessForDamage()
     {
         // AGENTS.md §11 / ADR-009: the Damage Pipeline performs no Crit roll
         // (COMBAT_RULES.md §3.3) and draws no RNG, so the retained RngState after a
         // committed Swap is exactly the one the board resolution's Spawn produced
         // (MATCH3_RULES.md §4.5 item 4). A second randomization mechanism would move
         // it, or would live outside the documented stream.
-        var service = new BattleStateService();
-        var created = service.CreateBattle("battle-damage-rng", PetConfiguration, BossDefinition);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("battle-damage-rng", Owner, PetConfiguration, BossDefinition);
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = service.ExecuteSwap("battle-damage-rng", pair);
+        var result = await service.ExecuteSwapAsync("battle-damage-rng", pair);
 
         Assert.True(result!.Value.IsAccepted);
         Assert.Equal(result.Value.Resolution.RngState, result.Value.State.RngState);

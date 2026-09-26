@@ -3,6 +3,8 @@ using GameServer.Application.Pets;
 using GameServer.Application.Relics;
 using GameServer.Domain.Battle;
 using GameServer.Domain.Bosses;
+using GameServer.Domain.Pets;
+using GameServer.Domain.Players;
 
 namespace GameServer.Application.Battle;
 
@@ -59,16 +61,17 @@ namespace GameServer.Application.Battle;
 /// <item>read Cards or Relics from the database after the snapshot exists, or
 /// persist a loadout/equip row (<c>RELIC_RULES.md</c> §2.5,
 /// <c>CARD_RULES.md</c> §1, ADR-012 items 7–10),</item>
-/// <item>write <c>BattleState</c> to Redis. <c>REDIS_STATE.md</c> §7 items 1–2
-/// and 12 defer that storage, and §7 item 7 makes it required only when a real
-/// battle can be created — the deferral gate <c>ROADMAP.md</c> §1 raises with
-/// this endpoint is a separate decision, and this task writes no Redis key and
-/// introduces no partial store,</item>
+/// <item>write <c>BattleState</c> itself, or bypass <see cref="BattleStateService"/>
+/// to reach the store. <c>REDIS_STATE.md</c> §3 ties the active-state record's
+/// creation to this endpoint, and <see cref="BattleStateService"/> owns both the
+/// composition and the write — this boundary calls it and stores nothing
+/// directly,</item>
 /// <item>implement any gameplay: no Match-3, no Card cast, no Card or Relic
 /// effect, no Boss AI, no victory/defeat (<c>GAME_RULES.md</c> §17 steps 18–19
 /// remain unimplemented),</item>
-/// <item>hold the authoritative state — <see cref="BattleStateService"/> does
-/// (<c>GAME_STATE.md</c> §5.1). This boundary returns identity and outcome
+/// <item>hold the authoritative state — the active-state store does, reached
+/// through <see cref="BattleStateService"/> (<c>REDIS_STATE.md</c> §2 item 2,
+/// <c>GAME_STATE.md</c> §5.1). This boundary returns identity and outcome
 /// only.</item>
 /// </list>
 /// </summary>
@@ -281,16 +284,20 @@ public sealed class BattleStartService
         // Step 5: compose PetState from both snapshots and create the battle
         // ===============================================================
         // PetConfiguration is the documented carrier of the battle's Pet
-        // configuration (GAME_STATE.md §2.3): the Element and Passive come from
-        // the Pet's definition, and both battle-scoped loadout snapshots —
-        // EquippedCards from the Card validator and EquippedRelics from the
-        // Relic validator — are carried into PetState.AtBattleCreation
+        // configuration (GAME_STATE.md §2.3): the owned Pet instance identity the
+        // request selected (the instance this step already resolved and validated
+        // ownership of — never a definition id and never a client-supplied
+        // identity), the Element and Passive from that instance's definition, and
+        // both battle-scoped loadout snapshots — EquippedCards from the Card
+        // validator and EquippedRelics from the Relic validator — carried into
+        // PetState.AtBattleCreation
         // unchanged, in the order each validator produced.
         //
         // Both snapshots are now fixed values: nothing after this point re-reads
         // PlayerUnlockedCard, Relic, or any inventory row (RELIC_RULES.md §2.5,
         // CARD_RULES.md §1, ADR-012 items 8 and 10).
         var petConfiguration = new BattleStateService.PetConfiguration(
+            PetId: new PetId(pet.PetInstanceId),
             Element: petDefinition.Element,
             PassiveId: petDefinition.PassiveId,
             PassiveThreshold: petDefinition.PassiveThreshold,
@@ -308,7 +315,24 @@ public sealed class BattleStartService
         // server entropy, generates the board deterministically, and builds
         // PetState and BossState at their documented creation values
         // (GAME_STATE.md §2.0.5, §2.3 item 3, §2.4).
-        _battles.CreateBattle(battleId, petConfiguration, bossDefinition);
+        //
+        // The requesting Player's identity is recorded into the created state here
+        // (GAME_STATE.md §2.8, ADR-014 decision 1): the value is the authenticated
+        // `playerId` this method was called with — the same identity the Pet
+        // ownership check above already validated — so the battle's owner identity
+        // is captured exactly once, from the server-side battle-creation context,
+        // and is never re-derived from a session or from client input afterward
+        // (§2.8 item 4, GAME_RULES.md §18, AGENTS.md §10).
+        //
+        // Creation also writes the active-state record (REDIS_STATE.md §3
+        // "Created: on POST /api/battle/start"), so a battle the caller is told
+        // about is a battle whose state is stored. A store failure propagates
+        // from here rather than yielding a created battle whose state exists
+        // nowhere — §2 item 2 makes the record the source of truth and §7 item 5
+        // permits no in-process substitute.
+        await _battles
+            .CreateBattleAsync(battleId, new PlayerId(playerId), petConfiguration, bossDefinition, cancellationToken)
+            .ConfigureAwait(false);
 
         return BattleStartResult.Started(battleId);
     }
@@ -317,10 +341,13 @@ public sealed class BattleStartService
     /// Resolves a submitted <c>bossId</c> against the content-defined MVP Boss
     /// set (<c>API_CONTRACTS.md</c> §3, <c>BOSS_RULES.md</c> §6).
     ///
-    /// The comparison is against <see cref="BossId.Value"/> — the display-name
-    /// identity <c>BOSS_RULES.md</c> §6.4 fixes ("fixed here so no task invents
-    /// its own") — and is ordinal, because the identity is an opaque stable name
-    /// and not a culture-sensitive string.
+    /// The comparison is against <see cref="BossId.Value"/> — the canonical
+    /// technical Identity <c>BOSS_RULES.md</c> §6.4 fixes (the convention
+    /// <c>boss-&lt;ascii-kebab-case-name&gt;</c>, e.g. <c>"boss-hoa-long"</c>;
+    /// "fixed here so no task invents its own") — and is ordinal, because the
+    /// identity is an opaque stable ASCII id and not a culture-sensitive string.
+    /// The Boss's display name is presentation-only content and is never
+    /// accepted here.
     ///
     /// It is a lookup over the three transcribed definitions, not a registry:
     /// <c>BOSS_RULES.md</c> §6 defines exactly those three, and a Boss that is

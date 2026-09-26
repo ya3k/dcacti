@@ -103,7 +103,7 @@ export interface PetStatePayload {
    */
   readonly passiveId: string;
   /**
-   * The Passive's `current / threshold` pair (`GAME_STATE.md` §2.5). Both
+   * The Passive's `current / threshold` pair (`GAME_STATE.md` §2.3). Both
    * members are always present: `current = 0` is a real publishable value — it
    * is what a battle begins with — so absence is never used for it and a client
    * must not read an absent member as zero (§4.3 item 4).
@@ -125,7 +125,7 @@ export interface PetStatePayload {
 }
 
 /**
- * The wire projection of `GAME_STATE.md` §2.5's `PassiveProgress`
+ * The wire projection of `GAME_STATE.md` §2.3's `PassiveProgress`
  * `(Threshold, Current)` pair (`SIGNALR_PROTOCOL.md` §4.3 item 4).
  *
  * Both members are always present, and neither is nullable or omitted. The pair
@@ -137,7 +137,7 @@ export interface PassiveProgressPayload {
   /** The Passive's own Threshold (`PASSIVE_RULES.md` §1). */
   readonly threshold: number;
   /**
-   * The progress reached toward it (`GAME_STATE.md` §2.5) — the settled value,
+   * The progress reached toward it (`GAME_STATE.md` §2.3) — the settled value,
    * never derived or advanced by the client (§4.3 item 9).
    */
   readonly current: number;

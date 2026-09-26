@@ -38,9 +38,10 @@ namespace GameServer.Application.Battle;
 /// (<c>API_CONTRACTS.md</c> §3, <c>PET_RULES.md</c> §2).
 /// </param>
 /// <param name="BossId">
-/// The selected Boss identity (<c>BOSS_RULES.md</c> §6.4 — the display-name
-/// identity, e.g. <c>"Hỏa Long"</c>), which must resolve to a content-defined
-/// MVP Boss (<c>API_CONTRACTS.md</c> §3, <c>BOSS_RULES.md</c> §6).
+/// The selected Boss identity (<c>BOSS_RULES.md</c> §6.4 — the canonical
+/// technical Identity, e.g. <c>"boss-hoa-long"</c>; never a display name),
+/// which must resolve to a content-defined MVP Boss
+/// (<c>API_CONTRACTS.md</c> §3, <c>BOSS_RULES.md</c> §6).
 /// </param>
 /// <param name="CardLoadout">
 /// Exactly 3 submitted Basic Card <c>CardDefinitionId</c> values. The active

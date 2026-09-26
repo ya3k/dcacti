@@ -2,17 +2,21 @@ using GameServer.Domain.Bosses;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
+using GameServer.Domain.Pets;
+using GameServer.Domain.Players;
 
 namespace GameServer.Domain.Battle;
 
 /// <summary>
 /// Active Battle State through the Boss stage — the authoritative battle state
 /// at the Board Foundation stage (<c>GAME_STATE.md</c> §2.0.5) plus the
+/// Battle Identity member of §2.8, the
 /// Match/Combo accounting fields of §2.2 and the <c>PetState</c> fields of §2.3,
 /// and the <c>BossState</c> fields of §2.4.
 ///
 /// It is the Battle State Foundation (§2.0) <b>plus</b> the fields §2 already
-/// defines for the Match-3 board, the randomness that generates it, the commit
+/// defines for the battle's owner identity, the Match-3 board, the randomness
+/// that generates it, the commit
 /// record the staleness check reads, the battle's Match/Combo accounting, the
 /// active Pet's combat stats, Element, and Passive, and the battle's one Boss —
 /// nothing else is added, and nothing already in §2.0 changes (§0 item 5):
@@ -20,6 +24,8 @@ namespace GameServer.Domain.Battle;
 /// <code>
 /// BattleState
 /// ├── BattleId
+/// ├── PlayerId                       (§2.8 — owner identity only; not a wire
+/// │                                  member)
 /// ├── Turn          = 0
 /// ├── Sequence      = 0
 /// ├── RngSeed                        (§2.6)
@@ -29,6 +35,8 @@ namespace GameServer.Domain.Battle;
 /// ├── Combo          = 0             (§2.2 — Match/Combo accounting at the
 /// ├── MatchCount     = 0             │   root; there is no PlayerState node)
 /// ├── PetState                       (§2.3)
+/// │   ├── PetId                     (the owned Pet instance —
+/// │   │                              Pet.PetInstanceId)
 /// │   ├── HP         = 1000
 /// │   ├── MaxHP      = 1000
 /// │   ├── ATK        = 50
@@ -50,13 +58,26 @@ namespace GameServer.Domain.Battle;
 ///
 /// Each field has the same name, meaning, and rules as its §2 counterpart; each
 /// stage is where those §2 fields first come into existence (§2.0.5). The
-/// remaining §2 fields — <c>PetState</c>'s <c>StatusEffects</c>,
-/// <c>EquippedRelics</c>, and <c>EquippedCards</c>, its
-/// <c>PetId</c>/Identity, <c>Tier</c>/<c>Star</c>/<c>Level</c>, and
+/// remaining §2 fields — <c>PetState</c>'s <c>StatusEffects</c> and its
+/// <c>Tier</c>/<c>Star</c>/<c>Level</c>, and
 /// <c>BossState</c>'s <c>StatusEffects[]</c> — are still
 /// absent and still owned by later stages (§2.0.5.3). Their absence is a staging
 /// position, not a scope reduction of §2: a field absent from a stage is <b>not
 /// yet implemented</b>, not <b>not required</b> (§0 item 4).
+///
+/// <b><c>PlayerId</c> is the battle's owner identity only.</b> It is the
+/// identity of the Player who created the battle (<c>Player.PlayerId</c>,
+/// <c>DATABASE.md</c> §1), recorded from the authenticated battle-start request
+/// (<c>API_CONTRACTS.md</c> §1, §3) at battle creation and carried unchanged for
+/// the battle's lifetime (§2.8 items 1–2, <c>ADR-014</c> decision 1). It carries
+/// no stats, no resource pool, and no gameplay value of any kind, and it is not a
+/// lifecycle field — §2.0.3's no-<c>Status</c> rule is unaffected. It exists so
+/// the battle-end persistence path can source <c>BattleResult.PlayerId</c> from
+/// authoritative state without re-deriving identity from a session or from client
+/// input (§2.8 item 4). It is <b>not a wire member</b>: §2.8 item 3 excludes it
+/// from every <c>BattleStateUpdated</c> stage projection, every Battle Event, and
+/// the <c>GetBattleState</c> snapshot (<c>SIGNALR_PROTOCOL.md</c> §4 item 4,
+/// §7.1) — state added is not wire exposure added.
 ///
 /// <b>There is no <c>PlayerState</c> member.</b> §2 says so explicitly: the
 /// Player is the account/owner and has no authoritative battle-time combat pool.
@@ -102,6 +123,34 @@ namespace GameServer.Domain.Battle;
 /// Identity of the battle session (<c>GAME_STATE.md</c> §2.0.1, §2.0.5.1). It
 /// scopes the client's SignalR group membership (<c>SIGNALR_PROTOCOL.md</c>
 /// §1.2) and carries no gameplay content — it selects no Pet, Boss, or loadout.
+/// </param>
+/// <param name="PlayerId">
+/// The identity of the Player who created this battle (<c>GAME_STATE.md</c> §2.8)
+/// — the account/owner identity (<c>Player.PlayerId</c>, <c>DATABASE.md</c> §1),
+/// recorded from the authenticated battle-start request
+/// (<c>API_CONTRACTS.md</c> §1, §3) at battle creation and carried unchanged in
+/// this record for the battle's lifetime (<c>ADR-014</c> decision 1).
+///
+/// <b>Identity only.</b> It carries no stats, no resource pool, and no gameplay
+/// value (§2.8 item 1): the Player is the account/owner with no battle-time
+/// combat pool (<c>ADR-011</c>), and this member exists so the battle-end
+/// persistence path can source <c>BattleResult.PlayerId</c> (<c>DATABASE.md</c>
+/// §1) from authoritative state rather than re-deriving it from a session or
+/// from client input (§2.8 item 4, <c>GAME_RULES.md</c> §18, <c>AGENTS.md</c>
+/// §10).
+///
+/// It is <b>not</b> a lifecycle value: a battle has no lifecycle state machine
+/// and no <c>Status</c> field (<c>GAME_STATE.md</c> §2.0.3), and this member
+/// changes nothing about that.
+///
+/// It is <b>not a wire member</b> (§2.8 item 3): it is delivered by no
+/// <c>BattleStateUpdated</c> stage projection, no Battle Event, and no
+/// <c>GetBattleState</c> snapshot — the client never receives it.
+///
+/// It is <b>not optional, not nullable, and never lazily initialized</b>: it is
+/// recorded at creation, so a caller supplies the authenticated requesting
+/// Player's identity rather than letting one be defaulted with an invented
+/// value.
 /// </param>
 /// <param name="Turn">
 /// Current Turn number (<c>GAME_STATE.md</c> §2.0.1, §2.0.5.1, §2,
@@ -198,7 +247,9 @@ namespace GameServer.Domain.Battle;
 /// </param>
 /// <param name="PetState">
 /// The active Pet's state (<c>GAME_STATE.md</c> §2.3) — the documented owner of
-/// the battle's <b>combat stats</b> (<c>HP</c>/<c>MaxHP</c>,
+/// the battle's <b>Pet identity</b> (<c>PetId</c>, the owned Pet instance —
+/// <c>Pet.PetInstanceId</c>, <c>DATABASE.md</c> §1), the <b>combat stats</b>
+/// (<c>HP</c>/<c>MaxHP</c>,
 /// <c>ATK</c>/<c>DEF</c>/<c>Crit</c>, <c>Power</c>), the Element, and the Passive
 /// identity, its progress, and its declared Reset Behavior
 /// (<c>COMBAT_RULES.md</c> §1.1, <c>PET_RULES.md</c> §1,
@@ -276,6 +327,7 @@ namespace GameServer.Domain.Battle;
 /// </param>
 public sealed record BattleState(
     string BattleId,
+    PlayerId PlayerId,
     int Turn,
     int Sequence,
     ulong RngSeed,
@@ -361,15 +413,26 @@ public sealed record BattleState(
     /// The server-chosen seed (<c>GAME_STATE.md</c> §2.6.1). It must originate
     /// server-side; this type neither generates nor influences it.
     /// </param>
+    /// <param name="playerId">
+    /// The identity of the Player who created this battle
+    /// (<c>GAME_STATE.md</c> §2.8) — required, because a battle's owner identity
+    /// is recorded at creation and is never re-derived afterward (§2.8 items 2
+    /// and 4). The value comes from the authenticated battle-start context
+    /// (<c>API_CONTRACTS.md</c> §1, §3), never from client-supplied state
+    /// (<c>GAME_RULES.md</c> §18, <c>AGENTS.md</c> §10). It is the Pet's owner,
+    /// already established by the ownership check at battle start
+    /// (<c>API_CONTRACTS.md</c> §3).
+    /// </param>
     /// <param name="petState">
     /// The active Pet's state (<c>GAME_STATE.md</c> §2.3) — required, because its
-    /// combat stats, <c>Element</c>, and <c>PassiveId</c> are present from battle
+    /// <c>PetId</c> (the owned Pet instance), combat stats, <c>Element</c>, and
+    /// <c>PassiveId</c> are present from battle
     /// creation (§2.3 item 3) and no
     /// value may be invented for them. Pet selection and progression are not
     /// implemented, so the caller supplies the battle's Pet configuration;
     /// see <see cref="PetState.AtBattleCreation"/> for the documented initial
     /// progress and combat stats, or
-    /// <see cref="Create(string, ulong, Element, PassiveId, int, BossDefinition, PassiveResetBehavior?)"/>
+    /// <see cref="Create(string, ulong, PlayerId, PetId, Element, PassiveId, int, BossDefinition, PassiveResetBehavior?)"/>
     /// for the Element/identity/threshold form.
     /// </param>
     /// <param name="bossState">
@@ -389,6 +452,7 @@ public sealed record BattleState(
     public static BattleState Create(
         string battleId,
         ulong rngSeed,
+        PlayerId playerId,
         PetState petState,
         BossState bossState)
     {
@@ -401,6 +465,10 @@ public sealed record BattleState(
 
         return new BattleState(
             battleId,
+            // §2.8 item 2: the owner identity is recorded AT creation, from the
+            // caller's own authenticated context. It is never re-derived later and
+            // never taken from client input (§2.8 item 4, GAME_RULES.md §18).
+            playerId,
             InitialTurn,
             InitialSequence,
             rngSeed,
@@ -439,8 +507,9 @@ public sealed record BattleState(
     ///
     /// It reaches production assemblies because the test project has
     /// <c>InternalsVisibleTo</c> and not the reverse;
-    /// <see cref="BattleStateService.CreateBattle(string, BattleStateService.PetConfiguration, BossDefinition)"/>
-    /// remains the real creation path and takes the battle's actual Pet and Boss
+    /// <c>BattleStateService.CreateBattleAsync(string, BattleStateService.PetConfiguration, BossDefinition, CancellationToken)</c>
+    /// remains the real creation path and takes the battle's actual Player, Pet,
+    /// and Boss
     /// configuration. It is not a product default and no production caller uses
     /// it — it exists only so the earlier stages' tests stay readable.
     /// </summary>
@@ -450,7 +519,20 @@ public sealed record BattleState(
         Create(
             battleId,
             rngSeed,
-            PetState.AtBattleCreation(Element.Hoa, new PassiveId("fixture-passive"), 5),
+            // GAME_STATE.md §2.8: the owner identity is a fixture here, exactly as
+            // the Pet and Boss below are. A test that asserts something else needs a
+            // battle to exist, and the owner identity is irrelevant to what those
+            // suites assert — so it is supplied once, here, rather than repeated at
+            // every creation site.
+            new PlayerId("fixture-player"),
+            PetState.AtBattleCreation(
+                // GAME_STATE.md §2.3: PetState carries the owned Pet instance
+                // identity, so the fixture Pet needs one too — like the Element and
+                // Passive below, it is a value no suite at this level asserts.
+                new PetId("fixture-pet"),
+                Element.Hoa,
+                new PassiveId("fixture-passive"),
+                5),
             // GAME_STATE.md §2.4.1–§2.4.3: the fixture Boss carries a Passive identity
             // and a Threshold too, because BossState's own field set requires them.
             // They are fixture values for tests that assert something else, exactly
@@ -466,15 +548,16 @@ public sealed record BattleState(
 
     /// <summary>
     /// Creates the authoritative state for a newly created battle session from the
-    /// battle's Pet configuration — the required Element, Passive identity, and
+    /// battle's owner and Pet configuration — the owning Player's identity, the
+    /// selected owned Pet instance, the required Element, Passive identity, and
     /// Threshold, plus
     /// the optional non-default Reset Behavior
-    /// (<c>GAME_STATE.md</c> §2.3, <c>PASSIVE_RULES.md</c> §1, §4) — against the
+    /// (<c>GAME_STATE.md</c> §2.3, §2.8, <c>PASSIVE_RULES.md</c> §1, §4) — against the
     /// Boss definition the battle is fought against (<c>GAME_STATE.md</c> §2.4,
     /// <c>BOSS_RULES.md</c> §6.1).
     ///
     /// This is the same creation as
-    /// <see cref="Create(string, ulong, PetState, BossState)"/>
+    /// <see cref="Create(string, ulong, PlayerId, PetState, BossState)"/>
     /// with the documented starting progress and combat stats applied: the
     /// Threshold is the
     /// Passive's own value and <c>Current</c> begins at <c>0</c>
@@ -486,6 +569,16 @@ public sealed record BattleState(
     /// </summary>
     /// <param name="battleId">Identity of the battle session.</param>
     /// <param name="rngSeed">The server-chosen seed (<c>GAME_STATE.md</c> §2.6.1).</param>
+    /// <param name="playerId">
+    /// The identity of the Player who created this battle
+    /// (<c>GAME_STATE.md</c> §2.8) — the authenticated requesting Player, never a
+    /// client-supplied value (<c>AGENTS.md</c> §10).
+    /// </param>
+    /// <param name="petId">
+    /// The identity of the owned Pet instance the battle selected
+    /// (<c>GAME_STATE.md</c> §2.3) — the resolved
+    /// <c>Pet.PetInstanceId</c>, never a definition id.
+    /// </param>
     /// <param name="element">
     /// The active Pet's one Element (<c>GAME_STATE.md</c> §2.3,
     /// <c>ELEMENT_RULES.md</c> §6) — set at battle creation and never changed
@@ -518,6 +611,8 @@ public sealed record BattleState(
     public static BattleState Create(
         string battleId,
         ulong rngSeed,
+        PlayerId playerId,
+        PetId petId,
         Element element,
         PassiveId passiveId,
         int passiveThreshold,
@@ -526,7 +621,13 @@ public sealed record BattleState(
         Create(
             battleId,
             rngSeed,
-            PetState.AtBattleCreation(element, passiveId, passiveThreshold, passiveResetOverride),
+            playerId,
+            PetState.AtBattleCreation(
+                petId,
+                element,
+                passiveId,
+                passiveThreshold,
+                passiveResetOverride),
             // §2.4 / BOSS_RULES.md §6.1: the Boss begins at its definition's stats
             // at full health, in the documented Initial State. The definition owns
             // every value; this factory chooses none of them.

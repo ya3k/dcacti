@@ -1,6 +1,7 @@
 using GameServer.Domain.Battle;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Passives;
+using GameServer.Domain.Pets;
 using GameServer.Domain.Relics;
 
 namespace GameServer.Domain.Tests;
@@ -23,6 +24,7 @@ public class PetStateEquippedRelicsTests
 
     private static PetState CreatePet(EquippedRelicIdentity[]? relics) =>
         PetState.AtBattleCreation(
+            new PetId("pet_instance_loadout_1"),
             Element.Hoa,
             new PassiveId("passive_1"),
             passiveThreshold: 5,

@@ -28,18 +28,22 @@ namespace GameServer.Domain.Bosses;
 /// <c>PassiveId</c> pattern (<c>GameServer.Domain.Passives</c>), which is the
 /// same shape for the same reason.
 ///
-/// There is no id format, scheme, or validation rule in any document —
-/// <c>GAME_STATE.md</c> §2.4 defines the field's meaning, not its spelling, and
-/// <c>API_CONTRACTS.md</c> §3 requires only that <c>bossId</c> "must be a valid
-/// MVP Boss" (<c>BOSS_RULES.md</c> §6) — so this type imposes no format and
-/// holds the identifier verbatim.
+/// <b>It is the canonical technical Identity, not the display name.</b>
+/// <c>BOSS_RULES.md</c> §6.4 fixes the value form — the convention
+/// <c>boss-&lt;ascii-kebab-case-name&gt;</c> (ASCII, lowercase, kebab-case, no
+/// Vietnamese diacritics), e.g. <c>"boss-hoa-long"</c> — and states it is
+/// machine-readable, "never a display name". The display name is
+/// presentation-only content owned by §6's reference tables and is not carried
+/// here. <c>API_CONTRACTS.md</c> §3 requires the submitted <c>bossId</c> to "be
+/// a valid MVP Boss" (<c>BOSS_RULES.md</c> §6); this type imposes no format of
+/// its own and holds the documented identifier verbatim.
 /// </summary>
 /// <param name="Value">
-/// The Boss's identifier, exactly as the Boss configuration
+/// The Boss's canonical technical Identity, exactly as the Boss configuration
 /// (<see cref="BossDefinition"/>) and <c>GAME_STATE.md</c> §2.4's
-/// <c>BossState.BossId</c> hold it. It is resolved against the MVP Boss
-/// reference of <c>BOSS_RULES.md</c> §6 and is never re-derived, re-numbered, or
-/// invented by a reader.
+/// <c>BossState.BossId</c> hold it (<c>BOSS_RULES.md</c> §6.4). It is resolved
+/// against the MVP Boss reference of <c>BOSS_RULES.md</c> §6 and is never
+/// re-derived, re-slugified, re-numbered, or invented by a reader.
 /// </param>
 public readonly record struct BossId(string Value)
 {

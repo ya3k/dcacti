@@ -5,6 +5,8 @@ using GameServer.Domain.Combat;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
+using GameServer.Domain.Pets;
+using GameServer.Domain.Players;
 using Xunit;
 
 namespace GameServer.Application.Tests;
@@ -37,28 +39,37 @@ namespace GameServer.Application.Tests;
 public class BossResponseTests
 {
     /// <summary>
-    /// The Pet these battles carry — Xích Lang's MVP Element and Passive
+    /// The Pet these battles carry — the owned instance identity
+    /// (<c>GAME_STATE.md</c> §2.3), Xích Lang's MVP Element and Passive
     /// (<c>ELEMENT_RULES.md</c> §6, <c>PASSIVE_RULES.md</c> §8).
     /// </summary>
     private static readonly BattleStateService.PetConfiguration Pet =
-        new(Element.Hoa, new PassiveId("xich-lang"), PassiveThreshold: 5);
+        new(new PetId("pet_instance_1"), Element.Hoa, new PassiveId("xich-lang"), PassiveThreshold: 5);
+
+    /// <summary>
+    /// The owning Player of these battles (<c>GAME_STATE.md</c> §2.8) — the
+    /// identity the creation path records. These suites assert Boss response,
+    /// damage, and the write-back, not identity, so one fixture value is supplied
+    /// in one place.
+    /// </summary>
+    private static readonly PlayerId Owner = new("player_boss_response_owner");
 
     // =======================================================================
     // Boss Passive — GAME_RULES.md §17 step 18a, BOSS_RULES.md §3, §6.2
     // =======================================================================
 
     [Fact]
-    public void BossPassive_ShouldChargeOncePerPlayerMatch()
+    public async Task BossPassive_ShouldChargeOncePerPlayerMatch()
     {
         // BOSS_RULES.md §3.3 item 1 / §6.2: Hỏa Long's Passive charges "Every 5
         // Player Matches" — the same per-Match rate the Pet Passive uses
         // (PASSIVE_RULES.md §2 item 1), over the same Match total. GAME_STATE.md
         // §2.4.2 gives it its own counter.
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var created = service.CreateBattle("boss-passive-charge", Pet, BossDefinitions.HoaLong);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("boss-passive-charge", Owner, Pet, BossDefinitions.HoaLong);
 
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-passive-charge", pair);
+        var result = await service.ExecuteSwapAsync("boss-passive-charge", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -87,16 +98,16 @@ public class BossResponseTests
     }
 
     [Fact]
-    public void BossPassive_ShouldReportTheBossSourceAndDisplayNameIdentity()
+    public async Task BossPassive_ShouldReportTheBossSourceAndCanonicalIdentity()
     {
         // SIGNALR_PROTOCOL.md §3.2.16 items 1–2 / BOSS_RULES.md §7: the shared events
-        // carry source="boss", and sourceId is the DISPLAY-NAME BossState.BossId —
-        // §6.4 fixes "Hỏa Long", never a slug.
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var created = service.CreateBattle("boss-passive-identity", Pet, BossDefinitions.HoaLong);
+        // carry source="boss", and sourceId is the canonical technical Identity
+        // BossState.BossId — §6.4 fixes "boss-hoa-long", never a display name.
+        var service = NewService();
+        var created = await service.CreateBattleAsync("boss-passive-identity", Owner, Pet, BossDefinitions.HoaLong);
 
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-passive-identity", pair);
+        var result = await service.ExecuteSwapAsync("boss-passive-identity", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -116,24 +127,24 @@ public class BossResponseTests
                 : (e.PassiveTriggered.PassiveId.Value, e.PassiveTriggered.Source, e.PassiveTriggered.SourceId);
 
             Assert.Equal(PassiveEventSource.Boss, source);
-            Assert.Equal("Hỏa Long", sourceId);
+            Assert.Equal("boss-hoa-long", sourceId);
             Assert.Equal("boss-hoa-long-rage", passiveId);
         }
     }
 
     [Fact]
-    public void BossPassive_ShouldNotEmitMatchDrivenEventsForThuyMa()
+    public async Task BossPassive_ShouldNotEmitMatchDrivenEventsForThuyMa()
     {
         // BOSS_RULES.md §6.2 is explicit: Thủy Ma's trigger is "Passive (always
         // active)" — an alternate trigger (PASSIVE_RULES.md §3), not a Match count —
         // so it "is never charged via PassiveTracker.Charge on Player Matches, and
         // emits no PassiveCharged/PassiveTriggered from match progress". Its stored
         // PassiveThreshold is therefore the Always-Active marker 0, not a threshold.
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var created = service.CreateBattle("boss-passive-thuyma", Pet, BossDefinitions.ThuyMa);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("boss-passive-thuyma", Owner, Pet, BossDefinitions.ThuyMa);
 
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-passive-thuyma", pair);
+        var result = await service.ExecuteSwapAsync("boss-passive-thuyma", pair);
 
         Assert.True(result!.Value.IsAccepted);
         Assert.True(result.Value.Resolution.TotalMatches >= 1);
@@ -163,7 +174,7 @@ public class BossResponseTests
     }
 
     [Fact]
-    public void BossPassive_ShouldTriggerAtTheThresholdAndReset()
+    public async Task BossPassive_ShouldTriggerAtTheThresholdAndReset()
     {
         // PASSIVE_RULES.md §2 item 3 / §4 item 1: the Threshold is evaluated once
         // after the batch and the default reset settles progress at 0. This drives a
@@ -171,13 +182,16 @@ public class BossResponseTests
         // built from the documented §6.3/§6.4 shape rather than invented — so any
         // committed Swap (which always produces >= 1 Match, MATCH3_RULES.md §2.1.2
         // item 4) crosses it.
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var boss = BossDefinitions.HoaLong with { PassiveThreshold = 1 };
+        var service = NewService();
+        var boss = BossDefinitions.HoaLong with
+        {
+            PassiveDefinition = BossDefinitions.HoaLong.PassiveDefinition with { Threshold = 1 },
+        };
 
-        var created = service.CreateBattle("boss-passive-trigger", Pet, boss);
+        var created = await service.CreateBattleAsync("boss-passive-trigger", Owner, Pet, boss);
 
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-passive-trigger", pair);
+        var result = await service.ExecuteSwapAsync("boss-passive-trigger", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -199,20 +213,23 @@ public class BossResponseTests
     }
 
     [Fact]
-    public void BossPassive_ShouldApplyNoEffect()
+    public async Task BossPassive_ShouldApplyNoEffect()
     {
         // BOSS_RULES.md §3 item 3 / §6.2, TASK-022 §3.8: this task implements charging
         // and the trigger event only. Mộc Yêu's regeneration, Hỏa Long's Rage, and
         // Thủy Ma's healing reduction are NOT applied — so a trigger changes no HP and
         // no stat. This asserts the boundary: a triggered Mộc Yêu at Threshold 1 leaves
         // its own HP and every stat exactly as the damage left them.
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var boss = BossDefinitions.MocYeu with { PassiveThreshold = 1 };
+        var service = NewService();
+        var boss = BossDefinitions.MocYeu with
+        {
+            PassiveDefinition = BossDefinitions.MocYeu.PassiveDefinition with { Threshold = 1 },
+        };
 
-        var created = service.CreateBattle("boss-passive-no-effect", Pet, boss);
+        var created = await service.CreateBattleAsync("boss-passive-no-effect", Owner, Pet, boss);
 
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-passive-no-effect", pair);
+        var result = await service.ExecuteSwapAsync("boss-passive-no-effect", pair);
 
         Assert.True(result!.Value.IsAccepted);
         Assert.Contains(
@@ -241,21 +258,24 @@ public class BossResponseTests
     // =======================================================================
 
     [Fact]
-    public void BossSkill_ShouldFireWhenChargeMeetsTheRequirementAndCooldownIsZero()
+    public async Task BossSkill_ShouldFireWhenChargeMeetsTheRequirementAndCooldownIsZero()
     {
         // GAME_STATE.md §2.4.3 / BOSS_RULES.md §6.3: "The Skill fires when BOTH
         // conditions are met: SkillCharge >= SkillChargeRequirement AND SkillCooldown
         // = 0". This drives a ChargeRequirement of 1 so the Swap's Match total (>= 1)
         // satisfies it, with the definition's own SkillId and base damage.
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var boss = BossDefinitions.HoaLong with { SkillChargeRequirement = 1 };
+        var service = NewService();
+        var boss = BossDefinitions.HoaLong with
+        {
+            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 1 },
+        };
 
-        var created = service.CreateBattle("boss-skill-fires", Pet, boss);
+        var created = await service.CreateBattleAsync("boss-skill-fires", Owner, Pet, boss);
 
         Assert.Equal(0, created.BossState.SkillCooldown);
 
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-skill-fires", pair);
+        var result = await service.ExecuteSwapAsync("boss-skill-fires", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -265,21 +285,24 @@ public class BossResponseTests
 
         Assert.Single(casts);
         Assert.Equal("flame-burst", casts[0].BossSkillCast.SkillId);
-        Assert.Equal("Hỏa Long", casts[0].BossSkillCast.SourceId);
+        Assert.Equal("boss-hoa-long", casts[0].BossSkillCast.SourceId);
     }
 
     [Fact]
-    public void BossSkill_ShouldResetChargeAndSetTheCooldown()
+    public async Task BossSkill_ShouldResetChargeAndSetTheCooldown()
     {
         // BOSS_RULES.md §6.3 / GAME_STATE.md §2.4.3: "After the Skill fires:
         // SkillCharge resets to 0, SkillCooldown resets to the Boss's cooldown value."
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var boss = BossDefinitions.HoaLong with { SkillChargeRequirement = 1 };
+        var service = NewService();
+        var boss = BossDefinitions.HoaLong with
+        {
+            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 1 },
+        };
 
-        var created = service.CreateBattle("boss-skill-reset", Pet, boss);
+        var created = await service.CreateBattleAsync("boss-skill-reset", Owner, Pet, boss);
 
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-skill-reset", pair);
+        var result = await service.ExecuteSwapAsync("boss-skill-reset", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -290,19 +313,22 @@ public class BossResponseTests
     }
 
     [Fact]
-    public void BossSkill_ShouldUseBossAttackPlusSkillBaseDamage()
+    public async Task BossSkill_ShouldUseBossAttackPlusSkillBaseDamage()
     {
         // COMBAT_RULES.md §3.4 / BOSS_RULES.md §6.3: the Skill's Step 1 Base Damage is
         // defined per Skill, and the term is ADDITIVE to the Boss's ATK. The
         // documented breakdown is derived here from the published formula and the
         // definition's values, never read back from the implementation.
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var boss = BossDefinitions.HoaLong with { SkillChargeRequirement = 1 };
+        var service = NewService();
+        var boss = BossDefinitions.HoaLong with
+        {
+            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 1 },
+        };
 
-        var created = service.CreateBattle("boss-skill-damage", Pet, boss);
+        var created = await service.CreateBattleAsync("boss-skill-damage", Owner, Pet, boss);
 
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-skill-damage", pair);
+        var result = await service.ExecuteSwapAsync("boss-skill-damage", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -338,22 +364,22 @@ public class BossResponseTests
     }
 
     [Fact]
-    public void BossSkill_ShouldBeBlockedWhileTheCooldownIsActive()
+    public async Task BossSkill_ShouldBeBlockedWhileTheCooldownIsActive()
     {
         // BOSS_RULES.md §6.3: "The Skill is blocked while CD > 0." The previous Swap
         // cast the Skill, so this one begins with the cooldown running: the Skill
         // condition fails on its second clause and the Boss falls back to its Basic
         // Attack — no BossSkillCast is emitted.
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var (battleId, _) = BattleWithACoolingBoss(service, "boss-skill-cooldown-blocks");
+        var service = NewService();
+        var (battleId, _) = await BattleWithACoolingBoss(service, "boss-skill-cooldown-blocks");
 
-        var afterCast = service.GetBattle(battleId)!;
+        var afterCast = (await service.GetBattleAsync(battleId))!;
 
         // MATCH3_RULES.md §2.1.4: the pair just committed is recorded as already
         // applied, so the next Swap must be a different one.
         var pair = FindMatchProducingPair(afterCast);
 
-        var result = service.ExecuteSwap(battleId, pair);
+        var result = await service.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -369,18 +395,21 @@ public class BossResponseTests
     }
 
     [Fact]
-    public void BossSkill_ShouldBeBlockedWhileTheChargeIsShort()
+    public async Task BossSkill_ShouldBeBlockedWhileTheChargeIsShort()
     {
         // The first clause of §2.4.3's condition. A ChargeRequirement no single Swap
         // can reach leaves the Skill unfired and the Basic Attack runs — and the
         // charge still accumulates for a later Swap.
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var boss = BossDefinitions.HoaLong with { SkillChargeRequirement = 100 };
+        var service = NewService();
+        var boss = BossDefinitions.HoaLong with
+        {
+            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 100 },
+        };
 
-        var created = service.CreateBattle("boss-skill-charge-short", Pet, boss);
+        var created = await service.CreateBattleAsync("boss-skill-charge-short", Owner, Pet, boss);
 
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-skill-charge-short", pair);
+        var result = await service.ExecuteSwapAsync("boss-skill-charge-short", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -397,19 +426,22 @@ public class BossResponseTests
     }
 
     [Fact]
-    public void BossSkillCharge_ShouldIncrementPerPlayerMatch()
+    public async Task BossSkillCharge_ShouldIncrementPerPlayerMatch()
     {
         // BOSS_RULES.md §6.3 / GAME_STATE.md §2.4.3: "Matches increment
         // BossState.SkillCharge". One Match is one increment (MATCH3_RULES.md §3
         // item 5), so the charge equals the resolution's own Match total on a Swap
         // whose requirement was not met.
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var boss = BossDefinitions.MocYeu with { SkillChargeRequirement = 1000 };
+        var service = NewService();
+        var boss = BossDefinitions.MocYeu with
+        {
+            SkillDefinition = BossDefinitions.MocYeu.SkillDefinition with { ChargeRequirement = 1000 },
+        };
 
-        var created = service.CreateBattle("boss-skill-charge-rate", Pet, boss);
+        var created = await service.CreateBattleAsync("boss-skill-charge-rate", Owner, Pet, boss);
 
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-skill-charge-rate", pair);
+        var result = await service.ExecuteSwapAsync("boss-skill-charge-rate", pair);
 
         Assert.True(result!.Value.IsAccepted);
         Assert.Equal(
@@ -418,22 +450,24 @@ public class BossResponseTests
     }
 
     [Fact]
-    public void BossSkill_ShouldNotResetThePassiveProgress()
+    public async Task BossSkill_ShouldNotResetThePassiveProgress()
     {
         // TASK-022 §3.7 / GAME_STATE.md §2.4.3: SkillCharge and PassiveProgress are
         // "independent counter[s]". Firing the Skill resets the charge and sets the
         // cooldown; the Passive's own progress is whatever its own step produced.
-        var service = new BattleStateService(new FixedRngSeedSource());
+        var service = NewService();
         var boss = BossDefinitions.HoaLong with
         {
-            SkillChargeRequirement = 1,
-            PassiveThreshold = 100,
+            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition
+                with { ChargeRequirement = 1 },
+            PassiveDefinition = BossDefinitions.HoaLong.PassiveDefinition
+                with { Threshold = 100 },
         };
 
-        var created = service.CreateBattle("boss-skill-independent", Pet, boss);
+        var created = await service.CreateBattleAsync("boss-skill-independent", Owner, Pet, boss);
 
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-skill-independent", pair);
+        var result = await service.ExecuteSwapAsync("boss-skill-independent", pair);
 
         Assert.True(result!.Value.IsAccepted);
         Assert.Contains(result.Value.Events, e => e.Type == BattleEventType.BossSkillCast);
@@ -449,21 +483,23 @@ public class BossResponseTests
     }
 
     [Fact]
-    public void BossPassive_ShouldNotResetTheSkillCharge()
+    public async Task BossPassive_ShouldNotResetTheSkillCharge()
     {
         // The other direction of the same independence (§3.7): a Passive trigger must
         // not clear the Skill's charge.
-        var service = new BattleStateService(new FixedRngSeedSource());
+        var service = NewService();
         var boss = BossDefinitions.HoaLong with
         {
-            SkillChargeRequirement = 1000,
-            PassiveThreshold = 1,
+            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition
+                with { ChargeRequirement = 1000 },
+            PassiveDefinition = BossDefinitions.HoaLong.PassiveDefinition
+                with { Threshold = 1 },
         };
 
-        var created = service.CreateBattle("boss-passive-independent", Pet, boss);
+        var created = await service.CreateBattleAsync("boss-passive-independent", Owner, Pet, boss);
 
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-passive-independent", pair);
+        var result = await service.ExecuteSwapAsync("boss-passive-independent", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -486,18 +522,21 @@ public class BossResponseTests
     // =======================================================================
 
     [Fact]
-    public void BossBasicAttack_ShouldUseBossAttackAndComboOne()
+    public async Task BossBasicAttack_ShouldUseBossAttackAndComboOne()
     {
         // COMBAT_RULES.md §3.4: "Boss Basic Attack: Step 1 — Base Damage = Boss.ATK"
         // and "Step 2 — Combo Modifier = 1 (Boss attacks are not part of a Combo
         // chain)". The Skill's base damage is NOT part of this instance.
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var boss = BossDefinitions.HoaLong with { SkillChargeRequirement = 1000 };
+        var service = NewService();
+        var boss = BossDefinitions.HoaLong with
+        {
+            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 1000 },
+        };
 
-        var created = service.CreateBattle("boss-basic-damage", Pet, boss);
+        var created = await service.CreateBattleAsync("boss-basic-damage", Owner, Pet, boss);
 
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-basic-damage", pair);
+        var result = await service.ExecuteSwapAsync("boss-basic-damage", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -512,20 +551,23 @@ public class BossResponseTests
     }
 
     [Fact]
-    public void BossBasicAttack_ShouldDefendWithTheActivePetElementAndThePlayerDef()
+    public async Task BossBasicAttack_ShouldDefendWithTheActivePetElementAndThePlayerDef()
     {
         // COMBAT_RULES.md §3.4 step 3 / §3.2: the defending Element is the ACTIVE
         // PET's ("the defender is the Pet, not the Player" — a Player has no Element),
         // and the mitigation input is the active Pet's DEF (GAME_STATE.md §2.3,
         // ADR-011 items 3 and 5). The matchup the assertion
         // reads is resolved from the two documented Elements.
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var boss = BossDefinitions.HoaLong with { SkillChargeRequirement = 1000 };
+        var service = NewService();
+        var boss = BossDefinitions.HoaLong with
+        {
+            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 1000 },
+        };
 
-        var created = service.CreateBattle("boss-basic-defender", Pet, boss);
+        var created = await service.CreateBattleAsync("boss-basic-defender", Owner, Pet, boss);
 
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-basic-defender", pair);
+        var result = await service.ExecuteSwapAsync("boss-basic-defender", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -548,7 +590,7 @@ public class BossResponseTests
     }
 
     [Fact]
-    public void BossBasicAttack_ShouldWriteThePlayersHp()
+    public async Task BossBasicAttack_ShouldWriteThePlayersHp()
     {
         // COMBAT_RULES.md §3.4 step 6: "Final Damage applied to Player.HP" names the
         // Player side of the instance — and the Pet is that side's combat character
@@ -556,13 +598,16 @@ public class BossResponseTests
         // (GAME_STATE.md §2.3, §5.1). The
         // Pet's HP must fall by exactly the amount the Boss→Player instance
         // reports, in the same write-back (GAME_STATE.md §5.1).
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var boss = BossDefinitions.HoaLong with { SkillChargeRequirement = 1000 };
+        var service = NewService();
+        var boss = BossDefinitions.HoaLong with
+        {
+            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 1000 },
+        };
 
-        var created = service.CreateBattle("boss-basic-playerhp", Pet, boss);
+        var created = await service.CreateBattleAsync("boss-basic-playerhp", Owner, Pet, boss);
 
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-basic-playerhp", pair);
+        var result = await service.ExecuteSwapAsync("boss-basic-playerhp", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -578,20 +623,23 @@ public class BossResponseTests
     }
 
     [Fact]
-    public void BossResponse_ShouldBeEitherASkillOrABasicAttack_NotBoth()
+    public async Task BossResponse_ShouldBeEitherASkillOrABasicAttack_NotBoth()
     {
         // GAME_RULES.md §17 steps 18b–18c: the two are mutually exclusive — the Skill
         // is taken when eligible and the Basic Attack is the fallback. Exactly one
         // Boss→Player damage instance is produced per action, in either case.
         foreach (var chargeRequirement in new[] { 1, 1000 })
         {
-            var service = new BattleStateService(new FixedRngSeedSource());
-            var boss = BossDefinitions.HoaLong with { SkillChargeRequirement = chargeRequirement };
+            var service = NewService();
+            var boss = BossDefinitions.HoaLong with
+        {
+            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = chargeRequirement },
+        };
             var battleId = $"boss-mutual-{chargeRequirement}";
 
-            var created = service.CreateBattle(battleId, Pet, boss);
+            var created = await service.CreateBattleAsync(battleId, Owner, Pet, boss);
             var pair = FindMatchProducingPair(created);
-            var result = service.ExecuteSwap(battleId, pair);
+            var result = await service.ExecuteSwapAsync(battleId, pair);
 
             Assert.True(result!.Value.IsAccepted);
 
@@ -627,17 +675,20 @@ public class BossResponseTests
     }
 
     [Fact]
-    public void BossResponse_ShouldRunAfterThePlayersDamage()
+    public async Task BossResponse_ShouldRunAfterThePlayersDamage()
     {
         // GAME_RULES.md §17 / BOSS_RULES.md §3.3 item 1: the Boss's damage instance
         // follows the player's, because the Passive "fires once per player action,
         // after all player damage is resolved".
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var boss = BossDefinitions.HoaLong with { SkillChargeRequirement = 1 };
+        var service = NewService();
+        var boss = BossDefinitions.HoaLong with
+        {
+            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 1 },
+        };
 
-        var created = service.CreateBattle("boss-response-order", Pet, boss);
+        var created = await service.CreateBattleAsync("boss-response-order", Owner, Pet, boss);
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-response-order", pair);
+        var result = await service.ExecuteSwapAsync("boss-response-order", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -686,17 +737,17 @@ public class BossResponseTests
     // =======================================================================
 
     [Fact]
-    public void CommittedSwap_ShouldAdvanceTurnExactlyOnce()
+    public async Task CommittedSwap_ShouldAdvanceTurnExactlyOnce()
     {
         // MATCH3_RULES.md §8.1 item 1 / §8.3: one committed Swap begins exactly one
         // Turn. SwapExecutor already performs the increment in its own write-back
         // (GAME_STATE.md §5.1), and BattleStateService must NOT increment again — so
         // the stored Turn advances by exactly 1, never 2.
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var created = service.CreateBattle("boss-turn-once", Pet, BossDefinitions.HoaLong);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("boss-turn-once", Owner, Pet, BossDefinitions.HoaLong);
 
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-turn-once", pair);
+        var result = await service.ExecuteSwapAsync("boss-turn-once", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -705,24 +756,24 @@ public class BossResponseTests
         Assert.Equal(created.Sequence + 1, result.Value.State.Sequence);
 
         // The registry holds the same single write-back (GAME_STATE.md §5.1).
-        Assert.Equal(result.Value.State.Turn, service.GetBattle("boss-turn-once")!.Turn);
+        Assert.Equal(result.Value.State.Turn, (await service.GetBattleAsync("boss-turn-once"))!.Turn);
     }
 
     [Fact]
-    public void CommittedSwaps_ShouldAdvanceTurnOnceEach()
+    public async Task CommittedSwaps_ShouldAdvanceTurnOnceEach()
     {
         // Two committed Swaps leave Turn at 2 — one per Swap, never more. This is the
         // regression guard for a second increment being added to the resolution.
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var created = service.CreateBattle("boss-turn-twice", Pet, BossDefinitions.HoaLong);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("boss-turn-twice", Owner, Pet, BossDefinitions.HoaLong);
 
         var firstPair = FindMatchProducingPair(created);
-        var first = service.ExecuteSwap("boss-turn-twice", firstPair);
+        var first = await service.ExecuteSwapAsync("boss-turn-twice", firstPair);
         Assert.True(first!.Value.IsAccepted);
 
-        var afterFirst = service.GetBattle("boss-turn-twice")!;
+        var afterFirst = (await service.GetBattleAsync("boss-turn-twice"))!;
         var secondPair = FindMatchProducingPair(afterFirst);
-        var second = service.ExecuteSwap("boss-turn-twice", secondPair);
+        var second = await service.ExecuteSwapAsync("boss-turn-twice", secondPair);
         Assert.True(second!.Value.IsAccepted);
 
         Assert.Equal(BattleState.InitialTurn + 2, second.Value.State.Turn);
@@ -730,44 +781,44 @@ public class BossResponseTests
     }
 
     [Fact]
-    public void RejectedSwap_ShouldNotAdvanceTurnOrCoolTheBossDown()
+    public async Task RejectedSwap_ShouldNotAdvanceTurnOrCoolTheBossDown()
     {
         // MATCH3_RULES.md §2.1.5: a rejected action writes nothing. It is not a Turn,
         // so the cooldown does not decrement either — the decrement is tied to the
         // Turn a committed Swap begins (BOSS_RULES.md §6.3).
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var (battleId, _) = BattleWithACoolingBoss(service, "boss-rejected-no-turn");
+        var service = NewService();
+        var (battleId, _) = await BattleWithACoolingBoss(service, "boss-rejected-no-turn");
 
-        var before = service.GetBattle(battleId)!;
+        var before = (await service.GetBattleAsync(battleId))!;
         var turnBefore = before.Turn;
         var cooldownBefore = before.BossState.SkillCooldown;
 
         Assert.True(cooldownBefore > 0);
 
         // An out-of-range request is rejected by the validator's index check.
-        var result = service.ExecuteSwap(battleId, new SwapRequest(99, 100));
+        var result = await service.ExecuteSwapAsync(battleId, new SwapRequest(99, 100));
 
         Assert.True(result!.Value.IsRejected);
         Assert.Empty(result.Value.Events);
 
-        var stored = service.GetBattle(battleId)!;
+        var stored = (await service.GetBattleAsync(battleId))!;
 
         Assert.Equal(turnBefore, stored.Turn);
         Assert.Equal(cooldownBefore, stored.BossState.SkillCooldown);
     }
 
     [Fact]
-    public void SkillCooldown_ShouldDecrementOncePerCommittedSwapAfterTheTurn()
+    public async Task SkillCooldown_ShouldDecrementOncePerCommittedSwapAfterTheTurn()
     {
         // BOSS_RULES.md §6.3: the cooldown "Decrements by 1 at each Turn increment",
         // and MATCH3_RULES.md §8.1 makes one committed Swap begin exactly one Turn. So
         // one Swap decrements it by exactly 1 — not by 0, and not by 2.
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var (battleId, _) = BattleWithACoolingBoss(service, "boss-cooldown-decrement");
+        var service = NewService();
+        var (battleId, _) = await BattleWithACoolingBoss(service, "boss-cooldown-decrement");
 
-        var before = service.GetBattle(battleId)!;
+        var before = (await service.GetBattleAsync(battleId))!;
         var pair = FindMatchProducingPair(before);
-        var result = service.ExecuteSwap(battleId, pair);
+        var result = await service.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -776,7 +827,7 @@ public class BossResponseTests
     }
 
     [Fact]
-    public void SkillCooldown_ShouldTickDownOnePerSwapAndLetTheSkillFireAgain()
+    public async Task SkillCooldown_ShouldTickDownOnePerSwapAndLetTheSkillFireAgain()
     {
         // The documented lifecycle end to end (BOSS_RULES.md §6.3, GAME_STATE.md
         // §2.4.3): a cast sets the cooldown to SkillCooldownTurns, each subsequent
@@ -787,14 +838,17 @@ public class BossResponseTests
         // "Decrements by 1 at each Turn increment" and blocks the Skill "while
         // CD > 0" — so a cooldown of N blocks N−1 Turns and the Nth Turn is the one
         // it is eligible on again.
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var boss = BossDefinitions.HoaLong with { SkillChargeRequirement = 1 };
+        var service = NewService();
+        var boss = BossDefinitions.HoaLong with
+        {
+            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 1 },
+        };
 
         var battleId = "boss-cooldown-lifecycle";
 
-        var created = service.CreateBattle(battleId, Pet, boss);
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, boss);
         var previousPair = FindMatchProducingPair(created);
-        var first = service.ExecuteSwap(battleId, previousPair);
+        var first = await service.ExecuteSwapAsync(battleId, previousPair);
 
         Assert.True(first!.Value.IsAccepted);
         Assert.Contains(first.Value.Events, e => e.Type == BattleEventType.BossSkillCast);
@@ -803,12 +857,12 @@ public class BossResponseTests
         // Each blocked Swap decrements by exactly one and fires nothing.
         for (var blocked = 1; blocked < boss.SkillCooldownTurns; blocked++)
         {
-            var current = service.GetBattle(battleId)!;
+            var current = (await service.GetBattleAsync(battleId))!;
 
             Assert.Equal(boss.SkillCooldownTurns - (blocked - 1), current.BossState.SkillCooldown);
 
             var nextPair = FindMatchProducingPair(current);
-            var result = service.ExecuteSwap(battleId, nextPair);
+            var result = await service.ExecuteSwapAsync(battleId, nextPair);
 
             Assert.True(result!.Value.IsAccepted);
 
@@ -825,11 +879,11 @@ public class BossResponseTests
 
         // The cooldown is now 1. The next committed Swap decrements it to 0 and the
         // Skill fires on that same Turn — the first Turn it is eligible.
-        var eligibleState = service.GetBattle(battleId)!;
+        var eligibleState = (await service.GetBattleAsync(battleId))!;
         Assert.Equal(1, eligibleState.BossState.SkillCooldown);
 
         var finalPair = FindMatchProducingPair(eligibleState);
-        var recast = service.ExecuteSwap(battleId, finalPair);
+        var recast = await service.ExecuteSwapAsync(battleId, finalPair);
 
         Assert.True(recast!.Value.IsAccepted);
         Assert.Contains(recast.Value.Events, e => e.Type == BattleEventType.BossSkillCast);
@@ -837,7 +891,7 @@ public class BossResponseTests
     }
 
     [Fact]
-    public void SkillCooldown_ShouldNotDecrementBelowZero()
+    public async Task SkillCooldown_ShouldNotDecrementBelowZero()
     {
         // §2.4.3 blocks the Skill "while > 0", so 0 is the floor — the decrement
         // cannot drive the cooldown negative.
@@ -847,13 +901,13 @@ public class BossResponseTests
         // requirement (here 5): a cast SETS the cooldown to SkillCooldownTurns, and
         // only an un-fired Skill leaves the decrement's result. The floor rule holds
         // either way, so both are asserted.
-        var service = new BattleStateService(new FixedRngSeedSource());
-        var created = service.CreateBattle("boss-cooldown-floor", Pet, BossDefinitions.HoaLong);
+        var service = NewService();
+        var created = await service.CreateBattleAsync("boss-cooldown-floor", Owner, Pet, BossDefinitions.HoaLong);
 
         Assert.Equal(0, created.BossState.SkillCooldown);
 
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap("boss-cooldown-floor", pair);
+        var result = await service.ExecuteSwapAsync("boss-cooldown-floor", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -880,25 +934,45 @@ public class BossResponseTests
     // =======================================================================
 
     /// <summary>
+    /// Builds the service under test over an <see cref="InMemoryBattleStateRepository"/>.
+    ///
+    /// <b>The repository is a TEST DOUBLE for the active-battle-state store.</b>
+    /// <c>REDIS_STATE.md</c> §1–§4 make Redis the owner of Active Battle State, and
+    /// §2 item 2 / §7 item 5 permit no in-process substitute for it in the running
+    /// server — the production composition registers
+    /// <c>GameServer.Infrastructure.Redis.BattleStateRepository</c> instead. This
+    /// helper exists only so a test that asserts a <i>gameplay</i> rule can run the
+    /// real <see cref="BattleStateService"/> pipeline without a live Redis instance;
+    /// the double still models the documented creation/absence and Sequence
+    /// compare-and-set semantics, so a test cannot pass against a more permissive
+    /// contract than the store actually offers.
+    /// </summary>
+    private static BattleStateService NewService() =>
+        new(new InMemoryBattleStateRepository(), new FixedRngSeedSource());
+
+    /// <summary>
     /// Commits one Swap on a fresh battle whose Boss casts its Skill immediately, and
     /// returns the battle id. The cooldown is reached through the real path — a Skill
     /// that fires and sets <c>SkillCooldownTurns</c> (<c>BOSS_RULES.md</c> §6.3) — so
     /// no test-only state write is introduced and the scenario starts from a state the
     /// game genuinely produces.
     /// </summary>
-    private static (string BattleId, BossDefinition Boss) BattleWithACoolingBoss(
+    private static async Task<(string BattleId, BossDefinition Boss)> BattleWithACoolingBoss(
         BattleStateService service,
         string battleId)
     {
-        var boss = BossDefinitions.HoaLong with { SkillChargeRequirement = 1 };
+        var boss = BossDefinitions.HoaLong with
+        {
+            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 1 },
+        };
 
-        var created = service.CreateBattle(battleId, Pet, boss);
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, boss);
         var pair = FindMatchProducingPair(created);
-        var result = service.ExecuteSwap(battleId, pair);
+        var result = await service.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
         Assert.Contains(result.Value.Events, e => e.Type == BattleEventType.BossSkillCast);
-        Assert.True(service.GetBattle(battleId)!.BossState.SkillCooldown > 0);
+        Assert.True((await service.GetBattleAsync(battleId))!.BossState.SkillCooldown > 0);
 
         return (battleId, boss);
     }

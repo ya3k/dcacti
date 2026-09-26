@@ -119,26 +119,27 @@ public class PassiveEventSourceTests
     // =======================================================================
 
     [Fact]
-    public void BossCharge_ShouldCarryTheBossSourceAndDisplayNameIdentity()
+    public void BossCharge_ShouldCarryTheBossSourceAndCanonicalIdentity()
     {
         // SIGNALR_PROTOCOL.md §3.2.16 items 1–2: a Boss Passive charge carries
         // source="boss" and sourceId=BossState.BossId, and BOSS_RULES.md §6.4 fixes
-        // that BossId as the DISPLAY NAME ("Hỏa Long") — never a slug. The same call
-        // shape the Application layer uses for the Boss step.
+        // that BossId as the canonical technical Identity (e.g. "boss-hoa-long"),
+        // never a display name. The same call shape the Application layer uses for
+        // the Boss step.
         var charged = new PassiveChargedEvent(
             new PassiveId("boss-hoa-long-rage"),
             Progress: 3,
             Threshold: 5,
             Source: PassiveEventSource.Boss,
-            SourceId: "Hỏa Long");
+            SourceId: "boss-hoa-long");
 
         Assert.Equal("boss", charged.Source);
-        Assert.Equal("Hỏa Long", charged.SourceId);
+        Assert.Equal("boss-hoa-long", charged.SourceId);
         Assert.Equal("boss-hoa-long-rage", charged.PassiveId.Value);
     }
 
     [Fact]
-    public void BossTrigger_ShouldCarryTheBossSourceAndDisplayNameIdentity()
+    public void BossTrigger_ShouldCarryTheBossSourceAndCanonicalIdentity()
     {
         // The trigger carries the same two members with the same semantics
         // (SIGNALR_PROTOCOL.md §3.2.17 item 1).
@@ -147,19 +148,20 @@ public class PassiveEventSourceTests
             Progress: 5,
             Threshold: 5,
             Source: PassiveEventSource.Boss,
-            SourceId: "Mộc Yêu");
+            SourceId: "boss-moc-yeu");
 
         Assert.Equal("boss", triggered.Source);
-        Assert.Equal("Mộc Yêu", triggered.SourceId);
+        Assert.Equal("boss-moc-yeu", triggered.SourceId);
     }
 
     [Theory]
     // BOSS_RULES.md §6.4's identity contract: the BossId an event reports is the
-    // display name from BossDefinitions, and the PassiveId is the kebab-case value
-    // §6.4 fixes. This asserts the two travel together as §3.2.16 describes.
-    [InlineData("Hỏa Long", "boss-hoa-long-rage")]
-    [InlineData("Thủy Ma", "boss-thuy-ma-heal")]
-    [InlineData("Mộc Yêu", "boss-moc-yeu-regen")]
+    // canonical technical Identity from BossDefinitions, and the PassiveId is the
+    // kebab-case value §6.4 fixes. This asserts the two travel together as §3.2.16
+    // describes.
+    [InlineData("boss-hoa-long", "boss-hoa-long-rage")]
+    [InlineData("boss-thuy-ma", "boss-thuy-ma-heal")]
+    [InlineData("boss-moc-yeu", "boss-moc-yeu-regen")]
     public void BossReports_ShouldUseTheDefinitionsOwnIdentities(
         string bossId,
         string passiveId)
@@ -181,15 +183,17 @@ public class PassiveEventSourceTests
     }
 
     [Fact]
-    public void BossReports_ShouldNotUseASlugForTheSourceId()
+    public void BossReports_ShouldUseTheCanonicalIdentityNotADisplayName()
     {
-        // BOSS_RULES.md §6.4: "BossId is the display name already used by
-        // BossDefinitions.cs (BossId("Hỏa Long"), etc.) — the boss's identity, not a
-        // slug." SIGNALR_PROTOCOL.md §3.2.16 item 2 repeats it for sourceId. This
-        // excludes the slug spelling a reader might reach for.
+        // BOSS_RULES.md §6.4: "BossId is the canonical technical Identity
+        // (boss-<ascii-kebab-case-name>, e.g. boss-hoa-long) — machine-readable,
+        // never the display name." SIGNALR_PROTOCOL.md §3.2.16 item 2 repeats it
+        // for sourceId. This excludes both the display name and the bare slug
+        // spelling a reader might reach for.
         var hoaLong = GameServer.Domain.Bosses.BossDefinitions.HoaLong;
 
-        Assert.Equal("Hỏa Long", hoaLong.BossId.Value);
+        Assert.Equal("boss-hoa-long", hoaLong.BossId.Value);
+        Assert.NotEqual("Hỏa Long", hoaLong.BossId.Value);
         Assert.NotEqual("hoa-long", hoaLong.BossId.Value);
         Assert.NotEqual(hoaLong.PassiveId.Value, hoaLong.BossId.Value);
     }

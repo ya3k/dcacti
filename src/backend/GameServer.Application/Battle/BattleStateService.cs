@@ -6,6 +6,8 @@ using GameServer.Domain.Combat;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
+using GameServer.Domain.Pets;
+using GameServer.Domain.Players;
 using GameServer.Domain.Relics;
 
 namespace GameServer.Application.Battle;
@@ -45,16 +47,26 @@ namespace GameServer.Application.Battle;
 /// One write-back            (GAME_STATE.md §5.1)
 /// </code>
 ///
-/// — and hold the authoritative state of a battle session so the realtime
-/// boundary can deliver it when a client joins that battle's group
-/// (<c>SIGNALR_PROTOCOL.md</c> §1.2, §4.1) or when a Swap resolves. It performs
-/// sequencing and coordination only — no game rule logic
-/// (<c>ARCHITECTURE.md</c> §2.1). Board generation itself, the RNG, the initial-board
-/// constraints, swap validation, the whole board-resolution pipeline, the
-/// Passive charge/threshold/reset rules, and the Damage Pipeline's formula and
-/// Boss HP write all live in Domain; this service only
+/// — and load, resolve, and store the authoritative state of a battle session
+/// through the active-state store, so the realtime boundary can deliver it when
+/// a client joins that battle's group (<c>SIGNALR_PROTOCOL.md</c> §1.2, §4.1) or
+/// when a Swap resolves. It performs sequencing and coordination only — no game
+/// rule logic (<c>ARCHITECTURE.md</c> §2.1). Board generation itself, the RNG,
+/// the initial-board constraints, swap validation, the whole board-resolution
+/// pipeline, the Passive charge/threshold/reset rules, and the Damage
+/// Pipeline's formula and Boss HP write all live in Domain; this service only
 /// orders the calls, supplies each engine the values the other produced, and
-/// records the result.
+/// stores the result.
+///
+/// <b>The authoritative record is Redis's.</b> <c>REDIS_STATE.md</c> §2 item 2
+/// makes the stored record the single source of truth for a battle's live state
+/// and states that "the server process holds no long-lived in-memory copy across
+/// requests (<c>ARCHITECTURE.md</c> §4 — <c>BattleResolutionService</c> loads,
+/// uses, and saves it within one resolution)". This service holds none: it
+/// creates the record (<c>§3</c> "Created"), loads it at the start of a
+/// resolution (<c>§4</c> item 1), and saves it once at the end under the
+/// <c>Sequence</c> compare-and-set (<c>§4</c> items 2, 5). Every read below is a
+/// read of that record, so no value here survives a request.
 ///
 /// It must never:
 /// <list type="bullet">
@@ -64,45 +76,58 @@ namespace GameServer.Application.Battle;
 /// <item>compute an authoritative gameplay value (<c>GAME_RULES.md</c> §18,
 /// <c>ADR-001</c>) — including Passive progress, which is
 /// <see cref="PassiveTracker"/>'s result and is written back unchanged,</item>
-/// <item>persist foundation state (<c>REDIS_STATE.md</c> §7.1, §7.4: neither
-/// Battle State Foundation nor Board Foundation State is written to Redis;
-/// <c>GAME_STATE.md</c> §2.0.5.4) — nor the Match-3 resolution stage, which
-/// <c>REDIS_STATE.md</c> §7 item 8 keeps equally deferred, nor
-/// <c>PetState</c>, whose persistence <c>REDIS_STATE.md</c> §7 and
-/// <c>SIGNALR_PROTOCOL.md</c> §4.3 item 12 leave equally unchanged,</item>
+/// <item>hold the authoritative state across requests, or keep an in-process
+/// copy of it as a fallback. The store is the record of truth
+/// (<c>REDIS_STATE.md</c> §2 item 2, §7 item 5; <c>ADR-005</c> rejected process
+/// memory), so a store failure is raised rather than absorbed, and nothing is
+/// served from a local cache,</item>
+/// <item>persist anything the contract does not define: it writes the one
+/// documented active-state record and nothing else — no partial state
+/// (<c>REDIS_STATE.md</c> §7 items 1–2), no second key, and nothing to
+/// PostgreSQL (<c>GAME_STATE.md</c> §2.0.4 item 3, <c>DATABASE.md</c> §5
+/// item 3),</item>
 /// <item>emit or deliver Battle Events — board generation emits none
 /// (<c>GAME_STATE.md</c> §2.0.5.2 item 2), and the Swap boundary hands back the
 /// events Domain and the Passive stage produced without building, altering, or
 /// delivering any of them. <c>ReceiveEvents</c> is the protocol's event path
 /// (<c>SIGNALR_PROTOCOL.md</c> §3) and is not implemented here,</item>
-/// <item>contain SignalR, Hub, or client concerns (<c>ARCHITECTURE.md</c>
-/// §2.1).</item>
+/// <item>contain SignalR, Hub, client concerns, or Redis concerns
+/// (<c>ARCHITECTURE.md</c> §2.1). It reaches the store through
+/// <see cref="IBattleStateRepository"/>, which names no key, TTL, connection, or
+/// Redis type.</item>
 /// </list>
-///
-/// The session registry here is deliberately not a battle-state store in the
-/// <c>REDIS_STATE.md</c> sense, and not an alternative to it. It holds the staged
-/// subset — no full <c>BattleState</c> (§2) can be expressed yet, because
-/// <c>BossState</c> carries only the Boss Response members (§2.4) — and it
-/// is process-local and safe to lose, exactly as §2.0.5.4 describes: Board
-/// Foundation State is not persisted to Redis or PostgreSQL.
 /// </summary>
 public sealed class BattleStateService
 {
     /// <summary>
-    /// The Pet configuration a battle's active Pet carries — its Element
+    /// The Pet configuration a battle's active Pet carries — the identity of the
+    /// owned Pet instance the battle selected (<c>GAME_STATE.md</c> §2.3), its
+    /// Element
     /// (<c>GAME_STATE.md</c> §2.3, <c>ELEMENT_RULES.md</c> §6) and the Passive it
     /// carries (§2.3, <c>PASSIVE_RULES.md</c> §1).
     ///
     /// Pet selection and progression are not implemented (<c>GAME_STATE.md</c>
     /// §2.3, <c>SIGNALR_PROTOCOL.md</c> §4.3 item 2), so the battle's Pet is
     /// supplied by the caller rather than resolved from a Pet definition. It is
-    /// exactly the values <see cref="PetState"/> holds — the Element, the Passive
+    /// exactly the values <see cref="PetState"/> holds — the owned Pet instance
+    /// identity, the Element, the Passive
     /// identity, the Threshold, and the optional non-default Reset Behavior — and
     /// it introduces no further member: the Threshold is part of the documented
     /// progress pair (<c>PASSIVE_RULES.md</c> §6 item 1) and is data-driven
     /// configuration, never a value this layer invents (<c>ARCHITECTURE.md</c> §5
     /// item 1).
     /// </summary>
+    /// <param name="PetId">
+    /// The identity of the owned Pet instance the battle selected
+    /// (<c>GAME_STATE.md</c> §2.3) — the <c>Pet.PetInstanceId</c> the battle-start
+    /// path resolved from the Player's owned collection
+    /// (<c>API_CONTRACTS.md</c> §3). It is the instance, never a
+    /// <c>PetDefinitionId</c>: the Pet instance's definition supplies the Element
+    /// and Passive below. It is <b>not</b> optional: <c>PetState</c> is present
+    /// from battle creation (§2.3 item 3) and carries this identity from that
+    /// moment, and no value may be invented for it (this is the documented
+    /// <c>ADR-014</c> decision 4 member, not a second one).
+    /// </param>
     /// <param name="Element">
     /// The active Pet's one Element (<c>GAME_STATE.md</c> §2.3,
     /// <c>ELEMENT_RULES.md</c> §6). It is set at battle creation and never changes
@@ -153,6 +178,7 @@ public sealed class BattleStateService
     /// loadout — <c>CARD_RULES.md</c> §1 defines no zero-Card battle.
     /// </param>
     public readonly record struct PetConfiguration(
+        PetId PetId,
         Element Element,
         PassiveId PassiveId,
         int PassiveThreshold,
@@ -162,14 +188,16 @@ public sealed class BattleStateService
     {
         /// <summary>
         /// The <c>PetState</c> this configuration initializes a battle's
-        /// <c>BattleState</c> with — progress at the Passive's start
-        /// (<c>GAME_STATE.md</c> §2.3 item 3), the Pet's Element, and both
+        /// <c>BattleState</c> with — the selected owned Pet instance identity
+        /// (<c>GAME_STATE.md</c> §2.3), progress at the Passive's start
+        /// (§2.3 item 3), the Pet's Element, and both
         /// battle-scoped loadout snapshots: the Relic instances in submitted
         /// order (<c>RELIC_RULES.md</c> §2.5) and the 4 Cards the Card loadout
         /// validator produced (<c>CARD_RULES.md</c> §1).
         /// </summary>
         public PetState ToPetState() =>
             PetState.AtBattleCreation(
+                PetId,
                 Element,
                 PassiveId,
                 PassiveThreshold,
@@ -200,16 +228,36 @@ public sealed class BattleStateService
         public BossState ToBossState() => Definition.ToInitialState();
     }
 
-    private readonly ConcurrentDictionary<string, BattleState> _battles = new(StringComparer.Ordinal);
+    /// <summary>
+    /// The active battle state store (<c>REDIS_STATE.md</c> §1–§4). It is the
+    /// documented record of truth for a battle's live state, reached through the
+    /// Application-layer contract so nothing above Infrastructure names Redis
+    /// (<c>ARCHITECTURE.md</c> §2.1 item 3).
+    ///
+    /// This service keeps no state of its own: the authoritative record lives in
+    /// the store, and every operation below reads it and writes it back within
+    /// one resolution (<c>REDIS_STATE.md</c> §2 item 2, §4 items 1 and 5).
+    /// </summary>
+    private readonly IBattleStateRepository _repository;
+
     private readonly IRngSeedSource _seedSource;
 
     /// <summary>
     /// The Active Pet's configuration for each battle, attached at creation
     /// (<c>GAME_STATE.md</c> §2.3 item 2: <c>PassiveId</c> "is set at battle
     /// creation and never changes"). It is the battle's loadout input, not battle
-    /// state: <c>PetState</c> in <see cref="BattleState"/> is the authoritative
-    /// record and is what the resolution reads and writes, so this registry is not
-    /// a second copy of any value it holds.
+    /// state: <c>PetState</c> is the authoritative record and is what the
+    /// resolution reads and writes (<c>REDIS_STATE.md</c> §2 item 2), so this
+    /// registry is not a second copy of any value it holds.
+    ///
+    /// <b>Why it is retained.</b> The record holds the state; it does not hold
+    /// the battle's loadout <i>input</i>. A resolution needs the Pet's declared
+    /// Reset Behavior as configuration, and <c>REDIS_STATE.md</c> §1 fixes the
+    /// key set at one state key with §2 item 1 forbidding a Redis-only field for
+    /// it — so this is the caller-supplied configuration the boundary is given
+    /// at creation, exactly as the Boss definition below is. It is not the
+    /// authoritative battle state and is never the source of one: every value
+    /// the resolution acts on is read from the stored record.
     /// </summary>
     private readonly ConcurrentDictionary<string, PetConfiguration> _petConfiguration = new(StringComparer.Ordinal);
 
@@ -231,27 +279,52 @@ public sealed class BattleStateService
     /// </summary>
     private readonly ConcurrentDictionary<string, BossConfiguration> _bossConfiguration = new(StringComparer.Ordinal);
 
-    public BattleStateService()
-        : this(new SystemEntropyRngSeedSource())
+    /// <summary>
+    /// Creates the battle-state boundary over the active-state store and the
+    /// server's seed source.
+    ///
+    /// <b>Both are required, and the store has no default.</b>
+    /// <c>REDIS_STATE.md</c> §2 item 2 makes the stored record the single source
+    /// of truth for a battle's live state and §7 item 5 states that nothing
+    /// permits that state to live in process memory, so there is deliberately no
+    /// parameterless construction and no in-process substitute: composing this
+    /// service without a store must fail at startup rather than silently resolve
+    /// battles whose state is never persisted (<c>ADR-005</c>).
+    /// </summary>
+    /// <param name="repository">
+    /// The active battle state store (<c>REDIS_STATE.md</c> §1–§4).
+    /// </param>
+    /// <param name="seedSource">
+    /// The server-side entropy source for <c>RngSeed</c>
+    /// (<c>GAME_STATE.md</c> §2.6.1). It is never supplied or influenced by the
+    /// client.
+    /// </param>
+    public BattleStateService(IBattleStateRepository repository, IRngSeedSource seedSource)
     {
-    }
-
-    public BattleStateService(IRngSeedSource seedSource)
-    {
+        _repository = repository ?? throw new ArgumentNullException(nameof(repository));
         _seedSource = seedSource ?? throw new ArgumentNullException(nameof(seedSource));
     }
 
     /// <summary>
-    /// Creates the authoritative Board Foundation state for a new battle session
-    /// (<c>GAME_STATE.md</c> §2.0.5, §2.2, §2.3, §2.4, §2.7.1).
+    /// Creates the authoritative state for a new battle session
+    /// (<c>GAME_STATE.md</c> §2, §2.7.1) and persists it as the battle's
+    /// active-state record (<c>REDIS_STATE.md</c> §3 "Created:
+    /// on <c>POST /api/battle/start</c>").
     ///
     /// The server chooses the battle's seed from its own entropy (§2.6.1), then
     /// the board is generated deterministically from that seed
     /// (<c>MATCH3_RULES.md</c> §1.2.1), and the accepted board plus the retained
     /// resulting RNG state become the battle state (§2.7.1 steps 5–6). The
-    /// player's progression state, the active Pet's Element and Passive state, and
-    /// the battle's one Boss are created
+    /// battle's Match/Combo accounting, the active Pet's combat stats, Element,
+    /// Passive, and loadouts, and the battle's one Boss are created
     /// with it at their documented starting values (§2.2, §2.3 item 3, §2.4).
+    ///
+    /// <b>Creation ends with the record written.</b> A battle the caller is told
+    /// about is a battle whose state is stored — the write is not deferred to the
+    /// first resolution, so there is no window in which a battle exists only in
+    /// process memory (<c>REDIS_STATE.md</c> §2 item 2, §7 item 5). A store
+    /// failure therefore fails the creation rather than yielding a battle whose
+    /// state exists nowhere.
     ///
     /// Generation is initialization, not resolution: it consumes no Turn and no
     /// <c>Sequence</c>, both of which remain <c>0</c> (§2.0.5.2 item 1), and it
@@ -262,14 +335,26 @@ public sealed class BattleStateService
     /// (<c>BOSS_RULES.md</c> §3–§5).
     ///
     /// This is not a battle-creation endpoint or hub method. Battle creation
-    /// remains <c>POST /api/battle/start</c> (<c>API_CONTRACTS.md</c> §3), which
-    /// is unchanged by this stage and which no board-foundation battle can
-    /// satisfy, because the loadout systems it validates do not exist yet
-    /// (<c>REDIS_STATE.md</c> §7.3–§7.4, <c>ROADMAP.md</c> §1 Phase 2).
+    /// remains <c>POST /api/battle/start</c> (<c>API_CONTRACTS.md</c> §3).
+    /// <see cref="CreateBattleAsync"/> is the composition that endpoint calls; it
+    /// is not itself a public creation contract, and the id it is given is
+    /// server-authored (<c>§1</c>, <c>GAME_RULES.md</c> §18).
     /// </summary>
     /// <param name="battleId">Identity of the battle session.</param>
+    /// <param name="playerId">
+    /// The identity of the Player who created this battle
+    /// (<c>GAME_STATE.md</c> §2.8) — the authenticated requesting Player resolved
+    /// from the battle-start context (<c>API_CONTRACTS.md</c> §1, §3). It is
+    /// recorded into the created state's <c>BattleState.PlayerId</c> at creation
+    /// and is never re-derived from a session or from client input afterward
+    /// (§2.8 items 2 and 4, <c>GAME_RULES.md</c> §18, <c>AGENTS.md</c> §10). It is
+    /// required: defaulting it would be an invented owner identity, and the
+    /// battle-end persistence path sources <c>BattleResult.PlayerId</c> from this
+    /// member (<c>DATABASE.md</c> §1).
+    /// </param>
     /// <param name="petConfiguration">
-    /// The active Pet's Element and Passive — its Element, the Passive's identity,
+    /// The active Pet's owned instance identity, Element, and Passive — its
+    /// <c>Pet.PetInstanceId</c>, its Element, the Passive's identity,
     /// its Threshold, and its declared Reset
     /// Behavior. <c>PetState</c> is present from battle creation
     /// (<c>GAME_STATE.md</c> §2.3 item 3) and no value may be invented for it, so
@@ -284,36 +369,55 @@ public sealed class BattleStateService
     /// implemented and the battle's Boss definition is therefore supplied by the
     /// caller — <see cref="BossDefinitions"/> holds the MVP set.
     /// </param>
+    /// <param name="cancellationToken">Cancels the store write.</param>
     /// <exception cref="GameServer.Domain.Match3.BoardGenerationFailedException">
     /// No candidate board satisfied the documented initial-board constraints
     /// within the documented 64-attempt bound (<c>MATCH3_RULES.md</c> §1.5
     /// item 3). The battle creation is rejected as an error and no state is
     /// recorded; the seed is not changed and no fallback board is substituted.
     /// </exception>
-    public BattleState CreateBattle(
+    public async Task<BattleState> CreateBattleAsync(
         string battleId,
+        PlayerId playerId,
         PetConfiguration petConfiguration,
-        BossDefinition bossDefinition)
+        BossDefinition bossDefinition,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
 
         var seed = _seedSource.CreateSeed();
 
         // §2.3 / §2.4: the battle's PetState is built from the caller's Pet
-        // configuration with progress at the start of its first charge, and its
+        // configuration — carrying the selected owned Pet instance identity and
+        // progress at the start of its first charge — and its
         // BossState from the Boss definition at full health in the documented
         // Initial State, carrying the Passive identity §2.4.2 sets at creation.
         // Neither is absent, neither is defaulted with an invented value, and
         // neither is created lazily on the first Swap.
         var bossConfiguration = new BossConfiguration(bossDefinition);
 
+        // §2.8 item 2: the owner identity is recorded at creation from the
+        // caller's authenticated context — the same Player the ownership check
+        // already validated — and never re-derived afterward (§2.8 item 4).
         var state = BattleState.Create(
             battleId,
             seed,
+            playerId,
             petConfiguration.ToPetState(),
             bossConfiguration.ToBossState());
 
-        _battles[battleId] = state;
+        // REDIS_STATE.md §3 "Created: on POST /api/battle/start": the record is
+        // written as part of creation, so a created battle has a stored state
+        // from its first moment and never only in process memory (§7 item 5).
+        //
+        // The write precedes the loadout input registry below: if the store
+        // refuses the write the creation fails and no battle exists — rather
+        // than a battle whose state is recorded nowhere.
+        await _repository.CreateAsync(state, cancellationToken).ConfigureAwait(false);
+
+        // The battle's loadout and content inputs, attached at creation. These
+        // are configuration, not state (see the field docs): the authoritative
+        // record was written above and is what every later read returns.
         _petConfiguration[battleId] = petConfiguration;
         _bossConfiguration[battleId] = bossConfiguration;
 
@@ -346,13 +450,24 @@ public sealed class BattleStateService
 
     /// <summary>
     /// Returns the authoritative state for a battle, or <c>null</c> when no
-    /// session with that id exists.
+    /// record exists for that id.
+    ///
+    /// The value comes from the active-state store
+    /// (<c>REDIS_STATE.md</c> §2 item 2) — there is no in-process copy to serve
+    /// it from, so this reads the record the battle is persisted as. A
+    /// <c>null</c> therefore means the battle is unknown <b>or</b> its record has
+    /// expired from inactivity (§3), and the two are deliberately the same
+    /// answer: neither is a battle this server holds state for.
     /// </summary>
-    public BattleState? GetBattle(string battleId)
+    /// <param name="battleId">Identity of the battle session.</param>
+    /// <param name="cancellationToken">Cancels the store read.</param>
+    public async Task<BattleState?> GetBattleAsync(
+        string battleId,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
 
-        return _battles.TryGetValue(battleId, out var state) ? state : null;
+        return await _repository.GetAsync(battleId, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -365,11 +480,20 @@ public sealed class BattleStateService
     /// request. Board generation happens server-side before this push;
     /// <c>BattleStateUpdated</c> reports the result and never triggers generation
     /// (§4.1 item 4). No value is derived, adjusted, or recomputed here.
+    ///
+    /// The state is served from the store, so the push reports the battle's
+    /// authoritative record rather than a process-local copy
+    /// (<c>REDIS_STATE.md</c> §2 item 2, <c>ARCHITECTURE.md</c> §4 steps 1–3).
+    /// A client that has not been sent anything yet receives the record at its
+    /// current <c>Sequence</c> — including after earlier resolutions committed
+    /// by another request.
     /// </summary>
-    public BattleState? GetInitialStateForGroup(string battleId)
-    {
-        return GetBattle(battleId);
-    }
+    /// <param name="battleId">Identity of the battle session.</param>
+    /// <param name="cancellationToken">Cancels the store read.</param>
+    public Task<BattleState?> GetInitialStateForGroupAsync(
+        string battleId,
+        CancellationToken cancellationToken = default) =>
+        GetBattleAsync(battleId, cancellationToken);
 
     /// <summary>
     /// Resolves the board of a battle to stability and records the resulting
@@ -402,15 +526,22 @@ public sealed class BattleStateService
     /// not being resolved from a Swap (in which case every Match 4 / Match 5 is placed
     /// at its line centre — <c>MATCH3_RULES.md</c> §5.5.3 item 3).
     /// </param>
+    /// <param name="cancellationToken">Cancels the store read and write.</param>
     /// <returns>
-    /// The resulting authoritative state, or <c>null</c> when no session with that id
-    /// exists.
+    /// The resulting authoritative state, or <c>null</c> when no record exists for
+    /// that id.
     /// </returns>
-    public BattleState? ResolveBoard(string battleId, int? swapOriginIndex = null)
+    public async Task<BattleState?> ResolveBoardAsync(
+        string battleId,
+        int? swapOriginIndex = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
 
-        if (!_battles.TryGetValue(battleId, out var state))
+        // §4 item 1: the resolution begins by reading the record. Nothing is
+        // cached between resolutions, so this is the current authoritative state
+        // and not a stale copy.
+        if (await _repository.GetAsync(battleId, cancellationToken).ConfigureAwait(false) is not { } state)
         {
             return null;
         }
@@ -431,7 +562,14 @@ public sealed class BattleStateService
             RngState = resolution.RngState,
         };
 
-        _battles[battleId] = resolved;
+        // Resolving the board is not an action resolution: it validates no Swap
+        // and advances no Sequence (MATCH3_RULES.md §8.1 item 4, §8.2 item 2), so
+        // the write is not a Sequence-gated commit and is not the documented
+        // per-action write-back of REDIS_STATE.md §4 item 5. It stores the
+        // resolved board with the state's own unchanged Sequence, through the
+        // same compare-and-set the Swap path uses so a concurrent resolution
+        // still cannot be overwritten by this one (§4 items 2–3).
+        await TryStoreResolvedAsync(resolved, state.Sequence, cancellationToken).ConfigureAwait(false);
 
         return resolved;
     }
@@ -491,37 +629,173 @@ public sealed class BattleStateService
     /// order — it builds no event, and it reorders, filters, regroups, and drops
     /// none. No event is delivered from here —
     /// <c>ReceiveEvents</c> is the protocol's event path
-    /// (<c>SIGNALR_PROTOCOL.md</c> §3) and remains unimplemented — and
-    /// no state is persisted (<c>REDIS_STATE.md</c> §7 items 8 and 12). Recording the
-    /// resolved state in the process-local registry is not Redis persistence: it
-    /// is the same staged, safe-to-lose boundary this service already holds.
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3) and remains unimplemented — and the
+    /// resolved state is stored by the caller under the <c>Sequence</c>
+    /// compare-and-set as the one write-back of the resolution
+    /// (<c>REDIS_STATE.md</c> §4 items 2, 5). Nothing is written for a rejected
+    /// action (§4 item 7).
     /// </summary>
     /// <param name="battleId">The battle the Swap applies to.</param>
     /// <param name="request">The two §1.0 cell indices the player is exchanging.</param>
+    /// <param name="cancellationToken">Cancels the store reads and write.</param>
     /// <returns>
-    /// The rejection or commit result, or <c>null</c> when no session with that id
-    /// exists — consistent with <see cref="GetBattle"/> and
-    /// <see cref="ResolveBoard"/>, which resolve nothing for an unknown battle
+    /// The rejection or commit result, or <c>null</c> when no record exists for that
+    /// id — consistent with <see cref="GetBattleAsync"/> and
+    /// <see cref="ResolveBoardAsync"/>, which resolve nothing for an unknown battle
     /// rather than creating one.
     /// </returns>
-    public SwapExecutionResult? ExecuteSwap(string battleId, SwapRequest request)
+    public async Task<SwapExecutionResult?> ExecuteSwapAsync(
+        string battleId,
+        SwapRequest request,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
 
-        if (!_battles.TryGetValue(battleId, out var state))
+        // ===================================================================
+        // REDIS_STATE.md §4 item 1: read the record, with its Sequence
+        // ===================================================================
+        // The resolution runs against the stored authoritative state and the
+        // Sequence it was read at — the pre-resolution value §4 item 6 names as
+        // the compare-and-set's expected token. Nothing is cached between
+        // resolutions.
+        if (await _repository.GetAsync(battleId, cancellationToken).ConfigureAwait(false) is not { } state)
         {
             return null;
         }
 
+        // §4 item 6 / §2 item 3: the retry re-runs the resolution against fresh
+        // state. The bound is a safety net for pathological contention, not part
+        // of the contract's semantics — the documented behaviour is that a
+        // mismatch aborts and retries against fresh state (§4 item 2), and each
+        // attempt recomputes from the state it read.
+        //
+        // The resolution itself is deterministic (§4 item 6: "a retried
+        // resolution re-runs the same deterministic computation and produces the
+        // same result"), so a retry cannot produce a different outcome for an
+        // unchanged board.
+        const int MaxAttempts = 8;
+
+        for (var attempt = 1; attempt <= MaxAttempts; attempt++)
+        {
+            var expectedSequence = state.Sequence;
+
+            var committed = await ResolveSwapAsync(battleId, state, request, cancellationToken)
+                .ConfigureAwait(false);
+
+            // A rejected Swap writes nothing at all (§4 item 7, MATCH3_RULES.md
+            // §2.1.5): no store call is made, so the record, its TTL, and its
+            // Sequence are untouched, and the caller receives the validator's
+            // reason.
+            if (committed.IsRejected)
+            {
+                return committed;
+            }
+
+            // §4 items 2, 5: the one write-back of this resolution, guarded by
+            // the Sequence read at the start of it.
+            var written = await _repository
+                .TryUpdateAsync(committed.State, expectedSequence, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (written)
+            {
+                return committed;
+            }
+
+            // §4 items 2–3: the stored Sequence had moved on, so this resolution
+            // was refused rather than allowed to overwrite a newer authoritative
+            // state. The documented behaviour is to abort and retry against the
+            // fresh state — re-read and resolve again.
+            if (await _repository.GetAsync(battleId, cancellationToken).ConfigureAwait(false)
+                is not { } fresh)
+            {
+                // The record disappeared between the read and the write (its TTL
+                // elapsed, or the battle ended). There is no fresh state to retry
+                // against, and no battle is invented for it.
+                return null;
+            }
+
+            state = fresh;
+        }
+
+        // Contention did not settle within the bound. The authoritative record is
+        // intact and holds the newest state (the refused attempts wrote nothing),
+        // so nothing is corrupted — but this action was not committed.
+        //
+        // The rejection is produced by running the Domain validator against the
+        // current record rather than being constructed here: MATCH3_RULES.md
+        // §2.1.4's already-applied check is the rule an action that lost against
+        // the committed record fails, and letting the validator decide the reason
+        // keeps the rejection's ownership in Domain instead of this boundary
+        // inventing one. If the validator reports the action still valid against
+        // this state, the action is executed once more and stored — the write is
+        // the loop's own purpose, and reporting an uncommitted resolution as
+        // accepted would be a false acknowledgement (§3.1 item 1: the state is
+        // committed before anything is published).
+        var lastAttempt = await ResolveSwapAsync(battleId, state, request, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (lastAttempt.IsRejected)
+        {
+            return lastAttempt;
+        }
+
+        return await _repository
+            .TryUpdateAsync(lastAttempt.State, state.Sequence, cancellationToken)
+            .ConfigureAwait(false)
+            ? lastAttempt
+            : null;
+    }
+
+    /// <summary>
+    /// Runs one Swap resolution over a state the caller has already read from the
+    /// store, and returns the result — <b>without writing anything</b>.
+    ///
+    /// <b>Why the write is not here.</b> The store write is the guarded one:
+    /// <c>REDIS_STATE.md</c> §4 items 2–3 require the write to be refused when
+    /// the stored <c>Sequence</c> has moved on, so the caller
+    /// (<see cref="ExecuteSwapAsync"/>) owns the compare-and-set and can retry
+    /// against fresh state. This method produces the finished post-resolution
+    /// state and the ordered event list; it stores nothing, which is what keeps
+    /// "one action is one write-back" (item 5) a property of the single call
+    /// site rather than a convention this method has to remember.
+    ///
+    /// <b>A rejected request produces nothing to write.</b> The executor's
+    /// rejection is returned as it is (<c>MATCH3_RULES.md</c> §2.1.5): the board
+    /// pipeline is never reached and the Passive is not charged at all — so the
+    /// progress, the event list, and every other value are the ones the state
+    /// already held, and §4 item 7's "a rejected action writes nothing" holds
+    /// without the write path even being entered.
+    ///
+    /// It orders the documented calls and records the result, and it implements
+    /// no game rule (<c>ARCHITECTURE.md</c> §2.1). Validation, the exchange,
+    /// Match Detection, Special Gem creation and activation, Gravity, Spawn, and
+    /// the cascade loop all live in Domain — this method delegates to
+    /// <see cref="SwapExecutor.Execute"/>, which sequences them. The Damage
+    /// Pipeline's formula, the Passive's charge/threshold/reset rules, and the
+    /// Enrage transition are likewise Domain's and are only ordered here.
+    /// </summary>
+    /// <param name="battleId">The battle the Swap applies to.</param>
+    /// <param name="state">
+    /// The authoritative state this resolution runs against — the record as
+    /// read, with the <c>Sequence</c> the caller will compare-and-set on.
+    /// </param>
+    /// <param name="request">The two §1.0 cell indices the player is exchanging.</param>
+    /// <param name="cancellationToken">Cancels the store reads this stage performs.</param>
+    /// <returns>The rejection, or the committed result carrying its finished state.</returns>
+    private async Task<SwapExecutionResult> ResolveSwapAsync(
+        string battleId,
+        BattleState state,
+        SwapRequest request,
+        CancellationToken cancellationToken)
+    {
+        _ = cancellationToken;
+
         var result = SwapExecutor.Execute(state, request);
 
-        // §2.1.5: a rejected action writes nothing, so the registry keeps the state
-        // it already held. Only a commit replaces it.
-        //
-        // A rejection also charges the Passive nothing: PASSIVE_RULES.md §2 item 1
-        // charges per Match, the board pipeline is never reached for a rejected
-        // Swap, and Charge is therefore not called at all — the progress, the
-        // event list, and every other value are the ones the state already held.
+        // §2.1.5: a rejected action writes nothing, so the returned result is the
+        // executor's own rejection and no further stage runs. Only a commit
+        // continues.
         if (result.IsRejected)
         {
             return result;
@@ -698,7 +972,9 @@ public sealed class BattleStateService
             // The label is not renamed; only its source member is the documented one.
             events.Add(BattleEvent.ForBattleWon(bossState.HP, resolved.PetState.HP));
 
-            return Commit(battleId, result, resolved with { BossState = bossState }, events);
+            return result
+                .WithEvents(events)
+                .WithState(resolved with { BossState = bossState });
         }
 
         // ===================================================================
@@ -710,8 +986,9 @@ public sealed class BattleStateService
         // The charge uses the SAME shared PassiveTracker and the SAME shared
         // PassiveCharged/PassiveTriggered events the Pet Passive uses; §7 states
         // "no Boss-specific passive event name is needed". They carry
-        // source="boss" and sourceId=BossId — the display-name identity of
-        // BOSS_RULES.md §6.4, never a slug (SIGNALR_PROTOCOL.md §3.2.16 item 2).
+        // source="boss" and sourceId=BossId — the canonical technical Identity
+        // of BOSS_RULES.md §6.4 (e.g. "boss-hoa-long"), never a display name
+        // (SIGNALR_PROTOCOL.md §3.2.16 item 2).
         //
         // Thủy Ma is the documented exception: §6.2 gives it the trigger "Passive
         // (always active)" — an alternate trigger (PASSIVE_RULES.md §3), not a Match
@@ -876,48 +1153,35 @@ public sealed class BattleStateService
         }
 
         // ===================================================================
-        // Step 13: single final state write-back — GAME_STATE.md §5.1
+        // Step 13: the finished post-resolution state — GAME_STATE.md §5.1
         // ===================================================================
-        return Commit(battleId, result, resolved with { BossState = bossState }, events);
+        // The caller performs the one write-back, under the Sequence
+        // compare-and-set (REDIS_STATE.md §4 items 2 and 5).
+        return result
+            .WithEvents(events)
+            .WithState(resolved with { BossState = bossState });
     }
 
     /// <summary>
-    /// Performs the documented single post-resolution write-back
-    /// (<c>GAME_STATE.md</c> §5.1): stores the resolved authoritative state and
-    /// hands back the result carrying <b>that same</b> state and the assembled
-    /// event list.
+    /// Stores a resolved state under the documented <c>Sequence</c>
+    /// compare-and-set and reports whether it was applied
+    /// (<c>REDIS_STATE.md</c> §4 items 1–3, 5).
     ///
-    /// <b>It exists so the two terminal paths cannot drift.</b> <c>GAME_RULES.md</c>
-    /// §17's Boss-death path ends early and the surviving path runs to the end of
-    /// the method; both must still produce exactly one write-back, with the state
-    /// the caller receives being the state the registry holds. Routing both through
-    /// this one place makes that a single statement rather than a convention the
-    /// two paths have to repeat.
-    ///
-    /// It computes no gameplay value: it records the caller's finished state and
-    /// pairs it with the caller's finished event list
-    /// (<c>GAME_EVENTS.md</c> §3 item 6: an event is never a substitute for the
-    /// state write-back, and the write-back is never replaced by an event).
+    /// The compare-and-set itself belongs to the store — §4 item 2 fixes the
+    /// semantics, not this layer's spelling of them — so this is a thin pass of
+    /// the resolved state and the <c>Sequence</c> it was resolved from. A
+    /// <c>false</c> result means the stored sequence had moved on and the newer
+    /// authoritative state was left intact.
     /// </summary>
-    /// <param name="battleId">The battle being recorded.</param>
-    /// <param name="result">The committed executor result whose events are extended.</param>
     /// <param name="resolved">The finished post-resolution state.</param>
-    /// <param name="events">The ordered events of this resolution.</param>
-    private SwapExecutionResult Commit(
-        string battleId,
-        SwapExecutionResult result,
+    /// <param name="expectedSequence">
+    /// The <c>Sequence</c> the resolution read — the pre-resolution value
+    /// (§4 item 6).
+    /// </param>
+    /// <param name="cancellationToken">Cancels the write.</param>
+    private Task<bool> TryStoreResolvedAsync(
         BattleState resolved,
-        List<BattleEvent> events)
-    {
-        var committed = result
-            .WithEvents(events)
-            .WithState(resolved);
-
-        _battles[battleId] = resolved;
-
-        return committed;
-    }
-
-    /// <summary>Number of battle sessions currently held.</summary>
-    public int ActiveBattleCount => _battles.Count;
+        int expectedSequence,
+        CancellationToken cancellationToken) =>
+        _repository.TryUpdateAsync(resolved, expectedSequence, cancellationToken);
 }

@@ -16,7 +16,8 @@ namespace GameServer.Application.Runtime;
 /// <list type="bullet">
 /// <item>implement Match-3, combat, or any domain rule (ARCHITECTURE.md §2.1),</item>
 /// <item>compute authoritative gameplay values (GAME_RULES.md §18, ADR-001),</item>
-/// <item>read or write active battle state (REDIS_STATE.md — not implemented yet),</item>
+/// <item>read or write active battle state (REDIS_STATE.md — that is
+/// <c>IBattleStateRepository</c>'s, not this boundary's),</item>
 /// <item>emit Battle Events (GAME_EVENTS.md — owned by battle resolution).</item>
 /// </list>
 ///

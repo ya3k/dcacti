@@ -1,6 +1,30 @@
 # Database
 
-**Version:** 1.5 (§1 CardDefinition.LoadoutCopyLimit added — required
+**Version:** 1.9 (§1 `BossDefinitionId` semantics fixed per TASK-049 — an
+independent stable persistence key supplied by content/Domain
+(`required string BossDefinitionId`, stored as the PK), never
+database-generated and never derived from `Identity` or the display name;
+value form `boss-def-<ascii-kebab-case-name>` with canonical values
+`boss-def-hoa-long` / `boss-def-thuy-ma` / `boss-def-moc-yeu`; §1 contract
+note item 2 added and items renumbered, §3 `BossDefinition.BossDefinitionId`
+constraint added; the TASK-046 three-way non-collapse rule is preserved
+unchanged; prior 1.8: §1 Boss identity contract per TASK-046 — `BossDefinitionId`
+= persistence PK, `Identity` = canonical technical Boss ID
+(`BOSS_RULES.md` §6.4), display name not a column; `BattleResult.BossDefinitionId`
+value sourced from `BattleState.BossState.BossId` via `Identity` lookup;
+§3 `BossDefinition.Identity` NOT NULL/UNIQUE added; prior 1.7: §1 BossDefinition persistence contract documented per
+TASK-045 — `PassiveDefinition`/`SkillDefinition` JSON member lists and
+reset-token set {Default, Partial, Persistent} defined, `threshold` null
+semantics (always-active, no 0-sentinel), persistent-identity vs
+combat-stat source split, no-invented-provisioning guard and
+content-defined-rows-only scope clarified; §3 BossDefinition constraints
+added; prior 1.6: §1 BattleResult identity/reward sourcing documented —
+`BattleResultId` = `BattleId` (one row per battle), `PlayerId` value from
+`BattleState.PlayerId` (`GAME_STATE.md` §2.8), `PetInstanceId` value from
+`BattleState.PetState.PetId` (`GAME_STATE.md` §2.3 — the owned Pet
+instance), `RewardSummary` staging value = empty JSON object with no line
+items until TASK-033 (ADR-014, TASK-042); prior 1.5: §1
+CardDefinition.LoadoutCopyLimit added — required
 per-battle-loadout copy limit per CARD_RULES.md §1; explicit value
 required, no default; concrete values deferred to content/balance;
 prior 1.4: §1 PetLevelMultiplier type/range and Pet.Level floor
@@ -98,26 +122,183 @@ Relic                                (a player's OWNED instance, if Relics
 ├── RelicDefinitionId (FK → RelicDefinition)
 └── AcquiredAt
 
-BossDefinition                       (static content: 5 MVP Bosses)
-├── BossDefinitionId (PK)
-├── Identity
+BossDefinition                       (static content — MVP scope target:
+ │                                    5 Bosses, MVP_SCOPE.md §1;
+ │                                    content-defined: 3, BOSS_RULES.md
+ │                                    §6; only content-defined rows may
+ │                                    ever be provisioned — see contract
+ │                                    note below)
+├── BossDefinitionId (PK)             (independent stable persistence key —
+ │                                     content/Domain supplied, never
+ │                                     database-generated; distinct from
+ │                                     `Identity` below and from the display
+ │                                     name, and never derived from either,
+ │                                     TASK-046/TASK-049; value form
+ │                                     `boss-def-<ascii-kebab-case-name>`,
+ │                                     e.g. "boss-def-hoa-long")
+├── Identity                          (canonical technical Boss ID —
+ │                                     BOSS_RULES.md §6.4, e.g.
+ │                                     "boss-hoa-long"; never a display
+ │                                     name; no display-name column exists
+ │                                     on this table)
 ├── Element
-├── PassiveDefinition
-└── SkillDefinition                   (BOSS_RULES.md)
+├── PassiveDefinition                (JSON, NOT NULL — member list:
+ │                                    TASK-045; BOSS_RULES.md §6,
+ │                                    PASSIVE_RULES.md §4)
+└── SkillDefinition                   (JSON, NOT NULL — member list:
+                                      TASK-045; BOSS_RULES.md §6)
 
 BattleResult
-├── BattleResultId (PK)
-├── PlayerId (FK → Player)
-├── PetInstanceId (FK → Pet)
+├── BattleResultId (PK)              (= the battle's own BattleId — one row
+│                                      per battle, GAME_STATE.md §2)
+├── PlayerId (FK → Player)           (value: BattleState.PlayerId —
+│                                      GAME_STATE.md §2.8)
+├── PetInstanceId (FK → Pet)         (value: BattleState.PetState.PetId —
+│                                      GAME_STATE.md §2.3; the owned Pet
+│                                      instance)
 ├── BossDefinitionId (FK → BossDefinition)
+│                                      (value: the key of the row whose
+│                                      `Identity` = BattleState.BossState.BossId —
+│                                      GAME_STATE.md §2.4, BOSS_RULES.md §6.4,
+│                                      derived on the battle-end path)
 ├── Outcome                            ("Won" | "Lost")
 ├── DurationTurns
 ├── CompletedAt
-└── RewardSummary                        (JSON — reward line items; may
-                                          include Player XP granting
-                                          Player Level — PET_RULES.md §5,
-                                          GDD §14)
+└── RewardSummary                        (JSON — member list owned by
+                                          TASK-033; staging value until
+                                          then: empty object, no reward
+                                          line items; may include Player
+                                          XP granting Player Level —
+                                          PET_RULES.md §5, GDD §14)
 ```
+
+**Persistence contract for `BossDefinition`.** (TASK-045)
+
+1. **Persistent record vs combat-stat source.** The row is the
+   persistent static identity/configuration record: `Identity`,
+   `Element`, and the two JSON objects below. `Identity` holds the Boss's
+   canonical technical ID (`BOSS_RULES.md` §6.4, e.g. `boss-hoa-long`) —
+   it is **not** the display name, and it is **not** `BossDefinitionId`
+   (this row's persistence primary key): the three are never collapsed
+   (TASK-046). The display name is presentation content owned by
+   `BOSS_RULES.md` §6 and is not a column of this table. The combat-definition
+   values `MaxHP`, `ATK`, `DEF`, `EnrageThreshold` (`BOSS_RULES.md`
+   §6.1) are **not** stored in this table — they remain sourced from the
+   authoritative Domain `BossDefinition` content at battle creation. At
+   battle creation the server combines the persisted
+   identity/configuration with that combat-stat configuration to
+   construct the existing `BossState` (`GAME_STATE.md` §2.4); after
+   battle creation, the BattleState/Redis contract governs
+   (`REDIS_STATE.md`, ADR-005). No column may be added unless an
+   existing authoritative document explicitly requires it (anti-
+   overengineering, `AGENTS.md` §9).
+2. **`BossDefinitionId` is a caller/content-supplied stable key.** (TASK-049)
+   It is the row's primary key and is **independent**: distinct from
+   `Identity` and from the display name, and never derived from either at
+   runtime or at content-authoring time.
+   - **Value form:** a non-empty string, `boss-def-<ascii-kebab-case-name>`
+     — ASCII only, lowercase, kebab-case, stable, no Vietnamese diacritics,
+     no display/localization text, no spaces, no runtime-generated or
+     runtime-slugified identifiers.
+   - **Canonical values** for the three content-defined MVP Bosses
+     (`BOSS_RULES.md` §6), which are **not** the `Identity` values:
+     ```text
+     Hỏa Long    boss-def-hoa-long      (Identity: boss-hoa-long)
+     Thủy Ma     boss-def-thuy-ma       (Identity: boss-thuy-ma)
+     Mộc Yêu     boss-def-moc-yeu       (Identity: boss-moc-yeu)
+     ```
+   - **Source / ownership:** supplied by game content/Domain, **not**
+     database-generated. The Domain `BossDefinition` record carries it
+     explicitly as `required string BossDefinitionId`, and persistence
+     stores that value as the primary key. No GUID, integer, provider-
+     generated, or database-generated key is used, and no `HasData`, seed,
+     startup loader, or migration-inserted production row is introduced by
+     this contract (note item 5 below; `§5` item 4).
+   - **Relationship to `Identity`:** the two are separate values serving
+     separate purposes — `Identity` is the canonical technical Boss ID that
+     battle state, events, the API, and the `BattleResult` FK *lookup*
+     (`§1`, "Identity and reward sourcing for `BattleResult`" item 2) all
+     use; `BossDefinitionId` is the persistence key of the row itself.
+     A caller resolves the row **by `Identity`** and then stores that row's
+     `BossDefinitionId` as a foreign key; it must never substitute one value
+     for the other.
+3. **`PassiveDefinition` members** (JSON object, NOT NULL — every Boss
+   carries exactly one Passive, `BOSS_RULES.md` §1/§6.4):
+   ```json
+   { "passiveId": "…", "threshold": 5, "resetBehavior": "Default" }
+   ```
+   - `passiveId` (string) — the Boss's canonical PassiveId
+     (`BOSS_RULES.md` §6.4).
+   - `threshold` (int | null) — the Passive's match-charging Threshold
+     (`PASSIVE_RULES.md` §1). `null` means the Passive has **no
+     threshold and is always active** (`BOSS_RULES.md` §6.2); `0` is
+     never used as a "no threshold" sentinel.
+   - `resetBehavior` (string) — exactly one of `Default` | `Partial` |
+     `Persistent`, the storage names for the documented Reset Behavior
+     variants Default Reset / Partial Reset / No Reset — Persistent
+     (`PASSIVE_RULES.md` §4). No other token exists. The documented
+     default when a rule states no override is `Default`
+     (`PASSIVE_RULES.md` §1). Internal enum mapping
+     (`PassiveResetBehavior`): `Default` → `Default`, `Partial` →
+     `Partial`, `Persistent` → `NoReset` — the JSON/storage names are
+     the contract; internal representation maps to them, not vice
+     versa.
+4. **`SkillDefinition` members** (JSON object, NOT NULL — every Boss has
+   exactly one Skill, `BOSS_RULES.md` §1/§6.4):
+   ```json
+   { "skillId": "…", "baseDamage": 0, "chargeRequirement": 0,
+     "cooldownTurns": 0 }
+   ```
+   - `skillId` (string) — the Boss's canonical SkillId
+     (`BOSS_RULES.md` §6.4).
+   - `baseDamage` (int) — Skill Base Dmg (`BOSS_RULES.md` §6.3).
+   - `chargeRequirement` (int) — Charge Requirement (`BOSS_RULES.md`
+     §6.3; battle-state member `SkillChargeRequirement`,
+     `GAME_STATE.md` §2.4.3).
+   - `cooldownTurns` (int) — Cooldown (CD) in turns (`BOSS_RULES.md`
+     §6.3).
+
+   These storage member names are fixed by TASK-045; battle-state
+   member names (`GAME_STATE.md` §2.4) are a separate contract and are
+   unchanged.
+5. **Rows and provisioning.** Rows are static content derived from the
+   canonical Boss definitions: provisioning must be deterministic, must
+   be idempotent, and must never depend on a player's runtime battle.
+   **No provisioning mechanism is documented, and none may be invented**
+   (`AGENTS.md` §7/§9) — a future provisioning-contract decision is
+   required before any row exists. Only content-defined Bosses
+   (currently 3 — `BOSS_RULES.md` §6) may ever be provisioned; the
+   5-Boss figure is the MVP scope target (`MVP_SCOPE.md` §1), not
+   permission to create placeholder rows for undefined content. The
+   `BossDefinitionId` of item 2 changes nothing here: no `HasData`, seed,
+   startup loader, or migration-inserted production row is introduced.
+
+**Identity and reward sourcing for `BattleResult`.**
+
+1. **One row per battle.** `BattleResultId` **is** the battle's own
+   `BattleId` (`GAME_STATE.md` §2) — no second identifier is introduced and
+   no second row can exist; `GET /api/battle/{battleId}/result`
+   (`API_CONTRACTS.md` §4) looks the row up by this key.
+2. **Identity values come from battle state.** `PlayerId` is copied from
+   `BattleState.PlayerId` (`GAME_STATE.md` §2.8) and `PetInstanceId` from
+   `BattleState.PetState.PetId` (`GAME_STATE.md` §2.3 — the owned Pet
+   instance) on the battle-end path; both are server-authoritative and are
+   never re-derived from client input or from a session at battle end
+   (`GAME_RULES.md` §18, ADR-001). Both identities are members of the
+   state record and therefore round-trip through serialization with it
+   (`REDIS_STATE.md` §2). `BossDefinitionId` follows the same rule: it is
+   the key of the `BossDefinition` row whose `Identity` equals
+   `BattleState.BossState.BossId` (the canonical technical Boss Identity —
+   `GAME_STATE.md` §2.4, `BOSS_RULES.md` §6.4), resolved server-side on
+   that path from battle state — not re-derived from client input at
+   battle end, and never from a display name (uniqueness of `Identity`
+   for this lookup: §3).
+3. **`RewardSummary`'s member list is owned by TASK-033** (reward
+   magnitudes, XP, and line-item shape — `PET_RULES.md` §5,
+   `MVP_SCOPE.md` §1). Until that task defines it, the documented staging
+   value is the **empty JSON object `{}`** — a value that is always
+   present, never absent, for both `Outcome`s; a `Lost` battle carries no
+   line items.
 
 ---
 
@@ -161,6 +342,15 @@ Pet.Star           ∈ [1, 5]                                       (PET_RULES.m
 Pet.Level           ∈ [1, 50]                                      (PET_RULES.md §5)
 PetDefinition.PetLevelMultiplier > 0 (decimal)                    (PET_RULES.md §5)
 CardDefinition.Category  ∈ {Basic, PetSkill}                        (CARD_RULES.md §1)
+BossDefinition.BossDefinitionId     NOT NULL, UNIQUE, caller/content-supplied (independent persistence key, never
+                                                                      database-generated; distinct from `Identity` and
+                                                                      from the display name — §1 note item 2, TASK-049)
+BossDefinition.PassiveDefinition  NOT NULL                           (every Boss has one Passive — BOSS_RULES.md §1)
+BossDefinition.SkillDefinition    NOT NULL                           (every Boss has one Skill — BOSS_RULES.md §1)
+BossDefinition.Identity           NOT NULL, UNIQUE                   (canonical technical Boss ID — BOSS_RULES.md
+                                                                      §6.4; the unique target of the FK lookup in §1)
+BossDefinition.PassiveDefinition.resetBehavior ∈ {Default, Partial, Persistent}   (PASSIVE_RULES.md §4)
+BossDefinition.PassiveDefinition.threshold = null ⇔ always-active, no threshold    (BOSS_RULES.md §6.2)
 Player.PlayerId (per battle) must own exactly one active Pet selection
   at battle start — enforced at the Application layer (ARCHITECTURE.md),
   not purely at the DB level, since it is a request-time rule
@@ -200,3 +390,8 @@ when a real query pattern requires them (anti-overengineering,
    `MVP_SCOPE.md` §2.
 3. Active battle state — lives in Redis only (`REDIS_STATE.md`), never
    written to PostgreSQL until the battle ends.
+4. Any seed/provisioning mechanism for static-content rows
+   (`BossDefinition`, `PetDefinition`, `CardDefinition`, …) — none is
+   documented; when rows become necessary, defining it is a separate
+   documented decision (see §1, `BossDefinition` persistence contract
+   item 5).

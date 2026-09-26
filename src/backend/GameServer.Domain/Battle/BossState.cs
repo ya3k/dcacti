@@ -18,7 +18,7 @@ namespace GameServer.Domain.Battle;
 ///     ├── DEF          defense           (COMBAT_RULES.md §1.2)     (§2.4)
 ///     ├── State        Idle / Charging / Enraged / Stunned          (§2.4)
 ///     ├── PassiveId    which Boss Passive (BOSS_RULES.md §3)        (§2.4)
-///     ├── PassiveProgress  charging position (§2.4, §2.5)           (§2.4)
+///     ├── PassiveProgress  charging position (§2.4, §2.4.2)        (§2.4)
 ///     ├── SkillCharge  matches charged toward the Skill (§2.4.3)    (§2.4)
 ///     └── SkillCooldown turns remaining before the Skill can fire    (§2.4)
 /// </code>
@@ -183,7 +183,7 @@ namespace GameServer.Domain.Battle;
 /// </param>
 /// <param name="PassiveProgress">
 /// The Boss Passive's charging position — the progress reached and the
-/// Threshold it is measured against (<c>GAME_STATE.md</c> §2.4, §2.4.2, §2.5).
+/// Threshold it is measured against (<c>GAME_STATE.md</c> §2.4, §2.4.2).
 ///
 /// It starts at <see cref="PassiveProgress.AtStart"/> with the Boss definition's
 /// <see cref="BossDefinition.PassiveThreshold"/> (§2.4.2) and is written after

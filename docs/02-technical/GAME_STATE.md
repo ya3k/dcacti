@@ -1,6 +1,16 @@
 # Game State
 
-**Version:** 2.5 (§2.3 `PetState.EquippedCards[]` element representation
+**Version:** 2.7 (§2.4 `BossId` denotation fixed per TASK-046 — the tree's
+`BossId / Identity` entry is the canonical technical Boss Identity
+(`BOSS_RULES.md` §6.4, e.g. `boss-hoa-long`), not a display name and not
+`BossDefinitionId`; no second identity field and no display-name member is
+added to `BossState`; prior 2.6: §2.8 Battle Identity — `BattleState.PlayerId` added to the
+full §2 contract as the battle-creation owner identity that sources
+`BattleResult.PlayerId` (`DATABASE.md` §1); server-authoritative, excluded
+from every wire projection (`SIGNALR_PROTOCOL.md` §4, §7.1), ADR-014;
+§2.3 `PetId` denotation fixed to the owned Pet instance
+(`Pet.PetInstanceId`); §2.0.3 staging list updated; prior 2.5: §2.3
+`PetState.EquippedCards[]` element representation
 stated as `CardDefinitionId` — definition-based, repeated entries repeat
 the same definition per the CARD_RULES.md §1 loadout copy limit, order
 non-semantic; card-side "underlying instances" wording corrected — Cards
@@ -101,6 +111,8 @@ State** are defined in this document. Persistent State fields live in
 ```text
 BattleState
 ├── BattleId
+├── PlayerId                (the Player who created this battle — owner
+│                            identity only, §2.8; not a wire member)
 ├── Sequence               (monotonic counter, incremented per resolved
 │                            action — used for ordering/idempotency,
 │                            see SIGNALR_PROTOCOL.md)
@@ -120,7 +132,8 @@ BattleState
 ```
 
 `BattleId`, `Sequence`, and `Turn` are present from the start (§2.0). The
-remainder are added as their owning systems are implemented.
+remainder — including `PlayerId` (§2.8) — are added as their owning systems
+are implemented.
 
 There is no `PlayerState` member. The Player is the account/owner and has
 no authoritative battle-time combat pool; combat stats and the battle
@@ -128,7 +141,9 @@ loadout live under `PetState` (§2.3), and Match/Combo accounting lives at
 the `BattleState` root (§2.2). The wire member name `playerState` used by
 `SIGNALR_PROTOCOL.md` §4.2 is a **fixed protocol label** for the Combo/
 MatchCount projection and does not reintroduce a state path of that name
-(ADR-011).
+(ADR-011). The only Player identity in state is the root member `PlayerId`
+(§2.8) — owner identity metadata for persistence sourcing, with no combat
+pool and no gameplay value.
 
 ## 2.0 Battle State Foundation
 
@@ -209,8 +224,8 @@ adds no `Status` field and no lifecycle value, and
 3. If a battle lifecycle state machine is later required, it must be
    introduced by its own design/ADR task, not added here.
 
-The remaining §2 fields (`Combo`/`MatchCount` §2.2, `PetState` §2.3, and
-`BossState` §2.4) are likewise
+The remaining §2 fields (`PlayerId` §2.8, `Combo`/`MatchCount` §2.2,
+`PetState` §2.3, and `BossState` §2.4) are likewise
 not present in §2.0. They are gameplay systems that do not exist yet; that is
 not a scope reduction of §2.
 
@@ -900,6 +915,17 @@ PetState
                                   PASSIVE_RULES.md §4)
 ```
 
+**`PetId` denotes the owned Pet instance.** The tree's `PetId / Identity`
+entry is the **instance** identity: the same value as `Pet.PetInstanceId`
+(`DATABASE.md` §1), the `petId` submitted to `POST /api/battle/start`
+(`API_CONTRACTS.md` §3), and `BattleResult.PetInstanceId` at battle end
+(`DATABASE.md` §1). It is not a Pet definition id and not the display
+`Identity` name (`PET_RULES.md` §2, `PetDefinition.Identity`) — those are
+persistent definition-side values, not battle state. The `PetId` payload
+member of `BattleStarted` (`GAME_EVENTS.md` §2) denotes this same instance
+value. ADR-014 evaluated whether a separate `PetState.PetInstanceId` member
+was required and recorded that it is not: `PetId` already is the instance.
+
 **Implemented so far: `HP`, `MaxHP`, `ATK`, `DEF`, `Power`, `Crit`, plus
 `PassiveId`/`PassiveProgress`/`PassiveResetOverride` and identity fields**
 as staged, together with the two battle-loadout collections
@@ -1058,6 +1084,21 @@ BossState
 └── StatusEffects[]              (not yet implemented — owned by Status
                                   Effects system)
 ```
+
+**`BossId` denotes the canonical technical Boss Identity.** The tree's
+`BossId / Identity` entry is the stable machine-readable game-level Boss ID
+(`BOSS_RULES.md` §6.4, e.g. `boss-hoa-long`) — the same value
+`BattleStarted.BossId` reports (`GAME_EVENTS.md` §2), event `sourceId`
+carries when `source = "boss"` (`SIGNALR_PROTOCOL.md` §3.2.16–§3.2.18),
+`POST /api/battle/start` receives as `bossId` (`API_CONTRACTS.md` §3), and
+`BossDefinition.Identity` persists (`DATABASE.md` §1). It is **not** the
+Boss's display name (display names are presentation-only content —
+`BOSS_RULES.md` §6.4) and **not** `BossDefinitionId` (the persistence
+primary key — `DATABASE.md` §1); the three are never collapsed (TASK-046).
+It is set at battle creation and never changes; there is no boss instance
+record, so it is a definition-side identity (contrast `PetState.PetId`,
+which is an instance identity — §2.3, ADR-014). No second identity field
+and no display-name member is added to `BossState`.
 
 ### 2.4.1 Staged BossState Fields
 
@@ -1261,6 +1302,37 @@ expose a gameplay match/swap engine to satisfy its own constraints.
 
 The generated board and RNG state are held per §2.0.5.4 items 2–3: no
 Redis record and no PostgreSQL row is created for them at this stage.
+
+## 2.8 Battle Identity (`BattleState.PlayerId`)
+
+`PlayerId` is the identity of the Player who created this battle: the
+account/owner identity (`Player.PlayerId`, `DATABASE.md` §1), recorded from
+the authenticated battle-start request (`API_CONTRACTS.md` §1, §3 — the
+"requesting Player") at battle creation and carried unchanged in the state
+record for the battle's lifetime (ADR-014).
+
+1. **Denotation.** Identity only. The Player is the account/owner with no
+   battle-time combat pool (ADR-011): `PlayerId` carries no stats, no
+   resource pool, and no gameplay value of any kind — it exists so the
+   battle-end persistence path can source `BattleResult.PlayerId`
+   (`DATABASE.md` §1) from authoritative state. It is not a lifecycle
+   field; §2.0.3's no-`Status` rule is unaffected.
+2. **Staging.** Not a Battle State Foundation field (§2.0, §2.0.3) and not
+   a Board Foundation field (§2.0.5): the full §2 contract includes it, and
+   the implementation stage adds it with its owning system (§0 item 4).
+3. **Not a wire member.** `PlayerId` is server state only. It is delivered
+   by no `BattleStateUpdated` stage projection (`SIGNALR_PROTOCOL.md` §4 —
+   only the members each stage list enumerates are ever projected) and by
+   no Battle Event (`GAME_EVENTS.md` §2), and it is excluded from the
+   `GetBattleState` snapshot projection (`SIGNALR_PROTOCOL.md` §7.1). State
+   added is not wire exposure added (`SIGNALR_PROTOCOL.md` §4 item 4); the
+   client never receives it.
+4. **Battle-end sourcing.** The battle-end path writes this member, in
+   fixed order, into `BattleResult.PlayerId` (`DATABASE.md` §1) before the
+   active state record is cleared (`REDIS_STATE.md` §3,
+   `ARCHITECTURE.md` §4 item 4). The value is never re-derived from a
+   session or from client input at battle end (`GAME_RULES.md` §18,
+   ADR-001, `AGENTS.md` §10).
 
 ---
 

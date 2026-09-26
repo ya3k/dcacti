@@ -22,6 +22,38 @@ namespace GameServer.Infrastructure.Postgres.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("GameServer.Domain.Bosses.BossDefinition", b =>
+                {
+                    b.Property<string>("BossDefinitionId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("BossId")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("Identity");
+
+                    b.Property<int>("Element")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("PassiveDefinition")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<string>("SkillDefinition")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.HasKey("BossDefinitionId");
+
+                    b.HasIndex("BossId")
+                        .IsUnique()
+                        .HasDatabaseName("IX_BossDefinition_Identity");
+
+                    b.ToTable("BossDefinition", (string)null);
+                });
+
             modelBuilder.Entity("GameServer.Domain.Cards.CardDefinition", b =>
                 {
                     b.Property<string>("CardDefinitionId")
