@@ -228,9 +228,11 @@ public class RelicPersistenceTests
         // CardDefinition and PlayerUnlockedCard are the Card ownership/content
         // tables added by TASK-028 (DATABASE.md §1–§2) — static Card content and
         // Player unlock flags. BossDefinition is the static Boss content table
-        // added by TASK-044 (DATABASE.md §1). No equip/loadout table exists for
-        // any system: Card equipment is battle-scoped exactly as Relic
-        // equipment is (DATABASE.md §2, ADR-012 item 10).
+        // added by TASK-044 (DATABASE.md §1), and BattleResult is the durable
+        // battle outcome table added by TASK-041 (DATABASE.md §1). No
+        // equip/loadout table exists for any system: Card equipment is
+        // battle-scoped exactly as Relic equipment is (DATABASE.md §2, ADR-012
+        // item 10).
         var model = CreateDesignTimeModel(nameof(Model_ShouldIntroduceNoPersistentEquipTable));
 
         var tables = model.GetEntityTypes()
@@ -241,8 +243,9 @@ public class RelicPersistenceTests
         Assert.Equal(
             new[]
             {
-                "BossDefinition", "CardDefinition", "Pet", "PetDefinition",
-                "Player", "PlayerUnlockedCard", "Relic", "RelicDefinition",
+                "BattleResult", "BossDefinition", "CardDefinition", "Pet",
+                "PetDefinition", "Player", "PlayerUnlockedCard", "Relic",
+                "RelicDefinition",
             },
             tables.OrderBy(n => n, StringComparer.Ordinal).ToArray());
     }

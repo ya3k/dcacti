@@ -1,3 +1,4 @@
+using GameServer.Domain.Battle;
 using GameServer.Domain.Bosses;
 using GameServer.Domain.Cards;
 using GameServer.Domain.Pets;
@@ -66,6 +67,14 @@ public class GameDbContext : DbContext
     /// (<c>DATABASE.md</c> §1 note item 5, §5 item 4).
     /// </summary>
     public DbSet<BossDefinition> BossDefinitions => Set<BossDefinition>();
+
+    /// <summary>
+    /// The durable battle result table (<c>DATABASE.md</c> §1) — one row per
+    /// completed battle, keyed by the battle's own <c>BattleId</c>. Live battle
+    /// state is never stored here: it lives in Redis only until the battle ends
+    /// (<c>DATABASE.md</c> §5 item 3, <c>REDIS_STATE.md</c>).
+    /// </summary>
+    public DbSet<BattleResult> BattleResults => Set<BattleResult>();
 
     /// <summary>
     /// EF Core 7+ documented API for removing conventions.

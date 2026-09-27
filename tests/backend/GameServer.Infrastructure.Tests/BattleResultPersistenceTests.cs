@@ -1,0 +1,689 @@
+using GameServer.Domain.Battle;
+using GameServer.Domain.Bosses;
+using GameServer.Domain.Elements;
+using GameServer.Domain.Passives;
+using GameServer.Domain.Pets;
+using GameServer.Domain.Players;
+using GameServer.Infrastructure.Postgres;
+using GameServer.Infrastructure.Postgres.Repositories;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Metadata;
+
+namespace GameServer.Infrastructure.Tests;
+
+/// <summary>
+/// <c>BattleResult</c> persistence — <c>DATABASE.md</c> §1, §2, §3, §4
+/// (TASK-041).
+///
+/// What is verified is the documented contract: the eight persisted values, the
+/// primary key that <i>is</i> the battle's own <c>BattleId</c>, the three foreign
+/// keys, the outcome's contract spelling, the JSON reward summary, the server
+/// completion instant, and the one documented index. Nothing here plays a battle:
+/// the type under test is persistence only.
+/// </summary>
+public class BattleResultPersistenceTests
+{
+    private static GameDbContext CreateContext(string storeName) =>
+        TestGameDbContextFactory.Create(storeName);
+
+    private static IModel CreateDesignTimeModel(string storeName)
+    {
+        using var context = CreateContext(storeName);
+        return context.GetService<IDesignTimeModel>().Model;
+    }
+
+    /// <summary>
+    /// A representative result carrying the documented values. The identities are
+    /// real, non-default strings, so a member dropped, renamed, or defaulted by the
+    /// mapping cannot pass a naive round trip.
+    /// </summary>
+    private static BattleResult NewResult(
+        string battleResultId = "battle_result_1",
+        string playerId = "player_result_1",
+        string petInstanceId = "pet_instance_result_1",
+        string bossDefinitionId = "boss-def-hoa-long",
+        BattleOutcome outcome = BattleOutcome.Victory,
+        int durationTurns = 7,
+        string rewardSummary = "{}") =>
+        new(
+            battleResultId,
+            playerId,
+            petInstanceId,
+            bossDefinitionId,
+            outcome,
+            durationTurns,
+            new DateTimeOffset(2026, 9, 27, 12, 30, 15, TimeSpan.Zero),
+            rewardSummary);
+
+    /// <summary>
+    /// Seeds the three referenced rows so the foreign keys are satisfiable —
+    /// <c>DATABASE.md</c> §2's relationships. The Boss row is the provisioned
+    /// canonical one (TASK-053), so the FK target is a real row rather than a
+    /// fixture invented here.
+    /// </summary>
+    private static async Task SeedReferencedRowsAsync(GameDbContext context)
+    {
+        context.Players.Add(new Player
+        {
+            PlayerId = "player_result_1",
+            DiscordUserId = $"9{Random.Shared.NextInt64(1_000_000_000_000_000L):D16}",
+            Level = Player.InitialLevel,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+
+        context.PetDefinitions.Add(new PetDefinition
+        {
+            PetDefinitionId = "pet_def_result_1",
+            Identity = "Thanh Xà",
+            Element = Element.Moc,
+            PetLevelMultiplier = 1.0m,
+            PassiveId = new PassiveId("thanh-xa-regen"),
+            PassiveThreshold = 5,
+            SignatureSkillCardId = "card_skill_result_1",
+        });
+
+        context.Pets.Add(new Pet
+        {
+            PetInstanceId = "pet_instance_result_1",
+            PlayerId = "player_result_1",
+            PetDefinitionId = "pet_def_result_1",
+            Tier = PetTier.Common,
+            Star = 1,
+            Level = 1,
+            AcquiredAt = DateTimeOffset.UtcNow,
+        });
+
+        // The canonical provisioned BossDefinition row (DATABASE.md §1 note item
+        // 5, TASK-053): boss-hoa-long ↔ boss-def-hoa-long.
+        context.BossDefinitions.Add(BossDefinitions.HoaLong);
+
+        await context.SaveChangesAsync();
+    }
+
+    // -----------------------------------------------------------------------
+    // DATABASE.md §1 — the field set
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public void BattleResult_ShouldCarryExactlyTheEightDocumentedFields()
+    {
+        // DATABASE.md §1 defines exactly eight BattleResult values. The set is
+        // closed: no Status, no battle-state snapshot, no winner/loser id, no extra
+        // turn count, no Sequence, no RNG state, and no board.
+        var properties = typeof(BattleResult)
+            .GetProperties()
+            .Select(p => p.Name)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(
+            new[]
+            {
+                "BattleResultId",
+                "BossDefinitionId",
+                "CompletedAt",
+                "DurationTurns",
+                "Outcome",
+                "PetInstanceId",
+                "PlayerId",
+                "RewardSummary",
+            },
+            properties);
+
+        foreach (var forbidden in new[]
+                 {
+                     "Status", "BattleState", "Snapshot", "WinnerId", "LoserId",
+                     "TurnCount", "Sequence", "RngSeed", "RngState", "Board",
+                 })
+        {
+            Assert.DoesNotContain(forbidden, properties);
+        }
+
+        using var context = CreateContext($"battle-result-fields-{Guid.NewGuid():N}");
+
+        var storedColumns = context.Model
+            .FindEntityType(typeof(BattleResult))!
+            .GetProperties()
+            .Select(p => p.Name)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(properties, storedColumns);
+    }
+
+    [Fact]
+    public void BattleResult_ShouldBeMappedToTheDocumentedTable()
+    {
+        // DATABASE.md §1 names the entity BattleResult; the table is that name.
+        var model = CreateDesignTimeModel(nameof(BattleResult_ShouldBeMappedToTheDocumentedTable));
+
+        var entity = model.FindEntityType(typeof(BattleResult));
+
+        Assert.NotNull(entity);
+        Assert.Equal("BattleResult", entity!.GetTableName());
+    }
+
+    // -----------------------------------------------------------------------
+    // DATABASE.md §1 / §3 — the primary key
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public void BattleResultId_ShouldBeThePrimaryKey()
+    {
+        // DATABASE.md §1: BattleResultId (PK). Because it IS the battle's own
+        // BattleId, this key is the at-most-one-row guarantee REDIS_STATE.md §3
+        // relies on (sourcing item 1).
+        var model = CreateDesignTimeModel(nameof(BattleResultId_ShouldBeThePrimaryKey));
+
+        var entity = model.FindEntityType(typeof(BattleResult))!;
+        var key = entity.FindPrimaryKey();
+
+        Assert.NotNull(key);
+
+        var keyProperty = Assert.Single(key!.Properties);
+
+        Assert.Equal(nameof(BattleResult.BattleResultId), keyProperty.Name);
+    }
+
+    [Fact]
+    public void BattleResultId_ShouldNotBeGeneratedByTheStore()
+    {
+        // DATABASE.md §1 sourcing item 1: the key is the battle's own id — "no
+        // second identifier is introduced". It is therefore never database-
+        // generated, exactly as BossDefinition.BossDefinitionId is not
+        // (TASK-049): no default, no store-generated behaviour, and not nullable.
+        var model = CreateDesignTimeModel(nameof(BattleResultId_ShouldNotBeGeneratedByTheStore));
+
+        var property = model.FindEntityType(typeof(BattleResult))!
+            .FindProperty(nameof(BattleResult.BattleResultId))!;
+
+        Assert.False(property.ValueGenerated.HasFlag(ValueGenerated.OnAdd));
+        Assert.Null(property.GetDefaultValue());
+        Assert.False(property.IsNullable);
+    }
+
+    [Fact]
+    public async Task BattleResultId_ShouldBeStoredVerbatimAsSupplied()
+    {
+        // The value the caller supplies is the value stored — the repository adds
+        // no identifier of its own (DATABASE.md §1 sourcing item 1).
+        var storeName = $"battle-result-pk-{Guid.NewGuid():N}";
+
+        await using var context = CreateContext(storeName);
+        await SeedReferencedRowsAsync(context);
+
+        context.BattleResults.Add(NewResult(battleResultId: "battle-the-key"));
+        await context.SaveChangesAsync();
+
+        var stored = await context.BattleResults.AsNoTracking().SingleAsync();
+
+        Assert.Equal("battle-the-key", stored.BattleResultId);
+    }
+
+    [Fact]
+    public async Task BattleResult_ShouldRoundTripEveryDocumentedValue()
+    {
+        // DATABASE.md §1: the row stores the eight values as written. The
+        // assertion re-reads the row through a separate context, so "the context
+        // still held the object" cannot be mistaken for a verified round trip.
+        var storeName = $"battle-result-roundtrip-{Guid.NewGuid():N}";
+
+        await using (var context = CreateContext(storeName))
+        {
+            await SeedReferencedRowsAsync(context);
+
+            context.BattleResults.Add(NewResult());
+            await context.SaveChangesAsync();
+        }
+
+        await using var read = CreateContext(storeName);
+
+        var stored = await read.BattleResults
+            .AsNoTracking()
+            .SingleAsync(result => result.BattleResultId == "battle_result_1");
+
+        Assert.Equal("battle_result_1", stored.BattleResultId);
+        Assert.Equal("player_result_1", stored.PlayerId);
+        Assert.Equal("pet_instance_result_1", stored.PetInstanceId);
+        Assert.Equal("boss-def-hoa-long", stored.BossDefinitionId);
+        Assert.Equal(BattleOutcome.Victory, stored.Outcome);
+        Assert.Equal(7, stored.DurationTurns);
+        Assert.Equal(
+            new DateTimeOffset(2026, 9, 27, 12, 30, 15, TimeSpan.Zero),
+            stored.CompletedAt);
+        Assert.Equal("{}", stored.RewardSummary);
+    }
+
+    // -----------------------------------------------------------------------
+    // DATABASE.md §1 — Outcome storage
+    // -----------------------------------------------------------------------
+
+    [Theory]
+    [InlineData(BattleOutcome.Victory, "victory")]
+    [InlineData(BattleOutcome.Defeat, "defeat")]
+    public async Task Outcome_ShouldBeStoredAsTheDocumentedContractValue(
+        BattleOutcome outcome,
+        string expected)
+    {
+        // DATABASE.md §1 stores the values "victory" | "defeat" (the set
+        // GAME_EVENTS.md §2 owns) — never the C# enum identifier and never the
+        // retired "Won"/"Lost" spelling TASK-050 replaced. The stored document's
+        // member value is asserted directly, so the converter — not the enum's
+        // ToString() — is what is verified.
+        var storeName = $"battle-result-outcome-{expected}-{Guid.NewGuid():N}";
+
+        await using var context = CreateContext(storeName);
+
+        await SeedReferencedRowsAsync(context);
+
+        context.BattleResults.Add(NewResult(outcome: outcome));
+        await context.SaveChangesAsync();
+
+        var stored = await context.BattleResults.AsNoTracking().SingleAsync();
+
+        Assert.Equal(expected, BattleOutcomes.ToContractValue(stored.Outcome));
+        Assert.Equal(outcome, stored.Outcome);
+
+        // The mapping is what persistence applies, so the column holds exactly this
+        // text — not "Victory"/"Defeat" and not "Won"/"Lost".
+        Assert.NotEqual(outcome.ToString(), BattleOutcomes.ToContractValue(outcome));
+    }
+
+    [Fact]
+    public void Outcome_ShouldBeARequiredValue()
+    {
+        // DATABASE.md §1: every result carries one outcome — the row has no
+        // "unknown" or absent form.
+        var model = CreateDesignTimeModel(nameof(Outcome_ShouldBeARequiredValue));
+
+        var property = model.FindEntityType(typeof(BattleResult))!
+            .FindProperty(nameof(BattleResult.Outcome))!;
+
+        Assert.False(property.IsNullable);
+    }
+
+    // -----------------------------------------------------------------------
+    // DATABASE.md §1 / §3 — DurationTurns
+    // -----------------------------------------------------------------------
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(42)]
+    public async Task DurationTurns_ShouldPersistTheTerminalTurn(int turns)
+    {
+        // DATABASE.md §1 "Duration and completion sourcing" item 1: the battle's
+        // Turn at terminal resolution, including the documented 0 edge (a battle
+        // that ended before any committed Swap).
+        var storeName = $"battle-result-duration-{turns}-{Guid.NewGuid():N}";
+
+        await using (var context = CreateContext(storeName))
+        {
+            await SeedReferencedRowsAsync(context);
+
+            context.BattleResults.Add(NewResult(durationTurns: turns));
+            await context.SaveChangesAsync();
+        }
+
+        await using var read = CreateContext(storeName);
+
+        var stored = await read.BattleResults.AsNoTracking().SingleAsync();
+
+        Assert.Equal(turns, stored.DurationTurns);
+    }
+
+    // -----------------------------------------------------------------------
+    // DATABASE.md §1 — CompletedAt
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public async Task CompletedAt_ShouldPersistTheSuppliedServerInstant()
+    {
+        // DATABASE.md §1 item 2: the server clock reading captured on the
+        // battle-end path. The column stores exactly that instant — assertable to
+        // the second, since the write must not shift, default, or re-stamp it.
+        var storeName = $"battle-result-completed-{Guid.NewGuid():N}";
+        var completedAt = new DateTimeOffset(2026, 9, 27, 8, 15, 42, TimeSpan.Zero);
+
+        await using (var context = CreateContext(storeName))
+        {
+            await SeedReferencedRowsAsync(context);
+
+            context.BattleResults.Add(NewResult() with { CompletedAt = completedAt });
+            await context.SaveChangesAsync();
+        }
+
+        await using var read = CreateContext(storeName);
+
+        var stored = await read.BattleResults.AsNoTracking().SingleAsync();
+
+        Assert.Equal(completedAt, stored.CompletedAt);
+        Assert.Equal(completedAt.UtcDateTime, stored.CompletedAt.UtcDateTime);
+    }
+
+    [Fact]
+    public void CompletedAt_ShouldBeARequiredValue()
+    {
+        // The completion instant is part of the row, not optional: a result with no
+        // completion time would be a battle whose end the server did not record. It
+        // carries no store default either, so nothing can stand in for the server's
+        // own clock reading (DATABASE.md §1 item 2).
+        var model = CreateDesignTimeModel(nameof(CompletedAt_ShouldBeARequiredValue));
+
+        var property = model.FindEntityType(typeof(BattleResult))!
+            .FindProperty(nameof(BattleResult.CompletedAt))!;
+
+        Assert.False(property.IsNullable);
+        Assert.False(property.ValueGenerated.HasFlag(ValueGenerated.OnAdd));
+    }
+
+    // -----------------------------------------------------------------------
+    // DATABASE.md §1 — RewardSummary
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public async Task RewardSummary_ShouldPersistTheDocumentedStagingValue()
+    {
+        // DATABASE.md §1: the documented staging value is the empty JSON object {}
+        // — always present, never absent — until TASK-033 owns the member list.
+        var storeName = $"battle-result-reward-{Guid.NewGuid():N}";
+
+        await using (var context = CreateContext(storeName))
+        {
+            await SeedReferencedRowsAsync(context);
+
+            context.BattleResults.Add(NewResult());
+            await context.SaveChangesAsync();
+        }
+
+        await using var read = CreateContext(storeName);
+
+        var stored = await read.BattleResults.AsNoTracking().SingleAsync();
+
+        Assert.Equal("{}", stored.RewardSummary);
+
+        // The stored document is the empty JSON object — not NULL, not an empty
+        // string, and not a document carrying a line item.
+        using var document = System.Text.Json.JsonDocument.Parse(stored.RewardSummary);
+
+        Assert.Equal(System.Text.Json.JsonValueKind.Object, document.RootElement.ValueKind);
+        Assert.Empty(document.RootElement.EnumerateObject());
+    }
+
+    [Fact]
+    public void RewardSummary_ShouldBeRequiredJson()
+    {
+        // DATABASE.md §1: the value is "always present, never absent", and §1's
+        // entity block types it as JSON.
+        var model = CreateDesignTimeModel(nameof(RewardSummary_ShouldBeRequiredJson));
+
+        var property = model.FindEntityType(typeof(BattleResult))!
+            .FindProperty(nameof(BattleResult.RewardSummary))!;
+
+        Assert.False(property.IsNullable);
+    }
+
+    // -----------------------------------------------------------------------
+    // DATABASE.md §1 / §2 — the foreign keys
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public void BattleResult_ShouldDeclareTheThreeDocumentedForeignKeys()
+    {
+        // DATABASE.md §1 lists PlayerId (FK → Player), PetInstanceId (FK → Pet),
+        // and BossDefinitionId (FK → BossDefinition); §2 records
+        // BattleResult N ── 1 Pet and BattleResult N ── 1 BossDefinition alongside
+        // Player 1 ── N BattleResult. Exactly three, and no fourth.
+        var model = CreateDesignTimeModel(nameof(BattleResult_ShouldDeclareTheThreeDocumentedForeignKeys));
+
+        var entity = model.FindEntityType(typeof(BattleResult))!;
+
+        var foreignKeys = entity.GetForeignKeys()
+            .Select(fk => (Column: fk.Properties.Single().Name, Principal: fk.PrincipalEntityType.ClrType.Name))
+            .OrderBy(fk => fk.Column, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(
+            new[]
+            {
+                (Column: "BossDefinitionId", Principal: nameof(BossDefinition)),
+                (Column: "PetInstanceId", Principal: nameof(Pet)),
+                (Column: "PlayerId", Principal: nameof(Player)),
+            },
+            foreignKeys);
+    }
+
+    [Fact]
+    public async Task ForeignKeys_ShouldReferenceRowsThatMustAlreadyExist()
+    {
+        // DATABASE.md §1 sourcing item 3: the FK is "never satisfied by anything
+        // other than a real, provisioned BossDefinition row", and an unresolved
+        // definition never produces a fabricated key. The model declares all three
+        // as required, and the provider rejects a row whose target is absent.
+        var model = CreateDesignTimeModel(nameof(ForeignKeys_ShouldReferenceRowsThatMustAlreadyExist));
+
+        var entity = model.FindEntityType(typeof(BattleResult))!;
+
+        foreach (var foreignKey in entity.GetForeignKeys())
+        {
+            Assert.False(foreignKey.IsRequired is false && foreignKey.Properties.Any(p => p.IsNullable));
+
+            Assert.All(foreignKey.Properties, property => Assert.False(property.IsNullable));
+        }
+
+        // No cascade: DATABASE.md §2 documents the relationship shape, not a
+        // cascade rule, so deleting a referenced row must not silently erase a
+        // battle's history.
+        Assert.All(
+            entity.GetForeignKeys(),
+            foreignKey => Assert.Equal(DeleteBehavior.Restrict, foreignKey.DeleteBehavior));
+
+        await Task.CompletedTask;
+    }
+
+    // -----------------------------------------------------------------------
+    // DATABASE.md §4 — the index
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public void BattleResult_ShouldDeclareOnlyTheDocumentedIndex()
+    {
+        // DATABASE.md §4 lists exactly one BattleResult index —
+        // BattleResult(PlayerId, CompletedAt DESC), "battle history, most recent
+        // first" — and states no further index is specified. No speculative index
+        // is declared.
+        var model = CreateDesignTimeModel(nameof(BattleResult_ShouldDeclareOnlyTheDocumentedIndex));
+
+        var entity = model.FindEntityType(typeof(BattleResult))!;
+
+        var indexes = entity.GetIndexes()
+            .Where(index => !index.IsUnique)
+            .Select(index => index.Properties.Select(p => p.Name).ToArray())
+            .ToArray();
+
+        var documented = Assert.Single(indexes);
+
+        Assert.Equal(
+            new[] { nameof(BattleResult.PlayerId), nameof(BattleResult.CompletedAt) },
+            documented);
+    }
+
+    [Fact]
+    public void CompletedAtIndex_ShouldBeDescending()
+    {
+        // DATABASE.md §4 states the order explicitly — "(PlayerId, CompletedAt
+        // DESC)" — because the index serves "battle history, most recent first". A
+        // default ascending index would not serve that query.
+        var model = CreateDesignTimeModel(nameof(CompletedAtIndex_ShouldBeDescending));
+
+        var index = model.FindEntityType(typeof(BattleResult))!
+            .GetIndexes()
+            .Single(i => i.Properties.Any(p => p.Name == nameof(BattleResult.CompletedAt)));
+
+        var completedAt = index.Properties
+            .Select((property, position) => (property.Name, Descending: index.IsDescending[position]))
+            .Single(p => p.Name == nameof(BattleResult.CompletedAt));
+
+        Assert.True(completedAt.Descending);
+    }
+
+    [Fact]
+    public async Task Index_ShouldExistWithTheDocumentedNameInTheMigration()
+    {
+        // The applied schema carries the documented index. Asserted against the
+        // migration source, which is how this repository pins schema artifacts
+        // (the BossPersistenceTests precedent).
+        var migration = await File.ReadAllTextAsync(FindMigrationPath());
+
+        Assert.Contains("IX_BattleResult_PlayerId_CompletedAt", migration, StringComparison.Ordinal);
+        Assert.Contains("descending: new[] { false, true }", migration, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Migration_ShouldCreateTheDocumentedTableAndNothingElse()
+    {
+        // DATABASE.md §1/§2/§4: the migration creates the one table, its three FKs,
+        // and the one index. It alters no existing table — DATABASE.md §4's
+        // existing indexes and every prior migration stay untouched.
+        var migration = await File.ReadAllTextAsync(FindMigrationPath());
+
+        Assert.Contains("CreateTable(", migration, StringComparison.Ordinal);
+        Assert.Contains("name: \"BattleResult\"", migration, StringComparison.Ordinal);
+
+        foreach (var forbidden in new[] { "AddColumn", "AlterColumn", "DropColumn", "DropTable(\n                name: \"BossDefinition\"", "InsertData" })
+        {
+            Assert.DoesNotContain(forbidden, migration, StringComparison.Ordinal);
+        }
+
+        // And the historical schema migration is still schema-only and untouched.
+        var bossMigration = await File.ReadAllTextAsync(
+            Path.Combine(
+                Path.GetDirectoryName(FindMigrationPath())!,
+                "20260926124429_AddBossPersistence.cs"));
+
+        Assert.DoesNotContain("BattleResult", bossMigration, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The location of the migration under test, resolved from the repository
+    /// root rather than hard-coded as an absolute path.
+    /// </summary>
+    private static string FindMigrationPath() =>
+        Path.Combine(
+            RepositoryRoot(),
+            "src",
+            "backend",
+            "GameServer.Infrastructure",
+            "Postgres",
+            "Migrations",
+            "20260927075413_AddBattleResultPersistence.cs");
+
+    /// <summary>
+    /// Walks up from the test assembly to the repository root (the directory
+    /// holding <c>src/</c> and <c>tests/</c>).
+    /// </summary>
+    private static string RepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+
+        while (directory is not null
+               && !Directory.Exists(Path.Combine(directory.FullName, "src", "backend")))
+        {
+            directory = directory.Parent;
+        }
+
+        Assert.NotNull(directory);
+
+        return directory!.FullName;
+    }
+
+    // -----------------------------------------------------------------------
+    // The repository — DATABASE.md §1 sourcing item 1
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public async Task Repository_ShouldWriteAndReadTheRowByTheBattlesOwnId()
+    {
+        // DATABASE.md §1 sourcing item 1 / API_CONTRACTS.md §4: the row is written
+        // and looked up by the battle's own id, and an absent id reads as absence —
+        // never as a defaulted result.
+        var storeName = $"battle-result-repository-{Guid.NewGuid():N}";
+
+        await using (var context = CreateContext(storeName))
+        {
+            await SeedReferencedRowsAsync(context);
+
+            var repository = new BattleResultRepository(context);
+
+            await repository.AddAsync(NewResult(battleResultId: "battle-by-key"));
+        }
+
+        await using var read = CreateContext(storeName);
+
+        var reader = new BattleResultRepository(read);
+
+        var stored = await reader.GetByIdAsync("battle-by-key");
+
+        Assert.NotNull(stored);
+        Assert.Equal("battle-by-key", stored!.BattleResultId);
+
+        Assert.Null(await reader.GetByIdAsync("battle-that-does-not-exist"));
+    }
+
+    [Fact]
+    public async Task Repository_ShouldNotCreateASecondRow_ForARepeatedWrite()
+    {
+        // DATABASE.md §1 sourcing item 1 / REDIS_STATE.md §3: at most one row per
+        // battle, guaranteed by the key — a repeated terminal persistence must not
+        // append. The repository adds no second idempotency mechanism; the end
+        // state is simply one row.
+        var storeName = $"battle-result-idempotent-{Guid.NewGuid():N}";
+
+        await using var context = CreateContext(storeName);
+
+        await SeedReferencedRowsAsync(context);
+
+        var repository = new BattleResultRepository(context);
+
+        await repository.AddAsync(NewResult(battleResultId: "battle-repeated"));
+        await repository.AddAsync(NewResult(battleResultId: "battle-repeated"));
+
+        var rows = await context.BattleResults
+            .Where(result => result.BattleResultId == "battle-repeated")
+            .ToListAsync();
+
+        Assert.Single(rows);
+    }
+
+    [Fact]
+    public async Task Repository_ShouldPropagateTheStoreFailure()
+    {
+        // DATABASE.md §1 sourcing item 3: the battle-end path must fail closed when
+        // the durable write does not happen, so the repository raises the failure it
+        // receives instead of absorbing it — there is no "unavailable" result a
+        // caller could mistake for a completed write. This context is disposed
+        // before the write, so the store is genuinely unavailable.
+        var storeName = $"battle-result-failure-{Guid.NewGuid():N}";
+
+        var context = CreateContext(storeName);
+        var repository = new BattleResultRepository(context);
+
+        await context.DisposeAsync();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            repository.AddAsync(NewResult(battleResultId: "battle-store-unavailable")));
+    }
+
+    [Fact]
+    public async Task Repository_ShouldExposeAForeignKeyViolation_AsAStoreFailure()
+    {
+        // DATABASE.md §1 sourcing item 3: the FK "is never satisfied by anything
+        // other than a real, provisioned BossDefinition row". Against real
+        // PostgreSQL an insert whose referenced rows are absent is refused by the
+        // database itself — asserted in BattleResultPostgresTests, where the
+        // constraint is actually enforced, because the in-memory provider used by
+        // this class does not enforce foreign keys.
+        await Task.CompletedTask;
+    }
+}

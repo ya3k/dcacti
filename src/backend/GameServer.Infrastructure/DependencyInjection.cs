@@ -3,6 +3,8 @@ using GameServer.Application.Cards;
 using GameServer.Application.Identity;
 using GameServer.Application.Pets;
 using GameServer.Application.Players;
+using GameServer.Application.Players;
+using GameServer.Domain.Players;
 using GameServer.Application.Relics;
 using GameServer.Infrastructure.Discord;
 using GameServer.Infrastructure.Postgres;
@@ -60,6 +62,23 @@ public static class DependencyInjection
         // items 9–10). Registered unconditionally for the same reason as
         // IPlayerRepository.
         services.AddScoped<ICardRepository, CardRepository>();
+
+        // Durable battle result persistence and the two documented battle-end
+        // lookups (DATABASE.md §1; ARCHITECTURE.md §3 `PersistenceRepository
+        // (Postgres)`).
+        //
+        // The result row and both lookups are PostgreSQL reads/writes that
+        // happen on the terminal path only — TDD.md §4 item 3 keeps PostgreSQL
+        // off the hot resolution path, and DATABASE.md §5 item 3 keeps active
+        // battle state out of it entirely. Registered unconditionally for the
+        // same reason as IPlayerRepository: the repositories take the scoped
+        // GameDbContext.
+        services.AddScoped<IBattleResultRepository, BattleResultRepository>();
+
+        // DATABASE.md §1 note item 2: the Identity → BossDefinitionId lookup is
+        // owned by the Infrastructure layer through this existing persistence
+        // boundary — no resolver service, registry, or read model is introduced.
+        services.AddScoped<IBossDefinitionLookup, BossDefinitionLookup>();
 
         // Discord identity exchange boundary (API_CONTRACTS.md §2.2–§2.4).
         //

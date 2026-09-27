@@ -82,10 +82,13 @@ namespace GameServer.Application.Battle;
 /// memory), so a store failure is raised rather than absorbed, and nothing is
 /// served from a local cache,</item>
 /// <item>persist anything the contract does not define: it writes the one
-/// documented active-state record and nothing else — no partial state
-/// (<c>REDIS_STATE.md</c> §7 items 1–2), no second key, and nothing to
-/// PostgreSQL (<c>GAME_STATE.md</c> §2.0.4 item 3, <c>DATABASE.md</c> §5
-/// item 3),</item>
+/// documented active-state record (<c>REDIS_STATE.md</c> §7 items 1–2 — no
+/// partial state, no second key) and, on the terminal path only, invokes the one
+/// documented durable battle end (<c>ARCHITECTURE.md</c> §4 item 4,
+/// <c>DATABASE.md</c> §1). Nothing else reaches PostgreSQL, and nothing
+/// reaches it during an ordinary action resolution: <c>TDD.md</c> §4 item 3
+/// keeps PostgreSQL off the hot resolution path, and
+/// <c>GAME_STATE.md</c> §2.0.4 item 3 keeps active state out of it entirely,</item>
 /// <item>emit or deliver Battle Events — board generation emits none
 /// (<c>GAME_STATE.md</c> §2.0.5.2 item 2), and the Swap boundary hands back the
 /// events Domain and the Passive stage produced without building, altering, or
@@ -240,6 +243,42 @@ public sealed class BattleStateService
     /// </summary>
     private readonly IBattleStateRepository _repository;
 
+    /// <summary>
+    /// The durable battle result writer — the documented battle-end persistence
+    /// step, invoked from the resolution paths that observed a terminal outcome
+    /// (<c>ARCHITECTURE.md</c> §4 item 4, <c>DATABASE.md</c> §1).
+    ///
+    /// <b>It is optional because the store is not this boundary's.</b> The
+    /// durable result and its two PostgreSQL lookups are Infrastructure
+    /// concerns reached through their own Application contracts, and the
+    /// resolution pipeline is explicitly independent of them
+    /// (<c>ARCHITECTURE.md</c> §2.1 item 2 — "Infrastructure implements
+    /// persistence and transport. It depends on Domain/Application interfaces,
+    /// never the other way around"). A composition without it resolves battles
+    /// exactly as before and writes no result; a composition with it records
+    /// one, which is what the running server does. It must never be replaced by
+    /// an in-process substitute for the active-state store
+    /// (<c>REDIS_STATE.md</c> §7 item 5).
+    /// </summary>
+    /// <summary>
+    /// The durable battle result writer — the documented battle-end persistence
+    /// step, invoked from the resolution paths that observed a terminal outcome
+    /// (<c>ARCHITECTURE.md</c> §4 item 4, <c>DATABASE.md</c> §1).
+    ///
+    /// <b>It is optional because the store is not this boundary's.</b> The
+    /// durable result and its two PostgreSQL lookups are Infrastructure concerns
+    /// reached through their own Application contracts
+    /// (<c>ARCHITECTURE.md</c> §2.1 item 2). A composition without it resolves
+    /// battles exactly as before and records no durable result; a composition
+    /// with it records one — which is what the running server does — and the
+    /// documented write-then-delete order is <see cref="BattleResultService"/>'s,
+    /// not this type's. It is deliberately not a place to substitute an
+    /// in-process store for the active-state record
+    /// (<c>REDIS_STATE.md</c> §7 item 5), which is why the contract only forwards
+    /// the state the resolution already produced.
+    /// </summary>
+    private readonly IBattleResultPersistence? _battleResults;
+
     private readonly IRngSeedSource _seedSource;
 
     /// <summary>
@@ -299,10 +338,23 @@ public sealed class BattleStateService
     /// (<c>GAME_STATE.md</c> §2.6.1). It is never supplied or influenced by the
     /// client.
     /// </param>
-    public BattleStateService(IBattleStateRepository repository, IRngSeedSource seedSource)
+    /// <param name="battleResults">
+    /// The durable battle-end step, or <c>null</c> for a composition that records
+    /// no durable result.
+    /// </param>
+    public BattleStateService(
+        IBattleStateRepository repository,
+        IRngSeedSource seedSource,
+        IBattleResultPersistence? battleResults = null)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
         _seedSource = seedSource ?? throw new ArgumentNullException(nameof(seedSource));
+
+        // ARCHITECTURE.md §4 item 4: the battle-end step (durable result, then
+        // active-state delete) is reached from the terminal paths below. It is
+        // expressed through its own contract so this singleton names no
+        // persistence lifetime and no PostgreSQL type.
+        _battleResults = battleResults;
     }
 
     /// <summary>
@@ -369,6 +421,15 @@ public sealed class BattleStateService
     /// implemented and the battle's Boss definition is therefore supplied by the
     /// caller — <see cref="BossDefinitions"/> holds the MVP set.
     /// </param>
+    /// <param name="seed">
+    /// The battle's server-chosen PRNG seed (<c>GAME_STATE.md</c> §2.6.1). It is
+    /// read from this boundary's own entropy source when the caller does not
+    /// supply one, which is the only documented behaviour: no client, request
+    /// member, or caller value influences it (§2.6.1 items 1–2). It is an
+    /// explicit parameter — rather than being generated internally — only so the
+    /// RNG stream is reproducible for a caller that must replay it
+    /// (<c>TDD.md</c> §6 item 3, ADR-009).
+    /// </param>
     /// <param name="cancellationToken">Cancels the store write.</param>
     /// <exception cref="GameServer.Domain.Match3.BoardGenerationFailedException">
     /// No candidate board satisfied the documented initial-board constraints
@@ -381,11 +442,15 @@ public sealed class BattleStateService
         PlayerId playerId,
         PetConfiguration petConfiguration,
         BossDefinition bossDefinition,
+        BattleSeed? seed = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
 
-        var seed = _seedSource.CreateSeed();
+        // §2.6.1 item 3: the seed records the battle's origin point and is never
+        // rewritten after creation. A caller may supply one for reproducibility;
+        // otherwise the server's own entropy produces it (items 1–2).
+        var battleSeed = seed ?? new BattleSeed(_seedSource.CreateSeed());
 
         // §2.3 / §2.4: the battle's PetState is built from the caller's Pet
         // configuration — carrying the selected owned Pet instance identity and
@@ -401,7 +466,7 @@ public sealed class BattleStateService
         // already validated — and never re-derived afterward (§2.8 item 4).
         var state = BattleState.Create(
             battleId,
-            seed,
+            battleSeed.Value,
             playerId,
             petConfiguration.ToPetState(),
             bossConfiguration.ToBossState());
@@ -699,6 +764,15 @@ public sealed class BattleStateService
 
             if (written)
             {
+                // ARCHITECTURE.md §4 item 4: a committed resolution that emitted
+                // BattleWon/BattleLost has ended the battle, so its durable result
+                // is recorded and its active state is cleared. This runs AFTER the
+                // write-back — the commit is what makes the terminal transition
+                // authoritative, and the clear must not precede it
+                // (REDIS_STATE.md §3, §4 items 2–3, 5).
+                await PersistTerminalResultAsync(committed.State, committed.Events, cancellationToken)
+                    .ConfigureAwait(false);
+
                 return committed;
             }
 
@@ -970,6 +1044,13 @@ public sealed class BattleStateService
             // label, and the value it carries is the ACTIVE PET's HP — the only
             // Player-side HP the contract has, since a Player has no combat pool.
             // The label is not renamed; only its source member is the documented one.
+            //
+            // ARCHITECTURE.md §4 item 4 / DATABASE.md §1: this is the documented
+            // terminal end signal — the resolution reports the outcome as
+            // BattleWon (GAME_EVENTS.md §2, because GAME_STATE.md §2.0.3 forbids a
+            // lifecycle field on the state). The durable battle-end step itself
+            // runs in the caller, after the state has been committed
+            // (REDIS_STATE.md §3, §4 items 2–3).
             events.Add(BattleEvent.ForBattleWon(bossState.HP, resolved.PetState.HP));
 
             return result
@@ -1156,12 +1237,14 @@ public sealed class BattleStateService
         // Step 13: the finished post-resolution state — GAME_STATE.md §5.1
         // ===================================================================
         // The caller performs the one write-back, under the Sequence
-        // compare-and-set (REDIS_STATE.md §4 items 2 and 5).
+        // compare-and-set (REDIS_STATE.md §4 items 2 and 5), and — when this
+        // resolution emitted BattleLost — the documented battle-end step that
+        // follows it (ARCHITECTURE.md §4 item 4, DATABASE.md §1). A non-terminal
+        // resolution emits neither outcome event, so nothing durable follows it.
         return result
             .WithEvents(events)
             .WithState(resolved with { BossState = bossState });
     }
-
     /// <summary>
     /// Stores a resolved state under the documented <c>Sequence</c>
     /// compare-and-set and reports whether it was applied
@@ -1184,4 +1267,168 @@ public sealed class BattleStateService
         int expectedSequence,
         CancellationToken cancellationToken) =>
         _repository.TryUpdateAsync(resolved, expectedSequence, cancellationToken);
+
+    /// <summary>
+    /// Persists the durable result for a resolution that reached a terminal
+    /// outcome, then clears the battle's active state — the documented battle-end
+    /// step of <c>ARCHITECTURE.md</c> §4 item 4, in the documented order
+    /// (<c>REDIS_STATE.md</c> §3: "Deleted: explicitly, when
+    /// <c>BattleWon</c>/<c>BattleLost</c> is resolved and the result has been
+    /// written to PostgreSQL").
+    ///
+    /// <b>The terminal check is the events, not a state field.</b>
+    /// <c>GAME_STATE.md</c> §2.0.3 forbids a <c>Status</c>/lifecycle member on
+    /// <c>BattleState</c>, and <c>GAME_EVENTS.md</c> §2 makes
+    /// <c>BattleWon</c>/<c>BattleLost</c> the outcome statement: the presence of
+    /// one of those two events in the resolution's own list is the only
+    /// documented end signal, so it is what this method reads. Both terminal
+    /// branches of the resolution already append exactly one and then return, so
+    /// a non-terminal resolution simply never reaches this method.
+    ///
+    /// <b>Why the state passed is the committed one.</b> The caller invokes this
+    /// after the <c>Sequence</c> compare-and-set accepted the resolution, so the
+    /// result records the terminal values of the transition that became
+    /// authoritative — not a state a concurrent resolution refused
+    /// (<c>REDIS_STATE.md</c> §4 items 2–3). That order matters in both
+    /// directions: the durable write must not happen for a resolution the store
+    /// refused, and the active-state clear must not happen before the write.
+    ///
+    /// <b>Resolution never fails because the result could not be written.</b>
+    /// The resolution has already committed to the store by the time this runs;
+    /// a persistence failure must not turn a committed action into a reported
+    /// failure, and <c>REDIS_STATE.md</c> §3 already governs the consequential
+    /// case — the state stays in Redis under its sliding TTL, the battle is not
+    /// lost, the outcome events have been returned, and no automatic retry,
+    /// worker, or queue is introduced for it. The one outcome this method
+    /// deliberately does not swallow is a resolved
+    /// <c>BossDefinition</c> whose row is absent: that path writes no row and
+    /// performs no delete, so the battle remains intact and retryable
+    /// (<c>DATABASE.md</c> §1 sourcing item 3).
+    /// </summary>
+    /// <param name="committed">
+    /// The post-resolution state the store accepted — the terminal transition
+    /// whose values the result records.
+    /// </param>
+    /// <param name="events">
+    /// The resolution's own ordered event list, whose terminal member selects
+    /// the outcome (<c>GAME_EVENTS.md</c> §2).
+    /// </param>
+    /// <param name="cancellationToken">Cancels the lookups, the write, and the delete.</param>
+    private async Task PersistTerminalResultAsync(
+        BattleState committed,
+        IReadOnlyList<BattleEvent> events,
+        CancellationToken cancellationToken)
+    {
+        // No durable result boundary is composed: the battle resolves exactly as
+        // it did before this step existed and nothing durable is recorded. This
+        // is the only case in which termination is observed but unrecorded, and
+        // it cannot arise in the running server (Program.cs composes the
+        // boundary).
+        if (_battleResults is null)
+        {
+            return;
+        }
+
+        var outcome = TerminalOutcome(events);
+
+        if (outcome is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _battleResults
+                .PersistTerminalResultAsync(committed, outcome.Value, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception failure) when (!cancellationToken.IsCancellationRequested)
+        {
+            // ARCHITECTURE.md §4 item 3: the ordered event list is this
+            // resolution's result, and the action has already committed to the
+            // store. A failed durable write must therefore leave the resolution
+            // reported as it happened — the outcome events included — while the
+            // authoritative state stays in Redis and the battle remains
+            // recoverable and retryable (REDIS_STATE.md §3, DATABASE.md §1
+            // sourcing item 3). No retry, rollback, worker, or compensating
+            // action is introduced: none is documented (ARCHITECTURE.md §5).
+            //
+            // The failure is not silently discarded: it is recorded against the
+            // battle so an operator can see that a battle ended without a durable
+            // result. That is observation only — the record below changes no
+            // state, is never the source of a value, and is the same information
+            // REDIS_STATE.md §3 already exposes through the surviving key.
+            MarkResultNotPersisted(committed.BattleId, failure);
+        }
+    }
+
+    /// <summary>
+    /// The battles whose terminal resolution produced no durable result, with the
+    /// failure that prevented it.
+    ///
+    /// <b>It is a diagnostic record, not state.</b> No value here is ever read to
+    /// produce a battle value: the authoritative state is the active-state
+    /// record's (<c>REDIS_STATE.md</c> §2 item 2), the durable result is
+    /// PostgreSQL's (<c>DATABASE.md</c> §1), and a battle is never resolved,
+    /// returned, or delivered from this map. It exists because the documented
+    /// fail-closed path (<c>DATABASE.md</c> §1 sourcing item 3) otherwise leaves a
+    /// battle end that reached no database completely unobservable — the one case
+    /// the contract deliberately does not surface to the client.
+    ///
+    /// <b>Why it is not surfaced as a wire contract.</b> <c>DATABASE.md</c> §1
+    /// sourcing item 3 states that no new error code, API response, or wire
+    /// contract is introduced for this path: the endpoint simply finds no row and
+    /// returns its documented <c>404</c> until the write succeeds.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, Exception> _unpersistedResults = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The battles whose terminal resolution reached no durable result, for
+    /// operators and tests — see <see cref="_unpersistedResults"/> for why this is
+    /// not battle state and not a client-facing contract.
+    /// </summary>
+    public IReadOnlyCollection<string> UnpersistedResultBattleIds => _unpersistedResults.Keys.ToArray();
+
+    /// <summary>
+    /// The failure recorded for a battle whose terminal resolution reached no
+    /// durable result, or <c>null</c> when it reached one. Observation only.
+    /// </summary>
+    public Exception? UnpersistedResultFailure(string battleId) =>
+        _unpersistedResults.TryGetValue(battleId, out var failure) ? failure : null;
+
+    /// <summary>
+    /// Records the failure that prevented a terminal resolution from reaching a
+    /// durable result (<c>DATABASE.md</c> §1 sourcing item 3). Observation only.
+    /// </summary>
+    private void MarkResultNotPersisted(string battleId, Exception failure) =>
+        _unpersistedResults[battleId] = failure;
+
+    /// <summary>
+    /// The outcome a resolution's event list states, or <c>null</c> when it
+    /// states none (<c>GAME_EVENTS.md</c> §2).
+    ///
+    /// The battle's terminal checks are ordered Boss-first and each ends the
+    /// resolution, so at most one of the two events is ever present
+    /// (<c>GAME_RULES.md</c> §1.4, <c>BOSS_RULES.md</c> §5 item 4). This reads
+    /// the list the resolution produced and decides nothing: an absent outcome
+    /// is the documented statement that the action was not terminal, and no
+    /// outcome is inferred from HP values, from <c>Turn</c>, or from anything
+    /// else.
+    /// </summary>
+    private static BattleOutcome? TerminalOutcome(IReadOnlyList<BattleEvent> events)
+    {
+        for (var index = 0; index < events.Count; index++)
+        {
+            switch (events[index].Type)
+            {
+                case BattleEventType.BattleWon:
+                    return BattleOutcome.Victory;
+
+                case BattleEventType.BattleLost:
+                    return BattleOutcome.Defeat;
+            }
+        }
+
+        return null;
+    }
 }

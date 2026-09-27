@@ -314,7 +314,8 @@ public class CardPersistenceTests
         // persisted here". TASK-028 therefore adds exactly two tables.
         //
         // The list is exhaustive, so it also carries the tables added by later
-        // tasks: BossDefinition (TASK-044, DATABASE.md §1). Neither task
+        // tasks: BossDefinition (TASK-044, DATABASE.md §1) and BattleResult
+        // (TASK-041, DATABASE.md §1 — the durable battle outcome). Neither task
         // introduces a Card instance/quantity/equip table.
         var model = CreateDesignTimeModel(nameof(Model_ShouldIntroduceNoCardInstanceQuantityOrEquipTable));
 
@@ -327,6 +328,7 @@ public class CardPersistenceTests
         Assert.Equal(
             new[]
             {
+                "BattleResult",
                 "BossDefinition",
                 "CardDefinition",
                 "Pet",

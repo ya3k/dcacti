@@ -124,4 +124,50 @@ internal sealed class InMemoryBattleStateRepository : IBattleStateRepository
 
         return Task.FromResult(true);
     }
+
+    /// <summary>
+    /// The documented battle-end delete (<c>REDIS_STATE.md</c> §3), recorded so a
+    /// test can assert the ordering rule the terminal path must obey: the
+    /// durable result is written first, and the delete happens only after it.
+    /// </summary>
+    /// <remarks>
+    /// It records the delete rather than only performing it, because "the delete
+    /// was attempted, and attempted after the write" is the contract under test —
+    /// a double that merely removed the entry could not distinguish a delete that
+    /// happened on the wrong path from one that never happened.
+    /// </remarks>
+    public Task DeleteAsync(string battleId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
+
+        DeleteCount++;
+
+        if (DeleteFails)
+        {
+            // REDIS_STATE.md §3: a failing delete after a successful result write
+            // is the documented case with no retry and no worker. The double
+            // raises it so a test can prove the battle-end path keeps its result
+            // rather than unwinding it.
+            throw new InvalidOperationException(
+                "REDIS_STATE.md §3: this double is configured to fail the battle-end delete.");
+        }
+
+        // Deleting an absent record is the documented no-op (§3: an abandoned
+        // battle or one a concurrent resolution already cleared).
+        _records.Remove(battleId);
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// How many <see cref="DeleteAsync"/> calls this double has received.
+    /// </summary>
+    public int DeleteCount { get; private set; }
+
+    /// <summary>
+    /// When set, <see cref="DeleteAsync"/> raises instead of clearing the record —
+    /// the documented <c>REDIS_STATE.md</c> §3 delete-failure case, which must
+    /// leave the durable result standing.
+    /// </summary>
+    public bool DeleteFails { get; set; }
 }

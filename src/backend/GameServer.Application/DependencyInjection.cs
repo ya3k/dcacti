@@ -31,7 +31,53 @@ public static class DependencyInjection
         // (GAME_STATE.md §2.6.1); it is never supplied or influenced by the
         // client.
         services.AddSingleton<IRngSeedSource, SystemEntropyRngSeedSource>();
+
+        // A singleton, and it must stay one.
+        //
+        // It carries two in-process registries — each battle's Pet loadout input
+        // and the Boss definition it was created from — which the resolution
+        // reads for configuration the mutable state deliberately does not
+        // duplicate (GAME_STATE.md §0 item 5). Those registries are populated at
+        // creation and consumed by later resolutions of the same battle, so a
+        // per-request instance would lose every battle's configuration between
+        // the request that created it and the one that resolves it. Nothing here
+        // is authoritative battle state: the record in the active-state store is
+        // (REDIS_STATE.md §2 item 2), which is why this registration is not the
+        // "state in process memory" that §7 item 5 forbids.
+        //
+        // The durable battle result boundary it invokes on the terminal path is
+        // therefore resolved lazily, per call, from the request scope — see
+        // below.
         services.AddSingleton<BattleStateService>();
+
+        // The durable battle result boundary (ARCHITECTURE.md §4 item 4,
+        // DATABASE.md §1): on the terminal path it writes the battle's
+        // BattleResult row and then clears the active state, in that order.
+        // Scoped because it resolves the scoped PostgreSQL result repository and
+        // the two battle-end lookups; it holds no state of its own.
+        //
+        // Its clock is the server's (TimeProvider.System): DATABASE.md §1
+        // "Duration and completion sourcing" item 2 makes CompletedAt the server
+        // clock reading at the durable write, and no other source is permitted.
+        services.AddSingleton(TimeProvider.System);
+        services.AddScoped<BattleResultService>();
+
+        // The completed-battle result read behind GET /api/battle/{battleId}/result
+        // (API_CONTRACTS.md §4). Scoped for the same reason as the boundary above:
+        // it resolves the scoped PostgreSQL result repository. It performs the
+        // document's owner-only read (note 7), so the caller's authenticated
+        // identity is established before any row is returned.
+        services.AddScoped<BattleResultQueryService>();
+
+        // Resolves the scoped durable result boundary for the singleton
+        // resolution service above, in a scope of its own, so the terminal
+        // battle-end step gets the request-scoped PostgreSQL context it needs
+        // without the singleton capturing a scope. It is the composition root's
+        // one piece of glue for that lifetime difference; the resolution service
+        // still depends only on the Application contract.
+        services.AddSingleton<IBattleResultPersistence>(provider =>
+            new ScopedBattleResultPersistence(
+                provider.GetRequiredService<IServiceScopeFactory>()));
 
         // Denormalized Pet Level recompute hook (DATABASE.md §1;
         // ADR-012 Consequences; PET_RULES.md §5 item 2). Scoped because it

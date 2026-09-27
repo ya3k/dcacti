@@ -33,11 +33,18 @@ public class PlayerPersistenceTests
     [Fact]
     public void Player_ShouldCarryExactlyTheDocumentedFields()
     {
-        // DATABASE.md §1 defines the Player record as PlayerId (PK),
-        // DiscordUserId (unique), Level, and CreatedAt. The field list is
-        // closed: DATABASE.md §1 adds no XP column and no reward field, and
-        // TASK-033 owns progression.
-        var fields = typeof(Player)
+        // DATABASE.md §1 defines the Player record as four persisted members —
+        // PlayerId (PK), DiscordUserId (unique), Level, and CreatedAt. The
+        // persisted field list is closed: §1 adds no XP column and no reward
+        // field, and TASK-033 owns progression.
+        //
+        // The CLR member set and the mapped column set are now identical: the
+        // Player contract carries exactly the four documented members and nothing
+        // else. §1 states that BattleResult persistence requires no Player
+        // combat-readiness condition, so there is no readiness member and no
+        // readiness column — the assertion below proves the mapping stores the
+        // four documented columns and that no fifth exists on either side.
+        var properties = typeof(Player)
             .GetProperties()
             .Select(p => p.Name)
             .OrderBy(n => n, StringComparer.Ordinal)
@@ -45,7 +52,20 @@ public class PlayerPersistenceTests
 
         Assert.Equal(
             new[] { "CreatedAt", "DiscordUserId", "Level", "PlayerId" },
-            fields);
+            properties);
+
+        using var context = CreateContext($"player-fields-{Guid.NewGuid():N}");
+
+        var storedColumns = context.Model
+            .FindEntityType(typeof(Player))!
+            .GetProperties()
+            .Select(p => p.Name)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(
+            new[] { "CreatedAt", "DiscordUserId", "Level", "PlayerId" },
+            storedColumns);
     }
 
     [Fact]

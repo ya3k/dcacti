@@ -331,7 +331,12 @@ public sealed class BattleStartService
         // nowhere — §2 item 2 makes the record the source of truth and §7 item 5
         // permits no in-process substitute.
         await _battles
-            .CreateBattleAsync(battleId, new PlayerId(playerId), petConfiguration, bossDefinition, cancellationToken)
+            .CreateBattleAsync(
+                battleId,
+                new PlayerId(playerId),
+                petConfiguration,
+                bossDefinition,
+                cancellationToken: cancellationToken)
             .ConfigureAwait(false);
 
         return BattleStartResult.Started(battleId);

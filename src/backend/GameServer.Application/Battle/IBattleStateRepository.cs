@@ -17,10 +17,11 @@ namespace GameServer.Application.Battle;
 /// <b>It exposes the documented active-state operations and nothing else.</b>
 /// <c>REDIS_STATE.md</c> §1 defines exactly one state key,
 /// <c>battle:{battleId}:state</c>; §3 defines its lifecycle (created on battle
-/// creation, refreshed on a successful resolution); §4 defines the
-/// <c>Sequence</c> compare-and-set that guards the write. Those are the four
-/// operations below, and there is deliberately no more surface than that — no
-/// enumeration, no deletion, no query, no second record.
+/// creation, refreshed on a successful resolution, deleted on battle end once
+/// the durable result has been written); §4 defines the <c>Sequence</c>
+/// compare-and-set that guards the write. Those are the four operations below,
+/// and there is deliberately no more surface than that — no enumeration, no
+/// history query, no partial update, and no second record.
 ///
 /// <b>It is not a Redis contract.</b> No key format, TTL value, connection,
 /// lock, or client type appears in this file: the members are expressed in
@@ -126,4 +127,42 @@ public interface IBattleStateRepository
         BattleState state,
         int expectedSequence,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Deletes a battle's active-state record (<c>REDIS_STATE.md</c> §3
+    /// "Deleted: explicitly, when <c>BattleWon</c>/<c>BattleLost</c> is resolved
+    /// and the result has been written to PostgreSQL").
+    ///
+    /// <b>Ordering is the caller's obligation and the contract's.</b> §3
+    /// conditions this delete on the durable result having been written:
+    /// <c>ARCHITECTURE.md</c> §4 item 4 states the order ("write the durable
+    /// result … and instructs <c>BattleStateRepository</c> to clear the active
+    /// state"), and <c>DATABASE.md</c> §1 sourcing item 3 fails the battle-end
+    /// path closed when that write did not happen — "the delete must not happen
+    /// either", because the active state is the only authoritative copy of a
+    /// battle that was never durably recorded. This operation therefore only
+    /// performs the delete it is asked to perform; it does not decide when it is
+    /// permitted, and no caller may invoke it before a successful result write.
+    ///
+    /// <b>A failure here does not undo the result.</b> §3 states that if the
+    /// delete fails after the result write, no automatic retry is performed and
+    /// no worker or queue exists for it: the sliding TTL remains the cleanup
+    /// path and the durable result stands. A failed delete cannot produce a
+    /// second result either — <c>BattleResultId</c> is the battle's own
+    /// <c>BattleId</c>, so at most one row can ever exist per battle
+    /// (<c>DATABASE.md</c> §1).
+    ///
+    /// <b>Deleting an absent record is not an error.</b> A record that already
+    /// expired (an abandoned battle — §3) or that a concurrent resolution
+    /// already removed has nothing left to clear, and the documented outcome is
+    /// the same: the key is gone. The caller's terminal resolution is unaffected
+    /// either way.
+    /// </summary>
+    /// <param name="battleId">
+    /// Identity of the battle whose record is cleared
+    /// (<c>GAME_STATE.md</c> §2.0.1). It is the whole key — no other record is
+    /// touched (<c>REDIS_STATE.md</c> §1).
+    /// </param>
+    /// <param name="cancellationToken">Cancels the delete.</param>
+    Task DeleteAsync(string battleId, CancellationToken cancellationToken = default);
 }

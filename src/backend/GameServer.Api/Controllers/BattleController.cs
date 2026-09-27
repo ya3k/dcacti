@@ -6,7 +6,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace GameServer.Api.Controllers;
 
 /// <summary>
-/// The battle-start boundary (<c>API_CONTRACTS.md</c> §3).
+/// The battle boundary (<c>API_CONTRACTS.md</c> §3, §4).
 ///
 /// <code>
 /// POST /api/battle/start
@@ -19,13 +19,19 @@ namespace GameServer.Api.Controllers;
 /// BattleStateService
 ///         ↓
 /// { battleId, signalrHub, initialState }
+///
+/// GET /api/battle/{battleId}/result
+///         ↓
+/// BattleResultQueryService        (Application — owner-scoped read)
+///         ↓
+/// { battleId, outcome, rewards, durationTurns }
 /// </code>
 ///
 /// <b>It is a thin boundary</b> (<c>ARCHITECTURE.md</c> §2.1 item 4): it
-/// translates the wire request, delegates the whole orchestration to
-/// <see cref="BattleStartService"/>, and translates the outcome back to the wire
-/// response. It contains no Card copy-limit logic, no Relic duplicate logic, no
-/// Pet combat initialization, and no Boss logic — each is owned by the service
+/// translates the wire request, delegates the whole orchestration to the service
+/// it calls, and translates the outcome back to the wire response. It contains no
+/// Card copy-limit logic, no Relic duplicate logic, no Pet combat initialization,
+/// no Boss logic, and no ownership rule of its own — each is owned by the service
 /// this controller calls.
 ///
 /// <b>The client supplies selection only.</b> The four documented request
@@ -38,7 +44,7 @@ namespace GameServer.Api.Controllers;
 /// (<c>API_CONTRACTS.md</c> §1, §2.8; <c>ADR-015</c> D3): the
 /// <c>player_id</c> claim, published as the request context's
 /// <c>GameServer.PlayerId</c>. No request member, query parameter, or header
-/// selects, overrides, or stands in for it.
+/// selects, overrides, or stands in for it — on either endpoint.
 /// </summary>
 [ApiController]
 [Authorize]
@@ -59,11 +65,16 @@ public class BattleController : ControllerBase
     private const string BattleHubPath = "/hubs/battle";
 
     private readonly BattleStartService _battleStart;
+    private readonly BattleResultQueryService _battleResults;
     private readonly BattleStateService _battles;
 
-    public BattleController(BattleStartService battleStart, BattleStateService battles)
+    public BattleController(
+        BattleStartService battleStart,
+        BattleResultQueryService battleResults,
+        BattleStateService battles)
     {
         _battleStart = battleStart;
+        _battleResults = battleResults;
         _battles = battles;
     }
 
@@ -150,6 +161,89 @@ public class BattleController : ControllerBase
                 _battles,
                 cancellationToken)));
     }
+
+    /// <summary>
+    /// Returns the completed battle's result for its owning Player
+    /// (<c>API_CONTRACTS.md</c> §4).
+    ///
+    /// <b>Success (200).</b> Exactly the §4 response shape — <c>battleId</c>,
+    /// <c>outcome</c>, <c>rewards</c>, and <c>durationTurns</c> — for a battle
+    /// that has already ended and that the authenticated caller owns. While a
+    /// battle is active its state is available only through the SignalR
+    /// connection, not here, and no row exists for it yet, so this endpoint
+    /// answers the same <c>404</c> an unknown battle gets.
+    ///
+    /// <b>Not found (404).</b> The §6 envelope with <c>BATTLE_NOT_FOUND</c>, for
+    /// a result that does not exist <b>or</b> that belongs to another Player.
+    /// §4 note 7 makes those one answer deliberately, so the endpoint never
+    /// discloses whether another Player's battle exists.
+    ///
+    /// <b>Unauthenticated (401).</b> The §6 envelope with <c>UNAUTHENTICATED</c>,
+    /// produced by the class-level <c>[Authorize]</c> and the session pipeline
+    /// before this method runs — one outcome for a missing, invalid, tampered, or
+    /// expired session, with no validation detail disclosed
+    /// (<c>API_CONTRACTS.md</c> §2.8, §4 note 6; <c>ADR-015</c> D5). The guard
+    /// below covers the remaining case the pipeline allows through: a principal
+    /// that carries no <c>player_id</c>, which identifies nobody and must
+    /// therefore not be answered with a result.
+    ///
+    /// <b>The caller's identity comes from the session, never the request.</b>
+    /// §4 note 7 forbids any request member, query parameter, header, or body
+    /// field from selecting, overriding, or standing in for the caller's
+    /// identity, so this action binds no identity input at all: the only value it
+    /// accepts is the battle id in the route, and the identity is read from the
+    /// request context the authentication boundary published
+    /// (<see cref="AuthenticatedPlayer"/>, <c>ADR-015</c> D3).
+    /// </summary>
+    /// <param name="battleId">
+    /// The battle to read (<c>GAME_STATE.md</c> §2.0.1) — the result row's own
+    /// key, since <c>BattleResultId</c> is the battle's <c>BattleId</c>
+    /// (<c>DATABASE.md</c> §1).
+    /// </param>
+    /// <param name="cancellationToken">Cancels the read with the request.</param>
+    [HttpGet("{battleId}/result")]
+    public async Task<IActionResult> Result(string battleId, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(battleId))
+        {
+            return NotFound(new { error = BattleNotFoundErrorCode });
+        }
+
+        var playerId = ResolveRequestingPlayerId();
+
+        if (string.IsNullOrWhiteSpace(playerId))
+        {
+            // API_CONTRACTS.md §1 / §2.8 / §4 note 6: an identity that identifies
+            // nobody is not an authenticated session, and §4 note 7 permits no
+            // request-supplied substitute for it. The response is the documented
+            // unauthenticated one — not BATTLE_NOT_FOUND, which note 6 reserves
+            // for an authenticated caller and which would make an authorization
+            // failure indistinguishable from a missing row.
+            return Unauthorized(new
+            {
+                error = UnauthenticatedResponse.ErrorCode,
+                message = "An authenticated session is required to read a battle result.",
+            });
+        }
+
+        var result = await _battleResults.GetOwnedResultAsync(battleId, playerId, cancellationToken);
+
+        if (result is null)
+        {
+            // §4: the documented failure for a result that does not exist or is
+            // not the caller's. The two are one answer by design (note 7).
+            return NotFound(new { error = BattleNotFoundErrorCode });
+        }
+
+        return Ok(BattleResultResponse.From(result));
+    }
+
+    /// <summary>
+    /// The documented <c>§4</c> error code for a result the caller cannot read —
+    /// a battle that does not exist, or one that is not theirs
+    /// (<c>API_CONTRACTS.md</c> §4, §6).
+    /// </summary>
+    private const string BattleNotFoundErrorCode = "BATTLE_NOT_FOUND";
 
     /// <summary>
     /// The documented <c>§6</c> error code for a rejection.

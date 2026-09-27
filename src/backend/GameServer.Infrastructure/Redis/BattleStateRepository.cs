@@ -21,7 +21,8 @@ namespace GameServer.Infrastructure.Redis;
 /// <b>What it implements.</b> Exactly the store <c>REDIS_STATE.md</c> §1
 /// defines — one key per battle, holding the serialized authoritative
 /// <c>BattleState</c> — with §3's lifecycle (created on battle creation,
-/// sliding expiry refreshed on a successful resolution), §4's <c>Sequence</c>
+/// sliding expiry refreshed on a successful resolution, explicitly deleted at
+/// battle end once the durable result has been written), §4's <c>Sequence</c>
 /// compare-and-set (the only concurrency token, §4 item 6), and §4 item 5's one
 /// write-back per resolution. It adds no key, no hash field, no index, and no
 /// second record: §1 fixes the key set at one state key (the optional lock key
@@ -268,5 +269,32 @@ public sealed class BattleStateRepository : IBattleStateRepository
         // item 2: a refusal is the caller's signal to retry against fresh state,
         // and the newer authoritative state was left untouched.
         return (long)result == 1;
+    }
+
+    /// <inheritdoc />
+    public async Task DeleteAsync(string battleId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
+
+        // REDIS_STATE.md §3 "Deleted: explicitly, when BattleWon/BattleLost is
+        // resolved and the result has been written to PostgreSQL": this is that
+        // delete, and it is the whole of it — one key, no second record, no
+        // per-battle index, and no tombstone left behind.
+        //
+        // The ordering rule belongs to the caller (ARCHITECTURE.md §4 item 4,
+        // DATABASE.md §1 sourcing item 3): a terminal path may only reach here
+        // after the durable result was written, because the active record is the
+        // only authoritative copy of a battle that was never durably recorded.
+        // This method deletes what it is asked to delete and does not second-guess
+        // that decision.
+        //
+        // Deleting an absent key is a no-op that reports success: an abandoned
+        // battle whose record already expired (§3) and a record a concurrent
+        // resolution already cleared have both reached the documented end state —
+        // the key is gone — and neither is an error for the caller. The command's
+        // own boolean is therefore deliberately not surfaced as a failure.
+        await _connection.GetDatabase()
+            .KeyDeleteAsync(StateKey(battleId))
+            .ConfigureAwait(false);
     }
 }

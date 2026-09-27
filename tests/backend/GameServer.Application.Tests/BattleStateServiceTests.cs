@@ -645,22 +645,42 @@ public class BattleStateServiceTests
         // persistence, and §7 leaves PetState's persistence equally unchanged
         // (SIGNALR_PROTOCOL.md §4.3 item 12). The service writes nothing but the one
         // documented active-state record: §7 items 1–2 permit no partial state and no
-        // second key, and GAME_STATE.md §2.0.4 item 3 permits nothing to PostgreSQL.
+        // second key, and GAME_STATE.md §2.0.4 item 3 permits nothing to PostgreSQL
+        // during an ordinary action resolution — TDD.md §4 item 3 keeps PostgreSQL
+        // off the hot path.
         //
         // The two dictionaries are the battle's Pet loadout input and the battle's
         // Boss definition (BOSS_RULES.md §6.2–§6.4's static content, which BossState
         // deliberately does not duplicate); neither is a REDIS_STATE.md store. The
-        // remaining two fields are the ONE documented store the active-state record
-        // is written through and the seed source; no fifth field (cache, bus, logger,
-        // or a second store) was introduced.
+        // remaining fields are the ONE documented store the active-state record is
+        // written through, the seed source, and the durable battle result boundary
+        // the terminal paths invoke (ARCHITECTURE.md §4 item 4, DATABASE.md §1).
+        // No cache, bus, logger, or second store was introduced.
         var fields = typeof(BattleStateService)
             .GetFields(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
             .Select(f => f.Name)
             .ToArray();
 
         Assert.Equal(
-            ["_bossConfiguration", "_petConfiguration", "_repository", "_seedSource"],
+            [
+                "_battleResults",
+                "_bossConfiguration",
+                "_petConfiguration",
+                "_repository",
+                "_seedSource",
+                "_unpersistedResults",
+            ],
             fields.OrderBy(n => n, StringComparer.Ordinal));
+
+        // The durable boundary is reached through the Application contract, not
+        // through a PostgreSQL or lifetime-specific type held here: the resolution
+        // still names no database, and active-state persistence is still the
+        // store's alone.
+        Assert.Equal(
+            typeof(GameServer.Application.Battle.IBattleResultPersistence),
+            typeof(BattleStateService)
+                .GetField("_battleResults", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                .FieldType);
     }
 
     // -----------------------------------------------------------------------

@@ -1,6 +1,8 @@
 # Redis State
 
-**Version:** 1.5 (§3 battle-end delete-failure behaviour: no retry, no
+**Version:** 1.6 (§3's battle-end delete is implemented by TASK-041 — the §7
+status note's sequencing boundary is closed: the `BattleResult` write happens
+first and the record is deleted only after it; prior 1.5: §3 battle-end delete-failure behaviour: no retry, no
 worker/queue — the sliding TTL remains the cleanup path and the documented
 maximum lifetime of the active-state record; at-most-one-result-row
 guarantee via `BattleResultId` = `BattleId` (`DATABASE.md` §1); prior 1.4:
@@ -386,8 +388,22 @@ Full active battle state          Full BattleState (GAME_STATE.md §2)
     > they say about *staged subsets*: no foundation or board-foundation record is
     > ever written here, and §1's key set is unchanged.
     >
-    > `§3`'s explicit delete on battle end remains **not implemented**: it is
-    > conditioned on the `BattleResult` write to PostgreSQL (`DATABASE.md`), which
-    > does not exist yet. Until it does, the TTL governs the key's expiry, exactly
-    > as §3 and `TDD.md` §4.2 ("TTL or explicit delete") allow. This is a
-    > sequencing boundary of its own task, not a gap in the record's lifecycle.
+    > `§3`'s explicit delete on battle end **is now implemented** (TASK-041). The
+    > sequencing boundary this note recorded is closed:
+    >
+    > - a resolution that emits `BattleWon`/`BattleLost` writes the durable
+    >   `BattleResult` row to PostgreSQL **first** (`DATABASE.md` §1,
+    >   `ARCHITECTURE.md` §4 item 4), and
+    > - `battle:{battleId}:state` is deleted only after that write succeeded
+    >   (`IBattleStateRepository.DeleteAsync`, implementation
+    >   `GameServer.Infrastructure.Redis.BattleStateRepository`).
+    >
+    > When the result write does **not** happen — no `BossDefinition` row resolves
+    > for the battle's Identity, or PostgreSQL fails — the delete does not happen
+    > either, and the record above remains the battle's recoverable authoritative
+    > state (`DATABASE.md` §1 "Identity and reward sourcing" item 3). When the
+    > write succeeds and the delete fails, §3's paragraph above applies unchanged:
+    > no retry, no worker, the TTL is the cleanup path, and `BattleResultId` =
+    > `BattleId` makes a second result impossible. The TTL therefore remains the
+    > documented maximum lifetime of the active-state record in every case, and
+    > the deferral recorded at the top of this section is fully discharged.

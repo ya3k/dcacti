@@ -75,8 +75,22 @@ public sealed class BossDefinitionConfiguration : IEntityTypeConfiguration<BossD
 
         // DATABASE.md §1/§3: Identity — the canonical technical Boss ID from
         // the BossId value wrapper; NOT NULL, UNIQUE (the §1 FK-lookup target).
+        //
+        // The converter is bound to the property so a query can compare the
+        // column directly: the battle-end lookup filters on `Identity`, and a
+        // value-typed wrapper whose `.Value` is only reachable inside the
+        // expression tree would not translate to SQL. With the conversion
+        // declared here, `definition.BossId == new BossId(identity)` — and the
+        // equivalent comparison written as a projection over the wrapper — is a
+        // plain column comparison at the provider.
         builder.Property(definition => definition.BossId)
-            .HasConversion(id => id.Value, value => new BossId(value))
+            .HasConversion(
+                id => id.Value,
+                value => new BossId(value),
+                new ValueComparer<BossId>(
+                    (left, right) => left.Equals(right),
+                    id => id.GetHashCode(),
+                    id => new BossId(id.Value)))
             .HasColumnName("Identity")
             .HasMaxLength(64)
             .IsRequired();

@@ -1,6 +1,14 @@
 # Database
 
-**Version:** 1.13 (§1 `BossDefinition` provisioning **implementation
+**Version:** 1.14 (§1 "Identity and reward sourcing for `BattleResult`"
+clarified per TASK-056 human decision: **`BattleResult` persistence requires
+no Player combat-readiness condition** — the documented prerequisites are
+unchanged and no `IsCombatReady` predicate is part of the contract;
+the pre-existing duplicate item-3 numbering is deliberately left as-is
+(the new item is inserted as a third item 3, adjacent to the
+unresolved-`BossDefinition` fail-closed rule it belongs with, and no item
+was renumbered); no ADR is required because this document is the canonical
+owner of the contract; prior 1.13: §1 `BossDefinition` provisioning **implementation
 complete** in TASK-053 — migration
 `20260926151112_ProvisionBossDefinitions` carries the three `InsertData`
 rows, is applied through the existing `dotnet ef database update` workflow,
@@ -457,6 +465,42 @@ BattleResult
      value is resolved from authoritative data; this item guarantees that a
      missing definition can never corrupt the FK contract or destroy
      recoverable state.
+3. **`BattleResult` persistence requires NO Player combat-readiness condition.**
+   (TASK-056 human decision) The prerequisites for writing a `BattleResult` row
+   are exactly the ones documented in this section — item 1 (one row per
+   battle), item 2 (identity sourcing from authoritative battle state), the
+   unresolvable-`BossDefinition` fail-closed rule above, and the duration/
+   completion/outcome sourcing and `RewardSummary` staging value documented
+   below. **There is no separate Player combat-readiness prerequisite**, and no
+   `IsCombatReady` predicate is part of the `BattleResult` persistence contract.
+   The battle-end path must not consult, require, or evaluate any Player-side
+   eligibility condition before writing the durable result:
+   - **Not a condition of the write, in either direction.** An account being
+     "ready" or "not ready" is not an input: the battle-end write neither
+     requires a positive readiness value nor fails closed on a negative one.
+     The only fail-closed condition on this path is the unresolved
+     `BossDefinition` above, which is unchanged and independent of this item.
+   - **No Player-side predicate may be substituted for it.** Authenticated
+     session validity, battle ownership, owning a Pet, owning Cards or Relics,
+     a valid loadout, or any Player Level threshold are governed by their own
+     contracts — authentication and result-read authorization by §1's global
+     session rule and `API_CONTRACTS.md` §2.8/§4 note 7, loadout validity by
+     `API_CONTRACTS.md` §3 at **battle start** — and none of them is a
+     battle-end persistence condition. Conflating any of them with
+     `BattleResult` persistence would add a prerequisite this contract does not
+     define.
+   - **The Player entity gains no column and no state member.** `Player`
+     remains the four documented columns (item 1, entity block above;
+     `ADR-011`, `ADR-012`); `BattleState` gains no lifecycle or readiness
+     member (`GAME_STATE.md` §2.0.3).
+   - **This item resolves a code↔contract mismatch, not a design change.**
+     The authoritative documents never defined a readiness concept; an
+     implementation of the battle-end path (TASK-041) introduced one together
+     with a citation to this section that this section never contained.
+     TASK-056 recorded the human decision that the implementation, not this
+     contract, was wrong; removing that unsupported mechanism is the subject of
+     a separate implementation reconciliation task and is not a change to any
+     rule recorded here.
 3. **`RewardSummary`'s member list is owned by TASK-033** (reward
    magnitudes, XP, and line-item shape — `PET_RULES.md` §5,
    `MVP_SCOPE.md` §1). Until that task defines it, the documented staging

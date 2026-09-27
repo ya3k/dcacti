@@ -36,6 +36,13 @@ public sealed class ApiTestBattleStateRepository : IBattleStateRepository
     /// <summary>Number of battle records currently stored.</summary>
     public int RecordCount => _records.Count;
 
+    /// <summary>
+    /// How many <see cref="DeleteAsync"/> calls this double has received, so a test
+    /// can assert the documented battle-end clear happened on the terminal path
+    /// (<c>REDIS_STATE.md</c> §3).
+    /// </summary>
+    public int DeleteCount { get; private set; }
+
     /// <inheritdoc />
     public Task CreateAsync(BattleState state, CancellationToken cancellationToken = default)
     {
@@ -81,5 +88,25 @@ public sealed class ApiTestBattleStateRepository : IBattleStateRepository
         _records[state.BattleId] = state;
 
         return Task.FromResult(true);
+    }
+
+    /// <summary>
+    /// The documented battle-end delete (<c>REDIS_STATE.md</c> §3). Recorded
+    /// rather than merely performed so the API tests can assert that a completed
+    /// battle's record was cleared, and that the clear happened on the terminal
+    /// path only.
+    /// </summary>
+    public Task DeleteAsync(string battleId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
+
+        DeleteCount++;
+
+        // §3: deleting an absent record is the documented no-op — an abandoned
+        // battle whose TTL already elapsed, or one a concurrent resolution
+        // cleared, has reached the same end state.
+        _records.TryRemove(battleId, out _);
+
+        return Task.CompletedTask;
     }
 }
