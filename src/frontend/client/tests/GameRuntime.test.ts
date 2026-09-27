@@ -19,6 +19,12 @@ class FakeSignalR {
   public connectId: string | null = 'conn-1';
   /** Mirrors the real service: `on()` requires a live connection. */
   public connected = false;
+  /** Every `swap()` call the runtime made, in order (SIGNALR_PROTOCOL.md §2.1). */
+  public swapCalls: Array<[string, number, number, string]> = [];
+  /** The acknowledgement `swap()` resolves with; overridden per case. */
+  public swapResult: { accepted: boolean; reason?: string | null } = { accepted: true };
+  /** When set, `swap()` rejects with it — a transport failure (§8.3). */
+  public swapBehaviour: (() => Promise<never>) | null = null;
 
   setHandlers(handlers: SignalRConnectionHandlers): void {
     this.handlers = handlers;
@@ -34,6 +40,20 @@ class FakeSignalR {
   async disconnect(): Promise<void> {
     this.disconnectCalls += 1;
     this.connected = false;
+  }
+
+  async swap(
+    battleId: string,
+    fromCell: number,
+    toCell: number,
+    clientSequence: string
+  ): Promise<{ accepted: boolean; reason?: string | null }> {
+    if (this.swapBehaviour) {
+      return await this.swapBehaviour();
+    }
+
+    this.swapCalls.push([battleId, fromCell, toCell, clientSequence]);
+    return this.swapResult;
   }
 
   on<TArgs extends unknown[]>(
@@ -911,12 +931,170 @@ describe('GameRuntime', () => {
   });
 
   describe('client → server request boundary', () => {
-    it('exposes the boundary without implementing gameplay actions', async () => {
-      const { runtime } = createRuntime();
+    /**
+     * TASK-069 stage advance. This block previously asserted only that
+     * `requestAction({ kind: 'Swap' })` rejects with
+     * `RuntimeActionNotImplementedError`, because no gameplay action was
+     * implemented at all. `SIGNALR_PROTOCOL.md` §2.1's Swap contract existed in
+     * docs and on the server (`BattleHub.Swap`) with no client half; TASK-069
+     * implements it, so the Swap assertions are replaced by the documented path.
+     *
+     * Every property that still holds is preserved below: an unknown action
+     * kind, `CardCast`, `PetSkillCast`, and `GetBattleState` all still reject,
+     * and no client-side gameplay is introduced.
+     */
 
-      await expect(runtime.requestAction({ kind: 'Swap' })).rejects.toBeInstanceOf(
-        RuntimeActionNotImplementedError
-      );
+    /**
+     * A joined battle: the runtime holds the state the server pushed
+     * (SIGNALR_PROTOCOL.md §4), which is where it sources `battleId`.
+     */
+    async function joinedRuntime() {
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-42' }));
+      return { runtime, transport };
+    }
+
+    it('routes the documented Swap action to the transport', async () => {
+      const { runtime, transport } = await joinedRuntime();
+
+      const acknowledgement = await runtime.requestAction({
+        kind: 'Swap',
+        fromCell: 12,
+        toCell: 13,
+      });
+
+      // MATCH3_RULES.md §2.1.1 / SIGNALR_PROTOCOL.md §2.1: exactly the four
+      // documented arguments, in order — the battle, the two §1.0 cell indices,
+      // and the opaque client correlation id.
+      expect(transport.swapCalls).toHaveLength(1);
+      const [battleId, fromCell, toCell, clientSequence] = transport.swapCalls[0];
+
+      expect(battleId).toBe('battle-42');
+      expect(fromCell).toBe(12);
+      expect(toCell).toBe(13);
+      expect(typeof clientSequence).toBe('string');
+      expect(clientSequence.length).toBeGreaterThan(0);
+
+      // §5: the acknowledgement is returned to the caller unchanged.
+      expect(acknowledgement).toEqual({ accepted: true });
+    });
+
+    it('sources battleId from the state the server pushed, not the caller', async () => {
+      const { runtime, transport } = await joinedRuntime();
+
+      // The request shape carries no battle id at all (SIGNALR_PROTOCOL.md
+      // §2.1: the transport identifies the battle), so the runtime can only use
+      // the one it received.
+      await runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 });
+
+      expect(transport.swapCalls[0][0]).toBe('battle-42');
+    });
+
+    it('does not require the correlation id to equal the server sequence', async () => {
+      // SIGNALR_PROTOCOL.md §2 item 1 / MATCH3_RULES.md §2.1.4 item 1:
+      // `clientSequence` is opaque, is NOT `BattleState.Sequence`, and is never
+      // used to reject a stale action. The client is never required to track a
+      // server number for its Swap to be accepted.
+      const { runtime, transport } = await joinedRuntime();
+
+      const state = runtime.getBattleState()!;
+      expect(state.sequence).toBe(0);
+
+      await runtime.requestAction({ kind: 'Swap', fromCell: 4, toCell: 5 });
+
+      expect(transport.swapCalls[0][3]).not.toBe(String(state.sequence));
+    });
+
+    it('generates a distinct opaque correlation id per request', async () => {
+      const { runtime, transport } = await joinedRuntime();
+
+      await runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 });
+      await runtime.requestAction({ kind: 'Swap', fromCell: 2, toCell: 3 });
+
+      const first = transport.swapCalls[0][3];
+      const second = transport.swapCalls[1][3];
+
+      expect(first).not.toBe(second);
+    });
+
+    it('resolves with a rejection without mutating any state', async () => {
+      // SIGNALR_PROTOCOL.md §5 item 2 / MATCH3_RULES.md §2.1.5: a rejected swap
+      // is a gameplay no-op. The client mutates nothing, and the reason is
+      // surfaced as received.
+      const { runtime, transport } = await joinedRuntime();
+      transport.swapResult = { accepted: false, reason: 'NO_MATCH_FROM_SWAP' };
+
+      const before = runtime.getBattleState();
+
+      const acknowledgement = await runtime.requestAction({
+        kind: 'Swap',
+        fromCell: 12,
+        toCell: 13,
+      });
+
+      expect(acknowledgement).toEqual({ accepted: false, reason: 'NO_MATCH_FROM_SWAP' });
+      // Board, turn, and sequence are exactly what the server pushed: the
+      // runtime recomputed nothing and derived nothing.
+      expect(runtime.getBattleState()).toEqual(before);
+      expect(runtime.getBattleState()!.board.cells).toEqual(before!.board.cells);
+    });
+
+    it('reports the unknown-battle rejection the hub returns', async () => {
+      // BattleHub.Swap's unknown-battle path returns accepted:false with
+      // BATTLE_NOT_FOUND. The runtime passes it through uninterpreted.
+      const { runtime, transport } = await joinedRuntime();
+      transport.swapResult = { accepted: false, reason: 'BATTLE_NOT_FOUND' };
+
+      const acknowledgement = await runtime.requestAction({
+        kind: 'Swap',
+        fromCell: 0,
+        toCell: 8,
+      });
+
+      expect(acknowledgement.reason).toBe('BATTLE_NOT_FOUND');
+    });
+
+    it('sends no request when no battle state is known', async () => {
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      await expect(
+        runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 })
+      ).rejects.toThrow(/No battle state is known/);
+
+      expect(transport.swapCalls).toEqual([]);
+    });
+
+    it('propagates a transport failure without mutating state', async () => {
+      const { runtime, transport } = await joinedRuntime();
+      transport.swapBehaviour = async () => {
+        throw new Error('SignalR connection is not established.');
+      };
+
+      await expect(
+        runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 })
+      ).rejects.toThrow('SignalR connection is not established.');
+
+      // A failed request is a transport failure — presentation state, not game
+      // state (SIGNALR_PROTOCOL.md §8.3).
+      expect(runtime.getBattleState()!.battleId).toBe('battle-42');
+    });
+
+    it('still rejects every action kind the client does not implement', async () => {
+      const { runtime, transport } = await joinedRuntime();
+
+      // `CardCast` and `PetSkillCast` (SIGNALR_PROTOCOL.md §2) and
+      // `GetBattleState` (§7) are not implemented by the server
+      // (BattleHub_ShouldNotRegisterGameplayMethods) and must stay unavailable
+      // on the client. An unmodelled kind is rejected, and nothing is sent.
+      for (const kind of ['CardCast', 'PetSkillCast', 'GetBattleState', 'Unknown']) {
+        await expect(runtime.requestAction({ kind } as never)).rejects.toBeInstanceOf(
+          RuntimeActionNotImplementedError
+        );
+      }
+
+      expect(transport.swapCalls).toEqual([]);
     });
   });
 });

@@ -54,15 +54,49 @@ public interface IPlayerRepository
     /// Returns the Player identified by <paramref name="playerId"/>, or
     /// <c>null</c> when no such Player exists.
     ///
-    /// The Pet Level recompute path reads <see cref="Player.Level"/> through
-    /// this lookup (<c>DATABASE.md</c> §1; ADR-012 Consequences) — it is a
-    /// read of the persistent account attribute, never a level-up step
-    /// (TASK-033 owns progression).
+    /// It is a pure read of the persistent account row
+    /// (<c>DATABASE.md</c> §1) — it never creates a Player and never rewrites a
+    /// value. The battle-end reward path reads the owning Player through this
+    /// lookup before applying the documented XP grant (<c>COMBAT_RULES.md</c>
+    /// §7.2).
     /// </summary>
     /// <param name="playerId">The Player's identifier (the auth boundary's
     /// <c>playerId</c>, <c>API_CONTRACTS.md</c> §2.5).</param>
     /// <param name="cancellationToken">Cancels the query.</param>
     Task<Player?> GetByIdAsync(
         string playerId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Persists a mutated Player's progression values — the one write this
+    /// boundary exposes (<c>DATABASE.md</c> §1, <c>COMBAT_RULES.md</c> §7.2).
+    ///
+    /// <b>Why the boundary gains exactly one member.</b> The Player's
+    /// <c>XP</c> and <c>Level</c> are persisted columns that the battle-end
+    /// reward path must maintain, and today's surface is read-only plus
+    /// match-or-create, so there is no way to store a mutated Player. Adding
+    /// this one operation keeps the change inside the existing boundary rather
+    /// than introducing a progression service, wallet, or manager
+    /// (<c>AGENTS.md</c> §9, <c>ARCHITECTURE.md</c> §5).
+    ///
+    /// <b>The caller owns the values; this boundary only stores them.</b> It
+    /// computes no XP and no Level: <see cref="Player.LevelForXp"/> owns the
+    /// documented relationship (<c>COMBAT_RULES.md</c> §7.4) and
+    /// <c>§7.2</c> owns the amount. A missing row is reported as absence
+    /// rather than silently creating a Player, so a reward can never bring a
+    /// Player into existence.
+    /// </summary>
+    /// <param name="player">
+    /// The Player whose current <see cref="Player.XP"/> and
+    /// <see cref="Player.Level"/> are to be stored. Its
+    /// <see cref="Player.PlayerId"/> identifies the row.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the write.</param>
+    /// <returns>
+    /// <c>true</c> when the row was found and updated; <c>false</c> when no
+    /// Player exists for that identifier, in which case nothing is written.
+    /// </returns>
+    Task<bool> SaveProgressionAsync(
+        Player player,
         CancellationToken cancellationToken = default);
 }

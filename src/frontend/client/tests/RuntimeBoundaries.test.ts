@@ -230,16 +230,35 @@ describe('Frontend architectural boundaries', () => {
       }
     });
 
-    it('the client exposes no gameplay Hub methods', () => {
+    it('the client invokes exactly the documented gameplay Hub methods', () => {
       const code = stripComments(readSource(join('services', 'realtime', 'SignalRService.ts')));
 
-      // SIGNALR_PROTOCOL.md §2/§7 own these; implementing them is gameplay.
-      // `JoinBattle` (§1.2) is the only client → server method the foundation
-      // adds, and it is a group join, not a gameplay action.
-      expect(code).not.toMatch(/invoke<[^>]*>\('Swap'/);
+      // TASK-069 stage advance. This assertion previously read "the client
+      // exposes no gameplay Hub methods", because the runtime foundation stage
+      // implemented only `JoinBattle`. The Swap contract already existed in
+      // SIGNALR_PROTOCOL.md §2.1 and on the server (BattleHub.Swap) and had no
+      // client half; TASK-069 implements that half, so `'Swap'` now IS invoked.
+      //
+      // Every property that still holds is preserved: the other documented
+      // gameplay methods stay absent, and `JoinBattle` stays present.
+      const invoked = [...code.matchAll(/invoke(?:<[^>]*>)?\(\s*'([^']+)'/g)].map((m) => m[1]);
+      expect(invoked.sort()).toEqual(['JoinBattle', 'Ping', 'Swap']);
+
+      // `Swap` is the one documented client → server gameplay method
+      // (SIGNALR_PROTOCOL.md §2, §2.1).
+      expect(code).toMatch(/invoke<[^>]*>\(\s*'Swap'/);
+
+      // `CardCast`, `PetSkillCast` (§2) and `GetBattleState` (§7) remain
+      // unimplemented on the client because the server does not implement them
+      // — `BattleHub_ShouldNotRegisterGameplayMethods`
+      // (tests/backend/GameServer.Api.Tests/ApiIntegrationTests.cs) asserts
+      // exactly that. Adding them here would be client-side gameplay.
       expect(code).not.toMatch(/'CardCast'/);
       expect(code).not.toMatch(/'PetSkillCast'/);
       expect(code).not.toMatch(/'GetBattleState'/);
+
+      // `JoinBattle` (§1.2) is still the documented group join, and it is not a
+      // gameplay action.
       expect(code).toMatch(/'JoinBattle'/);
     });
 

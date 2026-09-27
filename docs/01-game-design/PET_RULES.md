@@ -1,11 +1,25 @@
 # Pet Rules
 
-**Version:** 1.4 (§5 derivation contract completed — multiplier type
+**Version:** 3.0 (§5 rewritten and **finalized** — the twelve Pet XP
+progression/reward decisions are now decided, not open: Pet.XP persists per
+instance, initial `0`, initial Level `1`, range 1–50, `BattleWon` grants the
+active combat Pet `+100`, `BattleLost` `+0`, inactive owned Pets `+0`,
+`Pet.Level = min(floor(Pet.XP / 100) + 1, 50)`, and Pet XP is hard-capped at
+`4900` (a deliberate divergence from the uncapped Player track). §5.2's open
+list is replaced by §5.2–§5.5; retired terms moved to §5.6; non-XP
+attributes moved to §5.7. Prior 2.0: §5 rewritten — Pet XP / Pet Level are
+now an independent
+two-track progression owned by the Pet instance, superseding the
+`Player.Level × PetDefinition.PetLevelMultiplier` derivation, which is
+**RETIRED**; the twelve open Pet XP balance decisions are recorded in §5.2
+as unresolved human gameplay decisions; superseded decisions recorded in
+ADR-016. Prior 1.4: §5 derivation contract completed — multiplier type
 `decimal`, range `> 0`, `floor` rounding, floor → clamp order, one
 canonical rule for stored and battle Pet Level, concrete MVP multipliers
 deferred; prior 1.3: §5 item 8 added — a newly created Player starts at
 Level 1; prior 1.2: §5 resolved — Player Level defined in MVP, Pet Level =
-clamp(Player Level × Pet Level Multiplier, 1, 50), Tier/Star remain
+clamp(Player Level × Pet Level Multiplier, 1, 50) (**RETIRED** as of 2.0 —
+see `ADR-016`), Tier/Star remain
 independent, Evolution out of scope; §5.1 OPEN conflicts closed per
 ADR-012; prior 1.1: §2 ownership clarified)
 **Status:** MVP Domain Rule
@@ -24,11 +38,17 @@ Pet
 ├── Element            (exactly one of the Five Elements)
 ├── Tier                (Common / Rare / Epic / Legendary / Mythic)
 ├── Star                (1–5)
-├── Level               (1–50)
+├── XP                  (per-instance progression; feeds Level — §5;
+│                        0–4900, hard-capped — §5.5)
+├── Level               (per-instance progression derived from this Pet's
+│                        own XP — §5.4; range 1–50)
 ├── Stats               (HP, ATK, DEF, Crit, ... derived from Tier/Star/Level)
 ├── Passive             (see PASSIVE_RULES.md)
 └── Signature Skill      (see CARD_RULES.md §2, Pet Skill Card)
 ```
+
+`XP` and `Level` belong to the **owned Pet instance**, not to
+`PetDefinition` (§5.1, `DATABASE.md` §1).
 
 ---
 
@@ -97,129 +117,205 @@ Range: 1–5
 
 ```text
 Player Level range:  1–50   (persistent account attribute)
-Pet Level range:     1–50   (clamped result of the formula below)
+Pet Level range:     1–50   (§5.5)
 ```
 
-1. Pet Level is derived from the account's Player Level. The **canonical
-   rule** is exactly:
+This section is the **canonical owner** of the Pet XP → Pet Level
+progression contract. Other documents reference it; they do not restate it
+(`.ai/workflow/documentation/documentation-change.md` §2). The twelve
+decisions below were finalized by explicit product-owner decision; `ADR-016`
+records why the two-track ownership split exists.
 
-   ```text
-   Pet.Level = clamp(
-       floor(Player.Level × PetDefinition.PetLevelMultiplier),
-       1,
-       50
-   )
-   ```
+## 5.1 Pet XP and Pet Level Ownership
 
-   Operation order (this sequence and no other):
+1. **A Pet instance owns its own XP.** `Pet.XP` is a per-instance
+   progression attribute stored on the owned Pet instance
+   (`DATABASE.md` §1) — not on `PetDefinition` and not on the Player.
+2. **A Pet instance owns its own Level.** `Pet.Level` is a per-instance
+   progression attribute of the same owned Pet.
+3. **Pet Level is independent of Player Level.** Player Level is not an
+   input to Pet Level. Player owns account/meta progression
+   (`COMBAT_RULES.md` §7, ADR-016); the Pet owns independent
+   combat-character progression.
+4. **Pet Level is a function of Pet XP.** Pet Level is derived from the
+   Pet's own accumulating XP (§5.4) — not from any Player attribute and not
+   from `PetDefinition`.
+5. **Two independent tracks.** Player XP → Player Level and Pet XP → Pet
+   Level are separate tracks that neither read nor modify each other
+   (ADR-016). They share a formula *shape* (§5.4) but no variable, no pool,
+   and no stored value.
+6. **Pet XP persists permanently with the Pet instance.** It is not reset
+   by battle outcome, by changing the active Pet, or by any other event.
+   `PetDefinition` remains static template data and never holds instance
+   progression.
 
-   ```text
-   1. Calculate Player.Level × PetDefinition.PetLevelMultiplier
-   2. Apply floor to the product
-   3. Clamp the floored result to [1, 50]
-   4. Result is Pet.Level
-   ```
+## 5.2 Initial Values
 
-   `Pet Level Multiplier` (`PetDefinition.PetLevelMultiplier`) is a
-   per-Pet **configuration value** owned by `PetDefinition` (never
-   hard-coded inside gameplay logic). Its semantics are:
+```text
+A newly created PlayerPet:
+    Pet.XP    = 0
+    Pet.Level = 1
+```
 
-   ```text
-   Type:  decimal
-   Range: > 0        (values below 1 are legal — a Pet may lag its owner;
-                      zero and negative values are not)
-   ```
+`Pet.XP = 0` yields `Pet.Level = 1` under the §5.4 formula, so the two
+initial values are consistent by construction, not by separate tuning.
 
-   Rounding is **`floor`**, applied to the product **before** the clamp.
-   The clamp then bounds the floored result to the 1–50 range above; it
-   does not re-define Player Level's own 1–50 range and does not
-   supersede either range. There is no round-after-clamp step: clamp is
-   always the last operation.
+## 5.3 Pet Battle Reward Targeting Semantics
 
-   Worked examples (authoritative):
+This subsection is the canonical owner of the Pet reward rule. Items 5–8 of
+the finalized decision set are **one** coherent rule, stated here end-to-end:
 
-   ```text
-   Player.Level = 3,  Multiplier = 1.5  →  3 × 1.5 = 4.5  → floor = 4  → clamp = 4
-   Player.Level = 40, Multiplier = 2    →  40 × 2 = 80    → floor = 80 → clamp = 50
-   Player.Level = 1,  Multiplier = 0.5  →  1 × 0.5 = 0.5  → floor = 0  → clamp = 1
-   ```
+```text
+BattleWon
+ ├── Player    receives  +100 Player XP   (Player track — COMBAT_RULES.md §7)
+ └── Active combat Pet receives  +100 Pet XP
 
-2. **One canonical rule for every representation of Pet.Level.** The
-   formula and operation order in item 1 are the single derivation rule
-   for Pet Level. They apply identically to:
+BattleLost
+ ├── Player    receives  +0 Player XP     (Player track — COMBAT_RULES.md §7)
+ └── Active combat Pet receives  +0 Pet XP
 
-   ```text
-   persistent Pet representation   (Pet.Level stored with the Pet instance —
-                                    DATABASE.md §1)
-   BattleState.PetState.Level      (battle-time Level under BattleState —
-                                    GAME_STATE.md §2.3)
-   ```
+Inactive owned Pets
+ └── +0 Pet XP from that battle
+```
 
-   Implementation must not define a different battle-time formula,
-   rounding rule, or clamp order. The battle-time Level is a snapshot of
-   the same derived value, not a second derivation path.
+1. **Only the active combat Pet receives battle XP.** The recipient is the
+   Pet associated with that battle's combat state — the same Pet that
+   fought (`GAME_STATE.md` §2.3). One battle awards Pet XP to exactly one
+   Pet.
+2. **A `BattleLost` grants the active combat Pet `+0` Pet XP.** This is an
+   explicit Pet decision; it is not inherited from the Player track's `+0`.
+3. **Inactive owned Pets receive `+0` Pet XP from that battle.** There is
+   **no** passive XP, **no** shared XP, **no** party-wide XP, and **no**
+   account-wide Pet XP distribution.
+4. **To train a Pet, that Pet must be the active combat Pet.** There is no
+   alternative progression path.
+5. **No other reward cases exist.** A draw, timeout, disconnect, or
+   spectator state grants no Pet XP, and no additional reward case may be
+   introduced without a new human gameplay decision (`GAME_RULES.md` §20).
 
-3. **Concrete MVP Pet Level Multiplier values are deferred.** The
-   five MVP Pets' `PetLevelMultiplier` numbers are balance/configuration
-   values (same classification as the exact Player Level XP curve —
-   ROADMAP Phase 3 balance pass on all configurable values). They are
-   not defined in this document. Do not invent them in rules, tasks, or
-   code comments.
+**Player XP is unaffected by this subsection.** The Player reward is owned
+by `COMBAT_RULES.md` §7 and is frozen; this subsection neither modifies nor
+re-derives it.
 
-4. Pets have no independent XP progression — there is no Pet XP bar, no
-   XP gain from battles, and no Pet-level-up action. Player Level itself
-   increases through Meta Progression battle Rewards (GDD §14,
-   `MVP_SCOPE.md` §1); the exact XP curve is a balance/config concern and
-   is not defined in this document.
+## 5.4 Pet XP → Pet Level Formula
 
-5. Player Level carries **no combat stats**. It is an account-level
+```text
+Pet.Level = min(floor(Pet.XP / 100) + 1, 50)
+```
+
+Worked boundaries (authoritative):
+
+```text
+Pet.XP = 0      →  Pet Level 1
+Pet.XP = 100    →  Pet Level 2
+Pet.XP = 4900   →  Pet Level 50
+```
+
+The formula is deterministic and total over the valid Pet XP domain
+`[0, 4900]` (§5.5). `Pet.XP = 4900` corresponds to 49 `BattleWon` rewards
+of 100 Pet XP.
+
+### Reward Amount vs. Curve Constant
+
+Following the same distinction the Player track documents
+(`COMBAT_RULES.md` §7.3), these are **two independent concepts** that
+currently happen to share the value `100`:
+
+```text
+Pet XP reward amount          = 100   (MVP initial value — CONFIGURATION)
+Pet XP-per-level curve constant = 100 (part of the progression FORMULA)
+```
+
+Changing either one must never silently rewrite the other, and neither is
+derived from the Player track's corresponding value.
+
+### Relationship to the Player Curve
+
+1. **Same formula shape.** Player and Pet use the identical formula shape
+   `min(floor(XP / 100) + 1, 50)` (`COMBAT_RULES.md` §7.4). This is an
+   explicit decision, chosen to keep MVP progression simple — not an
+   inherited default.
+2. **Independent pools.** The two tracks remain independent progression
+   pools. Pet XP is never derived from Player XP, and Pet Level is never
+   derived from Player Level.
+3. **Independent reward amounts.** The reward amounts are independently
+   configurable. Both currently equal `100`, which does **not** mean the two
+   tracks share an XP pool or a progression variable.
+
+## 5.5 Pet XP Cap and Post-Cap Behavior
+
+```text
+Pet Level maximum = 50
+Pet XP maximum    = 4900
+```
+
+1. **`Pet.XP` has a hard maximum of 4900.** It is not uncapped.
+2. **Pet XP stops accumulating at Level 50.** Once a Pet reaches Level 50
+   its stored XP is `4900` and further Pet XP rewards do not accumulate —
+   they are neither awarded nor stored.
+3. **No overflow is retained.** There is no XP overflow, no hidden XP, no
+   prestige XP, and no post-Level-50 accumulation.
+4. **Level and XP caps are separate facts, and both are documented.** The
+   Level cap (50) and the XP cap (4900) are distinct: the formula's
+   `min(…, 50)` bounds the Level, while the XP cap bounds the stored XP.
+   Stating only "Level is capped" would leave XP accumulation ambiguous,
+   which is why both are fixed here.
+
+### Deliberate Divergence From the Player Track
+
+```text
+                         Player track          Pet track
+──────────────────────   ──────────────────    ──────────────────
+Reward per BattleWon     +100                   +100
+Level formula            min(floor(XP/100)+1, 50)  min(floor(XP/100)+1, 50)
+Level maximum            50                     50
+XP maximum               NONE (uncapped)        4900 (HARD CAP)
+XP after Level 50        keeps accumulating     not awarded / not stored
+```
+
+This is an **intentional divergence**: Player XP is uncapped (it is
+account/content progression that keeps accumulating), while Pet XP is
+hard-capped at 4900 at Level 50 to avoid unnecessary MVP
+overflow/prestige complexity. Neither track's cap rule may be applied to
+the other.
+
+## 5.6 Retired Terms Are Not Reused
+
+1. **The `Player.Level × PetLevelMultiplier` derivation is RETIRED.** Pet
+   Level is no longer derived from Player Level, and `PetLevelMultiplier`
+   has **no role** in the Pet XP model. It is not an XP curve multiplier,
+   not an XP reward multiplier, and not a Pet Level input, and it must not
+   be retained or reinterpreted for any such purpose without an explicit
+   human gameplay decision (`GAME_RULES.md` §20).
+2. **`PetDefinition` does not own instance XP or instance Level.**
+   `PetDefinition` remains static content (Identity, Element, and its
+   content-defined fields); per-instance progression belongs to the owned
+   `Pet` row (`DATABASE.md` §1, ADR-016).
+3. **The term `Player Level` in this document means the Player's own
+   account Level only** (`COMBAT_RULES.md` §7). Nothing in this document
+   derives any Pet attribute from it.
+4. **There is no Evolution system.** No Evolution system exists in any
+   rule document; if introduced later it must go through
+   `GAME_RULES.md` §20 and `MVP_SCOPE.md` §4 (FUTURE by default). There is
+   no Level/Evolution interaction to specify.
+
+## 5.7 Non-XP Pet Attributes (unchanged)
+
+1. Player Level carries **no combat stats**. It is an account-level
    progression value only; battle-time HP/ATK/DEF/Crit/Power live on
    `PetState` (`GAME_STATE.md` §2.3, ADR-011).
-
-6. Level primarily scales base stats (HP/ATK/DEF) via a stat curve.
-7. Level does not change Element, Tier, Passive trigger type, or Signature
+2. Level scales base stats (HP/ATK/DEF) via a stat curve. The curve itself
+   is a balance concern, not defined here.
+3. Level does not change Element, Tier, Passive trigger type, or Signature
    Skill identity — only magnitude, where applicable.
-8. Exact level curve (linear/exponential/tabled) is a balance concern defined
-   in COMBAT_RULES.md / config, not here.
-9. **Tier and Star remain independent progression axes.** They are not
-   derived from Player Level. Only Pet Level is account-derived
-   (resolution recorded in §5.1).
-10. **A newly created Player starts at Level 1.** This is the documented
-    initial value of the `Player.Level` attribute defined above — the
-    value a Player row carries when it is first created. It is an
-    initial-value rule only: it defines no XP amount, no XP curve, no
-    level-up threshold, and no rate of increase. How Player Level
-    increases is stated at the mechanism level in item 4, and the
-    increase curve remains undefined (item 4, §5.1 item 4).
-
-## 5.1 Former OPEN Conflicts — Resolved (ADR-012)
-
-The three conflicts previously reported under this heading are resolved
-as follows, and item 4 records the initial value added in version 1.3;
-this document no longer carries open items in §5:
-
-1. **Player Level is defined for MVP.** Range 1–50, persistent on the
-   Player account (`DATABASE.md` §1), listed IN in `MVP_SCOPE.md` §1,
-   increases via battle Rewards (Meta Progression). No combat stats
-   (§5 item 5).
-2. **The 1–50 level cap clamps the formula result.** `Pet.Level =
-   clamp(floor(Player.Level × PetDefinition.PetLevelMultiplier), 1, 50)`
-   (§5 item 1 — floor before clamp). Both Player Level and Pet Level
-   independently respect 1–50.
-3. **Tier and Star are not account-derived.** They remain independent
-   axes alongside the account-derived Level (§5 item 9);
-   `PET_RULES.md` §3–§4 are unchanged.
-4. **The initial Player Level is specified.** A newly created Player
-   starts at Level 1 (§5 item 10). This closes the one value the 1–50
-   range statement left open: a range defines the legal values an
-   attribute may hold, not the value it holds at creation. Item 10
-   records the initial value only; the increase curve remains a
-   balance/config concern and is not defined here (§5 item 4).
-
-**Evolution is out of scope.** No Evolution system exists in any rule
-document; if introduced later it must go through `GAME_RULES.md` §20 and
-`MVP_SCOPE.md` §4 (FUTURE by default). There is no Level/Evolution
-interaction to specify.
+4. **Tier and Star remain independent progression axes.** They are not
+   derived from Player Level and not derived from Pet XP. §3–§4 are
+   unchanged.
+5. **A newly created Player starts at Level 1.** This is the documented
+   initial value of the `Player.Level` attribute (`COMBAT_RULES.md` §7.5
+   item 3, `DATABASE.md` §3). It is the *Player's* initial value only. The
+   corresponding Pet initial values are `Pet.XP = 0` / `Pet.Level = 1`
+   (§5.2) — a separate decision.
 
 ---
 
@@ -231,11 +327,11 @@ Final in-battle Pet stats are derived from all progression axes combined:
 Final Stat = f(Base Stat[Tier], Level Curve[Level], Star Bonus[Star])
 ```
 
-Here `Level` is the Pet Level defined in §5 (`clamp(floor(Player Level × Pet
-Level Multiplier), 1, 50)`, config). The exact function `f` is a
-balance/config concern. This document only fixes that all three axes
-(Tier, Level, Star) contribute, and that none of them alone is the sole
-source of power growth (reinforcing GAME_RULES.md §9.8).
+Here `Level` is the Pet's own Level defined in §5, derived from that Pet
+instance's own XP (§5.4). The exact function `f` is a balance/config
+concern. This document only fixes that all three axes (Tier, Level, Star)
+contribute, and that none of them alone is the sole source of power growth
+(reinforcing GAME_RULES.md §9.8).
 
 ---
 

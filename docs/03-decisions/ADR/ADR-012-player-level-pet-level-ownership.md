@@ -1,6 +1,8 @@
 # ADR-012: Player Level, Pet Level Formula, Ownership/Equipment Boundaries, and MVP Scope Closure
 
-**Status:** Accepted
+**Status:** Accepted (items 3, 4, and 6 partially superseded by ADR-016 —
+see the supersession note at the end of the Decision section. All other
+items remain in force.)
 **Date:** 2026-09-24
 
 ## Context
@@ -104,6 +106,45 @@ migrations in this change):
     combat pool is introduced; BattleState shape is unchanged (no
     PlayerState node — ADR-011).
 ```
+
+---
+
+### Supersession note (ADR-016)
+
+The following parts of the Decision above are **superseded by ADR-016** and
+are preserved above as the historical record:
+
+```text
+Item 3   The Pet Level formula
+         Pet.Level = clamp(floor(Player.Level × PetDefinition.PetLevelMultiplier),
+                           1, 50)
+         and the `PetLevelMultiplier` per-Pet configuration value it
+         consumes.
+         REPLACED BY: Pet Level is a function of the Pet instance's own XP
+         and is independent of Player Level (PET_RULES.md §5.1). The
+         `PetLevelMultiplier` field is RETIRED.
+         STILL IN FORCE in item 3: Player Level is an MVP persistent account
+         attribute with no combat stats — now owned by COMBAT_RULES.md §7.
+
+Item 4   The historical 1–50 range clamping the FORMULA RESULT.
+         REPLACED BY: the formula item 4 clamped no longer exists. Player
+         Level's own [1, 50] range remains in force (COMBAT_RULES.md §7);
+         the Pet Level range is now decided as [1, 50] (PET_RULES.md §5.5).
+
+Item 6   "There is no Pet XP system".
+         REPLACED BY: a Pet owns its own XP and Level (PET_RULES.md §5.1).
+         STILL IN FORCE in item 6: there is no Evolution system
+         (PET_RULES.md §5.6 item 4).
+```
+
+Everything else in this ADR is **unaffected** and remains Accepted —
+including item 1 (Player Level as a persistent account attribute), item 2
+(Player Level increases through battle Rewards; the amount and curve it
+left open are now owned by `COMBAT_RULES.md` §7), item 5 (Tier/Star
+independence), items 7–10 (Relic/Card ownership vs. battle-scoped equip),
+item 11 (fixed wire labels), and item 12 (MVP scope closure). The
+Consequences, Alternatives Considered, and rationale above are historical
+and are not rewritten.
 
 ## Consequences
 

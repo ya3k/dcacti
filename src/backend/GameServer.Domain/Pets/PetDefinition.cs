@@ -11,7 +11,6 @@ namespace GameServer.Domain.Pets;
 /// ├── PetDefinitionId    (PK)
 /// ├── Identity           ("Thanh Xà", "Xích Lang", ...)
 /// ├── Element            (exactly one of the Five Elements)
-/// ├── PetLevelMultiplier (decimal > 0 — configuration, never hard-coded)
 /// ├── PassiveId          (the Pet's one Passive identity — PASSIVE_RULES.md §1)
 /// └── PassiveThreshold   (the Passive's "every N Matches" threshold)
 /// </code>
@@ -20,15 +19,9 @@ namespace GameServer.Domain.Pets;
 /// static content shared by every owned copy; <c>Pet</c> is a Player's
 /// owned instance that references this definition
 /// (<c>DATABASE.md</c> §2: Pet N ── 1 PetDefinition). Tier, Star, Level,
-/// and AcquiredAt live on the instance, not here.
-///
-/// <b>The multiplier is configuration, not a constant.</b>
-/// <c>PetLevelMultiplier</c> is the per-Pet decimal input to
-/// <see cref="PetLevelDerivation.Derive"/> (<c>PET_RULES.md</c> §5 item 1,
-/// ADR-012 item 3). It is stored, not hard-coded, and concrete MVP values
-/// are deferred to balance (<c>PET_RULES.md</c> §5 item 3,
-/// <c>MVP_SCOPE.md</c> §1) — this type imposes no default value and invents
-/// none.
+/// and AcquiredAt live on the instance, not here. Per
+/// <c>PET_RULES.md</c> §5.6 item 2, per-instance progression (including
+/// XP and Level) is never stored on this definition.
 ///
 /// <b>PassiveDefinition is an identity plus threshold.</b>
 /// <c>DATABASE.md</c> §1 names the field "threshold/effect reference"; the
@@ -75,19 +68,6 @@ public class PetDefinition
     /// item 7).
     /// </summary>
     public Element Element { get; init; }
-
-    /// <summary>
-    /// The per-Pet Level Multiplier — decimal configuration, <c>&gt; 0</c>
-    /// (<c>PET_RULES.md</c> §5 item 1, <c>DATABASE.md</c> §1, §3,
-    /// ADR-012 item 3).
-    ///
-    /// It is the multiplier half of <see cref="PetLevelDerivation.Derive"/>'s
-    /// inputs and is stored on this definition so gameplay logic never
-    /// hard-codes it. Values below 1 are legal; zero and negative values are
-    /// not. Concrete MVP numbers are balance/config and are not defined
-    /// here (<c>PET_RULES.md</c> §5 item 3).
-    /// </summary>
-    public decimal PetLevelMultiplier { get; init; }
 
     /// <summary>
     /// The identity of this Pet's one Passive (<c>DATABASE.md</c> §1

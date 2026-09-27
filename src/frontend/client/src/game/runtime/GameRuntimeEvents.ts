@@ -248,30 +248,107 @@ export interface GameRuntimePort {
   /**
    * Request boundary for client → server actions (SIGNALR_PROTOCOL.md §2).
    *
-   * Deliberately unimplemented: no gameplay action input exists in this task.
-   * It exists so the architectural boundary is established (task §15) without
-   * inventing gameplay request shapes.
+   * The documented **swap** action is implemented: it submits the two §1.0 cell
+   * indices through the transport and resolves with the §5 acknowledgement. The
+   * remaining documented gameplay actions (`CardCast`, `PetSkillCast`) and
+   * `GetBattleState` are NOT implemented, and no other action kind is accepted —
+   * those still reject with `RuntimeActionNotImplementedError`.
+   *
+   * The runtime coordinates the request and nothing else: it does not decide
+   * whether a swap is legal, does not compute a match, cascade, combo, or
+   * damage, and does not mutate the board. The server resolves the action and
+   * the next authoritative push re-renders the client (`GAME_RULES.md` §18,
+   * ADR-001).
    */
-  requestAction(action: RuntimeActionRequest): Promise<never>;
+  requestAction(action: RuntimeActionRequest): Promise<RuntimeActionAcknowledgement>;
 }
 
 /**
- * Placeholder for a client → server gameplay action request.
+ * The action kind the runtime implements (`SIGNALR_PROTOCOL.md` §2.1).
  *
- * No concrete action (`Swap` / `CardCast` / `PetSkillCast`) is modelled: those
- * shapes are owned by SIGNALR_PROTOCOL.md §2 and implementing them is gameplay.
+ * The string is the documented hub method name, so the request carries the
+ * protocol's own action vocabulary rather than a second one invented here.
  */
-export interface RuntimeActionRequest {
-  readonly kind: string;
-  readonly [key: string]: unknown;
+export const RUNTIME_ACTION_SWAP = 'Swap';
+
+/**
+ * A client → server gameplay action request (SIGNALR_PROTOCOL.md §2).
+ *
+ * Only the documented **swap** shape is modelled, because it is the only action
+ * the client implements: the two §1.0 cell indices of the pair the player
+ * selected (`MATCH3_RULES.md` §2.1.1) and nothing else. No Gem type, match
+ * result, Combo, Turn, or `Sequence` value is carried — every such value is
+ * server-determined (`GAME_RULES.md` §18), and the request must not grow a member
+ * that could be authoritative.
+ *
+ * `battleId` is deliberately **not** a member: the runtime sources it from the
+ * battle state the server already pushed, so the scene cannot supply an
+ * identifier the runtime never received (SIGNALR_PROTOCOL.md §2.1: the transport
+ * identifies the battle).
+ *
+ * This is a request, not state. The client never treats a submitted pair as
+ * authoritative board state, and an accepted swap changes nothing locally — the
+ * next `BattleStateUpdated` push does (`SIGNALR_PROTOCOL.md` §3.1, §4).
+ */
+export interface RuntimeSwapActionRequest {
+  readonly kind: typeof RUNTIME_ACTION_SWAP;
+  /**
+   * The §1.0 index of the cell the player is moving (`MATCH3_RULES.md` §2.1.1).
+   */
+  readonly fromCell: number;
+  /**
+   * The §1.0 index it is exchanged with (`MATCH3_RULES.md` §2.1.1). The pair is
+   * unordered: the two indices together are the swap's identity, and neither is
+   * a "primary" cell for validation (§2.1.1 item 2, §2.1.3 item 3).
+   */
+  readonly toCell: number;
+}
+
+/**
+ * Any client → server action request the runtime boundary accepts.
+ *
+ * The union has exactly one member today because exactly one gameplay action is
+ * implemented. A `kind`-only object is not assignable to it: an unknown or
+ * unimplemented action reaches the boundary as an unmodelled value and is
+ * rejected with `RuntimeActionNotImplementedError`, which is what keeps
+ * `CardCast`, `PetSkillCast`, and `GetBattleState` unavailable
+ * (SIGNALR_PROTOCOL.md §2, §7).
+ */
+export type RuntimeActionRequest = RuntimeSwapActionRequest;
+
+/**
+ * The transport-level result of an action request
+ * (`SIGNALR_PROTOCOL.md` §5).
+ *
+ * It is feedback about the **request**, not authoritative state and not a Battle
+ * Event: it is not broadcast, is not sequenced, and changes nothing by itself
+ * (§5 item 1). `accepted: true` means the action was resolved and its events
+ * arrive on the §3 batch; `accepted: false` means the action was rejected under
+ * its owning domain rule and nothing happened (`MATCH3_RULES.md` §2.1.5).
+ *
+ * The runtime hands this to the caller unchanged: it does not interpret
+ * `reason`, does not retry, and does not mutate state on either outcome
+ * (§5 item 2). `reason` is presentation data only — the client derives no
+ * gameplay meaning from it.
+ */
+export interface RuntimeActionAcknowledgement {
+  /** True when the action was resolved; false when it was rejected (§5 item 2). */
+  readonly accepted: boolean;
+  /**
+   * The machine-readable rejection code (§5 item 3), or absent/`null` when
+   * accepted. Empty strings are normalised to absence: a rejection always
+   * carries a real code, and the client must not treat an empty one as a reason.
+   */
+  readonly reason?: string | null;
 }
 
 /** Raised when a caller attempts a gameplay action the runtime does not implement. */
 export class RuntimeActionNotImplementedError extends Error {
   constructor(kind: string) {
     super(
-      `Runtime action "${kind}" is not implemented: gameplay action requests ` +
-        `(SIGNALR_PROTOCOL.md §2) are outside the runtime foundation scope.`
+      `Runtime action "${kind}" is not implemented: the client implements only ` +
+        `the documented Swap request (SIGNALR_PROTOCOL.md §2.1). CardCast, ` +
+        `PetSkillCast, and GetBattleState are not implemented.`
     );
     this.name = 'RuntimeActionNotImplementedError';
   }

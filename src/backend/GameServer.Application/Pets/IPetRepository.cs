@@ -5,58 +5,46 @@ namespace GameServer.Application.Pets;
 /// <summary>
 /// The Pet persistence boundary (<c>DATABASE.md</c> §1–§2).
 ///
-/// It exposes the operations TASK-024 defines: add an owned instance, load
-/// instances for recompute, and read definition configuration.
+/// It exposes the operations the Application layer needs: add an owned
+/// instance, resolve an owned instance by its identifier, read the
+/// static definition row the battle-start path needs, and store a mutated
+/// instance's own progression values.
 ///
 /// <b>It is an Application boundary, not a persistence implementation.</b>
 /// The interface lives here so the Application layer can orchestrate Pet
-/// Level recompute without depending on EF Core; the implementation is an
+/// work without depending on EF Core; the implementation is an
 /// Infrastructure concern (<c>ARCHITECTURE.md</c> §2.1, §3
 /// "PersistenceRepository (Postgres) — Infrastructure"). Domain types cross
 /// this boundary; persistence types do not (<c>ARCHITECTURE.md</c> §2 item
 /// 3).
+///
+/// <b>No recompute surface exists here.</b> The retired Pet Level recompute
+/// pass (<c>Player.Level × PetLevelMultiplier</c>) was removed with the
+/// derivation itself (<c>PET_RULES.md</c> §5.6 item 1, ADR-016 item 13), so
+/// this boundary exposes no bulk-listing or bulk-save operation. Pet Level is
+/// re-derived per instance from that instance's own XP
+/// (<c>PET_RULES.md</c> §5.4), which the single progression write below
+/// stores.
 /// </summary>
 public interface IPetRepository
 {
     /// <summary>
     /// Persists a new owned Pet instance (<c>DATABASE.md</c> §1).
     ///
-    /// The caller is responsible for supplying a <see cref="Pet.Level"/>
-    /// already produced by <see cref="PetLevelDerivation.Derive"/> — this
-    /// boundary stores the denormalized snapshot; it does not invent one.
+    /// The caller supplies the instance's stored <see cref="Pet.Level"/> —
+    /// this boundary stores the value it is given; it does not derive or
+    /// invent one.
     /// </summary>
     /// <param name="pet">The owned instance to persist.</param>
     /// <param name="cancellationToken">Cancels the persistence work.</param>
     Task AddAsync(Pet pet, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Returns every Pet instance owned by <paramref name="playerId"/>
-    /// (<c>DATABASE.md</c> §2: Player 1 ── N Pet) — the set the Player
-    /// Level recompute path walks.
-    /// </summary>
-    /// <param name="playerId">The owning Player's identifier.</param>
-    /// <param name="cancellationToken">Cancels the query.</param>
-    Task<IReadOnlyList<Pet>> ListByPlayerIdAsync(
-        string playerId,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Returns every Pet instance that references
-    /// <paramref name="petDefinitionId"/> (<c>DATABASE.md</c> §2: Pet N ── 1
-    /// PetDefinition) — the set the multiplier recompute path walks.
-    /// </summary>
-    /// <param name="petDefinitionId">The definition's identifier.</param>
-    /// <param name="cancellationToken">Cancels the query.</param>
-    Task<IReadOnlyList<Pet>> ListByDefinitionIdAsync(
-        string petDefinitionId,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
     /// Returns the definition row for <paramref name="petDefinitionId"/>,
     /// or <c>null</c> when no such definition exists.
     ///
-    /// The multiplier recompute path reads
-    /// <see cref="PetDefinition.PetLevelMultiplier"/> through this lookup.
+    /// The battle-start path reads the selected definition's static content
+    /// through this lookup (<c>API_CONTRACTS.md</c> §3).
     /// </summary>
     /// <param name="petDefinitionId">The definition's identifier.</param>
     /// <param name="cancellationToken">Cancels the query.</param>
@@ -95,10 +83,45 @@ public interface IPetRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Persists pending entity changes — the save step of a recompute pass
-    /// after <see cref="Pet.Level"/> has been rewritten with the derived
-    /// value.
+    /// Persists a mutated Pet instance's progression values — the one write
+    /// this boundary exposes (<c>DATABASE.md</c> §1, <c>PET_RULES.md</c>
+    /// §5.3/§5.4).
+    ///
+    /// <b>Why the boundary gains exactly one member.</b> A Pet instance's
+    /// <c>XP</c> and <c>Level</c> are persisted columns that the battle-end
+    /// reward path must maintain (<c>PET_RULES.md</c> §5.1 item 6: Pet XP
+    /// persists permanently with the instance), and the surface above is
+    /// read-only plus add, so there is no way to store a mutated instance.
+    /// Adding this one operation keeps the change inside the existing
+    /// boundary rather than introducing a progression service, manager, or
+    /// wallet (<c>AGENTS.md</c> §9, <c>ARCHITECTURE.md</c> §5).
+    ///
+    /// <b>The caller owns the values; this boundary only stores them.</b> It
+    /// computes no XP and no Level: <see cref="Pet.GrantBattleXp"/> owns the
+    /// documented grant, the hard cap, and the
+    /// <see cref="Pet.LevelForXp"/> relationship (<c>PET_RULES.md</c>
+    /// §5.3–§5.5). A missing row is reported as absence rather than silently
+    /// creating a Pet, so a reward can never bring a Pet instance into
+    /// existence.
+    ///
+    /// <b>It is deliberately instance-scoped.</b> <c>PET_RULES.md</c> §5.3
+    /// item 1 makes exactly one Pet — the active combat Pet — the recipient
+    /// of a battle's Pet XP, and items 3–4 give every other owned Pet
+    /// <c>+0</c>: there is no bulk, party-wide, or account-wide Pet XP path,
+    /// so this boundary exposes no bulk save and no recompute pass.
     /// </summary>
-    /// <param name="cancellationToken">Cancels the save.</param>
-    Task SaveChangesAsync(CancellationToken cancellationToken = default);
+    /// <param name="pet">
+    /// The Pet instance whose current <see cref="Pet.XP"/> and
+    /// <see cref="Pet.Level"/> are to be stored. Its
+    /// <see cref="Pet.PetInstanceId"/> identifies the row.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the write.</param>
+    /// <returns>
+    /// <c>true</c> when the row was found and updated; <c>false</c> when no
+    /// Pet instance exists for that identifier, in which case nothing is
+    /// written.
+    /// </returns>
+    Task<bool> SaveProgressionAsync(
+        Pet pet,
+        CancellationToken cancellationToken = default);
 }

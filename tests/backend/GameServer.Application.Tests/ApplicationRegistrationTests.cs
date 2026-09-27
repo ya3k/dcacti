@@ -20,21 +20,6 @@ public class ApplicationRegistrationTests
     }
 
     [Fact]
-    public void AddApplicationServices_ShouldRegisterPetLevelService()
-    {
-        // ADR-012 Consequences: the recompute hook is an Application service
-        // registered alongside the other Application services.
-        var services = new ServiceCollection();
-        services.AddApplicationServices();
-
-        var serviceProvider = services.BuildServiceProvider();
-
-        Assert.Contains(
-            services,
-            d => d.ServiceType == typeof(PetLevelService));
-    }
-
-    [Fact]
     public void AddApplicationServices_ShouldRegisterCardLoadoutService()
     {
         // CARD_RULES.md §1 / API_CONTRACTS.md §3: the battle-start Card loadout

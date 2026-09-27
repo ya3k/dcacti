@@ -174,6 +174,11 @@ namespace GameServer.Infrastructure.Postgres.Migrations
                     b.Property<int>("Tier")
                         .HasColumnType("integer");
 
+                    b.Property<int>("XP")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
                     b.HasKey("PetInstanceId");
 
                     b.HasIndex("PlayerId");
@@ -183,6 +188,8 @@ namespace GameServer.Infrastructure.Postgres.Migrations
                             t.HasCheckConstraint("CK_Pet_Level_Range", "\"Level\" >= 1 AND \"Level\" <= 50");
 
                             t.HasCheckConstraint("CK_Pet_Star_Range", "\"Star\" >= 1 AND \"Star\" <= 5");
+
+                            t.HasCheckConstraint("CK_Pet_XP_Range", "\"XP\" >= 0 AND \"XP\" <= 4900");
                         });
                 });
 
@@ -208,10 +215,6 @@ namespace GameServer.Infrastructure.Postgres.Migrations
                     b.Property<int>("PassiveThreshold")
                         .HasColumnType("integer");
 
-                    b.Property<decimal>("PetLevelMultiplier")
-                        .HasPrecision(9, 4)
-                        .HasColumnType("numeric(9,4)");
-
                     b.Property<string>("SignatureSkillCardId")
                         .IsRequired()
                         .HasMaxLength(64)
@@ -219,10 +222,7 @@ namespace GameServer.Infrastructure.Postgres.Migrations
 
                     b.HasKey("PetDefinitionId");
 
-                    b.ToTable("PetDefinition", null, t =>
-                        {
-                            t.HasCheckConstraint("CK_PetDefinition_PetLevelMultiplier_Positive", "\"PetLevelMultiplier\" > 0");
-                        });
+                    b.ToTable("PetDefinition", (string)null);
                 });
 
             modelBuilder.Entity("GameServer.Domain.Players.Player", b =>
@@ -244,6 +244,11 @@ namespace GameServer.Infrastructure.Postgres.Migrations
                         .HasColumnType("integer")
                         .HasDefaultValue(1);
 
+                    b.Property<int>("XP")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
                     b.HasKey("PlayerId");
 
                     b.HasIndex("DiscordUserId")
@@ -252,6 +257,8 @@ namespace GameServer.Infrastructure.Postgres.Migrations
                     b.ToTable("Player", null, t =>
                         {
                             t.HasCheckConstraint("CK_Player_Level_Range", "\"Level\" >= 1 AND \"Level\" <= 50");
+
+                            t.HasCheckConstraint("CK_Player_XP_NonNegative", "\"XP\" >= 0");
                         });
                 });
 

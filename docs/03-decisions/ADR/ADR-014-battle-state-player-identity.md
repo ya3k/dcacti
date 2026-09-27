@@ -137,5 +137,8 @@ a store, a column, a field, or a protocol member.
 - `ADR-010` — precedent: missing BattleState member resolved ADR-first
 - `ADR-005`, `ADR-006`, `ADR-008` — storage and recovery boundaries
 - TASK-042 (decision task), TASK-041 (blocked consumer — must not be
-  edited by it), TASK-033 (`RewardSummary` member list remains owned
-  there), TASK-034 (session/auth — out of scope)
+  edited by it), TASK-033 (was the `RewardSummary` member-list owner when
+  this ADR was written; that ownership was **moved to `DATABASE.md` §1 by
+  ADR-016 / TASK-059** — see `docs/03-decisions/README.md` §7),
+  TASK-034 (session/auth — out of scope)
+- `ADR-016` — independent Player XP and Pet XP progression tracks

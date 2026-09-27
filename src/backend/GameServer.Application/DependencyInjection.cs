@@ -79,11 +79,6 @@ public static class DependencyInjection
             new ScopedBattleResultPersistence(
                 provider.GetRequiredService<IServiceScopeFactory>()));
 
-        // Denormalized Pet Level recompute hook (DATABASE.md §1;
-        // ADR-012 Consequences; PET_RULES.md §5 item 2). Scoped because it
-        // resolves the scoped IPetRepository/IPlayerRepository boundaries.
-        services.AddScoped<PetLevelService>();
-
         // Battle-start Relic loadout validation and snapshot preparation
         // (RELIC_RULES.md §2.1–§2.5; API_CONTRACTS.md §3). Scoped because it
         // resolves the scoped IRelicRepository boundary. It validates

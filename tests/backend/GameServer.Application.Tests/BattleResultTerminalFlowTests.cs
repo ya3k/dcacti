@@ -69,6 +69,8 @@ public class BattleResultTerminalFlowTests
         InMemoryBattleStateRepository Store,
         InMemoryBattleResultRepository Results,
         ScriptedBossDefinitionLookup BossLookup,
+        InMemoryPlayerRepository Players,
+        InMemoryPetRepository Pets,
         IBattleResultPersistence Persistence)
     {
         public static Harness Create(BossDefinition? resolvableBoss = null)
@@ -78,15 +80,30 @@ public class BattleResultTerminalFlowTests
             var bossLookup = resolvableBoss is null
                 ? new ScriptedBossDefinitionLookup()
                 : ScriptedBossDefinitionLookup.Resolving(resolvableBoss);
+            var players = new InMemoryPlayerRepository();
+            var pets = new InMemoryPetRepository();
+
+            // The battle's owning Player always exists here: the reward path
+            // grants XP to the Player the battle belonged to (COMBAT_RULES.md
+            // §7.2), and a Player row is created by the auth boundary long
+            // before a battle starts (DATABASE.md §1).
+            players.Seed(Owner.Value);
+
+            // The active combat Pet always exists too: the battle's own
+            // PetState.PetId names it (GAME_STATE.md §2.3), and the Pet XP grant
+            // is applied to that instance (PET_RULES.md §5.3 item 1).
+            pets.Seed(Pet.PetId.Value, playerId: Owner.Value);
 
             var persistence = new DirectBattleResultPersistence(
-                new BattleResultService(results, bossLookup, store, TimeProvider.System));
+                new BattleResultService(results, bossLookup, store, players, pets, TimeProvider.System));
 
             return new Harness(
                 new BattleStateService(store, new FixedRngSeedSource(), persistence),
                 store,
                 results,
                 bossLookup,
+                players,
+                pets,
                 persistence);
         }
     }
@@ -163,7 +180,16 @@ public class BattleResultTerminalFlowTests
         Assert.Equal(committed.Turn, row.DurationTurns);
         Assert.Equal(1, row.DurationTurns);
 
-        Assert.Equal("{}", row.RewardSummary);
+        // DATABASE.md §1 "Reward semantics": the populated summary on the landed
+        // path — a victory grants the documented +100 to both tracks, and both
+        // tracks' members are present. The `{}` staging value does not survive the
+        // implementation task landing (item 4).
+        using var summary = System.Text.Json.JsonDocument.Parse(row.RewardSummary);
+
+        Assert.Equal(100, summary.RootElement.GetProperty("playerXpGained").GetInt32());
+        Assert.Equal(100, summary.RootElement.GetProperty("newPlayerXp").GetInt32());
+        Assert.Equal(100, summary.RootElement.GetProperty("petXpGained").GetInt32());
+        Assert.Equal(100, summary.RootElement.GetProperty("newPetXp").GetInt32());
 
         // REDIS_STATE.md §3: the active state was deleted once, on this terminal
         // path.

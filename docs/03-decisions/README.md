@@ -1,6 +1,17 @@
 # Architecture Decision Records (ADR)
 
-**Version:** 1.5 (ADR-015 added — application session authentication contract:
+**Version:** 1.7 (ADR-016 note added per TASK-062 — the twelve Pet XP
+balance/reward decisions that ADR-016 item 14 deferred to `PET_RULES.md`
+§5.2 are now finalized in `PET_RULES.md` §5.1–§5.5 (Pet Level range 1–50,
+Pet XP hard-capped at 4900). ADR-016 remains Accepted; its deferral record
+is preserved as historical context. Prior 1.6: ADR-016 added — independent Player XP and Pet XP
+progression tracks: Player owns persistent XP / Level with a capped Level
+and uncapped XP, Pet owns independent per-instance XP / Level, the
+`Player.Level × PetLevelMultiplier` derivation and the `PetLevelMultiplier`
+field are RETIRED, and the Pet XP balance values were then unresolved human
+gameplay decisions; ADR-012 items 3, 4, 6 and ADR-011 item 7 partially
+superseded by ADR-016. Prior 1.5: ADR-015 added — application session
+authentication contract:
 signed JWT, stateless, `player_id` claim, Bearer + SignalR access-token
 propagation, 24h absolute expiry, JWT Bearer enforcement;
 prior 1.4: ADR-014 added — `BattleState.PlayerId` as the
@@ -137,11 +148,55 @@ technical document.
 | ADR-008 | Snapshot-based battle reconnection                             | Accepted |
 | ADR-009 | Deterministic PRNG for server-authoritative gameplay randomness | Proposed |
 | ADR-010 | Committed-swap state for idempotent Swap rejection            | Accepted |
-| ADR-011 | Player = account owner; Pet = combat character; PetState = battle combat runtime (no PlayerState) | Accepted |
-| ADR-012 | Player Level + Pet Level clamp formula; Relic/Card ownership vs battle equip; MVP scope closure; no Evolution | Accepted |
+| ADR-011 | Player = account owner; Pet = combat character; PetState = battle combat runtime (no PlayerState) | Accepted (item 7 partially superseded by ADR-016) |
+| ADR-012 | Player Level + Pet Level clamp formula; Relic/Card ownership vs battle equip; MVP scope closure; no Evolution | Accepted (items 3, 4, 6 partially superseded by ADR-016) |
 | ADR-013 | Discord authorization-code → identity exchange contract (OAuth2 code grant, token endpoint, `/users/@me`, `DiscordUserId` source) | Accepted |
 | ADR-014 | `BattleState.PlayerId` = battle-end owner-identity source (not a wire member); `PetState.PetId` = owned Pet instance; `BattleResultId` = `BattleId` | Accepted |
 | ADR-015 | Application session authentication contract (signed JWT, stateless, `player_id` claim, Bearer + SignalR access-token propagation, 24h absolute expiry, ASP.NET Core JWT Bearer enforcement) | Accepted |
+| ADR-016 | Independent Player XP and Pet XP progression tracks — Player owns account XP / Level (capped Level 50, uncapped XP); Pet owns per-instance XP / Level (range 1–50, hard-capped at 4900); `Player.Level × PetLevelMultiplier` derivation and the `PetLevelMultiplier` field RETIRED; Pet XP balance decided in `PET_RULES.md` §5.1–§5.5 | Accepted |
+
+**Partial supersession (ADR-016).** ADR-011 and ADR-012 remain in force
+except for the specific items named below, which ADR-016 supersedes. Their
+historical content is preserved unmodified:
+
+```text
+ADR-011 item 7        The Pet Level formula
+                      `clamp(floor(Player Level × Pet Level Multiplier),
+                      1, 50)`, the `PetLevelMultiplier` configuration
+                      input, and the statement "There is no Pet XP system"
+                      — superseded. A Pet has its own XP (PET_RULES.md
+                      §5.1). ADR-011's role model and state-ownership
+                      decisions (items 1–5) and its wire-label decision
+                      (item 6) remain in force, as does item 7's
+                      "no Evolution system" clause.
+
+ADR-012 item 3        The Pet Level formula
+                      clamp(floor(Player.Level × PetLevelMultiplier), 1, 50)
+                      — superseded. Pet Level is derived from the Pet
+                      instance's own XP (PET_RULES.md §5.1). ADR-012 item 3's
+                      statement that Player Level is an MVP persistent
+                      account attribute remains in force.
+
+ADR-012 item 4        The 1–50 clamp on the formula result — superseded; the
+                      formula it clamped no longer exists. Player Level's own
+                      [1, 50] range remains in force and is now owned by
+                      COMBAT_RULES.md §7; the Pet Level range is now decided
+                      as [1, 50] (PET_RULES.md §5.5).
+
+ADR-012 item 6        "There is no Pet XP system" — superseded, as for
+                      ADR-011 item 7. The no-Evolution clause of item 6
+                      remains in force (PET_RULES.md §5.6 item 4).
+```
+
+**ADR-016 item 14 is now satisfied.** The twelve Pet XP balance/reward
+decisions that ADR-016 deferred to `PET_RULES.md` §5.2 have been finalized
+(see that document's §5.1–§5.5). The deferral record in ADR-016 is preserved
+as historical context; the values themselves are owned by `PET_RULES.md`.
+
+Everything else in ADR-011 and ADR-012 — the Player/Pet role model, the
+"no `PlayerState`" decision, collection-ownership vs. battle-scoped equip,
+`PlayerUnlockedCard`, the fixed wire labels, and the rest of ADR-012's
+scope closure — is **unaffected** and remains Accepted.
 
 ---
 

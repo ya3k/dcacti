@@ -5,6 +5,7 @@ import { BattleScene } from '../src/game/scenes/BattleScene';
 import { BootScene } from '../src/game/scenes/BootScene';
 import { PreloaderScene } from '../src/game/scenes/PreloaderScene';
 import { RUNTIME_REGISTRY_KEY } from '../src/game/runtime/RuntimeRegistry';
+import { GAME_WIDTH, SAFE_AREA } from '../src/game/GameViewport';
 import { INITIAL_RUNTIME_STATE } from '../src/state/GameRuntimeState';
 import type { GameRuntimeState } from '../src/state/GameRuntimeState';
 import type { RuntimeBattleState } from '../src/game/runtime/GameRuntimeEvents';
@@ -16,6 +17,9 @@ vi.mock('phaser', () => ({
   Scene: class MockScene {},
   Structs: { Size: class MockSize {} },
   Loader: { Events: { COMPLETE: 'complete' } },
+  // The board layer registers its pointer input through this event constant
+  // (Phaser's own `gameobjectdown` name).
+  Input: { Events: { GAMEOBJECT_POINTER_DOWN: 'gameobjectdown' } },
 }));
 
 /**
@@ -50,6 +54,18 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
   const sceneStarted: Array<{ key: string; data?: unknown }> = [];
   const loadHandlers = new Map<string, () => void>();
   const setEngineStatus = vi.fn();
+  /**
+   * The board layer's registered gameobject input handlers, keyed by event name
+   * (`Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN`). Phaser drives the scene's
+   * input through these; the harness does the same.
+   */
+  const boardInputHandlers = new Map<string, (pointer: { x: number; y: number }) => void>();
+  /** Every action the scene submitted through the runtime port. */
+  const requestedActions: Array<Record<string, unknown>> = [];
+  /** The acknowledgement `requestAction` resolves with. */
+  let actionResult: { accepted: boolean; reason?: string | null } = { accepted: true };
+  /** When set, `requestAction` rejects with it. */
+  let actionBehaviour: (() => Promise<never>) | null = null;
   let loading = false;
   let currentBattleState = battleState;
 
@@ -67,6 +83,13 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       return () => {
         battleStateListeners.delete(listener);
       };
+    },
+    requestAction: (action: Record<string, unknown>) => {
+      if (actionBehaviour) {
+        return actionBehaviour();
+      }
+      requestedActions.push(action);
+      return Promise.resolve(actionResult);
     },
     setEngineStatus,
   };
@@ -119,6 +142,14 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
           children = [];
           syncBoard();
         },
+        /** The board layer's input registration (Phaser's gameobject events). */
+        on: (event: string, handler: (pointer: { x: number; y: number }) => void) => {
+          boardInputHandlers.set(event, handler);
+          return obj;
+        },
+        off: (event: string) => {
+          boardInputHandlers.delete(event);
+        },
       };
 
       const syncBoard = () => {
@@ -162,6 +193,14 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     listeners,
     battleStateListeners,
     boardCells,
+    boardInputHandlers,
+    requestedActions,
+    setActionResult: (next: { accepted: boolean; reason?: string | null }) => {
+      actionResult = next;
+    },
+    setActionBehaviour: (next: (() => Promise<never>) | null) => {
+      actionBehaviour = next;
+    },
     sceneStarted,
     loadHandlers,
     setBattleState: (next: RuntimeBattleState) => {
@@ -181,6 +220,72 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
 function runScene(scene: object, ctx: object, method: string): void {
   const fn = Object.getPrototypeOf(scene)[method] as (this: object) => void;
   fn.call(ctx);
+}
+
+/**
+ * The board's presentation geometry, mirroring `BattleScene`'s own constants.
+ *
+ * The scene's index → screen mapping is a presentation concern
+ * (`ARCHITECTURE.md` §2.2.2), so the tests resolve a cell the same way the scene
+ * does: `index = row * 8 + column` (`MATCH3_RULES.md` §1.0) drawn at a fixed
+ * pitch from the board origin. Nothing gameplay is derived here.
+ *
+ * The board layer is a container at the scene origin, so a pointer event's local
+ * coordinates are the space the cells are drawn in — the same space these helpers
+ * produce.
+ */
+const CELL_SIZE = 56;
+const CELL_GAP = 6;
+const BOARD_PITCH = CELL_SIZE + CELL_GAP;
+const BOARD_COLUMNS = 8;
+const BOARD_WIDTH = BOARD_COLUMNS * CELL_SIZE + (BOARD_COLUMNS - 1) * CELL_GAP;
+const BOARD_ORIGIN_X = (GAME_WIDTH - BOARD_WIDTH) / 2;
+const BOARD_ORIGIN_Y = SAFE_AREA.y + 96;
+
+/** Board-layer-local centre of the cell at a §1.0 index. */
+function cellCentre(index: number): { x: number; y: number } {
+  const row = Math.floor(index / BOARD_COLUMNS);
+  const column = index % BOARD_COLUMNS;
+  return {
+    x: BOARD_ORIGIN_X + column * BOARD_PITCH + CELL_SIZE / 2,
+    y: BOARD_ORIGIN_Y + row * BOARD_PITCH + CELL_SIZE / 2,
+  };
+}
+
+/** The midpoint of the gap between two horizontally adjacent cells. */
+function gapCentre(row: number): { x: number; y: number } {
+  return {
+    x: BOARD_ORIGIN_X + CELL_SIZE + CELL_GAP / 2,
+    y: BOARD_ORIGIN_Y + row * BOARD_PITCH + CELL_SIZE / 2,
+  };
+}
+
+/** Taps the cell at a §1.0 index, through the scene's registered board input. */
+function tapCell(
+  harness: { boardInputHandlers: Map<string, (p: { x: number; y: number }) => void> },
+  index: number
+): void {
+  const handler = harness.boardInputHandlers.get('gameobjectdown');
+  if (!handler) {
+    throw new Error('BattleScene registered no board pointer input.');
+  }
+  handler(cellCentre(index));
+}
+
+/** Taps a board-layer-local point. */
+function tapPoint(
+  harness: { boardInputHandlers: Map<string, (p: { x: number; y: number }) => void> },
+  x: number,
+  y: number
+): void {
+  harness.boardInputHandlers.get('gameobjectdown')?.({ x, y });
+}
+
+/** Lets the pending swap promise chain settle. */
+async function flush(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 describe('Phaser scene lifecycle', () => {
@@ -378,16 +483,26 @@ describe('BattleScene', () => {
     expect(() => runScene(scene, ctx, 'shutdown')).not.toThrow();
   });
 
-  it('contains no gameplay interaction or resolution presentation', () => {
+  it('contains no resolution presentation', () => {
     const { harness, scene, ctx } = createBattle();
 
     runScene(scene, ctx, 'create');
 
-    // No gameplay: no swap interaction, match, cascade, combo, damage, or boss
-    // readout. (A board is presented once the server pushes one — see the Board
-    // Foundation block below — but the scene resolves nothing.)
+    // TASK-069 stage advance. This assertion previously read "contains no
+    // gameplay interaction or resolution presentation" and forbade `Swap`
+    // outright, because the scene had no input at all. The documented Match-3
+    // interaction (MATCH3_RULES.md §2 item 1) is now implemented, so `Swap` as a
+    // *request* is no longer a violation.
+    //
+    // What is still forbidden, and all this assertion now forbids, is
+    // **resolution presentation**: a match, cascade, or combo readout, a damage
+    // number, or a boss readout. None of those exists on the client, because the
+    // client computes none of them (GAME_RULES.md §18, ADR-001). The scene's swap
+    // line reports only which cells were selected and whether the server accepted
+    // the request — transport feedback (SIGNALR_PROTOCOL.md §2.1, §5), not a
+    // resolution result.
     const rendered = harness.texts.map((t) => t.text).join(' ');
-    for (const forbidden of ['Boss', 'Combo', 'Damage', 'Cascade', 'Match ', 'Swap']) {
+    for (const forbidden of ['Boss', 'Combo', 'Damage', 'Cascade', 'Match ']) {
       expect(rendered).not.toMatch(new RegExp(forbidden, 'i'));
     }
   });
@@ -684,5 +799,248 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
 
     expect(source).not.toMatch(/Math\.random/);
     expect(source).not.toMatch(/crypto\./);
+  });
+});
+
+describe('BattleScene — Swap input (MATCH3_RULES.md §2, SIGNALR_PROTOCOL.md §2.1)', () => {
+  /** The four documented Gem contract names (MATCH3_RULES.md §1.1). */
+  const GEM_NAMES = ['ATK', 'DEF', 'HP', 'POWER'];
+
+  function serverState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+    return {
+      battleId: 'battle-1',
+      turn: 0,
+      sequence: 0,
+      rngSeed: 42,
+      rngState: { state: 123456789, increment: 1 },
+      board: {
+        cells: Array.from({ length: 64 }, (_, index) => GEM_NAMES[index % GEM_NAMES.length]),
+      },
+      playerState: { combo: 0, matchCount: 0 },
+      petState: {
+        passiveId: 'xich-lang',
+        passiveProgress: { threshold: 5, current: 0 },
+      },
+      ...overrides,
+    };
+  }
+
+  function createBattle(battleState: RuntimeBattleState | null = serverState()) {
+    const harness = createSceneHarness({ battleState });
+    const scene = new BattleScene();
+    const ctx = harness.context(scene, 'BattleScene');
+    return { harness, scene, ctx };
+  }
+
+  it('registers board pointer input', () => {
+    const { harness, scene, ctx } = createBattle();
+
+    runScene(scene, ctx, 'create');
+
+    expect(harness.boardInputHandlers.has('gameobjectdown')).toBe(true);
+  });
+
+  it('submits the documented Swap request for two selected cells', async () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+
+    // MATCH3_RULES.md §2 item 1 / §2.1.1: select the first cell, then the second.
+    tapCell(harness, 12);
+    expect(harness.requestedActions).toHaveLength(0);
+
+    tapCell(harness, 13);
+    await flush();
+
+    // Exactly one request, carrying the two §1.0 indices and nothing else: no
+    // Gem type, match result, Combo, Turn, or Sequence value (§2.1.1 item 3).
+    expect(harness.requestedActions).toEqual([
+      { kind: 'Swap', fromCell: 12, toCell: 13 },
+    ]);
+  });
+
+  it('names the pair in the order the cells were selected', async () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+
+    tapCell(harness, 27);
+    tapCell(harness, 35);
+    await flush();
+
+    // The pair is unordered as a *swap* (MATCH3_RULES.md §2.1.1 item 2); the
+    // selection order is what the scene reports, and no direction field exists.
+    expect(harness.requestedActions).toEqual([
+      { kind: 'Swap', fromCell: 27, toCell: 35 },
+    ]);
+  });
+
+  it('clears the selection instead of submitting when the same cell is tapped twice', async () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+
+    tapCell(harness, 20);
+    tapCell(harness, 20);
+    await flush();
+
+    // Local interaction feedback only: a cell swapped with itself is not a Swap
+    // (MATCH3_RULES.md §2.1.2 item 2), so nothing is sent.
+    expect(harness.requestedActions).toHaveLength(0);
+
+    // The selection is cleared, so the next tap starts a new pair.
+    tapCell(harness, 21);
+    tapCell(harness, 22);
+    await flush();
+
+    expect(harness.requestedActions).toEqual([
+      { kind: 'Swap', fromCell: 21, toCell: 22 },
+    ]);
+  });
+
+  it('sends the pair as selected even when it is not adjacent', async () => {
+    // The scene performs no gameplay validation: adjacency is
+    // MATCH3_RULES.md §2.1.2 item 3's server-side check, and the server's
+    // rejection is the answer the client renders
+    // (SIGNALR_PROTOCOL.md §2.1 item 1).
+    const { harness, scene, ctx } = createBattle();
+    harness.setActionResult({ accepted: false, reason: 'INVALID_SWAP' });
+
+    runScene(scene, ctx, 'create');
+    tapCell(harness, 0);
+    tapCell(harness, 63);
+    await flush();
+
+    expect(harness.requestedActions).toEqual([
+      { kind: 'Swap', fromCell: 0, toCell: 63 },
+    ]);
+  });
+
+  it('presents the acknowledgement without mutating the board', async () => {
+    const state = serverState();
+    const cellsBefore = [...state.board.cells];
+
+    const { harness, scene, ctx } = createBattle(state);
+    runScene(scene, ctx, 'create');
+
+    tapCell(harness, 8);
+    tapCell(harness, 9);
+    await flush();
+
+    // §5 item 2 + §3.1: acceptance changes nothing locally — the next
+    // authoritative state push re-renders the board. No cell value was rewritten,
+    // and the scene computed no board, match, cascade, combo, or Sequence value.
+    expect(state.board.cells).toEqual(cellsBefore);
+    expect(harness.boardCells.filter((c) => c.kind === 'label')).toHaveLength(64);
+  });
+
+  it('surfaces a rejection as feedback and changes nothing', async () => {
+    const state = serverState();
+    const cellsBefore = [...state.board.cells];
+
+    const { harness, scene, ctx } = createBattle(state);
+    harness.setActionResult({ accepted: false, reason: 'NO_MATCH_FROM_SWAP' });
+
+    runScene(scene, ctx, 'create');
+    tapCell(harness, 12);
+    tapCell(harness, 13);
+    await flush();
+
+    // SIGNALR_PROTOCOL.md §5 item 2 / MATCH3_RULES.md §2.1.5: a rejected swap is
+    // a gameplay no-op. The machine-readable reason is shown as received, nothing
+    // is mutated, and nothing is retried automatically.
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('NO_MATCH_FROM_SWAP');
+    expect(harness.requestedActions).toHaveLength(1);
+    expect(state.board.cells).toEqual(cellsBefore);
+  });
+
+  it('ignores taps outside the board', async () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+
+    // Far outside the drawn board, and in the gap between two cells: neither
+    // resolves to a cell, so nothing is selected and nothing is sent. The point
+    // is never clamped or rounded into a neighbouring cell
+    // (MATCH3_RULES.md §2.1.3 item 2).
+    tapPoint(harness, -50, -50);
+    tapCell(harness, 9);
+
+    // A gap tap after the first cell: the selection survives, and the next real
+    // cell tap completes the pair.
+    const gap = gapCentre(1);
+    tapPoint(harness, gap.x, gap.y);
+    tapCell(harness, 10);
+    await flush();
+
+    expect(harness.requestedActions).toEqual([
+      { kind: 'Swap', fromCell: 9, toCell: 10 },
+    ]);
+  });
+
+  it('reports a transport failure without sending a second request', async () => {
+    const { harness, scene, ctx } = createBattle();
+    harness.setActionBehaviour(async () => {
+      throw new Error('SignalR connection is not established.');
+    });
+
+    runScene(scene, ctx, 'create');
+    tapCell(harness, 0);
+    tapCell(harness, 1);
+    await flush();
+
+    // A failed request is presentation state, not game state
+    // (SIGNALR_PROTOCOL.md §8.3). No board value changed and nothing was retried.
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('Swap not sent');
+    expect(harness.requestedActions).toHaveLength(0);
+  });
+
+  it('reports swap-unavailable when no runtime was supplied', async () => {
+    const harness = createSceneHarness({ battleState: serverState(), withRuntime: false });
+    const scene = new BattleScene();
+    const ctx = harness.context(scene, 'BattleScene');
+
+    runScene(scene, ctx, 'create');
+    tapCell(harness, 0);
+    tapCell(harness, 1);
+    await flush();
+
+    expect(harness.requestedActions).toHaveLength(0);
+    expect(harness.texts.map((t) => t.text).join('\n')).toContain('Swap unavailable');
+  });
+
+  it('adds no competing coordinate system and computes no gameplay', () => {
+    // MATCH3_RULES.md §1.0 / §2.1.1: the board's only coordinate convention is
+    // `index = row * 8 + column`. The scene maps that index to screen space for
+    // presentation (`ARCHITECTURE.md` §2.2.2) and must not introduce a second
+    // convention, implement Match-3 resolution, or duplicate board state.
+    //
+    // Comments are stripped first, so the prose that *names* these forbidden
+    // systems while forbidding them is not a violation — only real code is.
+    const source = readFileSync(
+      resolve(__dirname, '../src/game/scenes/BattleScene.ts'),
+      'utf8'
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+    for (const forbidden of [
+      'SignalRService',
+      'HubConnection',
+      '@microsoft/signalr',
+      'findMatch',
+      'hasMatch',
+      'cascade =',
+      'applyGravity',
+      'damage',
+      'combo++',
+    ]) {
+      expect(source, `BattleScene must not reference "${forbidden}"`).not.toContain(forbidden);
+    }
+
+    // It submits through the runtime port and never invents an action name.
+    expect(source).toContain('requestAction');
+    expect(source).toContain('RUNTIME_ACTION_SWAP');
+    expect(source).not.toContain("'CardCast'");
+    expect(source).not.toContain("'PetSkillCast'");
+    expect(source).not.toContain("'GetBattleState'");
   });
 });

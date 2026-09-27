@@ -1,7 +1,13 @@
 # Game Design Document (GDD)
 
 **Project:** Match-3 RPG Discord Activity
-**Version:** 2.2 (Player Level defined for MVP — persistent account
+**Version:** 2.4 (§6 Pet System finalized per TASK-062 — Pet progression is
+fed by battle rewards to the active combat Pet and is hard-capped at Pet
+Level 50; the Pet XP balance values are now decided, not open. Prior 2.3:
+§6/§14 updated per TASK-059 — Player XP / Level and
+Pet XP / Level are two independent progression tracks; Pet Level is no
+longer derived from Player Level; ADR-016. Prior 2.2: Player Level defined
+for MVP — persistent account
 attribute, 1–50, source of Pet Level; ADR-012; prior 2.1: Player =
 account/owner / Pet = combat character clarified)
 **Status:** MVP Design
@@ -114,9 +120,12 @@ and `ELEMENT_RULES.md`.
 # 6. Pet System
 
 Players can collect multiple Pets; one Pet is active per battle. A Pet has
-an Identity, an Element, a Tier (Common → Mythic), a Star (1–5), a Level
-(1–50, derived from the account's Player Level — `PET_RULES.md` §5), Stats,
-a Passive, and one Signature Skill.
+an Identity, an Element, a Tier (Common → Mythic), a Star (1–5), its own XP
+and Level, Stats, a Passive, and one Signature Skill. A Pet's Level is
+derived from that Pet instance's own XP and is **independent** of the
+account's Player Level (`PET_RULES.md` §5). Pet progression is fed by battle
+rewards to the active combat Pet and is hard-capped at Pet Level 50
+(`PET_RULES.md` §5.3–§5.5).
 
 Higher Tier must not be a simple stat multiplier — it should add strategic
 distinctiveness through Passive, Skill, or identity, not just bigger numbers.
@@ -224,9 +233,10 @@ Full event list, resolution order, and server-authority rules: see
 
 # 14. Meta Progression
 
-MVP persistent systems: Player (account/owner), Player Level (1–50 —
-drives Pet Level via `PET_RULES.md` §5; increases through battle
-Rewards), Pet Collection, Pet progression, Card Collection, Relic
+MVP persistent systems: Player (account/owner), Player XP / Level (1–50 —
+increases through battle Rewards, `COMBAT_RULES.md` §7), Pet Collection,
+Pet progression (including each Pet instance's own XP / Level,
+`PET_RULES.md` §5 — independent of Player Level), Card Collection, Relic
 Collection, Battle Results, Rewards. The Player owns the collections;
 battle-time combat state belongs to the active Pet (`PetState`), not to a
 Player combat pool. Player Level itself carries no combat stats.

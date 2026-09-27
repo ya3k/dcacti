@@ -13,13 +13,19 @@ namespace GameServer.Infrastructure.Tests;
 /// Pet and PetDefinition persistence — <c>DATABASE.md</c> §1, §3, §4.
 ///
 /// What is verified is the documented contract: the Pet field set, the
-/// PetDefinition field set, the documented check constraints, the
-/// <c>petLevelMultiplier &gt; 0</c> constraint, the single
-/// <c>Pet(PlayerId)</c> index, and the absence of any XP or Evolution
-/// column (ADR-012 items 5–6).
+/// PetDefinition field set, the documented check constraints, the single
+/// <c>Pet(PlayerId)</c> index, and the continuing absence of any Evolution
+/// field (ADR-012 items 5–6).
 ///
-/// <c>SignatureSkillCardId</c> is deliberately absent: CardDefinition does
-/// not exist until TASK-028 (TASK-024 Scope; <c>AGENTS.md</c> §7).
+/// <b>Pet XP is now part of the documented field set.</b> <c>DATABASE.md</c> §1
+/// and <c>PET_RULES.md</c> §5.1 item 1 place <c>XP</c> on the owned Pet row, so
+/// these assertions allow it. <b>Evolution and the retired
+/// <c>PetLevelMultiplier</c> remain forbidden</b> — the field list is still
+/// closed, and enabling XP must not have opened it to anything else.
+///
+/// <c>SignatureSkillCardId</c> is deliberately present on PetDefinition:
+/// CardDefinition exists and TASK-028 completed that deferral (TASK-024 Scope;
+/// <c>AGENTS.md</c> §7).
 /// </summary>
 public class PetPersistenceTests
 {
@@ -40,8 +46,9 @@ public class PetPersistenceTests
     public void Pet_ShouldCarryExactlyTheDocumentedFields()
     {
         // DATABASE.md §1 defines Pet as PetInstanceId (PK), PlayerId (FK),
-        // PetDefinitionId (FK), Tier, Star, Level, and AcquiredAt. The field
-        // list is closed: no XP column, no Evolution field, no combat stats.
+        // PetDefinitionId (FK), Tier, Star, XP, Level, and AcquiredAt. The field
+        // list is closed: no Evolution field, no combat stats, and no retired
+        // multiplier.
         var fields = typeof(Pet)
             .GetProperties()
             .Select(p => p.Name)
@@ -49,18 +56,28 @@ public class PetPersistenceTests
             .ToArray();
 
         Assert.Equal(
-            new[] { "AcquiredAt", "Level", "PetDefinitionId", "PetInstanceId", "PlayerId", "Star", "Tier" },
+            new[] { "AcquiredAt", "Level", "PetDefinitionId", "PetInstanceId", "PlayerId", "Star", "Tier", "XP" },
             fields);
     }
 
     [Fact]
-    public void Pet_ShouldExposeNoXpOrEvolutionField()
+    public void Pet_ShouldExposeXp_ButStillNoEvolutionOrRetiredMultiplierField()
     {
-        // ADR-012 items 5–6: no XP column, no Evolution field, no Tier/Star
-        // derivation from Player Level. DATABASE.md §1 defines none.
+        // DATABASE.md §1 / PET_RULES.md §5.1 item 1: XP IS a documented Pet
+        // member, on the owned instance rather than on PetDefinition or Player.
         var fields = typeof(Pet).GetProperties().Select(p => p.Name).ToArray();
 
-        foreach (var forbidden in new[] { "XP", "Xp", "Experience", "Evolution", "Evolves", "NextLevelXP" })
+        Assert.Contains("XP", fields);
+
+        // The rest of the closed list is unchanged by that: ADR-012 items 5–6
+        // forbid an Evolution field, and PET_RULES.md §5.6 item 1 / ADR-016 item
+        // 13 retired PetLevelMultiplier. Enabling XP must not have opened the
+        // field list to a second progression source or a resurrected one.
+        foreach (var forbidden in new[]
+                 {
+                     "Experience", "Evolution", "Evolves", "NextLevelXP",
+                     "PetLevelMultiplier", "LevelMultiplier", "PetLevelDerivation",
+                 })
         {
             Assert.DoesNotContain(forbidden, fields);
         }
@@ -71,7 +88,8 @@ public class PetPersistenceTests
     {
         // DATABASE.md §3 / ADR-011 item 5: no combat-stat columns on Pet —
         // HP/ATK/DEF/Crit/Power are battle-time PetState values
-        // (GAME_STATE.md §2.3).
+        // (GAME_STATE.md §2.3). PET_RULES.md §5.7 item 1: Pet XP grants no combat
+        // stats, so adding XP must not have added one either.
         var fields = typeof(Pet).GetProperties().Select(p => p.Name).ToArray();
 
         foreach (var combatField in new[] { "HP", "MaxHP", "ATK", "DEF", "Crit", "Power" })
@@ -88,12 +106,17 @@ public class PetPersistenceTests
     public void PetDefinition_ShouldCarryExactlyTheDocumentedFields()
     {
         // DATABASE.md §1: PetDefinitionId (PK), Identity, Element,
-        // PetLevelMultiplier, PassiveDefinition (threshold/effect reference),
+        // PassiveDefinition (threshold/effect reference),
         // SignatureSkillCardId (FK → CardDefinition).
         //
         // SignatureSkillCardId was intentionally absent while CardDefinition
         // did not exist (TASK-024 Scope); TASK-028 completes that deferral, so
         // the field is now part of the documented set and is asserted here.
+        //
+        // PetLevelMultiplier is absent because it was retired with the
+        // Player.Level × PetLevelMultiplier derivation (PET_RULES.md §5.6
+        // item 1, ADR-016 item 13) and removed from the documented field set
+        // (DATABASE.md §1).
         var fields = typeof(PetDefinition)
             .GetProperties()
             .Select(p => p.Name)
@@ -108,7 +131,6 @@ public class PetPersistenceTests
                 "PassiveId",
                 "PassiveThreshold",
                 "PetDefinitionId",
-                "PetLevelMultiplier",
                 "SignatureSkillCardId",
             },
             fields);
@@ -170,37 +192,86 @@ public class PetPersistenceTests
         var check = entity.GetCheckConstraints()
             .Single(c => c.Name == "CK_Pet_Level_Range");
 
-        Assert.Contains(Player.MinLevel.ToString(), check.Sql);
-        Assert.Contains(Player.MaxLevel.ToString(), check.Sql);
+        // The Pet range is read from the Pet track's own constants
+        // (PET_RULES.md §5.5 item 4, ADR-016 item 12: independent tracks).
+        Assert.Contains(Pet.MinLevel.ToString(), check.Sql);
+        Assert.Contains(Pet.MaxLevel.ToString(), check.Sql);
     }
 
     [Fact]
-    public void Model_ShouldConstrainPetLevelMultiplierToBePositive()
+    public void Model_ShouldMapPetXp_RequiredWithTheDocumentedDefault()
     {
-        // DATABASE.md §3: PetDefinition.PetLevelMultiplier > 0 (decimal)
-        // (PET_RULES.md §5). Zero and negative multipliers are illegal.
-        var model = CreateDesignTimeModel(nameof(Model_ShouldConstrainPetLevelMultiplierToBePositive));
+        // DATABASE.md §1/§3: Pet.XP is int, NOT NULL, default 0 (PET_RULES.md
+        // §5.2's initial value). The column default is what gives an existing row
+        // the documented 0 — no Level → XP conversion exists in any document.
+        var model = CreateDesignTimeModel(nameof(Model_ShouldMapPetXp_RequiredWithTheDocumentedDefault));
 
-        var entity = model.FindEntityType(typeof(PetDefinition))!;
+        var entity = model.FindEntityType(typeof(Pet))!;
+        var xp = entity.FindProperty(nameof(Pet.XP))!;
+
+        Assert.False(xp.IsNullable);
+        Assert.Equal(Pet.InitialXp, xp.GetDefaultValue());
+        Assert.Equal(0, Pet.InitialXp);
+    }
+
+    [Fact]
+    public void Model_ShouldConstrainXpToTheDocumentedZeroToFortyNineHundredRange()
+    {
+        // DATABASE.md §3: Pet.XP ∈ [0, 4900], a HARD cap (PET_RULES.md §5.5 item
+        // 1 — Pet XP stops at 4900 and no overflow is retained). Both bounds are
+        // asserted, because §5.5 item 4 keeps the XP cap and the Level cap as
+        // separate documented facts.
+        var model = CreateDesignTimeModel(nameof(Model_ShouldConstrainXpToTheDocumentedZeroToFortyNineHundredRange));
+
+        var entity = model.FindEntityType(typeof(Pet))!;
         var check = entity.GetCheckConstraints()
-            .Single(c => c.Name == "CK_PetDefinition_PetLevelMultiplier_Positive");
+            .Single(c => c.Name == "CK_Pet_XP_Range");
 
-        Assert.Contains(">", check.Sql);
-        Assert.Contains("0", check.Sql);
+        Assert.Contains(Pet.InitialXp.ToString(), check.Sql);
+        Assert.Contains(Pet.MaxXp.ToString(), check.Sql);
+        Assert.Equal(4900, Pet.MaxXp);
+
+        // The Pet cap is emphatically not the Player policy: the Player column is
+        // uncapped (COMBAT_RULES.md §7.5 item 1), so its constraint must carry no
+        // ceiling.
+        var playerXp = model.FindEntityType(typeof(Player))!
+            .GetCheckConstraints()
+            .Single(c => c.Name == "CK_Player_XP_NonNegative");
+
+        Assert.DoesNotContain(Pet.MaxXp.ToString(), playerXp.Sql);
     }
 
     [Fact]
-    public void Model_ShouldStorePetLevelMultiplierAsADecimal()
+    public void Model_ShouldRetainBothExistingPetCheckConstraints()
     {
-        // DATABASE.md §1/§3: PetLevelMultiplier is a decimal > 0 — the type
-        // is part of the documented contract, not a float approximation.
-        var model = CreateDesignTimeModel(nameof(Model_ShouldStorePetLevelMultiplierAsADecimal));
+        // DATABASE.md §3: adding the XP bound must not have dropped or widened the
+        // two constraints the Pet table already carried.
+        var model = CreateDesignTimeModel(nameof(Model_ShouldRetainBothExistingPetCheckConstraints));
+
+        var entity = model.FindEntityType(typeof(Pet))!;
+        var constraintNames = entity.GetCheckConstraints()
+            .Select(constraint => constraint.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(
+            new[] { "CK_Pet_Level_Range", "CK_Pet_Star_Range", "CK_Pet_XP_Range" },
+            constraintNames);
+    }
+
+    [Fact]
+    public void PetDefinition_ShouldStillCarryNoRetiredMultiplier()
+    {
+        // PET_RULES.md §5.6 items 1–2 / ADR-016 item 13: PetLevelMultiplier is
+        // retired, and PetDefinition never owns instance XP or Level. Enabling
+        // Pet.XP must not have moved progression onto the definition row.
+        var model = CreateDesignTimeModel(nameof(PetDefinition_ShouldStillCarryNoRetiredMultiplier));
 
         var entity = model.FindEntityType(typeof(PetDefinition))!;
-        var property = entity.FindProperty(nameof(PetDefinition.PetLevelMultiplier))!;
 
-        Assert.Equal(typeof(decimal), property.ClrType);
-        Assert.True(property.IsNullable == false);
+        Assert.Null(entity.FindProperty("PetLevelMultiplier"));
+        Assert.Null(entity.FindProperty("XP"));
+        Assert.Null(entity.FindProperty("Level"));
     }
 
     [Fact]
@@ -238,15 +309,17 @@ public class PetPersistenceTests
     }
 
     // -----------------------------------------------------------------------
-    // PET_RULES.md §5 — Level is a denormalized snapshot
+    // PET_RULES.md §5 — Level is derived from this Pet's own XP
     // -----------------------------------------------------------------------
 
     [Fact]
-    public void PetLevel_ShouldBeWritableForRecompute()
+    public void PetLevel_ShouldBeWritableForTheProgressionPath()
     {
-        // ADR-012 Consequences: Pet.Level is a denormalized snapshot that is
-        // rewritten when Player Level or the multiplier changes. The setter
-        // exists solely for that recompute path — it is not an XP API.
+        // DATABASE.md §1/§3 make Pet.Level a PERSISTED column rather than a
+        // computed member, so the progression path must be able to assign it
+        // (PET_RULES.md §5.4). The retired Player.Level × PetLevelMultiplier
+        // recompute pass is gone (ADR-016 item 13); the setter now serves the
+        // XP-derived write, and the grant is the only production caller.
         var pet = new Pet
         {
             PetInstanceId = "pet_1",
@@ -254,12 +327,41 @@ public class PetPersistenceTests
             PetDefinitionId = "def_1",
             Tier = PetTier.Common,
             Star = 1,
-            Level = 1,
+            XP = Pet.InitialXp,
+            Level = Pet.InitialLevel,
             AcquiredAt = DateTimeOffset.UtcNow,
         };
+
+        // A newly constructed Pet holds the documented initial pair, which the
+        // §5.4 formula agrees with by construction (PET_RULES.md §5.2).
+        Assert.Equal(Pet.InitialXp, pet.XP);
+        Assert.Equal(Pet.LevelForXp(pet.XP), pet.Level);
 
         pet.Level = 10;
 
         Assert.Equal(10, pet.Level);
+    }
+
+    [Fact]
+    public void GrantBattleXp_ShouldLeaveXpAndLevelConsistentOnTheEntity()
+    {
+        // PET_RULES.md §5.4: the grant re-derives Level from the resulting XP, so
+        // the two persisted columns can never be left disagreeing by the one
+        // production writer.
+        var pet = new Pet
+        {
+            PetInstanceId = "pet_grant",
+            PlayerId = "player_1",
+            PetDefinitionId = "def_1",
+            Tier = PetTier.Common,
+            Star = 1,
+            AcquiredAt = DateTimeOffset.UtcNow,
+        };
+
+        pet.GrantBattleXp(Pet.BattleWonXpReward);
+
+        Assert.Equal(100, pet.XP);
+        Assert.Equal(Pet.LevelForXp(pet.XP), pet.Level);
+        Assert.Equal(2, pet.Level);
     }
 }

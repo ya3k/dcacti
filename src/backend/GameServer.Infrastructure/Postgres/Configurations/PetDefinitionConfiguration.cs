@@ -14,17 +14,17 @@ namespace GameServer.Infrastructure.Postgres.Configurations;
 /// ├── PetDefinitionId       (PK)
 /// ├── Identity
 /// ├── Element
-/// ├── PetLevelMultiplier    (decimal > 0)
 /// ├── PassiveId             (threshold/effect reference)
 /// ├── PassiveThreshold
 /// └── SignatureSkillCardId  (FK → CardDefinition)
 /// </code>
 ///
-/// <b>The multiplier constraint is the documented one.</b>
-/// <c>DATABASE.md</c> §3 states <c>PetLevelMultiplier &gt; 0 (decimal)</c>
-/// (<c>PET_RULES.md</c> §5 item 1); the check constraint spells that bound
-/// directly. No default value is applied: concrete MVP multipliers are
-/// balance/config and are deferred (<c>PET_RULES.md</c> §5 item 3).
+/// <b>No progression column exists on this definition.</b> The retired
+/// <c>PetLevelMultiplier</c> field was removed with the
+/// <c>Player.Level × PetLevelMultiplier</c> derivation
+/// (<c>PET_RULES.md</c> §5.6 item 1, ADR-016 item 13). Per-instance
+/// progression is owned by the owned <c>Pet</c> row and is never stored on
+/// this static definition (<c>PET_RULES.md</c> §5.6 item 2).
 ///
 /// <b><c>SignatureSkillCardId</c> completes the TASK-024 deferral.</b>
 /// <c>DATABASE.md</c> §1 lists the FK and §2 states
@@ -68,18 +68,6 @@ public sealed class PetDefinitionConfiguration : IEntityTypeConfiguration<PetDef
         // CHECK (ELEMENT_RULES.md §1, §7).
         builder.Property(definition => definition.Element)
             .IsRequired();
-
-        // DATABASE.md §1/§3: PetLevelMultiplier — decimal > 0
-        // (PET_RULES.md §5 item 1). Precision supports fractional
-        // multipliers (e.g. 1.5) without silent rounding; the CHECK enforces
-        // the lower bound at the database level.
-        builder.Property(definition => definition.PetLevelMultiplier)
-            .HasPrecision(9, 4)
-            .IsRequired();
-
-        builder.ToTable(table => table.HasCheckConstraint(
-            "CK_PetDefinition_PetLevelMultiplier_Positive",
-            "\"PetLevelMultiplier\" > 0"));
 
         // DATABASE.md §1: PassiveDefinition (threshold/effect reference) —
         // stored as PassiveId (identity) + PassiveThreshold, matching how

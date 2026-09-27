@@ -8,6 +8,35 @@ export interface PingResult {
 }
 
 /**
+ * The direct invocation result of a `Swap` request
+ * (`SIGNALR_PROTOCOL.md` §5).
+ *
+ * It is transport-level feedback about the **request** — not authoritative state
+ * and not a Battle Event. It is delivered to the caller only, is not broadcast,
+ * is not sequenced, and changes nothing by itself (§5 items 1 and 4). The
+ * service returns it verbatim: it interprets nothing, defaults nothing, and
+ * mutates no state.
+ *
+ * `accepted: true` means the action was resolved and its events arrive on the §3
+ * batch (and its state on the §4 push). `accepted: false` means the action was
+ * rejected under its owning domain rule and **nothing happened**
+ * (`MATCH3_RULES.md` §2.1.5). The client must not mutate the board on a
+ * rejection and must not blindly retry one (§5 item 2).
+ */
+export interface SwapResult {
+  readonly accepted: boolean;
+  /**
+   * The machine-readable rejection code, or absent when accepted
+   * (`SIGNALR_PROTOCOL.md` §5 item 3). The codes are owned per action by its
+   * domain document — for `Swap`, the failing checks of `MATCH3_RULES.md`
+   * §2.1.2 together with the staleness rejection of §2.1.4. This contract keeps
+   * no parallel list, so the client treats the value as opaque presentation
+   * data and derives no gameplay meaning from it.
+   */
+  readonly reason?: string;
+}
+
+/**
  * The authoritative battle state pushed on group join
  * (SIGNALR_PROTOCOL.md §4, §4.2, §4.3).
  *
@@ -266,15 +295,20 @@ export interface SignalRConnectionHandlers {
  * never on `HubConnection` directly — that keeps Phaser independent of the
  * transport implementation (ARCHITECTURE.md §2.2 rule 3, task §16).
  *
- * In-battle hub methods (`Swap`, `CardCast`, `PetSkillCast`, `GetBattleState`)
- * are NOT implemented: they are gameplay (SIGNALR_PROTOCOL.md §2, §7).
+ * In-battle hub methods (`CardCast`, `PetSkillCast`, `GetBattleState`) are NOT
+ * implemented: they require the Card/Pet systems and reconnect recovery, which
+ * are out of scope (SIGNALR_PROTOCOL.md §2, §7).
  * `ReceiveEvents` (§3) is subscribed generically so the runtime can forward
  * server-authoritative event batches without modelling any event shape.
  *
- * `JoinBattle` (§1.2) is the one client → server method implemented here, and it
- * is not gameplay: it adds the connection to the battle's group, which is what
- * triggers the server's initial-state push (§4.1). The service exposes it and
- * subscribes to `BattleStateUpdated` (§4) without interpreting the payload.
+ * Two client → server methods are implemented here, and neither is gameplay:
+ * `joinBattle` (§1.2) adds the connection to the battle's group, which is what
+ * triggers the server's initial-state push (§4.1), and `swap` (§2.1) submits the
+ * documented Swap request and returns the §5 acknowledgement. The service
+ * decides nothing: it does not detect matches, validate board state, resolve a
+ * cascade, or modify any battle state — the server remains authoritative
+ * (`GAME_RULES.md` §18, ADR-001). The service exposes them and subscribes to
+ * `BattleStateUpdated` (§4) without interpreting the payload.
  */
 export class SignalRService {
   private static instance: SignalRService | null = null;
@@ -445,5 +479,51 @@ export class SignalRService {
     }
 
     return await this.connection.invoke<PingResult>('Ping', clientSequence);
+  }
+
+  /**
+   * Submits one Swap request (`SIGNALR_PROTOCOL.md` §2, §2.1) and returns the
+   * §5 acknowledgement verbatim.
+   *
+   * The four arguments are exactly the documented request, in the documented
+   * order: `battleId`, `fromCell`, `toCell`, `clientSequence`. Both cells are
+   * §1.0 row-major indices `0..63` and nothing else — no row/column pair, no
+   * screen coordinate, and no direction (`MATCH3_RULES.md` §2.1.1, §2.1.3) — and
+   * the pair is unordered, so `(12, 13)` and `(13, 12)` name the same swap
+   * (§2.1.1 item 2). No gameplay field is sent: the request carries no Gem type,
+   * match result, Combo, Turn, or `Sequence` value (§2.1 item 4,
+   * `GAME_RULES.md` §18).
+   *
+   * `clientSequence` is the opaque client-generated correlation id (§2 item 1).
+   * It is **not** `BattleState.Sequence`, is never compared with or derived from
+   * it, and is never used to reject a stale action — staleness is
+   * `MATCH3_RULES.md` §2.1.4 item 2's already-applied check, decided by the
+   * server. The client is never required to track a server number for its Swap
+   * to be accepted.
+   *
+   * This is transport only. Whether the swap is legal, whether it produces a
+   * match, and what it resolves to are the server's decisions
+   * (`MATCH3_RULES.md` §2.1.2, §2.1.6). The service sends the request, returns
+   * the result, and mutates nothing — an accepted result does not change any
+   * board value here; the next authoritative `BattleStateUpdated` push does
+   * that (§3.1, §4).
+   */
+  public async swap(
+    battleId: string,
+    fromCell: number,
+    toCell: number,
+    clientSequence: string
+  ): Promise<SwapResult> {
+    if (!this.connection || this.connection.state !== signalR.HubConnectionState.Connected) {
+      throw new Error('SignalR connection is not established.');
+    }
+
+    return await this.connection.invoke<SwapResult>(
+      'Swap',
+      battleId,
+      fromCell,
+      toCell,
+      clientSequence
+    );
   }
 }

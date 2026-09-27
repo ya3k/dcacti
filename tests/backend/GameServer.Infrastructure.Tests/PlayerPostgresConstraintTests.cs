@@ -19,8 +19,9 @@ namespace GameServer.Infrastructure.Tests;
 /// hermetically where no database is available.
 ///
 /// What is verified is the documented contract only: the unique
-/// <c>DiscordUserId</c>, the <c>[1, 50]</c> Level range, and the creation
-/// Level of <c>1</c>.
+/// <c>DiscordUserId</c>, the <c>[1, 50]</c> Level range, the <c>XP &gt;= 0</c>
+/// constraint with no upper bound, and the creation values of <c>XP = 0</c> and
+/// <c>Level = 1</c> (<c>COMBAT_RULES.md</c> §7.5 item 3).
 /// </summary>
 public class PlayerPostgresConstraintTests : IAsyncLifetime
 {
@@ -154,7 +155,7 @@ public class PlayerPostgresConstraintTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Postgres_ShouldApplyTheDocumentedCreationLevel()
+    public async Task Postgres_ShouldApplyTheDocumentedCreationValues()
     {
         if (!_available) return;
 
@@ -166,18 +167,106 @@ public class PlayerPostgresConstraintTests : IAsyncLifetime
 
         try
         {
-            // PET_RULES.md §5 item 8: a newly created Player starts at Level 1.
+            // COMBAT_RULES.md §7.5 item 3 / DATABASE.md §3: a newly created
+            // Player starts at XP 0 and Level 1.
+            Assert.Equal(0, created.XP);
             Assert.Equal(1, created.Level);
 
             var stored = await context.Players.AsNoTracking()
                 .SingleAsync(p => p.DiscordUserId == discordUserId);
 
+            Assert.Equal(0, stored.XP);
             Assert.Equal(1, stored.Level);
         }
         finally
         {
             await using var cleanup = CreateContext();
             var entity = await cleanup.Players.SingleOrDefaultAsync(p => p.PlayerId == created.PlayerId);
+            if (entity is not null)
+            {
+                cleanup.Players.Remove(entity);
+                await cleanup.SaveChangesAsync();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Postgres_ShouldRoundTripAnUncappedXpValue()
+    {
+        if (!_available) return;
+
+        await using var context = CreateContext();
+
+        var player = new Player
+        {
+            PlayerId = $"player_xp_{Guid.NewGuid():N}",
+            DiscordUserId = NewDiscordUserId(),
+            // Past the Level-50 boundary: COMBAT_RULES.md §7.5 item 1 keeps the
+            // XP uncapped, so the applied schema must store it verbatim.
+            XP = 12_345,
+            Level = Player.LevelForXp(12_345),
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+
+        context.Players.Add(player);
+        await context.SaveChangesAsync();
+
+        try
+        {
+            await using var reload = CreateContext();
+            var stored = await reload.Players.AsNoTracking()
+                .SingleAsync(p => p.PlayerId == player.PlayerId);
+
+            Assert.Equal(12_345, stored.XP);
+            Assert.Equal(Player.MaxLevel, stored.Level);
+
+            // The XP column accepts the value while the Level constraint holds:
+            // proof the cap is on Level only, as DATABASE.md §3 states.
+            Assert.True(stored.Level <= Player.MaxLevel);
+        }
+        finally
+        {
+            await using var cleanup = CreateContext();
+            var entity = await cleanup.Players.SingleOrDefaultAsync(p => p.PlayerId == player.PlayerId);
+            if (entity is not null)
+            {
+                cleanup.Players.Remove(entity);
+                await cleanup.SaveChangesAsync();
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Postgres_ShouldRejectANegativeXpValue()
+    {
+        if (!_available) return;
+
+        await using var context = CreateContext();
+
+        var player = new Player
+        {
+            PlayerId = $"player_xp_neg_{Guid.NewGuid():N}",
+            DiscordUserId = NewDiscordUserId(),
+            XP = 0,
+            Level = Player.InitialLevel,
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+
+        context.Players.Add(player);
+        await context.SaveChangesAsync();
+
+        try
+        {
+            // DATABASE.md §3: Player.XP >= 0. The constraint is enforced by the
+            // applied schema, so a negative stored value is rejected.
+            context.Entry(player).Property(nameof(Player.XP)).CurrentValue = -1;
+
+            await Assert.ThrowsAsync<DbUpdateException>(() => context.SaveChangesAsync());
+        }
+        finally
+        {
+            await using var cleanup = CreateContext();
+            var entity = await cleanup.Players.SingleOrDefaultAsync(p => p.PlayerId == player.PlayerId);
             if (entity is not null)
             {
                 cleanup.Players.Remove(entity);

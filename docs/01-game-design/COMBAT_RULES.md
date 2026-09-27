@@ -1,6 +1,11 @@
 # Combat Rules
 
-**Version:** 1.3 (§1.1 renamed — combat stats are the active Pet's
+**Version:** 1.4 (§8 added — Player XP / Level progression contract: the
+two-track ownership model, the battle-outcome XP reward, the reward-amount
+vs. curve-constant distinction, and the uncapped-XP / capped-Level
+semantics; supersedes the retired `Player.Level × PetLevelMultiplier` Pet
+Level derivation owned by `PET_RULES.md` §5; prior 1.3: §1.1 renamed —
+combat stats are the active Pet's
 (PetState) stats, not a Player combat identity; §3.4 Final Damage target
 corrected to active Pet HP; wire `target="player"` documented as a fixed
 protocol label for the player's side — §3.2 Boss Damage — Element defender
@@ -230,9 +235,119 @@ validation flow to avoid duplicating those two owning documents.
 
 ---
 
-# 7. Determinism & Authority
+# 7. Player XP & Level Progression
+
+This section is the **canonical owner** of the Player XP → Player Level
+progression contract. Other documents reference it; they do not restate it
+(`.ai/workflow/documentation/documentation-change.md` §2).
+
+## 7.1 Two Progression Tracks
+
+```text
+Player XP / Level   →  account / meta / content progression  (this section)
+Pet XP / Level      →  combat-character progression          (PET_RULES.md §5)
+```
+
+The two tracks are **independent**. Player Level is not an input to Pet
+Level, and Pet Level is not an input to Player Level. The Player is the
+account/owner; a Pet is a combat character. `ADR-016` records why this
+ownership split was chosen; `GAME_RULES.md` §9.3 states the Pet rule.
+
+## 7.2 Player XP Reward (battle outcome)
+
+```text
+BattleWon   →  Player XP +100
+BattleLost  →  Player XP +0
+```
+
+A battle awards XP as a single outcome-based amount, applied server-side on
+the battle-end path (`GAME_RULES.md` §18). The client never determines the
+amount granted (`GAME_RULES.md` §18, ADR-001).
+
+## 7.3 Reward Amount vs. Curve Constant
+
+These are **two independent concepts** and must never be collapsed into
+one value. Both currently equal `100`; that equality is a balance
+coincidence, not a shared definition.
+
+```text
+Player XP reward amount       = 100   (MVP initial value — CONFIGURATION)
+XP-per-level curve constant   = 100   (part of the progression FORMULA)
+```
+
+These two concepts are also recorded separately: the reward figures in
+`DATABASE.md` §1/§3 and the formula in `DATABASE.md` §3 cite this section
+for both.
+
+- The **reward amount** is a configuration value: the MVP initial amount
+  granted by a won battle (§7.2). Retuning it is a balance change
+  (`ROADMAP.md` Phase 3 configurable-value pass), not a rule change.
+- The **curve constant** is a gameplay formula constant: the divisor in the
+  Level formula (§7.4). It defines the shape of progression and is not a
+  balance tuning knob of the same kind.
+
+Changing either one must never silently rewrite the other.
+
+## 7.4 Player Level Formula
+
+```text
+Player.Level = min(floor(Player.XP / 100), 49) + 1
+
+equivalently:
+
+Player.Level = min(floor(Player.XP / 100) + 1, 50)
+```
+
+The divisor `100` is the curve constant of §7.3. The formula is
+deterministic and total: every non-negative integer `Player.XP` yields
+exactly one Player Level.
+
+Worked boundaries (authoritative):
+
+```text
+Player.XP = 0      →  Level 1
+Player.XP = 100    →  Level 2
+Player.XP = 400    →  Level 5
+Player.XP = 4900   →  Level 50
+Player.XP = 5000   →  Level 50
+Player.XP = 10000  →  Level 50
+```
+
+## 7.5 XP Is Uncapped; Level Is Capped
+
+1. **`Player.XP` is uncapped.** It is cumulative lifetime progression and
+   keeps accumulating after Level 50. There is no XP ceiling, no XP reset,
+   and no XP discard at the cap.
+2. **`Player.Level` is capped at 50.** The `min(…, 50)` term of §7.4 is the
+   whole cap: once the curve reaches 50 the Level stops increasing while XP
+   continues to grow.
+3. **Initial values.** A newly created Player has `Player.XP = 0` and
+   `Player.Level = 1` (§7.4 at `XP = 0`). Both are persisted
+   (`DATABASE.md` §1).
+4. **Defeat changes nothing.** A `BattleLost` grants `+0` Player XP (§7.2)
+   and therefore causes no Level change.
+5. **Do not invent post-50 progression.** Prestige, Paragon, Season XP,
+   additional XP currencies, and any other post-Level-50 progression system
+   are **not** part of this contract and must not be introduced without a
+   new human gameplay decision (`GAME_RULES.md` §20, `MVP_SCOPE.md` §4). XP
+   continuing to accumulate past Level 50 (item 1) is the entirety of the
+   documented post-50 behavior.
+
+## 7.6 Player Level Has No Combat Stats
+
+Player Level is an account/meta progression value only. It carries **no
+combat stats** — there is no `PlayerAttack`, `PlayerDefense`, `PlayerHP`,
+`PlayerCrit`, `PlayerPower`, or equivalent. Battle-time HP/ATK/DEF/Crit/
+Power belong to the active Pet's `PetState` (`GAME_STATE.md` §2.3, §1.1,
+ADR-011). Player Level grants no combat modifier of any kind.
+
+---
+
+# 8. Determinism & Authority
 
 All formulas in this document execute server-side. No client-submitted value
-for Base Damage, Modifiers, Defense, or Final Damage is ever authoritative
-(GAME_RULES.md §18). The client renders the `DamageCalculated` /
-`DamageDealt` / `DamageTaken` events (GAME_RULES.md §16) produced by the server.
+for Base Damage, Modifiers, Defense, Final Damage, Player XP, or Player
+Level is ever authoritative (`GAME_RULES.md` §18). The client renders the
+`DamageCalculated` / `DamageDealt` / `DamageTaken` events
+(`GAME_RULES.md` §16) produced by the server, together with the reward
+summary carried by `BattleWon` / `BattleLost` (`GAME_EVENTS.md` §2).

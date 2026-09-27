@@ -27,7 +27,8 @@ namespace GameServer.Application.Tests;
 /// (identity carriage), <c>MatchComboAccountingTests</c> (no
 /// <c>PlayerState</c> node), <c>BattleStateTests</c> (the
 /// <c>BattleState</c>/<c>PetState</c> field sets), <c>PlayerPersistenceTests</c>
-/// (the Player CLR + model field set), <c>PetLevelDerivationTests</c>,
+/// (the Player CLR + model field set), <c>PetPersistenceTests</c> (the
+/// Pet/PetDefinition field sets and model constraints),
 /// <c>CardLoadoutServiceTests</c>, <c>RelicLoadoutServiceTests</c>,
 /// <c>BattleStartServiceTests</c>, <c>BattleStartEndpointTests</c>, and
 /// <c>ApplicationSessionRESTTests</c>. Those are not duplicated here; they are

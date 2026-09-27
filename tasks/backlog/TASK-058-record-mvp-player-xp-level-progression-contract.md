@@ -16,7 +16,7 @@
 ```text
 Task ID:           TASK-058
 Type:              DOCUMENTATION
-Status:            BACKLOG
+Status:            SUPERSEDED (by TASK-059 — see Status note below)
 Risk:              MEDIUM (cross-referenced contract: domain rule doc +
                    DATABASE.md + API_CONTRACTS.md / GAME_EVENTS.md;
                    tasks/TASK_TYPES.md §4 "MEDIUM if it affects a
@@ -51,11 +51,21 @@ precedent set (TASK-045/046/048/050/051/056 — all contract-formalization
 tasks typed `DOCUMENTATION`) govern here. The domain rule content is still
 reviewed for accuracy by the `gameplay` supporting agent.
 
-**Status note.** `BACKLOG`, not `BLOCKED`: the stop condition that blocked
-TASK-033 was closed by the human decisions recorded in §2 before this task was
-written. Per `tasks/README.md` §6 the file lives in `backlog/`; per
-`TASK_LIFECYCLE.md` §3 it may move `BACKLOG → READY` once an orchestrator
-confirms the §7 criteria.
+**Status note.** `SUPERSEDED` by **TASK-059**
+(`tasks/backlog/TASK-059-resolve-independent-player-xp-and-pet-xp-contract.md`)
+under an explicit product-owner decision. This task's single-track contract
+(§2.1 "There is no Pet XP", §2.6 `Player (XP, Level) → Pet Level`) is
+replaced by the independent two-track Player XP + Pet XP model. This file is
+**preserved unmodified as the historical record** apart from this Status
+field and note. Do not implement this task, and do not re-derive the Player
+XP values from it — the surviving Player-track decisions are restated in
+TASK-059 §2.
+
+**Original status note (historical).** `BACKLOG`, not `BLOCKED`: the stop
+condition that blocked TASK-033 was closed by the human decisions recorded
+in §2 before this task was written. Per `tasks/README.md` §6 the file lives
+in `backlog/`; per `TASK_LIFECYCLE.md` §3 it may move `BACKLOG → READY` once
+an orchestrator confirms the §7 criteria.
 
 ---
 

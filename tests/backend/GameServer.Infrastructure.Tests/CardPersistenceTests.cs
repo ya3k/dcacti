@@ -473,7 +473,6 @@ public class CardPersistenceTests
                 PetDefinitionId = "pet_def_xich_lang",
                 Identity = "Xích Lang",
                 Element = Domain.Elements.Element.Hoa,
-                PetLevelMultiplier = 1.5m,
                 PassiveId = new Domain.Passives.PassiveId("xich-lang-passive"),
                 PassiveThreshold = 5,
                 SignatureSkillCardId = "card_skill_inferno",

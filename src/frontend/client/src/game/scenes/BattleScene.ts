@@ -4,6 +4,7 @@ import { readRuntime } from '../runtime/RuntimeRegistry';
 import type { GameRuntime } from '../runtime/GameRuntime';
 import type { GameRuntimeState } from '../../state/GameRuntimeState';
 import type { RuntimeBattleState, RuntimeBoard } from '../runtime/GameRuntimeEvents';
+import { RUNTIME_ACTION_SWAP } from '../runtime/GameRuntimeEvents';
 
 /**
  * Board presentation geometry, in logical game pixels.
@@ -61,9 +62,20 @@ const GEM_PRESENTATION: Readonly<Record<string, { readonly color: number; readon
  * client-side randomness (SIGNALR_PROTOCOL.md §4 item 10, `GAME_RULES.md` §18,
  * ADR-001). Its only transformation is the documented index → screen mapping.
  *
- * This is not gameplay: there is no swap interaction, match detection, cascade,
- * gravity, combo, or combat presentation here. Those are owned by the future
- * resolution task.
+ * **Swap input.** The scene implements the documented Match-3 interaction
+ * (`MATCH3_RULES.md` §2 item 1): a tap on a cell selects it, and a tap on a
+ * second cell submits the pair through the runtime port —
+ *
+ *   select cell A → select cell B → GameRuntime.requestAction(Swap)
+ *     → SignalRService.swap → BattleHub.Swap
+ *
+ * The selection is presentation-local state. The scene does not decide whether
+ * the swap is legal, whether it produces a match, or what it resolves to: that
+ * is `MATCH3_RULES.md` §2.1.2's server-side validation. Its only local checks
+ * are interaction feedback — a tap outside the board is ignored, and a second
+ * tap on the same cell clears the selection instead of submitting — which
+ * neither alters the request shape nor substitutes for the server's answer
+ * (`SIGNALR_PROTOCOL.md` §2.1 item 1).
  *
  * It is created with the `GameRuntime` as scene data by `GameConfig`. When no
  * runtime is supplied it still runs, reporting that the runtime is unavailable,
@@ -77,8 +89,18 @@ export class BattleScene extends Phaser.Scene {
   private detailText: Phaser.GameObjects.Text | null = null;
   private battleText: Phaser.GameObjects.Text | null = null;
   private boardText: Phaser.GameObjects.Text | null = null;
+  private swapText: Phaser.GameObjects.Text | null = null;
   /** The drawn board cells, cleared and redrawn on each state push. */
   private boardLayer: Phaser.GameObjects.Container | null = null;
+  /**
+   * The first selected cell's §1.0 index, or `null` when nothing is selected.
+   *
+   * Presentation-local input state only — it is not board state and is never
+   * sent as anything but the two cells of a Swap request.
+   */
+  private selectedCell: number | null = null;
+  /** True while a Swap request is outstanding, so further taps are ignored. */
+  private swapPending = false;
 
   constructor() {
     super('BattleScene');
@@ -87,6 +109,7 @@ export class BattleScene extends Phaser.Scene {
   create(): void {
     this.runtime = readRuntime(this);
     this.drawRuntimeShell();
+    this.registerBoardInput();
 
     // Reflect current runtime state immediately, then follow transitions.
     this.renderRuntimeState(this.runtime?.getState() ?? null);
@@ -115,8 +138,11 @@ export class BattleScene extends Phaser.Scene {
     this.detailText = null;
     this.battleText = null;
     this.boardText = null;
+    this.swapText = null;
     this.boardLayer?.destroy(true);
     this.boardLayer = null;
+    this.selectedCell = null;
+    this.swapPending = false;
   }
 
   private drawRuntimeShell(): void {
@@ -169,6 +195,18 @@ export class BattleScene extends Phaser.Scene {
         fontFamily: 'ui-monospace, monospace',
         fontSize: '13px',
         color: '#64748b',
+      })
+      .setOrigin(0, 0.5);
+
+    // Swap input / acknowledgement feedback. This is transport feedback about
+    // the request — not resolution presentation: it reports which cells were
+    // selected and whether the server accepted the request
+    // (SIGNALR_PROTOCOL.md §2.1, §5).
+    this.swapText = this.add
+      .text(BOARD_ORIGIN_X, BOARD_ORIGIN_Y - 42, '', {
+        fontFamily: 'ui-monospace, monospace',
+        fontSize: '13px',
+        color: '#94a3b8',
       })
       .setOrigin(0, 0.5);
 
@@ -225,7 +263,6 @@ export class BattleScene extends Phaser.Scene {
       this.renderBoard(null);
       return;
     }
-
     this.battleText.setText(
       [
         `BattleId: ${state.battleId}`,
@@ -319,6 +356,211 @@ export class BattleScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     this.boardLayer.add([tile, label]);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Swap input (MATCH3_RULES.md §2 item 1; SIGNALR_PROTOCOL.md §2.1)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Registers the two-tap Swap interaction on the existing board layer.
+   *
+   * Phaser delivers a pointer event with the container's local coordinates, so
+   * the tapped cell is resolved with the inverse of the same mapping
+   * `renderBoard` uses — one coordinate convention, used in both directions
+   * (`MATCH3_RULES.md` §1.0). A tap that falls in a gap between cells, or
+   * outside the board, resolves to no cell and is ignored.
+   */
+  private registerBoardInput(): void {
+    if (!this.boardLayer) {
+      return;
+    }
+
+    this.boardLayer.on(
+      Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN,
+      (pointer: Phaser.Input.Pointer) => {
+        this.onCellTapped(BattleScene.cellIndexAt(pointer.x, pointer.y));
+      }
+    );
+  }
+
+  /**
+   * Maps a board-layer-local point to a §1.0 cell index, or `null` when the
+   * point is not inside a cell.
+   *
+   * The board layer is a container positioned at the scene origin, so a pointer
+   * event's local coordinates are already the same space `drawCell` draws in —
+   * the mapping below is the exact inverse of `drawCell`'s
+   * `x = BOARD_ORIGIN_X + column * pitch + CELL_SIZE / 2`
+   * (`MATCH3_RULES.md` §1.0 provides the index; this is only its presentation
+   * inverse).
+   *
+   * This is presentation geometry only. It decides no gameplay fact: it answers
+   * "which drawn cell did the player touch", and an out-of-cell point yields no
+   * index rather than a clamped or guessed one
+   * (`MATCH3_RULES.md` §2.1.3 item 2 — nothing is clamped or reinterpreted).
+   */
+  private static cellIndexAt(x: number, y: number): number | null {
+    const pitch = CELL_SIZE + CELL_GAP;
+    const localX = x - BOARD_ORIGIN_X;
+    const localY = y - BOARD_ORIGIN_Y;
+
+    if (localX < 0 || localY < 0) {
+      return null;
+    }
+
+    const column = Math.floor(localX / pitch);
+    const row = Math.floor(localY / pitch);
+
+    if (row >= BOARD_ROWS || column >= BOARD_COLUMNS) {
+      return null;
+    }
+
+    // Inside the cell's own square, not in the gap that follows it.
+    if (localX - column * pitch > CELL_SIZE || localY - row * pitch > CELL_SIZE) {
+      return null;
+    }
+
+    return row * BOARD_COLUMNS + column;
+  }
+
+  /**
+   * Handles one tap on a board cell.
+   *
+   * Local interaction behavior only (`SIGNALR_PROTOCOL.md` §2.1 item 1):
+   *
+   * - no cell (tap outside the board) — ignored;
+   * - first cell — selected, shown as selection feedback;
+   * - second tap on the selected cell — selection cleared, nothing sent;
+   * - second cell — the pair is submitted through the runtime port.
+   *
+   * The scene performs no gameplay validation: it never checks adjacency, never
+   * looks for a match, and never decides whether the swap is legal. Adjacency is
+   * `MATCH3_RULES.md` §2.1.2's server-side check, and the server's answer is what
+   * this scene renders.
+   */
+  private onCellTapped(cellIndex: number | null): void {
+    if (cellIndex === null || this.swapPending) {
+      return;
+    }
+
+    if (this.selectedCell === null) {
+      this.selectedCell = cellIndex;
+      this.renderSwapStatus();
+      return;
+    }
+
+    if (this.selectedCell === cellIndex) {
+      this.selectedCell = null;
+      this.renderSwapStatus();
+      return;
+    }
+
+    const fromCell = this.selectedCell;
+    this.selectedCell = null;
+
+    void this.submitSwap(fromCell, cellIndex);
+  }
+
+  /**
+   * Submits one Swap request through the runtime port and presents the result.
+   *
+   * The scene calls the runtime and nothing else: it does not touch
+   * `SignalRService`, the hub, or the board (`ARCHITECTURE.md` §2.2 rule 3).
+   *
+   * On `accepted: true` the scene changes **no** board, turn, or sequence value:
+   * the next authoritative `BattleStateUpdated` push re-renders the board
+   * (`SIGNALR_PROTOCOL.md` §3.1, §4). On `accepted: false` nothing is mutated
+   * locally and nothing is retried automatically — the machine-readable `reason`
+   * is shown as feedback only (`MATCH3_RULES.md` §2.1.5, §5 item 2).
+   */
+  private async submitSwap(fromCell: number, toCell: number): Promise<void> {
+    if (!this.runtime) {
+      this.renderSwapStatus('Swap unavailable: no runtime is connected.');
+      return;
+    }
+
+    this.swapPending = true;
+    this.renderSwapStatus();
+
+    try {
+      // The pair is sent as selected, and both cells are §1.0 indices
+      // (`MATCH3_RULES.md` §2.1.1). The runtime sources the battle id and the
+      // correlation id; the scene supplies only the two cells the player chose.
+      const acknowledgement = await this.runtime.requestAction({
+        kind: RUNTIME_ACTION_SWAP,
+        fromCell,
+        toCell,
+      });
+
+      this.renderSwapStatus(undefined, fromCell, toCell, acknowledgement);
+    } catch (error) {
+      // A failed request is a transport/runtime failure — presentation state,
+      // not game state (`SIGNALR_PROTOCOL.md` §8.3). No board value changes and
+      // nothing is retried.
+      this.renderSwapStatus(
+        `Swap not sent: ${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      this.swapPending = false;
+    }
+  }
+
+  /**
+   * Presents the Swap interaction's own feedback: the current selection, or the
+   * outcome of the last submitted request.
+   *
+   * This is transport feedback (`SIGNALR_PROTOCOL.md` §2.1, §5) — not resolution
+   * presentation. It reports no match, cascade, combo, damage, or boss value,
+   * because the client computes none of those.
+   */
+  private renderSwapStatus(
+    message?: string,
+    fromCell?: number,
+    toCell?: number,
+    acknowledgement?: { readonly accepted: boolean; readonly reason?: string | null }
+  ): void {
+    if (!this.swapText) {
+      return;
+    }
+
+    if (message !== undefined) {
+      this.swapText.setText(message);
+      this.swapText.setColor('#f87171');
+      return;
+    }
+
+    if (acknowledgement) {
+      if (acknowledgement.accepted) {
+        // The request was accepted. The board is NOT changed here: the next
+        // authoritative push re-renders it (SIGNALR_PROTOCOL.md §3.1, §4).
+        this.swapText.setText(
+          `Swap ${fromCell} -> ${toCell}: accepted. Awaiting the server's state push.`
+        );
+        this.swapText.setColor('#34d399');
+      } else {
+        // Rejected: nothing happened, and the reason is the server's own
+        // machine-readable code, shown as received (§5 items 2–3).
+        this.swapText.setText(
+          `Swap ${fromCell} -> ${toCell}: rejected (${acknowledgement.reason ?? 'unknown'}).`
+        );
+        this.swapText.setColor('#fbbf24');
+      }
+      return;
+    }
+
+    if (this.swapPending) {
+      this.swapText.setText('Swap request in flight…');
+      this.swapText.setColor('#94a3b8');
+      return;
+    }
+
+    this.swapText.setText(
+      this.selectedCell === null
+        ? 'Select a cell to swap.'
+        : `Cell ${this.selectedCell} selected — select a neighbour.`
+    );
+    this.swapText.setColor('#94a3b8');
   }
 }
 

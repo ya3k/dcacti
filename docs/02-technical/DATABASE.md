@@ -1,6 +1,31 @@
-# Database
+﻿# Database
 
-**Version:** 1.14 (§1 "Identity and reward sourcing for `BattleResult`"
+**Version:** 1.17 (§1 "Reward semantics for `RewardSummary`" **defeat shape
+resolved** per TASK-068 human decision (**Option A**) — the contradiction
+between item 1's per-outcome Player-track member list and the former
+"a `"defeat"` battle carries no line items" wording is removed: the
+Player-track member set applies to **both** outcomes, with
+`playerXpGained = 100` on `BattleWon` and `playerXpGained = 0` on
+`BattleLost`; item 5 now states the member set explicitly, the §1 entity-block
+staging sentence no longer asserts a defeat-specific empty shape, and every
+reward value is unchanged (Player XP `+100`/`+0`, Pet XP `+100`/`+0`, Pet XP
+cap/formula, `{}` staging semantics). Prior 1.16: §1/§3 Pet XP contract **finalized** per TASK-062 — the
+twelve Pet XP decisions are now decided: `Pet.XP` initial `0`, hard-capped at
+`4900` with no overflow, `Pet.Level` range 1–50, initial `1`, formula
+`min(floor(Pet.XP / 100) + 1, 50)`; the §3 "UNRESOLVED" Pet constraints are
+replaced by concrete constraints, and the `RewardSummary` Pet track moves
+from "not finalizable" to "semantics decided, member list deferred to the
+implementation task". Prior 1.15: §1/§3 XP persistence contract resolved per TASK-059:
+`Player.XP` added as a persisted column with the decided Player XP →
+Player Level contract, `Pet.XP` added as a per-instance Pet column with
+its balance values at that time explicitly recorded as unresolved
+(**superseded by version 1.16 — they are now decided**), the retired
+`PetDefinition.PetLevelMultiplier` column removed from the documented
+contract and `Pet.Level` re-sourced from the Pet's own XP, and the
+`RewardSummary` member list re-assigned to this document with the
+Pet-track members explicitly dependent on the Pet XP decisions then
+unresolved (**superseded by version 1.16**);
+ADR-016. Prior 1.14: §1 "Identity and reward sourcing for `BattleResult`"
 clarified per TASK-056 human decision: **`BattleResult` persistence requires
 no Player combat-readiness condition** — the documented prerequisites are
 unchanged and no `IsCombatReady` predicate is part of the contract;
@@ -63,7 +88,9 @@ added; prior 1.6: §1 BattleResult identity/reward sourcing documented —
 `BattleState.PlayerId` (`GAME_STATE.md` §2.8), `PetInstanceId` value from
 `BattleState.PetState.PetId` (`GAME_STATE.md` §2.3 — the owned Pet
 instance), `RewardSummary` staging value = empty JSON object with no line
-items until TASK-033 (ADR-014, TASK-042); prior 1.5: §1
+items until its member list is defined (ADR-014, TASK-042 — that member
+list is owned by this document as of version 1.15; prior 1.6 wording
+attributed it to TASK-033); prior 1.5: §1
 CardDefinition.LoadoutCopyLimit added — required
 per-battle-loadout copy limit per CARD_RULES.md §1; explicit value
 required, no default; concrete values deferred to content/balance;
@@ -71,7 +98,9 @@ prior 1.4: §1 PetLevelMultiplier type/range and Pet.Level floor
 semantics synchronized with PET_RULES.md §5 derivation contract;
 §3 item reference corrected to §5 item 10; prior 1.3: §3 initial
 Player.Level value added — a newly created
-Player starts at Level 1, per PET_RULES.md §5 item 10; prior 1.2: §1
+Player starts at Level 1, per PET_RULES.md §5 item 10 (that rule now lives
+at PET_RULES.md §5.4 item 5 after the TASK-059 §5 rewrite — this is a
+historical changelog entry, not a current attribution); prior 1.2: §1
 Player.Level added; §2 Card ownership ASSUMPTION resolved to
 `PlayerUnlockedCard` join table per ADR-012; prior 1.1: §3 ownership
 model note per ADR-011 — Player FKs = collection ownership; no
@@ -92,9 +121,15 @@ combat-stat columns on Player; equip is battle-scoped)
 Player
 ├── PlayerId (PK)
 ├── DiscordUserId (unique)
-├── Level                           (1–50 — PET_RULES.md §5, MVP_SCOPE.md §1;
-│                                    persistent account attribute, NO combat
-│                                    stats; ADR-012)
+├── XP                              (int, NOT NULL, default 0 — persisted
+│                                    account progression; UNCAPPED, keeps
+│                                    accumulating after Level 50;
+│                                    COMBAT_RULES.md §7)
+├── Level                           (1–50 — Player XP → Player Level
+│                                    contract owned by COMBAT_RULES.md §7;
+│                                    derived from Player.XP, persistent
+│                                    account attribute, capped at 50, NO
+│                                    combat stats; ADR-016)
 └── CreatedAt
 
 Pet                              (a player's OWNED instance of a Pet)
@@ -103,21 +138,26 @@ Pet                              (a player's OWNED instance of a Pet)
 ├── PetDefinitionId (FK → PetDefinition)
 ├── Tier
 ├── Star
-├── Level                           (floor(Player.Level ×
-│                                    PetLevelMultiplier) clamped to 1–50 —
-│                                    PET_RULES.md §5; denormalized snapshot
-│                                    of the derived value, not an
-│                                    independent XP store; same canonical
-│                                    rule as BattleState.PetState.Level)
+├── XP                              (int, NOT NULL, default 0 — per-INSTANCE
+│                                    combat progression; belongs to the Pet
+│                                    instance, NOT to PetDefinition
+│                                    (PET_RULES.md §5.1, ADR-016). Range
+│                                    0–4900 with a HARD cap of 4900 —
+│                                    Pet XP stops accumulating at Level 50
+│                                    and no overflow is retained
+│                                    (PET_RULES.md §5.5). Initial value 0
+│                                    (PET_RULES.md §5.2))
+├── Level                           (per-instance Pet Level derived from this
+│                                    Pet's own XP — PET_RULES.md §5.4;
+│                                    independent of Player Level. Range
+│                                    1–50, initial value 1
+│                                    (PET_RULES.md §5.2, §5.5))
 └── AcquiredAt
 
 PetDefinition                    (static content, one row per MVP Pet)
 ├── PetDefinitionId (PK)
 ├── Identity                      ("Thanh Xà", "Xích Lang", ...)
 ├── Element
-├── PetLevelMultiplier            (decimal > 0 — PET_RULES.md §5; never
-│                                  hard-coded; concrete MVP values deferred
-│                                  to balance/config)
 ├── PassiveDefinition              (threshold/effect reference —
 │                                  PASSIVE_RULES.md)
 └── SignatureSkillCardId (FK → CardDefinition)
@@ -205,12 +245,14 @@ BattleResult
 │                                      owned by GAME_EVENTS.md §2)
 ├── DurationTurns
 ├── CompletedAt
-└── RewardSummary                        (JSON — member list owned by
-                                          TASK-033; staging value until
-                                          then: empty object, no reward
-                                          line items; may include Player
-                                          XP granting Player Level —
-                                          PET_RULES.md §5, GDD §14)
+└── RewardSummary                        (JSON — member list owned by THIS
+                                           document; see "Reward semantics"
+                                           below. The Player-track members
+                                           are fixed; the Pet-track SEMANTICS
+                                           are fixed by PET_RULES.md
+                                           §5.3–§5.5 while its member list
+                                           is deferred to the
+                                           implementation task)
 ```
 
 **Persistence contract for `BossDefinition`.** (TASK-045)
@@ -490,8 +532,10 @@ BattleResult
      `BattleResult` persistence would add a prerequisite this contract does not
      define.
    - **The Player entity gains no column and no state member.** `Player`
-     remains the four documented columns (item 1, entity block above;
-     `ADR-011`, `ADR-012`); `BattleState` gains no lifecycle or readiness
+     gains nothing from this item: its documented columns are the ones in
+     the entity block above (`PlayerId`, `DiscordUserId`, `XP`, `Level`,
+     `CreatedAt`), unchanged by TASK-056 (`ADR-011`, `ADR-012`,
+     `ADR-016`); `BattleState` gains no lifecycle or readiness
      member (`GAME_STATE.md` §2.0.3).
    - **This item resolves a code↔contract mismatch, not a design change.**
      The authoritative documents never defined a readiness concept; an
@@ -501,12 +545,95 @@ BattleResult
      contract, was wrong; removing that unsupported mechanism is the subject of
      a separate implementation reconciliation task and is not a change to any
      rule recorded here.
-3. **`RewardSummary`'s member list is owned by TASK-033** (reward
-   magnitudes, XP, and line-item shape — `PET_RULES.md` §5,
-   `MVP_SCOPE.md` §1). Until that task defines it, the documented staging
-   value is the **empty JSON object `{}`** — a value that is always
-   present, never absent, for both `Outcome`s; a `"defeat"` battle carries
-   no line items.
+3. **`RewardSummary`'s member list is owned by THIS document.** (TASK-059;
+   reassigned from TASK-033 — see "Reward semantics" below for the complete
+   contract.) The documented staging value is the **empty JSON object
+   `{}`** — a value that is always present, never absent, for both
+   `Outcome`s; the `{}` value contains no reward data while the implementation task is pending.
+
+**Reward semantics for `RewardSummary`.** (TASK-059)
+
+`RewardSummary` is the persisted record of what a battle awarded. Its shape
+is kept deliberately split into a **finalized Player track** and a
+**Pet track that cannot be finalized yet**:
+
+1. **Player track — decided, and therefore contracted here.** The Player
+   reward is owned by `COMBAT_RULES.md` §7:
+
+   ```text
+   BattleWon   →  Player XP +100
+   BattleLost  →  Player XP +0
+   ```
+
+   `Player.XP` and `Player.Level` are persisted columns (`§1`, `§3`). The
+   Player-track members of `RewardSummary` are:
+
+   ```text
+   playerXpGained     (int)  — Player XP granted by this battle:
+                               100 on a win, 0 on a loss
+   newPlayerXp        (int)  — Player.XP after applying the grant
+   playerLeveledUp    (bool) — whether Player.Level changed
+   newPlayerLevel     (int)  — Player.Level after applying the grant
+   ```
+
+   These four members are the complete Player-track contract and are
+   sourced from the authoritative Player XP rule, not invented here.
+
+2. **Pet track — the reward semantics are now DECIDED; the member list
+   remains deferred to the implementation task.** (TASK-062) The Pet XP
+   reward contract is finalized in `PET_RULES.md` §5.3/§5.4, so the
+   information a Pet reward would carry is now fully determined:
+
+   ```text
+   PET_RULES.md §5.3   the active combat Pet is the sole recipient of
+                       battle Pet XP (+100 on BattleWon, +0 on BattleLost,
+                       and +0 for every inactive owned Pet)
+   PET_RULES.md §5.4   Pet.Level = min(floor(Pet.XP / 100) + 1, 50)
+   PET_RULES.md §5.5   Pet.XP is hard-capped at 4900 (no overflow)
+   ```
+
+   The arity that previously blocked the shape is therefore **resolved**:
+   one battle awards Pet XP to exactly **one** Pet — the active combat Pet
+   (`PET_RULES.md` §5.3 item 1).
+
+   **This document nevertheless does not freeze the Pet member names.** The
+   `RewardSummary` Pet-track member list is a wire/persistence projection
+   concern whose exact representation is deferred to the implementation task,
+   which will define it from the now-decided semantics above. In particular
+   the illustrative names used in TASK-059 §6.4 are examples only and are
+   **not** part of this contract. Until that member list is defined, the
+   value in force remains the `{}` staging value (item 4).
+
+3. **No placeholder members.** A field must not be added to `RewardSummary`
+   merely to "complete" the schema before its representation is defined for
+   implementation — `AGENTS.md` §7, `AGENTS.md` §9. This is now a
+   representation decision, not an undecided gameplay decision: the
+   semantics it projects are fixed by `PET_RULES.md` §5.3–§5.5.
+
+4. **The `{}` staging value remains the contract in force.** Because the
+   Pet-track member list is not yet defined and the Player-track members are
+   only meaningful once the reward path is implemented, the persisted and
+   returned value remains the always-present empty JSON object until the
+   implementation task lands. `BattleResult.RewardSummary` is `JSON`, and
+   the `GET /api/battle/{battleId}/result` `rewards` member
+   (`API_CONTRACTS.md` §4 note 1) returns this value unchanged.
+
+5. **Outcome semantics.** `RewardSummary` is present for both
+   `Outcome` values (§1 entity block, `API_CONTRACTS.md` §4 note 1). The
+   Player-track member set defined in item 1 applies identically to
+   both outcomes:
+
+   ```text
+   BattleWon   → playerXpGained = 100
+   BattleLost  → playerXpGained = 0
+   ```
+
+   On a `"defeat"` the four Player-track members are serialized with
+   `playerXpGained = 0`, `playerLeveledUp = false`, and
+   `newPlayerXp` / `newPlayerLevel` equal to the current values
+   (no change), which matches a `+0` Player XP grant
+   (`COMBAT_RULES.md` §7.2) and a `+0` Pet XP grant to the
+   active combat Pet (`PET_RULES.md` §5.3 item 2).
 
 **Duration and completion sourcing for `BattleResult`.** (TASK-050)
 
@@ -568,12 +695,24 @@ loadout only (`RELIC_RULES.md` §2, `API_CONTRACTS.md` §3).
 # 3. Constraints
 
 ```text
-Player.Level        ∈ [1, 50]                                      (PET_RULES.md §5)
-Player.Level        = 1 for a newly created Player                 (PET_RULES.md §5 item 10)
+Player.XP             int, NOT NULL, default 0                       (COMBAT_RULES.md §7)
+Player.XP             >= 0   (no UPPER bound — XP is uncapped and       (COMBAT_RULES.md §7.5 item 1)
+                              only Level is capped at 50)
+Player.XP             = 0 for a newly created Player                 (COMBAT_RULES.md §7.5 item 3)
+Player.Level        ∈ [1, 50]                                      (COMBAT_RULES.md §7)
+Player.Level        = min(floor(Player.XP / 100) + 1, 50)          (COMBAT_RULES.md §7.4)
+Player.Level        = 1 for a newly created Player                 (COMBAT_RULES.md §7.5 item 3)
+Pet.XP                int, NOT NULL, default 0                       (§1; PER-INSTANCE —
+                                                                      PET_RULES.md §5.1)
+Pet.XP                ∈ [0, 4900]   (HARD cap — Pet XP stops at 4900    (PET_RULES.md §5.5)
+                                     and no overflow is retained)
+Pet.XP                = 0 for a newly created PlayerPet               (PET_RULES.md §5.2)
 Pet.Tier          ∈ {Common, Rare, Epic, Legendary, Mythic}      (PET_RULES.md §3)
 Pet.Star           ∈ [1, 5]                                       (PET_RULES.md §4)
-Pet.Level           ∈ [1, 50]                                      (PET_RULES.md §5)
-PetDefinition.PetLevelMultiplier > 0 (decimal)                    (PET_RULES.md §5)
+Pet.Level             derived from this Pet instance's own Pet.XP    (PET_RULES.md §5.4)
+Pet.Level          ∈ [1, 50]                                       (PET_RULES.md §5.5)
+Pet.Level             = min(floor(Pet.XP / 100) + 1, 50)           (PET_RULES.md §5.4)
+Pet.Level             = 1 for a newly created PlayerPet             (PET_RULES.md §5.2)
 CardDefinition.Category  ∈ {Basic, PetSkill}                        (CARD_RULES.md §1)
 BossDefinition.BossDefinitionId     NOT NULL, UNIQUE, caller/content-supplied (independent persistence key, never
                                                                       database-generated; distinct from `Identity` and
@@ -589,14 +728,17 @@ Player.PlayerId (per battle) must own exactly one active Pet selection
   not purely at the DB level, since it is a request-time rule
   (API_CONTRACTS.md §2), not a stored invariant.
 
-Ownership model (ADR-011, ADR-012): Player FKs on Pet/Relic (and
+Ownership model (ADR-011, ADR-012, ADR-016): Player FKs on Pet/Relic (and
 PlayerUnlockedCard rows) are collection ownership only. There are no
 combat-stat columns on Player — HP/ATK/DEF/Crit/Power are battle-time
-`PetState` (GAME_STATE.md §2.3, REDIS_STATE.md). `Player.Level` is a
-persistent progression value (1–50), not a combat stat. Equipped
-Relic/Card loadout is battle-scoped, selected at POST /api/battle/start
-for the active Pet and snapshotted into PetState; it is not stored as
-Player-owned or Pet-owned equip slots.
+`PetState` (GAME_STATE.md §2.3, REDIS_STATE.md). `Player.XP` and
+`Player.Level` are persistent account progression values, not combat
+stats. `Pet.XP` and `Pet.Level` are persistent per-instance progression
+values owned by the Pet instance — they are not `PetDefinition` columns and
+are not derived from any Player attribute (PET_RULES.md §5.1, ADR-016).
+Equipped Relic/Card loadout is battle-scoped, selected at
+POST /api/battle/start for the active Pet and snapshotted into PetState; it
+is not stored as Player-owned or Pet-owned equip slots.
 ```
 
 ---

@@ -53,13 +53,34 @@ public interface IBattleResultRepository
     /// How a repeat is handled is the storage's to express against that key —
     /// the contract requires only that the end state is at most one row for the
     /// battle, holding the terminal result.
+    ///
+    /// <b>The return value reports whether this call was the first durable
+    /// write.</b> <c>true</c> means the row was newly stored by this call — the
+    /// documented terminal transition became durable here. <c>false</c> means
+    /// the result was already durably stored, identically, so nothing was
+    /// written. It is reported because the battle-end path's Player XP grant
+    /// (<c>COMBAT_RULES.md</c> §7.2) must be bound to the <i>first</i> durable
+    /// write and must not be re-applied by a retry or reconciliation of the
+    /// same battle's result. That reconciles the grant against the existing
+    /// primary-key guard instead of adding a second idempotency mechanism
+    /// (<c>DATABASE.md</c> §1 sourcing item 1, <c>ARCHITECTURE.md</c> §5).
+    ///
+    /// It is an observation of what the store did, never a decision: an
+    /// implementation that cannot distinguish the two cases must not report
+    /// <c>true</c> for an already-stored row, because that would turn a retry
+    /// into a duplicate grant.
     /// </summary>
     /// <param name="result">
     /// The finished result to persist — every value already resolved from
     /// authoritative server state by the caller.
     /// </param>
     /// <param name="cancellationToken">Cancels the write.</param>
-    Task AddAsync(BattleResult result, CancellationToken cancellationToken = default);
+    /// <returns>
+    /// <c>true</c> when this call performed the first durable write of the
+    /// result; <c>false</c> when an identical row was already stored and
+    /// nothing was written.
+    /// </returns>
+    Task<bool> AddAsync(BattleResult result, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Reads a battle's durable result by its key, or <c>null</c> when no row

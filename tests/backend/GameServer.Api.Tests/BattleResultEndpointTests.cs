@@ -286,11 +286,25 @@ public class BattleResultEndpointTests
         Assert.Contains(resultOutcome, new[] { "victory", "defeat" });
 
         // §4 note 1: rewards is always present, and its value is the stored
-        // RewardSummary — the documented staging value {}.
+        // RewardSummary exactly as DATABASE.md §1 documents it. TASK-068 resolved
+        // the defeat shape as Option A (DATABASE.md §1 item 5), so once the
+        // implementation task lands the member set applies to BOTH outcomes — this
+        // is not the empty object, and its members are the two tracks' documented
+        // ones.
         var rewards = body.GetProperty("rewards");
 
         Assert.Equal(JsonValueKind.Object, rewards.ValueKind);
-        Assert.Empty(rewards.EnumerateObject());
+        Assert.NotEmpty(rewards.EnumerateObject());
+
+        Assert.Equal(
+            new[]
+            {
+                "newPetLevel", "newPetXp", "newPlayerLevel", "newPlayerXp",
+                "petLeveledUp", "petXpGained", "playerLeveledUp", "playerXpGained",
+            }.OrderBy(name => name, StringComparer.Ordinal),
+            rewards.EnumerateObject()
+                .Select(member => member.Name)
+                .OrderBy(name => name, StringComparer.Ordinal));
 
         // §4 note 5 / DATABASE.md §1 item 1: durationTurns is the terminal Turn.
         Assert.Equal(outcome.DurationTurns, body.GetProperty("durationTurns").GetInt32());
@@ -369,8 +383,10 @@ public class BattleResultEndpointTests
     [Fact]
     public async Task Result_ForATerminalDefeat_ShouldReportTheDefeatOutcome()
     {
-        // The other documented value, with rewards still present per §4 note 1
-        // (a "defeat" carries no line items — the stored staging value is {}).
+        // The other documented value, with rewards present and populated for BOTH
+        // outcomes per §4 note 1 and DATABASE.md §1 item 5 (the TASK-068 Option A
+        // resolution): a defeat grants +0 on both tracks, so those members hold
+        // their documented 0 / unchanged values rather than the object being empty.
         using var factory = new ResultFactory();
 
         var owner = await factory.NewPlayerAsync();
@@ -388,7 +404,22 @@ public class BattleResultEndpointTests
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
 
         Assert.Equal("defeat", body.GetProperty("outcome").GetString());
-        Assert.Empty(body.GetProperty("rewards").EnumerateObject());
+
+        var rewards = body.GetProperty("rewards");
+
+        Assert.Equal(JsonValueKind.Object, rewards.ValueKind);
+        Assert.NotEmpty(rewards.EnumerateObject());
+
+        // DATABASE.md §1 item 5: playerXpGained = 0 on a defeat, playerLeveledUp =
+        // false, and newPlayerXp / newPlayerLevel unchanged — the SAME four-player
+        // member set as victory, not {}.
+        Assert.Equal(0, rewards.GetProperty("playerXpGained").GetInt32());
+        Assert.False(rewards.GetProperty("playerLeveledUp").GetBoolean());
+
+        // PET_RULES.md §5.3 item 2: the active combat Pet's +0, with the same
+        // member shape on the Pet track.
+        Assert.Equal(0, rewards.GetProperty("petXpGained").GetInt32());
+        Assert.False(rewards.GetProperty("petLeveledUp").GetBoolean());
     }
 
     [Fact]
@@ -523,7 +554,6 @@ public class BattleResultEndpointTests
                 PetDefinitionId = petDefinitionId,
                 Identity = "Thanh Xà",
                 Element = Element.Moc,
-                PetLevelMultiplier = 1.0m,
                 PassiveId = new PassiveId("thanh-xa-regen"),
                 PassiveThreshold = 5,
                 SignatureSkillCardId = $"card_skill_{playerId}",

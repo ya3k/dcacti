@@ -1,6 +1,13 @@
 # MVP Scope
 
-**Version:** 1.2 (§1 Pets Pet Level formula synchronized with the
+**Version:** 1.4 (§1 Pets block finalized per TASK-062 — the Pet XP
+balance/reward decisions are now decided (`PET_RULES.md` §5.1–§5.5):
+Pet Level range 1–50, Pet XP hard-capped at 4900. Prior 1.3: §1 Player and
+Pets blocks updated per TASK-059 — Player
+XP / Level is the account progression track (`COMBAT_RULES.md` §7) and is
+no longer the source of Pet Level; Pet XP / Level is the Pet instance's own
+independent track (`PET_RULES.md` §5); ADR-016. Prior 1.2: §1 Pets Pet Level
+formula synchronized with the
 completed derivation contract — floor before clamp — PET_RULES.md §5;
 prior 1.1: §1 Player Level added — required by the Pet Level
 formula; PET_RULES.md §5, ADR-012)
@@ -34,10 +41,9 @@ Element damage modifiers (Advantage / Neutral / Disadvantage)
 ## Player
 ```text
 Player account (Discord identity, collection owner)
-Player Level (1–50) — persistent account attribute; no combat stats.
-  Source of Pet Level via PET_RULES.md §5. Increases through battle
-  Rewards (Meta Progression — GDD §14). Exact XP curve is a balance
-  concern, not a scope item.
+Player XP / Level — persistent account progression (COMBAT_RULES.md §7).
+  XP uncapped; Level 1–50. BattleWon +100 XP, BattleLost +0 XP.
+  No combat stats.
 ```
 
 ## Pets
@@ -45,9 +51,9 @@ Player Level (1–50) — persistent account attribute; no combat stats.
 5 Pets (Thanh Xà, Xích Lang, Sơn Hùng, Bạch Hổ, Huyền Quy)
 Pet Element, Passive, Signature Skill
 Tier, Star, Level progression
-  (Pet Level = clamp(floor(Player Level × Pet Level Multiplier), 1, 50) —
-   PET_RULES.md §5; no Pet XP; concrete MVP multiplier values deferred
-   to balance/config)
+  (Pet XP / Pet Level — the Pet instance's own progression, independent of
+   Player Level; PET_RULES.md §5. Battle-won rewards go to the active
+   combat Pet; Pet Level range 1–50, Pet XP hard-capped at 4900)
 ```
 
 ## Cards

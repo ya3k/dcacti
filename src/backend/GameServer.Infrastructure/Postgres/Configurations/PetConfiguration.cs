@@ -15,22 +15,33 @@ namespace GameServer.Infrastructure.Postgres.Configurations;
 /// ├── PetDefinitionId   (FK → PetDefinition)
 /// ├── Tier              (Common / Rare / Epic / Legendary / Mythic)
 /// ├── Star              (1–5)
-/// ├── Level             (1–50 — denormalized snapshot)
+/// ├── XP                (0–4900 — per-instance Pet XP; hard-capped)
+/// ├── Level             (1–50 — derived from this instance's own XP)
 /// └── AcquiredAt
 /// </code>
 ///
 /// <b>The constraints are the documented ones, not chosen here.</b>
 /// <c>DATABASE.md</c> §3 states <c>Pet.Tier ∈ the five documented members</c>,
-/// <c>Pet.Star ∈ [1, 5]</c>, and <c>Pet.Level ∈ [1, 50]</c>; §4 lists the
-/// single <c>Pet(PlayerId)</c> index. Ranges are read from the Domain
-/// constants that own them so each bound has exactly one spelling.
+/// <c>Pet.Star ∈ [1, 5]</c>, <c>Pet.XP ∈ [0, 4900]</c>, and
+/// <c>Pet.Level ∈ [1, 50]</c>; §4 lists the single <c>Pet(PlayerId)</c> index.
+/// Ranges are read from the Domain constants that own them so each bound has
+/// exactly one spelling.
 ///
-/// <b>Level is a stored snapshot, not an independent store.</b>
-/// <c>DATABASE.md</c> §1 documents it as the denormalized result of
-/// <c>PET_RULES.md</c> §5's formula; the check constraint enforces the
-/// range, while derivation itself lives in Domain
-/// (<see cref="PetLevelDerivation"/>). There is no XP column
-/// (ADR-012 item 6).
+/// <b>XP and Level are stored per-instance progression values.</b>
+/// <c>DATABASE.md</c> §1 documents <c>XP</c> as this Pet instance's own Pet XP
+/// and <c>Level</c> as its documented function (<c>PET_RULES.md</c> §5.4); the
+/// check constraints enforce the documented <c>[0, 4900]</c> and <c>[1, 50]</c>
+/// ranges. Level is no longer derived from Player Level — the retired
+/// <c>Player.Level × PetLevelMultiplier</c> derivation was removed
+/// (<c>PET_RULES.md</c> §5.6 item 1, ADR-016 item 13) — and is re-derived from
+/// this Pet's own XP by <see cref="Pet.GrantBattleXp"/>.
+///
+/// <b>The XP cap is the Pet track's, never the Player's.</b>
+/// <c>PET_RULES.md</c> §5.5 makes <c>Pet.XP</c> hard-capped at <c>4900</c> with
+/// no overflow, while <c>COMBAT_RULES.md</c> §7.5 item 1 leaves
+/// <c>Player.XP</c> uncapped; neither cap rule is applied to the other track.
+/// Both bounds are declared here because §5.5 item 4 keeps the XP cap and the
+/// Level cap as separate, equally documented facts.
 ///
 /// <b>No index beyond Pet(PlayerId) is declared.</b> <c>DATABASE.md</c> §4
 /// lists exactly that one Pet index and states further indexes should be
@@ -95,9 +106,27 @@ public sealed class PetConfiguration : IEntityTypeConfiguration<Pet>
         builder.Property(pet => pet.Star)
             .IsRequired();
 
-        // DATABASE.md §3: Pet.Level ∈ [1, 50] (PET_RULES.md §5). Check
-        // constraint reads Player.MinLevel/MaxLevel — the same documented
-        // 1–50 range both Player Level and Pet Level share (ADR-012 item 4).
+        // DATABASE.md §1/§3: Pet.XP — int, NOT NULL, default 0, in [0, 4900]
+        // (PET_RULES.md §5.2 initial value, §5.5 hard cap). The initial value is
+        // the column default, read from the domain constant that owns it, so an
+        // existing row receives the documented 0 rather than a value derived
+        // from its Level — no Level → XP conversion exists in any document.
+        builder.Property(pet => pet.XP)
+            .IsRequired()
+            .HasDefaultValue(Pet.InitialXp);
+
+        // §5.5 item 1: the hard cap. Both bounds are declared, because §5.5
+        // item 4 keeps the XP cap (4900) and the Level cap (50) as separate
+        // documented facts, and this track's cap is deliberately NOT the
+        // Player track's uncapped policy (COMBAT_RULES.md §7.5 item 1).
+        builder.ToTable(table => table.HasCheckConstraint(
+            "CK_Pet_XP_Range",
+            $"\"XP\" >= {Pet.InitialXp} AND \"XP\" <= {Pet.MaxXp}"));
+
+        // DATABASE.md §3: Pet.Level ∈ [1, 50] (PET_RULES.md §5.5 item 4).
+        // Check constraint reads this track's own Domain constants so the
+        // bounds cannot drift — and so the Pet range is not silently sourced
+        // from Player's constants (ADR-016 item 12: independent tracks).
         builder.Property(pet => pet.Level)
             .IsRequired();
 
@@ -109,7 +138,7 @@ public sealed class PetConfiguration : IEntityTypeConfiguration<Pet>
 
             table.HasCheckConstraint(
                 "CK_Pet_Level_Range",
-                $"\"Level\" >= {Player.MinLevel} AND \"Level\" <= {Player.MaxLevel}");
+                $"\"Level\" >= {Pet.MinLevel} AND \"Level\" <= {Pet.MaxLevel}");
         });
 
         // DATABASE.md §1: AcquiredAt — a creation timestamp, set once.

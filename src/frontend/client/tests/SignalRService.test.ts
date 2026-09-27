@@ -19,6 +19,12 @@ function installFakeHub() {
   const invokes: Array<{ method: string; args: unknown[] }> = [];
   /** The options the service passed to `withUrl` — where the token is supplied. */
   const withUrlOptions: Array<Record<string, unknown>> = [];
+  /**
+   * The result `invoke` resolves with. Defaults to `undefined` (the shape
+   * `JoinBattle`/`Ping` have); a Swap test overrides it with the documented §5
+   * acknowledgement.
+   */
+  let invokeResult: unknown = undefined;
 
   const connection = {
     state: signalR.HubConnectionState.Connected,
@@ -33,7 +39,7 @@ function installFakeHub() {
     }),
     invoke: vi.fn(async (method: string, ...args: unknown[]) => {
       invokes.push({ method, args });
-      return undefined;
+      return invokeResult;
     }),
     onreconnecting: vi.fn(),
     onreconnected: vi.fn(),
@@ -60,7 +66,16 @@ function installFakeHub() {
     build: () => connection,
   };
 
-  return { connection, handlers, invokes, withUrlOptions };
+  return {
+    connection,
+    handlers,
+    invokes,
+    withUrlOptions,
+    /** Sets the acknowledgement `invoke` resolves with. */
+    setInvokeResult: (value: unknown) => {
+      invokeResult = value;
+    },
+  };
 }
 
 describe('SignalRService', () => {
@@ -323,6 +338,105 @@ describe('SignalRService', () => {
       await expect(service.joinBattle('battle-1')).rejects.toThrow(
         'SignalR connection is not established.'
       );
+    });
+  });
+
+  describe('Swap request transport (SIGNALR_PROTOCOL.md §2, §2.1, §5)', () => {
+    it('invokes the documented Swap method with exactly the four arguments', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      await service.swap('battle-1', 12, 13, 'req-1');
+
+      // §2.1: `Swap(battleId, fromCell, toCell, clientSequence)` — the documented
+      // method name, the documented argument order, and nothing else. Both cells
+      // are §1.0 indices and the pair is unordered (MATCH3_RULES.md §2.1.1).
+      expect(hub.invokes).toEqual([
+        { method: 'Swap', args: ['battle-1', 12, 13, 'req-1'] },
+      ]);
+    });
+
+    it('carries no gameplay field in the request', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      await service.swap('battle-1', 0, 8, 'req-2');
+
+      // §2.1 item 4 / GAME_RULES.md §18: no Gem type, match result, Combo, Turn,
+      // or Sequence value is sent — every such value is server-determined.
+      const [{ args }] = hub.invokes;
+      expect(args).toHaveLength(4);
+      expect(args).toEqual(['battle-1', 0, 8, 'req-2']);
+    });
+
+    it('returns the §5 acknowledgement unchanged', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      // Accepted: the documented shape without a reason.
+      hub.setInvokeResult({ accepted: true });
+
+      await expect(service.swap('battle-1', 12, 13, 'req-3')).resolves.toEqual({
+        accepted: true,
+      });
+    });
+
+    it('returns a rejection with its machine-readable reason', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      // Rejected: `accepted:false` plus the code of §5 item 3 — for Swap, the
+      // failing checks of MATCH3_RULES.md §2.1.2 / §2.1.4. The service forwards
+      // it verbatim and interprets nothing.
+      hub.setInvokeResult({ accepted: false, reason: 'INVALID_SWAP' });
+
+      await expect(service.swap('battle-1', 12, 20, 'req-4')).resolves.toEqual({
+        accepted: false,
+        reason: 'INVALID_SWAP',
+      });
+    });
+
+    it('forwards the unknown-battle rejection code', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      // BattleHub.Swap's unknown-battle path.
+      hub.setInvokeResult({ accepted: false, reason: 'BATTLE_NOT_FOUND' });
+
+      const result = await service.swap('missing-battle', 0, 1, 'req-5');
+      expect(result).toEqual({ accepted: false, reason: 'BATTLE_NOT_FOUND' });
+    });
+
+    it('throws on swap when no connection is established', async () => {
+      await expect(service.swap('battle-1', 0, 1, 'req-6')).rejects.toThrow(
+        'SignalR connection is not established.'
+      );
+    });
+
+    it('stays transport-focused: no swap validation or resolution', () => {
+      // §2.1 item 1–3 / GAME_RULES.md §18: whether a swap is legal, whether it
+      // produces a match, and what it resolves to are the server's decisions.
+      // The service must not range-check, adjacency-check, detect a match,
+      // resolve a cascade, or mutate any battle state.
+      const surface = Object.getOwnPropertyNames(SignalRService.prototype);
+
+      for (const forbidden of [
+        'isAdjacent',
+        'isValidSwap',
+        'validateSwap',
+        'resolveSwap',
+        'hasMatch',
+        'applySwap',
+        'applyGravity',
+        'detectMatches',
+      ]) {
+        expect(surface).not.toContain(forbidden);
+      }
+
+      const source = SignalRService.prototype.swap.toString();
+      expect(source).toMatch(/["']Swap["']/);
+      expect(source).not.toMatch(/fromCell\s*[<>!=]|toCell\s*[<>!=]/);
+      expect(source).not.toContain('Math.');
     });
   });
 

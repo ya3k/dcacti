@@ -77,7 +77,6 @@ public class BattleResultPersistenceTests
             PetDefinitionId = "pet_def_result_1",
             Identity = "Thanh Xà",
             Element = Element.Moc,
-            PetLevelMultiplier = 1.0m,
             PassiveId = new PassiveId("thanh-xa-regen"),
             PassiveThreshold = 5,
             SignatureSkillCardId = "card_skill_result_1",
@@ -654,6 +653,55 @@ public class BattleResultPersistenceTests
             .ToListAsync();
 
         Assert.Single(rows);
+    }
+
+    [Fact]
+    public async Task Repository_ShouldReportOnlyTheFirstWriteAsDurable()
+    {
+        // DATABASE.md §1 sourcing item 1: the primary key is the duplicate guard,
+        // and the battle-end path binds the Player XP grant (COMBAT_RULES.md §7.2)
+        // to the FIRST durable write of a battle's result. The repository is
+        // therefore what distinguishes "stored now" from "already stored", so a
+        // retry cannot be mistaken for a new terminal transition.
+        //
+        // This is the case that matters in practice: a retry builds its candidate
+        // with a fresh server clock reading (DATABASE.md §1 "Duration and
+        // completion sourcing" item 2), so the retry's row is never byte-identical
+        // to the stored one. The determination must therefore rest on the key
+        // alone — not on a value comparison that a differing timestamp would
+        // defeat.
+        var storeName = $"battle-result-first-write-{Guid.NewGuid():N}";
+
+        await using var context = CreateContext(storeName);
+
+        await SeedReferencedRowsAsync(context);
+
+        var repository = new BattleResultRepository(context);
+
+        var first = NewResult(battleResultId: "battle-first-write");
+        var firstCompletedAt = first.CompletedAt;
+
+        Assert.True(
+            await repository.AddAsync(first),
+            "The first write of a battle's result is the durable one.");
+
+        // A retry of the same battle — with a later completion instant, exactly as
+        // a real retry would carry.
+        var retry = await repository.AddAsync(
+            first with { CompletedAt = firstCompletedAt.AddMinutes(5) });
+
+        Assert.False(
+            retry,
+            "A retry of the same battle's result must not report a new durable write.");
+
+        // One row, holding the FIRST durable write's values — DATABASE.md §1
+        // sources CompletedAt to the write that recorded the battle, one value per
+        // battle, so a later retry does not rewrite it.
+        var stored = await context.BattleResults
+            .AsNoTracking()
+            .SingleAsync(result => result.BattleResultId == "battle-first-write");
+
+        Assert.Equal(firstCompletedAt, stored.CompletedAt);
     }
 
     [Fact]

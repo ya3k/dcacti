@@ -46,16 +46,16 @@ public sealed class BattleResultRepository : IBattleResultRepository
     }
 
     /// <inheritdoc />
-    public async Task AddAsync(BattleResult result, CancellationToken cancellationToken = default)
+    public async Task<bool> AddAsync(BattleResult result, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(result);
 
         // DATABASE.md §1 sourcing item 1: the row is keyed by the battle's own
-        // BattleId, so an existing row for this battle is the same battle's
-        // already-durable result — not a second result. Reconciling against it
-        // keeps the documented end state (exactly one row per battle) true even
-        // when a terminal persistence is retried, without inventing a second
-        // idempotency mechanism: the primary key remains the guard.
+        // BattleId, so an existing row for this battle IS the same battle's
+        // already-durable terminal result — not a second result. Reconciling
+        // against it keeps the documented end state (exactly one row per battle)
+        // true even when a terminal persistence is retried, without inventing a
+        // second idempotency mechanism: the primary key remains the guard.
         var existing = await _dbContext.BattleResults
             .FirstOrDefaultAsync(
                 stored => stored.BattleResultId == result.BattleResultId,
@@ -64,23 +64,31 @@ public sealed class BattleResultRepository : IBattleResultRepository
 
         if (existing is not null)
         {
-            if (existing == result)
-            {
-                // Already durable, identically: nothing to write.
-                return;
-            }
-
-            // The row exists with different values. The battle's terminal
-            // transition is what the first successful write recorded, and the
-            // primary key says there is one row per battle — so the stored row is
-            // updated to the result being persisted rather than a second row
-            // being created or the write being silently dropped.
-            _dbContext.BattleResults.Remove(existing);
+            // The battle's terminal transition was already made durable by the
+            // first successful write, and the primary key says there is one row
+            // per battle. The first durable result IS the record of what
+            // happened, so this call writes nothing and reports that it was not
+            // the first write — which is what stops the battle-end path from
+            // applying the Player XP grant (COMBAT_RULES.md §7.2) a second time.
+            //
+            // The stored row is deliberately NOT rewritten. Its CompletedAt is
+            // the server clock reading captured when that first write happened
+            // (DATABASE.md §1 "Duration and completion sourcing" item 2 — "one
+            // value per battle"), and the terminal values it holds are the ones
+            // the accepted resolution produced. Rewriting them from a later
+            // retry would replace the battle's recorded completion instant with
+            // a later one — a value the contract fixes at the first durable write
+            // — and would report a write that changed nothing.
+            return false;
         }
 
         _dbContext.BattleResults.Add(result);
 
         await _dbContext.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+
+        // The row was stored by this call: the documented terminal transition
+        // became durable here, which is what the reward grant binds to.
+        return true;
     }
 
     /// <inheritdoc />

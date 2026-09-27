@@ -666,7 +666,6 @@ public class ApplicationSessionRESTTests
                 PetDefinitionId = "session_pet_def",
                 Identity = "Thanh Xà",
                 Element = Element.Moc,
-                PetLevelMultiplier = 1.0m,
                 PassiveId = new PassiveId("session-passive"),
                 PassiveThreshold = 5,
                 SignatureSkillCardId = "session_skill",

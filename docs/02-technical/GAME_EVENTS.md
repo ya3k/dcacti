@@ -1,6 +1,20 @@
 # Game Events
 
-**Version:** 2.4 (§2 BattleWon/BattleLost `Outcome` value set defined —
+**Version:** 2.7 (§2 `BattleWon`/`BattleLost` payload pointer updated per
+TASK-068 human decision (**Option A**) — the `RewardSummary` defeat-shape
+contradiction in `DATABASE.md` §1 is resolved: the Player-track member set
+applies to both outcomes, and the deferred part is the Pet-track member list
+alone (the earlier "still blocked on unresolved Pet XP decisions" wording was
+stale — those decisions were finalized by TASK-062). Prior 2.6: §2 reward-summary item updated per TASK-062 — the Pet XP
+reward semantics are now decided, so the item no longer describes the Pet
+track as "not finalizable"; the `RewardSummary` Pet member list remains
+deferred to the implementation task. Prior 2.5: §2 BattleWon/BattleLost reward-summary item added per
+TASK-059 — the payload's reward summary is the single `RewardSummary`
+contract owned by `DATABASE.md` §1, whose Player track is decided
+(`COMBAT_RULES.md` §7) and whose Pet track is explicitly not finalizable
+until the Pet XP reward decisions (`PET_RULES.md` §5.2 items 5–9) are made;
+no Pet reward member is frozen. Prior 2.4: §2 BattleWon/BattleLost
+`Outcome` value set defined —
 exactly `"victory"` (BattleWon) or `"defeat"` (BattleLost), the single
 battle-outcome vocabulary shared by `DATABASE.md` §1, `API_CONTRACTS.md`
 §4, and `SIGNALR_PROTOCOL.md` §3.2.19 per TASK-050 human Decision C;
@@ -441,7 +455,10 @@ Trigger:  Boss HP or active Pet HP reaches 0 (GAME_RULES.md §1.4 —
 Payload:  Outcome, final BattleState summary, reward summary (BattleWon
           only — this is the event-payload rule; the REST response's
           `rewards` field covers both outcomes — API_CONTRACTS.md §4;
-          exact reward data shape: DATABASE.md)
+          the single `RewardSummary` contract, whose Player-track member
+          set applies to both outcomes and whose Pet-track member list
+          remains deferred to the implementation task: DATABASE.md §1,
+          "Reward semantics for `RewardSummary`")
 ```
 
 1. **`Outcome` carries exactly one of two values: `"victory"` (with
@@ -450,6 +467,16 @@ Payload:  Outcome, final BattleState summary, reward summary (BattleWon
    (`DATABASE.md` §1), the REST `outcome` member (`API_CONTRACTS.md` §4),
    and the SignalR `outcome` wire member (`SIGNALR_PROTOCOL.md` §3.2.19)
    each use these same two values for the same battle.
+2. **The reward summary in this payload is `RewardSummary`** — the one
+   contract owned by `DATABASE.md` §1. This document does not define its
+   members and does not contradict the REST response. Both tracks' reward
+   semantics are now decided: the Player track by `COMBAT_RULES.md` §7
+   (`BattleWon` grants `+100` Player XP, `BattleLost` `+0`), and the Pet
+   track by `PET_RULES.md` §5.3 (`BattleWon` grants the active combat Pet
+   `+100` Pet XP, `BattleLost` `+0`, inactive owned Pets `+0`). The
+   `RewardSummary` Pet member list itself is deferred to the implementation
+   task (`DATABASE.md` §1, "Reward semantics for `RewardSummary`"); no Pet
+   reward member is frozen here (`AGENTS.md` §7, §9).
 
 ---
 

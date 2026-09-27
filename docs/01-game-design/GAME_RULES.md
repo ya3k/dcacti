@@ -1,6 +1,12 @@
 # Core Game Rules
 
-**Version:** 2.4 (§9.3 Pet Level formula synchronized with the completed
+**Version:** 3.1 (§9.3 Pet XP reference finalized per TASK-062 — the Pet XP
+balance/reward decisions are now decided, not open; `PET_RULES.md` §5.1–§5.5
+owns them. Prior 3.0: §9.3 rewritten — Pet Level is no longer derived from
+Player Level; the `Player.Level × Pet Level Multiplier` formula is
+**RETIRED** and replaced by the independent two-track model: Player XP /
+Level owned by `COMBAT_RULES.md` §7, Pet XP / Level owned by
+`PET_RULES.md` §5; ADR-016. Prior 2.4: §9.3 Pet Level formula synchronized with the completed
 derivation contract — floor before clamp — PET_RULES.md §5; prior 2.3:
 §9.3 Pet Level formula resolved with clamp per
 ADR-012 / PET_RULES.md §5.1; prior 2.2: Player = account/owner,
@@ -147,14 +153,15 @@ Exact damage modifier values and matchup resolution: see `ELEMENT_RULES.md`.
    The Player is the owner; the active Pet is the combat character whose
    HP and battle stats determine the battle outcome (§1.4, §14).
 2. Every Pet has exactly one Element, one Passive, and one Signature Skill.
-3. Pets have Level, Star, and Tier progression. Pet Level is derived as
-   `clamp(floor(Player Level × Pet Level Multiplier), 1, 50)` (config
-   multiplier `decimal > 0`, not hard-coded; `floor` before clamp) — see
-   `PET_RULES.md` §5 (canonical owner). Player Level is a persistent
-   account attribute (range 1–50, no combat stats) defined in
-   `MVP_SCOPE.md` §1 and `PET_RULES.md` §5; former OPEN conflicts are
-   resolved in `PET_RULES.md` §5.1 / ADR-012. There is no independent
-   Pet XP system and no Evolution system.
+3. Pets have Level, Star, and Tier progression. Pet Level is the Pet's
+   **own** progression value, derived from that Pet instance's own
+   accumulating XP — **not** from Player Level. The Pet XP contract
+   (initial values, rewards, formula, and cap) is owned by
+   `PET_RULES.md` §5.1–§5.5. Player Level is a separate,
+   independent account attribute (range 1–50, no combat stats) whose
+   XP → Level contract is owned by `COMBAT_RULES.md` §7; the two tracks
+   are independent (`PET_RULES.md` §5.1, ADR-016). There is no Evolution
+   system.
 4. Higher Tier must not simply be a raw stat multiplier of lower Tier — Pet
    identity comes primarily from Passive + Signature Skill + statistics
    together.

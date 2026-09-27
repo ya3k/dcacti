@@ -217,8 +217,23 @@ public class BattleResultSmokeTest
             DateTimeOffset.UtcNow.AddMinutes(-5),
             DateTimeOffset.UtcNow.AddMinutes(5));
 
-        // §1: the documented staging value, always present.
-        Assert.Equal("{}", row.RewardSummary);
+        // §1 "Reward semantics": the populated summary on the landed path — both
+        // tracks' documented members, replacing the `{}` staging value that item 4
+        // kept in force only until the implementation task landed. Every value is
+        // server-derived from the battle's own outcome.
+        using (var summary = JsonDocument.Parse(row.RewardSummary))
+        {
+            Assert.Equal(JsonValueKind.Object, summary.RootElement.ValueKind);
+            Assert.NotEmpty(summary.RootElement.EnumerateObject());
+
+            // GAME_EVENTS.md §2 / PET_RULES.md §5.3: a victory grants +100 on both
+            // tracks and a defeat grants +0 on both, so the members are the same
+            // eight either way and hold the outcome's documented amounts.
+            var expectedGain = row.Outcome == "victory" ? 100 : 0;
+
+            Assert.Equal(expectedGain, summary.RootElement.GetProperty("playerXpGained").GetInt32());
+            Assert.Equal(expectedGain, summary.RootElement.GetProperty("petXpGained").GetInt32());
+        }
 
         // ===================================================================
         // 4. Redis active-state deletion  (REDIS_STATE.md §3)
@@ -259,10 +274,26 @@ public class BattleResultSmokeTest
         Assert.Equal(row.DurationTurns, body.GetProperty("durationTurns").GetInt32());
 
         // §4 note 1: rewards is always present, and is the stored RewardSummary as
-        // the object §4's shape shows.
+        // the object §4's shape shows. TASK-068 resolved the defeat shape as Option
+        // A, so both outcomes carry the same member set — the value the row holds is
+        // what the wire member reports, unchanged (note 1).
         var rewards = body.GetProperty("rewards");
         Assert.Equal(JsonValueKind.Object, rewards.ValueKind);
-        Assert.Empty(rewards.EnumerateObject());
+        Assert.NotEmpty(rewards.EnumerateObject());
+
+        using (var storedSummary = JsonDocument.Parse(row.RewardSummary))
+        {
+            // Compared member-by-member rather than as raw text: the two documents
+            // are the same JSON value, but the wire encoding need not reproduce the
+            // stored string's incidental whitespace.
+            Assert.Equal(
+                storedSummary.RootElement.EnumerateObject()
+                    .OrderBy(member => member.Name, StringComparer.Ordinal)
+                    .Select(member => $"{member.Name}={member.Value.GetRawText()}"),
+                rewards.EnumerateObject()
+                    .OrderBy(member => member.Name, StringComparer.Ordinal)
+                    .Select(member => $"{member.Name}={member.Value.GetRawText()}"));
+        }
 
         // ===================================================================
         // 6. The same read as an unauthenticated and as a foreign caller
@@ -455,7 +486,6 @@ public class BattleResultSmokeTest
                 PetDefinitionId = petDefinitionId,
                 Identity = "Thanh Xà",
                 Element = Element.Moc,
-                PetLevelMultiplier = 1.0m,
                 PassiveId = new PassiveId("thanh-xa-regen"),
                 PassiveThreshold = 5,
                 SignatureSkillCardId = SignatureSkillCardId,

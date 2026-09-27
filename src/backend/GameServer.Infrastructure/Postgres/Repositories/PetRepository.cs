@@ -10,10 +10,14 @@ namespace GameServer.Infrastructure.Postgres.Repositories;
 /// (<c>DATABASE.md</c> §1–§2) — <c>ARCHITECTURE.md</c> §3's
 /// "PersistenceRepository (Postgres)", Infrastructure layer.
 ///
-/// Reads and writes the owned-instance and definition rows only; derivation
-/// of <see cref="Pet.Level"/> is a Domain concern
-/// (<see cref="PetLevelDerivation"/>) invoked by the Application recompute
-/// hook, never here.
+/// Reads and writes the owned-instance and definition rows only. It
+/// derives no progression value: the retired <c>Player.Level ×
+/// PetLevelMultiplier</c> recompute pass was removed
+/// (<c>PET_RULES.md</c> §5.6 item 1, ADR-016 item 13), so this boundary
+/// neither recomputes <see cref="Pet.Level"/> nor exposes a bulk-save step
+/// for one. Pet Level is re-derived from that Pet instance's own XP by
+/// <see cref="Pet.GrantBattleXp"/>, and this boundary only stores the values
+/// it is given (<c>PET_RULES.md</c> §5.4).
 /// </summary>
 public sealed class PetRepository : IPetRepository
 {
@@ -29,28 +33,6 @@ public sealed class PetRepository : IPetRepository
     {
         _dbContext.Pets.Add(pet);
         await _dbContext.SaveChangesAsync(cancellationToken);
-    }
-
-    /// <inheritdoc />
-    public async Task<IReadOnlyList<Pet>> ListByPlayerIdAsync(
-        string playerId,
-        CancellationToken cancellationToken = default)
-    {
-        // DATABASE.md §4: the Pet(PlayerId) index serves this lookup —
-        // "list a player's Pets".
-        return await _dbContext.Pets
-            .Where(pet => pet.PlayerId == playerId)
-            .ToListAsync(cancellationToken);
-    }
-
-    /// <inheritdoc />
-    public async Task<IReadOnlyList<Pet>> ListByDefinitionIdAsync(
-        string petDefinitionId,
-        CancellationToken cancellationToken = default)
-    {
-        return await _dbContext.Pets
-            .Where(pet => pet.PetDefinitionId == petDefinitionId)
-            .ToListAsync(cancellationToken);
     }
 
     /// <inheritdoc />
@@ -80,8 +62,37 @@ public sealed class PetRepository : IPetRepository
     }
 
     /// <inheritdoc />
-    public async Task SaveChangesAsync(CancellationToken cancellationToken = default)
+    public async Task<bool> SaveProgressionAsync(
+        Pet pet,
+        CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(pet);
+
+        // DATABASE.md §1: the primary-key lookup on PetInstanceId — the same
+        // identity GetByIdAsync resolves, so a read and a write through this
+        // boundary always describe the same row.
+        //
+        // Nothing is derived here: the caller applies the documented grant and
+        // its hard cap through Pet.GrantBattleXp (PET_RULES.md §5.3-§5.5), and
+        // this boundary stores the two progression values it is handed.
+        var stored = await _dbContext.Pets
+            .FirstOrDefaultAsync(
+                instance => instance.PetInstanceId == pet.PetInstanceId,
+                cancellationToken);
+
+        // An absent row is reported as absence and nothing is created: the
+        // reward updates the Pet that fought, it does not bring a Pet instance
+        // into existence (DATABASE.md §1 - Pet creation is not a reward step).
+        if (stored is null)
+        {
+            return false;
+        }
+
+        stored.XP = pet.XP;
+        stored.Level = pet.Level;
+
         await _dbContext.SaveChangesAsync(cancellationToken);
+
+        return true;
     }
 }

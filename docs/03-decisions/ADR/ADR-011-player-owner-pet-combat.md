@@ -1,6 +1,8 @@
 # ADR-011: Player as Account Owner, Pet as Combat Character, PetState as Battle Runtime Combat State
 
-**Status:** Accepted
+**Status:** Accepted (item 7 partially superseded by ADR-016 — see the
+supersession note at the end of the Decision section. All other items
+remain in force.)
 **Date:** 2026-09-24
 
 ## Context
@@ -83,6 +85,29 @@ BattleState
    and clamp order are owned solely by `PET_RULES.md` §5. There is **no
    Pet XP system** and **no Evolution system**.
 
+---
+
+### Supersession note (ADR-016)
+
+The following part of item 7 is **superseded by ADR-016** and is preserved
+above as the historical record:
+
+```text
+The Pet Level formula `clamp(floor(Player Level × Pet Level Multiplier),
+1, 50)`, the `PetLevelMultiplier` configuration input, and the statement
+"There is no Pet XP system".
+```
+
+Pet Level is now derived from the Pet instance's own XP and is independent
+of Player Level; `PetLevelMultiplier` is **RETIRED** and has no role in the
+Pet XP model. The replacement contract is owned by `PET_RULES.md` §5 (Pet)
+and `COMBAT_RULES.md` §7 (Player).
+
+Item 7's **"no Evolution system"** clause remains in force
+(`PET_RULES.md` §5.3 item 4). The rest of this ADR — items 1–6 and item 7's
+role-model framing — is **unaffected** and remains Accepted. The rationale
+above is historical and is not rewritten.
+
 ## Consequences
 
 ### Positive
@@ -124,8 +149,9 @@ ADR-001).
 ## Related Documents
 
 - `docs/01-game-design/GAME_RULES.md` (§1, §9, §12, §14, §17)
-- `docs/01-game-design/PET_RULES.md` (§2, §5, §5.1 — former OPEN conflicts
-  resolved per ADR-012)
+- `docs/01-game-design/PET_RULES.md` (§2, §5, §5.1 — Pet XP / Level
+  ownership; the former OPEN conflicts were resolved per ADR-012, and the
+  Pet XP balance was later finalized in §5.2–§5.5)
 - `docs/01-game-design/COMBAT_RULES.md` (§1.1, §3)
 - `docs/01-game-design/RELIC_RULES.md` (§2, §3)
 - `docs/01-game-design/CARD_RULES.md` (§1, §3)

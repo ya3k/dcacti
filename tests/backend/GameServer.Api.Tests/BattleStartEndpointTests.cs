@@ -692,7 +692,6 @@ public class BattleStartEndpointTests
                 PetDefinitionId = PetDefinitionId,
                 Identity = "Thanh Xà",
                 Element = Element.Moc,
-                PetLevelMultiplier = 1.0m,
                 PassiveId = new PassiveId("pet-passive-1"),
                 PassiveThreshold = 5,
                 SignatureSkillCardId = SignatureSkillCardId,

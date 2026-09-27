@@ -850,7 +850,6 @@ public class BattleStartServiceTests
             PetDefinitionId = PetDefinitionId,
             Identity = "Thanh Xà",
             Element = Element.Moc,
-            PetLevelMultiplier = 1.0m,
             PassiveId = new PassiveId("pet-passive-1"),
             PassiveThreshold = 5,
             SignatureSkillCardId = SignatureSkillCardId,
@@ -859,8 +858,13 @@ public class BattleStartServiceTests
 
     /// <summary>
     /// The Pet persistence boundary backed by the harness's own flags. Only the
-    /// two reads the battle-start path performs are implemented; a write is a
+    /// reads the battle-start path performs are implemented; a write is a
     /// defect and is reported as one.
+    ///
+    /// <b>Both writes are defects here.</b> Pet creation is not a battle-start
+    /// step, and Pet XP progression is granted only on the terminal battle-end
+    /// path (<c>PET_RULES.md</c> §5.3) — never while starting a battle — so
+    /// neither write may be reached from this boundary's caller.
     /// </summary>
     private sealed class FakePetRepository : IPetRepository
     {
@@ -874,16 +878,6 @@ public class BattleStartServiceTests
         public Task AddAsync(Pet pet, CancellationToken cancellationToken = default) =>
             throw new NotSupportedException("Battle start never writes Pet rows.");
 
-        public Task<IReadOnlyList<Pet>> ListByPlayerIdAsync(
-            string playerId,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException("Battle start resolves the Pet by instance identity.");
-
-        public Task<IReadOnlyList<Pet>> ListByDefinitionIdAsync(
-            string petDefinitionId,
-            CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException("Battle start never lists Pets by definition.");
-
         public Task<Pet?> GetByIdAsync(
             string petInstanceId,
             CancellationToken cancellationToken = default) =>
@@ -896,7 +890,8 @@ public class BattleStartServiceTests
                         PetDefinitionId = PetDefinitionId,
                         Tier = PetTier.Common,
                         Star = 1,
-                        Level = 1,
+                        XP = Pet.InitialXp,
+                        Level = Pet.InitialLevel,
                         AcquiredAt = DateTimeOffset.UtcNow,
                     }
                     : null);
@@ -909,8 +904,11 @@ public class BattleStartServiceTests
                     ? _harness.BuildDefinition()
                     : null);
 
-        public Task SaveChangesAsync(CancellationToken cancellationToken = default) =>
-            throw new NotSupportedException("Battle start never saves Pet changes.");
+        public Task<bool> SaveProgressionAsync(
+            Pet pet,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException(
+                "Battle start never grants Pet XP; the reward is applied on the terminal battle-end path.");
     }
 
     /// <summary>

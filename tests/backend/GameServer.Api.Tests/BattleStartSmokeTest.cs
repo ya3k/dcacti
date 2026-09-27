@@ -266,7 +266,6 @@ public class BattleStartSmokeTest
                 PetDefinitionId = PetDefinitionId,
                 Identity = "Thanh Xà",
                 Element = Element.Moc,
-                PetLevelMultiplier = 1.0m,
                 PassiveId = new PassiveId("thanh-xa-regen"),
                 PassiveThreshold = 5,
                 SignatureSkillCardId = SignatureSkillCardId,

@@ -1,6 +1,41 @@
 # API Contracts
 
-**Version:** 1.9 (§2.8 application session mechanism defined per `ADR-015`
+**Version:** 1.14 (§5.1 element wire value set defined per TASK-072 —
+`element` is now bound to `"Fire" | "Water" | "Earth" | "Wood" | "Metal"`
+(the Element names from `ELEMENT_RULES.md` §1), the §5.1/§5.2 examples
+corrected from `"Hỏa"` to `"Fire"`, and the Vietnamese design names (Mộc,
+Hỏa, Thổ, Kim, Thủy) recorded as display values only — presentation
+text, never API wire values. Prior 1.13: §5 collection read contracts
+defined per TASK-070 human
+decisions D1–D4 plus derivations D5–D7 — all four documented routes are now
+implementation-ready: `/api/cards` = `cardId, name, category` (unlock state =
+array membership, no `Card` entity exists — ADR-012, `DATABASE.md` §2),
+`/api/relics` = `relicId, name`, `/api/pets`' example made the binding
+exhaustive member list (`petId` = `PetInstanceId`; `xp`/`acquiredAt`/`playerId`
+explicitly not exposed), and `GET /api/pets/{petId}` gained its own §5 section
+(200 = same bare object as one array element; missing and foreign `petId` both
+→ `404 PET_NOT_FOUND`, extending §4 note 7's no-existence-disclosure pattern);
+D5 list semantics recorded (empty → `200 []`, no pagination, no defined
+ordering), D6 recorded that no collection response carries equip/loadout
+members (`DATABASE.md` §2, ADR-011, `GAME_STATE.md` §2.3); D7 corrected §4
+note 7's stale "`API_CONTRACTS.md` §7 item 1" pointer to §2.8; §1's
+detail-route pointer retargeted from `PET_RULES.md` (defines no response) to
+§5. Prior 1.12: §4 note 1 updated per TASK-068 human decision (**Option A**)
+— the `RewardSummary` defeat-shape contradiction in `DATABASE.md` §1 is
+resolved: the Player-track member set applies to **both** outcomes, so a
+`"defeat"` carries `playerXpGained = 0` rather than no line items; note 1 no
+longer restates a defeat-specific empty shape, and note 3's "value in force"
+clause now names both the staging value and the landed shape. Prior 1.11: §4 note 1 updated per TASK-062 — the Pet XP reward
+semantics are now decided (`PET_RULES.md` §5.3), so the note no longer
+describes the Pet track as "not finalizable"; the Pet member list remains
+deferred to the implementation task. Prior 1.10: §4 notes 1 and 3 updated per TASK-059 — `rewards`
+references the single `RewardSummary` contract owned by `DATABASE.md` §1
+("Reward semantics for `RewardSummary`"), which is now the member-list
+owner instead of TASK-033; the Player track is decided
+(`COMBAT_RULES.md` §7) and the Pet track is explicitly not finalizable
+until the Pet XP reward decisions (`PET_RULES.md` §5.2 items 5–9) are made,
+so no Pet reward field is frozen and REST/event do not contradict each
+other. Prior 1.9: §2.8 application session mechanism defined per `ADR-015`
 human decisions D1–D6 — self-contained signed JWT carrying the `player_id`
 claim, stateless (no session storage; `ADR-005`/`ADR-006` boundaries
 unchanged), `Authorization: Bearer <sessionToken>` on REST plus SignalR's
@@ -24,8 +59,9 @@ vocabulary owned by `GAME_EVENTS.md` §2 and shared with `DATABASE.md`
 prior 1.6: §3 `bossId` semantics fixed per TASK-046 — the request
 member is the Boss's canonical technical Identity (e.g. `"boss-hoa-long"`),
 never a display name, per `BOSS_RULES.md` §6/§6.4; prior 1.5: §4 battle-result response contract notes — `rewards`
-present for both `"Won"`/`"Lost"` (staging value `{}` until TASK-033,
-shape: DATABASE.md §1), `battleId` = result row key (`BattleResultId` =
+present for both outcomes (staging value `{}`; member list and shape:
+DATABASE.md §1 — reassigned from TASK-033 to `DATABASE.md` §1 by TASK-059),
+`battleId` = result row key (`BattleResultId` =
 `BattleId`), event-vs-REST reward distinction per GAME_EVENTS.md §2
 (TASK-042, ADR-014); prior 1.4: §3 `cardLoadout` made deterministic — 4-step validation
 (count, ownership, category, per-CardDefinition `LoadoutCopyLimit`),
@@ -64,7 +100,7 @@ POST    /api/auth/discord             Exchange Discord OAuth code for the
                                         Player, and establish an application
                                         session (§2, ADR-013)
 GET     /api/pets                      List the player's owned Pets
-GET     /api/pets/{petId}               Get one Pet's detail (PET_RULES.md)
+GET     /api/pets/{petId}               Get one Pet's detail (§5)
 GET     /api/cards                       List the player's owned Cards
 GET     /api/relics                       List the player's owned Relics
 POST    /api/battle/start                 Start a battle session, returns a
@@ -536,13 +572,28 @@ state is only available via the SignalR connection, not this endpoint.
 1. **`rewards` is always present** in this response — for both `"victory"`
    and `"defeat"`, never absent or optional. Its value is
    `BattleResult.RewardSummary` exactly as `DATABASE.md` §1 documents it
-   (staging value `{}` with no reward line items until TASK-033 owns the
-   member list; a `"defeat"` outcome carries no line items).
+   (currently the staging value `{}` until the implementation task lands;
+   once it lands, the Player-track member set is serialized for **both**
+   outcomes — `playerXpGained = 100` on `"victory"`, `playerXpGained = 0`
+   on `"defeat"`). The `RewardSummary` member list is owned by
+   `DATABASE.md` §1, "Reward semantics for `RewardSummary`": the
+   **Player track is decided** (`COMBAT_RULES.md` §7 — `BattleWon` grants
+   `+100` Player XP, `BattleLost` `+0`), and the **Pet track's reward
+   semantics are now decided too** (`PET_RULES.md` §5.3 — `BattleWon`
+   grants the active combat Pet `+100` Pet XP, `BattleLost` `+0`, every
+   inactive owned Pet `+0`). The Pet **member list** is deferred to the
+   implementation task; no Pet reward field is frozen here or there in the
+   meantime (`AGENTS.md` §7, §9).
 2. **`battleId` is the result row's primary key** — `BattleResultId` is
    the battle's own `BattleId`, one row per battle (`DATABASE.md` §1).
 3. **Event vs REST:** `GAME_EVENTS.md` §2 documents the reward summary as
    `BattleWon`-only because that rule governs the **event payload**; this
-   endpoint's `rewards` field covers both outcomes per note 1.
+   endpoint's `rewards` field covers both outcomes per note 1. The two
+   documents describe **one** `RewardSummary` contract, owned by
+   `DATABASE.md` §1: neither the event payload nor this response defines a
+   member list of its own, and neither contradicts the other on the value
+   that is in force (`{}` staging, or — once the implementation task lands —
+   the same Player-track member set for both outcomes).
 4. **`outcome` values** — `"victory"` | `"defeat"`. The value set and its
    semantics are owned by `GAME_EVENTS.md` §2 (BattleWon / BattleLost);
    the persisted `BattleResult.Outcome` (`DATABASE.md` §1) and the
@@ -578,30 +629,150 @@ state is only available via the SignalR connection, not this endpoint.
    header, or body field may select, override, or stand in for the caller's
    identity (`GAME_RULES.md` §18, ADR-001, ADR-014). The authenticated
    identity is derived server-side from the session (§1, ADR-007 item 4) and
-   is never re-derived from client input at read time (`API_CONTRACTS.md` §7
-   item 1).
+   is never re-derived from client input at read time (§2.8).
 
 ---
 
-# 5. GET /api/pets, /api/cards, /api/relics
+# 5. GET /api/pets, /api/pets/{petId}, /api/cards, /api/relics
 
-Standard list endpoints returning the player's owned collection. Response
-shape mirrors the persistent entities in `DATABASE.md` (Pet, Card, Relic)
-plus progression fields (Tier/Star/Level for Pets — `PET_RULES.md`).
+The four collection read endpoints. Ownership comes solely from the
+authenticated session (§1, §2.8): a caller reads only their own collection,
+and no request member, query parameter, or header selects a `playerId`.
+`401 UNAUTHENTICATED` applies as in §1 and is not repeated below. Response
+shapes are fixed per endpoint — which persisted members are exposed is
+stated per route (TASK-070 human decisions D1–D4, derivations D5–D7).
+
+## 5.1 GET /api/pets
 
 ```json
-Response 200 (example, /api/pets):
+Response 200:
 [
   {
     "petId": "string",
     "identity": "Xích Lang",
-    "element": "Hỏa",
+    "element": "Fire",
     "tier": "Common",
     "star": 1,
     "level": 12
   }
 ]
 ```
+
+The member list above is binding and exhaustive:
+
+```text
+member    type    source / semantics
+petId     string  Pet.PetInstanceId — the owned instance; the same id
+                  submitted as `petId` to POST /api/battle/start (§3)
+identity  string  PetDefinition.Identity
+element   string  PetDefinition.Element — "Fire" | "Water" | "Earth" |
+                  "Wood" | "Metal" (ELEMENT_RULES.md §1)
+tier      string  Pet.Tier
+star      int     Pet.Star
+level     int     Pet.Level
+```
+
+The Vietnamese Element names (`Mộc`, `Hỏa`, `Thổ`, `Kim`, `Thủy` —
+`ELEMENT_RULES.md` §1) are display values only — presentation text,
+never API wire values; wire payloads always carry the English form
+bound above.
+
+Persisted but **not** exposed: `xp`, `acquiredAt`, `playerId`,
+`petDefinitionId` (`DATABASE.md` §1).
+
+## 5.2 GET /api/pets/{petId}
+
+```json
+Response 200:
+{
+  "petId": "string",
+  "identity": "Xích Lang",
+  "element": "Fire",
+  "tier": "Common",
+  "star": 1,
+  "level": 12
+}
+```
+
+200 is the same object as one `/api/pets` array element (§5.1) — no wrapper.
+A `petId` that does not exist and a `petId` owned by another Player return
+the identical response, so the endpoint never discloses whether a Pet
+exists (same rationale as §4 note 7):
+
+```json
+Response 404:
+{ "error": "PET_NOT_FOUND", "message": "human-readable detail" }
+```
+
+## 5.3 GET /api/cards
+
+```json
+Response 200:
+[
+  {
+    "cardId": "string",
+    "name": "string",
+    "category": "Basic"
+  }
+]
+```
+
+```text
+member    type    source / semantics
+cardId    string  CardDefinition.CardDefinitionId — the id submitted in
+                  `cardLoadout` (§3)
+name      string  CardDefinition.Name
+category  string  CardDefinition.Category — "Basic" | "PetSkill"
+                  (CARD_RULES.md §1, DATABASE.md §3)
+```
+
+MVP Cards have no progression (`DATABASE.md` §2, ADR-012): presence in this
+array **is** the unlocked state — there is no `unlocked` member. Persisted
+or definition data but **not** exposed: `playerId`, `powerCost`,
+`loadoutCopyLimit`, `effectDefinition` — §3 validates these server-side.
+
+## 5.4 GET /api/relics
+
+```json
+Response 200:
+[
+  {
+    "relicId": "string",
+    "name": "string"
+  }
+]
+```
+
+```text
+member   type    source / semantics
+relicId  string  Relic.RelicInstanceId — the owned instance identity; the
+                 value submitted in `relicLoadout` (§3) and snapshotted
+                 into PetState.EquippedRelics[] at battle start
+                 (RELIC_RULES.md §2.2, GAME_STATE.md §2.3)
+name     string  RelicDefinition.Name
+```
+
+**Not** exposed: `playerId`, `acquiredAt`, `definitionId`, and
+`Trigger`/`Condition`/`EffectDefinition` (rule texts owned by
+`RELIC_RULES.md`).
+
+## 5.5 List semantics (§5.1, §5.3, §5.4)
+
+```text
+empty collection   200 with []
+ordering           none defined — clients must not rely on any order
+pagination         none in MVP — no page/limit/cursor/sort/filter/search
+                   parameters; the array is the full collection
+```
+
+## 5.6 No equip/loadout state
+
+No §5 response carries `isEquipped`, `equipped`, `slot`, `loadoutPosition`,
+or `active` members: equip state is battle-scoped and unpersisted
+(`DATABASE.md` §2, ADR-011); it exists only in the battle-start snapshot
+`PetState.EquippedCards[]` / `EquippedRelics[]` (`GAME_STATE.md` §2.3,
+`RELIC_RULES.md` §2.1). Clients must not read equip state from these
+endpoints.
 
 ---
 
