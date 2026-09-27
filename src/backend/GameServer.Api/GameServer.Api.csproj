@@ -7,6 +7,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Application session authentication (ADR-015 D6): the JWT Bearer
+         authentication scheme is the single application authentication
+         mechanism, used by both REST and the BattleHub access token.
+         ADR-015 D7/D9/D11 fix what is validated (HS256; no `iss`;
+         `aud` = `dcacti-backend`; `kid` = current or previous key);
+         the package only supplies the handler. -->
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.26" />
+
     <!-- Design-time only: required by the EF Core tools to build migrations for
          GameDbContext (DATABASE.md; ADR-006). PrivateAssets keeps it out of the
          application's published output. -->

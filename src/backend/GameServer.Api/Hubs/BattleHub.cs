@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using GameServer.Api.Authentication;
 using GameServer.Application.Battle;
 using GameServer.Application.Runtime;
 using GameServer.Domain.Battle;
@@ -405,17 +406,50 @@ public class BattleHub : Hub
     }
 
     /// <summary>
-    /// Technical connection acknowledgement.
+    /// Technical connection acknowledgement, and the connection's session
+    /// boundary (<c>SIGNALR_PROTOCOL.md</c> §1 items 3–5; <c>ADR-015</c> D3/D6).
     ///
-    /// Established by the framework lifecycle below rather than a bespoke
-    /// client-invoked method: <c>OnConnectedAsync</c> records the connection
-    /// and returns the status to the caller, which is the smallest technical
-    /// connection verification the documentation supports
-    /// (SIGNALR_PROTOCOL.md §1; ADR-008 relies on the connection having a
-    /// stable identity for reconnect/resync).
+    /// <code>
+    /// SignalR connection
+    ///         ↓
+    /// JWT Bearer authentication     (already run — this reads its result)
+    ///         ↓
+    /// authenticated PlayerId        (or the connection is refused)
+    /// </code>
+    ///
+    /// <b>The session is authenticated by the one JWT Bearer scheme, not here.</b>
+    /// This method parses no token, validates no signature, and holds no key: it
+    /// reads the principal that scheme already produced, through the same
+    /// identity resolver REST uses, and refuses the connection when that principal
+    /// carries no <c>player_id</c>. A missing, invalid, tampered, expired, or
+    /// identity-less session therefore never reaches a hub method (§1 item 5), and
+    /// the Discord access token is not accepted as a session (§1 item 4) because
+    /// it never validates as one.
+    ///
+    /// <b>Why the check is here rather than at the endpoint.</b> SignalR's
+    /// standard access-token mechanism supplies <c>Authorization</c> only on the
+    /// requests that follow negotiate, so an endpoint-level authorization policy
+    /// rejects the handshake before the client can present anything — the hub
+    /// would be unreachable by any client. The connection is where the validated
+    /// principal is actually available, so it is where the session is enforced.
+    ///
+    /// The hub remains thin (<c>ARCHITECTURE.md</c> §2.1): this is one identity
+    /// read and one refusal, no gameplay, no ownership decision, and no second
+    /// authentication mechanism. Delivery of the connection status to the caller
+    /// is unchanged.
     /// </summary>
     public override async Task OnConnectedAsync()
     {
+        if (AuthenticatedPlayer.GetPlayerIdFromPrincipal(Context.User) is null)
+        {
+            // Fails the connection, so no hub method becomes reachable. No
+            // validation detail is disclosed — the client is told only that a
+            // session is required, matching the single public outcome
+            // REST uses (API_CONTRACTS.md §2.8 "Failure behavior").
+            throw new HubException(
+                "An authenticated application session is required.");
+        }
+
         var status = _runtime.OnConnected(Context.ConnectionId);
 
         await Clients.Caller.SendAsync("RuntimeStatusChanged", status);

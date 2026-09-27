@@ -1,7 +1,7 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
-using GameServer.Api.Controllers;
 using GameServer.Application.Battle;
 using GameServer.Domain.Battle.Serialization;
 using GameServer.Domain.Cards;
@@ -11,9 +11,7 @@ using GameServer.Domain.Pets;
 using GameServer.Domain.Players;
 using GameServer.Domain.Relics;
 using GameServer.Infrastructure.Postgres;
-using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.EntityFrameworkCore;
@@ -114,7 +112,9 @@ public class RedisBattleStateSmokeTest
         {
             Content = JsonContent.Create(request),
         };
-        message.Headers.Add("X-Smoke-PlayerId", playerId);
+
+        // API_CONTRACTS.md §2.8 "Transport": Authorization: Bearer <sessionToken>.
+        message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", factory.SessionToken);
 
         var response = await client.SendAsync(message);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -431,14 +431,20 @@ public class RedisBattleStateSmokeTest
             builder.UseSetting("ConnectionStrings:DefaultConnection", "");
             builder.UseSetting("ConnectionStrings:Redis", RedisConnection);
 
+            // The application session's signing key, from configuration as
+            // ADR-015 D10 requires. The smoke walk therefore authenticates with a
+            // real session token on both REST and the hub.
+            foreach (var (key, value) in TestApplicationSession.CurrentKeyConfiguration)
+            {
+                builder.UseSetting(key, value);
+            }
+
             builder.ConfigureServices(services =>
             {
                 services.RemoveAll<DbContextOptions<GameDbContext>>();
                 services.RemoveAll<GameDbContext>();
                 services.AddDbContext<GameDbContext>(options =>
                     options.UseInMemoryDatabase(_storeName));
-
-                services.AddSingleton<IStartupFilter>(new SmokeIdentityStartupFilter());
             });
         }
 
@@ -481,33 +487,19 @@ public class RedisBattleStateSmokeTest
                 .WithUrl("http://localhost/hubs/battle", options =>
                 {
                     options.HttpMessageHandlerFactory = _ => Server.CreateHandler();
+
+                    // SIGNALR_PROTOCOL.md §1 item 3 / ADR-015 D4: the same
+                    // application session, through SignalR's standard
+                    // access-token mechanism.
+                    options.AccessTokenProvider = () => Task.FromResult<string?>(SessionToken);
                 })
                 .Build();
 
         /// <summary>
-        /// Supplies the authenticated Player identity the endpoint requires,
-        /// standing in for the TASK-034 session mechanism so the documented flow
-        /// can be walked end to end. It defines no session format.
+        /// The application session this smoke test presents on REST and on the
+        /// hub, for the Player <see cref="SeedAsync"/> created.
         /// </summary>
-        private sealed class SmokeIdentityStartupFilter : IStartupFilter
-        {
-            public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>
-                app =>
-                {
-                    app.Use(async (context, inner) =>
-                    {
-                        if (context.Request.Headers.TryGetValue("X-Smoke-PlayerId", out var playerId))
-                        {
-                            context.Items[BattleController.AuthenticatedPlayerItemKey] =
-                                playerId.ToString();
-                        }
-
-                        await inner();
-                    });
-
-                    next(app);
-                };
-        }
+        public string SessionToken { get; private set; } = string.Empty;
 
         /// <summary>
         /// Seeds the documented battle-start inputs: one Player owning one Pet
@@ -588,6 +580,10 @@ public class RedisBattleStateSmokeTest
             }
 
             await context.SaveChangesAsync();
+
+            // A real application session for the Player just seeded — the same
+            // token the hub and REST below present.
+            SessionToken = TestApplicationSession.Mint(playerId);
 
             return playerId;
         }

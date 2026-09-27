@@ -74,7 +74,15 @@ public class AuthPlayerOwnershipTests
         // API_CONTRACTS.md §2.5: the response shape is unchanged —
         // `sessionToken` and `playerId` — and `playerId` is the
         // matched-or-created Player's own PlayerId.
-        Assert.False(string.IsNullOrWhiteSpace(body.GetProperty("sessionToken").GetString()));
+        //
+        // §2.8: `sessionToken` is the self-contained signed JWT, not the former
+        // `session_{guid}` placeholder. The session contract's own tests
+        // (ApplicationSessionRESTTests, ApplicationSessionContractTests) assert
+        // its algorithm, issuer, audience, claims, lifetime, and validation; here
+        // it is asserted to be the issued artifact at all.
+        Assert.True(
+            JwtTokenShape.IsThreePartJwt(body.GetProperty("sessionToken").GetString()),
+            "API_CONTRACTS.md §2.8: sessionToken must be the issued JWT, not a placeholder");
 
         var playerId = body.GetProperty("playerId").GetString();
         Assert.False(string.IsNullOrWhiteSpace(playerId));
@@ -232,6 +240,14 @@ public class AuthPlayerOwnershipTests
             // store below instead of requiring a live PostgreSQL instance.
             builder.UseSetting("ConnectionStrings:DefaultConnection", "");
             builder.UseSetting("ConnectionStrings:Redis", "");
+
+            // The application session's signing key, from configuration as
+            // ADR-015 D10 requires — so this host issues the real self-contained
+            // signed JWT (API_CONTRACTS.md §2.8) rather than a placeholder.
+            foreach (var (key, value) in TestApplicationSession.CurrentKeyConfiguration)
+            {
+                builder.UseSetting(key, value);
+            }
 
             builder.ConfigureServices(services =>
             {

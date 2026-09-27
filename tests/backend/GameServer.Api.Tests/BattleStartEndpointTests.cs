@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using GameServer.Api.Controllers;
@@ -13,9 +14,7 @@ using GameServer.Domain.Players;
 using GameServer.Domain.Relics;
 using GameServer.Infrastructure.Postgres;
 using GameServer.Domain.Bosses;
-using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -612,6 +611,16 @@ public class BattleStartEndpointTests
             builder.UseSetting("ConnectionStrings:DefaultConnection", "");
             builder.UseSetting("ConnectionStrings:Redis", "");
 
+            // The application session's signing key, supplied through
+            // configuration exactly as production supplies it (ADR-015 D10) — the
+            // host validates real JWTs, and these tests present real ones. No
+            // stand-in authentication layer is registered: the production pipeline
+            // is what is under test.
+            foreach (var (key, value) in TestApplicationSession.CurrentKeyConfiguration)
+            {
+                builder.UseSetting(key, value);
+            }
+
             builder.ConfigureServices(services =>
             {
                 services.RemoveAll<DbContextOptions<GameDbContext>>();
@@ -625,60 +634,18 @@ public class BattleStartEndpointTests
                 // in-memory substitution the host makes for GameDbContext is made
                 // for it here — the real BattleStateService pipeline runs over it.
                 services.AddSingleton<IBattleStateRepository, ApiTestBattleStateRepository>();
-
-                // Stand in for the session mechanism ADR-007 item 4 leaves to
-                // TASK-034: translate the test's identity header into the same
-                // request-context item BattleController reads. It is registered
-                // as a startup filter so the host's own pipeline (routing, MVC,
-                // the hub) is left intact — the identity is the only thing this
-                // host adds. It defines no session format and validates nothing.
-                services.AddSingleton<IStartupFilter>(new TestIdentityStartupFilter());
             });
         }
 
         /// <summary>
-        /// Inserts the test identity middleware ahead of the host's pipeline.
-        /// </summary>
-        private sealed class TestIdentityStartupFilter : IStartupFilter
-        {
-            public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>
-                app =>
-                {
-                    app.UseMiddleware<TestIdentityMiddleware>();
-                    next(app);
-                };
-        }
-
-        /// <summary>
-        /// Copies the test identity header into the request context. It defines
-        /// no session format and validates nothing — it stands in for the
-        /// TASK-034 mechanism so the endpoint's own behaviour is testable.
-        /// </summary>
-        private sealed class TestIdentityMiddleware
-        {
-            private readonly RequestDelegate _next;
-
-            public TestIdentityMiddleware(RequestDelegate next)
-            {
-                _next = next;
-            }
-
-            public Task InvokeAsync(HttpContext context)
-            {
-                if (context.Request.Headers.TryGetValue("X-Test-PlayerId", out var playerId))
-                {
-                    context.Items[BattleController.AuthenticatedPlayerItemKey] = playerId.ToString();
-                }
-
-                return _next(context);
-            }
-        }
-
-        /// <summary>
-        /// Posts a battle-start request with the authenticated Player's identity
-        /// attached, standing in for the session mechanism ADR-007 item 4 leaves
-        /// to TASK-034. A <c>null</c> identity posts the request with no
-        /// authenticated caller at all.
+        /// Posts a battle-start request carrying the authenticated Player's
+        /// session, as <c>API_CONTRACTS.md</c> §2.8 "Transport" documents it:
+        /// <c>Authorization: Bearer &lt;sessionToken&gt;</c>.
+        ///
+        /// The token is a real JWT issued for that Player — not an injected
+        /// request-context value — so the endpoint's identity resolution is
+        /// exercised through the production authentication pipeline. A
+        /// <c>null</c> identity posts the request with no session at all.
         /// </summary>
         public async Task<HttpResponseMessage> PostStartAsync<T>(
             HttpClient client,
@@ -692,7 +659,9 @@ public class BattleStartEndpointTests
 
             if (playerId is not null)
             {
-                message.Headers.Add("X-Test-PlayerId", playerId);
+                message.Headers.Authorization = new AuthenticationHeaderValue(
+                    "Bearer",
+                    TestApplicationSession.Mint(playerId));
             }
 
             return await client.SendAsync(message);

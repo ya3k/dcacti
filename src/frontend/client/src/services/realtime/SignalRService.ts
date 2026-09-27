@@ -1,4 +1,5 @@
 import * as signalR from '@microsoft/signalr';
+import { ApplicationSession } from '../api/ApplicationSession';
 
 export interface PingResult {
   accepted: boolean;
@@ -311,7 +312,17 @@ export class SignalRService {
     }
 
     const connection = new signalR.HubConnectionBuilder()
-      .withUrl(hubUrl)
+      .withUrl(hubUrl, {
+        // SIGNALR_PROTOCOL.md §1 item 3 / ADR-015 D4: the `BattleHub` connection
+        // is authenticated with the application session — the same JWT REST
+        // carries — supplied through SignalR's standard access-token mechanism.
+        //
+        // It is a factory rather than a value so a reconnect after a new §2
+        // exchange presents the current session. The Discord access token is
+        // never used here: it is not the application session and is never
+        // accepted as a `BattleHub` credential (§1 item 4).
+        accessTokenFactory: () => ApplicationSession.getInstance().getSessionToken() ?? '',
+      })
       .withAutomaticReconnect()
       .configureLogging(signalR.LogLevel.Warning)
       .build();

@@ -29,8 +29,11 @@ existing documents).
 
 The decision was therefore taken explicitly by the human (TASK-054 §13.1,
 decisions D1–D6) and is recorded here (why) and in `API_CONTRACTS.md` §2.8
-(the what). This ADR does not supersede `ADR-007` or `ADR-013`; it fills
-the one item those ADRs deliberately left open.
+(the what). The five security-configuration items this ADR initially left
+open were supplied by the human in a second decision round (TASK-055,
+2026-09-27) and are recorded below as D7–D11. This ADR does not supersede
+`ADR-007` or `ADR-013`; it fills the one item those ADRs deliberately left
+open.
 
 ## Decision
 
@@ -96,14 +99,95 @@ the one item those ADRs deliberately left open.
    authentication/authorization boundary. `BattleHub` grows no second,
    custom authentication system — it remains transport-focused.
 
-### Not decided in this ADR
+### Session security configuration (D7–D11) — added 2026-09-27
 
-The signing algorithm (e.g. HS256 / RS256 / ES256), token issuer, audience,
-signing-key storage, and key rotation are **not** decided here. No
-authoritative document currently defines a value for any of them, and this
-ADR deliberately chooses none (`AGENTS.md` §7): they remain implementation
-security configuration to be settled when TASK-034 implements D6, and must
-not be assumed by any consumer of this contract.
+The five items this ADR initially left open were supplied by the human in a
+second decision round (TASK-055) and are recorded here as D7–D11. They are
+server-side security configuration for issuing and validating the D1 token;
+they change no claim shape, endpoint, or message, so `API_CONTRACTS.md` §2.8
+and `SIGNALR_PROTOCOL.md` §1 are unaffected. Their scope is the **JWT
+signing key only** — they do not decide Discord credential hygiene, which
+remains `TASK-036` (BLOCKED).
+
+**Decision**
+
+7. **D7 — the signing algorithm is HS256.** The session JWT is signed and
+   validated with HS256 (HMAC-SHA-256) using one symmetric signing secret.
+   Validation must reject any other algorithm, including `alg=none` and any
+   asymmetric `alg` header.
+8. **D8 — no issuer claim.** The token carries no `iss` claim, and issuer
+   validation is disabled. No canonical issuer value exists to check
+   against: the project owns no domain name, and the same process both
+   issues and validates (`ADR-002` modular monolith).
+9. **D9 — audience is `dcacti-backend`.** The token carries
+
+   ```text
+   claim: aud
+   value: dcacti-backend
+   ```
+
+   and audience validation is required with an exact match. One value
+   covers both consumers — REST and the `BattleHub` access token are the
+   same token under one scheme (D4/D6). The value was chosen by the human.
+10. **D10 — the signing secret comes from configuration, never from
+    tracked files.** In production it is read from a host environment
+    variable; in local development from an uncommitted `.env` file or a
+    `dotnet user-secrets` store. It must never appear in `appsettings.json`,
+    `appsettings.Development.json`, `.env.example`, source code, a test
+    fixture, a log line, or any committed artifact — the same boundary
+    `API_CONTRACTS.md` §2.7 and `src/backend/.env.example` already state
+    for secrets. The exact configuration key name is TASK-034's
+    implementation detail and is not fixed here.
+11. **D11 — rotation is manual with overlap.** Every token carries a `kid`
+    header, and validation accepts exactly two keys: the current signing
+    key and the previous one. Rotation is an operator-driven configuration
+    change; tokens issued under the old key remain valid until their
+    24-hour absolute expiry (D5), after which the previous key is removed
+    from the validation set. No JWKS, no KMS, no automated rotation in
+    MVP.
+
+**Rationale**
+
+- HS256 keeps one secret in one service: the monolith both issues and
+  validates, so asymmetric key distribution (RS256/ES256) would add
+  key-pair generation and storage with no second party that needs the
+  public key.
+- Omitting `iss` avoids recording a claim nobody can meaningfully check
+  today; an explicit but unverifiable value would be decorative.
+- A single explicit `aud` keeps audience validation real (a token minted
+  under this session contract is rejected elsewhere) at the cost of one
+  fixed string, while matching the one-token/one-scheme contract (D4/D6).
+- Configuration-supplied storage extends the repository's existing secret
+  convention instead of introducing a new mechanism
+  (`ARCHITECTURE.md` §5 anti-overengineering).
+- Overlap rotation bounds the damage of a key change: with no revocation
+  in MVP (D5), a no-overlap rotation would instantly kill every live
+  session, while overlap caps the old key's usefulness at the remaining
+  lifetime of tokens already issued.
+
+**Consequences**
+
+- TASK-034 can wire JWT Bearer issuance and validation with every security
+  value recorded; no default may be substituted silently at implementation.
+- HS256 means anyone who obtains the single secret can forge sessions
+  until the key is rotated; under D11's overlap, a compromised *old* key
+  also stays accepted until it is dropped from the validation set.
+- Rotation remains the only early-invalidation tool (D5 has no
+  revocation), and it is manual: a key change forces re-authentication of
+  every session not yet expired.
+- Changing `dcacti-backend` later has the same effect as a key change —
+  all outstanding tokens fail audience validation.
+
+**Implementation constraints (TASK-034)**
+
+- Validate: algorithm exactly HS256; `aud` exactly `dcacti-backend`; `iss`
+  not validated; `kid` resolves only to the current or the previous key.
+- Obtain the secret from configuration (D10); never hard-code, commit,
+  log, or return it. If it is absent, do not silently substitute a
+  generated or default key — STOP per `AGENTS.md` §7 rather than invent
+  one.
+- Any proposed change to D7–D11 is a change to this ADR: STOP per
+  `AGENTS.md` §4 and record a human decision before implementing.
 
 ## Alternatives Considered
 
@@ -174,10 +258,10 @@ request within the exchange and is never issued to the client.
 
 ### Trade-offs
 
-- Algorithm, issuer, audience, key storage, and rotation stay outside this
-  contract (see "Not decided in this ADR") — bounded, explicit, and not
-  silently assumed, rather than invented here without an authoritative
-  source.
+- Algorithm, issuer, audience, key storage, and rotation were initially
+  bounded and explicit rather than invented; they are now decided and
+  recorded as D7–D11 (2026-09-27, TASK-055), so no consumer of this
+  contract may substitute a default for them.
 
 ## Related Documents
 
@@ -195,6 +279,7 @@ request within the exchange and is never issued to the client.
 - `ADR-005`, `ADR-006` — unchanged storage boundaries (no session storage)
 - `ADR-014` — unchanged; battle-end owner identity still comes from
   `BattleState.PlayerId`, never from a session
-- TASK-054 (decision task — D1–D6 answered and recorded), TASK-034
-  (implementation consumer — not edited by this decision), TASK-041
-  (untouched)
+- TASK-054 (decision task — D1–D6 answered and recorded), TASK-055
+  (decision task — D7–D11 answered and recorded), TASK-034
+  (implementation consumer — its references reconciled to D7–D11),
+  TASK-041 (untouched)

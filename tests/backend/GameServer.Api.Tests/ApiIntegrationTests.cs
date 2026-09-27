@@ -55,6 +55,16 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             builder.UseSetting("ConnectionStrings:DefaultConnection", "");
             builder.UseSetting("ConnectionStrings:Redis", "");
 
+            // The application session's signing key, supplied through
+            // configuration exactly as production supplies it (ADR-015 D10), so
+            // these tests exercise the production authentication pipeline with
+            // real JWTs. Both keys are configured, which puts the D11 rotation
+            // overlap in effect for the whole class.
+            foreach (var (key, value) in TestApplicationSession.RotatedKeyConfiguration)
+            {
+                builder.UseSetting(key, value);
+            }
+
             builder.ConfigureServices(services =>
             {
                 services.RemoveAll<DbContextOptions<GameDbContext>>();
@@ -125,12 +135,7 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
     [Fact]
     public async Task BattleHub_Ping_ShouldEchoClientSequenceAndAccepted()
     {
-        var hubConnection = new HubConnectionBuilder()
-            .WithUrl("http://localhost/hubs/battle", options =>
-            {
-                options.HttpMessageHandlerFactory = _ => _factory.Server.CreateHandler();
-            })
-            .Build();
+        var hubConnection = BuildHubConnection();
 
         await hubConnection.StartAsync();
 
@@ -141,6 +146,35 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         Assert.Equal("seq-smoke-test-1", pingResult.ClientSequence);
 
         await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task HubRequests_ShouldAuthenticateWithTheApplicationSession()
+    {
+        // The same session the hub presents, sent as a REST request, must be
+        // accepted — which distinguishes "the session is invalid" from "the hub
+        // request did not carry it".
+        var client = _factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/api/battle/start")
+        {
+            Content = System.Net.Http.Json.JsonContent.Create(new
+            {
+                petId = "pet",
+                bossId = "boss-hoa-long",
+                cardLoadout = new[] { "a", "b", "c" },
+                relicLoadout = new[] { "r1", "r2", "r3" },
+            }),
+        };
+
+        request.Headers.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", OwnerSessionToken);
+
+        var response = await client.SendAsync(request);
+
+        // Never 401: the session is valid, so the endpoint's own contract answers
+        // (a bad loadout is a 400).
+        Assert.NotEqual(System.Net.HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
     [Fact]
@@ -257,10 +291,72 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         return new HubConnectionBuilder()
             .WithUrl("http://localhost/hubs/battle", options =>
             {
-                options.HttpMessageHandlerFactory = _ => _factory.Server.CreateHandler();
+                // SIGNALR_PROTOCOL.md §1 item 3 / ADR-015 D4: the connection is
+                // authenticated with the application session, supplied through
+                // SignalR's standard access-token mechanism. No other credential
+                // and no query parameter is involved.
+                //
+                // The token is applied by a message-handler wrapper rather than
+                // only through AccessTokenProvider because this host substitutes
+                // the test server's handler, which the transport's own attachment
+                // bypasses. The session carried is the same one; the mechanism is
+                // unchanged.
+                options.HttpMessageHandlerFactory = _ =>
+                    new BearerMessageHandler(
+                        _factory.Server.CreateHandler(),
+                        OwnerSessionToken);
+
+                options.Transports = Microsoft.AspNetCore.Http.Connections.HttpTransportType.LongPolling;
+
+                options.AccessTokenProvider = () => Task.FromResult<string?>(OwnerSessionToken);
             })
             .Build();
     }
+
+    /// <summary>
+    /// Attaches the application session as <c>Authorization: Bearer</c> to every
+    /// request this hub connection makes.
+    /// </summary>
+    /// <remarks>
+    /// It carries no identity of its own: it forwards the caller's requests with
+    /// the session header added, which is exactly what
+    /// <c>SIGNALR_PROTOCOL.md</c> §1 item 3 describes. It exists because the test
+    /// server's handler replaces the transport's own, not because the production
+    /// mechanism needs help.
+    /// </remarks>
+    private sealed class BearerMessageHandler : DelegatingHandler
+    {
+        private readonly string _token;
+
+        public BearerMessageHandler(HttpMessageHandler inner, string token)
+            : base(inner)
+        {
+            _token = token;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+        {
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+                "Bearer",
+                _token);
+
+            return base.SendAsync(request, cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// A real application session for <see cref="Owner"/> — the identity the
+    /// battles these tests create are recorded against
+    /// (<c>GAME_STATE.md</c> §2.8). The hub and, where relevant, REST present it
+    /// as a Bearer token exactly as the contract documents.
+    /// </summary>
+    /// <remarks>
+    /// It is a property rather than a field so it is minted on first use, after
+    /// the key configuration it depends on has been initialized.
+    /// </remarks>
+    private static string OwnerSessionToken => TestApplicationSession.Mint(Owner.Value);
 
     // -----------------------------------------------------------------------
     // Board Foundation State transport path

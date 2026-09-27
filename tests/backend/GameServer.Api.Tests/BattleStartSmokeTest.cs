@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using GameServer.Application.Battle;
@@ -10,8 +11,6 @@ using GameServer.Domain.Players;
 using GameServer.Domain.Relics;
 using GameServer.Infrastructure.Postgres;
 using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -92,7 +91,14 @@ public class BattleStartSmokeTest
         {
             Content = JsonContent.Create(request),
         };
-        message.Headers.Add("X-Smoke-PlayerId", playerId);
+
+        // API_CONTRACTS.md §2.8 "Transport": the session travels as a Bearer token.
+        // The token is a real JWT for the seeded Player, so the whole documented
+        // chain — session → authenticated PlayerId → battle ownership — is walked
+        // rather than simulated.
+        message.Headers.Authorization = new AuthenticationHeaderValue(
+            "Bearer",
+            TestApplicationSession.Mint(playerId));
 
         var response = await client.SendAsync(message);
 
@@ -211,6 +217,14 @@ public class BattleStartSmokeTest
             builder.UseSetting("ConnectionStrings:DefaultConnection", "");
             builder.UseSetting("ConnectionStrings:Redis", "");
 
+            // The application session's signing key, from configuration as
+            // ADR-015 D10 requires, so the smoke walk exercises the production
+            // authentication pipeline with a real session token.
+            foreach (var (key, value) in TestApplicationSession.CurrentKeyConfiguration)
+            {
+                builder.UseSetting(key, value);
+            }
+
             builder.ConfigureServices(services =>
             {
                 services.RemoveAll<DbContextOptions<GameDbContext>>();
@@ -224,34 +238,7 @@ public class BattleStartSmokeTest
                 // the isolated in-memory substitute, exactly as it does for
                 // GameDbContext.
                 services.AddSingleton<IBattleStateRepository, ApiTestBattleStateRepository>();
-
-                services.AddSingleton<IStartupFilter>(new SmokeIdentityStartupFilter());
             });
-        }
-
-        /// <summary>
-        /// Supplies the authenticated Player identity the endpoint requires,
-        /// standing in for the TASK-034 session mechanism so the documented flow
-        /// can be walked end to end.
-        /// </summary>
-        private sealed class SmokeIdentityStartupFilter : IStartupFilter
-        {
-            public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) =>
-                app =>
-                {
-                    app.Use(async (context, inner) =>
-                    {
-                        if (context.Request.Headers.TryGetValue("X-Smoke-PlayerId", out var playerId))
-                        {
-                            context.Items[Controllers.BattleController.AuthenticatedPlayerItemKey] =
-                                playerId.ToString();
-                        }
-
-                        await inner();
-                    });
-
-                    next(app);
-                };
         }
 
         /// <summary>

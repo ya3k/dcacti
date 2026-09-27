@@ -4,6 +4,7 @@ import type {
   BattleStateUpdatedPayload,
   CellPayload,
 } from '../src/services/realtime/SignalRService';
+import { ApplicationSession } from '../src/services/api/ApplicationSession';
 import * as signalR from '@microsoft/signalr';
 
 /**
@@ -16,6 +17,8 @@ import * as signalR from '@microsoft/signalr';
 function installFakeHub() {
   const handlers = new Map<string, (...args: unknown[]) => void>();
   const invokes: Array<{ method: string; args: unknown[] }> = [];
+  /** The options the service passed to `withUrl` — where the token is supplied. */
+  const withUrlOptions: Array<Record<string, unknown>> = [];
 
   const connection = {
     state: signalR.HubConnectionState.Connected,
@@ -40,7 +43,10 @@ function installFakeHub() {
   vi.spyOn(signalR, 'HubConnectionBuilder').mockImplementation(
     () =>
       ({
-        withUrl: () => builder,
+        withUrl: (_url: string, options: Record<string, unknown>) => {
+          withUrlOptions.push(options);
+          return builder;
+        },
         withAutomaticReconnect: () => builder,
         configureLogging: () => builder,
         build: () => connection,
@@ -54,7 +60,7 @@ function installFakeHub() {
     build: () => connection,
   };
 
-  return { connection, handlers, invokes };
+  return { connection, handlers, invokes, withUrlOptions };
 }
 
 describe('SignalRService', () => {
@@ -317,6 +323,66 @@ describe('SignalRService', () => {
       await expect(service.joinBattle('battle-1')).rejects.toThrow(
         'SignalR connection is not established.'
       );
+    });
+  });
+
+  describe('Connection authentication (SIGNALR_PROTOCOL.md §1, ADR-015 D4)', () => {
+    it('supplies the application session through the standard access-token mechanism', async () => {
+      ApplicationSession.getInstance().clear();
+      ApplicationSession.getInstance().establish({
+        sessionToken: 'issued.token.value',
+        playerId: 'player_1',
+      });
+
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      // §1 item 3: the connection is authenticated with the application session
+      // through SignalR's standard access-token mechanism — no custom query
+      // parameter and no other credential is introduced.
+      const options = hub.withUrlOptions[0];
+      expect(options).toHaveProperty('accessTokenFactory');
+
+      const factory = options.accessTokenFactory as () => string;
+      expect(factory()).toBe('issued.token.value');
+    });
+
+    it('reads the session at connect time through a factory, not a captured value', async () => {
+      ApplicationSession.getInstance().clear();
+
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      const factory = hub.withUrlOptions[0].accessTokenFactory as () => string;
+
+      // No session yet: the factory reports none rather than inventing one.
+      expect(factory()).toBe('');
+
+      // A later exchange is picked up, which is what lets a reconnect present
+      // the current session.
+      ApplicationSession.getInstance().establish({
+        sessionToken: 'later.token.value',
+        playerId: 'player_1',
+      });
+
+      expect(factory()).toBe('later.token.value');
+    });
+
+    it('carries no Discord access token', async () => {
+      ApplicationSession.getInstance().clear();
+
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      const factory = hub.withUrlOptions[0].accessTokenFactory as () => string;
+
+      // §1 item 4: the Discord access token is never a BattleHub credential. The
+      // service has no access to one — the token factory reads only the
+      // application session and returns nothing else.
+      expect(factory()).toBe('');
+
+      const serialized = JSON.stringify(hub.withUrlOptions[0]);
+      expect(serialized).not.toContain('discord');
     });
   });
 });

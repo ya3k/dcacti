@@ -6,9 +6,13 @@ using GameServer.Domain.Bosses;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
+using GameServer.Infrastructure.Postgres;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Xunit;
 
 namespace GameServer.Api.Tests;
@@ -34,13 +38,46 @@ namespace GameServer.Api.Tests;
 /// and the omission rules are asserted on what a client actually receives, not on
 /// an in-memory DTO.
 /// </summary>
-public class BossResponseWireTests : IClassFixture<WebApplicationFactory<Program>>
+public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWireFactory>
 {
-    private readonly WebApplicationFactory<Program> _factory;
+    private readonly BossWireFactory _factory;
 
-    public BossResponseWireTests(WebApplicationFactory<Program> factory)
+    public BossResponseWireTests(BossWireFactory factory)
     {
         _factory = factory;
+    }
+
+    /// <summary>
+    /// The suite's host: the real application pipeline with both connection
+    /// strings blanked (so it needs neither a live PostgreSQL nor a live Redis)
+    /// and the application session's signing key supplied through configuration
+    /// (<c>ADR-015</c> D10), so the hub connection authenticates with a real
+    /// session token exactly as <c>SIGNALR_PROTOCOL.md</c> §1 item 3 documents.
+    /// </summary>
+    public sealed class BossWireFactory : WebApplicationFactory<Program>
+    {
+        private readonly string _storeName = $"boss-wire-{Guid.NewGuid():N}";
+
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            builder.UseSetting("ConnectionStrings:DefaultConnection", "");
+            builder.UseSetting("ConnectionStrings:Redis", "");
+
+            foreach (var (key, value) in TestApplicationSession.CurrentKeyConfiguration)
+            {
+                builder.UseSetting(key, value);
+            }
+
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<DbContextOptions<GameDbContext>>();
+                services.RemoveAll<GameDbContext>();
+                services.AddDbContext<GameDbContext>(options =>
+                    options.UseInMemoryDatabase(_storeName));
+
+                services.AddSingleton<IBattleStateRepository, ApiTestBattleStateRepository>();
+            });
+        }
     }
 
     private static readonly BattleStateService.PetConfiguration Pet =
@@ -63,8 +100,18 @@ public class BossResponseWireTests : IClassFixture<WebApplicationFactory<Program
             .WithUrl("http://localhost/hubs/battle", options =>
             {
                 options.HttpMessageHandlerFactory = _ => _factory.Server.CreateHandler();
+
+                // SIGNALR_PROTOCOL.md §1 item 3 / ADR-015 D4: the same application
+                // session token, through SignalR's standard access-token mechanism.
+                options.AccessTokenProvider = () => Task.FromResult<string?>(OwnerSessionToken);
             })
             .Build();
+
+    /// <summary>
+    /// A real application session for <see cref="Owner"/>, presented on the hub.
+    /// </summary>
+    private static readonly string OwnerSessionToken =
+        TestApplicationSession.Mint(Owner.Value);
 
     /// <summary>
     /// Creates a battle server-side against <paramref name="bossDefinition"/> and

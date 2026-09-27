@@ -1,5 +1,7 @@
+using GameServer.Api.Authentication;
 using GameServer.Application.Identity;
 using GameServer.Application.Players;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace GameServer.Api.Controllers;
@@ -21,32 +23,25 @@ public record DiscordAuthResponse(string SessionToken, string PlayerId);
 ///         ↓
 /// existing Player → reuse
 /// new DiscordUserId → create Player Level 1
+///         ↓
+/// application session JWT (player_id = PlayerId)
 /// </code>
 ///
-/// This controller owns the <b>identity → Player</b> half of §2 only.
+/// This controller owns the <b>identity → Player → session</b> half of §2. The
+/// session itself is the self-contained signed JWT of §2.8, issued by
+/// <see cref="ApplicationSessionTokenService"/> after the §2 identity exchange
+/// has succeeded — §2.8's "issued by this endpoint only" (D1) is therefore true
+/// by construction.
+///
 /// It remains a thin boundary (<c>ARCHITECTURE.md</c> §2.1 item 4): it
-/// translates the wire request, delegates identity resolution and Player
-/// ownership, and translates the result back to the wire response.
+/// translates the wire request, delegates identity resolution, Player ownership,
+/// and session issuance, and translates the result back to the wire response.
 ///
-/// Two adjacent responsibilities are deliberately <b>not</b> implemented here,
-/// because neither is decided by an authoritative document yet:
-///
-/// <list type="bullet">
-/// <item>
-/// <b>The Discord authorization-code exchange</b> — owned by the TASK-035
-/// contract (<c>API_CONTRACTS.md</c> §2.2–§2.4, <c>ADR-013</c>). It is an
-/// Infrastructure concern (<c>ADR-013</c> item 13), consumed here through
-/// <see cref="IDiscordIdentityResolver"/> rather than reimplemented
-/// (<c>AGENTS.md</c> §7, §18).
-/// </item>
-/// <item>
-/// <b>The application session mechanism</b> — owned by TASK-034
-/// (<c>ADR-007</c> item 4). §2.5 defines no format, claims, lifetime, or
-/// validation strategy, so <c>sessionToken</c> continues to be the opaque,
-/// unvalidated placeholder it already was. This type introduces no token
-/// format and no session storage.
-/// </item>
-/// </list>
+/// The Discord authorization-code exchange is deliberately <b>not</b> implemented
+/// here: it is owned by the TASK-035 contract (<c>API_CONTRACTS.md</c> §2.2–§2.4,
+/// <c>ADR-013</c>) and is an Infrastructure concern (<c>ADR-013</c> item 13),
+/// consumed here through <see cref="IDiscordIdentityResolver"/> rather than
+/// reimplemented.
 /// </summary>
 [ApiController]
 [Route("api/auth")]
@@ -54,15 +49,31 @@ public class AuthController : ControllerBase
 {
     private readonly IDiscordIdentityResolver _identityResolver;
     private readonly IPlayerRepository _playerRepository;
+    private readonly ApplicationSessionTokenService _sessions;
 
     public AuthController(
         IDiscordIdentityResolver identityResolver,
-        IPlayerRepository playerRepository)
+        IPlayerRepository playerRepository,
+        ApplicationSessionTokenService sessions)
     {
         _identityResolver = identityResolver;
         _playerRepository = playerRepository;
+        _sessions = sessions;
     }
 
+    /// <summary>
+    /// Establishes the application session from a Discord authorization code
+    /// (<c>API_CONTRACTS.md</c> §2).
+    ///
+    /// This is the <b>one</b> endpoint that does not require an authenticated
+    /// session — it is the endpoint that establishes one
+    /// (<c>API_CONTRACTS.md</c> §2.1, §2.8 "Coverage"; <c>ADR-015</c> D6). That is
+    /// why it opts out of the default policy explicitly: no other endpoint shares
+    /// the exemption.
+    /// </summary>
+    /// <param name="request">The Discord authorization code — the only request member.</param>
+    /// <param name="cancellationToken">Cancels the exchange with the request.</param>
+    [AllowAnonymous]
     [HttpPost("discord")]
     public async Task<IActionResult> AuthenticateDiscord(
         [FromBody] DiscordAuthRequest request,
@@ -99,11 +110,17 @@ public class AuthController : ControllerBase
             identity.Identity.DiscordUserId,
             cancellationToken);
 
-        // §2.5: the response shape is unchanged, and `playerId` is the
-        // matched-or-created Player's own PlayerId. `sessionToken` remains the
-        // opaque placeholder until TASK-034 defines the session mechanism.
+        // Step 3 — issue the application session (API_CONTRACTS.md §2.5, §2.8;
+        // ADR-015 D1/D3/D5). The claim carries the PlayerId the exchange already
+        // resolved and mapped, so the chain stays
+        // `verified DiscordUserId → PlayerId → JWT player_id` and no client input
+        // participates: the Discord access token is never the session (§2.7
+        // item 4), and nothing is written anywhere to record the session (D2).
+        //
+        // §2.5: the response shape is unchanged — `sessionToken` and `playerId` —
+        // and `playerId` is the matched-or-created Player's own PlayerId.
         return Ok(new DiscordAuthResponse(
-            SessionToken: $"session_{Guid.NewGuid():N}",
+            SessionToken: _sessions.Issue(player.PlayerId, DateTimeOffset.UtcNow),
             PlayerId: player.PlayerId));
     }
 }

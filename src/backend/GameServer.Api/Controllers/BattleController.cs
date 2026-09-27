@@ -1,4 +1,6 @@
+using GameServer.Api.Authentication;
 using GameServer.Application.Battle;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace GameServer.Api.Controllers;
@@ -31,8 +33,15 @@ namespace GameServer.Api.Controllers;
 /// Combo value is accepted, and no <c>battleId</c> is submitted
 /// (<c>API_CONTRACTS.md</c> §1, <c>GAME_RULES.md</c> §18, ADR-001). The server
 /// authors the resulting <c>BattleState</c>.
+///
+/// <b>The requesting Player is the authenticated session's</b>
+/// (<c>API_CONTRACTS.md</c> §1, §2.8; <c>ADR-015</c> D3): the
+/// <c>player_id</c> claim, published as the request context's
+/// <c>GameServer.PlayerId</c>. No request member, query parameter, or header
+/// selects, overrides, or stands in for it.
 /// </summary>
 [ApiController]
+[Authorize]
 [Route("api/battle")]
 public class BattleController : ControllerBase
 {
@@ -76,12 +85,15 @@ public class BattleController : ControllerBase
     ///
     /// <b>The requesting Player</b> is the authenticated caller
     /// (<c>§1</c>: "All endpoints … require an authenticated session"; <c>§3</c>:
-    /// "the requesting Player"). The application session mechanism that carries
-    /// that identity is <c>ADR-007</c> item 4's open decision, owned by TASK-034
-    /// and deliberately not invented here — exactly as <c>AuthController</c>
-    /// records for <c>sessionToken</c>. This method therefore takes the resolved
-    /// Player from the request context's items, which the session mechanism
-    /// populates once it exists, and rejects a caller that presents none.
+    /// "the requesting Player"). The identity is the application session's
+    /// <c>player_id</c> claim, republished as the request context's
+    /// <c>GameServer.PlayerId</c> by the authentication boundary
+    /// (<c>API_CONTRACTS.md</c> §2.8 "Identity", <c>ADR-015</c> D3) — never a
+    /// client-supplied value. The class-level <c>[Authorize]</c> is what makes
+    /// an unauthenticated caller receive the documented
+    /// <c>401 UNAUTHENTICATED</c> before this method runs; the check below is the
+    /// identity contract's own guard, so a principal that carries no
+    /// <c>player_id</c> is refused rather than attributed to a default Player.
     /// </summary>
     /// <param name="request">The four documented selection members.</param>
     /// <param name="cancellationToken">Cancels the orchestration with the request.</param>
@@ -103,15 +115,15 @@ public class BattleController : ControllerBase
 
         if (string.IsNullOrWhiteSpace(playerId))
         {
-            // API_CONTRACTS.md §1 / §3 require an authenticated session, and the
-            // session mechanism is TASK-034's open decision. Until it exists no
-            // caller can be identified, so every request is rejected rather than
-            // attributed to a default Player — attributing one would let an
-            // unauthenticated caller act as another Player
-            // (GAME_RULES.md §18, ADR-001).
+            // API_CONTRACTS.md §1 / §3 require an authenticated session. A request
+            // that reached here therefore presented a validated token whose
+            // player_id claim is missing or empty — an identity that identifies
+            // nobody. It is rejected with the §2.8 unauthenticated response rather
+            // than attributed to a default Player: attributing one would let such
+            // a caller act as another Player (GAME_RULES.md §18, ADR-001).
             return Unauthorized(new
             {
-                error = "UNAUTHENTICATED",
+                error = UnauthenticatedResponse.ErrorCode,
                 message = "An authenticated session is required to start a battle.",
             });
         }
@@ -157,24 +169,28 @@ public class BattleController : ControllerBase
 
     /// <summary>
     /// The resolved requesting Player, or <c>null</c> when the caller presents no
-    /// identity.
+    /// authenticated identity.
     ///
-    /// It reads the item <c>AuthController</c>'s session mechanism populates and
-    /// defines no format of its own (<c>API_CONTRACTS.md</c> §2.5, ADR-007
-    /// item 4, TASK-034). The key is this endpoint's own contract: the session
-    /// mechanism writes the authenticated <c>Player.PlayerId</c> under it.
+    /// It reads the request-context item the authentication boundary publishes
+    /// from the validated session's <c>player_id</c> claim
+    /// (<see cref="AuthenticatedPlayer"/>, <c>API_CONTRACTS.md</c> §2.8,
+    /// <c>ADR-015</c> D3). The key is this endpoint's own contract and is
+    /// unchanged; what changed is that it now has a production writer.
     /// </summary>
     private string? ResolveRequestingPlayerId() =>
         HttpContext.Items[AuthenticatedPlayerItemKey] as string;
 
     /// <summary>
     /// The request-context key under which the authenticated session's
-    /// <c>Player.PlayerId</c> is carried to this endpoint.
+    /// <c>Player.PlayerId</c> is carried to this endpoint
+    /// (<c>API_CONTRACTS.md</c> §2.8: "<c>GameServer.PlayerId</c> may be used as
+    /// the server-internal request-context representation of that identity; it is
+    /// never a client input").
     ///
     /// It is public because it is a boundary contract, not a private detail: the
-    /// session mechanism (<c>ADR-007</c> item 4, TASK-034) writes it, and this
-    /// endpoint reads it. Nothing else about the session is shared — no format,
-    /// claims, lifetime, or validation strategy is defined here.
+    /// authentication boundary writes it and this endpoint reads it. The single
+    /// definition lives on <see cref="AuthenticatedPlayer"/>, so the writer and
+    /// the reader cannot drift to two different keys.
     /// </summary>
-    public const string AuthenticatedPlayerItemKey = "GameServer.PlayerId";
+    public const string AuthenticatedPlayerItemKey = AuthenticatedPlayer.RequestContextKey;
 }
