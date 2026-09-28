@@ -84,4 +84,23 @@ public sealed class RelicRepository : IRelicRepository
                 definition => definition.RelicDefinitionId == relicDefinitionId,
                 cancellationToken);
     }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<RelicDefinition>> ListDefinitionsAsync(
+        IReadOnlyCollection<string> relicDefinitionIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(relicDefinitionIds);
+
+        // One query for the whole set, so a collection projection with N owned
+        // instances issues two reads rather than N+1. This is a content read on
+        // the existing RelicDefinition table (DATABASE.md §1): no new index, no
+        // cache, and no read model is introduced.
+        //
+        // A requested id with no row is simply absent from the result — no
+        // placeholder definition is fabricated here (AGENTS.md §7).
+        return await _dbContext.RelicDefinitions
+            .Where(definition => relicDefinitionIds.Contains(definition.RelicDefinitionId))
+            .ToListAsync(cancellationToken);
+    }
 }

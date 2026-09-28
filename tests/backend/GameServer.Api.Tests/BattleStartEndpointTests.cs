@@ -199,6 +199,130 @@ public class BattleStartEndpointTests
     }
 
     // -----------------------------------------------------------------------
+    // Element wire values — API_CONTRACTS.md §3 + §5.1
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// The five documented Element wire values, spelled from
+    /// <c>API_CONTRACTS.md</c> §5.1 / <c>ELEMENT_RULES.md</c> §1 rather than from
+    /// the implementation.
+    /// </summary>
+    public static TheoryData<Element, string> DocumentedElementWireValues => new()
+    {
+        { Element.Moc, "Wood" },
+        { Element.Tho, "Earth" },
+        { Element.Thuy, "Water" },
+        { Element.Hoa, "Fire" },
+        { Element.Kim, "Metal" },
+    };
+
+    /// <summary>
+    /// The Domain enum's member names — the values §5.1 excludes from the wire.
+    /// </summary>
+    private static readonly string[] DomainElementMemberNames =
+        ["Moc", "Tho", "Thuy", "Hoa", "Kim"];
+
+    [Theory]
+    [MemberData(nameof(DocumentedElementWireValues))]
+    public async Task Start_ShouldEmitTheDocumentedWireValueForThePetElement(
+        Element element,
+        string expected)
+    {
+        // §3 binds initialState.petState.element to the §5.1 set — the English
+        // form, never the Domain enum member name. The Pet's Element is data
+        // (PetDefinition.Element), so all five pairs are reachable here.
+        using var factory = new BattleStartFactory { PetElement = element };
+        var client = factory.CreateClient();
+        var playerId = await factory.SeedPlayerAsync(client);
+
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId = "boss-hoa-long", cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var petElement = body
+            .GetProperty("initialState")
+            .GetProperty("petState")
+            .GetProperty("element");
+
+        Assert.Equal(expected, petElement.GetString());
+        Assert.Contains(
+            petElement.GetString(),
+            new[] { "Fire", "Water", "Earth", "Wood", "Metal" });
+        Assert.DoesNotContain(petElement.GetString(), DomainElementMemberNames);
+    }
+
+    [Theory]
+    [InlineData("boss-hoa-long", "Fire")]
+    [InlineData("boss-thuy-ma", "Water")]
+    [InlineData("boss-moc-yeu", "Wood")]
+    public async Task Start_ShouldEmitTheDocumentedWireValueForTheBossElement(
+        string bossId,
+        string expected)
+    {
+        // BOSS_RULES.md §6: exactly three content-defined MVP Bosses, so
+        // bossState.element can only ever reach three of the five values here.
+        // Earth and Metal are not reachable through the MVP roster and no Boss is
+        // invented to exercise them (AGENTS.md §7) — the shared mapping's
+        // exhaustiveness over all five is covered on petState.element and by
+        // ElementWireValuesTests.
+        using var factory = new BattleStartFactory();
+        var client = factory.CreateClient();
+        var playerId = await factory.SeedPlayerAsync(client);
+
+        var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId, cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var boss = body.GetProperty("initialState").GetProperty("bossState");
+
+        Assert.Equal(bossId, boss.GetProperty("bossId").GetString());
+
+        var bossElement = boss.GetProperty("element");
+
+        Assert.Equal(expected, bossElement.GetString());
+        Assert.Contains(
+            bossElement.GetString(),
+            new[] { "Fire", "Water", "Earth", "Wood", "Metal" });
+        Assert.DoesNotContain(bossElement.GetString(), DomainElementMemberNames);
+    }
+
+    [Fact]
+    public async Task Start_ShouldNeverEmitADomainEnumMemberName_ForEitherElementMember()
+    {
+        // The regression this task fixes: both members were produced with
+        // Element.ToString(), which answered "Moc"/"Hoa" — a value §5.1 excludes
+        // and no document on the REST surface binds. Asserted over every MVP Boss
+        // as well as the Pet, so a re-introduced enum projection fails here.
+        foreach (var bossId in new[] { "boss-hoa-long", "boss-thuy-ma", "boss-moc-yeu" })
+        {
+            using var factory = new BattleStartFactory { PetElement = Element.Hoa };
+            var client = factory.CreateClient();
+            var playerId = await factory.SeedPlayerAsync(client);
+
+            var response = await factory.PostStartAsync(client, new { petId = PetInstanceId, bossId, cardLoadout = new[] { BasicA, BasicB, BasicC }, relicLoadout = new[] { "relic_1", "relic_2", "relic_3" } }, playerId);
+
+            var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+            var state = body.GetProperty("initialState");
+
+            var petElement = state.GetProperty("petState").GetProperty("element").GetString();
+            var bossElement = state.GetProperty("bossState").GetProperty("element").GetString();
+
+            // Present and string-typed (§3 makes both root members of their
+            // summaries — neither is omitted).
+            Assert.Equal(JsonValueKind.String, state.GetProperty("petState").GetProperty("element").ValueKind);
+            Assert.Equal(JsonValueKind.String, state.GetProperty("bossState").GetProperty("element").ValueKind);
+
+            Assert.DoesNotContain(petElement, DomainElementMemberNames);
+            Assert.DoesNotContain(bossElement, DomainElementMemberNames);
+
+            Assert.Contains(petElement, new[] { "Fire", "Water", "Earth", "Wood", "Metal" });
+            Assert.Contains(bossElement, new[] { "Fire", "Water", "Earth", "Wood", "Metal" });
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Card validation — API_CONTRACTS.md §3, §6 (INVALID_LOADOUT)
     // -----------------------------------------------------------------------
 
@@ -603,6 +727,14 @@ public class BattleStartEndpointTests
         /// </summary>
         public string[] OwnedRelicInstanceIds { get; init; } = ["relic_1", "relic_2", "relic_3"];
 
+        /// <summary>
+        /// The Element of the seeded Pet's definition. Defaults to the value the
+        /// success-path tests were written against; the element-wire theories seed
+        /// each of the five documented Elements through it
+        /// (<c>ELEMENT_RULES.md</c> §1).
+        /// </summary>
+        public Element PetElement { get; init; } = Element.Moc;
+
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             // Blank the connection strings so AddInfrastructureServices does not
@@ -691,7 +823,7 @@ public class BattleStartEndpointTests
             {
                 PetDefinitionId = PetDefinitionId,
                 Identity = "Thanh Xà",
-                Element = Element.Moc,
+                Element = PetElement,
                 PassiveId = new PassiveId("pet-passive-1"),
                 PassiveThreshold = 5,
                 SignatureSkillCardId = SignatureSkillCardId,

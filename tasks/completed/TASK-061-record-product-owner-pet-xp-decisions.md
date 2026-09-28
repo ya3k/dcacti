@@ -21,7 +21,7 @@
 ```text
 Task ID:           TASK-061
 Type:              DOCUMENTATION
-Status:            BACKLOG
+Status:            SUPERSEDED (by TASK-062)
 Risk:              LOW (input capture only — no document is edited, no rule is
                    changed, no code exists in scope; risk rises to MEDIUM only
                    if a recorded decision is later transcribed into docs/,

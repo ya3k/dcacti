@@ -21,7 +21,7 @@
 ```text
 Task ID:           TASK-059
 Type:              DOCUMENTATION
-Status:            BACKLOG
+Status:            DONE
 Risk:              HIGH (retires a documented derivation model that is
                    currently implemented and covered by tests, and
                    supersedes two existing records: the PET_RULES.md §5

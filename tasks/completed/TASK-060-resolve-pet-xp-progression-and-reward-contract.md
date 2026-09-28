@@ -22,8 +22,8 @@
 ```text
 Task ID:           TASK-060
 Type:              DOCUMENTATION
-Status:            BLOCKED (execution attempted — §4 product-owner decisions
-                   were not supplied; STOP CONDITION recorded in §14)
+Status:            SUPERSEDED
+Superseded By:     TASK-062
 Risk:              HIGH (completes a cross-referenced progression contract
                    that TASK-059 deliberately left open and that currently
                    blocks every Pet XP implementation path; the twelve

@@ -386,6 +386,30 @@ internal sealed class InMemoryPetRepository : IPetRepository
         CancellationToken cancellationToken = default) =>
         Task.FromResult<PetDefinition?>(null);
 
+    /// <summary>
+    /// The collection read (<c>API_CONTRACTS.md</c> §5.1) is not exercised by the
+    /// battle-end reward path, so this double keeps its documented
+    /// <c>PlayerId</c> scoping available rather than throwing: a test that wants
+    /// to assert the boundary is Player-filtered can do so directly.
+    /// </summary>
+    public Task<IReadOnlyList<Pet>> ListByPlayerIdAsync(
+        string playerId,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<Pet>>(
+            _pets.Values
+                .Where(pet => pet.PlayerId == playerId)
+                .ToList());
+
+    /// <summary>
+    /// No definition rows are seeded (<see cref="GetDefinitionAsync"/>), so the
+    /// bulk content read resolves nothing — which is the same absence, stated for
+    /// the whole set at once.
+    /// </summary>
+    public Task<IReadOnlyList<PetDefinition>> ListDefinitionsAsync(
+        IReadOnlyCollection<string> petDefinitionIds,
+        CancellationToken cancellationToken = default) =>
+        Task.FromResult<IReadOnlyList<PetDefinition>>([]);
+
     /// <inheritdoc />
     public Task<Pet?> GetByIdAsync(
         string petInstanceId,

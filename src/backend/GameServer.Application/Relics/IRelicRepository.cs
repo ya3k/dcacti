@@ -86,4 +86,34 @@ public interface IRelicRepository
     Task<RelicDefinition?> GetDefinitionAsync(
         string relicDefinitionId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the definition rows matching
+    /// <paramref name="relicDefinitionIds"/> — the bulk content read the
+    /// collection projection uses (<c>API_CONTRACTS.md</c> §5.4: <c>name</c> is
+    /// <c>RelicDefinition.Name</c>).
+    ///
+    /// <b>It exists so a collection read is not an N+1 read.</b> A list
+    /// response needs one definition per owned instance, so resolving them one
+    /// <see cref="GetDefinitionAsync"/> call at a time would issue one query per
+    /// Relic. This read resolves the whole set in one query against the existing
+    /// <c>RelicDefinition</c> table (<c>DATABASE.md</c> §1); it introduces no new
+    /// index, no cache, and no read model.
+    ///
+    /// <b>It is a content read, not an ownership filter.</b> A Relic's
+    /// definition is shared static content, not Player-owned data
+    /// (<c>DATABASE.md</c> §2: Relic N ── 1 RelicDefinition), so the ownership
+    /// scoping of the collection happens on the instance read
+    /// (<see cref="ListByPlayerIdAsync"/>), not here.
+    ///
+    /// <b>A definition that does not exist is simply absent from the result.</b>
+    /// No placeholder row is fabricated (<c>AGENTS.md</c> §7).
+    ///
+    /// <b>The result is not an ordered contract.</b>
+    /// </summary>
+    /// <param name="relicDefinitionIds">The requested definition identities.</param>
+    /// <param name="cancellationToken">Cancels the query.</param>
+    Task<IReadOnlyList<RelicDefinition>> ListDefinitionsAsync(
+        IReadOnlyCollection<string> relicDefinitionIds,
+        CancellationToken cancellationToken = default);
 }

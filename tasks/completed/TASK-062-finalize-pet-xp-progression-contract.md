@@ -22,7 +22,7 @@
 ```text
 Task ID:           TASK-062
 Type:              DOCUMENTATION
-Status:            BACKLOG
+Status:            DONE
 Risk:              HIGH (retires TASK-060's twelve open items inside a
                    cross-referenced progression contract, and the Pet XP cap
                    semantics deliberately DIVERGE from the Player track —

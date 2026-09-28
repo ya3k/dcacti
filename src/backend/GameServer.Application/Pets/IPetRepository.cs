@@ -7,8 +7,9 @@ namespace GameServer.Application.Pets;
 ///
 /// It exposes the operations the Application layer needs: add an owned
 /// instance, resolve an owned instance by its identifier, read the
-/// static definition row the battle-start path needs, and store a mutated
-/// instance's own progression values.
+/// static definition row the battle-start path needs, list a Player's owned
+/// instances for the collection read, and store a mutated instance's own
+/// progression values.
 ///
 /// <b>It is an Application boundary, not a persistence implementation.</b>
 /// The interface lives here so the Application layer can orchestrate Pet
@@ -21,10 +22,11 @@ namespace GameServer.Application.Pets;
 /// <b>No recompute surface exists here.</b> The retired Pet Level recompute
 /// pass (<c>Player.Level × PetLevelMultiplier</c>) was removed with the
 /// derivation itself (<c>PET_RULES.md</c> §5.6 item 1, ADR-016 item 13), so
-/// this boundary exposes no bulk-listing or bulk-save operation. Pet Level is
-/// re-derived per instance from that instance's own XP
-/// (<c>PET_RULES.md</c> §5.4), which the single progression write below
-/// stores.
+/// this boundary exposes no bulk-save operation. Pet Level is re-derived per
+/// instance from that instance's own XP (<c>PET_RULES.md</c> §5.4), which the
+/// single progression write below stores. The one bulk <b>read</b> it exposes
+/// lists owned instances for the collection endpoint
+/// (<c>API_CONTRACTS.md</c> §5.1); it recomputes nothing.
 /// </summary>
 public interface IPetRepository
 {
@@ -40,6 +42,35 @@ public interface IPetRepository
     Task AddAsync(Pet pet, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Returns every Pet instance owned by <paramref name="playerId"/>
+    /// (<c>DATABASE.md</c> §2: Player 1 ── N Pet), served by the documented
+    /// <c>Pet(PlayerId)</c> index (§4 — "list a player's Pets").
+    ///
+    /// <b>The Player filter is part of the operation, not a convenience.</b>
+    /// The collection read behind <c>GET /api/pets</c> returns only the
+    /// authenticated caller's own Pets (<c>API_CONTRACTS.md</c> §5, §5.1), and
+    /// ownership is established from persistence rather than from any
+    /// client-supplied claim (<c>GAME_RULES.md</c> §18, ADR-001) — so an
+    /// instance belonging to another Player is never materialized for this
+    /// Player at all.
+    ///
+    /// <b>It is a different operation from <see cref="GetByIdAsync"/>.</b> That
+    /// one is deliberately instance-scoped so its caller can distinguish "no
+    /// such Pet" from "another Player's Pet"; this one is deliberately
+    /// Player-scoped, because a collection read has no such distinction to make.
+    ///
+    /// <b>The result is not an ordered contract.</b> <c>API_CONTRACTS.md</c>
+    /// §5.5 defines no ordering and clients must not rely on any; callers must
+    /// not depend on the order of the returned rows, and this boundary sorts by
+    /// nothing.
+    /// </summary>
+    /// <param name="playerId">The owning Player's identifier.</param>
+    /// <param name="cancellationToken">Cancels the query.</param>
+    Task<IReadOnlyList<Pet>> ListByPlayerIdAsync(
+        string playerId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Returns the definition row for <paramref name="petDefinitionId"/>,
     /// or <c>null</c> when no such definition exists.
     ///
@@ -50,6 +81,39 @@ public interface IPetRepository
     /// <param name="cancellationToken">Cancels the query.</param>
     Task<PetDefinition?> GetDefinitionAsync(
         string petDefinitionId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the definition rows matching
+    /// <paramref name="petDefinitionIds"/> — the bulk content read the
+    /// collection projection uses (<c>API_CONTRACTS.md</c> §5.1: <c>identity</c>
+    /// is <c>PetDefinition.Identity</c>, <c>element</c> is
+    /// <c>PetDefinition.Element</c>).
+    ///
+    /// <b>It exists so a collection read is not an N+1 read.</b> A list
+    /// response needs one definition per owned instance, so resolving them one
+    /// <see cref="GetDefinitionAsync"/> call at a time would issue one query per
+    /// Pet. This read resolves the whole set in one query against the existing
+    /// <c>PetDefinition</c> table (<c>DATABASE.md</c> §1); it introduces no new
+    /// index, no cache, and no read model.
+    ///
+    /// <b>It is a content read, not an ownership filter.</b> A Pet's definition
+    /// is shared static content, not Player-owned data (<c>DATABASE.md</c> §2:
+    /// Pet N ── 1 PetDefinition), so the ownership scoping of the collection
+    /// happens on the instance read
+    /// (<see cref="ListByPlayerIdAsync"/>), not here.
+    ///
+    /// <b>A definition that does not exist is simply absent from the result.</b>
+    /// No placeholder row is fabricated (<c>AGENTS.md</c> §7). Definitions with
+    /// no owned instance are equally absent: this is a lookup of the rows asked
+    /// for, not a listing of all content.
+    ///
+    /// <b>The result is not an ordered contract.</b>
+    /// </summary>
+    /// <param name="petDefinitionIds">The requested definition identities.</param>
+    /// <param name="cancellationToken">Cancels the query.</param>
+    Task<IReadOnlyList<PetDefinition>> ListDefinitionsAsync(
+        IReadOnlyCollection<string> petDefinitionIds,
         CancellationToken cancellationToken = default);
 
     /// <summary>

@@ -7,7 +7,7 @@
 ```text
 Task ID:           TASK-033
 Type:              FEATURE
-Status:            BLOCKED
+Status:            SUPERSEDED (by TASK-059)
 Risk:              MEDIUM
 Priority:          HIGH
 Primary Agent:     persistence

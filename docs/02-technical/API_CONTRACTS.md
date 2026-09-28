@@ -1,6 +1,16 @@
 # API Contracts
 
-**Version:** 1.14 (§5.1 element wire value set defined per TASK-072 —
+**Version:** 1.15 (§5.1's Element wire value set **scoped and made
+non-duplicable** per TASK-073 — the set is now stated as the Element wire set
+for this document's whole REST surface, and the recall pointer in §3 binds
+`POST /api/battle/start`'s `initialState.petState.element` /
+`initialState.bossState.element` to it by reference, so the battle-start
+response is no longer silent about its Element representation; the former
+unqualified sentence "wire payloads always carry the English form bound above"
+is replaced by that explicit scope plus an explicit statement that the set does
+**not** bind the Redis record's encoding, which `REDIS_STATE.md` §2 owns. No
+value in the set changed, no endpoint changed, and the set is still defined
+here exactly once. Prior 1.14: §5.1 element wire value set defined per TASK-072 —
 `element` is now bound to `"Fire" | "Water" | "Earth" | "Wood" | "Metal"`
 (the Element names from `ELEMENT_RULES.md` §1), the §5.1/§5.2 examples
 corrected from `"Hỏa"` to `"Fire"`, and the Vietnamese design names (Mộc,
@@ -541,6 +551,15 @@ gameplay-free variant of this endpoint exists, and none is introduced. The
 yet, because the loadout systems it validates do not exist (`ROADMAP.md` §1
 Phase 2).
 
+**`initialState`'s `Element` members are wire values.** `petState.element` and
+`bossState.element` (`GAME_STATE.md` §2.3, §2.4) are members of a client-facing
+REST response body, so they carry the Element wire value set bound in §5.1 —
+and not a display name, not an enum member name, and not a localized form.
+This endpoint's response is a wire payload like any other on this document's
+REST surface, so the §5.1 scope statement applies to it; the value set is
+defined there and is not restated here (one concept, one owner —
+`docs/AGENTS.md` §2).
+
 ---
 
 # 4. GET /api/battle/{battleId}/result
@@ -674,8 +693,22 @@ level     int     Pet.Level
 
 The Vietnamese Element names (`Mộc`, `Hỏa`, `Thổ`, `Kim`, `Thủy` —
 `ELEMENT_RULES.md` §1) are display values only — presentation text,
-never API wire values; wire payloads always carry the English form
-bound above.
+never API wire values.
+
+**The value set above is the Element wire value set for this document's whole
+REST surface, and it is defined here once.** `element` is a wire member
+wherever an Element is serialized into a REST request or response body — the
+§5 collection responses, and `POST /api/battle/start`'s
+`initialState.petState.element` / `initialState.bossState.element` (§3) — so
+every one of them carries the English form bound above. The set is stated
+only in this section; no other section, endpoint, or document restates it
+(one concept, one owner — `docs/AGENTS.md` §2).
+
+**It does not bind the Redis record's encoding.** The active-state record's
+Element representation is owned by `REDIS_STATE.md` §2, which is the
+serialization contract `GAME_STATE.md`'s stated purpose points at; that
+document states whether its encoding is bound or free, and this section does
+not decide it.
 
 Persisted but **not** exposed: `xp`, `acquiredAt`, `playerId`,
 `petDefinitionId` (`DATABASE.md` §1).

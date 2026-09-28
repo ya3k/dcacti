@@ -47,6 +47,43 @@ public sealed class PetRepository : IPetRepository
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<Pet>> ListByPlayerIdAsync(
+        string playerId,
+        CancellationToken cancellationToken = default)
+    {
+        // DATABASE.md §4: the Pet(PlayerId) index serves this lookup — "list a
+        // player's Pets". The filter is in the predicate, so another Player's
+        // instance is never materialized for this Player at all
+        // (GAME_RULES.md §18, ADR-001).
+        //
+        // No ordering is applied or promised: API_CONTRACTS.md §5.5 defines no
+        // ordering for a collection response and states clients must not rely on
+        // any. The caller must not depend on this result's order.
+        return await _dbContext.Pets
+            .Where(pet => pet.PlayerId == playerId)
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<PetDefinition>> ListDefinitionsAsync(
+        IReadOnlyCollection<string> petDefinitionIds,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(petDefinitionIds);
+
+        // One query for the whole set, so a collection projection with N owned
+        // instances issues two reads rather than N+1. This is a content read on
+        // the existing PetDefinition table (DATABASE.md §1): no new index, no
+        // cache, and no read model is introduced.
+        //
+        // A requested id with no row is simply absent from the result — no
+        // placeholder definition is fabricated here (AGENTS.md §7).
+        return await _dbContext.PetDefinitions
+            .Where(definition => petDefinitionIds.Contains(definition.PetDefinitionId))
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
     public async Task<Pet?> GetByIdAsync(
         string petInstanceId,
         CancellationToken cancellationToken = default)

@@ -24,7 +24,7 @@
 ```text
 Task ID:           TASK-064
 Type:              REFACTOR
-Status:            BACKLOG
+Status:            DONE
 Risk:              MEDIUM (removes a production DI registration, a Domain
                    type, a mapped `PetDefinition` column, a database CHECK
                    constraint, and a column-dropping migration; it also

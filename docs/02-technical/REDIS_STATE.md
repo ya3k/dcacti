@@ -1,6 +1,15 @@
 # Redis State
 
-**Version:** 1.6 (§3's battle-end delete is implemented by TASK-041 — the §7
+**Version:** 1.7 (§2 states the active-state record's `Element` encoding
+contract per TASK-073 — the record's `PetState.Element` /
+`BossState.Element` spelling is **unbound** and deliberately not the REST wire
+value set: `GAME_STATE.md` §2 declares `Element` as a member name only and its
+stated purpose disclaims serialization, §2 item 1's shape obligation therefore
+binds members and structure rather than a spelling, `GAME_STATE.md` §2.1.7
+item 4 already classes exact JSON names/casing as the serializer's
+implementation detail, and §7 item 9's round-trip obligation is internal to
+the round trip. A future binding of this encoding is a change to this document.
+Prior 1.6: §3's battle-end delete is implemented by TASK-041 — the §7
 status note's sequencing boundary is closed: the `BattleResult` write happens
 first and the record is deleted only after it; prior 1.5: §3 battle-end delete-failure behaviour: no retry, no
 worker/queue — the sliding TTL remains the cleanup path and the documented
@@ -49,6 +58,65 @@ There is no separate key, and no partial key, for Battle State Foundation
 "A battle's live state" means a **real, playable battle** whose full
 `GAME_STATE.md` §2 shape exists. The staged subset in `GAME_STATE.md` §2.0 is
 not that record and is never written here (§7).
+
+**The record's `Element` encoding is free, and is deliberately not the REST
+wire value set.** This is the storage-side half of the Element contract
+(TASK-073); the client-facing half is `API_CONTRACTS.md` §5.1. The five points
+below concern that encoding only — items 1–2 above are this section's general
+serialization rules and are unchanged by them.
+
+```text
+BattleState.PetState.Element   (GAME_STATE.md §2.3)
+BattleState.BossState.Element  (GAME_STATE.md §2.4)
+        ↓  written into battle:{battleId}:state
+encoding = the serializer's; this document binds no Element value set
+```
+
+1. **The shape obligation does not decide an encoding.** Item 1 above requires
+   the JSON to match `GAME_STATE.md` §2's shape exactly. `GAME_STATE.md` §2.3
+   and §2.4 declare `Element` as a **member name only** — no value set, no
+   representation, no serialization rule appears for it anywhere in that
+   document, whose stated purpose explicitly disclaims serialization and
+   points here. "Matches the shape exactly" therefore constrains the record's
+   members and structure, which is what item 1's "no additional Redis-only
+   fields" states; it binds no Element spelling, because §2 states none to
+   match.
+2. **`GAME_STATE.md` §2.1.7 item 4 already draws this line, and this record
+   follows it.** There, a value's *existence and meaning* are owned by the
+   state document while its *exact JSON member names and casing* are "an
+   implementation detail of the serializer". `Element`'s existence and meaning
+   — one Element per Pet, one per Boss (`ELEMENT_RULES.md` §1.1, §1.2) — are
+   owned by `GAME_STATE.md` §2.3/§2.4 and the Element rules; its spelling in
+   this record is the serializer's, exactly as §6 item 1 states when it
+   declines to re-specify a field-by-field JSON schema.
+3. **Round-trip losslessness does not force a shared spelling.** §7 item 9
+   (`GAME_STATE.md` §2.1.7 item 5) obliges the serializer to return an equal
+   `BattleState` — the same value at every member, and those members are the
+   ones `GAME_STATE.md` §2 declares. The obligation is *internal to the round
+   trip*: it requires this record's own reader to recover the Element the
+   writer wrote. It does not require this record's spelling to equal the REST
+   wire spelling or any other surface's, because no document makes the two
+   representations the same value.
+4. **The value set is not restated here, and none is bound.** Which encoding
+   the serializer uses — the `API_CONTRACTS.md` §5.1 English set, the `Element`
+   enum member names, or a numeric ordinal — is left to the serializer, and
+   this document leaves it there. Two things are nonetheless not permitted. An
+   accented design name (`Hỏa`, `Thủy`, `Thổ`, `Mộc`, `Kim` — `ELEMENT_RULES.md`
+   §1) is display text and is never a technical value on any surface
+   (`BOSS_RULES.md` §6.4's ASCII technical-identity rule). And no encoding may
+   be *presented* as the Element contract for a client-facing payload: a reader
+   that needs the client-visible value reads `API_CONTRACTS.md` §5.1, while a
+   reader of this record needs only that it round trips.
+5. **Changing this later is a contract change, not a refactor.** If a future
+   task binds this record's Element encoding — for the `DATABASE.md`-style
+   reason that a stored representation has been standardized, or to unify it
+   with the wire set — that decision belongs here and is recorded here, not
+   inferred from a serializer's current output.
+
+Item 1's "matches the shape in `GAME_STATE.md` §2 exactly" therefore remains
+verbatim and complete: this section adds no `BattleState` member, removes
+none, and renames none. It states only that the record's Element *spelling*
+is unbound — a statement about encoding, not about shape.
 
 ---
 

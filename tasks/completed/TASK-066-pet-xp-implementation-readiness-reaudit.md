@@ -30,7 +30,7 @@
 ```text
 Task ID:           TASK-066
 Type:              ARCHITECTURE
-Status:            BACKLOG
+Status:            DONE
 Risk:              MEDIUM (read-only re-audit — no source, test, migration,
                    or documentation file may be modified. Same rationale as
                    TASK-063: the deliverable is a readiness FINDING, not an

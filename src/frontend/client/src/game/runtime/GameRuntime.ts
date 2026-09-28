@@ -1,3 +1,5 @@
+import { ApiService } from '../../services/api/ApiService';
+import type { BattleStartRequest } from '../../services/api/ApiService';
 import { SignalRService } from '../../services/realtime/SignalRService';
 import {
   INITIAL_RUNTIME_STATE,
@@ -62,7 +64,9 @@ let clientSequenceCounter = 0;
  *     (`BattleStateUpdated`, SIGNALR_PROTOCOL.md §4),
  *   - scene lifecycle coordination (scenes publish/receive through the port),
  *   - the client → server request boundary for the documented Swap action
- *     (`requestAction`, SIGNALR_PROTOCOL.md §2.1) — coordination only.
+ *     (`requestAction`, SIGNALR_PROTOCOL.md §2.1) — coordination only,
+ *   - battle-start orchestration (`startBattle`, SIGNALR_PROTOCOL.md §1
+ *     items 1–2, §2 `JoinBattle`) — coordination only.
  *
  * It deliberately does NOT (task §9, AGENTS.md §10, ADR-001):
  *   - calculate damage, match, combo, cascade, passive, or power,
@@ -97,7 +101,10 @@ export class GameRuntime implements GameRuntimePort {
   private initialized = false;
   private disposed = false;
 
-  constructor(private readonly signalR: SignalRService = SignalRService.getInstance()) {}
+  constructor(
+    private readonly signalR: SignalRService = SignalRService.getInstance(),
+    private readonly api: ApiService = ApiService.getInstance()
+  ) {}
 
   // ---------------------------------------------------------------------------
   // Lifecycle
@@ -200,16 +207,7 @@ export class GameRuntime implements GameRuntimePort {
 
     // Subscribed only once the connection exists — `SignalRService.on` requires
     // a live connection to register a handler on.
-    this.transportUnsubscribers = [
-      this.signalR.on<[unknown]>('ReceiveEvents', (payload) => {
-        this.forwardBattleEvents(payload);
-      }),
-      // The documented initial state push (SIGNALR_PROTOCOL.md §4). Server-
-      // initiated, delivered on group join — never requested by the client.
-      this.signalR.on<[unknown]>('BattleStateUpdated', (payload) => {
-        this.receiveBattleState(payload);
-      }),
-    ];
+    this.registerTransportSubscriptions();
   }
 
   /**
@@ -407,8 +405,128 @@ export class GameRuntime implements GameRuntimePort {
   }
 
   // ---------------------------------------------------------------------------
+  // Battle start (REST → connect → join)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Battle-start orchestration — the client half of the documented sequence.
+   *
+   * ```text
+   * ApiService.startBattle(request)        POST /api/battle/start  (API_CONTRACTS.md §3)
+   *         ↓
+   * SignalRService.connect(signalrHub)     connect the hub          (SIGNALR_PROTOCOL.md §1 item 2)
+   *         ↓
+   * SignalRService.joinBattle(battleId)    join the battle group    (§1.2, §2 JoinBattle)
+   * ```
+   *
+   * That is the whole of the documented sequence (`SIGNALR_PROTOCOL.md` §1
+   * items 1–2, §2) and the whole of what this method does. It invokes no other
+   * hub method — `Swap` is `requestAction`'s, and `Ping`, `CardCast`,
+   * `PetSkillCast`, and `GetBattleState` are not part of starting a battle. It
+   * therefore does not call any state-fetch method after joining: the group join
+   * is a transport step whose only observable effect is the server-initiated
+   * state push (§2 `JoinBattle` item 2).
+   *
+   * **The synchronized copy is established only by that push.** This method does
+   * not read, store, merge, or render the response's `initialState` membership:
+   * `sync` and `getBattleState()` change only when a valid `BattleStateUpdated`
+   * arrives through `receiveBattleState` (§4). The REST response supplies the
+   * transport addresses and nothing else — no second synchronization path
+   * exists (§4 item 11, §8).
+   *
+   * **The method resolves after the join, not after the state arrives.** The
+   * push is asynchronous (§2 `JoinBattle` item 2), so this method deliberately
+   * does not await `sync`, and no timeout, poll, or wait constant is introduced:
+   * no such value is documented.
+   *
+   * **`battleId` is the server's.** It is taken from the start response, never
+   * derived from the request, from `initialState`, or from a locally generated
+   * identifier — the server owns BattleId (`GAME_RULES.md` §18, ADR-001).
+   *
+   * **Subscriptions are guaranteed present.** `connect` is called
+   * unconditionally and the transport service owns connection idempotency
+   * (`ARCHITECTURE.md` §2.2.1 rule 6 — one runtime, one connection), so no second
+   * connection policy exists here. The documented `ReceiveEvents` and
+   * `BattleStateUpdated` subscriptions are registered exactly once before the
+   * join, which is what makes the join-triggered push observable even when
+   * `initialize()` recorded a connection failure before reaching its own
+   * subscription step.
+   *
+   * **Failure rejects and nothing is fabricated.** A REST failure (`401
+   * UNAUTHENTICATED`, `400` loadout error — API_CONTRACTS.md §2.8, §3), a connect
+   * failure, or a join failure propagates to the caller with `sync`,
+   * `battleState`, and `connection` unchanged. No battle state is invented, no
+   * `battleId` is manufactured, and no partial battle is initialized
+   * (`SIGNALR_PROTOCOL.md` §8.3). The runtime adds no duplicate-start guard: no
+   * document defines the behavior of overlapping calls, so none is invented here.
+   *
+   * @throws Error when the runtime is disposed, or when any of the three
+   * documented steps fails.
+   */
+  public async startBattle(request: BattleStartRequest): Promise<void> {
+    if (this.disposed) {
+      throw new Error('GameRuntime has been disposed and cannot start a battle.');
+    }
+
+    const response = await this.api.startBattle(request);
+
+    await this.signalR.connect(response.signalrHub);
+
+    // The subscriptions the join's push arrives on. Registered before the join
+    // so the push is never silently unobserved, and registered exactly once
+    // (case A/B/C, task §9).
+    this.registerTransportSubscriptions();
+
+    await this.signalR.joinBattle(response.battleId);
+  }
+
+  // ---------------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------------
+
+  /**
+   * Registers the documented server → client subscriptions exactly once.
+   *
+   * ```text
+   * ReceiveEvents       §3 — one batch per resolved action
+   * BattleStateUpdated  §4 — the server-initiated state push on group join
+   * ```
+   *
+   * Both are registered here and nowhere else, so a successful battle start
+   * always has them present regardless of how the connection was obtained:
+   *
+   * ```text
+   * Case A  initialize() connected and subscribed → this is a no-op
+   * Case B  initialize() failed at connect        → registers now
+   * Case C  already registered                    → this is a no-op
+   * ```
+   *
+   * Case B is the reason this is a shared helper rather than an inlined block:
+   * `initialize()` subscribes only after a successful connect, so a runtime whose
+   * initialization failed would otherwise reach `joinBattle` with no handler for
+   * the push that join triggers — and that push would be silently missed.
+   *
+   * `SignalRService.on` requires a live connection, so this is only called after
+   * a successful `connect`. It is idempotent by the same mechanism `initialize()`
+   * already uses for repeated initialization: the registered unsubscribers are
+   * the record that the subscriptions exist.
+   */
+  private registerTransportSubscriptions(): void {
+    if (this.transportUnsubscribers.length > 0) {
+      return;
+    }
+
+    this.transportUnsubscribers = [
+      this.signalR.on<[unknown]>('ReceiveEvents', (payload) => {
+        this.forwardBattleEvents(payload);
+      }),
+      // The documented initial state push (SIGNALR_PROTOCOL.md §4). Server-
+      // initiated, delivered on group join — never requested by the client.
+      this.signalR.on<[unknown]>('BattleStateUpdated', (payload) => {
+        this.receiveBattleState(payload);
+      }),
+    ];
+  }
 
   private updateState(patch: Partial<GameRuntimeState>): void {
     this.state = { ...this.state, ...patch };

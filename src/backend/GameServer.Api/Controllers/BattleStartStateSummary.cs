@@ -1,4 +1,5 @@
 using GameServer.Application.Battle;
+using GameServer.Application.Collection;
 using GameServer.Domain.Battle;
 using GameServer.Domain.Match3;
 
@@ -9,13 +10,21 @@ namespace GameServer.Api.Controllers;
 /// <c>POST /api/battle/start</c> response's <c>initialState</c> summary
 /// (<c>API_CONTRACTS.md</c> §3, <c>GAME_STATE.md</c> §2).
 ///
-/// <b>It is a pure field mapping.</b> Every member is read one-to-one from the
-/// state the server created — the counters, the seed and RNG state, the board,
-/// the Match/Combo accounting, the Pet (including both loadout snapshots), and
-/// the Boss. Nothing is computed, defaulted, recomputed, sorted, or adjusted,
-/// and no value is read from the database: the snapshots carried by the state
-/// are the fixed ones battle creation produced
+/// <b>It is a field mapping, with one explicit wire projection.</b> Every member
+/// is read from the state the server created — the counters, the seed and RNG
+/// state, the board, the Match/Combo accounting, the Pet (including both loadout
+/// snapshots), and the Boss. Nothing is computed, defaulted, recomputed, sorted,
+/// or adjusted, and no value is read from the database: the snapshots carried by
+/// the state are the fixed ones battle creation produced
 /// (<c>RELIC_RULES.md</c> §2.5, <c>CARD_RULES.md</c> §1, ADR-012 items 8 and 10).
+///
+/// The one member that is not carried verbatim is the Element of the Pet and of
+/// the Boss: an <c>Element</c> is not a client-facing value in its Domain spelling,
+/// so the two members are projected through <c>ElementWireValues.ToWireValue</c>
+/// onto the Element wire value set (<c>API_CONTRACTS.md</c> §3, §5.1; see
+/// <see cref="ToPetState"/>/<see cref="ToBossState"/>). The same class of
+/// projection is already applied to the Gem type (<c>GemTypes.ToContractName</c>),
+/// and it is a wire projection only — it redefines no Element and changes no rule.
 ///
 /// <b>It reads the state, it does not own it.</b> The active-state store is the
 /// record of truth (<c>REDIS_STATE.md</c> §2 item 2); this projection is the
@@ -87,9 +96,11 @@ internal static class BattleStartStateSummary
             DEF: petState.DEF,
             Crit: petState.Crit,
             Power: petState.Power,
-            // PET_RULES.md §1 / ELEMENT_RULES.md §6: the Pet's one Element, as
-            // the documented contract name.
-            Element: petState.Element.ToString(),
+            // PET_RULES.md §1 / ELEMENT_RULES.md §6: the Pet's one Element. The
+            // state holds it as the Domain Element, which API_CONTRACTS.md §3
+            // binds to the §5.1 wire value set — so it is projected onto that set
+            // rather than emitted as its enum member name.
+            Element: ElementWireValues.ToWireValue(petState.Element),
             PassiveId: petState.PassiveId.Value,
             PassiveThreshold: petState.PassiveProgress.Threshold,
             PassiveCurrent: petState.PassiveProgress.Current,
@@ -110,7 +121,9 @@ internal static class BattleStartStateSummary
     private static BattleStartBossState ToBossState(BossState bossState) =>
         new(
             BossId: bossState.BossId.Value,
-            Element: bossState.Element.ToString(),
+            // BOSS_RULES.md §6.1: the Boss's one Element, projected onto the same
+            // §5.1 wire value set as the Pet's Element.
+            Element: ElementWireValues.ToWireValue(bossState.Element),
             HP: bossState.HP,
             MaxHP: bossState.MaxHP,
             ATK: bossState.ATK,

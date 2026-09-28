@@ -904,6 +904,27 @@ public class BattleStartServiceTests
                     ? _harness.BuildDefinition()
                     : null);
 
+        /// <summary>
+        /// The collection read (<c>API_CONTRACTS.md</c> §5.1) is not a
+        /// battle-start step, so it is unimplemented here: reaching it from this
+        /// boundary's caller is a defect, exactly as the two writes are.
+        /// </summary>
+        public Task<IReadOnlyList<Pet>> ListByPlayerIdAsync(
+            string playerId,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException(
+                "Battle start never lists a collection; GET /api/pets is a read-only collection endpoint.");
+
+        /// <summary>
+        /// As <see cref="ListByPlayerIdAsync"/>: the battle-start path resolves
+        /// the one selected definition, never a collection's worth of them.
+        /// </summary>
+        public Task<IReadOnlyList<PetDefinition>> ListDefinitionsAsync(
+            IReadOnlyCollection<string> petDefinitionIds,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException(
+                "Battle start resolves one selected definition; the bulk content read serves GET /api/pets.");
+
         public Task<bool> SaveProgressionAsync(
             Pet pet,
             CancellationToken cancellationToken = default) =>
@@ -1050,6 +1071,18 @@ public class BattleStartServiceTests
             string relicDefinitionId,
             CancellationToken cancellationToken = default) =>
             Task.FromResult<RelicDefinition?>(null);
+
+        /// <summary>
+        /// As <see cref="GetDefinitionAsync"/>: the battle-start path resolves no
+        /// Relic definition content, and the bulk read serves
+        /// <c>GET /api/relics</c> (<c>API_CONTRACTS.md</c> §5.4) rather than this
+        /// boundary's caller.
+        /// </summary>
+        public Task<IReadOnlyList<RelicDefinition>> ListDefinitionsAsync(
+            IReadOnlyCollection<string> relicDefinitionIds,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException(
+                "Battle start reads no Relic definition content; the bulk content read serves GET /api/relics.");
 
         private static Relic NewRelic(string instanceId) => new()
         {

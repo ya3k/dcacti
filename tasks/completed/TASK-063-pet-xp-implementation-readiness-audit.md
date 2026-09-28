@@ -25,7 +25,7 @@
 ```text
 Task ID:           TASK-063
 Type:              ARCHITECTURE
-Status:            BACKLOG
+Status:            DONE
 Risk:              MEDIUM (read-only audit — no code, no docs, no schema is
                    modified. tasks/TASK_TYPES.md §4 sets ARCHITECTURE at HIGH
                    "always"; lowered to MEDIUM because the deliverable is a

@@ -19,12 +19,37 @@ class FakeSignalR {
   public connectId: string | null = 'conn-1';
   /** Mirrors the real service: `on()` requires a live connection. */
   public connected = false;
+  /**
+   * Every hub method name invoked, in order — so a test can assert the start
+   * sequence calls no method beyond the documented `JoinBattle`
+   * (SIGNALR_PROTOCOL.md §2).
+   */
+  public invokedMethods: string[] = [];
+  /**
+   * `on()` registrations per method name. Counting registrations rather than
+   * only the surviving handler is what detects a duplicate subscription: the
+   * real `HubConnection` would also hold both handlers.
+   */
+  private registrationCounts = new Map<string, number>();
   /** Every `swap()` call the runtime made, in order (SIGNALR_PROTOCOL.md §2.1). */
   public swapCalls: Array<[string, number, number, string]> = [];
   /** The acknowledgement `swap()` resolves with; overridden per case. */
   public swapResult: { accepted: boolean; reason?: string | null } = { accepted: true };
   /** When set, `swap()` rejects with it — a transport failure (§8.3). */
   public swapBehaviour: (() => Promise<never>) | null = null;
+  /**
+   * Every `joinBattle()` call the runtime made, in order
+   * (SIGNALR_PROTOCOL.md §1.2, §2 `JoinBattle`).
+   */
+  public joinCalls: string[] = [];
+  /** When set, `joinBattle()` rejects with it — a join failure. */
+  public joinBehaviour: (() => Promise<never>) | null = null;
+  /**
+   * Counts physical connections built, the way the real service's single
+   * `HubConnection` field does. `connect()` returns early while connected, so a
+   * second call must not raise this (ARCHITECTURE.md §2.2.1 rule 6).
+   */
+  public physicalConnections = 0;
 
   setHandlers(handlers: SignalRConnectionHandlers): void {
     this.handlers = handlers;
@@ -32,14 +57,54 @@ class FakeSignalR {
 
   async connect(hubUrl: string): Promise<void> {
     this.connectCalls.push(hubUrl);
+
+    // Mirrors the real service: an already-Connected connection returns
+    // immediately and builds nothing, and an in-flight start is shared rather
+    // than duplicated.
+    if (this.connected) {
+      return;
+    }
+
     await this.connectBehaviour();
     this.connected = true;
+    this.physicalConnections += 1;
     this.handlers.onConnected?.(this.connectId);
   }
 
-  async disconnect(): Promise<void> {
+  disconnect(): Promise<void> {
     this.disconnectCalls += 1;
     this.connected = false;
+    return Promise.resolve();
+  }
+
+  /**
+   * Mirrors `SignalRService.joinBattle` (§1.2): it adds the connection to the
+   * battle's group and returns nothing.
+   *
+   * It fails when not connected, exactly as the real service does — the fake
+   * must not be more permissive than production, or the runtime's ordering
+   * (connect before join) would go unverified.
+   */
+  async joinBattle(battleId: string): Promise<void> {
+    if (this.joinBehaviour) {
+      return await this.joinBehaviour();
+    }
+
+    if (!this.connected) {
+      throw new Error('SignalR connection is not established.');
+    }
+
+    this.invokedMethods.push('JoinBattle');
+    this.joinCalls.push(battleId);
+  }
+
+  isConnected(): boolean {
+    return this.connected;
+  }
+
+  /** How many times `on()` was called for a method name. */
+  subscriptionRegistrations(methodName: string): number {
+    return this.registrationCounts.get(methodName) ?? 0;
   }
 
   async swap(
@@ -52,6 +117,7 @@ class FakeSignalR {
       return await this.swapBehaviour();
     }
 
+    this.invokedMethods.push('Swap');
     this.swapCalls.push([battleId, fromCell, toCell, clientSequence]);
     return this.swapResult;
   }
@@ -66,6 +132,7 @@ class FakeSignalR {
       throw new Error('SignalR connection is not established.');
     }
 
+    this.registrationCounts.set(methodName, this.subscriptionRegistrations(methodName) + 1);
     this.subscriptions.set(methodName, handler as (...args: unknown[]) => void);
     return () => {
       this.subscriptions.delete(methodName);
@@ -1095,6 +1162,378 @@ describe('GameRuntime', () => {
       }
 
       expect(transport.swapCalls).toEqual([]);
+    });
+  });
+
+  describe('battle start orchestration (SIGNALR_PROTOCOL.md §1 items 1–2, §2)', () => {
+    /**
+     * TASK-077. The documented start sequence is exactly:
+     *
+     * ```text
+     * ApiService.startBattle(request)     POST /api/battle/start
+     *         ↓
+     * SignalRService.connect(signalrHub)  §1 item 2
+     *         ↓
+     * SignalRService.joinBattle(battleId) §1.2, §2 JoinBattle
+     * ```
+     *
+     * The REST response's `initialState` is deliberately never read as battle
+     * state: the only synchronization path is the §4 push, handled by the
+     * existing `receiveBattleState`.
+     */
+
+    /** A `POST /api/battle/start` 200 body (API_CONTRACTS.md §3). */
+    function startResponse(overrides: Record<string, unknown> = {}) {
+      return {
+        battleId: 'server-battle-7',
+        signalrHub: '/hubs/battle',
+        // Present because the contract defines it, so these tests can assert it
+        // is never promoted into runtime state. Its values are deliberately
+        // distinguishable from anything the push later delivers.
+        initialState: {
+          battleId: 'server-battle-7',
+          turn: 0,
+          sequence: 0,
+          rngSeed: 999,
+          rngState: { state: 5, increment: 1 },
+          board: { cells: serverCells() },
+          combo: 0,
+          matchCount: 0,
+          petState: { passiveId: 'from-rest-initial-state' },
+          bossState: { bossId: 'boss-hoa-long' },
+        },
+        ...overrides,
+      };
+    }
+
+    /** A documented request selection (API_CONTRACTS.md §3). */
+    const request = {
+      petId: 'pet-001',
+      bossId: 'boss-hoa-long',
+      cardLoadout: ['heal', 'shield', 'power_charge'],
+      relicLoadout: ['relic-1', 'relic-2', 'relic-3'],
+    };
+
+    /**
+     * A runtime with a REST double. `ApiService` is injected the same way the
+     * transport is, so no live server is involved.
+     */
+    function createOrchestratedRuntime() {
+      const transport = new FakeSignalR();
+      const api = {
+        startBattle: vi.fn(async () => startResponse()),
+      };
+      const runtime = new GameRuntime(transport as never, api as never);
+      return { runtime, transport, api };
+    }
+
+    describe('the documented sequence', () => {
+      it('starts a battle through REST, connect, then join — in that order', async () => {
+        const { runtime, transport, api } = createOrchestratedRuntime();
+
+        const order: string[] = [];
+        api.startBattle.mockImplementation(async () => {
+          order.push('rest');
+          return startResponse();
+        });
+        const originalConnect = transport.connect.bind(transport);
+        transport.connect = async (url: string) => {
+          order.push('connect');
+          return await originalConnect(url);
+        };
+        const originalJoin = transport.joinBattle.bind(transport);
+        transport.joinBattle = async (battleId: string) => {
+          order.push('join');
+          return await originalJoin(battleId);
+        };
+
+        await runtime.startBattle(request);
+
+        expect(order).toEqual(['rest', 'connect', 'join']);
+      });
+
+      it('submits the request to the documented endpoint through ApiService', async () => {
+        const { runtime, api } = createOrchestratedRuntime();
+
+        await runtime.startBattle(request);
+
+        // The selection is transported unchanged — the client validates no
+        // gameplay rule and decides no accept/reject (API_CONTRACTS.md §3).
+        expect(api.startBattle).toHaveBeenCalledTimes(1);
+        expect(api.startBattle).toHaveBeenCalledWith(request);
+      });
+
+      it("connects using the response's signalrHub", async () => {
+        const { runtime, transport, api } = createOrchestratedRuntime();
+        api.startBattle.mockResolvedValue(startResponse({ signalrHub: '/hubs/custom-battle' }));
+
+        await runtime.startBattle(request);
+
+        expect(transport.connectCalls).toEqual(['/hubs/custom-battle']);
+      });
+
+      it("joins using the server's battleId, not a client-derived one", async () => {
+        const { runtime, transport, api } = createOrchestratedRuntime();
+        api.startBattle.mockResolvedValue(startResponse({ battleId: 'server-owned-id' }));
+
+        await runtime.startBattle(request);
+
+        // SIGNALR_PROTOCOL.md §1 item 1 / GAME_RULES.md §18: the server owns
+        // BattleId. It is never derived from the request, from `initialState`,
+        // or from a locally generated identifier.
+        expect(transport.joinCalls).toEqual(['server-owned-id']);
+        expect(transport.joinCalls[0]).not.toBe(request.petId);
+      });
+
+      it('resolves after the join, without awaiting the state push', async () => {
+        const { runtime, transport } = createOrchestratedRuntime();
+        await runtime.initialize();
+
+        // Nothing has pushed state, yet the start has resolved.
+        await expect(runtime.startBattle(request)).resolves.toBeUndefined();
+
+        expect(transport.joinCalls).toHaveLength(1);
+        expect(runtime.getState().sync).not.toBe('synchronized');
+        expect(runtime.getBattleState()).toBeNull();
+      });
+
+      it('invokes no hub method other than the documented group join', async () => {
+        const { runtime, transport } = createOrchestratedRuntime();
+
+        await runtime.startBattle(request);
+
+        // `JoinBattle` is the one non-gameplay client → server call (§2). The
+        // gameplay methods and the reconnect snapshot (`GetBattleState`) are not
+        // part of starting a battle.
+        expect(transport.joinCalls).toHaveLength(1);
+        expect(transport.swapCalls).toEqual([]);
+        expect(transport.invokedMethods).toEqual(['JoinBattle']);
+      });
+    });
+
+    describe('the single synchronization path', () => {
+      it('is unsynchronized until the server pushes, even after a successful start', async () => {
+        const { runtime, transport } = createOrchestratedRuntime();
+
+        await runtime.startBattle(request);
+
+        // SIGNALR_PROTOCOL.md §4: the state arrives as an unsolicited push on
+        // join. The REST `initialState` is not that push.
+        expect(runtime.getState().sync).not.toBe('synchronized');
+        expect(runtime.getBattleState()).toBeNull();
+
+        transport.emit('BattleStateUpdated', payload({ battleId: 'server-battle-7' }));
+
+        expect(runtime.getState().sync).toBe('synchronized');
+        expect(runtime.getBattleState()).not.toBeNull();
+      });
+
+      it('never promotes the REST initialState into runtime state', async () => {
+        // TASK-077's critical requirement: `response.initialState` must not be
+        // stored, merged, rendered, or used to set `sync`. The runtime state is
+        // established only by the §4 push.
+        const { runtime, transport } = createOrchestratedRuntime();
+        await runtime.initialize();
+
+        await runtime.startBattle(request);
+
+        expect(runtime.getBattleState()).toBeNull();
+        // A connected runtime that has not yet received the push: `awaiting_battle`
+        // is the documented state, and it is set by the connection lifecycle — not
+        // by the REST response (GameRuntimeState.ts SyncStatus).
+        expect(runtime.getState().sync).toBe('awaiting_battle');
+
+        // The pushed state is what the runtime holds — the REST summary's
+        // distinguishing value never appears.
+        transport.emit('BattleStateUpdated', payload({ battleId: 'server-battle-7' }));
+
+        const state = runtime.getBattleState()!;
+        expect(state.petState.passiveId).toBe('xich-lang');
+        expect(JSON.stringify(state)).not.toContain('from-rest-initial-state');
+        expect(state.rngSeed).toBe(42);
+      });
+
+      it('notifies battle-state listeners only when the push arrives', async () => {
+        const { runtime, transport } = createOrchestratedRuntime();
+        const listener = vi.fn();
+        runtime.onBattleState(listener);
+
+        await runtime.startBattle(request);
+        expect(listener).not.toHaveBeenCalled();
+
+        transport.emit('BattleStateUpdated', payload());
+        expect(listener).toHaveBeenCalledTimes(1);
+      });
+
+      it('leaves the TASK-069 swap path working against the pushed battleId', async () => {
+        // A successful start must not disturb the existing request boundary:
+        // `requestAction` sources `battleId` from the pushed state.
+        const { runtime, transport } = createOrchestratedRuntime();
+
+        await runtime.startBattle(request);
+        transport.emit('BattleStateUpdated', payload({ battleId: 'pushed-battle' }));
+
+        const acknowledgement = await runtime.requestAction({
+          kind: 'Swap',
+          fromCell: 12,
+          toCell: 13,
+        });
+
+        expect(acknowledgement).toEqual({ accepted: true });
+        expect(transport.swapCalls[0][0]).toBe('pushed-battle');
+      });
+    });
+
+    describe('subscription safety', () => {
+      it('registers both documented subscriptions exactly once when initialize succeeded', async () => {
+        const { runtime, transport } = createOrchestratedRuntime();
+        await runtime.initialize();
+
+        await runtime.startBattle(request);
+
+        // Case A: `connect` is idempotent and no second registration happens.
+        expect(transport.subscriptionRegistrations('ReceiveEvents')).toBe(1);
+        expect(transport.subscriptionRegistrations('BattleStateUpdated')).toBe(1);
+        expect(transport.subscriptions.size).toBe(2);
+      });
+
+      it('registers the subscriptions when initialize failed before subscribing', async () => {
+        // Case B — the critical regression: `initialize()` subscribes only after a
+        // successful connect, so a previously failed initialization leaves a later
+        // connection without handlers. Without this the join-triggered push would
+        // be silently missed.
+        const { runtime, transport } = createOrchestratedRuntime();
+        transport.connectBehaviour = async () => {
+          throw new Error('backend unreachable');
+        };
+
+        await runtime.initialize();
+        expect(transport.subscriptions.size).toBe(0);
+
+        transport.connectBehaviour = async () => {};
+
+        await runtime.startBattle(request);
+
+        expect(transport.subscriptionRegistrations('ReceiveEvents')).toBe(1);
+        expect(transport.subscriptionRegistrations('BattleStateUpdated')).toBe(1);
+        expect(transport.joinCalls).toEqual(['server-battle-7']);
+
+        // The push that the join triggered is observed.
+        transport.emit('BattleStateUpdated', payload());
+        expect(runtime.getBattleState()).toEqual(payload());
+        expect(runtime.getState().sync).toBe('synchronized');
+      });
+
+      it('does not re-register when a start follows an already-subscribed runtime', async () => {
+        // Case C: no duplicates, however the connection was obtained.
+        const { runtime, transport } = createOrchestratedRuntime();
+
+        await runtime.initialize();
+        await runtime.startBattle(request);
+
+        expect(transport.subscriptionRegistrations('ReceiveEvents')).toBe(1);
+        expect(transport.subscriptionRegistrations('BattleStateUpdated')).toBe(1);
+      });
+
+      it('opens no second physical connection when already connected', async () => {
+        // ARCHITECTURE.md §2.2.1 rule 6 — one runtime, one connection. The runtime
+        // calls `connect(response.signalrHub)` unconditionally and the service
+        // remains the single idempotency point.
+        const { runtime, transport } = createOrchestratedRuntime();
+        await runtime.initialize();
+        expect(transport.physicalConnections).toBe(1);
+
+        await runtime.startBattle(request);
+
+        expect(transport.connectCalls).toHaveLength(2);
+        expect(transport.physicalConnections).toBe(1);
+      });
+    });
+
+    describe('failure semantics', () => {
+      /**
+       * The documented REST rejections (API_CONTRACTS.md §2.8, §3) plus transport
+       * errors. Each must propagate with no connect, no join, and untouched state.
+       */
+      const restFailures: Array<[string, string]> = [
+        ['401', 'Request to /api/battle/start failed with status 401'],
+        ['400 INVALID_LOADOUT', 'Request to /api/battle/start failed with status 400'],
+        ['400 PET_NOT_OWNED', 'Request to /api/battle/start failed with status 400'],
+        ['400 BOSS_NOT_FOUND', 'Request to /api/battle/start failed with status 400'],
+        ['network error', 'Failed to fetch'],
+      ];
+
+      it.each(restFailures)('propagates a %s from the start request', async (_case, message) => {
+        const { runtime, transport, api } = createOrchestratedRuntime();
+        await runtime.initialize();
+        api.startBattle.mockRejectedValue(new Error(message));
+
+        await expect(runtime.startBattle(request)).rejects.toThrow(message);
+
+        // No battle exists after a rejection, so nothing is opened or joined and
+        // no state is fabricated.
+        expect(transport.connectCalls).toHaveLength(1);
+        expect(transport.joinCalls).toEqual([]);
+        expect(runtime.getBattleState()).toBeNull();
+        expect(runtime.getState().sync).not.toBe('synchronized');
+      });
+
+      it('propagates a connect failure without joining or fabricating state', async () => {
+        const { runtime, transport } = createOrchestratedRuntime();
+        transport.connectBehaviour = async () => {
+          throw new Error('hub unreachable');
+        };
+
+        await expect(runtime.startBattle(request)).rejects.toThrow('hub unreachable');
+
+        expect(transport.joinCalls).toEqual([]);
+        expect(runtime.getBattleState()).toBeNull();
+        expect(runtime.getState().sync).not.toBe('synchronized');
+      });
+
+      it('propagates a join failure and fabricates no battle state', async () => {
+        const { runtime, transport } = createOrchestratedRuntime();
+        transport.joinBehaviour = async () => {
+          throw new Error('JoinBattle failed');
+        };
+
+        await expect(runtime.startBattle(request)).rejects.toThrow('JoinBattle failed');
+
+        // The join is the last documented step, so a failure there means no
+        // battle was entered: `sync` and `battleState` stay untouched.
+        expect(runtime.getBattleState()).toBeNull();
+        expect(runtime.getState().sync).not.toBe('synchronized');
+      });
+
+      it('rejects a start after disposal without connecting or joining', async () => {
+        const { runtime, transport } = createOrchestratedRuntime();
+        await runtime.initialize();
+        await runtime.dispose();
+
+        await expect(runtime.startBattle(request)).rejects.toThrow(/disposed/i);
+
+        // 'connect' is called only once — by the initialize above — and the join
+        // never happens.
+        expect(transport.connectCalls).toHaveLength(1);
+        expect(transport.joinCalls).toEqual([]);
+        expect(runtime.getBattleState()).toBeNull();
+        expect(runtime.getState().sync).not.toBe('synchronized');
+      });
+
+      it('rejects when the join is attempted without a connection', async () => {
+        // The fake preserves production behaviour: `joinBattle` fails when
+        // disconnected, exactly as `SignalRService.joinBattle` does.
+        const { runtime, transport } = createOrchestratedRuntime();
+        transport.connectBehaviour = async () => {
+          throw new Error('SignalR connection is not established.');
+        };
+
+        await expect(runtime.startBattle(request)).rejects.toThrow(
+          'SignalR connection is not established.'
+        );
+
+        expect(transport.joinCalls).toEqual([]);
+      });
     });
   });
 });

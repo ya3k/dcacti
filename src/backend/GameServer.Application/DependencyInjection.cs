@@ -1,5 +1,6 @@
 using GameServer.Application.Battle;
 using GameServer.Application.Cards;
+using GameServer.Application.Collection;
 using GameServer.Application.Pets;
 using GameServer.Application.Relics;
 using GameServer.Application.Runtime;
@@ -107,6 +108,14 @@ public static class DependencyInjection
         // implements none of those rules itself. It creates a battle only after
         // every validation has passed, so a rejected request creates nothing.
         services.AddScoped<BattleStartService>();
+
+        // The collection read behind GET /api/pets, /api/pets/{petId},
+        // /api/cards, and /api/relics (API_CONTRACTS.md §5.1–§5.6). Scoped
+        // because it resolves the scoped Pet/Card/Relic repository boundaries.
+        // It is a read-only projection: it writes nothing, computes no gameplay
+        // value, and scopes every read to the authenticated Player identity its
+        // caller supplies.
+        services.AddScoped<CollectionQueryService>();
 
         return services;
     }

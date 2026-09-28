@@ -102,6 +102,19 @@ ResultScene
 - **PreloaderScene:** Asset loading and loading progress presentation.
 - **MainMenuScene:** Main game menu presentation and navigation.
 - **LobbyScene:** Battle preparation, loadout review, and match start trigger.
+  The MVP pre-battle selection flow (`GDD.md` §2 — Choose Pet, Equip Cards,
+  Equip Relics, Start Battle) is **LobbyScene's responsibility**: game-related
+  interactive flows belong inside Phaser, while React owns the application/
+  platform shell (`§2.1` Phaser/React split). LobbyScene therefore owns the
+  player-facing Pet, Card, and Relic selection steps and the Start Battle
+  trigger UI. It owns **presentation and interaction only**: it submits a
+  *request* through the runtime port, and never becomes authoritative for
+  `BattleState`, `PetState`, `EquippedCards[]`, `EquippedRelics[]`, Turn,
+  Sequence, RNG, or any combat result (`§2.1` Server-Authoritative Boundary,
+  `GAME_RULES.md` §18, ADR-001). There is **no MVP Boss-selection step** — the
+  Boss is supplied by the battle-start flow, not chosen by the player, and no
+  Boss-selection UI exists. Equip/loadout state is battle-scoped and is not
+  read from the collection endpoints (`API_CONTRACTS.md` §5.5–§5.6).
 - **BattleScene:** In-battle visual presentation, board animations, VFX, and
   Phaser runtime.
 - **ResultScene:** Battle outcome presentation (Victory/Defeat, summary).

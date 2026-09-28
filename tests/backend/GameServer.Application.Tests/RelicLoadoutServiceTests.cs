@@ -78,6 +78,19 @@ public class RelicLoadoutServiceTests
             CancellationToken cancellationToken = default) =>
             Task.FromResult<RelicDefinition?>(null);
 
+        /// <summary>
+        /// The bulk content read serves the collection endpoint
+        /// (<c>API_CONTRACTS.md</c> §5.4), not loadout validation — the validator
+        /// resolves no definition content at all, which is what
+        /// <see cref="GetDefinitionAsync"/> already states for the single-row
+        /// read.
+        /// </summary>
+        public Task<IReadOnlyList<RelicDefinition>> ListDefinitionsAsync(
+            IReadOnlyCollection<string> relicDefinitionIds,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException(
+                "The loadout validator reads no Relic definition content.");
+
         private static Relic NewRelic(string instanceId, string playerId) => new()
         {
             RelicInstanceId = instanceId,
