@@ -1,6 +1,14 @@
 # Architecture
 
-**Version:** 1.0
+**Version:** 1.1 (§2.2.3 added per TASK-081 — the pre-battle selection boundary
+is now stated: the in-progress Pet/Card/Relic selection is ephemeral
+`LobbyScene`-local state, the collection read it is built from reaches the scene
+through the runtime port rather than `services/api/` directly, and the port's
+pre-battle capability is `startBattle(request: BattleStartRequest):
+Promise<void>`. §2.2.1 rule 1 is restated as transport-general — it now covers
+`fetch`/`ApiService` as well as `@microsoft/signalr` — which resolves the scope
+TASK-079 recorded as "currently unstated in docs/". No API contract, gameplay
+rule, endpoint, or client source file changed.)
 **Status:** Draft — depends on TDD.md §0 assumption (ASP.NET Core backend)
 
 > This document answers: **"How is the software structured?"** It does not
@@ -175,7 +183,12 @@ Application Runtime        connection lifecycle tracking only
 1. **Scenes depend on the runtime port, never on the transport.** A Phaser scene
    must not import the SignalR client or `HubConnection`; transport independence
    is what allows the game presentation to be tested and changed without a live
-   hub.
+   hub. The rule covers every transport the client uses, not SignalR alone: a
+   scene must not import `fetch`, `ApiService`, or any other HTTP/REST client
+   either. `services/api/` is an isolated transport layer like
+   `services/realtime/` (§2.2 item 3), and a scene reaching it directly would
+   bypass this boundary in exactly the way this rule forbids. The pre-battle
+   selection flow that needs a collection read is §2.2.3's subject.
 2. **React and Phaser do not reach into each other.** React reads runtime status
    through `GameRuntimeContext`; Phaser reads the shared runtime from its
    registry (`RuntimeRegistry.ts`). React never manipulates Phaser internals and
@@ -221,6 +234,110 @@ recovery (`SIGNALR_PROTOCOL.md` §7, ADR-008) are not implemented yet. The
 contract they implement is owned by `MATCH3_RULES.md` §2–§8 (board resolution)
 and `GAME_STATE.md` §5.1 (the state write-back); neither is restated in the
 client runtime.
+
+### 2.2.3 Pre-Battle Selection Boundary
+
+The MVP pre-battle selection flow (Choose Pet, Equip Cards, Equip Relics,
+Start Battle) is `LobbyScene`'s responsibility (`TDD.md` §2.1, TASK-080). This
+section owns the boundary that flow runs on: where its in-progress selection
+lives, how it reads the owned collection, and what the runtime port exposes to
+it.
+
+```text
+        LobbyScene                        ← interaction surface (TDD.md §2.1)
+   ┌────────┴─────────┐
+   │ in-progress      │  ephemeral, scene-local, discarded on shutdown
+   │ selection        │  petId · cardLoadout[] · relicLoadout[]
+   └────────┬─────────┘
+            │  (GameRuntimePort)
+            ▼
+      GameRuntime                          ← coordination boundary
+        ├── collection read request ──▶ ApiService (services/api/, §2.2 rule 3)
+        └── startBattle(request) ─────▶ POST /api/battle/start
+                                            │
+                                            ▼
+                                    Server validates and snapshots into
+                                    PetState.EquippedCards[] /
+                                    EquippedRelics[] (GAME_STATE.md §2.3)
+```
+
+**Rules:**
+
+1. **The in-progress selection is ephemeral scene state, and `LobbyScene` owns
+   it.** It is the player's not-yet-submitted choice of one Pet and the Card
+   and Relic sets for the upcoming battle. It is created when the scene is,
+   lives only in the scene's own fields, and is discarded when the scene shuts
+   down. It is the same category as `BattleScene`'s selected board cell: client
+   presentation state that no other layer reads and that the server never
+   receives except as the request it is submitted in. It is **not** modelled in
+   `state/GameRuntimeState.ts` (rule 5), is **not** put on `GameRuntime`, and
+   is **not** given a store, manager, or module of its own
+   (`ARCHITECTURE.md` §5.5, `AGENTS.md` §9).
+2. **The in-progress selection is not owned by the runtime, and the runtime
+   does not hold it.** `GameRuntime` coordinates the request the scene submits;
+   coordinating a request is not owning the state the request was built from.
+   A scene that has been shut down has no selection, and the runtime keeps
+   none on its behalf.
+3. **Scenes reach the transport only through the runtime port.** The collection
+   read data the flow needs (`GET /api/pets`, `/api/cards`, `/api/relics` —
+   `API_CONTRACTS.md` §5.1, §5.3, §5.4) is HTTP REST communication, which
+   `services/api/` isolates (§2.2 rule 3). Rule 1's boundary is therefore not
+   limited to SignalR: a Phaser scene must not import `fetch`, `ApiService`, or
+   any other transport client, exactly as it must not import
+   `@microsoft/signalr`. `LobbyScene` requests the collection through the
+   runtime port and receives the resulting read models; `GameRuntime` is what
+   calls `ApiService`, as it already does for battle start.
+4. **The read data is a selection source, never a selection.** A collection
+   response carries no equip state and no defined ordering
+   (`API_CONTRACTS.md` §5.5, §5.6). The scene builds the in-progress selection
+   from it, and the order the player chooses in is what the request carries —
+   for Relics, position *i* is equip slot *i + 1* (`RELIC_RULES.md` §2.3).
+   Collection ordering never becomes loadout ordering.
+5. **The runtime port exposes `startBattle`, and the flow's validity is never
+   the scene's to decide.** The port's pre-battle capability is
+
+   ```text
+   startBattle(request: BattleStartRequest): Promise<void>
+   ```
+
+   — the scene submits the documented `API_CONTRACTS.md` §3 request and the
+   runtime performs the documented start sequence (REST → connect → join). The
+   scene does not validate the loadout, does not decide whether the selection
+   is legal, and does not handle the battle: the server validates the submitted
+   request (count, ownership, category, copy limit, distinctness) and is
+   authoritative for the resulting `BattleState` (`GAME_RULES.md` §18,
+   ADR-001). A rejected request leaves the scene active with its selection
+   intact and no battle created.
+6. **The port carries capabilities, not models.** It exposes the start
+   capability above and the collection read the flow needs; it does not define,
+   re-export, or own the collection read models or any loadout/selection type.
+   Those wire shapes stay where they already live (`services/api/`), as they do
+   for `RuntimeBattleState`'s relation to the server's state contract.
+
+**What this boundary is not.** The three concepts it separates are distinct and
+must not be collapsed into one state model (`AGENTS.md` §12, §13; ADR-011
+item 4):
+
+```text
+Owned collection      Player owns Pet/Card/Relic — persistent, server-side
+                          (DATABASE.md §2)
+
+      ≠
+
+In-progress selection Player selected items for THIS upcoming battle —
+                      ephemeral, scene-local, unpersisted (rule 1)
+
+      ≠
+
+BattleState snapshot  Server validated the request and snapshotted the loadout
+                      into PetState.EquippedCards[] / EquippedRelics[] —
+                      server-authoritative (GAME_STATE.md §2.3)
+```
+
+Only the third is authoritative, and the client authors none of it. This
+section introduces no new client state, no new endpoint, and no change to any
+API contract: it records where the existing documented flow's state and reads
+belong (`API_CONTRACTS.md` §3, §5.5, §5.6 unchanged).
 
 ### 2.2.2 Game Viewport & Scaling
 
