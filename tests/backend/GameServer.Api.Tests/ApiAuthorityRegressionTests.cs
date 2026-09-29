@@ -50,6 +50,66 @@ public class ApiAuthorityRegressionTests
     ];
 
     [Fact]
+    public void Api_ShouldDeclareNoStarterOwnershipEndpointOrManager()
+    {
+        // TASK-083 §16 / §"Out of Scope": the starter ownership bootstrap adds no
+        // public endpoint and no manager. It is reached only through the existing
+        // Player-creation step of POST /api/auth/discord (API_CONTRACTS.md §2),
+        // and ownership is observed only through the §5 collection reads.
+        //
+        // Declared-absence rather than route-table inspection: a controller or
+        // manager of this shape is the thing that would have to appear first, and
+        // catching it here fails the build's tests rather than a review.
+        var declared = typeof(GameServer.Api.Controllers.AuthController).Assembly
+            .GetTypes()
+            .Select(type => type.Name)
+            .ToArray();
+
+        foreach (var forbidden in new[]
+        {
+            "StarterOwnershipController",
+            "StarterController",
+            "StarterOwnershipManager",
+            "StarterGrantService",
+            "StarterGrantController",
+        })
+        {
+            Assert.DoesNotContain(forbidden, declared);
+        }
+    }
+
+    [Fact]
+    public void DiscordAuthResponse_ShouldCarryOnlyTheDocumentedMembers()
+    {
+        // API_CONTRACTS.md §2.5 / TASK-083 §"Acceptance Criteria": the auth
+        // response is byte-shape identical to before — `sessionToken` and
+        // `playerId`, and no member reporting the starter ownership. The client
+        // observes ownership only through the §5 collection reads.
+        var members = typeof(GameServer.Api.Controllers.DiscordAuthResponse)
+            .GetProperties()
+            .Select(property => property.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(["PlayerId", "SessionToken"], members);
+    }
+
+    [Fact]
+    public void DiscordAuthRequest_ShouldCarryOnlyTheDocumentedMember()
+    {
+        // API_CONTRACTS.md §2: the request carries exactly one member (`code`).
+        // No starter-selection member exists — the starter set is fixed
+        // server-side and unreachable from client input (GAME_RULES.md §18,
+        // ADR-001).
+        var members = typeof(GameServer.Api.Controllers.DiscordAuthRequest)
+            .GetProperties()
+            .Select(property => property.Name)
+            .ToArray();
+
+        Assert.Equal(["Code"], members);
+    }
+
+    [Fact]
     public void Api_ShouldDeclareNoPlayerCombatReadinessType()
     {
         // GAME_RULES.md §18 / ADR-001 make the server authoritative for HP and the

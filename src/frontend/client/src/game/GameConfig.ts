@@ -1,6 +1,7 @@
 import * as Phaser from 'phaser';
 import { BootScene } from './scenes/BootScene';
 import { PreloaderScene } from './scenes/PreloaderScene';
+import { LobbyScene } from './scenes/LobbyScene';
 import { BattleScene } from './scenes/BattleScene';
 import { GAME_WIDTH, GAME_HEIGHT } from './GameViewport';
 import type { GameRuntime } from './runtime/GameRuntime';
@@ -29,14 +30,16 @@ import { RUNTIME_REGISTRY_KEY } from './runtime/RuntimeRegistry';
  * is preserved by scaling the canvas with CSS while rendering at the logical
  * resolution; see the high-DPI note in the task documentation.
  *
- * Scene lifecycle (TDD.md §2.1, task §5):
+ * Scene lifecycle (TDD.md §2.1, including its MVP staging note):
  *
- *   BootScene → PreloaderScene → BattleScene
+ *   BootScene → PreloaderScene → LobbyScene → BattleScene
  *
- * `MainMenuScene`, `LobbyScene`, and `ResultScene` are documented in
- * `TDD.md` §2.1 / `ARCHITECTURE.md` §1 as part of the eventual full lifecycle,
- * but they are menu/navigation presentation owned by later tasks. Only the
- * scenes the runtime foundation requires are registered here.
+ * `MainMenuScene` and `ResultScene` are documented in `TDD.md` §2.1 /
+ * `ARCHITECTURE.md` §1 as part of the eventual full lifecycle, but they are
+ * menu/navigation and outcome presentation owned by later tasks. The MVP
+ * implementation stages the documented lifecycle without them, so the
+ * registered list is the four scenes below — the full lifecycle remains the
+ * design target, and `PreloaderScene` passes directly into `LobbyScene` for now.
  *
  * The `runtime` is injected into Phaser's game-wide registry (`game.registry`,
  * a `Phaser.Data.DataManager`) from the `postBoot` hook — the point at which
@@ -60,7 +63,7 @@ export function createGameConfig(
       autoRound: true,
       expandParent: false,
     },
-    scene: [BootScene, PreloaderScene, BattleScene],
+    scene: [BootScene, PreloaderScene, LobbyScene, BattleScene],
     callbacks: {
       // Runs at the end of the boot sequence: all game systems (including the
       // registry and Scene Manager) are live, and the first scene has not yet

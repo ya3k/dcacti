@@ -332,8 +332,10 @@ describe('PreloaderScene', () => {
 
     // The loading lifecycle boundary is registered...
     expect(harness.loadHandlers.has('complete')).toBe(true);
-    // ...and the scene still advances correctly with nothing to load.
-    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['BattleScene']);
+    // ...and the scene still advances correctly with nothing to load. TASK-078
+    // stage advance: the transition target is the pre-battle lobby
+    // (TDD.md §2.1's staged MVP order), not `BattleScene` directly.
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['LobbyScene']);
   });
 
   it('advances via the load-complete handler while assets are loading', () => {
@@ -350,10 +352,10 @@ describe('PreloaderScene', () => {
 
     harness.loadHandlers.get('complete')?.();
 
-    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['BattleScene']);
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['LobbyScene']);
   });
 
-  it('transitions to BattleScene exactly once', () => {
+  it('transitions to LobbyScene exactly once', () => {
     const harness = createSceneHarness();
     const preloader = new PreloaderScene();
     const ctx = harness.context(preloader, 'PreloaderScene');

@@ -272,6 +272,19 @@ public class AuthPlayerOwnershipTests
                     new StubIdentityResolver(_discordUserId, RejectIdentity));
             });
         }
+
+        /// <summary>
+        /// Supplies the provisioned content the starter ownership set references
+        /// (<c>DATABASE.md</c> §2 item 1). Production has these rows because
+        /// TASK-085 provisioned them by migration; an in-memory store applies no
+        /// migration, so a new-Player authentication would otherwise fail to
+        /// resolve the starter definitions.
+        /// </summary>
+        protected override void ConfigureClient(HttpClient client)
+        {
+            base.ConfigureClient(client);
+            TestProvisionedContent.Seed(Services);
+        }
     }
 
     /// <summary>

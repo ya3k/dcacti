@@ -42,17 +42,53 @@ function walk(dir: string): string[] {
 }
 
 describe('Frontend architectural boundaries', () => {
-  describe('Phaser is not coupled to SignalR', () => {
-    const sceneFiles = ['BootScene.ts', 'PreloaderScene.ts', 'BattleScene.ts'].map(
-      (f) => join('game', 'scenes', f)
-    );
+  describe('Phaser is not coupled to SignalR or to any other transport', () => {
+    // TASK-078: `LobbyScene` is a scene like any other and is covered by the same
+    // rules. The list is the registered scene set (GameConfig.ts), so a new
+    // scene is covered as soon as it exists.
+    const sceneFiles = [
+      'BootScene.ts',
+      'PreloaderScene.ts',
+      'LobbyScene.ts',
+      'BattleScene.ts',
+    ].map((f) => join('game', 'scenes', f));
 
-    it.each(sceneFiles)('%s does not import the SignalR transport', (file) => {
+    it.each(sceneFiles)('%s imports no transport client', (file) => {
       const code = stripComments(readSource(file));
 
+      // ARCHITECTURE.md §2.2.1 rule 1 (restated transport-general by §2.2.3
+      // rule 3): a scene depends on the runtime port, never on the transport —
+      // SignalR, `fetch`, or `ApiService`.
       expect(code).not.toMatch(/@microsoft\/signalr/);
       expect(code).not.toMatch(/HubConnection/);
       expect(code).not.toMatch(/services\/realtime/);
+
+      // A scene names the wire MODEL types it moves through the port (they are
+      // owned by `services/api/` and are not redefined for it — §2.2.3 rule 6),
+      // but it imports no transport implementation, so the only `services/api/`
+      // imports it may contain are the type-only model files.
+      const apiImports = [...code.matchAll(/from '[^']*services\/api\/([^']+)'/g)].map(
+        (match) => match[1]
+      );
+      for (const imported of apiImports) {
+        expect(['BattleModels', 'CollectionModels']).toContain(imported);
+      }
+
+      // No HTTP client and no Discord SDK in a scene.
+      expect(code).not.toMatch(/\bfetch\s*\(/);
+      expect(code).not.toMatch(/embedded-app-sdk/);
+      expect(code).not.toMatch(/services\/discord/);
+    });
+
+    it('the scene list under test is the registered scene list', () => {
+      // Guards against a scene being added to GameConfig.ts without being
+      // covered by the boundary assertions above.
+      const config = stripComments(readSource(join('game', 'GameConfig.ts')));
+      const registered = [...config.matchAll(/import \{ (\w+Scene) \} from '\.\/scenes\/(\w+Scene)'/g)]
+        .map((match) => `${match[2]}.ts`)
+        .sort();
+
+      expect(registered).toEqual([...sceneFiles].map((f) => f.split(/[\\/]/).pop()).sort());
     });
 
     it('GameConfig does not import the SignalR transport', () => {
@@ -110,12 +146,22 @@ describe('Frontend architectural boundaries', () => {
       // PASSIVE_RULES.md §6 item 1 requires the progress pair to reach the client
       // as a UI-facing value. The tests below assert the stronger property that
       // matters: the runtime never *derives* any of these values.
+      //
+      // TASK-078 stage advance. `boss` and `relic` were in this list because the
+      // runtime carried no Boss or Relic concept at all; ARCHITECTURE.md §2.2.3
+      // rules 3–6 now make the *collection read* a documented port capability, so
+      // `getRelics()` and the `RelicResponse` wire type it transports are part of
+      // the contract rather than a violation. What remains forbidden is what
+      // always was: a gameplay system. The runtime carries no Boss selection or
+      // Boss read (the MVP Boss is one fixed request value the scene supplies),
+      // and it does not equip, trigger, or evaluate a Relic — it transports the
+      // owned-instance list the server returned. The dedicated assertions below
+      // pin exactly that, so widening this list cannot hide a failure to the
+      // generic term scan.
       const forbidden = [
         'damage',
         'match3',
         'cascade',
-        'boss',
-        'relic',
         'crit',
         'gravity',
         'detonate',
@@ -127,6 +173,50 @@ describe('Frontend architectural boundaries', () => {
         // The term may appear in prose-adjacent identifiers only if it is part
         // of a negative assertion comment; comments are already stripped, so any
         // occurrence here is real code.
+        expect(code, `${file} must not reference "${term}"`).not.toContain(term);
+      }
+    });
+
+    it.each(runtimeFiles)('%s carries no Boss source beyond the fixed start value', (file) => {
+      const code = stripComments(readSource(file));
+
+      // ARCHITECTURE.md §2.2.3 rule 6 + BOSS_RULES.md §6.4: the MVP has exactly
+      // one Boss the request names, and the client holds no Boss source. There is
+      // no Boss collection read and no Boss selection state anywhere in the
+      // runtime, so no second Boss identity can reach the wire through it.
+      for (const term of [
+        'getBoss',
+        'getBosses',
+        'BossResponse',
+        'bossList',
+        'bossDefinition',
+        'BossDefinition',
+        'boss-hoa-long',
+        'boss-thuy-ma',
+        'boss-moc-yeu',
+      ]) {
+        expect(code, `${file} must not reference "${term}"`).not.toContain(term);
+      }
+    });
+
+    it.each(runtimeFiles)('%s equips, triggers, and evaluates no Relic', (file) => {
+      const code = stripComments(readSource(file));
+
+      // RELIC_RULES.md §2–§5 / GAME_RULES.md §18: the Relic trigger engine and the
+      // battle-scoped equip snapshot are the server's. The runtime transports the
+      // owned-instance read and has no equip model, no slot ordering, and no
+      // trigger evaluation of its own.
+      for (const term of [
+        'EquippedRelics',
+        'equippedRelics',
+        'RelicTrigger',
+        'TriggerRelic',
+        'triggerRelic',
+        'EvaluateRelic',
+        'equipRelic',
+        'loadoutPosition',
+        'isEquipped',
+      ]) {
         expect(code, `${file} must not reference "${term}"`).not.toContain(term);
       }
     });
@@ -260,6 +350,48 @@ describe('Frontend architectural boundaries', () => {
       // `JoinBattle` (§1.2) is still the documented group join, and it is not a
       // gameplay action.
       expect(code).toMatch(/'JoinBattle'/);
+    });
+
+    it('the runtime port carries capabilities, not models', () => {
+      // ARCHITECTURE.md §2.2.3 rule 6: the port exposes the start and collection
+      // read capabilities; it does not define, re-export, or own the collection
+      // read models or any loadout/selection type. Those wire shapes stay in
+      // `services/api/`, and the in-progress selection belongs to the scene.
+      const code = stripComments(readSource(join('game', 'runtime', 'GameRuntimeEvents.ts')));
+
+      // It DECLARES no such type...
+      expect(code).not.toMatch(/export (interface|type) \w*(Loadout|Selection|Collection)\w*/);
+
+      // ...and it carries only the documented capabilities.
+      const port = code.slice(
+        code.indexOf('export interface GameRuntimePort'),
+        code.indexOf('RuntimeActionNotImplementedError')
+      );
+      const members = [...port.matchAll(/^ {2}(\w+)\(/gm)].map((match) => match[1]).sort();
+      expect(members).toEqual([
+        'getBattleState',
+        'getCards',
+        'getPet',
+        'getPets',
+        'getRelics',
+        'getState',
+        'onBattleEvents',
+        'onBattleState',
+        'onRuntimeEvent',
+        'requestAction',
+        'startBattle',
+      ]);
+
+      // The model types it names are imported as types from their owner, never
+      // re-declared or re-exported. A re-export would make the port a second
+      // definition of a wire shape `services/api/` already owns.
+      expect(code).not.toMatch(/export type \{/);
+      expect(code).toMatch(
+        /import type \{ BattleStartRequest \} from '\.\.\/\.\.\/services\/api\/BattleModels'/
+      );
+      expect(code).toMatch(
+        /import type \{ CardResponse, PetResponse, RelicResponse \} from '\.\.\/\.\.\/services\/api\/CollectionModels'/
+      );
     });
 
     it('the runtime declares no undocumented state-sync method', () => {

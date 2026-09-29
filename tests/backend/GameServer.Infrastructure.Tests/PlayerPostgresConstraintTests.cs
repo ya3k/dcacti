@@ -80,7 +80,7 @@ public class PlayerPostgresConstraintTests : IAsyncLifetime
         var repository = new PlayerRepository(context);
 
         var discordUserId = NewDiscordUserId();
-        var created = await repository.GetOrCreateByDiscordUserIdAsync(discordUserId);
+        var created = await repository.GetOrCreateByDiscordUserIdAsync(discordUserId, TestStarterGrants.ResolvedCallback(context));
 
         try
         {
@@ -98,14 +98,11 @@ public class PlayerPostgresConstraintTests : IAsyncLifetime
         }
         finally
         {
-            // Keep the shared development database clean.
+            // Keep the shared development database clean. The Player's starter
+            // ownership rows are removed with it: their FKs are OnDelete
+            // Restrict, so the collection must go first.
             await using var cleanup = CreateContext();
-            var entity = await cleanup.Players.SingleOrDefaultAsync(p => p.PlayerId == created.PlayerId);
-            if (entity is not null)
-            {
-                cleanup.Players.Remove(entity);
-                await cleanup.SaveChangesAsync();
-            }
+            await TestStarterGrants.CleanupPlayerAsync(cleanup, created.PlayerId);
         }
     }
 
@@ -163,7 +160,7 @@ public class PlayerPostgresConstraintTests : IAsyncLifetime
         var repository = new PlayerRepository(context);
 
         var discordUserId = NewDiscordUserId();
-        var created = await repository.GetOrCreateByDiscordUserIdAsync(discordUserId);
+        var created = await repository.GetOrCreateByDiscordUserIdAsync(discordUserId, TestStarterGrants.ResolvedCallback(context));
 
         try
         {
@@ -181,12 +178,7 @@ public class PlayerPostgresConstraintTests : IAsyncLifetime
         finally
         {
             await using var cleanup = CreateContext();
-            var entity = await cleanup.Players.SingleOrDefaultAsync(p => p.PlayerId == created.PlayerId);
-            if (entity is not null)
-            {
-                cleanup.Players.Remove(entity);
-                await cleanup.SaveChangesAsync();
-            }
+            await TestStarterGrants.CleanupPlayerAsync(cleanup, created.PlayerId);
         }
     }
 

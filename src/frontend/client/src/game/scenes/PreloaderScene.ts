@@ -5,7 +5,7 @@ import { SAFE_AREA, GAME_WIDTH, GAME_HEIGHT } from '../GameViewport';
  * PreloaderScene — asset-loading infrastructure and lifecycle only
  * (TDD.md §2.1).
  *
- * It owns the loading lifecycle boundary and the transition to `BattleScene`.
+ * It owns the loading lifecycle boundary and the transition to `LobbyScene`.
  * No real gameplay assets exist yet, and the scene is written so it works
  * correctly with zero assets to load: `preload()` registers nothing, the
  * `complete` handler still fires, and the scene still transitions.
@@ -59,7 +59,8 @@ export class PreloaderScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    // Nothing to load: hand off to the battle runtime shell immediately.
+    // Nothing to load: hand off to the pre-battle lobby (TDD.md §2.1's staged
+    // MVP order — the lobby is where the player prepares and starts a battle).
     // When real assets are added, the `complete` handler performs this
     // transition instead.
     if (!this.load.isLoading()) {
@@ -68,11 +69,11 @@ export class PreloaderScene extends Phaser.Scene {
   }
 
   /**
-   * Loading lifecycle boundary → transition to the battle runtime shell.
+   * Loading lifecycle boundary → transition to the pre-battle lobby.
    *
    * Guarded so the transition happens at most once: with an empty load queue
    * `create()` completes loading directly while the `complete` handler is also
-   * registered, and both paths would otherwise start `BattleScene` twice.
+   * registered, and both paths would otherwise start `LobbyScene` twice.
    */
   private onLoadingComplete(): void {
     if (this.hasTransitioned) {
@@ -80,6 +81,6 @@ export class PreloaderScene extends Phaser.Scene {
     }
     this.hasTransitioned = true;
 
-    this.scene.start('BattleScene');
+    this.scene.start('LobbyScene');
   }
 }

@@ -1,6 +1,24 @@
-﻿# Database
+# Database
 
-**Version:** 1.17 (§1 "Reward semantics for `RewardSummary`" **defeat shape
+**Version:** 1.19 (TASK-084 MVP starter ownership contract resolved: §2 deterministic starter
+composition recorded [1 Pet: Xích Lang / `pet-xich-lang`; 3 Basic Cards: Heal / `card-heal`,
+Shield / `card-shield`, Power Charge / `card-power-charge`; 3 Relics: Berserker Core /
+`relic-berserker-core`, Mana Crystal / `relic-mana-crystal`, Assassin Eye / `relic-assassin-eye`];
+semantic classification recorded as MVP bootstrap/test content, not final acquisition gameplay;
+Player-creation single-grant semantics defined; atomicity confirmed achievable via single
+scoped `GameDbContext.SaveChangesAsync` with concurrent-first-login batch-discard prerequisite;
+no new architectural abstraction or gameplay system introduced). Prior 1.18: (TASK-082 Pet/Card/Relic content-provisioning contract
+recorded: §1 content-definition key value forms (`pet-`/`card-`/`relic-` +
+ASCII kebab-case slug of the documented display name), `PetDefinition.Identity`
+= display text, `EffectDefinition` = the owning domain document's verbatim
+effect rule text (≤128 chars, no effect-id vocabulary), `LoadoutCopyLimit`
+concrete values owned by `CARD_RULES.md` §1 (MVP value 1); §2 MVP
+starter-ownership composition decided (1 Pet / 3 Cards / 3–5 Relics from
+content-defined rows only; exact IDs + mechanism deferred to a follow-up
+implementation task); §5 item 4 provisioning mechanism now defined for
+`PetDefinition`/`CardDefinition`/`RelicDefinition` (EF Core migration-INSERT,
+the TASK-052 precedent; no `HasData`/seed/startup loader/JSON pipeline/
+external content service). Prior 1.17: §1 "Reward semantics for `RewardSummary`" **defeat shape
 resolved** per TASK-068 human decision (**Option A**) — the contradiction
 between item 1's per-outcome Player-track member list and the former
 "a `"defeat"` battle carries no line items" wording is removed: the
@@ -154,25 +172,52 @@ Pet                              (a player's OWNED instance of a Pet)
 │                                    (PET_RULES.md §5.2, §5.5))
 └── AcquiredAt
 
-PetDefinition                    (static content, one row per MVP Pet)
-├── PetDefinitionId (PK)
-├── Identity                      ("Thanh Xà", "Xích Lang", ...)
+PetDefinition                    (static content — only content-defined
+│                                  rows may be provisioned, §5 item 4;
+│                                  TASK-082 decision A)
+├── PetDefinitionId (PK)          (value form `pet-<ascii-kebab-case-name>`,
+│                                  e.g. "pet-xich-lang" — ASCII kebab-case of
+│                                  the Pet's documented display name
+│                                  (TASK-082 decision B / R2-9), mirroring
+│                                  `boss-def-<ascii-kebab-case-name>`; this
+│                                  key IS the Pet's technical identity —
+│                                  `PET_RULES.md` §1 (R2-10); content-supplied,
+│                                  never database-generated, never slugified
+│                                  at runtime)
+├── Identity                      (display text — "Thanh Xà", "Xích Lang",
+│                                  ...; NOT a technical identity;
+│                                  `PET_RULES.md` §1, `API_CONTRACTS.md` §5.1)
 ├── Element
 ├── PassiveDefinition              (threshold/effect reference —
 │                                  PASSIVE_RULES.md)
 └── SignatureSkillCardId (FK → CardDefinition)
 
-CardDefinition                    (static content: 3 Basic + 5 Pet Skill)
-├── CardDefinitionId (PK)
+CardDefinition                    (static content — MVP scope target
+│                                  `MVP_SCOPE.md` §1; only content-defined
+│                                  rows may be provisioned, §5 item 4; the
+│                                  defined rows are the 3 Basic Cards
+│                                  (`CARD_RULES.md` §2) and the 3 Pet Skill
+│                                  Cards (`CARD_RULES.md` §4.1) — TASK-082
+│                                  decision A / R1-1)
+├── CardDefinitionId (PK)         (value form `card-<ascii-kebab-case-name>`,
+│                                  e.g. "card-heal" — ASCII kebab-case of the
+│                                  Card's documented name (TASK-082 decision
+│                                  B / R2-9); content-supplied, never
+│                                  database-generated)
 ├── Name
 ├── Category                       ("Basic" | "PetSkill")
 ├── PowerCost
 ├── LoadoutCopyLimit               (required — max occurrences of this
 │                                  CardDefinition in one submitted 3-card
-│                                  Basic loadout; CARD_RULES.md §1; explicit
-│                                  value required, no default; concrete
-│                                  values are content/balance configuration)
-└── EffectDefinition                 (CARD_RULES.md)
+│                                  Basic loadout; `CARD_RULES.md` §1; explicit
+│                                  value required, no default; concrete MVP
+│                                  values are owned by `CARD_RULES.md` §1
+│                                  (TASK-082 decision C / R1-5 / R2-6))
+└── EffectDefinition               (the owning domain document's effect rule
+                                   text, stored VERBATIM and within the
+                                   128-char column limit; no `effect-{slug}`
+                                   or other effect-id vocabulary —
+                                   `CARD_RULES.md` §2/§4.1, TASK-082 R2-7)
 
 PlayerUnlockedCard               (Player owns Card unlocks — ADR-012;
 │                                  MVP Cards have no Tier/Star/Level, so an
@@ -180,12 +225,26 @@ PlayerUnlockedCard               (Player owns Card unlocks — ADR-012;
 ├── PlayerId (FK → Player)
 └── CardDefinitionId (FK → CardDefinition)
 
-RelicDefinition                    (static content: ~10 MVP Relics)
-├── RelicDefinitionId (PK)
+RelicDefinition                    (static content — MVP scope target
+│                                   `MVP_SCOPE.md` §1; only content-defined
+│                                   rows may be provisioned, §5 item 4; the
+│                                   defined rows and any deferred row are
+│                                   owned by `RELIC_RULES.md` §6 — TASK-082
+│                                   decision A / R2-8)
+├── RelicDefinitionId (PK)         (value form `relic-<ascii-kebab-case-name>`,
+│                                   e.g. "relic-berserker-core" — ASCII
+│                                   kebab-case of the Relic's documented name
+│                                   (TASK-082 decision B / R2-9);
+│                                   content-supplied, never
+│                                   database-generated)
 ├── Name
 ├── Trigger
 ├── Condition
-└── EffectDefinition                (RELIC_RULES.md)
+└── EffectDefinition                (the owning domain document's effect rule
+                                    text, stored VERBATIM and within the
+                                    128-char column limit; no `effect-{slug}`
+                                    or other effect-id vocabulary —
+                                    `RELIC_RULES.md` §6, TASK-082 R2-7)
 
 Relic                                (a player's OWNED instance, if Relics
 │                                     have per-instance state; otherwise
@@ -690,6 +749,76 @@ There is likewise **no persistent Relic-equip table**: Player owns Relic
 instances; which 3–5 are equipped for a given battle is request-time
 loadout only (`RELIC_RULES.md` §2, `API_CONTRACTS.md` §3).
 
+**MVP starter ownership contract (TASK-084 / TASK-082 decision E / R1-4).**
+For MVP, every newly created Player receives a deterministic starter ownership
+grant so the battle-start flow (`POST /api/battle/start`, `API_CONTRACTS.md` §3)
+can be exercised without a separate acquisition system.
+
+**1. Exact starter composition and canonical identities:**
+- **Starter Pet (1 owned `Pet` row):** Exactly one Pet instance referencing the
+  canonical provisioned definition `pet-xich-lang` (**Xích Lang**, Element Hỏa,
+  `PET_RULES.md` §8). Carries documented creation values (`DATABASE.md` §3):
+  `Tier = Common` (the MVP data default), `Star = 1` (`Pet.MinStar`),
+  `XP = 0` (`Pet.InitialXp`), `Level = 1` (`Pet.InitialLevel`, `PET_RULES.md` §5.2),
+  `AcquiredAt` server timestamp.
+- **Starter Basic Cards (3 `PlayerUnlockedCard` rows):** All three content-defined
+  Basic Cards (`CARD_RULES.md` §2) referencing canonical definition IDs:
+  `card-heal` (**Heal**), `card-shield` (**Shield**), and `card-power-charge`
+  (**Power Charge**), each with `Category = Basic` and `LoadoutCopyLimit = 1`.
+  *Excluded:* Pet Skill Cards (`Category = PetSkill`: `card-inferno`,
+  `card-tidal-barrier`, `card-iron-fang`) are derived from the active Pet's
+  `SignatureSkillCardId` at battle start and are never granted as unlocked Basic
+  Cards (`CARD_RULES.md` §1 item 4).
+- **Starter Relics (3 owned `Relic` rows):** Three distinct owned instances
+  referencing the three explicitly selected provisioned definitions
+  (`RELIC_RULES.md` §6): `relic-berserker-core` (**Berserker Core**),
+  `relic-mana-crystal` (**Mana Crystal**), and `relic-assassin-eye` (**Assassin
+  Eye**). Exactly one owned instance is granted per selected definition; each row
+  carries a distinct, server-minted `RelicInstanceId` (never collapsed with
+  `RelicDefinitionId`, `RELIC_RULES.md` §2.2) and `AcquiredAt` server timestamp.
+  *Excluded:* `Burning Curse` is deferred (`RELIC_RULES.md` §6 note 3); `Emergency
+  Core` is provisioned but deliberately not selected for the 3-Relic starter set.
+  *Selection basis:* The starter definitions are an explicit named Product Owner
+  selection, NOT derived from document ordering, alphabetical ordering, migration
+  ordering, or database ordering.
+
+**2. Semantic classification — MVP bootstrap, not acquisition gameplay:**
+These rows represent **MVP bootstrap / test content** for newly created Players.
+They exist solely so a newly created Player has sufficient owned content to
+satisfy the `POST /api/battle/start` loadout validation rules (`API_CONTRACTS.md`
+§3: 1 Pet, 3 Basic Cards, 3–5 Relics). They do **not** define or constrain future
+gameplay acquisition systems (starter choice UX, tutorial rewards, quests, gacha,
+shops, drops, events, or progression). Future tasks may alter the starter flow
+without altering the underlying collection ownership model (`DATABASE.md` §1–§2).
+
+**3. Player creation semantics and idempotency:**
+- **New Player creation:** Starter ownership rows (1 `Pet`, 3 `PlayerUnlockedCard`,
+  3 `Relic`) are created and committed atomically with the `Player` row on the
+  Player-creation branch (`POST /api/auth/discord`, `ARCHITECTURE.md` §2.3 item 3).
+- **Existing Player:** Authenticating an existing Player performs no starter grant;
+  the starter initialization path is reachable only when a new `Player` row is
+  inserted.
+- **Not a repair / top-up mechanism:** The initialization is strictly bound to
+  Player creation. The system must NOT evaluate conditional top-ups (e.g. "if
+  Player has no Pet / fewer than 3 Cards / no Relics → grant").
+
+**4. Persistence atomicity assessment and concurrency prerequisite (TASK-083):**
+- **Atomicity:** Achievable on the existing persistence boundary. All four entity
+  types (`Player`, `Pet`, `PlayerUnlockedCard`, `Relic`) share the single scoped
+  `GameDbContext` (`src/backend/GameServer.Infrastructure/Postgres/GameDbContext.cs`).
+  A single `SaveChangesAsync` commits the Player and all 7 starter ownership rows in
+  one atomic database transaction. No new persistence abstraction (`IUnitOfWork`,
+  `StarterOwnershipManager`, outbox, domain events) is required.
+- **Commit-scope surface:** Because existing repository methods (`PlayerRepository`,
+  `PetRepository`, etc.) each commit independently, TASK-083 must expose exactly
+  one combined commit-scope surface on the existing boundary.
+- **Concurrency race-safety:** On concurrent first-login for the same Discord
+  identity, the `DiscordUserId` UNIQUE constraint rolls back the losing batch.
+  The error-handling catch (`PlayerRepository.cs:69-85`) must discard/detach the
+  **entire staged batch** (Player + 7 ownership entities), not only the `Player`
+  entity, ensuring no orphaned ownership entities remain tracked. TASK-083 must
+  verify this concurrent first-login behavior in integration tests.
+
 ---
 
 # 3. Constraints
@@ -765,20 +894,35 @@ when a real query pattern requires them (anti-overengineering,
    `MVP_SCOPE.md` §2.
 3. Active battle state — lives in Redis only (`REDIS_STATE.md`), never
    written to PostgreSQL until the battle ends.
-4. Provisioning mechanisms for static-content rows **other than**
-   `BossDefinition` (`PetDefinition`, `CardDefinition`,
-   `RelicDefinition`, …) — none is defined here; each remains open
-   (`TASK-045` §6 issue 1). No `HasData`, seed, or startup loader exists
-   for any of them. For `BossDefinition` the mechanism **is** now defined
-   by this document (TASK-052): an EF Core migration that INSERTs the
-   three content-defined rows, applied through the existing
+4. Provisioning mechanisms for static-content rows: for
+   `BossDefinition` the mechanism **is** defined by this document
+   (TASK-052): an EF Core migration that INSERTs the three
+   content-defined rows, applied through the existing
    `dotnet ef database update` workflow in every battle-capable
    environment before that environment's first `BattleResult` write —
    no `HasData`, no seed, no startup loader, no separate manual-SQL
    deployment path, no runtime provisioning (§1, `BossDefinition`
-    persistence contract item 5). The migration script itself remains an
-    implementation detail (item 1); that implementation is **complete**
-    (TASK-053) — migration `20260926151112_ProvisionBossDefinitions` was
-    applied through `dotnet ef database update`, so the three canonical
-    rows are provisioned and every `BattleResult` write's FK target exists
-    wherever the migration has been applied (TASK-051 decision A3).
+   persistence contract item 5). For `PetDefinition`, `CardDefinition`,
+   and `RelicDefinition` the mechanism is **also now defined, on the
+   same terms** (TASK-082 decision D): EF Core migration-INSERT data
+   through the existing migration workflow — deterministically, from
+   content defined by the owning domain documents; **no** startup seed
+   runner, external content service, JSON content pipeline, or other
+   new persistence mechanism. Two rules bind those migrations: (a) only
+   **content-defined rows** may be inserted — a row whose required
+   members have no documented value stays unprovisioned and deferred in
+   its owning domain document (the deferred rows are recorded in
+   `PET_RULES.md` §8, `RELIC_RULES.md` §6, and — for the two TBD
+   Signature Skills — `CARD_RULES.md` §4.1); (b) the
+   migration's row values (keys, names, and each table's own members —
+   `LoadoutCopyLimit`, `EffectDefinition`, `Trigger`, per the `§1`
+   entity blocks) are copied from the owning domain documents, never
+   invented. The **implementation** (migration script,
+   the exact row values, and the TASK-083 starter-ownership initialization per §2)
+   remains an implementation detail (item 1) and is **not
+   yet written** — it is the follow-up provisioning implementation
+   task. The `BossDefinition` migration is **complete**
+   (TASK-053) — migration `20260926151112_ProvisionBossDefinitions` was
+   applied through `dotnet ef database update`, so the three canonical
+   rows are provisioned and every `BattleResult` write's FK target exists
+   wherever the migration has been applied (TASK-051 decision A3).

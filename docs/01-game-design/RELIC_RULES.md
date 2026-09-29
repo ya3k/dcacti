@@ -1,6 +1,11 @@
 # Relic Rules
 
-**Version:** 1.4 (§2.3 equip slot index source RESOLVED — request array
+**Version:** 1.5 (§6 provisioned/deferred row set recorded per TASK-082
+decisions A / R2-8 — the four event-triggered Relics are provisionable;
+"Burning Curse" **deferred** pending a documented static-modifier
+`RelicDefinition.Trigger`, with the §3 "exactly one primary Trigger" vs
+§6 note 1 static-modifier tension reported, not resolved (`AGENTS.md` §4);
+prior 1.4: §2.3 equip slot index source RESOLVED — request array
 position + 1 determines the slot; §2.4 duplicate selection RESOLVED — the same
 Relic instance may not occupy more than one slot, distinct instances of one
 RelicDefinition may be equipped together, duplicates rejected as
@@ -402,6 +407,16 @@ Notes:
 2. "Emergency Core" re-evaluates continuously (it is "armed" whenever
    HP < 30%, not a one-shot fire) — it modifies Heal Card cost for as long as
    the condition holds, reverting when HP rises back above 30%.
+3. **Provisioned vs. deferred row set.** (TASK-082 decisions A / R2-8)
+   Only **Berserker Core, Mana Crystal, Assassin Eye, and Emergency Core**
+   — the rows whose `Trigger` and `Condition` are declared per §3 — are
+   provisioned now. The **"Burning Curse" row is deferred**: §3 requires
+   a Relic to declare exactly one primary Trigger from the §3 list, while
+   note 1 describes Burning Curse as a static modifier with no such event
+   trigger. This §3-vs-note-1 tension is **reported, not resolved**
+   (`AGENTS.md` §4): a documented static-modifier `Trigger` must exist
+   before that row may be provisioned. No placeholder row, invented
+   `Trigger`, or invented value may be inserted (`DATABASE.md` §5 item 4).
 
 ---
 

@@ -1,6 +1,8 @@
 # Technical Design Document (TDD)
 
-**Version:** 1.0
+**Version:** 1.1 (§2.1 scene-lifecycle MVP staging note added per TASK-078 —
+staged scene order recorded explicitly; no lifecycle, gameplay rule, API
+contract, or code changed by this note)
 **Status:** Draft — contains ASSUMPTIONs pending confirmation (see §0)
 
 > This document answers: **"What technical approach are we using to
@@ -97,6 +99,16 @@ BattleScene
     ↓
 ResultScene
 ```
+
+> **MVP staging note (recorded per TASK-078's Product Owner decision).** The
+> MVP implementation stages this lifecycle as `BootScene → PreloaderScene →
+> LobbyScene → BattleScene`: `MainMenuScene` and `ResultScene` are deferred
+> to their own tasks, so the implemented transition order passes from
+> `PreloaderScene` directly into `LobbyScene` for now, and `LobbyScene`
+> transitions to `BattleScene` after a successful battle start. The
+> lifecycle above remains the design this document specifies; the staging is
+> an implementation-order decision recorded here so it is not left implicit,
+> not a change to the lifecycle.
 
 - **BootScene:** Technical initialization only (scales, engine config).
 - **PreloaderScene:** Asset loading and loading progress presentation.

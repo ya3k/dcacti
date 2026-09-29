@@ -1,6 +1,8 @@
 # Passive Rules
 
-**Version:** 1.0
+**Version:** 1.1 (§8 Pet `PassiveId` values recorded per TASK-082
+decisions B / R1-3 / R2-9 — `passive-<ascii-kebab-case-name>` of the
+owning Pet, scoped to Pet passives only; Boss PassiveIds unchanged)
 **Status:** MVP Domain Rule
 **Parent:** GAME_RULES.md
 
@@ -179,3 +181,23 @@ All five MVP Pet Passives use the default Match-based trigger and default
 full reset (§2, §4). Exact numeric effect magnitudes (Burn amount, Defense
 amount, Crit increase %) are balance values and live in config, not in this
 document.
+
+**Pet `PassiveId` values.** (TASK-082 decisions B / R1-3 / R2-9) A Pet
+passive's `PassiveId` is `passive-<ascii-kebab-case-name>` of the owning
+Pet's documented name — Pets are the only named anchor, since Pet
+passives have no separate name in any document:
+
+```text
+Xích Lang  →  passive-xich-lang
+Bạch Hổ    →  passive-bach-ho
+Huyền Quy  →  passive-huyen-quy
+```
+
+This format and the values above are scoped to **Pet passives only**
+(R1-3): Boss PassiveIds are unchanged and remain the values fixed by
+`BOSS_RULES.md` §6.4. The Thanh Xà and Sơn Hùng rows are deferred with
+their Pets (`PET_RULES.md` §8); when their Skill Cards are authored and
+their rows are provisioned, their `PassiveId` values are derived by this
+same rule. The thresholds for all five Pets are the values in the table above
+and are sourced from this document when `PetDefinition.PassiveDefinition`
+is filled (`DATABASE.md` §1).

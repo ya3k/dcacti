@@ -3,7 +3,6 @@ using GameServer.Application.Cards;
 using GameServer.Application.Identity;
 using GameServer.Application.Pets;
 using GameServer.Application.Players;
-using GameServer.Application.Players;
 using GameServer.Domain.Players;
 using GameServer.Application.Relics;
 using GameServer.Infrastructure.Discord;

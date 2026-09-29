@@ -1536,4 +1536,131 @@ describe('GameRuntime', () => {
       });
     });
   });
+
+  describe('pre-battle collection reads (ARCHITECTURE.md §2.2.3 rules 3–4, 6)', () => {
+    /**
+     * TASK-078. The pre-battle selection flow needs the owned collection, and
+     * `ARCHITECTURE.md` §2.2.3 rule 3 routes it through the runtime port rather
+     * than letting `LobbyScene` reach `services/api/`. These tests assert the
+     * port capability is pure delegation: no orchestration, no caching, no
+     * reordering, and no state held on the runtime.
+     */
+
+    /** A `GET /api/pets` element (API_CONTRACTS.md §5.1). */
+    const petElement = {
+      petId: 'pet-instance-1',
+      identity: 'Xích Lang',
+      element: 'Fire',
+      tier: 'Common',
+      star: 1,
+      level: 1,
+    };
+
+    /** A `GET /api/cards` element (API_CONTRACTS.md §5.3). */
+    const cardElement = { cardId: 'card-heal', name: 'Heal', category: 'Basic' };
+
+    /** A `GET /api/relics` element (API_CONTRACTS.md §5.4). */
+    const relicElement = { relicId: 'relic-instance-1', name: 'Berserker Core' };
+
+    /** A runtime with collection-read doubles on the injected `ApiService`. */
+    function createCollectionRuntime() {
+      const transport = new FakeSignalR();
+      const api = {
+        getPets: vi.fn(async () => [petElement]),
+        getPet: vi.fn(async () => petElement),
+        getCards: vi.fn(async () => [cardElement]),
+        getRelics: vi.fn(async () => [relicElement]),
+      };
+      const runtime = new GameRuntime(transport as never, api as never);
+      return { runtime, transport, api };
+    }
+
+    it('delegates getPets to the existing ApiService method', async () => {
+      const { runtime, api } = createCollectionRuntime();
+
+      await expect(runtime.getPets()).resolves.toEqual([petElement]);
+      expect(api.getPets).toHaveBeenCalledTimes(1);
+    });
+
+    it('delegates getPet with the instance id it was given', async () => {
+      const { runtime, api } = createCollectionRuntime();
+
+      // §5.2 addresses the detail route by the owned instance identity; the
+      // runtime passes it on unchanged and adds no lookup of its own.
+      await expect(runtime.getPet('pet-instance-7')).resolves.toEqual(petElement);
+      expect(api.getPet).toHaveBeenCalledWith('pet-instance-7');
+    });
+
+    it('delegates getCards to the existing ApiService method', async () => {
+      const { runtime, api } = createCollectionRuntime();
+
+      await expect(runtime.getCards()).resolves.toEqual([cardElement]);
+      expect(api.getCards).toHaveBeenCalledTimes(1);
+    });
+
+    it('delegates getRelics to the existing ApiService method', async () => {
+      const { runtime, api } = createCollectionRuntime();
+
+      await expect(runtime.getRelics()).resolves.toEqual([relicElement]);
+      expect(api.getRelics).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns the collection in the order the server sent it', async () => {
+      // §5.5 defines no ordering and forbids relying on one, so the runtime must
+      // not impose one either — a sort here would become loadout ordering the
+      // moment a scene submitted it (RELIC_RULES.md §2.3).
+      const { runtime, api } = createCollectionRuntime();
+      const sent = [
+        { relicId: 'relic-z', name: 'Z' },
+        { relicId: 'relic-a', name: 'A' },
+        { relicId: 'relic-m', name: 'M' },
+      ];
+      api.getRelics.mockResolvedValue(sent as never);
+
+      const received = await runtime.getRelics();
+
+      expect(received.map((r) => r.relicId)).toEqual(['relic-z', 'relic-a', 'relic-m']);
+      // And the array reaches the caller without being re-sorted into the
+      // server's own response order or any alphabetic order.
+      expect(received.map((r) => r.relicId)).not.toEqual([...sent.map((r) => r.relicId)].sort());
+    });
+
+    it('propagates a collection-read rejection unchanged', async () => {
+      // A `401 UNAUTHENTICATED` (API_CONTRACTS.md §2.8) reaches the caller as the
+      // transport raised it; the runtime records nothing and fabricates nothing.
+      const { runtime, api } = createCollectionRuntime();
+      api.getPets.mockRejectedValue(
+        new Error('Request to /api/pets failed with status 401')
+      );
+
+      await expect(runtime.getPets()).rejects.toThrow('status 401');
+
+      expect(runtime.getBattleState()).toBeNull();
+    });
+
+    it('holds no collection state on the runtime', async () => {
+      const { runtime } = createCollectionRuntime();
+
+      await runtime.getPets();
+      await runtime.getCards();
+      await runtime.getRelics();
+
+      // The read is a selection SOURCE, not a selection (ARCHITECTURE.md §2.2.3
+      // rule 4): the selected items belong to the scene. Nothing about the
+      // collection is kept here, so a scene cannot recover a selection from the
+      // runtime — not even in the technical state contract.
+      for (const key of ['pets', 'cards', 'relics', 'collection', 'loadout', 'selection']) {
+        expect(Object.keys(runtime.getState())).not.toContain(key);
+      }
+      expect(Object.keys(runtime.getState()).sort()).toEqual([
+        'connection',
+        'connectionId',
+        'engine',
+        'lastError',
+        'runtime',
+        'session',
+        'sync',
+      ]);
+    });
+  });
 });

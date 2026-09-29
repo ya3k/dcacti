@@ -51,7 +51,13 @@ describe('PhaserGame Component', () => {
     const config = vi.mocked(Phaser.Game).mock.calls[0][0] as Record<string, any>;
     const sceneKeys = (config.scene as Array<{ name?: string }>).map((s) => s.name);
 
-    expect(sceneKeys).toEqual(['BootScene', 'PreloaderScene', 'BattleScene']);
+    // TASK-078 stage advance. This assertion previously listed the three-scene
+    // runtime-foundation set, because `LobbyScene` did not exist. `TDD.md` §2.1's
+    // MVP staging note now records the implemented order as
+    // BootScene → PreloaderScene → LobbyScene → BattleScene, so the lobby is
+    // registered between the preloader and the battle. `MainMenuScene` and
+    // `ResultScene` remain deferred to their own tasks.
+    expect(sceneKeys).toEqual(['BootScene', 'PreloaderScene', 'LobbyScene', 'BattleScene']);
   });
 
   it('publishes the runtime to the Phaser registry for scenes', () => {

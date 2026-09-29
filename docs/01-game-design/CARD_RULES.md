@@ -1,6 +1,9 @@
 # Card Rules
 
-**Version:** 1.3 (§1 loadout copy limit — each CardDefinition's explicit
+**Version:** 1.4 (§1 item 5 — MVP `LoadoutCopyLimit` values recorded per
+TASK-082 decisions C / R1-5 / R2-6: the value is **1** for every
+CardDefinition defined by this document (§2 Basic Cards and §4.1 Pet
+Skill Cards); prior 1.3: §1 loadout copy limit — each CardDefinition's explicit
 `LoadoutCopyLimit` governs how many times it may appear in the submitted
 3-card Basic loadout; explicit value required, no default; concrete
 values are content/balance configuration; prior 1.2: §1 ownership
@@ -60,8 +63,13 @@ For each CardDefinitionId in cardLoadout:
    submitted, never counted, and keeps its own composition slot (the
    loadout remains 3 Basic + 1 Pet Skill); a `PetSkill` CardDefinition
    can never satisfy this section's Basic-Card composition rule.
-5. Concrete limit values are content/balance configuration, owned by a
-   future balance/content task; this document defines no values.
+5. Concrete MVP limit values are recorded here (TASK-082 decisions C,
+   R1-5, R2-6): **`LoadoutCopyLimit` = 1 for every CardDefinition
+   defined by this document** — the §2 Basic Cards and the §4.1 Pet
+   Skill Cards. For a `PetSkill` row the value is persisted only
+   because the database column is required and non-nullable; it is
+   never read for the submitted Basic loadout (item 4), so it
+   introduces no additional gameplay behavior.
 
 ---
 

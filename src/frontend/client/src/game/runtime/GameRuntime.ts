@@ -1,5 +1,6 @@
 import { ApiService } from '../../services/api/ApiService';
 import type { BattleStartRequest } from '../../services/api/ApiService';
+import type { CardResponse, PetResponse, RelicResponse } from '../../services/api/CollectionModels';
 import { SignalRService } from '../../services/realtime/SignalRService';
 import {
   INITIAL_RUNTIME_STATE,
@@ -478,6 +479,62 @@ export class GameRuntime implements GameRuntimePort {
     this.registerTransportSubscriptions();
 
     await this.signalR.joinBattle(response.battleId);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pre-battle collection reads (selection source, not a selection)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * The owned Pet collection (`API_CONTRACTS.md` §5.1) —
+   * `GET /api/pets`.
+   *
+   * This is the pre-battle selection source `LobbyScene` builds its in-progress
+   * selection from (`ARCHITECTURE.md` §2.2.3 rules 3–4). The runtime delegates
+   * to the existing `ApiService` method and nothing else: it adds no
+   * orchestration, does not cache the response, and does not hold it as state —
+   * the selection belongs to the scene (rule 2), and the read belongs to the
+   * transport. The array is returned in the order the server sent it; §5.5
+   * defines no ordering, so none is imposed here.
+   */
+  public async getPets(): Promise<PetResponse[]> {
+    return await this.api.getPets();
+  }
+
+  /**
+   * One owned Pet's detail (`API_CONTRACTS.md` §5.2) —
+   * `GET /api/pets/{petId}`.
+   *
+   * `petId` is the owned instance identity and is passed on as supplied; the
+   * runtime adds no lookup, index, or cached collection of its own.
+   */
+  public async getPet(petId: string): Promise<PetResponse> {
+    return await this.api.getPet(petId);
+  }
+
+  /**
+   * The Player's unlocked Card definitions (`API_CONTRACTS.md` §5.3) —
+   * `GET /api/cards`.
+   *
+   * Membership of the returned array **is** the unlocked state (ADR-012). The
+   * runtime reads it as sent: it does not evaluate a category, a count, or a
+   * copy limit, because those are the server's validation at battle start
+   * (`ARCHITECTURE.md` §2.2.3 rule 5).
+   */
+  public async getCards(): Promise<CardResponse[]> {
+    return await this.api.getCards();
+  }
+
+  /**
+   * The owned Relic instances (`API_CONTRACTS.md` §5.4) — `GET /api/relics`.
+   *
+   * Each element is an owned instance identity. The runtime transports the read
+   * unchanged — in particular it does not order or filter it, so no collection
+   * ordering can leak into the equip-slot order the submitted selection defines
+   * (`RELIC_RULES.md` §2.3, `ARCHITECTURE.md` §2.2.3 rule 4).
+   */
+  public async getRelics(): Promise<RelicResponse[]> {
+    return await this.api.getRelics();
   }
 
   // ---------------------------------------------------------------------------

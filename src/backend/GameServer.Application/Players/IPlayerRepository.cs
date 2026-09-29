@@ -31,13 +31,35 @@ public interface IPlayerRepository
     /// An existing Player is returned unchanged — its <c>Level</c> and
     /// <c>CreatedAt</c> are preserved — and no second Player row is created
     /// for an identity that already has one (<c>DATABASE.md</c> §3: a repeated
-    /// authentication does not create a duplicate Player row).
+    /// authentication does not create a duplicate Player row). On the matching
+    /// branch <paramref name="composeStarterGrant"/> is never invoked: the
+    /// starter set is creation-time only and no top-up or repair path exists
+    /// (<c>DATABASE.md</c> §2 item 3).
     /// </summary>
     /// <param name="discordUserId">
     /// The verified <c>DiscordUserId</c> of <c>API_CONTRACTS.md</c> §2.4 — the
     /// Discord User object's <c>id</c>, a snowflake string. The caller writes
     /// a Player only after this identity has been verified
     /// (<c>API_CONTRACTS.md</c> §2.6 rule 5, §2.7 item 6).
+    /// </param>
+    /// <param name="composeStarterGrant">
+    /// Composes the starter ownership set a <b>newly created</b> Player receives
+    /// (<c>DATABASE.md</c> §2 item 1). It is staged together with the Player row
+    /// and committed through <b>one</b> <c>SaveChangesAsync</c>, so the Player
+    /// and its seven ownership rows either all persist or none does
+    /// (<c>DATABASE.md</c> §2 item 4).
+    ///
+    /// <b>It is a callback, not a value, because it must run on the creation
+    /// branch only.</b> Composing it eagerly would resolve the starter content on
+    /// every authentication — including the repeated authentications of existing
+    /// Players, which grant nothing — and would make a match-branch login depend
+    /// on content it never uses. Deferring it also keeps "creation-time only"
+    /// structural: this operation is the only caller, and it invokes the callback
+    /// on exactly the branch that inserted the Player row.
+    ///
+    /// It is the one combined commit-scope surface <c>DATABASE.md</c> §2 item 4
+    /// records — no unit-of-work, transaction manager, outbox, or domain-event
+    /// abstraction is introduced for it.
     /// </param>
     /// <param name="cancellationToken">
     /// Cancels the persistence work with the request.
@@ -48,6 +70,7 @@ public interface IPlayerRepository
     /// </returns>
     Task<Player> GetOrCreateByDiscordUserIdAsync(
         string discordUserId,
+        Func<CancellationToken, Task<PlayerStarterGrant>> composeStarterGrant,
         CancellationToken cancellationToken = default);
 
     /// <summary>

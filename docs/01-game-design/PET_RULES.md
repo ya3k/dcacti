@@ -1,6 +1,11 @@
 # Pet Rules
 
-**Version:** 3.0 (§5 rewritten and **finalized** — the twelve Pet XP
+**Version:** 3.1 (§1 Pet identity model recorded per TASK-082 decision B /
+R2-10 — `PetDefinitionId` is the technical identity, `Identity` is display
+text, no new column; §8 MVP provisioned/deferred row set recorded per
+TASK-082 decision A — 3 Pets with content-defined Signature Skills
+provisionable, the 2 TBD-Skill Pets deferred; prior 3.0: §5 rewritten and
+**finalized** — the twelve Pet XP
 progression/reward decisions are now decided, not open: Pet.XP persists per
 instance, initial `0`, initial Level `1`, range 1–50, `BattleWon` grants the
 active combat Pet `+100`, `BattleLost` `+0`, inactive owned Pets `+0`,
@@ -49,6 +54,16 @@ Pet
 
 `XP` and `Level` belong to the **owned Pet instance**, not to
 `PetDefinition` (§5.1, `DATABASE.md` §1).
+
+**Identity model.** (TASK-082 decision B / R2-10) `PetDefinitionId` is
+the Pet's **technical identity** (its value form is owned by
+`DATABASE.md` §1); `PetDefinition.Identity` remains the **display
+identity** and continues to project the display text defined by
+`API_CONTRACTS.md` §5.1 (e.g. "Xích Lang"). No separate
+technical-identity column or new Pet identity concept is introduced —
+the TASK-046 three-way distinction stands: display name →
+`PetDefinition.Identity`; technical identity → `PetDefinitionId`;
+persistence identity → the database primary key.
 
 ---
 
@@ -366,3 +381,13 @@ Huyền Quy   Thủy      Every 6 Matches → Shield 15% Max HP     Tidal Barrie
 Each MVP Pet ships as a single Tier instance for MVP; the Tier/Star/Level
 system above governs how these (and future) Pets scale, not how many Tier
 variants exist at MVP launch (GAME_RULES.md §19 scope: "5 Pets").
+
+**Provisioned vs. deferred row set.** (TASK-082 decision A) Only Pets
+whose Signature Skill is content-defined in `CARD_RULES.md` §4.1 may be
+provisioned: **Xích Lang (Inferno), Bạch Hổ (Iron Fang), and Huyền Quy
+(Tidal Barrier)**. The **Thanh Xà and Sơn Hùng rows are deferred** until
+their Signature Skills are content-defined — their
+`SignatureSkillCardId` targets do not exist (`CARD_RULES.md` §4.1) and
+the FK is required (`DATABASE.md` §1). Their Passive thresholds above
+are unchanged and stay documented; no placeholder row, invented Skill
+Card, or invented value may be provisioned (`DATABASE.md` §5 item 4).

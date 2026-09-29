@@ -2,6 +2,7 @@ using GameServer.Application;
 using GameServer.Application.Battle;
 using GameServer.Application.Cards;
 using GameServer.Application.Pets;
+using GameServer.Application.Players;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -45,6 +46,22 @@ public class ApplicationRegistrationTests
         var descriptor = Assert.Single(
             services,
             d => d.ServiceType == typeof(BattleStartService));
+
+        Assert.Equal(ServiceLifetime.Scoped, descriptor.Lifetime);
+    }
+
+    [Fact]
+    public void AddApplicationServices_ShouldRegisterPlayerStarterGrantFactory()
+    {
+        // DATABASE.md §2 item 1: the starter ownership composition is registered
+        // so the Player-creation boundary can resolve it. It is scoped, because
+        // it depends on the scoped Pet/Card/Relic repository boundaries.
+        var services = new ServiceCollection();
+        services.AddApplicationServices();
+
+        var descriptor = Assert.Single(
+            services,
+            d => d.ServiceType == typeof(PlayerStarterGrantFactory));
 
         Assert.Equal(ServiceLifetime.Scoped, descriptor.Lifetime);
     }

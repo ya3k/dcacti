@@ -24,6 +24,8 @@
  */
 
 import type { GameRuntimeState } from '../../state/GameRuntimeState';
+import type { BattleStartRequest } from '../../services/api/BattleModels';
+import type { CardResponse, PetResponse, RelicResponse } from '../../services/api/CollectionModels';
 
 /** Technical runtime lifecycle events emitted by `GameRuntime`. */
 export type RuntimeEventType =
@@ -222,6 +224,17 @@ export type BattleStateListener = (state: RuntimeBattleState) => void;
  * Scenes depend on this interface, never on SignalR. That is the boundary that
  * keeps Phaser independent of the transport implementation
  * (ARCHITECTURE.md §2.2 rule 3, AGENTS.md §13).
+ *
+ * The rule is transport-general (`ARCHITECTURE.md` §2.2.1 rule 1, §2.2.3 rule
+ * 3): a scene must not import `fetch`, `ApiService`, or any other HTTP/REST
+ * client either, so the pre-battle selection flow's collection read is a
+ * capability of this port rather than a direct `services/api/` call.
+ *
+ * **Capabilities, not models** (`ARCHITECTURE.md` §2.2.3 rule 6). The port
+ * exposes what a scene may *ask the runtime to do*; it defines, re-exports, and
+ * owns no collection read model, loadout, or selection type. The wire shapes
+ * referenced below are owned by `services/api/` and are only imported as
+ * types, so this file declares none of them.
  */
 export interface GameRuntimePort {
   /** Current technical runtime state. */
@@ -261,6 +274,63 @@ export interface GameRuntimePort {
    * ADR-001).
    */
   requestAction(action: RuntimeActionRequest): Promise<RuntimeActionAcknowledgement>;
+  /**
+   * The battle-start capability of the pre-battle selection flow
+   * (`ARCHITECTURE.md` §2.2.3 rule 5, TASK-077).
+   *
+   * `LobbyScene` submits the documented `BattleStartRequest`
+   * (`API_CONTRACTS.md` §3) built from its own in-progress selection and the
+   * runtime performs the documented start sequence
+   * (`SIGNALR_PROTOCOL.md` §1 items 1–2, §2):
+   *
+   * ```text
+   * ApiService.startBattle(request)   →  POST /api/battle/start
+   *         ↓
+   * SignalRService.connect(signalrHub)
+   *         ↓
+   * SignalRService.joinBattle(battleId)
+   * ```
+   *
+   * The scene supplies the selection and nothing else. It does not validate the
+   * loadout, does not decide whether the selection is legal, and does not handle
+   * the battle: the server is authoritative for the resulting `BattleState`
+   * (`GAME_RULES.md` §18, ADR-001).
+   *
+   * The promise settles once the documented sequence has run — a rejection
+   * (`401 UNAUTHENTICATED`, `400 INVALID_LOADOUT` / `PET_NOT_OWNED` /
+   * `BOSS_NOT_FOUND`, or a connect/join failure) leaves no battle created and
+   * nothing fabricated, and the caller keeps its selection to retry
+   * (`ARCHITECTURE.md` §2.2.3 rule 5).
+   */
+  startBattle(request: BattleStartRequest): Promise<void>;
+  /**
+   * The owned Pet collection (`API_CONTRACTS.md` §5.1) as the server returns it.
+   *
+   * This is a **selection source, never a selection**
+   * (`ARCHITECTURE.md` §2.2.3 rule 4): the response carries no equip state and
+   * no defined ordering (§5.5, §5.6), so the caller builds its own selection
+   * from it and must not read a loadout out of it. The runtime transports the
+   * read unchanged — it does not sort, filter, default, or cache it.
+   */
+  getPets(): Promise<PetResponse[]>;
+  /**
+   * One owned Pet's detail (`API_CONTRACTS.md` §5.2), addressed by the owned
+   * **instance** identity (`Pet.PetInstanceId`, §5.1). The 200 body is the same
+   * object as one `getPets` array element.
+   */
+  getPet(petId: string): Promise<PetResponse>;
+  /**
+   * The Card definitions the Player has unlocked (`API_CONTRACTS.md` §5.3).
+   * Membership of the array **is** the unlocked state (ADR-012), so there is no
+   * equip or unlock member to read from it (§5.5, §5.6).
+   */
+  getCards(): Promise<CardResponse[]>;
+  /**
+   * The Relic **instances** the Player owns (`API_CONTRACTS.md` §5.4), each
+   * carrying its owned instance identity and no equip state (§5.6). The
+   * instance identity is what a `relicLoadout` selection submits (§3).
+   */
+  getRelics(): Promise<RelicResponse[]>;
 }
 
 /**

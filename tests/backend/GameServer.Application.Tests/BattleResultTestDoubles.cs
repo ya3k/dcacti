@@ -230,17 +230,36 @@ internal sealed class InMemoryPlayerRepository : IPlayerRepository
         _players.TryGetValue(playerId, out var player) ? player : null;
 
     /// <inheritdoc />
-    public Task<Player> GetOrCreateByDiscordUserIdAsync(
+    /// <remarks>
+    /// The starter grant is accepted and deliberately <b>not</b> modelled: this
+    /// double exists for the battle-reward path, which reads and writes one
+    /// Player progression row and observes no ownership. Modelling the seven
+    /// starter rows here would add state no test of this double's purpose could
+    /// assert — the atomic starter bootstrap is verified against real
+    /// persistence in the Infrastructure suite
+    /// (<c>PlayerStarterOwnershipTests</c>, <c>PlayerStarterOwnershipPostgresTests</c>).
+    ///
+    /// The composition callback is invoked exactly where the real boundary
+    /// invokes it — on the creation branch — so a test that asserts the starter
+    /// set is composed only for a new Player observes the same behavior here as
+    /// in the production path.
+    /// </remarks>
+    public async Task<Player> GetOrCreateByDiscordUserIdAsync(
         string discordUserId,
+        Func<CancellationToken, Task<PlayerStarterGrant>> composeStarterGrant,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(composeStarterGrant);
+
         var existing = _players.Values
             .FirstOrDefault(player => player.DiscordUserId == discordUserId);
 
         if (existing is not null)
         {
-            return Task.FromResult(existing);
+            return existing;
         }
+
+        _ = await composeStarterGrant(cancellationToken);
 
         var created = new Player
         {
@@ -253,7 +272,7 @@ internal sealed class InMemoryPlayerRepository : IPlayerRepository
 
         _players[created.PlayerId] = created;
 
-        return Task.FromResult(created);
+        return created;
     }
 
     /// <inheritdoc />

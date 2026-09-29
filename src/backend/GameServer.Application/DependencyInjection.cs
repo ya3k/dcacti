@@ -2,6 +2,7 @@ using GameServer.Application.Battle;
 using GameServer.Application.Cards;
 using GameServer.Application.Collection;
 using GameServer.Application.Pets;
+using GameServer.Application.Players;
 using GameServer.Application.Relics;
 using GameServer.Application.Runtime;
 using Microsoft.Extensions.DependencyInjection;
@@ -108,6 +109,15 @@ public static class DependencyInjection
         // implements none of those rules itself. It creates a battle only after
         // every validation has passed, so a rejected request creates nothing.
         services.AddScoped<BattleStartService>();
+
+        // Starter ownership composition (DATABASE.md §2 item 1). Scoped because
+        // it resolves the scoped Pet/Card/Relic repository boundaries. It builds
+        // the deterministic starter set a newly created Player receives and
+        // resolves every row against the provisioned definition content; it
+        // writes nothing itself — the Player-creation persistence boundary
+        // stages the set and commits it atomically with the Player row
+        // (DATABASE.md §2 item 4).
+        services.AddScoped<PlayerStarterGrantFactory>();
 
         // The collection read behind GET /api/pets, /api/pets/{petId},
         // /api/cards, and /api/relics (API_CONTRACTS.md §5.1–§5.6). Scoped

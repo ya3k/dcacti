@@ -28,7 +28,7 @@ public class PlayerMatchOrCreateTests
         await using var context = CreateContext(nameof(NewDiscordUserId_ShouldCreateAPlayerAtLevelOne));
         var repository = new PlayerRepository(context);
 
-        var player = await repository.GetOrCreateByDiscordUserIdAsync("80351110224678912");
+        var player = await repository.GetOrCreateByDiscordUserIdAsync("80351110224678912", TestStarterGrants.StagedCallback);
 
         // DATABASE.md §1: the row carries the identity it was created for, a
         // PlayerId, and a creation timestamp.
@@ -58,8 +58,8 @@ public class PlayerMatchOrCreateTests
 
         const string discordUserId = "80351110224678912";
 
-        var first = await repository.GetOrCreateByDiscordUserIdAsync(discordUserId);
-        var second = await repository.GetOrCreateByDiscordUserIdAsync(discordUserId);
+        var first = await repository.GetOrCreateByDiscordUserIdAsync(discordUserId, TestStarterGrants.StagedCallback);
+        var second = await repository.GetOrCreateByDiscordUserIdAsync(discordUserId, TestStarterGrants.StagedCallback);
 
         Assert.Equal(first.PlayerId, second.PlayerId);
         Assert.Equal(first.DiscordUserId, second.DiscordUserId);
@@ -90,7 +90,7 @@ public class PlayerMatchOrCreateTests
         });
         await context.SaveChangesAsync();
 
-        var matched = await repository.GetOrCreateByDiscordUserIdAsync(discordUserId);
+        var matched = await repository.GetOrCreateByDiscordUserIdAsync(discordUserId, TestStarterGrants.StagedCallback);
 
         Assert.Equal("player_progressed", matched.PlayerId);
         Assert.Equal(37, matched.Level);
@@ -109,8 +109,8 @@ public class PlayerMatchOrCreateTests
         await using var context = CreateContext(nameof(DistinctDiscordUserIds_ShouldResolveToDistinctPlayers));
         var repository = new PlayerRepository(context);
 
-        var first = await repository.GetOrCreateByDiscordUserIdAsync("80351110224678912");
-        var second = await repository.GetOrCreateByDiscordUserIdAsync("197198264217354241");
+        var first = await repository.GetOrCreateByDiscordUserIdAsync("80351110224678912", TestStarterGrants.StagedCallback);
+        var second = await repository.GetOrCreateByDiscordUserIdAsync("197198264217354241", TestStarterGrants.StagedCallback);
 
         Assert.NotEqual(first.PlayerId, second.PlayerId);
         Assert.NotEqual(first.DiscordUserId, second.DiscordUserId);
@@ -129,8 +129,8 @@ public class PlayerMatchOrCreateTests
         // A value beyond Int64 would break any numeric parsing.
         const string snowflakeBeyondInt64 = "99999999999999999999999";
 
-        var created = await repository.GetOrCreateByDiscordUserIdAsync(snowflakeBeyondInt64);
-        var matched = await repository.GetOrCreateByDiscordUserIdAsync(snowflakeBeyondInt64);
+        var created = await repository.GetOrCreateByDiscordUserIdAsync(snowflakeBeyondInt64, TestStarterGrants.StagedCallback);
+        var matched = await repository.GetOrCreateByDiscordUserIdAsync(snowflakeBeyondInt64, TestStarterGrants.StagedCallback);
 
         Assert.Equal(snowflakeBeyondInt64, created.DiscordUserId);
         Assert.Equal(created.PlayerId, matched.PlayerId);
@@ -148,8 +148,8 @@ public class PlayerMatchOrCreateTests
 
         const string discordUserId = "80351110224678912";
 
-        var created = await repository.GetOrCreateByDiscordUserIdAsync(discordUserId);
-        var matched = await repository.GetOrCreateByDiscordUserIdAsync(discordUserId);
+        var created = await repository.GetOrCreateByDiscordUserIdAsync(discordUserId, TestStarterGrants.StagedCallback);
+        var matched = await repository.GetOrCreateByDiscordUserIdAsync(discordUserId, TestStarterGrants.StagedCallback);
 
         Assert.NotEqual(default, created.CreatedAt);
         Assert.Equal(created.CreatedAt, matched.CreatedAt);

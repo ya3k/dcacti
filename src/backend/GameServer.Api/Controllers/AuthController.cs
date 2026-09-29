@@ -49,15 +49,18 @@ public class AuthController : ControllerBase
 {
     private readonly IDiscordIdentityResolver _identityResolver;
     private readonly IPlayerRepository _playerRepository;
+    private readonly PlayerStarterGrantFactory _starterGrants;
     private readonly ApplicationSessionTokenService _sessions;
 
     public AuthController(
         IDiscordIdentityResolver identityResolver,
         IPlayerRepository playerRepository,
+        PlayerStarterGrantFactory starterGrants,
         ApplicationSessionTokenService sessions)
     {
         _identityResolver = identityResolver;
         _playerRepository = playerRepository;
+        _starterGrants = starterGrants;
         _sessions = sessions;
     }
 
@@ -106,8 +109,26 @@ public class AuthController : ControllerBase
         // (DATABASE.md §1). This is TASK-023's responsibility: an existing
         // Player is reused unchanged, and a new one starts at the documented
         // initial Level (PET_RULES.md §5 item 8).
+        //
+        // The starter ownership composition (DATABASE.md §2 item 1) is supplied
+        // as a callback so it is resolved by the creation boundary on the
+        // creation branch only — an existing Player is returned unchanged and
+        // receives none of it (DATABASE.md §2 item 3). The composition is fixed
+        // server-side and no request member participates in it: the client's only
+        // observation path is the §5 collection reads (GAME_RULES.md §18,
+        // ADR-001).
+        //
+        // That is why no "has this Player received the starter set?" check exists
+        // anywhere: the creation branch is the whole rule, and it is reached at
+        // most once per Player.
         var player = await _playerRepository.GetOrCreateByDiscordUserIdAsync(
             identity.Identity.DiscordUserId,
+
+            // DATABASE.md §1: AcquiredAt is a server clock reading, set once. It
+            // is never supplied by the client.
+            composeStarterGrant: cancellation => _starterGrants.CreateAsync(
+                DateTimeOffset.UtcNow,
+                cancellation),
             cancellationToken);
 
         // Step 3 — issue the application session (API_CONTRACTS.md §2.5, §2.8;
