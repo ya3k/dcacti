@@ -49,8 +49,10 @@ describe('Frontend architectural boundaries', () => {
     const sceneFiles = [
       'BootScene.ts',
       'PreloaderScene.ts',
+      'MainMenuScene.ts',
       'LobbyScene.ts',
       'BattleScene.ts',
+      'ResultScene.ts',
     ].map((f) => join('game', 'scenes', f));
 
     it.each(sceneFiles)('%s imports no transport client', (file) => {

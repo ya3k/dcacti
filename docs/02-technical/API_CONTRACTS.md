@@ -1,6 +1,12 @@
 # API Contracts
 
-**Version:** 1.15 (§5.1's Element wire value set **scoped and made
+**Version:** 1.16 (§4 `GET /api/battle/{battleId}/result` response example and contract
+notes synchronized with the landed 8-member `RewardSummary` contract per TASK-089 —
+replaces `"rewards": {}` with the full 8-member object projection [`playerXpGained`,
+`newPlayerXp`, `playerLeveledUp`, `newPlayerLevel`, `petXpGained`, `newPetXp`,
+`petLeveledUp`, `newPetLevel`]; removes obsolete `{}` staging phrases and deferred Pet
+member list wording; preserves symmetrical victory/defeat shape per TASK-068 Option A).
+Prior 1.15: (§5.1's Element wire value set **scoped and made
 non-duplicable** per TASK-073 — the set is now stated as the Element wire set
 for this document's whole REST surface, and the recall pointer in §3 binds
 `POST /api/battle/start`'s `initialState.petState.element` /
@@ -569,7 +575,16 @@ Response 200:
 {
   "battleId": "string",
   "outcome": "victory" | "defeat",
-  "rewards": {},
+  "rewards": {
+    "playerXpGained": 100,
+    "newPlayerXp": 100,
+    "playerLeveledUp": false,
+    "newPlayerLevel": 1,
+    "petXpGained": 100,
+    "newPetXp": 100,
+    "petLeveledUp": false,
+    "newPetLevel": 1
+  },
   "durationTurns": 0
 }
 ```
@@ -591,18 +606,16 @@ state is only available via the SignalR connection, not this endpoint.
 1. **`rewards` is always present** in this response — for both `"victory"`
    and `"defeat"`, never absent or optional. Its value is
    `BattleResult.RewardSummary` exactly as `DATABASE.md` §1 documents it
-   (currently the staging value `{}` until the implementation task lands;
-   once it lands, the Player-track member set is serialized for **both**
-   outcomes — `playerXpGained = 100` on `"victory"`, `playerXpGained = 0`
-   on `"defeat"`). The `RewardSummary` member list is owned by
-   `DATABASE.md` §1, "Reward semantics for `RewardSummary`": the
-   **Player track is decided** (`COMBAT_RULES.md` §7 — `BattleWon` grants
-   `+100` Player XP, `BattleLost` `+0`), and the **Pet track's reward
-   semantics are now decided too** (`PET_RULES.md` §5.3 — `BattleWon`
-   grants the active combat Pet `+100` Pet XP, `BattleLost` `+0`, every
-   inactive owned Pet `+0`). The Pet **member list** is deferred to the
-   implementation task; no Pet reward field is frozen here or there in the
-   meantime (`AGENTS.md` §7, §9).
+   (the 8-member structure serialized for **both** outcomes —
+   `playerXpGained = 100` and `petXpGained = 100` on `"victory"`,
+   `playerXpGained = 0` and `petXpGained = 0` on `"defeat"`, with
+   `playerLeveledUp`/`petLeveledUp` `false` and unchanged XP/Level values on
+   defeat). The `RewardSummary` member list is owned by `DATABASE.md` §1,
+   "Reward semantics for `RewardSummary`": the **Player track**
+   (`COMBAT_RULES.md` §7 — `BattleWon` grants `+100` Player XP, `BattleLost`
+   `+0`) and the **Pet track** (`PET_RULES.md` §5.3–§5.5 — `BattleWon` grants
+   the active combat Pet `+100` Pet XP, `BattleLost` `+0`, every inactive owned
+   Pet `+0`, hard-capped at 4900).
 2. **`battleId` is the result row's primary key** — `BattleResultId` is
    the battle's own `BattleId`, one row per battle (`DATABASE.md` §1).
 3. **Event vs REST:** `GAME_EVENTS.md` §2 documents the reward summary as
@@ -611,8 +624,7 @@ state is only available via the SignalR connection, not this endpoint.
    documents describe **one** `RewardSummary` contract, owned by
    `DATABASE.md` §1: neither the event payload nor this response defines a
    member list of its own, and neither contradicts the other on the value
-   that is in force (`{}` staging, or — once the implementation task lands —
-   the same Player-track member set for both outcomes).
+   that is in force (the symmetrical 8-member structure for both outcomes).
 4. **`outcome` values** — `"victory"` | `"defeat"`. The value set and its
    semantics are owned by `GAME_EVENTS.md` §2 (BattleWon / BattleLost);
    the persisted `BattleResult.Outcome` (`DATABASE.md` §1) and the

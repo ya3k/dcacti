@@ -27,7 +27,8 @@ namespace GameServer.Domain.Battle;
 ///     ├── PassiveId              the Pet's one Passive — the identity the
 ///     │                          Passive events report (PASSIVE_RULES.md §1)
 ///     ├── PassiveProgress        current count vs. threshold                (§2)
-///     └── PassiveResetOverride?  only present for a non-default reset      (§4)
+///     ├── PassiveResetOverride?  only present for a non-default reset      (§4)
+///     └── StatusEffects[]        active Status Effect instances           (§2.3.1)
 /// </code>
 ///
 /// <b>This is the documented owner, not a new decision.</b> <c>GAME_STATE.md</c>
@@ -60,9 +61,7 @@ namespace GameServer.Domain.Battle;
 /// the record already owns (<c>GAME_STATE.md</c> §0 item 5).
 ///
 /// <b>Only the fields this stage requires exist.</b> §2.3 also lists
-/// <c>Tier</c>/<c>Star</c>/<c>Level</c> and the
-/// <c>StatusEffects[]</c> collection.
-/// Those belong to the Pet progression and Status Effect stages
+/// <c>Tier</c>/<c>Star</c>/<c>Level</c>. Those belong to the Pet progression stage
 /// and are <b>not yet
 /// implemented</b>, not <b>not required</b> (§0 item 4, §2.0.5.3,
 /// <c>SIGNALR_PROTOCOL.md</c> §4.3 item 2): each is added by its own owning task,
@@ -327,6 +326,28 @@ namespace GameServer.Domain.Battle;
 /// written back (<c>DATABASE.md</c> §2: "Battle equip of Cards is not persisted
 /// here").
 /// </param>
+/// <b><c>StatusEffects[]</c> is the Status Effect stage's member.</b> It is the
+/// collection of active Status Effect instances on this entity
+/// (<c>GAME_STATE.md</c> §2.3.1) — the same element shape and the same lifecycle
+/// as <c>BossState.StatusEffects[]</c> (§2.4.1: "identical element schema,
+/// identical lifecycle"), with no pet-specific variant.
+///
+/// It is <b>always present</b>: §2.3.2 item 1 makes an entity with no active
+/// effect serialize an <b>empty array</b>, because "the collection always exists
+/// (§0 item 4), so it is never omitted and never <c>null</c>". A <c>null</c> here
+/// would be the absent-collection state §2.3.2 item 1 states is not
+/// representable, so this member is non-nullable and defaults to the empty
+/// collection rather than to <c>null</c>.
+///
+/// Its mutation — apply, refresh, consume at <c>GAME_RULES.md</c> §17 step 19a,
+/// and expire — is owned by <c>GAME_STATE.md</c> §5.1.1 and implemented by
+/// <see cref="StatusEffectLifecycle"/>. The gameplay rule behind the countdown is
+/// <c>COMBAT_RULES.md</c> §5.3 and is not restated here.
+///
+/// It is <b>not a wire member</b>: §2.3.1's wire note states <c>StatusEffects[]</c>
+/// is not part of any current wire payload, so carrying it here adds no member to
+/// <c>BattleStateUpdated</c> and no message, method, or subscription.
+/// </param>
 /// <param name="PetId">
 /// The owned Pet instance this battle's active Pet is (<c>GAME_STATE.md</c>
 /// §2.3) — the same value as <see cref="GameServer.Domain.Pets.Pet.PetInstanceId"/>
@@ -362,6 +383,41 @@ public readonly record struct PetState(
     EquippedRelicIdentity[]? EquippedRelics = null,
     EquippedCardIdentity[]? EquippedCards = null)
 {
+    /// <summary>
+    /// The entity's active Status Effect instances (<c>GAME_STATE.md</c> §2.3.1).
+    ///
+    /// <b>It is never <c>null</c>.</b> §2.3.2 item 1 makes an entity with no
+    /// active effect an <b>empty array</b> — the collection "always exists (§0
+    /// item 4), so it is never omitted and never <c>null</c>" — so <c>null</c> is
+    /// not a state this record can hold: it is initialized to the empty collection
+    /// and every write goes through this one member, which <see cref="StatusEffectLifecycle"/>
+    /// is the only code that does. That matters for value equality as well as for
+    /// reads: two states differing only in "unset" versus "empty" are the same
+    /// documented state, so they must compare equal (§2.3.2 item 5's round-trip
+    /// obligation).
+    ///
+    /// Its mutation — apply, refresh, consume at <c>GAME_RULES.md</c> §17 step 19a,
+    /// and expire — is owned by <c>GAME_STATE.md</c> §5.1.1 (see
+    /// <see cref="StatusEffectLifecycle"/>). It is <b>not a wire member</b>
+    /// (§2.3.1's wire note), and it is carried here as state, not delivered.
+    /// </summary>
+    public StatusEffect[] ActiveStatusEffects { get; init; } = [];
+
+    /// <summary>
+    /// Whether this state's Status Effect collection holds the same instances as
+    /// another's — the structural comparison <c>GAME_STATE.md</c> §2.3.2 item 5's
+    /// round-trip obligation requires.
+    ///
+    /// The record's own equality compares an array member by reference, so two
+    /// states that a round trip made hold the same elements would compare unequal
+    /// on that member alone. This is the same need
+    /// <see cref="Match3.BoardState.CellsEqual"/> answers for the board (§2.1.7
+    /// item 5), applied to this collection.
+    /// </summary>
+    /// <param name="other">The state to compare the collection against.</param>
+    public bool StatusEffectsEqual(PetState other) =>
+        StatusEffectLifecycle.EffectsEqual(ActiveStatusEffects, other.ActiveStatusEffects);
+
     /// <summary>
     /// The documented MVP starting <c>MaxHP</c> (<c>COMBAT_RULES.md</c> §1.1:
     /// "Max HP — maximum health — MVP default: 1000").
@@ -496,6 +552,20 @@ public readonly record struct PetState(
     /// documented same-definition repetition, not a defect
     /// (<c>GAME_STATE.md</c> §2.3).
     /// </param>
+    /// <param name="statusEffects">
+    /// The active Status Effect instances the battle's Pet begins with, or
+    /// <c>null</c> for none (<c>GAME_STATE.md</c> §2.3.1).
+    ///
+    /// A battle begins with no Status Effect applied — no content-defined source
+    /// applies one at creation, because application happens during a resolution's
+    /// steps (<c>GAME_STATE.md</c> §5.1.1 item 1, <c>GAME_RULES.md</c> §17 step
+    /// 18b) and battle creation is not a resolution. The parameter therefore
+    /// defaults to none, and a <c>null</c> reads as the documented empty collection
+    /// rather than as an absent one (§2.3.2 item 1: the collection "always exists
+    /// ... it is never omitted and never null"). It exists so a caller that must
+    /// reconstruct a state carrying instances — a recovery, or a test — can do so
+    /// without a second construction path.
+    /// </param>
     public static PetState AtBattleCreation(
         PetId petId,
         Element element,
@@ -503,7 +573,8 @@ public readonly record struct PetState(
         int passiveThreshold,
         PassiveResetBehavior? passiveResetOverride = null,
         EquippedRelicIdentity[]? equippedRelics = null,
-        EquippedCardIdentity[]? equippedCards = null) =>
+        EquippedCardIdentity[]? equippedCards = null,
+        StatusEffect[]? statusEffects = null) =>
         // §2.3 item 3 / §4.3 item 4: progress begins at 0 against the Passive's own
         // Threshold. It is never absent, never lazily initialized, and never
         // defaulted with an invented value. The Element is likewise the Pet's own
@@ -526,5 +597,13 @@ public readonly record struct PetState(
             PassiveProgress: PassiveProgress.AtStart(passiveThreshold),
             PassiveResetOverride: passiveResetOverride,
             EquippedRelics: equippedRelics,
-            EquippedCards: equippedCards);
+            EquippedCards: equippedCards)
+        {
+            // §2.3.1: the Status Effect collection begins empty — no content-defined
+            // source applies one at creation, because application happens during a
+            // resolution (GAME_STATE.md §5.1.1 item 1, GAME_RULES.md §17 step 18b)
+            // and battle creation is not a resolution. A caller reconstructing a
+            // state that carries instances sets the member directly.
+            ActiveStatusEffects = statusEffects ?? [],
+        };
 }

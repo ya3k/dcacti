@@ -3,12 +3,14 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { BattleScene } from '../src/game/scenes/BattleScene';
 import { BootScene } from '../src/game/scenes/BootScene';
+import { MainMenuScene } from '../src/game/scenes/MainMenuScene';
 import { PreloaderScene } from '../src/game/scenes/PreloaderScene';
+import { ResultScene } from '../src/game/scenes/ResultScene';
 import { RUNTIME_REGISTRY_KEY } from '../src/game/runtime/RuntimeRegistry';
 import { GAME_WIDTH, SAFE_AREA } from '../src/game/GameViewport';
 import { INITIAL_RUNTIME_STATE } from '../src/state/GameRuntimeState';
 import type { GameRuntimeState } from '../src/state/GameRuntimeState';
-import type { RuntimeBattleState } from '../src/game/runtime/GameRuntimeEvents';
+import type { BattleEventsEnvelope, RuntimeBattleState } from '../src/game/runtime/GameRuntimeEvents';
 
 vi.mock('phaser', () => ({
   AUTO: 'AUTO',
@@ -45,6 +47,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
   const { state = INITIAL_RUNTIME_STATE, withRuntime = true, battleState = null } = options;
   const listeners = new Set<(event: { state: GameRuntimeState }) => void>();
   const battleStateListeners = new Set<(state: RuntimeBattleState) => void>();
+  const battleEventListeners = new Set<(envelope: BattleEventsEnvelope) => void>();
   const texts: Array<{ text: string; color?: string }> = [];
   /**
    * The board container's current children, in draw order. It models the real
@@ -82,6 +85,12 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       battleStateListeners.add(listener);
       return () => {
         battleStateListeners.delete(listener);
+      };
+    },
+    onBattleEvents: (listener: (envelope: BattleEventsEnvelope) => void) => {
+      battleEventListeners.add(listener);
+      return () => {
+        battleEventListeners.delete(listener);
       };
     },
     requestAction: (action: Record<string, unknown>) => {
@@ -166,7 +175,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       },
       add: {
         rectangle: () => {
-          const rect = { kind: 'tile', setStrokeStyle: () => rect };
+          const rect = { kind: 'tile', setStrokeStyle: () => rect, setInteractive: () => rect, on: vi.fn() };
           return rect;
         },
         text: (_x: number, _y: number, value: string) => makeText(value),
@@ -192,6 +201,12 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     texts,
     listeners,
     battleStateListeners,
+    battleEventListeners,
+    emitBattleEvents: (envelope: BattleEventsEnvelope) => {
+      for (const listener of battleEventListeners) {
+        listener(envelope);
+      }
+    },
     boardCells,
     boardInputHandlers,
     requestedActions,
@@ -217,9 +232,9 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
 }
 
 /** Invokes a scene method with the harness context, as Phaser itself would. */
-function runScene(scene: object, ctx: object, method: string): void {
-  const fn = Object.getPrototypeOf(scene)[method] as (this: object) => void;
-  fn.call(ctx);
+function runScene(scene: object, ctx: object, method: string, ...args: unknown[]): void {
+  const fn = Object.getPrototypeOf(scene)[method] as ((this: object, ...args: unknown[]) => void) | undefined;
+  fn?.call(ctx, ...args);
 }
 
 /**
@@ -296,7 +311,9 @@ describe('Phaser scene lifecycle', () => {
   it('exposes the documented scene classes', () => {
     expect(new BootScene()).toBeInstanceOf(BootScene);
     expect(new PreloaderScene()).toBeInstanceOf(PreloaderScene);
+    expect(new MainMenuScene()).toBeInstanceOf(MainMenuScene);
     expect(new BattleScene()).toBeInstanceOf(BattleScene);
+    expect(new ResultScene()).toBeInstanceOf(ResultScene);
   });
 });
 
@@ -332,10 +349,9 @@ describe('PreloaderScene', () => {
 
     // The loading lifecycle boundary is registered...
     expect(harness.loadHandlers.has('complete')).toBe(true);
-    // ...and the scene still advances correctly with nothing to load. TASK-078
-    // stage advance: the transition target is the pre-battle lobby
-    // (TDD.md §2.1's staged MVP order), not `BattleScene` directly.
-    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['LobbyScene']);
+    // ...and the scene still advances correctly with nothing to load. TASK-090:
+    // the transition target is now MainMenuScene (TDD.md §2.1 full lifecycle).
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['MainMenuScene']);
   });
 
   it('advances via the load-complete handler while assets are loading', () => {
@@ -352,10 +368,10 @@ describe('PreloaderScene', () => {
 
     harness.loadHandlers.get('complete')?.();
 
-    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['LobbyScene']);
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['MainMenuScene']);
   });
 
-  it('transitions to LobbyScene exactly once', () => {
+  it('transitions to MainMenuScene exactly once', () => {
     const harness = createSceneHarness();
     const preloader = new PreloaderScene();
     const ctx = harness.context(preloader, 'PreloaderScene');
@@ -365,6 +381,19 @@ describe('PreloaderScene', () => {
     harness.loadHandlers.get('complete')?.();
 
     expect(harness.sceneStarted).toHaveLength(1);
+  });
+
+  it('never starts LobbyScene directly from PreloaderScene', () => {
+    const harness = createSceneHarness();
+    const preloader = new PreloaderScene();
+    const ctx = harness.context(preloader, 'PreloaderScene');
+
+    runScene(preloader, ctx, 'preload');
+    runScene(preloader, ctx, 'create');
+    harness.loadHandlers.get('complete')?.();
+
+    const startedKeys = harness.sceneStarted.map((s) => s.key);
+    expect(startedKeys).not.toContain('LobbyScene');
   });
 });
 
@@ -1044,5 +1073,229 @@ describe('BattleScene — Swap input (MATCH3_RULES.md §2, SIGNALR_PROTOCOL.md �
     expect(source).not.toContain("'CardCast'");
     expect(source).not.toContain("'PetSkillCast'");
     expect(source).not.toContain("'GetBattleState'");
+  });
+});
+
+describe('BattleScene — Outcome handoff (TASK-087, SIGNALR_PROTOCOL.md §3.2.19)', () => {
+  function createBattle() {
+    const harness = createSceneHarness();
+    const scene = new BattleScene();
+    const ctx = harness.context(scene, 'BattleScene');
+    return { harness, scene, ctx };
+  }
+
+  it('subscribes to onBattleEvents on create and detaches on shutdown', () => {
+    const { harness, scene, ctx } = createBattle();
+
+    runScene(scene, ctx, 'create');
+    expect(harness.battleEventListeners.size).toBe(1);
+
+    runScene(scene, ctx, 'shutdown');
+    expect(harness.battleEventListeners.size).toBe(0);
+  });
+
+  it('transitions to ResultScene when BattleWon is received', () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+
+    harness.emitBattleEvents({
+      battleId: 'battle-1',
+      serverSequence: 10,
+      events: [
+        {
+          type: 'BattleWon',
+          outcome: 'victory',
+          finalBossHp: 37,
+          finalPlayerHp: 812,
+        },
+      ],
+    });
+
+    expect(harness.sceneStarted).toEqual([
+      {
+        key: 'ResultScene',
+        data: {
+          outcome: 'victory',
+          finalBossHp: 37,
+          finalPlayerHp: 812,
+        },
+      },
+    ]);
+  });
+
+  it('transitions to ResultScene when BattleLost is received', () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+
+    harness.emitBattleEvents({
+      battleId: 'battle-1',
+      serverSequence: 12,
+      events: [
+        {
+          type: 'BattleLost',
+          outcome: 'defeat',
+          finalBossHp: 412,
+          finalPlayerHp: 0,
+        },
+      ],
+    });
+
+    expect(harness.sceneStarted).toEqual([
+      {
+        key: 'ResultScene',
+        data: {
+          outcome: 'defeat',
+          finalBossHp: 412,
+          finalPlayerHp: 0,
+        },
+      },
+    ]);
+  });
+
+  it('does not transition when envelope contains no outcome event', () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+
+    harness.emitBattleEvents({
+      battleId: 'battle-1',
+      serverSequence: 3,
+      events: [{ type: 'TurnEnded', turn: 1 }],
+    });
+
+    expect(harness.sceneStarted).toHaveLength(0);
+  });
+
+  it('guards against duplicate transitions on multiple outcome events', () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+
+    const won = {
+      type: 'BattleWon',
+      outcome: 'victory',
+      finalBossHp: 0,
+      finalPlayerHp: 100,
+    };
+
+    harness.emitBattleEvents({
+      battleId: 'battle-1',
+      serverSequence: 10,
+      events: [won, won],
+    });
+
+    harness.emitBattleEvents({
+      battleId: 'battle-1',
+      serverSequence: 11,
+      events: [won],
+    });
+
+    expect(harness.sceneStarted).toHaveLength(1);
+  });
+});
+
+describe('ResultScene', () => {
+  it('renders victory outcome and verbatim HP values', () => {
+    const harness = createSceneHarness();
+    const scene = new ResultScene();
+    const ctx = harness.context(scene, 'ResultScene');
+
+    runScene(scene, ctx, 'create', {
+      outcome: 'victory',
+      finalBossHp: 37,
+      finalPlayerHp: 812,
+    });
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toMatch(/VICTORY/i);
+    expect(rendered).toContain('Boss HP: 37');
+    expect(rendered).toContain('Player HP: 812');
+  });
+
+  it('renders defeat outcome and verbatim HP values', () => {
+    const harness = createSceneHarness();
+    const scene = new ResultScene();
+    const ctx = harness.context(scene, 'ResultScene');
+
+    runScene(scene, ctx, 'create', {
+      outcome: 'defeat',
+      finalBossHp: 412,
+      finalPlayerHp: 0,
+    });
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toMatch(/DEFEAT/i);
+    expect(rendered).toContain('Boss HP: 412');
+    expect(rendered).toContain('Player HP: 0');
+  });
+});
+
+describe('MainMenuScene', () => {
+  it('can be created with the mocked Phaser/runtime harness', () => {
+    const harness = createSceneHarness();
+    const scene = new MainMenuScene();
+    const ctx = harness.context(scene, 'MainMenuScene');
+
+    expect(() => runScene(scene, ctx, 'create')).not.toThrow();
+  });
+
+  it('creates main menu presentation on create', () => {
+    const harness = createSceneHarness();
+    const scene = new MainMenuScene();
+    const ctx = harness.context(scene, 'MainMenuScene');
+
+    runScene(scene, ctx, 'create');
+
+    // The menu draws a title text.
+    const rendered = harness.texts.map((t) => t.text);
+    expect(rendered).toContain('DCACTI');
+  });
+
+  it('does not navigate before the navigation action', () => {
+    const harness = createSceneHarness();
+    const scene = new MainMenuScene();
+    const ctx = harness.context(scene, 'MainMenuScene');
+
+    runScene(scene, ctx, 'create');
+
+    expect(harness.sceneStarted).toHaveLength(0);
+  });
+
+  it('navigation action starts LobbyScene', () => {
+    const harness = createSceneHarness();
+    const scene = new MainMenuScene();
+    const ctx = harness.context(scene, 'MainMenuScene');
+
+    runScene(scene, ctx, 'create');
+
+    // Simulate the button click by invoking the private startBattle method
+    // through the proper harness context (the same `this` the scene was created with).
+    runScene(scene, ctx, 'startBattle' as never);
+
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['LobbyScene']);
+  });
+
+  it('repeated navigation action cannot start LobbyScene multiple times', () => {
+    const harness = createSceneHarness();
+    const scene = new MainMenuScene();
+    const ctx = harness.context(scene, 'MainMenuScene');
+
+    runScene(scene, ctx, 'create');
+
+    runScene(scene, ctx, 'startBattle' as never);
+    runScene(scene, ctx, 'startBattle' as never);
+    runScene(scene, ctx, 'startBattle' as never);
+
+    expect(harness.sceneStarted).toHaveLength(1);
+    expect(harness.sceneStarted[0].key).toBe('LobbyScene');
+  });
+
+  it('shutdown before navigation is safe and starts nothing', () => {
+    const harness = createSceneHarness();
+    const scene = new MainMenuScene();
+    const ctx = harness.context(scene, 'MainMenuScene');
+
+    runScene(scene, ctx, 'create');
+    runScene(scene, ctx, 'shutdown');
+
+    expect(harness.sceneStarted).toHaveLength(0);
   });
 });

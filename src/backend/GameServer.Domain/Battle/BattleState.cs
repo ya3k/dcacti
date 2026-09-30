@@ -46,22 +46,27 @@ namespace GameServer.Domain.Battle;
 /// │   ├── Element
 /// │   ├── PassiveId
 /// │   ├── PassiveProgress           (Threshold, Current = 0)
+/// │   ├── StatusEffects[]           (active instances — §2.3.1, §5.1.1)
 /// │   └── PassiveResetOverride?     (absent when Default)
 /// ├── BossState                      (§2.4)
 /// │   ├── BossId
 /// │   ├── Element
 /// │   ├── HP / MaxHP / ATK / DEF
-/// │   └── State                     (Idle / Charging / Enraged / Stunned)
+/// │   ├── State                     (Idle / Charging / Enraged / Stunned)
+/// │   └── StatusEffects[]           (active instances — §2.3.1, §5.1.1)
 /// └── LastCommittedSwapPair?         (§2.1.10; absent until the first
 ///                                    committed Swap)
 /// </code>
 ///
 /// Each field has the same name, meaning, and rules as its §2 counterpart; each
 /// stage is where those §2 fields first come into existence (§2.0.5). The
-/// remaining §2 fields — <c>PetState</c>'s <c>StatusEffects</c> and its
-/// <c>Tier</c>/<c>Star</c>/<c>Level</c>, and
-/// <c>BossState</c>'s <c>StatusEffects[]</c> — are still
-/// absent and still owned by later stages (§2.0.5.3). Their absence is a staging
+/// <c>StatusEffects[]</c> collection is the Status Effect stage's member and is
+/// <b>implemented</b> on both entities — the same element schema
+/// (<c>GAME_STATE.md</c> §2.3.1) and the same lifecycle (§5.1.1), carried by
+/// <c>PetState.ActiveStatusEffects</c> and <c>BossState.ActiveStatusEffects</c>
+/// and serialized with the rest of this record (§2.3.2). The remaining §2
+/// field — <c>PetState</c>'s <c>Tier</c>/<c>Star</c>/<c>Level</c> — is still
+/// absent and still owned by a later stage (§2.0.5.3). Its absence is a staging
 /// position, not a scope reduction of §2: a field absent from a stage is <b>not
 /// yet implemented</b>, not <b>not required</b> (§0 item 4).
 ///

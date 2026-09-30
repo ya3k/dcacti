@@ -264,6 +264,11 @@ public static class BattleStateSerializer
 
             EquippedRelics = petState.EquippedRelics?.Select(relic => relic.Value).ToArray(),
             EquippedCards = petState.EquippedCards?.Select(card => card.Value).ToArray(),
+
+            // §2.3.1 / §2.3.2 item 1: the active Status Effect instances, written
+            // in the order the state holds them. The collection is never null and
+            // is never omitted — an entity with no active effect writes [].
+            StatusEffects = petState.ActiveStatusEffects.Select(ToStatusEffectJson).ToArray(),
         };
 
     /// <summary>
@@ -287,6 +292,52 @@ public static class BattleStateSerializer
             PassiveProgress = ToPassiveProgressJson(bossState.PassiveProgress),
             SkillCharge = bossState.SkillCharge,
             SkillCooldown = bossState.SkillCooldown,
+
+            // §2.4.1: the Boss's collection uses the same element shape, the same
+            // mapping, and the same never-null/never-omitted rule as the Pet's
+            // (§2.3.2 item 1). It is carried in the order held.
+            StatusEffects = bossState.ActiveStatusEffects.Select(ToStatusEffectJson).ToArray(),
+        };
+
+    /// <summary>
+    /// Projects one Status Effect instance (<c>GAME_STATE.md</c> §2.3.1,
+    /// §2.3.2 item 3) — a pure field copy.
+    ///
+    /// <b>The presence rules are §2.3.1's, enforced by construction of the
+    /// instance.</b> A <see cref="StatusEffect"/> built through its factories
+    /// already carries exactly one duration model and a <c>TargetStat</c> iff it
+    /// is a <c>BuffDebuff</c>, so this projection writes what the instance holds
+    /// and never re-derives a member: an absent optional member is left
+    /// <c>null</c> so the DTO's ignore condition omits it (§2.3.1 item 7),
+    /// rather than being spelled by <c>null</c> or a sentinel.
+    ///
+    /// <b>Enum members are written by name, not ordinal</b> — the same rule the
+    /// Element, Gem type, and Boss State members follow, so a stored record does
+    /// not depend on the enum's member ordering.
+    /// </summary>
+    private static StatusEffectJson ToStatusEffectJson(StatusEffect effect) =>
+        new()
+        {
+            // §2.3.1 item 1: the identity, carried verbatim. The effect's rules
+            // stay with their owning document and are not written here.
+            Id = effect.Id,
+
+            Type = effect.Type.ToString(),
+            Source = effect.Source.ToString(),
+
+            // §2.3.1 item 2: the applied value only, uninterpreted and unchanged —
+            // no rounding, no scaling, no unit conversion.
+            Magnitude = effect.Magnitude,
+
+            // §2.3.1 item 7: present iff BuffDebuff; otherwise null, which the
+            // ignore condition omits from the document.
+            TargetStat = effect.TargetStat,
+
+            // §2.3.1 items 3–5: exactly one of the two duration models is present
+            // on a valid instance. The absent one is written as null and omitted,
+            // never as a 0 or a sentinel string (§2.3.1 items 7–8).
+            RemainingTurns = effect.RemainingTurns,
+            ExpiryCondition = effect.ExpiryCondition,
         };
 
     /// <summary>
@@ -390,7 +441,13 @@ public static class BattleStateSerializer
                 : Enum.Parse<PassiveResetBehavior>(dto.PassiveResetOverride, ignoreCase: true),
 
             dto.EquippedRelics?.Select(value => new EquippedRelicIdentity(value)).ToArray(),
-            dto.EquippedCards?.Select(value => new EquippedCardIdentity(value)).ToArray());
+            dto.EquippedCards?.Select(value => new EquippedCardIdentity(value)).ToArray())
+        {
+            // §2.3.2 item 1: the member is always written, so it is always read —
+            // an empty array restores as an empty collection, and a null is
+            // rejected as the contract violation it is.
+            ActiveStatusEffects = FromStatusEffectsJson(dto.StatusEffects),
+        };
 
     /// <summary>
     /// Rebuilds <c>BossState</c> from its stored values — carried, never
@@ -408,7 +465,122 @@ public static class BattleStateSerializer
             new PassiveId(dto.PassiveId),
             FromPassiveProgressJson(dto.PassiveProgress),
             dto.SkillCharge,
-            dto.SkillCooldown);
+            dto.SkillCooldown)
+        {
+            // §2.4.1 / §2.3.2 item 1: the Boss's collection is restored by the same
+            // element mapping, from the same always-present member.
+            ActiveStatusEffects = FromStatusEffectsJson(dto.StatusEffects),
+        };
+
+    /// <summary>
+    /// Rebuilds a <c>StatusEffects[]</c> collection (<c>GAME_STATE.md</c> §2.3.2
+    /// item 1).
+    ///
+    /// <b>A <c>null</c> member is rejected as the contract violation it is.</b>
+    /// §2.3.2 item 1 states the collection "always exists (§0 item 4), so it is
+    /// never omitted and never <c>null</c>" — an empty array is the only spelling
+    /// of "no active effect". A stored <c>null</c> is therefore not a state this
+    /// contract admits, and it is refused here with a message naming the rule
+    /// rather than being read as empty (which would admit the spelling item 1
+    /// rules out) or left to surface as an incidental LINQ failure.
+    /// </summary>
+    /// <param name="effects">The deserialized member, which may be <c>null</c>
+    /// only if the stored document violated the contract.</param>
+    /// <exception cref="JsonException">The member is <c>null</c>.</exception>
+    private static StatusEffect[] FromStatusEffectsJson(IReadOnlyList<StatusEffectJson>? effects)
+    {
+        if (effects is null)
+        {
+            throw new JsonException(
+                "statusEffects is null; GAME_STATE.md §2.3.2 item 1 requires the collection "
+                + "always to exist — an entity with no active effect holds an empty array.");
+        }
+
+        return effects.Select(FromStatusEffectJson).ToArray();
+    }
+
+    /// <summary>
+    /// Rebuilds one Status Effect instance (<c>GAME_STATE.md</c> §2.3.1) — the
+    /// <c>JSON → BattleState</c> half of the element mapping.
+    ///
+    /// <b>It validates rather than trusts.</b> The instance is rebuilt through
+    /// <see cref="StatusEffect.TurnBased"/> or <see cref="StatusEffect.TriggerBased"/>
+    /// rather than by setting members, so §2.3.1's documented invariants are
+    /// enforced by the same code that enforces them everywhere else — the same
+    /// reason this mapping rebuilds the board through
+    /// <c>BoardState.FromCellEntries</c> and the commit record through
+    /// <c>CommittedSwapPair</c>. A malformed element is therefore rejected as the
+    /// contract violation it is instead of being repaired into a state the battle
+    /// never had:
+    ///
+    /// <list type="bullet">
+    /// <item>both duration models present, or neither — §2.3.1 item 3 requires
+    /// exactly one, so the branch below rejects both cases rather than picking
+    /// one,</item>
+    /// <item><c>remainingTurns</c> of <c>0</c> or less — §2.3.1 item 8 makes zero
+    /// unobservable in a committed state and the factory rejects a duration below
+    /// <c>1</c>,</item>
+    /// <item>a <c>BuffDebuff</c> without <c>targetStat</c>, or a
+    /// <c>targetStat</c> on a type that modifies no stat — §2.3.1 item 7's
+    /// pairing, refused by the factory,</item>
+    /// <item>an unknown <c>type</c> or <c>source</c> name, or a missing required
+    /// member — an enum parse failure or a missing-member error.</item>
+    /// </list>
+    ///
+    /// <b>The duration model is decided by presence, not inferred.</b> An element
+    /// carrying <c>remainingTurns</c> is Turn-based and one carrying
+    /// <c>expiryCondition</c> is trigger-based; §2.3.1 item 3 makes those the only
+    /// two well-formed shapes, and anything else is a violation rather than a
+    /// case to guess at. <c>type</c> is read as the instance's own category and is
+    /// never used to decide which model applies — that would re-derive a rule the
+    /// instance states directly.
+    /// </summary>
+    private static StatusEffect FromStatusEffectJson(StatusEffectJson dto)
+    {
+        // Enum members are parsed by name from the document (the inverse of the
+        // by-name write above), so the record's meaning does not depend on enum
+        // member ordering.
+        var type = Enum.Parse<StatusEffectType>(dto.Type, ignoreCase: true);
+        var source = Enum.Parse<StatusEffectSource>(dto.Source, ignoreCase: true);
+
+        var hasTurnCountdown = dto.RemainingTurns is not null;
+        var hasExpiryCondition = dto.ExpiryCondition is not null;
+
+        // §2.3.1 item 3: "either the Turn countdown ... or a trigger-based expiry
+        // ... never both and never neither." A document that states both or
+        // neither is not a state this contract admits, so it is rejected rather
+        // than normalized to whichever model the branch order happens to prefer.
+        if (hasTurnCountdown == hasExpiryCondition)
+        {
+            var stated = hasTurnCountdown
+                ? "both remainingTurns and expiryCondition"
+                : "neither remainingTurns nor expiryCondition";
+
+            throw new ArgumentException(
+                "A Status Effect instance carries exactly one duration model "
+                + $"(GAME_STATE.md §2.3.1 item 3); got {stated}. "
+                + $"(id = '{dto.Id}', type = '{dto.Type}'.)");
+        }
+
+        // The factory enforces §2.3.1 item 7's TargetStat-iff-BuffDebuff pairing
+        // and item 8's positive duration, so neither is re-checked here — the
+        // violation surfaces as the ArgumentException the domain already raises
+        // for it, rather than as a second, weaker spelling of the same rule.
+        return hasTurnCountdown
+            ? StatusEffect.TurnBased(
+                dto.Id,
+                type,
+                source,
+                dto.Magnitude,
+                dto.RemainingTurns!.Value,
+                dto.TargetStat)
+            : StatusEffect.TriggerBased(
+                dto.Id,
+                type,
+                source,
+                dto.Magnitude,
+                dto.ExpiryCondition!);
+    }
 
     /// <summary>
     /// Rebuilds a <c>(Threshold, Current)</c> progress pair.

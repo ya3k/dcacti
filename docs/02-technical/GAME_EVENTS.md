@@ -1,6 +1,19 @@
 # Game Events
 
-**Version:** 2.7 (§2 `BattleWon`/`BattleLost` payload pointer updated per
+**Version:** 2.8 (§2 `CardCast`/`PetSkillCast`, `RelicTriggered`, and
+`PowerChanged` payload items authored, and `PassiveTriggered` item 3 reworded —
+the wire schema these events are delivered by is now fixed by
+`SIGNALR_PROTOCOL.md` §3.2.20–§3.2.25 per the TASK-104 A-1A/A-2C/A-3/A-4B/A-5A
+Product Owner rulings, so this document's §2 payload lines were reconciled with
+it: the `effect summary` element is described as "not populated yet" rather than
+"deferred" (the wire owner's §3.2.25 owns the omission convention, and this
+document keeps no second one), the Card cost is confirmed as a definition value
+rather than a wire member (A-2C), `PetSkillCast`'s Signature Skill confirmation
+is recorded as carried by `CardId` (A-4B), the `CardCast` → `PetSkillCast`
+emission order is cross-referenced (A-5A), and `RelicTriggered`'s
+"deterministic order index" is recorded as an emission-sequence fact rather
+than a payload member (§3.2.23 item 3). No event, trigger, ordering rule, or
+gameplay semantic is changed. Prior 2.7: §2 `BattleWon`/`BattleLost` payload pointer updated per
 TASK-068 human decision (**Option A**) — the `RewardSummary` defeat-shape
 contradiction in `DATABASE.md` §1 is resolved: the Player-track member set
 applies to both outcomes, and the deferred part is the Pet-track member list
@@ -350,6 +363,26 @@ Trigger:  Power increases or decreases (GAME_RULES.md §12)
 Payload:  Delta, new Power value, source (Gem match / Card cost / Relic)
 ```
 
+1. **`Delta` is the signed change and `new Power value` is the resulting
+   `PetState.Power`** (`GAME_STATE.md` §2.3) — the two travel together so a
+   reader renders the change and the resulting value without recomputing either.
+   `GAME_RULES.md` §12 owns the 0–100 range; this event reports the state's
+   value, it does not re-derive the invariant.
+2. **`source` answers "what changed Power"** — a Gem match, a Card cost, or a
+   Relic — and its three values are owned by this payload line. It shares the
+   member *name* `source` with the damage events and the Passive events, which
+   answer different questions and own different value sets; that is the same
+   shared-name convention `SIGNALR_PROTOCOL.md` §3.2.7 item 2 records for
+   `cascadeDepth`, and §3.2.24 item 3 states it for this event on the wire.
+3. **This event is the authoritative report of a Card cast's Power change.**
+   `SIGNALR_PROTOCOL.md` §3.2.20 item 2 records that `CardCast` carries no cost
+   member in MVP; where the Power change itself must be reported, it is reported
+   here rather than by re-adding a cost member to `CardCast`.
+4. **Emission is not implemented by this document.** Whether and when the Power
+   stage emits this event is owned by that stage (`GAME_EVENTS.md` §3 item 7's
+   sequencing position); `SIGNALR_PROTOCOL.md` §3.2.24 fixes only its wire
+   shape.
+
 ## PassiveCharged / PassiveTriggered
 ```text
 Trigger:  Passive progress increases / threshold reached
@@ -360,7 +393,7 @@ Payload:  PassiveCharged: PassiveId, Source (pet | boss),
           PassiveTriggered: PassiveId, Source (pet | boss),
                             SourceId (PetId | BossId),
                             new progress value, threshold,
-                            effect summary (deferred — see note)
+                            effect summary (not populated yet — see note)
 ```
 
 1. **`PassiveId` identifies the Passive that charged or triggered.** A Pet has
@@ -390,17 +423,24 @@ Payload:  PassiveCharged: PassiveId, Source (pet | boss),
    `PassiveTriggered`, the progress reported is the value at the moment the
    threshold was crossed — **before** that trigger's own reset
    (`PASSIVE_RULES.md` §2 item 4, §4).
-3. **`effect summary` is deferred, and its absence is not an omission.**
-   `PASSIVE_RULES.md` §7 defines `PassiveTriggered` as emitted "when the Passive
-   activates and its Effect resolves", and what the effect does is owned by the
-   Combat/Pet systems (`COMBAT_RULES.md`), not by the Passive tracker. Until
-   that stage exists this member is **not populated**, and the event's other
-   members are unaffected and fully decodable without it. A reader must not
-   treat a missing `effect summary` as "no effect occurred": it means "the
-   effect is not yet reported" (`GAME_STATE.md` §0 item 4's staging position,
-   applied to an event payload). This is a recorded sequencing position, not a
-   scope reduction — the member is added to the emitted value by the Combat
-   stage's own task, and the payload list above is not otherwise revised by it.
+3. **`effect summary` is not populated yet, and its absence is not an
+   omission.** `PASSIVE_RULES.md` §7 defines `PassiveTriggered` as emitted "when
+   the Passive activates and its Effect resolves", and what the effect does is
+   owned by the Combat/Pet systems (`COMBAT_RULES.md`), not by the Passive
+   tracker. Until that stage exists this member is **not populated**, and the
+   event's other members are unaffected and fully decodable without it. A reader
+   must not treat a missing `effect summary` as "no effect occurred": it means
+   "the effect is not yet reported" (`GAME_STATE.md` §0 item 4's staging
+   position, applied to an event payload). This is a recorded sequencing
+   position, not a scope reduction — the member is added to the emitted value by
+   the Combat stage's own task, and the payload list above is not otherwise
+   revised by it.
+   **How such an element appears — or does not appear — on the wire is owned by
+   `SIGNALR_PROTOCOL.md` §3.2.25**, which fixes the single governing convention
+   (omission) for a §2 payload element the wire cannot yet carry. This item
+   states only *why* the element is unpopulated and what its absence means; it
+   is not a wire rule, and this document does not keep a second convention
+   (`GAME_EVENTS.md` §3 item 1).
 4. **Boss Passive timing.** Boss Passive fires at Step 18a of
    `GAME_RULES.md` §17, after Player Damage (Steps 15–17) and before Boss
    Skill (Step 18b) and Boss Attack (Step 18c). The Passive evaluates
@@ -414,6 +454,28 @@ Trigger:  A Relic's Trigger+Condition is met (RELIC_RULES.md §3, §7)
 Payload:  RelicId, effect summary, deterministic order index for this event
 ```
 
+1. **`RelicId` is the triggered Relic's identity** — the same value
+   `PetState.EquippedRelics[]` holds (`RELIC_RULES.md` §2.2 item 3, which also
+   records that this identity member and the array element are one identity).
+   It is read and reported, never re-derived (`GAME_EVENTS.md` §2 item 1's
+   convention for `PassiveCharged`).
+2. **`effect summary` is not populated yet**, on the same basis as
+   `PassiveTriggered` item 3 — the member is added by the stage that implements
+   Relic effects, and its absence means "not yet reported", never "no effect
+   occurred".
+3. **The "deterministic order index" is an emission-sequence fact, not a
+   payload member.** `RELIC_RULES.md` §4 owns the deterministic trigger order,
+   and that order **is** the position of each `RelicTriggered` in the
+   `ReceiveEvents` batch (`SIGNALR_PROTOCOL.md` §3.2.1 item 3, §3.2.12 item 4).
+   `SIGNALR_PROTOCOL.md` §3.2.23 item 3 declines it as a wire member because
+   carrying an index beside the array order would be a second spelling of one
+   fact (`GAME_STATE.md` §0 item 5). This document's payload line above names
+   the order as something the event carries by position, not as a member; it is
+   not restated as a wire member here (`GAME_EVENTS.md` §3 item 1).
+4. **Whether a member is emitted is the wire owner's question.** For this event
+   the answer is `SIGNALR_PROTOCOL.md` §3.2.23 for the members and §3.2.25 for
+   any §2 element the wire cannot yet carry.
+
 ## CardCast / PetSkillCast
 ```text
 Trigger:  A Card cast is validated and applied (CARD_RULES.md §3, §6)
@@ -421,6 +483,32 @@ Payload:  CardId, Power cost paid, effect summary
           PetSkillCast additionally confirms it was the active Pet's
           Signature Skill
 ```
+
+1. **`CardId` is the cast Card's definition identity** — the same value
+   `PetState.EquippedCards[]` holds and the same id the
+   `CardCast(battleId, cardId, clientSequence)` request carries
+   (`SIGNALR_PROTOCOL.md` §2, `CARD_RULES.md` §1). There are no Card instances
+   (`GAME_STATE.md` §2.3, ADR-012 item 9), so it is a definition identity.
+2. **`PetSkillCast`'s confirmation that the cast Card was the Signature Skill is
+   carried by that same `CardId`.** Each Pet has exactly one Signature Skill
+   expressed as one Pet Skill Card (`CARD_RULES.md` §4 item 1), and its identity
+   is derivable server-side from `PetDefinition.SignatureSkillCardId`
+   (`CARD_RULES.md` §1 item 4) and present in the loadout snapshot
+   (`GAME_STATE.md` §2.3), so no dedicated confirmation member is defined here or
+   on the wire (`SIGNALR_PROTOCOL.md` §3.2.21 item 2).
+3. **`Power cost paid` is a definition value, not a wire member.** The Cost is
+   owned by `CARD_RULES.md` §2/§4.1; the authoritative record of what a cast did
+   to `PetState.Power` is the state value delivered by the push
+   (`GAME_STATE.md` §2.3), and where a Power change must be reported as an event
+   it is `PowerChanged` (below). `SIGNALR_PROTOCOL.md` §3.2.20 item 2 records
+   that MVP `CardCast` therefore carries no cost member — a decision by the wire
+   owner, which this document does not contradict.
+4. **`effect summary` is not populated yet**, on the same basis as
+   `PassiveTriggered` item 3.
+5. **Emission order: `CardCast` precedes `PetSkillCast`.** Both fire at
+   `GAME_RULES.md` §17 step 14 (`CARD_RULES.md` §6), and
+   `SIGNALR_PROTOCOL.md` §3.2.22 owns the ordering statement on the wire; a
+   Basic Card cast emits `CardCast` alone (`CARD_RULES.md` §6).
 
 ## DamageCalculated / DamageDealt / DamageTaken
 ```text

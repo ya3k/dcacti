@@ -346,6 +346,26 @@ Step 18 ("Resolve Boss Response") expands to:
      (SIGNALR_PROTOCOL.md §3.2).
 ```
 
+Step 19 ("End Turn") expands to:
+
+```text
+19a. Tick Status Effects — tick each active damage-over-time Status Effect
+     (e.g. Burn) exactly once, through the Damage Pipeline
+     (COMBAT_RULES.md §3, §5.2 item 3). This is the last combat effect of
+     the Turn — it runs after the Boss Response (step 18) — and it fires
+     once per resolved Turn (COMBAT_RULES.md §5.1).
+
+     This step is also the single duration-consumption point for Turn-based
+     Buff/Debuff Status Effects: exactly one Turn of duration is consumed
+     here for each active instance, regardless of how many apply/refresh
+     operations occurred earlier in the same Turn (COMBAT_RULES.md §5.3).
+     That rule is owned by COMBAT_RULES.md §5.3 and is not restated here.
+
+     Step 19a remains one step in one fixed position. This does not add a
+     resolution step, does not change its ordering, and does not change the
+     damage-over-time tick itself.
+```
+
 The implementation may split these into multiple internal steps, but
 observable game behavior must preserve this logical ordering.
 

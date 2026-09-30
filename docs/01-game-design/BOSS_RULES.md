@@ -150,19 +150,20 @@ Boss Passive fires at Step 18 of GAME_RULES.md §17, after Player Damage
    with no Boss Response). Order: Player→Boss Damage → Enrage → terminal
    Boss HP check → Boss Response 18a–18c → terminal active Pet HP check.
 5. **Stun** is a temporary state that prevents the Boss from acting. Duration
-   is measured in Turns and tracked by `StatusEffects[]` (not yet
-   implemented). For MVP, no content-defined Boss applies Stun.
+   is measured in Turns and tracked by `StatusEffects[]` (its state contract is
+   `GAME_STATE.md` §2.3.1 / §5.1.1; decay timing follows the Turn-based rule in
+   `COMBAT_RULES.md` §5.3). For MVP, no content-defined Boss applies Stun.
 
 ---
 
 # 6. MVP Boss Reference
 
 ```text
-Boss        Element   Passive (trigger)                          Skill                    Skill Timing
----------   -------   -----------------------------------------  -----------------------  ----------------------
-Hỏa Long    Hỏa       Every 5 Player Matches → gain Rage          Flame Burst → Dmg+Burn  Charge: 5 matches, CD: 2T
-Thủy Ma     Thủy      Healing received reduced                    Drain Power → −Pet Power Charge: 4 matches, CD: 3T
-Mộc Yêu     Mộc       Every 5 Player Matches → Regen HP           Root → −Pet ATK         Charge: 6 matches, CD: 2T
+Boss        Element   Passive (trigger)                          Skill (Effect Magnitudes)                                  Skill Timing
+---------   -------   -----------------------------------------  ---------------------------------------------------------  ----------------------
+Hỏa Long    Hỏa       Every 5 Player Matches → gain Rage          Flame Burst → 150 Dmg + Burn (50 dmg/tick, 2 Turns)       Charge: 5 matches, CD: 2T
+Thủy Ma     Thủy      Healing received reduced                    Drain Power → 120 Dmg + −20 flat Pet Power                Charge: 4 matches, CD: 3T
+Mộc Yêu     Mộc       Every 5 Player Matches → Regen HP           Root → 100 Dmg + −30% Pet ATK (2 Turns)                   Charge: 6 matches, CD: 2T
 ```
 
 Skill effect targets (`−Pet Power`, `−Pet ATK`) are the active Pet's
@@ -198,7 +199,7 @@ Matches, and emits no `PassiveCharged`/`PassiveTriggered` from match
 progress. Its always-on effect application is a separate concern (TASK-022
 implements charging/events only, not effects).
 
-### 6.3 Boss Skill Timing
+### 6.3 Boss Skill Timing & Effect Details
 
 Each Boss Skill has two timing parameters:
 
@@ -216,16 +217,34 @@ After the Skill fires: `SkillCharge` resets to 0, `SkillCooldown` resets to
 the Boss's cooldown value.
 
 ```text
-Boss        Charge Req.   CD (T)   Skill Base Dmg   Notes
----------   -----------   ------   --------------   -----
-Hỏa Long    5 matches     2        150              Aggressive, frequent
-Thủy Ma     4 matches     3        120              Strategic, less frequent
-Mộc Yêu     6 matches     2        100              Defensive, slower charge
+Boss        Skill         Charge Req.   CD (T)   Base Dmg   Secondary Effect & Magnitude
+---------   -----------   -----------   ------   --------   --------------------------------------------------------
+Hỏa Long    Flame Burst   5 matches     2        150        Burn: 50 fixed damage/tick for 2 Turns (step 19a ticks)
+Thủy Ma     Drain Power   4 matches     3        120        -20 flat Pet Power (instant, no duration)
+Mộc Yêu     Root          6 matches     2        100        -30% Pet ATK debuff for 2 Turns
 ```
 
 These are **MVP base configuration** — not universal balance invariants. The
 project owner approved these values. They are configuration defaults used at
 battle creation; they do not represent formulas or scaling rules.
+
+#### 6.3.1 Boss Skill Effect Magnitudes & Duration Semantics
+
+1. **Flame Burst (Hỏa Long):**
+   - **Base Damage:** 150 (deals damage through Damage Pipeline to active Pet).
+   - **Secondary Effect (Burn):** Applies Burn status effect to the active Pet.
+   - **Burn Magnitude:** Fixed 50 damage per tick (does not scale with Boss ATK, Pet ATK, percentage MaxHP, or elemental multipliers).
+   - **Burn Duration & Timing:** 2 Turns = exactly 2 End Turn ticks (`GAME_RULES.md` §17 step 19a; `COMBAT_RULES.md` §5.1, §5.2). When applied during Turn $N$ Boss Response (step 18b), Burn tick #1 (50 damage) occurs at Turn $N$ step 19a (End Turn). Burn tick #2 (50 damage) occurs at Turn $N+1$ step 19a (End Turn), after which the Burn expires before Turn $N+2$.
+2. **Drain Power (Thủy Ma):**
+   - **Base Damage:** 120 (deals damage through Damage Pipeline to active Pet).
+   - **Secondary Effect (Drain Power):** Instantly subtracts 20 flat Power from the active Pet (`PetState.Power = max(0, PetState.Power - 20)` per `GAME_RULES.md` §12).
+   - **Representation:** Flat Power reduction (not a percentage).
+   - **Duration:** None (instant stat reduction, not a persistent status effect).
+3. **Root (Mộc Yêu):**
+   - **Base Damage:** 100 (deals damage through Damage Pipeline to active Pet).
+   - **Secondary Effect (Root):** Applies a -30% Pet ATK debuff to the active Pet (`COMBAT_RULES.md` §5.1 Buff/Debuff).
+   - **Representation:** Percentage-based ATK reduction (-30% active Pet ATK).
+   - **Root Duration:** 2 Turns using the authoritative Turn model (`MATCH3_RULES.md` §8.1 / `GAME_RULES.md` §17). Root is a Turn-based Buff/Debuff, so its one-Turn-of-duration consumption point is governed by the canonical rule in `COMBAT_RULES.md` §5.3 and is not restated here.
 
 Two additional MVP Bosses (5 total per GAME_RULES.md §19 scope) are not yet
 content-defined. When authored, each must:

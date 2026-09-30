@@ -1,6 +1,21 @@
 # Database
 
-**Version:** 1.19 (TASK-084 MVP starter ownership contract resolved: §2 deterministic starter
+**Version:** 1.21 (§5 item 4 Pet/Card/Relic provisioning implementation status
+synchronized with the landed migration — the item now records the completed
+`20260929152651_ProvisionPetCardRelicContentDefinitions` migration (TASK-085:
+`PetDefinition` 3 rows, `CardDefinition` 6 rows, `RelicDefinition` 4 rows) and the
+completed TASK-083 starter-ownership initialization, in the same form the item
+already uses for the completed `BossDefinition` migration; the provisioning
+contract itself — mechanism, permitted rows, value sourcing, and the §1 entity
+definitions — is unchanged [TASK-097].
+Prior 1.20: (§1 `BattleResult` entity definition and "Reward semantics for
+`RewardSummary`" synchronized with the landed 8-member `RewardSummary` contract
+per TASK-089 [TASK-065, TASK-067, TASK-068] — records the 8-member projection
+covering Player and Pet progression tracks [`playerXpGained`, `newPlayerXp`,
+`playerLeveledUp`, `newPlayerLevel`, `petXpGained`, `newPetXp`, `petLeveledUp`,
+`newPetLevel`]; removes obsolete `{}` staging phrases and deferred Pet member
+list wording; preserves symmetrical victory/defeat shape per TASK-068 Option A).
+Prior 1.19: (TASK-084 MVP starter ownership contract resolved: §2 deterministic starter
 composition recorded [1 Pet: Xích Lang / `pet-xich-lang`; 3 Basic Cards: Heal / `card-heal`,
 Shield / `card-shield`, Power Charge / `card-power-charge`; 3 Relics: Berserker Core /
 `relic-berserker-core`, Mana Crystal / `relic-mana-crystal`, Assassin Eye / `relic-assassin-eye`];
@@ -306,12 +321,9 @@ BattleResult
 ├── CompletedAt
 └── RewardSummary                        (JSON — member list owned by THIS
                                            document; see "Reward semantics"
-                                           below. The Player-track members
-                                           are fixed; the Pet-track SEMANTICS
-                                           are fixed by PET_RULES.md
-                                           §5.3–§5.5 while its member list
-                                           is deferred to the
-                                           implementation task)
+                                           below. The 8-member projection
+                                           covering Player and Pet tracks
+                                           for both victory and defeat)
 ```
 
 **Persistence contract for `BossDefinition`.** (TASK-045)
@@ -571,7 +583,7 @@ BattleResult
    are exactly the ones documented in this section — item 1 (one row per
    battle), item 2 (identity sourcing from authoritative battle state), the
    unresolvable-`BossDefinition` fail-closed rule above, and the duration/
-   completion/outcome sourcing and `RewardSummary` staging value documented
+   completion/outcome sourcing and `RewardSummary` contract documented
    below. **There is no separate Player combat-readiness prerequisite**, and no
    `IsCombatReady` predicate is part of the `BattleResult` persistence contract.
    The battle-end path must not consult, require, or evaluate any Player-side
@@ -606,15 +618,14 @@ BattleResult
      rule recorded here.
 3. **`RewardSummary`'s member list is owned by THIS document.** (TASK-059;
    reassigned from TASK-033 — see "Reward semantics" below for the complete
-   contract.) The documented staging value is the **empty JSON object
-   `{}`** — a value that is always present, never absent, for both
-   `Outcome`s; the `{}` value contains no reward data while the implementation task is pending.
+   contract.) The landed contract is the **8-member JSON object** — a value
+   that is always present, never absent, for both `Outcome`s, projecting
+   Player-track and Pet-track progression post-grant.
 
-**Reward semantics for `RewardSummary`.** (TASK-059)
+**Reward semantics for `RewardSummary`.** (TASK-059, TASK-067)
 
 `RewardSummary` is the persisted record of what a battle awarded. Its shape
-is kept deliberately split into a **finalized Player track** and a
-**Pet track that cannot be finalized yet**:
+projects both the **Player track** and the **Pet track**:
 
 1. **Player track — decided, and therefore contracted here.** The Player
    reward is owned by `COMBAT_RULES.md` §7:
@@ -638,10 +649,8 @@ is kept deliberately split into a **finalized Player track** and a
    These four members are the complete Player-track contract and are
    sourced from the authoritative Player XP rule, not invented here.
 
-2. **Pet track — the reward semantics are now DECIDED; the member list
-   remains deferred to the implementation task.** (TASK-062) The Pet XP
-   reward contract is finalized in `PET_RULES.md` §5.3/§5.4, so the
-   information a Pet reward would carry is now fully determined:
+2. **Pet track — contracted per TASK-067.** The Pet XP reward contract is
+   finalized in `PET_RULES.md` §5.3–§5.5:
 
    ```text
    PET_RULES.md §5.3   the active combat Pet is the sole recipient of
@@ -651,47 +660,44 @@ is kept deliberately split into a **finalized Player track** and a
    PET_RULES.md §5.5   Pet.XP is hard-capped at 4900 (no overflow)
    ```
 
-   The arity that previously blocked the shape is therefore **resolved**:
-   one battle awards Pet XP to exactly **one** Pet — the active combat Pet
-   (`PET_RULES.md` §5.3 item 1).
+   The four Pet-track members landed in TASK-067 are:
 
-   **This document nevertheless does not freeze the Pet member names.** The
-   `RewardSummary` Pet-track member list is a wire/persistence projection
-   concern whose exact representation is deferred to the implementation task,
-   which will define it from the now-decided semantics above. In particular
-   the illustrative names used in TASK-059 §6.4 are examples only and are
-   **not** part of this contract. Until that member list is defined, the
-   value in force remains the `{}` staging value (item 4).
+   ```text
+   petXpGained        (int)  — Pet XP granted to active combat Pet:
+                               100 on a win, 0 on a loss
+   newPetXp           (int)  — active Pet.XP after applying the grant
+   petLeveledUp       (bool) — whether active Pet.Level changed
+   newPetLevel        (int)  — active Pet.Level after applying the grant
+   ```
+
+   Together with the Player track, these form the canonical 8-member
+   `RewardSummary` contract.
 
 3. **No placeholder members.** A field must not be added to `RewardSummary`
-   merely to "complete" the schema before its representation is defined for
-   implementation — `AGENTS.md` §7, `AGENTS.md` §9. This is now a
-   representation decision, not an undecided gameplay decision: the
-   semantics it projects are fixed by `PET_RULES.md` §5.3–§5.5.
+   merely to "complete" the schema — `AGENTS.md` §7, `AGENTS.md` §9. No item,
+   currency, streak, bonus, or curve value appears: none is documented
+   (`PET_RULES.md` §5.3 item 5, `AGENTS.md` §7).
 
-4. **The `{}` staging value remains the contract in force.** Because the
-   Pet-track member list is not yet defined and the Player-track members are
-   only meaningful once the reward path is implemented, the persisted and
-   returned value remains the always-present empty JSON object until the
-   implementation task lands. `BattleResult.RewardSummary` is `JSON`, and
-   the `GET /api/battle/{battleId}/result` `rewards` member
-   (`API_CONTRACTS.md` §4 note 1) returns this value unchanged.
+4. **The 8-member projection is the contract in force.** The landed
+   `RewardSummary` JSON document contains all 8 members across both the
+   Player and Pet tracks. `BattleResult.RewardSummary` is `JSON`, and the
+   `GET /api/battle/{battleId}/result` `rewards` member (`API_CONTRACTS.md`
+   §4 note 1) returns this object document directly.
 
 5. **Outcome semantics.** `RewardSummary` is present for both
    `Outcome` values (§1 entity block, `API_CONTRACTS.md` §4 note 1). The
-   Player-track member set defined in item 1 applies identically to
-   both outcomes:
+   8-member set applies identically to both outcomes (TASK-068 Option A):
 
    ```text
-   BattleWon   → playerXpGained = 100
-   BattleLost  → playerXpGained = 0
+   BattleWon   → playerXpGained = 100, petXpGained = 100
+   BattleLost  → playerXpGained = 0,   petXpGained = 0
    ```
 
-   On a `"defeat"` the four Player-track members are serialized with
-   `playerXpGained = 0`, `playerLeveledUp = false`, and
-   `newPlayerXp` / `newPlayerLevel` equal to the current values
-   (no change), which matches a `+0` Player XP grant
-   (`COMBAT_RULES.md` §7.2) and a `+0` Pet XP grant to the
+   On a `"defeat"` the members are serialized with `playerXpGained = 0`,
+   `petXpGained = 0`, `playerLeveledUp = false`, `petLeveledUp = false`, and
+   the respective `newPlayerXp` / `newPlayerLevel` and `newPetXp` /
+   `newPetLevel` equal to their unchanged pre-battle values, matching the
+   `+0` Player XP grant (`COMBAT_RULES.md` §7.2) and `+0` Pet XP grant to the
    active combat Pet (`PET_RULES.md` §5.3 item 2).
 
 **Duration and completion sourcing for `BattleResult`.** (TASK-050)
@@ -919,9 +925,12 @@ when a real query pattern requires them (anti-overengineering,
    entity blocks) are copied from the owning domain documents, never
    invented. The **implementation** (migration script,
    the exact row values, and the TASK-083 starter-ownership initialization per §2)
-   remains an implementation detail (item 1) and is **not
-   yet written** — it is the follow-up provisioning implementation
-   task. The `BossDefinition` migration is **complete**
+   is **complete** (TASK-085) — migration
+   `20260929152651_ProvisionPetCardRelicContentDefinitions` provisions the
+   `PetDefinition` (3), `CardDefinition` (6), and `RelicDefinition` (4)
+   content-defined rows through the same `dotnet ef database update`
+   workflow, and the TASK-083 starter-ownership initialization grants the
+   §2 starter rows in a single scoped `GameDbContext.SaveChangesAsync`. The `BossDefinition` migration is **complete**
    (TASK-053) — migration `20260926151112_ProvisionBossDefinitions` was
    applied through `dotnet ef database update`, so the three canonical
    rows are provisioned and every `BattleResult` write's FK target exists

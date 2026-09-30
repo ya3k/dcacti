@@ -947,19 +947,37 @@ public class BattleStateSerializationTests
     }
 
     [Fact]
-    public void Serialization_ShouldNotWriteStatusEffectsThatAreNotYetImplemented()
+    public void Serialization_ShouldWriteStatusEffectsAsAnAlwaysPresentArray()
     {
-        // GAME_STATE.md §2.3 / §2.4: StatusEffects[] belongs to the Status Effects
-        // system and is NOT yet implemented. §0 item 5 forbids representing it by a
-        // placeholder, so the mapping must not write an empty collection in its
-        // place on either PetState or BossState.
+        // GAME_STATE.md §2.3.1 / §2.3.2 item 1: the collection "always exists
+        // (§0 item 4), so it is never omitted and never null". The representative
+        // state carries no active effect, so the member must be written as an
+        // EMPTY ARRAY — the staging position this test previously asserted
+        // (absence) is superseded by TASK-096.
         using var document = JsonDocument.Parse(
             BattleStateSerializer.Serialize(RepresentativeState()));
 
-        Assert.False(
-            document.RootElement.GetProperty("petState").TryGetProperty("statusEffects", out _));
-        Assert.False(
-            document.RootElement.GetProperty("bossState").TryGetProperty("statusEffects", out _));
+        var pet = document.RootElement.GetProperty("petState");
+        var boss = document.RootElement.GetProperty("bossState");
+
+        Assert.True(pet.TryGetProperty("statusEffects", out var petEffects));
+        Assert.True(boss.TryGetProperty("statusEffects", out var bossEffects));
+
+        // An empty array, not `null` and not an omitted member.
+        Assert.Equal(JsonValueKind.Array, petEffects.ValueKind);
+        Assert.Equal(JsonValueKind.Array, bossEffects.ValueKind);
+        Assert.Equal(0, petEffects.GetArrayLength());
+        Assert.Equal(0, bossEffects.GetArrayLength());
+
+        // And the restored state holds the empty collection, never null
+        // (§2.3.2 item 1, §2.3.1 item 8).
+        var restored = BattleStateSerializer.Deserialize(
+            BattleStateSerializer.Serialize(RepresentativeState()));
+
+        Assert.NotNull(restored.PetState.ActiveStatusEffects);
+        Assert.NotNull(restored.BossState.ActiveStatusEffects);
+        Assert.Empty(restored.PetState.ActiveStatusEffects);
+        Assert.Empty(restored.BossState.ActiveStatusEffects);
     }
 
     [Fact]
@@ -1217,7 +1235,7 @@ public class BattleStateSerializationTests
         var json = BattleStateSerializer.Serialize(RepresentativeState())
             .Replace("\"gemType\":\"ATK\"", "\"gemType\":\"NOT_A_GEM\"", StringComparison.Ordinal);
 
-        Assert.Throws<ArgumentException>(() => BattleStateSerializer.Deserialize(json));
+        Assert.ThrowsAny<ArgumentException>(() => BattleStateSerializer.Deserialize(json));
     }
 
     [Fact]
@@ -1264,5 +1282,614 @@ public class BattleStateSerializationTests
     public void Deserialize_ShouldRejectNullJson()
     {
         Assert.Throws<ArgumentNullException>(() => BattleStateSerializer.Deserialize(null!));
+    }
+
+    // =======================================================================
+    // StatusEffects[] (GAME_STATE.md §2.3.1, §2.3.2; COMBAT_RULES.md §5.3)
+    //
+    // The round-trip obligation of §2.3.2 item 5: "Serializing a BattleState and
+    // deserializing it must return StatusEffects[] with the same elements, the
+    // same member values, the same optional-member presence/absence, and the same
+    // element order. A round trip that drops an instance, renumbers
+    // remainingTurns, materializes an absent optional member as null, or reorders
+    // elements is a defect."
+    // =======================================================================
+
+    /// <summary>
+    /// A Turn-based <c>DoT</c> instance — <c>GAME_STATE.md</c> §2.3.1 item 3's
+    /// Burn model, carrying <c>RemainingTurns</c> and no <c>ExpiryCondition</c>.
+    /// </summary>
+    private static StatusEffect TurnBasedBurn(int remainingTurns = 2) =>
+        StatusEffect.TurnBased(
+            id: "Burn",
+            type: StatusEffectType.DoT,
+            source: StatusEffectSource.Boss,
+            magnitude: 50,
+            duration: remainingTurns);
+
+    /// <summary>
+    /// A <c>BuffDebuff</c> instance carrying <c>TargetStat</c> and a negative
+    /// fractional magnitude — <c>GAME_STATE.md</c> §2.3.1 item 7's only type that
+    /// writes the stat member, and item 2's "typed but not interpreted" number.
+    /// </summary>
+    private static StatusEffect TurnBasedRoot(int remainingTurns = 2) =>
+        StatusEffect.TurnBased(
+            id: "Root",
+            type: StatusEffectType.BuffDebuff,
+            source: StatusEffectSource.Boss,
+            magnitude: -30,
+            duration: remainingTurns,
+            targetStat: "ATK");
+
+    /// <summary>
+    /// A trigger-based <c>Shield</c> instance — <c>GAME_STATE.md</c> §2.3.1
+    /// item 3's trigger model, carrying <c>ExpiryCondition</c> and no
+    /// <c>RemainingTurns</c>.
+    /// </summary>
+    private static StatusEffect TriggerBasedShield() =>
+        StatusEffect.TriggerBased(
+            id: "Shield",
+            type: StatusEffectType.Shield,
+            source: StatusEffectSource.Player,
+            magnitude: 200,
+            expiryCondition: StatusEffect.ShieldDepletedCondition);
+
+    /// <summary>
+    /// The representative state with the given collections seeded on both
+    /// entities — the fixture the Status Effect round-trip tests share.
+    /// </summary>
+    private static BattleState StateWithEffects(
+        StatusEffect[] petEffects,
+        StatusEffect[] bossEffects) =>
+        RepresentativeState() with
+        {
+            PetState = RepresentativePetState() with { ActiveStatusEffects = petEffects },
+            BossState = RepresentativeBossState() with { ActiveStatusEffects = bossEffects },
+        };
+
+    [Fact]
+    public void RoundTrip_ShouldPreserveATurnBasedInstance()
+    {
+        // GAME_STATE.md §2.3.2 item 5: an instance carrying RemainingTurns
+        // survives Domain -> JSON -> Domain with the same value, and the instance
+        // does not gain an ExpiryCondition member it never had (§2.3.1 item 3).
+        var original = StateWithEffects([TurnBasedBurn(remainingTurns: 2)], []);
+
+        var json = BattleStateSerializer.Serialize(original);
+        var restored = BattleStateSerializer.Deserialize(json);
+
+        var instance = Assert.Single(restored.PetState.ActiveStatusEffects);
+        Assert.Equal("Burn", instance.Id);
+        Assert.Equal(StatusEffectType.DoT, instance.Type);
+        Assert.Equal(StatusEffectSource.Boss, instance.Source);
+        Assert.Equal(50, instance.Magnitude);
+        Assert.Equal(2, instance.RemainingTurns);
+        Assert.Null(instance.ExpiryCondition);
+        Assert.Null(instance.TargetStat);
+
+        // The absent optional members are ABSENT from the document, not written as
+        // null or as a sentinel (§2.3.1 item 7; §2.3.2 item 5 names materializing
+        // one as null an explicit defect).
+        var element = JsonDocument.Parse(json).RootElement
+            .GetProperty("petState").GetProperty("statusEffects")[0];
+
+        Assert.True(element.TryGetProperty("remainingTurns", out var remaining));
+        Assert.Equal(2, remaining.GetInt32());
+        Assert.False(element.TryGetProperty("expiryCondition", out _));
+        Assert.False(element.TryGetProperty("targetStat", out _));
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldPreserveATriggerBasedInstance()
+    {
+        // GAME_STATE.md §2.3.2 item 5 / §5.1.1 item 7: a trigger-based instance's
+        // ExpiryCondition survives, no duration is invented for it, and the step
+        // 19a countdown's member is not written.
+        var original = StateWithEffects([], [TriggerBasedShield()]);
+
+        var json = BattleStateSerializer.Serialize(original);
+        var restored = BattleStateSerializer.Deserialize(json);
+
+        var instance = Assert.Single(restored.BossState.ActiveStatusEffects);
+        Assert.Equal("Shield", instance.Id);
+        Assert.Equal(StatusEffectType.Shield, instance.Type);
+        Assert.Equal(StatusEffectSource.Player, instance.Source);
+        Assert.Equal(200, instance.Magnitude);
+        Assert.Equal(StatusEffect.ShieldDepletedCondition, instance.ExpiryCondition);
+        Assert.Null(instance.RemainingTurns);
+
+        var element = JsonDocument.Parse(json).RootElement
+            .GetProperty("bossState").GetProperty("statusEffects")[0];
+
+        Assert.True(element.TryGetProperty("expiryCondition", out var expiry));
+        Assert.Equal("ShieldDepleted", expiry.GetString());
+        Assert.False(element.TryGetProperty("remainingTurns", out _));
+        Assert.False(element.TryGetProperty("targetStat", out _));
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldWriteTargetStatExactlyForABuffDebuff()
+    {
+        // GAME_STATE.md §2.3.1 item 7: TargetStat is "present iff Type =
+        // BuffDebuff". Both halves are asserted — present for the BuffDebuff, and
+        // absent for a type that modifies no stat — because writing a stat on a
+        // DoT would be a value no rule reads.
+        var original = StateWithEffects([TurnBasedRoot(), TurnBasedBurn()], []);
+
+        var json = BattleStateSerializer.Serialize(original);
+        var restored = BattleStateSerializer.Deserialize(json);
+
+        var root = restored.PetState.ActiveStatusEffects.Single(e => e.Id == "Root");
+        Assert.Equal(StatusEffectType.BuffDebuff, root.Type);
+        Assert.Equal("ATK", root.TargetStat);
+
+        // §2.3.1 item 2: the magnitude is copied verbatim — sign and fraction
+        // included, with no rounding, scaling, or unit conversion.
+        Assert.Equal(-30, root.Magnitude);
+
+        var elements = JsonDocument.Parse(json).RootElement
+            .GetProperty("petState").GetProperty("statusEffects");
+
+        var rootElement = elements.EnumerateArray().Single(e => e.GetProperty("id").GetString() == "Root");
+        var burnElement = elements.EnumerateArray().Single(e => e.GetProperty("id").GetString() == "Burn");
+
+        Assert.Equal("ATK", rootElement.GetProperty("targetStat").GetString());
+        Assert.Equal(-30, rootElement.GetProperty("magnitude").GetDouble());
+
+        // The DoT carries no targetStat member at all.
+        Assert.False(burnElement.TryGetProperty("targetStat", out _));
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldPreserveMultipleInstancesInCollectionOrder()
+    {
+        // GAME_STATE.md §2.3.2 items 5-6: the same elements, with the same member
+        // values, in the SAME order. The collection is held in a deliberately
+        // NON-Id order ("Stun", "Burn", "Root"), because §5.1.1 item 6's Id
+        // ascending order governs the step 19a PASS and not the stored array
+        // (§2.3.1 item 10 makes array order non-semantic). A mapping that sorted
+        // here would silently reorder a record required to be a round-trip no-op.
+        StatusEffect[] held =
+        [
+            StatusEffect.TurnBased("Stun", StatusEffectType.State, StatusEffectSource.Boss, 1, 2),
+            TurnBasedBurn(),
+            TurnBasedRoot(),
+        ];
+
+        var original = StateWithEffects(held, []);
+
+        var json = BattleStateSerializer.Serialize(original);
+        var restored = BattleStateSerializer.Deserialize(json);
+
+        Assert.Equal(
+            ["Stun", "Burn", "Root"],
+            restored.PetState.ActiveStatusEffects.Select(e => e.Id));
+
+        // The stored order is the held order, read straight off the document — so
+        // the assertion is on serialization order, not on the pass order.
+        Assert.Equal(
+            ["Stun", "Burn", "Root"],
+            JsonDocument.Parse(json).RootElement
+                .GetProperty("petState").GetProperty("statusEffects")
+                .EnumerateArray().Select(e => e.GetProperty("id").GetString()));
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldPreserveBothPetAndBossCollections()
+    {
+        // GAME_STATE.md §2.3.1's preamble / §2.4.1: one element shape serves both
+        // entities. A full BattleState carrying effects on BOTH round-trips both,
+        // with no cross-contamination between the two collections.
+        var original = StateWithEffects(
+            [TurnBasedBurn(), TriggerBasedShield()],
+            [TurnBasedRoot()]);
+
+        var restored = BattleStateSerializer.Deserialize(
+            BattleStateSerializer.Serialize(original));
+
+        Assert.Equal(["Burn", "Shield"], restored.PetState.ActiveStatusEffects.Select(e => e.Id));
+        Assert.Equal(["Root"], restored.BossState.ActiveStatusEffects.Select(e => e.Id));
+
+        // The Pet's Shield was applied by the player and the Boss's Root by the
+        // boss; Source is carried per instance and is never inferred from the
+        // owning entity.
+        Assert.Equal(
+            StatusEffectSource.Player,
+            restored.PetState.ActiveStatusEffects.Single(e => e.Id == "Shield").Source);
+        Assert.Equal(
+            StatusEffectSource.Boss,
+            restored.BossState.ActiveStatusEffects.Single(e => e.Id == "Root").Source);
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldNotChangeAnyUnrelatedMemberWhenEffectsAreCarried()
+    {
+        // GAME_STATE.md §2.3.2 item 5 read against §2.1.7 item 5: adding this
+        // collection to the record must not disturb any other member. Every other
+        // serializable member is compared by value on a state that DOES carry
+        // effects, so a regression introduced alongside the new members cannot
+        // hide behind the empty-collection fixture.
+        var original = StateWithEffects(
+            [TurnBasedBurn(remainingTurns: 1), TurnBasedRoot(remainingTurns: 2)],
+            [TriggerBasedShield()]);
+
+        var restored = BattleStateSerializer.Deserialize(
+            BattleStateSerializer.Serialize(original));
+
+        Assert.Equal(original.BattleId, restored.BattleId);
+        Assert.Equal(original.PlayerId, restored.PlayerId);
+        Assert.Equal(original.Turn, restored.Turn);
+        Assert.Equal(original.Sequence, restored.Sequence);
+        Assert.Equal(original.RngSeed, restored.RngSeed);
+        Assert.Equal(original.RngState, restored.RngState);
+        Assert.Equal(original.Combo, restored.Combo);
+        Assert.Equal(original.MatchCount, restored.MatchCount);
+        Assert.Equal(original.LastCommittedSwapPair, restored.LastCommittedSwapPair);
+
+        Assert.True(original.BoardState.CellsEqual(restored.BoardState));
+
+        // PetState is compared member by member, with the Status Effect collection
+        // compared STRUCTURALLY: the record's synthesized equality compares an
+        // array member by reference, so a whole-record comparison would fail on the
+        // collection alone even when it round-tripped correctly — the same reason
+        // TASK-095 added StatusEffectsEqual (GAME_STATE.md §2.3.2 item 5).
+        Assert.Equal(original.PetState.PetId, restored.PetState.PetId);
+        Assert.Equal(original.PetState.HP, restored.PetState.HP);
+        Assert.Equal(original.PetState.MaxHP, restored.PetState.MaxHP);
+        Assert.Equal(original.PetState.ATK, restored.PetState.ATK);
+        Assert.Equal(original.PetState.DEF, restored.PetState.DEF);
+        Assert.Equal(original.PetState.Crit, restored.PetState.Crit);
+        Assert.Equal(original.PetState.Power, restored.PetState.Power);
+        Assert.Equal(original.PetState.Element, restored.PetState.Element);
+        Assert.Equal(original.PetState.PassiveId, restored.PetState.PassiveId);
+        Assert.Equal(original.PetState.PassiveProgress, restored.PetState.PassiveProgress);
+        Assert.Equal(original.PetState.PassiveResetOverride, restored.PetState.PassiveResetOverride);
+        Assert.Equal(original.PetState.EquippedRelics, restored.PetState.EquippedRelics);
+        Assert.Equal(original.PetState.EquippedCards, restored.PetState.EquippedCards);
+
+        Assert.Equal(original.BossState.BossId, restored.BossState.BossId);
+        Assert.Equal(original.BossState.Element, restored.BossState.Element);
+        Assert.Equal(original.BossState.HP, restored.BossState.HP);
+        Assert.Equal(original.BossState.MaxHP, restored.BossState.MaxHP);
+        Assert.Equal(original.BossState.ATK, restored.BossState.ATK);
+        Assert.Equal(original.BossState.DEF, restored.BossState.DEF);
+        Assert.Equal(original.BossState.State, restored.BossState.State);
+        Assert.Equal(original.BossState.PassiveId, restored.BossState.PassiveId);
+        Assert.Equal(original.BossState.PassiveProgress, restored.BossState.PassiveProgress);
+        Assert.Equal(original.BossState.SkillCharge, restored.BossState.SkillCharge);
+
+        // The Skill cooldown is a separate Boss Skill counter and is carried as
+        // state (§2.4.3); it is not the Status Effect duration model (§5.1.1
+        // item 2).
+        Assert.Equal(original.BossState.SkillCooldown, restored.BossState.SkillCooldown);
+
+        Assert.True(original.PetState.StatusEffectsEqual(restored.PetState));
+        Assert.True(original.BossState.StatusEffectsEqual(restored.BossState));
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldBeStableAcrossRepeatedCyclesWithEffects()
+    {
+        // GAME_STATE.md §2.3.2 item 5: the round trip is lossless, so a second
+        // cycle must produce a byte-identical document — a record that lost or
+        // renumbered an instance would drift on the second pass.
+        var original = StateWithEffects(
+            [TurnBasedRoot(), TurnBasedBurn()],
+            [TriggerBasedShield()]);
+
+        var first = BattleStateSerializer.Serialize(original);
+        var restored = BattleStateSerializer.Deserialize(first);
+        var second = BattleStateSerializer.Serialize(restored);
+        var restoredAgain = BattleStateSerializer.Deserialize(second);
+
+        Assert.Equal(first, second);
+        Assert.True(restored.PetState.StatusEffectsEqual(restoredAgain.PetState));
+        Assert.True(restored.BossState.StatusEffectsEqual(restoredAgain.BossState));
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldPreserveAFractionalAndAnIntegralMagnitudeWithoutConversion()
+    {
+        // GAME_STATE.md §2.3.1 item 2: Magnitude is "typed but not interpreted" —
+        // Burn's is flat damage per tick and Root's is a negative percentage, and
+        // both are copied verbatim. The mapping applies no rounding, scaling, or
+        // unit conversion to either.
+        var original = StateWithEffects([TurnBasedRoot(), TurnBasedBurn()], []);
+
+        var restored = BattleStateSerializer.Deserialize(
+            BattleStateSerializer.Serialize(original));
+
+        Assert.Equal(
+            -30.0,
+            restored.PetState.ActiveStatusEffects.Single(e => e.Id == "Root").Magnitude);
+        Assert.Equal(
+            50.0,
+            restored.PetState.ActiveStatusEffects.Single(e => e.Id == "Burn").Magnitude);
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldPreserveEffectOrderForAStunAndABurnTogether()
+    {
+        // TASK-093's edge case: two Turn-based instances active simultaneously
+        // (Burn and Stun) each survive with its own RemainingTurns independent of
+        // the other, and the collection order is preserved (§2.3.2 items 5-6).
+        var original = StateWithEffects(
+            [
+                StatusEffect.TurnBased("Stun", StatusEffectType.State, StatusEffectSource.Boss, 1, 3),
+                TurnBasedBurn(remainingTurns: 1),
+            ],
+            []);
+
+        var restored = BattleStateSerializer.Deserialize(
+            BattleStateSerializer.Serialize(original));
+
+        Assert.Equal(["Stun", "Burn"], restored.PetState.ActiveStatusEffects.Select(e => e.Id));
+        Assert.Equal(3, restored.PetState.ActiveStatusEffects[0].RemainingTurns);
+        Assert.Equal(1, restored.PetState.ActiveStatusEffects[1].RemainingTurns);
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldPreserveEnumsByNameRatherThanOrdinal()
+    {
+        // §2.3.2 item 3 fixes the members and their meaning; the exact spelling is
+        // the serializer's implementation detail (§2.1.7 item 4). What matters for
+        // a stored record is that the value is written by NAME — an ordinal would
+        // silently change meaning if a member were ever added ahead of it.
+        var original = StateWithEffects([TurnBasedRoot(), TriggerBasedShield()], []);
+
+        var elements = JsonDocument.Parse(BattleStateSerializer.Serialize(original))
+            .RootElement.GetProperty("petState").GetProperty("statusEffects");
+
+        var root = elements.EnumerateArray().Single(e => e.GetProperty("id").GetString() == "Root");
+        var shield = elements.EnumerateArray().Single(e => e.GetProperty("id").GetString() == "Shield");
+
+        Assert.Equal("BuffDebuff", root.GetProperty("type").GetString());
+        Assert.Equal("Boss", root.GetProperty("source").GetString());
+        Assert.Equal("Shield", shield.GetProperty("type").GetString());
+        Assert.Equal("Player", shield.GetProperty("source").GetString());
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldRestoreAnEmptyCollectionAsOneValueNotTwo()
+    {
+        // GAME_STATE.md §2.3.2 item 1 / §2.3.1 item 8: absence of an element means
+        // "not active"; there is no second "unset" spelling. Two states that
+        // differ only in how an empty collection was arrived at are the same
+        // documented state and must compare equal.
+        var seeded = StateWithEffects([], []);
+        var restored = BattleStateSerializer.Deserialize(
+            BattleStateSerializer.Serialize(seeded));
+
+        Assert.True(seeded.PetState.StatusEffectsEqual(restored.PetState));
+        Assert.True(seeded.BossState.StatusEffectsEqual(restored.BossState));
+
+        // Round-tripping the restored state again returns the same document, so
+        // "empty" did not become a distinguishable third value.
+        Assert.Equal(
+            BattleStateSerializer.Serialize(seeded),
+            BattleStateSerializer.Serialize(restored));
+    }
+
+    // -----------------------------------------------------------------------
+    // Rejection — a malformed element is a contract violation, not a value to
+    // repair (GAME_STATE.md §2.3.1 items 3, 7, 8).
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// Serializes a state, replaces the Pet's serialized effect element with a
+    /// deliberately malformed one, and returns the mutated document — the shape a
+    /// corrupted or hand-edited record would have.
+    /// </summary>
+    private static string WithMalformedPetEffect(string effectJson)
+    {
+        var json = BattleStateSerializer.Serialize(
+            StateWithEffects([TurnBasedBurn()], []));
+
+        var root = System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject();
+        root["petState"]!.AsObject()["statusEffects"] =
+            System.Text.Json.Nodes.JsonNode.Parse($"[{effectJson}]");
+
+        return root.ToJsonString();
+    }
+
+    [Fact]
+    public void Deserialize_ShouldRejectAnEffectCarryingBothDurationModels()
+    {
+        // GAME_STATE.md §2.3.1 item 3: an instance uses EITHER the Turn countdown
+        // OR a trigger-based expiry — "never both and never neither". A record
+        // stating both is rejected rather than normalized to one of them.
+        var json = WithMalformedPetEffect(
+            """
+            {
+              "id": "Burn",
+              "type": "DoT",
+              "source": "Boss",
+              "magnitude": 50,
+              "remainingTurns": 2,
+              "expiryCondition": "ShieldDepleted"
+            }
+            """);
+
+        Assert.ThrowsAny<ArgumentException>(() => BattleStateSerializer.Deserialize(json));
+    }
+
+    [Fact]
+    public void Deserialize_ShouldRejectAnEffectCarryingNeitherDurationModel()
+    {
+        // GAME_STATE.md §2.3.1 item 3: "never both and never neither". An instance
+        // with no duration model at all could be neither decremented nor
+        // trigger-expired.
+        var json = WithMalformedPetEffect(
+            """
+            {
+              "id": "Burn",
+              "type": "DoT",
+              "source": "Boss",
+              "magnitude": 50
+            }
+            """);
+
+        Assert.ThrowsAny<ArgumentException>(() => BattleStateSerializer.Deserialize(json));
+    }
+
+    [Fact]
+    public void Deserialize_ShouldRejectAZeroRemainingTurnsRatherThanNormalizingIt()
+    {
+        // GAME_STATE.md §2.3.1 item 8: an instance at RemainingTurns = 0 is removed
+        // at the step 19a resolution that produced the 0, so it is never
+        // observable in a committed state. A stored 0 is therefore a contract
+        // violation, not a value to repair into an expiry.
+        var json = WithMalformedPetEffect(
+            """
+            {
+              "id": "Burn",
+              "type": "DoT",
+              "source": "Boss",
+              "magnitude": 50,
+              "remainingTurns": 0
+            }
+            """);
+
+        Assert.ThrowsAny<ArgumentException>(() => BattleStateSerializer.Deserialize(json));
+    }
+
+    [Fact]
+    public void Deserialize_ShouldRejectANegativeRemainingTurns()
+    {
+        // The same rule as the zero case: a negative duration is below the
+        // documented positive Turn count (GAME_STATE.md §2.3.1 item 8).
+        var json = WithMalformedPetEffect(
+            """
+            {
+              "id": "Burn",
+              "type": "DoT",
+              "source": "Boss",
+              "magnitude": 50,
+              "remainingTurns": -1
+            }
+            """);
+
+        Assert.ThrowsAny<ArgumentException>(() => BattleStateSerializer.Deserialize(json));
+    }
+
+    [Fact]
+    public void Deserialize_ShouldRejectATargetStatOnANonBuffDebuffEffect()
+    {
+        // GAME_STATE.md §2.3.1 item 7: TargetStat is present IFF Type = BuffDebuff.
+        // A stat on a DoT is a value no rule reads, so the pairing is enforced on
+        // the way in as well as on the way out.
+        var json = WithMalformedPetEffect(
+            """
+            {
+              "id": "Burn",
+              "type": "DoT",
+              "source": "Boss",
+              "magnitude": 50,
+              "targetStat": "ATK",
+              "remainingTurns": 2
+            }
+            """);
+
+        Assert.ThrowsAny<ArgumentException>(() => BattleStateSerializer.Deserialize(json));
+    }
+
+    [Fact]
+    public void Deserialize_ShouldRejectABuffDebuffWithoutATargetStat()
+    {
+        // The other half of GAME_STATE.md §2.3.1 item 7's pairing: a BuffDebuff
+        // without the stat it modifies describes no modification.
+        var json = WithMalformedPetEffect(
+            """
+            {
+              "id": "Root",
+              "type": "BuffDebuff",
+              "source": "Boss",
+              "magnitude": -30,
+              "remainingTurns": 2
+            }
+            """);
+
+        Assert.ThrowsAny<ArgumentException>(() => BattleStateSerializer.Deserialize(json));
+    }
+
+    [Fact]
+    public void Deserialize_ShouldRejectAnUnknownStatusEffectTypeName()
+    {
+        // The type vocabulary is GAME_STATE.md §2.3.1 item 3's four members.
+        // §2.3.3 item 1 makes introducing another a gameplay decision owned by
+        // COMBAT_RULES.md, so an unknown name is rejected rather than admitted.
+        var json = WithMalformedPetEffect(
+            """
+            {
+              "id": "Burn",
+              "type": "Poison",
+              "source": "Boss",
+              "magnitude": 50,
+              "remainingTurns": 2
+            }
+            """);
+
+        Assert.ThrowsAny<ArgumentException>(() => BattleStateSerializer.Deserialize(json));
+    }
+
+    [Fact]
+    public void Deserialize_ShouldRejectAnUnknownStatusEffectSourceName()
+    {
+        // The source vocabulary is GAME_STATE.md §2.3.1 item 7's "player" | "boss".
+        var json = WithMalformedPetEffect(
+            """
+            {
+              "id": "Burn",
+              "type": "DoT",
+              "source": "neutral",
+              "magnitude": 50,
+              "remainingTurns": 2
+            }
+            """);
+
+        Assert.ThrowsAny<ArgumentException>(() => BattleStateSerializer.Deserialize(json));
+    }
+
+    [Fact]
+    public void Deserialize_ShouldRejectAnEffectMissingARequiredMember()
+    {
+        // The four required members are always written (GAME_STATE.md §2.3.2
+        // item 3). A missing one is an error rather than a default: silently
+        // substituting a value would invent state the record never held — the same
+        // rule the mapping already applies to a missing battleId or sequence.
+        var json = WithMalformedPetEffect(
+            """
+            {
+              "id": "Burn",
+              "type": "DoT",
+              "magnitude": 50,
+              "remainingTurns": 2
+            }
+            """);
+
+        Assert.Throws<JsonException>(() => BattleStateSerializer.Deserialize(json));
+    }
+
+    [Fact]
+    public void Deserialize_ShouldRejectAnExplicitNullStatusEffectsMember()
+    {
+        // GAME_STATE.md §2.3.2 item 1: an entity with no active effect serializes
+        // an EMPTY ARRAY, because "the collection always exists (§0 item 4), so it
+        // is never omitted and never null". A record spelling the member as null is
+        // therefore not a state the contract admits — it is rejected rather than
+        // read as "no effects", which would admit the absent-collection spelling
+        // item 1 rules out.
+        var json = BattleStateSerializer.Serialize(
+            StateWithEffects([TurnBasedBurn()], []));
+
+        var root = System.Text.Json.Nodes.JsonNode.Parse(json)!.AsObject();
+        root["petState"]!.AsObject()["statusEffects"] = null;
+
+        // Rejected as a contract violation, with the rule named — not read as
+        // "no effects" and not left to fail incidentally.
+        var thrown = Assert.Throws<JsonException>(() =>
+            BattleStateSerializer.Deserialize(root.ToJsonString()));
+
+        Assert.Contains("2.3.2", thrown.Message, StringComparison.Ordinal);
     }
 }

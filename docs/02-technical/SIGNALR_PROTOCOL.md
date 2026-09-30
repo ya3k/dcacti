@@ -1,6 +1,20 @@
 # SignalR Protocol
 
-**Version:** 2.6 (§1 connection authentication made explicit per `ADR-015` —
+**Version:** 2.7 (§3.2.2's discriminator set extended and the four documented
+events projected — `CardCast`, `PetSkillCast`, `RelicTriggered`, and
+`PowerChanged` added to the table and given member tables at §3.2.20–§3.2.24,
+with `CardCast`/`PetSkillCast` emission order fixed at §3.2.22 and the
+`effect summary` convention reconciled at §3.2.25; the set is now closed
+against events `GAME_EVENTS.md` §2 does not define rather than against events
+it does. Applied per the **TASK-104 A-1A / A-2C / A-3 / A-4B / A-5A** Product
+Owner rulings. Two stale count statements are corrected in the same revision:
+§3.2.12 item 1's "The seven events carry exactly the members tabulated above"
+was already wrong (the table it referred to listed 12 names) and is replaced by
+an enumeration of all 16, and §3.2.4 item 3's "in any of the four events" — a
+phrase about enum-member scope, not the discriminator set — is widened to "in
+any event". No SignalR method, no §4/§6
+delivery path, and no gameplay rule is changed by this revision. Prior 2.6:
+§1 connection authentication made explicit per `ADR-015` —
 the application session is the self-contained signed JWT of
 `API_CONTRACTS.md` §2.8 supplied through SignalR's standard access-token
 mechanism, a Discord access token is never an accepted `BattleHub`
@@ -280,22 +294,41 @@ discriminator member and that event's own payload members at the same level.
 
 | Member | Type | Value |
 | --- | --- | --- |
-| `type` | string | one of `MatchCreated`, `CascadeCreated`, `ComboChanged`, `GemMatched`, `DamageCalculated`, `DamageDealt`, `DamageTaken`, `PassiveCharged`, `PassiveTriggered`, `BossSkillCast`, `BattleWon`, `BattleLost` |
+| `type` | string | one of `MatchCreated`, `CascadeCreated`, `ComboChanged`, `GemMatched`, `DamageCalculated`, `DamageDealt`, `DamageTaken`, `PassiveCharged`, `PassiveTriggered`, `BossSkillCast`, `BattleWon`, `BattleLost`, `CardCast`, `PetSkillCast`, `RelicTriggered`, `PowerChanged` |
 
 1. **The property name is `type`.** The string spelling matches the event name
    `GAME_RULES.md` §16 lists and `GAME_EVENTS.md` §2 defines.
 2. **The encoding is the string**, never the numeric enum value and never a
    camelCase variant. The allowed values are exactly the names in the
-   discriminator table above — the set is closed. No `MatchResolved`, no
-   `SpecialGemActivated`, no `TurnChanged`, no `BoardChanged`, and no other
-   name is a valid `type`: those are either state (`SIGNALR_PROTOCOL.md`
-   §3.1 item 3, §8 items 5–7) or undefined (`GAME_EVENTS.md` §2 item 3).
+   discriminator table above. **The set is closed against events that
+   `GAME_EVENTS.md` §2 does not define** — not against events it does define:
+   a name `GAME_RULES.md` §16 lists and `GAME_EVENTS.md` §2 gives a payload for
+   is a valid `type` once this section tabulates its members (§3.2.20, §3.2.21,
+   §3.2.23, §3.2.24).
+   No `MatchResolved`, no `SpecialGemActivated`, no `TurnChanged`, no
+   `BoardChanged`, and no other name is a valid `type`: those are either state
+   (`SIGNALR_PROTOCOL.md` §3.1 item 3, §8 items 5–7) or undefined
+   (`GAME_EVENTS.md` §2 item 3). This is the TASK-104 A-1A ruling; the four
+   events it admits are projected by their own subsections below, and
+   `GAME_EVENTS.md` §3 item 5 already required that every event §2 defines be
+   delivered.
 3. **The enum is projected to its name, not to its ordinal.** The ordinal
    (`BattleEventType`) is a Domain identity and is not part of the wire
    contract; renumbering the enum must not change the wire.
 4. **No numeric alias and no second discriminator exist.** `type` is the only
    member that identifies the event, and it is always present. An item without
    a recognized `type` is malformed, not a fifth event.
+5. **Admitting a §2 event adds no method and no state-push member.** The
+   gameplay methods remain exactly the three of §2 (§8 item 7), and the §4/§6
+   delivery paths are unchanged. `RelicTriggered` and `PowerChanged` are
+   projected by schema here; **their emission is not implemented by this
+   contract** — `ROADMAP.md` Phase 1 states "No Relics yet", and
+   `PowerChanged` belongs to the Power stage. Their emission **points** are
+   owned elsewhere and are not restated here: `RelicTriggered` by
+   `RELIC_RULES.md` §7 (`GAME_RULES.md` §17 step 11), and `PowerChanged` by
+   the Power stage (`GAME_RULES.md` §12). This section fixes their shape for
+   whichever stage emits them (`GAME_EVENTS.md` §3 item 7's sequencing
+   position).
 
 ### 3.2.3 Property Casing
 
@@ -327,8 +360,8 @@ name, never a number.
 2. **Special Gem type and orientation use their Domain member names**, which
    are already the documented names (`GAME_STATE.md` §2.1.4 items 1–2), and are
    the same spellings the board projection uses for a cell's Special Gem.
-3. **No numeric enum value is ever sent for an enum member**, in any of the
-   four events or in the nested match/special-gem objects.
+3. **No numeric enum value is ever sent for an enum member**, in any event or
+   in the nested match/special-gem objects.
 4. **No `GemType` is ever absent or null.** A cleared cell always has one of
    the four types, including a cell that held a Special Gem
    (`GAME_EVENTS.md` §2 item 1, `GAME_STATE.md` §2.1.3 items 1–2).
@@ -605,11 +638,21 @@ specialGem
 
 ### 3.2.12 No Member Outside This Schema
 
-1. **The seven events carry exactly the members tabulated above.** No event
-   carries a `battleId`, a `serverSequence`, a `turn`, a board, a `combo`, a
-   `matchCount`, a timestamp, a GUID, or a generated id: the first two belong
+1. **The events tabulated above carry exactly the members this section gives
+   them** — the twelve of §3.2.6–§3.2.19 plus the four of §3.2.20, §3.2.21,
+   §3.2.23, and §3.2.24 (§3.2.22 owns their order and §3.2.25 owns the
+   `effect summary` convention; neither is an event). No
+   event carries a `battleId`, a `serverSequence`, a `turn`, a board, a `combo`,
+   a `matchCount`, a timestamp, a GUID, or a generated id: the first two belong
    to the envelope (§3), and the rest are state (§3.1 item 3) or nonexistent
-   (`AGENTS.md` §11).
+   (`AGENTS.md` §11). (The prior revision's first sentence read "The seven events
+   carry exactly the members tabulated above". That count was already wrong
+   before this revision — the discriminator table it referred to listed 12
+   names — and it is now doubly wrong, because this revision adds four more.
+   It is replaced by the enumeration above, which accounts for all 16. §3.2.4
+   item 3's unrelated "**in any of the four events**" phrase, which described
+   the scope of the enum-representation rule rather than the discriminator set,
+   is widened to "in any event" in the same revision.)
 2. **No event carries a Match count.** The authoritative cumulative total is
    `BattleState.MatchCount`, delivered by the §4 push; `GAME_EVENTS.md` §3
    item 7 has the accounting stage emit no event.
@@ -797,8 +840,10 @@ specialGem
    `PassiveTriggered`, the progress reported is the value at the moment the
    threshold was crossed — **before** that trigger's own reset
    (`PASSIVE_RULES.md` §2 item 4, §4).
-3. **`effect summary` is deferred** per `GAME_EVENTS.md` §2 item 3 and is
-   not a wire member yet.
+3. **`effect summary` is omitted**, under the §3.2.25 convention. It is not
+   tabulated here, and — because `GAME_EVENTS.md` §2 item 3 records that the
+   member is not yet populated — its absence must not be read as "no effect
+   occurred": it means the effect is not yet reported (§3.2.25 item 5).
 
 ### 3.2.18 `BossSkillCast`
 
@@ -863,16 +908,270 @@ active Pet — `GAME_EVENTS.md` §1, ADR-011).
    (BattleWon / BattleLost), which own the value set for this event and
    for the same battle's persisted (`DATABASE.md` §1) and REST
    (`API_CONTRACTS.md` §4) forms. The string form is consistent with
-   other discriminator-style wire members (`source`, `gemType`).
+   other discriminator-style wire members (`source`, `gemType`). Note that
+   `source` is a **shared member name whose value set is per-event** — §3.2.14
+   and §3.2.16 carry one set each, and §3.2.24 carries a third — so it is
+   "discriminator-style" in form, not in having a single global vocabulary
+   (§3.2.24 item 3).
 2. **`finalBossHp` and `finalPlayerHp` are the terminal HP values.** They
    are the state values at the moment the battle ended, after all damage
    from the final action has been applied. `finalPlayerHp` carries the
    **active Pet's** HP (`PetState.HP`); the wire member name is a fixed
    protocol label and does not imply a Player HP pool (ADR-011). The client
    uses them for end-of-battle display.
-3. **`reward summary` is not a wire member yet.** It is defined for the
-   `BattleWon` event payload only (`GAME_EVENTS.md` §2 BattleWon /
-   BattleLost); the data shape is owned by `DATABASE.md`.
+3. **`reward summary` is omitted**, under the §3.2.25 convention. It is
+   defined for the `BattleWon` event payload only (`GAME_EVENTS.md` §2
+   BattleWon / BattleLost); the data shape is owned by `DATABASE.md`, and this
+   schema carries no member for it and no deferral note.
+
+### 3.2.20 `CardCast`
+
+```json
+{
+    "type": "CardCast",
+    "cardId": "card-shield"
+}
+```
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | always | `"CardCast"` |
+| `cardId` | string | always | the cast Card's `CardDefinitionId` (`GAME_STATE.md` §2.3 `EquippedCards[]`, `DATABASE.md` §1) |
+
+1. **`cardId` is the definition identity the cast named.** It is the same
+   value `PetState.EquippedCards[]` holds (`GAME_STATE.md` §2.3 — a
+   `CardDefinitionId`, `DATABASE.md` §1), the same value the
+   `CardCast(battleId, cardId, clientSequence)` request carries (§2), and the
+   same identity `API_CONTRACTS.md` §5.3 spells `cardId`. There is no second
+   Card identifier at any layer (`GAME_STATE.md` §2.3: "There are no Card
+   instances"), so this member is a reported identity, never a re-derived one
+   (`GAME_EVENTS.md` §2 item 1's "read and reported" convention, §3.2.16 item 3).
+   It is camelCase, which is the spelling §3.2.3 item 1 requires and the
+   spelling this section — not `GAME_EVENTS.md` §2's PascalCase prose — fixes
+   for the wire.
+2. **The event carries no Power cost member, and no other member.** The
+   TASK-104 **A-2C** ruling records that MVP `CardCast` reports **no** Power
+   cost: `GAME_EVENTS.md` §2 lists a cost element, but §3.2.12 item 3 forbids a
+   member `GAME_EVENTS.md` §2 does not define, and admitting an undefined cost
+   member would require inventing its name, type, and value set. The Card's
+   Cost is a definition value owned by `CARD_RULES.md` §2 — not a wire member —
+   and the authoritative record of what a cast did to `PetState.Power` is the
+   state value itself, delivered by the §4 push (`GAME_STATE.md` §2.3). A client
+   that must show the spent Cost reads the Card's definition; a client must not
+   recompute it from the event (`GAME_RULES.md` §18, ADR-001).
+3. **`effect summary` is omitted, under the §3.2.25 ruling.** It is not
+   tabulated here and no deferral note is written for it — see §3.2.25.
+4. **Emitted for every successful cast, after the Cost is deducted and the
+   Effect applied.** `CARD_RULES.md` §3 item 4 fixes that order, and §6 fixes
+   that `CardCast` fires "for every successful Basic Card or Pet Skill Card
+   cast". A rejected cast emits nothing (§3.1 item 4, `CARD_RULES.md` §3
+   item 3).
+5. **It precedes `PetSkillCast` when both are emitted** — §3.2.22.
+
+### 3.2.21 `PetSkillCast`
+
+```json
+{
+    "type": "PetSkillCast",
+    "cardId": "card-inferno"
+}
+```
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | always | `"PetSkillCast"` |
+| `cardId` | string | always | the cast Signature Skill Card's `CardDefinitionId` |
+
+1. **Same `cardId` member as §3.2.20, same identity, same spelling.** The
+   Signature Skill is expressed as one Pet Skill Card (`CARD_RULES.md` §4
+   item 1), so its `CardDefinitionId` is the identity this event reports, and it
+   is already present in the loadout snapshot (`GAME_STATE.md` §2.3
+   `EquippedCards[]`, which holds the 3 submitted Basic Cards **plus** the
+   derived Signature Skill Card).
+2. **The `cardId` value is the Signature Skill confirmation — no dedicated
+   member is added.** This is the TASK-104 **A-4B** ruling. `GAME_EVENTS.md` §2
+   says `PetSkillCast` "additionally confirms it was the active Pet's Signature
+   Skill" but names no member; that confirmation is carried by the `cardId`
+   identity, because each Pet has exactly one Signature Skill expressed as one
+   Pet Skill Card (`CARD_RULES.md` §4 item 1) and it is derivable server-side
+   from `PetDefinition.SignatureSkillCardId` (`CARD_RULES.md` §1 item 4). No
+   `skillId`, no boolean flag, and no other member is introduced
+   (`GAME_EVENTS.md` §2 defines none, and §3.2.12 item 3 forbids inventing one).
+3. **The client resolves the confirmation from the value it already holds.**
+   `cardId` alone suffices for a client that knows the active Pet's loadout from
+   the §4 push; the event needs no second member to be decodable, and this is
+   the same "identity member" shape §3.2.16/§3.2.18 establish for
+   `passiveId`/`skillId`/`sourceId`.
+4. **Omitted `effect summary`, as in §3.2.20 item 3 (§3.2.25).**
+5. **It is emitted only when the cast Card is the Signature Skill, and always
+   in addition to `CardCast`** — never instead of it (`CARD_RULES.md` §6: "in
+   addition to `CardCast`). A Basic Card cast therefore produces no
+   `PetSkillCast`.
+
+### 3.2.22 `CardCast` / `PetSkillCast` Emission Order
+
+The two events of a Pet Skill Card cast are ordered, and the order is part of
+the contract. This subsection owns that order; §3.2.20 and §3.2.21 own each
+event's shape.
+
+1. **`CardCast` is emitted first, then `PetSkillCast`.** The TASK-104 **A-5A**
+   ruling fixes this order. It is the order `GAME_EVENTS.md` §1's list already
+   displays, and it matches the resolution semantics: every successful cast
+   emits `CardCast` (`CARD_RULES.md` §6), and `PetSkillCast` is the additional
+   event that refines it, not a prerequisite of it.
+2. **The two are emitted together, at the same point in the resolution, in one
+   batch.** `CARD_RULES.md` §3 item 4 places both after "Apply Effect" and
+   before the downstream Relic step; `CARD_RULES.md` §6 places both at
+   `GAME_RULES.md` §17 step 14 ("Resolve Player Effects"). This subsection fixes
+   their **relative** order only — it adds no resolution step, and
+   `GAME_RULES.md` §17's step list is unchanged (step 14 remains one step; no
+   18a/19a-style expansion is created).
+3. **Both travel in the same `ReceiveEvents` batch** as every other event of
+   that cast's resolution (§3 item 1), under the same post-resolution
+   `serverSequence` (§3 item 2). The batch is atomic at the message level
+   (§3.1), so a client never sees one without the other.
+4. **A Basic Card cast emits `CardCast` alone** — no `PetSkillCast`, and
+   therefore no ordering question arises. This is the §3.2.21 item 5 rule seen
+   from the other side (`CARD_RULES.md` §6).
+5. **The order is a property of the contract, not of an implementation's
+   iteration.** The projection is a pure field mapping that sorts nothing
+   (§3.2.1 item 3), so the executor emits the pair in this order and the
+   transport preserves it.
+
+### 3.2.23 `RelicTriggered`
+
+```json
+{
+    "type": "RelicTriggered",
+    "relicId": "relic-berserker-core"
+}
+```
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | always | `"RelicTriggered"` |
+| `relicId` | string | always | the triggered Relic instance identity |
+
+1. **`relicId` is the identity `RELIC_RULES.md` §2.2 item 3 fixes** — the same
+   value `PetState.EquippedRelics[]` holds, and the same "identity, not a
+   definition" member shape §2.3 records for `PassiveId` and §2.4 for `BossId`.
+   `RELIC_RULES.md` §2.2 item 3 already states the array element and this
+   member are one identity, so this subsection reports it rather than defining
+   a second one.
+2. **`effect summary` is omitted**, by the same §3.2.25 ruling.
+3. **`GAME_EVENTS.md` §2 lists a "deterministic order index for this event" and
+   it is NOT a wire member here.** `RELIC_RULES.md` §4 owns the deterministic
+   trigger order, and that order is a property of the **emission sequence** —
+   the array is already in it (§3.2.1 item 3, §3.2.12 item 4). Carrying an index
+   as well would be a second spelling of the array's own order, which
+   `GAME_STATE.md` §0 item 5 forbids; the order is read from position, exactly
+   as it is for the resolution's other ordered events. The member is therefore
+   declined rather than deferred, and `GAME_EVENTS.md` §2's payload list is left
+   to its own owner for any wording correction.
+4. **Emission is not implemented by this contract.** `ROADMAP.md` Phase 1 states
+   "No Relics yet". The emission **point** is owned by `RELIC_RULES.md` §7 —
+   fired at `GAME_RULES.md` §17 step 11 ("Trigger Relics") — and the trigger,
+   condition, and deterministic order by `RELIC_RULES.md` §3/§4; those are the
+   specific governing rules, and this subsection does not restate them. The
+   Relic stage's own task emits the event (`GAME_EVENTS.md` §3 item 7's
+   sequencing position, applied to this event). This subsection fixes the wire
+   shape for whichever stage emits it, adds no Relic engine, and fires no
+   trigger (§3.2.2 item 5).
+
+### 3.2.24 `PowerChanged`
+
+```json
+{
+    "type": "PowerChanged",
+    "delta": 25,
+    "power": 45,
+    "source": "card"
+}
+```
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | always | `"PowerChanged"` |
+| `delta` | int | always | the signed change applied to `PetState.Power` |
+| `power` | int | always | `PetState.Power` **after** the change |
+| `source` | string | always | `"match"`, `"card"`, or `"relic"` |
+
+1. **`delta` is signed.** A generation is positive and a Card cost spend is
+   negative; `delta = 0` is a real value where it occurs and is sent as `0`,
+   following §3.2.8 item 2's rule for a zero-valued member.
+2. **`power` is the resulting value, not a delta and not the previous value.**
+   It is `PetState.Power` (`GAME_STATE.md` §2.3) after this change, and
+   `GAME_RULES.md` §12's 0–100 range is an invariant of that state, not
+   something this event re-derives.
+3. **`source` shares its name with §3.2.14 and §3.2.16, and carries a
+   different value set.** All three answer "what is the origin of this report",
+   which is why the name is shared (§3.2.7 item 2's convention for a shared
+   member name); the *value set* each reports is owned by its own event
+   definition. For this event it is the set `GAME_EVENTS.md` §2 names —
+   "source (Gem match / Card cost / Relic)" — projected to its documented
+   lowercase contract name: `"match"`, `"card"`, or `"relic"`. This is the
+   string-enum convention of §3.2.4 and the same value-projection rule §3.2.14
+   item 1 applies to `DamageParty`; the ordinal, if any, is a Domain identity
+   and never reaches the wire.
+   It is **not** a `DamageParty` (§3.2.14's `"player"`/`"boss"`) and it is
+   **not** §3.2.16's entity-owner `"pet"`/`"boss"`: those answer "which side"
+   and "which entity", while this answers "what changed Power". A consumer must
+   read `source` together with `type` — a member name alone does not fix a value
+   set anywhere in this schema (§3.2.19 item 1, §3.2.7 item 2).
+4. **This is not the Card cost member.** `CardCast` deliberately carries no cost
+   (§3.2.20 item 2, TASK-104 A-2C). Where a Power change must be reported, this
+   event reports it authoritatively; the two are not reconciled by adding a cost
+   member back to `CardCast`.
+5. **Emission is not implemented by this contract.** `PowerChanged` belongs to
+   the Power stage, which is not this contract's to build; this subsection fixes
+   its wire shape only, and §3.2.2 item 5 applies.
+
+### 3.2.25 The `effect summary` Convention — Omission
+
+**This subsection owns how this schema disposes of a payload element
+`GAME_EVENTS.md` §2 lists but the wire cannot yet represent.** It resolves the
+contradiction between §3.2.17 item 3 and §3.2.18, which previously gave two
+different answers to the same question.
+
+1. **The convention is OMISSION.** A §2 payload element that no rule yet
+   populates is **not a wire member**: it is not tabulated in the event's
+   member table, and no deferral note is written for it. This is the TASK-104
+   **A-3** ruling ("explicit omission").
+2. **What "explicit omission" means here, and why it is not silence.** The
+   element is omitted **deliberately and is recorded as such in this
+   subsection** — one place, once — rather than being left as an unexplained
+   gap in each event table. The event's member table therefore carries exactly
+   what is sent, and a reader who notices that `GAME_EVENTS.md` §2 lists an
+   unrepresented element finds the governing rule here rather than having to
+   infer it from three inconsistent subsections. The §2 payload list itself is
+   owned by `GAME_EVENTS.md` and is not restated, rewritten, or contradicted by
+   this section (`GAME_EVENTS.md` §3 item 1).
+3. **This supersedes §3.2.17 item 3's deferral wording.** The prior revision
+   declared `effect summary` "deferred … and is not a wire member yet" on
+   `PassiveTriggered`, while §3.2.18 disposed of the same element on
+   `BossSkillCast` by silent omission and §3.2.19 item 3 used a third wording.
+   Under this ruling **one** convention governs: where such an element is
+   omitted, it is omitted, and this subsection is the single statement of that
+   fact. §3.2.17 and §3.2.18 are not otherwise changed — their member tables
+   already carry exactly what is sent, which is what the ruling requires.
+4. **It applies to every event with such an element**, including
+   `CardCast`/`PetSkillCast` (§3.2.20 item 3, §3.2.21 item 4),
+   `RelicTriggered` (§3.2.23 item 2), `PassiveTriggered` (§3.2.17), and
+   `BossSkillCast` (§3.2.18).
+5. **Absence means "not reported yet", never "no effect occurred."** This
+   preserves `GAME_EVENTS.md` §2 item 3's substantive point for
+   `PassiveTriggered` — a reader must not read a missing `effect summary` as
+   "no effect happened" — while dropping the deferral *wording* in favour of
+   the omission convention. The element is added to the emitted value by the
+   stage that implements the effect (`GAME_EVENTS.md` §2 item 3, §3 item 7),
+   and adding it then is a member addition owned by that stage's task.
+6. **`reward summary` follows the same convention** (see §3.2.19 item 3): it is
+   defined for the `BattleWon` payload by `GAME_EVENTS.md` §2, its data shape is
+   owned by `DATABASE.md`, and it is not a wire member. This subsection fixes
+   no shape for it and adds none.
+7. **No new convention is invented, and no member is added.** The ruling selects
+   between the two conventions the document already contained rather than
+   authoring a third, and it adds no wire member to any event.
 
 ---
 

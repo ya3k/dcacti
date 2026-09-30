@@ -669,7 +669,7 @@ public sealed class BattleStateService
     /// <b>The Damage Pipeline runs here, after the Passive charge.</b>
     /// <c>GAME_RULES.md</c> §17 places "Calculate Damage" / "Apply Element
     /// Modifier" / "Apply Final Damage" at steps 15–17, after "Charge Passive"
-    /// (step 10) and before "Resolve Boss Response" (step 18, not implemented).
+    /// (step 10) and before "Resolve Boss Response" (step 18).
     /// This boundary calls <see cref="DamagePipeline.Calculate"/> with the values
     /// the earlier stages produced and writes its returned <c>BossState</c> back
     /// — the formula, the state transformation, and the HP clamp are Domain's
@@ -683,10 +683,14 @@ public sealed class BattleStateService
     /// computes no progress, evaluates no Threshold, and applies no reset. The
     /// damage it records is the Domain pipeline's — this boundary computes no
     /// Base Damage, modifier, mitigation, or Final Damage, performs no Crit roll,
-    /// and applies no additional damage of its own. Victory/Defeat
-    /// (<c>GAME_RULES.md</c> §17 step 19) and Boss Response (step 18) are
-    /// deliberately absent: a Boss HP of <c>0</c> is recorded as state and is not
-    /// read as an outcome here. The
+    /// and applies no additional damage of its own. The Boss Response stage that
+    /// follows the Damage Pipeline (<c>GAME_RULES.md</c> §17 steps 18a–18c), the
+    /// terminal Victory/Defeat check (§1.4), and the End Turn step 19a Status
+    /// Effect tick (<c>GAME_STATE.md</c> §5.1.1) all run in
+    /// <see cref="ResolveSwapAsync"/>, whose rules are the cited documents' and
+    /// not this boundary's: a Boss HP of <c>0</c> is recorded as state and is not
+    /// read as an outcome here, and the durable battle end it implies is performed
+    /// after the write-back by the caller (<c>ARCHITECTURE.md</c> §4 item 4). The
     /// ordered Battle Events of the resolution travel on the returned result
     /// (<c>GAME_EVENTS.md</c> §1.1, <c>SwapExecutionResult.Events</c>), which
     /// this boundary assembles only by appending the Passive stage's and the
@@ -1053,9 +1057,16 @@ public sealed class BattleStateService
             // (REDIS_STATE.md §3, §4 items 2–3).
             events.Add(BattleEvent.ForBattleWon(bossState.HP, resolved.PetState.HP));
 
+            // §17 step 19 (End Turn) is ordered AFTER step 18, and BOSS_RULES.md
+            // §5 item 4's "no Boss Response" ends only steps 18a–18c — not the
+            // Turn itself. The Turn this action began is still resolved, so step
+            // 19a's once-per-resolved-Turn consumption runs here too, before the
+            // single write-back (§5.1.1 items 2 and 9). Skipping it would make the
+            // consumption depend on which side died, which no rule states.
             return result
                 .WithEvents(events)
-                .WithState(resolved with { BossState = bossState });
+                .WithState(StatusEffectLifecycle.ConsumeAtStep19a(
+                    resolved with { BossState = bossState }));
         }
 
         // ===================================================================
@@ -1232,6 +1243,46 @@ public sealed class BattleStateService
             // (ADR-011 item 6: the label is not renamed).
             events.Add(BattleEvent.ForBattleLost(bossState.HP, resolved.PetState.HP));
         }
+
+        // ===================================================================
+        // Step 11: End Turn step 19a — Status Effect duration/expiry
+        //          GAME_RULES.md §17 step 19a, GAME_STATE.md §5.1.1
+        // ===================================================================
+        // §17 places End Turn (step 19) last, and step 19a is "the last combat
+        // effect of the Turn — it runs after the Boss Response (step 18) — and it
+        // fires once per resolved Turn". It therefore runs here, after the Boss
+        // Response (steps 9–10 above) and after the Boss's opportunity to reduce
+        // the Pet's HP — and BEFORE the single write-back, so the committed state
+        // is the post-19a state (§5.1.1 item 9). Step 19a remains one step in one
+        // fixed position: no step is added, removed, or reordered, and this is the
+        // only site that consumes Status Effect duration (COMBAT_RULES.md §5.3
+        // DR2 — "Exactly one decrement occurs per Turn, at GAME_RULES.md §17 step
+        // 19a — regardless of how many apply/refresh operations occurred earlier
+        // in that same Turn").
+        //
+        // GAME_STATE.md §5.1.1 owns the state mutation and COMBAT_RULES.md §5.3
+        // (DR1–DR6) owns the gameplay rule; both are Domain, and the call below
+        // only sequences them — this boundary decides no rule, computes no
+        // duration, and evaluates no expiry itself (ARCHITECTURE.md §2.1).
+        // StatusEffectLifecycle implements the pass: one decrement for each active
+        // Turn-countdown instance, removal of any instance that reaches 0 in the
+        // same pass (§5.1.1 items 2–5), untouched trigger-based instances (item 7),
+        // the deterministic Id-ascending order (item 6), and the BossState.State
+        // reversion to Idle when a Stun instance expires (item 8, §2.4.5).
+        //
+        // Burn's own damage tick is NOT performed here. §17 step 19a's
+        // damage-over-time tick runs through the Damage Pipeline (COMBAT_RULES.md
+        // §5.2 item 3) and is a separate concern: what this step implements is the
+        // documented duration countdown and expiry, and Burn's tick schedule and
+        // magnitude are unchanged (§5.3.4, BOSS_RULES.md §6.3.1 item 1).
+        //
+        // The Turn increment's SkillCooldown decrement (step 3 above) is a
+        // different counter and is not generalized here (§5.1.1 item 2, §5.3.4).
+        var afterStep19a = StatusEffectLifecycle.ConsumeAtStep19a(
+            resolved with { BossState = bossState });
+
+        resolved = afterStep19a;
+        bossState = afterStep19a.BossState;
 
         // ===================================================================
         // Step 13: the finished post-resolution state — GAME_STATE.md §5.1

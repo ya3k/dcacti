@@ -195,8 +195,10 @@ public class BossStateTests
     {
         // GAME_STATE.md §2.4 / §2.4.1: BossId, Element, HP, MaxHP, ATK, DEF, State,
         // PassiveId, PassiveProgress, SkillCharge, SkillCooldown — the eleven fields
-        // §2.4.1 marks "Implement now". StatusEffects[] is listed by §2.4 but belongs
-        // to the Status Effects system and is not stubbed here (§0 item 4, §0 item 5).
+        // §2.4.1 marks "Implement now" — plus StatusEffects[], which §2.4.1 lists as
+        // deferred to the Status Effects system's own task and which that task
+        // (TASK-095) now implements (§2.3.1, §5.1.1). It appears as
+        // ActiveStatusEffects, the never-null member §2.3.2 item 1 requires.
         var dataMembers = typeof(BossState)
             .GetConstructors()
             .SelectMany(c => c.GetParameters().Select(p => p.Name!))
@@ -213,7 +215,9 @@ public class BossStateTests
 
         // IsIdle and InitialState are a derived reading and a documented constant,
         // not additional state: the members above are the whole representation
-        // (§0 item 5).
+        // (§0 item 5). ActiveStatusEffects is the Status Effect stage's member
+        // (§2.3.1), the canonical never-null form of the nullable constructor
+        // parameter.
         var declared = typeof(BossState)
             .GetProperties()
             .Select(p => p.Name)
@@ -223,8 +227,9 @@ public class BossStateTests
         Assert.Equal(
             new[]
             {
-                "ATK", "BossId", "DEF", "Element", "HP", "IsIdle", "MaxHP",
-                "PassiveId", "PassiveProgress", "SkillCharge", "SkillCooldown", "State",
+                "ATK", "ActiveStatusEffects", "BossId", "DEF", "Element", "HP", "IsIdle",
+                "MaxHP", "PassiveId", "PassiveProgress", "SkillCharge", "SkillCooldown",
+                "State",
             },
             declared);
     }
@@ -232,17 +237,19 @@ public class BossStateTests
     [Fact]
     public void BossState_ShouldDeclareNoDeferredField()
     {
-        // GAME_STATE.md §2.4.1: StatusEffects[] is the one field §2.4 lists as
-        // "Deferred" — it is owned by the Status Effects system (COMBAT_RULES.md §5)
-        // and is "not yet implemented", not "not required" (§0 item 4). It is not
-        // stubbed, defaulted, or represented by a placeholder collection (§0 item 5).
+        // GAME_STATE.md §2.4.1: StatusEffects[] was the one field §2.4 listed as
+        // "Deferred" — owned by the Status Effects system (COMBAT_RULES.md §5) and
+        // "not yet implemented", not "not required" (§0 item 4). The Status Effect
+        // stage (TASK-095) now implements it, exactly as each earlier stage added
+        // its own field, so it is asserted PRESENT here rather than absent. Nothing
+        // §2.4 lists remains deferred.
         var declared = typeof(BossState)
             .GetProperties()
             .Select(p => p.Name)
             .Concat(typeof(BossState).GetFields().Select(f => f.Name))
             .ToArray();
 
-        Assert.DoesNotContain("StatusEffects", declared);
+        Assert.Contains("ActiveStatusEffects", declared);
 
         // No battle lifecycle value is introduced either (GAME_STATE.md §2.0.3):
         // State is the Boss's own enum (BOSS_RULES.md §1), not a battle status.

@@ -20,7 +20,8 @@ namespace GameServer.Domain.Battle;
 ///     ├── PassiveId    which Boss Passive (BOSS_RULES.md §3)        (§2.4)
 ///     ├── PassiveProgress  charging position (§2.4, §2.4.2)        (§2.4)
 ///     ├── SkillCharge  matches charged toward the Skill (§2.4.3)    (§2.4)
-///     └── SkillCooldown turns remaining before the Skill can fire    (§2.4)
+///     ├── SkillCooldown turns remaining before the Skill can fire    (§2.4)
+///     └── StatusEffects[]  active Status Effect instances         (§2.3.1)
 /// </code>
 ///
 /// <b>This is the documented owner, not a new decision.</b> <c>GAME_STATE.md</c>
@@ -44,13 +45,11 @@ namespace GameServer.Domain.Battle;
 /// <c>PetState</c>'s combat stats come from <c>COMBAT_RULES.md</c> §1.1's
 /// configuration (<c>GAME_STATE.md</c> §2.3, <c>ADR-011</c> item 3).
 ///
-/// <b>Only the fields this stage requires exist.</b> §2.4 also lists
-/// <c>StatusEffects[]</c>. That belongs to the Status Effects system
-/// (<c>COMBAT_RULES.md</c> §5) and is <b>not yet implemented</b>, not <b>not
-/// required</b> (§0 item 4, §2.0.5.3): it is added by its own owning task,
-/// exactly as this stage adds the eleven above. It is not stubbed, defaulted, or
-/// represented by a placeholder, because a placeholder for a field no rule yet
-/// reads would be a representation of its own (§0 item 5).
+/// <b>All §2.4 fields now exist.</b> The eleven fields §2.4.1 marks "Implement
+/// now" are above, and <c>StatusEffects[]</c> — which §2.4.1 lists as deferred to
+/// the Status Effects system's own task — is implemented by that task
+/// (<c>GAME_STATE.md</c> §2.3.1, §5.1.1). Nothing §2.4 lists is now absent from
+/// this type.
 ///
 /// <b>The Boss's Passive and Skill charging state are carried, not resolved.</b>
 /// §2.4.1 lists <c>PassiveId</c>, <c>PassiveProgress</c>, <c>SkillCharge</c>,
@@ -78,6 +77,26 @@ namespace GameServer.Domain.Battle;
 /// (<c>ARCHITECTURE.md</c> §2.1): it references no ASP.NET Core, SignalR, EF
 /// Core, Redis, HTTP, Phaser, or Discord concern.
 /// </summary>
+/// <b><c>StatusEffects[]</c> is the Status Effect stage's member.</b> It is the
+/// collection of active Status Effect instances on the Boss
+/// (<c>GAME_STATE.md</c> §2.3.1, §2.4.1) — "the same collection contract as
+/// <c>PetState</c>'s (§2.3.1): identical element schema, identical lifecycle
+/// (§5.1.1), and the same single-instance-per-identity rule. No boss-specific
+/// variant of the element is introduced (§0 item 5)."
+///
+/// §2.4.1 records why it exists for MVP even though no content-defined Boss
+/// applies a Status Effect to itself: Stun (§2.4.5) and future content are
+/// tracked through it. §5.1.1 item 8 fixes the one consequence that touches this
+/// type — when a Stun instance expires at <c>GAME_RULES.md</c> §17 step 19a,
+/// <c>State</c> reverts to <c>Idle</c> in the same resolution, so <c>State</c>
+/// never disagrees with the instance's presence. That reversion is applied by
+/// <see cref="StatusEffectLifecycle.ConsumeAtStep19a(BattleState)"/>; this type
+/// holds the collection and applies no meaning to it.
+///
+/// It is <b>always present</b>: §2.3.2 item 1 makes an entity with no active
+/// effect hold an <b>empty array</b>, never <c>null</c> and never omitted. It is
+/// <b>not a wire member</b> (§2.3.1's wire note).
+/// </param>
 /// <param name="BossId">
 /// The identity of the Boss being fought (<c>GAME_STATE.md</c> §2.4,
 /// <c>BOSS_RULES.md</c> §6). A battle has exactly one Boss
@@ -247,6 +266,42 @@ public readonly record struct BossState(
     /// <see cref="Initial"/> produces, before any Boss mechanic has changed it.
     /// </summary>
     public bool IsIdle => State == InitialState;
+
+    /// <summary>
+    /// The Boss's active Status Effect instances (<c>GAME_STATE.md</c> §2.3.1,
+    /// §2.4.1).
+    ///
+    /// <b>It is never <c>null</c>.</b> §2.3.2 item 1 makes an entity with no
+    /// active effect an <b>empty array</b> — the collection "always exists (§0
+    /// item 4), so it is never omitted and never <c>null</c>" — so <c>null</c> is
+    /// not a state this record can hold: it is initialized to the empty collection
+    /// and every write goes through this one member, which
+    /// <see cref="StatusEffectLifecycle"/> is the only code that does. Two states
+    /// differing only in "unset" versus "empty" are the same documented state, so
+    /// they compare equal. This mirrors
+    /// <see cref="PetState.ActiveStatusEffects"/>.
+    ///
+    /// §5.1.1 item 8 is the one consequence that touches this type: when a Stun
+    /// instance expires at <c>GAME_RULES.md</c> §17 step 19a,
+    /// <see cref="State"/> reverts to <see cref="InitialState"/> in the same
+    /// resolution, so <c>State</c> never disagrees with this collection's contents.
+    /// </summary>
+    public StatusEffect[] ActiveStatusEffects { get; init; } = [];
+
+    /// <summary>
+    /// Whether this state's Status Effect collection holds the same instances as
+    /// another's — the structural comparison <c>GAME_STATE.md</c> §2.3.2 item 5's
+    /// round-trip obligation requires.
+    ///
+    /// The record's own equality compares an array member by reference, so two
+    /// states that a round trip made hold the same elements would compare unequal
+    /// on that member alone. This is the same need
+    /// <see cref="Match3.BoardState.CellsEqual"/> answers for the board (§2.1.7
+    /// item 5), applied to this collection.
+    /// </summary>
+    /// <param name="other">The state to compare the collection against.</param>
+    public bool StatusEffectsEqual(BossState other) =>
+        StatusEffectLifecycle.EffectsEqual(ActiveStatusEffects, other.ActiveStatusEffects);
 
     /// <summary>
     /// The documented <c>BossState</c> of a newly created battle: the Boss's

@@ -1,6 +1,25 @@
 # Game State
 
-**Version:** 2.7 (§2.4 `BossId` denotation fixed per TASK-046 — the tree's
+**Version:** 2.10 (§2.4 combat-stat note corrected — the Damage Pipeline
+(`COMBAT_RULES.md` §3) and Resource Generation now read/write these fields, so
+the "not implemented" clause was false and is replaced by the implemented
+status; no contract, field, value, or lifecycle semantic changed.
+Prior 2.9: §2.3 and §2.4/§2.4.1 implementation-status wording synchronized
+with the landed Status Effect implementation — `StatusEffects[]` on `PetState`
+and on `BossState` now recorded as implemented (TASK-095 Domain member and
+step-19a lifecycle, TASK-096 serializer round trip) rather than "not yet
+implemented"; the `EquippedRelics[]`/`EquippedCards[]` tree annotations corrected
+to implemented (TASK-027/TASK-028, populated at battle creation by TASK-030);
+no contract, field, value, or lifecycle semantic changed — §2.3.1/§2.3.2/
+§2.3.3/§5.1.1 and §0 items 4–5 are byte-identical in meaning [TASK-097].
+Prior 2.8: §2.3.1–§2.3.3 added and §2.4/§2.4.1/§2.4.5/§5.1.1 updated —
+the `StatusEffects[]` Battle State contract is now authored: the instance
+schema (`id`/`type`/`source`/`magnitude`/`targetStat`/`remainingTurns`/
+`expiryCondition`), the apply/refresh/consume/expire lifecycle at
+`GAME_RULES.md` §17 step 19a, and the JSON round-trip shape; the duration
+consumption rule itself is owned by `COMBAT_RULES.md` §5.3 (TASK-094 DR1–DR6)
+and is referenced, not restated. Section numbering intentional gap preserved:
+there is still no §2.5 heading and none was invented. Prior 2.7: §2.4 `BossId` denotation fixed per TASK-046 — the tree's
 `BossId / Identity` entry is the canonical technical Boss Identity
 (`BOSS_RULES.md` §6.4, e.g. `boss-hoa-long`), not a display name and not
 `BossDefinitionId`; no second identity field and no display-name member is
@@ -895,16 +914,18 @@ PetState
 │                               the Domain model)
 ├── Power                      (0–100, GAME_RULES.md §12 — implemented in
 │                               the Domain model)
-├── StatusEffects[]              (Burn/Shield/Buff-Debuff instances,
-│                                COMBAT_RULES.md §5 — not yet implemented)
+├── StatusEffects[]              (active Status Effect instances —
+│                                COMBAT_RULES.md §5; instance schema §2.3.1,
+│                                lifecycle §5.1.1, serialization §2.3.2 —
+│                                implemented, TASK-095/TASK-096)
 ├── EquippedRelics[]              (3–5 owned Relic instance identities,
 │                                slot order fixed at battle start — the
 │                                slot index is the submitted `relicLoadout`
 │                                position + 1, and the array preserves that
 │                                order, RELIC_RULES.md §2.2–§2.5, §4 —
-│                                not yet implemented)
+│                                implemented, TASK-027/TASK-030)
 ├── EquippedCards[]                (3 Basic Cards + 1 Pet Skill Card —
-│                                 not yet implemented)
+│                                 implemented, TASK-028/TASK-030)
 ├── PassiveId                    (the Pet's one Passive — PASSIVE_RULES.md §1;
 │                                 the identity PassiveCharged/PassiveTriggered
 │                                 report, GAME_EVENTS.md §2)
@@ -931,8 +952,10 @@ was required and recorded that it is not: `PetId` already is the instance.
 as staged, together with the two battle-loadout collections
 `EquippedRelics[]` and `EquippedCards[]`, which TASK-027/TASK-028
 implemented and `POST /api/battle/start` (TASK-030) populates at battle
-creation. **The remaining collection member `StatusEffects[]` is not yet
-implemented.** (The Domain model no longer nests the combat stats under a
+creation. **`StatusEffects[]` is implemented** (TASK-095) together with its
+serialization round trip (§2.3.2, TASK-096) — the contract below is
+authoritative and the implementation now conforms to it. (The Domain model no
+longer nests the combat stats under a
 type named `PlayerState`; that implementation mismatch was corrected —
 see §2.2 Implementation note and ADR-011.)
 
@@ -950,21 +973,29 @@ not a redesign of this field list. `Crit` is the percent §1.1 defines
 ("critical hit chance (%)"), so the value is `5` and not `0.05`. `Power`'s
 0–100 range is a documented invariant of §1.1 and `GAME_RULES.md` §12 and is
 not enforced by the state. They are carried through the §5.1 write-back
-unchanged: this stage adds the fields and their initial values only, and the
-Damage Pipeline (`COMBAT_RULES.md` §3) and Resource Generation (§2) that will
-read and write them are not implemented.
+unchanged: this stage adds the fields and their initial values only. The
+Damage Pipeline (`COMBAT_RULES.md` §3) that reads and writes them **is**
+implemented (`DamagePipeline.Calculate`, invoked by the Swap resolution path),
+as is Resource Generation (`ResourceGenerator.Generate`/`ApplyPower`/`ApplyHeal`,
+invoked by the Domain swap executor).
 
 These combat stats are the **active Pet's** stats. There is no separate
 Player HP/ATK/DEF/Power pool in §2; damage and healing apply to
 `PetState.HP` (or `BossState.HP`), per `COMBAT_RULES.md` §1.1 and
 `GAME_RULES.md` §14.
 
-The remaining collection member is **not yet implemented** — not **not
-required** (§0 item 4): `StatusEffects[]` arrives with its owning Combat
-system, exactly as the Relic and Card stages arrived and added
-`EquippedRelics[]` and `EquippedCards[]`. It is not stubbed, defaulted, or
-represented by a placeholder collection, because a placeholder for a field
-no rule yet reads would be a representation of its own (§0 item 5).
+The remaining collection member **was** deferred until its duration
+lifecycle was decided; that decision now exists (TASK-094, recorded as
+`COMBAT_RULES.md` §5.3), and `StatusEffects[]` is contract-defined by §2.3.1
+below and **implemented** (TASK-095/TASK-096). It
+arrives with its owning Combat system, exactly as the Relic and Card stages
+arrived and added `EquippedRelics[]` and `EquippedCards[]`. It is not
+stubbed, defaulted, or represented by a placeholder collection, because a
+placeholder for a field no rule yet reads would be a representation of its
+own (§0 item 5). The same instance schema and lifecycle apply to
+`BossState.StatusEffects[]` (§2.4) — one schema, one lifecycle, no parallel
+representation (§0 item 5).
+
 `EquippedRelics[]` and `EquippedCards[]` are the **battle-scoped loadout**
 fixed at battle start (3–5 Relics, exactly 3 Basic + 1 Pet Skill Card), and
 `POST /api/battle/start` (`API_CONTRACTS.md` §3) is the point at which they
@@ -1064,6 +1095,183 @@ elsewhere in state use (`BossState.BossId`, `PetState.EquippedRelics[]`,
    extended by it. It carries no progress value (that is `PassiveProgress`)
    and no reset policy (that is `PassiveResetOverride`).
 
+### 2.3.1 `StatusEffects[]` — Instance Schema
+
+`StatusEffects[]` is the collection of **active Status Effect instances** on
+this entity. It exists on both `PetState` (§2.3) and `BossState` (§2.4) with
+identical element shape and identical lifecycle (§5.1.1).
+
+```text
+StatusEffect
+├── Id              (string, required — the Status Effect identity,
+│                    e.g. "Burn", "Root", "Shield", "Stun")
+├── Type            (string, required — "DoT" | "BuffDebuff" | "Shield" |
+│                    "State"; selects the duration model, §2.3.1 item 3)
+├── Source          (string, required — "player" | "boss",
+│                    GAME_EVENTS.md §2 source convention)
+├── Magnitude       (number, required — the effect's magnitude as the
+│                    owning rule defines it; NOT interpreted here)
+├── TargetStat      (string, optional — the modified stat for Type =
+│                    "BuffDebuff", e.g. "ATK"; absent otherwise)
+├── RemainingTurns  (integer, optional — the per-instance duration counter,
+│                    COMBAT_RULES.md §5.3 DR1; present iff the instance uses
+│                    the Turn countdown, §2.3.1 item 3)
+└── ExpiryCondition (string, optional — the trigger-based expiry for an
+                     effect that does not use the Turn countdown, e.g.
+                     "ShieldDepleted"; present iff RemainingTurns is absent)
+```
+
+1. **`Id` is an identity, not a definition.** It names which Status Effect
+   this instance is. The effect's rules (Burn's element and tick behavior,
+   Root's ATK percentage, Shield's absorption behavior) are owned by
+   `COMBAT_RULES.md` §5 and `BOSS_RULES.md` §6.3.1 and are **not** copied
+   into the instance (§0 item 5). `Magnitude` carries the applied value only.
+2. **`Magnitude` is typed but not interpreted here.** What the number means
+   (flat damage, a percentage reduction, an absorption pool) is owned by the
+   effect's rule document. This section fixes only that the value is stored
+   on the instance so a refresh can re-apply it (`COMBAT_RULES.md` §5.2
+   item 2).
+3. **`Type` selects exactly one duration model, and the two are exclusive.**
+   An instance uses **either** the Turn countdown (`RemainingTurns`, item 4)
+   **or** a trigger-based expiry (`ExpiryCondition`, item 5) — never both
+   and never neither. This is `COMBAT_RULES.md` §5.2 item 1's "a duration (in
+   Turns) or a trigger-based expiry" expressed as state, and §5.3.2's scope
+   rule is the gameplay side of the same statement.
+   - `RemainingTurns` is present for Turn-based instances: `DoT` (Burn) and
+     `BuffDebuff` (Root).
+   - `ExpiryCondition` is present for trigger-based instances: `Shield`
+     ("until Shield is depleted", `COMBAT_RULES.md` §5.1, §4).
+   - `State`-typed instances (Stun) use the Turn countdown, because
+     `GAME_STATE.md` §2.4.5 defines Stun duration as "measured in Turns".
+4. **`RemainingTurns` is the authoritative per-instance counter.** It is an
+   `int` (never nullable, never fractional), initialized to the applied or
+   refreshed duration value, and it is the single value
+   `COMBAT_RULES.md` §5.3 DR1–DR5 govern. Its **meaning and mutation** are
+   owned by §5.1.1; this section defines only its type and presence.
+5. **`ExpiryCondition` is a condition label, not a rule.** It names which
+   documented trigger ends the instance (e.g. Shield depletion). The
+   condition's behavior is owned by `COMBAT_RULES.md` §4 and §5.1 and is not
+   restated here.
+6. **There is never more than one instance per effect identity per entity.**
+   Applying an effect that is already active refreshes that existing instance
+   rather than appending a second one (`COMBAT_RULES.md` §5.2 item 2 — "refresh
+   duration, do not stack magnitude"), so the array holds at most one element
+   per `Id`. Independent-instance stacking is not an MVP behavior and no
+   second representation of it is introduced (§0 item 5).
+7. **Absence conventions.** `TargetStat` and `ExpiryCondition` are absent when
+   they do not apply (never `null`, never a sentinel string), following the
+   absent-member convention of §2.1.7 item 3. `RemainingTurns` and
+   `ExpiryCondition` are mutually exclusive by item 3, so exactly one of them
+   is present. `Magnitude` and `Source` are always present — an instance is
+   never created without them (`COMBAT_RULES.md` §5.2 item 1 requires a
+   source and a magnitude).
+8. **Zero is a value, and it is not the "expired" spelling.** An instance at
+   `RemainingTurns = 0` is removed at the step 19a resolution that produced
+   the 0 (§5.1.1 item 5), so it is never observable in a committed state.
+   Absence of the element means "not active", not "active with 0 Turns".
+9. **Instant, non-duration effects create no instance.** Drain Power is an
+   immediate `PetState.Power` mutation, not a Status Effect
+   (`BOSS_RULES.md` §6.3.1 item 2: "Duration: None (instant stat reduction,
+   not a persistent status effect)"), so it never produces an element here.
+10. **Ordering is not semantic.** No rule reads element positions, so no
+    ordering is imposed on the array and a serializer must not imply one
+    (contrast `EquippedRelics[]` in §2.3, whose order *is* the equip slot
+    order).
+11. **Iteration order for step 19a is deterministic and is not array order.**
+    When several instances are active, the consumption pass processes them in
+    a deterministic order so behavior is reproducible; that order is fixed by
+    §5.1.1 item 6 and is deliberately not "whatever order the array happens
+    to be in".
+12. **This section adds no gameplay rule.** Every statement above either types
+    a value or points at the owning rule document. What a duration means in
+    play is owned by `COMBAT_RULES.md` §5.3; this section must not be read as
+    an independent source for it.
+
+**Not a wire member.** `StatusEffects[]` is not part of any current wire
+payload: `SIGNALR_PROTOCOL.md` §4.2 fixes `playerState` to exactly
+`combo`/`matchCount` and §4.3 fixes `petState` to the Passive trio. Adding
+state is not adding a wire member (§2.1.10 item 9); delivering these
+instances is a protocol change owned by its own task. This contract does not
+add an event, a payload member, or a SignalR method.
+
+**Not a Redis-only concern.** These instances are part of `BattleState` and
+therefore serialize with it under the existing round-trip obligation
+(`REDIS_STATE.md` §7 item 9). This contract adds no Redis key, no Redis-only
+field, and no second storage representation.
+
+### 2.3.2 `StatusEffects[]` — JSON Serialization and Round-Trip
+
+Serialization and storage are owned by `REDIS_STATE.md` / `DATABASE.md`
+(this document's purpose statement, above), and this subsection introduces no
+new serialization mechanism. It records only the shape consequences of
+§2.3.1 so the existing round-trip obligation (`REDIS_STATE.md` §7 item 9) is
+unambiguous for this collection.
+
+1. **The array serializes as a JSON array of instance objects**, under the
+   member name `statusEffects`, on both `PetState` and `BossState`. An entity
+   with no active effect serializes an **empty array** — the collection always
+   exists (§0 item 4), so it is never omitted and never `null`. Absence of a
+   *member within* an element follows §2.3.1 item 7; absence of the
+   *collection* is not a representable state.
+2. **Member names and casing are the serializer's implementation detail**
+   (`SIGNALR_PROTOCOL.md` §8 item 1, §2.1.7 item 4). What is owned here is the
+   *existence, type, and meaning* of the members listed in §2.3.1 — not their
+   spelling.
+3. **An instance serializes exactly these members, with these types:**
+
+   ```text
+   id              string    required
+   type            string    required    ("DoT" | "BuffDebuff" | "Shield" | "State")
+   source          string    required    ("player" | "boss")
+   magnitude       number    required
+   targetStat      string    optional    (present iff type = "BuffDebuff")
+   remainingTurns  integer   optional    (present iff the instance uses the
+                                          Turn countdown; §2.3.1 item 3)
+   expiryCondition string    optional    (present iff the instance does not)
+   ```
+
+4. **`remainingTurns` is a plain integer and is never fractional, nullable, or
+   a duration-and-elapsed pair.** It is the applied/refreshed duration still
+   remaining (`COMBAT_RULES.md` §5.3 DR1). The refresh semantics are expressed
+   by assignment (DR3), so no `elapsedTurns`, `appliedTurn`, `duration`, or
+   `refreshedAt` member is introduced — a second counter representing the same
+   quantity is exactly the parallel representation §0 item 5 forbids.
+5. **Round-trip is lossless for this collection, and it is order-preserving.**
+   Serializing a `BattleState` and deserializing it must return
+   `StatusEffects[]` with the same elements, the same member values, the same
+   optional-member presence/absence, and the same element order. A round trip
+   that drops an instance, renumbers `remainingTurns`, materializes an absent
+   optional member as `null`, or reorders elements is a defect — the same
+   obligation §2.1.7 item 5 states for the board, applied to this collection.
+6. **Order is preserved for round-trip fidelity, not for semantics.** No rule
+   reads element positions (§2.3.1 item 10) and the step 19a pass does not use
+   array order (§5.1.1 item 6). Preserving the order is required so a round
+   trip is a no-op, not because the order means anything.
+7. **No Redis-only field is introduced.** The serialized shape matches this
+   document exactly (`REDIS_STATE.md` §2 item 1): there is no separate
+   status-effect key, hash, set, index, or second record
+   (`REDIS_STATE.md` §7 items 1–4 apply unchanged), and the collection is
+   written in the same single post-resolution write-back as the rest of
+   `BattleState` (§5.1, `REDIS_STATE.md` §4 item 5).
+
+### 2.3.3 What This Model Does Not Add
+
+This contract adds no Status Effect *rule*, no wire member, and no storage
+structure:
+
+- No new Status Effect type beyond `COMBAT_RULES.md` §5.1's MVP list (Burn,
+  Shield, Buff/Debuff) plus Stun (`GAME_STATE.md` §2.4.5). Introducing another
+  is a gameplay decision owned by `COMBAT_RULES.md`, not by this state.
+- No magnitude, duration, or percentage value. Every such number is owned by
+  `COMBAT_RULES.md` §1.1/§5 or `BOSS_RULES.md` §6.3.1 and is not restated.
+- No event, payload member, or SignalR method (`GAME_STATE.md` §2.3.1's wire
+  note, `SIGNALR_PROTOCOL.md` §4.2/§4.3).
+- No `PendingStatusEffects[]`, no queued/pending application collection, and no
+  second representation of an in-flight application: an application during a
+  resolution is Transient Resolution State (§3) until the write-back (§5.1
+  item 2).
+- No stacking model other than §5.2 item 2's refresh-in-place (§2.3.1 item 6).
+
 ## 2.4 BossState
 
 ```text
@@ -1081,8 +1289,9 @@ BossState
 │                                 BOSS_RULES.md §4)
 ├── SkillCooldown                (turns remaining before Skill can fire,
 │                                 BOSS_RULES.md §4)
-└── StatusEffects[]              (not yet implemented — owned by Status
-                                  Effects system)
+└── StatusEffects[]              (active Status Effect instances on the Boss —
+                                 same element schema and lifecycle as
+                                 `PetState.StatusEffects[]`, §2.3.1, §5.1.1)
 ```
 
 **`BossId` denotes the canonical technical Boss Identity.** The tree's
@@ -1105,11 +1314,17 @@ and no display-name member is added to `BossState`.
 ```text
 Implement now:
   BossId, Element, HP, MaxHP, ATK, DEF, State,
-  PassiveId, PassiveProgress, SkillCharge, SkillCooldown
-
-Deferred:
-  StatusEffects[] — owned by Status Effects system
+  PassiveId, PassiveProgress, SkillCharge, SkillCooldown,
+  StatusEffects[] — contract-defined by §2.3.1 and §5.1.1;
+  implemented (TASK-095/TASK-096)
 ```
+
+`StatusEffects[]` is the same collection contract as `PetState`'s (§2.3.1):
+identical element schema, identical lifecycle (§5.1.1), and the same
+single-instance-per-identity rule. No boss-specific variant of the element is
+introduced (§0 item 5). For MVP, no content-defined Boss applies a Status
+Effect to itself; the collection is defined because Stun (§2.4.5) and future
+content are tracked through it.
 
 ### 2.4.2 Boss Passive
 
@@ -1156,12 +1371,14 @@ BOSS_RULES.md §5.
 ### 2.4.5 Stunned
 
 Stunned is a temporary state that prevents the Boss from acting (no Skill,
-no basic attack). Stun duration is measured in Turns and tracked by
-`StatusEffects[]` (not yet implemented). When Stun is applied, `State` becomes
-`Stunned`; when the duration expires, `State` reverts to `Idle`. For MVP,
-no content-defined Boss applies Stun — the state exists for future content.
-Full state machines are explicitly deferred to Future Expansion
-(BOSS_RULES.md §5 item 3).
+no basic attack). Stun duration is measured in Turns and is tracked by
+`StatusEffects[]` (§2.3.1, §5.1.1 — `Type = "State"`, Turn-countdown model).
+When Stun is applied, `State` becomes `Stunned`; when the duration expires,
+`State` reverts to `Idle`. `State` is a materialized reflection of the Stun
+instance, not a second duration counter: the instance's `RemainingTurns` is
+authoritative (§5.1.1 item 7). For MVP, no content-defined Boss applies Stun —
+the state exists for future content. Full state machines are explicitly
+deferred to Future Expansion (BOSS_RULES.md §5 item 3).
 
 ## 2.6 RNG (`RngSeed` / `RngState`)
 
@@ -1473,6 +1690,86 @@ publish (SIGNALR_PROTOCOL.md §3, §4)
    step. It is not a resolution counter and is never used for concurrency
    control: `Sequence` remains the only concurrency token (§5, §5.1 item 4,
    `REDIS_STATE.md` §4 item 6).
+
+### 5.1.1 `StatusEffects[]` Lifecycle (Apply, Consume, Expire)
+
+This subsection owns the **state mutation** of `StatusEffects[]` instances
+(§2.3.1). The gameplay rule it implements — when one Turn of duration is
+consumed — is owned by `COMBAT_RULES.md` §5.3 and is **not** restated or
+reinterpreted here. The resolution position it runs at is
+`GAME_RULES.md` §17 step 19a.
+
+```text
+Turn N resolution (one accepted action)
+  ↓
+... steps 1–18, including step 18b Boss Skill apply/refresh
+  ↓
+step 19a — Status Effect tick and duration consumption
+    for each active instance using the Turn countdown:
+        RemainingTurns -= 1
+        if RemainingTurns == 0: remove the instance
+  ↓
+one atomic write-back of the whole BattleState, gated on the pre-resolution
+Sequence (§5.1)
+```
+
+1. **Application creates an instance, and Apply is a "set", not an
+   increment.** Applying a Status Effect that is not active appends one
+   element with `RemainingTurns = duration` (`COMBAT_RULES.md` §5.3 DR1,
+   DR3). Applying one that *is* active refreshes that existing instance by
+   re-setting `RemainingTurns = duration` — it does not append a second
+   element, and it does not add to the current value (§2.3.1 item 6,
+   `COMBAT_RULES.md` §5.2 item 2, §5.3 DR3).
+2. **Exactly one decrement per Turn, at step 19a.** Every active
+   Turn-countdown instance loses exactly one Turn of duration at step 19a,
+   regardless of how many apply/refresh operations occurred earlier in that
+   same Turn (`COMBAT_RULES.md` §5.3 DR2). No other resolution step mutates
+   `RemainingTurns`; in particular the Turn increment does **not** (§2.4.3's
+   `SkillCooldown` rule is a separate Boss Skill counter and is not adopted
+   here).
+3. **Apply timing within the Turn does not change the count.** An instance
+   applied or refreshed before step 19a is decremented at that same Turn's
+   step 19a — once (`COMBAT_RULES.md` §5.3 DR2, DR6). Same-Turn reapplication
+   does not produce a second decrement in that Turn (§5.3 DR4).
+4. **Expiry is a removal, not a stored zero.** When `RemainingTurns` reaches
+   `0` at step 19a, the instance is removed from `StatusEffects[]` in the same
+   resolution (`COMBAT_RULES.md` §5.3 DR5). An instance at `0` is therefore
+   never observable in a committed state, and absence means "not active"
+   (§2.3.1 item 8).
+5. **Expiry and consumption happen in the same pass, and only once.** The
+   decrement and the resulting removal occur within the single step 19a pass
+   of one resolved Turn, so a `duration = 1` instance applied during Turn N is
+   both consumed and removed at Turn N's step 19a and is inactive from Turn
+   N+1 (`COMBAT_RULES.md` §5.3.3).
+6. **The consumption pass order is deterministic.** Instances are processed in
+   a fixed order — by `Id` in ordinal ascending order — so the resulting state
+   is reproducible for a given input state and does not depend on array
+   insertion order (§2.3.1 item 11, `TDD.md` §6 determinism). This order is
+   part of the contract precisely because "array order" is not a semantic
+   (§2.3.1 item 10) and must not become one by accident.
+7. **Trigger-based instances are not decremented.** An instance carrying
+   `ExpiryCondition` instead of `RemainingTurns` (`Type = "Shield"`,
+   §2.3.1 item 3) is not touched by the step 19a countdown; it is removed by
+   its own documented trigger (`COMBAT_RULES.md` §4, §5.2 item 1). The step
+   19a pass must not invent a duration for it.
+8. **The Boss's `State = Stunned` follows the instance.** When a Stun instance
+   expires at step 19a, `BossState.State` reverts to `Idle` in the same
+   resolution, so `State` never disagrees with the presence of the Stun
+   instance (§2.4.5). `RemainingTurns` is authoritative; `State` reflects it.
+9. **All of this is one write-back.** The application (during steps 1–18) and
+   the consumption/expiry (at step 19a) are intermediate values of the
+   resolution; the committed `BattleState` is written once per §5.1, after
+   step 19a. A reader never observes an instance mid-count, and never observes
+   an expired instance still present (§5.1 item 2).
+10. **Nothing here is published.** This lifecycle adds no event, no payload
+    member, and no SignalR method — see §2.3.1's "Not a wire member" note and
+    `SIGNALR_PROTOCOL.md` §4.2/§4.3.
+11. **A rejected action mutates nothing.** A rejected action is not a
+    resolution (§5.1 item 6), so no instance is applied, decremented, or
+    removed, and step 19a does not run.
+12. **This subsection adds no gameplay rule.** Every rule above either
+    performs the mutation `COMBAT_RULES.md` §5.3 defines or fixes the
+    determinism/observability of that mutation.
 
 ## 5.2 What `Sequence` Is Not
 

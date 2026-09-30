@@ -1,8 +1,12 @@
 # Technical Design Document (TDD)
 
-**Version:** 1.1 (§2.1 scene-lifecycle MVP staging note added per TASK-078 —
-staged scene order recorded explicitly; no lifecycle, gameplay rule, API
-contract, or code changed by this note)
+**Version:** 1.2 (§2.1 staging note synchronized with implemented work per
+TASK-100 — the deferred-scene clause was falsified by TASK-087/TASK-090, which
+implemented `ResultScene` and `MainMenuScene` and changed the implemented
+transition order; the note now records the staging as completed and agrees with
+`GameConfig.ts`. Version 1.1 (§2.1 scene-lifecycle MVP staging note added per
+TASK-078 — staged scene order recorded explicitly; no lifecycle, gameplay rule,
+API contract, or code changed by this note))
 **Status:** Draft — contains ASSUMPTIONs pending confirmation (see §0)
 
 > This document answers: **"What technical approach are we using to
@@ -100,13 +104,18 @@ BattleScene
 ResultScene
 ```
 
-> **MVP staging note (recorded per TASK-078's Product Owner decision).** The
-> MVP implementation stages this lifecycle as `BootScene → PreloaderScene →
-> LobbyScene → BattleScene`: `MainMenuScene` and `ResultScene` are deferred
-> to their own tasks, so the implemented transition order passes from
-> `PreloaderScene` directly into `LobbyScene` for now, and `LobbyScene`
-> transitions to `BattleScene` after a successful battle start. The
-> lifecycle above remains the design this document specifies; the staging is
+> **MVP staging note (recorded per TASK-078's Product Owner decision; completed
+> by TASK-087 and TASK-090).** The MVP staged this lifecycle for
+> implementation-order reasons: it was first implemented as `BootScene →
+> PreloaderScene → LobbyScene → BattleScene`, with `MainMenuScene` and
+> `ResultScene` deferred to their own tasks, so the transition order passed
+> from `PreloaderScene` directly into `LobbyScene` for a time. TASK-090 has
+> since implemented `MainMenuScene` and TASK-087 `ResultScene`, so the
+> implemented transition order is now `BootScene → PreloaderScene →
+> MainMenuScene → LobbyScene → BattleScene → ResultScene`, matching the
+> lifecycle above and the registered order in `GameConfig.ts`. `LobbyScene`
+> still transitions to `BattleScene` after a successful battle start. The
+> lifecycle above remains the design this document specifies; the staging was
 > an implementation-order decision recorded here so it is not left implicit,
 > not a change to the lifecycle.
 

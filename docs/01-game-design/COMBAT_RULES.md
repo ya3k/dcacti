@@ -1,6 +1,26 @@
 # Combat Rules
 
-**Version:** 1.4 (§8 added — Player XP / Level progression contract: the
+**Version:** 1.6 (§4 — the Shield rule changed from additive stacking to
+refresh: a Shield applied while a Shield of the same effect identity is active
+replaces that Shield's value rather than adding to it, at most one Shield is
+active per entity, and no second instance is created; the depletion rule is
+authored — the pool reaching exactly 0 removes the Shield in the same
+resolution, and overflow damage reduces HP by exactly the remainder; §4 item
+2's "consumed first-in" wording reconciled to consumption before HP under a
+single pool; §4 item 4's old Heal/Shield-not-in-the-pipeline item is now item 6.
+`ShieldDepleted` is recorded as the trigger-based expiry condition, NOT a Battle
+Event — no event name, payload, or wire member is authored. Resolves the
+COMBAT_RULES.md §4 item 3 vs GAME_STATE.md §2.3.1 item 6 conflict per the
+TASK-104 Product Owner rulings B-1 "Refresh Shield" / B-2 "Shield is
+StatusEffect" / B-3 "Remove at 0, emit ShieldDepleted, overflow damage
+continues". Prior 1.5: §5.3 added — canonical owner of Status Effect duration
+consumption timing: the per-instance `remaining` counter, the single decrement
+per Turn at `GAME_RULES.md` §17 step 19a, identical Apply/Refresh mechanism,
+same-Turn reapplication, expiry at 0, the apply/refresh ordering invariant, and
+the Turn-based vs. trigger-based scope; resolves the TASK-093 §11 blocking
+decision recorded by TASK-094. Burn's tick schedule and
+`BossState.SkillCooldown`'s decrement are unchanged and explicitly out of this
+rule. Prior 1.4: §8 added — Player XP / Level progression contract: the
 two-track ownership model, the battle-outcome XP reward, the reward-amount
 vs. curve-constant distinction, and the uncapped-XP / capped-Level
 semantics; supersedes the retired `Player.Level × PetLevelMultiplier` Pet
@@ -184,16 +204,67 @@ separate Player HP pool (`SIGNALR_PROTOCOL.md` §3.2).
 
 # 4. Healing and Shields
 
+This section is the **canonical owner** of the Shield rule — its application,
+refresh, absorption, and depletion. Other documents reference it; they do not
+restate it (`.ai/workflow/documentation/documentation-change.md` §2). Shield is
+represented as a Status Effect instance (`GAME_STATE.md` §2.3.1 item 3, `Type =
+"Shield"`) and is **trigger-based**: it acquires no duration and is outside the
+Turn countdown (§5.3.2).
+
 1. Heal effects restore HP up to Max HP; overheal is discarded unless a Relic
    explicitly grants overheal/temp-HP.
 2. Shield effects grant an absorption pool that reduces incoming damage before
-   HP is affected, consumed first-in on any Final Damage applied to that
-   target.
-3. Multiple Shields stack additively into a single absorption pool unless a
-   Relic specifies otherwise.
-4. Heal and Shield amounts are NOT subject to the Damage Pipeline (§3) —
+   HP is affected. The pool is consumed **before HP** on any Final Damage
+   applied to that target; because at most one Shield is active per entity
+   (item 3), there is no multi-pool ordering to resolve and no "first-in"
+   tie-break exists.
+3. **Shield application refreshes; Shields do not stack.** Applying a Shield to
+   an entity that already has an active Shield **refreshes that existing
+   Shield** — the refreshed pool is **set to the magnitude of the new
+   application**. It is **not** summed with the existing value, and no additive
+   accumulation occurs under any MVP condition. No second Shield instance is
+   created: **at most one Shield is active per entity**, identified by the
+   Status Effect identity `"Shield"` (`GAME_STATE.md` §2.3.1 item 1, item 6) —
+   so two different Shield sources (e.g. the Shield Basic Card and a
+   Shield-granting Passive) applying to the same entity refresh one another
+   rather than forming a second pool. This is `§5.2 item 2`'s refresh default
+   applied to Shield, and the refresh is the same "set, not an increment"
+   operation `GAME_STATE.md` §5.1.1 item 1 defines for every Status Effect. The
+   carve-out is preserved: a **Relic** may explicitly specify otherwise. **No
+   MVP Relic exercises this carve-out** (`ROADMAP.md` Phase 1 — "No Relics
+   yet").
+4. **Depletion at exactly 0.** When damage reduces the pool, the pool reaches
+   **exactly 0**, and the Shield is **removed in that same resolution** — a
+   committed Shield value of 0 is never observable as an active Shield
+   (`GAME_STATE.md` §2.3.1 item 8's zero-is-not-a-stored-state rule, applied to
+   this trigger-based instance; §5.1.1 item 7). This is the `"ShieldDepleted"`
+   expiry condition (`GAME_STATE.md` §2.3.1 item 5) — the trigger that removes
+   the instance, evaluated during the damage resolution that depleted it.
+   `ShieldDepleted` is **not a Battle Event**: no event of that name exists in
+   `GAME_RULES.md` §16's canonical list or in `GAME_EVENTS.md` §2, and this
+   section authors none.
+5. **Overflow continues to HP.** Damage is applied in this fixed order:
+   ```text
+   Final Damage
+     ↓
+   Shield absorbs (pool reduced)
+     ↓
+   pool reaches 0 → Shield removed (same resolution)
+     ↓
+   remaining damage reduces HP, by exactly the remainder
+   ```
+   - Damage **less than** the pool: the pool is reduced, HP is unchanged.
+   - Damage **exactly equal to** the pool: the pool reaches 0, the Shield is
+     removed, and HP is **unchanged** — the whole amount is absorbed.
+   - Damage **greater than** the pool: the pool reaches 0, the Shield is
+     removed, and HP is reduced by **exactly the remainder** (damage minus the
+     pool). There is no double-counting: the absorbed portion never also
+     reduces HP.
+6. Heal and Shield amounts are NOT subject to the Damage Pipeline (§3) —
    they are not damage — but they ARE subject to their own explicit
-   modifiers (e.g. a Relic that increases Heal Card effectiveness).
+   modifiers (e.g. a Relic that increases Heal Card effectiveness). Step 5's
+   absorption is applied to the Final Damage the pipeline produces (§3 step 6);
+   it does not change that pipeline, whose steps 1–6 are unchanged.
 
 ---
 
@@ -202,9 +273,11 @@ separate Player HP pool (`SIGNALR_PROTOCOL.md` §3.2).
 ## 5.1 MVP Status Effects
 
 ```text
-Burn      damage-over-time, ticks each Turn (or configured interval),
-          Element = Hỏa for Element Modifier purposes
-Shield    absorption pool, see §4
+Burn      damage-over-time, ticks once per resolved Turn at End Turn
+          (GAME_RULES.md §17 step 19a), Element = Hỏa for Element
+          Modifier purposes
+Shield    absorption pool, see §4; refresh-not-stack, removed at 0
+          (trigger-based expiry, §4 items 3–5)
 Buff/Debuff  temporary stat modification (ATK/DEF/Crit/etc.), with duration
           measured in Turns unless stated otherwise
 ```
@@ -212,16 +285,108 @@ Buff/Debuff  temporary stat modification (ATK/DEF/Crit/etc.), with duration
 ## 5.2 Status Rules
 
 1. Every Status Effect has a source, a magnitude, and a duration (in Turns) or
-   a trigger-based expiry (e.g. "until Shield is depleted").
+   a trigger-based expiry (e.g. "until Shield is depleted" — §4 item 4).
 2. Stacking behavior (refresh duration vs. stack magnitude vs. independent
-   instances) is defined per-effect; default for MVP is **refresh duration,
-   do not stack magnitude** unless a Card/Relic explicitly says otherwise
+   instances) is defined per-effect; default for MVP is **refresh duration, do
+   not stack magnitude** unless a Card/Relic explicitly says otherwise
    (e.g. "Burning Curse" increases Burn damage, which is a magnitude modifier
-   on the existing Burn, not a second stack).
+   on the existing Burn, not a second stack). Shield follows this default and
+   is stated explicitly in §4 item 3; no MVP Card or Relic carves Shield out
+   of it.
 3. Damage-over-time ticks (Burn) go through the Damage Pipeline (§3) using the
    Effect's own Element, but do not consume Combo (Combo Modifier step uses
    Combo = 1 / neutral for DoT ticks, since a DoT tick is not itself part of a
    Swap's Combo chain).
+
+## 5.3 Duration Consumption Timing
+
+This section is the **canonical owner** of when one Turn of a Status Effect's
+duration is consumed. Other documents reference it; they do not restate it
+(`.ai/workflow/documentation/documentation-change.md` §2).
+
+```text
+DR1. Duration is a per-effect-instance counter, initialized to the
+     applied/refreshed duration value.
+
+DR2. Exactly one decrement occurs per Turn, at GAME_RULES.md §17 step 19a —
+     regardless of how many apply/refresh operations occurred earlier in that
+     same Turn.
+
+DR3. Apply and Refresh use the SAME mechanism: `remaining = duration`
+     (an initial Apply is not semantically different from a Refresh; Refresh
+     simply re-executes the same "set remaining" operation on an already-active
+     effect instance).
+
+DR4. Same-Turn reapplication (Apply/Refresh occurring again within the Turn in
+     which the effect is already active) resets `remaining` to the new duration
+     value and does NOT trigger an additional consumption in that Turn. Only
+     step 19a consumes.
+
+DR5. Expiration occurs when `remaining` reaches 0 at step 19a. An effect at
+     `remaining = 0` is inactive from that point forward (i.e. not active
+     during the following Turn).
+```
+
+### 5.3.1 Apply/Refresh Ordering (DR6)
+
+For any Turn-based Buff/Debuff Status Effect that is applied or refreshed at a
+documented point before `GAME_RULES.md` §17 step 19a, the effect consumes one
+Turn of duration at that Turn's step 19a.
+
+`GAME_RULES.md` §17 defines Boss Response (step 18) before End Turn (step 19),
+and step 19a is the last combat effect of the Turn. Therefore all currently
+documented Buff/Debuff application sites occur before the consumption point.
+
+No current gameplay rule defines an application or refresh after step 19a. If a
+future gameplay source introduces such a site, its duration-consumption timing
+must be explicitly defined before implementation; this rule does not infer or
+create such an application point.
+
+### 5.3.2 Scope
+
+This rule applies to all **Turn-based** Buff/Debuff Status Effects. An effect
+whose expiry is defined as trigger-based (§5.2 item 1, e.g. "until Shield is
+depleted") does not use the Turn countdown. Root follows this general
+Turn-based rule.
+
+### 5.3.3 Worked Examples
+
+```text
+duration = 2, no refresh:
+  Turn N:   Apply(2)              -> remaining = 2
+            §17 step 19a          -> remaining = 1
+  Turn N+1: active
+            §17 step 19a          -> remaining = 0 -> expires
+  Turn N+2: inactive
+
+duration = 2, refreshed in Turn N+1:
+  Turn N:   Apply(2)              -> remaining = 2
+            §17 step 19a          -> remaining = 1
+  Turn N+1: Refresh(2)            -> remaining = 2
+            §17 step 19a          -> remaining = 1
+  Turn N+2: §17 step 19a          -> remaining = 0 -> expires
+
+duration = 1, no refresh:
+  Turn N:   Apply(1)              -> remaining = 1
+            §17 step 19a          -> remaining = 0 -> expires
+  Turn N+1: inactive
+
+duration = 2, applied and refreshed within the same Turn N (DR4):
+  Turn N:   Apply(2)              -> remaining = 2
+            Refresh(2)            -> remaining = 2 (reset; no extra consumption)
+            §17 step 19a          -> remaining = 1
+  Turn N+1: active
+            §17 step 19a          -> remaining = 0 -> expires
+```
+
+### 5.3.4 No Change to Damage-over-time or Cooldown Rules
+
+This section fixes the consumption point for **duration-based Buff/Debuff**
+Status Effects. It does not change Burn's tick schedule, which
+`BOSS_RULES.md` §6.3.1 item 1 owns and which is consistent with DR1–DR5. It
+does not change `BossState.SkillCooldown`'s separate decrement rule
+(`BOSS_RULES.md` §6.3, `GAME_STATE.md` §2.4.3) — that is a Boss Skill counter,
+not a Status Effect, and no state field here adopts it.
 
 ---
 

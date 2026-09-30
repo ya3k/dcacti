@@ -92,8 +92,9 @@ public class DamagePipelineTests
         int defense = 0,
         int defenderHp = 500,
         DamageParty source = DamageParty.Player,
-        DamageParty target = DamageParty.Boss) =>
-        new(attack, baseDamagePool, combo, attacker, defender, defense, defenderHp, source, target);
+        DamageParty target = DamageParty.Boss,
+        int shieldPool = 0) =>
+        new(attack, baseDamagePool, combo, attacker, defender, defense, defenderHp, source, target, shieldPool);
 
     private static DamageResult Calculate(
         BossState boss,
@@ -944,5 +945,186 @@ public class DamagePipelineTests
         // Only the direction members differ.
         Assert.Equal(DamageParty.Player, playerToBoss.DamageDealt.Source);
         Assert.Equal(DamageParty.Boss, bossToPlayer.DamageDealt.Source);
+    }
+
+    // ---------------------------------------------------------------------
+    // Shield absorption (COMBAT_RULES.md §4 items 2–5) — TASK-102
+    //
+    // §4 item 5 fixes the order the absorption follows:
+    //
+    //     Final Damage → Shield absorbs (pool reduced) → pool reaches 0 →
+    //     Shield removed (same resolution) → remaining damage reduces HP,
+    //     by exactly the remainder
+    //
+    // §4 item 6 places the step after the pipeline, on "the Final Damage the
+    // pipeline produces (§3 step 6)", so steps 1–6 above are unchanged by it.
+    //
+    // The scenarios below use a Boss→Player instance against the documented MVP
+    // Pet (HP 1000, DEF 25 — COMBAT_RULES.md §1.1) because that is the direction
+    // a Shield on the player's side absorbs. Every expected value is derived from
+    // §4 and §3.2, never from the implementation: with DEF 25 and a Neutral 1.00
+    // Element matchup, Final Damage = truncate(Base × 100/125).
+    // ---------------------------------------------------------------------
+
+    /// <summary>
+    /// A Boss→Player instance whose Final Damage is exactly
+    /// <paramref name="finalDamage"/> — the value §4's three boundary cases are
+    /// stated against. With DEF 25 and a Neutral matchup the mitigation factor is
+    /// <c>100/125 = 0.8</c>, so a Base of <c>finalDamage × 5 / 4</c> truncates to
+    /// <paramref name="finalDamage"/> for every multiple of 4 used below.
+    /// </summary>
+    private static DamagePipeline.DamageInputs ShieldScenario(
+        int finalDamage,
+        int shieldPool,
+        int playerHp = 1000) =>
+        BossAttackInputs(
+            attack: finalDamage * 5 / 4,
+            baseDamagePool: 0,
+            bossElement: Element.Hoa,
+            petElement: Element.Hoa,
+            playerDefense: 25,
+            playerHp: playerHp) with
+        { DefenderShieldPool = shieldPool };
+
+    private static DamageResult Absorb(DamagePipeline.DamageInputs inputs) =>
+        DamagePipeline.Calculate(inputs, ComboModifiers.Default, ElementModifiers.Default);
+
+    [Fact]
+    public void Shield_WhenDamageIsLessThanThePool_ShouldLeaveHpUnchanged()
+    {
+        // COMBAT_RULES.md §4 item 5's first boundary: "Damage less than the pool:
+        // the pool is reduced, HP is unchanged." Final Damage 80 against a pool of
+        // 200 leaves HP at 1000 and the pool at 120.
+        var result = Absorb(ShieldScenario(finalDamage: 80, shieldPool: 200));
+
+        Assert.Equal(80, result.Calculation.FinalDamage);
+        Assert.Equal(80, result.AbsorbedDamage);
+        Assert.Equal(120, result.RemainingShieldPool);
+        Assert.Equal(1000, result.TargetHp);
+    }
+
+    [Fact]
+    public void Shield_WhenDamageEqualsThePool_ShouldLeaveHpUnchangedAndEmptyThePool()
+    {
+        // COMBAT_RULES.md §4 item 5's second boundary: "Damage exactly equal to the
+        // pool: the pool reaches 0, the Shield is removed, and HP is unchanged —
+        // the whole amount is absorbed." The removal itself is item 4; the pool
+        // reaching exactly 0 is what `RemainingShieldPool == 0` reports.
+        var result = Absorb(ShieldScenario(finalDamage: 200, shieldPool: 200));
+
+        Assert.Equal(200, result.Calculation.FinalDamage);
+        Assert.Equal(200, result.AbsorbedDamage);
+        Assert.Equal(0, result.RemainingShieldPool);
+        Assert.Equal(1000, result.TargetHp);
+    }
+
+    [Fact]
+    public void Shield_WhenDamageExceedsThePool_ShouldReduceHpByExactlyTheRemainder()
+    {
+        // COMBAT_RULES.md §4 item 5's third boundary: "Damage greater than the pool:
+        // the pool reaches 0, the Shield is removed, and HP is reduced by exactly
+        // the remainder (damage minus the pool)." 300 − 200 absorbed = 100 to HP, so
+        // 1000 − 100 = 900. The absorbed portion never also reduces HP (no
+        // double-counting): HP would be 700 if it did.
+        var result = Absorb(ShieldScenario(finalDamage: 300, shieldPool: 200));
+
+        Assert.Equal(300, result.Calculation.FinalDamage);
+        Assert.Equal(200, result.AbsorbedDamage);
+        Assert.Equal(0, result.RemainingShieldPool);
+        Assert.Equal(900, result.TargetHp);
+        Assert.NotEqual(700, result.TargetHp);
+    }
+
+    [Fact]
+    public void Shield_WithNoActiveShield_ShouldLeaveHpFullyExposed()
+    {
+        // COMBAT_RULES.md §4 item 2 requires an active Shield for any absorption to
+        // occur. With no Shield the Final Damage reaches HP in full — the behaviour
+        // every existing caller already has, which is why the pool defaults to 0.
+        var result = Absorb(ShieldScenario(finalDamage: 80, shieldPool: 0));
+
+        Assert.Equal(0, result.AbsorbedDamage);
+        Assert.Equal(0, result.RemainingShieldPool);
+        Assert.Equal(920, result.TargetHp);
+    }
+
+    [Fact]
+    public void Shield_ShouldAbsorbBeforeHp_NotAfter()
+    {
+        // COMBAT_RULES.md §4 item 2: the pool "reduces incoming damage before HP is
+        // affected", and item 5 orders absorption ahead of the HP write. The
+        // observable consequence is that a fully-absorbed instance leaves HP
+        // identical to the instance's starting HP — asserted against the input HP
+        // rather than a literal, so the direction of the reduction is explicit.
+        var result = Absorb(ShieldScenario(finalDamage: 80, shieldPool: 200, playerHp: 640));
+
+        Assert.Equal(640, result.TargetHp);
+    }
+
+    [Fact]
+    public void Shield_ShouldStillReportTheThreeDamageEventsWhenFullyAbsorbed()
+    {
+        // TASK-102 criterion: "A fully-absorbed damage instance still reports its
+        // documented DamageCalculated / DamageDealt / DamageTaken events, with the
+        // HP effect reflecting the absorption — the existing event contract is not
+        // silently changed by the new step." GAME_EVENTS.md §1 places the three
+        // events unconditionally on the resolution, and §2's members are unchanged
+        // — the reports carry the Final Damage the pipeline evaluated, which is not
+        // the amount that reached HP.
+        var result = Absorb(ShieldScenario(finalDamage: 80, shieldPool: 200));
+
+        Assert.Equal(80, result.Calculation.FinalDamage);
+        Assert.Equal(DamageParty.Boss, result.DamageDealt.Source);
+        Assert.Equal(DamageParty.Player, result.DamageDealt.Target);
+        Assert.Equal(80, result.DamageDealt.Amount);
+        Assert.Equal(80, result.DamageTaken.Amount);
+    }
+
+    [Fact]
+    public void Shield_ShouldNotChangeAnyPipelineStepBeforeIt()
+    {
+        // COMBAT_RULES.md §4 item 6: the absorption "does not change that pipeline,
+        // whose steps 1–6 are unchanged." A Shield therefore cannot alter the
+        // breakdown — the same inputs with and without a pool produce one
+        // DamageCalculated, and only the HP effect differs.
+        var withoutShield = Absorb(ShieldScenario(finalDamage: 80, shieldPool: 0));
+        var withShield = Absorb(ShieldScenario(finalDamage: 80, shieldPool: 200));
+
+        Assert.Equal(withoutShield.Calculation, withShield.Calculation);
+        Assert.Equal(withoutShield.DamageDealt, withShield.DamageDealt);
+    }
+
+    [Fact]
+    public void Shield_Overflow_ShouldClampHpAtZeroOnOverkill()
+    {
+        // GAME_RULES.md §1.4 ends the battle at 0 HP, so the remainder is applied
+        // with the pipeline's existing clamp: a remainder larger than the target's
+        // HP stops at 0, exactly as unabsorbed overkill does.
+        var result = Absorb(
+            ShieldScenario(finalDamage: 300, shieldPool: 200, playerHp: 50));
+
+        Assert.Equal(200, result.AbsorbedDamage);
+        Assert.Equal(0, result.TargetHp);
+        Assert.True(result.TargetHp >= 0);
+    }
+
+    [Fact]
+    public void Shield_ShouldApplyTheRemainderOnlyOnceAcrossRepeatedInstances()
+    {
+        // COMBAT_RULES.md §4 item 4 removes the Shield at exactly 0 "in that same
+        // resolution", so a second instance in the same resolution meets no pool —
+        // the caller no longer holds one (StatusEffectLifecycle.RemoveDepletedShield
+        // is what performs that removal). The pool is not resurrected between
+        // instances, so the second hit reaches HP in full: 1000 − 100 − 300 = 600.
+        var first = Absorb(ShieldScenario(finalDamage: 300, shieldPool: 200));
+
+        Assert.Equal(0, first.RemainingShieldPool);
+        Assert.Equal(900, first.TargetHp);
+
+        var second = Absorb(
+            ShieldScenario(finalDamage: 300, shieldPool: 0, playerHp: first.TargetHp));
+
+        Assert.Equal(0, second.AbsorbedDamage);
+        Assert.Equal(600, second.TargetHp);
     }
 }

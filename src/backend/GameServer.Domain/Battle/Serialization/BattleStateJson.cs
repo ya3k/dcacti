@@ -69,6 +69,22 @@ internal static class BattleStateJsonNames
     public const string PetEquippedRelics = "equippedRelics";
     public const string PetEquippedCards = "equippedCards";
 
+    // StatusEffects[] (GAME_STATE.md §2.3.1, §2.3.2 item 1) — the collection is
+    // written on BOTH PetState and BossState under this one member name, and one
+    // element shape serves both (§2.3.1 preamble, §2.4.1).
+    public const string StatusEffects = "statusEffects";
+
+    // One StatusEffect element (GAME_STATE.md §2.3.2 item 3 — the exact member
+    // set, in the documented order). The four required members are always
+    // written; the three optional ones carry an ignore-when-absent condition.
+    public const string StatusEffectId = "id";
+    public const string StatusEffectType = "type";
+    public const string StatusEffectSource = "source";
+    public const string StatusEffectMagnitude = "magnitude";
+    public const string StatusEffectTargetStat = "targetStat";
+    public const string StatusEffectRemainingTurns = "remainingTurns";
+    public const string StatusEffectExpiryCondition = "expiryCondition";
+
     // PassiveProgress — the documented "current count vs. threshold" pair (§2.3).
     public const string PassiveThreshold = "threshold";
     public const string PassiveCurrent = "current";
@@ -280,10 +296,6 @@ internal sealed record SpecialGemJson
 /// There is no <c>PlayerState</c> node here or anywhere in this mapping: the Pet
 /// is the combat character and the Player is the account/owner with no
 /// authoritative battle-time combat pool (§2, <c>ADR-011</c>).
-///
-/// Only the members the current contract implements exist
-/// (<c>StatusEffects[]</c> is not yet implemented and is therefore not a member —
-/// §2.3, §0 item 4).
 /// </summary>
 internal sealed record PetStateJson
 {
@@ -390,6 +402,30 @@ internal sealed record PetStateJson
     [JsonPropertyName(BattleStateJsonNames.PetEquippedCards)]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public IReadOnlyList<string>? EquippedCards { get; init; }
+
+    /// <summary>
+    /// The active Status Effect instances on this entity
+    /// (<c>GAME_STATE.md</c> §2.3.1, §2.3.2 item 1) — the same element shape and
+    /// the same lifecycle as <c>BossState.StatusEffects[]</c> (§2.4.1).
+    ///
+    /// <b>It is always written, and it is never <c>null</c>.</b> §2.3.2 item 1
+    /// makes an entity with no active effect serialize an <b>empty array</b>:
+    /// "the collection always exists (§0 item 4), so it is never omitted and
+    /// never <c>null</c>". It therefore carries <b>no ignore condition</b> —
+    /// deliberately unlike <see cref="EquippedRelics"/> and
+    /// <see cref="EquippedCards"/> above, whose stages have a documented "not yet
+    /// supplied" state to spell. This collection has no such state, so no
+    /// absent-member spelling is introduced for it (§0 item 5).
+    ///
+    /// <b>It is nullable in the DTO so a violation is rejectable, not admissible.</b>
+    /// The mapping always writes an array, so the <c>null</c> branch is reachable
+    /// only from a stored document that broke the contract. The type admits it so
+    /// that <c>FromStatusEffectsJson</c> can reject it with a message naming
+    /// §2.3.2 item 1, instead of the failure surfacing incidentally from a LINQ
+    /// call. A <c>null</c> here is never a state the Domain accepts.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.StatusEffects)]
+    public required IReadOnlyList<StatusEffectJson>? StatusEffects { get; init; }
 }
 
 /// <summary>
@@ -408,9 +444,6 @@ internal sealed record PassiveProgressJson
 
 /// <summary>
 /// <c>BossState</c> (<c>GAME_STATE.md</c> §2.4) — the battle's one Boss.
-///
-/// <c>StatusEffects[]</c> is not yet implemented and is therefore not a member
-/// (§2.4.1).
 /// </summary>
 internal sealed record BossStateJson
 {
@@ -463,6 +496,128 @@ internal sealed record BossStateJson
     /// </summary>
     [JsonPropertyName(BattleStateJsonNames.BossSkillCooldown)]
     public required int SkillCooldown { get; init; }
+
+    /// <inheritdoc cref="PetStateJson.StatusEffects"/>
+    [JsonPropertyName(BattleStateJsonNames.StatusEffects)]
+    public required IReadOnlyList<StatusEffectJson>? StatusEffects { get; init; }
+}
+
+/// <summary>
+/// One StatusEffect instance (<c>GAME_STATE.md</c> §2.3.1) — the element shape
+/// <c>PetState.StatusEffects[]</c> and <c>BossState.StatusEffects[]</c> share
+/// (§2.3.1's preamble: "identical element shape and identical lifecycle";
+/// §2.4.1). There is therefore <b>one</b> DTO, not a pet variant and a boss
+/// variant.
+///
+/// <b>The member set is §2.3.2 item 3's, exactly.</b>
+///
+/// <code>
+/// id              string    required
+/// type            string    required    ("DoT" | "BuffDebuff" | "Shield" | "State")
+/// source          string    required    ("player" | "boss")
+/// magnitude       number    required
+/// targetStat      string    optional    (present iff type = "BuffDebuff")
+/// remainingTurns  integer   optional    (present iff the instance uses the Turn countdown)
+/// expiryCondition string    optional    (present iff it does not)
+/// </code>
+///
+/// <b>Absence is spelled by omission, never by <c>null</c> or a sentinel.</b>
+/// §2.3.1 item 7 requires an inapplicable member to be <b>absent</b> — "never
+/// <c>null</c>, never a sentinel string" — following the absent-member convention
+/// of §2.1.7 item 3 that <see cref="CellJson.SpecialGem"/> and
+/// <see cref="PetStateJson.PassiveResetOverride"/> already follow. The three
+/// optional members are therefore nullable and are omitted when they do not
+/// apply. §2.3.2 item 5 makes materializing an absent optional member as
+/// <c>null</c> an explicit <b>defect</b>, which is what these conditions prevent.
+///
+/// <b>No second counter exists.</b> §2.3.2 item 4 forbids an <c>elapsedTurns</c>,
+/// <c>appliedTurn</c>, <c>duration</c>, or <c>refreshedAt</c> member: a second
+/// representation of the quantity <c>remainingTurns</c> already carries would be
+/// the parallel representation §0 item 5 forbids. Refresh is expressed by
+/// assignment on <c>remainingTurns</c> (§5.1.1 item 1), so this DTO has one
+/// duration member per model and nothing else.
+///
+/// <b>Nothing here interprets a value.</b> §2.3.1 items 1–2 make <c>id</c> an
+/// identity and <c>magnitude</c> a typed-but-uninterpreted number; the mapping
+/// copies both and applies no meaning, unit, sign, or range to either.
+/// </summary>
+internal sealed record StatusEffectJson
+{
+    /// <summary>
+    /// The Status Effect identity (§2.3.1 items 1 and 6), e.g. <c>"Burn"</c>,
+    /// <c>"Root"</c>, <c>"Shield"</c>, <c>"Stun"</c>. It is an identity, not a
+    /// definition: the effect's rules stay with <c>COMBAT_RULES.md</c> §5 and
+    /// <c>BOSS_RULES.md</c> §6.3.1 and are not written here.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.StatusEffectId)]
+    public required string Id { get; init; }
+
+    /// <summary>
+    /// The effect category (§2.3.1 item 3), written by name rather than ordinal —
+    /// <c>DoT</c>, <c>BuffDebuff</c>, <c>Shield</c>, or <c>State</c>. It selects
+    /// which of the two duration models the instance uses, which is why the
+    /// mapping keys that decision off the members present rather than off a
+    /// re-derived reading.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.StatusEffectType)]
+    public required string Type { get; init; }
+
+    /// <summary>
+    /// Which side applied the instance (§2.3.1 item 7) — <c>Player</c> or
+    /// <c>Boss</c>, written by name. It is written from the instance's own
+    /// <c>Source</c> and is never inferred from the owning entity: a Boss-applied
+    /// effect can sit on the Pet and vice versa.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.StatusEffectSource)]
+    public required string Source { get; init; }
+
+    /// <summary>
+    /// The effect's applied magnitude (§2.3.1 item 2), copied verbatim. What the
+    /// number means is owned by the effect's rule document and is not interpreted,
+    /// rounded, scaled, or converted here — Burn's is flat damage per tick and
+    /// Root's is a negative percentage, and both must round-trip unchanged.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.StatusEffectMagnitude)]
+    public required double Magnitude { get; init; }
+
+    /// <summary>
+    /// The modified stat for a <c>BuffDebuff</c> instance, e.g. <c>"ATK"</c>
+    /// (§2.3.1 item 7). Present <b>iff</b> <see cref="Type"/> is
+    /// <c>BuffDebuff</c>; omitted otherwise, because a stat on a type that
+    /// modifies none would be a value no rule reads.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.StatusEffectTargetStat)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TargetStat { get; init; }
+
+    /// <summary>
+    /// The per-instance duration counter for a Turn-based instance (§2.3.1
+    /// items 3–4; <c>COMBAT_RULES.md</c> §5.3 DR1), omitted for a trigger-based
+    /// one.
+    ///
+    /// It is a plain integer and is never fractional or a duration-and-elapsed
+    /// pair (§2.3.2 item 4). <b>A stored <c>0</c> is a contract violation, not a
+    /// value to normalize:</b> §2.3.1 item 8 makes an instance at zero
+    /// unobservable in a committed state, and the Domain factory rejects a
+    /// duration below <c>1</c>, so deserialization rejects it too rather than
+    /// repairing it into a state the battle never held.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.StatusEffectRemainingTurns)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public int? RemainingTurns { get; init; }
+
+    /// <summary>
+    /// The trigger-based expiry label for an instance that does not use the Turn
+    /// countdown, e.g. <c>"ShieldDepleted"</c> (§2.3.1 items 3 and 5). Present
+    /// iff <see cref="RemainingTurns"/> is absent — the two are mutually
+    /// exclusive by item 3, so exactly one is written.
+    ///
+    /// §2.3.1 item 5 makes it a condition label and not a rule: the mapping copies
+    /// which trigger ends the instance and evaluates nothing.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.StatusEffectExpiryCondition)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ExpiryCondition { get; init; }
 }
 
 /// <summary>

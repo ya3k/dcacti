@@ -4,6 +4,8 @@ import { GameShell } from './GameShell';
 import { StatusOverlay } from '../ui/components/StatusOverlay';
 import { ViewportDebugOverlay } from '../ui/components/ViewportDebugOverlay';
 import { GameRuntime } from '../game/runtime/GameRuntime';
+import { DiscordService } from '../services/discord/DiscordService';
+import { ApiService } from '../services/api/ApiService';
 
 /** Default hub path (SIGNALR_PROTOCOL.md §1; mapped in vite.config.ts). */
 const BATTLE_HUB_URL = '/hubs/battle';
@@ -18,6 +20,7 @@ const BATTLE_HUB_URL = '/hubs/battle';
  * mount → cleanup → mount race against the shared transport.
  */
 let sharedRuntime: GameRuntime | null = null;
+let bootstrapPromise: Promise<void> | null = null;
 
 function getSharedRuntime(): GameRuntime {
   if (sharedRuntime === null) {
@@ -26,9 +29,54 @@ function getSharedRuntime(): GameRuntime {
   return sharedRuntime;
 }
 
-/** Test-only: releases the module-scoped runtime between test cases. */
+/**
+ * Establishes the authenticated application session before connecting SignalR
+ * (TDD.md §2.1 item 4, API_CONTRACTS.md §2, SIGNALR_PROTOCOL.md §1).
+ *
+ * Sequence:
+ *   DiscordService.initialize()
+ *           ↓
+ *   DiscordService.getAuthorizationCode()
+ *           ↓
+ *   ApiService.authenticateDiscord(code)
+ *           ↓
+ *   ApplicationSession.establish(...) (called by ApiService.authenticateDiscord)
+ *           ↓
+ *   GameRuntime.setSessionStatus('authenticated')
+ *           ↓
+ *   GameRuntime.initialize(BATTLE_HUB_URL)
+ *           ↓
+ *   SignalR connection
+ */
+async function bootstrapApplication(runtime: GameRuntime): Promise<void> {
+  runtime.setSessionStatus('authenticating');
+
+  try {
+    const discordContext = await DiscordService.getInstance().initialize();
+    if (!discordContext.isAvailable) {
+      runtime.setSessionStatus('error');
+      return;
+    }
+
+    const code = await DiscordService.getInstance().getAuthorizationCode();
+    if (!code) {
+      runtime.setSessionStatus('error');
+      return;
+    }
+
+    await ApiService.getInstance().authenticateDiscord(code);
+    runtime.setSessionStatus('authenticated');
+
+    await runtime.initialize(BATTLE_HUB_URL);
+  } catch {
+    runtime.setSessionStatus('error');
+  }
+}
+
+/** Test-only: releases the module-scoped runtime and bootstrap promise between test cases. */
 export function resetSharedRuntime(): void {
   sharedRuntime = null;
+  bootstrapPromise = null;
 }
 
 /**
@@ -43,9 +91,9 @@ export function resetSharedRuntime(): void {
  * server-authoritative events to the presentation layer (task §15–§17).
  *
  * StrictMode (task §20). Effects run mount → cleanup → mount in development.
- * `initialize()` is idempotent and `dispose()` is only called when the runtime
- * was never initialized, so the second mount attaches to the already-connecting
- * runtime and the app never opens a second connection or tears down a live one.
+ * The bootstrap sequence is executed once and `initialize()` is idempotent,
+ * so the second mount attaches to the already-authenticating/connecting runtime
+ * and the app never opens a duplicate connection or duplicates authentication.
  */
 export const App: React.FC = () => {
   const [runtime, setRuntime] = useState<GameRuntime | null>(null);
@@ -55,11 +103,9 @@ export const App: React.FC = () => {
 
     setRuntime(activeRuntime);
 
-    // Initialize the runtime: connects the transport and binds lifecycle
-    // handlers. Idempotent, so the StrictMode remount is a no-op here. Failures
-    // are handled inside the runtime and surface as runtime state, so a backend
-    // that is down leaves the app usable (task §19).
-    void activeRuntime.initialize(BATTLE_HUB_URL);
+    if (!bootstrapPromise) {
+      bootstrapPromise = bootstrapApplication(activeRuntime);
+    }
 
     return () => {
       // The runtime outlives an individual effect run: `SignalRService` is a

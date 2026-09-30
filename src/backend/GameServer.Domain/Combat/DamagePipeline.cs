@@ -15,7 +15,9 @@ namespace GameServer.Domain.Combat;
 /// 3. × Element Modifier ELEMENT_RULES.md §2.2, by the resolved matchup
 /// 4. × Other Modifiers  pass-through 1.00× in MVP (no Relic/Passive/Buff/Crit)
 /// 5. − Defense          × ( K / (K + Defender.DEF) ), K = 100  (COMBAT §3.2)
-/// 6. → Final Damage     truncated toward zero, minimum 0, applied to Target HP
+/// 6. → Final Damage     truncated toward zero, minimum 0
+/// 7. − Shield           absorption pool, before HP (COMBAT_RULES.md §4 items 2–5)
+/// 8. → Target HP        reduced by the remainder only
 /// </code>
 ///
 /// <b>The order is fixed and is not an implementation choice.</b>
@@ -54,13 +56,13 @@ namespace GameServer.Domain.Combat;
 /// implemented). This type therefore performs one instance per call; a stage that
 /// needs several calls it several times.
 ///
-/// <b>What it owns, and what it does not.</b> It owns the calculation and the
+/// <b>What it owns, and what it does not.</b> It owns the calculation, the
+/// Shield absorption step (<c>COMBAT_RULES.md</c> §4 items 2–5), and the
 /// resulting target HP. It does <b>not</b> decide Victory or Defeat
 /// (<c>GAME_RULES.md</c> §1.4, §17 step 19 — the terminal checks belong to the
-/// resolution), it fires no Boss Response (step 18), it transitions no Boss
-/// State, and it applies no Shield (<c>COMBAT_RULES.md</c> §4 item 2 is not
-/// implemented). HP reaching 0 is simply HP reaching 0; nothing here reads it as
-/// an outcome.
+/// resolution), it fires no Boss Response (step 18), and it transitions no Boss
+/// State. HP reaching 0 is simply HP reaching 0; nothing here reads it as an
+/// outcome.
 ///
 /// This type is deliberately minimal and framework-independent
 /// (<c>ARCHITECTURE.md</c> §2.1): it references no ASP.NET Core, SignalR, EF
@@ -180,6 +182,36 @@ public static class DamagePipeline
     /// two reports. <see cref="DamageParty.Boss"/> for Player→Boss,
     /// <see cref="DamageParty.Player"/> for Boss→Player.
     /// </param>
+    /// <param name="DefenderShieldPool">
+    /// The defending target's active Shield absorption pool, or <c>0</c> when the
+    /// target has no active Shield (<c>COMBAT_RULES.md</c> §4 items 2–5).
+    ///
+    /// <b>It is the existing instance's <c>Magnitude</c>, not a second
+    /// representation.</b> A Shield is a <c>StatusEffect</c> instance with the
+    /// identity <c>"Shield"</c> and <c>Type = Shield</c>
+    /// (<c>GAME_STATE.md</c> §2.3.1 items 1–3), and §2.3.1 item 2 makes its
+    /// <c>Magnitude</c> the applied value whose meaning — here, an absorption pool
+    /// — is owned by the rule document. The caller therefore reads the value out of
+    /// <c>PetState.StatusEffects[]</c> / <c>BossState.StatusEffects[]</c> and passes
+    /// it here rather than this pipeline reaching into a state record, exactly as
+    /// it does for <paramref name="DefenderDefense"/> and
+    /// <paramref name="DefenderHp"/>. No <c>ShieldPoints</c> field exists or is
+    /// introduced (<c>GAME_STATE.md</c> §0 item 5).
+    ///
+    /// <b>It is a pool, not a duration or a source.</b> At most one Shield is
+    /// active per entity (§4 item 3), so there is no multi-pool ordering and this
+    /// parameter is a single number; the pooling of several Shield applications is
+    /// the refresh <c>COMBAT_RULES.md</c> §4 item 3 defines, which happens at the
+    /// application site and is already reflected in the value passed here.
+    ///
+    /// <b>It defaults to no Shield.</b> <c>0</c> means the target holds no active
+    /// Shield, which is the documented "no pool to consume" state rather than a
+    /// Shield of magnitude 0: §4 item 4 makes a pool at exactly <c>0</c> a removed
+    /// Shield, and <c>GAME_STATE.md</c> §2.3.1 item 8 makes a committed zero never
+    /// observable. Reading both as "nothing to absorb" is therefore the documented
+    /// behaviour, and the default keeps every existing caller correct without
+    /// change.
+    /// </param>
     public readonly record struct DamageInputs(
         int Attack,
         int BaseDamagePool,
@@ -189,7 +221,8 @@ public static class DamagePipeline
         int DefenderDefense,
         int DefenderHp,
         DamageParty Source,
-        DamageParty Target);
+        DamageParty Target,
+        int DefenderShieldPool = 0);
 
     /// <summary>
     /// Resolves one damage instance through the full pipeline and applies the
@@ -366,12 +399,63 @@ public static class DamagePipeline
             finalDamage = 0;
         }
 
-        // §3 step 6 / §17 step 17 / GAME_RULES.md §1.4 — apply the Final Damage to
-        // the target's HP, clamped so HP never becomes negative: overkill stops at
-        // 0. Only the HP is returned; the caller writes it onto the state record it
-        // owns, so this type cannot accidentally transition the Boss's State,
-        // rewrite a stat, or reach into a PetState it does not model.
-        var updatedHp = inputs.DefenderHp - finalDamage;
+        // -------------------------------------------------------------------
+        // COMBAT_RULES.md §4 items 2–5 — Shield absorption, before HP.
+        // -------------------------------------------------------------------
+        // §4 item 5 fixes the order explicitly ("Damage is applied in this fixed
+        // order"):
+        //
+        //     Final Damage
+        //       ↓
+        //     Shield absorbs (pool reduced)
+        //       ↓
+        //     pool reaches 0 → Shield removed (same resolution)
+        //       ↓
+        //     remaining damage reduces HP, by exactly the remainder
+        //
+        // §4 item 6 places this step after the pipeline: it "is applied to the
+        // Final Damage the pipeline produces (§3 step 6); it does not change that
+        // pipeline, whose steps 1–6 are unchanged". The absorption is therefore
+        // performed here, on `finalDamage`, and steps 1–6 above are untouched.
+        //
+        // At most one Shield is active per entity (§4 item 3), so the caller
+        // supplies one pool and there is no ordering to resolve (§4 item 2). A
+        // negative pool is not a documented state — §4 item 4 removes a pool at
+        // exactly 0 rather than storing a negative — so it is not admitted
+        // silently; treating it as 0 keeps the documented "nothing to absorb"
+        // reading rather than letting a malformed input increase damage.
+        var shieldPool = inputs.DefenderShieldPool > 0 ? inputs.DefenderShieldPool : 0;
+
+        // §4 item 5: the absorbed portion is the pool's worth of the incoming
+        // damage, and it never also reduces HP ("There is no double-counting: the
+        // absorbed portion never also reduces HP"). Damage less than or exactly
+        // equal to the pool is therefore fully absorbed — the exact-equality case
+        // is §4 item 5's second bullet, where "HP is unchanged — the whole amount
+        // is absorbed".
+        var absorbed = finalDamage < shieldPool ? finalDamage : shieldPool;
+
+        // §4 item 5: "remaining damage reduces HP, by exactly the remainder
+        // (damage minus the pool)". At or below the pool the remainder is 0, which
+        // is the "HP is unchanged" case of items 5's first two bullets.
+        var unabsorbedDamage = finalDamage - absorbed;
+
+        // §4 item 4 / §5.1.1 item 7 — the pool reaching EXACTLY 0 removes the
+        // Shield in the same resolution, so a Shield at 0 is never an observable
+        // committed value (§2.3.1 item 8). The post-absorption pool is reported so
+        // the caller can perform that removal on its own collection in the same
+        // single write-back: this pipeline returns values and holds no state
+        // (§5.1), so it does not mutate the collection itself. A pool that was
+        // already 0 before this instance leaves nothing to remove, which is the
+        // documented "no active Shield" state rather than a removal.
+        var remainingShieldPool = shieldPool - absorbed;
+
+        // §3 step 6 / §17 step 17 / GAME_RULES.md §1.4 — apply the UNABSORBED
+        // damage to the target's HP, clamped so HP never becomes negative:
+        // overkill stops at 0. Only the HP is returned; the caller writes it onto
+        // the state record it owns, so this type cannot accidentally transition
+        // the Boss's State, rewrite a stat, or reach into a PetState it does not
+        // model.
+        var updatedHp = inputs.DefenderHp - unabsorbedDamage;
         if (updatedHp < 0)
         {
             updatedHp = 0;
@@ -407,6 +491,8 @@ public static class DamagePipeline
             calculation,
             updatedHp,
             dealt,
-            taken);
+            taken,
+            AbsorbedDamage: absorbed,
+            RemainingShieldPool: remainingShieldPool);
     }
 }

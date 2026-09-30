@@ -171,7 +171,10 @@ public class BattleStateTests
                      // added its own field (§2.3, RELIC_RULES.md §2.2–§2.5).
                      // EquippedCards is likewise implemented now, by the Card loadout
                      // stage (TASK-028), the same way (§2.3, CARD_RULES.md §1).
-                     "StatusEffects",
+                     // StatusEffects is likewise implemented now, by the Status
+                     // Effect stage (TASK-095), the same way (§2.3.1, §5.1.1) — it
+                     // appears as ActiveStatusEffects and is asserted present by the
+                     // PetState/BossState contract tests above.
                      // The rest of §2.3, still owned by the Pet progression stage
                      // (§2.3, SIGNALR_PROTOCOL.md §4.3 item 2). PetId is NOT in this
                      // list any more: the Battle Identity stage (TASK-043)
@@ -447,9 +450,17 @@ public class BattleStateTests
         // PassiveResetOverride, and — since the Relic loadout stage (TASK-027) —
         // EquippedRelics, the battle-scoped snapshot the Relic stage owns (§2.3,
         // RELIC_RULES.md §2.2–§2.5). EquippedCards joined the representation with the
-        // Card loadout stage (TASK-028) (§2.3, CARD_RULES.md §1). The remaining
-        // collection (StatusEffects) and Tier/Star/Level belong to
-        // later stages and are not stubbed here (§0 item 4, §0 item 5).
+        // Card loadout stage (TASK-028) (§2.3, CARD_RULES.md §1).
+        //
+        // StatusEffects joined it with the Status Effect stage (TASK-095), exactly
+        // as each earlier stage added its own field: §2.3.1 makes the collection
+        // part of this record's representation, so it is asserted present here
+        // rather than listed as pending. It appears as ActiveStatusEffects — the
+        // never-null member §2.3.2 item 1 requires — and its own contract is
+        // covered by StatusEffectTests and StatusEffectLifecycleTests.
+        //
+        // Tier/Star/Level remain owned by the Pet progression stage and are still
+        // not stubbed here (§0 item 4, §0 item 5).
         var dataMembers = typeof(PetState)
             .GetConstructors()
             .SelectMany(c => c.GetParameters().Select(p => p.Name!))
@@ -471,7 +482,9 @@ public class BattleStateTests
         // own field (§2.3, RELIC_RULES.md §2.2–§2.5), and EquippedCards is the Card
         // loadout stage's (§2.3, CARD_RULES.md §1). PetId is the Pet identity
         // member ADR-014 decision 4 fixed to the owned instance — there is no
-        // second PetId/PetInstanceId member beside it.
+        // second PetId/PetInstanceId member beside it. ActiveStatusEffects is the
+        // Status Effect stage's member (§2.3.1), the canonical never-null form of
+        // the nullable constructor parameter.
         var declared = typeof(PetState)
             .GetProperties()
             .Select(p => p.Name)
@@ -481,7 +494,8 @@ public class BattleStateTests
         Assert.Equal(
             new[]
             {
-                "ATK", "Crit", "DEF", "Element", "EquippedCards", "EquippedRelics", "HP",
+                "ATK", "ActiveStatusEffects", "Crit", "DEF", "Element", "EquippedCards",
+                "EquippedRelics", "HP",
                 "HasResetOverride", "MaxHP",
                 "PassiveId", "PassiveProgress", "PassiveResetOverride", "PetId",
                 "Power",

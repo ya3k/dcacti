@@ -1437,6 +1437,218 @@ public class BattleStateServiceTests
         Assert.Equal(result.Value.Resolution.RngState, result.Value.State.RngState);
     }
 
+    // -----------------------------------------------------------------------
+    // End Turn step 19a — Status Effect duration/expiry
+    // (GAME_RULES.md §17 step 19a, GAME_STATE.md §5.1.1)
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public async Task ExecuteSwap_ShouldRunStep19aAtItsDocumentedPositionInTheResolution()
+    {
+        // GAME_RULES.md §17 step 19a: End Turn is step 19 — after the Boss Response
+        // (step 18) — and step 19a "fires once per resolved Turn". This asserts the
+        // position rather than only the effect: the committed state the resolution
+        // returns has already been through the pass, so an instance with duration 1
+        // applied before the Turn is consumed and removed in that same resolution
+        // (GAME_STATE.md §5.1.1 items 2, 4, 5).
+        //
+        // The instance is seeded into the created battle's state directly, because
+        // no gameplay source applies a Status Effect yet — producing them is the
+        // downstream Boss Skill task's act (TASK-095 Scope: this task implements the
+        // state lifecycle, not the systems that produce instances).
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
+        var created = await service.CreateBattleAsync(
+            "battle-step19a-position", Owner, PetConfiguration, BossDefinition);
+
+        var seeded = created with
+        {
+            BossState = created.BossState with
+            {
+                ActiveStatusEffects =
+                [
+                    StatusEffect.TurnBased(
+                        "Root", StatusEffectType.BuffDebuff, StatusEffectSource.Boss,
+                        magnitude: -30, duration: 1, targetStat: "ATK"),
+                ],
+            },
+        };
+
+        await repository.TryUpdateAsync(seeded, created.Sequence);
+
+        var pair = FindAdjacentPairThatProducesAMatch(seeded.BoardState);
+        var result = await service.ExecuteSwapAsync("battle-step19a-position", pair);
+
+        Assert.True(result!.Value.IsAccepted);
+
+        // One resolved Turn consumed the duration-1 instance entirely: it is gone
+        // from the committed state, because expiry is a removal in the same pass
+        // and 0 is never observable (§5.1.1 items 4–5, §2.3.1 item 8).
+        Assert.Empty(result.Value.State.BossState.ActiveStatusEffects);
+
+        // The pass ran BEFORE the single write-back (§5.1.1 item 9), so the stored
+        // record is the post-19a state and not the pre-19a one.
+        var reread = await service.GetBattleAsync("battle-step19a-position");
+
+        Assert.NotNull(reread);
+        Assert.Empty(reread!.BossState.ActiveStatusEffects);
+    }
+
+    [Fact]
+    public async Task ExecuteSwap_ShouldConsumeExactlyOneTurnOfDurationPerResolvedTurn()
+    {
+        // GAME_STATE.md §5.1.1 item 2 / COMBAT_RULES.md §5.3 DR2: exactly one
+        // decrement per resolved Turn, and §5.1.1 item 3 makes the apply timing
+        // irrelevant — an instance present before step 19a is decremented once at
+        // that Turn's step 19a.
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
+        var created = await service.CreateBattleAsync(
+            "battle-step19a-once", Owner, PetConfiguration, BossDefinition);
+
+        var seeded = created with
+        {
+            BossState = created.BossState with
+            {
+                ActiveStatusEffects =
+                [
+                    StatusEffect.TurnBased(
+                        "Root", StatusEffectType.BuffDebuff, StatusEffectSource.Boss,
+                        magnitude: -30, duration: 5, targetStat: "ATK"),
+                ],
+            },
+        };
+
+        await repository.TryUpdateAsync(seeded, created.Sequence);
+
+        var pair = FindAdjacentPairThatProducesAMatch(seeded.BoardState);
+        var result = await service.ExecuteSwapAsync("battle-step19a-once", pair);
+
+        Assert.True(result!.Value.IsAccepted);
+
+        // 5 - 1 = 4: exactly one Turn consumed, never two.
+        var instance = Assert.Single(result.Value.State.BossState.ActiveStatusEffects);
+
+        Assert.Equal("Root", instance.Id);
+        Assert.Equal(4, instance.RemainingTurns);
+    }
+
+    [Fact]
+    public async Task ExecuteSwap_ShouldNotRunStep19aForARejectedAction()
+    {
+        // GAME_STATE.md §5.1.1 item 11: "A rejected action is not a resolution
+        // (§5.1 item 6), so no instance is applied, decremented, or removed, and
+        // step 19a does not run."
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
+        var created = await service.CreateBattleAsync(
+            "battle-step19a-rejected", Owner, PetConfiguration, BossDefinition);
+
+        var seeded = created with
+        {
+            BossState = created.BossState with
+            {
+                ActiveStatusEffects =
+                [
+                    StatusEffect.TurnBased(
+                        "Root", StatusEffectType.BuffDebuff, StatusEffectSource.Boss,
+                        magnitude: -30, duration: 1, targetStat: "ATK"),
+                ],
+            },
+        };
+
+        await repository.TryUpdateAsync(seeded, created.Sequence);
+
+        // An out-of-range request is rejected (MATCH3_RULES.md §2.1.4).
+        var result = await service.ExecuteSwapAsync(
+            "battle-step19a-rejected", new SwapRequest(99, 100));
+
+        Assert.True(result!.Value.IsRejected);
+
+        // The duration-1 instance is untouched: had step 19a run, it would have
+        // expired. A rejected action mutates nothing (§5.1.1 item 11).
+        var reread = await service.GetBattleAsync("battle-step19a-rejected");
+
+        Assert.NotNull(reread);
+        var instance = Assert.Single(reread!.BossState.ActiveStatusEffects);
+
+        Assert.Equal(1, instance.RemainingTurns);
+    }
+
+    [Fact]
+    public async Task ExecuteSwap_ShouldNotDecrementATriggerBasedStatusEffect()
+    {
+        // GAME_STATE.md §5.1.1 item 7 / COMBAT_RULES.md §5.3.2: an instance carrying
+        // ExpiryCondition is not touched by the step 19a countdown — it is removed by
+        // its own documented trigger, and the pass "must not invent a duration for
+        // it". A triggered instance therefore survives the resolution unchanged.
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
+        var created = await service.CreateBattleAsync(
+            "battle-step19a-trigger", Owner, PetConfiguration, BossDefinition);
+
+        var seeded = created with
+        {
+            BossState = created.BossState with
+            {
+                ActiveStatusEffects =
+                [
+                    StatusEffect.TriggerBased(
+                        "Shield", StatusEffectType.Shield, StatusEffectSource.Player,
+                        magnitude: 200, expiryCondition: StatusEffect.ShieldDepletedCondition),
+                ],
+            },
+        };
+
+        await repository.TryUpdateAsync(seeded, created.Sequence);
+
+        var pair = FindAdjacentPairThatProducesAMatch(seeded.BoardState);
+        var result = await service.ExecuteSwapAsync("battle-step19a-trigger", pair);
+
+        Assert.True(result!.Value.IsAccepted);
+
+        var instance = Assert.Single(result.Value.State.BossState.ActiveStatusEffects);
+
+        Assert.Equal("Shield", instance.Id);
+        Assert.Null(instance.RemainingTurns);
+        Assert.Equal(StatusEffect.ShieldDepletedCondition, instance.ExpiryCondition);
+    }
+
+    [Fact]
+    public async Task ExecuteSwap_ShouldRevertBossStateToIdleWhenStunExpiresAtStep19a()
+    {
+        // GAME_STATE.md §5.1.1 item 8 / §2.4.5: when a Stun instance expires at step
+        // 19a, BossState.State reverts to Idle in the same resolution, so State never
+        // disagrees with the instance's presence.
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
+        var created = await service.CreateBattleAsync(
+            "battle-step19a-stun", Owner, PetConfiguration, BossDefinition);
+
+        var seeded = created with
+        {
+            BossState = created.BossState with
+            {
+                State = BossStateKind.Stunned,
+                ActiveStatusEffects =
+                [
+                    StatusEffect.TurnBased(
+                        "Stun", StatusEffectType.State, StatusEffectSource.Boss,
+                        magnitude: 0, duration: 1),
+                ],
+            },
+        };
+
+        await repository.TryUpdateAsync(seeded, created.Sequence);
+
+        var pair = FindAdjacentPairThatProducesAMatch(seeded.BoardState);
+        var result = await service.ExecuteSwapAsync("battle-step19a-stun", pair);
+
+        Assert.True(result!.Value.IsAccepted);
+        Assert.Empty(result.Value.State.BossState.ActiveStatusEffects);
+        Assert.Equal(BossStateKind.Idle, result.Value.State.BossState.State);
+    }
+
     /// <summary>
     /// Splits the tracker's reports at the single trigger: the charges that precede
     /// it, and the trigger run itself (<c>PASSIVE_RULES.md</c> §2 item 3 evaluates

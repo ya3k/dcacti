@@ -1,14 +1,22 @@
 # Architecture
 
-**Version:** 1.1 (§2.2.3 added per TASK-081 — the pre-battle selection boundary
-is now stated: the in-progress Pet/Card/Relic selection is ephemeral
-`LobbyScene`-local state, the collection read it is built from reaches the scene
-through the runtime port rather than `services/api/` directly, and the port's
-pre-battle capability is `startBattle(request: BattleStartRequest):
-Promise<void>`. §2.2.1 rule 1 is restated as transport-general — it now covers
-`fetch`/`ApiService` as well as `@microsoft/signalr` — which resolves the scope
-TASK-079 recorded as "currently unstated in docs/". No API contract, gameplay
-rule, endpoint, or client source file changed.)
+**Version:** 1.3 (§2.2.1 implementation-status sentence corrected again — the
+full `GAME_RULES.md` §17 pipeline is implemented in the Swap path (board
+resolution through Boss Response, terminal Victory/Defeat, and the step 19a
+Status Effect tick), so the earlier "battle resolution … not implemented"
+wording was wrong; `CardCast`, `PetSkillCast`, and reconnect/resync recovery
+remain not implemented. Version 1.2 (§2.2.1 implementation-status sentence
+synchronized per TASK-100 — `Swap` is implemented end-to-end and is no longer
+described as unimplemented. Version 1.1 (§2.2.3 added
+per TASK-081 — the pre-battle selection boundary is now stated: the in-progress
+Pet/Card/Relic selection is ephemeral `LobbyScene`-local state, the collection
+read it is built from reaches the scene through the runtime port rather than
+`services/api/` directly, and the port's pre-battle capability is
+`startBattle(request: BattleStartRequest): Promise<void>`. §2.2.1 rule 1 is
+restated as transport-general — it now covers `fetch`/`ApiService` as well as
+`@microsoft/signalr` — which resolves the scope `TASK-079` recorded as
+"currently unstated in docs/". No API contract, gameplay rule, endpoint, or
+client source file changed.))
 **Status:** Draft — depends on TDD.md §0 assumption (ASP.NET Core backend)
 
 > This document answers: **"How is the software structured?"** It does not
@@ -228,12 +236,19 @@ as the client's synchronized copy and exposes it through its port. The board
 is delivered as a field of that same push and is rendered by `BattleScene`;
 the client never generates or validates it (`GAME_STATE.md` §2.0.5.4).
 
-Battle resolution, the client → server gameplay methods (`Swap`, `CardCast`,
-`PetSkillCast` — `SIGNALR_PROTOCOL.md` §2), and reconnect/resync snapshot
-recovery (`SIGNALR_PROTOCOL.md` §7, ADR-008) are not implemented yet. The
-contract they implement is owned by `MATCH3_RULES.md` §2–§8 (board resolution)
-and `GAME_STATE.md` §5.1 (the state write-back); neither is restated in the
-client runtime.
+The client → server gameplay method `Swap` (`SIGNALR_PROTOCOL.md` §2) is
+implemented end-to-end: `BattleScene` requests it through `GameRuntime`, and the
+server resolves it through the full `GAME_RULES.md` §17 pipeline — board
+resolution, Passive charge, the Combat Damage Pipeline, Boss Response (Enrage,
+Boss Passive, Boss Skill or Basic Attack), the terminal Victory/Defeat check, and
+the End Turn step 19a Status Effect tick — committing one write-back
+(`GAME_STATE.md` §5.1) and pushing the resulting ordered Battle Events. The
+remaining client → server gameplay methods (`CardCast`, `PetSkillCast` —
+`SIGNALR_PROTOCOL.md` §2) and reconnect/resync snapshot recovery
+(`SIGNALR_PROTOCOL.md` §7, ADR-008) are not implemented yet. The contract they
+implement is owned by `MATCH3_RULES.md` §2–§8 (board resolution) and
+`GAME_STATE.md` §5.1 (the state write-back); neither is restated in the client
+runtime.
 
 ### 2.2.3 Pre-Battle Selection Boundary
 

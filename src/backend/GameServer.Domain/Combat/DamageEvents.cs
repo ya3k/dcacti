@@ -200,10 +200,12 @@ public readonly record struct DamageTakenEvent(
 ///
 /// <code>
 /// DamageResult
-/// ├── Calculation    the full DamageCalculated breakdown
-/// ├── TargetHp       the target's HP after Final Damage was applied
-/// ├── DamageDealt    source, target, amount
-/// └── DamageTaken    source, target, amount
+/// ├── Calculation         the full DamageCalculated breakdown
+/// ├── TargetHp            the target's HP after Final Damage was applied
+/// ├── DamageDealt         source, target, amount
+/// ├── DamageTaken         source, target, amount
+/// ├── AbsorbedDamage      the Final Damage the Shield pool absorbed
+/// └── RemainingShieldPool the pool after absorption (0 ⇒ the Shield is removed)
 /// </code>
 ///
 /// <b>The HP and the events describe one instance.</b> <see cref="TargetHp"/>
@@ -247,11 +249,40 @@ public readonly record struct DamageTakenEvent(
 /// <param name="DamageTaken">
 /// The <c>DamageTaken</c> report — source, target, Final Damage amount.
 /// </param>
+/// <param name="AbsorbedDamage">
+/// The part of the Final Damage the defending target's Shield absorption pool
+/// consumed (<c>COMBAT_RULES.md</c> §4 items 2 and 5). It is <c>0</c> when the
+/// target holds no active Shield, and it is never applied to HP: §4 item 5
+/// states "the absorbed portion never also reduces HP".
+///
+/// <b>It is reported, not published.</b> No Battle Event carries it —
+/// <c>GAME_RULES.md</c> §16's canonical list and <c>GAME_EVENTS.md</c> §2 define
+/// the three damage events with their existing members only, and this task adds
+/// no event, payload member, or SignalR method. The value exists so the caller —
+/// and a test — can see how the Final Damage split between the pool and HP, and
+/// so the HP write-back is explained by the result the caller holds
+/// (<c>GAME_STATE.md</c> §2.3.1's wire note; §5.1.1 item 10).
+/// </param>
+/// <param name="RemainingShieldPool">
+/// The defending target's Shield pool after this instance's absorption
+/// (<c>COMBAT_RULES.md</c> §4 items 4–5).
+///
+/// <b><c>0</c> means the Shield must be removed in this same resolution.</b>
+/// §4 item 4: the pool reaching exactly 0 removes the Shield in the resolution
+/// that depleted it, so a committed Shield value of 0 is never observable as an
+/// active Shield (<c>GAME_STATE.md</c> §2.3.1 item 8, §5.1.1 item 7). The caller
+/// performs that removal on the collection it owns, in the same single
+/// post-resolution write-back (<c>GAME_STATE.md</c> §5.1) — this pipeline holds
+/// no state and removes nothing itself. When the target held no Shield at all
+/// this is also <c>0</c>, and there is nothing to remove.
+/// </param>
 public readonly record struct DamageResult(
     DamageCalculation Calculation,
     int TargetHp,
     DamageDealtEvent DamageDealt,
-    DamageTakenEvent DamageTaken)
+    DamageTakenEvent DamageTaken,
+    int AbsorbedDamage = 0,
+    int RemainingShieldPool = 0)
 {
     /// <summary>
     /// The three documented events of one damage instance, in the order

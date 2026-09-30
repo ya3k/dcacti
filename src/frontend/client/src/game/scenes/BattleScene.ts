@@ -3,8 +3,10 @@ import { SAFE_AREA, GAME_WIDTH } from '../GameViewport';
 import { readRuntime } from '../runtime/RuntimeRegistry';
 import type { GameRuntime } from '../runtime/GameRuntime';
 import type { GameRuntimeState } from '../../state/GameRuntimeState';
-import type { RuntimeBattleState, RuntimeBoard } from '../runtime/GameRuntimeEvents';
+import type { BattleEventsEnvelope, RuntimeBattleState, RuntimeBoard } from '../runtime/GameRuntimeEvents';
 import { RUNTIME_ACTION_SWAP } from '../runtime/GameRuntimeEvents';
+import type { InBattleServerEvent } from './BattleEventPresenter';
+import { parseInBattleEvent, formatInBattleEvent } from './BattleEventPresenter';
 
 /**
  * Board presentation geometry, in logical game pixels.
@@ -85,11 +87,16 @@ export class BattleScene extends Phaser.Scene {
   private runtime: GameRuntime | null = null;
   private runtimeUnsubscribe: (() => void) | null = null;
   private battleStateUnsubscribe: (() => void) | null = null;
+  private battleEventsUnsubscribe: (() => void) | null = null;
   private statusText: Phaser.GameObjects.Text | null = null;
   private detailText: Phaser.GameObjects.Text | null = null;
   private battleText: Phaser.GameObjects.Text | null = null;
   private boardText: Phaser.GameObjects.Text | null = null;
   private swapText: Phaser.GameObjects.Text | null = null;
+  /** Feedback text area presenting in-battle server events in delivered order. */
+  private feedbackText: Phaser.GameObjects.Text | null = null;
+  /** Visual layer for transient event highlights and floating combat text. */
+  private feedbackLayer: Phaser.GameObjects.Container | null = null;
   /** The drawn board cells, cleared and redrawn on each state push. */
   private boardLayer: Phaser.GameObjects.Container | null = null;
   /**
@@ -101,6 +108,12 @@ export class BattleScene extends Phaser.Scene {
   private selectedCell: number | null = null;
   /** True while a Swap request is outstanding, so further taps are ignored. */
   private swapPending = false;
+  /** True while an in-battle event presentation sequence is playing, locking player input. */
+  private presentationLocked = false;
+  /** Guard ensuring only the first terminal outcome event transitions to ResultScene. */
+  private outcomeHandled = false;
+  /** Log of presented events for display and verification. */
+  private presentedEventsLog: string[] = [];
 
   constructor() {
     super('BattleScene');
@@ -122,6 +135,9 @@ export class BattleScene extends Phaser.Scene {
       this.battleStateUnsubscribe = this.runtime.onBattleState((state) => {
         this.renderBattleState(state);
       });
+      this.battleEventsUnsubscribe = this.runtime.onBattleEvents((envelope) => {
+        this.handleBattleEvents(envelope);
+      });
     }
   }
 
@@ -134,15 +150,24 @@ export class BattleScene extends Phaser.Scene {
     this.runtimeUnsubscribe = null;
     this.battleStateUnsubscribe?.();
     this.battleStateUnsubscribe = null;
+    this.battleEventsUnsubscribe?.();
+    this.battleEventsUnsubscribe = null;
     this.statusText = null;
     this.detailText = null;
     this.battleText = null;
     this.boardText = null;
     this.swapText = null;
+    this.feedbackText = null;
     this.boardLayer?.destroy(true);
     this.boardLayer = null;
+    this.feedbackLayer?.destroy(true);
+    this.feedbackLayer = null;
+    this.tweens?.killAll();
     this.selectedCell = null;
     this.swapPending = false;
+    this.presentationLocked = false;
+    this.outcomeHandled = false;
+    this.presentedEventsLog = [];
   }
 
   private drawRuntimeShell(): void {
@@ -210,7 +235,18 @@ export class BattleScene extends Phaser.Scene {
       })
       .setOrigin(0, 0.5);
 
+    // Event presentation feedback readout. Starts empty on create so no forbidden terms exist before events arrive.
+    this.feedbackText = this.add
+      .text(BOARD_ORIGIN_X + BOARD_WIDTH + 24, BOARD_ORIGIN_Y, '', {
+        fontFamily: 'ui-monospace, monospace',
+        fontSize: '13px',
+        color: '#94a3b8',
+        wordWrap: { width: 340 },
+      })
+      .setOrigin(0, 0);
+
     this.boardLayer = this.add.container(0, 0);
+    this.feedbackLayer = this.add.container(0, 0);
   }
 
   /**
@@ -440,7 +476,7 @@ export class BattleScene extends Phaser.Scene {
    * this scene renders.
    */
   private onCellTapped(cellIndex: number | null): void {
-    if (cellIndex === null || this.swapPending) {
+    if (cellIndex === null || this.swapPending || this.presentationLocked) {
       return;
     }
 
@@ -561,6 +597,226 @@ export class BattleScene extends Phaser.Scene {
         : `Cell ${this.selectedCell} selected — select a neighbour.`
     );
     this.swapText.setColor('#94a3b8');
+  }
+
+  /**
+   * Handles server-authoritative battle events delivered via the runtime port.
+   *
+   * 1. Outcome branch first (TASK-087): when the envelope contains BattleWon or BattleLost,
+   *    transitions immediately to ResultScene without delay.
+   * 2. In-battle presentation: presents the ten non-outcome event types in exact array order
+   *    while holding the scene-local input guard.
+   *
+   * It performs no result calculation: the server is authoritative for the
+   * outcome and terminal HP values (GAME_RULES.md §18, ADR-001, AGENTS.md §10).
+   */
+  private handleBattleEvents(envelope: BattleEventsEnvelope): void {
+    if (this.outcomeHandled) {
+      return;
+    }
+
+    const outcome = BattleScene.findOutcomeEvent(envelope.events);
+    if (outcome) {
+      this.outcomeHandled = true;
+      this.scene.start('ResultScene', outcome);
+      return;
+    }
+
+    this.presentationLocked = true;
+    try {
+      this.presentEventBatch(envelope.events);
+    } catch (error) {
+      this.tweens?.killAll();
+      this.presentationLocked = false;
+      return;
+    }
+  }
+
+  /**
+   * Presents a batch of in-battle server events in the exact array order received.
+   */
+  private presentEventBatch(events: readonly unknown[]): void {
+    let presentedCount = 0;
+
+    for (const raw of events) {
+      const parsed = parseInBattleEvent(raw);
+      if (!parsed) {
+        continue;
+      }
+
+      presentedCount++;
+      const formatted = formatInBattleEvent(parsed);
+      this.presentedEventsLog.push(formatted);
+      this.spawnEventVisualFeedback(parsed);
+    }
+
+    if (presentedCount > 0 && this.feedbackText) {
+      this.feedbackText.setText(this.presentedEventsLog.slice(-14).join('\n'));
+    }
+
+    if (this.tweens && presentedCount > 0) {
+      this.tweens.add({
+        targets: this.feedbackText ?? {},
+        alpha: { from: 0.6, to: 1 },
+        duration: 150,
+        onComplete: () => {
+          this.presentationLocked = false;
+        },
+      });
+    } else {
+      this.presentationLocked = false;
+    }
+  }
+
+  /**
+   * Spawns transient visual feedback objects for a presented event.
+   */
+  private spawnEventVisualFeedback(event: InBattleServerEvent): void {
+    if (!this.feedbackLayer) {
+      return;
+    }
+
+    switch (event.type) {
+      case 'MatchCreated': {
+        for (const cellIndex of event.cells) {
+          if (cellIndex >= 0 && cellIndex < BOARD_ROWS * BOARD_COLUMNS) {
+            const { x, y } = BattleScene.cellCoordinates(cellIndex);
+            const highlight = this.add
+              .rectangle(x, y, CELL_SIZE, CELL_SIZE, 0xffffff, 0.4)
+              .setStrokeStyle(2, 0xfacc15);
+            this.feedbackLayer.add(highlight);
+
+            if (this.tweens) {
+              this.tweens.add({
+                targets: highlight,
+                alpha: 0,
+                duration: 400,
+                onComplete: () => {
+                  highlight.destroy();
+                },
+              });
+            }
+          }
+        }
+        break;
+      }
+      case 'GemMatched': {
+        if (event.cellIndex >= 0 && event.cellIndex < BOARD_ROWS * BOARD_COLUMNS) {
+          const { x, y } = BattleScene.cellCoordinates(event.cellIndex);
+          const flash = this.add
+            .rectangle(x, y, CELL_SIZE, CELL_SIZE, 0x60a5fa, 0.5)
+            .setStrokeStyle(2, 0x38bdf8);
+          this.feedbackLayer.add(flash);
+
+          if (this.tweens) {
+            this.tweens.add({
+              targets: flash,
+              alpha: 0,
+              scale: 1.2,
+              duration: 350,
+              onComplete: () => {
+                flash.destroy();
+              },
+            });
+          }
+        }
+        break;
+      }
+      case 'DamageDealt':
+      case 'DamageTaken': {
+        const x = BOARD_ORIGIN_X + BOARD_WIDTH / 2;
+        const y =
+          event.type === 'DamageDealt'
+            ? BOARD_ORIGIN_Y - 20
+            : BOARD_ORIGIN_Y + BOARD_WIDTH + 20;
+        const color = event.type === 'DamageDealt' ? '#f87171' : '#fb923c';
+        const label = this.add
+          .text(x, y, `-${event.amount}`, {
+            fontFamily: 'system-ui, sans-serif',
+            fontSize: '18px',
+            color,
+            fontStyle: 'bold',
+          })
+          .setOrigin(0.5);
+        this.feedbackLayer.add(label);
+
+        if (this.tweens) {
+          this.tweens.add({
+            targets: label,
+            y: y - 30,
+            alpha: 0,
+            duration: 600,
+            onComplete: () => {
+              label.destroy();
+            },
+          });
+        }
+        break;
+      }
+      default:
+        // Other events update feedbackText log
+        break;
+    }
+  }
+
+  /**
+   * Computes center coordinates for a board cell index in presentation pixels.
+   */
+  private static cellCoordinates(index: number): { x: number; y: number } {
+    const row = Math.floor(index / BOARD_COLUMNS);
+    const column = index % BOARD_COLUMNS;
+    return {
+      x: BOARD_ORIGIN_X + column * (CELL_SIZE + CELL_GAP) + CELL_SIZE / 2,
+      y: BOARD_ORIGIN_Y + row * (CELL_SIZE + CELL_GAP) + CELL_SIZE / 2,
+    };
+  }
+
+  /** Read-only snapshot of presented event lines for diagnostics/testing. */
+  getPresentedEvents(): readonly string[] {
+    return this.presentedEventsLog;
+  }
+
+  /** Returns whether player input is currently locked. */
+  isInputLocked(): boolean {
+    return this.presentationLocked || this.swapPending;
+  }
+
+  /**
+   * Finds the first terminal battle outcome event in an event batch.
+   *
+   * The batch may contain other resolution events (GAME_EVENTS.md §1); the
+   * outcome is identified by the documented `BattleWon` / `BattleLost` wire
+   * discriminators (SIGNALR_PROTOCOL.md §3.2.19).
+   */
+  private static findOutcomeEvent(
+    events: readonly unknown[]
+  ): { readonly outcome: string; readonly finalBossHp: number; readonly finalPlayerHp: number } | null {
+    for (const event of events) {
+      if (
+        typeof event === 'object' &&
+        event !== null &&
+        'type' in event &&
+        (event.type === 'BattleWon' || event.type === 'BattleLost') &&
+        'outcome' in event &&
+        typeof (event as { outcome?: unknown }).outcome === 'string' &&
+        'finalBossHp' in event &&
+        typeof (event as { finalBossHp?: unknown }).finalBossHp === 'number' &&
+        'finalPlayerHp' in event &&
+        typeof (event as { finalPlayerHp?: unknown }).finalPlayerHp === 'number'
+      ) {
+        const payload = event as {
+          outcome: string;
+          finalBossHp: number;
+          finalPlayerHp: number;
+        };
+        return {
+          outcome: payload.outcome,
+          finalBossHp: payload.finalBossHp,
+          finalPlayerHp: payload.finalPlayerHp,
+        };
+      }
+    }
+    return null;
   }
 }
 
