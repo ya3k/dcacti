@@ -1,5 +1,6 @@
 using GameServer.Domain.Cards;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace GameServer.Infrastructure.Postgres.Configurations;
@@ -15,7 +16,7 @@ namespace GameServer.Infrastructure.Postgres.Configurations;
 /// ├── Category
 /// ├── PowerCost
 /// ├── LoadoutCopyLimit  (required — no default)
-/// └── EffectDefinition
+/// └── EffectDefinition  (jsonb, NOT NULL — structured effect rule)
 /// </code>
 ///
 /// <b>The field set is <c>DATABASE.md</c> §1's</b> — static content only. No
@@ -79,12 +80,30 @@ public sealed class CardDefinitionConfiguration : IEntityTypeConfiguration<CardD
         builder.Property(definition => definition.PowerCost)
             .IsRequired();
 
-        // DATABASE.md §1: EffectDefinition — the effect reference, stored as a
-        // reference matching how RelicDefinition.EffectDefinition and
-        // PetDefinition.PassiveId carry theirs rather than inlining effect
-        // content. Nothing executes it (TASK-028 Scope: no Card gameplay).
+        // DATABASE.md §1: EffectDefinition — the Card's structured effect rules.
+        //
+        // DATABASE.md §1 stores a JSON ARRAY of effect objects, each carrying its
+        // own `effectType`, `valueType`, and `value` (TASK-108 D-1/D-2, extended by
+        // TASK-111 D-1/D-3 and superseding TASK-082 R2-7 for Cards ONLY). The column
+        // is `jsonb`, NOT NULL, mapped with a value converter that writes exactly
+        // §1's document — the same scalar-conversion shape BossDefinitionConfiguration
+        // uses for its two JSON objects, which is what EF Core supports for an
+        // immutable value type carried on a constructor-independent property.
+        //
+        // The former `character varying(128)` was sized for the verbatim prose
+        // R2-7 stored and is neither large enough nor the right type for the
+        // structured payload; TASK-109's migration
+        // 20261001112446_StructureCardDefinitionEffectDefinition replaced it with
+        // `jsonb`, and TASK-112's migration re-encoded the six content rows from
+        // the single-object shape to this array shape.
+        //
+        // Nothing executes this value (TASK-112 Scope: no CardCast, no
+        // PetSkillCast, no Crit roll, no Burn tick): it is read and written as data
+        // only.
         builder.Property(definition => definition.EffectDefinition)
-            .HasMaxLength(128)
+            .HasConversion(new CardEffectDefinitionsConverter())
+            .HasColumnName("EffectDefinition")
+            .HasColumnType("jsonb")
             .IsRequired();
 
         // DATABASE.md §1 / CARD_RULES.md §1 item 2: LoadoutCopyLimit —
@@ -94,5 +113,37 @@ public sealed class CardDefinitionConfiguration : IEntityTypeConfiguration<CardD
         // database. No CHECK bound is added: §1 defines no range for it.
         builder.Property(definition => definition.LoadoutCopyLimit)
             .IsRequired();
+    }
+
+    /// <summary>
+    /// Writes and reads <c>DATABASE.md</c> §1's persisted structured Card effect
+    /// document — the <b>array</b> of effect objects.
+    ///
+    /// <code>
+    /// [ { "effectType": "Shield", "valueType": "PercentMaxHp", "value": 20 } ]
+    /// [ { "effectType": "Damage", "valueType": "Flat", "value": 100 },
+    ///   { "effectType": "Burn", "valueType": "Flat", "value": 50, "duration": 2 } ]
+    /// </code>
+    ///
+    /// It delegates to <see cref="CardEffectDefinitions.ToPersistedPayload"/> and
+    /// <see cref="CardEffectDefinitions.FromPersistedPayload"/>, so the storage
+    /// contract lives in exactly one place and the mapping defines no second
+    /// encoding of it (<c>GAME_STATE.md</c> §0 item 5). The reader throws on a
+    /// malformed payload — including the superseded single-object shape — rather
+    /// than substituting a default, which is what makes a corrupt column value
+    /// surface as a failure instead of a Card that silently does nothing
+    /// (<c>DATABASE.md</c> §1 item 6). <c>RelicDefinition.EffectDefinition</c> is
+    /// deliberately <b>not</b> mapped this way: TASK-082 R2-7 remains in force
+    /// for Relics (<c>DATABASE.md</c> §1).
+    /// </summary>
+    private sealed class CardEffectDefinitionsConverter
+        : ValueConverter<CardEffectDefinitions, string>
+    {
+        public CardEffectDefinitionsConverter()
+            : base(
+                effects => effects.ToPersistedPayload(),
+                payload => CardEffectDefinitions.FromPersistedPayload(payload))
+        {
+        }
     }
 }

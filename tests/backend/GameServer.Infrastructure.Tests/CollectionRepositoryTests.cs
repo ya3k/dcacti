@@ -524,7 +524,7 @@ public class CollectionRepositoryTests
         RelicDefinitionId = relicDefinitionId,
         Name = name,
         Trigger = "OnTurnEnd",
-        EffectDefinition = "effect",
+        EffectDefinition = "increase ATK by 5%",
     };
 
     private static Relic NewRelic(
@@ -544,7 +544,7 @@ public class CollectionRepositoryTests
         Name = cardDefinitionId,
         Category = CardCategory.Basic,
         PowerCost = 0,
-        EffectDefinition = "effect",
+        EffectDefinition = TestCardEffects.FlatPower,
         LoadoutCopyLimit = 1,
     };
 

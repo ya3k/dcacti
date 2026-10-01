@@ -252,7 +252,7 @@ public class PetXpSchemaTests : IAsyncLifetime
                 Name = "Pet XP Schema Signature Skill",
                 Category = CardCategory.PetSkill,
                 PowerCost = 0,
-                EffectDefinition = "pet_xp_schema_effect",
+                EffectDefinition = TestCardEffects.FlatPower,
                 LoadoutCopyLimit = 1,
             });
 

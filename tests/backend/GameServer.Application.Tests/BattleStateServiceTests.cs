@@ -524,7 +524,11 @@ public class BattleStateServiceTests
 
         Assert.True(result!.Value.IsAccepted);
         Assert.Empty(MatchDetector.Detect(result.Value.State.BoardState));
-        Assert.Equal(result.Value.Resolution.RngState, result.Value.State.RngState);
+
+        var expectedPcg = new Pcg32(result.Value.Resolution.RngState.State, result.Value.Resolution.RngState.Increment);
+        expectedPcg.NextBounded(100); // Player damage crit evaluation
+        expectedPcg.NextBounded(100); // Boss damage crit evaluation
+        Assert.Equal(expectedPcg.CurrentState, result.Value.State.RngState);
     }
 
     // -----------------------------------------------------------------------
@@ -665,6 +669,7 @@ public class BattleStateServiceTests
             [
                 "_battleResults",
                 "_bossConfiguration",
+                "_cardDefinitions",
                 "_petConfiguration",
                 "_repository",
                 "_seedSource",
@@ -1183,16 +1188,23 @@ public class BattleStateServiceTests
         var state = result.Value.State;
         var generation = result.Value.Resources;
 
-        var baseDamage = created.PetState.ATK + generation.BaseDamagePool;
-        var comboFactor = ComboModifiers.Default.NumeratorFor(state.Combo) / 100d;
-        var matchup = ElementMatchups.Resolve(
-            created.PetState.Element,
-            created.BossState.Element);
-        var elementFactor = ElementModifiers.Default.For(matchup);
-        var preDefense = baseDamage * comboFactor * elementFactor * DamagePipeline.NoOtherModifiers;
-        var expected = (int)Math.Truncate(
-            preDefense * (DamagePipeline.DefenseMitigationConstant
-                / (double)(DamagePipeline.DefenseMitigationConstant + created.BossState.DEF)));
+        var expectedDamage = DamagePipeline.Calculate(
+            new DamagePipeline.DamageInputs(
+                Attack: created.PetState.ATK,
+                BaseDamagePool: generation.BaseDamagePool,
+                Combo: state.Combo,
+                AttackerElement: created.PetState.Element,
+                DefenderElement: created.BossState.Element,
+                DefenderDefense: created.BossState.DEF,
+                DefenderHp: created.BossState.HP,
+                Source: DamageParty.Player,
+                Target: DamageParty.Boss,
+                AttackerCrit: created.PetState.Crit,
+                RngState: result.Value.Resolution.RngState),
+            ComboModifiers.Default,
+            ElementModifiers.Default);
+
+        var expected = expectedDamage.DamageDealt.Amount;
 
         Assert.True(expected > 0, "this fixture's Swap must deal damage for the assertion to mean anything");
         Assert.Equal(expected, created.BossState.HP - state.BossState.HP);
@@ -1274,7 +1286,9 @@ public class BattleStateServiceTests
             ElementModifiers.Default.For(
                 ElementMatchups.Resolve(created.PetState.Element, created.BossState.Element)),
             calculation.ElementModifier);
-        Assert.Equal(1.00, calculation.OtherModifiers);
+        var expectedCritRoll = new Pcg32(result.Value.Resolution.RngState.State, result.Value.Resolution.RngState.Increment).NextBounded(100);
+        var expectedOtherModifier = expectedCritRoll < created.PetState.Crit ? 1.50 : 1.00;
+        Assert.Equal(expectedOtherModifier, calculation.OtherModifiers);
         Assert.True(calculation.Defense > 0d);
         Assert.True(calculation.FinalDamage >= 0);
     }
@@ -1420,13 +1434,10 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public async Task ExecuteSwap_ShouldDrawNoAdditionalRandomnessForDamage()
+    public async Task ExecuteSwap_ShouldAdvanceRngStateForDamageCritEvaluation()
     {
-        // AGENTS.md §11 / ADR-009: the Damage Pipeline performs no Crit roll
-        // (COMBAT_RULES.md §3.3) and draws no RNG, so the retained RngState after a
-        // committed Swap is exactly the one the board resolution's Spawn produced
-        // (MATCH3_RULES.md §4.5 item 4). A second randomization mechanism would move
-        // it, or would live outside the documented stream.
+        // AGENTS.md §11 / COMBAT_RULES.md §3.3: the Damage Pipeline draws exactly one
+        // bounded RNG selection (bound 100) from the single PRNG stream (BattleState.RngState).
         var service = NewService();
         var created = await service.CreateBattleAsync("battle-damage-rng", Owner, PetConfiguration, BossDefinition);
 
@@ -1434,7 +1445,11 @@ public class BattleStateServiceTests
         var result = await service.ExecuteSwapAsync("battle-damage-rng", pair);
 
         Assert.True(result!.Value.IsAccepted);
-        Assert.Equal(result.Value.Resolution.RngState, result.Value.State.RngState);
+
+        var expectedPcg = new Pcg32(result.Value.Resolution.RngState.State, result.Value.Resolution.RngState.Increment);
+        expectedPcg.NextBounded(100); // Player damage crit evaluation
+        expectedPcg.NextBounded(100); // Boss damage crit evaluation
+        Assert.Equal(expectedPcg.CurrentState, result.Value.State.RngState);
     }
 
     // -----------------------------------------------------------------------

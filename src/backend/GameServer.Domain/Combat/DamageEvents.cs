@@ -1,3 +1,5 @@
+using GameServer.Domain.Match3;
+
 namespace GameServer.Domain.Combat;
 
 /// <summary>
@@ -282,7 +284,8 @@ public readonly record struct DamageResult(
     DamageDealtEvent DamageDealt,
     DamageTakenEvent DamageTaken,
     int AbsorbedDamage = 0,
-    int RemainingShieldPool = 0)
+    int RemainingShieldPool = 0,
+    RngState UpdatedRngState = default)
 {
     /// <summary>
     /// The three documented events of one damage instance, in the order

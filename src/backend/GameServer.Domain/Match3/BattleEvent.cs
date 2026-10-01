@@ -192,6 +192,41 @@ public enum BattleEventType
     /// (<c>GAME_RULES.md</c> §1.4).
     /// </summary>
     BattleLost = 11,
+
+    /// <summary>
+    /// A Card cast was validated and applied (<c>GAME_EVENTS.md</c> §2 <c>CardCast</c>,
+    /// <c>CARD_RULES.md</c> §3, §6; <c>SIGNALR_PROTOCOL.md</c> §3.2.20).
+    /// </summary>
+    CardCast = 12,
+
+    /// <summary>
+    /// A Pet Signature Skill cast was validated and applied (<c>GAME_EVENTS.md</c> §2 <c>PetSkillCast</c>,
+    /// <c>CARD_RULES.md</c> §4, §6; <c>SIGNALR_PROTOCOL.md</c> §3.2.21).
+    /// </summary>
+    PetSkillCast = 13,
+}
+
+/// <summary>
+/// The <c>PetSkillCast</c> payload — confirms the cast Card was the active Pet's Signature Skill
+/// (<c>GAME_EVENTS.md</c> §2, <c>CARD_RULES.md</c> §6; <c>SIGNALR_PROTOCOL.md</c> §3.2.21).
+/// </summary>
+/// <param name="CardId">The cast Signature Skill Card's definition identity.</param>
+public readonly record struct PetSkillCastEvent(string CardId)
+{
+    /// <summary>"PetSkillCast (cardId)" — for test diagnostics only.</summary>
+    public override string ToString() => $"PetSkillCast ({CardId})";
+}
+
+/// <summary>
+/// The <c>CardCast</c> payload — the Card that was cast
+/// (<c>GAME_EVENTS.md</c> §2, <c>CARD_RULES.md</c> §3, §6; <c>SIGNALR_PROTOCOL.md</c> §3.2.20).
+/// </summary>
+/// <param name="CardId">The cast Card's definition identity.</param>
+/// <param name="PowerCost">The Power cost paid for the cast.</param>
+public readonly record struct CardCastEvent(string CardId, int PowerCost = 0)
+{
+    /// <summary>"CardCast (cardId)" — for test diagnostics only.</summary>
+    public override string ToString() => $"CardCast ({CardId})";
 }
 
 /// <summary>
@@ -386,7 +421,9 @@ public readonly record struct BattleEvent
         DamageTakenEvent? damageTaken,
         BossSkillCastEvent? bossSkillCast,
         BattleWonEvent? battleWon,
-        BattleLostEvent? battleLost)
+        BattleLostEvent? battleLost,
+        CardCastEvent? cardCast,
+        PetSkillCastEvent? petSkillCast)
     {
         Type = type;
         _match = match;
@@ -401,6 +438,8 @@ public readonly record struct BattleEvent
         _bossSkillCast = bossSkillCast;
         _battleWon = battleWon;
         _battleLost = battleLost;
+        _cardCast = cardCast;
+        _petSkillCast = petSkillCast;
     }
 
     private readonly MatchResolution? _match;
@@ -415,6 +454,8 @@ public readonly record struct BattleEvent
     private readonly BossSkillCastEvent? _bossSkillCast;
     private readonly BattleWonEvent? _battleWon;
     private readonly BattleLostEvent? _battleLost;
+    private readonly CardCastEvent? _cardCast;
+    private readonly PetSkillCastEvent? _petSkillCast;
 
     /// <summary>Which documented event this is.</summary>
     public BattleEventType Type { get; }
@@ -569,6 +610,30 @@ public readonly record struct BattleEvent
             + "Check Type before reading BattleLost.");
 
     /// <summary>
+    /// The <c>CardCast</c> payload — the Card that was cast
+    /// (<c>GAME_EVENTS.md</c> §2, <c>CARD_RULES.md</c> §3, §6; <c>SIGNALR_PROTOCOL.md</c> §3.2.20).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// This event is not a <see cref="BattleEventType.CardCast"/>.
+    /// </exception>
+    public CardCastEvent CardCast =>
+        _cardCast ?? throw new InvalidOperationException(
+            $"A {Type} event carries no CardCast payload (GAME_EVENTS.md §2). "
+            + "Check Type before reading CardCast.");
+
+    /// <summary>
+    /// The <c>PetSkillCast</c> payload — the Pet Signature Skill that was cast
+    /// (<c>GAME_EVENTS.md</c> §2, <c>CARD_RULES.md</c> §4, §6; <c>SIGNALR_PROTOCOL.md</c> §3.2.21).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// This event is not a <see cref="BattleEventType.PetSkillCast"/>.
+    /// </exception>
+    public PetSkillCastEvent PetSkillCast =>
+        _petSkillCast ?? throw new InvalidOperationException(
+            $"A {Type} event carries no PetSkillCast payload (GAME_EVENTS.md §2). "
+            + "Check Type before reading PetSkillCast.");
+
+    /// <summary>
     /// A <c>MatchCreated</c> event for one detected Match.
     /// </summary>
     /// <param name="match">
@@ -576,7 +641,7 @@ public readonly record struct BattleEvent
     /// (<c>GAME_EVENTS.md</c> §1.1 item 2, <c>MATCH3_RULES.md</c> §3.2).
     /// </param>
     internal static BattleEvent ForMatch(MatchResolution match) =>
-        new(BattleEventType.MatchCreated, match, null, null, null, null, null, null, null, null, null, null, null);
+        new(BattleEventType.MatchCreated, match, null, null, null, null, null, null, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>CascadeCreated</c> event for one Cascade pass.
@@ -586,7 +651,7 @@ public readonly record struct BattleEvent
     /// 1 for the Swap's second pass (<c>MATCH3_RULES.md</c> §4.2 item 2).
     /// </param>
     internal static BattleEvent ForCascade(int cascadeDepth) =>
-        new(BattleEventType.CascadeCreated, null, cascadeDepth, null, null, null, null, null, null, null, null, null, null);
+        new(BattleEventType.CascadeCreated, null, cascadeDepth, null, null, null, null, null, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>ComboChanged</c> event carrying the Combo value the Match it follows
@@ -597,7 +662,7 @@ public readonly record struct BattleEvent
     /// <c>MATCH3_RULES.md</c> §6.6 item 2).
     /// </param>
     internal static BattleEvent ForCombo(int combo) =>
-        new(BattleEventType.ComboChanged, null, null, combo, null, null, null, null, null, null, null, null, null);
+        new(BattleEventType.ComboChanged, null, null, combo, null, null, null, null, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>GemMatched</c> event for one consumed Gem.
@@ -607,7 +672,7 @@ public readonly record struct BattleEvent
     /// §1.0 cell-index enumeration order of <c>GAME_EVENTS.md</c> §1.3.
     /// </param>
     internal static BattleEvent ForGem(GemMatchedEvent gem) =>
-        new(BattleEventType.GemMatched, null, null, null, gem, null, null, null, null, null, null, null, null);
+        new(BattleEventType.GemMatched, null, null, null, gem, null, null, null, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>PassiveCharged</c> event for one Match's charge
@@ -626,7 +691,7 @@ public readonly record struct BattleEvent
     /// increment produced, and the Threshold.
     /// </param>
     public static BattleEvent ForPassiveCharged(PassiveChargedEvent charged) =>
-        new(BattleEventType.PassiveCharged, null, null, null, null, charged, null, null, null, null, null, null, null);
+        new(BattleEventType.PassiveCharged, null, null, null, null, charged, null, null, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>PassiveTriggered</c> event for one threshold crossing
@@ -644,7 +709,7 @@ public readonly record struct BattleEvent
     /// </param>
     public static BattleEvent ForPassiveTriggered(
         PassiveTriggeredEvent triggered) =>
-        new(BattleEventType.PassiveTriggered, null, null, null, null, null, triggered, null, null, null, null, null, null);
+        new(BattleEventType.PassiveTriggered, null, null, null, null, null, triggered, null, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>DamageCalculated</c> event carrying the full pipeline breakdown
@@ -662,7 +727,7 @@ public readonly record struct BattleEvent
     /// Modifiers, Defense, Final Damage.
     /// </param>
     public static BattleEvent ForDamageCalculated(DamageCalculation calculation) =>
-        new(BattleEventType.DamageCalculated, null, null, null, null, null, null, calculation, null, null, null, null, null);
+        new(BattleEventType.DamageCalculated, null, null, null, null, null, null, calculation, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>DamageDealt</c> event for one damage instance
@@ -674,7 +739,7 @@ public readonly record struct BattleEvent
     /// The pipeline's own report — source, target, and the Final Damage amount.
     /// </param>
     public static BattleEvent ForDamageDealt(DamageDealtEvent dealt) =>
-        new(BattleEventType.DamageDealt, null, null, null, null, null, null, null, dealt, null, null, null, null);
+        new(BattleEventType.DamageDealt, null, null, null, null, null, null, null, dealt, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>DamageTaken</c> event for one damage instance
@@ -686,7 +751,7 @@ public readonly record struct BattleEvent
     /// The pipeline's own report — source, target, and the Final Damage amount.
     /// </param>
     public static BattleEvent ForDamageTaken(DamageTakenEvent taken) =>
-        new(BattleEventType.DamageTaken, null, null, null, null, null, null, null, null, taken, null, null, null);
+        new(BattleEventType.DamageTaken, null, null, null, null, null, null, null, null, taken, null, null, null, null, null);
 
     /// <summary>
     /// A <c>BossSkillCast</c> event for one Boss Skill that fired
@@ -716,6 +781,8 @@ public readonly record struct BattleEvent
             null, null, null, null, null, null, null, null, null,
             new BossSkillCastEvent(skillId, sourceId),
             null,
+            null,
+            null,
             null);
 
     /// <summary>
@@ -741,6 +808,8 @@ public readonly record struct BattleEvent
             BattleEventType.BattleWon,
             null, null, null, null, null, null, null, null, null, null,
             new BattleWonEvent(finalBossHp, finalPlayerHp),
+            null,
+            null,
             null);
 
     /// <summary>
@@ -768,7 +837,40 @@ public readonly record struct BattleEvent
         new(
             BattleEventType.BattleLost,
             null, null, null, null, null, null, null, null, null, null, null,
-            new BattleLostEvent(finalBossHp, finalPlayerHp));
+            new BattleLostEvent(finalBossHp, finalPlayerHp),
+            null,
+            null);
+
+    /// <summary>
+    /// A <c>CardCast</c> event for a successfully cast Card
+    /// (<c>GAME_EVENTS.md</c> §2, <c>CARD_RULES.md</c> §3, §6;
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.20).
+    /// </summary>
+    /// <param name="cardId">The cast Card's definition identity.</param>
+    /// <param name="powerCost">The Power cost paid for the cast.</param>
+    public static BattleEvent CreateCardCast(string cardId, int powerCost = 0) =>
+        new(
+            BattleEventType.CardCast,
+            null, null, null, null, null, null, null, null, null, null, null, null,
+            new CardCastEvent(cardId, powerCost),
+            null);
+
+    /// <summary>
+    /// A <c>PetSkillCast</c> event for a successfully cast Pet Signature Skill
+    /// (<c>GAME_EVENTS.md</c> §2, <c>CARD_RULES.md</c> §4, §6;
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.21).
+    /// </summary>
+    /// <param name="cardId">The cast Signature Skill Card's definition identity.</param>
+    public static BattleEvent CreatePetSkillCast(string cardId) =>
+        new(
+            BattleEventType.PetSkillCast,
+            null, null, null, null, null, null, null, null, null, null, null, null, null,
+            new PetSkillCastEvent(cardId));
+
+    /// <summary>
+    /// A <c>PetSkillCast</c> event for a successfully cast Pet Signature Skill.
+    /// </summary>
+    public static BattleEvent ForPetSkillCast(string cardId) => CreatePetSkillCast(cardId);
 
     /// <summary>"MatchCreated (Horizontal x3 at 25 (Atk))" — for test diagnostics only.</summary>
     public override string ToString() => Type switch
@@ -786,6 +888,8 @@ public readonly record struct BattleEvent
         BattleEventType.BossSkillCast => BossSkillCast.ToString(),
         BattleEventType.BattleWon => BattleWon.ToString(),
         BattleEventType.BattleLost => BattleLost.ToString(),
+        BattleEventType.CardCast => CardCast.ToString(),
+        BattleEventType.PetSkillCast => PetSkillCast.ToString(),
         _ => Type.ToString(),
     };
 }

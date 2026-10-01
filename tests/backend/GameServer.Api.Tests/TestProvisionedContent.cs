@@ -107,17 +107,56 @@ internal static class TestProvisionedContent
 
     private static void SeedCards(GameDbContext context)
     {
-        var cards = new (string Id, string Name, CardCategory Category)[]
+        var cards = new (string Id, string Name, CardCategory Category, int PowerCost, CardEffectDefinitions Effects)[]
         {
-            ("card-heal", "Heal", CardCategory.Basic),
-            ("card-shield", "Shield", CardCategory.Basic),
-            ("card-power-charge", "Power Charge", CardCategory.Basic),
-            ("card-inferno", "Inferno", CardCategory.PetSkill),
-            ("card-tidal-barrier", "Tidal Barrier", CardCategory.PetSkill),
-            ("card-iron-fang", "Iron Fang", CardCategory.PetSkill),
+            (
+                "card-heal",
+                "Heal",
+                CardCategory.Basic,
+                20,
+                CardEffectDefinitions.Create(
+                    CardEffectDefinition.Create(CardEffectType.Heal, CardEffectValueType.PercentMaxHp, 20))),
+            (
+                "card-shield",
+                "Shield",
+                CardCategory.Basic,
+                20,
+                CardEffectDefinitions.Create(
+                    CardEffectDefinition.Create(CardEffectType.Shield, CardEffectValueType.PercentMaxHp, 20))),
+            (
+                "card-power-charge",
+                "Power Charge",
+                CardCategory.Basic,
+                0,
+                CardEffectDefinitions.Create(
+                    CardEffectDefinition.Create(CardEffectType.Power, CardEffectValueType.Flat, 25))),
+            (
+                "card-inferno",
+                "Inferno",
+                CardCategory.PetSkill,
+                40,
+                CardEffectDefinitions.Create(
+                    CardEffectDefinition.Create(CardEffectType.Damage, CardEffectValueType.Flat, 100),
+                    CardEffectDefinition.Burn(CardEffectValueType.Flat, 50, 2))),
+            (
+                "card-tidal-barrier",
+                "Tidal Barrier",
+                CardCategory.PetSkill,
+                40,
+                CardEffectDefinitions.Create(
+                    CardEffectDefinition.Create(CardEffectType.Heal, CardEffectValueType.PercentMaxHp, 30),
+                    CardEffectDefinition.Create(CardEffectType.Shield, CardEffectValueType.PercentMaxHp, 30))),
+            (
+                "card-iron-fang",
+                "Iron Fang",
+                CardCategory.PetSkill,
+                40,
+                CardEffectDefinitions.Create(
+                    CardEffectDefinition.Create(CardEffectType.Damage, CardEffectValueType.Flat, 150),
+                    CardEffectDefinition.Crit(30, "NextAttack"))),
         };
 
-        foreach (var (id, name, category) in cards)
+        foreach (var (id, name, category, powerCost, effects) in cards)
         {
             if (context.CardDefinitions.Any(definition => definition.CardDefinitionId == id))
             {
@@ -129,8 +168,8 @@ internal static class TestProvisionedContent
                 CardDefinitionId = id,
                 Name = name,
                 Category = category,
-                PowerCost = 0,
-                EffectDefinition = "seeded for the starter-ownership bootstrap tests",
+                PowerCost = powerCost,
+                EffectDefinition = effects,
                 LoadoutCopyLimit = 1,
             });
         }

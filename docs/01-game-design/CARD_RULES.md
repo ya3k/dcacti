@@ -1,6 +1,11 @@
 # Card Rules
 
-**Version:** 1.4 (§1 item 5 — MVP `LoadoutCopyLimit` values recorded per
+**Version:** 1.5 (§4.1 — the three MVP Pet Skill Card effect magnitudes are
+authored per TASK-110 Product Owner decisions D-1…D-6: Inferno 100 flat Fire
+damage + Burn 50/tick for 2 Turns; Tidal Barrier Heal 20% Max HP + Shield
+20% Max HP (refresh-not-stack); Iron Fang 120 flat damage + Crit +10
+percentage points for the next attack only, independent of Bạch Hổ's Passive
+config value. Prior 1.4: §1 item 5 — MVP `LoadoutCopyLimit` values recorded per
 TASK-082 decisions C / R1-5 / R2-6: the value is **1** for every
 CardDefinition defined by this document (§2 Basic Cards and §4.1 Pet
 Skill Cards); prior 1.3: §1 loadout copy limit — each CardDefinition's explicit
@@ -149,16 +154,34 @@ Rules:
 ```text
 Xích Lang — Inferno
   Cost:   100 Power
-  Effect: Deal high Fire (Hỏa) damage; apply Burn
+  Effect: Deal 100 Fire (Hỏa) damage (flat base value, entering the Damage
+          Pipeline as the Card/Skill base value — COMBAT_RULES.md §3 step 1);
+          apply Burn
+  Burn:   50 damage per tick for 2 Turns (fixed; ticks once per resolved Turn
+          at End Turn — GAME_RULES.md §17 step 19a, COMBAT_RULES.md §5.1/§5.2)
 
 Huyền Quy — Tidal Barrier
   Cost:   80 Power
-  Effect: Heal; Gain Shield
+  Effect: Heal the active Pet for 20% of its Max HP; the active Pet gains
+          Shield equal to 20% of its Max HP (refresh-not-stack —
+          COMBAT_RULES.md §4)
 
 Bạch Hổ — Iron Fang
   Cost:   100 Power
-  Effect: High damage; increased Crit chance
+  Effect: Deal 120 damage (flat base value, entering the Damage Pipeline as
+          the Card/Skill base value — COMBAT_RULES.md §3 step 1); increase
+          Crit chance by 10 percentage points for the next attack only
 ```
+
+Effect magnitudes above are the Product Owner's decided values and are owned
+by this section. Burn ticks and Shield application follow the frozen contracts
+cited inline; neither is restated here.
+
+**Iron Fang's Crit increase is the Card's own value.** It is **independent**
+of Bạch Hổ's Pet Passive configuration value (`PASSIVE_RULES.md` §7/§8) — the
+two are separate sources that both modify Crit chance
+(`COMBAT_RULES.md` §3.3 item 3) and neither is derived from, nor shared with,
+the other.
 
 Thanh Xà and Sơn Hùng Signature Skills are not yet content-defined; when
 authored they must follow this same structure (Cost + Effect, consistent with

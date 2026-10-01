@@ -974,6 +974,7 @@ public class BattleEventEmissionTests
                 "BattleLost",
                 "BattleWon",
                 "BossSkillCast",
+                "CardCast",
                 "CascadeDepth",
                 "Combo",
                 "DamageCalculated",
@@ -983,6 +984,7 @@ public class BattleEventEmissionTests
                 "Match",
                 "PassiveCharged",
                 "PassiveTriggered",
+                "PetSkillCast",
                 "Type",
             ],
             members);
@@ -1346,6 +1348,7 @@ public class BattleEventEmissionTests
                 "BattleLost",
                 "BattleWon",
                 "BossSkillCast",
+                "CardCast",
                 "CascadeCreated",
                 "ComboChanged",
                 "DamageCalculated",
@@ -1355,6 +1358,7 @@ public class BattleEventEmissionTests
                 "MatchCreated",
                 "PassiveCharged",
                 "PassiveTriggered",
+                "PetSkillCast",
             ],
             names);
 

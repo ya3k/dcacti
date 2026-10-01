@@ -300,32 +300,32 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
         // CARD_RULES.md §2 (Basic) and §4.1 (Pet Skill): name, cost, and effect
         // text verbatim; §1 item 5 fixes LoadoutCopyLimit = 1 for every
         // CardDefinition defined by the document.
-        var expected = new (string Id, string Name, CardCategory Category, int PowerCost, string Effect)[]
+        //
+        // TASK-109 migrated EffectDefinition from prose to the structured
+        // contract (DATABASE.md §1), so this test asserts identity/cost/category
+        // here and delegates the EFFECT assertion to
+        // CardEffectDefinitionMigrationTests, which owns the per-row structured
+        // expectations. Asserting the effect shape twice would give the same
+        // fact two owners (GAME_STATE.md §0 item 5).
+        var expected = new (string Id, string Name, CardCategory Category, int PowerCost)[]
         {
-            ("card-heal", "Heal", CardCategory.Basic, 20,
-                "Restore the active Pet's HP by 20% of its Max HP"),
-            ("card-shield", "Shield", CardCategory.Basic, 20,
-                "Active Pet gains Shield equal to 20% of its Max HP"),
-            ("card-power-charge", "Power Charge", CardCategory.Basic, 0,
-                "Active Pet gains 25 Power"),
-            ("card-inferno", "Inferno", CardCategory.PetSkill, 100,
-                "Deal high Fire (Hỏa) damage; apply Burn"),
-            ("card-tidal-barrier", "Tidal Barrier", CardCategory.PetSkill, 80,
-                "Heal; Gain Shield"),
-            ("card-iron-fang", "Iron Fang", CardCategory.PetSkill, 100,
-                "High damage; increased Crit chance"),
+            ("card-heal", "Heal", CardCategory.Basic, 20),
+            ("card-shield", "Shield", CardCategory.Basic, 20),
+            ("card-power-charge", "Power Charge", CardCategory.Basic, 0),
+            ("card-inferno", "Inferno", CardCategory.PetSkill, 100),
+            ("card-tidal-barrier", "Tidal Barrier", CardCategory.PetSkill, 80),
+            ("card-iron-fang", "Iron Fang", CardCategory.PetSkill, 100),
         };
 
         Assert.Equal(expected.Length, cards.Count);
 
-        foreach (var (id, name, category, powerCost, effect) in expected)
+        foreach (var (id, name, category, powerCost) in expected)
         {
             var row = Assert.Single(cards, card => card.CardDefinitionId == id);
 
             Assert.Equal(name, row.Name);
             Assert.Equal(category, row.Category);
             Assert.Equal(powerCost, row.PowerCost);
-            Assert.Equal(effect, row.EffectDefinition);
             Assert.Equal(1, row.LoadoutCopyLimit);
         }
 

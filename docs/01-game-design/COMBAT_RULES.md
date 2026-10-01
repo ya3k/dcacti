@@ -167,13 +167,34 @@ separate Player entity (`ELEMENT_RULES.md` §5).
 
 ## 3.3 Critical Hits
 
-1. Crit is evaluated once per damage instance, after Element Modifier and
-   before Defense Mitigation (i.e., inside "Other Modifiers", step 4).
-2. On a successful Crit roll, damage is multiplied by a Crit Multiplier
-   (default: 1.5×, configuration).
-3. Crit chance can be modified by Relics (e.g. "Assassin Eye": Combo ≥ 3 →
-   increase Crit chance) and Pet Passives (e.g. Bạch Hổ: next attack gains
-   increased Crit chance).
+1. **Pipeline Position & Frequency:** Crit is evaluated once per damage instance,
+   inside Damage Pipeline step 4 ("× Other Modifiers", after Element Modifier and
+   before Defense Mitigation).
+2. **Deterministic Roll Procedure:** The Crit roll is exactly one **bounded RNG
+   selection with bound 100**, consuming from the single server-authoritative
+   `RngState` (PCG32 stream, `GAME_STATE.md` §2.6, `ADR-009`).
+   - The bounded selection follows the repository's rejection-sampling
+     operation (`MATCH3_RULES.md` §1.2.1.4 item 2): it draws 32-bit PRNG
+     output(s) until a value is accepted at or above the threshold, then reduces
+     modulo 100 to yield an integer value $V \in [0, 100)$.
+   - The roll **succeeds** if and only if $V < \text{current Crit stat}$
+     (where `Crit` is the integer percentage stat from `PetState.Crit`, §1.1).
+   - If $V \ge \text{current Crit stat}$, the roll **fails**.
+   - Example: with MVP default `Crit = 5`, accepted values in $\{0, 1, 2, 3, 4\}$
+     succeed, producing an observed rate of exactly 5%.
+3. **Multiplier:** On a successful Crit roll, damage is multiplied by the Crit
+   Multiplier (MVP default: `1.5×`, configuration). On failure, the Crit factor
+   is `1.00×`.
+4. **Scope:** Crit is evaluated for every damage instance traversing the Damage
+   Pipeline, including Player → Boss damage, Boss → Pet damage, and
+   damage-over-time ticks (Burn, §5.2 item 3).
+5. **Modifier Sources:** Crit chance can be modified by Relics (e.g. "Assassin
+   Eye": Combo ≥ 3 → increase Crit chance), Pet Passives (e.g. Bạch Hổ: next
+   attack gains increased Crit chance), and Cards (e.g. Iron Fang: `CARD_RULES.md`
+   §4.1).
+6. **Result Representation:** The Crit outcome is carried within step 4's
+   combined `otherModifiers` multiplier (`SIGNALR_PROTOCOL.md` §3.2.13). No
+   separate Crit event, state property, or wire member is emitted.
 
 ## 3.4 Boss Damage
 
@@ -293,10 +314,11 @@ Buff/Debuff  temporary stat modification (ATK/DEF/Crit/etc.), with duration
    on the existing Burn, not a second stack). Shield follows this default and
    is stated explicitly in §4 item 3; no MVP Card or Relic carves Shield out
    of it.
-3. Damage-over-time ticks (Burn) go through the Damage Pipeline (§3) using the
-   Effect's own Element, but do not consume Combo (Combo Modifier step uses
-   Combo = 1 / neutral for DoT ticks, since a DoT tick is not itself part of a
-   Swap's Combo chain).
+3. Damage-over-time ticks (Burn) traverse the Damage Pipeline (§3) using the
+   Effect's own Element, and participate in the step 4 Crit evaluation per
+   §3.3, but do not consume Combo (Combo Modifier step uses Combo = 1 /
+   neutral for DoT ticks, since a DoT tick is not itself part of a Swap's Combo
+   chain).
 
 ## 5.3 Duration Consumption Timing
 

@@ -111,6 +111,21 @@ public static class DamagePipeline
     public const double NoOtherModifiers = 1.00;
 
     /// <summary>
+    /// The critical hit damage multiplier (<c>COMBAT_RULES.md</c> §3.3 item 3: "1.5×, configuration").
+    /// </summary>
+    public const double CritMultiplier = 1.50;
+
+    /// <summary>
+    /// The non-critical hit multiplier (<c>COMBAT_RULES.md</c> §3.3 item 3: "1.00×").
+    /// </summary>
+    public const double NonCritMultiplier = 1.00;
+
+    /// <summary>
+    /// The bound for the Critical Hit roll (<c>COMBAT_RULES.md</c> §3.3 item 2: "bound 100").
+    /// </summary>
+    public const uint CritRollBound = 100;
+
+    /// <summary>
     /// The damage-relevant inputs of one damage instance — the values steps 1–5
     /// read (<c>COMBAT_RULES.md</c> §3).
     ///
@@ -160,15 +175,6 @@ public static class DamagePipeline
     /// The defending target's current HP — the value Final Damage is applied to
     /// (<c>COMBAT_RULES.md</c> §3 step 6). It is <c>BossState.HP</c> for
     /// Player→Boss damage and <c>PetState.HP</c> for Boss→Player damage.
-    ///
-    /// <b>It is an input because the target's type differs by direction.</b>
-    /// <c>COMBAT_RULES.md</c> §3.4's Boss damage instance writes the active Pet's
-    /// HP — <c>PetState.HP</c> (<c>GAME_STATE.md</c> §2.3, <c>ADR-011</c> item 3) —
-    /// which is a different state record from the
-    /// <c>BossState</c> the Player→Boss instance writes. Passing the value in —
-    /// rather than passing one of the two records — keeps this pipeline a single
-    /// calculation over both directions instead of two overloads or a second
-    /// pipeline. <see cref="DamageResult.TargetHp"/> carries the result back.
     /// </param>
     /// <param name="Source">
     /// Which party is dealing this damage — the <c>source</c> member of the
@@ -185,32 +191,15 @@ public static class DamagePipeline
     /// <param name="DefenderShieldPool">
     /// The defending target's active Shield absorption pool, or <c>0</c> when the
     /// target has no active Shield (<c>COMBAT_RULES.md</c> §4 items 2–5).
-    ///
-    /// <b>It is the existing instance's <c>Magnitude</c>, not a second
-    /// representation.</b> A Shield is a <c>StatusEffect</c> instance with the
-    /// identity <c>"Shield"</c> and <c>Type = Shield</c>
-    /// (<c>GAME_STATE.md</c> §2.3.1 items 1–3), and §2.3.1 item 2 makes its
-    /// <c>Magnitude</c> the applied value whose meaning — here, an absorption pool
-    /// — is owned by the rule document. The caller therefore reads the value out of
-    /// <c>PetState.StatusEffects[]</c> / <c>BossState.StatusEffects[]</c> and passes
-    /// it here rather than this pipeline reaching into a state record, exactly as
-    /// it does for <paramref name="DefenderDefense"/> and
-    /// <paramref name="DefenderHp"/>. No <c>ShieldPoints</c> field exists or is
-    /// introduced (<c>GAME_STATE.md</c> §0 item 5).
-    ///
-    /// <b>It is a pool, not a duration or a source.</b> At most one Shield is
-    /// active per entity (§4 item 3), so there is no multi-pool ordering and this
-    /// parameter is a single number; the pooling of several Shield applications is
-    /// the refresh <c>COMBAT_RULES.md</c> §4 item 3 defines, which happens at the
-    /// application site and is already reflected in the value passed here.
-    ///
-    /// <b>It defaults to no Shield.</b> <c>0</c> means the target holds no active
-    /// Shield, which is the documented "no pool to consume" state rather than a
-    /// Shield of magnitude 0: §4 item 4 makes a pool at exactly <c>0</c> a removed
-    /// Shield, and <c>GAME_STATE.md</c> §2.3.1 item 8 makes a committed zero never
-    /// observable. Reading both as "nothing to absorb" is therefore the documented
-    /// behaviour, and the default keeps every existing caller correct without
-    /// change.
+    /// </param>
+    /// <param name="AttackerCrit">
+    /// Attacker's active Crit stat percentage points (<c>COMBAT_RULES.md</c> §3.3).
+    /// </param>
+    /// <param name="RngState">
+    /// The battle's authoritative PRNG state for Step 4 Crit evaluation (<c>COMBAT_RULES.md</c> §3.3).
+    /// </param>
+    /// <param name="OtherModifiers">
+    /// Baseline other modifiers before Crit (<c>COMBAT_RULES.md</c> §3 step 4).
     /// </param>
     public readonly record struct DamageInputs(
         int Attack,
@@ -222,7 +211,10 @@ public static class DamagePipeline
         int DefenderHp,
         DamageParty Source,
         DamageParty Target,
-        int DefenderShieldPool = 0);
+        int DefenderShieldPool = 0,
+        int AttackerCrit = 0,
+        RngState RngState = default,
+        double OtherModifiers = 1.0);
 
     /// <summary>
     /// Resolves one damage instance through the full pipeline and applies the
@@ -357,14 +349,19 @@ public static class DamagePipeline
         var elementModifier = elementModifiers.For(matchup);
         var afterElement = afterCombo * elementModifier;
 
-        // §3 step 4 — Other Modifiers. COMBAT_RULES.md §3.1 makes step 4 a stage
-        // the pipeline always has, so it runs here even though MVP has no Relic,
-        // Passive damage bonus, Buff/Debuff, or Crit multiplier to contribute
-        // (§3.3, §3.4's "Other Modifiers = 1.0" for the Boss side, RELIC_RULES.md,
-        // COMBAT_RULES.md §5 are separate unimplemented systems). The identity
-        // factor is applied and reported, so the stage is visible in the breakdown
-        // rather than skipped.
-        var afterOtherModifiers = afterElement * NoOtherModifiers;
+        // §3 step 4 — Other Modifiers & Crit Evaluation (COMBAT_RULES.md §3.3).
+        // The Crit roll is exactly one bounded RNG selection with bound 100, consuming from the
+        // single server-authoritative RngState (PCG32 stream).
+        var pcg = inputs.RngState.Increment == 0
+            ? Pcg32.FromSeed(0)
+            : new Pcg32(inputs.RngState.State, inputs.RngState.Increment);
+
+        var critRoll = pcg.NextBounded(CritRollBound);
+        var isCrit = critRoll < (uint)Math.Max(0, inputs.AttackerCrit);
+        var critMultiplier = isCrit ? CritMultiplier : NonCritMultiplier;
+        var step4OtherModifiers = inputs.OtherModifiers * critMultiplier;
+        var updatedRngState = pcg.CurrentState;
+        var afterOtherModifiers = afterElement * step4OtherModifiers;
 
         // §3 step 5 / §3.2 — Defense Mitigation:
         //     Mitigated Damage = Pre-Defense Damage × ( K / (K + DEF) )
@@ -465,7 +462,7 @@ public static class DamagePipeline
             Base: baseDamage,
             ComboModifier: (double)comboNumerator / ComboModifiers.Denominator,
             ElementModifier: elementModifier,
-            OtherModifiers: NoOtherModifiers,
+            OtherModifiers: step4OtherModifiers,
             Defense: defense,
             FinalDamage: finalDamage);
 
@@ -493,6 +490,7 @@ public static class DamagePipeline
             dealt,
             taken,
             AbsorbedDamage: absorbed,
-            RemainingShieldPool: remainingShieldPool);
+            RemainingShieldPool: remainingShieldPool,
+            UpdatedRngState: updatedRngState);
     }
 }

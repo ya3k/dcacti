@@ -426,7 +426,7 @@ public class PlayerStarterGrantFactoryTests
                 Name = name,
                 Category = category,
                 PowerCost = 0,
-                EffectDefinition = "effect",
+                EffectDefinition = TestCardEffects.FlatPower,
                 LoadoutCopyLimit = 1,
             };
 
@@ -437,7 +437,7 @@ public class PlayerStarterGrantFactoryTests
                 Name = name,
                 Trigger = "OnMatchCount",
                 Condition = null,
-                EffectDefinition = "effect",
+                EffectDefinition = "+5% ATK",
             };
 
         public void RemovePet(string id) => Pets.Remove(id);

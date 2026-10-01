@@ -3,6 +3,7 @@ using GameServer.Api.Authentication;
 using GameServer.Application.Battle;
 using GameServer.Application.Runtime;
 using GameServer.Domain.Battle;
+using GameServer.Domain.Cards;
 using GameServer.Domain.Match3;
 using Microsoft.AspNetCore.SignalR;
 
@@ -314,6 +315,26 @@ public record SpecialGemPayload(string Type, string? Orientation);
 public record SwapResponse(bool Accepted, string? Reason);
 
 /// <summary>
+/// The §5 acknowledgement returned to the caller of <see cref="BattleHub.CardCast"/>.
+/// </summary>
+/// <param name="Accepted">True when the Card cast was resolved; false when rejected.</param>
+/// <param name="Reason">
+/// The documented rejection reason, or <c>null</c> when <paramref name="Accepted"/>
+/// is true.
+/// </param>
+public record CardCastResponse(bool Accepted, string? Reason);
+
+/// <summary>
+/// Direct invocation result of a <c>PetSkillCast</c> request (<c>SIGNALR_PROTOCOL.md</c> §2, §5).
+/// </summary>
+/// <param name="Accepted">True when the Pet Skill cast was resolved; false when rejected.</param>
+/// <param name="Reason">
+/// The documented rejection reason, or <c>null</c> when <paramref name="Accepted"/>
+/// is true.
+/// </param>
+public record PetSkillCastResponse(bool Accepted, string? Reason);
+
+/// <summary>
 /// The <c>ReceiveEvents</c> delivery payload
 /// (<c>SIGNALR_PROTOCOL.md</c> §3).
 ///
@@ -386,12 +407,13 @@ public record ReceiveEventsPayload(
 /// client may invoke; server → client ones are client-side handlers the server
 /// calls through <c>SendAsync</c> and are never invokable.
 ///
-/// <c>CardCast</c>, <c>PetSkillCast</c> (§2) and <c>GetBattleState</c> (§7) are
+/// <c>CardCast</c> is implemented for Basic Cards (<c>CARD_RULES.md</c> §2, §3).
+/// <c>PetSkillCast</c> (§2) and <c>GetBattleState</c> (§7) are
 /// client → server methods that are intentionally NOT implemented: they require
-/// Card/Pet systems and reconnect recovery, which are out of scope.
+/// Pet Skill Card resolution and reconnect recovery, which are out of scope.
 ///
 /// <c>ReceiveEvents</c> is the opposite direction: it is a server → client
-/// delivery (§3), implemented by the accepted-Swap path below, and it must never
+/// delivery (§3), implemented by the accepted-action paths below, and it must never
 /// be added as an invokable hub method.
 /// </summary>
 public class BattleHub : Hub
@@ -610,6 +632,90 @@ public class BattleHub : Hub
 
         return new SwapResponse(Accepted: true, Reason: null);
     }
+
+    /// <summary>
+    /// Executes one requested Basic Card cast (<c>CARD_RULES.md</c> §2, §3;
+    /// <c>SIGNALR_PROTOCOL.md</c> §2, §3.2.20, §5).
+    /// </summary>
+    /// <param name="battleId">The battle the action applies to; also scopes the group.</param>
+    /// <param name="cardId">The Card definition identity being cast.</param>
+    /// <param name="clientSequence">
+    /// The client's opaque correlation value. Carried for transport compatibility
+    /// and not consulted (<c>SIGNALR_PROTOCOL.md</c> §2 item 1).
+    /// </param>
+    /// <returns>The §5 acknowledgement: accepted, or rejected with its reason.</returns>
+    public async Task<CardCastResponse> CardCast(
+        string battleId,
+        string cardId,
+        string? clientSequence = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(cardId);
+
+        _ = clientSequence;
+
+        var result = await _battles.ExecuteCardCastAsync(battleId, cardId);
+
+        if (result is null)
+        {
+            return new CardCastResponse(Accepted: false, Reason: "BATTLE_NOT_FOUND");
+        }
+
+        if (result.Value.IsRejected)
+        {
+            return new CardCastResponse(
+                Accepted: false,
+                Reason: CardCastRejectionCodes.ToContractCode(result.Value.Reason));
+        }
+
+        await Clients.Group(battleId).SendAsync("BattleStateUpdated", ToPayload(result.Value.State));
+        await Clients.Group(battleId).SendAsync("ReceiveEvents", ToPayload(result.Value));
+
+        return new CardCastResponse(Accepted: true, Reason: null);
+    }
+
+    /// <summary>
+    /// Invocation entry point for a Pet Skill cast request (<c>SIGNALR_PROTOCOL.md</c> §2).
+    /// </summary>
+    /// <param name="battleId">The battle the cast belongs to.</param>
+    /// <param name="clientSequence">Opaque correlation value, ignored per §2 item 1.</param>
+    /// <returns>The §5 acknowledgement: accepted, or rejected with its reason.</returns>
+    public async Task<PetSkillCastResponse> PetSkillCast(
+        string battleId,
+        string? clientSequence = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
+
+        _ = clientSequence;
+
+        var result = await _battles.ExecutePetSkillCastAsync(battleId);
+
+        if (result is null)
+        {
+            return new PetSkillCastResponse(Accepted: false, Reason: "BATTLE_NOT_FOUND");
+        }
+
+        if (result.Value.IsRejected)
+        {
+            return new PetSkillCastResponse(
+                Accepted: false,
+                Reason: CardCastRejectionCodes.ToContractCode(result.Value.Reason));
+        }
+
+        await Clients.Group(battleId).SendAsync("BattleStateUpdated", ToPayload(result.Value.State));
+        await Clients.Group(battleId).SendAsync("ReceiveEvents", ToPayload(result.Value));
+
+        return new PetSkillCastResponse(Accepted: true, Reason: null);
+    }
+
+    /// <summary>
+    /// Projects the committed CardCast result onto the §3 <c>ReceiveEvents</c> payload.
+    /// </summary>
+    private static ReceiveEventsPayload ToPayload(CardCastExecutionResult result) =>
+        new(
+            result.State.BattleId,
+            result.State.Sequence,
+            BattleEventWireProjection.Project(result.Events));
 
     /// <summary>
     /// Projects the committed Swap result onto the §3 <c>ReceiveEvents</c> payload.

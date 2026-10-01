@@ -674,7 +674,7 @@ public class CollectionEndpointTests
             CardCategory.Basic,
             powerCost: 25,
             loadoutCopyLimit: 3,
-            effectDefinition: "heal_effect");
+            effectDefinition: TestCardEffects.PercentMaxHp);
 
         var body = await factory.GetJsonAsync(
             factory.CreateClient(),
@@ -699,7 +699,7 @@ public class CollectionEndpointTests
         Assert.NotNull(stored);
         Assert.Equal(25, stored!.PowerCost);
         Assert.Equal(3, stored.LoadoutCopyLimit);
-        Assert.Equal("heal_effect", stored.EffectDefinition);
+        Assert.Equal(TestCardEffects.PercentMaxHp, stored.EffectDefinition);
     }
 
     [Fact]
@@ -1089,14 +1089,14 @@ public class CollectionEndpointTests
             CardCategory category,
             int powerCost = 0,
             int loadoutCopyLimit = 1,
-            string effectDefinition = "effect") =>
+            CardEffectDefinitions? effectDefinition = null) =>
             MutateAsync(context => context.CardDefinitions.Add(new CardDefinition
             {
                 CardDefinitionId = cardDefinitionId,
                 Name = name,
                 Category = category,
                 PowerCost = powerCost,
-                EffectDefinition = effectDefinition,
+                EffectDefinition = effectDefinition ?? TestCardEffects.FlatPower,
                 LoadoutCopyLimit = loadoutCopyLimit,
             }));
 
@@ -1108,7 +1108,7 @@ public class CollectionEndpointTests
             CardCategory category,
             int powerCost = 0,
             int loadoutCopyLimit = 1,
-            string effectDefinition = "effect")
+            CardEffectDefinitions? effectDefinition = null)
         {
             await AddCardDefinitionAsync(
                 cardDefinitionId,
@@ -1152,7 +1152,7 @@ public class CollectionEndpointTests
                         Name = name,
                         Trigger = trigger,
                         Condition = condition,
-                        EffectDefinition = effectDefinition,
+                        EffectDefinition = "increase ATK by 5%",
                     });
                 }
 

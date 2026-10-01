@@ -296,7 +296,7 @@ public class BattleStartSmokeTest
                     Name = id,
                     Category = category,
                     PowerCost = 0,
-                    EffectDefinition = "effect",
+                    EffectDefinition = TestCardEffects.FlatPower,
                     LoadoutCopyLimit = id == HealCardId ? 1 : 3,
                 });
 

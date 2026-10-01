@@ -329,16 +329,19 @@ unrestricted draw per cell. That construction rule is owned by
 `MATCH3_RULES.md`; it consumes the same single PRNG and introduces no second
 randomization mechanism (`AGENTS.md` §11).
 
-4. **Gameplay resolution consumes the same PRNG, at one documented point.**
+4. **Gameplay resolution consumes the same PRNG at documented points.**
    During a board resolution the only operation that draws is the cascade spawn
    into empty cells — exactly one selection per spawned cell, in the fixed
-   column/top-to-bottom order of `MATCH3_RULES.md` §4.5. Validation, match
-   detection, Special Gem creation and activation, gravity, Combo calculation,
-   event creation, serialization, delivery, and client rendering draw nothing
-   (`MATCH3_RULES.md` §7.2 owns the full list). A rejected action draws nothing
-   at all (`MATCH3_RULES.md` §2.1.5 item 4), so `RngState` and `Sequence`
-   advance independently of each other and only the accepted actions of a
-   battle move either.
+   column/top-to-bottom order of `MATCH3_RULES.md` §4.5. During combat damage
+   resolution, each damage instance evaluated in the Damage Pipeline performs
+   exactly one bounded selection for Critical Hit evaluation
+   (`COMBAT_RULES.md` §3.3). Validation, match detection, Special Gem creation
+   and activation, gravity, Combo calculation, event creation, serialization,
+   delivery, and client rendering draw nothing (`MATCH3_RULES.md` §7.2 owns the
+   board list). A rejected action draws nothing at all
+   (`MATCH3_RULES.md` §2.1.5 item 4), so `RngState` and `Sequence` advance
+   independently of each other and only the accepted actions of a battle move
+   either.
 5. **The reproducibility guarantee is stated in
    `MATCH3_RULES.md` §7.1**: the same initial state plus the same ordered
    sequence of accepted actions produces the same final board, the same

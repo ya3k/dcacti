@@ -81,6 +81,13 @@ public static class DependencyInjection
             new ScopedBattleResultPersistence(
                 provider.GetRequiredService<IServiceScopeFactory>()));
 
+        // Resolves the scoped Card repository for the singleton BattleStateService
+        // via IServiceScopeFactory so Card definition lookups during CardCast
+        // have access to persistence without the singleton capturing a scope.
+        services.AddSingleton<ICardDefinitionLookup>(provider =>
+            new ScopedCardDefinitionLookup(
+                provider.GetRequiredService<IServiceScopeFactory>()));
+
         // Battle-start Relic loadout validation and snapshot preparation
         // (RELIC_RULES.md §2.1–§2.5; API_CONTRACTS.md §3). Scoped because it
         // resolves the scoped IRelicRepository boundary. It validates

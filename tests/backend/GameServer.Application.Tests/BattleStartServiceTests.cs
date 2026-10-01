@@ -990,7 +990,7 @@ public class BattleStartServiceTests
                             Name = "Signature Skill",
                             Category = CardCategory.PetSkill,
                             PowerCost = 0,
-                            EffectDefinition = "pet-skill",
+                            EffectDefinition = TestCardEffects.FlatPower,
                             LoadoutCopyLimit = 1,
                         }
                         : null
@@ -1012,7 +1012,7 @@ public class BattleStartServiceTests
                         ? _harness.CategoryOfBasicC
                         : CardCategory.Basic,
                     PowerCost = 0,
-                    EffectDefinition = "effect",
+                    EffectDefinition = TestCardEffects.FlatPower,
                     LoadoutCopyLimit = cardDefinitionId == BasicA
                         ? _harness.CopyLimitOfBasicA
                         : 3,

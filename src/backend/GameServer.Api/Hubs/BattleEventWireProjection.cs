@@ -242,7 +242,9 @@ public sealed record BattleEventWireDto(
     [property: JsonPropertyName("finalBossHp")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? FinalBossHp = null,
     [property: JsonPropertyName("finalPlayerHp")]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? FinalPlayerHp = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? FinalPlayerHp = null,
+    [property: JsonPropertyName("cardId")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CardId = null)
 {
     /// <summary>
     /// The wire item for one <c>MatchCreated</c>
@@ -507,6 +509,24 @@ public sealed record BattleEventWireDto(
             Source: source,
             Target: target,
             Amount: amount);
+
+    /// <summary>
+    /// The wire item for one <c>CardCast</c> (<c>SIGNALR_PROTOCOL.md</c> §3.2.20).
+    /// </summary>
+    /// <param name="cardId">The cast Card's definition identity.</param>
+    public static BattleEventWireDto CardCast(string cardId) =>
+        new(
+            Type: "CardCast",
+            CardId: cardId);
+
+    /// <summary>
+    /// The wire item for one <c>PetSkillCast</c> (<c>SIGNALR_PROTOCOL.md</c> §3.2.21).
+    /// </summary>
+    /// <param name="cardId">The cast Signature Skill Card's definition identity.</param>
+    public static BattleEventWireDto PetSkillCast(string cardId) =>
+        new(
+            Type: "PetSkillCast",
+            CardId: cardId);
 }
 
 /// <summary>
@@ -665,11 +685,25 @@ public static class BattleEventWireProjection
             BattleEventType.BossSkillCast => ProjectBossSkillCast(battleEvent.BossSkillCast),
             BattleEventType.BattleWon => ProjectBattleWon(battleEvent.BattleWon),
             BattleEventType.BattleLost => ProjectBattleLost(battleEvent.BattleLost),
+            BattleEventType.CardCast => ProjectCardCast(battleEvent.CardCast),
+            BattleEventType.PetSkillCast => ProjectPetSkillCast(battleEvent.PetSkillCast),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(battleEvent),
                 battleEvent.Type,
-                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.19, §3.3)."),
+                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.21, §3.3)."),
         };
+
+    /// <summary>
+    /// Projects the <c>PetSkillCast</c> payload (<c>SIGNALR_PROTOCOL.md</c> §3.2.21).
+    /// </summary>
+    private static BattleEventWireDto ProjectPetSkillCast(PetSkillCastEvent petSkillCast) =>
+        BattleEventWireDto.PetSkillCast(petSkillCast.CardId);
+
+    /// <summary>
+    /// Projects the <c>CardCast</c> payload (<c>SIGNALR_PROTOCOL.md</c> §3.2.20).
+    /// </summary>
+    private static BattleEventWireDto ProjectCardCast(CardCastEvent cardCast) =>
+        BattleEventWireDto.CardCast(cardCast.CardId);
 
     /// <summary>
     /// Projects the <c>PassiveCharged</c> payload (<c>SIGNALR_PROTOCOL.md</c> §3.3,

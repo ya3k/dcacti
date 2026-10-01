@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using GameServer.Application.Cards;
 using GameServer.Domain.Battle;
 using GameServer.Domain.Bosses;
 using GameServer.Domain.Cards;
@@ -279,6 +280,8 @@ public sealed class BattleStateService
     /// </summary>
     private readonly IBattleResultPersistence? _battleResults;
 
+    private readonly ICardDefinitionLookup? _cardDefinitions;
+
     private readonly IRngSeedSource _seedSource;
 
     /// <summary>
@@ -345,7 +348,8 @@ public sealed class BattleStateService
     public BattleStateService(
         IBattleStateRepository repository,
         IRngSeedSource seedSource,
-        IBattleResultPersistence? battleResults = null)
+        IBattleResultPersistence? battleResults = null,
+        ICardDefinitionLookup? cardDefinitions = null)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
         _seedSource = seedSource ?? throw new ArgumentNullException(nameof(seedSource));
@@ -355,6 +359,7 @@ public sealed class BattleStateService
         // expressed through its own contract so this singleton names no
         // persistence lifetime and no PostgreSQL type.
         _battleResults = battleResults;
+        _cardDefinitions = cardDefinitions;
     }
 
     /// <summary>
@@ -826,6 +831,162 @@ public sealed class BattleStateService
     }
 
     /// <summary>
+    /// Executes one requested Basic Card cast against a battle's authoritative state and
+    /// records the resulting state (<c>CARD_RULES.md</c> §2, §3).
+    /// </summary>
+    /// <param name="battleId">The battle the Card cast applies to.</param>
+    /// <param name="cardId">The Card definition identity being cast.</param>
+    /// <param name="cancellationToken">Cancels the store reads and write.</param>
+    /// <returns>
+    /// The rejection or commit result, or <c>null</c> when no battle record exists for that id.
+    /// </returns>
+    public async Task<CardCastExecutionResult?> ExecuteCardCastAsync(
+        string battleId,
+        string cardId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(cardId);
+
+        if (await _repository.GetAsync(battleId, cancellationToken).ConfigureAwait(false) is not { } state)
+        {
+            return null;
+        }
+
+        if (_cardDefinitions is null)
+        {
+            throw new InvalidOperationException("Card definition lookup is not configured.");
+        }
+
+        var cardDefinition = await _cardDefinitions.GetDefinitionAsync(cardId, cancellationToken).ConfigureAwait(false);
+        if (cardDefinition is null)
+        {
+            return CardCastExecutionResult.Rejected(CardCastRejectionReason.InvalidCard);
+        }
+
+        const int MaxAttempts = 8;
+
+        for (var attempt = 1; attempt <= MaxAttempts; attempt++)
+        {
+            var expectedSequence = state.Sequence;
+
+            var result = CardCastExecutor.Execute(state, cardDefinition);
+
+            if (result.IsRejected)
+            {
+                return result;
+            }
+
+            var written = await _repository
+                .TryUpdateAsync(result.State, expectedSequence, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (written)
+            {
+                if (result.Events.Any(e => e.Type is BattleEventType.BattleWon or BattleEventType.BattleLost))
+                {
+                    await PersistTerminalResultAsync(result.State, result.Events, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                return result;
+            }
+
+            if (await _repository.GetAsync(battleId, cancellationToken).ConfigureAwait(false)
+                is not { } fresh)
+            {
+                return null;
+            }
+
+            state = fresh;
+        }
+
+        throw new InvalidOperationException(
+            $"Resolution of CardCast on battle '{battleId}' exceeded {MaxAttempts} compare-and-set attempts.");
+    }
+
+    /// <summary>
+    /// Validates and executes a Pet Signature Skill cast against the battle's authoritative state
+    /// (<c>SIGNALR_PROTOCOL.md</c> §2, <c>CARD_RULES.md</c> §4).
+    /// </summary>
+    public async Task<CardCastExecutionResult?> ExecutePetSkillCastAsync(
+        string battleId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
+
+        if (await _repository.GetAsync(battleId, cancellationToken).ConfigureAwait(false) is not { } state)
+        {
+            return null;
+        }
+
+        if (_cardDefinitions is null)
+        {
+            throw new InvalidOperationException("Card definition lookup is not configured.");
+        }
+
+        // Identify the active Pet's equipped Pet Skill Card
+        CardDefinition? petSkillCard = null;
+        if (state.PetState.EquippedCards is not null)
+        {
+            foreach (var cardId in state.PetState.EquippedCards)
+            {
+                var def = await _cardDefinitions.GetDefinitionAsync(cardId.Value, cancellationToken).ConfigureAwait(false);
+                if (def is not null && def.Category == CardCategory.PetSkill)
+                {
+                    petSkillCard = def;
+                    break;
+                }
+            }
+        }
+
+        if (petSkillCard is null)
+        {
+            return CardCastExecutionResult.Rejected(CardCastRejectionReason.InvalidCard);
+        }
+
+        const int MaxAttempts = 8;
+
+        for (var attempt = 1; attempt <= MaxAttempts; attempt++)
+        {
+            var expectedSequence = state.Sequence;
+
+            var result = CardCastExecutor.Execute(state, petSkillCard);
+
+            if (result.IsRejected)
+            {
+                return result;
+            }
+
+            var written = await _repository
+                .TryUpdateAsync(result.State, expectedSequence, cancellationToken)
+                .ConfigureAwait(false);
+
+            if (written)
+            {
+                if (result.Events.Any(e => e.Type is BattleEventType.BattleWon or BattleEventType.BattleLost))
+                {
+                    await PersistTerminalResultAsync(result.State, result.Events, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                return result;
+            }
+
+            if (await _repository.GetAsync(battleId, cancellationToken).ConfigureAwait(false)
+                is not { } fresh)
+            {
+                return null;
+            }
+
+            state = fresh;
+        }
+
+        throw new InvalidOperationException(
+            $"Resolution of PetSkillCast on battle '{battleId}' exceeded {MaxAttempts} compare-and-set attempts.");
+    }
+
+    /// <summary>
     /// Runs one Swap resolution over a state the caller has already read from the
     /// store, and returns the result — <b>without writing anything</b>.
     ///
@@ -971,9 +1132,8 @@ public sealed class BattleStateService
         //   - step 3's elements — PetState.Element (attacker) and
         //                         BossState.Element (defender), both set at battle
         //                         creation and never rewritten (ELEMENT_RULES.md §5)
+        //   - step 4's crit     — PetState.Crit (COMBAT_RULES.md §3.3)
         //   - step 5's DEF      — BossState.DEF (GAME_STATE.md §2.4)
-        // The pipeline draws no RNG and performs no Crit roll, so no randomness is
-        // introduced here (COMBAT_RULES.md §3.3, ADR-009).
         var playerDamage = DamagePipeline.Calculate(
             new DamagePipeline.DamageInputs(
                 Attack: resolved.PetState.ATK,
@@ -984,9 +1144,14 @@ public sealed class BattleStateService
                 DefenderDefense: bossState.DEF,
                 DefenderHp: bossState.HP,
                 Source: DamageParty.Player,
-                Target: DamageParty.Boss),
+                Target: DamageParty.Boss,
+                DefenderShieldPool: StatusEffectLifecycle.ShieldPool(bossState.ActiveStatusEffects),
+                AttackerCrit: resolved.PetState.Crit,
+                RngState: resolved.RngState),
             ComboModifiers.Default,
             ElementModifiers.Default);
+
+        resolved = resolved with { RngState = playerDamage.UpdatedRngState };
 
         // §17 step 17 / GAME_STATE.md §5.1: the Boss's HP write is part of the SAME
         // single post-resolution write-back as the board, the counters, the
@@ -994,6 +1159,31 @@ public sealed class BattleStateService
         // the cooldown decrement. The pipeline returned the post-damage HP, written
         // onto the Boss state here so the write-back is never split in two.
         bossState = bossState with { HP = playerDamage.TargetHp };
+        if (playerDamage.RemainingShieldPool == 0)
+        {
+            bossState = bossState with
+            {
+                ActiveStatusEffects = StatusEffectLifecycle.RemoveDepletedShield(bossState.ActiveStatusEffects),
+            };
+        }
+        else if (playerDamage.AbsorbedDamage > 0)
+        {
+            bossState = bossState with
+            {
+                ActiveStatusEffects = StatusEffectLifecycle.ApplyShield(
+                    bossState.ActiveStatusEffects,
+                    StatusEffect.TriggerBased("Shield", StatusEffectType.Shield, StatusEffectSource.Player, playerDamage.RemainingShieldPool, StatusEffect.ShieldDepletedCondition)),
+            };
+        }
+
+        // Consume NextAttack Crit modifier if active
+        if (resolved.PetState.Crit != PetState.DefaultCrit)
+        {
+            resolved = resolved with
+            {
+                PetState = resolved.PetState with { Crit = PetState.DefaultCrit },
+            };
+        }
 
         // GAME_EVENTS.md §1/§2: the three Damage events follow the Passive stage's
         // reports, in the order §1 places them — DamageCalculated, DamageDealt,
@@ -1177,24 +1367,40 @@ public sealed class BattleStateService
                 DefenderDefense: resolved.PetState.DEF,
                 DefenderHp: resolved.PetState.HP,
                 Source: DamageParty.Boss,
-                Target: DamageParty.Player),
+                Target: DamageParty.Player,
+                DefenderShieldPool: StatusEffectLifecycle.ShieldPool(resolved.PetState.ActiveStatusEffects),
+                AttackerCrit: 0,
+                RngState: resolved.RngState),
             ComboModifiers.Default,
             ElementModifiers.Default);
 
-        // COMBAT_RULES.md §3.4 step 6 / GAME_STATE.md §5.1: "Final Damage applied to
-        // Player.HP" names the Player side of the instance, and the Pet is that
-        // side's combat character (ADR-011 items 3 and 5) — so the write is onto the
-        // active Pet's PetState.HP (GAME_STATE.md §2.3). The write is explicit — the
-        // pipeline returned the post-damage
-        // HP and this boundary writes it onto the active Pet's PetState, in the same
-        // single write-back as every other value this action changed. The wire label
-        // target="player" (SIGNALR_PROTOCOL.md §3.2 item 3) is unchanged: it names
-        // the Player side of the instance, and the Pet is that side's combat
-        // character (ADR-011 items 3 and 6).
         resolved = resolved with
         {
+            RngState = bossDamage.UpdatedRngState,
             PetState = resolved.PetState with { HP = bossDamage.TargetHp },
         };
+        if (bossDamage.RemainingShieldPool == 0)
+        {
+            resolved = resolved with
+            {
+                PetState = resolved.PetState with
+                {
+                    ActiveStatusEffects = StatusEffectLifecycle.RemoveDepletedShield(resolved.PetState.ActiveStatusEffects),
+                },
+            };
+        }
+        else if (bossDamage.AbsorbedDamage > 0)
+        {
+            resolved = resolved with
+            {
+                PetState = resolved.PetState with
+                {
+                    ActiveStatusEffects = StatusEffectLifecycle.ApplyShield(
+                        resolved.PetState.ActiveStatusEffects,
+                        StatusEffect.TriggerBased("Shield", StatusEffectType.Shield, StatusEffectSource.Player, bossDamage.RemainingShieldPool, StatusEffect.ShieldDepletedCondition)),
+                },
+            };
+        }
 
         events.Add(BattleEvent.ForDamageCalculated(bossDamage.Calculation));
         events.Add(BattleEvent.ForDamageDealt(bossDamage.DamageDealt));
@@ -1260,24 +1466,146 @@ public sealed class BattleStateService
         // 19a — regardless of how many apply/refresh operations occurred earlier
         // in that same Turn").
         //
-        // GAME_STATE.md §5.1.1 owns the state mutation and COMBAT_RULES.md §5.3
-        // (DR1–DR6) owns the gameplay rule; both are Domain, and the call below
-        // only sequences them — this boundary decides no rule, computes no
-        // duration, and evaluates no expiry itself (ARCHITECTURE.md §2.1).
-        // StatusEffectLifecycle implements the pass: one decrement for each active
-        // Turn-countdown instance, removal of any instance that reaches 0 in the
-        // same pass (§5.1.1 items 2–5), untouched trigger-based instances (item 7),
-        // the deterministic Id-ascending order (item 6), and the BossState.State
-        // reversion to Idle when a Stun instance expires (item 8, §2.4.5).
-        //
-        // Burn's own damage tick is NOT performed here. §17 step 19a's
-        // damage-over-time tick runs through the Damage Pipeline (COMBAT_RULES.md
-        // §5.2 item 3) and is a separate concern: what this step implements is the
-        // documented duration countdown and expiry, and Burn's tick schedule and
-        // magnitude are unchanged (§5.3.4, BOSS_RULES.md §6.3.1 item 1).
-        //
-        // The Turn increment's SkillCooldown decrement (step 3 above) is a
-        // different counter and is not generalized here (§5.1.1 item 2, §5.3.4).
+        // Damage-over-time ticks (Burn) traverse the Damage Pipeline (COMBAT_RULES.md
+        // §3, §5.2 item 3) using Fire element, Combo = 1, Crit evaluated, before
+        // duration is decremented.
+
+        // 1. Tick DoTs on Boss (if Boss is still alive)
+        if (bossState.HP > 0)
+        {
+            var bossDots = bossState.ActiveStatusEffects
+                .Where(e => e.Type == StatusEffectType.DoT)
+                .OrderBy(e => e.Id, StringComparer.Ordinal)
+                .ToList();
+
+            foreach (var dot in bossDots)
+            {
+                if (bossState.HP <= 0)
+                {
+                    break;
+                }
+
+                var dotDamage = DamagePipeline.Calculate(
+                    new DamagePipeline.DamageInputs(
+                        Attack: (int)dot.Magnitude,
+                        BaseDamagePool: 0,
+                        Combo: 1,
+                        AttackerElement: Element.Hoa,
+                        DefenderElement: bossState.Element,
+                        DefenderDefense: bossState.DEF,
+                        DefenderHp: bossState.HP,
+                        Source: DamageParty.Player,
+                        Target: DamageParty.Boss,
+                        DefenderShieldPool: StatusEffectLifecycle.ShieldPool(bossState.ActiveStatusEffects),
+                        AttackerCrit: resolved.PetState.Crit,
+                        RngState: resolved.RngState),
+                    ComboModifiers.Default,
+                    ElementModifiers.Default);
+
+                resolved = resolved with { RngState = dotDamage.UpdatedRngState };
+                bossState = bossState with { HP = dotDamage.TargetHp };
+
+                if (dotDamage.RemainingShieldPool == 0)
+                {
+                    bossState = bossState with
+                    {
+                        ActiveStatusEffects = StatusEffectLifecycle.RemoveDepletedShield(bossState.ActiveStatusEffects),
+                    };
+                }
+                else if (dotDamage.AbsorbedDamage > 0)
+                {
+                    bossState = bossState with
+                    {
+                        ActiveStatusEffects = StatusEffectLifecycle.ApplyShield(
+                            bossState.ActiveStatusEffects,
+                            StatusEffect.TriggerBased("Shield", StatusEffectType.Shield, StatusEffectSource.Player, dotDamage.RemainingShieldPool, StatusEffect.ShieldDepletedCondition)),
+                    };
+                }
+
+                events.Add(BattleEvent.ForDamageCalculated(dotDamage.Calculation));
+                events.Add(BattleEvent.ForDamageDealt(dotDamage.DamageDealt));
+                events.Add(BattleEvent.ForDamageTaken(dotDamage.DamageTaken));
+
+                if (bossState.HP == 0)
+                {
+                    events.Add(BattleEvent.ForBattleWon(bossState.HP, resolved.PetState.HP));
+                }
+            }
+        }
+
+        // 2. Tick DoTs on Pet (if Pet is still alive and Boss did not die)
+        if (resolved.PetState.HP > 0 && bossState.HP > 0)
+        {
+            var petDots = resolved.PetState.ActiveStatusEffects
+                .Where(e => e.Type == StatusEffectType.DoT)
+                .OrderBy(e => e.Id, StringComparer.Ordinal)
+                .ToList();
+
+            foreach (var dot in petDots)
+            {
+                if (resolved.PetState.HP <= 0)
+                {
+                    break;
+                }
+
+                var dotDamage = DamagePipeline.Calculate(
+                    new DamagePipeline.DamageInputs(
+                        Attack: (int)dot.Magnitude,
+                        BaseDamagePool: 0,
+                        Combo: 1,
+                        AttackerElement: Element.Hoa,
+                        DefenderElement: resolved.PetState.Element,
+                        DefenderDefense: resolved.PetState.DEF,
+                        DefenderHp: resolved.PetState.HP,
+                        Source: DamageParty.Boss,
+                        Target: DamageParty.Player,
+                        DefenderShieldPool: StatusEffectLifecycle.ShieldPool(resolved.PetState.ActiveStatusEffects),
+                        AttackerCrit: 0,
+                        RngState: resolved.RngState),
+                    ComboModifiers.Default,
+                    ElementModifiers.Default);
+
+                resolved = resolved with
+                {
+                    RngState = dotDamage.UpdatedRngState,
+                    PetState = resolved.PetState with { HP = dotDamage.TargetHp },
+                };
+
+                if (dotDamage.RemainingShieldPool == 0)
+                {
+                    resolved = resolved with
+                    {
+                        PetState = resolved.PetState with
+                        {
+                            ActiveStatusEffects = StatusEffectLifecycle.RemoveDepletedShield(resolved.PetState.ActiveStatusEffects),
+                        },
+                    };
+                }
+                else if (dotDamage.AbsorbedDamage > 0)
+                {
+                    resolved = resolved with
+                    {
+                        PetState = resolved.PetState with
+                        {
+                            ActiveStatusEffects = StatusEffectLifecycle.ApplyShield(
+                                resolved.PetState.ActiveStatusEffects,
+                                StatusEffect.TriggerBased("Shield", StatusEffectType.Shield, StatusEffectSource.Player, dotDamage.RemainingShieldPool, StatusEffect.ShieldDepletedCondition)),
+                        },
+                    };
+                }
+
+                events.Add(BattleEvent.ForDamageCalculated(dotDamage.Calculation));
+                events.Add(BattleEvent.ForDamageDealt(dotDamage.DamageDealt));
+                events.Add(BattleEvent.ForDamageTaken(dotDamage.DamageTaken));
+
+                if (resolved.PetState.HP <= 0)
+                {
+                    events.Add(BattleEvent.ForBattleLost(bossState.HP, resolved.PetState.HP));
+                }
+            }
+        }
+
+        // 3. Duration decrement and expiry pass
         var afterStep19a = StatusEffectLifecycle.ConsumeAtStep19a(
             resolved with { BossState = bossState });
 

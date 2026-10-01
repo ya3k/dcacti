@@ -61,10 +61,8 @@ Type:              FEATURE (TASK_TYPES.md §2 — "Implement a documented
                    GAME_EVENTS.md §2, and SIGNALR_PROTOCOL.md
                    §3.2.20/§3.2.22 already define the entire mechanic. This
                    task builds what is documented and changes no rule.)
-Status:            BACKLOG (per tasks/README.md §6 step 6. Ascends to READY
-                   only through a lifecycle validation that confirms the
-                   BACKLOG → READY criteria of TASK_LIFECYCLE.md §3 — see
-                   "Readiness Pre-Check" below and the Reviewer's Checklist.)
+Status:            COMPLETED (per tasks/README.md §6 step 6. Implemented Basic CardCast
+                   server path across Domain, Application, and Api layers with full test coverage.)
 Risk:              HIGH (TASK_TYPES.md §4 — FEATURE baseline MEDIUM, "can be
                    HIGH if it touches combat / battle state / auth". This
                    touches PetState.Power, PetState.HP, the StatusEffects[]

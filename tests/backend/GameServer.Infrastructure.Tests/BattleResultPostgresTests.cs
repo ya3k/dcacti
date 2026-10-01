@@ -109,7 +109,7 @@ public class BattleResultPostgresTests : IAsyncLifetime
             Name = signatureSkillCardId,
             Category = GameServer.Domain.Cards.CardCategory.PetSkill,
             PowerCost = 0,
-            EffectDefinition = "effect",
+            EffectDefinition = TestCardEffects.FlatPower,
             LoadoutCopyLimit = 1,
         });
 

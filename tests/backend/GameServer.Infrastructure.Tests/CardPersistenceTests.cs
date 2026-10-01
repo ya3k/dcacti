@@ -32,13 +32,14 @@ public class CardPersistenceTests
     private static CardDefinition NewDefinition(
         string id,
         CardCategory category = CardCategory.Basic,
-        int loadoutCopyLimit = 1) => new()
+        int loadoutCopyLimit = 1,
+        CardEffectDefinitions? effectDefinition = null) => new()
     {
         CardDefinitionId = id,
         Name = "Heal",
         Category = category,
         PowerCost = 0,
-        EffectDefinition = "heal_effect",
+        EffectDefinition = effectDefinition ?? TestCardEffects.FlatPower,
         LoadoutCopyLimit = loadoutCopyLimit,
     };
 
@@ -352,7 +353,11 @@ public class CardPersistenceTests
 
         await using (var context = CreateContext(storeName))
         {
-            context.CardDefinitions.Add(NewDefinition("card_heal", CardCategory.Basic, loadoutCopyLimit: 2));
+            context.CardDefinitions.Add(NewDefinition(
+                "card_heal",
+                CardCategory.Basic,
+                loadoutCopyLimit: 2,
+                effectDefinition: TestCardEffects.PercentMaxHp));
             await context.SaveChangesAsync();
         }
 
@@ -364,7 +369,15 @@ public class CardPersistenceTests
             Assert.Equal("Heal", stored.Name);
             Assert.Equal(CardCategory.Basic, stored.Category);
             Assert.Equal(0, stored.PowerCost);
-            Assert.Equal("heal_effect", stored.EffectDefinition);
+
+            // DATABASE.md §1: the structured effect array survives the round trip
+            // with every element, member, and exact type (TASK-111 D-1's array
+            // shape, implemented by TASK-112).
+            Assert.Equal(TestCardEffects.PercentMaxHp, stored.EffectDefinition);
+            Assert.Equal(1, stored.EffectDefinition.Count);
+            Assert.Equal(CardEffectType.Heal, stored.EffectDefinition[0].EffectType);
+            Assert.Equal(CardEffectValueType.PercentMaxHp, stored.EffectDefinition[0].ValueType);
+            Assert.Equal(1, stored.EffectDefinition[0].Value);
             Assert.Equal(2, stored.LoadoutCopyLimit);
         }
     }

@@ -19,6 +19,7 @@ using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Npgsql;
 using StackExchange.Redis;
 using Xunit;
@@ -366,6 +367,8 @@ public class BattleResultSmokeTest
             {
                 builder.UseSetting(key, value);
             }
+
+            builder.ConfigureLogging(logging => logging.ClearProviders());
         }
 
         /// <summary>
@@ -561,7 +564,7 @@ public class BattleResultSmokeTest
                 Name = cardDefinitionId,
                 Category = category,
                 PowerCost = 0,
-                EffectDefinition = "effect",
+                EffectDefinition = TestCardEffects.FlatPower,
                 LoadoutCopyLimit = copyLimit,
             });
         }
@@ -586,7 +589,7 @@ public class BattleResultSmokeTest
                 Name = "Smoke Relic",
                 Trigger = "on_match",
                 Condition = "always",
-                EffectDefinition = "effect",
+                EffectDefinition = "increase ATK by 5%",
             });
         }
 

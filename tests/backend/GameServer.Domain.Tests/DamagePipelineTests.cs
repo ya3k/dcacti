@@ -2,6 +2,7 @@ using GameServer.Domain.Battle;
 using GameServer.Domain.Bosses;
 using GameServer.Domain.Combat;
 using GameServer.Domain.Elements;
+using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
 using Xunit;
 
@@ -313,18 +314,81 @@ public class DamagePipelineTests
     }
 
     [Fact]
-    public void CritStat_ShouldNotBeReadByThePipeline()
+    public void CritEvaluation_WhenAttackerCritIsZero_ShouldNotCrit()
     {
-        // COMBAT_RULES.md §3.3's Crit roll is not implemented, and no Crit input
-        // exists on DamageInputs. This asserts the omission is deliberate: the type
-        // carries no Crit member, so no roll can occur and no randomness is
-        // introduced (AGENTS.md §11, ADR-009).
-        var memberNames = typeof(DamagePipeline.DamageInputs)
-            .GetProperties()
-            .Select(p => p.Name)
-            .ToArray();
+        // COMBAT_RULES.md §3.3: Crit succeeds iff V < AttackerCrit.
+        // For AttackerCrit = 0, V < 0 is false for all V in [0, 100).
+        var rng = Pcg32.FromSeed(12345).CurrentState;
+        var inputs = new DamagePipeline.DamageInputs(
+            Attack: 100,
+            BaseDamagePool: 0,
+            Combo: 1,
+            AttackerElement: Element.Moc,
+            DefenderElement: Element.Moc,
+            DefenderDefense: 0,
+            DefenderHp: 500,
+            Source: DamageParty.Player,
+            Target: DamageParty.Boss,
+            AttackerCrit: 0,
+            RngState: rng);
 
-        Assert.DoesNotContain(memberNames, n => n.Contains("Crit", StringComparison.Ordinal));
+        var result = DamagePipeline.Calculate(inputs, ComboModifiers.Default, ElementModifiers.Default);
+
+        Assert.Equal(1.00, result.Calculation.OtherModifiers);
+        Assert.Equal(100, result.Calculation.FinalDamage);
+    }
+
+    [Fact]
+    public void CritEvaluation_WhenAttackerCritIsOneHundred_ShouldAlwaysCrit()
+    {
+        // COMBAT_RULES.md §3.3: Crit multiplier = 1.5x on crit.
+        // For AttackerCrit = 100, V < 100 is always true for V in [0, 100).
+        var rng = Pcg32.FromSeed(12345).CurrentState;
+        var inputs = new DamagePipeline.DamageInputs(
+            Attack: 100,
+            BaseDamagePool: 0,
+            Combo: 1,
+            AttackerElement: Element.Moc,
+            DefenderElement: Element.Moc,
+            DefenderDefense: 0,
+            DefenderHp: 500,
+            Source: DamageParty.Player,
+            Target: DamageParty.Boss,
+            AttackerCrit: 100,
+            RngState: rng);
+
+        var result = DamagePipeline.Calculate(inputs, ComboModifiers.Default, ElementModifiers.Default);
+
+        Assert.Equal(1.50, result.Calculation.OtherModifiers);
+        Assert.Equal(150, result.Calculation.FinalDamage);
+    }
+
+    [Fact]
+    public void CritEvaluation_ConsumesExactlyOneBoundedSelectionFromRngState()
+    {
+        // COMBAT_RULES.md §3.3 item 2: Exactly one bounded RNG selection over bound 100
+        var initialRng = Pcg32.FromSeed(42).CurrentState;
+        var expectedPcg = new Pcg32(initialRng.State, initialRng.Increment);
+        var expectedRoll = expectedPcg.NextBounded(100);
+        var expectedUpdatedRng = expectedPcg.CurrentState;
+
+        var inputs = new DamagePipeline.DamageInputs(
+            Attack: 100,
+            BaseDamagePool: 0,
+            Combo: 1,
+            AttackerElement: Element.Moc,
+            DefenderElement: Element.Moc,
+            DefenderDefense: 0,
+            DefenderHp: 500,
+            Source: DamageParty.Player,
+            Target: DamageParty.Boss,
+            AttackerCrit: (int)expectedRoll + 1, // Guaranteed crit
+            RngState: initialRng);
+
+        var result = DamagePipeline.Calculate(inputs, ComboModifiers.Default, ElementModifiers.Default);
+
+        Assert.Equal(1.50, result.Calculation.OtherModifiers);
+        Assert.Equal(expectedUpdatedRng, result.UpdatedRngState);
     }
 
     // ---------------------------------------------------------------------

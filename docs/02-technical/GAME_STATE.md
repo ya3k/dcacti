@@ -1424,7 +1424,10 @@ Meaning: where the stream resumes
 2. `RngState` is the single advancement point of the battle's randomness. Any
    operation that consumes randomness reads `RngState`, produces its values,
    and stores the resulting `RngState` back into `BattleState` — there is no
-   second, hidden generator (`AGENTS.md` §11).
+   second, hidden generator (`AGENTS.md` §11). Board generation
+   (`MATCH3_RULES.md` §1.2.1), cascade spawns (`MATCH3_RULES.md` §4.5), and
+   Critical Hit evaluations in the Damage Pipeline (`COMBAT_RULES.md` §3.3) all
+   draw from this single stream.
 3. **Advanced by consumption.** `RngState` changes only when a value is
    drawn; drawing nothing leaves it unchanged. It is not advanced on a timer,
    on a Turn boundary, or as a side effect of unrelated state changes.

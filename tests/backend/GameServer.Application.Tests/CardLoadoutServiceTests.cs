@@ -48,7 +48,7 @@ public class CardLoadoutServiceTests
         Name = id,
         Category = CardCategory.Basic,
         PowerCost = 0,
-        EffectDefinition = $"{id}_effect",
+        EffectDefinition = TestCardEffects.FlatPower,
         LoadoutCopyLimit = loadoutCopyLimit,
     };
 
@@ -58,7 +58,7 @@ public class CardLoadoutServiceTests
         Name = id,
         Category = CardCategory.PetSkill,
         PowerCost = 0,
-        EffectDefinition = $"{id}_effect",
+        EffectDefinition = TestCardEffects.FlatPower,
         LoadoutCopyLimit = 1,
     };
 

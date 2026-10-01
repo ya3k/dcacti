@@ -110,8 +110,8 @@ namespace GameServer.Infrastructure.Postgres.Migrations
 
                     b.Property<string>("EffectDefinition")
                         .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
+                        .HasColumnType("jsonb")
+                        .HasColumnName("EffectDefinition");
 
                     b.Property<int>("LoadoutCopyLimit")
                         .HasColumnType("integer");

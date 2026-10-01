@@ -258,26 +258,27 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         // The hub is a thin transport boundary (ARCHITECTURE.md §1, §2.1), and the
         // two directions it carries are distinct (SIGNALR_PROTOCOL.md §2, §3).
         //
-        // `CardCast` and `PetSkillCast` are §2 client → server methods that are
-        // intentionally NOT implemented; `GetBattleState` is §7's client → server
-        // reconnect/resync method, also not implemented. None of them is a hub
-        // method, so a client invocation fails.
+        // `PetSkillCast` is a §2 client → server method that is intentionally NOT
+        // implemented; `GetBattleState` is §7's client → server reconnect/resync
+        // method, also not implemented. Neither is an invokable hub method, so a
+        // client invocation fails.
         //
         // `ReceiveEvents` is in this list for the opposite reason: it is a §3
         // **Server → Client** delivery — a client-side handler the server invokes
         // through `Clients.Group(...).SendAsync(...)` — so it is not a hub method
         // and a client may not invoke it, even though the server does send it to
-        // clients (BattleHub.Swap). Both halves of that distinction matter: the
-        // server sends the batch, and a client still cannot call it.
+        // clients (BattleHub.Swap / BattleHub.CardCast). Both halves of that
+        // distinction matter: the server sends the batch, and a client still cannot
+        // call it.
         //
-        // `JoinBattle` and `Swap` are deliberately NOT in this list: `JoinBattle` is
-        // the group join that triggers the documented initial-state push (§1.2, §4.1)
-        // and carries no gameplay, and `Swap` is the §2 gameplay method implemented
-        // by the Swap-execution task.
+        // `JoinBattle`, `Swap`, and `CardCast` are deliberately NOT in this list:
+        // `JoinBattle` is the group join that triggers the initial-state push (§1.2, §4.1),
+        // `Swap` is the §2 Swap gameplay method, and `CardCast` is the §2 Basic Card
+        // cast gameplay method.
         var hubConnection = BuildHubConnection();
         await hubConnection.StartAsync();
 
-        foreach (var method in new[] { "CardCast", "PetSkillCast", "GetBattleState", "ReceiveEvents" })
+        foreach (var method in new[] { "PetSkillCast", "GetBattleState", "ReceiveEvents" })
         {
             await Assert.ThrowsAnyAsync<Exception>(() =>
                 hubConnection.InvokeAsync<object>(method));
@@ -1426,7 +1427,14 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             new GameServer.Domain.Pets.PetId("pet_instance_wire_1"),
             GameServer.Domain.Elements.Element.Hoa,
             new GameServer.Domain.Passives.PassiveId("xich-lang"),
-            PassiveThreshold: PASSIVE_THRESHOLD);
+            PassiveThreshold: PASSIVE_THRESHOLD,
+            EquippedCards:
+            [
+                new GameServer.Domain.Cards.EquippedCardIdentity("card-heal"),
+                new GameServer.Domain.Cards.EquippedCardIdentity("card-shield"),
+                new GameServer.Domain.Cards.EquippedCardIdentity("card-power-charge"),
+                new GameServer.Domain.Cards.EquippedCardIdentity("card-inferno"),
+            ]);
 
     /// <summary>
     /// The owning Player of the battles these tests create
@@ -3470,10 +3478,13 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                 e.BattleLost.FinalBossHp,
                 e.BattleLost.FinalPlayerHp),
 
+            BattleEventType.CardCast => BattleEventWireDto.CardCast(
+                e.CardCast.CardId),
+
             _ => throw new ArgumentOutOfRangeException(
                 nameof(e),
                 e.Type,
-                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.19, §3.3)."),
+                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.20, §3.3)."),
         };
     }
 

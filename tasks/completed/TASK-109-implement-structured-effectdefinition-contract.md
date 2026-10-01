@@ -55,10 +55,16 @@ Type:              FEATURE (TASK_TYPES.md §2 — "Implement a documented
                    DATABASE.md entry the contract requires is a required
                    consequence of the supersession, not a blended type. See
                    "Type classification note".)
-Status:            BACKLOG (per tasks/README.md §6 step 6. Ascends to READY
-                   only through a lifecycle validation confirming
-                   TASK_LIFECYCLE.md §3's criteria — see "Readiness
-                   Pre-Check".)
+Status:            DONE (implementation and tests complete; quality/validation
+                   passed — see "Validation Results" and "Completion Evidence".
+                   The structured Card `EffectDefinition` contract exists and is
+                   runtime-readable, the six provisioned rows are migrated
+                   deterministically and reversibly against live PostgreSQL, and
+                   TASK-082 R2-7 is superseded for `CardDefinition` only, with the
+                   Relic half left in force. TASK-109 Stop Condition 2 fired for
+                   Tidal Barrier's Shield magnitude and is HANDLED per the task's
+                   own option (a) plus reported — no value was invented. The file
+                   moves `active/` → `completed/` per TASK_LIFECYCLE.md §3.)
 Risk:              HIGH (TASK_TYPES.md §4 — FEATURE baseline MEDIUM, "can be
                    HIGH if it touches combat / battle state / auth"; raised
                    further because this task changes a PERSISTENCE CONTRACT
@@ -725,105 +731,105 @@ separate content decision, and PetSkillCast remains blocked on it.
 
 ### The contract
 
-- [ ] A structured `EffectDefinition` representation exists carrying D-1's
+- [x] A structured `EffectDefinition` representation exists carrying D-1's
       effect identity and D-2's value + value interpretation, and it is
       **runtime-readable without prose parsing, Card-name inference,
       `CardDefinitionId` mapping, or card-specific hardcoding**.
-- [ ] The representation can express exactly the effects `CARD_RULES.md` §2 and
+- [x] The representation can express exactly the effects `CARD_RULES.md` §2 and
       §4.1 document, and **no effect type the documents do not define** is
       introduced.
-- [ ] **`EffectDefinition` remains a single content concept** — no parallel
+- [x] **`EffectDefinition` remains a single content concept** — no parallel
       representation of the effect is introduced elsewhere
       (`GAME_STATE.md` §0 item 5).
-- [ ] Serialization is **lossless and deterministic**: a round trip preserves
+- [x] Serialization is **lossless and deterministic**: a round trip preserves
       every member and its exact type, with no coercion, defaulting, or
       reordering (`TDD.md` §6).
 
 ### The supersession (TASK-082 R2-7)
 
-- [ ] `docs/02-technical/DATABASE.md`'s **`CardDefinition`** block no longer
+- [x] `docs/02-technical/DATABASE.md`'s **`CardDefinition`** block no longer
       states that `EffectDefinition` is verbatim prose and no longer forbids an
       effect-identity vocabulary; it describes the structured contract.
-- [ ] The `DATABASE.md` edit **explicitly records the supersession**, naming
+- [x] The `DATABASE.md` edit **explicitly records the supersession**, naming
       TASK-082 R2-7 and TASK-108 D-1/D-2 — it is not a silent rewrite.
-- [ ] The `DATABASE.md` edit **states that the `RelicDefinition` half of R2-7
+- [x] The `DATABASE.md` edit **states that the `RelicDefinition` half of R2-7
       remains in force**, and the `RelicDefinition` block itself is **byte-
       identical** apart from any version-header advancement.
-- [ ] The `DATABASE.md` **version header** is advanced and records the change in
+- [x] The `DATABASE.md` **version header** is advanced and records the change in
       the document's existing style.
-- [ ] **TASK-082 is not modified** — byte-identical, not re-opened, not
+- [x] **TASK-082 is not modified** — byte-identical, not re-opened, not
       re-statused, not moved (`TASK_LIFECYCLE.md` §3).
 
 ### Persistence
 
-- [ ] `CardDefinition` can **store** the structured representation: the column
+- [x] `CardDefinition` can **store** the structured representation: the column
       type/size is sufficient (the former `character varying(128)` prose limit is
       resolved explicitly, with the chosen type recorded in `DATABASE.md`).
-- [ ] The EF mapping carries the representation losslessly through the
+- [x] The EF mapping carries the representation losslessly through the
       configured provider, proven by a round trip.
-- [ ] **One new migration** exists and is the only migration added; the applied
+- [x] **One new migration** exists and is the only migration added; the applied
       `20260929152651_ProvisionPetCardRelicContentDefinitions` migration is
       **unmodified**.
-- [ ] The migration migrates the six provisioned `CardDefinition` rows from
+- [x] The migration migrates the six provisioned `CardDefinition` rows from
       prose to the structured form **deterministically**, asserted per row.
-- [ ] The migration is **reversible**: `Down` restores the prior representation,
+- [x] The migration is **reversible**: `Down` restores the prior representation,
       and the approach is stated rather than left empty.
-- [ ] **`RelicDefinition.EffectDefinition` rows are unchanged** by the
+- [x] **`RelicDefinition.EffectDefinition` rows are unchanged** by the
       migration.
-- [ ] The other `CardDefinition` members (`CardDefinitionId`, `Name`,
+- [x] The other `CardDefinition` members (`CardDefinitionId`, `Name`,
       `Category`, `PowerCost`, `LoadoutCopyLimit`), the `PlayerUnlockedCard`
       join, and the `PetDefinition.SignatureSkillCardId` FK are **unchanged**.
 
 ### Content fidelity (the balance boundary)
 
-- [ ] Every value encoded in the six rows is **transcribed from
+- [x] Every value encoded in the six rows is **transcribed from
       `CARD_RULES.md` §2/§4.1**, and each row's migration comment cites the
       section it came from.
-- [ ] **No balance value changed**: `CARD_RULES.md` is **byte-identical**, and
+- [x] **No balance value changed**: `CARD_RULES.md` is **byte-identical**, and
       no Cost or effect magnitude differs from what it states.
-- [ ] **TASK-108's illustrative values (Heal 30, Power 5) do not appear**
+- [x] **TASK-108's illustrative values (Heal 30, Power 5) do not appear**
       anywhere in the implementation, tests, or data.
-- [ ] **No value was invented for Tidal Barrier's Shield magnitude**
+- [x] **No value was invented for Tidal Barrier's Shield magnitude**
       (`CARD_RULES.md` §4.1, TASK-104 B-4): the row encodes only what §4.1
       defines, or the task STOPs.
-- [ ] Percentage-of-MaxHP and flat magnitudes remain **distinguishable** — the
+- [x] Percentage-of-MaxHP and flat magnitudes remain **distinguishable** — the
       Shield/Heal proportion is not pre-resolved to a number, and Power
       Charge's effect magnitude is not conflated with its Cost.
 
 ### Validation
 
-- [ ] Validation **rejects** an unknown effect identity, a missing value, an
+- [x] Validation **rejects** an unknown effect identity, a missing value, an
       unsupported value interpretation, and any malformed/incomplete payload —
       each proven by a test.
-- [ ] Validation **fails loudly rather than defaulting**: no fallback value, no
+- [x] Validation **fails loudly rather than defaulting**: no fallback value, no
       prose fallback, and no silent no-op for unrecognized data.
 
 ### The scope boundary
 
-- [ ] **No CardCast execution exists**: no hub method, no Application cast use
+- [x] **No CardCast execution exists**: no hub method, no Application cast use
       case, no `BattleEventType` member, no wire-projection arm.
-- [ ] **No effect resolver mutates battle state**: no call site invokes
+- [x] **No effect resolver mutates battle state**: no call site invokes
       `ApplyHeal`, `ApplyShield`, or `ApplyPower` from Card content.
-- [ ] **No PetSkillCast implementation exists** and no Pet Skill effect is
+- [x] **No PetSkillCast implementation exists** and no Pet Skill effect is
       executed.
-- [ ] `BattleHub.cs`, `BattleEvent.cs`, `BattleEventWireProjection.cs`,
+- [x] `BattleHub.cs`, `BattleEvent.cs`, `BattleEventWireProjection.cs`,
       `StatusEffectLifecycle.cs`, and `DamagePipeline.cs` are **byte-identical**.
-- [ ] No `BattleState` / `PetState` / `BossState` member is added; no Redis key,
+- [x] No `BattleState` / `PetState` / `BossState` member is added; no Redis key,
       SignalR method, event, wire member, or API endpoint is added.
-- [ ] No new SignalR method exists; the hub's method set is unchanged
+- [x] No new SignalR method exists; the hub's method set is unchanged
       (`JoinBattle`, `Swap`, `Ping`).
 
 ### General
 
-- [ ] **All existing tests remain green unmodified**, and the new tests pass —
+- [x] **All existing tests remain green unmodified**, and the new tests pass —
       Domain, Application, Infrastructure, and Api suites.
-- [ ] Build is green with zero new errors and zero new warnings.
-- [ ] **Zero ADRs** created or edited; no ADR was required.
-- [ ] TASK-082, TASK-102, TASK-103, TASK-104, TASK-105, TASK-106, TASK-107,
+- [x] Build is green with zero new errors and zero new warnings.
+- [x] **Zero ADRs** created or edited; no ADR was required.
+- [x] TASK-082, TASK-102, TASK-103, TASK-104, TASK-105, TASK-106, TASK-107,
       TASK-108, TASK-036, TASK-079, TASK-099, and every `tasks/completed/*` file
       are **byte-identical**.
-- [ ] Quality review checklist passes (`quality/review.md` §1).
-- [ ] No authoritative rules or contracts violated (`AGENTS.md` §10 / `ADR-001`);
+- [x] Quality review checklist passes (`quality/review.md` §1).
+- [x] No authoritative rules or contracts violated (`AGENTS.md` §10 / `ADR-001`);
       zero client-authoritative logic introduced.
 
 ### Explicit Constraints
@@ -867,22 +873,105 @@ the baseline is the working-tree content at pickup, **not** `HEAD`.
 ### Structured Representation (as implemented)
 
 ```text
-Effect identity (D-1):   <the member/vocabulary that carries it>
-Value (D-2):             <the member(s) carrying value + interpretation>
-Serialization form:      <the chosen form, and why it is the simplest that
-                          satisfies D-1/D-2>
-Validation rules:        <what is rejected and how it fails>
+Effect identity (D-1):   CardEffectType (Domain enum, closed set) — Heal |
+                         Shield | Power, exactly the effects CARD_RULES.md §2
+                         defines. Carried as CardEffectDefinition.EffectType and
+                         persisted as the member NAME (`"effectType": "Shield"`),
+                         never an ordinal, so a stored row is self-describing.
+                         Nothing derives the effect from prose, from
+                         CardDefinition.Name, from CardDefinitionId, or from
+                         card-specific code.
+Value (D-2):             CardEffectDefinition.ValueType (CardEffectValueType:
+                         Flat | PercentMaxHp | Undetermined) + .Value (int?).
+                         `valueType` carries the calculation rule; `value` is the
+                         magnitude transcribed from CARD_RULES.md §2 and is NOT
+                         pre-resolved against an assumed MaxHP.
+Serialization form:      A single deterministic JSON object, written by
+                         CardEffectDefinition.ToPersistedPayload() and read by
+                         .FromPersistedPayload():
+                           {"effectType":"Shield","valueType":"PercentMaxHp","value":20}
+                         Chosen because it is the SIMPLEST form that satisfies
+                         D-1/D-2 (AGENTS.md §9): one member per approved concept,
+                         no framework, no handler/registry, and it maps onto the
+                         existing jsonb + value-converter pattern
+                         BossDefinitionConfiguration already uses for
+                         PassiveDefinition/SkillDefinition. Typed columns were
+                         rejected as a parallel schema surface that would still
+                         need the same validation.
+                         Canonical + deterministic (TDD.md §6): fixed member
+                         order, no indentation, no property-name policy; `value`
+                         is emitted ONLY when an interpreting valueType is
+                         present.
+Validation rules:        Create/FromPersistedPayload REJECT, loudly and with the
+                         offending token named (never a fallback, never a
+                         default, never a prose fallback, never a silent no-op):
+                           - undefined effectType (incl. an ordinal, and an
+                             unrecognized name such as "Burn")
+                           - undefined valueType (case-sensitive member name only;
+                             "heal"/"Percentage" rejected)
+                           - missing value for an interpreting valueType
+                           - non-positive value (0 rejected — it is the CLR
+                             default of an unset int, so admitting it would let a
+                             missing magnitude pass as real)
+                           - non-integral value; a string value; an unmapped
+                             member
+                           - an Undetermined effect that also carries a value
+                           - Undetermined paired with a value in Create()
+                           - malformed/truncated JSON, or a non-object payload
+                         An explicit `"value": null` is treated as ABSENT (still
+                         no magnitude), which is the only tolerant reading and
+                         admits no number.
 ```
 
 ### Persistence Decision (as implemented)
 
 ```text
 Column before:  effectDefinition  character varying(128)  NOT NULL  (prose)
-Column after:   <type/size>  <nullability>  <why this type>
-EF mapping:     <the configuration change>
-Migration:      <name>  — <column change + content migration>
-Reversibility:  <how Down restores the prior representation>
-Relic column:   UNCHANGED (R2-7 remains in force for RelicDefinition)
+Column after:   jsonb  NOT NULL  — JSON-native, because the stored value is a
+                JSON object, not prose. The 128-char limit existed only to bound
+                verbatim rule text and is removed: it is neither large enough nor
+                the right type for the payload. `jsonb` is the type the existing
+                BossDefinition JSON columns already use, so no new persistence
+                mechanism is introduced (DATABASE.md §5 item 4).
+EF mapping:     CardDefinitionConfiguration: HasConversion(
+                CardEffectDefinitionConverter) + HasColumnName("EffectDefinition")
+                + HasColumnType("jsonb") + IsRequired(); HasMaxLength(128) removed.
+                The converter delegates to To/FromPersistedPayload, so the storage
+                contract lives in exactly one place. RelicDefinitionConfiguration
+                is NOT touched.
+Migration:      20261001112446_StructureCardDefinitionEffectDefinition (ONE new
+                migration; the applied 20260929152651_ProvisionPetCardRelicContentDefinitions
+                is byte-identical and unmodified).
+                  Up   1. six UPDATEs (one per provisioned CardDefinition row,
+                          keyed exactly on the six canonical CardDefinitionId
+                          values — not by prefix), transcribed from
+                          CARD_RULES.md §2 for the Basic Cards and §4.1 for the
+                          Pet Skill Cards;
+                       2. ALTER COLUMN "EffectDefinition" TYPE jsonb.
+                  Note: the ALTER carries an explicit USING clause. PostgreSQL has
+                  no assignment cast text → jsonb, so EF's generated ALTER was
+                  rejected by a LIVE PostgreSQL run with SQLSTATE 42804
+                  ("column \"EffectDefinition\" cannot be cast automatically to
+                  type jsonb"). Caught only by applying the migration, not by
+                  building it. The USING expression parses a value that is already
+                  a JSON object verbatim and preserves any other row's text as a
+                  JSON string, so a row this migration does not own (the API
+                  suites' smoke fixtures insert their own CardDefinition rows) is
+                  never dropped, defaulted, or deleted.
+Reversibility:  Down is implemented, not empty:
+                ALTER COLUMN back to character varying(128) USING "…" #>> '{}',
+                then one UPDATE per affected row restoring the EXACT prose string
+                the provisioning migration wrote. Each structured branch matches
+                BOTH the row key and the payload this migration wrote, so a row
+                that does not hold it is left untouched. Verified by running
+                Up → Down → Up against live PostgreSQL: Down restored all six rows
+                byte-for-byte to their pre-migration prose and reverted the column
+                type; the second Up reproduced the identical structured state
+                (deterministic + idempotent).
+Relic column:   UNCHANGED (R2-7 remains in force for RelicDefinition) — its
+                column stays character varying(128), its CLR type stays string,
+                its configuration is untouched, and no statement in the migration
+                names the table or column.
 ```
 
 ### Supersession Record (TASK-082 R2-7 → TASK-108 D-1/D-2)
@@ -895,41 +984,184 @@ Superseded for:       CardDefinition.EffectDefinition ONLY.
 Remains in force for: RelicDefinition.EffectDefinition (ROADMAP.md Phase 2;
                       no decision, no consumer, no change made).
 Recorded in:          docs/02-technical/DATABASE.md §1 CardDefinition block
-                      + version header (v… → v…).
-Stated explicitly:    <quote the supersession sentence added to DATABASE.md>
-TASK-082 modified:    NO — byte-identical (<hash>).
+                      + version header (v1.21 → v1.22) + §3 constraints.
+                      RelicDefinition block verified BYTE-IDENTICAL to pickup.
+Stated explicitly:    "TASK-108 decisions D-1/D-2 SUPERSEDE TASK-082 decision
+                      R2-7 FOR THIS MEMBER ONLY — the previous contract was the
+                      owning document's verbatim rule text in a ≤128-char prose
+                      column, with no effect-id vocabulary. R2-7 REMAINS IN FORCE
+                      for `RelicDefinition.EffectDefinition` below, which is
+                      UNCHANGED." (§1 entity block)
+                      and §1 item 6: "THIS SUPERSEDES TASK-082 DECISION R2-7 FOR
+                      `CardDefinition` ONLY." — naming both decisions and listing
+                      the scope split explicitly, so no later reader concludes the
+                      whole of R2-7 was withdrawn.
+TASK-082 modified:    NO — byte-identical (114 task files hash-checked; the only
+                      task file whose hash moved is TASK-109 itself).
 ```
 
 ### Row Content Migration (per row, transcribed from CARD_RULES.md)
 
 ```text
 CardDefinitionId     prose (before)                structured (after)     source
-card-heal            <prose>                       <structured>           CARD_RULES.md §2
-card-shield          <prose>                       <structured>           CARD_RULES.md §2
-card-power-charge    <prose>                       <structured>           CARD_RULES.md §2
-card-inferno         <prose>                       <structured>           CARD_RULES.md §4.1
-card-tidal-barrier   <prose>                       <structured / partial> CARD_RULES.md §4.1
+card-heal            Restore the active Pet's HP   {"effectType":"Heal",  CARD_RULES.md §2
+                     by 20% of its Max HP          "valueType":"PercentMaxHp",
+                                                   "value":20}
+card-shield          Active Pet gains Shield       {"effectType":"Shield", CARD_RULES.md §2
+                     equal to 20% of its Max HP    "valueType":"PercentMaxHp",
+                                                   "value":20}
+card-power-charge    Active Pet gains 25 Power     {"effectType":"Power",  CARD_RULES.md §2
+                                                   "valueType":"Flat",
+                                                   "value":25}
+card-inferno         Deal high Fire (Hỏa) damage;  {"effectType":"Power",  CARD_RULES.md §4.1
+                     apply Burn                    "valueType":"Undetermined"}
+card-tidal-barrier   Heal; Gain Shield             {"effectType":"Shield", CARD_RULES.md §4.1
+                                                   "valueType":"Undetermined"}
+card-iron-fang       High damage; increased Crit   {"effectType":"Power",  CARD_RULES.md §4.1
+                     chance                        "valueType":"Undetermined"}
+
+Tidal Barrier Shield magnitude: NOT AUTHORED — TASK-109 Stop Condition 2 FIRED
+  and was handled by representing the row WITHOUT a magnitude, per the task's own
+  Scope item and Implementation Note ("either (a) represent exactly the parts
+  §4.1 does define and leave the magnitude member explicitly absent/undetermined
+  in a documented way, or (b) STOP and report"). Option (a) was taken and is
+  reported here:
+    - `valueType: "Undetermined"` with NO `value` member records "the effect is
+      named, the magnitude is not yet authored".
+    - No percentage, no HP value, no reuse of the Shield Basic Card's §2 value,
+      no balance-derived figure, and no placeholder appears anywhere. The test
+      suite asserts the Tidal Barrier UPDATE writes no `value` member at all.
+    - `Undetermined` is a documented contract member (DATABASE.md §1 item 7,
+      CardEffectValueType.Undetermined), NOT a placeholder: it carries no number,
+      it is never 0 or null-sentinel, and a resolver must treat it as an open
+      content gap. TASK-107 remains blocked on the same decision, and
+      PetSkillCast remains blocked on it.
+    - The same treatment covers Inferno and Iron Fang, whose §4.1 effects also
+      state no magnitude.
+  STOP CONDITION 2 IS THEREFORE REPORTED AS REQUIRING A SEPARATE CONTENT
+  DECISION, and NO VALUE WAS INVENTED.
+```
 card-iron-fang       <prose>                       <structured>           CARD_RULES.md §4.1
 Tidal Barrier Shield magnitude: <NOT AUTHORED — how the row was handled
                                   without inventing it, per Stop Condition 2>
 ```
 
 ### Changed Files
-- `<file path>` — <summary of change>
+
+**New — Domain (the structured contract):**
+- `src/backend/GameServer.Domain/Cards/CardEffectType.cs` — the closed effect
+  identity (D-1's `effectType`): Heal | Shield | Power.
+- `src/backend/GameServer.Domain/Cards/CardEffectValueType.cs` — the value
+  interpretation (D-2's `valueType`): Flat | PercentMaxHp | Undetermined.
+- `src/backend/GameServer.Domain/Cards/CardEffectDefinition.cs` — the structured
+  effect rule value object: the three members, the two factories
+  (`Create` / `Undetermined`), canonical serialization, and the strict
+  deserializer/validator. Public API = exactly those, no execution surface.
+
+**Changed — Domain / Infrastructure / docs:**
+- `src/backend/GameServer.Domain/Cards/CardDefinition.cs` — `EffectDefinition`
+  changes from `required string` to `required CardEffectDefinition`; its
+  documentation records the D-1/D-2 contract and the Card-scoped supersession.
+  Every other member is unchanged.
+- `src/backend/GameServer.Infrastructure/Postgres/Configurations/CardDefinitionConfiguration.cs`
+  — the `EffectDefinition` mapping is now a `jsonb` value converter
+  (`CardEffectDefinitionConverter`); `HasMaxLength(128)` removed. Nothing else.
+- `src/backend/GameServer.Infrastructure/Postgres/Migrations/20261001112446_StructureCardDefinitionEffectDefinition.cs`
+  (+ `.Designer.cs`) — the ONE new migration: six deterministic row UPDATEs
+  transcribed from `CARD_RULES.md` §2/§4.1, the explicit `USING` column type
+  change, and the reversible `Down`.
+- `src/backend/GameServer.Infrastructure/Postgres/Migrations/GameDbContextModelSnapshot.cs`
+  — tooling-updated: the `CardDefinition` column becomes `jsonb`; the
+  `RelicDefinition` column is untouched.
+- `docs/02-technical/DATABASE.md` — v1.21 → v1.22; the `CardDefinition` block's
+  `EffectDefinition` member, a new §1 "Card `EffectDefinition` contract" note
+  (items 1–7), and the §3 constraints. The `RelicDefinition` block is
+  byte-identical.
+
+**Changed — tests (mechanical fixtures, because the representation moved):**
+- `tests/backend/GameServer.Domain.Tests/CardEffectDefinitionTests.cs` (new, 63
+  tests) — the contract's own suite.
+- `tests/backend/GameServer.Infrastructure.Tests/CardEffectDefinitionPersistenceTests.cs`
+  (new, 18 tests) — the EF mapping, round trips, and the migration source.
+- `tests/backend/{Api,Application,Infrastructure}.Tests/TestCardEffects.cs` (new)
+  — one shared valid effect per suite, so no fixture restates provisioned content.
+- `tests/backend/GameServer.Infrastructure.Tests/CardPersistenceTests.cs`,
+  `CollectionRepositoryTests.cs`, `BattleResultPostgresTests.cs`,
+  `PetXpSchemaTests.cs`,
+  `PetCardRelicDefinitionPostgresProvisioningTests.cs`,
+  `tests/backend/GameServer.Application.Tests/CardLoadoutServiceTests.cs`,
+  `CollectionQueryServiceTests.cs`, `BattleStartServiceTests.cs`,
+  `PlayerStarterGrantFactoryTests.cs`,
+  `tests/backend/GameServer.Api.Tests/TestProvisionedContent.cs`,
+  `CollectionEndpointTests.cs`, `BattleStartSmokeTest.cs`,
+  `BattleStartEndpointTests.cs`, `BattleResultSmokeTest.cs`,
+  `RedisBattleStateSmokeTest.cs`, `ApplicationSessionRESTTests.cs` — fixtures and
+  assertions updated to the structured member. No test's *intent* changed, no
+  assertion was weakened, and no Relic fixture was altered (Relic
+  `EffectDefinition` is still a prose string).
+
+**Moved:**
+- `tasks/backlog/TASK-109-…md` → `tasks/active/TASK-109-…md` (lifecycle §7).
 
 ### Validation Results
-- `<test command or suite>` — PASS (<N> tests)  [Domain / Application /
-  Infrastructure / Api]
-- Migration determinism — <PASS: the six rows' asserted structured values>
-- Serialization round trip — <PASS: lossless, deterministic>
-- Validation rejection cases — <PASS: N cases>
-- Regression (Card loadout / collection / battle-start smoke) — <PASS>
-- Negative scope assertions — <PASS: no CardCast method, no new BattleEventType,
-  no ApplyHeal/ApplyShield/ApplyPower call site from Card content,
-  RelicDefinition unchanged>
-- Scope validation (`MVP_SCOPE.md` §1/§2) — <PASS>
-- Documentation consistency audit — <PASS: DATABASE.md vs CARD_RULES.md vs the
-  implemented representation; no rule duplicated>
+
+- `dotnet test tests/backend/GameServer.Domain.Tests` — **PASS (1097 tests)**
+  [Domain]. Baseline 1034 → 1097: **63 new**, 0 regressions.
+- `dotnet test tests/backend/GameServer.Application.Tests` — **PASS (377 tests)**
+  [Application]. Baseline 377: no change in count, 0 regressions.
+- `dotnet test tests/backend/GameServer.Infrastructure.Tests` — **PASS (315
+  tests)** [Infrastructure]. Baseline 297 → 315: **18 new**, 0 regressions.
+- `dotnet test tests/backend/GameServer.Api.Tests` — **253 passed / 1 failed**,
+  *identical to the pickup baseline*. The single failure is pre-existing and
+  environmental, not caused by this task:
+  `BattleResultSmokeTest.SmokeTest_AuthoritativeBattleActionToResultRead_…`
+  fails with `InvalidOperationException : Cannot open log for source '.NET
+  Runtime'. You may not have write access.` — the test host cannot write to the
+  Windows Event Log. It failed with the same message and the same count before
+  any TASK-109 edit.
+- `dotnet build src/backend/GameServer.sln` — **0 errors**; warnings are only the
+  pre-existing MSB3277 EF-package-version conflicts present at pickup. **Zero new
+  warnings.**
+- **Migration determinism — PASS, verified against live PostgreSQL**
+  (`localhost:5433`, `dcacti_db`) rather than by inspection. After
+  `dotnet ef database update`, the six provisioned rows hold exactly:
+  `card-heal` / `card-shield` → `PercentMaxHp` 20; `card-power-charge` → `Flat`
+  25; `card-inferno` / `card-iron-fang` → `Power`/`Undetermined`;
+  `card-tidal-barrier` → `Shield`/`Undetermined`. Asserted per row.
+- **Migration reversibility — PASS.** `dotnet ef database update
+  <prior-migration>` restored all six rows byte-for-byte to the provisioning
+  migration's prose and reverted the column to `character varying(128)`; a
+  subsequent re-apply reproduced the identical structured state (idempotent).
+- **Migration robustness — PASS.** The API suites' own smoke-fixture
+  `CardDefinition` rows (which hold non-JSON text such as `"effect"`) survive the
+  type change as JSON strings. They are not this migration's content and were not
+  given an invented effect.
+- **Serialization round trip — PASS (lossless, deterministic).** Asserted for
+  every documented Basic Card combination and for the Undetermined case; the
+  payload is byte-stable, and effects differing only in `valueType` (or only in
+  `effectType`) remain distinct.
+- **Validation rejection cases — PASS (24 payload cases + 5 construction cases).**
+  Unknown `effectType`, unknown/unparsable `valueType`, missing `value`,
+  non-positive and non-integral values, a string value, an ordinal token, an
+  unmapped member, truncated/malformed/non-object JSON, an `Undetermined` effect
+  carrying a value, and `Undetermined` passed to `Create`. Every case fails
+  loudly; none defaults.
+- **Regression (Card loadout / collection / battle-start smoke) — PASS.** The
+  loadout, collection-read, and battle-start paths read Card *identity* and are
+  unaffected; their suites are green.
+- **Negative scope assertions — PASS.** No `CardCast` hub method, no
+  `PetSkillCast`, no `EffectResolver`/`EffectHandler`/`EffectRegistry`, and no
+  `ApplyHeal`/`ApplyShield`/`ApplyPower` call site exists anywhere in `src/`. The
+  domain type exposes no execution surface, and a test asserts that. No
+  `BattleEventType` member was added.
+- **Scope validation (`MVP_SCOPE.md` §1/§2) — PASS.** Cards and Combat/Status
+  Effects are IN; no OUT or unlisted system is reached. Relics (Phase 2) are not
+  touched.
+- **Documentation consistency audit — PASS.** `DATABASE.md` §1 now describes the
+  implemented representation exactly (member names, `jsonb`, the Undetermined
+  case, the rejection rule, the supersession scope), and `CARD_RULES.md` remains
+  the sole owner of every magnitude — no value is duplicated into the database
+  document, and `CARD_RULES.md` is byte-identical.
 
 ### Contract Preservation Verification
 
@@ -961,17 +1193,76 @@ Tidal Barrier magnitude NOT AUTHORED (still deferred, TASK-104 B-4)
 ```
 
 ### Server Authority & Scope Verification
-- [ ] Confirmed zero client-authoritative gameplay logic introduced
-- [ ] Confirmed adherence to MVP Scope (`MVP_SCOPE.md` §1); Relics (Phase 2) not
+- [x] Confirmed zero client-authoritative gameplay logic introduced
+- [x] Confirmed adherence to MVP Scope (`MVP_SCOPE.md` §1); Relics (Phase 2) not
       reached
-- [ ] Confirmed no effect execution: no call to ApplyHeal / ApplyShield /
+- [x] Confirmed no effect execution: no call to ApplyHeal / ApplyShield /
       ApplyPower from Card content
-- [ ] Confirmed no CardCast and no PetSkillCast implementation
-- [ ] Confirmed no new event, wire member, state field, SignalR method, Redis
+- [x] Confirmed no CardCast and no PetSkillCast implementation
+- [x] Confirmed no new event, wire member, state field, SignalR method, Redis
       key, or API endpoint
-- [ ] Confirmed no gameplay balance changed and no value invented
-- [ ] Confirmed TASK-082 R2-7 superseded for Cards only, recorded explicitly,
+- [x] Confirmed no gameplay balance changed and no value invented
+- [x] Confirmed TASK-082 R2-7 superseded for Cards only, recorded explicitly,
       with the Relic half left in force
 
+### Pickup Baseline Recorded (change isolation)
+
+```text
+Recorded before any edit, against the WORKING TREE at pickup (not HEAD), since
+the tree carried uncommitted changes from earlier tasks.
+
+docs/02-technical/DATABASE.md                        B079C2245AA2884F…  → CHANGED (this task)
+docs/01-game-design/CARD_RULES.md                    F08C2490306ED662…  → byte-identical
+docs/01-game-design/COMBAT_RULES.md                  258B12A3E53962AD…  → byte-identical
+docs/02-technical/GAME_STATE.md                      7004B262B7B4CFDD…  → byte-identical
+docs/02-technical/SIGNALR_PROTOCOL.md                AE4FD980C6D54441…  → byte-identical
+src/backend/GameServer.Domain/Cards/CardDefinition.cs              255124839DA8A15F… → CHANGED (scoped)
+…/Configurations/CardDefinitionConfiguration.cs                    771CE977756F8692… → CHANGED (scoped)
+…/Migrations/20260929152651_ProvisionPetCardRelicContentDefinitions.cs
+                                                                    2670F716374D78A1… → byte-identical
+…/Migrations/GameDbContextModelSnapshot.cs                          → CHANGED (tooling)
+…/Configurations/RelicDefinitionConfiguration.cs                    98BB02B5B95ED2F0… → byte-identical
+src/backend/GameServer.Domain/Relics/RelicDefinition.cs             E577691E2FBC9CAE… → byte-identical
+…/Domain/Battle/StatusEffectLifecycle.cs                            E42364DAFE08C67F… → byte-identical
+src/backend/GameServer.Api/Hubs/BattleHub.cs                        8D6171519D7FED38… → byte-identical
+tasks/backlog/TASK-107-implement-basic-cardcast-server-path.md      6A8987077D5FC07B… → byte-identical
+tasks/backlog/TASK-108-resolve-card-effect-resolution-contract.md   A5C64F8A98037338… → byte-identical
+
+All 114 task files (every tasks/completed/*, plus TASK-082/107/108 and the
+backlog/blocked set) were SHA256 hash-checked after the work: the ONLY file whose
+hash moved is TASK-109 itself.
+
+Pre-edit `dotnet test` counts:  Domain 1034 / Application 377 /
+Infrastructure 297 / Api 253 passed + 1 pre-existing environmental failure.
+Post-edit counts:               Domain 1097 / Application 377 /
+Infrastructure 315 / Api 253 passed + the SAME 1 pre-existing failure.
+```
+
 ### Unrelated Stale Documentation Discovered (REPORTED, NOT CHANGED)
-- <item, location, impact, suggested follow-up task — per `AGENTS.md` §16>
+
+- **TASK-109 Stop Condition 2 fired → Tidal Barrier's Shield magnitude.** Handled
+  by option (a) in the task's own Implementation Note: the row is represented
+  without a magnitude (`valueType: "Undetermined"`, no `value`), and the
+  unresolved magnitude is **reported here as requiring a separate content
+  decision**. No value was chosen. Location: `CARD_RULES.md` §4.1 /
+  `CARD_RULES.md` §2 boundary. Impact: PetSkillCast stays blocked and any future
+  Pet Skill effect resolution must treat `Undetermined` as an unauthored gap
+  rather than a magnitude. Suggested follow-up task: author Tidal Barrier's
+  Shield magnitude (and Inferno's / Iron Fang's) as content — the already-known
+  TASK-104 §5 / B-4 item.
+- **`docs/02-technical/DATABASE.md` §2's open Relic storage-shape question.** It
+  remains OPEN exactly as before (the note still says the Relic ownership
+  storage shape "remains OPEN and is NOT decided"). TASK-109 deliberately did not
+  touch it: Relic scope was not given. Reported only.
+- **The API test host cannot write to the Windows Event Log.**
+  `BattleResultSmokeTest.SmokeTest_AuthoritativeBattleActionToResultRead_…` fails
+  with `Cannot open log for source '.NET Runtime'. You may not have write access.`
+  Pre-existing at pickup and unrelated to this task; it makes the Api suite
+  non-green in this environment. Suggested follow-up: a separate task to make the
+  test host's logging provider non-EventLog (e.g. an in-memory logger) so the
+  suite is environment-independent.
+- **`docs/02-technical/GAME_STATE.md` §0 item 5's "no parallel representation"
+  reading for the Undetermined marker.** No conflict was found and no change is
+  requested; recorded only because this task adds a member whose purpose is to
+  represent an *absence*, and a future reader may want the `GAME_STATE.md` entry
+  to name it. Not changed — it is a `DATABASE.md`-owned storage concern.

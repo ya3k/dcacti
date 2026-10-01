@@ -855,7 +855,7 @@ public class BattleStartEndpointTests
                     Name = id,
                     Category = category,
                     PowerCost = 0,
-                    EffectDefinition = "effect",
+                    EffectDefinition = TestCardEffects.FlatPower,
                     LoadoutCopyLimit = id == BasicA ? CopyLimitOfBasicA : 3,
                 });
 

@@ -438,7 +438,7 @@ public class CollectionQueryServiceTests
                 unlockedBy: Owner,
                 powerCost: 25,
                 loadoutCopyLimit: 3,
-                effectDefinition: "heal_effect");
+                effectDefinition: TestCardEffects.PercentMaxHp);
 
         var members = typeof(CardCollectionItem)
             .GetProperties()
@@ -457,7 +457,9 @@ public class CollectionQueryServiceTests
 
         Assert.Equal(25, fixture.Definitions["card_heal"].PowerCost);
         Assert.Equal(3, fixture.Definitions["card_heal"].LoadoutCopyLimit);
-        Assert.Equal("heal_effect", fixture.Definitions["card_heal"].EffectDefinition);
+        Assert.Equal(
+            TestCardEffects.PercentMaxHp,
+            fixture.Definitions["card_heal"].EffectDefinition);
 
         Assert.Single(await CreateService(fixture).ListCardsAsync(Owner));
     }
@@ -794,7 +796,7 @@ public class CollectionQueryServiceTests
             string? unlockedBy,
             int powerCost = 0,
             int loadoutCopyLimit = 1,
-            string effectDefinition = "effect")
+            CardEffectDefinitions? effectDefinition = null)
         {
             Definitions[cardDefinitionId] = new CardDefinition
             {
@@ -802,7 +804,7 @@ public class CollectionQueryServiceTests
                 Name = name,
                 Category = category,
                 PowerCost = powerCost,
-                EffectDefinition = effectDefinition,
+                EffectDefinition = effectDefinition ?? TestCardEffects.FlatPower,
                 LoadoutCopyLimit = loadoutCopyLimit,
             };
 
@@ -850,7 +852,7 @@ public class CollectionQueryServiceTests
                     RelicDefinitionId = relicDefinitionId,
                     Name = relicDefinitionId,
                     Trigger = "OnTurnEnd",
-                    EffectDefinition = "effect",
+                    EffectDefinition = "increase ATK by 5%",
                 });
 
             return this;
@@ -861,7 +863,7 @@ public class CollectionQueryServiceTests
             string name,
             string trigger = "OnTurnEnd",
             string? condition = null,
-            string effectDefinition = "effect")
+            string effectDefinition = "increase ATK by 5%")
         {
             _relicDefinitions[relicDefinitionId] = new RelicDefinition
             {

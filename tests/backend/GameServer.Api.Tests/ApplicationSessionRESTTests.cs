@@ -696,7 +696,7 @@ public class ApplicationSessionRESTTests
                     Name = id,
                     Category = category,
                     PowerCost = 0,
-                    EffectDefinition = "effect",
+                    EffectDefinition = TestCardEffects.FlatPower,
                     LoadoutCopyLimit = 3,
                 });
 

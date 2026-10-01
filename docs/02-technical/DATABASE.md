@@ -1,6 +1,46 @@
 # Database
 
-**Version:** 1.21 (§5 item 4 Pet/Card/Relic provisioning implementation status
+**Version:** 1.24 (§1 Card `EffectDefinition` contract item 8 — **status
+synchronization only**: the six content-defined `CardDefinition` rows are now
+**encoded** in the ARRAY shape v1.23 defined, so the "not yet re-encoded" /
+"no row conforms to the full contract" wording is retired and the recorded
+`card-iron-fang` identity correction is marked applied (`Damage` + `Crit`, in
+agreement with `CARD_RULES.md` §4.1). The three `Undetermined` markers are
+retired because §4.1 authors every Pet Skill magnitude (TASK-110); the member
+itself remains valid for an effect whose magnitude is not yet authored (item 9).
+**No rule, magnitude, schema shape, vocabulary, or valueType semantic changed** —
+item 9's statement of `Undetermined` and items 1–7's contract are untouched
+[TASK-112]. Prior 1.23: (§1 Card `EffectDefinition` contract **extended** per TASK-111
+Product Owner decisions D-1/D-2/D-3/D-4/D-5: the stored value is now an **ARRAY**
+of effect objects, one element per effect, each keeping its own
+`effectType`/`valueType`/`value` triple (D-1/D-1a/D-1b, uniform for one- and
+multi-effect Cards); the `effectType` closed set becomes
+`Heal | Shield | Power | Damage | Burn | Crit` (D-2, with `Damage` distinct from
+`Power`, which still denotes Power Charge — D-4); the `valueType` set becomes
+`Flat | PercentMaxHp | PercentagePoints | Undetermined` (D-3, with
+`Undetermined` still valid); `Burn` elements carry `duration` (Turns, `value` =
+damage per tick) and `Crit` elements carry `scope` = `NextAttack` (`value` =
+percentage points) as extra members beside `value` (D-3); element order is
+**not** semantic (D-5). **No gameplay rule, magnitude, or balance value changed:**
+every extra member stores a rule already owned by `CARD_RULES.md` §4.1,
+`COMBAT_RULES.md` §5 and `GAME_RULES.md` §17 step 19a, and §2's values are
+byte-identical. The six provisioned rows are **not yet re-encoded** into the
+array shape, and retiring their `Undetermined` markers is the downstream
+encoding task's act (D-6/D-6b); the stale "§4.1 authors no magnitude" statements
+TASK-110 made false are corrected to reference the authored §4.1 [TASK-111].
+Prior 1.22: (§1 `CardDefinition.EffectDefinition` became a STRUCTURED
+effect rule — a `jsonb` object carrying `effectType`, `valueType`, and `value` —
+per TASK-108 decisions D-1/D-2, implemented by TASK-109. This **supersedes
+TASK-082 decision R2-7 for the `CardDefinition` member only**: that decision had
+required the owning domain document's verbatim rule text within a 128-character
+prose column and barred any effect-id vocabulary. The `RelicDefinition` block is
+**unchanged** and R2-7 remains in force for it (Relic effect resolution is
+`ROADMAP.md` Phase 2; no Relic decision was taken). A new §1 note records the
+contract, the supersession, and its exact scope, and §3 gains the corresponding
+constraint. No gameplay value, rule, or balance figure changed: every encoded
+magnitude is transcribed from `CARD_RULES.md` §2/§4.1, and §2's values are
+byte-identical [TASK-109].
+Prior 1.21: (§5 item 4 Pet/Card/Relic provisioning implementation status
 synchronized with the landed migration — the item now records the completed
 `20260929152651_ProvisionPetCardRelicContentDefinitions` migration (TASK-085:
 `PetDefinition` 3 rows, `CardDefinition` 6 rows, `RelicDefinition` 4 rows) and the
@@ -228,11 +268,31 @@ CardDefinition                    (static content — MVP scope target
 │                                  value required, no default; concrete MVP
 │                                  values are owned by `CARD_RULES.md` §1
 │                                  (TASK-082 decision C / R1-5 / R2-6))
-└── EffectDefinition               (the owning domain document's effect rule
-                                   text, stored VERBATIM and within the
-                                   128-char column limit; no `effect-{slug}`
-                                   or other effect-id vocabulary —
-                                   `CARD_RULES.md` §2/§4.1, TASK-082 R2-7)
+└── EffectDefinition               (JSON ARRAY, NOT NULL — the Card's
+                                   STRUCTURED effect rules, one element per
+                                   effect: which domain effect the Card
+                                   applies and its value with the value's
+                                   interpretation. Member list below.
+                                   `CARD_RULES.md` §2/§4.1 owns
+                                   the effect values; THIS document owns
+                                   the storage shape.
+                                   TASK-108 decisions D-1/D-2 SUPERSEDE
+                                   TASK-082 decision R2-7 FOR THIS MEMBER
+                                   ONLY — the previous contract was the
+                                   owning document's verbatim rule text in
+                                   a ≤128-char prose column, with no
+                                   effect-id vocabulary. R2-7 REMAINS IN
+                                   FORCE for `RelicDefinition.
+                                   EffectDefinition` below, which is
+                                   UNCHANGED. TASK-111 decisions
+                                   D-1/D-2/D-3/D-4/D-5 EXTEND the contract:
+                                   the value is an ARRAY of effect objects,
+                                   the `effectType` set gains Damage/Burn/
+                                   Crit, `valueType` gains PercentagePoints,
+                                   `Burn`/`Crit` carry `duration`/`scope`
+                                   beside `value`, and element order is not
+                                   semantic. See "Card EffectDefinition
+                                   contract" below.)
 
 PlayerUnlockedCard               (Player owns Card unlocks — ADR-012;
 │                                  MVP Cards have no Tier/Star/Level, so an
@@ -325,6 +385,168 @@ BattleResult
                                            covering Player and Pet tracks
                                            for both victory and defeat)
 ```
+
+**Card `EffectDefinition` contract.** (TASK-109, implementing TASK-108 D-1/D-2;
+extended by TASK-111 D-1/D-2/D-3/D-4/D-5)
+
+1. **The stored value is a structured effect rule, not prose, and it is an
+   ARRAY of effects.** The column is `jsonb` (NOT NULL). Since TASK-111 **D-1**
+   its value is a **sequence of effect objects** — a Card with one effect stores
+   a one-element array, and a Card with several effects stores one element per
+   effect. The shape is uniform for every Card:
+
+   ```json
+   [ { "effectType": "Shield", "valueType": "PercentMaxHp", "value": 20 } ]
+   ```
+
+   Each element carries **its own** `effectType`/`valueType`/`value` triple
+   (TASK-111 **D-1a**), and an effect that needs more than a single magnitude
+   carries **additional members beside `value` in the same element** (TASK-111
+   **D-3** — see item 3).
+
+   - `effectType` (string) — which domain effect the Card applies. The closed
+     set is `Heal` | `Shield` | `Power` | `Damage` | `Burn` | `Crit`.
+     `Heal`, `Shield`, and `Power` are the three effects `CARD_RULES.md` §2
+     documents; `Damage`, `Burn`, and `Crit` are the three the Product Owner
+     named for the §4.1 Pet Skill Cards (TASK-111 **D-2**, which also confirms
+     the first three remain). No other identity is defined. It is the effect
+     identity carrier (TASK-108 **D-1**), so the runtime must never derive the
+     effect from parsed prose, from the Card's `Name`, from `CardDefinitionId`
+     mapping, or from hardcoded card-specific logic.
+     `Damage` is a member **distinct from `Power`** (TASK-111 **D-4**): `Power`
+     continues to denote Power Charge (`CARD_RULES.md` §2), while `Damage`
+     carries a damage-dealing effect's base value — the input to
+     `COMBAT_RULES.md` §3 step 1, whose magnitudes `CARD_RULES.md` §4.1 owns.
+   - `valueType` (string) — how `value` is interpreted: `Flat` | `PercentMaxHp` |
+     `PercentagePoints`, or `Undetermined`. `Flat` and `PercentMaxHp` are
+     exactly the interpretations `CARD_RULES.md` §2 distinguishes ("20% of its
+     Max HP" versus "25 Power"); `PercentagePoints` is the percentage-point
+     interpretation `CARD_RULES.md` §4.1's Crit increase states (TASK-111
+     **D-3**). A percentage is **not** pre-resolved to an absolute amount: the
+     active Pet's `MaxHP` is battle state (`GAME_STATE.md` §2.3) and is read when
+     the effect is applied. `Undetermined` is **not an interpretation** — it
+     records that the owning document states no magnitude for the effect yet,
+     and it **remains valid** for such effects (TASK-111 **D-3**). It is why no
+     magnitude has to be invented to make such a row representable (item 7).
+   - `value` (int) — the effect's magnitude, transcribed from
+     `CARD_RULES.md` §2/§4.1 through the `valueType` above. It is the **effect**
+     value, never the Card's Cost: Power Charge's Cost is `0` by design while
+     its effect grants Power (`CARD_RULES.md` §2 item 3), and the Cost is the
+     separate `PowerCost` column. It is **present iff `valueType` interprets
+     one** — an `Undetermined` effect carries no `value` member at all, never
+     `0` and never `null`, so an unauthored magnitude cannot be read as a number.
+   - **Per-effect extra members** (TASK-111 **D-3**) — present only for effects
+     that require a parameter `value` alone cannot carry:
+     - `duration` (int) — on a `Burn` element: the number of Turns the effect
+       lasts, in the authoritative Turn / End-Turn-tick unit
+       (`GAME_RULES.md` §17 step 19a, `COMBAT_RULES.md` §5.2). `value` on a
+       `Burn` element is the **damage per tick**. Example:
+
+       ```json
+       [ { "effectType": "Burn", "valueType": "Flat", "value": 50,
+           "duration": 2 } ]
+       ```
+
+     - `scope` (string) — on a `Crit` element: which damage instances the
+       increase applies to. The defined value is `NextAttack`. `value` on a
+       `Crit` element is the **increase in percentage points**. Example:
+
+       ```json
+       [ { "effectType": "Crit", "valueType": "PercentagePoints", "value": 10,
+           "scope": "NextAttack" } ]
+       ```
+
+     `duration` and `scope` are **storage members for rules the owning domain
+     documents already state**; they author no gameplay. Burn's tick schedule
+     and duration unit are owned by `GAME_RULES.md` §17 step 19a and
+     `COMBAT_RULES.md` §5.1–§5.3; Crit's next-attack scope is owned by
+     `CARD_RULES.md` §4.1 (`PASSIVE_RULES.md` §7 uses the same scope for Bạch
+     Hổ's Passive). No further extra member is defined, and none may be added
+     without a recorded owner decision.
+2. **The member names are the contract.** `effectType`, `valueType`, and
+   `value` are TASK-108 **D-2**'s, and `duration` / `scope` are TASK-111
+   **D-3**'s; they are fixed here. The internal representation maps to them, not
+   vice versa — the same convention `PassiveDefinition` and `SkillDefinition`
+   follow (note 3/note 4 above). The type members are stored as their **member
+   names**, not as enum ordinals, so a persisted row is self-describing.
+3. **Ordering within the array is NOT semantic.** (TASK-111 **D-5**) The stored
+   sequence is a storage sequence only: no rule reads element positions, no
+   effect resolves "before" or "after" another because of its index, and a
+   serializer must not imply an order carries meaning — the same non-semantic
+   convention `GAME_STATE.md` §2.3.1 item 10 records for `StatusEffects[]`.
+   This is a **storage** statement: it authors no resolution step, no priority,
+   and no ordering rule, and it does not change `GAME_RULES.md` §17 or
+   `CARD_RULES.md` §3/§4.
+4. **The effect magnitude is data-driven and value-sourced, not authored
+   here.** `CARD_RULES.md` §2/§4.1 remains the sole owner of every magnitude;
+   the migration that populates this column transcribes those values and
+   computes and invents none (`§5` item 4 rule (b)). TASK-108 supplied its
+   JSON shapes as **examples only** — they disagree with `CARD_RULES.md` §2
+   and are deliberately not the encoded values (TASK-108 **D-6** boundary).
+5. **The value is read, never executed, by this contract.** Nothing in this
+   document, and nothing in the task that introduced or extended it, applies a
+   Card effect: Heal, Shield, Power, damage, Burn, and Crit application remain
+   owned by `COMBAT_RULES.md` §3/§4/§5 and `GAME_RULES.md` §12 through their
+   existing Domain write sites. Card casting and effect resolution are
+   `CARD_RULES.md` §3's separate, unimplemented concern.
+6. **A stored value that is not a well-formed structured effect is rejected
+   loudly.** There is no fallback magnitude, no default, no prose fallback,
+   and no silent no-op for an unrecognized `effectType`, an unrecognized
+   `valueType`, a missing `value`, or a missing required extra member (`duration`
+   on `Burn`, `scope` on `Crit`) — the same "explicit value required, no
+   default" standard `LoadoutCopyLimit` carries below. A malformed or truncated
+   value therefore surfaces as a failure at the read, not as a Card that quietly
+   does nothing.
+7. **THIS SUPERSEDES TASK-082 DECISION R2-7 FOR `CardDefinition` ONLY.**
+   R2-7 (DONE, immutable) required `EffectDefinition` to be the owning domain
+   document's **verbatim rule text**, and explicitly forbade "an
+   `effect-{slug}` vocabulary or any new effect-reference identifier system".
+   TASK-108 **D-1** requires exactly such a structured contract, so the two
+   cannot both hold and D-1 governs here. This supersession is **scoped to
+   the `CardDefinition` member**:
+   - `RelicDefinition.EffectDefinition` (below) **still carries R2-7's
+     verbatim rule text** in its unchanged `character varying(128)` column.
+     No Relic decision exists (Relic effect resolution is `ROADMAP.md` Phase
+     2) and none is made here.
+   - Only the `CardDefinition` rows in provisioning were migrated, per
+     `CARD_RULES.md` §2/§4.1. The three Basic Cards carry a full structured
+     effect because §2 authors their effect completely. The three Pet Skill
+     Cards carry the effect identity §4.1 names, because §4.1 now authors their
+     magnitudes (TASK-110) — **see item 8, which now records their encoded
+     state.**
+   - TASK-082 itself is not modified, re-opened, or re-statused
+     (`TASK_LIFECYCLE.md` §3 — completed tasks are immutable).
+8. **The six provisioned rows are encoded in this shape.** (TASK-111 **D-6**;
+   encoded by TASK-112) All six content-defined `CardDefinition` rows now hold
+   the array shape above. The three §2 Basic Card rows are **contract-compatible**
+   with it — their single effect is the array's single element, stored as a
+   one-element array (D-1b) — and the three Pet Skill rows store **one element
+   per effect** §4.1 states (two each), with every magnitude transcribed from
+   `CARD_RULES.md` §2/§4.1 and no value computed or invented (§5 item 4 rule
+   (b)). Under **D-6b** the three `Undetermined` markers are **retired**: §4.1
+   now authors every Pet Skill magnitude (TASK-110), so **no provisioned content
+   row remains in that state** — the member itself stays valid for an effect
+   whose magnitude is not yet authored (item 9), but nothing provisioned needs
+   it. The `card-iron-fang` identity correction recorded here for that task is
+   **applied**: the row's damage effect now carries `effectType` `Damage` and its
+   second element is `Crit` (`PercentagePoints`, `scope` `NextAttack`), so the
+   row agrees with `CARD_RULES.md` §4.1 (Iron Fang deals damage and raises Crit
+   chance) rather than the superseded `Power` placeholder. **Every row now
+   conforms to the full contract**, and a reader may treat the present rows as
+   the contract's encoded form. No rule, magnitude, or schema shape was changed
+   by that encoding: the column remained `jsonb NOT NULL`, no column or table was
+   added, `RelicDefinition` was untouched, and no effect is applied anywhere
+   (item 5).
+9. **An unauthored magnitude is represented, never invented.** (TASK-111
+   **D-3**: `Undetermined` "remains valid for effects whose authored magnitude
+   is not yet determined.") An `Undetermined` effect stores the effect identity
+   with `valueType` `Undetermined` and no `value`, so the element is
+   representable and readable while no percentage, HP value, borrowed
+   Basic-Card value, balance-derived figure, or placeholder is authored
+   (`AGENTS.md` §7). An `Undetermined` effect is **not resolvable**: a caller
+   must treat it as an open content gap and must never substitute a value.
+   The authored rule text and magnitudes remain owned by `CARD_RULES.md` §4.1
+   and are not restated here as a second source for them.
 
 **Persistence contract for `BossDefinition`.** (TASK-045)
 
@@ -849,6 +1071,46 @@ Pet.Level          ∈ [1, 50]                                       (PET_RULES.
 Pet.Level             = min(floor(Pet.XP / 100) + 1, 50)           (PET_RULES.md §5.4)
 Pet.Level             = 1 for a newly created PlayerPet             (PET_RULES.md §5.2)
 CardDefinition.Category  ∈ {Basic, PetSkill}                        (CARD_RULES.md §1)
+CardDefinition.EffectDefinition     jsonb, NOT NULL — an ARRAY of effect       (§1 "Card EffectDefinition
+  objects, one per effect                contract"; TASK-108 D-1/D-2,
+                                          TASK-109; ARRAY shape + vocabulary
+                                          extended by TASK-111 D-1/D-2/D-3;
+                                          supersedes TASK-082 R2-7 for THIS
+                                          member only)
+CardDefinition.EffectDefinition.effectType ∈ {Heal, Shield, Power, Damage,   (§1; CARD_RULES.md §2 for the
+  Burn, Crit}                            first three, §4.1 for the last three
+                                          — D-2 named all six; `Damage` is
+                                          distinct from `Power`, which
+                                          denotes Power Charge — D-4)
+CardDefinition.EffectDefinition.valueType ∈ {Flat, PercentMaxHp,              (§1; §2's two interpretations,
+  PercentagePoints, Undetermined}        plus §4.1's Crit percentage-point
+                                          unit — D-3; plus the
+                                          unauthored-magnitude marker —
+                                          §1 item 9)
+CardDefinition.EffectDefinition.value  int, > 0, present iff                 (§1; the effect magnitude,
+  valueType interprets one                valueType ≠ Undetermined    transcribed from CARD_RULES.md
+                                          §2/§4.1 through valueType — NOT
+                                          the Card's Cost; absent, never 0,
+                                          when Undetermined)
+CardDefinition.EffectDefinition.duration  int, > 0, present iff             (§1 item 1; ONLY on a `Burn`
+  effectType = Burn                       element — the effect's duration in
+                                          Turns; `value` is damage per tick;
+                                          the tick schedule and unit are
+                                          owned by GAME_RULES.md §17 step 19a
+                                          and COMBAT_RULES.md §5.2 — D-3)
+CardDefinition.EffectDefinition.scope  string = "NextAttack", present iff    (§1 item 1; ONLY on a `Crit`
+  effectType = Crit                       element — which damage instances the
+                                          increase applies to; the rule is
+                                          owned by CARD_RULES.md §4.1 — D-3)
+CardDefinition.EffectDefinition     REJECTED, never defaulted, when  (§1 item 6; no fallback
+  not a well-formed structured rule   the stored value is malformed   magnitude, no prose fallback,
+                                                                      no silent no-op, and no
+                                                                      missing required extra
+                                                                      member (`duration` on Burn,
+                                                                      `scope` on Crit))
+CardDefinition.EffectDefinition     element ORDER is NOT semantic       (§1 item 3 — D-5; a storage
+  ordering                                                             statement only; authors no
+                                                                       resolution step or priority)
 BossDefinition.BossDefinitionId     NOT NULL, UNIQUE, caller/content-supplied (independent persistence key, never
                                                                       database-generated; distinct from `Identity` and
                                                                       from the display name — §1 note item 2, TASK-049)
