@@ -1,8 +1,8 @@
 /**
  * BattleEventPresenter — Scene-local interpretation and formatting of in-battle server events.
  *
- * Implements interpretation for the ten non-outcome event types of the closed wire discriminator
- * (SIGNALR_PROTOCOL.md §3.2.2, §3.2.6–§3.2.18, GAME_EVENTS.md §2):
+ * Implements interpretation for the twelve non-outcome event types of the closed wire discriminator
+ * (SIGNALR_PROTOCOL.md §3.2.2, §3.2.6–§3.2.21, GAME_EVENTS.md §2):
  *
  *   1. MatchCreated
  *   2. CascadeCreated
@@ -14,6 +14,8 @@
  *   8. PassiveCharged
  *   9. PassiveTriggered
  *  10. BossSkillCast
+ *  11. CardCast
+ *  12. PetSkillCast
  *
  * Server-authoritative boundary (GAME_RULES.md §18, AGENTS.md §10):
  * - Presents only delivered members verbatim.
@@ -105,6 +107,16 @@ export interface PresentedBossSkillCast {
   readonly sourceId: string;
 }
 
+export interface PresentedCardCast {
+  readonly type: 'CardCast';
+  readonly cardId: string;
+}
+
+export interface PresentedPetSkillCast {
+  readonly type: 'PetSkillCast';
+  readonly cardId: string;
+}
+
 export type InBattleServerEvent =
   | PresentedMatchCreated
   | PresentedCascadeCreated
@@ -115,7 +127,9 @@ export type InBattleServerEvent =
   | PresentedDamageTaken
   | PresentedPassiveCharged
   | PresentedPassiveTriggered
-  | PresentedBossSkillCast;
+  | PresentedBossSkillCast
+  | PresentedCardCast
+  | PresentedPetSkillCast;
 
 /**
  * Validates and parses a raw event object into a typed InBattleServerEvent.
@@ -152,6 +166,10 @@ export function parseInBattleEvent(raw: unknown): InBattleServerEvent | null {
       return parsePassiveTriggered(raw);
     case 'BossSkillCast':
       return parseBossSkillCast(raw);
+    case 'CardCast':
+      return parseCardCast(raw);
+    case 'PetSkillCast':
+      return parsePetSkillCast(raw);
     default:
       // Unknown event type or outcome event — ignored safely per SIGNALR_PROTOCOL.md §3.2.2
       return null;
@@ -370,6 +388,28 @@ function parseBossSkillCast(raw: unknown): PresentedBossSkillCast | null {
   };
 }
 
+function parseCardCast(raw: unknown): PresentedCardCast | null {
+  const p = raw as Partial<PresentedCardCast>;
+  if (typeof p.cardId !== 'string' || p.cardId.length === 0) {
+    return null;
+  }
+  return {
+    type: 'CardCast',
+    cardId: p.cardId,
+  };
+}
+
+function parsePetSkillCast(raw: unknown): PresentedPetSkillCast | null {
+  const p = raw as Partial<PresentedPetSkillCast>;
+  if (typeof p.cardId !== 'string' || p.cardId.length === 0) {
+    return null;
+  }
+  return {
+    type: 'PetSkillCast',
+    cardId: p.cardId,
+  };
+}
+
 /**
  * Formats an in-battle event for presentation using only delivered members verbatim.
  * Contains zero client-side calculation or derivation.
@@ -410,5 +450,9 @@ export function formatInBattleEvent(event: InBattleServerEvent): string {
       return `PassiveTriggered: ${event.passiveId} (${event.source}:${event.sourceId}) ${event.progress}/${event.threshold}`;
     case 'BossSkillCast':
       return `BossSkillCast: ${event.skillId} by ${event.sourceId}`;
+    case 'CardCast':
+      return `CardCast: ${event.cardId}`;
+    case 'PetSkillCast':
+      return `PetSkillCast: ${event.cardId}`;
   }
 }

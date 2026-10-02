@@ -1,6 +1,33 @@
 # Boss Rules
 
-**Version:** 2.4 (§6.4 identity contract completed per TASK-048 — the Thủy Ma
+**Version:** 2.6 (§6.2.1's Hỏa Long Rage damage-scope bullet reconciled per
+TASK-126 with the Boss Skill Step-1 composition TASK-125 decided and
+`COMBAT_RULES.md` §3.4 now owns. The bullet previously stated that Rage reaches
+"only Boss damage whose Step-1 `Attack` input derives from `BossState.ATK` — the
+Boss basic attack", which contradicted the resolved composition; it now states
+that Rage reaches Boss damage through the Step-1 `EffectiveBossATK`
+contribution — present in **every** Boss damage instance, basic attack and Boss
+Skill alike — while never reaching a Skill's **authored Base Damage** value
+(Flame Burst's 150 remains 150 and does not itself receive the +20%). Mechanic
+and composition are referenced to their owners (`COMBAT_RULES.md` §3.4, §5.5)
+rather than restated. §6.3/§6.3.1's authored magnitudes are unchanged, as is the
+Rage `+20%` / 3-turn magnitude and every TASK-123/TASK-124-recorded behavior.
+No magnitude changed, no new event, SignalR member, `BattleState` member, Redis
+key, or database column introduced. Prior 2.5: §6.2 corrected and expanded per TASK-124 — the Boss Passive
+effect contract TASK-123 decided is now recorded at its canonical owner. The
+Thủy Ma trigger is corrected from the stale `Passive (always active)` wording
+to **Battle Start** (`PASSIVE_RULES.md` §3, a one-time trigger), and the
+retired pointer to an alternate trigger that §3 does not define is removed.
+§6.2 gains §6.2.1–§6.2.4: Hỏa Long Rage (representation, damage scope, apply
+point, duration, reapplication), Thủy Ma healing reduction (trigger,
+representation, application site, duration window, reapplication), Mộc Yêu
+regeneration (timing, base, truncation, clamp, direct `BossState.HP` update,
+repetition), and the server-authority/intentional-client-invisibility
+statement. Mechanics are referenced to their owners (`COMBAT_RULES.md` §4
+item 7, §5.2 item 2, §5.3, §5.5; `GAME_STATE.md` §2.3.1/§2.4.1;
+`GAME_RULES.md` §17 step 18a) rather than restated. No magnitude changed, no
+new event, SignalR member, `BattleState` member, Redis key, or database column
+introduced. Prior 2.4: §6.4 identity contract completed per TASK-048 — the Thủy Ma
 and Mộc Yêu technical Identities, previously recorded `UNRESOLVED`, are now
 recorded as `"boss-thuy-ma"` and `"boss-moc-yeu"`; the code-alignment note is
 corrected now that source and tests carry the canonical Identities (TASK-047);
@@ -162,7 +189,7 @@ Boss Passive fires at Step 18 of GAME_RULES.md §17, after Player Damage
 Boss        Element   Passive (trigger)                          Skill (Effect Magnitudes)                                  Skill Timing
 ---------   -------   -----------------------------------------  ---------------------------------------------------------  ----------------------
 Hỏa Long    Hỏa       Every 5 Player Matches → gain Rage          Flame Burst → 150 Dmg + Burn (50 dmg/tick, 2 Turns)       Charge: 5 matches, CD: 2T
-Thủy Ma     Thủy      Healing received reduced                    Drain Power → 120 Dmg + −20 flat Pet Power                Charge: 4 matches, CD: 3T
+Thủy Ma     Thủy      Battle Start → healing received reduced    Drain Power → 120 Dmg + −20 flat Pet Power                Charge: 4 matches, CD: 3T
 Mộc Yêu     Mộc       Every 5 Player Matches → Regen HP           Root → 100 Dmg + −30% Pet ATK (2 Turns)                   Charge: 6 matches, CD: 2T
 ```
 
@@ -181,23 +208,131 @@ Mộc Yêu     Mộc       5000         100   50    1500 (30%)        Idle
 
 ### 6.2 Boss Passive Details
 
+This subsection is the **canonical owner** of the MVP Boss Passive **rows** —
+which Boss carries which Passive effect and what its trigger is. The *mechanics*
+that consume these values are owned elsewhere and are referenced, not restated
+(`.ai/workflow/documentation/documentation-change.md` §2).
+
 ```text
 Boss        Passive Effect                                    Passive Trigger
 ---------   -----------------------------------------------   ----------------------
 Hỏa Long    Gain +20% ATK (Rage) for 3 turns                  Every 5 Player Matches
-Thủy Ma     Active Pet healing reduced by 50% for 3 turns     Passive (always active)
+Thủy Ma     Active Pet healing reduced by 50% for 3 turns     Battle Start
 Mộc Yêu     Regenerate 5% MaxHP                               Every 5 Player Matches
 ```
 
 **PassiveThreshold (match-charged passives only):** Hỏa Long and Mộc Yêu
 use PassiveThreshold = 5 (PASSIVE_RULES.md §2 — progress increments per
-Player Match, Threshold evaluated once per Cascade batch). Thủy Ma's
-trigger is "Passive (always active)" — an alternate trigger
-(PASSIVE_RULES.md §3), **not** match-based: it has no PassiveThreshold for
-match counting, is never charged via `PassiveTracker.Charge` on Player
-Matches, and emits no `PassiveCharged`/`PassiveTriggered` from match
-progress. Its always-on effect application is a separate concern (TASK-022
-implements charging/events only, not effects).
+Player Match, Threshold evaluated once per Cascade batch). Thủy Ma's trigger
+is **Battle Start** (`PASSIVE_RULES.md` §3 — "Battle Start (one-time
+trigger)"), **not** match-based: it has no PassiveThreshold for match
+counting, is never charged via `PassiveTracker.Charge` on Player Matches, and
+emits no `PassiveCharged`/`PassiveTriggered` from match progress.
+
+#### 6.2.1 Hỏa Long — Rage
+
+- **Magnitude and duration:** `+20% ATK` for 3 turns. These are this
+  document's values and are not restated elsewhere.
+- **Representation and consumption:** a Turn-based `BuffDebuff` Status Effect
+  instance in `BossState.StatusEffects[]` with `TargetStat = "ATK"`,
+  `Magnitude = +20%`, `RemainingTurns = 3`. `BossState.ATK` remains the
+  immutable/base value and is never overwritten; Rage is **not** a separate
+  `BossState` field (the existing Status Effect model — `GAME_STATE.md` §2.3.1,
+  §2.4.1).
+- **Damage scope:** Rage reaches Boss damage through the Step-1 `EffectiveBossATK`
+  input — the contribution derived from `BossState.ATK`. That contribution is
+  present in every Boss damage instance, the basic attack included, so Rage
+  reaches both the basic attack and a Boss Skill. What it never reaches is a
+  Skill's **authored Base Damage** value: Flame Burst's 150 (§6.3.1 item 1)
+  remains 150 and does **not** itself receive the +20%; the Skill's Step-1
+  damage carries the modifier only through its `EffectiveBossATK`
+  contribution. The `+20%` is applied to that Step-1 input, **not** to Step 4.
+  Composition owner: `COMBAT_RULES.md` §3.4 ("Boss Skill Step-1 composition");
+  consumption rule: `COMBAT_RULES.md` §5.5.
+- **When it applies:** at Boss Response step 18a (`GAME_RULES.md` §17 step
+  18a). The application does not retroactively modify damage already resolved
+  earlier in that Turn.
+- **Duration and reapplication:** owned by `COMBAT_RULES.md` §5.3 (the
+  Turn-based duration lifecycle) and §5.2 item 2 (the refresh-not-stack
+  default). A re-trigger while Rage is active refreshes the existing instance
+  to `RemainingTurns = 3`; it does **not** create a second instance and does
+  **not** stack magnitude. At most one +20% Rage instance is active at a time,
+  with the same source identity.
+- **No new state or protocol:** Rage adds no `BossState` member, no Battle
+  Event, and no SignalR member. The consumption rule is
+  `COMBAT_RULES.md` §5.5.
+
+#### 6.2.2 Thủy Ma — healing reduction
+
+- **Magnitude and duration:** active Pet healing reduced by `50%` for
+  3 turns. These are this document's values and are not restated elsewhere.
+- **Trigger:** **Battle Start** — a one-time trigger (`PASSIVE_RULES.md` §3),
+  evaluated once when the battle session is created, before the first Turn.
+  It is **not** match-charged and is **not** always-active.
+- **Representation:** the existing Turn-based Buff/Debuff Status Effect model
+  (`GAME_STATE.md` §2.3.1), held in `BossState.StatusEffects[]` — no new
+  trigger mechanism, no `PassiveTracker.Charge`, and no
+  `PassiveCharged`/`PassiveTriggered` from match progress.
+- **Where the −50% is applied:** at the shared **Heal Resolution** step
+  (`COMBAT_RULES.md` §4 item 7), **before** the existing overheal clamp
+  (`COMBAT_RULES.md` §4 item 1). It is **one applicable Heal modifier**, not a
+  special-cased site. It reaches Pet healing from any existing source that uses
+  that resolution — explicitly including Card Heal and HP-Gem healing. It does
+  **not** modify MaxHP and does **not** affect Shield.
+- **Duration:** applied at Battle Start with `RemainingTurns = 3`; the
+  Battle Start application is not a Turn and consumes no duration unit; the
+  effect is active throughout Turns 1, 2, and 3; the existing Turn-based
+  lifecycle decrements at the End Turn / step 19a boundary
+  (`COMBAT_RULES.md` §5.3); after step 19a of Turn 3, `RemainingTurns` reaches 0
+  and the effect expires before Turn 4. No new duration mechanism or lifecycle
+  phase is introduced.
+- **Reapplication:** a further application while an instance is active
+  refreshes that instance to the full 3-turn duration. It does **not** stack
+  additively (−50% + −50% = −100% is explicitly not the behavior); at most one
+  active instance exists at a time, with the same source identity. The refresh
+  rule is `COMBAT_RULES.md` §5.2 item 2's MVP default and is referenced, not
+  restated. *(Reachability note: because the Battle Start trigger is one-time,
+  no second application source exists in the current MVP content; the rule is
+  the safe behavior and applies to any future re-application source.)*
+- **No new event or protocol:** the effect introduces no Battle Event and
+  emits no `PassiveCharged`/`PassiveTriggered`. Application, refresh,
+  decrement, and expiry are state changes only; there is no `HealingReduced`,
+  `BossPassiveApplied`, or `BossPassiveExpired` event.
+
+#### 6.2.3 Mộc Yêu — regeneration
+
+- **Magnitude:** heals exactly `5%` of Mộc Yêu's MaxHP — this document's
+  value. At the §6.1 MVP MaxHP of `5000`, the amount is
+  `truncate(5000 × 5 / 100) = 250`.
+- **When it applies:** during Boss Response step 18a, at the point the Boss
+  Passive effect is applied (`GAME_RULES.md` §17 step 18a; §3.3).
+- **Rounding:** truncated **toward zero** to an integer HP amount — the same
+  integer convention `COMBAT_RULES.md` §3 step 6 uses for Final Damage.
+- **Clamping:** `Final HP = min(CurrentHP + RegenAmount, MaxHP)`. No overheal
+  is retained — the same shaping as `COMBAT_RULES.md` §4 item 1's "restore HP
+  up to Max HP; overheal is discarded", which is referenced, not restated.
+- **Applied as:** a **direct authoritative `BossState.HP` update**. No
+  persistent `StatusEffect` instance is created, and the regeneration is
+  **not** routed through `COMBAT_RULES.md` §4 item 7's Heal Resolution step,
+  whose scope is Pet-HP healing only.
+- **Observability:** no new Battle Event. The resulting state is server-side
+  and authoritative, synchronized through the existing authoritative state
+  mechanism (see §7 and §8).
+- **Repetition:** each valid Mộc Yêu Passive activation applies **one** 5%
+  MaxHP regeneration. It does **not** stack as a persistent modifier.
+
+#### 6.2.4 Applied effects and client visibility
+
+All three effects are **server-authoritative** (§8, `GAME_RULES.md` §18,
+`ADR-001`). The client does not calculate, predict, or authoritatively apply
+any of them.
+
+The current SignalR projection **intentionally does not expose `BossState`**,
+so these Boss Passive state changes are not directly client-visible through
+the state push in the current MVP protocol. **This is an intentional,
+recorded contract limitation, not a defect.** Any requirement for
+client-visible Boss HP or Boss StatusEffects is a separate future protocol
+decision, and is not authorized by these effect rules.
 
 ### 6.3 Boss Skill Timing & Effect Details
 

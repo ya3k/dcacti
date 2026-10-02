@@ -1,6 +1,14 @@
 # Redis State
 
-**Version:** 1.7 (§2 states the active-state record's `Element` encoding
+**Version:** 1.8 (§7 items 13–14 added — `PetState.NextAttackCritModifiers[]`
+(`GAME_STATE.md` §2.3.4, ADR-017) adds no Redis key, no Redis-only field, and no
+persistence work: it is a `PetState` member of the `BattleState` shape §2 item 1
+already covers, it round-trips under the existing obligation with an empty array
+as the no-modifier form, it is written in the same single post-resolution
+write-back under the unchanged `Sequence` compare-and-set, and it has no wire
+consequence because adding state is not adding a wire member
+(`SIGNALR_PROTOCOL.md` §4 item 4). §1–§6 and §7 items 1–12 are unchanged; no key,
+lifecycle, TTL, or concurrency rule changed. Prior 1.7: §2 states the active-state record's `Element` encoding
 contract per TASK-073 — the record's `PetState.Element` /
 `BossState.Element` spelling is **unbound** and deliberately not the REST wire
 value set: `GAME_STATE.md` §2 declares `Element` as a member name only and its
@@ -475,3 +483,55 @@ Full active battle state          Full BattleState (GAME_STATE.md §2)
     > `BattleId` makes a second result impossible. The TTL therefore remains the
     > documented maximum lifetime of the active-state record in every case, and
     > the deferral recorded at the top of this section is fully discharged.
+13. **`PetState.NextAttackCritModifiers[]` adds no key, no Redis-only field,
+    and no persistence work.** `GAME_STATE.md` §2.3.4 defines one new
+    `PetState` collection (`ADR-017`) — temporary source-specific Crit
+    modifiers awaiting consumption by a qualifying owner attack, each element
+    carrying a source identity and a Crit contribution in percentage points.
+    Its consequences here are these, and nothing more:
+
+    - **It is part of the §2 shape, so §2 item 1 covers it unchanged.**
+      `BattleState` is serialized as JSON matching `GAME_STATE.md` §2 exactly,
+      and this collection is a `PetState` member. It introduces no Redis-only
+      field, and §1's key structure is untouched: no
+      `battle:{battleId}:crit` key, no hash field, no set, no index, and no
+      second record exists for it. It is **not** a concurrency token;
+      `Sequence` remains the only one (§4 item 6).
+    - **Round-trip losslessness covers it, and an empty collection round-trips
+      as empty.** A record that drops an element, reorders elements, or
+      collapses two distinct source identities into one does not round-trip
+      (`GAME_STATE.md` §2.3.4 items 2 and 6, §2.1.7 item 5). The collection is
+      always present (`GAME_STATE.md` §2.3.4 item 5), so an entity with no
+      active modifier serializes an **empty array** — it is never omitted and
+      never `null`, unlike `LastCommittedSwapPair` (item 11), whose absence is
+      itself a documented statement.
+    - **The lifecycle and concurrency rules are untouched.** Creation and
+      consumption both occur inside one resolution and are written in the same
+      single post-resolution write-back as the rest of the state (§4 item 5),
+      under the same `Sequence` compare-and-set (§4 item 2). A reader never
+      observes a modifier mid-consumption (`GAME_STATE.md` §5.1.2 item 6). A
+      rejected action writes nothing and therefore does not touch this key,
+      reset the TTL, or change this collection (§4 item 7).
+    - **It is not a staged subset.** §7 item 7's precondition is met — a real,
+      playable battle carrying §2's shape can be created and resolved — so this
+      member is carried by the existing `battle:{battleId}:state` record
+      exactly as every other `PetState` member is (see the status note above).
+      It changes no storage decision.
+    - **No expiry of its own is introduced by storage.** A modifier's lifetime
+      is owned by `COMBAT_RULES.md` §3.3 item 8 and mutated by
+      `GAME_STATE.md` §5.1.2; Redis adds no TTL, sweep, or expiry for this
+      collection beyond the record's own §3 sliding TTL.
+
+    Like the Special Gem, commit-record, and accounting changes above, this is
+    a **content** change to the record rather than a **structure** change to
+    the store.
+
+14. **No SignalR or wire consequence reaches this document.**
+    `SIGNALR_PROTOCOL.md` §4 item 4 governs: the state push carries exactly the
+    implemented stage's own fields, and adding state is not adding a wire
+    member. `NextAttackCritModifiers[]` is therefore **not** part of
+    `BattleStateUpdated`'s payload (`SIGNALR_PROTOCOL.md` §4.2/§4.3 fix
+    `playerState` and `petState` to their existing member sets) and adds no
+    message, method, or subscription. Delivering it would be a protocol change
+    owned by its own task, and this document defines no storage contract for
+    such a delivery.

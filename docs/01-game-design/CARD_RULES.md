@@ -1,6 +1,13 @@
 # Card Rules
 
-**Version:** 1.5 (§4.1 — the three MVP Pet Skill Card effect magnitudes are
+**Version:** 1.6 (§4.1 — Iron Fang's `NextAttack` Crit scope now points at its
+canonical owner instead of being left as prose: `COMBAT_RULES.md` §3.3 items
+7–10 own the modifier's lifetime, the qualifying-attack consumption boundary,
+the composition, and source-specific removal, and `GAME_STATE.md` §2.3.4 owns
+the state it is held in. §4.1's magnitudes, costs, and the Iron Fang × Bạch Hổ
+independence statement are unchanged; the `COMBAT_RULES.md` §3.3 cross-reference
+in that statement was corrected from item 3 to item 5 (Modifier Sources). The
+detail is referenced, not restated (documentation-change.md §2). Prior 1.5: §4.1 — the three MVP Pet Skill Card effect magnitudes are
 authored per TASK-110 Product Owner decisions D-1…D-6: Inferno 100 flat Fire
 damage + Burn 50/tick for 2 Turns; Tidal Barrier Heal 20% Max HP + Shield
 20% Max HP (refresh-not-stack); Iron Fang 120 flat damage + Crit +10
@@ -180,8 +187,25 @@ cited inline; neither is restated here.
 **Iron Fang's Crit increase is the Card's own value.** It is **independent**
 of Bạch Hổ's Pet Passive configuration value (`PASSIVE_RULES.md` §7/§8) — the
 two are separate sources that both modify Crit chance
-(`COMBAT_RULES.md` §3.3 item 3) and neither is derived from, nor shared with,
+(`COMBAT_RULES.md` §3.3 item 5) and neither is derived from, nor shared with,
 the other.
+
+**The Crit increase is scoped to the next attack, and that rule is not owned
+here.** Iron Fang's `Crit` element is stored with `scope = "NextAttack"`
+(`DATABASE.md` §3 item 1), and what that scope means in play — when the
+modifier stops applying, which attack consumes it, and how it composes with
+the other Crit sources — is owned by **`COMBAT_RULES.md` §3.3 items 7–10**.
+It is not restated here
+(`.ai/workflow/documentation/documentation-change.md` §2). The state it is
+held in is `PetState.NextAttackCritModifiers[]` (`GAME_STATE.md` §2.3.4).
+
+This Card's cast is a resolution site for that modifier, not a rule about it:
+the Card applies its Crit element when the cast resolves at `GAME_RULES.md`
+§17 step 14 ("Resolve Player Effects"), and the modifier then persists until a
+qualifying owner attack consumes it (`COMBAT_RULES.md` §3.3 item 8). That the
+cast's own damage and the modifier's consumption can occur in the same Swap
+is a consequence of `GAME_RULES.md` §17's fixed order, not a separate rule
+here.
 
 Thanh Xà and Sơn Hùng Signature Skills are not yet content-defined; when
 authored they must follow this same structure (Cost + Effect, consistent with

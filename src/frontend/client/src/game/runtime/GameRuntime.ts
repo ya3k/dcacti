@@ -8,6 +8,8 @@ import {
 } from '../../state/GameRuntimeState';
 import {
   RUNTIME_ACTION_SWAP,
+  RUNTIME_ACTION_CARD_CAST,
+  RUNTIME_ACTION_PET_SKILL_CAST,
   RuntimeActionNotImplementedError,
   type BattleEventsEnvelope,
   type BattleEventsListener,
@@ -324,22 +326,25 @@ export class GameRuntime implements GameRuntimePort {
   /**
    * The client → server request boundary (task §15, reverse direction).
    *
-   * Implements the documented **swap** action
+   * Coordinates the documented `Swap`, `CardCast`, and `PetSkillCast` requests
    * (`SIGNALR_PROTOCOL.md` §2, §2.1, `MATCH3_RULES.md` §2.1.1):
    *
    * ```text
    * BattleScene → GameRuntime.requestAction → SignalRService.swap → BattleHub.Swap
+   * BattleScene → GameRuntime.requestAction → SignalRService.cardCast → BattleHub.CardCast
+   * BattleScene → GameRuntime.requestAction → SignalRService.petSkillCast → BattleHub.PetSkillCast
    * ```
    *
    * The runtime coordinates and nothing more. It resolves the battle the action
    * applies to from the state the server already pushed (never from the caller),
-   * generates an opaque per-request correlation id, submits the pair through the
+   * generates an opaque per-request correlation id, submits through the
    * transport, and resolves with the §5 acknowledgement.
    *
-   * It decides no gameplay: it does not check range, adjacency, or matches, does
-   * not simulate or commit a swap, does not resolve a cascade, and does not
-   * mutate the board. Whether the swap succeeds is the server's answer
-   * (`MATCH3_RULES.md` §2.1.2, §2.1.6, `GAME_RULES.md` §18, ADR-001).
+   * It decides no gameplay: it does not validate cards, costs, cooldowns, or
+   * effects, does not simulate or commit a swap, does not resolve a cascade, and
+   * does not mutate the board or combat state. Whether the action succeeds is
+   * the server's answer (`MATCH3_RULES.md` §2.1.2, `CARD_RULES.md` §3,
+   * `GAME_RULES.md` §18, ADR-001).
    *
    * The `clientSequence` it generates is opaque and is **not**
    * `BattleState.Sequence`: it is never derived from, compared with, or required
@@ -347,10 +352,10 @@ export class GameRuntime implements GameRuntimePort {
    * decide staleness (`SIGNALR_PROTOCOL.md` §2 item 1, `MATCH3_RULES.md` §2.1.4
    * item 1).
    *
-   * Every other action kind — including `CardCast`, `PetSkillCast`, and
-   * `GetBattleState` — still rejects with `RuntimeActionNotImplementedError`.
+   * Every other action kind — including `GetBattleState` — still rejects with
+   * `RuntimeActionNotImplementedError`.
    *
-   * @throws RuntimeActionNotImplementedError for any action other than `Swap`.
+   * @throws RuntimeActionNotImplementedError for any action other than `Swap`, `CardCast`, or `PetSkillCast`.
    * @throws Error when no battle state is known, or the transport rejects the
    * request (no connection / connection lost). Both are presentation-level
    * failures, not game state (`SIGNALR_PROTOCOL.md` §8.3).
@@ -358,9 +363,18 @@ export class GameRuntime implements GameRuntimePort {
   public async requestAction(
     action: RuntimeActionRequest
   ): Promise<RuntimeActionAcknowledgement> {
-    const candidate = action as { kind?: unknown; fromCell?: unknown; toCell?: unknown };
+    const candidate = action as {
+      kind?: unknown;
+      fromCell?: unknown;
+      toCell?: unknown;
+      cardId?: unknown;
+    };
 
-    if (candidate.kind !== RUNTIME_ACTION_SWAP) {
+    if (
+      candidate.kind !== RUNTIME_ACTION_SWAP &&
+      candidate.kind !== RUNTIME_ACTION_CARD_CAST &&
+      candidate.kind !== RUNTIME_ACTION_PET_SKILL_CAST
+    ) {
       throw new RuntimeActionNotImplementedError(String(candidate.kind));
     }
 
@@ -372,20 +386,39 @@ export class GameRuntime implements GameRuntimePort {
     if (battleState === null) {
       throw new Error(
         'No battle state is known: the server has not pushed BattleStateUpdated ' +
-          'for a joined battle (SIGNALR_PROTOCOL.md §4). No Swap was sent.'
+          'for a joined battle (SIGNALR_PROTOCOL.md §4). No action was sent.'
       );
     }
 
-    // The cells are passed on as supplied. The runtime does not range-check,
-    // adjacency-check, or otherwise pre-validate them: the only pointer-side
-    // check is the scene's own interaction feedback (a clearly non-board or
-    // same-cell tap is never submitted), and the authoritative validation is
-    // `MATCH3_RULES.md` §2.1.2's, which the server performs.
-    return await this.signalR.swap(
+    if (candidate.kind === RUNTIME_ACTION_SWAP) {
+      // The cells are passed on as supplied. The runtime does not range-check,
+      // adjacency-check, or otherwise pre-validate them: the only pointer-side
+      // check is the scene's own interaction feedback (a clearly non-board or
+      // same-cell tap is never submitted), and the authoritative validation is
+      // `MATCH3_RULES.md` §2.1.2's, which the server performs.
+      return await this.signalR.swap(
+        battleState.battleId,
+        candidate.fromCell as number,
+        candidate.toCell as number,
+        this.nextClientSequence('swap')
+      );
+    }
+
+    if (candidate.kind === RUNTIME_ACTION_CARD_CAST) {
+      if (typeof candidate.cardId !== 'string' || candidate.cardId.length === 0) {
+        throw new Error('CardCast action requires a non-empty cardId.');
+      }
+      return await this.signalR.cardCast(
+        battleState.battleId,
+        candidate.cardId,
+        this.nextClientSequence('card_cast')
+      );
+    }
+
+    // candidate.kind === RUNTIME_ACTION_PET_SKILL_CAST
+    return await this.signalR.petSkillCast(
       battleState.battleId,
-      candidate.fromCell as number,
-      candidate.toCell as number,
-      this.nextClientSequence()
+      this.nextClientSequence('pet_skill_cast')
     );
   }
 
@@ -400,9 +433,9 @@ export class GameRuntime implements GameRuntimePort {
    * correlation and introduces none of the non-determinism `AGENTS.md` §11
    * forbids.
    */
-  private nextClientSequence(): string {
+  private nextClientSequence(prefix = 'action'): string {
     clientSequenceCounter += 1;
-    return `swap_${clientSequenceCounter}`;
+    return `${prefix}_${clientSequenceCounter}`;
   }
 
   // ---------------------------------------------------------------------------
@@ -800,7 +833,8 @@ export class GameRuntime implements GameRuntimePort {
    * Every value is read as sent. The runtime does not charge a Passive, evaluate
    * a Threshold, reset progress, or apply an overflow (§4.3 item 9), and it does
    * not widen the object to the rest of §2.3 — identity, progression, combat
-   * stats, and loadouts are not delivered (§4.3 item 2).
+   * stats, and relics are not delivered (§4.3 item 2), while `equippedCards`
+   * is delivered per §4.3 item 13.
    */
   private readPetState(value: unknown): RuntimePetState | null {
     if (typeof value !== 'object' || value === null) {
@@ -818,6 +852,14 @@ export class GameRuntime implements GameRuntimePort {
       return null;
     }
 
+    if (
+      !Array.isArray(candidate.equippedCards) ||
+      candidate.equippedCards.length !== 4 ||
+      !candidate.equippedCards.every((id) => typeof id === 'string' && id.length > 0)
+    ) {
+      return null;
+    }
+
     // The conditional member: absent means the default reset, and only the two
     // documented contract names are a non-default statement (§4.3 items 6–7).
     if (
@@ -828,10 +870,15 @@ export class GameRuntime implements GameRuntimePort {
     }
 
     return candidate.passiveResetOverride === undefined
-      ? { passiveId: candidate.passiveId, passiveProgress }
+      ? {
+          passiveId: candidate.passiveId,
+          passiveProgress,
+          equippedCards: [...candidate.equippedCards],
+        }
       : {
           passiveId: candidate.passiveId,
           passiveProgress,
+          equippedCards: [...candidate.equippedCards],
           passiveResetOverride: candidate.passiveResetOverride,
         };
   }

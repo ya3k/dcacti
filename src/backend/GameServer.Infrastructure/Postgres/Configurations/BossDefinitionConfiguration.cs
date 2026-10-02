@@ -172,6 +172,16 @@ public sealed class BossDefinitionConfiguration : IEntityTypeConfiguration<BossD
     ///
     /// Exactly four members, all required; the battle-state member names
     /// (<c>GAME_STATE.md</c> §2.4) are a separate contract and are not used.
+    ///
+    /// <b>The Skill's secondary effect is deliberately not written.</b> The
+    /// stored document is fixed to exactly these four members by §1 note item 4
+    /// ("fixed by TASK-045 … unchanged"), so
+    /// <c>BossSkillDefinition.SecondaryEffect</c> — the Domain configuration
+    /// carrying <c>BOSS_RULES.md</c> §6.3.1's Skill effects — has no column and
+    /// is excluded by this converter, which is the persistence boundary. This is
+    /// the same treatment the combat stats receive (excluded from the model):
+    /// the value lives on the Domain type and is never persisted, so no
+    /// migration and no schema change follows.
     /// </summary>
     private sealed class SkillDefinitionConverter
         : ValueConverter<BossSkillDefinition, string>

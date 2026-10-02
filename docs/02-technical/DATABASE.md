@@ -1,6 +1,25 @@
 # Database
 
-**Version:** 1.24 (§1 Card `EffectDefinition` contract item 8 — **status
+**Version:** 1.26 (§1 item 3's `threshold` note, the §3 provisioning row-content
+note, and the §6 constraint entry — **stale characterization correction only**
+per TASK-124: `threshold = null` was described as meaning the Passive "is
+always active", a semantic the TASK-123 D-2a decision retired when Thủy Ma's
+trigger became Battle Start. `null` now reads as "no match-charging threshold",
+with the activation trigger explicitly defined per Passive by
+`BOSS_RULES.md` §6.2. **The storage constraint itself is unchanged** — `null`
+still denotes a non-match-charged Passive, `0` is still never the sentinel, and
+**no table, column, storage member, schema shape, or vocabulary changed**.
+Prior 1.25: §1 Card `EffectDefinition` contract item 1's closing
+paragraph — **dependency-pointer correction only**: the sentence that
+delegated `scope = "NextAttack"` to `CARD_RULES.md` §4.1 as the owning rule is
+re-pointed at the document that now owns it, `COMBAT_RULES.md` §3.3 items 7–10
+(modifier lifetime, qualifying-attack consumption boundary, source-specific
+removal), with the state named as `GAME_STATE.md` §2.3.4 (`ADR-017`);
+`CARD_RULES.md` §4.1 and `PASSIVE_RULES.md` §7/§8 are recorded as owning each
+source's own contribution. **No storage member, schema shape, value, vocabulary,
+or `valueType` semantic changed** — `scope` is still a storage member, exactly
+one scope value is still defined, and no column or table is added [TASK-117].
+Prior 1.24: (§1 Card `EffectDefinition` contract item 8 — **status
 synchronization only**: the six content-defined `CardDefinition` rows are now
 **encoded** in the ARRAY shape v1.23 defined, so the "not yet re-encoded" /
 "no row conforms to the full contract" wording is retired and the recorded
@@ -153,7 +172,8 @@ value sourced from `BattleState.BossState.BossId` via `Identity` lookup;
 §3 `BossDefinition.Identity` NOT NULL/UNIQUE added; prior 1.7: §1 BossDefinition persistence contract documented per
 TASK-045 — `PassiveDefinition`/`SkillDefinition` JSON member lists and
 reset-token set {Default, Partial, Persistent} defined, `threshold` null
-semantics (always-active, no 0-sentinel), persistent-identity vs
+semantics (no match-charging threshold; then characterized as "always-active",
+superseded above in 1.26, no 0-sentinel), persistent-identity vs
 combat-stat source split, no-invented-provisioning guard and
 content-defined-rows-only scope clarified; §3 BossDefinition constraints
 added; prior 1.6: §1 BattleResult identity/reward sourcing documented —
@@ -459,10 +479,19 @@ extended by TASK-111 D-1/D-2/D-3/D-4/D-5)
      `duration` and `scope` are **storage members for rules the owning domain
      documents already state**; they author no gameplay. Burn's tick schedule
      and duration unit are owned by `GAME_RULES.md` §17 step 19a and
-     `COMBAT_RULES.md` §5.1–§5.3; Crit's next-attack scope is owned by
-     `CARD_RULES.md` §4.1 (`PASSIVE_RULES.md` §7 uses the same scope for Bạch
-     Hổ's Passive). No further extra member is defined, and none may be added
-     without a recorded owner decision.
+     `COMBAT_RULES.md` §5.1–§5.3; Crit's next-attack scope — the modifier's
+     lifetime, the qualifying-attack consumption boundary, and the Crit
+     source composition it participates in — is owned by
+     `COMBAT_RULES.md` §3.3 items 7–10, with the state it is held in defined
+     by `GAME_STATE.md` §2.3.4 (`ADR-017`). `CARD_RULES.md` §4.1 owns Iron
+     Fang's own Crit `value` (+10 percentage points) and `PASSIVE_RULES.md`
+     §7/§8 owns Bạch Hổ's Passive contribution; both use the same scope and
+     both reference the composition rule rather than restating it. Note that
+     `scope` remains a **storage** member and is unchanged by that ownership:
+     this contract still defines exactly one scope value, `NextAttack`, and
+     the runtime meaning behind it now lives in the document named above. No
+     further extra member is defined, and none may be added without a recorded
+     owner decision.
 2. **The member names are the contract.** `effectType`, `valueType`, and
    `value` are TASK-108 **D-2**'s, and `duration` / `scope` are TASK-111
    **D-3**'s; they are fixed here. The internal representation maps to them, not
@@ -627,9 +656,12 @@ extended by TASK-111 D-1/D-2/D-3/D-4/D-5)
    - `passiveId` (string) — the Boss's canonical PassiveId
      (`BOSS_RULES.md` §6.4).
    - `threshold` (int | null) — the Passive's match-charging Threshold
-     (`PASSIVE_RULES.md` §1). `null` means the Passive has **no
-     threshold and is always active** (`BOSS_RULES.md` §6.2); `0` is
-     never used as a "no threshold" sentinel.
+     (`PASSIVE_RULES.md` §1). `null` means the Passive has **no match-charging
+      threshold**; `0` is never used as a "no threshold" sentinel.
+      A null threshold is **not** a statement that the Passive is
+      always-active: the activation trigger is defined by the Passive
+      itself (`BOSS_RULES.md` §6.2), and Thủy Ma's trigger is Battle
+      Start — a one-time trigger, not a permanent always-on state.
    - `resetBehavior` (string) — exactly one of `Default` | `Partial` |
      `Persistent`, the storage names for the documented Reset Behavior
      variants Default Reset / Partial Reset / No Reset — Persistent
@@ -690,8 +722,9 @@ extended by TASK-111 D-1/D-2/D-3/D-4/D-5)
      from `BOSS_RULES.md` §6.4; `Element` from `BOSS_RULES.md` §6;
      `PassiveDefinition` per item 3's member list with `passiveId` and
      `threshold` from `BOSS_RULES.md` §6.2/§6.4 (including `null` for
-     Thủy Ma's always-active Passive — `§3`: `threshold = null` ⇔
-     always-active) and `resetBehavior` = `Default` (the documented
+      Thủy Ma's non-match-charged Passive — `§3`: `threshold = null`
+      means no match-charging threshold, **not** always-active; the
+      trigger is Battle Start, `BOSS_RULES.md` §6.2) and `resetBehavior` = `Default` (the documented
      default when a rule states no override — no Boss Passive documents
      one, `PASSIVE_RULES.md` §4 item 3); `SkillDefinition` per item 4's
      member list with `skillId`, `baseDamage`, `chargeRequirement`, and
@@ -1119,7 +1152,8 @@ BossDefinition.SkillDefinition    NOT NULL                           (every Boss
 BossDefinition.Identity           NOT NULL, UNIQUE                   (canonical technical Boss ID — BOSS_RULES.md
                                                                       §6.4; the unique target of the FK lookup in §1)
 BossDefinition.PassiveDefinition.resetBehavior ∈ {Default, Partial, Persistent}   (PASSIVE_RULES.md §4)
-BossDefinition.PassiveDefinition.threshold = null ⇔ always-active, no threshold    (BOSS_RULES.md §6.2)
+BossDefinition.PassiveDefinition.threshold = null ⇔ no match-charging threshold (NOT always-active;   (BOSS_RULES.md §6.2,
+                                              the trigger is defined per Passive, not by null)          BOSS_RULES.md §6.2.1-§6.2.3)
 Player.PlayerId (per battle) must own exactly one active Pet selection
   at battle start — enforced at the Application layer (ARCHITECTURE.md),
   not purely at the DB level, since it is a request-time rule

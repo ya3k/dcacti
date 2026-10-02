@@ -37,6 +37,18 @@ class FakeSignalR {
   public swapResult: { accepted: boolean; reason?: string | null } = { accepted: true };
   /** When set, `swap()` rejects with it — a transport failure (§8.3). */
   public swapBehaviour: (() => Promise<never>) | null = null;
+  /** Every `cardCast()` call the runtime made, in order (SIGNALR_PROTOCOL.md §2). */
+  public cardCastCalls: Array<[string, string, string | undefined]> = [];
+  /** The acknowledgement `cardCast()` resolves with; overridden per case. */
+  public cardCastResult: { accepted: boolean; reason?: string | null } = { accepted: true };
+  /** When set, `cardCast()` rejects with it — a transport failure (§8.3). */
+  public cardCastBehaviour: (() => Promise<never>) | null = null;
+  /** Every `petSkillCast()` call the runtime made, in order (SIGNALR_PROTOCOL.md §2). */
+  public petSkillCastCalls: Array<[string, string | undefined]> = [];
+  /** The acknowledgement `petSkillCast()` resolves with; overridden per case. */
+  public petSkillCastResult: { accepted: boolean; reason?: string | null } = { accepted: true };
+  /** When set, `petSkillCast()` rejects with it — a transport failure (§8.3). */
+  public petSkillCastBehaviour: (() => Promise<never>) | null = null;
   /**
    * Every `joinBattle()` call the runtime made, in order
    * (SIGNALR_PROTOCOL.md §1.2, §2 `JoinBattle`).
@@ -122,6 +134,33 @@ class FakeSignalR {
     return this.swapResult;
   }
 
+  async cardCast(
+    battleId: string,
+    cardId: string,
+    clientSequence?: string
+  ): Promise<{ accepted: boolean; reason?: string | null }> {
+    if (this.cardCastBehaviour) {
+      return await this.cardCastBehaviour();
+    }
+
+    this.invokedMethods.push('CardCast');
+    this.cardCastCalls.push([battleId, cardId, clientSequence]);
+    return this.cardCastResult;
+  }
+
+  async petSkillCast(
+    battleId: string,
+    clientSequence?: string
+  ): Promise<{ accepted: boolean; reason?: string | null }> {
+    if (this.petSkillCastBehaviour) {
+      return await this.petSkillCastBehaviour();
+    }
+
+    this.invokedMethods.push('PetSkillCast');
+    this.petSkillCastCalls.push([battleId, clientSequence]);
+    return this.petSkillCastResult;
+  }
+
   on<TArgs extends unknown[]>(
     methodName: string,
     handler: (...args: TArgs) => void
@@ -183,6 +222,7 @@ function payload(overrides: Record<string, unknown> = {}): Record<string, unknow
     petState: {
       passiveId: 'xich-lang',
       passiveProgress: { threshold: 5, current: 0 },
+      equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
     },
     ...overrides,
   };
@@ -708,6 +748,7 @@ describe('GameRuntime', () => {
         petState: {
           passiveId: 'thanh-xa-poison',
           passiveProgress: { threshold: 7, current: 3 },
+          equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
         },
       });
 
@@ -716,6 +757,7 @@ describe('GameRuntime', () => {
       expect(runtime.getBattleState()!.petState).toEqual({
         passiveId: 'thanh-xa-poison',
         passiveProgress: { threshold: 7, current: 3 },
+        equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
       });
 
       // Exactly what was sent — not derived from `board`, `turn`, `sequence`,
@@ -738,6 +780,7 @@ describe('GameRuntime', () => {
               passiveId: 'xich-lang',
               passiveProgress: { threshold: 5, current: 4 },
               passiveResetOverride: contractName,
+              equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
             },
           })
         );
@@ -761,28 +804,84 @@ describe('GameRuntime', () => {
 
       expect('passiveResetOverride' in petState).toBe(false);
       expect(petState.passiveResetOverride).toBeUndefined();
-      expect(Object.keys(petState)).toEqual(['passiveId', 'passiveProgress']);
+      expect(Object.keys(petState).sort()).toEqual(
+        ['equippedCards', 'passiveId', 'passiveProgress'].sort()
+      );
     });
 
     it('rejects a payload missing a PetState member rather than defaulting it', async () => {
-      // §4.3 items 3–4 / GAME_STATE.md §2.3 item 3: `passiveId` and both members
-      // of `passiveProgress` are non-nullable and always present, and
-      // `current = 0` is a real value rather than an absence. A payload that
-      // omits one is therefore malformed — the client must not substitute a
+      // §4.3 items 3–4, 13 / GAME_STATE.md §2.3 item 3: `passiveId`, both members
+      // of `passiveProgress`, and the 4-entry `equippedCards` are non-nullable and
+      // always present, and `current = 0` is a real value rather than an absence.
+      // A payload that omits one is therefore malformed — the client must not substitute a
       // value of its own, which would be a second, non-authoritative Passive
       // source (GAME_RULES.md §18).
       const malformed = [
         // No `petState` at all.
         { petState: undefined },
         // No `passiveId`.
-        { petState: { passiveProgress: { threshold: 5, current: 0 } } },
+        {
+          petState: {
+            passiveProgress: { threshold: 5, current: 0 },
+            equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+          },
+        },
         // No `passiveProgress`.
-        { petState: { passiveId: 'xich-lang' } },
+        {
+          petState: {
+            passiveId: 'xich-lang',
+            equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+          },
+        },
         // Half of the progress pair.
-        { petState: { passiveId: 'xich-lang', passiveProgress: { threshold: 5 } } },
+        {
+          petState: {
+            passiveId: 'xich-lang',
+            passiveProgress: { threshold: 5 },
+            equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+          },
+        },
         // Ill-typed members.
-        { petState: { passiveId: 'xich-lang', passiveProgress: { threshold: '5', current: 0 } } },
-        { petState: { passiveId: 7, passiveProgress: { threshold: 5, current: 0 } } },
+        {
+          petState: {
+            passiveId: 'xich-lang',
+            passiveProgress: { threshold: '5', current: 0 },
+            equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+          },
+        },
+        {
+          petState: {
+            passiveId: 7,
+            passiveProgress: { threshold: 5, current: 0 },
+            equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+          },
+        },
+        // Missing equippedCards.
+        { petState: { passiveId: 'xich-lang', passiveProgress: { threshold: 5, current: 0 } } },
+        // equippedCards not an array.
+        {
+          petState: {
+            passiveId: 'xich-lang',
+            passiveProgress: { threshold: 5, current: 0 },
+            equippedCards: 'invalid',
+          },
+        },
+        // equippedCards wrong length.
+        {
+          petState: {
+            passiveId: 'xich-lang',
+            passiveProgress: { threshold: 5, current: 0 },
+            equippedCards: ['card-heal', 'card-shield', 'card-power-charge'],
+          },
+        },
+        // equippedCards empty string.
+        {
+          petState: {
+            passiveId: 'xich-lang',
+            passiveProgress: { threshold: 5, current: 0 },
+            equippedCards: ['card-heal', '', 'card-power-charge', 'card-inferno'],
+          },
+        },
       ];
 
       for (const override of malformed) {
@@ -800,11 +899,9 @@ describe('GameRuntime', () => {
     });
 
     it('models no undocumented PetState member', async () => {
-      // §4.3 item 2: `petState` carries exactly the Passive trio. The rest of
-      // GAME_STATE.md §2.3 — identity, progression, the combat stats, and both
-      // loadout snapshots — belongs to other stages and is not delivered, so a
-      // payload carrying one must not widen the runtime's copy into a second,
-      // undocumented wire shape.
+      // §4.3 item 2: `petState` carries the Passive trio and equippedCards.
+      // The rest of GAME_STATE.md §2.3 — identity, progression, combat stats,
+      // and relics — belongs to other stages and is not delivered.
       const { runtime, transport } = createRuntime();
       await runtime.initialize();
 
@@ -814,6 +911,7 @@ describe('GameRuntime', () => {
           petState: {
             passiveId: 'xich-lang',
             passiveProgress: { threshold: 5, current: 0 },
+            equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
             petId: 'pet-1',
             element: 'Hoa',
             tier: 1,
@@ -827,7 +925,6 @@ describe('GameRuntime', () => {
             power: 0,
             statusEffects: [],
             equippedRelics: ['relic-a'],
-            equippedCards: ['card-a'],
           },
         })
       );
@@ -836,7 +933,9 @@ describe('GameRuntime', () => {
 
       // Only the documented members are modelled; the rest are dropped rather
       // than carried as an invented shape.
-      expect(Object.keys(petState)).toEqual(['passiveId', 'passiveProgress']);
+      expect(Object.keys(petState).sort()).toEqual(
+        ['equippedCards', 'passiveId', 'passiveProgress'].sort()
+      );
 
       for (const undocumented of [
         'petId',
@@ -852,10 +951,28 @@ describe('GameRuntime', () => {
         'power',
         'statusEffects',
         'equippedRelics',
-        'equippedCards',
       ]) {
         expect(petState).not.toHaveProperty(undocumented);
       }
+    });
+
+    it('carries the delivered equippedCards loadout verbatim', async () => {
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const loadout = ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'];
+      transport.emit(
+        'BattleStateUpdated',
+        payload({
+          petState: {
+            passiveId: 'xich-lang',
+            passiveProgress: { threshold: 5, current: 0 },
+            equippedCards: loadout,
+          },
+        })
+      );
+
+      expect(runtime.getBattleState()!.petState.equippedCards).toEqual(loadout);
     });
 
     it('rejects an explicit null reset override rather than reading it as a default', async () => {
@@ -901,6 +1018,7 @@ describe('GameRuntime', () => {
         petState: {
           passiveId: 'xich-lang',
           passiveProgress: { threshold: 5, current: 3 },
+          equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
         },
       });
 
@@ -1148,20 +1266,60 @@ describe('GameRuntime', () => {
       expect(runtime.getBattleState()!.battleId).toBe('battle-42');
     });
 
+    it('routes the documented CardCast action to the transport', async () => {
+      const { runtime, transport } = await joinedRuntime();
+
+      const acknowledgement = await runtime.requestAction({
+        kind: 'CardCast',
+        cardId: 'card-heal',
+      });
+
+      expect(transport.cardCastCalls).toHaveLength(1);
+      const [battleId, cardId, clientSequence] = transport.cardCastCalls[0];
+      expect(battleId).toBe('battle-42');
+      expect(cardId).toBe('card-heal');
+      expect(typeof clientSequence).toBe('string');
+      expect(clientSequence!.length).toBeGreaterThan(0);
+      expect(acknowledgement).toEqual({ accepted: true });
+    });
+
+    it('rejects CardCast when cardId is missing or empty', async () => {
+      const { runtime } = await joinedRuntime();
+
+      await expect(
+        runtime.requestAction({ kind: 'CardCast', cardId: '' })
+      ).rejects.toThrow('CardCast action requires a non-empty cardId.');
+    });
+
+    it('routes the documented PetSkillCast action to the transport', async () => {
+      const { runtime, transport } = await joinedRuntime();
+
+      const acknowledgement = await runtime.requestAction({
+        kind: 'PetSkillCast',
+      });
+
+      expect(transport.petSkillCastCalls).toHaveLength(1);
+      const [battleId, clientSequence] = transport.petSkillCastCalls[0];
+      expect(battleId).toBe('battle-42');
+      expect(typeof clientSequence).toBe('string');
+      expect(clientSequence!.length).toBeGreaterThan(0);
+      expect(acknowledgement).toEqual({ accepted: true });
+    });
+
     it('still rejects every action kind the client does not implement', async () => {
       const { runtime, transport } = await joinedRuntime();
 
-      // `CardCast` and `PetSkillCast` (SIGNALR_PROTOCOL.md §2) and
-      // `GetBattleState` (§7) are not implemented by the server
-      // (BattleHub_ShouldNotRegisterGameplayMethods) and must stay unavailable
-      // on the client. An unmodelled kind is rejected, and nothing is sent.
-      for (const kind of ['CardCast', 'PetSkillCast', 'GetBattleState', 'Unknown']) {
+      // `GetBattleState` (SIGNALR_PROTOCOL.md §7) and unmodelled actions remain
+      // unimplemented and must stay unavailable on the client.
+      for (const kind of ['GetBattleState', 'Unknown', 'Surrender']) {
         await expect(runtime.requestAction({ kind } as never)).rejects.toBeInstanceOf(
           RuntimeActionNotImplementedError
         );
       }
 
       expect(transport.swapCalls).toEqual([]);
+      expect(transport.cardCastCalls).toEqual([]);
+      expect(transport.petSkillCastCalls).toEqual([]);
     });
   });
 

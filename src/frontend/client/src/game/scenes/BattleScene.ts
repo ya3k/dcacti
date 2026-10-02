@@ -4,7 +4,12 @@ import { readRuntime } from '../runtime/RuntimeRegistry';
 import type { GameRuntime } from '../runtime/GameRuntime';
 import type { GameRuntimeState } from '../../state/GameRuntimeState';
 import type { BattleEventsEnvelope, RuntimeBattleState, RuntimeBoard } from '../runtime/GameRuntimeEvents';
-import { RUNTIME_ACTION_SWAP } from '../runtime/GameRuntimeEvents';
+import {
+  RUNTIME_ACTION_SWAP,
+  RUNTIME_ACTION_CARD_CAST,
+  RUNTIME_ACTION_PET_SKILL_CAST,
+} from '../runtime/GameRuntimeEvents';
+import type { CardResponse } from '../../services/api/CollectionModels';
 import type { InBattleServerEvent } from './BattleEventPresenter';
 import { parseInBattleEvent, formatInBattleEvent } from './BattleEventPresenter';
 
@@ -93,12 +98,16 @@ export class BattleScene extends Phaser.Scene {
   private battleText: Phaser.GameObjects.Text | null = null;
   private boardText: Phaser.GameObjects.Text | null = null;
   private swapText: Phaser.GameObjects.Text | null = null;
+  /** Feedback text area presenting card/skill cast transport feedback. */
+  private castText: Phaser.GameObjects.Text | null = null;
   /** Feedback text area presenting in-battle server events in delivered order. */
   private feedbackText: Phaser.GameObjects.Text | null = null;
   /** Visual layer for transient event highlights and floating combat text. */
   private feedbackLayer: Phaser.GameObjects.Container | null = null;
   /** The drawn board cells, cleared and redrawn on each state push. */
   private boardLayer: Phaser.GameObjects.Container | null = null;
+  /** Interactive cast controls container for equipped cards and signature skill. */
+  private castControlsLayer: Phaser.GameObjects.Container | null = null;
   /**
    * The first selected cell's §1.0 index, or `null` when nothing is selected.
    *
@@ -108,12 +117,18 @@ export class BattleScene extends Phaser.Scene {
   private selectedCell: number | null = null;
   /** True while a Swap request is outstanding, so further taps are ignored. */
   private swapPending = false;
+  /** True while any action request (swap or cast) is in flight. */
+  private actionInFlight = false;
   /** True while an in-battle event presentation sequence is playing, locking player input. */
   private presentationLocked = false;
   /** Guard ensuring only the first terminal outcome event transitions to ResultScene. */
   private outcomeHandled = false;
   /** Log of presented events for display and verification. */
   private presentedEventsLog: string[] = [];
+  /** Card definition lookup populated via GameRuntimePort.getCards(). */
+  private cardDefinitions = new Map<string, CardResponse>();
+  /** Current battle state for redrawing cast controls when card definitions load. */
+  private currentBattleState: RuntimeBattleState | null = null;
 
   constructor() {
     super('BattleScene');
@@ -123,6 +138,8 @@ export class BattleScene extends Phaser.Scene {
     this.runtime = readRuntime(this);
     this.drawRuntimeShell();
     this.registerBoardInput();
+
+    void this.loadCardDefinitions();
 
     // Reflect current runtime state immediately, then follow transitions.
     this.renderRuntimeState(this.runtime?.getState() ?? null);
@@ -157,17 +174,23 @@ export class BattleScene extends Phaser.Scene {
     this.battleText = null;
     this.boardText = null;
     this.swapText = null;
+    this.castText = null;
     this.feedbackText = null;
     this.boardLayer?.destroy(true);
     this.boardLayer = null;
+    this.castControlsLayer?.destroy(true);
+    this.castControlsLayer = null;
     this.feedbackLayer?.destroy(true);
     this.feedbackLayer = null;
     this.tweens?.killAll();
     this.selectedCell = null;
     this.swapPending = false;
+    this.actionInFlight = false;
     this.presentationLocked = false;
     this.outcomeHandled = false;
     this.presentedEventsLog = [];
+    this.cardDefinitions.clear();
+    this.currentBattleState = null;
   }
 
   private drawRuntimeShell(): void {
@@ -235,6 +258,16 @@ export class BattleScene extends Phaser.Scene {
       })
       .setOrigin(0, 0.5);
 
+    // Cast input / acknowledgement feedback. Transport feedback about CardCast
+    // and PetSkillCast requests (SIGNALR_PROTOCOL.md §2, §5).
+    this.castText = this.add
+      .text(BOARD_ORIGIN_X, BOARD_ORIGIN_Y + BOARD_WIDTH + 14, '', {
+        fontFamily: 'ui-monospace, monospace',
+        fontSize: '13px',
+        color: '#94a3b8',
+      })
+      .setOrigin(0, 0.5);
+
     // Event presentation feedback readout. Starts empty on create so no forbidden terms exist before events arrive.
     this.feedbackText = this.add
       .text(BOARD_ORIGIN_X + BOARD_WIDTH + 24, BOARD_ORIGIN_Y, '', {
@@ -246,6 +279,7 @@ export class BattleScene extends Phaser.Scene {
       .setOrigin(0, 0);
 
     this.boardLayer = this.add.container(0, 0);
+    this.castControlsLayer = this.add.container(0, 0);
     this.feedbackLayer = this.add.container(0, 0);
   }
 
@@ -290,6 +324,8 @@ export class BattleScene extends Phaser.Scene {
    * (GAME_STATE.md §2.0.5.4, ADR-001).
    */
   private renderBattleState(state: RuntimeBattleState | null): void {
+    this.currentBattleState = state;
+
     if (!this.battleText) {
       return;
     }
@@ -297,6 +333,7 @@ export class BattleScene extends Phaser.Scene {
     if (state === null) {
       this.battleText.setText('');
       this.renderBoard(null);
+      this.renderCastControls(null);
       return;
     }
     this.battleText.setText(
@@ -317,6 +354,94 @@ export class BattleScene extends Phaser.Scene {
     );
 
     this.renderBoard(state.board);
+    this.renderCastControls(state);
+  }
+
+  /**
+   * Loads card definition metadata via the runtime port (`GameRuntimePort.getCards()`).
+   *
+   * The client uses definition metadata only to present names and identify the
+   * Signature Skill (`category === 'PetSkill'`). It performs no gameplay validation
+   * and computes no effect or cost (CARD_RULES.md §3, ADR-001).
+   */
+  private async loadCardDefinitions(): Promise<void> {
+    if (!this.runtime || typeof this.runtime.getCards !== 'function') {
+      return;
+    }
+
+    try {
+      const cards = await this.runtime.getCards();
+      this.cardDefinitions.clear();
+      for (const card of cards) {
+        this.cardDefinitions.set(card.cardId, card);
+      }
+      if (this.currentBattleState) {
+        this.renderCastControls(this.currentBattleState);
+      }
+    } catch {
+      // Failed collection read is presentation feedback; controls render with available data.
+    }
+  }
+
+  /**
+   * Renders interactive cast triggers for equipped cards and the active Pet's
+   * Signature Skill from authoritative `RuntimeBattleState.petState.equippedCards`.
+   */
+  private renderCastControls(state: RuntimeBattleState | null): void {
+    if (!this.castControlsLayer) {
+      return;
+    }
+
+    this.castControlsLayer.removeAll(true);
+
+    if (state === null || !state.petState.equippedCards) {
+      return;
+    }
+
+    const equipped = state.petState.equippedCards;
+    const buttonWidth = 115;
+    const buttonHeight = 36;
+    const buttonGap = 10;
+    const originY = BOARD_ORIGIN_Y + BOARD_WIDTH + 34;
+
+    for (let index = 0; index < equipped.length; index++) {
+      const cardId = equipped[index];
+      const def = this.cardDefinitions.get(cardId);
+      const isPetSkill = def?.category === 'PetSkill';
+      const displayName = def?.name ?? cardId;
+      const labelText = isPetSkill ? `Skill: ${displayName}` : `Card: ${displayName}`;
+
+      const x = BOARD_ORIGIN_X + index * (buttonWidth + buttonGap) + buttonWidth / 2;
+      const y = originY + buttonHeight / 2;
+
+      const tile = this.add
+        .rectangle(x, y, buttonWidth, buttonHeight, isPetSkill ? 0x4f46e5 : 0x1e293b)
+        .setStrokeStyle(1, isPetSkill ? 0x818cf8 : 0x475569)
+        .setInteractive({ useHandCursor: true });
+
+      const label = this.add
+        .text(x, y, labelText, {
+          fontFamily: 'system-ui, sans-serif',
+          fontSize: '12px',
+          color: '#e2e8f0',
+          fontStyle: 'bold',
+        })
+        .setOrigin(0.5)
+        .setInteractive({ useHandCursor: true });
+
+      const onTrigger = () => {
+        if (isPetSkill) {
+          void this.submitPetSkillCast();
+        } else {
+          void this.submitCardCast(cardId);
+        }
+      };
+
+      tile.on(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN, onTrigger);
+      label.on(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN, onTrigger);
+
+      this.castControlsLayer.add([tile, label]);
+    }
   }
 
   /**
@@ -476,7 +601,7 @@ export class BattleScene extends Phaser.Scene {
    * this scene renders.
    */
   private onCellTapped(cellIndex: number | null): void {
-    if (cellIndex === null || this.swapPending || this.presentationLocked) {
+    if (cellIndex === null || this.isInputLocked()) {
       return;
     }
 
@@ -511,12 +636,17 @@ export class BattleScene extends Phaser.Scene {
    * is shown as feedback only (`MATCH3_RULES.md` §2.1.5, §5 item 2).
    */
   private async submitSwap(fromCell: number, toCell: number): Promise<void> {
+    if (this.isInputLocked()) {
+      return;
+    }
+
     if (!this.runtime) {
       this.renderSwapStatus('Swap unavailable: no runtime is connected.');
       return;
     }
 
     this.swapPending = true;
+    this.actionInFlight = true;
     this.renderSwapStatus();
 
     try {
@@ -539,6 +669,7 @@ export class BattleScene extends Phaser.Scene {
       );
     } finally {
       this.swapPending = false;
+      this.actionInFlight = false;
     }
   }
 
@@ -597,6 +728,106 @@ export class BattleScene extends Phaser.Scene {
         : `Cell ${this.selectedCell} selected — select a neighbour.`
     );
     this.swapText.setColor('#94a3b8');
+  }
+
+  /**
+   * Submits one CardCast request through the runtime port and presents the result.
+   */
+  private async submitCardCast(cardId: string): Promise<void> {
+    if (this.isInputLocked()) {
+      return;
+    }
+
+    if (!this.runtime) {
+      this.renderCastStatus('CardCast unavailable: no runtime is connected.');
+      return;
+    }
+
+    this.actionInFlight = true;
+    this.renderCastStatus(`CardCast ${cardId} in flight…`);
+
+    try {
+      const acknowledgement = await this.runtime.requestAction({
+        kind: RUNTIME_ACTION_CARD_CAST,
+        cardId,
+      });
+
+      this.renderCastStatus(undefined, cardId, false, acknowledgement);
+    } catch (error) {
+      this.renderCastStatus(
+        `CardCast ${cardId} not sent: ${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      this.actionInFlight = false;
+    }
+  }
+
+  /**
+   * Submits one PetSkillCast request through the runtime port and presents the result.
+   */
+  private async submitPetSkillCast(): Promise<void> {
+    if (this.isInputLocked()) {
+      return;
+    }
+
+    if (!this.runtime) {
+      this.renderCastStatus('PetSkillCast unavailable: no runtime is connected.');
+      return;
+    }
+
+    this.actionInFlight = true;
+    this.renderCastStatus('PetSkillCast in flight…');
+
+    try {
+      const acknowledgement = await this.runtime.requestAction({
+        kind: RUNTIME_ACTION_PET_SKILL_CAST,
+      });
+
+      this.renderCastStatus(undefined, undefined, true, acknowledgement);
+    } catch (error) {
+      this.renderCastStatus(
+        `PetSkillCast not sent: ${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      this.actionInFlight = false;
+    }
+  }
+
+  /**
+   * Presents cast interaction transport feedback: in flight, accepted, or rejected
+   * with server machine-readable reason (SIGNALR_PROTOCOL.md §2, §5).
+   */
+  private renderCastStatus(
+    message?: string,
+    cardId?: string,
+    isSkill?: boolean,
+    acknowledgement?: { readonly accepted: boolean; readonly reason?: string | null }
+  ): void {
+    if (!this.castText) {
+      return;
+    }
+
+    if (message !== undefined) {
+      this.castText.setText(message);
+      this.castText.setColor(message.includes('in flight') ? '#94a3b8' : '#f87171');
+      return;
+    }
+
+    if (acknowledgement) {
+      const actionName = isSkill ? 'PetSkillCast' : `CardCast ${cardId}`;
+      if (acknowledgement.accepted) {
+        this.castText.setText(`${actionName}: accepted. Awaiting the server's state push.`);
+        this.castText.setColor('#34d399');
+      } else {
+        this.castText.setText(
+          `${actionName}: rejected (${acknowledgement.reason ?? 'unknown'}).`
+        );
+        this.castText.setColor('#fbbf24');
+      }
+      return;
+    }
+
+    this.castText.setText('');
   }
 
   /**
@@ -778,7 +1009,7 @@ export class BattleScene extends Phaser.Scene {
 
   /** Returns whether player input is currently locked. */
   isInputLocked(): boolean {
-    return this.presentationLocked || this.swapPending;
+    return this.presentationLocked || this.swapPending || this.actionInFlight;
   }
 
   /**

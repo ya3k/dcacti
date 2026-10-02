@@ -264,12 +264,18 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
 
         // §3.2.18 item 3: the Skill's damage is carried by the damage events in the
         // same batch, with source="boss" and target="player".
+        //
+        // The Skill's own instance is the first Boss-sourced one of the response. A
+        // Burn instance that Flame Burst then applies (BOSS_RULES.md §6.3.1 item 1)
+        // also reports source="boss" when it ticks at step 19a, so the batch can
+        // carry more than one Boss-sourced instance; that later one is a
+        // Status-Effect tick, not the Skill's damage.
         var bossDamage = payload.GetProperty("events").EnumerateArray()
             .Where(e => e.GetProperty("type").GetString() == "DamageDealt"
                 && e.GetProperty("source").GetString() == "boss")
             .ToArray();
 
-        Assert.Single(bossDamage);
+        Assert.NotEmpty(bossDamage);
         Assert.Equal("player", bossDamage[0].GetProperty("target").GetString());
     }
 
@@ -289,17 +295,32 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
             .Where(e => e.GetProperty("type").GetString() == "DamageDealt")
             .ToArray();
 
-        Assert.Equal(2, dealt.Length);
+        // The batch carries both directions, the player's first. Flame Burst's Burn
+        // (BOSS_RULES.md §6.3.1 item 1) adds a further Boss-sourced instance when it
+        // ticks at step 19a, so the assertion is on each direction's members rather
+        // than on a fixed total that a documented Status Effect tick can change.
+        Assert.True(dealt.Length >= 2);
 
         Assert.Equal("player", dealt[0].GetProperty("source").GetString());
         Assert.Equal("boss", dealt[0].GetProperty("target").GetString());
-        Assert.Equal("boss", dealt[1].GetProperty("source").GetString());
-        Assert.Equal("player", dealt[1].GetProperty("target").GetString());
 
-        // Each instance reports its own amount, and both are positive at the MVP
-        // stats — an instance of 0 would make the direction assertion vacuous.
+        // Every Boss-sourced instance of the batch reports target="player".
+        var bossInstances = dealt
+            .Where(e => e.GetProperty("source").GetString() == "boss")
+            .ToArray();
+
+        Assert.NotEmpty(bossInstances);
+        Assert.All(
+            bossInstances,
+            e => Assert.Equal("player", e.GetProperty("target").GetString()));
+
+        // Each instance reports its own amount, and both directions are positive at
+        // the MVP stats — an instance of 0 would make the direction assertion
+        // vacuous.
         Assert.True(dealt[0].GetProperty("amount").GetInt32() > 0);
-        Assert.True(dealt[1].GetProperty("amount").GetInt32() > 0);
+        Assert.All(
+            bossInstances,
+            e => Assert.True(e.GetProperty("amount").GetInt32() > 0));
     }
 
     // =======================================================================
@@ -397,8 +418,19 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
         Assert.DoesNotContain("BattleWon", types);
         Assert.DoesNotContain("BattleLost", types);
 
-        // The full response still ran: two damage instances, the player's first.
-        Assert.Equal(2, types.Count(t => t == "DamageDealt"));
+        // The full response still ran: the player's instance first, then the Boss's.
+        // Flame Burst's Burn (BOSS_RULES.md §6.3.1 item 1) may add a further
+        // Boss-sourced instance when it ticks at step 19a, so the assertion is on
+        // both directions being present and the player's coming first — not on a
+        // total that a documented Status Effect tick can legitimately change.
+        var dealt = payload.GetProperty("events").EnumerateArray()
+            .Where(e => e.GetProperty("type").GetString() == "DamageDealt")
+            .ToArray();
+
+        Assert.True(dealt.Length >= 2);
+        Assert.Equal("player", dealt[0].GetProperty("source").GetString());
+        Assert.Equal("boss", dealt[0].GetProperty("target").GetString());
+        Assert.Contains(dealt, e => e.GetProperty("source").GetString() == "boss");
     }
 
     [Fact]

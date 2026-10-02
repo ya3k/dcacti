@@ -158,7 +158,19 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
             var row = rows.Single(r => r.BossDefinitionId == definition.BossDefinitionId);
 
             Assert.Equal(definition.PassiveDefinition, row.PassiveDefinition);
-            Assert.Equal(definition.SkillDefinition, row.SkillDefinition);
+
+            // DATABASE.md §1 note item 4 fixes the stored SkillDefinition
+            // document to exactly skillId, baseDamage, chargeRequirement, and
+            // cooldownTurns ("fixed by TASK-045 … unchanged"), so the comparison
+            // is scoped to those four persisted members. The Skill's secondary
+            // effect (BOSS_RULES.md §6.3.1) is Domain configuration on the same
+            // record but is deliberately NOT a stored member — the same
+            // treatment the combat stats MaxHP/ATK/DEF/EnrageThreshold receive —
+            // so it is excluded from the persisted comparison rather than being
+            // silently absent from it.
+            Assert.Equal(
+                definition.SkillDefinition with { SecondaryEffect = null },
+                row.SkillDefinition);
 
             Assert.Equal(
                 BossDefinitionJson.WritePassive(definition.PassiveDefinition),

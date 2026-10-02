@@ -37,6 +37,26 @@ export interface SwapResult {
 }
 
 /**
+ * The direct invocation result of a `CardCast` request
+ * (`SIGNALR_PROTOCOL.md` §2, §5).
+ */
+export interface CardCastAcknowledgement {
+  readonly accepted: boolean;
+  readonly reason?: string | null;
+}
+export type CardCastResult = CardCastAcknowledgement;
+
+/**
+ * The direct invocation result of a `PetSkillCast` request
+ * (`SIGNALR_PROTOCOL.md` §2, §5).
+ */
+export interface PetSkillCastAcknowledgement {
+  readonly accepted: boolean;
+  readonly reason?: string | null;
+}
+export type PetSkillCastResult = PetSkillCastAcknowledgement;
+
+/**
  * The authoritative battle state pushed on group join
  * (SIGNALR_PROTOCOL.md §4, §4.2, §4.3).
  *
@@ -152,6 +172,12 @@ export interface PetStatePayload {
    * item 7).
    */
   readonly passiveResetOverride?: string;
+  /**
+   * The active Pet's equipped cards (`SIGNALR_PROTOCOL.md` §4.3 item 13,
+   * `GAME_STATE.md` §2.3). Exactly the 4-entry loadout (3 Basic Cards +
+   * 1 Pet Skill Card). Always present, non-empty, and non-nullable.
+   */
+  readonly equippedCards: readonly string[];
 }
 
 /**
@@ -295,20 +321,20 @@ export interface SignalRConnectionHandlers {
  * never on `HubConnection` directly — that keeps Phaser independent of the
  * transport implementation (ARCHITECTURE.md §2.2 rule 3, task §16).
  *
- * In-battle hub methods (`CardCast`, `PetSkillCast`, `GetBattleState`) are NOT
- * implemented: they require the Card/Pet systems and reconnect recovery, which
- * are out of scope (SIGNALR_PROTOCOL.md §2, §7).
+ * In-battle hub methods `CardCast` and `PetSkillCast` (SIGNALR_PROTOCOL.md §2)
+ * are implemented. Reconnect recovery (`GetBattleState`, §7) remains out of scope.
  * `ReceiveEvents` (§3) is subscribed generically so the runtime can forward
  * server-authoritative event batches without modelling any event shape.
  *
- * Two client → server methods are implemented here, and neither is gameplay:
- * `joinBattle` (§1.2) adds the connection to the battle's group, which is what
- * triggers the server's initial-state push (§4.1), and `swap` (§2.1) submits the
- * documented Swap request and returns the §5 acknowledgement. The service
- * decides nothing: it does not detect matches, validate board state, resolve a
- * cascade, or modify any battle state — the server remains authoritative
- * (`GAME_RULES.md` §18, ADR-001). The service exposes them and subscribes to
- * `BattleStateUpdated` (§4) without interpreting the payload.
+ * Three client → server gameplay actions are implemented here: `swap` (§2.1),
+ * `cardCast` (§2), and `petSkillCast` (§2). None is client-authoritative: the
+ * service sends requests and returns §5 acknowledgements verbatim.
+ * `joinBattle` (§1.2) adds the connection to the battle's group, which triggers
+ * the server's initial-state push (§4.1). The service decides nothing: it does
+ * not detect matches, validate board state, resolve a cascade, or modify any
+ * battle state — the server remains authoritative (`GAME_RULES.md` §18, ADR-001).
+ * The service exposes them and subscribes to `BattleStateUpdated` (§4) without
+ * interpreting the payload.
  */
 export class SignalRService {
   private static instance: SignalRService | null = null;
@@ -523,6 +549,58 @@ export class SignalRService {
       battleId,
       fromCell,
       toCell,
+      clientSequence
+    );
+  }
+
+  /**
+   * Submits one CardCast request (`SIGNALR_PROTOCOL.md` §2) and returns the
+   * §5 acknowledgement verbatim.
+   *
+   * The three arguments are exactly the documented request, in the documented
+   * order: `battleId`, `cardId`, `clientSequence`. `cardId` is the cast Card's
+   * `CardDefinitionId` (§3.2.20).
+   *
+   * `clientSequence` is the opaque client-generated correlation id (§2 item 1).
+   */
+  public async cardCast(
+    battleId: string,
+    cardId: string,
+    clientSequence?: string
+  ): Promise<CardCastAcknowledgement> {
+    if (!this.connection || this.connection.state !== signalR.HubConnectionState.Connected) {
+      throw new Error('SignalR connection is not established.');
+    }
+
+    return await this.connection.invoke<CardCastAcknowledgement>(
+      'CardCast',
+      battleId,
+      cardId,
+      clientSequence
+    );
+  }
+
+  /**
+   * Submits one PetSkillCast request (`SIGNALR_PROTOCOL.md` §2) and returns the
+   * §5 acknowledgement verbatim.
+   *
+   * The two arguments are exactly the documented request, in the documented
+   * order: `battleId`, `clientSequence`. The active Pet's Signature Skill is
+   * implied (§2).
+   *
+   * `clientSequence` is the opaque client-generated correlation id (§2 item 1).
+   */
+  public async petSkillCast(
+    battleId: string,
+    clientSequence?: string
+  ): Promise<PetSkillCastAcknowledgement> {
+    if (!this.connection || this.connection.state !== signalR.HubConnectionState.Connected) {
+      throw new Error('SignalR connection is not established.');
+    }
+
+    return await this.connection.invoke<PetSkillCastAcknowledgement>(
+      'PetSkillCast',
+      battleId,
       clientSequence
     );
   }

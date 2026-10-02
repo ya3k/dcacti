@@ -1347,10 +1347,248 @@ public class BattleStateSerializationTests
             BossState = RepresentativeBossState() with { ActiveStatusEffects = bossEffects },
         };
 
+    /// <summary>
+    /// A representative state carrying the supplied <c>NextAttackCritModifiers[]</c>
+    /// collection (<c>GAME_STATE.md</c> §2.3.4).
+    /// </summary>
+    private static BattleState StateWithCritModifiers(
+        NextAttackCritModifier[] modifiers) =>
+        RepresentativeState() with
+        {
+            PetState = RepresentativePetState() with { NextAttackCritModifiers = modifiers },
+        };
+
+    [Fact]
+    public void RoundTrip_ShouldPreserveEachNextAttackCritModifierByValue()
+    {
+        // GAME_STATE.md §2.3.4 item 8 / REDIS_STATE.md §7 item 13: every element's two
+        // members survive Domain -> JSON -> Domain with the same values, and the
+        // element gains no third member (§2.3.4 item 4 fixes the schema at exactly
+        // two).
+        var original = StateWithCritModifiers(
+        [
+            new NextAttackCritModifier("card-iron-fang", 10),
+            new NextAttackCritModifier("passive-bach-ho", 25),
+        ]);
+
+        var json = BattleStateSerializer.Serialize(original);
+        var restored = BattleStateSerializer.Deserialize(json);
+
+        Assert.Equal(2, restored.PetState.NextAttackCritModifiers.Length);
+
+        var ironFang = restored.PetState.NextAttackCritModifiers[0];
+        Assert.Equal("card-iron-fang", ironFang.SourceIdentity);
+        Assert.Equal(10, ironFang.CritContribution);
+
+        var bachHo = restored.PetState.NextAttackCritModifiers[1];
+        Assert.Equal("passive-bach-ho", bachHo.SourceIdentity);
+        Assert.Equal(25, bachHo.CritContribution);
+
+        // Exactly two members are written, and no duration/expiry/consumed member is
+        // synthesized (§2.3.4 item 4).
+        var element = JsonDocument.Parse(json).RootElement
+            .GetProperty("petState").GetProperty("nextAttackCritModifiers")[0];
+
+        Assert.Equal(2, element.EnumerateObject().Count());
+        Assert.True(element.TryGetProperty("sourceIdentity", out _));
+        Assert.True(element.TryGetProperty("critContribution", out _));
+        Assert.False(element.TryGetProperty("remainingTurns", out _));
+        Assert.False(element.TryGetProperty("expiryCondition", out _));
+        Assert.False(element.TryGetProperty("consumed", out _));
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldPreserveTheModifierCollectionOrder()
+    {
+        // REDIS_STATE.md §7 item 13 requires the order to round-trip, even though
+        // §2.3.4 item 6 makes it non-semantic — a record that reordered the elements
+        // would not be a no-op round trip.
+        var original = StateWithCritModifiers(
+        [
+            new NextAttackCritModifier("source-c", 5),
+            new NextAttackCritModifier("source-a", 10),
+            new NextAttackCritModifier("source-b", 15),
+        ]);
+
+        var restored = BattleStateSerializer.Deserialize(
+            BattleStateSerializer.Serialize(original));
+
+        Assert.Equal(
+            ["source-c", "source-a", "source-b"],
+            restored.PetState.NextAttackCritModifiers.Select(m => m.SourceIdentity));
+
+        Assert.True(original.PetState.NextAttackCritModifiersEqual(restored.PetState));
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldWriteAnEmptyModifierCollectionAsAnEmptyArray()
+    {
+        // GAME_STATE.md §2.3.4 item 5: absence of the collection is not a representable
+        // state — an entity with no active modifier serializes an EMPTY ARRAY, never an
+        // omission and never null. This is deliberately unlike
+        // LastCommittedSwapPair, whose absence IS a documented statement.
+        var original = StateWithCritModifiers([]);
+
+        var json = BattleStateSerializer.Serialize(original);
+
+        var member = JsonDocument.Parse(json).RootElement
+            .GetProperty("petState").GetProperty("nextAttackCritModifiers");
+
+        Assert.Equal(JsonValueKind.Array, member.ValueKind);
+        Assert.Equal(0, member.GetArrayLength());
+
+        var restored = BattleStateSerializer.Deserialize(json);
+
+        Assert.NotNull(restored.PetState.NextAttackCritModifiers);
+        Assert.Empty(restored.PetState.NextAttackCritModifiers);
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldBeStableAcrossRepeatedCyclesWithCritModifiers()
+    {
+        // §2.3.4 item 8: the round trip is lossless, so a second cycle must produce a
+        // byte-identical document — a record that lost or reordered an element would
+        // drift on the second pass.
+        var original = StateWithCritModifiers(
+        [
+            new NextAttackCritModifier("card-iron-fang", 10),
+            new NextAttackCritModifier("passive-bach-ho", 10),
+        ]);
+
+        var first = BattleStateSerializer.Serialize(original);
+        var restored = BattleStateSerializer.Deserialize(first);
+        var second = BattleStateSerializer.Serialize(restored);
+
+        Assert.Equal(first, second);
+        Assert.True(restored.PetState.NextAttackCritModifiersEqual(
+            BattleStateSerializer.Deserialize(second).PetState));
+    }
+
+    [Fact]
+    public void Deserialize_ShouldRejectANullModifierCollection()
+    {
+        // GAME_STATE.md §2.3.4 item 5: "Absence of the collection is not a representable
+        // state", so a stored null is a contract violation and is refused rather than
+        // read as empty — the same treatment §2.3.2 item 1 gives statusEffects.
+        var json = BattleStateSerializer.Serialize(StateWithCritModifiers([]));
+        var withNull = json.Replace(
+            "\"nextAttackCritModifiers\":[]",
+            "\"nextAttackCritModifiers\":null",
+            StringComparison.Ordinal);
+
+        Assert.Contains("\"nextAttackCritModifiers\":null", withNull, StringComparison.Ordinal);
+        Assert.Throws<JsonException>(() => BattleStateSerializer.Deserialize(withNull));
+    }
+
+    [Fact]
+    public void Deserialize_ShouldRejectAModifierWithABlankSourceIdentity()
+    {
+        // §2.3.4 item 2: the identity is the removal key that source-specific
+        // consumption matches on. A blank one could not be consumed
+        // source-specifically, so a stored element carrying it is rejected at the read
+        // rather than admitted into the state.
+        var json = BattleStateSerializer.Serialize(
+            StateWithCritModifiers([new NextAttackCritModifier("card-iron-fang", 10)]));
+        var withBlank = json.Replace(
+            "\"sourceIdentity\":\"card-iron-fang\"",
+            "\"sourceIdentity\":\"\"",
+            StringComparison.Ordinal);
+
+        Assert.Contains("\"sourceIdentity\":\"\"", withBlank, StringComparison.Ordinal);
+        Assert.Throws<JsonException>(() => BattleStateSerializer.Deserialize(withBlank));
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldPreserveModifiersAlongsideStatusEffects()
+    {
+        // GAME_STATE.md §2.3.4 item 1: the two collections are separate concepts with
+        // separate representations. Neither may be collapsed into the other, and a
+        // record carrying both must round-trip both.
+        var original = StateWithEffects([TurnBasedBurn()], []) with
+        {
+            PetState = (StateWithEffects([TurnBasedBurn()], []).PetState) with
+            {
+                NextAttackCritModifiers = [new NextAttackCritModifier("card-iron-fang", 10)],
+            },
+        };
+
+        var restored = BattleStateSerializer.Deserialize(
+            BattleStateSerializer.Serialize(original));
+
+        Assert.Single(restored.PetState.ActiveStatusEffects);
+        Assert.Single(restored.PetState.NextAttackCritModifiers);
+        Assert.True(original.PetState.StatusEffectsEqual(restored.PetState));
+        Assert.True(original.PetState.NextAttackCritModifiersEqual(restored.PetState));
+    }
+
+    [Fact]
+    public void RoundTrip_ShouldPreserveTheBossSkillSecondaryEffectInstances()
+    {
+        // BOSS_RULES.md §6.3.1 items 1 and 3 / GAME_STATE.md §2.3.2 items 3 and 5:
+        // the two instances a Boss Skill's secondary effect applies to the active Pet
+        // — Flame Burst's Burn and Root — round-trip with no new JSON member. The
+        // values are the committed ones (both are applied at step 18b of a Turn and
+        // consumed once at that Turn's step 19a), and the member set is exactly
+        // §2.3.1's: Root carries targetStat, Burn does not, and neither carries
+        // expiryCondition because both are Turn-based (§2.3.1 item 3).
+        var original = StateWithEffects(
+            [TurnBasedBurn(remainingTurns: 1), TurnBasedRoot(remainingTurns: 1)],
+            []);
+
+        var json = BattleStateSerializer.Serialize(original);
+        var restored = BattleStateSerializer.Deserialize(json);
+
+        Assert.True(original.PetState.StatusEffectsEqual(restored.PetState));
+
+        var burn = restored.PetState.ActiveStatusEffects.Single(e => e.Id == "Burn");
+        Assert.Equal(StatusEffectType.DoT, burn.Type);
+        Assert.Equal(StatusEffectSource.Boss, burn.Source);
+        Assert.Equal(50, burn.Magnitude);
+        Assert.Equal(1, burn.RemainingTurns);
+        Assert.Null(burn.TargetStat);
+        Assert.Null(burn.ExpiryCondition);
+
+        var root = restored.PetState.ActiveStatusEffects.Single(e => e.Id == "Root");
+        Assert.Equal(StatusEffectType.BuffDebuff, root.Type);
+        Assert.Equal(StatusEffectSource.Boss, root.Source);
+        Assert.Equal(30, Math.Abs(root.Magnitude));
+        Assert.Equal("ATK", root.TargetStat);
+        Assert.Equal(1, root.RemainingTurns);
+        Assert.Null(root.ExpiryCondition);
+
+        // The serialized elements carry exactly §2.3.1's members — no Boss-Skill
+        // specific member is introduced by the effect that produced them.
+        var elements = JsonDocument.Parse(json).RootElement
+            .GetProperty("petState").GetProperty("statusEffects")
+            .EnumerateArray()
+            .ToArray();
+
+        foreach (var element in elements)
+        {
+            var names = element.EnumerateObject()
+                .Select(p => p.Name)
+                .OrderBy(n => n, StringComparer.Ordinal)
+                .ToArray();
+
+            Assert.All(
+                names,
+                name => Assert.Contains(
+                    name,
+                    new[]
+                    {
+                        "id", "type", "source", "magnitude",
+                        "targetStat", "remainingTurns", "expiryCondition",
+                    }));
+
+            Assert.DoesNotContain("bossSkillId", names);
+            Assert.DoesNotContain("skillId", names);
+            Assert.DoesNotContain("effectKind", names);
+        }
+    }
+
     [Fact]
     public void RoundTrip_ShouldPreserveATurnBasedInstance()
-    {
-        // GAME_STATE.md §2.3.2 item 5: an instance carrying RemainingTurns
+    {        // GAME_STATE.md §2.3.2 item 5: an instance carrying RemainingTurns
         // survives Domain -> JSON -> Domain with the same value, and the instance
         // does not gain an ExpiryCondition member it never had (§2.3.1 item 3).
         var original = StateWithEffects([TurnBasedBurn(remainingTurns: 2)], []);

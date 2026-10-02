@@ -74,6 +74,18 @@ internal static class BattleStateJsonNames
     // element shape serves both (§2.3.1 preamble, §2.4.1).
     public const string StatusEffects = "statusEffects";
 
+    // NextAttackCritModifiers[] (GAME_STATE.md §2.3.4, §2.3.4 item 8;
+    // REDIS_STATE.md §7 item 13) — a PetState-only collection. It is a DIFFERENT
+    // collection from StatusEffects[] and deliberately carries a different member
+    // name: §2.3.4 item 1 makes the two separate representations of two different
+    // concepts, so sharing a name would be the collision §0 item 5 forbids.
+    public const string NextAttackCritModifiers = "nextAttackCritModifiers";
+
+    // One NextAttackCritModifier element (GAME_STATE.md §2.3.4 items 2–4 — exactly
+    // two members, both always present, and no third member of any kind).
+    public const string NextAttackCritSourceIdentity = "sourceIdentity";
+    public const string NextAttackCritContribution = "critContribution";
+
     // One StatusEffect element (GAME_STATE.md §2.3.2 item 3 — the exact member
     // set, in the documented order). The four required members are always
     // written; the three optional ones carry an ignore-when-absent condition.
@@ -426,6 +438,65 @@ internal sealed record PetStateJson
     /// </summary>
     [JsonPropertyName(BattleStateJsonNames.StatusEffects)]
     public required IReadOnlyList<StatusEffectJson>? StatusEffects { get; init; }
+
+    /// <summary>
+    /// The active temporary Crit modifiers awaiting consumption by a qualifying
+    /// owner attack (<c>GAME_STATE.md</c> §2.3.4, <c>ADR-017</c>).
+    ///
+    /// <b>It is always written, and it is never <c>null</c>.</b> §2.3.4 item 5 makes
+    /// the collection always-present — "Absence of the <i>collection</i> is not a
+    /// representable state" — so an entity with no active modifier serializes an
+    /// <b>empty array</b>. It therefore carries <b>no ignore condition</b>, exactly
+    /// like <see cref="StatusEffects"/> above and deliberately unlike
+    /// <see cref="EquippedRelics"/> and <see cref="EquippedCards"/>, whose stages
+    /// have a documented "not yet supplied" state to spell. This collection has no
+    /// such state.
+    ///
+    /// <b>It is nullable in the DTO so a violation is rejectable, not admissible.</b>
+    /// As with <see cref="StatusEffects"/>, the mapping always writes an array, so
+    /// the <c>null</c> branch is reachable only from a stored document that broke
+    /// the contract; the type admits it so the reader can reject it with a message
+    /// naming §2.3.4 item 5 rather than failing incidentally.
+    ///
+    /// <b>Order participates in the round trip.</b> <c>REDIS_STATE.md</c> §7
+    /// item 13 requires the order to survive serialization, even though §2.3.4
+    /// item 6 makes it non-semantic.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.NextAttackCritModifiers)]
+    public required IReadOnlyList<NextAttackCritModifierJson>? NextAttackCritModifiers { get; init; }
+}
+
+/// <summary>
+/// One <c>NextAttackCritModifier</c> element (<c>GAME_STATE.md</c> §2.3.4,
+/// <c>ADR-017</c>).
+///
+/// <b>Exactly two members, and there is no third.</b> §2.3.4 item 4 forbids a
+/// duration, a Turn counter, an expiry label, a "consumed" flag, a priority, an
+/// ordering index, a target reference, a remaining-use counter, and a timestamp —
+/// no rule reads any of them, so none is written and none may be added without a
+/// recorded owner decision.
+///
+/// <b>Both members are always present.</b> §2.3.4 item 5 states absence of a
+/// <i>member within</i> an element does not arise, and item 2 makes a blank
+/// identity unrepresentable — so neither member carries an ignore condition.
+/// </summary>
+internal sealed record NextAttackCritModifierJson
+{
+    /// <summary>
+    /// The stable source-scoped identity of the modifier's source
+    /// (<c>GAME_STATE.md</c> §2.3.4 item 2) — the removal key consumption matches
+    /// on (<c>COMBAT_RULES.md</c> §3.3 item 9). It is copied verbatim: the mapping
+    /// applies no meaning to it and derives no identity of its own.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.NextAttackCritSourceIdentity)]
+    public required string SourceIdentity { get; init; }
+
+    /// <summary>
+    /// The modifier's Crit increase in percentage points (§2.3.4 item 3), copied
+    /// verbatim and uninterpreted.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.NextAttackCritContribution)]
+    public required int CritContribution { get; init; }
 }
 
 /// <summary>

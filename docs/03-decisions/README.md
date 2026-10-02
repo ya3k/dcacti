@@ -1,6 +1,13 @@
 # Architecture Decision Records (ADR)
 
-**Version:** 1.7 (ADR-016 note added per TASK-062 — the twelve Pet XP
+**Version:** 1.9 (§8 — TASK-119 checked: the `BuffDebuff` `TargetStat = "ATK"`
+consumption gap was not listed here, is not an ADR-level open item, and is
+recorded as checked-and-closed; the resolved rule is `COMBAT_RULES.md` §5.4.
+No ADR was added or edited. Prior 1.8: ADR-017 added per TASK-117 — the architecture decision
+TASK-116's Product Owner decision set requires: `PetState.NextAttackCritModifiers[]`
+is authoritative battle runtime state, separate from `StatusEffects[]`, persisting
+across Turns until consumed by a qualifying owner attack. ADR-016 remains
+Accepted and unchanged. Prior 1.7: ADR-016 note added per TASK-062 — the twelve Pet XP
 balance/reward decisions that ADR-016 item 14 deferred to `PET_RULES.md`
 §5.2 are now finalized in `PET_RULES.md` §5.1–§5.5 (Pet Level range 1–50,
 Pet XP hard-capped at 4900). ADR-016 remains Accepted; its deferral record
@@ -154,6 +161,7 @@ technical document.
 | ADR-014 | `BattleState.PlayerId` = battle-end owner-identity source (not a wire member); `PetState.PetId` = owned Pet instance; `BattleResultId` = `BattleId` | Accepted |
 | ADR-015 | Application session authentication contract (signed JWT, stateless, `player_id` claim, Bearer + SignalR access-token propagation, 24h absolute expiry, ASP.NET Core JWT Bearer enforcement) | Accepted |
 | ADR-016 | Independent Player XP and Pet XP progression tracks — Player owns account XP / Level (capped Level 50, uncapped XP); Pet owns per-instance XP / Level (range 1–50, hard-capped at 4900); `Player.Level × PetLevelMultiplier` derivation and the `PetLevelMultiplier` field RETIRED; Pet XP balance decided in `PET_RULES.md` §5.1–§5.5 | Accepted |
+| ADR-017 | `PetState.NextAttackCritModifiers[]` as authoritative battle state — a dedicated source-specific collection separate from `StatusEffects[]`, persisting across Turns until consumed by a qualifying owner attack; additive Crit composition capped at 100 percentage points; consumed modifiers removed source-specifically; `DefaultCrit` is never a runtime reset mechanism | Accepted |
 
 **Partial supersession (ADR-016).** ADR-011 and ADR-012 remain in force
 except for the specific items named below, which ADR-016 supersedes. Their
@@ -215,6 +223,17 @@ forgotten, per `AGENTS.md` §2.2:
   algorithm, ADR-009 is the only place it is selected. Its state contract is
   defined in GAME_STATE.md §2.6.
 ```
+
+**Checked and not listed (TASK-119).** The `BuffDebuff` `TargetStat = "ATK"`
+consumption gap — that no document stated how a Turn-based Buff/Debuff's
+`Magnitude` reaches the stat its `TargetStat` names — was **not** an entry in
+this section before TASK-119. It was recorded instead in the TASK-119 task
+file's "Decision Inputs", and it was **not** an ADR-level open item: the
+Product Owner's decision (TASK-119 D-1–D-5) resolves it inside the existing
+`StatusEffects[]` model, so it introduces **no** new battle-state concept and
+requires **no** ADR. The resolved rule is authored at its canonical owner,
+`COMBAT_RULES.md` §5.4. This item is recorded here as checked-and-closed
+rather than added to the open list above.
 
 When any of these is resolved, add a new ADR (next sequential number) rather
 than retroactively editing an existing one.

@@ -141,6 +141,11 @@ public sealed class BattleHubCardCastTests : IClassFixture<ApiIntegrationTests.A
 
         // State validation
         Assert.Equal(1, statePayload.GetProperty("sequence").GetInt32());
+        var petState = statePayload.GetProperty("petState");
+        Assert.True(petState.TryGetProperty("equippedCards", out var equippedCardsProp));
+        Assert.Equal(
+            new[] { "card-heal", "card-shield", "card-power-charge", "card-inferno" },
+            equippedCardsProp.EnumerateArray().Select(c => c.GetString()).ToArray());
 
         // Events validation (SIGNALR_PROTOCOL.md §3.2.20)
         Assert.Equal(battleId, eventsPayload.GetProperty("battleId").GetString());

@@ -65,12 +65,15 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
   const boardInputHandlers = new Map<string, (pointer: { x: number; y: number }) => void>();
   /** Every action the scene submitted through the runtime port. */
   const requestedActions: Array<Record<string, unknown>> = [];
+  /** Every action invocation sent to the runtime port (including in-flight or failed). */
+  const actionInvocations: Array<Record<string, unknown>> = [];
   /** The acknowledgement `requestAction` resolves with. */
   let actionResult: { accepted: boolean; reason?: string | null } = { accepted: true };
   /** When set, `requestAction` rejects with it. */
   let actionBehaviour: (() => Promise<never>) | null = null;
   let loading = false;
   let currentBattleState = battleState;
+  const clickables: Array<{ text: string; interactive: boolean; click: () => void }> = [];
 
   const runtime = {
     getState: () => state,
@@ -94,25 +97,46 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       };
     },
     requestAction: (action: Record<string, unknown>) => {
+      actionInvocations.push(action);
       if (actionBehaviour) {
         return actionBehaviour();
       }
       requestedActions.push(action);
       return Promise.resolve(actionResult);
     },
+    getCards: vi.fn(async () => [
+      { cardId: 'card-heal', name: 'Heal', category: 'Basic' as const },
+      { cardId: 'card-shield', name: 'Shield', category: 'Basic' as const },
+      { cardId: 'card-power-charge', name: 'Power Charge', category: 'Basic' as const },
+      { cardId: 'card-inferno', name: 'Inferno', category: 'PetSkill' as const },
+    ]),
+    getPets: vi.fn(async () => []),
+    getPet: vi.fn(async () => ({} as never)),
+    getRelics: vi.fn(async () => []),
     setEngineStatus,
   };
 
   /** Builds the `this` context for a scene instance. */
   function context(scene: object, sceneKey: string): object {
+    let containerIndex = 0;
+
     /** A text object. When `into` is given, the object is a board child. */
     const makeText = (value: string, into?: { kind: string; label: string }[]) => {
       const entry = { text: value, color: undefined as string | undefined };
       texts.push(entry);
 
+      const handlers: Array<() => void> = [];
+      let interactive = false;
+
       const obj = {
         kind: 'label' as const,
         label: value,
+        get text() {
+          return entry.text;
+        },
+        get interactive() {
+          return interactive;
+        },
         setOrigin: () => obj,
         setText: (next: string) => {
           entry.text = next;
@@ -122,8 +146,24 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
           entry.color = next;
           return obj;
         },
+        setInteractive: () => {
+          interactive = true;
+          return obj;
+        },
+        on: (_event: string, handler: () => void) => {
+          handlers.push(handler);
+          return obj;
+        },
+        off: () => {
+          handlers.length = 0;
+          return obj;
+        },
+        click: () => {
+          for (const h of [...handlers]) h();
+        },
       };
 
+      clickables.push(obj);
       // Board labels are created through the same `add.text` factory as scene
       // readouts, so the distinction is made at the call site in the scene: the
       // scene adds board children to its container explicitly.
@@ -133,23 +173,25 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
 
     /** A container that models child ownership, including `removeAll`. */
     const makeContainer = () => {
+      containerIndex++;
+      const isBoard = containerIndex === 1;
       let children: Array<{ kind: string; label?: string }> = [];
 
       const obj = {
         add: (added: unknown) => {
           const list = Array.isArray(added) ? added : [added];
           children = children.concat(list as Array<{ kind: string; label?: string }>);
-          syncBoard();
+          if (isBoard) syncBoard();
           return obj;
         },
         removeAll: () => {
           children = [];
-          syncBoard();
+          if (isBoard) syncBoard();
           return obj;
         },
         destroy: () => {
           children = [];
-          syncBoard();
+          if (isBoard) syncBoard();
         },
         /** The board layer's input registration (Phaser's gameobject events). */
         on: (event: string, handler: (pointer: { x: number; y: number }) => void) => {
@@ -175,7 +217,32 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       },
       add: {
         rectangle: () => {
-          const rect = { kind: 'tile', setStrokeStyle: () => rect, setInteractive: () => rect, on: vi.fn() };
+          const handlers: Array<() => void> = [];
+          let interactive = false;
+          const rect = {
+            kind: 'tile',
+            text: '',
+            get interactive() {
+              return interactive;
+            },
+            setStrokeStyle: () => rect,
+            setInteractive: () => {
+              interactive = true;
+              return rect;
+            },
+            on: (_event: string, handler: () => void) => {
+              handlers.push(handler);
+              return rect;
+            },
+            off: () => {
+              handlers.length = 0;
+              return rect;
+            },
+            click: () => {
+              for (const h of [...handlers]) h();
+            },
+          };
+          clickables.push(rect);
           return rect;
         },
         text: (_x: number, _y: number, value: string) => makeText(value),
@@ -209,7 +276,18 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     },
     boardCells,
     boardInputHandlers,
+    clickables,
+    clickOption: (pattern: string | RegExp) => {
+      const match = clickables.find((c) =>
+        typeof pattern === 'string' ? c.text.includes(pattern) : pattern.test(c.text)
+      );
+      if (!match) {
+        throw new Error(`Clickable matching "${pattern}" was not found.`);
+      }
+      match.click();
+    },
     requestedActions,
+    actionInvocations,
     setActionResult: (next: { accepted: boolean; reason?: string | null }) => {
       actionResult = next;
     },
@@ -566,6 +644,7 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
       petState: {
         passiveId: 'xich-lang',
         passiveProgress: { threshold: 5, current: 0 },
+        equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
       },
       ...overrides,
     };
@@ -614,6 +693,7 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
       petState: {
         passiveId: 'thanh-xa-poison',
         passiveProgress: { threshold: 7, current: 3 },
+        equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
       },
     }));
 
@@ -636,6 +716,7 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
         passiveId: 'xich-lang',
         passiveProgress: { threshold: 5, current: 4 },
         passiveResetOverride: 'Partial',
+        equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
       },
     }));
 
@@ -813,9 +894,10 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     runScene(scene, ctx, 'create');
 
     // The board and its four Gem types are part of this stage; the later-stage
-    // gameplay systems are not (GAME_STATE.md §2.0.5.3).
+    // gameplay systems are not (GAME_STATE.md §2.0.5.3). Card casts are implemented
+    // in TASK-120, while remaining systems remain unmodelled.
     const rendered = harness.texts.map((t) => t.text).join(' ');
-    for (const forbidden of ['Boss', 'Combo', 'Damage', 'Pet', 'Card', 'Relic', 'PendingSpecial']) {
+    for (const forbidden of ['Boss', 'Combo', 'Damage', 'Pet', 'Relic', 'PendingSpecial']) {
       expect(rendered).not.toMatch(new RegExp(forbidden, 'i'));
     }
   });
@@ -851,6 +933,7 @@ describe('BattleScene — Swap input (MATCH3_RULES.md §2, SIGNALR_PROTOCOL.md �
       petState: {
         passiveId: 'xich-lang',
         passiveProgress: { threshold: 5, current: 0 },
+        equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
       },
       ...overrides,
     };
@@ -1070,9 +1153,193 @@ describe('BattleScene — Swap input (MATCH3_RULES.md §2, SIGNALR_PROTOCOL.md �
     // It submits through the runtime port and never invents an action name.
     expect(source).toContain('requestAction');
     expect(source).toContain('RUNTIME_ACTION_SWAP');
-    expect(source).not.toContain("'CardCast'");
-    expect(source).not.toContain("'PetSkillCast'");
+    expect(source).toContain('RUNTIME_ACTION_CARD_CAST');
+    expect(source).toContain('RUNTIME_ACTION_PET_SKILL_CAST');
     expect(source).not.toContain("'GetBattleState'");
+  });
+});
+
+describe('BattleScene — CardCast and PetSkillCast input (SIGNALR_PROTOCOL.md §2, TASK-120)', () => {
+  const GEM_NAMES = ['ATK', 'DEF', 'HP', 'POWER'];
+
+  function serverState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+    return {
+      battleId: 'battle-1',
+      turn: 0,
+      sequence: 0,
+      rngSeed: 42,
+      rngState: { state: 123456789, increment: 1 },
+      board: {
+        cells: Array.from({ length: 64 }, (_, index) => GEM_NAMES[index % GEM_NAMES.length]),
+      },
+      playerState: { combo: 0, matchCount: 0 },
+      petState: {
+        passiveId: 'xich-lang',
+        passiveProgress: { threshold: 5, current: 0 },
+        equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+      },
+      ...overrides,
+    };
+  }
+
+  function createBattle(battleState: RuntimeBattleState | null = serverState()) {
+    const harness = createSceneHarness({ battleState });
+    const scene = new BattleScene();
+    const ctx = harness.context(scene, 'BattleScene');
+    return { harness, scene, ctx };
+  }
+
+  it('renders cast controls for all synchronized equipped cards', async () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    const rendered = harness.texts.map((t) => t.text).join(' ');
+    expect(rendered).toContain('Card: Heal');
+    expect(rendered).toContain('Card: Shield');
+    expect(rendered).toContain('Card: Power Charge');
+    expect(rendered).toContain('Skill: Inferno');
+  });
+
+  it('derives the signature skill dynamically from category === PetSkill metadata', async () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    // The button for Inferno is categorized as PetSkill, so it presents as Skill
+    const skillOption = harness.clickables.find((c) => c.text.includes('Skill: Inferno'));
+    expect(skillOption).toBeDefined();
+
+    // The basic cards are presented as Card
+    const cardOption = harness.clickables.find((c) => c.text.includes('Card: Heal'));
+    expect(cardOption).toBeDefined();
+  });
+
+  it('submits CardCast through runtime.requestAction on basic card click', async () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    harness.clickOption('Card: Heal');
+    await flush();
+
+    expect(harness.requestedActions).toEqual([
+      { kind: 'CardCast', cardId: 'card-heal' },
+    ]);
+  });
+
+  it('submits PetSkillCast through runtime.requestAction on skill click without sending cardId', async () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    harness.clickOption('Skill: Inferno');
+    await flush();
+
+    expect(harness.requestedActions).toEqual([
+      { kind: 'PetSkillCast' },
+    ]);
+  });
+
+  it('displays transport feedback when cast is accepted', async () => {
+    const { harness, scene, ctx } = createBattle();
+    harness.setActionResult({ accepted: true });
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    harness.clickOption('Card: Shield');
+    await flush();
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('CardCast card-shield: accepted. Awaiting the server\'s state push.');
+  });
+
+  it('displays rejection reason code when cast is rejected', async () => {
+    const { harness, scene, ctx } = createBattle();
+    harness.setActionResult({ accepted: false, reason: 'INSUFFICIENT_POWER' });
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    harness.clickOption('Skill: Inferno');
+    await flush();
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('PetSkillCast: rejected (INSUFFICIENT_POWER).');
+  });
+
+  it('locks cast input while an action is in flight to prevent concurrent submissions', async () => {
+    const { harness, scene, ctx } = createBattle();
+    let resolveAction!: (val: { accepted: boolean; reason?: string | null }) => void;
+    harness.setActionBehaviour(
+      () =>
+        new Promise<{ accepted: boolean; reason?: string | null }>((resolve) => {
+          resolveAction = resolve;
+        }) as unknown as Promise<never>
+    );
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    // Trigger first cast
+    harness.clickOption('Card: Heal');
+
+    // Attempt second cast while first is in flight
+    harness.clickOption('Card: Shield');
+
+    // Attempt skill cast while in flight
+    harness.clickOption('Skill: Inferno');
+
+    // Attempt board swap while in flight
+    tapCell(harness, 0);
+    tapCell(harness, 1);
+
+    expect(harness.actionInvocations).toHaveLength(1);
+
+    resolveAction({ accepted: true });
+    await flush();
+
+    // Only the first action was submitted
+    expect(harness.actionInvocations).toHaveLength(1);
+    expect(harness.actionInvocations[0]).toEqual({ kind: 'CardCast', cardId: 'card-heal' });
+  });
+
+  it('locks card and skill cast while swap is in flight', async () => {
+    const { harness, scene, ctx } = createBattle();
+    let resolveSwap!: (val: { accepted: boolean; reason?: string | null }) => void;
+    harness.setActionBehaviour(
+      () =>
+        new Promise<{ accepted: boolean; reason?: string | null }>((resolve) => {
+          resolveSwap = resolveSwap ?? resolve;
+        }) as unknown as Promise<never>
+    );
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    // Start swap
+    tapCell(harness, 12);
+    tapCell(harness, 13);
+
+    // Attempt card cast while swap is in flight
+    harness.clickOption('Card: Heal');
+    harness.clickOption('Skill: Inferno');
+
+    resolveSwap({ accepted: true });
+    await flush();
+
+    // Only swap was submitted
+    expect(harness.actionInvocations).toEqual([
+      { kind: 'Swap', fromCell: 12, toCell: 13 },
+    ]);
+  });
+
+  it('has zero direct SignalRService access from BattleScene', () => {
+    const source = readFileSync(
+      resolve(__dirname, '../src/game/scenes/BattleScene.ts'),
+      'utf8'
+    );
+
+    expect(source).not.toMatch(/from\s+['"][^'"]*SignalRService/);
+    expect(source).not.toContain('hubConnection');
+    expect(source).not.toMatch(/\.invoke\s*</);
   });
 });
 

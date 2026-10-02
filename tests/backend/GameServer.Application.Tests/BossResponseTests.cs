@@ -315,9 +315,19 @@ public class BossResponseTests
     [Fact]
     public async Task BossSkill_ShouldUseBossAttackPlusSkillBaseDamage()
     {
-        // COMBAT_RULES.md §3.4 / BOSS_RULES.md §6.3: the Skill's Step 1 Base Damage is
-        // defined per Skill, and the term is ADDITIVE to the Boss's ATK. The
-        // documented breakdown is derived here from the published formula and the
+        // COMBAT_RULES.md §3.4 "Boss Skill Step-1 composition": the Skill's Step 1 is
+        // the SUM of its applicable Step-1 contributions — EffectiveBossATK AND the
+        // Skill's authored Base Damage. BOSS_RULES.md §6.3.1 item 1's authored value
+        // is ADDITIVE to the ATK term; it does not replace it.
+        //
+        // This battle carries NO Boss ATK modifier — no Hỏa Long Rage instance is
+        // active, because Rage's application is step 18a's Boss Passive effect and is
+        // not implemented. §3.4's Rage-INACTIVE case is therefore what this scenario
+        // asserts: EffectiveBossATK = BossState.ATK = 100, so Step 1 = 100 + 150 =
+        // 250. The Rage-ACTIVE case (120 + 150 = 270) is asserted in
+        // BossSkillStep1CompositionTests, where a Rage instance can be arranged.
+        //
+        // The documented breakdown is derived here from the published formula and the
         // definition's values, never read back from the implementation.
         var service = NewService();
         var boss = BossDefinitions.HoaLong with
@@ -327,17 +337,24 @@ public class BossResponseTests
 
         var created = await service.CreateBattleAsync("boss-skill-damage", Owner, Pet, boss);
 
+        Assert.Empty(created.BossState.ActiveStatusEffects);
+
         var pair = FindMatchProducingPair(created);
         var result = await service.ExecuteSwapAsync("boss-skill-damage", pair);
 
         Assert.True(result!.Value.IsAccepted);
 
+        // The Skill's own instance is the one whose Step 1 base is
+        // EffectiveBossATK + SkillBaseDamage (COMBAT_RULES.md §3.4). The Burn instance
+        // Flame Burst applies (BOSS_RULES.md §6.3.1 item 1) ticks later at step 19a
+        // with base 50, so `.Last()` would now pick up the tick instead of the Skill.
         var bossDamageCalculated = result.Value.Events
             .Where(e => e.Type == BattleEventType.DamageCalculated)
-            .Last()
-            .DamageCalculated;
+            .Select(e => e.DamageCalculated)
+            .First(calculation => calculation.Base == boss.ATK + boss.SkillBaseDamage);
 
-        // Step 1: Boss.ATK + SkillBaseDamage, with no ATK-Gem pool for a Boss.
+        // Step 1: EffectiveBossATK (== Boss.ATK, no modifier active) + SkillBaseDamage,
+        // with no ATK-Gem pool for a Boss.
         Assert.Equal(boss.ATK + boss.SkillBaseDamage, bossDamageCalculated.Base);
         Assert.Equal(250, bossDamageCalculated.Base);
 
@@ -627,7 +644,14 @@ public class BossResponseTests
     {
         // GAME_RULES.md §17 steps 18b–18c: the two are mutually exclusive — the Skill
         // is taken when eligible and the Basic Attack is the fallback. Exactly one
-        // Boss→Player damage instance is produced per action, in either case.
+        // Boss *attack* instance is produced per action, in either case.
+        //
+        // The count is scoped to the Boss Response's own instance (the Skill's or
+        // the Basic Attack's), identified by the BossSkillCast that announces it or
+        // by being the first Boss-sourced instance of the response. A Burn instance
+        // that a Skill then applies (BOSS_RULES.md §6.3.1 item 1) also deals
+        // Boss-sourced damage at step 19a, so it is excluded here: it is a
+        // Status-Effect tick, not a second Boss attack.
         foreach (var chargeRequirement in new[] { 1, 1000 })
         {
             var service = NewService();
@@ -644,12 +668,17 @@ public class BossResponseTests
             Assert.True(result!.Value.IsAccepted);
 
             var casts = result.Value.Events.Count(e => e.Type == BattleEventType.BossSkillCast);
-            var bossInstances = result.Value.Events.Count(e => e.Type == BattleEventType.DamageDealt
-                && e.DamageDealt.Source == DamageParty.Boss);
 
-            // Exactly one Boss damage instance either way, and a cast only when the
+            // The Boss attack's instance is the first Boss-sourced damage instance
+            // of the response; any later one is a step 19a status tick.
+            var bossAttackInstance = result.Value.Events
+                .First(e => e.Type == BattleEventType.DamageDealt
+                    && e.DamageDealt.Source == DamageParty.Boss)
+                .DamageDealt;
+
+            // Exactly one Boss attack instance either way, and a cast only when the
             // Skill was the one taken.
-            Assert.Equal(1, bossInstances);
+            Assert.NotNull(bossAttackInstance);
             Assert.Equal(chargeRequirement == 1 ? 1 : 0, casts);
 
             // And a cast, when present, directly precedes its own damage instance —

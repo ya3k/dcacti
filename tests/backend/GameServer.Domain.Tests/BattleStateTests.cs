@@ -459,6 +459,11 @@ public class BattleStateTests
         // never-null member §2.3.2 item 1 requires — and its own contract is
         // covered by StatusEffectTests and StatusEffectLifecycleTests.
         //
+        // NextAttackCritModifiers joined it with the NextAttack Crit stage
+        // (ADR-017, GAME_STATE.md §2.3.4), on the same footing: §2.3.4 item 5 makes
+        // the collection always-present, so it is asserted present here and its own
+        // contract is covered by NextAttackCritModifierTests.
+        //
         // Tier/Star/Level remain owned by the Pet progression stage and are still
         // not stubbed here (§0 item 4, §0 item 5).
         var dataMembers = typeof(PetState)
@@ -484,7 +489,8 @@ public class BattleStateTests
         // member ADR-014 decision 4 fixed to the owned instance — there is no
         // second PetId/PetInstanceId member beside it. ActiveStatusEffects is the
         // Status Effect stage's member (§2.3.1), the canonical never-null form of
-        // the nullable constructor parameter.
+        // the nullable constructor parameter. NextAttackCritModifiers is the
+        // NextAttack Crit stage's member (§2.3.4), the same never-null form.
         var declared = typeof(PetState)
             .GetProperties()
             .Select(p => p.Name)
@@ -496,7 +502,7 @@ public class BattleStateTests
             {
                 "ATK", "ActiveStatusEffects", "Crit", "DEF", "Element", "EquippedCards",
                 "EquippedRelics", "HP",
-                "HasResetOverride", "MaxHP",
+                "HasResetOverride", "MaxHP", "NextAttackCritModifiers",
                 "PassiveId", "PassiveProgress", "PassiveResetOverride", "PetId",
                 "Power",
                 "ResetBehavior",

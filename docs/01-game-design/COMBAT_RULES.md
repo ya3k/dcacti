@@ -1,6 +1,85 @@
 # Combat Rules
 
-**Version:** 1.6 (§4 — the Shield rule changed from additive stacking to
+**Version:** 2.0 (§3.4 gained the **Boss Skill Step-1 composition** and §5.5.2's
+composition note was resolved — the TASK-125 Product-Owner decision (Option B) is
+now authored at its canonical owner. §3.4's Boss Skill clause now states the
+composition: a Boss Skill's Step 1 Base Damage is the sum of its applicable
+Step-1 contributions under §3 step 1 — `EffectiveBossATK` (§5.5.1) **and** the
+Skill's authored Base Damage (`BOSS_RULES.md` §6.3/§6.3.1). A Boss ATK modifier
+such as Hỏa Long's Rage therefore reaches a Boss Skill's Step-1 damage through
+the `EffectiveBossATK` contribution, while the Skill's authored Base Damage
+remains unchanged by it; the worked example is `EffectiveBossATK = 120`,
+`+ 150` authored `= 270`. **This closes GAP-1**, which TASK-124 deliberately left
+open: §5.5.2's composition note no longer describes the composition as an open,
+pre-existing, or deliberately undecided question, and its "Does NOT reach" rows
+and §5.5.3's scope row were reconciled to say the modifier never reaches the
+authored Skill Base Damage value (which §5.5.3 previously, and now no longer,
+expressed as excluding a Boss Skill outright). §3.4's Boss Basic Attack clause,
+its Boss-side `Step 4 = 1.0`, §3.1's six-step order, §5.3's DR1–DR6, §5.2,
+§5.4, §5.4.5, §5.5.1, §5.5.4, and §5.5.5 are unchanged; §3 step 1's sum rule is
+referenced, not restated or altered. No new Battle Event, Status Effect `Type`,
+`TargetStat` value, `BattleState` member, SignalR member, Redis key, database
+column, or RNG stream is introduced — `EffectiveBossATK` remains derived,
+non-stored terminology, and no authored balance value changes. Resolves the
+TASK-126 documentation application of TASK-125's decision; the decision input is
+TASK-125, not this document.
+Prior 1.9: (§4 item 7 added and §5.5 added — the Boss Passive effect
+contract TASK-123 decided is now authored at its canonical owners. §4 item 7
+AUTHORS the **Heal Resolution** step: every Pet-HP healing source (Card Heal
+and the §2 HP-Gem heal pool, now routed through it by §2 item 5) passes through
+`Raw Heal → applicable Heal modifiers → Final Heal Amount → item 1's unchanged
+MaxHP/overheal clamp → HP update`; Thủy Ma's −50% (`BOSS_RULES.md` §6.2) is one
+applicable Heal modifier, not a special-cased site; the step is Pet-scoped and
+does not govern Boss-side HP restoration; it modifies no MaxHP and does not
+affect Shield; §4's self-description line widened to cover Heal resolution
+alongside Shield. §5.5 added — the Boss-side `BuffDebuff` consumption rule,
+mirroring §5.4: `TargetStat = "ATK"` on a Boss `StatusEffects[]` instance is
+consumed at the Boss Damage Pipeline **Step 1 `Attack` input** as a derived,
+non-stored `EffectiveBossATK`; it reaches only Boss damage whose Step-1 input
+derives from `BossState.ATK` (the basic attack), not an independently authored
+Boss Skill Base Damage; `BossState.ATK` is never overwritten. §5.3.3 gained
+worked examples for a Battle-Start duration-3 apply, a step-18a duration-3
+apply, and a duration-3 refresh. **§3.4 and §5.4.5 are unchanged** (both
+retained — the modifier is a Step-1 input, not a Step-4 factor), §5.3's
+DR1–DR6 are unchanged, §4 item 1's clamp is not re-ordered or reworded, and
+§5.2/§5.4 are unchanged. No new Battle Event, Status Effect `Type`,
+`TargetStat` value, `BattleState` member, SignalR member, Redis key, database
+column, or RNG stream is introduced. Resolves the TASK-124 documentation
+reconciliation of TASK-123's decisions; the decision input is TASK-123, not
+this document. Reported open: the Boss Skill Step-1 composition question
+(`§3.4` × `BOSS_RULES.md` §6.3.1) remains unresolved and is not authored here.)
+Prior 1.8: §5.4 added — the canonical owner of how a Turn-based
+`BuffDebuff` Status Effect's `Magnitude` reaches the stat its `TargetStat`
+names. Resolves the TASK-119 Product Owner decision set: `TargetStat = "ATK"`
+is consumed at the **Player → Boss Damage Pipeline Step 1 `Attack` input**; the
+percentage applies to `PetState.ATK` **alone** (not to the Skill/Card base
+value, the ATK-Gem-generated damage pool, the Step-1 sum, Step 4, or final
+damage); `EffectiveATK = truncate(ATK × (100 − |Magnitude|) / 100)`, truncated
+toward zero, applied before the pipeline runs; activity follows the committed
+`StatusEffects[]` state at attack resolution and the unchanged §5.3 Turn-based
+lifecycle; and the base stat is never overwritten nor reset to a configuration
+default (the `ADR-017` / `GAME_STATE.md` §2.3.4 non-destructive precedent,
+without touching `NextAttackCritModifiers[]`). §3, §3.1, §3.4, §5.1, §5.2, and
+§5.3 are unchanged — including §3.4's Boss-side `Step 4 = 1.0` and §3.1's
+six-step order. No new Battle Event, Status Effect `Type`, `TargetStat` value,
+SignalR member, Redis key, database column, or RNG stream is introduced.
+Prior 1.7: §3.3 items 7–11 added and §1.1's Crit row extended — the
+`NextAttack` Crit contract TASK-116 resolved is now authored at its canonical
+owner: item 7 owns Effective Crit composition (base + Passive + Relic +
+applicable `NextAttack` modifiers, additive percentage points, capped at 100)
+and the substitution of `EffectiveCrit` into the unchanged item 2 roll
+procedure; item 8 owns the modifier lifetime (until consumed by a qualifying
+owner attack — not Turn-based, not Shield-triggered, no cleanup) and the
+qualifying-attack consumption boundary (non-damaging actions do not consume;
+multiple damage instances from one attack consume once at the first
+qualifying instance); item 9 owns source-specific removal; item 10 owns
+multiple simultaneous sources and forbids the `DefaultCrit` reset; item 11
+bounds the concept against the Status Effect model (§5.2/§5.3 unchanged).
+§1.1's Crit row gains the **newly authored** 0–100 percentage-point range
+(TASK-116 D-4.4 — not a pre-existing documented cap) and now states that the
+stat is the permanent/base value. All other values, ranges, formulas, and
+rules are unchanged; §3.3 items 1–6 are extended by reference, not reworded.
+Prior 1.6: §4 — the Shield rule changed from additive stacking to
 refresh: a Shield applied while a Shield of the same effect identity is active
 replaces that Shield's value rather than adding to it, at most one Shield is
 active per entity, and no second instance is created; the depletion rule is
@@ -50,7 +129,8 @@ Max HP    maximum health                          MVP default: 1000
 ATK       attack power                            MVP default: 50
 DEF       defense                                 MVP default: 25
 Power     resource for casting Cards / Skills, range 0–100
-Crit      critical hit chance (%)                 MVP default: 5%
+Crit      critical hit chance (%), range 0–100 percentage points
+                                              MVP default: 5%
 Status    active Status Effects (see §5)
 ```
 
@@ -64,6 +144,23 @@ invariants — future Pet progression (Level, Star, Tier) may produce different
 actual Battle Stats. Combat formulas consume the current Battle Stats rather
 than assuming these exact numbers permanently. Changing balance values is a
 configuration change, not a combat pipeline redesign.
+
+**`Crit`'s 0–100 range is a newly authored value, not a pre-existing one.**
+It was authored by the TASK-116 Product Owner decision set (D-4.4) and is
+recorded in the table above so the composed Crit value has a documented
+ceiling; §3.3 item 7 owns the composition and cap rule. It must not be
+confused with the Crit roll's bound (V ∈ [0, 100), §3.3 item 2) — the two are
+separate values with separate meanings, and neither is inferred from the
+other. `Crit` was previously documented here with a default and no range.
+
+**`Crit` is the permanent/base value, and temporary modifiers do not
+overwrite it.** The stat holds the base percentage only. A temporary
+source-specific Crit modifier is held in
+`PetState.NextAttackCritModifiers[]` (`GAME_STATE.md` §2.3.4) and participates
+in the composed value §3.3 items 7–10 define; it is never written into this
+stat. This is what makes source-specific removal possible (§3.3 item 9) and
+is why the configuration default above is an initialization value only and
+never a runtime reset target (§3.3 item 10).
 
 ## 1.2 Boss Stats
 
@@ -119,6 +216,14 @@ document references.
 4. **Match 6+ has no multiplier of its own.** A run of 6 or more is a Match 5
    (`MATCH3_RULES.md` §5.3 item 3) and uses the Match-5 rate above. No sixth
    row exists in this table.
+5. **The HP Gem heal pool is a healing source.** The HP Gem's generated output
+   is a Heal pool: `GAME_RULES.md` §17 step 12 generates it and step 14
+   ("Resolve Player Effects") applies it to the active Pet's HP. When it is
+   applied, it passes through the **Heal Resolution** step (§4 item 7) — the
+   same step every Pet-HP healing source uses — and therefore receives the
+   applicable Heal modifiers and the item-1 overheal clamp. This item states
+   only where the pool is **consumed**; the pool's rate is the table above and
+   is not restated elsewhere.
 
 These are default balance values owned by this document. They are
 configuration, not hardcoded constants, and are not required to match any
@@ -177,8 +282,10 @@ separate Player entity (`ELEMENT_RULES.md` §5).
      operation (`MATCH3_RULES.md` §1.2.1.4 item 2): it draws 32-bit PRNG
      output(s) until a value is accepted at or above the threshold, then reduces
      modulo 100 to yield an integer value $V \in [0, 100)$.
-   - The roll **succeeds** if and only if $V < \text{current Crit stat}$
-     (where `Crit` is the integer percentage stat from `PetState.Crit`, §1.1).
+   - The roll **succeeds** if and only if $V < \text{current Crit stat}$,
+     where the value compared against is the **Effective Crit** value item 7
+     composes (the base `Crit` stat of §1.1 plus the applicable modifiers).
+     With no modifier active, Effective Crit equals the base stat.
    - If $V \ge \text{current Crit stat}$, the roll **fails**.
    - Example: with MVP default `Crit = 5`, accepted values in $\{0, 1, 2, 3, 4\}$
      succeed, producing an observed rate of exactly 5%.
@@ -191,10 +298,144 @@ separate Player entity (`ELEMENT_RULES.md` §5).
 5. **Modifier Sources:** Crit chance can be modified by Relics (e.g. "Assassin
    Eye": Combo ≥ 3 → increase Crit chance), Pet Passives (e.g. Bạch Hổ: next
    attack gains increased Crit chance), and Cards (e.g. Iron Fang: `CARD_RULES.md`
-   §4.1).
+   §4.1). How those sources combine is owned by item 7 below.
 6. **Result Representation:** The Crit outcome is carried within step 4's
    combined `otherModifiers` multiplier (`SIGNALR_PROTOCOL.md` §3.2.13). No
    separate Crit event, state property, or wire member is emitted.
+7. **Effective Crit — Composition (Canonical Owner).** This item is the
+   **canonical owner** of how the Crit sources compose, of the composed
+   value's cap, and of the value the roll in item 2 compares against. Other
+   documents reference it; they do not restate it
+   (`.ai/workflow/documentation/documentation-change.md` §2).
+
+   ```text
+   EffectiveCrit =
+         BaseCrit                                  the permanent value of the
+                                                   Crit stat (§1.1)
+       + PassiveCrit                               applicable and active
+       + RelicCrit                                 applicable and active
+       + the sum of applicable NextAttack Crit modifiers
+           ↓
+       capped at 100 percentage points
+   ```
+
+   - **`Crit` is the base.** The stat is the permanent/base value and is
+     **never overwritten** by a temporary modifier (§1.1). Effective Crit is
+     calculated at runtime **for the current Damage Pipeline execution** — it
+     is a value used within one pipeline run, not a stored state member.
+   - **Contributions are additive**, in **percentage points** — the unit
+     `CARD_RULES.md` §4.1 and `DATABASE.md` §3 item 1 already use for a Crit
+     element's `value`.
+   - **Only sources that are active and applicable to the current attack
+     participate.** A source that is not currently qualifying contributes
+     nothing to this execution.
+   - **Each source contributes independently**, so removing one source does
+     not disturb the base, the Passive contribution, the Relic contribution,
+     or any other temporary source (item 9).
+   - **The composed value is capped at 100 percentage points** (the range
+     §1.1 records for the Crit stat). The cap bounds the composed value; it
+     does **not** change item 2's roll bound.
+   - **Item 2's roll procedure is unchanged**, with `EffectiveCrit`
+     substituted for the bare Crit stat: exactly one bounded RNG selection
+     over bound 100 yields V ∈ [0, 100), and the roll succeeds iff
+     V < `EffectiveCrit`. No second draw, stream, or generator is introduced
+     (`ADR-009`, `GAME_STATE.md` §2.6.2).
+8. **`NextAttack`-Scoped Crit Modifiers — Lifetime and the Qualifying Attack
+   (Canonical Owner).** This item is the **canonical owner** of the
+   lifetime and the consumption boundary of a Crit modification scoped to
+   the next attack (`DATABASE.md` §3 item 1's `scope = "NextAttack"`). The
+   state representation is `GAME_STATE.md` §2.3.4 and its mutation lifecycle
+   is `GAME_STATE.md` §5.1.2; `ADR-017` records why it is represented that
+   way. This item authors the gameplay rule; it does not describe storage.
+
+   ```text
+   lifetime      active until the owner's next qualifying attack consumes it
+   not           Turn-based: no Turn countdown, no step 19a decrement, no
+                 Timeout, no end-of-turn removal, and no automatic cleanup
+   not           trigger-based: it does not use Shield depletion
+   ```
+
+   - **A qualifying attack is an explicit owner attack action that enters the
+     Damage Pipeline.** Whether a given action is the owner's attack action
+     is determined by `GAME_RULES.md` §17's resolution order; this rule does
+     not add a step to it, and creation happens at the source's own existing
+     site (a Card or Pet Skill at step 14 "Resolve Player Effects"; a Pet
+     Passive at step 10 "Charge Passive").
+   - **A raw damage instance is not itself a separate attack.** A
+     non-damaging action (a Heal, Shield, or Power Charge Card cast, or a Swap
+     producing no damage) **does not consume** a modifier.
+   - **Multiple damage instances from one qualifying attack belong to the
+     same attack.** The modifier is consumed at the **first qualifying damage
+     instance** of that attack and must **not** be consumed again by later
+     instances belonging to the same attack.
+   - **Because a Burn/DoT tick and the Boss's own attack are not the owner's
+     qualifying attack action, they do not consume a modifier** — even though
+     item 4 makes them Crit-eligible and they therefore **do** participate in
+     Effective Crit composition while a modifier is active. Eligibility
+     decides which value the roll reads; consumption decides whether the
+     modifier survives the instance. The two are different questions.
+   - **An unconsumed modifier persists across Turns until a qualifying attack
+     occurs.** This is intentional. No Turn-based expiry, timeout, or cleanup
+     may be introduced for it, at any layer.
+   - **Consumption point.** The consumed modifier(s) are removed in the same
+     resolution as the consuming attack, in the single post-resolution
+     write-back (`GAME_STATE.md` §5.1, §5.1.2 item 6). Consumption removes
+     **only** the source-specific modifiers consumed by that attack — see
+     item 9.
+9. **Source-Specific Removal.** Consuming a `NextAttack` Crit modifier
+   removes **only** the temporary modifier(s) the qualifying attack consumed.
+
+   ```text
+   It must NOT reset the Crit stat.
+   It must NOT remove Passive Crit.
+   It must NOT remove Relic Crit.
+   It must NOT remove an unrelated temporary Crit source not consumed by
+     that attack.
+   ```
+
+   Consumption is the deletion of identified elements, never an arithmetic
+   inverse and never a recomputation from the base.
+10. **Multiple Simultaneous `NextAttack` Sources, and the Configuration
+    Default.** Multiple active `NextAttack` Crit modifiers **stack
+    additively** and **do not replace one another**; a qualifying attack
+    consumes **all applicable** modifiers assigned to that attack, and the
+    permanent/base Crit remains unchanged afterwards.
+
+    Worked example — Iron Fang together with Bạch Hổ's Passive:
+
+    ```text
+    Base Crit            = 5
+    Iron Fang            = +10 percentage points
+    Bạch Hổ's Passive    = +10 percentage points
+
+    Effective Crit       = 25   (≥ … capped at 100)
+
+    after the qualifying attack consumes both modifiers:
+    Base Crit            = 5    (unchanged)
+    Iron Fang modifier   = removed
+    Bạch Hổ modifier     = removed
+    ```
+
+    `CARD_RULES.md` §4.1's statement that Iron Fang's value is independent of
+    Bạch Hổ's configuration value remains in force: they are separate
+    sources, neither derived from nor shared with the other, and each is
+    individually removable.
+
+    **`DefaultCrit` (or any equivalent configuration default) is
+    initialization/default-state data only. It is never a runtime reset
+    mechanism.** Consumption must never be expressed as assigning the Crit
+    stat its configured default value — that comparison is source-blind and
+    is forbidden (`GAME_STATE.md` §2.3.4 item 10, `ADR-017`).
+11. **The `NextAttack` scope is not a Status Effect.** A `NextAttack` Crit
+    modifier is **not** represented as a Status Effect instance and does not
+    use the duration model `COMBAT_RULES.md` §5.2 item 1 states for Status
+    Effects. §5.3's Turn-countdown consumption therefore does not apply to
+    it, and §5.3.2's scope statement is unchanged: the Turn countdown governs
+    **Turn-based** Buff/Debuff Status Effects, and this modifier is not one.
+    It is held in `PetState.NextAttackCritModifiers[]` (`GAME_STATE.md`
+    §2.3.4) — a collection separate from `StatusEffects[]`, whose
+    two-duration-model dichotomy (`GAME_STATE.md` §2.3.1 item 3) is neither
+    widened nor relaxed by it.
 
 ## 3.4 Boss Damage
 
@@ -215,6 +456,82 @@ Boss Skill:
   effects (debuffs, resource drain) which are applied outside the pipeline.
 ```
 
+**Boss Skill Step-1 composition.** A Boss Skill's Step 1 Base Damage is the
+**sum of its applicable Step-1 contributions**, per §3 step 1's existing rule —
+the same rule this document already applies to every other pipeline user. Both
+of the following contribute:
+
+```text
+1. EffectiveBossATK  — the Boss's `ATK` for this attack, after any applicable
+                       Boss ATK modifier (§5.5.1). Derived at attack
+                       resolution; not stored.
+2. The Skill's authored Base Damage — the per-Skill value §3.4 names above,
+                       owned by BOSS_RULES.md §6.3/§6.3.1.
+```
+
+```text
+BossState.ATK
+      ↓
+Boss ATK modifiers (e.g. Hỏa Long Rage, BOSS_RULES.md §6.2)
+      ↓
+EffectiveBossATK            derived at attack resolution — NOT stored
+      ↓
+Boss Skill Step 1
+      ↓
++ the Skill's authored Base Damage
+      ↓
+Step 1 Base Damage
+```
+
+The composition is therefore:
+
+```text
+Boss Skill Step 1 Base Damage = EffectiveBossATK + authored Skill Base Damage
+```
+
+Consequences, all of which follow from the two contributions above being
+separate Step-1 contributions under §3 step 1:
+
+- **A Boss ATK modifier reaches a Boss Skill's damage through
+  `EffectiveBossATK`.** Hỏa Long's Rage (`BOSS_RULES.md` §6.2) therefore
+  affects a Boss Skill's Step-1 damage — it modifies the `EffectiveBossATK`
+  contribution (§5.5.1), not the Skill's authored value.
+- **The Skill's authored Base Damage is unchanged by a Boss ATK modifier.**
+  The percentage applies to `BossState.ATK` **alone** (§5.5.1 item 3), exactly
+  as §5.4.1 item 2 applies the Pet-side modifier to `PetState.ATK` alone; a
+  Skill/Card base value is a separate Step-1 contribution and is not modified.
+- **This is the Boss-side counterpart of §5.4.1 item 2**, which spells the
+  same sum out for the Pet (`EffectiveATK + Skill/Card base value +
+  ATK-Gem-generated damage pool`). Unlike the Pet, a Boss Skill contributes
+  **no ATK-Gem-generated damage pool** — Bosses match no Gems (§3.4 above).
+- **Step 4 is unaffected.** The Boss side's `Step 4 = 1.0` (above) stands; a
+  Boss ATK modifier is a Step-1 input, never a Step-4 factor (§5.5.3).
+
+**Worked example** — Rage active, using the documents' existing values
+(`§1.1`'s MVP `ATK` default, `BOSS_RULES.md` §6.2's `+20%`, and
+`BOSS_RULES.md` §6.3.1 item 1's authored `150`):
+
+```text
+BossState.ATK                = 100
+Hỏa Long Rage                = +20%
+EffectiveBossATK             = truncate(100 × (100 + 20) / 100) = 120
+
+Flame Burst authored Base Damage = 150        (unchanged by the modifier)
+
+Step 1 Base Damage = 120 + 150 = 270
+```
+
+With Rage inactive (`EffectiveBossATK = 100`) the same Skill yields
+`100 + 150 = 250`. The authored `150` is the same in both cases — only the
+`EffectiveBossATK` contribution carries the modifier.
+
+`EffectiveBossATK` is derived terminology for a value used within **one**
+pipeline execution. It is **not** a `BattleState`/`BossState` member, not
+persisted, and not a second representation of the Boss `ATK` stat (§5.5.4).
+The resulting Step-1 value already reaches the client as
+`DamageCalculated.base` (`SIGNALR_PROTOCOL.md` §3.2.13) — a value change, not a
+member-set change.
+
 The `DamageCalculated` event reports the full breakdown; `DamageDealt` and
 `DamageTaken` report the final amount with `source = "boss"` and
 `target = "player"`. The value `"player"` is a fixed wire label
@@ -226,8 +543,10 @@ separate Player HP pool (`SIGNALR_PROTOCOL.md` §3.2).
 # 4. Healing and Shields
 
 This section is the **canonical owner** of the Shield rule — its application,
-refresh, absorption, and depletion. Other documents reference it; they do not
-restate it (`.ai/workflow/documentation/documentation-change.md` §2). Shield is
+refresh, absorption, and depletion — and of the **Heal Resolution** step
+(item 7) — how a raw Heal amount becomes the HP change a healing source
+applies. Other documents reference it; they do not restate it
+(`.ai/workflow/documentation/documentation-change.md` §2). Shield is
 represented as a Status Effect instance (`GAME_STATE.md` §2.3.1 item 3, `Type =
 "Shield"`) and is **trigger-based**: it acquires no duration and is outside the
 Turn countdown (§5.3.2).
@@ -286,6 +605,63 @@ Turn countdown (§5.3.2).
    modifiers (e.g. a Relic that increases Heal Card effectiveness). Step 5's
    absorption is applied to the Final Damage the pipeline produces (§3 step 6);
    it does not change that pipeline, whose steps 1–6 are unchanged.
+7. **Heal Resolution (canonical).** This item is the **canonical owner** of
+   how a Raw Heal amount becomes the HP change a healing source applies. Every
+   healing source that restores **Pet HP** passes through this step. Other
+   documents reference it; they do not restate it
+   (`.ai/workflow/documentation/documentation-change.md` §2).
+
+   ```text
+   Raw Heal
+     ↓
+   Applicable Heal Modifiers
+     ↓
+   Final Heal Amount
+     ↓
+   Existing MaxHP / overheal clamp   (item 1 — unchanged, still last)
+     ↓
+   HP update
+   ```
+
+   - **Raw Heal** is the amount the healing source itself produces, before any
+     modifier — e.g. a Card Heal's authored percentage of Max HP
+     (`CARD_RULES.md` §4.1), or the HP-Gem heal pool (§2) that
+     `GAME_RULES.md` §17 step 12 generates and step 14 applies.
+   - **Applicable Heal Modifiers** are the modifiers that currently apply to
+     this healing instance, from the sources that are active and applicable to
+     it. Each is applied to the Raw Heal to produce the Final Heal Amount. An
+     applicable Heal modifier is **not** a special-cased site: any rule that
+     reduces or increases healing received is one applicable Heal modifier
+     here.
+     - **Thủy Ma's −50% healing reduction (`BOSS_RULES.md` §6.2) is one
+       applicable Heal modifier.** It is not a second mechanism and has no
+       site of its own: it participates in this step exactly as any other
+       applicable Heal modifier does.
+     - This item **authors the mechanism only**. It defines no modifier's
+       magnitude, source, duration, or activity window; those belong to the
+       rule that creates the modifier, and are referenced, not restated here.
+   - **The Final Heal Amount is what item 1's clamp receives.** Item 1's clamp
+     ("Heal effects restore HP up to Max HP; overheal is discarded unless a
+     Relic explicitly grants overheal/temp-HP") is **unchanged and is still the
+     last step**: it runs *after* the modifiers, on the Final Heal Amount, and
+     the HP update applies its result. This item does not re-order, reword, or
+     replace item 1.
+   - **Scope — Pet HP only.** This step covers healing that restores **Pet
+     HP**. It does **not** govern a Boss-side HP change: a Boss's own HP
+     restoration is that effect's own rule and does not route through this
+     step. Widening this step to another target would require its own recorded
+     decision; this item does not do so
+     (`BOSS_RULES.md` §6.2's Mộc Yêu regeneration).
+   - **It does not modify MaxHP, and it does not affect Shield.** A Heal
+     modifier changes the Heal amount only; MaxHP is untouched (§1.2) and
+     Shield keeps its own §4 rules (items 2–5).
+   - **No elemental interaction.** `ELEMENT_RULES.md` §2.2's Element Modifier
+     does not apply to non-damage effects, so this step introduces no
+     elemental interaction for healing.
+   - **This is a combat-rule mechanism only.** It adds no `BattleState`
+     member, no Battle Event (`GAME_RULES.md` §16), no SignalR member, no
+     Redis key, and no database column. It introduces no generic
+     abstraction beyond this documented step.
 
 ---
 
@@ -300,7 +676,8 @@ Burn      damage-over-time, ticks once per resolved Turn at End Turn
 Shield    absorption pool, see §4; refresh-not-stack, removed at 0
           (trigger-based expiry, §4 items 3–5)
 Buff/Debuff  temporary stat modification (ATK/DEF/Crit/etc.), with duration
-          measured in Turns unless stated otherwise
+          measured in Turns unless stated otherwise; how a `Magnitude`
+          reaches the stat its `TargetStat` names is owned by §5.4
 ```
 
 ## 5.2 Status Rules
@@ -399,6 +776,39 @@ duration = 2, applied and refreshed within the same Turn N (DR4):
             §17 step 19a          -> remaining = 1
   Turn N+1: active
             §17 step 19a          -> remaining = 0 -> expires
+
+duration = 3, applied at Battle Start — BEFORE the first counted Turn:
+  (the apply point is not a Turn, so it consumes no duration unit on its own;
+   the first consumed Turn is Turn 1 — §5.3.1/DR6)
+  Battle Start:  Apply(3)         -> remaining = 3   (no Turn consumed)
+  Turn 1:        active
+                 §17 step 19a     -> remaining = 2
+  Turn 2:        active
+                 §17 step 19a     -> remaining = 1
+  Turn 3:        active
+                 §17 step 19a     -> remaining = 0 -> expires
+  Turn 4:        inactive
+
+duration = 3, applied at Boss Response step 18a of Turn N — BEFORE that same
+Turn's step 19a:
+  (the apply point is after step 15-17's already-resolved player damage, so
+   this Turn's resolved damage is NOT modified retroactively — §5.4.3)
+  Turn N:        Apply(3) at §17 step 18a  -> remaining = 3
+                 §17 step 19a              -> remaining = 2
+  Turn N+1:      active
+                 §17 step 19a              -> remaining = 1
+  Turn N+2:      active
+                 §17 step 19a              -> remaining = 0 -> expires
+  Turn N+3:      inactive
+
+duration = 3, refreshed at Turn M while already active (DR3/DR4):
+  Turn M:        Refresh(3)       -> remaining = 3 (reset; no extra consumption)
+                 §17 step 19a     -> remaining = 2
+  Turn M+1:      active
+                 §17 step 19a     -> remaining = 1
+  Turn M+2:      active
+                 §17 step 19a     -> remaining = 0 -> expires
+  Turn M+3:      inactive
 ```
 
 ### 5.3.4 No Change to Damage-over-time or Cooldown Rules
@@ -409,6 +819,375 @@ Status Effects. It does not change Burn's tick schedule, which
 does not change `BossState.SkillCooldown`'s separate decrement rule
 (`BOSS_RULES.md` §6.3, `GAME_STATE.md` §2.4.3) — that is a Boss Skill counter,
 not a Status Effect, and no state field here adopts it.
+
+## 5.4 Stat Modifiers (`BuffDebuff` Consumption)
+
+This section is the **canonical owner** of how a Turn-based Buff/Debuff Status
+Effect's `Magnitude` reaches the stat its `TargetStat` names. Other documents
+reference it; they do not restate it
+(`.ai/workflow/documentation/documentation-change.md` §2). Root
+(`BOSS_RULES.md` §6.3.1 item 3) is the MVP instance of this rule; its magnitude,
+its duration, and its `"ATK"` `TargetStat` are that document's and are not
+restated here. `GAME_STATE.md` §2.3.1 types the instance and explicitly
+declines to interpret `Magnitude`; this section supplies the meaning it hands
+off.
+
+### 5.4.1 `TargetStat = "ATK"` — the ATK Modifier Rule
+
+A Turn-based `BuffDebuff` Status Effect instance whose `TargetStat` is `"ATK"`
+modifies the **active Pet's ATK used by that Pet's own attack** — the Pet's
+Player → Boss damage. The modifier is consumed when the Damage Pipeline call
+for that attack is constructed, by changing the **Step 1 `Attack` input** it
+receives.
+
+```text
+1. Consumption point
+   Player → Boss Damage Pipeline Step 1 — the `Attack` argument the call
+   receives is the effective ATK this rule produces.
+
+2. What the percentage applies to — PetState.ATK ALONE
+
+   EffectiveATK = the reduced PetState.ATK
+
+   Step 1 = EffectiveATK
+          + Skill/Card base value
+          + ATK-Gem-generated damage pool
+
+3. Percentage application and rounding
+
+   EffectiveATK = truncate( ATK × (100 − |Magnitude|) / 100 )
+
+   (truncate toward zero, to an integer)
+
+4. Activity
+   the committed state of the instance at attack resolution, per §5.3
+```
+
+**Worked example** (`PetState.ATK = 100`, ATK-Gem-generated pool `= 40`,
+`Magnitude = 30`):
+
+```text
+EffectiveATK = truncate(100 × 70 / 100) = 70
+
+Step 1 Base Damage = 70 + 40 = 110
+```
+
+It is **not** `(100 + 40) × 70% = 98`. The Skill/Card base value and the
+ATK-Gem-generated damage pool are separate Step-1 contributions
+(§3 step 1) and are **not** modified by this rule. The modifier does not touch
+Step 4, and it does not touch Step 6's Final Damage beyond the Step-1 input it
+changed.
+
+### 5.4.2 Rounding
+
+The reduction is applied to the ATK stat **before** the pipeline runs, and the
+result is an **integer**, truncated **toward zero** — the same integer
+convention §3 step 6 already uses for Final Damage:
+
+```text
+ATK 50  → 35
+ATK 51  → 35
+ATK 99  → 69
+ATK 100 → 70
+ATK 101 → 70
+```
+
+The calculation must not depend on floating-point representation: the same
+input ATK and magnitude yield the same `EffectiveATK` integer on every
+platform and in every evaluation order. **§3 step 6's Final Damage rounding is
+unchanged** — this rule rounds a Step-1 input, and adds, removes, or changes
+no rounding anywhere else in the pipeline.
+
+### 5.4.3 Activity and Duration
+
+The modifier is active **according to the committed
+`GAME_STATE.md` §2.3.1 instance state at attack resolution**, and it consumes
+duration exactly as §5.3 defines — no new duration model, no new consumption
+point, and no change to DR1–DR6. Because the Pet's attack is
+`GAME_RULES.md` §17 step 15 and §5.3.1 DR6 places every documented
+Buff/Debuff application before step 19a, an instance applied at a later step
+of the **same** Turn cannot affect that Turn's already-resolved attack:
+
+```text
+Root applied at Turn N step 18b (Boss Skill secondary effect)
+  Turn N   step 15   Root NOT yet applied — this attack is unaffected
+           step 18b  Root applied, RemainingTurns = 2
+           step 19a  RemainingTurns: 2 → 1
+
+  Turn N+1 step 15   Root IS active — Pet ATK reduced by 30%
+           step 19a  RemainingTurns: 1 → 0 → expires (§5.3 DR5)
+
+  Turn N+2           inactive — Pet ATK is its normal derived value again
+```
+
+An instance whose `RemainingTurns` reaches 0 at step 19a is inactive from that
+point forward (`GAME_STATE.md` §2.3.1 item 8: a stored zero is never an active
+state), so the following Turn's attack uses the unreduced ATK.
+
+### 5.4.4 The Base Stat Is Never Overwritten
+
+The modifier is **non-destructive**, following the temporary-modifier
+precedent `ADR-017` and `GAME_STATE.md` §2.3.4 record for the temporary Crit
+modifier:
+
+```text
+PetState.ATK
+      ↓
+temporary modifier (the active instance's Magnitude)
+      ↓
+EffectiveATK        derived at attack resolution — NOT stored
+      ↓
+Damage Pipeline Step 1
+```
+
+- `PetState.ATK` **is never overwritten** by the modifier, and there is no
+  "restore" step: the stored stat is unchanged throughout. An implementation
+  that writes `PetState.ATK = PetState.ATK × 0.7` and later restores it is
+  **not** this rule.
+- The configured default is an **initialization value only** and is **never**
+  an expiry or reset mechanism: `PetState.ATK = DefaultATK` is forbidden for
+  the same source-blind reason §3.3 item 10 forbids `DefaultCrit`
+  (`GAME_STATE.md` §2.3.4 item 10).
+- `EffectiveATK` is a value used within **one** pipeline execution. It is
+  **not** persisted, not stored in `BattleState`, and not a second
+  representation of the ATK stat (`GAME_STATE.md` §0 item 5). Because the
+  modifier lives in the existing `StatusEffects[]` instance
+  (`GAME_STATE.md` §2.3.1 item 3, item 7), **no new state collection, member,
+  or representation is introduced by this rule** — unlike ADR-017's Crit
+  modifier, which needed its own collection. `NextAttackCritModifiers[]` is
+  unaffected.
+
+### 5.4.5 Scope and Boundaries
+
+```text
+Applies to      a Turn-based BuffDebuff instance with TargetStat = "ATK"
+                consumed by the owning Pet's own attack (Player → Boss)
+Does NOT apply  to the Boss's damage — §3.4 pins the Boss side's Step 4
+                to 1.0, and this rule authors no Boss-side factor
+Does NOT apply  to a BuffDebuff naming any stat other than "ATK"; the
+                consumer reads TargetStat explicitly and a non-"ATK" value
+                modifies no ATK
+Does NOT apply  to a DoT tick or a Shield: those Types have their own rules
+                (§5.2 item 3, §4) and are not ATK modifiers
+Does NOT        change §3.1's six-step order, §3.4's Boss-side value, or
+                §5.3's duration consumption
+```
+
+A `BuffDebuff` whose `TargetStat` names a stat for which this document defines
+no consumption rule is **not** silently treated as an ATK modifier: this
+section defines the `"ATK"` case only, and any other stat would require its own
+recorded decision before it could be implemented.
+
+This section adds no Battle Event (`GAME_RULES.md` §16), no Status Effect
+`Type`, no `TargetStat` value, no SignalR member, no Redis key, and no
+database column. The Step-1 value it produces already reaches the client as
+`DamageCalculated.base` (`SIGNALR_PROTOCOL.md` §3.2.13) — a value change, not
+a member-set change.
+
+## 5.5 Boss Stat Modifiers (`BuffDebuff` Consumption — Boss Side)
+
+This section is the **canonical owner** of how a Turn-based Buff/Debuff Status
+Effect on the **Boss** reaches the stat its `TargetStat` names. It is the
+Boss-side counterpart of §5.4 and mirrors its shape deliberately; the
+Pet-side rule is §5.4 and is referenced, not restated
+(`.ai/workflow/documentation/documentation-change.md` §2). Hỏa Long's Rage
+(`BOSS_RULES.md` §6.2) is the MVP instance of this rule; its magnitude, its
+duration, its trigger, and its repeat behavior are that document's and are not
+restated here.
+
+### 5.5.1 `TargetStat = "ATK"` — the Boss ATK Modifier Rule
+
+A Turn-based `BuffDebuff` Status Effect instance held in the Boss's
+`StatusEffects[]` (`GAME_STATE.md` §2.4/§2.4.1, same element schema and
+lifecycle as the Pet's) whose `TargetStat` is `"ATK"` modifies the **Boss's ATK
+used by ATK-derived Boss damage**. The modifier is consumed when the Damage
+Pipeline call for that attack is constructed, by changing the **Step 1
+`Attack` input** it receives.
+
+```text
+1. Consumption point
+   Boss Damage Pipeline Step 1 — the `Attack` argument the call receives is
+   the effective Boss ATK this rule produces.
+
+2. The flow
+
+   BossState.ATK
+         ↓
+   +20% Rage modifier (the active instance's Magnitude)
+         ↓
+   EffectiveBossATK        derived at attack resolution — NOT stored
+         ↓
+   Boss Damage Pipeline Step 1
+
+3. What the percentage applies to — BossState.ATK ALONE
+
+   EffectiveBossATK = truncate( BossState.ATK × (100 + Magnitude) / 100 )
+
+   Step 1 = EffectiveBossATK
+
+4. Percentage application and direction — the instance's Magnitude, signed
+
+   The percentage value is supplied by the active instance's `Magnitude`
+   (`BOSS_RULES.md` §6.2); this rule owns how that value is applied.
+
+   The `Magnitude` is used WITH ITS OWN SIGN — it is the direction signal:
+
+   Magnitude > 0  →  increase   EffectiveBossATK > BossState.ATK
+   Magnitude < 0  →  decrease   EffectiveBossATK < BossState.ATK
+   Magnitude = 0  →  unchanged  EffectiveBossATK = BossState.ATK
+
+   A Boss-side ATK modifier therefore supports BOTH an increase and a
+   decrease; there is no increase-only and no decrease-only semantic.
+   Direction is carried by the sign of `Magnitude` itself — no separate
+   direction field, flag, operation, or member exists or is introduced.
+```
+
+- **The modifier changes the Step-1 input, not Step 4.** `§3.4` pins the Boss
+  side's Step 4 to `1.0` and receives no direct Relic/Passive/Buff modifier;
+  **`§3.4` is unchanged by this rule.** Rage is not a Step-4 modifier — see
+  §5.5.3. This is the same separation §5.4.1 item 1 draws for the Pet.
+
+- **Rounding.** The formula's result is an integer, **truncated toward zero** —
+  the same integer convention §5.4.2 and §3 step 6 already use. The applied
+  arithmetic must not depend on floating-point representation: the same
+  `BossState.ATK` and `Magnitude` yield the same `EffectiveBossATK` integer on
+  every platform and in every evaluation order. This rule owns this formula;
+  it authors no percentage of its own — the active instance's `Magnitude`
+  supplies that value (`BOSS_RULES.md` §6.2).
+
+- **Worked example.** `BOSS_RULES.md` §6.2.1's Hỏa Long Rage, using §1.1's MVP
+  `ATK` default: `BossState.ATK = 100` with an active `Magnitude = +20` gives
+  `truncate(100 × (100 + 20) / 100) = 120`. With `Magnitude = -30` the same
+  stat gives `truncate(100 × (100 − 30) / 100) = 70`. `Magnitude = 0` leaves it
+  at `100`. These values are the documents' own and are not restated here as
+  new; `BOSS_RULES.md` §6.2.1 owns Rage's magnitude and duration, and §6.3.1
+  owns the Bosses' authored Skill Base Damages.
+
+- **This is NOT the Pet-side rule — the two conventions are deliberately
+  different.** `§5.4.1` governs the **Pet's** ATK and uses the ABSOLUTE value,
+  `truncate( ATK × (100 − |Magnitude|) / 100 )`, which only ever reduces; its
+  scope statement `§5.4.5` records that it "Does NOT apply to the **Boss's**
+  damage". This rule is the Boss-side counterpart and uses the **signed**
+  `Magnitude`. The two must **not** be collapsed into one shared formula: the
+  Pet-side rule cannot express this rule's increase, and applying this rule's
+  signed reading to the Pet would invert a Pet-side debuff such as Root
+  (`BOSS_RULES.md` §6.3.1 item 3, applied to the active Pet and consumed by
+  `§5.4.1`). Each rule is referenced, not restated, by the other.
+
+- **No new state, type, or protocol member.** The direction signal is the sign
+  of the **existing** `Magnitude` field (`GAME_STATE.md` §2.3.1). This rule
+  introduces no new `BossState`/`BattleState` member, no new `StatusEffect`
+  member, no new Status Effect `Type`, no new `TargetStat` value, no wire
+  field, no Redis key, and no database column.
+
+- **Activity.** The committed state of the instance at attack resolution, per
+  §5.3 — identical to §5.4.1 item 4. Duration, reapplication, and the
+  refresh-not-stack default are §5.5.5's and are referenced, not re-authored
+  here.
+
+### 5.5.2 Damage Scope — Which Boss Damage the Modifier Reaches
+
+The modifier enters through **the Step-1 `Attack` input derived from
+`BossState.ATK`** — i.e. the `EffectiveBossATK` contribution — and it changes
+that contribution only.
+
+```text
+Reaches        the Boss BASIC ATTACK — §3.4's "Step 1 — Base Damage =
+               Boss.ATK", whose Step-1 input is EffectiveBossATK under this
+               rule
+Reaches        a Boss SKILL — through its EffectiveBossATK Step-1
+               contribution only (§3.4 "Boss Skill Step-1 composition")
+Does NOT       the Skill's authored Base Damage. That authored value is a
+reach          separate Step-1 contribution (§3 step 1) and does not receive
+               the modifier; it is not scaled by Boss ATK
+```
+
+The modifier's contribution is present in **every** Boss damage instance,
+because every one has an `EffectiveBossATK` Step-1 contribution. What it never
+reaches is an independently authored Skill Base Damage value, which stays at
+its authored magnitude (`BOSS_RULES.md` §6.3.1).
+
+This makes explicit what §3.4's Boss Skill Step-1 composition, and its
+Boss-side counterpart §5.4.1 item 2 for the Pet, already establish: the
+modifier applies to the stat **alone**, and a Skill/Card base value is a
+separate Step-1 contribution that is **not** modified. `§3.4` is referenced,
+not restated, and is not amended.
+
+Composition: this rule fixes **which** pipeline invocations the modifier feeds,
+and how it reaches them. A Boss Skill's Step 1 is composed of two separate
+Step-1 contributions — `EffectiveBossATK` and the Skill's authored Base Damage
+— and this modifier changes the `EffectiveBossATK` contribution only. The
+composition and its consequences are owned by `§3.4` ("Boss Skill Step-1
+composition") and are referenced, not restated, here. The Skill's authored
+value does not receive the modifier; the Skill's Step-1 damage does, through
+the `EffectiveBossATK` contribution.
+
+### 5.5.3 Scope and Boundaries
+
+```text
+Applies to      a Turn-based BuffDebuff instance with TargetStat = "ATK"
+                held in the Boss's StatusEffects[], consumed by a
+                Boss attack, through that attack's Step-1
+                EffectiveBossATK contribution (§5.5.1, §5.5.2)
+Does NOT apply  to Step 4 — §3.4 pins the Boss side's Step 4 to 1.0 and is
+                unchanged; this rule authors no Step-4 factor
+Does NOT apply  to a BuffDebuff naming any stat other than "ATK"; the
+                consumer reads TargetStat explicitly and a non-"ATK" value
+                modifies no ATK
+Does NOT apply  to a Boss Skill's independently authored Base Damage value,
+                which stays at its authored magnitude and is not scaled by
+                Boss ATK (§5.5.2; §3.4 "Boss Skill Step-1 composition")
+Does NOT apply  to a DoT tick or a Shield: those Types have their own rules
+                (§5.2 item 3, §4) and are not ATK modifiers
+Does NOT        change §3.1's six-step order, §3.4's Boss-side value, §5.4's
+                Pet-side rule, or §5.3's duration consumption
+```
+
+A `BuffDebuff` whose `TargetStat` names a stat for which this document defines
+no consumption rule is **not** silently treated as an ATK modifier: this
+section defines the `"ATK"` case only, and any other stat would require its own
+recorded decision before it could be implemented — the same position §5.4.5
+takes for the Pet side.
+
+### 5.5.4 The Boss Base Stat Is Never Overwritten
+
+The modifier is **non-destructive**, exactly as §5.4.4 is for the Pet:
+
+- `BossState.ATK` **is never overwritten** by the modifier, and there is no
+  "restore" step: the stored stat is unchanged throughout. An implementation
+  that writes `BossState.ATK = BossState.ATK × 1.2` and later restores it is
+  **not** this rule.
+- The configured default is an **initialization value only** and is **never**
+  an expiry or reset mechanism (§5.4.4's rule, applied to the Boss stat).
+- `EffectiveBossATK` is a value used within **one** pipeline execution. It is
+  **not** persisted, not stored in `BattleState`, and not a second
+  representation of the Boss ATK stat (`GAME_STATE.md` §0 item 5). Because the
+  modifier lives in the existing `StatusEffects[]` instance
+  (`GAME_STATE.md` §2.3.1 item 3, item 7; §2.4.1), **no new state collection,
+  member, or representation is introduced by this rule**.
+
+### 5.5.5 Duration and Reapplication
+
+Duration and reapplication are the **existing** rules and are **not**
+re-authored here:
+
+- **Duration** is consumed by the unchanged §5.3 Turn-based lifecycle
+  (DR1–DR6). An instance applied at a documented point before
+  `GAME_RULES.md` §17 step 19a consumes one Turn of duration at that Turn's
+  step 19a (§5.3.1/DR6), and §5.4.3's non-retroactivity statement — an
+  instance applied at a later step of the same Turn cannot affect that Turn's
+  already-resolved attack — applies to a Boss-side instance identically.
+- **Reapplication** follows §5.2 item 2's MVP default (**refresh duration, do
+  not stack magnitude**) and `GAME_STATE.md` §2.3.1 item 6's
+  one-instance-per-effect-identity rule. The refresh mechanism is §5.3
+  DR3/DR4. No new stacking model is authored.
+
+This section adds no Battle Event (`GAME_RULES.md` §16), no Status Effect
+`Type`, no `TargetStat` value, no SignalR member, no Redis key, and no
+database column. The Step-1 value it produces already reaches the client as
+`DamageCalculated.base` (`SIGNALR_PROTOCOL.md` §3.2.13) — a value change, not
+a member-set change, exactly as §5.4's closing paragraph states for the Pet
+side.
 
 ---
 

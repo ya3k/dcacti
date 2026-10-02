@@ -269,6 +269,31 @@ public static class BattleStateSerializer
             // in the order the state holds them. The collection is never null and
             // is never omitted — an entity with no active effect writes [].
             StatusEffects = petState.ActiveStatusEffects.Select(ToStatusEffectJson).ToArray(),
+
+            // §2.3.4 item 5 / REDIS_STATE.md §7 item 13: the same always-present
+            // rule and the same order-preserving projection, applied to the
+            // NextAttack Crit modifier collection. It is a distinct member and is
+            // never null and never omitted — no modifier active writes [].
+            NextAttackCritModifiers = petState.NextAttackCritModifiers
+                .Select(ToNextAttackCritModifierJson)
+                .ToArray(),
+        };
+
+    /// <summary>
+    /// Projects one NextAttack Crit modifier (<c>GAME_STATE.md</c> §2.3.4) — a pure
+    /// field copy of both members and nothing else.
+    ///
+    /// <b>No third member is written.</b> §2.3.4 item 4 fixes the element at
+    /// exactly two members, so this projection has nothing to derive, default, or
+    /// synthesize: the identity and the contribution are carried verbatim and the
+    /// mapping interprets neither (§2.3.4 items 2–3).
+    /// </summary>
+    private static NextAttackCritModifierJson ToNextAttackCritModifierJson(
+        NextAttackCritModifier modifier) =>
+        new()
+        {
+            SourceIdentity = modifier.SourceIdentity,
+            CritContribution = modifier.CritContribution,
         };
 
     /// <summary>
@@ -447,6 +472,11 @@ public static class BattleStateSerializer
             // an empty array restores as an empty collection, and a null is
             // rejected as the contract violation it is.
             ActiveStatusEffects = FromStatusEffectsJson(dto.StatusEffects),
+
+            // §2.3.4 item 5 / REDIS_STATE.md §7 item 13: the same always-present
+            // rule, so the same always-read mapping. The collection is a distinct
+            // member from statusEffects and is never null.
+            NextAttackCritModifiers = FromNextAttackCritModifiersJson(dto.NextAttackCritModifiers),
         };
 
     /// <summary>
@@ -471,6 +501,62 @@ public static class BattleStateSerializer
             // element mapping, from the same always-present member.
             ActiveStatusEffects = FromStatusEffectsJson(dto.StatusEffects),
         };
+
+    /// <summary>
+    /// Rebuilds a <c>NextAttackCritModifiers[]</c> collection
+    /// (<c>GAME_STATE.md</c> §2.3.4 item 5).
+    ///
+    /// <b>A <c>null</c> member is rejected as the contract violation it is.</b>
+    /// §2.3.4 item 5 states that absence of the collection "is not a representable
+    /// state" and that an entity with no modifier holds an <b>empty collection</b>,
+    /// so a stored <c>null</c> is refused here — rather than being read as empty,
+    /// which would admit the spelling the contract rules out — with a message naming
+    /// the rule, exactly as <see cref="FromStatusEffectsJson"/> does for the sibling
+    /// collection.
+    /// </summary>
+    /// <param name="modifiers">The deserialized member, which may be <c>null</c>
+    /// only if the stored document violated the contract.</param>
+    /// <exception cref="JsonException">The member is <c>null</c>.</exception>
+    private static NextAttackCritModifier[] FromNextAttackCritModifiersJson(
+        IReadOnlyList<NextAttackCritModifierJson>? modifiers)
+    {
+        if (modifiers is null)
+        {
+            throw new JsonException(
+                "nextAttackCritModifiers is null; GAME_STATE.md §2.3.4 item 5 requires "
+                + "the collection always to exist — an entity with no active modifier "
+                + "holds an empty array.");
+        }
+
+        return modifiers.Select(FromNextAttackCritModifierJson).ToArray();
+    }
+
+    /// <summary>
+    /// Rebuilds one NextAttack Crit modifier (<c>GAME_STATE.md</c> §2.3.4).
+    ///
+    /// <b>It validates rather than trusts.</b> The modifier is rebuilt through the
+    /// same invariant the apply path enforces — a non-blank source identity
+    /// (§2.3.4 item 2 makes it the removal key) — so a stored element that could not
+    /// be consumed source-specifically is rejected at the read rather than admitted
+    /// into the state. This mirrors <see cref="FromStatusEffectJson"/>'s
+    /// reconstruction through the factories rather than through member assignment.
+    /// </summary>
+    /// <exception cref="JsonException">The element carries no usable identity.</exception>
+    private static NextAttackCritModifier FromNextAttackCritModifierJson(
+        NextAttackCritModifierJson dto)
+    {
+        var modifier = new NextAttackCritModifier(dto.SourceIdentity, dto.CritContribution);
+
+        if (!modifier.HasSourceIdentity)
+        {
+            throw new JsonException(
+                "nextAttackCritModifiers element has a blank sourceIdentity; "
+                + "GAME_STATE.md §2.3.4 item 2 makes it the removal key that "
+                + "source-specific consumption matches on.");
+        }
+
+        return modifier;
+    }
 
     /// <summary>
     /// Rebuilds a <c>StatusEffects[]</c> collection (<c>GAME_STATE.md</c> §2.3.2

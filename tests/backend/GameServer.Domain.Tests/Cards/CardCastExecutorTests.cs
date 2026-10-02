@@ -356,7 +356,7 @@ public sealed class CardCastExecutorTests
     }
 
     [Fact]
-    public void Execute_IronFang_DealsDamage_IncreasesCrit_AndEmitsPetSkillCastEvent()
+    public void Execute_IronFang_DealsDamage_GrantsNextAttackCritModifier_AndEmitsPetSkillCastEvent()
     {
         var state = CreateTestBattleState(power: 50);
         var initialCrit = state.PetState.Crit;
@@ -366,7 +366,24 @@ public sealed class CardCastExecutorTests
         Assert.True(result.IsAccepted);
         Assert.Equal(10, result.State.PetState.Power); // 50 - 40 = 10
         Assert.True(result.State.BossState.HP < state.BossState.HP); // Damaged
-        Assert.Equal(initialCrit + 10, result.State.PetState.Crit); // +10 percentage points
+
+        // COMBAT_RULES.md §3.3 item 7 / GAME_STATE.md §2.3.4 item 9: the base Crit
+        // stat is the permanent value a temporary modifier is NEVER overwritten by,
+        // so the cast must leave it exactly as it was. This is the assertion the old
+        // `newCrit += critAmount` write failed.
+        Assert.Equal(initialCrit, result.State.PetState.Crit);
+
+        // Iron Fang deals 120 damage AND grants +10 percentage points for the next
+        // attack, and this cast is itself a qualifying attack (§3.3 item 8), so the
+        // modifier it grants is granted and consumed within this one action — it does
+        // not survive to a later Swap. TASK-115's own verification list states the
+        // expected behavior as "Iron Fang NextAttack Crit buff consumption on the
+        // SUBSEQUENT attack", and the attack this cast performs is that attack.
+        //
+        // What the collection must NOT show is the modifier lingering: an unconsumed
+        // Iron Fang modifier after its own damage would mean the buff applied to a
+        // later attack than the one the Card's damage belongs to.
+        Assert.Empty(result.State.PetState.NextAttackCritModifiers);
 
         Assert.Equal(
             [
@@ -377,6 +394,170 @@ public sealed class CardCastExecutorTests
                 BattleEventType.DamageTaken,
             ],
             result.Events.Select(e => e.Type));
+    }
+
+    [Fact]
+    public void Execute_IronFang_IsOrderIndependent_BecauseEffectOrderIsNotSemantic()
+    {
+        // DATABASE.md §3 item 3: the stored EffectDefinition[] order is NOT semantic.
+        // Iron Fang stores [Damage, Crit]; a Card storing [Crit, Damage] must produce
+        // the same committed state. Consuming inside the per-effect loop would make
+        // the two differ, which is the defect this assertion exists to prevent.
+        var critFirstCard = new CardDefinition
+        {
+            CardDefinitionId = "card-iron-fang",
+            Name = "Iron Fang",
+            Category = CardCategory.PetSkill,
+            PowerCost = 40,
+            LoadoutCopyLimit = 1,
+            EffectDefinition = CardEffectDefinitions.Create(
+                CardEffectDefinition.Crit(10, "NextAttack"),
+                CardEffectDefinition.Create(CardEffectType.Damage, CardEffectValueType.Flat, 120)),
+        };
+
+        var damageFirstState = CreateTestBattleState(power: 50);
+        var critFirstState = CreateTestBattleState(power: 50);
+
+        var damageFirst = CardCastExecutor.Execute(damageFirstState, IronFangCard);
+        var critFirst = CardCastExecutor.Execute(critFirstState, critFirstCard);
+
+        Assert.True(damageFirst.IsAccepted);
+        Assert.True(critFirst.IsAccepted);
+
+        // Same committed gameplay outcome either way.
+        Assert.Equal(
+            damageFirst.State.PetState.Crit,
+            critFirst.State.PetState.Crit);
+        Assert.Equal(
+            damageFirst.State.PetState.NextAttackCritModifiers.Length,
+            critFirst.State.PetState.NextAttackCritModifiers.Length);
+        Assert.Equal(
+            damageFirst.State.BossState.HP,
+            critFirst.State.BossState.HP);
+        Assert.Equal(
+            damageFirst.State.PetState.Power,
+            critFirst.State.PetState.Power);
+    }
+
+    [Fact]
+    public void Execute_CritOnlyPetSkill_GrantsModifierWithoutConsumingIt()
+    {
+        // A Crit element with no damage instance in the same Card is not a
+        // qualifying attack, so the modifier it grants stays active
+        // (COMBAT_RULES.md §3.3 item 8: consumption requires an attack that enters
+        // the Damage Pipeline).
+        var critOnlyCard = new CardDefinition
+        {
+            CardDefinitionId = "card-crit-only",
+            Name = "Crit Only",
+            Category = CardCategory.PetSkill,
+            PowerCost = 10,
+            LoadoutCopyLimit = 1,
+            EffectDefinition = CardEffectDefinitions.Create(
+                CardEffectDefinition.Crit(10, "NextAttack")),
+        };
+
+        var state = CreateTestBattleState(power: 50) with
+        {
+            PetState = CreateTestBattleState(power: 50).PetState with
+            {
+                EquippedCards = [new EquippedCardIdentity("card-crit-only")],
+            },
+        };
+
+        var result = CardCastExecutor.Execute(state, critOnlyCard);
+
+        Assert.True(result.IsAccepted);
+        Assert.Equal(PetState.DefaultCrit, result.State.PetState.Crit);
+
+        var modifier = Assert.Single(result.State.PetState.NextAttackCritModifiers);
+        Assert.Equal("card-crit-only", modifier.SourceIdentity);
+        Assert.Equal(10, modifier.CritContribution);
+    }
+
+    [Fact]
+    public void Execute_IronFangTwice_RefreshesTheSameSourceRatherThanStacking()
+    {
+        // GAME_STATE.md §5.1.2 item 1: two elements with the same SourceIdentity are
+        // never observable in a committed state — a repeat application from one
+        // source refreshes that element instead of appending a second one.
+        var critOnlyCard = new CardDefinition
+        {
+            CardDefinitionId = "card-crit-only",
+            Name = "Crit Only",
+            Category = CardCategory.PetSkill,
+            PowerCost = 10,
+            LoadoutCopyLimit = 1,
+            EffectDefinition = CardEffectDefinitions.Create(
+                CardEffectDefinition.Crit(10, "NextAttack")),
+        };
+
+        var state = CreateTestBattleState(power: 50) with
+        {
+            PetState = CreateTestBattleState(power: 50).PetState with
+            {
+                EquippedCards = [new EquippedCardIdentity("card-crit-only")],
+            },
+        };
+
+        var first = CardCastExecutor.Execute(state, critOnlyCard);
+        Assert.True(first.IsAccepted);
+
+        var second = CardCastExecutor.Execute(first.State, critOnlyCard);
+        Assert.True(second.IsAccepted);
+
+        var modifier = Assert.Single(second.State.PetState.NextAttackCritModifiers);
+        Assert.Equal("card-crit-only", modifier.SourceIdentity);
+        Assert.Equal(10, modifier.CritContribution);
+    }
+
+    [Fact]
+    public void Execute_TwoDifferentSources_CoexistAsTwoModifiers()
+    {
+        // COMBAT_RULES.md §3.3 item 10: different sources coexist and stack
+        // additively. Iron Fang's Card identity and another source's identity are
+        // two distinct elements, so both apply to the same attack and each is
+        // individually removable.
+        var otherCritSource = new CardDefinition
+        {
+            CardDefinitionId = "card-other-crit",
+            Name = "Other Crit",
+            Category = CardCategory.PetSkill,
+            PowerCost = 10,
+            LoadoutCopyLimit = 1,
+            EffectDefinition = CardEffectDefinitions.Create(
+                CardEffectDefinition.Crit(10, "NextAttack")),
+        };
+
+        var state = CreateTestBattleState(power: 50) with
+        {
+            PetState = CreateTestBattleState(power: 50).PetState with
+            {
+                EquippedCards =
+                [
+                    new EquippedCardIdentity("card-other-crit"),
+                    new EquippedCardIdentity("card-crit-only"),
+                ],
+                NextAttackCritModifiers =
+                [
+                    new NextAttackCritModifier("card-crit-only", 10),
+                ],
+            },
+        };
+
+        var result = CardCastExecutor.Execute(state, otherCritSource);
+
+        Assert.True(result.IsAccepted);
+
+        // `card-other-crit` has no Damage element, so it grants without consuming —
+        // both sources are now active, and neither replaced the other.
+        Assert.Equal(2, result.State.PetState.NextAttackCritModifiers.Length);
+        Assert.Contains(
+            result.State.PetState.NextAttackCritModifiers,
+            modifier => modifier.SourceIdentity == "card-crit-only" && modifier.CritContribution == 10);
+        Assert.Contains(
+            result.State.PetState.NextAttackCritModifiers,
+            modifier => modifier.SourceIdentity == "card-other-crit" && modifier.CritContribution == 10);
     }
 
     [Fact]

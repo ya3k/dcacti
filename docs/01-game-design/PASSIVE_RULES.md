@@ -1,6 +1,12 @@
 # Passive Rules
 
-**Version:** 1.1 (§8 Pet `PassiveId` values recorded per TASK-082
+**Version:** 1.2 (§8 — Bạch Hổ's "next attack gains increased Crit chance"
+effect is now recorded as a `NextAttack` Crit modifier whose lifetime,
+consumption boundary, composition, and source-specific removal are owned by
+`COMBAT_RULES.md` §3.3 items 7–10 and whose state is
+`PetState.NextAttackCritModifiers[]` (`GAME_STATE.md` §2.3.4), referenced
+rather than restated. The Passive table, every Threshold, every trigger type,
+every reset behavior, and every `PassiveId` value are unchanged. Prior 1.1: §8 Pet `PassiveId` values recorded per TASK-082
 decisions B / R1-3 / R2-9 — `passive-<ascii-kebab-case-name>` of the
 owning Pet, scoped to Pet passives only; Boss PassiveIds unchanged)
 **Status:** MVP Domain Rule
@@ -182,11 +188,42 @@ full reset (§2, §4). Exact numeric effect magnitudes (Burn amount, Defense
 amount, Crit increase %) are balance values and live in config, not in this
 document.
 
+**Bạch Hổ's `NextAttack` Crit increase is a Crit modifier, and its rule is
+not owned here.** Bạch Hổ's Passive effect ("next attack gains increased Crit
+chance") creates a temporary Crit modifier scoped to the next attack — the
+same scope Iron Fang's Card Crit element uses (`DATABASE.md` §3 item 1,
+`CARD_RULES.md` §4.1). The modifier's lifetime, the qualifying-attack
+consumption boundary, the Crit composition it participates in, and
+source-specific removal are owned by **`COMBAT_RULES.md` §3.3 items 7–10**,
+and the state it is held in is `PetState.NextAttackCritModifiers[]`
+(`GAME_STATE.md` §2.3.4). None of that is restated here
+(`.ai/workflow/documentation/documentation-change.md` §2).
+
+1. **This Passive's trigger is unchanged.** Bạch Hổ's Threshold (4 Matches),
+   its default Match-based trigger, and its default full reset are owned by
+   §2/§4 above and by the table; the Crit modifier is created when this
+   Passive triggers, at `GAME_RULES.md` §17 step 10 ("Charge Passive"). This
+   section does not add, move, or re-time that trigger.
+2. **The increase is an independent source.** It is separate from Iron Fang's
+   Card Crit value (`CARD_RULES.md` §4.1); the two are neither derived from
+   nor shared with each other, both apply additively to the same attack, and
+   each is individually removed after that attack consumes it
+   (`COMBAT_RULES.md` §3.3 item 10).
+3. **The numeric increase remains a config balance value** (paragraph above)
+   and is not authored here. Whether the modifier stacks with itself on
+   repeated triggers, and how a repeat application behaves, follow the
+   modifier's own state rule (`GAME_STATE.md` §5.1.2 item 1) rather than a
+   Passive-side stacking rule.
+4. **The modifier is not a Status Effect.** It does not use this document's
+   progress/threshold model, and it is not a Status Effect instance — see
+   `COMBAT_RULES.md` §3.3 item 11. Bạch Hổ's *progress* remains the
+   `StatusEffects[]`-independent `PassiveProgress` (`GAME_STATE.md` §2.3); the
+   modifier it produces is a separate `PetState` collection.
+
 **Pet `PassiveId` values.** (TASK-082 decisions B / R1-3 / R2-9) A Pet
 passive's `PassiveId` is `passive-<ascii-kebab-case-name>` of the owning
 Pet's documented name — Pets are the only named anchor, since Pet
 passives have no separate name in any document:
-
 ```text
 Xích Lang  →  passive-xich-lang
 Bạch Hổ    →  passive-bach-ho

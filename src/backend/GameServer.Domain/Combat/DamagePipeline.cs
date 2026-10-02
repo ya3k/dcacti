@@ -122,8 +122,30 @@ public static class DamagePipeline
 
     /// <summary>
     /// The bound for the Critical Hit roll (<c>COMBAT_RULES.md</c> §3.3 item 2: "bound 100").
+    ///
+    /// <b>This is the RNG draw's domain, not the Crit stat's ceiling.</b>
+    /// <c>COMBAT_RULES.md</c> §3.3 item 7 and §1.1 keep the two separate: the draw
+    /// is a bounded selection yielding <c>V ∈ [0, 100)</c>, while the composed
+    /// Crit stat is capped at <see cref="MaxCritPercentagePoints"/>. Neither value
+    /// is inferred from the other (<c>GAME_STATE.md</c> §2.3.4 item 3's unit note,
+    /// TASK-116 §13).
     /// </summary>
     public const uint CritRollBound = 100;
+
+    /// <summary>
+    /// The cap on the composed Crit stat, in percentage points
+    /// (<c>COMBAT_RULES.md</c> §1.1's <c>Crit</c> row: "critical hit chance (%),
+    /// range 0–100 percentage points"; §3.3 item 7: "The composed value is capped
+    /// at 100 percentage points").
+    ///
+    /// <b>It bounds the composed stat and nothing else.</b> §3.3 item 7 states the
+    /// cap "bounds the composed value; it does <b>not</b> change item 2's roll
+    /// bound" — so <see cref="CritRollBound"/> remains an independent value. This
+    /// is the bound <c>COMBAT_RULES.md</c> §1.1 records as a <b>newly authored</b>
+    /// value (TASK-116 D-4.4): it is not a pre-existing documented ceiling, and
+    /// §1.1 says so explicitly so no reader mistakes it for a restatement.
+    /// </summary>
+    public const int MaxCritPercentagePoints = 100;
 
     /// <summary>
     /// The damage-relevant inputs of one damage instance — the values steps 1–5
@@ -195,6 +217,19 @@ public static class DamagePipeline
     /// <param name="AttackerCrit">
     /// Attacker's active Crit stat percentage points (<c>COMBAT_RULES.md</c> §3.3).
     /// </param>
+    /// <param name="NextAttackCritContribution">
+    /// The summed contribution of the attacker's applicable <c>NextAttack</c> Crit
+    /// modifiers, in percentage points (<c>COMBAT_RULES.md</c> §3.3 items 7 and 10;
+    /// <c>GAME_STATE.md</c> §2.3.4). It is supplied <b>in addition to</b>
+    /// <paramref name="AttackerCrit"/> rather than folded into it, because §3.3
+    /// item 7 makes the base a separate value that a temporary modifier must never
+    /// overwrite — which is what lets consumption remove a source without
+    /// disturbing the base (item 9).
+    ///
+    /// The default <c>0</c> is the documented "no modifier active" contribution:
+    /// §2.3.4 item 5 makes an entity with no modifier hold an <b>empty
+    /// collection</b>, whose sum is <c>0</c>.
+    /// </param>
     /// <param name="RngState">
     /// The battle's authoritative PRNG state for Step 4 Crit evaluation (<c>COMBAT_RULES.md</c> §3.3).
     /// </param>
@@ -214,7 +249,8 @@ public static class DamagePipeline
         int DefenderShieldPool = 0,
         int AttackerCrit = 0,
         RngState RngState = default,
-        double OtherModifiers = 1.0);
+        double OtherModifiers = 1.0,
+        int NextAttackCritContribution = 0);
 
     /// <summary>
     /// Resolves one damage instance through the full pipeline and applies the
@@ -323,11 +359,18 @@ public static class DamagePipeline
         // §3 step 1 — Base Damage. COMBAT_RULES.md §3 step 1 names three
         // contributions: "ATK stat, Skill/Card base value, and any
         // ATK-Gem-generated damage pool for this action". The caller supplies the
-        // first two summed in `Attack` — for a Swap that is PetState.ATK alone,
-        // and for a Boss Skill it is Boss.ATK + SkillBaseDamage (§3.4, §6.3) — and
-        // the transient pool separately. No term is invented here and none is
-        // dropped: this step only sums what the direction's caller already
-        // determined.
+        // first two summed in `Attack` — for a Swap that is PetState.ATK alone, and
+        // for a Boss Skill it is EffectiveBossATK + the Skill's authored Base Damage
+        // (§3.4 "Boss Skill Step-1 composition", §5.5) — and the transient pool
+        // separately. No term is invented here and none is dropped: this step only
+        // sums what the direction's caller already determined.
+        //
+        // EffectiveBossATK is §5.5.1's value — truncate(BossState.ATK ×
+        // (100 + Magnitude) / 100), where the active instance's Magnitude carries the
+        // direction in its sign (> 0 increase, < 0 decrease, = 0 unchanged). That
+        // derivation belongs to COMBAT_RULES.md §5.5.1 and to its Domain consumer
+        // (StatusEffectLifecycle.EffectiveBossAttack); this pipeline is handed the
+        // already-derived integer and stays unaware of BossState and StatusEffect.
         var baseDamage = inputs.Attack + inputs.BaseDamagePool;
 
         // §3 step 2 — Combo Modifier. GAME_RULES.md §5's table, selected by the
@@ -352,12 +395,44 @@ public static class DamagePipeline
         // §3 step 4 — Other Modifiers & Crit Evaluation (COMBAT_RULES.md §3.3).
         // The Crit roll is exactly one bounded RNG selection with bound 100, consuming from the
         // single server-authoritative RngState (PCG32 stream).
+        //
+        // COMBAT_RULES.md §3.3 item 7 — Effective Crit. This is the ONE place
+        // §3.3 item 7's composed value is built and capped, so the ceiling has a
+        // single owner in code exactly as item 7 has it in documentation.
+        //
+        //     EffectiveCrit = BaseCrit
+        //                   + PassiveCrit  (already carried in AttackerCrit)
+        //                   + RelicCrit    (already carried in AttackerCrit)
+        //                   + applicable NextAttack modifiers
+        //         ↓
+        //     capped at 100 percentage points
+        //
+        // item 7: "`Crit` is the base. The stat is the permanent/base value and is
+        // NEVER overwritten by a temporary modifier." The caller therefore supplies
+        // the base stat as `AttackerCrit`, and the temporary modifiers are supplied
+        // separately as `NextAttackCritContribution` — so the base is never written
+        // by a temporary modifier, which is what makes source-specific removal
+        // (item 9) possible without an arithmetic inverse.
+        //
+        // Contributions are additive percentage points (item 7, and the unit
+        // CARD_RULES.md §4.1 and DATABASE.md §3 item 1 already use). The sum is
+        // clamped to [0, 100]: the upper bound is item 7's documented cap, and the
+        // lower bound keeps a malformed negative contribution from turning a Crit
+        // chance negative. The cap bounds the COMPOSED STAT ONLY — item 7 states it
+        // "does not change item 2's roll bound", so the draw below stays a bound-100
+        // selection yielding V ∈ [0, 100).
+        var composedCrit = inputs.AttackerCrit + inputs.NextAttackCritContribution;
+        var effectiveCrit = Math.Clamp(composedCrit, 0, MaxCritPercentagePoints);
+
         var pcg = inputs.RngState.Increment == 0
             ? Pcg32.FromSeed(0)
             : new Pcg32(inputs.RngState.State, inputs.RngState.Increment);
 
         var critRoll = pcg.NextBounded(CritRollBound);
-        var isCrit = critRoll < (uint)Math.Max(0, inputs.AttackerCrit);
+
+        // §3.3 item 2 / item 7: the roll succeeds iff V < EffectiveCrit — the strict
+        // comparison item 2 fixes, with EffectiveCrit substituted for the bare stat.
+        var isCrit = critRoll < (uint)effectiveCrit;
         var critMultiplier = isCrit ? CritMultiplier : NonCritMultiplier;
         var step4OtherModifiers = inputs.OtherModifiers * critMultiplier;
         var updatedRngState = pcg.CurrentState;

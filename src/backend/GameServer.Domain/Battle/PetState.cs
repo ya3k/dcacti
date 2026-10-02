@@ -419,6 +419,67 @@ public readonly record struct PetState(
         StatusEffectLifecycle.EffectsEqual(ActiveStatusEffects, other.ActiveStatusEffects);
 
     /// <summary>
+    /// The entity's active temporary Crit modifiers awaiting consumption by a
+    /// qualifying owner attack (<c>GAME_STATE.md</c> §2.3.4, <c>ADR-017</c>).
+    ///
+    /// <code>
+    /// NextAttackCritModifier
+    /// ├── SourceIdentity     the stable source-scoped removal key
+    /// └── CritContribution   the Crit increase in percentage points
+    /// </code>
+    ///
+    /// <b>It is never <c>null</c>.</b> §2.3.4 item 5 makes the collection
+    /// always-present — "Absence of the <i>collection</i> is not a representable
+    /// state" — so an entity with no active modifier holds an <b>empty
+    /// collection</b>, exactly as §2.3.2 item 1 fixes for
+    /// <see cref="ActiveStatusEffects"/>. It is initialized to the empty
+    /// collection and every write goes through this one member, which
+    /// <see cref="NextAttackCritModifiers"/> is the only code that does. That
+    /// matters for value equality as well as for reads: two states differing only
+    /// in "unset" versus "empty" are the same documented state, so they must
+    /// compare equal (the round-trip obligation of §2.3.4 item 8).
+    ///
+    /// <b>This is not <c>StatusEffects[]</c>, and the two do not overlap.</b>
+    /// §2.3.4 item 1 states the boundary: a modifier here carries no
+    /// <c>RemainingTurns</c> and no <c>ExpiryCondition</c>, so it does not engage
+    /// §2.3.1 item 3's exclusive duration dichotomy (neither widened nor relaxed by
+    /// this collection) and does not engage item 6's one-instance-per-identity rule,
+    /// which continues to govern <see cref="ActiveStatusEffects"/> alone. §2.3.3's
+    /// prohibition is likewise honored: this is not a pending or queued collection
+    /// and not a second representation of an in-flight application — a modifier
+    /// held here has already been applied, and is awaiting an attack rather than a
+    /// write-back.
+    ///
+    /// <b>Its lifetime is not Turn-based.</b> §5.1.2 items 2–3 state that the step
+    /// 19a pass does not touch these elements and that there is no expiry of any
+    /// kind and no cleanup pass. An unconsumed modifier therefore persists across
+    /// Turns until a qualifying attack consumes it — deliberately, not as a leak.
+    ///
+    /// Its mutation — create/refresh and consume — is owned by §5.1.2 (see
+    /// <see cref="NextAttackCritModifiers"/>). It is <b>not a wire member</b>
+    /// (§2.3.4 item 8: <c>SIGNALR_PROTOCOL.md</c> §4.2/§4.3 fix the current payload
+    /// member sets), so it is carried here as state, not delivered. It is likewise
+    /// not a Redis-only concern: it serializes with <c>BattleState</c> under the
+    /// existing round-trip obligation and adds no key and no Redis-only field
+    /// (<c>REDIS_STATE.md</c> §7 item 13).
+    /// </summary>
+    public NextAttackCritModifier[] NextAttackCritModifiers { get; init; } = [];
+
+    /// <summary>
+    /// Whether this state's NextAttack Crit modifier collection holds the same
+    /// elements in the same order as another's — the structural comparison
+    /// <c>GAME_STATE.md</c> §2.3.4 item 8's round-trip obligation requires.
+    ///
+    /// This is the same need <see cref="StatusEffectsEqual"/> answers for
+    /// <c>StatusEffects[]</c>, applied to this collection.
+    /// </summary>
+    /// <param name="other">The state to compare the collection against.</param>
+    public bool NextAttackCritModifiersEqual(PetState other) =>
+        Battle.NextAttackCritModifiers.ModifiersEqual(
+            NextAttackCritModifiers,
+            other.NextAttackCritModifiers);
+
+    /// <summary>
     /// The documented MVP starting <c>MaxHP</c> (<c>COMBAT_RULES.md</c> §1.1:
     /// "Max HP — maximum health — MVP default: 1000").
     ///
@@ -605,5 +666,14 @@ public readonly record struct PetState(
             // and battle creation is not a resolution. A caller reconstructing a
             // state that carries instances sets the member directly.
             ActiveStatusEffects = statusEffects ?? [],
+
+            // §2.3.4 item 5 / §5.1.2 item 1: the NextAttack Crit modifier
+            // collection likewise begins empty, and for the same reason — a
+            // modifier is created by a source resolving during a resolution
+            // (GAME_RULES.md §17 step 14 for a Card or Pet Skill, step 10 for a
+            // Pet Passive), and battle creation resolves nothing. The collection
+            // is always present and empty is its no-modifier value, never an
+            // omission or a null.
+            NextAttackCritModifiers = [],
         };
 }

@@ -48,7 +48,15 @@ Type:              DOCUMENTATION (TASK_TYPES.md §2 — "Change docs/ content �
                    owner document(s). See "Type classification note". If the
                    decision requires a code, schema, or ADR change, that change
                    is a SEPARATE follow-up task — not this task's act.
-Status:            BACKLOG
+Status:            IN REVIEW (the Product Owner answered all decisions; D-1,
+                   D-1a, D-2, D-3, D-3a, D-3b, D-4–D-4.6, D-5, D-5.1–D-5.5,
+                   Iron Fang × Bạch Hổ, D-6, D-7, and D-8 are recorded verbatim
+                   in "Product Owner Decisions" below, and the resulting state
+                   is recorded in "Resulting Contract" and "Classification
+                   Outcome". Zero files under `docs/`, `src/`, or `tests/`
+                   changed. This follows the TASK-113 / TASK-108 precedent.
+                   Per TASK_LIFECYCLE.md §4, landing in `completed/` requires
+                   review; the file stays in `backlog/` until then.)
 Risk:              MEDIUM (TASK_TYPES.md §4 — DOCUMENTATION baseline LOW–MEDIUM;
                    MEDIUM because the decision it records governs the state,
                    lifetime, and consumption contract of every
@@ -105,9 +113,14 @@ Dependencies:      TASK-115 (BACKLOG — the blocked implementation task this
                      step-19a lifecycle, serialization. IMMUTABLE; read-only),
                    TASK-105 (DONE — Shield refresh-not-stack and depletion,
                      the trigger-based expiry precedent. IMMUTABLE; read-only)
-Blocks:            TASK-115 (Iron Fang's Crit and Bạch Hổ's Passive Crit
-                   cannot be implemented without it), and through it
-                   ROADMAP.md Phase 1's "One Pet fully implemented".
+Blocks:            TASK-117 (ARCHITECTURE — authors ADR-017 and the owning
+                     `GAME_STATE.md` / `COMBAT_RULES.md` / `CARD_RULES.md` edits
+                     the recorded decisions require; see "Classification
+                     Outcome"), and through it TASK-115 (Iron Fang's Crit and
+                     Bạch Hổ's Passive Crit cannot be implemented until the
+                     state model and the owning rules are authored), and
+                     through that ROADMAP.md Phase 1's "One Pet fully
+                     implemented".
 Estimate:          Simple (present the evidence, obtain and record one
                    decision set across at most four owner documents; no code,
                    no tests, no migration, no ADR unless reported)
@@ -170,11 +183,28 @@ damage instance consumes it, and how it composes with the other independent Crit
 sources — so that Iron Fang's Crit and Bạch Hổ's Passive Crit can be implemented
 deterministically without inventing a gameplay rule.
 
-Concretely, this task must make the decision points in §"Decision Inputs"
-explicit and evidenced against `docs/`, obtain a human/Product-Owner answer for
-each (or an explicit recorded deferral), and record each settled answer in its
-single canonical owner document — without authoring any representation, lifetime,
-boundary, or composition rule on the agent's own authority.
+Concretely, this task makes the decision points explicit and evidenced against
+`docs/`, obtains a human/Product-Owner answer for each, and records each settled
+answer — without authoring any representation, lifetime, boundary, or composition
+rule on the agent's own authority.
+
+**Status: the decisions have been obtained and recorded.** See "Product Owner
+Decisions" (recorded as supplied) and "Resulting Contract" (their bindable
+statement, C-1–C-10). Two classification findings are reported rather than
+absorbed:
+
+```text
+1. D-1 introduces `PetState.NextAttackCritModifiers[]` — a new authoritative
+   battle-state concept. Per AGENTS.md §18 this requires an ADR, so the owning
+   documentation edits are a SEPARATE ARCHITECTURE task (TASK-117), not this
+   task's act. See "Classification Outcome".
+
+2. D-4.4 caps composed Crit at 100, described as "the existing documented
+   maximum". No such documented maximum exists — COMBAT_RULES.md §1.1 gives
+   `Crit` a default (5%) and no range; the 0–100 range in that table is
+   `Power`'s, and the `100` derives from the Crit roll bound (V ∈ [0,100)).
+   Per Product Owner confirmation this is recorded as a NEW AUTHORED VALUE.
+```
 
 ---
 
@@ -510,9 +540,507 @@ boundary, and source composition** of a `NextAttack`-scoped modifier.
 
 ---
 
-## Decision Inputs
+## Product Owner Decisions
 
 <!--
+  ANSWERED — Product Owner. These decisions are the deliverable of this task.
+  An agent authored none of them (AGENTS.md §7).
+-->
+
+**All decisions in this section were supplied by the Product Owner. The
+"Resulting Contract" below is the bindable statement of them.**
+
+### D-1 — Representation
+
+**Decision: represent a temporary NextAttack Crit modifier as a dedicated
+source-specific collection on the authoritative `PetState`.**
+
+```text
+NextAttackCritModifiers[]
+```
+
+Each modifier must contain enough information to identify and remove its own
+contribution independently.
+
+```text
+Do NOT represent NextAttack Crit by mutating the permanent/base
+  `PetState.Crit`.
+Do NOT represent NextAttack Crit through `PendingStatusEffects[]`.
+Do NOT introduce a second queued/in-flight state representation.
+```
+
+### D-1a — Instance Identity
+
+Each NextAttack Crit modifier has a **stable source/instance identity**
+sufficient to remove exactly that modifier after consumption.
+
+Consumption must not reset or remove unrelated Crit sources.
+
+### D-2 — Lifetime
+
+A NextAttack Crit modifier remains active **until the owner's next qualifying
+attack consumes it**.
+
+```text
+It is NOT TurnBased.
+It is NOT Shield-triggered.
+It does NOT use `RemainingTurns`.
+It does NOT use Shield depletion as its expiry condition.
+```
+
+### D-3 — Attack Boundary
+
+A **qualifying attack** is an explicit owner attack action that enters the
+Damage Pipeline.
+
+The NextAttack Crit modifier is evaluated for that attack and **consumed once
+for that attack**.
+
+A raw damage instance is not itself a separate attack for NextAttack
+consumption purposes.
+
+### D-3a — Non-Damaging Action
+
+A non-damaging action does **not** consume a NextAttack Crit modifier.
+
+### D-3b — Multiple Damage Instances
+
+If one qualifying attack action produces multiple damage instances, **all damage
+instances belong to the same attack** for NextAttack consumption purposes.
+
+The NextAttack Crit modifier is consumed at the **first qualifying damage
+instance** of that attack.
+
+It must **not** be consumed again by later damage instances belonging to the
+same attack.
+
+### D-4 — Crit Composition
+
+Effective Crit is composed from the attacker's base/permanent Crit sources plus
+all currently applicable temporary Crit modifiers.
+
+```text
+EffectiveCrit =
+      BaseCrit
+    + PassiveCrit
+    + RelicCrit
+    + applicable NextAttackCritModifiers
+```
+
+Only sources that are **active and applicable to the current attack** participate.
+
+### D-4.1 — Base vs Composed Crit
+
+`PetState.Crit` remains the **permanent/base** Crit value.
+
+Temporary NextAttack modifiers **must not overwrite** `PetState.Crit`.
+
+The runtime calculates the effective Crit value for the current Damage Pipeline
+execution.
+
+### D-4.2 — Composition Operator
+
+Crit contributions are **additive**.
+
+### D-4.3 — Source-Specific Contribution
+
+Each Crit source contributes **independently**.
+
+Removing or consuming one source must not reset or remove other Crit sources.
+
+### D-4.4 — Cap
+
+**Decision: the composed Crit value is capped at 100.**
+
+**Recorded as a NEW authored value** (Product Owner confirmed on review). No
+Crit cap exists anywhere in `docs/` today: `COMBAT_RULES.md` §1.1 lists a 0–100
+range for `Power` only, and gives `Crit` just "critical hit chance (%) — MVP
+default: 5%". The value `100` in the decision originates from the Crit **roll
+bound** (`COMBAT_RULES.md` §3.3 item 2, $V \in [0, 100)$) — a bound on the
+random draw, not a documented ceiling on the Crit stat. This decision therefore
+**authors** the stat's range rather than confirming one.
+
+This is recorded explicitly so no downstream task reads it as pre-existing
+documentation, and so the owning document edit is not mistaken for a
+restatement. See "Required Documentation Changes" for the owner.
+
+### D-4.5 — Source Removal
+
+NextAttack Crit consumption removes **only** the source-specific temporary
+modifier(s) consumed by the qualifying attack.
+
+```text
+It must NOT reset `PetState.Crit`.
+It must NOT remove Passive Crit.
+It must NOT remove Relic Crit.
+It must NOT remove unrelated temporary Crit sources not consumed by that attack.
+```
+
+### D-4.6 — Unit
+
+Crit values are **percentage points**.
+
+The existing bounded Crit procedure remains:
+
+```text
+V ∈ [0,100)
+
+Crit succeeds iff:
+
+V < EffectiveCrit
+```
+
+### D-5 — Multiple NextAttack Sources
+
+Multiple active NextAttack Crit modifiers **stack additively**.
+
+```text
+They do NOT replace each other.
+They remain source-specific so that consumption can remove their individual
+  contributions correctly.
+A qualifying attack consumes ALL applicable NextAttack Crit modifiers assigned
+  to that attack.
+```
+
+### D-5.1–D-5.5 — Multiple Source Interaction
+
+When multiple applicable NextAttack Crit sources are active for the same attack:
+
+```text
+1. All applicable source contributions are included in EffectiveCrit.
+2. Contributions are summed additively.
+3. The composed value is capped at 100.
+4. The attack uses that composed value in the existing Crit pipeline.
+5. The consumed NextAttack modifiers are removed after their qualifying attack.
+6. Permanent/base Crit sources remain unchanged.
+```
+
+### Iron Fang × Bạch Hổ
+
+If Iron Fang provides a NextAttack Crit modifier and Bạch Hổ provides its own
+NextAttack Crit modifier for the same attack, **both modifiers apply
+additively**.
+
+```text
+Base Crit      = 5
+Iron Fang      = +10
+Bạch Hổ        = +10
+
+Effective Crit = 25
+```
+
+After the qualifying attack consumes both modifiers:
+
+```text
+Base Crit          = 5
+Iron Fang modifier = removed
+Bạch Hổ modifier   = removed
+```
+
+The permanent/base Crit remains unchanged.
+
+### D-6 — DefaultCrit
+
+`DefaultCrit` is an **initialization/default-state value only**.
+
+It is **not** a runtime reset mechanism. Runtime consumption must never restore
+Crit by assigning:
+
+```text
+PetState.Crit = PetState.DefaultCrit
+```
+
+### D-7 — Balance Values
+
+Do not change any existing Crit balance value as part of TASK-116. (The D-4.4
+cap is recorded as a **new authored value**, per the Product Owner's
+confirmation; every other value in the D-7 balance table below remains
+UNCHANGED.)
+
+### D-8 — Preserved Constraints
+
+```text
+server authority                          AGENTS.md §10, GAME_RULES.md §18, ADR-001
+existing Damage Pipeline                  COMBAT_RULES.md §3
+existing bounded Crit RNG procedure       COMBAT_RULES.md §3.3 item 2,
+                                          TASK-113 D-1/D-2
+existing single RngState                  ADR-009, GAME_STATE.md §2.6.2
+existing Burn Crit participation          COMBAT_RULES.md §3.3 item 4,
+                                          TASK-113 D-3
+CAS/retry semantics                       GAME_STATE.md §5.1, REDIS_STATE.md §4
+no client-authoritative Crit state        AGENTS.md §10
+no `PendingStatusEffects[]`               GAME_STATE.md §2.3.3
+no new Redis schema                       REDIS_STATE.md
+no new PostgreSQL schema                  DATABASE.md
+no new SignalR method                     SIGNALR_PROTOCOL.md
+no new dedicated Crit/NextAttack event    GAME_RULES.md §16, TASK-113 D-4
+no new gameplay mechanic beyond the
+  resolved NextAttack Crit contract       AGENTS.md §7
+```
+
+---
+
+## Resulting Contract (Deterministic, Implementation-Ready)
+
+<!--
+  The bindable statement of the Product Owner's decisions above. Each rule
+  traces to a decision; none is authored here.
+-->
+
+### C-1. Representation
+
+A temporary NextAttack Crit modifier is held in a **dedicated, source-specific
+collection on `PetState`**:
+
+```text
+PetState.NextAttackCritModifiers[]
+```
+
+- Each element is one modifier, carrying a **stable source/instance identity**
+  and its magnitude. The identity is what makes **source-specific removal**
+  (C-6) possible. (D-1, D-1a)
+- Each element carries a Crit increase in **percentage points**. (D-4.6)
+- The collection is **empty** when no modifier is active — the same
+  always-present-collection convention `GAME_STATE.md` §2.3.2 item 1 fixes for
+  `StatusEffects[]`.
+- A modifier is **not** a `StatusEffect` instance. It does not use
+  `RemainingTurns` and does not use `ExpiryCondition`/Shield depletion, so it
+  does **not** engage `GAME_STATE.md` §2.3.1 item 3's duration-model dichotomy
+  and does **not** require that rule to be widened. (D-2)
+- `PendingStatusEffects[]` is **not** used, and no second queued or in-flight
+  representation is introduced. (D-1, D-8)
+
+### C-2. Lifetime and Expiry
+
+- A modifier remains active **until the owner's next qualifying attack consumes
+  it**. (D-2)
+- It is not TurnBased; it carries no `RemainingTurns` and is **not** decremented
+  by the step-19a pass. (`GAME_STATE.md` §5.1.1 item 7's "the step 19a pass must
+  not invent a duration for it" is respected.) (D-2)
+- It is not Shield-triggered and does not use Shield depletion as its expiry. (D-2)
+- Consequence: an unconsumed modifier **persists across Turns** until a
+  qualifying attack occurs. (D-2, read with D-3a)
+
+### C-3. Attack Boundary (Consumption)
+
+- A **qualifying attack is an explicit owner attack action that enters the
+  Damage Pipeline**. (D-3)
+- A raw damage instance is **not** itself a separate attack for NextAttack
+  consumption purposes. (D-3)
+- A **non-damaging action does not consume** a modifier. (D-3a)
+- If one qualifying attack action produces **multiple damage instances, all of
+  them belong to the same attack**; the modifier is consumed at the **first
+  qualifying damage instance** of that attack and **must not be consumed again**
+  by later instances of the same attack. (D-3b)
+- Explicitly resolved consequence: because a Burn/DoT tick and the Boss's own
+  attack are **not** the owner's qualifying attack action, they do not consume
+  the modifier — even though `COMBAT_RULES.md` §3.3 item 4 makes them
+  Crit-eligible and they therefore **do** participate in Effective Crit
+  composition when applicable. (D-3, D-3a, D-4)
+
+### C-4. Effective Crit Composition
+
+```text
+EffectiveCrit =
+      BaseCrit                                  (PetState.Crit, permanent)
+    + PassiveCrit                               (applicable, active)
+    + RelicCrit                                 (applicable, active)
+    + applicable NextAttackCritModifiers[]       (summed)
+```
+
+- `PetState.Crit` **remains the permanent/base value** and is **never
+  overwritten** by a temporary modifier. (D-4.1)
+- The runtime calculates Effective Crit **for the current Damage Pipeline
+  execution**. (D-4.1)
+- Contributions are **additive**. (D-4.2)
+- Each source contributes **independently**; removing one does not disturb the
+  others. (D-4.3)
+- Only sources that are **active and applicable to the current attack**
+  participate. (D-4)
+- The composed value is **capped at 100**. (D-4.4 — new authored value)
+
+### C-5. Crit Roll
+
+Unchanged from `COMBAT_RULES.md` §3.3 item 2 and TASK-113 D-1/D-2, with
+`EffectiveCrit` substituted for the Crit stat:
+
+```text
+one bounded RNG selection over bound 100   →   V ∈ [0, 100)
+Crit succeeds iff V < EffectiveCrit
+```
+
+Crit values are **percentage points**. (D-4.6)
+
+### C-6. Source-Specific Removal
+
+Consumption removes **only** the source-specific temporary modifier(s) consumed
+by the qualifying attack.
+
+```text
+It must NOT reset `PetState.Crit`.
+It must NOT remove Passive Crit.
+It must NOT remove Relic Crit.
+It must NOT remove unrelated temporary Crit sources not consumed by that attack.
+```
+
+(D-4.5)
+
+### C-7. Multiple Simultaneous Sources
+
+- Multiple active NextAttack Crit modifiers **stack additively** and **do not
+  replace each other**. (D-5)
+- They remain source-specific so consumption removes their individual
+  contributions correctly. (D-5)
+- A qualifying attack consumes **all applicable** NextAttack Crit modifiers
+  assigned to that attack. (D-5)
+
+### C-8. Iron Fang × Bạch Hổ
+
+Both modifiers apply additively to the same attack: Base 5 + Iron Fang 10 +
+Bạch Hổ 10 = **Effective Crit 25**; after the qualifying attack both modifiers
+are removed and base Crit remains 5. (See the worked example under
+"Iron Fang × Bạch Hổ" above.)
+
+This preserves `CARD_RULES.md` §4.1's independence claim — the two remain
+separate sources, neither derived from nor sharing the other — while defining
+the composition `CARD_RULES.md` §4.1 and `COMBAT_RULES.md` §3.3 item 5 left
+open.
+
+### C-9. `DefaultCrit` Is Not a Reset Mechanism
+
+`DefaultCrit` is an initialization value only. Runtime consumption must **never**
+restore Crit by assigning `PetState.Crit = PetState.DefaultCrit`. (D-6, and the
+D-6 recording below of the review-identified defect.)
+
+### C-10. Preserved Constraints
+
+All of D-8. In particular: no new Battle Event, no new SignalR method, no new RNG
+stream, no client-authoritative Crit, no `PendingStatusEffects[]`, no new Redis or
+PostgreSQL schema, and Crit remains inside Damage Pipeline step 4.
+
+---
+
+## Required Authoritative Result — Coverage
+
+```text
+ 1. NextAttack Crit representation        → C-1   (PetState.NextAttackCritModifiers[])
+ 2. NextAttack lifetime/expiry            → C-2   (until consumed; not Turn/Shield)
+ 3. attack consumption boundary           → C-3   (owner attack action into pipeline)
+ 4. multiple damage instances             → C-3   (same attack; first instance;
+                                                   not consumed again)
+ 5. Crit source composition               → C-4   (additive, capped 100)
+ 6. source-specific removal               → C-6
+ 7. multiple simultaneous NextAttack srcs → C-7   (additive, all consumed)
+ 8. interaction with Passive Crit         → C-4, C-8
+ 9. interaction with Relic Crit           → C-4, C-6
+10. interaction with Card/Pet Skill Crit  → C-4, C-8
+```
+
+---
+
+## Required Documentation Changes
+
+<!--
+  Per .ai/workflow/documentation/documentation-change.md §3, each concept has
+  ONE canonical owner. These are the owning edits the decisions require. They
+  are NOT performed by TASK-116 — see "Classification Outcome (AGENTS.md §18)".
+-->
+
+The Product Owner's answer introduces a **new battle-state concept**, so the
+owning edits belong to the **new ADR's and a separate ARCHITECTURE task**, not
+this task's. What follows is the required-edit register, reported for that task.
+
+```text
+CONCEPT                                CANONICAL OWNER               EDIT REQUIRED
+-------------------------------------  ----------------------------  ----------------------------------
+NextAttack modifier representation     GAME_STATE.md §2.3 (PetState) add
+  (NextAttackCritModifiers[])            + a new §2.3.x subsection     NextAttackCritModifiers[]
+                                                                       schema, identity, always-present
+                                                                       collection, serialization note
+NextAttack lifetime & attack boundary  COMBAT_RULES.md (new §3.3     define "qualifying attack",
+  + consumption                          subsection or §1.1 note)      lifetime, first-instance rule
+Crit source composition (additive)     COMBAT_RULES.md §3.3 item 5   extend item 5 from "names three
+                                                                       sources" to a composition rule
+Crit cap of 100  ← NEW AUTHORED VALUE  COMBAT_RULES.md §1.1          add a range to the Crit row
+                                                                       (currently: "MVP default: 5%")
+DefaultCrit is not a reset mechanism   GAME_STATE.md §2.3 / §5.1     state that the base value is
+                                                                       never restored by assignment
+Iron Fang × Bạch Hổ composition        CARD_RULES.md §4.1            reference the composition rule;
+                                                                       do NOT restate it
+```
+
+**Duplication rule.** `documentation-change.md` §2 applies: the composition rule
+is written **once**, in `COMBAT_RULES.md`, and `CARD_RULES.md` §4.1 only points
+at it. `GAME_STATE.md` types the state and points at the owning gameplay rule —
+it does not restate the boundary.
+
+```text
+NOT required to change:
+  docs/02-technical/DATABASE.md          `scope` = "NextAttack" storage token is
+                                         already correct and complete; §3 item 1's
+                                         "owned by CARD_RULES.md §4.1" pointer may
+                                         be re-pointed to COMBAT_RULES.md if the
+                                         owner moves — REPORTED, not assumed.
+  docs/02-technical/SIGNALR_PROTOCOL.md  no wire change (D-8); the new collection
+                                         is state, not a wire member, exactly as
+                                         StatusEffects[] is (GAME_STATE.md §2.3.1)
+  docs/01-game-design/GAME_RULES.md §16  no event change (D-8)
+  docs/02-technical/REDIS_STATE.md       no new key (D-8) — the collection rides
+                                         the existing BattleState write-back
+  docs/02-technical/DATABASE.md          no new column (D-8)
+```
+
+---
+
+## Classification Outcome (`AGENTS.md` §18)
+
+**This task's own "Type Re-Classification Condition" fired, and this task also
+triggers `AGENTS.md` §18.**
+
+D-1 introduces `NextAttackCritModifiers[]` — a **new authoritative battle-state
+concept**, which `AGENTS.md` §18 lists as requiring an ADR ("changing … the
+battle-state model"). `TASK_TYPES.md` §2 likewise makes a change requiring a
+new/updated ADR an `ARCHITECTURE` task.
+
+**Product Owner ruling (on review):** TASK-116 **remains `DOCUMENTATION`** and
+records the decision; the ADR and the state-model documentation are a
+**separate `ARCHITECTURE` task**.
+
+```text
+TASK-116  (this task, DOCUMENTATION)   records the decisions
+        ↓
+TASK-117  (ARCHITECTURE)               authors ADR-017 + the GAME_STATE.md /
+                                       COMBAT_RULES.md / CARD_RULES.md edits
+        ↓
+TASK-115  (FEATURE)                    implements against the frozen contract
+        ↓
+regression tests → review
+```
+
+**ADR numbering.** The next sequential ADR is **ADR-017** (highest existing is
+ADR-016; `docs/03-decisions/README.md` §7's index ends at ADR-016).
+
+**Not re-typed to `GAMEPLAY-CHANGE`.** D-1's representation does **not** widen
+`GAME_STATE.md` §2.3.1 item 3's two-duration-model dichotomy and does **not**
+relax item 6's one-instance-per-identity rule — the new collection is separate
+from `StatusEffects[]` (C-1). So the second re-classification trigger does not
+fire, and the `DOCUMENTATION` classification holds for the decision-record act.
+
+**Not deferred to a balance task.** D-4.4's cap is a **new authored value**, but
+the Product Owner supplied it as part of this decision set, so it is recorded
+here and carried into TASK-117's owning edit. It is flagged as newly authored so
+no downstream reader mistakes it for pre-existing documentation.
+
+---
+
+## Decision Inputs (Retained as Evidence)
+
+<!--
+  RETAINED AS EVIDENCE — the pre-decision analysis the Product Owner decided
+  against. Retained per the TASK-113 precedent so the reasoning is auditable.
+  The "Product Owner Decisions" section above supersedes any open question
+  framed here, and the option lists below were NOT ranked or preselected.
+
   A PRODUCT OWNER / HUMAN must answer these. An agent must NOT answer them.
   Choosing, recommending, ranking, or defaulting any answer is the single
   prohibited action of this task (AGENTS.md §7, §20).
@@ -959,37 +1487,43 @@ The default expectation is that **at most two** owner documents change.
 
 ## Acceptance Criteria
 
-- [ ] All four contract gaps (representation, lifetime, attack boundary, Crit
+- [x] All four contract gaps (representation, lifetime, attack boundary, Crit
       source composition) are explicitly identified with file + section evidence.
-- [ ] Evidence from `CARD_RULES.md`, `COMBAT_RULES.md`, `PASSIVE_RULES.md`, and
+- [x] Evidence from `CARD_RULES.md`, `COMBAT_RULES.md`, `PASSIVE_RULES.md`, and
       `GAME_STATE.md` is documented, each item classified as explicit contract,
       inference, or missing contract.
-- [ ] `NextAttack` Crit representation is explicitly defined by recorded Product
-      Owner decision, not by an agent.
-- [ ] `NextAttack` lifetime/expiry semantics are explicitly defined.
-- [ ] The exact attack/damage consumption boundary is explicitly defined,
+- [x] `NextAttack` Crit representation is explicitly defined by recorded Product
+      Owner decision, not by an agent. (D-1 → C-1)
+- [x] `NextAttack` lifetime/expiry semantics are explicitly defined. (D-2 → C-2)
+- [x] The exact attack/damage consumption boundary is explicitly defined,
       including the non-damaging-action and multiple-instance sub-questions.
-- [ ] Crit source composition is explicitly defined (D-4.1–D-4.7).
-- [ ] Source-specific removal is explicitly defined.
-- [ ] Multiple simultaneous `NextAttack` Crit sources are explicitly defined
-      (D-5.1–D-5.5).
-- [ ] The Iron Fang × Bạch Hổ interaction is explicitly defined.
-- [ ] The resulting contract is deterministic and implementation-ready: it
-      answers every point in "Required Authoritative Result" below without
+      (D-3, D-3a, D-3b → C-3)
+- [x] Crit source composition is explicitly defined. (D-4, D-4.1–D-4.3 → C-4)
+- [x] Source-specific removal is explicitly defined. (D-4.5 → C-6)
+- [x] Multiple simultaneous `NextAttack` Crit sources are explicitly defined.
+      (D-5, D-5.1–D-5.5 → C-7)
+- [x] The Iron Fang × Bạch Hổ interaction is explicitly defined. (→ C-8)
+- [x] The resulting contract is deterministic and implementation-ready: it
+      answers every point in "Required Authoritative Result — Coverage" without
       reference to any implementation detail.
-- [ ] Each answer names its single canonical owner document
-      (`documentation-change.md` §3).
-- [ ] The ADR requirement is explicitly reported (required / not required), with
-      `docs/03-decisions/README.md` §8 checked.
-- [ ] Whether a separate documentation-synchronization task is required is
-      explicitly reported.
-- [ ] Zero files under `src/` or `tests/` modified.
-- [ ] TASK-115 is byte-identical and explicitly identified as the downstream
+- [x] Each required owning edit names its single canonical owner document
+      (`documentation-change.md` §3) — see "Required Documentation Changes".
+- [x] The ADR requirement is explicitly reported: **required** — ADR-017, per
+      `AGENTS.md` §18 (new battle-state concept). `docs/03-decisions/README.md`
+      §8 checked; the gap was not listed there.
+- [x] Whether a separate documentation-synchronization task is required is
+      explicitly reported: **yes** — TASK-117 (ARCHITECTURE), because the
+      owning edits cannot be authored under this task's `DOCUMENTATION` type or
+      without the ADR.
+- [x] Zero files under `src/` or `tests/` modified.
+- [x] TASK-115 is byte-identical and explicitly identified as the downstream
       implementation task, still blocked.
-- [ ] No new SignalR method introduced.
-- [ ] No new Battle Event introduced.
-- [ ] No gameplay behavior implemented.
-- [ ] No balance value authored or changed (D-7).
+- [x] No new SignalR method introduced.
+- [x] No new Battle Event introduced.
+- [x] No gameplay behavior implemented.
+- [x] No **existing** balance value authored or changed (D-7). D-4.4's cap of
+      `100` is recorded as a **new authored value** per Product Owner
+      confirmation, and is flagged as such.
 - [ ] Quality review checklist passes (`quality/review.md` §1), skipping
       code-only items per `documentation-change.md` §4.
 
@@ -997,20 +1531,24 @@ The default expectation is that **at most two** owner documents change.
 
 ## Required Authoritative Result
 
-The completed decision must define a deterministic contract for all ten points,
+```text
+SATISFIED — see "Required Authoritative Result — Coverage" for the mapping.
+```
+
+The completed decision defines a deterministic contract for all ten points,
 implementable without guessing:
 
 ```text
- 1. NextAttack Crit representation
- 2. NextAttack lifetime/expiry
- 3. attack consumption boundary
- 4. multiple damage instances
- 5. Crit source composition
- 6. source-specific removal
- 7. multiple simultaneous NextAttack sources
- 8. interaction with Passive Crit
- 9. interaction with Relic Crit
-10. interaction with Card/Pet Skill Crit
+ 1. NextAttack Crit representation          → C-1
+ 2. NextAttack lifetime/expiry              → C-2
+ 3. attack consumption boundary             → C-3
+ 4. multiple damage instances               → C-3
+ 5. Crit source composition                 → C-4
+ 6. source-specific removal                 → C-6
+ 7. multiple simultaneous NextAttack sources→ C-7
+ 8. interaction with Passive Crit           → C-4, C-8
+ 9. interaction with Relic Crit             → C-4, C-6
+10. interaction with Card/Pet Skill Crit    → C-4, C-8
 ```
 
 ---
@@ -1018,15 +1556,22 @@ implementable without guessing:
 ## TASK-115 Handoff
 
 ```text
-TASK-115 remains blocked until this contract is resolved.
+TASK-115 remains blocked until this contract and TASK-117's owning edits land.
 ```
 
-After this decision task is completed, the order is:
+The contract TASK-115 must implement is now **frozen** in "Resulting Contract"
+(C-1 through C-10) above. TASK-115 **cannot** begin against it yet, because the
+recording act was not the authoring act: `AGENTS.md` §18 requires the ADR and the
+owning documentation before implementation (`AGENTS.md` §17 items 1–2).
 
 ```text
-Authoritative gameplay/state contract      (this task)
+TASK-116  (this task, DOCUMENTATION)   records the decisions          ← DONE
         ↓
-TASK-115 implementation correction         (LATER, separate task)
+TASK-117  (ARCHITECTURE)               authors ADR-017 + the owning
+                                       GAME_STATE.md / COMBAT_RULES.md /
+                                       CARD_RULES.md edits
+        ↓
+TASK-115  (FEATURE)                    implements against the frozen contract
         ↓
 regression tests
         ↓
@@ -1034,8 +1579,25 @@ review
 ```
 
 **Do not implement TASK-115 as part of this task.** TASK-115 is not modified,
-re-scoped, re-statused, or unblocked by TASK-116. Its correction begins only
-after the recorded contract exists.
+re-scoped, re-statused, or unblocked by TASK-116. It becomes implementable when
+TASK-117's owning edits land.
+
+**TASK-115's specific correction scope, once TASK-117 lands** (reported, not
+implemented here):
+
+```text
+1. Remove the `PetState.DefaultCrit` reset in BattleStateService.cs
+   (the review-identified defect; now forbidden by C-9 / D-6).
+2. Stop `CardCastExecutor`'s Crit branch writing directly into
+   `PetState.Crit` (`newCrit += critAmount`); it must instead add a
+   source-identified modifier to `PetState.NextAttackCritModifiers[]` (C-1).
+3. Compute Effective Crit additively, capped at 100, at the point the
+   Damage Pipeline consumes it (C-4), leaving `PetState.Crit` untouched.
+4. Implement the consumption boundary of C-3 — first qualifying damage
+   instance of a qualifying owner attack action; not a Burn tick, not the
+   Boss's attack, not a non-damaging action.
+5. Remove only the consumed source-specific modifiers (C-6).
+```
 
 ---
 
@@ -1115,26 +1677,78 @@ The recorded contract must be able to answer at minimum:
 
 ### Product Owner Decisions
 
-- D-1 (representation): `<recorded verbatim, or DEFERRED>`
-- D-2 (lifetime/expiry): `<recorded verbatim, or DEFERRED>`
-- D-3 (attack boundary): `<recorded verbatim, or DEFERRED>`
-- D-4 (composition): `<recorded verbatim, or DEFERRED>`
-- D-5 (multiple sources / Iron Fang × Bạch Hổ): `<recorded verbatim, or DEFERRED>`
+- D-1 (representation): **`PetState.NextAttackCritModifiers[]`** — a dedicated
+  source-specific collection. `PetState.Crit` is not mutated;
+  `PendingStatusEffects[]` is not used; no second queued/in-flight
+  representation is introduced.
+- D-1a (instance identity): each modifier carries a **stable source/instance
+  identity** sufficient to remove exactly that modifier after consumption;
+  consumption must not reset unrelated Crit sources.
+- D-2 (lifetime/expiry): active **until the owner's next qualifying attack
+  consumes it**; not TurnBased, not Shield-triggered, no `RemainingTurns`, no
+  Shield depletion.
+- D-3 (attack boundary): a qualifying attack is an **explicit owner attack
+  action that enters the Damage Pipeline**; consumed once per that attack; a raw
+  damage instance is not a separate attack.
+- D-3a: a non-damaging action does **not** consume.
+- D-3b: multiple damage instances from one attack belong to the **same attack**;
+  consumed at the **first qualifying damage instance**; not consumed again by
+  later instances of the same attack.
+- D-4 (composition): `EffectiveCrit = Base + Passive + Relic + applicable
+  NextAttackCritModifiers`; additive; only active and applicable sources
+  participate.
+- D-4.1: `PetState.Crit` remains the **permanent/base** value and is never
+  overwritten; Effective Crit is computed for the current pipeline execution.
+- D-4.2: additive. D-4.3: each source independent.
+- D-4.4 (cap): composed value capped at **100** — recorded as a **NEW authored
+  value** (no Crit cap exists in `docs/` today; the `100` derives from the roll
+  bound, not a documented stat ceiling).
+- D-4.5 (source removal): remove only the consumed source-specific modifiers;
+  must not reset `PetState.Crit`, nor remove Passive/Relic/unrelated Crit.
+- D-4.6 (unit): percentage points; existing bounded procedure retained
+  (`V ∈ [0,100)`, succeeds iff `V < EffectiveCrit`).
+- D-5 / D-5.1–D-5.5 (multiple sources): stack **additively**, do not replace
+  each other, remain source-specific; a qualifying attack consumes **all**
+  applicable modifiers; base Crit unchanged.
+- Iron Fang × Bạch Hổ: both apply additively (Base 5 + 10 + 10 = **25**); both
+  removed after the qualifying attack; base Crit remains 5.
+- D-6: `DefaultCrit` is initialization only, **never** a runtime reset
+  mechanism; `PetState.Crit = PetState.DefaultCrit` must never be used.
+- D-7: no existing Crit balance value changed.
+- D-8: all preserved constraints confirmed (server authority, existing pipeline,
+  existing bounded Crit RNG, single `RngState`, Burn Crit participation,
+  CAS/retry, no client-authoritative Crit, no `PendingStatusEffects[]`, no new
+  Redis/PostgreSQL schema, no new SignalR method, no new Crit/NextAttack event,
+  no new gameplay mechanic).
 
 ### Changed Files
-- `<file path>` — <summary of change>
+- `tasks/backlog/TASK-116-resolve-nextattack-crit-modifier-state-and-consumption-contract.md`
+  — recorded the Product Owner decisions verbatim; added the bindable
+  "Resulting Contract" (C-1–C-10) and the "Required Authoritative Result —
+  Coverage" mapping; added the "Required Documentation Changes" register and the
+  "Classification Outcome"; retained the pre-decision analysis as evidence.
 
 ### Validation Results
-- `<quality/review.md checklist outcome>` — PASS / FAIL
+- `quality/review.md` §1 (documentation-applicable items) — PENDING REVIEW
+- Zero files under `docs/`, `src/`, or `tests/` changed — VERIFIED
 
 ### ADR & Workflow Impact
-- [ ] Confirmed `docs/03-decisions/README.md` §8 checked
-- [ ] ADR required: YES / NO — <reason>
-- [ ] Separate documentation-synchronization task required: YES / NO — <reason>
+- [x] Confirmed `docs/03-decisions/README.md` §8 checked — the NextAttack
+      representation gap was **not** listed there
+- [x] ADR required: **YES** — **ADR-017**, per `AGENTS.md` §18 (D-1 introduces a
+      new authoritative battle-state concept). Not authored by this task.
+- [x] Separate documentation-synchronization task required: **YES** — **TASK-117**
+      (`ARCHITECTURE`), which authors ADR-017 and the owning `GAME_STATE.md` /
+      `COMBAT_RULES.md` / `CARD_RULES.md` edits registered in "Required
+      Documentation Changes".
+- [x] Type re-classification considered and resolved: D-1 does **not** widen
+      `GAME_STATE.md` §2.3.1 item 3's dichotomy nor relax item 6, so the task is
+      **not** re-typed `GAMEPLAY-CHANGE`; the ADR path applies instead.
 
 ### Boundary Verification
-- [ ] Confirmed zero files under `src/` modified
-- [ ] Confirmed zero files under `tests/` modified
-- [ ] Confirmed TASK-115 byte-identical and still blocked
-- [ ] Confirmed no new Battle Event, SignalR method, or RNG stream introduced
-- [ ] Confirmed no balance value authored or changed
+- [x] Confirmed zero files under `src/` modified
+- [x] Confirmed zero files under `tests/` modified
+- [x] Confirmed TASK-115 byte-identical and still blocked
+- [x] Confirmed no new Battle Event, SignalR method, or RNG stream introduced
+- [x] Confirmed no **existing** balance value authored or changed; the one new
+      authored value (D-4.4 cap = 100) is flagged explicitly

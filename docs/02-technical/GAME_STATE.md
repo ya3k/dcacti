@@ -1,6 +1,43 @@
 # Game State
 
-**Version:** 2.10 (§2.4 combat-stat note corrected — the Damage Pipeline
+**Version:** 2.14 (§2.4.1's stale sentence corrected per TASK-124 — the claim
+that "no content-defined Boss applies a Status Effect to itself" is false once
+Hỏa Long's Rage and Thủy Ma's healing reduction are held in
+`BossState.StatusEffects[]` (`BOSS_RULES.md` §6.2); the sentence now records
+that content-defined Bosses do apply Status Effects to themselves and points at
+the owning gameplay rules. **No member was added, renamed, removed, or retyped:
+the `StatusEffect` schema and member set, §2.3.1's items, §2.4's tree, §2.4.2,
+§2.4.4, §2.4.5, and every lifecycle semantic are unchanged.** Prior 2.13:
+§2.3 wire delivery notes synchronized per TASK-121 — references
+updated to reflect `SIGNALR_PROTOCOL.md` §4.3's projection of `equippedCards`
+alongside the Passive trio in `BattleStateUpdated`'s `petState` payload member;
+no state field, domain schema, or lifecycle semantic changed). Prior 2.12:
+§2.3.1 items 2 and 12 clarified per the TASK-119 Product
+Owner decision set — the state-mutation consequence of `COMBAT_RULES.md` §5.4
+is now recorded. Item 2's `Magnitude` hand-off now names §5.4 as the owner of
+what a `BuffDebuff` `Magnitude` does to its `TargetStat`; item 12 records that
+§5.4's `"ATK"` rule composes an **effective** value at attack resolution from
+the `StatusEffects[]` instance plus the stored stat, does **not** store that
+result, and does **not** overwrite `PetState.ATK` — so the instance is the
+modifier's sole representation. **No member was added, renamed, removed, or
+retyped: the `StatusEffect` schema and its member set (§2.3.1's tree, §2.3.2's
+serialized shape) are byte-identical in meaning, §2.3.1 items 3/6/7 are
+unchanged, §2.3.4 and §5.1.2 (`NextAttackCritModifiers[]`, ADR-017) are
+untouched, and no lifecycle semantic changed.** The gameplay rule itself is
+owned by `COMBAT_RULES.md` §5.4 and is referenced, not restated. Prior 2.11:
+§2.3.4 added and §2.3's `PetState` tree extended — the
+`NextAttackCritModifiers[]` Battle State contract is now authored per ADR-017
+(TASK-117): the two-member element schema (source identity + Crit
+contribution in percentage points), source-scoped identity, the
+always-present collection, the lifetime (persists across Turns until consumed
+by a qualifying owner attack — no Turn countdown, no trigger expiry, no
+cleanup), the consumption boundary, the not-a-wire-member and no-new-Redis-key
+statements, and the explicit boundary that §2.3.1 item 3's duration-model
+dichotomy and item 6's one-instance-per-identity rule are neither widened nor
+relaxed (the collection is separate from `StatusEffects[]`). The Crit
+composition/cap gameplay rule is owned by `COMBAT_RULES.md` §3.3 and is
+referenced, not restated. No existing field, value, lifecycle semantic, or
+section was changed. Prior 2.10: §2.4 combat-stat note corrected — the Damage Pipeline
 (`COMBAT_RULES.md` §3) and Resource Generation now read/write these fields, so
 the "not implemented" clause was false and is replaced by the implemented
 status; no contract, field, value, or lifecycle semantic changed.
@@ -911,7 +948,20 @@ PetState
 ├── HP / MaxHP                 (combat stats — implemented in the Domain
 │                               model; COMBAT_RULES.md §1.1)
 ├── ATK / DEF / Crit           (base + active modifiers — implemented in
-│                               the Domain model)
+│                               the Domain model; COMBAT_RULES.md §1.1.
+│                               The stat holds the stored base value; a
+│                               temporary `BuffDebuff` modifier is composed
+│                               at resolution time from the
+│                               `StatusEffects[]` instance and is never
+│                               written into the stat — `COMBAT_RULES.md`
+│                               §5.4 for `ATK`. `Crit` is the permanent/base
+│                               value and is never overwritten by a temporary
+│                               modifier — §2.3.4, ADR-017)
+├── NextAttackCritModifiers[]    (temporary source-specific Crit modifiers
+│                                awaiting consumption by a qualifying owner
+│                                attack — schema §2.3.4, lifecycle §5.1.2,
+│                                ADR-017. Separate from `StatusEffects[]`;
+│                                NOT Turn-based and NOT trigger-expired)
 ├── Power                      (0–100, GAME_RULES.md §12 — implemented in
 │                               the Domain model)
 ├── StatusEffects[]              (active Status Effect instances —
@@ -962,7 +1012,7 @@ see §2.2 Implementation note and ADR-011.)
 **Domain state implemented is not the same as client wire delivery.**
 Not all members here are part of any wire payload — see
 `SIGNALR_PROTOCOL.md` §4.2 (only `combo`/`matchCount` under the
-`playerState` label) and §4.3 (only the Passive trio under `petState`).
+`playerState` label) and §4.3 (the Passive trio plus `equippedCards` under `petState`).
 
 The combat-stats stage owns `HP`, `MaxHP`, `ATK`, `DEF`, `Power`, and
 `Crit` as `int` members, each initialized at battle creation to its
@@ -1043,9 +1093,9 @@ slot order.
 
 **The combat stats are state, and they are not yet delivered on the wire.**
 `SIGNALR_PROTOCOL.md` §4.2 fixes the `playerState` payload member to exactly
-`combo` and `matchCount`, and §4.3 fixes `petState` to exactly the Passive
-trio — so no combat member of this section reaches the client today, per
-§4 item 4's rule that a payload carries only the implemented stage's own
+`combo` and `matchCount`, and §4.3 fixes `petState` to the Passive trio plus
+`equippedCards` — so no combat member of this section reaches the client today,
+per §4 item 4's rule that a payload carries only the implemented stage's own
 fields. The combat stats do not change that by themselves: as with
 `LastCommittedSwapPair` (§2.1.10 item 9, `SIGNALR_PROTOCOL.md` §4 item 12),
 adding state is not adding a wire member. Delivering them is a protocol
@@ -1130,7 +1180,14 @@ StatusEffect
    (flat damage, a percentage reduction, an absorption pool) is owned by the
    effect's rule document. This section fixes only that the value is stored
    on the instance so a refresh can re-apply it (`COMBAT_RULES.md` §5.2
-   item 2).
+   item 2). For a `BuffDebuff` instance the meaning is now authored, by
+   entity: `COMBAT_RULES.md` §5.4 owns how a `Magnitude` reaches the stat its
+   `TargetStat` names on the **Pet** (`PetState.StatusEffects[]`), including
+   the `"ATK"` case Root (`BOSS_RULES.md` §6.3.1 item 3) uses; and
+   `COMBAT_RULES.md` §5.5.1 owns that concept on the **Boss**
+   (`BossState.StatusEffects[]`). The two are separate rules with separate
+   conventions and neither is restated here. This section neither restates
+   either rule nor reads `Magnitude` itself.
 3. **`Type` selects exactly one duration model, and the two are exclusive.**
    An instance uses **either** the Turn countdown (`RemainingTurns`, item 4)
    **or** a trigger-based expiry (`ExpiryCondition`, item 5) — never both
@@ -1185,7 +1242,16 @@ StatusEffect
 12. **This section adds no gameplay rule.** Every statement above either types
     a value or points at the owning rule document. What a duration means in
     play is owned by `COMBAT_RULES.md` §5.3; this section must not be read as
-    an independent source for it.
+    an independent source for it. What a `BuffDebuff` `Magnitude` does to its
+    `TargetStat` is owned by `COMBAT_RULES.md` §5.4 on the **Pet** and by
+    `COMBAT_RULES.md` §5.5.1 on the **Boss**, and this section is likewise not
+    an independent source for it. In particular, each of those rules composes
+    an **effective** value at attack resolution from the instance plus the
+    stored stat — neither stores the result, and neither overwrites the
+    stat (`§2.3`: the combat stats are configuration, "not permanent
+    invariants"). No member below is added, changed, or repurposed by either:
+    §2.3.1's member set is unchanged, and no second representation of a
+    modified stat exists.
 
 **Not a wire member.** `StatusEffects[]` is not part of any current wire
 payload: `SIGNALR_PROTOCOL.md` §4.2 fixes `playerState` to exactly
@@ -1272,6 +1338,102 @@ structure:
   item 2).
 - No stacking model other than §5.2 item 2's refresh-in-place (§2.3.1 item 6).
 
+### 2.3.4 `NextAttackCritModifiers[]` — Instance Schema
+
+`NextAttackCritModifiers[]` is the collection of **active temporary Crit
+modifiers awaiting consumption by a qualifying owner attack**, held on
+`PetState`. It exists so a source can raise Crit chance for the next attack
+without overwriting the permanent Crit value and without losing the ability
+to remove exactly its own contribution afterwards (`ADR-017`).
+
+```text
+NextAttackCritModifier
+├── SourceIdentity   (string, required — the stable identity of the source
+│                     that created this modifier; the removal key)
+└── CritContribution (number, required — the Crit increase in percentage
+                      points; NOT interpreted here)
+```
+
+1. **This is a separate collection, and it is not `StatusEffects[]`.** A
+   modifier here is **not** a `StatusEffect` instance. It carries no
+   `RemainingTurns` and no `ExpiryCondition`, so it does **not** engage
+   §2.3.1 item 3's duration-model dichotomy — that rule is neither widened
+   nor relaxed by this collection — and it does **not** engage item 6's
+   one-instance-per-identity rule, which continues to govern
+   `StatusEffects[]` alone. `§2.3.3`'s prohibition is honored: this is not a
+   pending/queued collection and not a second representation of an in-flight
+   application. A modifier present here has already been applied; it is
+   awaiting an attack, not a write-back.
+2. **`SourceIdentity` is the removal key, and it is source-scoped and
+   stable.** It identifies the source that created the modifier so that
+   consumption can remove exactly that modifier and nothing else (§5.1.2).
+   It is **not** a per-cast unique key, a GUID, a timestamp, an allocation
+   order, or an array position: it must be deterministic and reproducible for
+   a given input state (`TDD.md` §6), so a replayed or recovered battle
+   re-derives the same identities. Because the identity is per **source**, a
+   source re-applying concatenates onto its own existing element rather than
+   appending a second one — two simultaneous elements therefore always mean
+   two distinct sources (e.g. Iron Fang and Bạch Hổ's Passive), which is what
+   makes them independently removable. The identity is a value, not a
+   definition: no source's rule, magnitude, or lifetime is copied into it
+   (§0 item 5). Which token a given source uses is owned by that source's
+   rule document and is not fixed here.
+3. **`CritContribution` is typed but not interpreted here.** Its unit is
+   percentage points, matching `CARD_RULES.md` §4.1 and `DATABASE.md` §3
+   item 1. How the contributions compose, and the cap that composition is
+   subject to, are gameplay rules owned by `COMBAT_RULES.md` §3.3 and are not
+   restated here. This section fixes only that the value is stored on the
+   element.
+4. **Two members is the whole schema, and there is no third.** No duration,
+   no Turn counter, no expiry label, no "consumed" flag, no priority, no
+   ordering index, no target reference, no remaining-use counter, and no
+   timestamp is stored. No rule reads any of them, and a field kept "for
+   later" is the speculative representation §0 item 5 forbids.
+5. **The collection is always present and is empty when no modifier is
+   active.** Absence of the *collection* is not a representable state — the
+   same always-present-collection convention §2.3.2 item 1 fixes for
+   `StatusEffects[]`. An empty collection is the statement "no temporary Crit
+   modifier is active", and there is no sentinel element, no null, and no
+   omitted member standing in for it. Absence of a *member within* an element
+   does not arise: both members are always present (item 8).
+6. **Ordering is not semantic.** No rule reads element positions. Addition
+   and consumption are operations over identities, not over indices, and the
+   resulting composed Crit value does not depend on array order — the same
+   convention §2.3.1 item 10 records for `StatusEffects[]`. A serializer must
+   not imply an order carries meaning.
+7. **This section adds no gameplay rule and authors no value.** Lifetime and
+   the consumption boundary are stated in §5.1.2 and, as gameplay, are owned
+   by `COMBAT_RULES.md` §3.3; every Crit magnitude, threshold, and
+   configuration value remains owned by its current document
+   (`COMBAT_RULES.md` §1.1/§3.3, `CARD_RULES.md` §4.1,
+   `PASSIVE_RULES.md` §7/§8, `RELIC_RULES.md` §5). No event, payload member,
+   wire member, or SignalR method is introduced.
+8. **Not a wire member, and not a Redis-only concern.** The collection is
+   **not** part of any current wire payload: `SIGNALR_PROTOCOL.md` §4.2 fixes
+   `playerState` to exactly `combo`/`matchCount` and §4.3 fixes `petState` to
+   the Passive trio. Adding state is not adding a wire member (§2.1.10
+   item 9); delivering this collection is a protocol change owned by its own
+   task. Like `StatusEffects[]`, it is part of `BattleState` and therefore
+   serializes with it under the existing round-trip obligation
+   (`REDIS_STATE.md` §7 item 9, §2 item 1): no new Redis key, no Redis-only
+   field, and no second storage representation. It is written in the same
+   single post-resolution write-back as the rest of the state (§5.1).
+9. **`PetState.Crit` remains the permanent/base Crit value.** A modifier in
+   this collection never overwrites it, and consumption never restores it —
+   in particular it must never be restored by assigning the configuration
+   default (item 10).
+10. **`DefaultCrit` is initialization/default-state data only, and it is
+    never a runtime reset mechanism.** `PetState.Crit` is set to the
+    `COMBAT_RULES.md` §1.1 MVP default once, at battle creation. Consuming a
+    modifier must never be expressed as `PetState.Crit = DefaultCrit`: that
+    comparison cannot distinguish one source from another, and it couples "no
+    modifier is active" to "the stat equals the default" even though §2.3
+    states these defaults are configuration and "not permanent invariants"
+    (`ADR-017`, TASK-116 C-9/D-6).
+11. **The Boss carries no such collection.** `BossState` (§2.4) is unchanged:
+    no documented Boss source produces a NextAttack Crit modifier, and the
+    modifier a Pet carries applies to the Pet's own attacks.
+
 ## 2.4 BossState
 
 ```text
@@ -1322,9 +1484,12 @@ Implement now:
 `StatusEffects[]` is the same collection contract as `PetState`'s (§2.3.1):
 identical element schema, identical lifecycle (§5.1.1), and the same
 single-instance-per-identity rule. No boss-specific variant of the element is
-introduced (§0 item 5). For MVP, no content-defined Boss applies a Status
-Effect to itself; the collection is defined because Stun (§2.4.5) and future
-content are tracked through it.
+introduced (§0 item 5). Content-defined Bosses do apply Status Effects to
+themselves: Hỏa Long's Rage and Thủy Ma's healing reduction are both
+Turn-based instances held here (`BOSS_RULES.md` §6.2). The collection is also
+what Stun (§2.4.5) and future content are tracked through. The gameplay rule
+each instance consumes is owned by `COMBAT_RULES.md` (§5.3 duration, §5.5 Boss
+ATK modifiers, §4 item 7 Heal resolution) and is referenced, not restated.
 
 ### 2.4.2 Boss Passive
 
@@ -1773,6 +1938,85 @@ Sequence (§5.1)
 12. **This subsection adds no gameplay rule.** Every rule above either
     performs the mutation `COMBAT_RULES.md` §5.3 defines or fixes the
     determinism/observability of that mutation.
+
+### 5.1.2 `NextAttackCritModifiers[]` Lifecycle (Create, Persist, Consume)
+
+This subsection owns the **state mutation** of `NextAttackCritModifiers[]`
+elements (§2.3.4). The gameplay rule it implements — what a qualifying
+attack is, and how the contributions compose — is owned by
+`COMBAT_RULES.md` §3.3 and is **not** restated or reinterpreted here. The
+architectural decision is `ADR-017`.
+
+```text
+Created        the source resolves and adds one element (identity,
+               contribution)
+   ↓
+Active         survives any number of Turns, any number of Swaps, and any
+across Turns   number of non-damaging actions; the step 19a pass does not
+               touch it
+   ↓
+Consumed       the owner's qualifying attack enters the Damage Pipeline;
+               at its first qualifying damage instance the consumed
+               source-specific elements are removed
+```
+
+1. **Application creates or refreshes, never duplicates an identity.**
+   Creating a modifier appends one element when its `SourceIdentity` is not
+   already present, and otherwise sets that existing element's
+   `CritContribution` to the new value. Two elements with the same
+   `SourceIdentity` are never observable in a committed state — the same
+   "set, not an increment" operation §5.1.1 item 1 defines for
+   `StatusEffects[]`, applied here (§2.3.4 item 2).
+2. **The step 19a pass does not touch this collection.** Item 2's single
+   decrement-per-Turn is a **Turn-countdown** rule, and these elements carry
+   no `RemainingTurns`. Item 7 of this subsection's sibling already states
+   that the step 19a pass "must not invent a duration for" an instance that
+   does not use the countdown; that statement applies here by the same
+   reason. An implementation that decrements, expires, or sweeps these
+   elements at step 19a is inventing a Turn-based lifetime the contract does
+   not define (`ADR-017`).
+3. **There is no expiry of any kind, and no cleanup pass.** No Turn expiry,
+   no timeout, no end-of-turn or end-of-battle-state removal, no periodic
+   sweep, and no removal on Turn increment. The **only** operation that
+   removes an element is consumption by a qualifying attack (item 4). An
+   unconsumed element therefore persists across Turns indefinitely — this is
+   the contract, not a leak (`ADR-017`, TASK-116 C-2).
+4. **Consumption is a removal of the consumed source-specific elements, and
+   nothing else.** When a qualifying owner attack consumes its applicable
+   modifiers, exactly those elements are removed from the collection in that
+   same resolution. Consumption:
+   - **never** writes `PetState.Crit` (§2.3.4 item 9) and never assigns it
+     `DefaultCrit` (§2.3.4 item 10);
+   - **never** removes a modifier whose source was not consumed by that
+     attack;
+   - **never** removes, resets, or adjusts any other Crit source —
+     Passive Crit, Relic Crit, or the base value remain exactly as they were;
+   - is **not** an arithmetic inverse and is **not** a recomputation from the
+     base: it is the deletion of identified elements.
+   Which attack qualifies, and that a modifier is consumed once at the first
+   qualifying damage instance of that attack and not again by later instances
+   of the same attack, are the gameplay rules owned by `COMBAT_RULES.md`
+   §3.3. A Burn/DoT tick and the Boss's own attack are not the owner's
+   qualifying attack action and therefore consume nothing here, even though
+   they participate in Crit evaluation while a modifier is active.
+5. **Consumption is order-independent by construction.** Elements are matched
+   by `SourceIdentity`, not by position, so the result does not depend on
+   array order (§2.3.4 item 6) and no ordering rule has to be — or may be —
+   invented to make consumption deterministic.
+6. **Application and consumption are one write-back.** Both are intermediate
+   values of the resolution; the committed `BattleState` is written once per
+   §5.1, after all resolution steps. A reader therefore never observes a
+   modifier mid-consumption, and never observes a consumed modifier still
+   present (§5.1 item 2).
+7. **A rejected action mutates nothing.** A rejected action is not a
+   resolution (§5.1 item 6), so no modifier is created, refreshed, or
+   consumed, and no other step runs.
+8. **Nothing here is published.** This lifecycle adds no event, no payload
+   member, and no SignalR method — see §2.3.4 item 8 and
+   `SIGNALR_PROTOCOL.md` §4.2/§4.3.
+9. **This subsection adds no gameplay rule.** Every rule above either
+   performs the mutation the owning gameplay rule defines or fixes the
+   determinism and observability of that mutation.
 
 ## 5.2 What `Sequence` Is Not
 

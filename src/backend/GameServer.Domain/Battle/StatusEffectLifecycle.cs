@@ -560,6 +560,272 @@ public static class StatusEffectLifecycle
     }
 
     /// <summary>
+    /// The effective ATK an owning Pet's own attack consumes — <c>PetState.ATK</c>
+    /// reduced by every active <c>TargetStat = "ATK"</c> Turn-based
+    /// <c>BuffDebuff</c> instance (<c>COMBAT_RULES.md</c> §5.4.1).
+    ///
+    /// <b>This is §5.4's Step-1 value, not a second representation of ATK.</b>
+    /// <c>COMBAT_RULES.md</c> §5.4.1 fixes the modifier's consumption point at the
+    /// <b>Player → Boss Damage Pipeline Step 1 <c>Attack</c> input</b>: the value
+    /// returned here is passed as that argument and is never written back to
+    /// <c>PetState.ATK</c>. §5.4.4 requires the base stat to be untouched and the
+    /// derived value to be used within one pipeline execution and discarded, which
+    /// is exactly what a pure function returning an <c>int</c> expresses — no
+    /// <c>EffectiveATK</c> member exists on any state type (<c>GAME_STATE.md</c>
+    /// §2.3.1 item 12, §2.3).
+    ///
+    /// <b>The percentage applies to the stat alone.</b> §5.4.1 item 2 and the
+    /// Product Owner decision D-2 make the reduced value the <i>ATK term only</i>:
+    /// step 1's other contributions — the Skill/Card base value and the
+    /// ATK-Gem-generated damage pool — are separate and are not modified by this
+    /// rule. The caller therefore sums the returned value with the pool, so
+    /// <c>ATK 100</c> with a pool of <c>40</c> at <c>−30%</c> yields Step 1
+    /// <c>= 70 + 40 = 110</c> and never <c>(100 + 40) × 70% = 98</c>.
+    ///
+    /// <b>Rounding is truncation toward zero, in integers only.</b> §5.4.2 fixes
+    /// <c>EffectiveATK = truncate(ATK × (100 − |Magnitude|) / 100)</c> and requires
+    /// the result not to depend on floating-point representation. The arithmetic
+    /// below is therefore integer division on a non-negative numerator — which is
+    /// truncation toward zero for this domain — rather than a <c>double</c>
+    /// multiply-then-cast. §5.4.2's worked values <c>50 → 35</c>, <c>51 → 35</c>,
+    /// <c>99 → 69</c>, <c>100 → 70</c>, <c>101 → 70</c> fall out of it exactly.
+    /// Step 6's Final Damage rounding is untouched (this value enters Step 1
+    /// already integral).
+    ///
+    /// <b>Selection is by <c>Type</c> and <c>TargetStat</c>, never by
+    /// <c>Id</c>.</b> §5.4.5 makes the consumer read <c>TargetStat</c> explicitly:
+    /// <c>Root</c> is the MVP <i>instance</i> of the rule and not the rule's
+    /// identity, so a differently-named <c>BuffDebuff</c> naming <c>"ATK"</c>
+    /// applies, while a <c>DoT</c>, a <c>Shield</c>, a <c>State</c>, or a
+    /// <c>BuffDebuff</c> naming any other stat does not. A trigger-based instance
+    /// carries no <c>TargetStat</c> at all (<c>GAME_STATE.md</c> §2.3.1 item 7), so
+    /// it cannot be selected.
+    ///
+    /// <b>Multiple active modifiers each contribute their own percentage.</b>
+    /// §5.4 authors no stacking rule beyond applying each active instance's
+    /// magnitude in turn; the fold below multiplies by each instance's factor in
+    /// <c>Id</c>-ordinal order, which is the deterministic order
+    /// <c>GAME_STATE.md</c> §5.1.1 item 6 already fixes for the collection's
+    /// passes. No additive/multiplicative/strongest-only choice is invented, and
+    /// no aggregation type is introduced.
+    ///
+    /// <b>An expired instance is already gone.</b> §5.4.3 makes activity follow the
+    /// committed <c>StatusEffects[]</c> state, and §5.3 DR5 / §2.3.1 item 8 remove
+    /// an instance whose count reaches 0 in the same step-19a resolution — so an
+    /// expired <c>Root</c> is simply absent from the collection this method reads
+    /// and needs no separate check.
+    /// </summary>
+    /// <param name="attack">
+    /// The stored base value (<c>PetState.ATK</c>). It is read and never written:
+    /// §5.4.4 forbids overwriting it and forbids resetting it to a configuration
+    /// default.
+    /// </param>
+    /// <param name="effects">
+    /// The attacking entity's active instances (<c>GAME_STATE.md</c> §2.3.1),
+    /// always a collection and never <c>null</c> (§2.3.2 item 1).
+    /// </param>
+    /// <returns>
+    /// The Step-1 <c>Attack</c> input: <paramref name="attack"/> unchanged when no
+    /// active <c>TargetStat = "ATK"</c> <c>BuffDebuff</c> instance is present, and
+    /// otherwise the value each such instance's magnitude reduces it to.
+    /// </returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="effects"/> is <c>null</c> (§2.3.2 item 1).
+    /// </exception>
+    public static int EffectiveAttack(
+        int attack,
+        IReadOnlyList<StatusEffect> effects)
+    {
+        ArgumentNullException.ThrowIfNull(effects);
+
+        var effective = attack;
+
+        // §5.1.1 item 6 fixes the collection's processing order to Id ordinal
+        // ascending, so a fold over several instances is reproducible rather than
+        // dependent on array position (§2.3.1 item 10, TDD.md §6).
+        foreach (var effect in effects
+            .Where(IsAtkBuffDebuff)
+            .OrderBy(effect => effect.Id, StringComparer.Ordinal))
+        {
+            // §5.4.1 item 3 / §5.4.2: truncate toward zero on the integer domain.
+            // |Magnitude| is the documented reading — BOSS_RULES.md §6.3.1 item 3
+            // writes Root as "-30%" while the stored Magnitude is the positive 30
+            // the declaration carries (BossDefinitions.cs).
+            var magnitude = (int)Math.Abs(effect.Magnitude);
+
+            // §5.4 authorizes no factor outside the documented 0-100 percentage
+            // range. A magnitude beyond it would make the numerator negative and
+            // integer division would then truncate toward zero from the wrong
+            // side, so the domain is rejected rather than silently reinterpreted —
+            // a missing rule is a stop condition (AGENTS.md §7/§20), not a value
+            // to guess.
+            if (magnitude is < 0 or > 100)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(effects),
+                    magnitude,
+                    $"A TargetStat = \"ATK\" BuffDebuff magnitude must be a percentage in "
+                    + $"0-100 (COMBAT_RULES.md §5.4.2: EffectiveATK = truncate(ATK × "
+                    + $"(100 − |Magnitude|) / 100)); instance '{effect.Id}' carries {magnitude}.");
+            }
+
+            effective = effective * (100 - magnitude) / 100;
+        }
+
+        return effective;
+    }
+
+    /// <summary>
+    /// The effective Boss ATK a Boss attack's Step-1 input consumes —
+    /// <c>BossState.ATK</c> modified by every active <c>TargetStat = "ATK"</c>
+    /// Turn-based <c>BuffDebuff</c> instance held in the Boss's own
+    /// <c>StatusEffects[]</c> (<c>COMBAT_RULES.md</c> §5.5.1).
+    ///
+    /// <b>This is the Boss-side counterpart of
+    /// <see cref="EffectiveAttack"/>, and it is §5.5's Step-1 value, not a second
+    /// representation of ATK.</b> §5.5.1 fixes the modifier's consumption point at
+    /// the <b>Boss Damage Pipeline Step 1 <c>Attack</c> input</b>: the value
+    /// returned here is passed as that argument and is never written back to
+    /// <c>BossState.ATK</c>. §5.5.4 requires the base stat to be untouched and the
+    /// derived value to be used within one pipeline execution and discarded, which
+    /// is exactly what a pure function returning an <c>int</c> expresses — no
+    /// <c>EffectiveBossATK</c> member exists on any state type
+    /// (<c>GAME_STATE.md</c> §2.4/§2.4.1, §0 item 5).
+    ///
+    /// <b>The percentage applies to the stat alone.</b> §5.5.1 item 3 makes the
+    /// modified value the <i>ATK term only</i>: a Boss Skill's authored Base Damage
+    /// is a separate Step-1 contribution and is not modified by this rule
+    /// (§5.5.2, §3.4 "Boss Skill Step-1 composition"). The caller therefore
+    /// composes the Skill's Step-1 input by summing the returned value with the
+    /// Skill's authored Base Damage, and a Boss attack contributes no ATK-Gem pool
+    /// at all (§3.4).
+    ///
+    /// <b>Direction is the sign of <c>Magnitude</c> itself, and the formula is
+    /// §5.5.1's own.</b> §5.5.1 authors
+    /// <c>EffectiveBossATK = truncate( BossState.ATK × (100 + Magnitude) / 100 )</c>
+    /// and states that the <c>Magnitude</c> is used <b>WITH ITS OWN SIGN</b>:
+    /// <c>&gt; 0</c> increases, <c>&lt; 0</c> decreases, <c>= 0</c> leaves the stat
+    /// unchanged. The sign therefore enters the single arithmetic expression as the
+    /// addend's sign — there is no separate buff/debuff flag, no direction field,
+    /// and no branch on an inferred semantic. This is deliberately <b>not</b>
+    /// §5.4.1's Pet-side reading: the Pet-side rule uses <c>|Magnitude|</c> and only
+    /// ever reduces, and §5.5.1 states the two conventions must not be collapsed
+    /// into one shared formula.
+    ///
+    /// <b>Rounding is truncation toward zero, in integers only.</b> §5.5.1 applies
+    /// the same convention §5.4.2 states for the Pet side and §3 step 6 uses for
+    /// Final Damage. The arithmetic below is integer division rather than a
+    /// <c>double</c> multiply-then-cast, so the result does not depend on
+    /// floating-point representation. §3.4's worked example falls out of it exactly:
+    /// <c>ATK 100</c> at <c>+20%</c> → <c>120</c>, and <c>ATK 100</c> at
+    /// <c>-30%</c> → <c>70</c>.
+    ///
+    /// <b>Selection is by <c>Type</c> and <c>TargetStat</c>, never by
+    /// <c>Id</c>.</b> §5.5.3 applies §5.4.5's discipline to the Boss side: the
+    /// consumer reads <c>TargetStat</c> explicitly, and <c>Rage</c> is the MVP
+    /// <i>instance</i> of the rule rather than the rule's identity
+    /// (<c>BOSS_RULES.md</c> §6.2.1). A <c>DoT</c> (the Boss's own Burn tick), a
+    /// <c>Shield</c>, a <c>State</c>, or a <c>BuffDebuff</c> naming any other stat
+    /// is therefore not an ATK modifier.
+    ///
+    /// <b>Multiple active modifiers each apply the one decided formula in turn.</b>
+    /// §5.5.5 fixes the existing Boss contract — at most one instance per effect
+    /// identity, refreshed rather than stacked, with refresh-not-stack as the MVP
+    /// default (§5.2 item 2, <c>GAME_STATE.md</c> §2.3.1 item 6) — and §5.5.1
+    /// authors no stacking model. Where more than one distinct active instance is
+    /// present, each therefore applies §5.5.1's single formula in the collection's
+    /// existing committed order; the fold below uses the <c>Id</c>-ordinal order
+    /// <c>GAME_STATE.md</c> §5.1.1 item 6 already fixes for the collection's passes.
+    /// No additive/multiplicative/strongest-only choice is invented, and no
+    /// aggregation type is introduced.
+    /// </summary>
+    /// <param name="attack">
+    /// The stored base value (<c>BossState.ATK</c>). It is read and never written:
+    /// §5.5.4 forbids overwriting it and forbids resetting it to a configuration
+    /// default.
+    /// </param>
+    /// <param name="effects">
+    /// The <b>Boss's</b> active instances (<c>GAME_STATE.md</c> §2.4.1) — not the
+    /// Pet's. Always a collection and never <c>null</c> (§2.3.2 item 1).
+    /// </param>
+    /// <returns>
+    /// The Step-1 <c>Attack</c> input: <paramref name="attack"/> unchanged when no
+    /// active <c>TargetStat = "ATK"</c> <c>BuffDebuff</c> instance is present, and
+    /// otherwise the value each such instance's magnitude modifies it to.
+    /// </returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="effects"/> is <c>null</c> (§2.3.2 item 1).
+    /// </exception>
+    public static int EffectiveBossAttack(
+        int attack,
+        IReadOnlyList<StatusEffect> effects)
+    {
+        ArgumentNullException.ThrowIfNull(effects);
+
+        var effective = attack;
+
+        // §5.1.1 item 6 fixes the collection's processing order to Id ordinal
+        // ascending, so a fold over several instances is reproducible rather than
+        // dependent on array position (§2.3.1 item 10, TDD.md §6).
+        foreach (var effect in effects
+            .Where(IsAtkBuffDebuff)
+            .OrderBy(effect => effect.Id, StringComparer.Ordinal))
+        {
+            // §5.5.1 item 3's own formula, with §5.5.1 item 4's direction semantics:
+            //
+            //   EffectiveBossATK = truncate( BossState.ATK × (100 + Magnitude) / 100 )
+            //
+            // The Magnitude is used WITH ITS OWN SIGN and is the direction signal —
+            //   Magnitude > 0  ->  increase
+            //   Magnitude < 0  ->  decrease
+            //   Magnitude = 0  ->  unchanged
+            // so the sign needs no separate interpretation: it is carried by the
+            // addend itself, and no buff/debuff flag or direction branch exists.
+            // §5.5.1 also states the truncation convention: the result is an integer
+            // truncated toward zero (§5.4.2, §3 step 6), and the arithmetic must not
+            // depend on floating-point representation. Integer division over the
+            // integer-cast magnitude gives exactly that on every platform and in
+            // every evaluation order.
+            var magnitude = (int)effect.Magnitude;
+
+            effective = effective * (100 + magnitude) / 100;
+        }
+
+        return effective;
+    }
+
+    /// <summary>
+    /// Whether an instance is one of the ATK modifiers
+    /// <see cref="EffectiveAttack"/> consumes — a Turn-based
+    /// <see cref="StatusEffectType.BuffDebuff"/> whose
+    /// <see cref="StatusEffect.TargetStat"/> is <c>"ATK"</c>
+    /// (<c>COMBAT_RULES.md</c> §5.4.1, §5.4.5).
+    ///
+    /// <b>Identity is deliberately not consulted.</b> §5.4.5 makes <c>Root</c> the
+    /// MVP instance of the rule rather than the rule's name, so dispatching on
+    /// <c>Id</c> would encode a second, undocumented definition of which effects
+    /// modify ATK.
+    ///
+    /// <b>The same selector is the Boss-side consumer's</b>
+    /// (<see cref="EffectiveBossAttack"/>): §5.5.3 applies §5.4.5's discipline to
+    /// the Boss side, so the instance is identified by its <c>Type</c> and
+    /// <c>TargetStat</c> on both entities and only the collection differs
+    /// (<c>GAME_STATE.md</c> §2.3.1's "identical element shape").
+    /// </summary>
+    private static bool IsAtkBuffDebuff(StatusEffect effect) =>
+        effect.Type == StatusEffectType.BuffDebuff
+        && string.Equals(effect.TargetStat, AttackStat, StringComparison.Ordinal);
+
+    /// <summary>
+    /// The one documented <c>TargetStat</c> value this contract defines a
+    /// consumption rule for (<c>COMBAT_RULES.md</c> §5.4.1: <c>TargetStat =
+    /// "ATK"</c>). §5.4.5 states a <c>BuffDebuff</c> naming any other stat
+    /// "would require its own recorded decision before it could be implemented",
+    /// so no second value is added here.
+    /// </summary>
+    private const string AttackStat = "ATK";
+
+    /// <summary>
     /// Whether two Status Effect collections hold the same instances in the same
     /// order — the structural comparison <c>GAME_STATE.md</c> §2.3.2 item 5's
     /// round-trip obligation requires.

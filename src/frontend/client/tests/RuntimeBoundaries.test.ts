@@ -334,19 +334,15 @@ describe('Frontend architectural boundaries', () => {
       // Every property that still holds is preserved: the other documented
       // gameplay methods stay absent, and `JoinBattle` stays present.
       const invoked = [...code.matchAll(/invoke(?:<[^>]*>)?\(\s*'([^']+)'/g)].map((m) => m[1]);
-      expect(invoked.sort()).toEqual(['JoinBattle', 'Ping', 'Swap']);
+      expect(invoked.sort()).toEqual(['CardCast', 'JoinBattle', 'PetSkillCast', 'Ping', 'Swap']);
 
-      // `Swap` is the one documented client → server gameplay method
-      // (SIGNALR_PROTOCOL.md §2, §2.1).
+      // `Swap`, `CardCast`, and `PetSkillCast` are the documented client → server
+      // gameplay methods (SIGNALR_PROTOCOL.md §2, §2.1).
       expect(code).toMatch(/invoke<[^>]*>\(\s*'Swap'/);
+      expect(code).toMatch(/invoke<[^>]*>\(\s*'CardCast'/);
+      expect(code).toMatch(/invoke<[^>]*>\(\s*'PetSkillCast'/);
 
-      // `CardCast`, `PetSkillCast` (§2) and `GetBattleState` (§7) remain
-      // unimplemented on the client because the server does not implement them
-      // — `BattleHub_ShouldNotRegisterGameplayMethods`
-      // (tests/backend/GameServer.Api.Tests/ApiIntegrationTests.cs) asserts
-      // exactly that. Adding them here would be client-side gameplay.
-      expect(code).not.toMatch(/'CardCast'/);
-      expect(code).not.toMatch(/'PetSkillCast'/);
+      // `GetBattleState` (§7) remains unimplemented on the client.
       expect(code).not.toMatch(/'GetBattleState'/);
 
       // `JoinBattle` (§1.2) is still the documented group join, and it is not a

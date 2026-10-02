@@ -375,6 +375,28 @@ describe('TASK-088 — BattleEventPresenter parser & formatter', () => {
     expect(formatInBattleEvent(parsed!)).toBe('BossSkillCast: flame-burst-mega by boss-hoa-long');
   });
 
+  it('parses and formats CardCast with verbatim cardId (SIGNALR_PROTOCOL.md §3.2.20)', () => {
+    const raw = {
+      type: 'CardCast',
+      cardId: 'card-shield',
+    };
+
+    const parsed = parseInBattleEvent(raw);
+    expect(parsed).toEqual(raw);
+    expect(formatInBattleEvent(parsed!)).toBe('CardCast: card-shield');
+  });
+
+  it('parses and formats PetSkillCast with verbatim cardId (SIGNALR_PROTOCOL.md §3.2.21)', () => {
+    const raw = {
+      type: 'PetSkillCast',
+      cardId: 'card-inferno',
+    };
+
+    const parsed = parseInBattleEvent(raw);
+    expect(parsed).toEqual(raw);
+    expect(formatInBattleEvent(parsed!)).toBe('PetSkillCast: card-inferno');
+  });
+
   it('returns null for unknown event types or malformed events', () => {
     expect(parseInBattleEvent({ type: 'UnknownType', amount: 10 })).toBeNull();
     expect(parseInBattleEvent({ type: 'BattleStarted', battleId: 'b1' })).toBeNull();
@@ -382,6 +404,12 @@ describe('TASK-088 — BattleEventPresenter parser & formatter', () => {
     expect(parseInBattleEvent('invalid')).toBeNull();
     expect(parseInBattleEvent({ type: 'MatchCreated', shape: 123 })).toBeNull();
     expect(parseInBattleEvent({ type: 'DamageDealt', amount: 'notANumber' })).toBeNull();
+    expect(parseInBattleEvent({ type: 'CardCast' })).toBeNull();
+    expect(parseInBattleEvent({ type: 'CardCast', cardId: '' })).toBeNull();
+    expect(parseInBattleEvent({ type: 'CardCast', cardId: 123 })).toBeNull();
+    expect(parseInBattleEvent({ type: 'PetSkillCast' })).toBeNull();
+    expect(parseInBattleEvent({ type: 'PetSkillCast', cardId: '' })).toBeNull();
+    expect(parseInBattleEvent({ type: 'PetSkillCast', cardId: 123 })).toBeNull();
   });
 });
 
@@ -511,6 +539,22 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
       },
       expectedTokens: ['flame-burst-mega', 'boss-hoa-long'],
     },
+    {
+      name: 'CardCast',
+      event: {
+        type: 'CardCast',
+        cardId: 'card-shield',
+      },
+      expectedTokens: ['CardCast', 'card-shield'],
+    },
+    {
+      name: 'PetSkillCast',
+      event: {
+        type: 'PetSkillCast',
+        cardId: 'card-inferno',
+      },
+      expectedTokens: ['PetSkillCast', 'card-inferno'],
+    },
   ])('presents $name verbatim when delivered in ReceiveEvents', ({ event, expectedTokens }) => {
     const { harness, scene, ctx } = createBattle();
     runScene(scene, ctx, 'create');
@@ -525,6 +569,26 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
     for (const token of expectedTokens) {
       expect(rendered, `Expected rendered output to contain "${token}"`).toContain(token);
     }
+  });
+
+  it('presents both CardCast and PetSkillCast in order for Pet Skill Card cast (SIGNALR_PROTOCOL.md §3.2.22)', () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+
+    harness.emitBattleEvents({
+      battleId: 'b-test',
+      serverSequence: 5,
+      events: [
+        { type: 'CardCast', cardId: 'card-inferno' },
+        { type: 'PetSkillCast', cardId: 'card-inferno' },
+      ],
+    });
+
+    const presented = (scene as unknown as { getPresentedEvents(): readonly string[] }).getPresentedEvents();
+    expect(presented).toEqual([
+      'CardCast: card-inferno',
+      'PetSkillCast: card-inferno',
+    ]);
   });
 
   it('preserves the exact received event order during presentation (GAME_EVENTS.md §1.1)', () => {

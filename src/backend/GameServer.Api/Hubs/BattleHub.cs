@@ -102,17 +102,18 @@ public record BattleStateUpdated(
 /// petState
 /// ├── passiveId                 the active Pet's Passive identity   always present
 /// ├── passiveProgress            { threshold, current }             always present
-/// └── passiveResetOverride       "Partial" | "NoReset"              present only when
-///                                                                   non-default
+/// ├── passiveResetOverride       "Partial" | "NoReset"              present only when
+/// │                                                                 non-default
+/// └── equippedCards              string[] (4 CardDefinitionId)      always present
 /// </code>
 ///
-/// The members are exactly the three <c>PetState</c> fields this stage implements
+/// The members are exactly the four <c>PetState</c> fields this stage implements
 /// and nothing else (§4.3 item 2): the Passive's <c>Threshold</c>, <c>Trigger
 /// Type</c>, <c>Effect</c>, and <c>Reset Behavior</c> are its <b>definition</b>
 /// and are not members here (<c>PASSIVE_RULES.md</c> §1, §4.3 item 3), and the
 /// rest of §2.3 — <c>PetId</c>/Identity, <c>Element</c>,
-/// <c>Tier</c>/<c>Star</c>/<c>Level</c> — belongs to the Pet identity and
-/// progression stage and is not delivered.
+/// <c>Tier</c>/<c>Star</c>/<c>Level</c>, combat stats, StatusEffects, and EquippedRelics —
+/// belongs to other subsystems or server-only calculation and is not delivered.
 ///
 /// The client renders what it receives and derives nothing: it does not charge a
 /// Passive, evaluate a Threshold, reset progress, or apply an overflow, and it
@@ -133,6 +134,13 @@ public record BattleStateUpdated(
 /// supplying either from elsewhere (<c>PASSIVE_RULES.md</c> §6 item 1's
 /// <c>7 / 10 Matches</c>).
 /// </param>
+/// <param name="EquippedCards">
+/// The battle-scoped Card loadout snapshot (<c>CARD_RULES.md</c> §1;
+/// <c>SIGNALR_PROTOCOL.md</c> §4.3 item 13) — exactly 4
+/// <c>CardDefinitionId</c> strings (the 3 submitted Basic Cards plus the
+/// active Pet's derived Signature Skill Card). Always present, non-empty, and
+/// non-nullable.
+/// </param>
 /// <param name="PassiveResetOverride">
 /// The Passive's non-default Reset Behavior as its contract name —
 /// <c>"Partial"</c> or <c>"NoReset"</c> (<c>PASSIVE_RULES.md</c> §4 item 2), never
@@ -147,6 +155,7 @@ public record BattleStateUpdated(
 public record PetStatePayload(
     [property: JsonPropertyName("passiveId")] string PassiveId,
     [property: JsonPropertyName("passiveProgress")] PassiveProgressPayload PassiveProgress,
+    [property: JsonPropertyName("equippedCards")] IReadOnlyList<string> EquippedCards,
     [property: JsonPropertyName("passiveResetOverride")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PassiveResetOverride = null);
 
@@ -820,6 +829,14 @@ public class BattleHub : Hub
             new PassiveProgressPayload(
                 petState.PassiveProgress.Threshold,
                 petState.PassiveProgress.Current),
+
+            // §4.3 item 13: the battle-scoped Card loadout snapshot — exactly 4
+            // CardDefinitionId strings (the 3 submitted Basic Cards plus the active
+            // Pet's derived Signature Skill Card). Always present, non-empty, and
+            // non-nullable.
+            (petState.EquippedCards ?? [])
+                .Select(card => card.Value)
+                .ToArray(),
 
             // §4.3 items 6–7: the Reset Behavior's contract name when — and only
             // when — it is non-default. "Partial"/"NoReset" are the two non-default

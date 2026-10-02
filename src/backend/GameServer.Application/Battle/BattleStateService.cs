@@ -1122,11 +1122,20 @@ public sealed class BattleStateService
         //
         // The inputs are read from the states the resolution is already committed
         // to, never re-derived:
-        //   - step 1's ATK      — PetState.ATK (GAME_STATE.md §2.3, ADR-011 item 3),
-        //                         the combat-stat home of the attacking Pet; the
-        //                         executor carried it forward in `resolved`
+        //   - step 1's ATK      — the effective ATK derived from PetState.ATK
+        //                         (GAME_STATE.md §2.3, ADR-011 item 3) and the
+        //                         Pet's active TargetStat="ATK" BuffDebuff
+        //                         instances (COMBAT_RULES.md §5.4.1). It is
+        //                         computed for THIS call only and never written
+        //                         back — §5.4.4 forbids overwriting the stored
+        //                         stat and forbids persisting the derived value,
+        //                         so no EffectiveATK member exists anywhere.
         //   - step 1's pool     — result.Resources.BaseDamagePool, the transient
-        //                         pool step 12 generated (GAME_STATE.md §3)
+        //                         pool step 12 generated (GAME_STATE.md §3). It is
+        //                         passed through UNCHANGED: §5.4.1 item 2 reduces
+        //                         the ATK term alone and sums the pool afterwards,
+        //                         so ATK 100 + pool 40 at −30% is 70 + 40 = 110,
+        //                         never (100 + 40) × 70% = 98.
         //   - step 2's selector — BattleState.Combo (GAME_STATE.md §2.2), this
         //                         Swap's Match total, a root member
         //   - step 3's elements — PetState.Element (attacker) and
@@ -1136,7 +1145,9 @@ public sealed class BattleStateService
         //   - step 5's DEF      — BossState.DEF (GAME_STATE.md §2.4)
         var playerDamage = DamagePipeline.Calculate(
             new DamagePipeline.DamageInputs(
-                Attack: resolved.PetState.ATK,
+                Attack: StatusEffectLifecycle.EffectiveAttack(
+                    resolved.PetState.ATK,
+                    resolved.PetState.ActiveStatusEffects),
                 BaseDamagePool: result.Resources.BaseDamagePool,
                 Combo: resolved.Combo,
                 AttackerElement: resolved.PetState.Element,
@@ -1147,7 +1158,9 @@ public sealed class BattleStateService
                 Target: DamageParty.Boss,
                 DefenderShieldPool: StatusEffectLifecycle.ShieldPool(bossState.ActiveStatusEffects),
                 AttackerCrit: resolved.PetState.Crit,
-                RngState: resolved.RngState),
+                RngState: resolved.RngState,
+                NextAttackCritContribution: NextAttackCritModifiers.TotalContribution(
+                    resolved.PetState.NextAttackCritModifiers)),
             ComboModifiers.Default,
             ElementModifiers.Default);
 
@@ -1176,14 +1189,43 @@ public sealed class BattleStateService
             };
         }
 
-        // Consume NextAttack Crit modifier if active
-        if (resolved.PetState.Crit != PetState.DefaultCrit)
+        // COMBAT_RULES.md §3.3 items 7–10 / GAME_STATE.md §5.1.2 item 4 —
+        // NextAttack Crit modifier consumption.
+        //
+        // The Swap's player damage above is an explicit owner attack action that
+        // entered the Damage Pipeline, so it is a QUALIFYING ATTACK (item 8). Its
+        // composition already included the applicable modifiers (item 7, passed as
+        // NextAttackCritContribution), and the modifiers that applied to it are
+        // consumed here — after the instance that used them, in the same resolution
+        // and therefore the same single write-back (§5.1.2 item 6).
+        //
+        // Item 10: all applicable NextAttack modifiers for the qualifying attack are
+        // consumed together. Iron Fang's and Bạch Hổ's contributions are both removed
+        // by this one attack; neither is left behind merely because the two share the
+        // attack scope.
+        //
+        // Item 9 / §5.1.2 item 4: consumption removes ONLY the identified elements.
+        // It does not write PetState.Crit, does not touch Passive or Relic Crit, and
+        // is not an arithmetic inverse — the base stat is simply never written here,
+        // which is what makes source-specific removal possible without one.
+        //
+        // The previous implementation compared the composed stat against the
+        // configuration constant and reset it (PetState.Crit != PetState.DefaultCrit
+        // -> Crit = DefaultCrit). ADR-017 and TASK-116 C-9/D-6 forbid that: it could
+        // not distinguish one source from another, and it coupled "no modifier
+        // active" to "the stat equals the default" even though GAME_STATE.md §2.3
+        // states the combat-stat defaults are configuration and "not permanent
+        // invariants". DefaultCrit remains an initialization value only.
+        //
+        // Only the Pet's own attack consumes: a Burn/DoT tick and the Boss's own
+        // attack are not the owner's qualifying attack action (item 8), so the later
+        // step 19a and step 18b/18c instances below deliberately do not consume —
+        // even though item 4 makes them Crit-eligible and they therefore do compose
+        // against the modifier while it is active.
+        resolved = resolved with
         {
-            resolved = resolved with
-            {
-                PetState = resolved.PetState with { Crit = PetState.DefaultCrit },
-            };
-        }
+            PetState = ConsumeNextAttackCritModifiers(resolved.PetState),
+        };
 
         // GAME_EVENTS.md §1/§2: the three Damage events follow the Passive stage's
         // reports, in the order §1 places them — DamageCalculated, DamageDealt,
@@ -1331,11 +1373,36 @@ public sealed class BattleStateService
         var skillFires = bossState.SkillCharge >= bossDefinition.SkillChargeRequirement
             && bossState.SkillCooldown == 0;
 
-        // COMBAT_RULES.md §3.4: a Boss Skill's Step 1 base damage is "defined per
-        // Skill" — the SkillBaseDamage term — and a Boss Basic Attack's is Boss.ATK.
-        // Both pass Combo = 1 ("Boss attacks are not part of a Combo chain"), an
-        // empty BaseDamagePool (Bosses match no Gems, so no ATK-Gem pool exists for
-        // them), and the Boss's Element as the attacker.
+        // COMBAT_RULES.md §3.4 / §5.5.1: a Boss attack's Step-1 `Attack` input is
+        // `EffectiveBossATK` — BossState.ATK after any applicable Boss ATK modifier
+        // (e.g. Hỏa Long's Rage, BOSS_RULES.md §6.2). The modifier is read from the
+        // BOSS's own StatusEffects[] and selected by Type + TargetStat, never by Id
+        // (§5.5.3 applying §5.4.5's discipline). The value is DERIVED here and used
+        // within this one pipeline execution: §5.5.4 forbids writing it back to
+        // BossState.ATK and forbids persisting it, so no EffectiveBossATK member
+        // exists anywhere (GAME_STATE.md §2.4/§2.4.1, §0 item 5).
+        //
+        // Both branches derive through the same documented consumption point. For
+        // the Basic Attack (§3.4: "Step 1 — Base Damage = Boss.ATK") this value IS
+        // the Step-1 input; for a Boss Skill it is the composition's first
+        // contribution below.
+        var effectiveBossAtk = StatusEffectLifecycle.EffectiveBossAttack(
+            bossState.ATK,
+            bossState.ActiveStatusEffects);
+
+        // COMBAT_RULES.md §3.4 "Boss Skill Step-1 composition": a Boss Skill's
+        // Step-1 Base Damage is the SUM of its two applicable Step-1 contributions
+        // under §3 step 1 — `EffectiveBossATK` AND the Skill's authored Base Damage
+        // (BOSS_RULES.md §6.3/§6.3.1). The authored value is passed through
+        // UNCHANGED: §5.5.2 makes the modifier reach the Skill's Step-1 damage only
+        // through the EffectiveBossATK contribution, so Flame Burst's authored 150
+        // never becomes 180 or 270.
+        //
+        // Step 4 is untouched by the modifier (§5.5.3): the Boss side's
+        // OtherModifiers stays 1.0 below. Both branches pass Combo = 1 ("Boss
+        // attacks are not part of a Combo chain"), an empty BaseDamagePool (Bosses
+        // match no Gems, so no ATK-Gem pool exists for them — §3.4 states a Boss
+        // Skill contributes none), and the Boss's Element as the attacker.
         //
         // The defender side is the player's, per §3.4 ("Source = Boss, Target =
         // Player"): the defending Element is the ACTIVE PET's (§3.4, §3.2 — "the
@@ -1346,8 +1413,8 @@ public sealed class BattleStateService
         // combat-stat home; there is no separate Player DEF or HP pool of the
         // values §3.2 and §3.4 name as the target's.
         var bossAttack = skillFires
-            ? bossState.ATK + bossDefinition.SkillBaseDamage
-            : bossState.ATK;
+            ? effectiveBossAtk + bossDefinition.SkillBaseDamage
+            : effectiveBossAtk;
 
         if (skillFires)
         {
@@ -1405,6 +1472,153 @@ public sealed class BattleStateService
         events.Add(BattleEvent.ForDamageCalculated(bossDamage.Calculation));
         events.Add(BattleEvent.ForDamageDealt(bossDamage.DamageDealt));
         events.Add(BattleEvent.ForDamageTaken(bossDamage.DamageTaken));
+
+        // -------------------------------------------------------------------
+        // Step 10b: Boss Skill secondary effect — BOSS_RULES.md §6.3.1
+        // -------------------------------------------------------------------
+        // GAME_RULES.md §17 step 18b: "If eligible, execute the Skill (damage
+        // through Damage Pipeline, apply non-damage effects) and emit
+        // BossSkillCast." The Skill's damage instance above is that step's
+        // damage; this is its non-damage effect, applied as COMBAT_RULES.md §3.4
+        // states — "Boss Skill damage may also include non-damage effects
+        // (debuffs, resource drain) which are applied **outside the pipeline**".
+        //
+        // It runs AFTER the Skill's damage instance and BEFORE the
+        // charge/cooldown reset below, preserving the order BOSS_RULES.md §6.3
+        // records ("After the Skill fires: SkillCharge resets to 0...") and the
+        // reset semantics TASK-022 implemented. Nothing here is a second
+        // persistence operation: the mutations below are intermediate values of
+        // this resolution and are committed by the same single write-back
+        // (GAME_STATE.md §5.1, §5.1.1 item 9).
+        //
+        // Only the Skill that declares an effect applies one, and it is applied
+        // only when the Skill actually fires — the §18c Basic Attack fallback
+        // below reaches none of this. The declaration is read from the Boss's own
+        // definition (BossSkillDefinition.SecondaryEffect), so there is no
+        // SkillId string dispatch here.
+        //
+        // No event is emitted: GAME_RULES.md §16's canonical list is closed and
+        // BOSS_RULES.md §7 enumerates step 18's events. The effects are
+        // authoritative BattleState mutation, not transport events — and
+        // StatusEffects[] is not a wire member (GAME_STATE.md §2.3.1's wire note).
+        if (skillFires && bossDefinition.SkillDefinition.SecondaryEffect is { } skillEffect)
+        {
+            switch (skillEffect.Kind)
+            {
+                case BossSkillSecondaryEffectKind.Burn:
+                {
+                    // BOSS_RULES.md §6.3.1 item 1: Burn applied to the active Pet —
+                    // Id "Burn", Type DoT, Source Boss, Magnitude 50,
+                    // RemainingTurns 2.
+                    //
+                    // §6.3.1 item 1's timing is explicit: applied "during Turn N
+                    // Boss Response (step 18b)", tick #1 at "Turn N step 19a", tick
+                    // #2 at Turn N+1 step 19a, expiring before Turn N+2. The step
+                    // 19a pass below already runs after step 18 in this same
+                    // resolution, so no ordering change is needed — only that the
+                    // instance is on the state that pass reads.
+                    //
+                    // COMBAT_RULES.md §5.2 item 2 / GAME_STATE.md §2.3.1 item 6:
+                    // applying an effect that is already active REFRESHES that
+                    // existing instance (duration and magnitude re-set) rather
+                    // than appending a second one. Apply is that operation, so a
+                    // re-cast Flame Burst resets the one instance to 2 Turns
+                    // instead of stacking to 4 or duplicating it.
+                    var burn = StatusEffect.TurnBased(
+                        skillEffect.StatusEffectId!,
+                        skillEffect.StatusEffectType!.Value,
+                        StatusEffectSource.Boss,
+                        skillEffect.Magnitude,
+                        skillEffect.DurationTurns!.Value);
+
+                    resolved = resolved with
+                    {
+                        PetState = resolved.PetState with
+                        {
+                            ActiveStatusEffects = StatusEffectLifecycle.Apply(
+                                resolved.PetState.ActiveStatusEffects,
+                                burn),
+                        },
+                    };
+                    break;
+                }
+
+                case BossSkillSecondaryEffectKind.PowerDrain:
+                {
+                    // BOSS_RULES.md §6.3.1 item 2: "Instantly subtracts 20 flat
+                    // Power from the active Pet (PetState.Power = max(0,
+                    // PetState.Power - 20))". The floor at 0 is that item's own
+                    // formula and GAME_RULES.md §12's 0-100 range.
+                    //
+                    // GAME_STATE.md §2.3.1 item 9: this creates NO Status Effect
+                    // instance — it is an immediate PetState.Power mutation — so
+                    // nothing is written to StatusEffects[] here.
+                    //
+                    // No duration, stacking, refresh, or reset behavior is
+                    // invented: §6.3.1 item 2 gives the reduction none.
+                    resolved = resolved with
+                    {
+                        PetState = resolved.PetState with
+                        {
+                            Power = Math.Max(
+                                0,
+                                resolved.PetState.Power - (int)skillEffect.Magnitude),
+                        },
+                    };
+                    break;
+                }
+
+                case BossSkillSecondaryEffectKind.AtkDebuff:
+                {
+                    // BOSS_RULES.md §6.3.1 item 3: Root applied to the active Pet —
+                    // Id "Root", Type BuffDebuff, Source Boss, TargetStat "ATK",
+                    // Magnitude 30, RemainingTurns 2.
+                    //
+                    // StatusEffect.TurnBased enforces the
+                    // TargetStat-iff-BuffDebuff pairing of GAME_STATE.md §2.3.1
+                    // item 7 at construction, so the instance is well-formed by
+                    // construction. Apply carries the dispatch contract's refresh
+                    // semantics (COMBAT_RULES.md §5.3 DR3/DR4), so a re-cast
+                    // refreshes the one instance rather than appending a second.
+                    //
+                    // Its one-Turn-of-duration consumption is the existing step
+                    // 19a pass (COMBAT_RULES.md §5.3.2 — Root is Turn-based);
+                    // no second consumption path is added.
+                    //
+                    // COMBAT_RULES.md §5.4 owns what the instance's Magnitude then
+                    // does: §5.4.1 consumes it at the Player → Boss Damage Pipeline
+                    // Step 1 Attack input, and the step-15 block above reads that
+                    // value through StatusEffectLifecycle.EffectiveAttack. §5.4.3
+                    // places this application AFTER step 15 of this Turn, so Root
+                    // does not retroactively modify the attack this same
+                    // resolution already resolved — it applies to Turn N+1's
+                    // step-15 attack, and step 19a's 2 → 1 below is the first of
+                    // its two documented consumption Turns.
+                    var root = StatusEffect.TurnBased(
+                        skillEffect.StatusEffectId!,
+                        skillEffect.StatusEffectType!.Value,
+                        StatusEffectSource.Boss,
+                        skillEffect.Magnitude,
+                        skillEffect.DurationTurns!.Value,
+                        skillEffect.TargetStat);
+
+                    resolved = resolved with
+                    {
+                        PetState = resolved.PetState with
+                        {
+                            ActiveStatusEffects = StatusEffectLifecycle.Apply(
+                                resolved.PetState.ActiveStatusEffects,
+                                root),
+                        },
+                    };
+                    break;
+                }
+
+                default:
+                    throw new InvalidOperationException(
+                        $"Unhandled Boss Skill secondary effect kind '{skillEffect.Kind}'.");
+            }
+        }
 
         if (skillFires)
         {
@@ -1646,6 +1860,54 @@ public sealed class BattleStateService
         int expectedSequence,
         CancellationToken cancellationToken) =>
         _repository.TryUpdateAsync(resolved, expectedSequence, cancellationToken);
+
+    /// <summary>
+    /// Consumes every active <c>NextAttack</c> Crit modifier on the Pet, returning
+    /// the resulting state (<c>COMBAT_RULES.md</c> §3.3 items 8–10;
+    /// <c>GAME_STATE.md</c> §5.1.2 item 4).
+    ///
+    /// <b>Every active modifier is consumed, because they all applied.</b> §3.3
+    /// item 10: "A qualifying attack consumes <b>all applicable</b> NextAttack Crit
+    /// modifiers assigned to that attack", and they "stack additively and do not
+    /// replace one another". The composition this attack used was the sum over the
+    /// whole collection (<see cref="NextAttackCritModifiers.TotalContribution"/>),
+    /// so the identities consumed are exactly the collection's — the removal set and
+    /// the composition set are the same set by construction, which is what keeps
+    /// "consumed together" (item 10) true rather than merely asserted.
+    ///
+    /// <b>Only the collection is written.</b> §5.1.2 item 4 enumerates the
+    /// prohibitions this honors: it never writes <c>PetState.Crit</c>, never assigns
+    /// the configuration default, and never removes, resets, or adjusts any other
+    /// Crit source — so the base value, Passive Crit, and Relic Crit are carried
+    /// across untouched. The base stat is not carried in this method at all, which is
+    /// the strongest form of "must NOT reset <c>PetState.Crit</c> after the attack".
+    ///
+    /// <b>An empty collection consumes nothing.</b> §2.3.4 item 5 makes no-modifier
+    /// an empty collection, and an attack with no applicable modifier has nothing to
+    /// consume — no branch is needed for it, and none is added.
+    /// </summary>
+    /// <param name="petState">The Pet state whose modifiers are consumed.</param>
+    /// <returns>The Pet state with every previously active modifier removed.</returns>
+    private static PetState ConsumeNextAttackCritModifiers(PetState petState)
+    {
+        var modifiers = petState.NextAttackCritModifiers;
+
+        if (modifiers.Length == 0)
+        {
+            return petState;
+        }
+
+        var consumedIdentities = new string[modifiers.Length];
+        for (var index = 0; index < modifiers.Length; index++)
+        {
+            consumedIdentities[index] = modifiers[index].SourceIdentity;
+        }
+
+        return petState with
+        {
+            NextAttackCritModifiers = NextAttackCritModifiers.Consume(modifiers, consumedIdentities),
+        };
+    }
 
     /// <summary>
     /// Persists the durable result for a resolution that reached a terminal

@@ -437,10 +437,11 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             new[] { "combo", "matchCount" },
             playerState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
-        // §4.3: the nested PetState object carries exactly the three members the Pet /
-        // Passive stage fixes — the Passive identity, its progress pair, and the
-        // conditional reset override. The rest of GAME_STATE §2.3 (PetId, Element,
-        // Tier/Star/Level) belongs to a later stage and is not delivered.
+        // §4.3 item 2 / item 13: the nested PetState object carries exactly the four
+        // members the Pet / Passive stage fixes — the Passive identity, its progress pair,
+        // the conditional reset override, and equippedCards. The rest of GAME_STATE §2.3 (PetId,
+        // Element, Tier/Star/Level, combat stats, StatusEffects, EquippedRelics) belongs
+        // to other stages or server-only calculation and is not delivered.
         var petState = payload.GetProperty("petState");
         var petFields = petState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal);
 
@@ -448,8 +449,14 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         // non-default reset (§4.3 item 6), and the battle created here uses the
         // default (§4 item 1), so the member is omitted entirely — never written as
         // JSON null and never spelled "Default" (§4.3 item 7).
-        Assert.Equal(new[] { "passiveId", "passiveProgress" }, petFields);
+        Assert.Equal(new[] { "equippedCards", "passiveId", "passiveProgress" }, petFields);
         Assert.False(petState.TryGetProperty("passiveResetOverride", out _));
+
+        // §4.3 item 13: `equippedCards` is the battle-scoped loadout snapshot (4 strings).
+        var cards = petState.GetProperty("equippedCards").EnumerateArray().Select(c => c.GetString()).ToArray();
+        Assert.Equal(
+            new[] { "card-heal", "card-shield", "card-power-charge", "card-inferno" },
+            cards);
 
         // `passiveProgress` is the `{ threshold, current }` pair, both always present
         // (§4.3 item 4).
@@ -837,7 +844,7 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             // presence (§4.3 items 3–4).
             Assert.Equal("xich-lang", payload.GetProperty("petState").GetProperty("passiveId").GetString());
             Assert.Equal(
-                new[] { "current", "passiveId", "passiveProgress", "passiveResetOverride", "threshold" },
+                new[] { "current", "equippedCards", "passiveId", "passiveProgress", "passiveResetOverride", "threshold" },
                 EnumeratePetStateMemberPaths(payload).OrderBy(n => n, StringComparer.Ordinal));
 
             await hubConnection.StopAsync();
@@ -947,21 +954,21 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
     }
 
     [Fact]
-    public async Task BattleStateUpdated_PetState_ShouldCarryNoMemberOutsideTheDocumentedPassiveTrio()
+    public async Task BattleStateUpdated_PetState_ShouldCarryNoMemberOutsideTheDocumentedWireMembers()
     {
-        // SIGNALR_PROTOCOL.md §4.3 item 2: `petState` carries EXACTLY the three
+        // SIGNALR_PROTOCOL.md §4.3 item 2: `petState` carries EXACTLY the four
         // members the Pet / Passive stage fixes — `passiveId`, `passiveProgress`,
-        // and the conditional `passiveResetOverride`. The rest of GAME_STATE.md
-        // §2.3 belongs to the Pet identity, progression, Combat, Relic, and Card
-        // stages and is NOT delivered: §4 item 4 admits only the implemented
+        // `equippedCards`, and the conditional `passiveResetOverride`. The rest of
+        // GAME_STATE.md §2.3 belongs to the Pet identity, progression, Combat, and
+        // Relic stages and is NOT delivered: §4 item 4 admits only the implemented
         // stage's own fields, and referring to `petState` as a whole does not
         // widen that rule.
         //
         // This is the negative-contract guard for the `petState` scope. The
-        // battle created here carries EquippedRelics and EquippedCards in its
-        // authoritative PetState (TASK-027/TASK-028), so the Domain really holds
-        // the members this asserts are absent — their absence is a property of
-        // the projection, not of an empty Domain state.
+        // battle created here carries EquippedRelics in its authoritative PetState
+        // (TASK-027), so the Domain really holds the members this asserts are
+        // absent — their absence is a property of the projection, not of an empty
+        // Domain state.
         const string battleId = "battle-petstate-no-extra-member";
         await CreateBattleOnServerAsync(battleId);
 
@@ -978,21 +985,21 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
         // The complete permitted member set of the object, including the nested
         // progress pair's members: `passiveId`, `passiveProgress`, `threshold`,
-        // `current`, and — only when the Passive declares a non-default reset —
-        // `passiveResetOverride` (§4.3 items 3–7).
+        // `current`, `equippedCards`, and — only when the Passive declares a
+        // non-default reset — `passiveResetOverride` (§4.3 items 3–7, 13).
         var permitted = new[]
         {
-            "passiveId", "passiveProgress", "threshold", "current", "passiveResetOverride",
+            "passiveId", "passiveProgress", "threshold", "current", "equippedCards", "passiveResetOverride",
         };
 
         Assert.All(
             EnumeratePetStateMemberPaths(payload),
             path => Assert.Contains(path, permitted));
 
-        // The three members §4.3 fixes are the only direct members of the object,
+        // The four members §4.3 fixes are the only direct members of the object,
         // and the progress pair's are the only members of the nested pair.
         Assert.Equal(
-            new[] { "passiveId", "passiveProgress" },
+            new[] { "equippedCards", "passiveId", "passiveProgress" },
             petState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
         Assert.Equal(
             new[] { "current", "threshold" },
@@ -1003,15 +1010,15 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
         // The no-gameplay-system-field blocklist, scoped to `petState`. Every
         // member below is authoritative Domain state at this stage — the combat
-        // stats, the status collection, and both loadout snapshots that
-        // TASK-027/TASK-028 implemented into PetState — and none of them is a
+        // stats, the status collection, and the relic loadout snapshot that
+        // TASK-027 implemented into PetState — and none of them is a
         // §4.3 wire member (GAME_STATE.md §2.3: "Domain state implemented is not
         // the same as client wire delivery").
         foreach (var domainOnlyMember in new[]
                  {
                      "hp", "maxHp", "atk", "def", "crit", "power",
                      "status", "statusEffects",
-                     "equippedRelics", "equippedCards",
+                     "equippedRelics",
                      "petId", "identity", "element", "tier", "star", "level",
                      "bossState", "resetBehavior", "hasResetOverride",
                  })
@@ -1025,6 +1032,44 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         // Passive uses the default reset, so it is omitted rather than written
         // (§4.3 items 6–7).
         Assert.False(petState.TryGetProperty("passiveResetOverride", out _));
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task BattleStateUpdated_PetState_ShouldCarryEquippedCards_WithAuthoritativeCardinalityAndOrder()
+    {
+        // SIGNALR_PROTOCOL.md §4.3 item 13: `equippedCards` is the active Pet's
+        // battle-scoped loadout carrying the 4 CardDefinitionId strings (the 3
+        // submitted Basic Cards plus the active Pet's derived Signature Skill Card).
+        // It is always present, non-empty, and non-nullable.
+        const string battleId = "battle-equipped-cards-projection";
+        await CreateBattleOnServerAsync(battleId);
+
+        var hubConnection = BuildHubConnection();
+        var received = new TaskCompletionSource<JsonElement>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        hubConnection.On<JsonElement>("BattleStateUpdated", payload => received.TrySetResult(payload));
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+        var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        var petState = payload.GetProperty("petState");
+
+        Assert.True(petState.TryGetProperty("equippedCards", out var cardsProp));
+        Assert.Equal(JsonValueKind.Array, cardsProp.ValueKind);
+
+        var cards = cardsProp.EnumerateArray().Select(c => c.GetString()).ToArray();
+        Assert.Equal(4, cards.Length);
+        Assert.Equal(
+            new[] { "card-heal", "card-shield", "card-power-charge", "card-inferno" },
+            cards);
+
+        // Verify existing sibling fields are unaffected
+        Assert.Equal("xich-lang", petState.GetProperty("passiveId").GetString());
+        Assert.Equal(5, petState.GetProperty("passiveProgress").GetProperty("threshold").GetInt32());
+        Assert.Equal(0, petState.GetProperty("passiveProgress").GetProperty("current").GetInt32());
 
         await hubConnection.StopAsync();
     }
@@ -1170,9 +1215,9 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
         // The petState object is likewise still exactly the §4.3 payload — the
-        // Passive trio only.
+        // Passive trio plus equippedCards.
         Assert.Equal(
-            new[] { "passiveId", "passiveProgress" },
+            new[] { "equippedCards", "passiveId", "passiveProgress" },
             payload.GetProperty("petState")
                 .EnumerateObject()
                 .Select(p => p.Name)
@@ -1822,13 +1867,13 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             new[] { "combo", "matchCount" },
             playerState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
-        // ---- 2. `petState` is still exactly the documented Passive trio ----------
+        // ---- 2. `petState` is still exactly the documented wire members ----------
         // SIGNALR_PROTOCOL.md §4.3 item 2: not one combat stat may appear here merely
         // because PetState now stores them (GAME_STATE.md §2.3).
         var petState = payload.GetProperty("petState");
 
         Assert.Equal(
-            new[] { "passiveId", "passiveProgress" },
+            new[] { "equippedCards", "passiveId", "passiveProgress" },
             petState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
         Assert.Equal(
@@ -2419,7 +2464,23 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                     DefenderDefense: before.BossState.DEF,
                     DefenderHp: before.BossState.HP,
                     Source: GameServer.Domain.Combat.DamageParty.Player,
-                    Target: GameServer.Domain.Combat.DamageParty.Boss),
+                    Target: GameServer.Domain.Combat.DamageParty.Boss,
+                    // COMBAT_RULES.md §3.3 item 2 / ADR-009: the Crit roll consumes
+                    // from the single server-authoritative RngState, so the
+                    // expectation must start from the SAME stream position the
+                    // resolution starts from. That position is the BOARD
+                    // RESOLUTION's output — MATCH3_RULES.md §8.4 makes Spawn the
+                    // step that advances RngState, and the Application boundary
+                    // resumes the damage stages from the executor's resulting state
+                    // (GAME_STATE.md §5.1) — not the pre-Swap state, and not a
+                    // fresh stream. Starting from the wrong position would make the
+                    // expected Crit outcomes depend on the draw the real resolution
+                    // happened to get, which is exactly the run-to-run flakiness
+                    // this expectation must not have. This instance's step-1 Attack
+                    // is the Pet's own ATK (§3 step 1) and its Crit stat is
+                    // PetState.Crit (§3.3 item 7's base).
+                    AttackerCrit: committed.State.PetState.Crit,
+                    RngState: committed.State.RngState),
                 GameServer.Domain.Combat.ComboModifiers.Default,
                 GameServer.Domain.Elements.ElementModifiers.Default);
 
@@ -2463,9 +2524,20 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                         >= bossDefinition.SkillChargeRequirement
                     && bossSkillCooldown == 0;
 
+                // COMBAT_RULES.md §3.4 "Boss Skill Step-1 composition": the Skill's
+                // Step 1 is EffectiveBossATK + the authored Skill Base Damage, and the
+                // Basic Attack's is EffectiveBossATK alone. §5.5.1 derives
+                // EffectiveBossATK from BossState.ATK and the Boss's active ATK
+                // modifiers — no MVP path applies one yet (Rage's application is the
+                // unimplemented step 18a half), so the derived value equals the stored
+                // stat here. It is still read through the documented consumer rather
+                // than assumed, so this expectation tracks the contract.
+                var effectiveBossAtk = StatusEffectLifecycle.EffectiveBossAttack(
+                    before.BossState.ATK, before.BossState.ActiveStatusEffects);
+
                 var bossAttack = skillFires
-                    ? before.BossState.ATK + bossDefinition.SkillBaseDamage
-                    : before.BossState.ATK;
+                    ? effectiveBossAtk + bossDefinition.SkillBaseDamage
+                    : effectiveBossAtk;
 
                 if (skillFires)
                 {
@@ -2483,7 +2555,13 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                         DefenderDefense: before.PetState.DEF,
                         DefenderHp: before.PetState.HP,
                         Source: GameServer.Domain.Combat.DamageParty.Boss,
-                        Target: GameServer.Domain.Combat.DamageParty.Player),
+                        Target: GameServer.Domain.Combat.DamageParty.Player,
+                        // §3.3 item 4 makes every damage instance Crit-eligible, and
+                        // the Crit roll consumes from the single RngState. The
+                        // expectation must therefore continue the SAME stream the
+                        // player's instance just advanced, or the rig's Crit
+                        // outcomes diverge from the resolution's (ADR-009).
+                        RngState: playerDamage.UpdatedRngState),
                     GameServer.Domain.Combat.ComboModifiers.Default,
                     GameServer.Domain.Elements.ElementModifiers.Default);
 
@@ -2491,6 +2569,48 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                     .Append(BattleEvent.ForDamageCalculated(bossDamage.Calculation))
                     .Append(BattleEvent.ForDamageDealt(bossDamage.DamageDealt))
                     .Append(BattleEvent.ForDamageTaken(bossDamage.DamageTaken));
+
+                // BOSS_RULES.md §6.3.1 item 1 / GAME_RULES.md §17 step 19a: when the
+                // Skill that fired is Flame Burst, its Burn instance is applied to
+                // the active Pet at step 18b and then ticks ONCE in this same
+                // resolution's step 19a, through the Damage Pipeline. That tick is a
+                // real Boss→Player damage instance (COMBAT_RULES.md §5.2 item 3), so
+                // the expectation must include it — it is part of the ordered batch
+                // this test is asserting.
+                if (skillFires
+                    && bossDefinition.SkillDefinition.SecondaryEffect
+                        is { Kind: GameServer.Domain.Bosses.BossSkillSecondaryEffectKind.Burn } burnEffect
+                    && bossDamage.TargetHp > 0)
+                {
+                    var burnTick = GameServer.Domain.Combat.DamagePipeline.Calculate(
+                        new GameServer.Domain.Combat.DamagePipeline.DamageInputs(
+                            // §6.3.1 item 1: the tick's Step 1 is the fixed Burn
+                            // magnitude, with no ATK term and no pool.
+                            Attack: (int)burnEffect.Magnitude,
+                            BaseDamagePool: 0,
+                            // §5.2 item 3: a DoT tick uses Combo = 1 / neutral.
+                            Combo: 1,
+                            AttackerElement: GameServer.Domain.Elements.Element.Hoa,
+                            DefenderElement: before.PetState.Element,
+                            DefenderDefense: before.PetState.DEF,
+                            DefenderHp: bossDamage.TargetHp,
+                            Source: GameServer.Domain.Combat.DamageParty.Boss,
+                            Target: GameServer.Domain.Combat.DamageParty.Player,
+                            RngState: bossDamage.UpdatedRngState),
+                        GameServer.Domain.Combat.ComboModifiers.Default,
+                        GameServer.Domain.Elements.ElementModifiers.Default);
+
+                    expectedEvents = expectedEvents
+                        .Append(BattleEvent.ForDamageCalculated(burnTick.Calculation))
+                        .Append(BattleEvent.ForDamageDealt(burnTick.DamageDealt))
+                        .Append(BattleEvent.ForDamageTaken(burnTick.DamageTaken));
+
+                    if (burnTick.TargetHp <= 0)
+                    {
+                        expectedEvents = expectedEvents.Append(
+                            BattleEvent.ForBattleLost(playerDamage.TargetHp, burnTick.TargetHp));
+                    }
+                }
 
                 if (bossDamage.TargetHp <= 0)
                 {

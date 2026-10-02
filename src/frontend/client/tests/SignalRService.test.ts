@@ -147,6 +147,7 @@ describe('SignalRService', () => {
         petState: {
           passiveId: 'xich-lang',
           passiveProgress: { threshold: 5, current: 0 },
+          equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
         },
       };
       hub.handlers.get('BattleStateUpdated')?.(payload);
@@ -180,6 +181,7 @@ describe('SignalRService', () => {
           passiveId: 'thanh-xa-poison',
           passiveProgress: { threshold: 7, current: 5 },
           passiveResetOverride: 'Partial',
+          equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
         },
       };
       hub.handlers.get('BattleStateUpdated')?.(payload);
@@ -437,6 +439,141 @@ describe('SignalRService', () => {
       expect(source).toMatch(/["']Swap["']/);
       expect(source).not.toMatch(/fromCell\s*[<>!=]|toCell\s*[<>!=]/);
       expect(source).not.toContain('Math.');
+    });
+  });
+
+  describe('CardCast request transport (SIGNALR_PROTOCOL.md §2, §5)', () => {
+    it('invokes the documented CardCast method with exactly the three arguments', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      await service.cardCast('battle-1', 'card-heal', 'req-cc-1');
+
+      expect(hub.invokes).toEqual([
+        { method: 'CardCast', args: ['battle-1', 'card-heal', 'req-cc-1'] },
+      ]);
+    });
+
+    it('carries no gameplay field in the request', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      await service.cardCast('battle-1', 'card-shield', 'req-cc-2');
+
+      const [{ args }] = hub.invokes;
+      expect(args).toHaveLength(3);
+      expect(args).toEqual(['battle-1', 'card-shield', 'req-cc-2']);
+    });
+
+    it('returns the §5 acknowledgement unchanged', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      hub.setInvokeResult({ accepted: true });
+
+      await expect(service.cardCast('battle-1', 'card-heal', 'req-cc-3')).resolves.toEqual({
+        accepted: true,
+      });
+    });
+
+    it('returns a rejection with its machine-readable reason', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      hub.setInvokeResult({ accepted: false, reason: 'INSUFFICIENT_POWER' });
+
+      await expect(service.cardCast('battle-1', 'card-heal', 'req-cc-4')).resolves.toEqual({
+        accepted: false,
+        reason: 'INSUFFICIENT_POWER',
+      });
+    });
+
+    it('throws on cardCast when no connection is established', async () => {
+      await expect(service.cardCast('battle-1', 'card-heal', 'req-cc-5')).rejects.toThrow(
+        'SignalR connection is not established.'
+      );
+    });
+
+    it('stays transport-focused: no card validation or calculation', () => {
+      const surface = Object.getOwnPropertyNames(SignalRService.prototype);
+      for (const forbidden of [
+        'validateCardCast',
+        'calculateCardCost',
+        'applyCardEffect',
+        'hasPowerForCard',
+      ]) {
+        expect(surface).not.toContain(forbidden);
+      }
+
+      const source = SignalRService.prototype.cardCast.toString();
+      expect(source).toMatch(/["']CardCast["']/);
+    });
+  });
+
+  describe('PetSkillCast request transport (SIGNALR_PROTOCOL.md §2, §5)', () => {
+    it('invokes the documented PetSkillCast method with exactly the two arguments', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      await service.petSkillCast('battle-1', 'req-psc-1');
+
+      expect(hub.invokes).toEqual([
+        { method: 'PetSkillCast', args: ['battle-1', 'req-psc-1'] },
+      ]);
+    });
+
+    it('carries no gameplay field in the request', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      await service.petSkillCast('battle-1', 'req-psc-2');
+
+      const [{ args }] = hub.invokes;
+      expect(args).toHaveLength(2);
+      expect(args).toEqual(['battle-1', 'req-psc-2']);
+    });
+
+    it('returns the §5 acknowledgement unchanged', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      hub.setInvokeResult({ accepted: true });
+
+      await expect(service.petSkillCast('battle-1', 'req-psc-3')).resolves.toEqual({
+        accepted: true,
+      });
+    });
+
+    it('returns a rejection with its machine-readable reason', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      hub.setInvokeResult({ accepted: false, reason: 'INSUFFICIENT_POWER' });
+
+      await expect(service.petSkillCast('battle-1', 'req-psc-4')).resolves.toEqual({
+        accepted: false,
+        reason: 'INSUFFICIENT_POWER',
+      });
+    });
+
+    it('throws on petSkillCast when no connection is established', async () => {
+      await expect(service.petSkillCast('battle-1', 'req-psc-5')).rejects.toThrow(
+        'SignalR connection is not established.'
+      );
+    });
+
+    it('stays transport-focused: no skill validation or calculation', () => {
+      const surface = Object.getOwnPropertyNames(SignalRService.prototype);
+      for (const forbidden of [
+        'validatePetSkillCast',
+        'calculateSkillCost',
+        'applySkillEffect',
+      ]) {
+        expect(surface).not.toContain(forbidden);
+      }
+
+      const source = SignalRService.prototype.petSkillCast.toString();
+      expect(source).toMatch(/["']PetSkillCast["']/);
     });
   });
 

@@ -58,14 +58,17 @@ namespace GameServer.Domain.Bosses;
 /// is persisted; the combat stats remain Domain-only (<c>DATABASE.md</c> §1 note
 /// item 1).
 ///
-/// <b>The Passive/Skill mechanics are configuration; their effects are not
+/// <b>The Passive mechanics are configuration; their effects are not
 /// implemented.</b> §6.2–§6.3 give each Boss a Passive trigger and a Skill
 /// timing, and this type carries those values so the resolution can charge,
 /// trigger, and cast. The Passive <i>effects</i> — Hỏa Long's Rage, Thủy Ma's
-/// healing reduction, Mộc Yêu's regeneration — and the Skill <i>effects</i> —
-/// Burn, Power drain, ATK reduction — remain unimplemented and are owned by their
-/// own stages (<c>BOSS_RULES.md</c> §3 item 3, §4 item 4). Nothing here applies
-/// one.
+/// healing reduction, Mộc Yêu's regeneration — remain unimplemented and are
+/// owned by their own stages (<c>BOSS_RULES.md</c> §3 item 3). The Skill
+/// <i>effects</i> — Burn, Power drain, ATK reduction — are carried here as each
+/// Skill's <see cref="BossSkillDefinition.SecondaryEffect"/> declaration and
+/// are applied by the step 18b resolution (<c>BOSS_RULES.md</c> §4 item 4,
+/// §6.3.1); the Root declaration's <c>-30%</c> is consumed by the Pet's own
+/// attack through <c>COMBAT_RULES.md</c> §5.4. Nothing here applies an effect.
 ///
 /// <b>Thủy Ma's <c>PassiveThreshold</c> is <c>0</c> — the Always-Active
 /// marker.</b> §6.2 gives its trigger as "Passive (always active)", an alternate
@@ -105,7 +108,20 @@ public static class BossDefinitions
             SkillId: "flame-burst",
             BaseDamage: 150,
             ChargeRequirement: 5,
-            CooldownTurns: 2))
+            CooldownTurns: 2)
+        {
+            // §6.3.1 item 1: "Burn: 50 fixed damage/tick for 2 Turns". The
+            // magnitude is fixed — §6.3.1 item 1 states it "does not scale with
+            // Boss ATK, Pet ATK, percentage MaxHP, or elemental multipliers".
+            SecondaryEffect = new BossSkillSecondaryEffect
+            {
+                Kind = BossSkillSecondaryEffectKind.Burn,
+                StatusEffectId = "Burn",
+                StatusEffectType = Battle.StatusEffectType.DoT,
+                Magnitude = 50,
+                DurationTurns = 2,
+            },
+        })
     {
         // §6.1: MaxHP 5000, ATK 100, DEF 50, Enrage "1500 (30%)" — the shared
         // MVP base configuration (the Domain defaults, not persisted columns).
@@ -139,7 +155,20 @@ public static class BossDefinitions
             SkillId: "drain-power",
             BaseDamage: 120,
             ChargeRequirement: 4,
-            CooldownTurns: 3))
+            CooldownTurns: 3)
+        {
+            // §6.3.1 item 2: "Instantly subtracts 20 flat Power from the active
+            // Pet (PetState.Power = max(0, PetState.Power - 20))". No
+            // StatusEffectId/Type/TargetStat and no DurationTurns: §6.3.1 item 2
+            // states the representation is a flat reduction and the duration is
+            // "None (instant stat reduction, not a persistent status effect)",
+            // which GAME_STATE.md §2.3.1 item 9 records as creating no instance.
+            SecondaryEffect = new BossSkillSecondaryEffect
+            {
+                Kind = BossSkillSecondaryEffectKind.PowerDrain,
+                Magnitude = 20,
+            },
+        })
     {
         // §6.1 base stats — the shared MVP configuration.
         MaxHP = 5000,
@@ -167,7 +196,30 @@ public static class BossDefinitions
             SkillId: "root",
             BaseDamage: 100,
             ChargeRequirement: 6,
-            CooldownTurns: 2))
+            CooldownTurns: 2)
+        {
+            // §6.3.1 item 3: "-30% Pet ATK debuff for 2 Turns ... Percentage-based
+            // ATK reduction (-30% active Pet ATK)", applied as a Turn-based
+            // Buff/Debuff (COMBAT_RULES.md §5.1) whose TargetStat is "ATK"
+            // (GAME_STATE.md §2.3.1's example for Type = BuffDebuff).
+            //
+            // How that magnitude reaches the Pet's own damage is owned by
+            // COMBAT_RULES.md §5.4 (TASK-119): §5.4.1 consumes it at the
+            // Player → Boss Damage Pipeline Step 1 Attack input, §5.4.2 fixes
+            // truncate-toward-zero rounding, and §5.4.4 keeps PetState.ATK
+            // untouched. The consumer is StatusEffectLifecycle.EffectiveAttack.
+            // This declaration therefore carries the instance's values only and
+            // still decides no rule.
+            SecondaryEffect = new BossSkillSecondaryEffect
+            {
+                Kind = BossSkillSecondaryEffectKind.AtkDebuff,
+                StatusEffectId = "Root",
+                StatusEffectType = Battle.StatusEffectType.BuffDebuff,
+                TargetStat = "ATK",
+                Magnitude = 30,
+                DurationTurns = 2,
+            },
+        })
     {
         // §6.1 base stats — the shared MVP configuration.
         MaxHP = 5000,

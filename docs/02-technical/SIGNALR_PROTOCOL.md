@@ -1,6 +1,18 @@
 # SignalR Protocol
 
-**Version:** 2.7 (§3.2.2's discriminator set extended and the four documented
+**Version:** 2.9 (§4.3 `petState` wire projection extended per TASK-121 to include
+`equippedCards` (readonly string[], 4 `CardDefinitionId` entries: 3 Basic Cards +
+1 derived Signature Skill Card); resolves the client loadout visibility contract
+for `CardCast` and `PetSkillCast` action paths in `BattleScene` without client
+authority or secondary REST state retention. Prior 2.8: §4 item 14 added — `PetState.NextAttackCritModifiers[]`
+(`GAME_STATE.md` §2.3.4, `ADR-017`) is **not** a wire member and adds no
+payload member, message, method, or subscription: item 4 governs, item 13's
+`PetState` exception was made for `PassiveProgress` because
+`PASSIVE_RULES.md` §6 item 1 requires that value to be visible to the player,
+and `COMBAT_RULES.md` §3.3 item 6 already fixes the Crit outcome's sole
+representation to step 4's combined `otherModifiers` multiplier. No §2/§3/§4
+member set, delivery path, or gameplay rule is changed by this revision.
+Prior 2.7: §3.2.2's discriminator set extended and the four documented
 events projected — `CardCast`, `PetSkillCast`, `RelicTriggered`, and
 `PowerChanged` added to the table and given member tables at §3.2.20–§3.2.24,
 with `CardCast`/`PetSkillCast` emission order fixed at §3.2.22 and the
@@ -1292,6 +1304,27 @@ action: it reports state (§4 item 6).
     contract is §4.3; it adds no message, method, or subscription (§4 item 11),
     and its arrival replaces nothing (item 12's record is unaffected).
 
+14. **`NextAttackCritModifiers[]` is not delivered, and item 13 is not the
+    precedent for delivering it.** `GAME_STATE.md` §2.3.4 adds
+    `PetState.NextAttackCritModifiers[]` to authoritative state (`ADR-017`) —
+    temporary source-specific Crit modifiers awaiting consumption by a
+    qualifying owner attack. It is **not** a member of this payload, and this
+    section adds none for it. Item 4 governs: the record carries exactly the
+    implemented stage's fields, and item 13's exception was made for
+    `PassiveProgress` specifically because `PASSIVE_RULES.md` §6 item 1
+    requires that value to be exposed to the player. No document requires a
+    Crit modifier to be exposed: `COMBAT_RULES.md` §3.3 item 6 fixes the Crit
+    outcome's representation to step 4's combined `otherModifiers` multiplier
+    and states that "no separate Crit event, state property, or wire member is
+    emitted", and §3.3 item 7 makes Effective Crit a value computed for the
+    current pipeline execution rather than a stored member. The client
+    therefore neither receives nor needs the collection. It is also not a
+    field the client may infer: it must never compute, predict, or reconstruct
+    a Crit modifier from events, from `otherModifiers`, or from the Crit value
+    (`GAME_RULES.md` §18, `ADR-001`). No new message, method, subscription, or
+    payload member is introduced by it (`GAME_STATE.md` §2.3.4 item 8), and it
+    replaces nothing in item 12's or item 13's record.
+
 This method name is `BattleStateUpdated` for the `BattleState` it delivers,
 and is the only state-push method in this protocol. No second or parallel
 state-sync method exists — `GameStateSync`, `SyncEverything`, or similar are
@@ -1400,10 +1433,11 @@ push — it does not add a delivery path, a subscription, or an event:
 
 ```text
 petState
-├── passiveId                 the active Pet's Passive identity   always present
-├── passiveProgress            { threshold, current }             always present
-└── passiveResetOverride       "Partial" | "NoReset"              present only when
-                                                                  non-default
+├── passiveId                 the active Pet's Passive identity          always present
+├── passiveProgress            { threshold, current }                    always present
+├── passiveResetOverride       "Partial" | "NoReset"                     present only when
+│                                                                        non-default
+└── equippedCards              string[] (4 CardDefinitionId entries)     always present
 ```
 
 1. The client receives `petState` together with `battleId`, `turn`, `sequence`,
@@ -1411,12 +1445,14 @@ petState
    `BattleStateUpdated` push. It is delivered on join (§4.1 trigger) and on
    every committed Swap's resolved-state push (§2.1, §5).
 2. `petState` is the wire projection of `GAME_STATE.md` §2.3's implemented
-   fields, and carries **exactly three members**: `passiveId`,
-   `passiveProgress`, and the conditional `passiveResetOverride`. The rest of
-   §2.3 — `PetId`/Identity, `Element`, `Tier`/`Star`/`Level` — belongs to the
-   Pet identity and progression stage and is **not** delivered, because §4
-   item 4 admits only the implemented stage's own fields. Referring to
-   `petState` as a whole does not widen that rule.
+   fields, and carries **four members**: `passiveId`, `passiveProgress`, the
+   conditional `passiveResetOverride`, and `equippedCards`. The rest of
+   §2.3 — `PetId`/Identity, `Element`, `Tier`/`Star`/`Level`, combat stats
+   (`HP`, `MaxHP`, `ATK`, `DEF`, `Crit`, `Power`), `StatusEffects[]`,
+   `NextAttackCritModifiers[]`, and `EquippedRelics[]` — belongs to other
+   subsystems or server-only calculation and is **not** delivered, per §4
+   item 4's rule that a payload carries only the implemented stage's own
+   fields. Referring to `petState` as a whole does not widen that rule.
 3. **`passiveId` is always present and is the Passive's identity, not its
    definition.** It carries the same value `PetState.PassiveId` holds
    (`GAME_STATE.md` §2.3) — the identity `GAME_EVENTS.md` §2's
@@ -1496,6 +1532,26 @@ petState
     from whatever `BattleState` the server holds. Whether `PetState` is
     written to Redis is owned by `REDIS_STATE.md` §7 and is unchanged here:
     this section defines the payload member, not the storage contract.
+13. **`equippedCards` is the active Pet's battle-scoped loadout.** It carries
+    the 4 `CardDefinitionId` strings (`GAME_STATE.md` §2.3, `CARD_RULES.md`
+    §1) — the 3 submitted Basic Cards plus the active Pet's derived Signature
+    Skill Card. It is always present, non-empty, and non-nullable.
+    - **Bootstrap and synchronization:** Snapshotted once at battle creation
+      (`POST /api/battle/start`, `API_CONTRACTS.md` §3), it does not mutate
+      during the battle. It is delivered to the client on group join
+      (`JoinBattle`, §4.1) and on every subsequent `BattleStateUpdated` push,
+      as well as in the reconnect snapshot (`GetBattleState`, §7, `ADR-008`).
+    - **Client usage boundary:** The presentation layer (`BattleScene` via
+      `GameRuntimePort`) reads `runtime.getBattleState().petState.equippedCards`
+      to render interactive casting controls and dispatch action requests
+      (`CardCast`, `PetSkillCast`, §2). Full card definitions and effect
+      mechanics are resolved server-side (`CARD_RULES.md` §3); the client
+      maintains no local registry and performs no card validation.
+    - **Signature Skill identification:** Exactly one entry in `equippedCards`
+      is the active Pet's Signature Skill (`Category == PetSkill`,
+      `CARD_RULES.md` §4, `API_CONTRACTS.md` §5.3). Client-side invocation
+      of `PetSkillCast(battleId, clientSequence)` (§2) does not require a card
+      or skill identifier; the server resolves it from this same loadout.
 
 ---
 
