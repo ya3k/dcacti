@@ -21,11 +21,14 @@
 ```text
 Task ID:           TASK-094
 Type:              GAMEPLAY-CHANGE
-Status:            READY (decision complete — DR1–DR6 recorded in the
-                   "Decision Record" section. Decision-input only: no
-                   authoritative documentation was modified by this task.
-                   Handoff to TASK-093 is complete-but-unapplied; applying
-                   DR1–DR6 to `COMBAT_RULES.md` §5.2 is the downstream act.)
+Status:            DONE (decision-input task directly executed: owner selection
+                   Option C/(i) recorded, DR1–DR6 recorded in the "Decision
+                   Record" section, 9/9 §5 coverage items answered, no
+                   authoritative documentation modified by this task.
+                   Lifecycle reconciliation: READY → DONE per TASK_LIFECYCLE.md §3
+                   — direct execution verified; DR1–DR6 subsequently consumed and
+                   applied by TASK-093 (COMBAT_RULES.md §5.3), completing the
+                   handoff this task's record anticipated.)
 Risk:              MEDIUM (TASK_TYPES.md §4: GAMEPLAY-CHANGE baseline is HIGH,
                     but this task records no rule itself — it obtains the
                     decision. Risk is classified at the higher end of the

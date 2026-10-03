@@ -653,13 +653,18 @@ public class BattleStateServiceTests
         // during an ordinary action resolution — TDD.md §4 item 3 keeps PostgreSQL
         // off the hot path.
         //
-        // The two dictionaries are the battle's Pet loadout input and the battle's
+        // The three dictionaries are the battle's Pet loadout input, the battle's
         // Boss definition (BOSS_RULES.md §6.2–§6.4's static content, which BossState
-        // deliberately does not duplicate); neither is a REDIS_STATE.md store. The
-        // remaining fields are the ONE documented store the active-state record is
-        // written through, the seed source, and the durable battle result boundary
-        // the terminal paths invoke (ARCHITECTURE.md §4 item 4, DATABASE.md §1).
-        // No cache, bus, logger, or second store was introduced.
+        // deliberately does not duplicate), and the battle's equipped Relics'
+        // resolved definitions (RELIC_RULES.md §2.2, §8 — the content
+        // GAME_RULES.md §17 step 11 reads, which PetState.EquippedRelics[]
+        // deliberately does not copy). None is a REDIS_STATE.md store, and none is
+        // queried from PostgreSQL during a resolution: that is exactly why the Relic
+        // content is attached here at creation (TDD.md §4 item 3). The remaining
+        // fields are the ONE documented store the active-state record is written
+        // through, the seed source, and the durable battle result boundary the
+        // terminal paths invoke (ARCHITECTURE.md §4 item 4, DATABASE.md §1). No
+        // cache, bus, logger, or second store was introduced.
         var fields = typeof(BattleStateService)
             .GetFields(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
             .Select(f => f.Name)
@@ -671,6 +676,7 @@ public class BattleStateServiceTests
                 "_bossConfiguration",
                 "_cardDefinitions",
                 "_petConfiguration",
+                "_relicConfiguration",
                 "_repository",
                 "_seedSource",
                 "_unpersistedResults",

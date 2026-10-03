@@ -561,14 +561,21 @@ public class CollectionQueryServiceTests
         // §5.4: "Not exposed: playerId, acquiredAt, definitionId, and
         // Trigger/Condition/EffectDefinition". §5.6 adds the equip members. The
         // stored rows carry all of them, so the omission is real.
+        //
+        // RELIC_RULES.md §8.1/§8.2 (TASK-132) make Condition and EffectDefinition
+        // STRUCTURED values on the definition; the projection's omission is
+        // unchanged by that, which is what this asserts.
+        var condition = RelicCondition.Create(RelicConditionType.ComboAtLeast, 3);
+        var effects = TestRelicEffects.Effect;
+
         var fixture = new CollectionFixture()
             .WithRelic("relic_1", Owner, "relic_def_1")
             .WithRelicDefinition(
                 "relic_def_1",
                 "Berserker Core",
                 trigger: "OnCombo3Plus",
-                condition: "Combo ≥ 3",
-                effectDefinition: "berserker_effect");
+                condition: condition,
+                effectDefinition: effects);
 
         var members = typeof(RelicCollectionItem)
             .GetProperties()
@@ -589,8 +596,8 @@ public class CollectionQueryServiceTests
             relic => relic.RelicDefinitionId == "relic_def_1");
 
         Assert.Equal("OnCombo3Plus", definition.Trigger);
-        Assert.Equal("Combo ≥ 3", definition.Condition);
-        Assert.Equal("berserker_effect", definition.EffectDefinition);
+        Assert.Equal(condition, definition.Condition);
+        Assert.Equal(effects, definition.EffectDefinition);
 
         Assert.Single(await CreateService(fixture).ListRelicsAsync(Owner));
     }
@@ -852,7 +859,7 @@ public class CollectionQueryServiceTests
                     RelicDefinitionId = relicDefinitionId,
                     Name = relicDefinitionId,
                     Trigger = "OnTurnEnd",
-                    EffectDefinition = "increase ATK by 5%",
+                    EffectDefinition = TestRelicEffects.Effect,
                 });
 
             return this;
@@ -862,8 +869,8 @@ public class CollectionQueryServiceTests
             string relicDefinitionId,
             string name,
             string trigger = "OnTurnEnd",
-            string? condition = null,
-            string effectDefinition = "increase ATK by 5%")
+            RelicCondition? condition = null,
+            RelicEffectDefinitions? effectDefinition = null)
         {
             _relicDefinitions[relicDefinitionId] = new RelicDefinition
             {
@@ -871,7 +878,7 @@ public class CollectionQueryServiceTests
                 Name = name,
                 Trigger = trigger,
                 Condition = condition,
-                EffectDefinition = effectDefinition,
+                EffectDefinition = effectDefinition ?? TestRelicEffects.Effect,
             };
 
             return this;

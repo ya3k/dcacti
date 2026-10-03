@@ -197,8 +197,8 @@ internal static class TestProvisionedContent
                 RelicDefinitionId = id,
                 Name = name,
                 Trigger = "seeded",
-                Condition = "seeded",
-                EffectDefinition = "seeded for the starter-ownership bootstrap tests",
+                Condition = TestRelicEffects.Condition,
+                EffectDefinition = TestRelicEffects.Effect,
             });
         }
     }

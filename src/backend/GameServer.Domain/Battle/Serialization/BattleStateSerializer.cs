@@ -277,6 +277,58 @@ public static class BattleStateSerializer
             NextAttackCritModifiers = petState.NextAttackCritModifiers
                 .Select(ToNextAttackCritModifierJson)
                 .ToArray(),
+
+            // §2.3.7 item 6 / §2.3.8 item 1 / REDIS_STATE.md §7 item 16: the same
+            // always-present rule, applied to the ATK modifier collection. It is a
+            // distinct member and is never null and never omitted — no modifier
+            // active writes []. The order written is the collection's own, which
+            // §2.3.7 item 7 fixes as the SourceIdentity sort; the mapping neither
+            // re-sorts nor depends on insertion order, so two serializations of the
+            // same state are byte-identical.
+            ATKModifiers = petState.ATKModifiers
+                .Select(ToATKModifierJson)
+                .ToArray(),
+
+            // §2.3.5 item 6 / §2.3.6 item 1 / REDIS_STATE.md §7 item 15: the sibling
+            // collection on the same terms. §2.3.6 item 6 preserves its written order
+            // rather than sorting it — the deliberate contrast with the member above.
+            CardCostModifiers = petState.CardCostModifiers
+                .Select(ToCardCostModifierJson)
+                .ToArray(),
+        };
+
+    /// <summary>
+    /// Projects one ATK modifier (<c>GAME_STATE.md</c> §2.3.7) — a pure field copy of
+    /// both members and nothing else.
+    ///
+    /// <b>No third member is written.</b> §2.3.7 items 4 and 8 fix the element at
+    /// exactly two members, so this projection has nothing to derive, default, or
+    /// synthesize: the identity and the signed percentage are carried verbatim and the
+    /// mapping interprets neither. In particular it does <b>not</b> compute or store an
+    /// effective ATK value — §2.3.7 item 9 and <c>COMBAT_RULES.md</c> §5.6.6 item 8
+    /// leave that derived value to attack resolution and forbid storing it.
+    /// </summary>
+    private static ATKModifierJson ToATKModifierJson(ATKModifier modifier) =>
+        new()
+        {
+            SourceIdentity = modifier.SourceIdentity,
+            ATKModifierPercentage = modifier.ATKModifierPercentage,
+        };
+
+    /// <summary>
+    /// Projects one Card-cost modifier (<c>GAME_STATE.md</c> §2.3.5) — a pure field
+    /// copy of both members and nothing else.
+    ///
+    /// <b>No third member is written.</b> §2.3.5 item 5 fixes the element at exactly
+    /// two members — in particular with no stack count — and item 4 leaves the cost
+    /// arithmetic to <c>CARD_RULES.md</c> §3.6. <c>EffectiveCardCost</c> is therefore
+    /// not computed, stored, or written here.
+    /// </summary>
+    private static CardCostModifierJson ToCardCostModifierJson(CardCostModifier modifier) =>
+        new()
+        {
+            SourceIdentity = modifier.SourceIdentity,
+            CostReductionPercentage = modifier.CostReductionPercentage,
         };
 
     /// <summary>
@@ -477,7 +529,136 @@ public static class BattleStateSerializer
             // rule, so the same always-read mapping. The collection is a distinct
             // member from statusEffects and is never null.
             NextAttackCritModifiers = FromNextAttackCritModifiersJson(dto.NextAttackCritModifiers),
+
+            // §2.3.7 item 6 / §2.3.8 item 1 / REDIS_STATE.md §7 item 16: the ATK
+            // modifier collection is restored from its own always-present member,
+            // element for element and in the stored order — never re-sorted,
+            // collapsed, dropped, or defaulted.
+            ATKModifiers = FromATKModifiersJson(dto.ATKModifiers),
+
+            // §2.3.5 item 6 / §2.3.6 item 1 / REDIS_STATE.md §7 item 15: the
+            // Card-cost collection on the same terms, with its written order
+            // preserved (§2.3.6 item 6).
+            CardCostModifiers = FromCardCostModifiersJson(dto.CardCostModifiers),
         };
+
+    /// <summary>
+    /// Rebuilds an <c>ATKModifiers[]</c> collection (<c>GAME_STATE.md</c> §2.3.7
+    /// item 6, §2.3.8 items 1 and 5).
+    ///
+    /// <b>A <c>null</c> member is rejected as the contract violation it is.</b>
+    /// §2.3.7 item 6 states that the collection is never omitted and never <c>null</c>
+    /// and that "absence of the collection is not a representable state", so a stored
+    /// <c>null</c> is refused here — rather than being read as empty, which would admit
+    /// the spelling the contract rules out — with a message naming the rule, exactly as
+    /// <see cref="FromNextAttackCritModifiersJson"/> does for its sibling.
+    ///
+    /// <b>The stored order is carried across unchanged.</b> §2.3.8 item 5 requires the
+    /// same element order back, and §2.3.7 item 7 makes that order the
+    /// <c>SourceIdentity</c> sort. The order is not re-derived here: re-sorting would
+    /// mask a document that disagrees with the contract, and the writer already emits
+    /// the sorted order, so a faithful record restores faithfully while a defective one
+    /// stays visible.
+    /// </summary>
+    /// <param name="modifiers">The deserialized member, which may be <c>null</c> only
+    /// if the stored document violated the contract.</param>
+    /// <exception cref="JsonException">The member is <c>null</c>.</exception>
+    private static ATKModifier[] FromATKModifiersJson(IReadOnlyList<ATKModifierJson>? modifiers)
+    {
+        if (modifiers is null)
+        {
+            throw new JsonException(
+                "atkModifiers is null; GAME_STATE.md §2.3.7 item 6 requires the collection "
+                + "always to exist — a Pet with no active ATK modifier holds an empty "
+                + "array, and it is never omitted and never null.");
+        }
+
+        return modifiers.Select(FromATKModifierJson).ToArray();
+    }
+
+    /// <summary>
+    /// Rebuilds one ATK modifier (<c>GAME_STATE.md</c> §2.3.7).
+    ///
+    /// <b>It validates rather than trusts.</b> The modifier is rebuilt through the same
+    /// invariant the apply path enforces — a non-blank source identity, which
+    /// §2.3.7 item 3 makes the replace/refresh and removal key — so a stored element
+    /// that could not be refreshed or removed source-specifically is rejected at the
+    /// read rather than admitted into the state. This mirrors
+    /// <see cref="FromNextAttackCritModifierJson"/>'s reconstruction and
+    /// <c>RELIC_RULES.md</c> §8.2 item 5's loud-rejection position for a malformed
+    /// stored effect.
+    /// </summary>
+    /// <exception cref="JsonException">The element carries no usable identity.</exception>
+    private static ATKModifier FromATKModifierJson(ATKModifierJson dto)
+    {
+        var modifier = new ATKModifier(dto.SourceIdentity, dto.ATKModifierPercentage);
+
+        if (!modifier.HasSourceIdentity)
+        {
+            throw new JsonException(
+                "atkModifiers element has a blank sourceIdentity; GAME_STATE.md §2.3.7 "
+                + "item 3 makes it the replace/refresh and removal key that "
+                + "source-specific removal matches on.");
+        }
+
+        return modifier;
+    }
+
+    /// <summary>
+    /// Rebuilds a <c>CardCostModifiers[]</c> collection (<c>GAME_STATE.md</c> §2.3.5
+    /// item 6, §2.3.6 items 1 and 5).
+    ///
+    /// <b>A <c>null</c> member is rejected as the contract violation it is.</b>
+    /// §2.3.5 item 6 states that "Absence of the <i>collection</i> is not a representable
+    /// state" and that there is "no sentinel element, no null, and no omitted member
+    /// standing in for" the empty collection, so a stored <c>null</c> is refused rather
+    /// than read as empty.
+    ///
+    /// <b>The stored order is carried across unchanged.</b> §2.3.6 item 5 requires the
+    /// same element order back and item 6 makes that order preserved rather than
+    /// sorted, so nothing here reorders the elements.
+    /// </summary>
+    /// <param name="modifiers">The deserialized member, which may be <c>null</c> only
+    /// if the stored document violated the contract.</param>
+    /// <exception cref="JsonException">The member is <c>null</c>.</exception>
+    private static CardCostModifier[] FromCardCostModifiersJson(
+        IReadOnlyList<CardCostModifierJson>? modifiers)
+    {
+        if (modifiers is null)
+        {
+            throw new JsonException(
+                "cardCostModifiers is null; GAME_STATE.md §2.3.5 item 6 requires the "
+                + "collection always to exist — a Pet with no active Card-cost modifier "
+                + "holds an empty array, and there is no null spelling for it.");
+        }
+
+        return modifiers.Select(FromCardCostModifierJson).ToArray();
+    }
+
+    /// <summary>
+    /// Rebuilds one Card-cost modifier (<c>GAME_STATE.md</c> §2.3.5).
+    ///
+    /// <b>It validates rather than trusts.</b> §2.3.5 item 7 requires
+    /// <c>SourceIdentity</c> to be a non-empty string and states that "A malformed
+    /// element is not silently repaired, defaulted, or dropped", so an element carrying
+    /// no usable identity is rejected with a message naming the rule rather than
+    /// admitted, repaired, or discarded.
+    /// </summary>
+    /// <exception cref="JsonException">The element carries no usable identity.</exception>
+    private static CardCostModifier FromCardCostModifierJson(CardCostModifierJson dto)
+    {
+        var modifier = new CardCostModifier(dto.SourceIdentity, dto.CostReductionPercentage);
+
+        if (!modifier.HasSourceIdentity)
+        {
+            throw new JsonException(
+                "cardCostModifiers element has a blank sourceIdentity; GAME_STATE.md "
+                + "§2.3.5 items 3 and 7 require a non-empty stable source identity as the "
+                + "replace/refresh and removal key.");
+        }
+
+        return modifier;
+    }
 
     /// <summary>
     /// Rebuilds <c>BossState</c> from its stored values — carried, never

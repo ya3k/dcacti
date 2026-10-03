@@ -41,12 +41,7 @@ Type:              DOCUMENTATION (TASK_TYPES.md §2 — "Change `docs/` content 
                    (`+20%`, `30`, `150`) is authored elsewhere and is carried
                    through unchanged. It records an already-decided rule at its
                    owner.)
-Status:            IN REVIEW (the documentation change is applied and validated;
-                   `quality/review.md` is the remaining gate — see "Completion
-                   Evidence". `TASK_LIFECYCLE.md` §4 keeps the file in
-                   `backlog/` until IN REVIEW → DONE moves it to `completed/`,
-                   and the executing agent does not relocate task files
-                   manually — the TASK-118 / TASK-119 / TASK-127 precedent.
+Status:            DONE
 Risk:              LOW–MEDIUM (TASK_TYPES.md §4 — DOCUMENTATION: "LOW for
                    corrections, MEDIUM if it affects a cross-referenced
                    contract". MEDIUM: §5.5.1 is a cross-referenced contract —

@@ -820,8 +820,8 @@ public class CollectionEndpointTests
             "relic_1",
             "Berserker Core",
             trigger: "OnCombo3Plus",
-            condition: "Combo ≥ 3",
-            effectDefinition: "berserker_effect");
+            condition: TestRelicEffects.Condition,
+            effectDefinition: TestRelicEffects.Effect);
 
         var response = await factory.GetAsync(
             factory.CreateClient(),
@@ -1136,8 +1136,8 @@ public class CollectionEndpointTests
             string relicInstanceId,
             string name,
             string trigger = "OnTurnEnd",
-            string? condition = null,
-            string effectDefinition = "effect")
+            RelicCondition? condition = null,
+            RelicEffectDefinitions? effectDefinition = null)
         {
             var relicDefinitionId = $"relic_def_{name.Replace(' ', '_')}";
 
@@ -1152,7 +1152,7 @@ public class CollectionEndpointTests
                         Name = name,
                         Trigger = trigger,
                         Condition = condition,
-                        EffectDefinition = "increase ATK by 5%",
+                        EffectDefinition = effectDefinition ?? TestRelicEffects.Effect,
                     });
                 }
 

@@ -1,6 +1,83 @@
 # Combat Rules
 
-**Version:** 2.0 (§3.4 gained the **Boss Skill Step-1 composition** and §5.5.2's
+**Version:** 2.4 (§4 item 7, §5.4.5, and §5.5.3 reconciled per TASK-155, applying
+the TASK-154 Product Owner decision (Option B): an applicable Heal modifier may
+be **held on the Boss**, and the Pet-scoped Heal Resolution step is **explicitly
+authorized** to perform a **cross-entity read** of `BossState.StatusEffects[]` at
+its Applicable Heal Modifiers stage, one-directionally and non-mutating, selecting
+the applicable instance by its Status Effect `Id` (its value owned by
+`BOSS_RULES.md` §6.2.2, referenced not restated). §4 item 7's **"Scope — Pet HP
+only" clause is UNCHANGED and is NOT widened** — the authorization is a read, not
+a scope change; a Boss-side HP change still does not route through the step, and
+Option C (a target-aware/target-agnostic Heal Resolution) was not selected.
+§5.4.5 and §5.5.3 each record that Thủy Ma's healing reduction is **not** a
+`TargetStat`-consumed `BuffDebuff` and opens **no** new non-`"ATK"` `TargetStat`
+case; their "any other stat would require its own recorded decision" boundary is
+preserved in meaning and is not exercised. §4 item 7's reading order, §4 item 1's
+clamp position (still last), and the MaxHP/Shield non-effects and
+no-elemental-interaction statements are unchanged. No new `TargetStat` value, no
+Battle Event, SignalR member, `BattleState` member, Redis key, or database column
+is introduced, and no modifier's magnitude, source, duration, or activity window
+is authored here. Decision source: TASK-154; applying task: TASK-155. Prior 2.3: (§5.4.1 / §5.6.5 / §5.6.6 reconciled — the Pet ATK modifier
+composition contract is now unified under §5.6 / §5.6.6 per the TASK-138
+Product-Owner decision set D1–D6. §5.6.6 is the canonical composition model
+for all applicable Pet ATK modifiers, including when only Turn-based `BuffDebuff`
+modifiers are active (D1, D2). §5.4.1's independent absolute-value ATK composition
+formula is superseded/narrowed and no longer defines a separate calculation path (D2, D4);
+§5.4 retains the Turn-based BuffDebuff StatusEffect consumption and lifetime contract (D2).
+A BuffDebuff ATK reduction contributes -|Magnitude| signed percentage points to
+TotalATKModifierPercentage, and an increase contributes +|Magnitude| signed percentage
+points (D3); the stored StatusEffect Magnitude remains unchanged and does not encode sign (D3).
+One unified composition calculation produces EffectivePetATK for all applicable Pet ATK
+modifiers, applying the combined signed percentage to permanent base PetState.ATK and
+truncating toward zero exactly once after the combined calculation, with no intermediate
+per-modifier truncation (D4, D5). PetState.ATK remains permanent/base, never overwritten,
+mutated, restored, or reset; EffectivePetATK remains derived at calculation time and is
+never stored (D6). No new ATK cap is introduced (§5.6.1 item 5, §1.1). Resolves the
+TASK-139 contract application of the TASK-138 decision. Prior 2.2: (§5.6.6 resolved — the interaction between a Relic
+Battle-lifetime ATK modifier and a Turn-based `BuffDebuff` `TargetStat = "ATK"`
+modifier is now authored at its canonical owner per the TASK-137 Product-Owner
+decision set D1–D7. Both modifier classes coexist (D1) and compose
+order-independently as a single signed percentage adjustment against permanent
+Base Pet ATK (D2, D3), truncated toward zero exactly once (D4) to produce
+integer `EffectivePetATK = truncate(PetState.ATK × (100 + TotalATKModifierPercentage) / 100)`,
+where `TotalATKModifierPercentage` is the signed sum of all applicable Pet ATK
+modifiers from `PetState.ATKModifiers[]` and applicable Turn-based `BuffDebuff`
+ATK `StatusEffects[]` (D5). No new ATK cap is introduced (D5). The two modifier
+carriers retain independent ownership and lifecycles (`PetState.ATKModifiers[] ≠ PetState.StatusEffects[]`);
+expiry of one modifier removes only its own entry and does not remove or disturb
+the other (D6). `PetState.ATK` remains the permanent/base ATK and is never mutated
+or reset; `EffectivePetATK` remains derived state (D7). §5.6.6 is no longer
+unresolved; the worked example demonstrates `50 × (100 − 25) / 100 = 37`. §5.4,
+§5.5, §3, §3.1, §3.4, and §1.1 are unchanged. No new Battle Event, Status Effect
+`Type`, `TargetStat` value, `effectType`, `BattleState` member, SignalR member,
+Redis key, or database column is introduced. Resolves the TASK-137 documentation
+application. Prior 2.1: (§5.6 added — the **Effective Pet ATK** composition for an
+applied, Battle-lifetime ATK modifier sourced from a Relic is now authored at
+its canonical owner, per the TASK-136 Product-Owner decision set D1–D12:
+`EffectivePetATK = truncate(PetState.ATK × (100 + TotalATKModifierPercentage) /
+100)`, where the modifiers are **signed percentage-point contributions** and
+`TotalATKModifierPercentage` is their **sum** (D5/D6); the value is consumed at
+the Player → Boss Damage Pipeline Step 1 `Attack` input, applies to
+`PetState.ATK` **alone**, is truncated toward zero, and **no ATK cap is
+authored** because `ATK` has no documented valid range in §1.1 and D5 forbids
+inventing one; the base stat is **never overwritten** and has no restore step
+(D5/D8). §5.6 is a **separate rule**, not an extension of §5.4: §5.4 remains
+scoped by §5.4.5 to a Turn-based `BuffDebuff` instance and is **not** silently
+reused for a Relic Battle-lifetime modifier (D11). §5.6.6 records an
+**UNRESOLVED** open item: no authoritative document determines whether, or how,
+a §5.4 `BuffDebuff` ATK modifier and a §5.6 Relic ATK modifier interact when
+both are live on the same Pet attack — they are two rules producing the same
+Step-1 input — so an implementation that would need to apply both must STOP per
+`AGENTS.md` §7. **§5.4, §5.4.1–§5.4.5, §5.5, §5.5.1–§5.5.5, §3, §3.1, §3.4,
+and §1.1 are unchanged**, including §5.4.5's `BuffDebuff`-only scope statement
+and §3.4's Boss-side `Step 4 = 1.0`. No new Battle Event, Status Effect `Type`,
+`TargetStat` value, `effectType`, `BattleState` member, SignalR member, Redis
+key, database column, or RNG stream is introduced, and no authored balance value
+changes. The state representation is `GAME_STATE.md` §2.3.7 and its lifecycle is
+`GAME_STATE.md` §5.1.4; this document owns the composition only. Resolves the
+TASK-136 documentation application; the decision input is TASK-136, not this
+document. Prior 2.0: (§3.4 gained the **Boss Skill Step-1 composition** and §5.5.2's
 composition note was resolved — the TASK-125 Product-Owner decision (Option B) is
 now authored at its canonical owner. §3.4's Boss Skill clause now states the
 composition: a Boss Skill's Step 1 Base Damage is the sum of its applicable
@@ -633,10 +710,28 @@ Turn countdown (§5.3.2).
      applicable Heal modifier is **not** a special-cased site: any rule that
      reduces or increases healing received is one applicable Heal modifier
      here.
-     - **Thủy Ma's −50% healing reduction (`BOSS_RULES.md` §6.2) is one
+     - **Thủy Ma's −50% healing reduction (`BOSS_RULES.md` §6.2.2) is one
        applicable Heal modifier.** It is not a second mechanism and has no
        site of its own: it participates in this step exactly as any other
        applicable Heal modifier does.
+     - **An applicable Heal modifier may be held on the Boss.** This Pet-scoped
+       step is **explicitly authorized** to perform a **cross-entity read** of
+       `BossState.StatusEffects[]` at this stage, for the instance applicable to
+       Pet healing. The read is **one-directional** (Pet-side step →
+       Boss-owned instance) and **non-mutating**: it does not write
+       `BossState`, and it does not consume, decrement, or remove the instance.
+       Which instance is applicable is determined by the Status Effect identity
+       `Id` the effect's own rule authors, under `GAME_STATE.md` §2.3.1 item 1
+       and item 6; the value is owned by the modifier's rule
+       (`BOSS_RULES.md` §6.2.2) and is referenced, not restated, here. Thủy Ma's
+       healing reduction is the MVP instance of this authorized read, and it is
+       **not** a `TargetStat`-consumed `BuffDebuff` (§5.4.5 / §5.5.3).
+     - **This authorization is a read, not a scope change.** It does not widen
+       the "Scope — Pet HP only" clause below: this step still governs only
+       healing that restores Pet HP, and a Boss-side HP change still does not
+       route through this step. The effect's owner is the Boss; the resolution
+       site is this Pet-scoped step; the authorized read is the bridge between
+       them.
      - This item **authors the mechanism only**. It defines no modifier's
        magnitude, source, duration, or activity window; those belong to the
        rule that creates the modifier, and are referenced, not restated here.
@@ -649,7 +744,10 @@ Turn countdown (§5.3.2).
    - **Scope — Pet HP only.** This step covers healing that restores **Pet
      HP**. It does **not** govern a Boss-side HP change: a Boss's own HP
      restoration is that effect's own rule and does not route through this
-     step. Widening this step to another target would require its own recorded
+     step. The cross-entity read authorized above consults a Boss-**owned**
+     modifier while resolving **Pet** healing; it does not add a second heal
+     target and does not bring a Boss-side HP change into this step. Widening
+     this step to another target would require its own recorded
      decision; this item does not do so
      (`BOSS_RULES.md` §6.2's Mộc Yêu regeneration).
    - **It does not modify MaxHP, and it does not affect Shield.** A Heal
@@ -837,37 +935,51 @@ off.
 A Turn-based `BuffDebuff` Status Effect instance whose `TargetStat` is `"ATK"`
 modifies the **active Pet's ATK used by that Pet's own attack** — the Pet's
 Player → Boss damage. The modifier is consumed when the Damage Pipeline call
-for that attack is constructed, by changing the **Step 1 `Attack` input** it
-receives.
+for that attack is constructed, by participating in the **Step 1 `Attack` input**
+it receives (`EffectivePetATK`).
+
+**Canonical composition owner (TASK-138 D1, D2, D4):**
+The arithmetic composition of Pet ATK modifiers is canonically owned by
+**§5.6 / §5.6.6**. §5.4.1's historical absolute-value calculation path
+(`truncate(ATK × (100 − |Magnitude|) / 100)`) is **superseded/narrowed** for ATK
+composition and no longer defines a separate calculation path (D2, D4).
+This section (§5.4) retains the Turn-based BuffDebuff StatusEffect consumption
+and lifetime contract (activity, duration countdown per §5.3, non-retroactivity,
+and base-stat independence); only its arithmetic contribution to `EffectivePetATK`
+is governed by the unified composition model in §5.6.6 (D2).
 
 ```text
 1. Consumption point
    Player → Boss Damage Pipeline Step 1 — the `Attack` argument the call
-   receives is the effective ATK this rule produces.
+   receives is `EffectivePetATK`, produced by the canonical composition model
+   in §5.6 / §5.6.6 (TASK-138 D4).
 
 2. What the percentage applies to — PetState.ATK ALONE
-
-   EffectiveATK = the reduced PetState.ATK
-
-   Step 1 = EffectiveATK
+   The percentage adjustment applies to permanent base PetState.ATK alone (§5.6.1, §5.6.6).
+   Step 1 = EffectivePetATK
           + Skill/Card base value
           + ATK-Gem-generated damage pool
 
-3. Percentage application and rounding
+3. Percentage contribution and sign (TASK-138 D3)
+   An active Turn-based BuffDebuff ATK instance contributes to TotalATKModifierPercentage
+   in §5.6.6 with its documented sign:
+   - ATK reduction (e.g. Root -30%): contributes -|Magnitude| signed percentage points (-30).
+   - ATK increase (if authored): contributes +|Magnitude| signed percentage points.
+   The stored StatusEffect.Magnitude remains the existing applied magnitude (30) and
+   does not itself encode the sign (GAME_STATE.md §2.3.1 item 2).
 
-   EffectiveATK = truncate( ATK × (100 − |Magnitude|) / 100 )
-
-   (truncate toward zero, to an integer)
-
-4. Activity
-   the committed state of the instance at attack resolution, per §5.3
+4. Activity and evaluation timing
+   The modifier participates if active according to the committed state of the
+   instance at attack resolution, per §5.3 and §5.4.3.
 ```
 
 **Worked example** (`PetState.ATK = 100`, ATK-Gem-generated pool `= 40`,
-`Magnitude = 30`):
+Root `Magnitude = 30`, no Relic equipped):
 
+Under the canonical composition rule in §5.6.6:
 ```text
-EffectiveATK = truncate(100 × 70 / 100) = 70
+TotalATKModifierPercentage = -30
+EffectivePetATK = truncate(100 × (100 + (-30)) / 100) = truncate(100 × 70 / 100) = 70
 
 Step 1 Base Damage = 70 + 40 = 110
 ```
@@ -878,23 +990,29 @@ ATK-Gem-generated damage pool are separate Step-1 contributions
 Step 4, and it does not touch Step 6's Final Damage beyond the Step-1 input it
 changed.
 
-### 5.4.2 Rounding
+### 5.4.2 Rounding and Truncation
 
-The reduction is applied to the ATK stat **before** the pipeline runs, and the
-result is an **integer**, truncated **toward zero** — the same integer
-convention §3 step 6 already uses for Final Damage:
+Rounding for Pet ATK modifier composition is canonically governed by **§5.6.1 item 4
+and §5.6.6 item 4 (TASK-138 D5)**:
+- The combined signed percentage (`TotalATKModifierPercentage`) is applied to `PetState.ATK`
+  and truncated toward zero **exactly once** to produce integer `EffectivePetATK`.
+- **No intermediate per-modifier truncation occurs.** When multiple modifiers are active,
+  sequential per-instance truncation is prohibited.
+
+For a single active BuffDebuff modifier (such as Root -30% with no Relic equipped),
+the single combined truncation yields:
 
 ```text
-ATK 50  → 35
-ATK 51  → 35
-ATK 99  → 69
-ATK 100 → 70
-ATK 101 → 70
+ATK 50  → 35  (truncate(50 × 70 / 100) = 35)
+ATK 51  → 35  (truncate(51 × 70 / 100) = 35.7 → 35)
+ATK 99  → 69  (truncate(99 × 70 / 100) = 69.3 → 69)
+ATK 100 → 70  (truncate(100 × 70 / 100) = 70)
+ATK 101 → 70  (truncate(101 × 70 / 100) = 70.7 → 70)
 ```
 
 The calculation must not depend on floating-point representation: the same
-input ATK and magnitude yield the same `EffectiveATK` integer on every
-platform and in every evaluation order. **§3 step 6's Final Damage rounding is
+input ATK and active modifiers yield the same integer on every platform and in
+every evaluation order (`TDD.md` §6). **§3 step 6's Final Damage rounding is
 unchanged** — this rule rounds a Step-1 input, and adds, removes, or changes
 no rounding anywhere else in the pipeline.
 
@@ -928,14 +1046,14 @@ state), so the following Turn's attack uses the unreduced ATK.
 
 The modifier is **non-destructive**, following the temporary-modifier
 precedent `ADR-017` and `GAME_STATE.md` §2.3.4 record for the temporary Crit
-modifier:
+modifier, and confirmed for Pet ATK composition by TASK-138 **D6**:
 
 ```text
-PetState.ATK
+PetState.ATK (permanent base stat)
       ↓
-temporary modifier (the active instance's Magnitude)
+active modifiers (StatusEffects[], ATKModifiers[])
       ↓
-EffectiveATK        derived at attack resolution — NOT stored
+EffectivePetATK        derived at attack resolution per §5.6.6 — NOT stored
       ↓
 Damage Pipeline Step 1
 ```
@@ -947,8 +1065,9 @@ Damage Pipeline Step 1
 - The configured default is an **initialization value only** and is **never**
   an expiry or reset mechanism: `PetState.ATK = DefaultATK` is forbidden for
   the same source-blind reason §3.3 item 10 forbids `DefaultCrit`
-  (`GAME_STATE.md` §2.3.4 item 10).
-- `EffectiveATK` is a value used within **one** pipeline execution. It is
+  (`GAME_STATE.md` §2.3.4 item 10). No `DefaultATK`-style runtime reset
+  mechanism exists (TASK-138 D6).
+- `EffectivePetATK` is a value derived within **one** pipeline execution. It is
   **not** persisted, not stored in `BattleState`, and not a second
   representation of the ATK stat (`GAME_STATE.md` §0 item 5). Because the
   modifier lives in the existing `StatusEffects[]` instance
@@ -961,9 +1080,13 @@ Damage Pipeline Step 1
 
 ```text
 Applies to      a Turn-based BuffDebuff instance with TargetStat = "ATK"
-                consumed by the owning Pet's own attack (Player → Boss)
+                consumed by the owning Pet's own attack (Player → Boss);
+                its consumption and duration lifecycle are governed here,
+                while its arithmetic contribution to EffectivePetATK is
+                governed by the unified model in §5.6 / §5.6.6 (TASK-138 D2)
 Does NOT apply  to the Boss's damage — §3.4 pins the Boss side's Step 4
-                to 1.0, and this rule authors no Boss-side factor
+                to 1.0, and this rule authors no Boss-side factor (§5.5
+                governs the Boss side)
 Does NOT apply  to a BuffDebuff naming any stat other than "ATK"; the
                 consumer reads TargetStat explicitly and a non-"ATK" value
                 modifies no ATK
@@ -977,6 +1100,15 @@ A `BuffDebuff` whose `TargetStat` names a stat for which this document defines
 no consumption rule is **not** silently treated as an ATK modifier: this
 section defines the `"ATK"` case only, and any other stat would require its own
 recorded decision before it could be implemented.
+
+This section defines the `"ATK"` case only because that is the only
+`TargetStat`-consumed case in MVP content. Thủy Ma's healing reduction
+(`BOSS_RULES.md` §6.2.2) is held in the Boss's `StatusEffects[]` and read by
+the Pet-side Heal Resolution step's authorized cross-entity read (§4 item 7),
+which selects the instance by its Status Effect `Id`, not by `TargetStat`. It
+is therefore **not** a `TargetStat`-consumed `BuffDebuff` and opens **no** new
+non-`"ATK"` `TargetStat` case; no `TargetStat` value is added for it, and the
+boundary above is neither weakened nor exercised.
 
 This section adds no Battle Event (`GAME_RULES.md` §16), no Status Effect
 `Type`, no `TargetStat` value, no SignalR member, no Redis key, and no
@@ -1064,15 +1196,15 @@ Pipeline call for that attack is constructed, by changing the **Step 1
   owns the Bosses' authored Skill Base Damages.
 
 - **This is NOT the Pet-side rule — the two conventions are deliberately
-  different.** `§5.4.1` governs the **Pet's** ATK and uses the ABSOLUTE value,
-  `truncate( ATK × (100 − |Magnitude|) / 100 )`, which only ever reduces; its
-  scope statement `§5.4.5` records that it "Does NOT apply to the **Boss's**
-  damage". This rule is the Boss-side counterpart and uses the **signed**
-  `Magnitude`. The two must **not** be collapsed into one shared formula: the
-  Pet-side rule cannot express this rule's increase, and applying this rule's
-  signed reading to the Pet would invert a Pet-side debuff such as Root
-  (`BOSS_RULES.md` §6.3.1 item 3, applied to the active Pet and consumed by
-  `§5.4.1`). Each rule is referenced, not restated, by the other.
+  different.** The Pet-side ATK composition is canonically governed by **§5.6 / §5.6.6**
+  (where an active BuffDebuff reduction contributes ` -|Magnitude| ` signed percentage points
+  per TASK-138 D3, and §5.4 governs consumption/lifetime); its scope statement records that
+  it does not apply to the Boss's damage. This rule is the Boss-side counterpart and uses the
+  **signed** `Magnitude` directly. The two must **not** be collapsed into one shared formula:
+  the Pet-side composition uses a signed sum with negative contributions for debuffs against
+  permanent base Pet ATK, while the Boss-side rule uses the signed `Magnitude` of an active
+  `StatusEffects[]` entry against `BossState.ATK`. Each rule is referenced, not restated, by the
+  other.
 
 - **No new state, type, or protocol member.** The direction signal is the sign
   of the **existing** `Magnitude` field (`GAME_STATE.md` §2.3.1). This rule
@@ -1149,6 +1281,14 @@ section defines the `"ATK"` case only, and any other stat would require its own
 recorded decision before it could be implemented — the same position §5.4.5
 takes for the Pet side.
 
+Thủy Ma's healing reduction (`BOSS_RULES.md` §6.2.2) is likewise **not** a
+`TargetStat`-consumed `BuffDebuff` and opens **no** new non-`"ATK"` `TargetStat`
+case. It is held in `BossState.StatusEffects[]` but is consumed by §4 item 7's
+Pet-side Heal Resolution step through the authorized cross-entity read, which
+selects the instance by its Status Effect `Id`; it is not consumed by a Boss
+attack through a stat this section names, and no `TargetStat` value is added for
+it. The boundary above is neither weakened nor exercised.
+
 ### 5.5.4 The Boss Base Stat Is Never Overwritten
 
 The modifier is **non-destructive**, exactly as §5.4.4 is for the Pet:
@@ -1190,6 +1330,391 @@ a member-set change, exactly as §5.4's closing paragraph states for the Pet
 side.
 
 ---
+
+
+## 5.6 Effective Pet ATK — Unified Pet ATK Modifier Composition
+
+This section is the **canonical owner** of how all applicable Pet ATK modifiers —
+both applied, Battle-lifetime ATK modifiers sourced from a **Relic** and active,
+Turn-based **BuffDebuff** `TargetStat = "ATK"` modifiers — compose to modify the
+active Pet's ATK. It is authored by the TASK-136 Product-Owner decision set
+(D1–D12), the TASK-137 Product-Owner decision set (D1–D7), and the TASK-138
+Product-Owner decision set (D1–D6).
+
+This section is the **canonical composition model for all applicable Pet ATK
+modifiers** (TASK-138 D2), including the BuffDebuff-only case (TASK-138 D1),
+the Relic-only case, and the Relic + BuffDebuff coexistence case (§5.6.6).
+§5.4 retains the Turn-based BuffDebuff StatusEffect consumption and lifetime
+contract; this section owns the arithmetic composition of all active Pet ATK
+modifiers into `EffectivePetATK`.
+The state representation for Relic modifiers is `GAME_STATE.md` §2.3.7 and its
+mutation lifecycle is `GAME_STATE.md` §5.1.4; Status Effect state representation is
+`GAME_STATE.md` §2.3.1 and its lifecycle is `GAME_STATE.md` §5.1.1. This section
+authors the gameplay composition rule and does not describe storage.
+
+### 5.6.1 The Effective Pet ATK Composition
+
+```text
+1. Consumption point
+   Player → Boss Damage Pipeline Step 1 — the `Attack` argument the call
+   receives is `EffectivePetATK`, produced by this rule. Exactly ONE
+   composition calculation produces EffectivePetATK for all applicable Pet ATK
+   modifiers (TASK-138 D4). This rule governs even when no Relic ATK modifier is
+   present (BuffDebuff-only case, TASK-138 D1).
+
+2. The composition — signed, additive percentage points (TASK-138 D1–D4)
+
+   TotalATKModifierPercentage =
+       the signed sum of every applicable Pet ATK modifier:
+       - applicable Battle-lifetime entries in PetState.ATKModifiers[]
+       - applicable signed Turn-based BuffDebuff ATK entries in PetState.StatusEffects[]
+
+   EffectivePetATK =
+       truncate( PetState.ATK × (100 + TotalATKModifierPercentage) / 100 )
+
+3. What the percentage applies to — PetState.ATK ALONE
+
+   Step 1 = EffectivePetATK
+          + Skill/Card base value
+          + ATK-Gem-generated damage pool
+
+   The Skill/Card base value and the ATK-Gem-generated damage pool are separate
+   Step-1 contributions (§3 step 1) and are **not** modified by this rule.
+
+4. Percentage application, direction, and rounding (TASK-138 D3, D5)
+
+   Each modifier value is a **signed percentage-point contribution**:
+   it is used WITH ITS OWN SIGN, so it supports both an increase and a decrease.
+   - Relic ATK percentage: used with its authored sign (e.g. +5% contributes +5).
+   - BuffDebuff ATK reduction: contributes -|Magnitude| signed percentage points (e.g. Root -30% contributes -30).
+   - BuffDebuff ATK increase (if authored): contributes +|Magnitude| signed percentage points.
+   The stored StatusEffect.Magnitude remains the existing applied magnitude and does not encode the sign.
+
+   TotalATKModifierPercentage > 0  →  increase   EffectivePetATK > PetState.ATK
+   TotalATKModifierPercentage < 0  →  decrease   EffectivePetATK < PetState.ATK
+   TotalATKModifierPercentage = 0  →  unchanged  EffectivePetATK = PetState.ATK
+
+   The formula's result is an integer, **truncated toward zero exactly once**
+   after the combined calculation (TASK-138 D5) — the same integer convention
+   §3 step 6 already uses. No intermediate per-modifier truncation occurs.
+
+5. Cap — none is authored
+   No ATK cap is defined by this rule. `ATK` has no documented valid range in
+   §1.1 (unlike `Power`'s 0–100 and `Crit`'s 0–100 percentage points), and
+   TASK-136 D5 / TASK-138 require clamping only to a **documented** valid ATK
+   range and forbid inventing a new stat cap. Because no such range exists, this
+   rule authors no clamp and the composed value is unbounded below by 0 and above
+   by any ceiling. Authoring an ATK range is a separate balance decision
+   (`GAME_RULES.md` §20) and is not made here.
+
+6. Evaluation timing
+   The composition is performed from the permanent base `PetState.ATK` plus all
+   active modifiers at the moment ATK is required — i.e. when the Damage
+   Pipeline call for that attack is constructed (TASK-136 D5, TASK-138 D4). It is
+   not evaluated eagerly, not cached across resolutions, and not stored.
+```
+
+**Worked example** (`PetState.ATK = 50`, §1.1's MVP default; Berserker Core
+`+5%`):
+
+```text
+TotalATKModifierPercentage = +5
+EffectivePetATK = truncate(50 × (100 + 5) / 100) = truncate(52.5) = 52
+```
+
+With a second, simultaneous Battle-lifetime modifier of `-10`:
+
+```text
+TotalATKModifierPercentage = +5 + (-10) = -5
+EffectivePetATK = truncate(50 × (100 − 5) / 100) = truncate(47.5) = 47
+```
+
+The example's magnitudes are illustrative arithmetic only; the provisioned
+Relic magnitude is `RELIC_RULES.md` §8.5's and is not restated here.
+
+### 5.6.2 Multiple Sources Compose Additively
+
+Multiple simultaneously-active Battle-lifetime ATK modifiers are **summed**
+(TASK-136 **D6**). The sum is taken over their `ATKModifierPercentage` values
+with their signs, and the single `TotalATKModifierPercentage` is then applied
+once through §5.6.1 item 2's formula.
+
+```text
+Correct     TotalATKModifierPercentage = Σ ATKModifierPercentage
+            EffectivePetATK = truncate( ATK × (100 + Total) / 100 )
+
+Incorrect   applying each modifier to the running result in sequence
+            (that is a composition order this rule does not define, and it
+            does not generally produce the same integer)
+```
+
+Each source contributes independently, so removing one source does not disturb
+the base stat or any other source's contribution — the same independence §3.3
+item 7 states for Effective Crit. There is no cap on the sum (§5.6.1 item 5).
+
+### 5.6.3 Lifetime, Refresh, and Removal
+
+The lifetime, refresh, and removal **mechanics** are owned by `GAME_STATE.md`
+§5.1.4 and are not restated here. The gameplay statements are:
+
+```text
+Lifetime     Battle — a standing modification for the remainder of the battle
+             (RELIC_RULES.md §8.3 item 4). Not Turn-based: no Turn countdown,
+             no step 19a participation, and no expiry on Turn, Swap, or a
+             non-damaging action (TASK-136 D4).
+Refresh      the same source replaces/refreshes its existing modifier with the
+             newly applied value; it does not create a duplicate and does not
+             accumulate (TASK-136 D7, GAME_STATE.md §5.1.4 items 1–2).
+Removal      when the source is removed or when the battle ends (TASK-136 D8).
+Result       removing a modifier changes only the composed value; it never
+             restores, rewrites, or recalculates a stored stat, because
+             `PetState.ATK` was never modified (§5.6.4).
+```
+
+### 5.6.4 The Base Stat Is Never Overwritten
+
+The modifier is **non-destructive**, following the same precedent §5.4.4 and
+§5.5.4 record, and adopted here by TASK-136 **D5/D8** as an explicit decision
+rather than inherited:
+
+```text
+PetState.ATK
+      ↓
+ATKModifiers[] entries (the active sources' signed percentages)
+      ↓
+EffectivePetATK        derived at attack resolution — NOT stored
+      ↓
+Damage Pipeline Step 1
+```
+
+- `PetState.ATK` **is never overwritten** by the modifier, and there is no
+  "restore" step: the stored stat is unchanged throughout. An implementation
+  that writes `PetState.ATK = PetState.ATK × 1.05` and later restores it is
+  **not** this rule.
+- The configured default is an **initialization value only** and is **never** an
+  expiry or reset mechanism (`§5.4.4`, `§3.3` item 10).
+- `EffectivePetATK` is a value used within **one** pipeline execution. It is
+  **not** persisted, not stored in `BattleState`, and not a second
+  representation of the ATK stat (`GAME_STATE.md` §0 item 5). It is not the
+  `ATKModifiers[]` collection, and the collection is not a second `ATK` member.
+- `PetState.ATK` remains the **permanent/base** stat (`TASK-136` D8).
+
+### 5.6.5 Scope and Boundaries
+
+```text
+Applies to      all applicable Pet ATK modifiers — including applied, Battle-lifetime
+                ATK modifiers in PetState.ATKModifiers[] and active Turn-based
+                BuffDebuff ATK modifiers in PetState.StatusEffects[] — consumed by the
+                owning Pet's own attack (Player → Boss) through that attack's
+                Step-1 `Attack` input (EffectivePetATK)
+Does NOT apply  to the Boss's damage — §3.4 pins the Boss side's Step 4 to
+                1.0, and §5.5 is the Boss-side counterpart of §5.4, not of
+                this rule
+Does NOT apply  to Step 4 — this rule changes the Step-1 input only and
+                authors no Step-4 factor
+Does NOT apply  to a Skill/Card base value or the ATK-Gem-generated damage
+                pool: those are separate Step-1 contributions (§3 step 1) and
+                are not modified (§5.6.1 item 3)
+Does NOT apply  to a DoT tick or a Shield: those have their own rules (§5.2
+                item 3, §4) and are not ATK modifiers
+Does NOT        change §3.1's six-step order, §3.4's Boss-side value, or
+                §5.3's duration consumption. §5.6 does not replace §5.4's
+                BuffDebuff lifecycle/consumption semantics; §5.6 owns the
+                arithmetic composition of an active BuffDebuff ATK contribution
+                (TASK-138 D2)
+```
+
+This section adds no Battle Event (`GAME_RULES.md` §16), no Status Effect
+`Type`, no `TargetStat` value, no SignalR member, no Redis key, and no database
+column. The Step-1 value it produces already reaches the client as
+`DamageCalculated.base` (`SIGNALR_PROTOCOL.md` §3.2.13) — a value change, not a
+member-set change, exactly as §5.4's closing paragraph states for that rule.
+
+It introduces no new gameplay mechanic beyond the composition TASK-136 decided:
+no new `effectType`, no new Trigger or Condition, no new Relic, and no new
+magnitude. The provisioned magnitude and lifetime are `RELIC_RULES.md` §8.5's.
+
+### 5.6.6 Unified Pet ATK Composition Contract — Canonical Composition Model (TASK-137 / TASK-138)
+
+This section is the **canonical owner** of how all applicable Pet ATK modifiers
+compose to produce the active Pet's `EffectivePetATK` used as the Player → Boss
+Damage Pipeline Step 1 `Attack` input. It is authored by the **TASK-137
+Product-Owner decision set (D1–D7)** and the **TASK-138 Product-Owner decision
+set (D1–D6)**.
+
+§5.6.6 is the **canonical composition model for all applicable Pet ATK modifiers**
+(TASK-138 D2). It governs:
+1. When Relic ATK modifiers and Turn-based `BuffDebuff` ATK modifiers coexist on the same attack.
+2. When only Turn-based `BuffDebuff` ATK modifiers are active (no Relic equipped, TASK-138 D1).
+3. When only Relic ATK modifiers are active.
+
+Historical §5.4.1 absolute-value composition is superseded/narrowed and no longer
+defines a separate calculation path (TASK-138 D2). §5.4 retains the Turn-based
+BuffDebuff StatusEffect consumption and lifetime contract; only its contribution
+to `EffectivePetATK` is governed by this unified composition model (TASK-138 D2).
+
+Under this unified contract:
+
+#### 1. Unified Model and Coexistence (TASK-137 D1, TASK-138 D1, D2)
+
+- §5.6.6 governs all Pet ATK composition cases, including when no Relic ATK modifier is active (D1).
+- When both a Relic Battle-lifetime ATK modifier and a Turn-based `BuffDebuff` ATK modifier are present, they **coexist** and both affect `EffectivePetATK`. Neither modifier suppresses, preempts, or invalidates the other.
+
+#### 2. Composition Operator and Sign Semantics (TASK-137 D2, TASK-138 D3)
+
+The modifiers are composed as a **single signed percentage adjustment** against
+the permanent base `PetState.ATK`.
+
+All applicable Pet ATK modifiers are summed with their documented signs:
+
+```text
+TotalATKModifierPercentage =
+    Σ (applicable Relic ATKModifierPercentage entries in PetState.ATKModifiers[])
+  + Σ (applicable signed Turn-based BuffDebuff ATK entries in PetState.StatusEffects[])
+```
+
+- **Positive ATK modifier = increase** (e.g. Berserker Core `+5%` contributes `+5`).
+- **Negative ATK modifier = decrease** (e.g. Mộc Yêu Root `-30%` Pet ATK debuff contributes `-30`).
+- **BuffDebuff sign mapping (TASK-138 D3):**
+  - A `BuffDebuff` ATK reduction contributes ` -|Magnitude| ` signed percentage points to `TotalATKModifierPercentage`.
+  - A `BuffDebuff` ATK increase, if introduced by an authoritative gameplay rule, contributes ` +|Magnitude| ` signed percentage points.
+  - The stored `StatusEffect.Magnitude` remains the existing applied magnitude (e.g. `30` for Root) and does not itself encode the sign (`GAME_STATE.md` §2.3.1 item 2).
+- The historical absolute value convention (`|Magnitude|`) from §5.4.1 is **not** used as a separate reduction-only calculation path.
+- **No new ATK cap is introduced:** consistent with §5.6.1 item 5 and §1.1, neither the composed percentage nor the resulting ATK is clamped to an invented range.
+
+#### 3. Order Independence (TASK-137 D3)
+
+Composition is **order-independent**. All applicable modifier sources are combined
+into `TotalATKModifierPercentage` before applying to Base Pet ATK. Modifiers must
+**not** be applied sequentially in an order-dependent pipeline
+(e.g. applying Relic percentage first then `BuffDebuff` percentage to an intermediate
+value, or vice versa, is forbidden).
+
+#### 4. Single Truncation Point (TASK-137 D4, TASK-138 D5)
+
+Apply the combined signed percentage to Base Pet ATK and **truncate toward zero exactly
+once** when producing integer `EffectivePetATK`.
+**No intermediate per-modifier truncation occurs** (TASK-138 D5). Applying modifiers
+sequentially with intermediate truncation is prohibited.
+
+#### 5. EffectivePetATK Formula (TASK-137 D5, TASK-138 D4)
+
+Use **one unified composition calculation** to produce `EffectivePetATK` for all
+applicable Pet ATK modifiers (TASK-138 D4). No second stored or derived ATK representation
+(`EffectiveBuffDebuffATK`, `EffectiveRelicATK`, etc.) is introduced.
+
+```text
+EffectivePetATK =
+    truncate(
+        PetState.ATK
+        × (100 + TotalATKModifierPercentage)
+        / 100
+    )
+```
+
+The resulting integer `EffectivePetATK` is passed directly as the Step 1 `Attack`
+argument to the Player → Boss Damage Pipeline (§3 step 1).
+
+#### 6. Numerical Contract / Worked Examples
+
+##### Example 1: Relic + BuffDebuff Coexistence
+Provisioned MVP battle against Mộc Yêu (`BOSS_RULES.md` §6.3.1 item 3) with
+Berserker Core equipped (`RELIC_RULES.md` §8.5):
+
+```text
+Base Pet ATK (PetState.ATK) = 50   (COMBAT_RULES.md §1.1 MVP default)
+Berserker Core modifier      = +5%  (PetState.ATKModifiers[])
+Mộc Yêu Root modifier        = -30% (PetState.StatusEffects[], BuffDebuff TargetStat = "ATK")
+
+TotalATKModifierPercentage = (+5) + (-30) = -25
+
+EffectivePetATK = truncate( 50 × (100 + (-25)) / 100 )
+                = truncate( 50 × 75 / 100 )
+                = truncate( 37.5 )
+                = 37
+```
+**The resolved integer result is exactly 37.**
+The divergence between sequential application models (which yielded 36) and combined
+percentage (which yields 37) is authoritatively resolved: sequential application is
+prohibited (D3), and single truncation of the combined percentage (D4/D5) produces **37**.
+
+##### Example 2: BuffDebuff-Only (TASK-138 D1)
+Mộc Yêu Root active with no Relic equipped:
+
+```text
+Base Pet ATK (PetState.ATK) = 50
+Mộc Yêu Root modifier        = -30% (contributes -|30| = -30)
+
+TotalATKModifierPercentage = -30
+
+EffectivePetATK = truncate( 50 × (100 + (-30)) / 100 )
+                = truncate( 50 × 70 / 100 )
+                = truncate( 35.0 )
+                = 35
+```
+**The resolved integer result is exactly 35.**
+
+##### Example 3: Relic-Only
+Berserker Core active with no debuff:
+
+```text
+Base Pet ATK (PetState.ATK) = 50
+Berserker Core modifier      = +5%
+
+TotalATKModifierPercentage = +5
+
+EffectivePetATK = truncate( 50 × (100 + 5) / 100 )
+                = truncate( 50 × 105 / 100 )
+                = truncate( 52.5 )
+                = 52
+```
+**The resolved integer result is exactly 52.**
+
+##### Example 4: Multi-Modifier Divergence Illustration
+Two simultaneous BuffDebuff instances (`-30%` and `-10%`), `PetState.ATK = 50`:
+
+```text
+Unified Combined Calculation (Authoritative):
+TotalATKModifierPercentage = (-30) + (-10) = -40
+EffectivePetATK = truncate( 50 × (100 + (-40)) / 100 )
+                = truncate( 50 × 60 / 100 )
+                = truncate( 30.0 )
+                = 30
+
+Sequential Intermediate Truncation (Prohibited):
+truncate(50 × 70 / 100) = 35
+truncate(35 × 90 / 100) = truncate(31.5) = 31  (diverges: 31 ≠ 30)
+```
+Single truncation of the combined signed percentage produces **30**.
+
+#### 7. Independent Carrier Ownership and Lifetime (TASK-137 D6)
+
+The two modifier carriers retain **independent ownership and lifetime**:
+
+```text
+PetState.ATKModifiers[]   ≠   PetState.StatusEffects[]
+(Relic Battle lifetime)       (Turn-based BuffDebuff lifetime)
+```
+
+- When Mộc Yêu Root expires (at `GAME_RULES.md` §17 step 19a via §5.3 DR1–DR6),
+  **only its `StatusEffects[]` entry is removed**.
+- The Berserker Core `ATKModifiers[]` entry remains active for the rest of the
+  Battle (removed only at battle end or source removal per `GAME_STATE.md` §5.1.4 item 4).
+- A modifier is **never** removed merely because another modifier expires.
+- Expiry of one carrier does not disturb, refresh, or mutate the other carrier.
+- Upon expiry of one source, subsequent attacks derive `EffectivePetATK` from the
+  remaining active modifiers without any history or reset mechanism.
+
+#### 8. Base PetState.ATK Independence (TASK-137 D7, TASK-138 D6)
+
+`PetState.ATK` remains the permanent/base Pet ATK value:
+
+- Neither Relic ATK modifiers nor `BuffDebuff` ATK modifiers may overwrite,
+  mutate, restore, or reset `PetState.ATK` (§5.4.4, §5.6.4, TASK-138 D6).
+- No `DefaultATK`-style runtime reset mechanism exists or is introduced.
+- `EffectivePetATK` remains **derived state** computed at calculation time;
+  it is never persisted, never stored in `PetState` or `BattleState`, and does
+  not create a second stored ATK representation (`GAME_STATE.md` §0 item 5).
 
 # 6. Power
 

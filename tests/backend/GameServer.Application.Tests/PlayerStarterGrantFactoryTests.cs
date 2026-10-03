@@ -436,8 +436,8 @@ public class PlayerStarterGrantFactoryTests
                 RelicDefinitionId = id,
                 Name = name,
                 Trigger = "OnMatchCount",
-                Condition = null,
-                EffectDefinition = "+5% ATK",
+                Condition = TestRelicEffects.Condition,
+                EffectDefinition = TestRelicEffects.Effect,
             };
 
         public void RemovePet(string id) => Pets.Remove(id);

@@ -1,6 +1,30 @@
 # Database
 
-**Version:** 1.26 (§1 item 3's `threshold` note, the §3 provisioning row-content
+**Version:** 1.29 (§1's Relic contract note item 5 synchronized with the landed
+Relic resolution stage — `GAME_RULES.md` §17 step 11 now evaluates the stored
+`Trigger`/`Condition`/`EffectDefinition` values, so the item no longer records
+that step as unimplemented (TASK-133). **This is a status synchronization only: no
+table, column, constraint, index, migration, or stored value changes**, no
+gameplay rule is added, and no value is authored — the structured shape and the
+four encoded rows are unchanged. Prior 1.28: (§1's Relic contract note item 5 clarified — it now records
+that the `CardCost` (`GAME_STATE.md` §2.3.5, TASK-134) and `ATK`
+(`GAME_STATE.md` §2.3.7, TASK-136) runtime carriers are **active battle state,
+not persisted content**, so neither is a `RelicDefinition` member and neither
+adds a table, a column, or a migration. This is a scope clarification only: **no
+schema, column, constraint, index, or migration changes**, no gameplay rule is
+added, and no value is authored. The `RelicDefinition` structured shape and the
+four encoded rows are unchanged. Prior 1.27: (§1's `RelicDefinition` block, the Relic
+`EffectDefinition`/`Condition` contract note, §3's constraints, and §5 item 4's
+status — **structured Relic storage landed** per TASK-132, implementing
+TASK-131 D1/D2/D3/D5/D9: `RelicDefinition.Condition` and
+`RelicDefinition.EffectDefinition` are now `jsonb` holding the structured shapes
+`RELIC_RULES.md` §8.1–§8.3 defines, the migration's requirement is satisfied,
+and the four provisioned rows hold §8.5's values. The note now records the two
+stored member shapes and that the four rows are encoded. **No gameplay rule,
+magnitude, threshold, target, lifetime, or vocabulary changed** — every encoded
+value is transcribed from `RELIC_RULES.md` §8.5, `RelicDefinition.Trigger` is
+unchanged (§8.5 item 3), no column or table was added, and `Burning Curse`
+stays deferred [TASK-132]. Prior 1.26: §1 item 3's `threshold` note, the §3 provisioning row-content
 note, and the §6 constraint entry — **stale characterization correction only**
 per TASK-124: `threshold = null` was described as meaning the Passive "is
 always active", a semantic the TASK-123 D-2a decision retired when Thủy Ma's
@@ -47,14 +71,21 @@ byte-identical. The six provisioned rows are **not yet re-encoded** into the
 array shape, and retiring their `Undetermined` markers is the downstream
 encoding task's act (D-6/D-6b); the stale "§4.1 authors no magnitude" statements
 TASK-110 made false are corrected to reference the authored §4.1 [TASK-111].
-Prior 1.22: (§1 `CardDefinition.EffectDefinition` became a STRUCTURED
+Prior 1.22.1: (§1 Relic `EffectDefinition`/`Condition` contract recorded per
+TASK-131 D1/D2/D3/D5/D9 — the Relic member is now STRUCTURED, superseding
+TASK-082 R2-7 for it and closing the boundary TASK-109 left open; the
+`character varying(128)` columns are recorded as insufficient and the migration
+to `jsonb` is a separate follow-up task. `RELIC_RULES.md` §8 is the canonical
+owner of the representation. No schema change and no gameplay value changed
+here [TASK-131]. Prior 1.22: (§1 `CardDefinition.EffectDefinition` became a STRUCTURED
 effect rule — a `jsonb` object carrying `effectType`, `valueType`, and `value` —
 per TASK-108 decisions D-1/D-2, implemented by TASK-109. This **supersedes
 TASK-082 decision R2-7 for the `CardDefinition` member only**: that decision had
 required the owning domain document's verbatim rule text within a 128-character
-prose column and barred any effect-id vocabulary. The `RelicDefinition` block is
-**unchanged** and R2-7 remains in force for it (Relic effect resolution is
-`ROADMAP.md` Phase 2; no Relic decision was taken). A new §1 note records the
+prose column and barred any effect-id vocabulary. The `RelicDefinition` block was
+**unchanged** by that task and R2-7 remained in force for it (Relic effect
+resolution is `ROADMAP.md` Phase 2; no Relic decision was taken then — now
+superseded by TASK-131). A new §1 note records the
 contract, the supersession, and its exact scope, and §3 gains the corresponding
 constraint. No gameplay value, rule, or balance figure changed: every encoded
 magnitude is transcribed from `CARD_RULES.md` §2/§4.1, and §2's values are
@@ -301,10 +332,10 @@ CardDefinition                    (static content — MVP scope target
                                    ONLY — the previous contract was the
                                    owning document's verbatim rule text in
                                    a ≤128-char prose column, with no
-                                   effect-id vocabulary. R2-7 REMAINS IN
-                                   FORCE for `RelicDefinition.
-                                   EffectDefinition` below, which is
-                                   UNCHANGED. TASK-111 decisions
+                                   effect-id vocabulary. R2-7 was ALSO
+                                   superseded for `RelicDefinition.
+                                   EffectDefinition` by TASK-131 D1 — no
+                                   member remains under it. TASK-111 decisions
                                    D-1/D-2/D-3/D-4/D-5 EXTEND the contract:
                                    the value is an ARRAY of effect objects,
                                    the `effectType` set gains Damage/Burn/
@@ -334,12 +365,25 @@ RelicDefinition                    (static content — MVP scope target
 │                                   database-generated)
 ├── Name
 ├── Trigger
-├── Condition
-└── EffectDefinition                (the owning domain document's effect rule
-                                    text, stored VERBATIM and within the
-                                    128-char column limit; no `effect-{slug}`
-                                    or other effect-id vocabulary —
-                                    `RELIC_RULES.md` §6, TASK-082 R2-7)
+├── Condition                       (jsonb, NULL — STRUCTURED, optional:
+│                                    `conditionType` + `threshold`, per
+│                                    RELIC_RULES.md §8.1. The absent case is
+│                                    the documented "no extra condition"
+│                                    (§8.1 item 4), not a sentinel)
+└── EffectDefinition                (jsonb, NOT NULL — STRUCTURED: an ARRAY
+                                     of effect objects, per TASK-131
+                                     D1/D2/D3 and RELIC_RULES.md §8.2–§8.4.
+                                     This SUPERSEDES TASK-082 R2-7 for this
+                                     member, which had required the owning
+                                     domain document's verbatim rule text
+                                     within a 128-char prose column. The
+                                     migration from `character varying(128)`
+                                     to `jsonb`, for this member and for
+                                     `Condition`, is LANDED — TASK-132,
+                                     migration
+                                     `20261003074309_StructureRelicDefinitionStructuredColumns`;
+                                     see §1 "Relic `EffectDefinition` and
+                                     `Condition` contract" below)
 
 Relic                                (a player's OWNED instance, if Relics
 │                                     have per-instance state; otherwise
@@ -533,10 +577,15 @@ extended by TASK-111 D-1/D-2/D-3/D-4/D-5)
    TASK-108 **D-1** requires exactly such a structured contract, so the two
    cannot both hold and D-1 governs here. This supersession is **scoped to
    the `CardDefinition` member**:
-   - `RelicDefinition.EffectDefinition` (below) **still carries R2-7's
-     verbatim rule text** in its unchanged `character varying(128)` column.
-     No Relic decision exists (Relic effect resolution is `ROADMAP.md` Phase
-     2) and none is made here.
+   - `RelicDefinition.EffectDefinition` **was** left under R2-7's verbatim
+     rule text in its unchanged `character varying(128)` column by that task.
+     **TASK-131 D1 has since superseded R2-7 for this member**: the Relic
+     contract is now structured (`RELIC_RULES.md` §8), and TASK-131 D9 records
+     that its `varchar(128)` storage is insufficient, with the migration left
+     to a separate follow-up task. See the "Relic `EffectDefinition` and
+     `Condition` contract" note above. That task's own statement that "No Relic
+     decision exists" described the repository at that time and no longer
+     holds.
    - Only the `CardDefinition` rows in provisioning were migrated, per
      `CARD_RULES.md` §2/§4.1. The three Basic Cards carry a full structured
      effect because §2 authors their effect completely. The three Pet Skill
@@ -576,6 +625,107 @@ extended by TASK-111 D-1/D-2/D-3/D-4/D-5)
    must treat it as an open content gap and must never substitute a value.
    The authored rule text and magnitudes remain owned by `CARD_RULES.md` §4.1
    and are not restated here as a second source for them.
+
+**Relic `EffectDefinition` and `Condition` contract.** (TASK-131, implementing
+D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
+
+1. **The representation is owned by `RELIC_RULES.md` §8 and is not restated
+   here.** That section is the canonical owner of the Relic
+   Trigger/Condition/Effect contract: `EffectDefinition` as a structured
+   `EffectDefinition[]`, its `valueType` set, its `target`/`lifetime`
+   vocabulary, the `Condition` forms, and their allowed combinations. This
+   document records only the **storage consequence** below.
+2. **THIS SUPERSEDES TASK-082 DECISION R2-7 FOR `RelicDefinition.EffectDefinition`.**
+   R2-7 (DONE, immutable) required `EffectDefinition` to be the owning domain
+   document's **verbatim rule text** and expressly forbade "an `effect-{slug}`
+   vocabulary or any new effect-reference identifier system". TASK-131 **D1**
+   requires a structured contract, so the two cannot both hold and D1 governs
+   here. Combined with TASK-109's earlier Card-scoped supersession, **R2-7 is
+   now superseded for both members it governed and no member remains under it.**
+   TASK-082 itself is not modified, re-opened, or re-statused
+   (`TASK_LIFECYCLE.md` §3 — completed tasks are immutable). This closes the
+   boundary TASK-109 recorded when it stated R2-7 "REMAINS IN FORCE for
+   `RelicDefinition.EffectDefinition`" — that statement described the repository
+   at that time and is superseded by a recorded decision, not by an edit to it.
+3. **The previous `character varying(128)` columns are INSUFFICIENT.**
+   (TASK-131 **D9**) `RelicDefinition.EffectDefinition` and
+   `RelicDefinition.Condition` cannot hold the decided structured
+   representation in a 128-character prose column. The `CardDefinition`
+   precedent already required `jsonb` for the identical contract shape (see the
+   Card contract above). Both columns are now `jsonb` — see item 4.
+4. **The migration was a SEPARATE follow-up task, and it has LANDED.** (TASK-131
+   **D9**; performed by TASK-132) Per `AGENTS.md` §18 the schema change is gated
+   on its own task; that task is TASK-132, whose migration
+   `20261003074309_StructureRelicDefinitionStructuredColumns` moves
+   `RelicDefinition.Condition` and `RelicDefinition.EffectDefinition` from
+   `character varying(128)` to `jsonb` and encodes the four provisioned rows of
+   `RELIC_RULES.md` §8.5. **This document records only that storage consequence
+   and the shapes below; the representation itself remains `RELIC_RULES.md`
+   §8's and is not restated here.** `Condition` stays NULLABLE, because §8.1
+   item 4 keeps it optional; `EffectDefinition` stays NOT NULL, because every
+   Relic states at least one effect. `RelicDefinition.Trigger` is **unchanged**:
+   `RELIC_RULES.md` §8.5 item 3 (TASK-131 D8) leaves §3's closed list alone, so
+   it remains a bounded identity string and is not restructured.
+5. **No value is authored here, and nothing in this document executes.** Every
+   magnitude and threshold the structured form carries is owned by
+   `RELIC_RULES.md` §6 and §8.1/§8.5; the migration transcribes those values and
+   computes and invents none (`§5` item 4 rule (b)). This document's scope is the
+   stored shape only: it evaluates no trigger, applies no effect, and emits no
+   `RelicTriggered` event. Those are `GAME_RULES.md` §17 step 11's stage, which
+   reads the values stored here and is **implemented** (`RELIC_RULES.md` §8.7) —
+   it reads this shape as data and adds no persisted member to it.
+   The landed migration changes storage only; it applies no effect and fires no
+   trigger, and it introduces no battle-state member, no Redis key, no SignalR
+   member, and no Card-cost or ATK modifier carrier **in this document's
+   scope**. The `CardCost` runtime carrier (`GAME_STATE.md` §2.3.5, TASK-134)
+   and the `ATK` runtime carrier (`GAME_STATE.md` §2.3.7, TASK-136) are
+   **active battle state**, not persisted content: neither adds a table, a
+   column, or a migration, and neither is a `RelicDefinition` member. This
+   document records the content-side storage shape only.
+6. **A stored value that is not a well-formed structured effect or condition is
+   rejected loudly**, under the same "explicit value required, no default"
+   standard item 6 of the Card contract applies — no fallback magnitude, no
+   prose fallback, no default threshold, and no silent no-op. This is what makes
+   a corrupt column value surface as a failure at the read rather than as a
+   Relic that quietly does nothing.
+7. **The two stored member shapes.** (TASK-132; the storage consequence of
+   `RELIC_RULES.md` §8.1–§8.3, whose vocabulary and allowed combinations this
+   document does not restate)
+   - `Condition` — a JSON **object** carrying exactly the two members the §8.1
+     forms need: the form and its threshold.
+
+     ```json
+     { "conditionType": "MatchCountAtLeast", "threshold": 3 }
+     ```
+
+   - `EffectDefinition` — a JSON **ARRAY** of effect objects, one element per
+     effect, each carrying exactly the five members §8.2–§8.3 define:
+
+     ```json
+     [ { "effectType": "ATK", "valueType": "Percentage", "value": 5,
+         "target": "Pet", "lifetime": "Battle" } ]
+     ```
+
+     The Card-only `duration` (Burn) and `scope` (Crit) members have **no Relic
+     counterpart**: `RELIC_RULES.md` §8.3 item 5 defines no member beyond
+     `target` and `lifetime`, so a Relic payload carrying one is rejected rather
+     than partially accepted.
+   - The member names are the contract, and the type members are stored as
+     their **member names**, not as enum ordinals — the same convention item 2
+     of the Card contract fixes, so a persisted row is self-describing.
+   - Array order is **not** semantic (`RELIC_RULES.md` §8.2 item 4), and a
+     Relic's resolution order is §4's equip-slot order rather than an effect's
+     index within one Relic.
+   - **The four provisioned rows are encoded in these shapes.** (TASK-132) All
+     four content-defined `RelicDefinition` rows now hold them, with every value
+     transcribed from `RELIC_RULES.md` §8.5 and none computed or invented
+     (`§5` item 4 rule (b)). No provisioned row carries an `Undetermined`
+     element, because §8.5 authors every magnitude; the member itself remains
+     valid for an effect whose magnitude is not yet authored (`RELIC_RULES.md`
+     §8.2 item 2). **`Burning Curse` remains unprovisioned** — §6 note 3 / §8.5
+     item 4 keep it deferred, and no placeholder row, Trigger, value, or
+     condition is inserted for it. The column set, the `Relic` ownership table,
+     and every other table are unchanged by that migration.
 
 **Persistence contract for `BossDefinition`.** (TASK-045)
 
@@ -1144,6 +1294,53 @@ CardDefinition.EffectDefinition     REJECTED, never defaulted, when  (§1 item 6
 CardDefinition.EffectDefinition     element ORDER is NOT semantic       (§1 item 3 — D-5; a storage
   ordering                                                             statement only; authors no
                                                                        resolution step or priority)
+RelicDefinition.Condition           jsonb, NULL — a structured condition   (§1 "Relic EffectDefinition
+  object (`conditionType` +           and Condition" contract" items 3–4,
+  `threshold`), or NULL               7; RELIC_RULES.md §8.1; TASK-131
+                                      D5/D9; TASK-132. NULL is the
+                                      documented "no extra condition"
+                                      (§8.1 item 4), never a sentinel)
+RelicDefinition.Condition.conditionType ∈ {MatchCountAtLeast,              (§1 item 7; the §8.1
+  ComboAtLeast, HpPercentageBelow}       grammar — the closed form set)
+RelicDefinition.Condition.threshold  int, > 0, always present             (§1 item 7; §8.1 item 1 —
+                                                                          the threshold is part of the
+                                                                          value, never prose; never
+                                                                          defaulted)
+RelicDefinition.EffectDefinition    jsonb, NOT NULL — an ARRAY of      (§1 "Relic EffectDefinition
+  effect objects, one per effect      and Condition" contract" items 4,
+                                      7; TASK-131 D1/D2/D3, TASK-132;
+                                      supersedes TASK-082 R2-7 for this
+                                      member)
+RelicDefinition.EffectDefinition.effectType ∈ {ATK, Power, Crit,          (§1 item 7; RELIC_RULES.md
+  CardCost}                             §8.2 item 1 — the closed
+                                        Relic identity set, which is
+                                        NOT the Card set)
+RelicDefinition.EffectDefinition.valueType ∈ {Flat, Percentage,           (§1 item 7; §8.2 item 2 —
+  PercentagePoints, Undetermined}       `Percentage` is not the Card
+                                        set's `PercentMaxHp`)
+RelicDefinition.EffectDefinition.value  int, > 0, present iff              (§1 item 7; §8.2 item 3 —
+  valueType interprets one                valueType ≠ Undetermined         transcribed from §8.5
+                                                                          through valueType; absent,
+                                                                          never 0, when Undetermined)
+RelicDefinition.EffectDefinition.target ∈ {Pet}                            (§1 item 7; §8.3 item 1)
+RelicDefinition.EffectDefinition.lifetime ∈ {Immediate, Battle,            (§1 item 7; §8.3 item 2 /
+  NextAttack}                             ADR-018 item 3; the allowed
+                                          value is fixed per effectType
+                                          by §8.3's table)
+RelicDefinition.EffectDefinition     REJECTED, never defaulted, when        (§1 item 6; no fallback
+  not a well-formed structured rule or  the stored value is malformed     magnitude, no default
+  condition                                                              threshold, no prose
+                                                                          fallback, no silent no-op,
+                                                                          and no Card-only
+                                                                          `duration`/`scope` member —
+                                                                          §8.3 item 5)
+RelicDefinition.EffectDefinition     element ORDER is NOT semantic          (§1 item 7; §8.2 item 4 — a
+  ordering                                                               storage statement only; a
+                                                                          Relic's resolution order is
+                                                                          §4's equip-slot order)
+RelicDefinition.Trigger              unchanged — a §3 identity string,      (§1; RELIC_RULES.md §8.5
+  never NULL                            NOT restructured by §8            item 3 / TASK-131 D8 — §3's
+                                                                          closed list is unchanged)
 BossDefinition.BossDefinitionId     NOT NULL, UNIQUE, caller/content-supplied (independent persistence key, never
                                                                       database-generated; distinct from `Identity` and
                                                                       from the display name — §1 note item 2, TASK-049)
@@ -1226,7 +1423,15 @@ when a real query pattern requires them (anti-overengineering,
    `PetDefinition` (3), `CardDefinition` (6), and `RelicDefinition` (4)
    content-defined rows through the same `dotnet ef database update`
    workflow, and the TASK-083 starter-ownership initialization grants the
-   §2 starter rows in a single scoped `GameDbContext.SaveChangesAsync`. The `BossDefinition` migration is **complete**
+   §2 starter rows in a single scoped `GameDbContext.SaveChangesAsync`. The
+   four `RelicDefinition` rows were subsequently **re-encoded into the
+   structured shape** `RELIC_RULES.md` §8 defines (TASK-132, migration
+   `20261003074309_StructureRelicDefinitionStructuredColumns`) — a
+   representation migration over the same four rows, with every value
+   transcribed from `RELIC_RULES.md` §8.5 and none computed or invented
+   (rule (b) above). That migration provisions no row: it inserts none,
+   deletes none, and leaves `Burning Curse` deferred (rule (a) above,
+   `RELIC_RULES.md` §6 note 3). The `BossDefinition` migration is **complete**
    (TASK-053) — migration `20260926151112_ProvisionBossDefinitions` was
    applied through `dotnet ef database update`, so the three canonical
    rows are provisioned and every `BattleResult` write's FK target exists

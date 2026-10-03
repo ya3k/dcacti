@@ -369,27 +369,39 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
         var relics = await ReadRelicsAsync();
         if (relics is null) return;
 
-        // RELIC_RULES.md §6 owns Trigger, Condition, and Effect verbatim; §3 is
-        // the closed Trigger list. The Condition spellings keep their documented
-        // "≥" and "−" characters.
-        var expected = new (string Id, string Name, string Trigger, string Condition, string Effect)[]
+        // RELIC_RULES.md §3 is the closed Trigger list, and Trigger is unchanged
+        // by §8 (TASK-131 D8) — it stays the §3 identity the provisioning
+        // migration stored.
+        //
+        // TASK-132 migrated Condition and EffectDefinition from prose to the
+        // structured contract RELIC_RULES.md §8 defines (DATABASE.md §1), so this
+        // test asserts the identity/Trigger here and the STRUCTURED §8.5 values
+        // per row. Asserting the encoded shape twice would give the same fact two
+        // owners (GAME_STATE.md §0 item 5) — the persistence-level twin of these
+        // assertions lives in RelicStructuredStorageTests.
+        var expected = new (string Id, string Name, string Trigger)[]
         {
-            ("relic-berserker-core", "Berserker Core", "OnMatchCount", "every 3 Matches", "+5% ATK"),
-            ("relic-mana-crystal", "Mana Crystal", "OnMatchCount", "every 4 Matches", "+10 Power"),
-            ("relic-assassin-eye", "Assassin Eye", "OnCombo", "Combo ≥ 3", "Increased Crit chance"),
-            ("relic-emergency-core", "Emergency Core", "OnHpBelow", "HP < 30%", "Heal Card cost −50%"),
+            ("relic-berserker-core", "Berserker Core", "OnMatchCount"),
+            ("relic-mana-crystal", "Mana Crystal", "OnMatchCount"),
+            ("relic-assassin-eye", "Assassin Eye", "OnCombo"),
+            ("relic-emergency-core", "Emergency Core", "OnHpBelow"),
         };
 
         Assert.Equal(expected.Length, relics.Count);
 
-        foreach (var (id, name, trigger, condition, effect) in expected)
+        foreach (var (id, name, trigger) in expected)
         {
             var row = Assert.Single(relics, relic => relic.RelicDefinitionId == id);
 
             Assert.Equal(name, row.Name);
             Assert.Equal(trigger, row.Trigger);
-            Assert.Equal(condition, row.Condition);
-            Assert.Equal(effect, row.EffectDefinition);
+
+            // The structured Condition and EffectDefinition read back as the
+            // §8.1/§8.2 contract values — not as the superseded prose.
+            var structured = RelicProvisionedContent.Single(id);
+
+            Assert.Equal(structured.Condition, row.Condition);
+            Assert.Equal(structured.Effects, row.EffectDefinition);
         }
     }
 

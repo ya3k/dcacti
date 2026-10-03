@@ -1,6 +1,26 @@
 # Redis State
 
-**Version:** 1.8 (§7 items 13–14 added — `PetState.NextAttackCritModifiers[]`
+**Version:** 1.10 (§7 item 16 added — `PetState.ATKModifiers[]`
+(`GAME_STATE.md` §2.3.7, TASK-136 D1/D2) adds no Redis key, no Redis-only field,
+and no persistence work: it is a `PetState` member of the `BattleState` shape §2
+item 1 already covers, it round-trips under the existing obligation with an
+empty array as the no-modifier form and a deterministic `SourceIdentity`
+ordering, it is written in the same single post-resolution write-back under the
+unchanged `Sequence` compare-and-set and the unchanged §3 sliding TTL, and it
+has no wire consequence because adding state is not adding a wire member
+(`SIGNALR_PROTOCOL.md` §4 item 4). The effective Pet ATK itself is derived, not
+stored. §1–§6 and §7 items 1–15 are unchanged; no key, lifecycle, TTL, or
+concurrency rule changed. Prior 1.9: (§7 item 15 added — `PetState.CardCostModifiers[]`
+(`GAME_STATE.md` §2.3.5, ADR-018, TASK-134 D1/D2) adds no Redis key, no
+Redis-only field, and no persistence work: it is a `PetState` member of the
+`BattleState` shape §2 item 1 already covers, it round-trips under the existing
+obligation with an empty array as the no-modifier form, it is written in the
+same single post-resolution write-back under the unchanged `Sequence`
+compare-and-set and the unchanged §3 sliding TTL, and it has no wire
+consequence because adding state is not adding a wire member
+(`SIGNALR_PROTOCOL.md` §4 item 4). Card cost itself is derived, not stored. §1–§6
+and §7 items 1–14 are unchanged; no key, lifecycle, TTL, or concurrency rule
+changed. Prior 1.8: §7 items 13–14 added — `PetState.NextAttackCritModifiers[]`
 (`GAME_STATE.md` §2.3.4, ADR-017) adds no Redis key, no Redis-only field, and no
 persistence work: it is a `PetState` member of the `BattleState` shape §2 item 1
 already covers, it round-trips under the existing obligation with an empty array
@@ -535,3 +555,104 @@ Full active battle state          Full BattleState (GAME_STATE.md §2)
     message, method, or subscription. Delivering it would be a protocol change
     owned by its own task, and this document defines no storage contract for
     such a delivery.
+15. **`PetState.CardCostModifiers[]` adds no key, no Redis-only field, and no
+    persistence work.** `GAME_STATE.md` §2.3.5 defines one new `PetState`
+    collection (`ADR-018`, TASK-134 D1/D2) — applied, Battle-scoped Card-cost
+    modifiers, each element carrying a source identity and a cost reduction in
+    percentage points. Its consequences here are these, and nothing more:
+
+    - **It is part of the §2 shape, so §2 item 1 covers it unchanged.**
+      `BattleState` is serialized as JSON matching `GAME_STATE.md` §2 exactly,
+      and this collection is a `PetState` member. It introduces no Redis-only
+      field, and §1's key structure is untouched: no
+      `battle:{battleId}:cardcost` key, no hash field, no set, no index, and no
+      second record exists for it. It is **not** a concurrency token;
+      `Sequence` remains the only one (§4 item 6).
+    - **Round-trip losslessness covers it, and an empty collection round-trips
+      as empty.** A record that drops an element, alters a
+      `costReductionPercentage`, reorders elements, or collapses two distinct
+      source identities into one does not round-trip (`GAME_STATE.md` §2.3.6
+      items 3 and 5, §2.1.7 item 5). The collection is always present
+      (`GAME_STATE.md` §2.3.5 item 6), so a Pet with no active modifier
+      serializes an **empty array** — it is never omitted and never `null`,
+      unlike `LastCommittedSwapPair` (item 11), whose absence is itself a
+      documented statement.
+    - **The lifecycle and concurrency rules are untouched.** Creation,
+      replace/refresh, and removal all occur inside one resolution and are
+      written in the same single post-resolution write-back as the rest of the
+      state (§4 item 5), under the same `Sequence` compare-and-set (§4 item 2),
+      and under the unchanged §3 sliding TTL. A reader never observes a
+      modifier mid-refresh (`GAME_STATE.md` §5.1.3 item 6). A rejected action
+      writes nothing and therefore does not touch this key, reset the TTL, or
+      change this collection (§4 item 7).
+    - **It is not a staged subset.** §7 item 7's precondition is met — a real,
+      playable battle carrying §2's shape can be created and resolved — so this
+      member is carried by the existing `battle:{battleId}:state` record
+      exactly as every other `PetState` member is (see the status note above).
+      It changes no storage decision.
+    - **No Card cost is stored here.** The collection stores the *modifiers*;
+      `EffectiveCardCost` is a value derived at cast resolution and is not a
+      stored field, a Redis-only field, or a second representation of a Card's
+      cost (`CARD_RULES.md` §3.6 item 2, `GAME_STATE.md` §2.3.5 item 10).
+    - **No expiry of its own is introduced by storage.** The modifier's
+      `Battle` lifetime is owned by `RELIC_RULES.md` §8.3/§8.4 and mutated by
+      `GAME_STATE.md` §5.1.3; Redis adds no TTL, sweep, or expiry for this
+      collection beyond the record's own §3 sliding TTL.
+
+    Like the Special Gem, commit-record, accounting, and Crit-modifier changes
+    above, this is a **content** change to the record rather than a
+    **structure** change to the store.
+16. **`PetState.ATKModifiers[]` adds no key, no Redis-only field, and no
+    persistence work.** `GAME_STATE.md` §2.3.7 defines one new `PetState`
+    collection (TASK-136 D1/D2) — applied, Battle-scoped ATK modifiers, each
+    element carrying a source identity and a signed percentage-point
+    contribution. Its consequences here are these, and nothing more:
+
+    - **It is part of the §2 shape, so §2 item 1 covers it unchanged.**
+      `BattleState` is serialized as JSON matching `GAME_STATE.md` §2 exactly,
+      and this collection is a `PetState` member. It introduces no Redis-only
+      field, and §1's key structure is untouched: no
+      `battle:{battleId}:atk` key, no hash field, no set, no index, and no
+      second record exists for it. It is **not** a concurrency token;
+      `Sequence` remains the only one (§4 item 6).
+    - **Round-trip losslessness covers it, and an empty collection round-trips
+      as empty.** A record that drops an element, alters an
+      `atkModifierPercentage`, reorders elements, or collapses two distinct
+      source identities into one does not round-trip (`GAME_STATE.md` §2.3.8
+      items 3 and 5, §2.1.7 item 5). The collection is always present
+      (`GAME_STATE.md` §2.3.7 item 6), so a Pet with no active modifier
+      serializes an **empty array** — it is never omitted and never `null`,
+      unlike `LastCommittedSwapPair` (item 11), whose absence is itself a
+      documented statement.
+    - **The ordering obligation is deterministic, not merely preserved.** Unlike
+      the sibling collections, whose order records application or equip order,
+      this collection's order is the **`SourceIdentity` sort**
+      (`GAME_STATE.md` §2.3.7 item 7). A store must therefore not be relied on
+      to preserve insertion order for this member: the serialized order is
+      reproducible from the element set alone, so two serializations of the same
+      state are byte-identical (`TDD.md` §6, TASK-136 D9).
+    - **The lifecycle and concurrency rules are untouched.** Creation,
+      replace/refresh, and removal all occur inside one resolution and are
+      written in the same single post-resolution write-back as the rest of the
+      state (§4 item 5), under the same `Sequence` compare-and-set (§4 item 2),
+      and under the unchanged §3 sliding TTL. A reader never observes a
+      modifier mid-refresh (`GAME_STATE.md` §5.1.4 item 7). A rejected action
+      writes nothing and therefore does not touch this key, reset the TTL, or
+      change this collection (§4 item 7).
+    - **It is not a staged subset.** §7 item 7's precondition is met — a real,
+      playable battle carrying §2's shape can be created and resolved — so this
+      member is carried by the existing `battle:{battleId}:state` record
+      exactly as every other `PetState` member is (see the status note above).
+      It changes no storage decision.
+    - **No ATK value is stored here.** The collection stores the *modifiers*;
+      `EffectivePetATK` is a value derived at attack resolution
+      (`COMBAT_RULES.md` §5.6) and is not a stored field, a Redis-only field, or
+      a second representation of the ATK stat (`GAME_STATE.md` §2.3.7 item 9).
+    - **No expiry of its own is introduced by storage.** The modifier's `Battle`
+      lifetime is owned by `RELIC_RULES.md` §8.3/§8.4 and mutated by
+      `GAME_STATE.md` §5.1.4; Redis adds no TTL, sweep, or expiry for this
+      collection beyond the record's own §3 sliding TTL.
+
+    Like the Special Gem, commit-record, accounting, Card-cost, and
+    Crit-modifier changes above, this is a **content** change to the record
+    rather than a **structure** change to the store.

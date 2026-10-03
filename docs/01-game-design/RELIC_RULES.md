@@ -1,6 +1,90 @@
 # Relic Rules
 
-**Version:** 1.5 (§6 provisioned/deferred row set recorded per TASK-082
+**Version:** 1.12 (§8.1 gained item 8 — the three Condition forms' exact
+observation point, resolving the step-11 ordering question TASK-133 reported:
+`GAME_RULES.md` §17 fixes step 11 after step 10 ("Charge Passive") and before
+steps 12–14, so `HpPercentageBelow` reads the active Pet's HP **before** this
+Swap's step-14 player-effect (heal) resolution, while `MatchCountAtLeast` and
+`ComboAtLeast` read the existing `BattleState.MatchCount` / `BattleState.Combo`
+at that same point. **This is a cross-reference to `GAME_RULES.md` §17's order,
+not a second copy of it**: no Trigger, Condition form, effect, magnitude,
+threshold, target, lifetime, state member, or event is added, removed, or
+altered; §3's closed Trigger list, §6's row set, and §8.2–§8.7 are unchanged.
+Prior 1.11: (§8.7's startup status and its trailing status paragraph
+synchronized with the landed Relic resolution stage: TASK-133 implements
+`GAME_RULES.md` §17 step 11 — `GAME_RULES.md` §17's "Trigger Relics" step is now
+executed server-side, so the five `NOT IMPLEMENTED` lines §8.7 recorded are
+replaced by `IMPLEMENTED`. **This is a status synchronization only: no Trigger,
+Condition, effect, magnitude, threshold, target, or lifetime is added, removed,
+or altered; §3's closed Trigger list, §6's row set, and §8.1–§8.6 are unchanged,
+and `Burning Curse` stays deferred and unprovisioned.** Prior 1.10: (§2.4 item 6, §8.5 item 4, and §8.7 synchronized with the
+resolved Relic Battle-lifetime ATK modifier × Turn-based `BuffDebuff` `TargetStat = "ATK"`
+modifier composition contract: how the two coexist and compose is now authored
+at its canonical owner `COMBAT_RULES.md` §5.6.6 per the TASK-137 Product-Owner
+decision set D1–D7. Modifiers compose order-independently by summing signed
+percentage adjustments against permanent Base Pet ATK, truncated toward zero
+exactly once into integer `EffectivePetATK`, with independent carrier ownership
+and lifetimes (`PetState.ATKModifiers[] ≠ PetState.StatusEffects[]`). The contract
+is implementation-ready for TASK-133. §8.2, §8.3, §8.4, and §3–§7 are unchanged;
+no new Trigger, Condition, effect, magnitude, or event is added. Relic trigger
+evaluation remains UNIMPLEMENTED — `GAME_RULES.md` §17 step 11. Prior 1.9: (§2.4 item 6, §8.5 item 4, and §8.7 synchronized with the
+applied `ATK` runtime contract: the `ATK` modifier's composition is now authored
+by `COMBAT_RULES.md` §5.6 (signed percentage-point contributions, summed) and
+its runtime carrier by `GAME_STATE.md` §2.3.7/§5.1.4, per the TASK-136
+Product-Owner decision set D1–D12. **§2.4 item 6's "defines no stacking
+behavior" disclaimer is not withdrawn for Relics in general**: it now names
+**two** decided exceptions — `CardCost` (`CARD_RULES.md` §3.6) and `ATK`
+(`COMBAT_RULES.md` §5.6) — and explicitly leaves `Power`, `Crit`, and every
+other `effectType` where they were, undefined and pending a future rule change.
+A new §8.5 item 4 records Berserker Core's runtime carrier, lifecycle, and
+composition references, and records as **unresolved** how a Relic `ATK` modifier
+interacts with a Turn-based `BuffDebuff` `TargetStat = "ATK"` modifier
+(`COMBAT_RULES.md` §5.6.6). §8.7 now distinguishes the *contracts* that exist
+from the *implementation* that does not: the five `NOT IMPLEMENTED` lines are
+unchanged. §8.2's structured effect declaration
+(`effectType`/`valueType`/`value`/`target`/`lifetime`), §8.3's allowed
+combinations, §8.4, and §3–§7 are unchanged; no Trigger, Condition, effect,
+magnitude, or event is added. Relic trigger evaluation remains UNIMPLEMENTED —
+`GAME_RULES.md` §17 step 11. Prior 1.8: (§8.6/§8.7 status synchronized with the landed structured
+storage: TASK-132 moved `RelicDefinition.Condition` and
+`RelicDefinition.EffectDefinition` from `character varying(128)` prose to the
+structured `jsonb` representation §8.1–§8.3 defines and §8.5 encodes — §8.7's
+`Structured Relic storage` line now reads IMPLEMENTED, and §8.6 records that its
+required separate migration has landed. **This is a status synchronization only:
+no trigger, condition, effect, magnitude, threshold, target, or lifetime is
+added, removed, or altered, and §3's closed Trigger list is unchanged.**
+`RelicTriggered` emission, trigger evaluation, condition evaluation, and effect
+application all remain NOT IMPLEMENTED — §8.7. Prior 1.7: §2.4 item 6 and §8.5 item 2 updated — the applied `CardCost`
+modifier's runtime contract is now authoritative, applied per TASK-134 D1–D11
+plus the Product Owner `EffectiveCardCost` truncation decision. **§2.4 item 6's
+"defines no stacking behavior" disclaimer is not withdrawn for Relics in
+general**: it now names the single decided exception — the composition of
+multiple simultaneously-active `CardCost` modifiers, a `GAME_RULES.md` §20 rule
+change owned by `CARD_RULES.md` §3.6 (additive percentage reduction, total
+capped at 100%) — and explicitly leaves `ATK`, `Power`, `Crit`, and every other
+`effectType` where they were, undefined and pending a future rule change. §8.5
+item 2 now references the runtime state carrier (`GAME_STATE.md` §2.3.5), its
+mutation lifecycle (`GAME_STATE.md` §5.1.3), and the cost composition
+`CARD_RULES.md` §3.6 owns, and states that Emergency Core's continuous
+re-evaluation replaces/refreshes its one entry rather than accumulating. Neither
+section restates the runtime schema. §8.2's structured effect declaration
+(`effectType`/`valueType`/`value`/`target`/`lifetime`), §8.3's allowed
+combinations, §8.4, and §3–§7 are unchanged; no trigger, condition, effect,
+magnitude, or event is added. Relic trigger evaluation remains UNIMPLEMENTED —
+`GAME_RULES.md` §17 step 11. Prior 1.6: §8 added — the Trigger/Condition/Effect
+contract RESOLVED per TASK-131 D1–D11: `EffectDefinition` is a structured
+`EffectDefinition[]` with `valueType` `Flat`/`Percentage`/`PercentagePoints`/`Undetermined` and
+explicit `target`/`lifetime` vocabulary; `Condition` is structured as
+`MatchCountAtLeast(N)`/`ComboAtLeast(N)`/`HpPercentageBelow(N)` evaluated against
+the current resolution state with no persistent Relic counters; Assassin Eye's
+Crit magnitude is +10 percentage points with `NextAttack` lifetime; effect
+lifetime and trigger re-evaluation are independent; §3's closed Trigger list is
+unchanged; `Burning Curse` remains deferred with the §3-vs-§6-note-1 conflict
+still reported and unresolved; the `varchar(128)` column is insufficient and a
+separate migration task is required. This supersedes TASK-082 R2-7 for
+`RelicDefinition.EffectDefinition`, closing the member TASK-109 had left under
+it. Prior 1.5: §6
+provisioned/deferred row set recorded per TASK-082
 decisions A / R2-8 — the four event-triggered Relics are provisionable;
 "Burning Curse" **deferred** pending a documented static-modifier
 `RelicDefinition.Trigger`, with the §3 "exactly one primary Trigger" vs
@@ -227,12 +311,48 @@ anti-chain rule and is unchanged).
    error envelope). A rejected request writes no battle state and equips
    nothing.
 
-6. **This defines no stacking behavior.** Item 3 permits two instances of one
-   definition to be equipped; it does **not** state that their effects
-   combine, scale, or interact. Any such behavior is a future rule change
-   (`GAME_RULES.md` §20), not something this section implies. §5's
-   anti-infinite-chain rule is unchanged, and this section does not define
-   what "the same Relic" means for §5 — §5 continues to operate as written.
+6. **This defines no stacking behavior, with one decided exception.** Item 3
+   permits two instances of one definition to be equipped; it does **not**
+   state that their effects combine, scale, or interact. Any such behavior is
+   a future rule change (`GAME_RULES.md` §20), not something this section
+   implies. §5's anti-infinite-chain rule is unchanged, and this section does
+   not define what "the same Relic" means for §5 — §5 continues to operate as
+   written.
+
+   **The decided exceptions, and their boundary.** The composition of multiple
+   simultaneously-active **`CardCost`** modifiers is no longer undefined: it
+   was decided as a rule change under `GAME_RULES.md` §20 (Product Owner
+   decision D5, recorded in TASK-134) and is owned by **`CARD_RULES.md` §3.6**
+   — additive percentage reduction, total reduction capped at 100%. The
+   composition of multiple simultaneously-active **`ATK`** modifiers is likewise
+   no longer undefined: it was decided as a rule change under `GAME_RULES.md`
+   §20 (Product Owner decisions D5/D6, recorded in TASK-136) and is owned by
+   **`COMBAT_RULES.md` §5.6** — signed percentage-point contributions, summed.
+   Each rule governs its own `effectType` **only**:
+
+   ```text
+   DECIDED     CardCost modifier composition       CARD_RULES.md §3.6
+   DECIDED     ATK modifier composition            COMBAT_RULES.md §5.6
+   NOT DECIDED every other Relic effect type        this item, unchanged
+               (Power, Crit, and any future
+                effect type)
+   ```
+
+   This section defines no stacking, scaling, or interaction behavior for
+   `Power`, `Crit`, or any other `effectType` — those remain exactly where this
+   item left them: undefined, and a future rule change (`GAME_RULES.md` §20).
+   Nor do the exceptions widen `§8.4`'s lifetime independence or `§5`'s
+   anti-infinite-chain rule. §8.3's combinations are unchanged, and §8.2's
+   structured effect declaration is not extended.
+
+   **ATK modifier interaction with BuffDebuff is resolved.** How a Relic `ATK`
+   modifier interacts with a Turn-based `BuffDebuff` `TargetStat = "ATK"`
+   modifier (`COMBAT_RULES.md` §5.4) is resolved by the TASK-137 Product-Owner
+   decision (D1–D7) and canonically owned by **`COMBAT_RULES.md` §5.6.6**: both
+   coexist and compose order-independently by summing signed percentage
+   adjustments against permanent Base Pet ATK before a single truncation toward
+   zero into `EffectivePetATK`. The two modifier carriers maintain independent
+   ownership and lifetimes (`PetState.ATKModifiers[] ≠ PetState.StatusEffects[]`).
 
 Validation order: count and ownership (`§2.1`) and the distinctness rule
 above are all request-time checks; §2.5 states the resulting behavior.
@@ -428,3 +548,341 @@ RelicTriggered   emitted each time a Relic's Effect actually applies
 
 Part of the Battle Event Model (GAME_RULES.md §16), fired at the point shown
 in the Event Resolution Rules (GAME_RULES.md §17, step 11 "Trigger Relics").
+
+`RelicTriggered` reports **that** a Relic's Effect applied and **which** Relic
+applied it. Its wire shape is `{ type, relicId }` and carries no effect
+summary — the resulting state is delivered through the existing `BattleState`
+projection (`SIGNALR_PROTOCOL.md` §3.2.23, §3.2.25, §4; `GAME_STATE.md` §0).
+This section fixes no wire member and does not restate the projection.
+
+---
+
+# 8. Trigger, Condition, and Effect Contract
+
+**Canonical owner.** This section owns the machine-readable shape a Relic's
+`Trigger`, `Condition`, and `EffectDefinition` must take. `DATABASE.md` §1
+stores these values; `SIGNALR_PROTOCOL.md` §3.2.23 fixes the event that
+reports them; neither restates this contract.
+
+It is a **representation** contract. It authors no trigger condition, no
+magnitude, and no gameplay rule of its own: every value it carries is owned by
+§3 (Triggers), §6 (the MVP Relic Reference), `COMBAT_RULES.md` (`RelicCrit`'s
+composition), or `GAME_RULES.md` §17 (the resolution order). Where this section
+records a value, that value is transcribed from its owner.
+
+## 8.1 `Condition` — Structured Evaluation
+
+**Decided** (TASK-131 **D5**). `Condition` is a **structured** value, not free
+text. The defined forms are:
+
+```text
+MatchCountAtLeast(N)      the cumulative Match count reached N or more
+ComboAtLeast(N)           the current Chain's Combo reached N or more
+HpPercentageBelow(N)      the active Pet's HP fell below N percent
+```
+
+1. **Every form carries its threshold as `N`, an integer.** The threshold is
+   part of the value, never embedded in prose — `"every 3 Matches"` as a string
+   is not a valid `Condition`.
+2. **Each is evaluated against the current resolution state**, at the point
+   `GAME_RULES.md` §17 step 11 executes, and against the specific event being
+   processed. `N` is compared to the value that state holds at that moment.
+3. **No persistent Relic counters are introduced.** A Relic does not own, carry,
+   or accumulate a counter of its own, and no Relic-scoped counter is added to
+   active battle state. `MatchCountAtLeast` reads the battle's existing
+   cumulative Match count and `ComboAtLeast` reads the existing Combo value
+   (`GAME_RULES.md` §5, `GAME_STATE.md` §2.4/§2.6); this contract adds no state
+   member to `GAME_STATE.md`.
+4. **`Condition` remains optional** (§1). A Relic whose Trigger alone is its
+   complete condition carries none.
+5. **The `N` values are supplied by §6's rows, not by this section.** For the
+   provisioned Relics the transcriptions are: Berserker Core `MatchCountAtLeast(3)`,
+   Mana Crystal `MatchCountAtLeast(4)`, Assassin Eye `ComboAtLeast(3)`,
+   Emergency Core `HpPercentageBelow(30)`.
+6. **`HpPercentageBelow` reads the active Pet's HP** — the subject §3 fixes for
+   the `OnHpBelow` trigger. Whether the comparison resolves against current HP
+   or a maximum is a property of the percentage form itself and is stated by the
+   implementing stage against `GAME_STATE.md` §2.3's HP members; this contract
+   fixes the form, the subject, and the threshold carrier, and adds no
+   alternative reading.
+7. **`Berserker Core`'s "every 3 Matches" is a threshold form, not a modulo.**
+   `MatchCountAtLeast(3)` states the condition the §6 row declares. This section
+   authors no additional "fires only on the exact Nth Match" or "fires on every
+   multiple" rule; §3's `OnMatchCount` description and §1's re-fire default
+   govern re-firing, and §5's anti-infinite-chain rule is unchanged.
+8. **The observation point — stated once, by reference to its owner.** Every
+   form above is read at `GAME_RULES.md` §17 step 11, which §17 fixes after
+   step 10 ("Charge Passive") and **before** step 12 ("Generate Resources"),
+   step 13 ("Update Power"), and step 14 ("Resolve Player Effects"). The order
+   is `GAME_RULES.md` §17's; this item records only what that position means for
+   these three forms:
+   - **`HpPercentageBelow(N)`** reads the active Pet's HP **before this Swap's
+     step-14 player-effect resolution** — before the HP-Gem heal pool
+     `COMBAT_RULES.md` §2 item 5 has step 12 generate and step 14 apply. For the
+     Swap it is evaluated in, it never reads a post-healing HP.
+   - **`MatchCountAtLeast(N)`** reads `BattleState.MatchCount` — the battle's
+     cumulative Match count as of step 9 ("Count Matches"), so this Swap's
+     Matches are already included.
+   - **`ComboAtLeast(N)`** reads `BattleState.Combo` — this Swap's Combo as of
+     step 8 ("Update Combo").
+   The single post-resolution write-back (`GAME_STATE.md` §5.1) defers when the
+   resulting state becomes visible; it does not move this point. How many times
+   the stage executes is §3's trigger semantics and §1's re-fire default,
+   unchanged; **each** execution, however many there are, reads the state at
+   this point. So `Emergency Core`'s §6 note 2 re-evaluation is an evaluation at
+   this point, and its reversion is what such an evaluation observes — never a
+   re-evaluation taken after step 14 has already moved HP. No form reads a value
+   this section does not name, and no counter, snapshot, or state member is
+   introduced by this item (item 3).
+
+## 8.2 `EffectDefinition` — Structured `EffectDefinition[]`
+
+**Decided** (TASK-131 **D1**, **D2**, **D3**). `EffectDefinition` is a
+**structured array** of effect objects, following the same representation
+contract `DATABASE.md` §1 records for `CardDefinition.EffectDefinition`
+(TASK-108 D-1/D-2, TASK-111 D-1/D-5). It is **not** verbatim prose.
+
+```json
+[ { "effectType": "ATK", "valueType": "Percentage", "value": 5,
+    "target": "Pet", "lifetime": "Battle" } ]
+```
+
+Each element carries **its own** `effectType` / `valueType` / `value` triple
+plus the target and lifetime members §8.3 and §8.4 define.
+
+1. **`effectType` (string)** — which domain effect the Relic applies. The
+   defined set is `ATK` | `Power` | `Crit` | `CardCost`, carrying the effect
+   identities §6's rows declare. It is the effect identity carrier: the runtime
+   must never derive a Relic's effect from parsed prose, from the Relic's
+   `Name`, from `RelicDefinitionId` mapping, or from hardcoded per-Relic logic.
+   `ATK` is a stat modifier, `Power` is a Power grant (`GAME_RULES.md` §12),
+   `Crit` is a Crit-chance increase participating in `COMBAT_RULES.md` §2 item 7's
+   `EffectiveCrit` composition, and `CardCost` is a Card-cost modifier.
+2. **`valueType` (string)** — how `value` is interpreted:
+   `Flat` | `Percentage` | `PercentagePoints` | `Undetermined`.
+   `Flat` is an absolute amount; `Percentage` is a proportion of the stat's own
+   value; `PercentagePoints` is a proportion expressed in percentage points, the
+   interpretation a Crit-chance increase states (`COMBAT_RULES.md` §2 item 2).
+   `Undetermined` is **not an interpretation** — it records that the owning
+   document states no magnitude yet, and it **remains valid** for such an effect.
+   It is why no magnitude has to be invented to make such a row representable.
+   A percentage is never pre-resolved to an absolute amount: the value it
+   applies to is read from battle state when the effect is applied.
+3. **`value` (int)** — the effect's magnitude, transcribed from §6 through the
+   `valueType` above. It is present **iff `valueType` interprets one**: an
+   `Undetermined` effect carries no `value` member at all, never `0` and never
+   `null`, so an unauthored magnitude cannot be read as a number.
+4. **Ordering within the array is NOT semantic**, following TASK-111 **D-5**'s
+   convention for `CardDefinition.EffectDefinition` and `GAME_STATE.md` §2.3.1
+   item 10's for `StatusEffects[]`. No rule reads element positions. A Relic's
+   resolution order is §4's equip-slot order, which is a property of the Relic
+   sequence, not of an effect's index within one Relic.
+5. **A stored value that is not a well-formed structured effect is rejected
+   loudly.** There is no fallback magnitude, no default, no prose fallback, and
+   no silent no-op for an unrecognized `effectType`, an unrecognized `valueType`,
+   a missing `value`, or a missing required member.
+6. **This is the representation only.** Reading and applying a Relic effect is
+   `GAME_RULES.md` §17 step 11's resolution stage, which is not implemented by
+   this document.
+
+## 8.3 Effect Target and Scope Vocabulary
+
+**Decided** (TASK-131 **D3**). Each effect element carries an explicit target
+and lifetime vocabulary. The combinations allowed per `effectType` are fixed
+below; a combination not listed is not defined and may not be inferred.
+
+| `effectType` | `target` | `lifetime` | `valueType` |
+| --- | --- | --- | --- |
+| `ATK` | `Pet` | `Battle` | `Percentage` |
+| `Power` | `Pet` | `Immediate` | `Flat` |
+| `Crit` | `Pet` | `NextAttack` | `PercentagePoints` |
+| `CardCost` | `Pet` | `Battle` | `Percentage` |
+
+1. **`target` (string)** — which entity the effect modifies. The defined value
+   is `Pet`: §3 fixes the active Pet as the trigger subject, and §2 item 1 fixes
+   Relics as carried by the active Pet.
+2. **`lifetime` (string)** — how long the applied modification persists. A
+   value outside the allowed combination for its `effectType` is not defined.
+3. **`Immediate` is not a duration.** It denotes an effect applied once, at the
+   moment it triggers, which leaves no standing modification behind — Mana
+   Crystal's Power grant is applied to `PetState.Power` and the effect itself
+   then ends.
+4. **`Battle` denotes a standing modification for the remainder of the battle.**
+   **`NextAttack`** denotes a modification consumed by the next qualifying owner
+   attack, which is the lifetime `scope: "NextAttack"` already carries for the
+   Card `Crit` effect (`DATABASE.md` §1; `COMBAT_RULES.md` §2 item 7;
+   `ADR-017`). This contract reuses that established boundary and introduces no
+   second consumption rule.
+5. **No member is defined beyond `target` and `lifetime`.** Additional members
+   may not be added without a recorded owner decision.
+
+## 8.4 Effect Lifetime and Trigger Re-evaluation Are Independent
+
+**Decided** (TASK-131 **D6**). A Relic's **effect lifetime** and its **trigger
+re-evaluation** are two separate things.
+
+1. **Effect lifetime** answers how long an applied modification persists — §8.3's
+   `lifetime` member.
+2. **Trigger re-evaluation** answers whether the Relic's Trigger and Condition
+   are evaluated again. This remains §1's `Reset/Cooldown` default: a Relic
+   re-fires every time its Trigger/Condition is met, with no cooldown, unless
+   §6 states otherwise.
+3. **A Relic whose effect lifetime has ended is not disabled.** A `NextAttack`
+   or `Immediate` effect ending does not stop the Relic's Trigger from being
+   re-evaluated on later events; a Relic may fire repeatedly, each firing
+   producing its own effect with its own lifetime.
+4. **This section adds no cooldown, no charge, and no per-Relic reset state.**
+   §5's anti-infinite-chain rule remains the only constraint on repeated firing.
+5. **The provisioned lifetimes are** (TASK-131 **D6**): Berserker Core `Battle`,
+   Mana Crystal `Immediate`, Assassin Eye `NextAttack`, Emergency Core `Battle`.
+
+## 8.5 The Provisioned Relic Contract
+
+Transcribed from §6 and this section. No value below is authored here.
+
+| Relic | `Trigger` (§3) | `Condition` (§8.1) | `EffectDefinition[]` (§8.2–§8.4) |
+| --- | --- | --- | --- |
+| Berserker Core | `OnMatchCount` | `MatchCountAtLeast(3)` | `[{ "effectType": "ATK", "valueType": "Percentage", "value": 5, "target": "Pet", "lifetime": "Battle" }]` |
+| Mana Crystal | `OnMatchCount` | `MatchCountAtLeast(4)` | `[{ "effectType": "Power", "valueType": "Flat", "value": 10, "target": "Pet", "lifetime": "Immediate" }]` |
+| Assassin Eye | `OnCombo` | `ComboAtLeast(3)` | `[{ "effectType": "Crit", "valueType": "PercentagePoints", "value": 10, "target": "Pet", "lifetime": "NextAttack" }]` |
+| Emergency Core | `OnHpBelow` | `HpPercentageBelow(30)` | `[{ "effectType": "CardCost", "valueType": "Percentage", "value": 50, "target": "Pet", "lifetime": "Battle" }]` |
+
+1. **`Assassin Eye`'s magnitude is `+10` percentage points** (TASK-131 **D4**),
+   resolving the qualitative "Increased Crit chance" of §6. This is the
+   `RelicCrit` term `COMBAT_RULES.md` §2 item 7 names in its `EffectiveCrit`
+   composition; that composition, its cap, and its consumption boundary are that
+   document's and `ADR-017`'s, and are not restated here.
+2. **`Emergency Core`'s effect is a Card-cost modifier on the active Pet**
+   (`CardCost`, `-50%` as the §6 row states), and its Trigger re-evaluates
+   continuously while §6 note 2's condition holds. §8.4 item 3 governs: the
+   `Battle` lifetime of the applied modification and the continuous
+   re-evaluation of the Trigger are independent, and §6 note 2 is unchanged.
+
+   **What the applied modifier is, and what it is not.** This section declares
+   the effect; it does not define where an applied `CardCost` modifier lives,
+   how repeated evaluation of the condition affects it, or how its value
+   reaches Card casting. Those are owned elsewhere and are referenced, not
+   restated:
+
+   ```text
+   the declaration itself     §8.2–§8.4 (this section)
+   the runtime state carrier  GAME_STATE.md §2.3.5
+                              (PetState.CardCostModifiers[], the applied
+                               modifier — SourceIdentity +
+                               CostReductionPercentage)
+   its mutation lifecycle     GAME_STATE.md §5.1.3
+                              (create / replace-or-refresh / remove)
+   its cost composition and   CARD_RULES.md §3.6
+   the value Card casting      (TotalReduction, EffectiveCardCost)
+   reads
+   ```
+
+   Continuous re-evaluation **re-evaluates**, it does not accumulate: every
+   evaluation while the condition holds resolves to the *same* source
+   identity, so the applied modifier is replaced/refreshed in place and there
+   is exactly one `Emergency Core` entry at any time. Re-evaluation creates no
+   second entry, no counter, no queue, and no event. When the §6 note 2
+   condition no longer holds, the modifier is removed by the §6 note 2
+   reversion semantics; `CARD_RULES.md` §3.6 then reads a TotalReduction that
+   no longer includes it. The `-50%` value is the §6 row's, transcribed
+   through §8.2's `valueType: Percentage`.
+3. **`Trigger` remains §3's closed list** (TASK-131 **D8**). §3 is unchanged and
+   no value is added, removed, or reinterpreted. `Trigger` stays a single
+   primary Trigger as §3 and §1 require.
+4. **`Berserker Core`'s effect is an ATK modifier on the active Pet**
+   (`ATK`, `+5%` as the §6 row states, `Battle` lifetime). This section declares
+   the effect; it does not define where an applied ATK modifier lives, how
+   repeated evaluation of the condition affects it, or how its value reaches the
+   Pet's damage. Those are owned elsewhere and are referenced, not restated
+   (TASK-136 D1–D12):
+
+   ```text
+   the declaration itself     §8.2–§8.4 (this section)
+   the runtime state carrier  GAME_STATE.md §2.3.7
+                              (PetState.ATKModifiers[], the applied modifier —
+                               SourceIdentity + ATKModifierPercentage)
+   its mutation lifecycle     GAME_STATE.md §5.1.4
+                              (create / replace-or-refresh / remove)
+   its ATK composition and    COMBAT_RULES.md §5.6
+   the value the Damage        (TotalATKModifierPercentage, EffectivePetATK)
+   Pipeline reads
+   ```
+
+   The applied modifier's lifetime is `Battle` and its removal boundary is the
+   battle's end or its source's removal (`GAME_STATE.md` §5.1.4 item 4). The
+   `+5` value is the §6 row's, transcribed through §8.2's
+   `valueType: Percentage`; §5.6 owns how that value composes, including its
+   sign handling and its rounding.
+
+   **Interaction with BuffDebuff ATK modifiers is resolved.** How this Relic ATK
+   modifier interacts with a Turn-based `BuffDebuff` `TargetStat = "ATK"`
+   modifier (`COMBAT_RULES.md` §5.4) is resolved by TASK-137 and owned by
+   **`COMBAT_RULES.md` §5.6.6**: the two coexist and compose additively as
+   signed percentage points against base `PetState.ATK` before a single
+   truncation toward zero, with independent carrier lifecycles.
+5. **`Burning Curse` remains deferred** (TASK-131 **D7**). §6 note 3's reported
+   conflict — §3's "exactly one primary Trigger from this list" versus §6 note 1's
+   description of Burning Curse as a static modifier with no event trigger — is
+   **not resolved** by this section, and no `Trigger` is invented for it. The row
+   stays unprovisioned and no placeholder may be inserted (TASK-082 A / R2-8).
+
+## 8.6 Storage Consequence
+
+**Decided** (TASK-131 **D9**). The existing `character varying(128)` column is
+**insufficient** for a structured Relic effect array: the `CardDefinition`
+precedent already required `jsonb` for the same contract shape
+(`DATABASE.md` §1). A **separate schema/storage migration task** is required to
+move `RelicDefinition.Condition` and `RelicDefinition.EffectDefinition` to their
+structured representation.
+
+This section records the requirement. It performs no migration and changes no
+schema: the migration is that separate task's act, and the schema change is
+gated on it (`AGENTS.md` §18).
+
+**Status.** The migration has since **landed** (TASK-132): both columns are now
+`jsonb` and the four provisioned rows of §8.5 hold the structured values this
+section's contract defines. `DATABASE.md` §1 owns the storage shape; this
+section's requirement is satisfied and §8.7's status line below is updated
+accordingly. No rule of §8.1–§8.5 is changed by that migration — every encoded
+value is §8.5's, transcribed.
+
+## 8.7 Startup Status
+
+```text
+Relic trigger evaluation        IMPLEMENTED — GAME_RULES.md §17 step 11
+Relic effect application        IMPLEMENTED
+RelicTriggered emission         IMPLEMENTED — SIGNALR_PROTOCOL.md §3.2.23
+Condition evaluation            IMPLEMENTED
+EffectDefinition execution      IMPLEMENTED
+Structured Relic storage        IMPLEMENTED — §8.6 migration landed (TASK-132)
+```
+
+This section defines the contract those stages conform to; the stages themselves
+are `GAME_RULES.md` §17 step 11's, executed by the resolution pipeline, and they
+are now landed. The last line records storage only.
+
+**The implementation consumes this contract and adds nothing to it.** Every
+Trigger the stage evaluates, every Condition form it compares, and every
+`effectType` it applies is one of the values §3, §8.1, and §8.2 define; each
+effect reaches the runtime carrier §8.5 references for it, the equip-slot
+resolution order is §4's, and the once-per-root-event safeguard is §5's. No
+Trigger, Condition, effect, magnitude, threshold, lifetime, state member, event,
+or wire member is added by it, and no Relic is recognised by its `Name` or its
+`RelicDefinitionId` (§8.2 item 1). `Burning Curse` remains deferred and
+unprovisioned (§6 note 3, §8.5 item 5): step 11 evaluates no static-modifier
+Relic, and no placeholder was inserted for one.
+
+**Runtime contracts are now complete for two effect types.** `CardCost`'s runtime
+carrier and composition were decided by TASK-134 and applied (`GAME_STATE.md`
+§2.3.5/§5.1.3, `CARD_RULES.md` §3.6); `ATK`'s were decided by TASK-136 and
+applied (`GAME_STATE.md` §2.3.7/§5.1.4, `COMBAT_RULES.md` §5.6). `Power`'s is
+`Immediate` and leaves no standing modification (§8.3 item 3), and `Crit`'s
+`NextAttack` representation already existed (`GAME_STATE.md` §2.3.4, `ADR-017`).
+
+**The Relic × BuffDebuff ATK interaction is resolved.** The composition contract
+between a Relic Battle-lifetime `ATK` modifier and a Turn-based `BuffDebuff`
+`TargetStat = "ATK"` modifier when both are live on the same Pet attack is
+resolved by TASK-137 and canonically authored at `COMBAT_RULES.md` §5.6.6.
+Coexistence, signed composition, single truncation, and independent carrier
+lifetimes are fully specified, and `GAME_RULES.md` §17 step 11 composes both
+carriers through that one rule.

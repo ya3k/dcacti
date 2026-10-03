@@ -152,7 +152,13 @@ public sealed class BattleHubCardCastTests : IClassFixture<ApiIntegrationTests.A
         Assert.Equal(1, eventsPayload.GetProperty("serverSequence").GetInt32());
 
         var eventsArray = eventsPayload.GetProperty("events");
-        Assert.Equal(1, eventsArray.GetArrayLength());
+
+        // GAME_EVENTS.md §2 item 4 / SIGNALR_PROTOCOL.md §3.2.24 (D-7, D-8): a Card
+        // cast that pays a cost emits the CardCast AND one PowerChanged for that
+        // cost mutation — `source = "card"`, the negative delta the spend applied,
+        // and the resulting Power. The cost is this cast's only Power mutation
+        // (Heal grants no Power), so exactly two items arrive.
+        Assert.Equal(2, eventsArray.GetArrayLength());
 
         var cardCastWireDto = eventsArray[0];
         Assert.Equal("CardCast", cardCastWireDto.GetProperty("type").GetString());
@@ -163,6 +169,12 @@ public sealed class BattleHubCardCastTests : IClassFixture<ApiIntegrationTests.A
         Assert.False(cardCastWireDto.TryGetProperty("cost", out _));
         Assert.False(cardCastWireDto.TryGetProperty("effects", out _));
         Assert.False(cardCastWireDto.TryGetProperty("effectSummary", out _));
+
+        var powerChangedWireDto = eventsArray[1];
+        Assert.Equal("PowerChanged", powerChangedWireDto.GetProperty("type").GetString());
+        Assert.Equal(-20, powerChangedWireDto.GetProperty("delta").GetInt32());
+        Assert.Equal(30, powerChangedWireDto.GetProperty("power").GetInt32());
+        Assert.Equal("card", powerChangedWireDto.GetProperty("source").GetString());
 
         await hubConnection.StopAsync();
     }

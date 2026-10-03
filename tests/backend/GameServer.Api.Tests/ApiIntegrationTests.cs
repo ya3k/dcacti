@@ -258,10 +258,9 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         // The hub is a thin transport boundary (ARCHITECTURE.md §1, §2.1), and the
         // two directions it carries are distinct (SIGNALR_PROTOCOL.md §2, §3).
         //
-        // `PetSkillCast` is a §2 client → server method that is intentionally NOT
-        // implemented; `GetBattleState` is §7's client → server reconnect/resync
-        // method, also not implemented. Neither is an invokable hub method, so a
-        // client invocation fails.
+        // `PetSkillCast` is deliberately NOT in this list: §2's Pet Skill cast method
+        // is implemented, so it is a real invokable hub method. Its contract is
+        // covered by BattleHubPetSkillCastTests.
         //
         // `ReceiveEvents` is in this list for the opposite reason: it is a §3
         // **Server → Client** delivery — a client-side handler the server invokes
@@ -275,10 +274,15 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         // `JoinBattle` is the group join that triggers the initial-state push (§1.2, §4.1),
         // `Swap` is the §2 Swap gameplay method, and `CardCast` is the §2 Basic Card
         // cast gameplay method.
+        //
+        // `GetBattleState` is deliberately NOT in this list either: §7's
+        // reconnect/resync snapshot method is now implemented, so it is a real
+        // invokable hub method. Its contract is covered by
+        // BattleHubReconnectRecoveryTests.
         var hubConnection = BuildHubConnection();
         await hubConnection.StartAsync();
 
-        foreach (var method in new[] { "PetSkillCast", "GetBattleState", "ReceiveEvents" })
+        foreach (var method in new[] { "ReceiveEvents" })
         {
             await Assert.ThrowsAnyAsync<Exception>(() =>
                 hubConnection.InvokeAsync<object>(method));
@@ -2486,13 +2490,34 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
             var expectedEvents = committed.Events
                 .Concat(charged.Charges.Select(BattleEvent.ForPassiveCharged))
-                .Concat(charged.Triggers.Select(BattleEvent.ForPassiveTriggered))
-                .Concat(new[]
-                {
-                    BattleEvent.ForDamageCalculated(playerDamage.Calculation),
-                    BattleEvent.ForDamageDealt(playerDamage.DamageDealt),
-                    BattleEvent.ForDamageTaken(playerDamage.DamageTaken),
-                });
+                .Concat(charged.Triggers.Select(BattleEvent.ForPassiveTriggered));
+
+            // GAME_RULES.md §17 step 13 / GAME_EVENTS.md §2 item 4: the Power stage
+            // writes the generated Power and reports its own mutation with
+            // source="match". It sits after step 11 (the Relic stage's reports are
+            // already in committed.Events) and before the damage instances of steps
+            // 15–17. The delta is read from the single clamp site's own result, so a
+            // generation the 100 cap absorbs is reported as the change it produced —
+            // and a Swap that generated no Power emits nothing.
+            var step13Power = GameServer.Domain.Match3.ResourceGenerator.ApplyPower(
+                before.PetState,
+                committed.Resources);
+
+            if (step13Power.Power != before.PetState.Power)
+            {
+                expectedEvents = expectedEvents.Append(BattleEvent.ForPowerChanged(
+                    new PowerChangedEvent(
+                        PowerChangeSource.Match,
+                        step13Power.Power - before.PetState.Power,
+                        step13Power.Power)));
+            }
+
+            expectedEvents = expectedEvents.Concat(new[]
+            {
+                BattleEvent.ForDamageCalculated(playerDamage.Calculation),
+                BattleEvent.ForDamageDealt(playerDamage.DamageDealt),
+                BattleEvent.ForDamageTaken(playerDamage.DamageTaken),
+            });
 
             // The fixture Boss has 5000 HP and this Swap deals far less, so the Boss
             // survives and the full Boss Response runs. The branch is expressed from
@@ -3349,6 +3374,12 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
         // Every item is a serialized flat JSON object carrying the documented string
         // discriminator — not a numeric enum ordinal (§3.2.2 items 2–3).
+        //
+        // The allowed set is §3.2.2 item 2's closed discriminator list, not a guess at
+        // which subset a particular Swap happens to produce: which stages emit depends
+        // on the generated board and on whether the Boss's Skill fires, so a narrower
+        // list would make this assertion depend on the random board rather than on the
+        // contract.
         foreach (var e in events)
         {
             Assert.Equal(JsonValueKind.Object, e.ValueKind);
@@ -3369,6 +3400,19 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                     // terminal outcomes, on the same batch (§3 item 1: the batch is
                     // atomic).
                     "BossSkillCast", "BattleWon", "BattleLost",
+                    // §3.2.20–§3.2.21: the cast stages' two events. They travel in this
+                    // same batch on this same path — a Swap does not emit them, but a
+                    // batch that does must not be rejected for carrying a documented
+                    // name.
+                    "CardCast", "PetSkillCast",
+                    // §3.2.23: the Relic stage's report for a Relic whose effect applied
+                    // at GAME_RULES.md §17 step 11.
+                    "RelicTriggered",
+                    // §3.2.24: the Power report. Every authoritative PetState.Power
+                    // mutation emits one from the stage that owns it, so a Swap's batch
+                    // carries the Match generation's ("match") and/or the Boss Response's
+                    // drain ("boss") alongside the Relic stage's ("relic").
+                    "PowerChanged",
                 });
 
             // §3.2.2 item 4 / §3.2.5 item 5: the discriminator is always present and
@@ -3424,6 +3468,11 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                 // `reward summary`, whose absence item 3 records as deferred.
                 "BattleWon" => new[] { "type", "outcome", "finalBossHp", "finalPlayerHp" },
                 "BattleLost" => new[] { "type", "outcome", "finalBossHp", "finalPlayerHp" },
+                // §3.2.24: the signed change, the resulting Power, and which stage
+                // owns the mutation — exactly four members, no more. The Swap path
+                // emits the Match stage's generation and the Boss Response's drain,
+                // so `source` here carries "match" and/or "boss".
+                "PowerChanged" => new[] { "type", "delta", "power", "source" },
                 _ => throw new InvalidOperationException($"Undocumented event type on the wire: {type}."),
             };
 
@@ -3601,10 +3650,23 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             BattleEventType.CardCast => BattleEventWireDto.CardCast(
                 e.CardCast.CardId),
 
+            // §3.2.23: the triggered Relic's owned instance identity and nothing else.
+            BattleEventType.RelicTriggered => BattleEventWireDto.RelicTriggered(
+                e.RelicTriggered.RelicId),
+
+            // §3.2.24: the signed change, the resulting Power, and the owning stage's
+            // projected lowercase contract name. The projection reads the Domain value
+            // and lowercases it, exactly as the production projection does — so the
+            // expectation tracks the documented value set rather than restating it.
+            BattleEventType.PowerChanged => BattleEventWireDto.PowerChanged(
+                e.PowerChanged.Delta,
+                e.PowerChanged.Power,
+                e.PowerChanged.Source.ToString().ToLowerInvariant()),
+
             _ => throw new ArgumentOutOfRangeException(
                 nameof(e),
                 e.Type,
-                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.20, §3.3)."),
+                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.24, §3.3)."),
         };
     }
 

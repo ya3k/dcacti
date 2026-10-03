@@ -344,6 +344,76 @@ public record CardCastResponse(bool Accepted, string? Reason);
 public record PetSkillCastResponse(bool Accepted, string? Reason);
 
 /// <summary>
+/// The reconnect/resync snapshot response (<c>SIGNALR_PROTOCOL.md</c> §7, §5;
+/// <c>ADR-008</c>).
+///
+/// <code>
+/// GetBattleState(battleId)
+///         ↓
+/// {
+///   accepted:       true,
+///   serverSequence: BattleState.Sequence,
+///   state:          BattleStateUpdatedPayload
+/// }
+/// </code>
+///
+/// <b>The snapshot is the same projection the <c>BattleStateUpdated</c> push
+/// carries.</b> <c>state</c> is the §4 payload itself — <c>battleId</c>,
+/// <c>turn</c>, <c>sequence</c>, <c>board</c>, <c>rngSeed</c>, <c>rngState</c>,
+/// <c>playerState</c>, and <c>petState</c> — produced by the one
+/// <see cref="BattleHub.ToPayload(BattleState)"/> mapping the push uses, so
+/// recovery and join cannot drift apart and neither a recovery-only schema nor a
+/// second state-push method is introduced (§4 item 11, §7). Because the client
+/// re-renders from this snapshot rather than replaying events (§7.2), the
+/// snapshot must carry everything a resolution produced — and it does, because
+/// every one of those values is <c>BattleState</c> (<c>GAME_STATE.md</c> §5.3
+/// items 1–4).
+///
+/// <b><c>serverSequence</c> is <c>BattleState.Sequence</c>.</b> It is the same
+/// value §3's <c>ReceiveEvents</c> envelope and the §6 ordering rules use, read
+/// from the committed record rather than calculated here. Recovery is a read, so
+/// it is never incremented or re-derived by the request that asks for it
+/// (<c>GAME_STATE.md</c> §5 item 1, §5.2 item 3).
+///
+/// <b><c>PlayerId</c> is not a member, and neither is any other server-only
+/// field.</b> The owner identity is excluded from the snapshot projection
+/// (<c>SIGNALR_PROTOCOL.md</c> §7.1, <c>GAME_STATE.md</c> §2.8 item 3,
+/// <c>ADR-014</c> decision 3), and no <c>playerId</c>/<c>discordUserId</c>/
+/// <c>userId</c>/<c>ownerId</c> member is added for convenience: ownership is
+/// decided server-side before this payload is built.
+/// </summary>
+/// <param name="Accepted">
+/// <c>true</c> when the caller owns the battle and its snapshot is carried;
+/// <c>false</c> when the request is rejected and no state is returned. The
+/// envelope is the §5 one, reused rather than a second acknowledgement shape.
+/// </param>
+/// <param name="ServerSequence">
+/// The authoritative <c>BattleState.Sequence</c> of the recovered snapshot, or
+/// <c>null</c> when <paramref name="Accepted"/> is <c>false</c> — a rejected
+/// request has no sequence to report.
+/// </param>
+/// <param name="State">
+/// The authoritative snapshot projected exactly as the §4
+/// <c>BattleStateUpdated</c> push projects it, or <c>null</c> when
+/// <paramref name="Accepted"/> is <c>false</c>. It carries no
+/// <c>playerId</c> and no other server-only member.
+/// </param>
+/// <param name="Reason">
+/// The documented rejection code, or <c>null</c> when
+/// <paramref name="Accepted"/> is <c>true</c>. <c>BATTLE_NOT_FOUND</c> is the one
+/// value on this path: it is the code §7.3 names for a snapshot that cannot be
+/// recovered, and it covers an unknown battle, an expired record, and a battle
+/// owned by another Player as the same answer (<c>REDIS_STATE.md</c> §3,
+/// <c>API_CONTRACTS.md</c> §4 notes 6–7), so the rejection discloses neither
+/// existence nor ownership.
+/// </param>
+public record GetBattleStateResponse(
+    [property: JsonPropertyName("accepted")] bool Accepted,
+    [property: JsonPropertyName("serverSequence")] int? ServerSequence,
+    [property: JsonPropertyName("state")] BattleStateUpdated? State,
+    [property: JsonPropertyName("reason")] string? Reason);
+
+/// <summary>
 /// The <c>ReceiveEvents</c> delivery payload
 /// (<c>SIGNALR_PROTOCOL.md</c> §3).
 ///
@@ -417,9 +487,15 @@ public record ReceiveEventsPayload(
 /// calls through <c>SendAsync</c> and are never invokable.
 ///
 /// <c>CardCast</c> is implemented for Basic Cards (<c>CARD_RULES.md</c> §2, §3).
-/// <c>PetSkillCast</c> (§2) and <c>GetBattleState</c> (§7) are
-/// client → server methods that are intentionally NOT implemented: they require
-/// Pet Skill Card resolution and reconnect recovery, which are out of scope.
+/// <c>PetSkillCast</c> is implemented too, and its client → server method surface
+/// is owned by <c>SIGNALR_PROTOCOL.md</c> §2.
+///
+/// <c>GetBattleState</c> (<c>§7</c>) <b>is</b> implemented — it is the
+/// client-requested snapshot recovery of <c>ADR-008</c>, resolved entirely
+/// server-side from the authenticated caller's own battle. It is not a second
+/// state path: it returns the same <c>§4</c> projection the
+/// <c>BattleStateUpdated</c> push carries, and it adds no method, event, or
+/// member to the protocol (<c>§4</c> item 11, <c>§7</c>, <c>§8</c> item 8).
 ///
 /// <c>ReceiveEvents</c> is the opposite direction: it is a server → client
 /// delivery (§3), implemented by the accepted-action paths below, and it must never
@@ -542,6 +618,133 @@ public class BattleHub : Hub
 
         await Clients.Caller.SendAsync("BattleStateUpdated", ToPayload(state));
     }
+
+    /// <summary>
+    /// Returns the current authoritative battle snapshot for reconnect/resync
+    /// (<c>SIGNALR_PROTOCOL.md</c> §7; <c>ADR-008</c>; <c>GAME_STATE.md</c> §5.3).
+    ///
+    /// <code>
+    /// authenticated caller              (§1 items 3–5, ADR-015 D6)
+    ///         ↓
+    /// caller PlayerId                   (this hub — one identity read)
+    ///         ↓
+    /// Application ownership + read      (BattleStateService, §2.8, §4 note 7)
+    ///         ↓
+    /// active-state record               (REDIS_STATE.md §2 item 2)
+    ///         ↓
+    /// §4 wire projection                (the same mapping the push uses)
+    ///         ↓
+    /// caller                            (this method's return value)
+    /// </code>
+    ///
+    /// <b>This is §7's snapshot recovery, not §4's join push.</b> §4 delivers
+    /// state unsolicited when a client joins a group and is not a request; §7 is a
+    /// client-requested full snapshot for a client that has lost synchronization.
+    /// The two are not interchangeable and §7.2 keeps this one snapshot-based:
+    /// the client discards its local prediction and re-renders from this value,
+    /// and it never replays missed events. No event log, replay channel, or
+    /// reconstruction from <c>ReceiveEvents</c> exists or is introduced here
+    /// (<c>ADR-008</c>, <c>ARCHITECTURE.md</c> §5.2, §8 item 8).
+    ///
+    /// <b>It is a read.</b> The request resolves no action: it validates no Swap,
+    /// exchanges nothing, increments no <c>Sequence</c>, begins no <c>Turn</c>,
+    /// changes no state, and emits no Battle Event
+    /// (<c>GAME_STATE.md</c> §5.1 item 1, §5.2 item 3). It therefore writes
+    /// nothing back and broadcasts nothing — the snapshot is this method's own
+    /// return value, delivered to the caller only (§5 item 4, §7.1).
+    ///
+    /// <b>The hub stays thin.</b> It performs exactly two things: it reads the
+    /// caller's identity from the principal the authentication boundary already
+    /// validated, and it delegates to the Application layer, which owns the store
+    /// read and the ownership comparison (<c>ARCHITECTURE.md</c> §2.1 item 3).
+    /// No Redis type, key, or command appears here; no gameplay value is computed,
+    /// derived, or adjusted; and no authorization rule is decided here beyond the
+    /// single session check <c>OnConnectedAsync</c> already establishes.
+    ///
+    /// <b>The caller's identity comes from the session, never the request.</b>
+    /// No <c>playerId</c> parameter, member, or header selects or stands in for
+    /// it (<c>API_CONTRACTS.md</c> §4 note 7, <c>GAME_STATE.md</c> §2.8 item 4).
+    /// A principal carrying no <c>player_id</c> identifies nobody and is rejected
+    /// as <c>BATTLE_NOT_FOUND</c> rather than being trusted into a lookup.
+    ///
+    /// <b>Unknown, expired, and foreign are one answer.</b> §7.3 makes an expired
+    /// or cleared record <c>BATTLE_NOT_FOUND</c> (<c>REDIS_STATE.md</c> §3), and
+    /// §4 note 7 makes a battle the caller does not own the same code, so a
+    /// rejection reveals neither the existence of another Player's battle nor
+    /// which of the three cases occurred, and no <c>PlayerId</c>, ownership
+    /// value, or store detail is included in it. No Redis-specific failure is
+    /// exposed either: a store failure surfaces as its own failure rather than
+    /// being reported as absence (<c>IBattleStateRepository</c>).
+    ///
+    /// <b>The snapshot is the §4 projection.</b> It is produced by the same
+    /// <see cref="ToPayload(BattleState)"/> mapping the <c>BattleStateUpdated</c>
+    /// push uses, so recovery is wire-compatible with an ordinary state push —
+    /// including <c>petState.equippedCards</c> (§4.3 item 13) — and no
+    /// recovery-only schema exists. The server-only <c>BattleState.PlayerId</c> is
+    /// absent from it (<c>GAME_STATE.md</c> §2.8 item 3, <c>ADR-014</c>
+    /// decision 3).
+    /// </summary>
+    /// <param name="battleId">
+    /// The battle to recover (<c>GAME_STATE.md</c> §2.0.1) — the id the client
+    /// obtained from <c>POST /api/battle/start</c> (<c>SIGNALR_PROTOCOL.md</c>
+    /// §1.1).
+    /// </param>
+    /// <returns>
+    /// The §5 acknowledgement carrying the snapshot and its
+    /// <c>serverSequence</c> when the caller owns the battle, or
+    /// <c>accepted: false</c> with <c>BATTLE_NOT_FOUND</c> when it cannot be
+    /// recovered.
+    /// </returns>
+    public async Task<GetBattleStateResponse> GetBattleState(string battleId)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
+
+        // ADR-015 D6 / §1 items 3–5: one identity read of the principal the
+        // authentication boundary validated. It is not a second authentication
+        // mechanism — no token is parsed here — and an identity-less principal
+        // resolves to a rejection rather than to a default Player.
+        var callerPlayerId = AuthenticatedPlayer.GetPlayerIdFromPrincipal(Context.User);
+
+        if (callerPlayerId is null)
+        {
+            return new GetBattleStateResponse(
+                Accepted: false,
+                ServerSequence: null,
+                State: null,
+                Reason: BattleNotFoundReason);
+        }
+
+        var state = await _battles.GetOwnedBattleStateAsync(battleId, callerPlayerId);
+
+        // §7.3 / REDIS_STATE.md §3 / API_CONTRACTS.md §4 notes 6–7: unknown,
+        // expired, and not-the-caller's are one documented answer, so nothing
+        // distinguishes them in the response and no state is returned.
+        if (state is null)
+        {
+            return new GetBattleStateResponse(
+                Accepted: false,
+                ServerSequence: null,
+                State: null,
+                Reason: BattleNotFoundReason);
+        }
+
+        // §7.1: the authoritative snapshot, projected exactly as the §4 push
+        // projects it, plus its Sequence. Both are read from the committed record
+        // — nothing is incremented, derived, or recalculated by this read.
+        return new GetBattleStateResponse(
+            Accepted: true,
+            ServerSequence: state.Sequence,
+            State: ToPayload(state),
+            Reason: null);
+    }
+
+    /// <summary>
+    /// The documented rejection code for a snapshot that cannot be recovered
+    /// (<c>SIGNALR_PROTOCOL.md</c> §7.3) — an unknown battle, an expired record,
+    /// or one the caller does not own (<c>REDIS_STATE.md</c> §3,
+    /// <c>API_CONTRACTS.md</c> §4 note 7). No other code exists on this path.
+    /// </summary>
+    private const string BattleNotFoundReason = "BATTLE_NOT_FOUND";
 
     /// <summary>
     /// Resolves one player Swap action (<c>SIGNALR_PROTOCOL.md</c> §2, §2.1).

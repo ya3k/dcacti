@@ -4,10 +4,15 @@ import { resolve } from 'node:path';
 import { ResultScene } from '../src/game/scenes/ResultScene';
 import type { ResultSceneData } from '../src/game/scenes/ResultScene';
 import { BattleScene } from '../src/game/scenes/BattleScene';
+import { GameRuntime } from '../src/game/runtime/GameRuntime';
 import { RUNTIME_REGISTRY_KEY } from '../src/game/runtime/RuntimeRegistry';
 import { INITIAL_RUNTIME_STATE } from '../src/state/GameRuntimeState';
 import type { GameRuntimeState } from '../src/state/GameRuntimeState';
 import type { BattleEventsEnvelope, RuntimeBattleState } from '../src/game/runtime/GameRuntimeEvents';
+import type {
+  BattleResultResponse,
+  RewardSummaryResponse,
+} from '../src/services/api/BattleModels';
 
 vi.mock('phaser', () => ({
   AUTO: 'AUTO',
@@ -23,15 +28,27 @@ interface SceneHarnessOptions {
   state?: GameRuntimeState;
   withRuntime?: boolean;
   battleState?: RuntimeBattleState | null;
+  /**
+   * The result the mock runtime's `getBattleResult` resolves with (TASK-149).
+   * A rejected promise models the documented `404 BATTLE_NOT_FOUND` /
+   * `401 UNAUTHENTICATED` outcomes (API_CONTRACTS.md §4 notes 6–7).
+   */
+  battleResult?: BattleResultResponse | Error;
 }
 
 function createSceneHarness(options: SceneHarnessOptions = {}) {
-  const { state = INITIAL_RUNTIME_STATE, withRuntime = true, battleState = null } = options;
+  const {
+    state = INITIAL_RUNTIME_STATE,
+    withRuntime = true,
+    battleState = null,
+    battleResult,
+  } = options;
   const runtimeListeners = new Set<(event: { state: GameRuntimeState }) => void>();
   const battleStateListeners = new Set<(state: RuntimeBattleState) => void>();
   const battleEventListeners = new Set<(envelope: BattleEventsEnvelope) => void>();
   const texts: Array<{ text: string; color?: string }> = [];
   const sceneStarted: Array<{ key: string; data?: unknown }> = [];
+  const battleResultRequests: string[] = [];
 
   const runtime = {
     getState: () => state,
@@ -55,6 +72,16 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       };
     },
     requestAction: () => Promise.resolve({ accepted: true }),
+    getBattleResult: (battleId: string) => {
+      battleResultRequests.push(battleId);
+      if (battleResult instanceof Error) {
+        return Promise.reject(battleResult);
+      }
+      if (battleResult === undefined) {
+        return Promise.reject(new Error('BATTLE_NOT_FOUND'));
+      }
+      return Promise.resolve(battleResult);
+    },
     setEngineStatus: vi.fn(),
   };
 
@@ -125,6 +152,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     runtimeListeners,
     battleStateListeners,
     battleEventListeners,
+    battleResultRequests,
     emitBattleEvents: (envelope: BattleEventsEnvelope) => {
       for (const listener of battleEventListeners) {
         listener(envelope);
@@ -233,7 +261,7 @@ describe('ResultScene presentation (TDD.md §2.1, SIGNALR_PROTOCOL.md §3.2.19)'
     expect(() => runScene(scene, ctx, 'shutdown')).not.toThrow();
   });
 
-  it('contains no client-side outcome derivation or reward logic', () => {
+  it('contains no client-side outcome derivation or direct transport access', () => {
     const source = readFileSync(
       resolve(__dirname, '../src/game/scenes/ResultScene.ts'),
       'utf8'
@@ -241,18 +269,321 @@ describe('ResultScene presentation (TDD.md §2.1, SIGNALR_PROTOCOL.md §3.2.19)'
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/(^|[^:])\/\/.*$/gm, '$1');
 
+    // TASK-149 stage advance. This assertion previously also listed
+    // 'RewardSummary', '/api/battle/', and 'getBattleResult' as forbidden,
+    // because no reward member was rendered and the scene reached no result
+    // route. TASK-149 implements exactly that: `ResultScene` now reads the
+    // persisted result through the GameRuntime port and renders its `rewards`
+    // (API_CONTRACTS.md §4 note 1, DATABASE.md §1). The historical *assertion*
+    // is superseded by the current authoritative contract, not TASK-087 itself
+    // (completed tasks are immutable, TASK_LIFECYCLE.md §3).
+    //
+    // Every property that still holds is preserved: the scene derives no
+    // outcome from HP, and it still reaches no transport directly — the
+    // remaining forbidden tokens are the transport implementations, and
+    // RuntimeBoundaries.test.ts independently enforces the same boundary for
+    // every registered scene.
     for (const forbidden of [
       'finalBossHp <= 0',
       'finalBossHp === 0',
       'finalPlayerHp <= 0',
       'finalPlayerHp === 0',
-      'RewardSummary',
-      '/api/battle/',
-      'getBattleResult',
       'ApiService',
+      'services/api/ApiService',
+      'services/realtime',
+      '@microsoft/signalr',
+      'HubConnection',
     ]) {
       expect(source, `ResultScene must not contain "${forbidden}"`).not.toContain(forbidden);
     }
+
+    // The result route is reached through the runtime port, never spelled as a
+    // URL or fetched by the scene (ARCHITECTURE.md §2.2.1 rule 1).
+    expect(source).not.toMatch(/\bfetch\s*\(/);
+    expect(source).toContain('readRuntime');
+  });
+});
+
+describe('ResultScene reward presentation (TASK-149, API_CONTRACTS.md §4 note 1, DATABASE.md §1)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** One delivered `RewardSummary` — the 8-member contract in force (`DATABASE.md` §1). */
+  function deliveredRewards(overrides: Partial<RewardSummaryResponse> = {}): RewardSummaryResponse {
+    return {
+      playerXpGained: 100,
+      newPlayerXp: 400,
+      playerLeveledUp: true,
+      newPlayerLevel: 5,
+      petXpGained: 100,
+      newPetXp: 900,
+      petLeveledUp: false,
+      newPetLevel: 10,
+      ...overrides,
+    };
+  }
+
+  function deliveredResult(rewards: RewardSummaryResponse): BattleResultResponse {
+    return {
+      battleId: 'b-1',
+      outcome: 'victory',
+      rewards,
+      durationTurns: 4,
+    };
+  }
+
+  async function renderWithResult(
+    data: ResultSceneData,
+    battleResult: BattleResultResponse | Error
+  ) {
+    const harness = createSceneHarness({ battleResult });
+    const scene = new ResultScene();
+    const ctx = harness.context(scene, 'ResultScene');
+
+    runScene(scene, ctx, 'create', data);
+
+    // The reward read is asynchronous; the outcome render is not, so flushing
+    // the microtask queue is what lets the delivered members land.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    return harness;
+  }
+
+  const outcomeData: ResultSceneData = {
+    outcome: 'victory',
+    finalBossHp: 0,
+    finalPlayerHp: 320,
+    battleId: 'b-1',
+  };
+
+  it('reads the persisted result through the runtime port, once, by battleId', async () => {
+    const harness = await renderWithResult(outcomeData, deliveredResult(deliveredRewards()));
+
+    expect(harness.battleResultRequests).toEqual(['b-1']);
+  });
+
+  it('renders every documented Player-track member verbatim (DATABASE.md §1 item 1)', async () => {
+    const harness = await renderWithResult(
+      outcomeData,
+      deliveredResult(
+        deliveredRewards({
+          playerXpGained: 100,
+          newPlayerXp: 400,
+          playerLeveledUp: true,
+          newPlayerLevel: 5,
+        })
+      )
+    );
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('+100 XP');
+    expect(rendered).toContain('400');
+    expect(rendered).toContain('5');
+    expect(rendered).toMatch(/LEVEL UP/);
+  });
+
+  it('renders every documented Pet-track member verbatim (DATABASE.md §1 item 2)', async () => {
+    const harness = await renderWithResult(
+      outcomeData,
+      deliveredResult(
+        deliveredRewards({
+          petXpGained: 100,
+          newPetXp: 900,
+          petLeveledUp: false,
+          newPetLevel: 10,
+        })
+      )
+    );
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('900');
+    expect(rendered).toContain('10');
+  });
+
+  it('renders both tracks distinguishably', async () => {
+    const harness = await renderWithResult(outcomeData, deliveredResult(deliveredRewards()));
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('Player:');
+    expect(rendered).toContain('Pet:');
+    expect(rendered).toContain('REWARDS');
+  });
+
+  it('renders a defeat’s zero grants as 0, never as an omission (DATABASE.md §1 item 5)', async () => {
+    const harness = await renderWithResult(
+      { ...outcomeData, outcome: 'defeat', finalPlayerHp: 0 },
+      deliveredResult(
+        deliveredRewards({
+          playerXpGained: 0,
+          petXpGained: 0,
+          newPlayerXp: 300,
+          newPetXp: 800,
+          playerLeveledUp: false,
+          petLeveledUp: false,
+        })
+      )
+    );
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('+0 XP');
+    expect(rendered).not.toMatch(/LEVEL UP/);
+  });
+
+  it('renders a null resulting value as unavailable, never as 0 (DATABASE.md §1 item 4)', async () => {
+    const harness = await renderWithResult(
+      outcomeData,
+      deliveredResult(
+        deliveredRewards({
+          newPlayerXp: null,
+          newPlayerLevel: null,
+          playerLeveledUp: null,
+          newPetXp: null,
+          newPetLevel: null,
+          petLeveledUp: null,
+        })
+      )
+    );
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('—');
+    // A null member must not become a number.
+    expect(rendered).not.toContain('XP 0');
+    expect(rendered).not.toContain('Level 0');
+  });
+
+  it('renders the delivered leveledUp flags without re-deriving them', async () => {
+    // Contrary on purpose: the Level is unchanged numerically, but the server
+    // reports the level-up. The scene prints what was delivered.
+    const harness = await renderWithResult(
+      outcomeData,
+      deliveredResult(
+        deliveredRewards({
+          newPlayerLevel: 4,
+          playerLeveledUp: true,
+          newPetLevel: 10,
+          petLeveledUp: false,
+        })
+      )
+    );
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toMatch(/LEVEL UP/);
+  });
+
+  it('leaves the outcome presentation intact when the result read is rejected (API_CONTRACTS.md §4 notes 6–7)', async () => {
+    const harness = await renderWithResult(
+      outcomeData,
+      new Error('BATTLE_NOT_FOUND')
+    );
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toMatch(/VICTORY/i);
+    expect(rendered).toContain('Boss HP: 0');
+    expect(rendered).toContain('Player HP: 320');
+    // No reward value is fabricated for an unavailable result.
+    expect(rendered).not.toContain('REWARDS');
+  });
+
+  it('issues no result request when the handoff carries no battleId', async () => {
+    const harness = createSceneHarness({ battleResult: deliveredResult(deliveredRewards()) });
+    const scene = new ResultScene();
+    const ctx = harness.context(scene, 'ResultScene');
+
+    runScene(scene, ctx, 'create', {
+      outcome: 'victory',
+      finalBossHp: 0,
+      finalPlayerHp: 320,
+    });
+
+    await Promise.resolve();
+
+    expect(harness.battleResultRequests).toEqual([]);
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toMatch(/VICTORY/i);
+  });
+
+  it('issues no result request when no runtime is published', async () => {
+    const harness = createSceneHarness({ withRuntime: false });
+    const scene = new ResultScene();
+    const ctx = harness.context(scene, 'ResultScene');
+
+    runScene(scene, ctx, 'create', outcomeData);
+
+    await Promise.resolve();
+
+    expect(harness.battleResultRequests).toEqual([]);
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toMatch(/VICTORY/i);
+  });
+
+  it('renders the outcome before the reward read resolves', () => {
+    const harness = createSceneHarness({ battleResult: deliveredResult(deliveredRewards()) });
+    const scene = new ResultScene();
+    const ctx = harness.context(scene, 'ResultScene');
+
+    runScene(scene, ctx, 'create', outcomeData);
+
+    // Synchronously after create(), the outcome is already rendered while the
+    // reward read is still pending.
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toMatch(/VICTORY/i);
+    expect(rendered).toContain('Boss HP: 0');
+  });
+
+  it('cleans up reward presentation references on shutdown', () => {
+    const harness = createSceneHarness({ battleResult: deliveredResult(deliveredRewards()) });
+    const scene = new ResultScene();
+    const ctx = harness.context(scene, 'ResultScene');
+
+    runScene(scene, ctx, 'create', outcomeData);
+
+    expect(() => runScene(scene, ctx, 'shutdown')).not.toThrow();
+  });
+});
+
+describe('GameRuntime result port (TASK-149, API_CONTRACTS.md §4)', () => {
+  it('delegates getBattleResult to the ApiService method with the supplied battleId', async () => {
+    const delivered = {
+      battleId: 'b-9',
+      outcome: 'victory' as const,
+      rewards: {
+        playerXpGained: 100,
+        newPlayerXp: 400,
+        playerLeveledUp: true,
+        newPlayerLevel: 5,
+        petXpGained: 100,
+        newPetXp: 900,
+        petLeveledUp: false,
+        newPetLevel: 10,
+      },
+      durationTurns: 4,
+    };
+
+    const api = {
+      getBattleResult: vi.fn().mockResolvedValue(delivered),
+    };
+    const signalR = {} as never;
+
+    const runtime = new GameRuntime(signalR, api as never);
+    const result = await runtime.getBattleResult('b-9');
+
+    expect(api.getBattleResult).toHaveBeenCalledTimes(1);
+    expect(api.getBattleResult).toHaveBeenCalledWith('b-9');
+    // The response is transported unchanged — no member is rewritten.
+    expect(result).toEqual(delivered);
+  });
+
+  it('propagates a rejection without fabricating a result', async () => {
+    const api = {
+      getBattleResult: vi.fn().mockRejectedValue(new Error('BATTLE_NOT_FOUND')),
+    };
+
+    const runtime = new GameRuntime({} as never, api as never);
+
+    await expect(runtime.getBattleResult('b-9')).rejects.toThrow('BATTLE_NOT_FOUND');
   });
 });
 
@@ -310,6 +641,10 @@ describe('BattleScene outcome handoff (TASK-087, SIGNALR_PROTOCOL.md §3.2.19)',
         outcome: 'victory',
         finalBossHp: 37,
         finalPlayerHp: 812,
+        // TASK-149 adds the batch's battleId so ResultScene can address the
+        // documented result endpoint (API_CONTRACTS.md §4). The outcome members
+        // are unchanged.
+        battleId: 'b-1',
       },
     });
   });
@@ -338,6 +673,8 @@ describe('BattleScene outcome handoff (TASK-087, SIGNALR_PROTOCOL.md §3.2.19)',
         outcome: 'defeat',
         finalBossHp: 412,
         finalPlayerHp: 0,
+        // TASK-149: the batch's battleId travels with the outcome handoff.
+        battleId: 'b-2',
       },
     });
   });
@@ -385,6 +722,7 @@ describe('BattleScene outcome handoff (TASK-087, SIGNALR_PROTOCOL.md §3.2.19)',
           outcome: 'victory',
           finalBossHp: 0,
           finalPlayerHp: 250,
+          battleId: 'b-1',
         },
       },
     ]);

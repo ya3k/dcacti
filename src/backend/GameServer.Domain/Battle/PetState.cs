@@ -28,7 +28,13 @@ namespace GameServer.Domain.Battle;
 ///     │                          Passive events report (PASSIVE_RULES.md §1)
 ///     ├── PassiveProgress        current count vs. threshold                (§2)
 ///     ├── PassiveResetOverride?  only present for a non-default reset      (§4)
-///     └── StatusEffects[]        active Status Effect instances           (§2.3.1)
+///     ├── StatusEffects[]        active Status Effect instances           (§2.3.1)
+///     ├── NextAttackCritModifiers[]  temporary Crit modifiers awaiting a
+///     │                          qualifying attack's consumption           (§2.3.4)
+///     ├── ATKModifiers[]         applied, Battle-scoped ATK modifiers,
+///     │                          ordered by SourceIdentity                 (§2.3.7)
+///     └── CardCostModifiers[]    applied, Battle-scoped Card-cost
+///                                modifiers, in written order               (§2.3.5)
 /// </code>
 ///
 /// <b>This is the documented owner, not a new decision.</b> <c>GAME_STATE.md</c>
@@ -164,6 +170,19 @@ namespace GameServer.Domain.Battle;
 /// <c>GAME_STATE.md</c> §2.3) — the stat the Damage Pipeline's base damage is
 /// read from (<c>COMBAT_RULES.md</c> §3 step 1). Its documented MVP default is
 /// <see cref="DefaultATK"/>.
+///
+/// <b>It is the permanent/base ATK, and the Battle-scoped
+/// <see cref="ATKModifiers"/> collection never mutates it.</b> <c>GAME_STATE.md</c>
+/// §2.3.7 item 9 keeps this member the permanent/base value, and §5.1.4 item 6 is
+/// explicit: it "holds the base value for the whole battle and is never written by
+/// this lifecycle, never reset to the configuration default, and never adjusted by
+/// an arithmetic inverse", so <c>PetState.ATK = DefaultATK</c> is forbidden for the
+/// same source-blind reason §3.3 item 10 forbids <c>DefaultCrit</c>
+/// (<c>TASK-136</c> D5/D8). The value the Damage Pipeline consumes is the composed
+/// <c>EffectivePetATK</c>, which <c>COMBAT_RULES.md</c> §5.6.6 derives at attack
+/// resolution and which is <b>never stored</b> here or anywhere in
+/// <c>BattleState</c> (§5.6.6 item 8, §0 item 5). <see cref="DefaultATK"/> is
+/// therefore initialization data only, exactly as <see cref="DefaultCrit"/> is.
 /// </param>
 /// <param name="DEF">
 /// The active Pet's defense (<c>COMBAT_RULES.md</c> §1.1,
@@ -480,6 +499,144 @@ public readonly record struct PetState(
             other.NextAttackCritModifiers);
 
     /// <summary>
+    /// The Pet's applied, Battle-scoped ATK modifiers — one entry per active source
+    /// currently modifying this Pet's ATK (<c>GAME_STATE.md</c> §2.3.7;
+    /// <c>TASK-136</c> D1/D2).
+    ///
+    /// <code>
+    /// ATKModifier
+    /// ├── SourceIdentity          the replace/refresh and removal key
+    /// └── ATKModifierPercentage   signed percentage points
+    /// </code>
+    ///
+    /// <b>It is never <c>null</c>.</b> §2.3.7 item 6 makes the collection
+    /// always-present — "A Pet with no active ATK modifier holds an <b>empty</b>
+    /// <c>ATKModifiers[]</c> — it is never omitted, never <c>null</c>, and never
+    /// represented by a stored zero or a stored inactive flag. Absence of the
+    /// collection is not a representable state" — so it is initialized to the empty
+    /// collection and every write goes through this one member, which
+    /// <see cref="ATKModifiers"/> is the only code that does. That matters for value
+    /// equality as well as for reads: two states differing only in "unset" versus
+    /// "empty" are the same documented state, so they must compare equal
+    /// (§2.3.8 item 5's round-trip obligation).
+    ///
+    /// <b>It is ordered deterministically, and the order is not a gameplay rule.</b>
+    /// §2.3.7 item 7 fixes the element order as a <b>sort on
+    /// <see cref="ATKModifier.SourceIdentity"/></b> — "Unlike the sibling collections,
+    /// whose order records application or equip order, this collection's order is a
+    /// deterministic sort on the identity key, so the serialized order is reproducible
+    /// from the element set alone" — while §2.3.8 item 6 states that no rule reads
+    /// element positions. <c>REDIS_STATE.md</c> §7 item 16 draws the storage
+    /// consequence: a store must not be relied on to preserve insertion order for this
+    /// member, because two serializations of the same state are byte-identical. The
+    /// ordering is maintained by <see cref="ATKModifiers"/>, so a caller never sorts
+    /// this member itself.
+    ///
+    /// <b>It is not a second representation of ATK.</b> §2.3.7 item 9 keeps
+    /// <see cref="ATK"/> the permanent/base value, never mutated by an entry here, and
+    /// makes the composed <c>EffectivePetATK</c> a value <b>derived at attack
+    /// resolution</b> by <c>COMBAT_RULES.md</c> §5.6.6's composition rule — not stored
+    /// in <c>BattleState</c>, not a member here, and not a second representation of
+    /// the ATK stat (<c>GAME_STATE.md</c> §0 item 5).
+    ///
+    /// <b>Its lifetime is <c>Battle</c>, and it is not Turn-based.</b> §2.3.7 item 8:
+    /// there is no Turn countdown, no <c>RemainingTurns</c>, no <c>ExpiresAt</c>, no
+    /// step 19a participation, and no automatic end-of-Turn cleanup, and it is not
+    /// carried into a later battle — a new battle is a new <c>BattleState</c>. Removal
+    /// is source-scoped and is owned by §5.1.4 (see <see cref="ATKModifiers"/>).
+    ///
+    /// Its mutation — apply/refresh and source-specific removal — is owned by §5.1.4.
+    /// It is <b>not a wire member</b> (§2.3.7 item 10: no <c>ATKModifierApplied</c>,
+    /// <c>ATKModifierExpired</c>, or <c>ATKChanged</c> event or method exists), so it
+    /// is carried here as state, not delivered. It is likewise not a Redis-only
+    /// concern: it serializes with <c>BattleState</c> under the existing round-trip
+    /// obligation and adds no key and no Redis-only field
+    /// (<c>REDIS_STATE.md</c> §7 item 16).
+    /// </summary>
+    public ATKModifier[] ATKModifiers { get; init; } = [];
+
+    /// <summary>
+    /// Whether this state's ATK modifier collection holds the same elements in the
+    /// same order as another's — the structural comparison <c>GAME_STATE.md</c> §2.3.8
+    /// item 5's round-trip obligation requires.
+    ///
+    /// This is the same need <see cref="NextAttackCritModifiersEqual"/> answers for the
+    /// sibling collection, applied to this one.
+    /// </summary>
+    /// <param name="other">The state to compare the collection against.</param>
+    public bool ATKModifiersEqual(PetState other) =>
+        Battle.ATKModifiers.ModifiersEqual(ATKModifiers, other.ATKModifiers);
+
+    /// <summary>
+    /// The Pet's applied, Battle-scoped Card-cost modifiers — one entry per active
+    /// source currently reducing the cost of this Pet's Cards
+    /// (<c>GAME_STATE.md</c> §2.3.5; <c>TASK-134</c> D1/D2).
+    ///
+    /// <code>
+    /// CardCostModifier
+    /// ├── SourceIdentity           the replace/refresh and removal key
+    /// └── CostReductionPercentage  percentage points
+    /// </code>
+    ///
+    /// <b>It is never <c>null</c>.</b> §2.3.5 item 6 makes the collection
+    /// always-present — "Absence of the <i>collection</i> is not a representable
+    /// state. An empty collection is the statement 'no Card-cost modifier is active',
+    /// and there is no sentinel element, no null, and no omitted member standing in
+    /// for it" — so it is initialized to the empty collection and every write goes
+    /// through this one member, which <see cref="CardCostModifiers"/> is the only code
+    /// that does. As with the sibling collections, that makes "unset" and "empty" the
+    /// same documented state for value equality (§2.3.6 item 5's round-trip
+    /// obligation).
+    ///
+    /// <b>It lives on <c>PetState</c> because the effect's target is the Pet.</b>
+    /// §2.3.5 item 2 and <c>RELIC_RULES.md</c> §8.3 fix the <c>CardCost</c> effect's
+    /// <c>target</c> as <c>Pet</c>, so the modifier modifies the <b>active Pet's own
+    /// Card costs</b>. The Boss carries no such collection (§2.3.5 item 2), and Cards
+    /// are cast by the active Pet (<c>CARD_RULES.md</c> §3).
+    ///
+    /// <b>Its order is stable but not semantic, and it is not sorted.</b> §2.3.5
+    /// item 8 and §2.3.6 item 6 make ordering non-semantic while requiring it to be
+    /// preserved: "a round trip must still return the elements in the order they were
+    /// written". This is the deliberate contrast with <see cref="ATKModifiers"/>, whose
+    /// §2.3.7 item 7 order is a deterministic identity sort; a caller must therefore
+    /// not reorder this member, and <see cref="CardCostModifiers"/> preserves position
+    /// on refresh and on removal.
+    ///
+    /// <b>It is not a second representation of a Card's cost.</b> §2.3.5 item 4 leaves
+    /// the composition, its cap, and the arithmetic to <c>CARD_RULES.md</c> §3.6, whose
+    /// item 2 makes <c>EffectiveCardCost</c> a runtime value derived for the cast being
+    /// resolved — explicitly not a <c>PetState</c> member, not a <c>BattleState</c>
+    /// member, and not a Redis field. Authored <c>CardDefinition.PowerCost</c> is
+    /// likewise never mutated (§2.3.5 preamble).
+    ///
+    /// <b>Its lifetime is <c>Battle</c>, and it is not Turn-based.</b> §2.3.5 item 9 and
+    /// §5.1.3 items 3 and 5: there is no Turn countdown, no <c>RemainingTurns</c>, no
+    /// <c>ExpiresAt</c>, and no automatic cleanup, and the collection is not carried
+    /// into a later battle — a new battle is a new <c>BattleState</c> with an empty
+    /// collection. Removal is source-specific and is owned by §5.1.3 (see
+    /// <see cref="CardCostModifiers"/>).
+    ///
+    /// Its mutation — apply/refresh and source-specific removal — is owned by §5.1.3.
+    /// It is <b>not a wire member</b> (§2.3.5 item 10: no
+    /// <c>CardCostModifierApplied</c>, <c>CardCostModifierExpired</c>, or
+    /// <c>CardCostChanged</c> event or method exists), and it adds no Redis key and no
+    /// Redis-only field (<c>REDIS_STATE.md</c> §7 item 15).
+    /// </summary>
+    public CardCostModifier[] CardCostModifiers { get; init; } = [];
+
+    /// <summary>
+    /// Whether this state's Card-cost modifier collection holds the same elements in
+    /// the same order as another's — the structural comparison <c>GAME_STATE.md</c>
+    /// §2.3.6 item 5's round-trip obligation requires.
+    ///
+    /// This is the same need <see cref="ATKModifiersEqual"/> answers for the sibling
+    /// collection, applied to this one.
+    /// </summary>
+    /// <param name="other">The state to compare the collection against.</param>
+    public bool CardCostModifiersEqual(PetState other) =>
+        Battle.CardCostModifiers.ModifiersEqual(CardCostModifiers, other.CardCostModifiers);
+
+    /// <summary>
     /// The documented MVP starting <c>MaxHP</c> (<c>COMBAT_RULES.md</c> §1.1:
     /// "Max HP — maximum health — MVP default: 1000").
     ///
@@ -675,5 +832,20 @@ public readonly record struct PetState(
             // is always present and empty is its no-modifier value, never an
             // omission or a null.
             NextAttackCritModifiers = [],
+
+            // §2.3.7 item 6 / §5.1.4 item 1: the ATK modifier collection begins
+            // empty on the same documented basis. A modifier is applied by a source
+            // whose Trigger+Condition is met at GAME_RULES.md §17 step 11 during a
+            // resolution, and battle creation is not a resolution. The collection is
+            // always present — "it is never omitted, never null, and never
+            // represented by a stored zero or a stored inactive flag" — so empty is
+            // its no-modifier value rather than an omission.
+            ATKModifiers = [],
+
+            // §2.3.5 item 6 / §5.1.3 item 5: the Card-cost modifier collection
+            // begins empty for the same reason and with the same always-present
+            // rule, and §5.1.3 item 5 adds that it "needs no separate expiry step: a
+            // new battle is a new BattleState with an empty collection".
+            CardCostModifiers = [],
         };
 }

@@ -50,6 +50,13 @@ public class BattleStartServiceTests
     private const string BasicC = "card_basic_c";
 
     /// <summary>
+    /// The <c>RelicDefinitionId</c> every fixture's owned Relic instance
+    /// references (<c>DATABASE.md</c> §1: <c>Relic.RelicDefinitionId</c>), so the
+    /// battle-start path's definition resolution has a real reference to follow.
+    /// </summary>
+    private const string RelicDefinitionId = "relic_def_1";
+
+    /// <summary>
     /// A valid MVP Boss canonical technical Identity (<c>BOSS_RULES.md</c> §6.4) —
     /// never the Boss's display name.
     /// </summary>
@@ -769,6 +776,7 @@ public class BattleStartServiceTests
             Pets = new FakePetRepository(this);
             Cards = new FakeCardRepository(this);
             Relics = new FakeRelicRepository(this);
+            RelicDefinitions = new FakeRelicDefinitionLookup(this);
         }
 
         public BattleStateService Battles { get; }
@@ -785,6 +793,21 @@ public class BattleStartServiceTests
         internal FakeCardRepository Cards { get; }
 
         internal FakeRelicRepository Relics { get; }
+
+        /// <summary>
+        /// The Relic definition content read (<c>RELIC_RULES.md</c> §8,
+        /// <c>DATABASE.md</c> §1). The battle-start path resolves each equipped
+        /// instance's definition through it, once per battle, so
+        /// <c>GAME_RULES.md</c> §17 step 11 never queries PostgreSQL during a Swap
+        /// (<c>TDD.md</c> §4 item 3).
+        /// </summary>
+        internal FakeRelicDefinitionLookup RelicDefinitions { get; }
+
+        /// <summary>Whether the Relic definition rows resolve.</summary>
+        public bool RelicDefinitionsExist { get; set; } = true;
+
+        /// <summary>The <c>RelicDefinitionId</c> values the content read was asked for.</summary>
+        public List<string> RelicDefinitionReads { get; } = [];
 
         /// <summary>The owner of the selected Pet instance.</summary>
         public string PetOwner { get; set; } = Owner;
@@ -841,7 +864,13 @@ public class BattleStartServiceTests
         public Task<BattleStartResult> StartAsync(
             BattleStartRequest request,
             string playerId = Owner) =>
-            new BattleStartService(Pets, new CardLoadoutService(Cards), new RelicLoadoutService(Relics), Battles)
+            new BattleStartService(
+                Pets,
+                new CardLoadoutService(Cards),
+                new RelicLoadoutService(Relics),
+                Battles,
+                Relics,
+                RelicDefinitions)
                 .StartAsync(playerId, request);
 
         /// <summary>The Pet definition the fake repository serves.</summary>
@@ -1073,8 +1102,9 @@ public class BattleStartServiceTests
             Task.FromResult<RelicDefinition?>(null);
 
         /// <summary>
-        /// As <see cref="GetDefinitionAsync"/>: the battle-start path resolves no
-        /// Relic definition content, and the bulk read serves
+        /// As <see cref="GetDefinitionAsync"/>: this boundary resolves no Relic
+        /// definition through the repository — the battle-start path reads content
+        /// through <see cref="IRelicDefinitionLookup"/>. The bulk read serves
         /// <c>GET /api/relics</c> (<c>API_CONTRACTS.md</c> §5.4) rather than this
         /// boundary's caller.
         /// </summary>
@@ -1082,14 +1112,54 @@ public class BattleStartServiceTests
             IReadOnlyCollection<string> relicDefinitionIds,
             CancellationToken cancellationToken = default) =>
             throw new NotSupportedException(
-                "Battle start reads no Relic definition content; the bulk content read serves GET /api/relics.");
+                "Battle start reads no Relic definition content from this boundary; the content read is IRelicDefinitionLookup's.");
 
         private static Relic NewRelic(string instanceId) => new()
         {
             RelicInstanceId = instanceId,
             PlayerId = Owner,
-            RelicDefinitionId = "relic_def_1",
+            RelicDefinitionId = RelicDefinitionId,
             AcquiredAt = DateTimeOffset.UtcNow,
+        };
+    }
+
+    /// <summary>
+    /// The Relic definition content boundary (<c>DATABASE.md</c> §1), backed by the
+    /// harness's own flags.
+    ///
+    /// <b>The battle-start path reads it once per equipped slot.</b> Every equipped
+    /// instance references <see cref="RelicDefinitionId"/>, so a valid loadout
+    /// produces that many reads — and the returned definition is a well-formed
+    /// structured value (<c>RELIC_RULES.md</c> §8.1/§8.2), because a definition the
+    /// contract's own reader would reject could not stand in for provisioned
+    /// content.
+    /// </summary>
+    private sealed class FakeRelicDefinitionLookup : IRelicDefinitionLookup
+    {
+        private readonly Harness _harness;
+
+        internal FakeRelicDefinitionLookup(Harness harness)
+        {
+            _harness = harness;
+        }
+
+        public Task<RelicDefinition?> GetDefinitionAsync(
+            string relicDefinitionId,
+            CancellationToken cancellationToken = default)
+        {
+            _harness.RelicDefinitionReads.Add(relicDefinitionId);
+
+            return Task.FromResult<RelicDefinition?>(
+                _harness.RelicDefinitionsExist ? NewDefinition(relicDefinitionId) : null);
+        }
+
+        private static RelicDefinition NewDefinition(string relicDefinitionId) => new()
+        {
+            RelicDefinitionId = relicDefinitionId,
+            Name = "Test Relic",
+            Trigger = "OnMatchCount",
+            Condition = TestRelicEffects.Condition,
+            EffectDefinition = TestRelicEffects.Effect,
         };
     }
 }

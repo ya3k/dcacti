@@ -3,6 +3,7 @@ using GameServer.Application.Battle;
 using GameServer.Application.Cards;
 using GameServer.Application.Pets;
 using GameServer.Application.Players;
+using GameServer.Application.Relics;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -64,5 +65,25 @@ public class ApplicationRegistrationTests
             d => d.ServiceType == typeof(PlayerStarterGrantFactory));
 
         Assert.Equal(ServiceLifetime.Scoped, descriptor.Lifetime);
+    }
+
+    [Fact]
+    public void AddApplicationServices_ShouldRegisterRelicDefinitionLookupAsASingletonAdapter()
+    {
+        // DATABASE.md §1 / RELIC_RULES.md §8: the shared RelicDefinition content
+        // read is registered through the scope-factory adapter — the same
+        // registration shape as ICardDefinitionLookup — so a singleton consumer
+        // reads Relic content without capturing the scoped GameDbContext. It is
+        // built by a factory rather than by type, because the adapter is given
+        // the container's IServiceScopeFactory.
+        var services = new ServiceCollection();
+        services.AddApplicationServices();
+
+        var descriptor = Assert.Single(
+            services,
+            d => d.ServiceType == typeof(IRelicDefinitionLookup));
+
+        Assert.Equal(ServiceLifetime.Singleton, descriptor.Lifetime);
+        Assert.NotNull(descriptor.ImplementationFactory);
     }
 }

@@ -1,6 +1,21 @@
 # Card Rules
 
-**Version:** 1.6 (§4.1 — Iron Fang's `NextAttack` Crit scope now points at its
+**Version:** 1.7 (§3.6 added — the canonical owner of **Effective Card Cost**,
+per TASK-134 D4/D5 and the explicit Product Owner `EffectiveCardCost`
+fractional-value decision: `TotalReduction = min(sum(CostReductionPercentage),
+100)`, `RawEffectiveCardCost = CardDefinition.PowerCost × (100 − TotalReduction)
+/ 100`, `EffectiveCardCost = truncate(RawEffectiveCardCost)` toward zero, an
+integer with no minimum-cost rule; `CardDefinition.PowerCost` remains the
+authored/base value and is never mutated. §3's items 1–6 are unchanged except
+for a clarifying sentence that "Card Cost" in items 2 and 4 means
+`EffectiveCardCost`; §3 item 2's validation and item 4's deduction now have a
+definition of the value they read, and the value is used consistently for
+validation, deduction, and `CardCast` reporting. `EffectiveCardCost` is a
+derived runtime value — not stored state and not a wire member. The composition
+rule is `CardCost`-specific and defines no stacking for any other Relic
+`effectType`. §5 gains a cost-modification boundary sentence (declaration is
+`RELIC_RULES.md`'s, the calculation is this document's). No authored Card cost,
+magnitude, effect, or column is changed. Prior 1.6: §4.1 — Iron Fang's `NextAttack` Crit scope now points at its
 canonical owner instead of being left as prose: `COMBAT_RULES.md` §3.3 items
 7–10 own the modifier's lifetime, the qualifying-attack consumption boundary,
 the composition, and source-specific removal, and `GAME_STATE.md` §2.3.4 owns
@@ -142,6 +157,152 @@ Rules:
    cast *request*, and the server computes and emits the actual result
    (GAME_RULES.md §18).
 
+**"Card Cost" in items 2 and 4 is the Effective Card Cost**, defined in §3.6 —
+not the authored `CardDefinition.PowerCost` on its own. §3.6 owns that value's
+composition, its integer/truncation semantics, and the single point at which it
+is calculated.
+
+## 3.6 Effective Card Cost (Canonical Owner)
+
+**Canonical owner.** This subsection owns **"what a Card cast actually costs"**
+— the runtime, composed cost that §3 items 2 and 4 read and that `CardCast`
+reports. It is the owner of the `EffectiveCardCost` term. `RELIC_RULES.md`
+declares the Relic effect that can modify a Card's cost (§8.2–§8.5) and
+`GAME_STATE.md` §2.3.5 owns the state the applied modifier is held in; neither
+restates this calculation
+(`.ai/workflow/documentation/documentation-change.md` §2).
+
+**Decided** — Product Owner decision **D4** and **D5** (TASK-134) plus the
+explicit `EffectiveCardCost` fractional-value decision.
+
+```text
+CardDefinition.PowerCost          the authored/base value
+                                  (DATABASE.md §1 — never mutated)
+        ↓
+PetState.CardCostModifiers[]      every applied, Battle-scoped CardCost
+                                  modifier currently active on the active Pet
+                                  (GAME_STATE.md §2.3.5)
+        ↓
+TotalReduction = min( sum(CostReductionPercentage), 100 )
+        ↓
+RawEffectiveCardCost =
+        CardDefinition.PowerCost × (100 − TotalReduction) / 100
+        ↓
+EffectiveCardCost = truncate(RawEffectiveCardCost)
+        ↓  truncate toward zero; the result is an integer
+        ↓
+validation → deduction → CardCast reporting
+```
+
+1. **`CardDefinition.PowerCost` is the authored/base value and is never
+   mutated.** It is the content-side definition value (`DATABASE.md` §1,
+   `CARD_RULES.md` §2/§4.1), and it remains exactly what its owning content
+   section authored. No modifier writes to it, no resolution rewrites it, and
+   no new column or definition member is introduced for the runtime result. It
+   is the **input** to the calculation below, not the cost of a cast.
+2. **`EffectiveCardCost` is a runtime value, not stored state.**
+   `PetState.CardCostModifiers[]` stores the *modifiers*; the composed cost is
+   **derived** for the cast being resolved and is not itself a `PetState`
+   member, a `BattleState` member, a Redis field, or a wire member. There is
+   exactly one representation of a Card's cost and exactly one of each
+   modifier — no second spelling of either (`GAME_STATE.md` §0 item 5).
+3. **`TotalReduction` is additive and capped at 100%.** Multiple
+   simultaneously-active `CardCost` modifiers compose by **adding** their
+   `CostReductionPercentage` values; the total is capped at `100`. The cap
+   bounds the composed percentage — it does not change the formula below, and
+   it means `RawEffectiveCardCost` is never negative and `EffectiveCardCost`
+   is never below `0`.
+
+   ```text
+   TotalReduction = min( sum(CostReductionPercentage), 100 )
+
+   Emergency Core alone        50          → TotalReduction = 50
+   two independent 50% sources 50 + 50     → capped to 100
+   ```
+
+   This composition rule is **`CardCost`-specific**. It does not define
+   stacking, scaling, or interaction for any other Relic `effectType`
+   (`ATK`, `Power`, `Crit`, …) — those remain undefined and are a future rule
+   change (`RELIC_RULES.md` §2.4 item 6, `GAME_RULES.md` §20).
+4. **The formula, and the truncation rule.**
+
+   ```text
+   RawEffectiveCardCost = CardDefinition.PowerCost × (100 − TotalReduction) / 100
+
+   EffectiveCardCost    = truncate(RawEffectiveCardCost)
+   ```
+
+   `EffectiveCardCost` is an **integer**. A fractional
+   `RawEffectiveCardCost` is **truncated toward zero** — the direction rule is
+   fixed by the Product Owner decision and is not `floor`, `ceil`,
+   round-half-up, or banker's rounding.
+
+   ```text
+   PowerCost = 15, Reduction =  50%  →  Raw = 7.5  →  EffectiveCardCost =  7
+   PowerCost = 25, Reduction =  50%  →  Raw = 12.5 →  EffectiveCardCost = 12
+   PowerCost = 15, Reduction = 100%  →  Raw = 0    →  EffectiveCardCost =  0
+   PowerCost = 20, Reduction =  50%  →  Raw = 10   →  EffectiveCardCost = 10
+   ```
+
+5. **There is no minimum-cost rule, and cost `0` is a real cost.** No
+   "minimum cost of 1" floor exists: a `100%` total reduction yields
+   `EffectiveCardCost = 0`, and a cost of `0` is validated and deducted as
+   `0`. This is consistent with `CARD_RULES.md` §2's Power Charge, which
+   already costs `0` Power by design, and with §2 item 3's rule that a
+   `0`-cost Card "must never be blocked by insufficient Power".
+6. **`Power` remains an integer-valued resource.** The truncation keeps the
+   cost integral because `PetState.Power` is integral (`COMBAT_RULES.md` §1.1,
+   `GAME_RULES.md` §12, `GAME_STATE.md` §2.3). No decimal Power, no decimal
+   Card cost, and no fractional resource pool is introduced anywhere. The
+   truncation is defined **for `EffectiveCardCost` only** and generalizes to
+   no other calculation — it is not a new global rounding convention, and it
+   changes no damage, stat-composition, or progression rule
+   (`COMBAT_RULES.md` §3 step 6, §5.4.2, §5.5.1, §7 are untouched).
+7. **When `EffectiveCardCost` is calculated — before validation, deduction,
+   and reporting.** One calculation, at the start of the cast resolution, and
+   the same value is used by all three consumers below. It is not recomputed
+   between them, so a cast cannot be validated against one cost and charged
+   another.
+
+   ```text
+   EffectiveCardCost calculated ONCE, before all three
+        ↓
+   1. validation   §3 item 2 — the check is
+                   current Power ≥ EffectiveCardCost
+        ↓
+   2. deduction    §3 item 4 — the amount removed from PetState.Power is
+                   exactly EffectiveCardCost
+        ↓
+   3. reporting    CardCast reports the cost actually deducted, which is
+                   EffectiveCardCost
+   ```
+
+   - **Validation reads it.** §3 item 2's "`current Power ≥ Card Cost`" is
+     evaluated against `EffectiveCardCost`, compared with the active Pet's
+     current `PetState.Power`.
+   - **Deduction reads it.** §3 item 4's "Deduct Cost from Power" removes
+     exactly `EffectiveCardCost` from `PetState.Power`. The resulting Power is
+     the value delivered by the `BattleState` push (§6 below).
+   - **Reporting reads it.** `CardCast`'s cost is the effective cost that was
+     actually deducted (`GAME_EVENTS.md` §2). On the wire, MVP `CardCast`
+     carries no cost member at all (`SIGNALR_PROTOCOL.md` §3.2.20 item 2) and
+     the authoritative record of the resulting `Power` is the state push and
+     `PowerChanged` (`SIGNALR_PROTOCOL.md` §3.2.24) — this subsection does not
+     add a wire member or change that event's shape.
+8. **Activity is read from the committed state at cast resolution.** Which
+   modifiers participate is decided by the committed
+   `PetState.CardCostModifiers[]` contents at the moment the cast resolves
+   (`GAME_STATE.md` §5.1.3) — not by a re-evaluation performed by the Card
+   path, and not by anything the client supplies. The Card path reads the
+   collection; it does not create, refresh, or remove an entry
+   (`AGENTS.md` §12 — Card cost is a Card concern, the Relic side declares the
+   effect).
+9. **This subsection adds no gameplay rule beyond the decided ones.** It
+   authors no Card, no Relic, no effect magnitude, no threshold, and no new
+   cost-modifying source. `CardDefinition.PowerCost`'s authored values
+   (`§2`, `§4.1`) are unchanged, no Card content is re-encoded, and no
+   database column is added.
+
 ---
 
 # 4. Pet Skill Card (Signature Skill)
@@ -220,6 +381,24 @@ when to cast them. Relics are **passive** — they react automatically to
 events and are never directly cast by the player. A system must never blur
 this line (e.g. a "Relic" that requires manual activation should instead be
 modeled as a Card).
+
+**Cost modification does not blur the line.** A Relic may modify a Card's cost
+(`RELIC_RULES.md` §8.3's `CardCost` effect type, e.g. Emergency Core's
+`-50%`). The boundary is unchanged and the ownership is split:
+
+```text
+Relic declares the effect          RELIC_RULES.md §8.2–§8.5
+                                   (effectType/valueType/value/target/lifetime)
+applied modifier is held in        GAME_STATE.md §2.3.5
+                                   (PetState.CardCostModifiers[] — state)
+Card cost is composed and read     CARD_RULES.md §3.6 — THIS document
+                                   (TotalReduction → EffectiveCardCost)
+```
+
+A Relic never casts, and a Card never evaluates a Relic Trigger or Condition.
+Reading `PetState.CardCostModifiers[]` at cast time is a Card-side *read* of
+authoritative state: the Card path creates, refreshes, and removes no entry in
+that collection (`AGENTS.md` §12, `GAME_STATE.md` §5.1.3).
 
 ---
 

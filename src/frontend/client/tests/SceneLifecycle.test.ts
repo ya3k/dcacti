@@ -1385,6 +1385,10 @@ describe('BattleScene — Outcome handoff (TASK-087, SIGNALR_PROTOCOL.md §3.2.1
           outcome: 'victory',
           finalBossHp: 37,
           finalPlayerHp: 812,
+          // TASK-149: the handoff also carries the batch's battleId so
+          // ResultScene can read the persisted reward summary
+          // (API_CONTRACTS.md §4). The outcome members are unchanged.
+          battleId: 'battle-1',
         },
       },
     ]);
@@ -1414,6 +1418,8 @@ describe('BattleScene — Outcome handoff (TASK-087, SIGNALR_PROTOCOL.md §3.2.1
           outcome: 'defeat',
           finalBossHp: 412,
           finalPlayerHp: 0,
+          // TASK-149: the handoff also carries the batch's battleId.
+          battleId: 'battle-1',
         },
       },
     ]);

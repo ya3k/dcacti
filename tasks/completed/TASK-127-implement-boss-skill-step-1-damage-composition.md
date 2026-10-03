@@ -50,13 +50,7 @@ Type:              FEATURE (TASK_TYPES.md §2 — "Implement a documented
                    docs/ but has not yet been built." The composition is fully
                    specified by COMBAT_RULES.md §3.4 and §5.5; the
                    EffectiveBossATK Step-1 contribution is not built.)
-Status:            IN REVIEW — implementation and tests complete; all
-                   acceptance criteria met; `quality/review.md` is the
-                   remaining gate. `TASK_LIFECYCLE.md` §4 keeps the file in
-                   `backlog/` until IN REVIEW → DONE moves it to `completed/`,
-                   and the executing agent does not relocate task files
-                   manually (the TASK-118 / TASK-119 precedent). See
-                   "Completion Evidence" below.
+Status:            DONE
 Risk:              HIGH (TASK_TYPES.md §4 — FEATURE baseline MEDIUM; HIGH
                    because it touches the Combat Damage Pipeline's Step-1
                    input and the Boss Skill damage path in

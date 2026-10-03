@@ -1,6 +1,12 @@
 # Architecture
 
-**Version:** 1.3 (§2.2.1 implementation-status sentence corrected again — the
+**Version:** 1.4 (§2.2.1 implementation-status wording synchronized — the
+`CardCast`/`PetSkillCast` clause and the reconnect/resync recovery clause are
+corrected from "not implemented yet" to implemented per TASK-107, TASK-115,
+TASK-120, TASK-143, and TASK-144, and the sentence's contract-ownership
+citation now names the documents that own those contracts. Status
+synchronization only: no wire member, contract, boundary, or rule is changed.)
+Version 1.3 (§2.2.1 implementation-status sentence corrected again — the
 full `GAME_RULES.md` §17 pipeline is implemented in the Swap path (board
 resolution through Boss Response, terminal Victory/Defeat, and the step 19a
 Status Effect tick), so the earlier "battle resolution … not implemented"
@@ -243,12 +249,12 @@ resolution, Passive charge, the Combat Damage Pipeline, Boss Response (Enrage,
 Boss Passive, Boss Skill or Basic Attack), the terminal Victory/Defeat check, and
 the End Turn step 19a Status Effect tick — committing one write-back
 (`GAME_STATE.md` §5.1) and pushing the resulting ordered Battle Events. The
-remaining client → server gameplay methods (`CardCast`, `PetSkillCast` —
+other client → server gameplay methods (`CardCast`, `PetSkillCast` —
 `SIGNALR_PROTOCOL.md` §2) and reconnect/resync snapshot recovery
-(`SIGNALR_PROTOCOL.md` §7, ADR-008) are not implemented yet. The contract they
-implement is owned by `MATCH3_RULES.md` §2–§8 (board resolution) and
-`GAME_STATE.md` §5.1 (the state write-back); neither is restated in the client
-runtime.
+(`SIGNALR_PROTOCOL.md` §7, ADR-008) are implemented. Their contracts are
+owned by `SIGNALR_PROTOCOL.md` §2 and §7, `CARD_RULES.md` §2–§4 (casting),
+and `GAME_STATE.md` §5.3 (snapshot compatibility); none of those contracts is
+restated in the client runtime.
 
 ### 2.2.3 Pre-Battle Selection Boundary
 

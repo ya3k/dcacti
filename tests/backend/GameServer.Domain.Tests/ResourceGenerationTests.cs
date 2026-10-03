@@ -301,7 +301,8 @@ public class ResourceGenerationTests
         // PetState member — the active Pet's — and it is persistent, and it equals
         // the Swap's generated Power when the cap does not bind (a battle starts at
         // 0 — the documented default Power).
-        Assert.Equal(result.Resources.Power, result.State.PetState.Power);
+        var afterPower = ResourceGenerator.ApplyPower(result.State.PetState, result.Resources);
+        Assert.Equal(result.Resources.Power, afterPower.Power);
     }
 
     // =======================================================================
@@ -668,7 +669,7 @@ public class ResourceGenerationTests
 
         var first = SwapExecutor.Execute(battle, new SwapRequest(From, To));
         Assert.True(first.IsAccepted);
-        var afterFirst = first.State.PetState.Power;
+        var afterFirst = ResourceGenerator.ApplyPower(first.State.PetState, first.Resources).Power;
 
         // The first Swap generates 30 Power at its Match-3, so the persistent value
         // is that amount (the cap does not bind at 30). Cascades may add more, so the
@@ -680,13 +681,18 @@ public class ResourceGenerationTests
         // gain depends on the spawned board, so the property asserted is the
         // accumulation itself: the persistent value equals the first Swap's Power
         // plus whatever the second generated, capped at 100.
-        var second = SwapExecutor.Execute(first.State, new SwapRequest(From, To));
+        var firstCommittedState = first.State with
+        {
+            PetState = first.State.PetState with { Power = afterFirst },
+        };
+        var second = SwapExecutor.Execute(firstCommittedState, new SwapRequest(From, To));
 
         if (second.IsAccepted)
         {
+            var afterSecond = ResourceGenerator.ApplyPower(second.State.PetState, second.Resources).Power;
             Assert.Equal(
                 Math.Min(afterFirst + second.Resources.Power, ResourceGenerator.MaxPower),
-                second.State.PetState.Power);
+                afterSecond);
         }
     }
 
@@ -705,7 +711,8 @@ public class ResourceGenerationTests
 
         Assert.True(result.IsAccepted);
         Assert.True(result.Resources.Power >= 30, "The Swap's own Match-3 always generates.");
-        Assert.Equal(ResourceGenerator.MaxPower, result.State.PetState.Power); // clamped state
+        var afterPower = ResourceGenerator.ApplyPower(result.State.PetState, result.Resources);
+        Assert.Equal(ResourceGenerator.MaxPower, afterPower.Power); // clamped state
         Assert.True(
             result.Resources.Power > ResourceGenerator.MaxPower - 95,
             "The pool is the unclamped amount generated, so it exceeds the room the cap left.");

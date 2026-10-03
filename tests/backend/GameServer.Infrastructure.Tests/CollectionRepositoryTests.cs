@@ -524,7 +524,7 @@ public class CollectionRepositoryTests
         RelicDefinitionId = relicDefinitionId,
         Name = name,
         Trigger = "OnTurnEnd",
-        EffectDefinition = "increase ATK by 5%",
+        EffectDefinition = TestRelicEffects.Effect,
     };
 
     private static Relic NewRelic(

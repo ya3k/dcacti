@@ -1,6 +1,21 @@
 # Architecture Decision Records (ADR)
 
-**Version:** 1.9 (§8 — TASK-119 checked: the `BuffDebuff` `TargetStat = "ATK"`
+**Version:** 1.11 (§7 — ADR-018 amended per TASK-134 D11: the `CardCost` effect's
+runtime state carrier is now recorded as Decision 12 —
+`PetState.CardCostModifiers[]` (`SourceIdentity` + `CostReductionPercentage`), a
+dedicated source-specific `BattleState` collection separate from
+`StatusEffects[]`, `target = Pet` / `lifetime = Battle`, same-source
+replace/refresh, additive composition capped at 100% for `CardCost` only, no
+PostgreSQL persistence, no new Redis key, no new SignalR event/method. The
+amendment is appended to ADR-018 and its items 1–11 and decision history are
+preserved unmodified; no new ADR was created, because the amendment closes the
+runtime gap ADR-018 item 5 deliberately left open rather than recording a new
+decision. ADR-017 remains Accepted and unchanged. Prior 1.10: §7 — ADR-018 added per TASK-131 D11: the structured Relic
+Trigger/Condition/Effect contract. The decision establishes a cross-layer
+runtime/content/storage contract spanning `RELIC_RULES.md`, `DATABASE.md`, the
+Domain Relic content model, and the realtime event surface, and it supersedes
+TASK-082 R2-7 for `RelicDefinition.EffectDefinition` — the member TASK-109 had
+left under it. ADR-017 remains Accepted and unchanged. Prior 1.9 — TASK-119 checked: the `BuffDebuff` `TargetStat = "ATK"`
 consumption gap was not listed here, is not an ADR-level open item, and is
 recorded as checked-and-closed; the resolved rule is `COMBAT_RULES.md` §5.4.
 No ADR was added or edited. Prior 1.8: ADR-017 added per TASK-117 — the architecture decision
@@ -162,6 +177,7 @@ technical document.
 | ADR-015 | Application session authentication contract (signed JWT, stateless, `player_id` claim, Bearer + SignalR access-token propagation, 24h absolute expiry, ASP.NET Core JWT Bearer enforcement) | Accepted |
 | ADR-016 | Independent Player XP and Pet XP progression tracks — Player owns account XP / Level (capped Level 50, uncapped XP); Pet owns per-instance XP / Level (range 1–50, hard-capped at 4900); `Player.Level × PetLevelMultiplier` derivation and the `PetLevelMultiplier` field RETIRED; Pet XP balance decided in `PET_RULES.md` §5.1–§5.5 | Accepted |
 | ADR-017 | `PetState.NextAttackCritModifiers[]` as authoritative battle state — a dedicated source-specific collection separate from `StatusEffects[]`, persisting across Turns until consumed by a qualifying owner attack; additive Crit composition capped at 100 percentage points; consumed modifiers removed source-specifically; `DefaultCrit` is never a runtime reset mechanism | Accepted |
+| ADR-018 | Structured Relic Trigger/Condition/Effect contract — `EffectDefinition` is a structured `EffectDefinition[]` with `valueType` `Flat`/`Percentage`/`PercentagePoints`/`Undetermined` and explicit `target`/`lifetime`; `Condition` is structured and evaluated against the current resolution state with no persistent Relic counters; effect lifetime is independent of trigger re-evaluation; the closed Trigger list is unchanged; `Burning Curse` remains deferred; `varchar(128)` storage is insufficient and migration is a separate task; `RelicTriggered` stays `{ type, relicId }`; supersedes TASK-082 R2-7 for the Relic member. **Amended (Decision 12)** — the `CardCost` effect's runtime state carrier is `PetState.CardCostModifiers[]` (`SourceIdentity` + `CostReductionPercentage`), a dedicated source-specific `BattleState` collection separate from `StatusEffects[]`, with `target = Pet` and `lifetime = Battle`, same-source replace/refresh, additive composition capped at 100% for `CardCost` only, no PostgreSQL persistence, no new Redis key, and no new SignalR event/method | Accepted (amended) |
 
 **Partial supersession (ADR-016).** ADR-011 and ADR-012 remain in force
 except for the specific items named below, which ADR-016 supersedes. Their

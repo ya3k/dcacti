@@ -152,13 +152,24 @@ public sealed class BattleHubPetSkillCastTests : IClassFixture<ApiIntegrationTes
         Assert.Equal(1, eventsPayload.GetProperty("serverSequence").GetInt32());
 
         var eventsArray = eventsPayload.GetProperty("events");
-        Assert.True(eventsArray.GetArrayLength() >= 2);
+
+        // GAME_EVENTS.md §2 item 4 / SIGNALR_PROTOCOL.md §3.2.24 item 6 (D-8): the
+        // cast's cost is the FIRST Power mutation, and it is reported by its own
+        // PowerChanged (`source = "card"`) in the authoritative mutation order —
+        // before the PetSkillCast that reports the Skill cast itself.
+        Assert.True(eventsArray.GetArrayLength() >= 3);
 
         var cardCastWireDto = eventsArray[0];
         Assert.Equal("CardCast", cardCastWireDto.GetProperty("type").GetString());
         Assert.Equal("card-inferno", cardCastWireDto.GetProperty("cardId").GetString());
 
-        var petSkillCastWireDto = eventsArray[1];
+        var costPowerChangedWireDto = eventsArray[1];
+        Assert.Equal("PowerChanged", costPowerChangedWireDto.GetProperty("type").GetString());
+        Assert.Equal(-40, costPowerChangedWireDto.GetProperty("delta").GetInt32());
+        Assert.Equal(10, costPowerChangedWireDto.GetProperty("power").GetInt32());
+        Assert.Equal("card", costPowerChangedWireDto.GetProperty("source").GetString());
+
+        var petSkillCastWireDto = eventsArray[2];
         Assert.Equal("PetSkillCast", petSkillCastWireDto.GetProperty("type").GetString());
         Assert.Equal("card-inferno", petSkillCastWireDto.GetProperty("cardId").GetString());
     }

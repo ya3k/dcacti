@@ -1,8 +1,8 @@
 /**
  * BattleEventPresenter — Scene-local interpretation and formatting of in-battle server events.
  *
- * Implements interpretation for the twelve non-outcome event types of the closed wire discriminator
- * (SIGNALR_PROTOCOL.md §3.2.2, §3.2.6–§3.2.21, GAME_EVENTS.md §2):
+ * Implements interpretation for the fourteen non-outcome event types of the closed wire discriminator
+ * (SIGNALR_PROTOCOL.md §3.2.2, §3.2.6–§3.2.24, GAME_EVENTS.md §2):
  *
  *   1. MatchCreated
  *   2. CascadeCreated
@@ -16,6 +16,8 @@
  *  10. BossSkillCast
  *  11. CardCast
  *  12. PetSkillCast
+ *  13. RelicTriggered
+ *  14. PowerChanged
  *
  * Server-authoritative boundary (GAME_RULES.md §18, AGENTS.md §10):
  * - Presents only delivered members verbatim.
@@ -117,6 +119,30 @@ export interface PresentedPetSkillCast {
   readonly cardId: string;
 }
 
+/**
+ * A triggered Relic (SIGNALR_PROTOCOL.md §3.2.23) — the Relic's owned instance
+ * identity, and nothing else. No effect summary exists on this event (§3.2.23
+ * item 2, §3.2.25): the resulting state reaches the client through the
+ * `BattleState` projection (§4), not here.
+ */
+export interface PresentedRelicTriggered {
+  readonly type: 'RelicTriggered';
+  readonly relicId: string;
+}
+
+/**
+ * A change to the active Pet's Power (SIGNALR_PROTOCOL.md §3.2.24) — the signed
+ * change, the resulting value, and what changed it. `delta` is signed and is
+ * presented as delivered; `power` is the server's resulting value and is never
+ * recomputed from `delta` on the client.
+ */
+export interface PresentedPowerChanged {
+  readonly type: 'PowerChanged';
+  readonly delta: number;
+  readonly power: number;
+  readonly source: string;
+}
+
 export type InBattleServerEvent =
   | PresentedMatchCreated
   | PresentedCascadeCreated
@@ -129,7 +155,9 @@ export type InBattleServerEvent =
   | PresentedPassiveTriggered
   | PresentedBossSkillCast
   | PresentedCardCast
-  | PresentedPetSkillCast;
+  | PresentedPetSkillCast
+  | PresentedRelicTriggered
+  | PresentedPowerChanged;
 
 /**
  * Validates and parses a raw event object into a typed InBattleServerEvent.
@@ -170,6 +198,10 @@ export function parseInBattleEvent(raw: unknown): InBattleServerEvent | null {
       return parseCardCast(raw);
     case 'PetSkillCast':
       return parsePetSkillCast(raw);
+    case 'RelicTriggered':
+      return parseRelicTriggered(raw);
+    case 'PowerChanged':
+      return parsePowerChanged(raw);
     default:
       // Unknown event type or outcome event — ignored safely per SIGNALR_PROTOCOL.md §3.2.2
       return null;
@@ -411,6 +443,53 @@ function parsePetSkillCast(raw: unknown): PresentedPetSkillCast | null {
 }
 
 /**
+ * `RelicTriggered` (SIGNALR_PROTOCOL.md §3.2.23) — exactly `type` and `relicId`.
+ *
+ * `relicId` is the Relic's owned instance identity (RELIC_RULES.md §2.2 item 3),
+ * not a `RelicDefinitionId` and not a display name. It is read as delivered; no
+ * client-side definition lookup or label mapping is performed. Any other member
+ * on the payload (e.g. a hypothetical `effectSummary`) is deliberately not read:
+ * §3.2.23 item 2 omits it under §3.2.25.
+ */
+function parseRelicTriggered(raw: unknown): PresentedRelicTriggered | null {
+  const p = raw as Partial<PresentedRelicTriggered>;
+  if (typeof p.relicId !== 'string' || p.relicId.length === 0) {
+    return null;
+  }
+  return {
+    type: 'RelicTriggered',
+    relicId: p.relicId,
+  };
+}
+
+/**
+ * `PowerChanged` (SIGNALR_PROTOCOL.md §3.2.24) — `type`, `delta`, `power`, `source`.
+ *
+ * `delta` is the signed change and `power` is `PetState.Power` after the change;
+ * both are presented exactly as delivered, and `power` is never re-derived from
+ * `delta` (that would be client-side gameplay calculation). `source` is the
+ * delivered string (`"match"` / `"card"` / `"relic"`); it is not validated
+ * against a client-side enum and an unrecognized value is not rejected — the
+ * client presents what the server projected rather than deciding what is valid.
+ */
+function parsePowerChanged(raw: unknown): PresentedPowerChanged | null {
+  const p = raw as Partial<PresentedPowerChanged>;
+  if (
+    typeof p.delta !== 'number' ||
+    typeof p.power !== 'number' ||
+    typeof p.source !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    type: 'PowerChanged',
+    delta: p.delta,
+    power: p.power,
+    source: p.source,
+  };
+}
+
+/**
  * Formats an in-battle event for presentation using only delivered members verbatim.
  * Contains zero client-side calculation or derivation.
  */
@@ -454,5 +533,9 @@ export function formatInBattleEvent(event: InBattleServerEvent): string {
       return `CardCast: ${event.cardId}`;
     case 'PetSkillCast':
       return `PetSkillCast: ${event.cardId}`;
+    case 'RelicTriggered':
+      return `RelicTriggered: ${event.relicId}`;
+    case 'PowerChanged':
+      return `PowerChanged: ${event.delta >= 0 ? '+' : ''}${event.delta} -> ${event.power} (${event.source})`;
   }
 }

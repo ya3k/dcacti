@@ -985,6 +985,8 @@ public class BattleEventEmissionTests
                 "PassiveCharged",
                 "PassiveTriggered",
                 "PetSkillCast",
+                "PowerChanged",
+                "RelicTriggered",
                 "Type",
             ],
             members);
@@ -1327,11 +1329,14 @@ public class BattleEventEmissionTests
         // Damage Pipeline (TASK-021) adds the three GAME_RULES.md §16 / GAME_EVENTS.md
         // §2 Damage names — DamageCalculated, DamageDealt, DamageTaken. The Boss
         // Response stage (TASK-022) adds the three BOSS_RULES.md §7 names —
-        // BossSkillCast, BattleWon, BattleLost. No undocumented name may be added
+        // BossSkillCast, BattleWon, BattleLost. The Card stages add the two
+        // CARD_RULES.md §6 names — CardCast and PetSkillCast. The Relic stage
+        // (GAME_RULES.md §17 step 11, RELIC_RULES.md §7) adds RelicTriggered, and the
+        // Power stage's PowerChanged is its payload (GAME_EVENTS.md §2,
+        // SIGNALR_PROTOCOL.md §3.2.23–§3.2.24) — both names are on §16's canonical
+        // list, so this set is exactly that list. No undocumented name may be added
         // (AGENTS.md §7). In particular no MatchCountChanged, SpecialGemActivated,
-        // SpecialGemCreated, TurnChanged, SequenceChanged, or BoardChanged exists,
-        // and the stages that own PowerChanged, RelicTriggered, CardCast, and
-        // PetSkillCast have not added theirs here.
+        // SpecialGemCreated, TurnChanged, SequenceChanged, or BoardChanged exists.
         //
         // BOSS_RULES.md §7 is explicit about the three names the Boss stage did NOT
         // add: Boss Passive triggers reuse the shared PassiveCharged/PassiveTriggered
@@ -1340,7 +1345,9 @@ public class BattleEventEmissionTests
         // inferable from the event sequence. So BossPassiveCharged,
         // BossPassiveTriggered, BossBasicAttack, and BossEnraged are all absent — and
         // absent from this list by construction, which is what the assertions below
-        // state directly.
+        // state directly. §3.2.24 item 4 and §3.2.23 item 5 likewise add no
+        // CardCostChanged, CardCostModifierApplied, or ATKChanged: a Relic's resulting
+        // state reaches the client through the BattleState projection.
         var names = Enum.GetNames<BattleEventType>().OrderBy(n => n, StringComparer.Ordinal).ToArray();
 
         Assert.Equal(
@@ -1359,6 +1366,8 @@ public class BattleEventEmissionTests
                 "PassiveCharged",
                 "PassiveTriggered",
                 "PetSkillCast",
+                "PowerChanged",
+                "RelicTriggered",
             ],
             names);
 

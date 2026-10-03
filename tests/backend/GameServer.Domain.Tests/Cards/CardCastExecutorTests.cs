@@ -125,10 +125,20 @@ public sealed class CardCastExecutorTests
         Assert.Equal(700, result.State.PetState.HP); // 500 + 20% of 1000 = 700
         Assert.Equal(30, result.State.PetState.Power); // 50 - 20 = 30
         Assert.Equal(1, result.State.Sequence);
-        Assert.Single(result.Events);
-        Assert.Equal(BattleEventType.CardCast, result.Events[0].Type);
+
+        // GAME_EVENTS.md §2 item 4 / SIGNALR_PROTOCOL.md §3.2.24 item 6 (D-8): the
+        // cost spend is the cast's first — and here only — Power mutation, so it is
+        // reported by its own PowerChanged with `source = "card"` immediately after
+        // the CardCast that records the cast itself.
+        Assert.Equal(
+            [BattleEventType.CardCast, BattleEventType.PowerChanged],
+            result.Events.Select(e => e.Type));
         Assert.Equal("card-heal", result.Events[0].CardCast.CardId);
         Assert.Equal(20, result.Events[0].CardCast.PowerCost);
+
+        Assert.Equal(PowerChangeSource.Card, result.Events[1].PowerChanged.Source);
+        Assert.Equal(-20, result.Events[1].PowerChanged.Delta);
+        Assert.Equal(30, result.Events[1].PowerChanged.Power);
     }
 
     [Fact]
@@ -316,6 +326,7 @@ public sealed class CardCastExecutorTests
         Assert.Equal(
             [
                 BattleEventType.CardCast,
+                BattleEventType.PowerChanged,
                 BattleEventType.PetSkillCast,
                 BattleEventType.DamageCalculated,
                 BattleEventType.DamageDealt,
@@ -324,7 +335,12 @@ public sealed class CardCastExecutorTests
             result.Events.Select(e => e.Type));
 
         Assert.Equal("card-inferno", result.Events[0].CardCast.CardId);
-        Assert.Equal("card-inferno", result.Events[1].PetSkillCast.CardId);
+        Assert.Equal("card-inferno", result.Events[2].PetSkillCast.CardId);
+
+        // 50 -> 10 is the cost's own mutation, reported once (D-8).
+        Assert.Equal(PowerChangeSource.Card, result.Events[1].PowerChanged.Source);
+        Assert.Equal(-40, result.Events[1].PowerChanged.Delta);
+        Assert.Equal(10, result.Events[1].PowerChanged.Power);
     }
 
     [Fact]
@@ -347,12 +363,18 @@ public sealed class CardCastExecutorTests
         Assert.Equal(
             [
                 BattleEventType.CardCast,
+                BattleEventType.PowerChanged,
                 BattleEventType.PetSkillCast,
             ],
             result.Events.Select(e => e.Type));
 
         Assert.Equal("card-tidal-barrier", result.Events[0].CardCast.CardId);
-        Assert.Equal("card-tidal-barrier", result.Events[1].PetSkillCast.CardId);
+        Assert.Equal("card-tidal-barrier", result.Events[2].PetSkillCast.CardId);
+
+        // The card has no Power effect, so the cost is the only mutation (D-8).
+        Assert.Equal(PowerChangeSource.Card, result.Events[1].PowerChanged.Source);
+        Assert.Equal(-40, result.Events[1].PowerChanged.Delta);
+        Assert.Equal(10, result.Events[1].PowerChanged.Power);
     }
 
     [Fact]
@@ -385,15 +407,27 @@ public sealed class CardCastExecutorTests
         // later attack than the one the Card's damage belongs to.
         Assert.Empty(result.State.PetState.NextAttackCritModifiers);
 
+        // GAME_EVENTS.md §2 item 4 (D-8): the cost is Iron Fang's only Power
+        // mutation — the Card has no Power effect — so exactly one PowerChanged
+        // follows the CardCast.
         Assert.Equal(
             [
                 BattleEventType.CardCast,
+                BattleEventType.PowerChanged,
                 BattleEventType.PetSkillCast,
                 BattleEventType.DamageCalculated,
                 BattleEventType.DamageDealt,
                 BattleEventType.DamageTaken,
             ],
             result.Events.Select(e => e.Type));
+
+        var costPowerChange = Assert.Single(
+            result.Events,
+            e => e.Type == BattleEventType.PowerChanged);
+
+        Assert.Equal(PowerChangeSource.Card, costPowerChange.PowerChanged.Source);
+        Assert.Equal(-40, costPowerChange.PowerChanged.Delta);
+        Assert.Equal(10, costPowerChange.PowerChanged.Power);
     }
 
     [Fact]
@@ -575,6 +609,7 @@ public sealed class CardCastExecutorTests
         Assert.Equal(
             [
                 BattleEventType.CardCast,
+                BattleEventType.PowerChanged,
                 BattleEventType.PetSkillCast,
                 BattleEventType.DamageCalculated,
                 BattleEventType.DamageDealt,
@@ -582,5 +617,161 @@ public sealed class CardCastExecutorTests
                 BattleEventType.BattleWon,
             ],
             result.Events.Select(e => e.Type));
+    }
+
+    // =======================================================================
+    // PowerChanged — the Card stage's own mutations (D-7, D-8)
+    // =======================================================================
+
+    /// <summary>
+    /// A Card that both pays a non-zero cost and grants Power — the composed case
+    /// <c>CARD_RULES.md</c> §3 permits and D-8 fixes the reporting shape for. No
+    /// MVP-provisioned Card declares both, so the fixture declares it directly:
+    /// D-8 is a general-contract rule, not a property of today's content.
+    /// </summary>
+    private static readonly CardDefinition CostAndPowerCard = new()
+    {
+        CardDefinitionId = "card-cost-and-power",
+        Name = "Cost And Power",
+        Category = CardCategory.Basic,
+        PowerCost = 10,
+        LoadoutCopyLimit = 1,
+        EffectDefinition = CardEffectDefinitions.Create(
+            CardEffectDefinition.Create(CardEffectType.Power, CardEffectValueType.Flat, 25)),
+    };
+
+    [Fact]
+    public void Execute_PowerCharge_EmitsOneCardPowerChanged_WithAPositiveDelta()
+    {
+        // D-7: "card" identifies a Card-OWNED Power mutation, not only a cost
+        // spend. Power Charge's cost is 0 (CARD_RULES.md §2), so its +25 grant is
+        // the cast's only Power mutation and it is reported under source "card"
+        // with the mutation's own positive sign (SIGNALR_PROTOCOL.md §3.2.24 item 1).
+        var state = CreateTestBattleState(power: 10);
+
+        var result = CardCastExecutor.Execute(state, PowerChargeCard);
+
+        Assert.True(result.IsAccepted);
+        Assert.Equal(35, result.State.PetState.Power);
+
+        // A cost of 0 performs no mutation, so no event is emitted for it — the
+        // grant is the single PowerChanged (GAME_EVENTS.md §2 item 4).
+        var powerChanged = Assert.Single(
+            result.Events,
+            e => e.Type == BattleEventType.PowerChanged);
+
+        Assert.Equal(PowerChangeSource.Card, powerChanged.PowerChanged.Source);
+        Assert.Equal(25, powerChanged.PowerChanged.Delta);
+        Assert.Equal(35, powerChanged.PowerChanged.Power);
+        Assert.Equal(
+            [BattleEventType.CardCast, BattleEventType.PowerChanged],
+            result.Events.Select(e => e.Type));
+    }
+
+    [Fact]
+    public void Execute_PowerCharge_ReportsTheClampedGrant_NotTheRequestedMagnitude()
+    {
+        // GAME_RULES.md §12 makes 0–100 an invariant of PetState.Power, and
+        // SIGNALR_PROTOCOL.md §3.2.24 item 1 makes delta the change the mutation
+        // ACTUALLY applied. A +25 grant against Power 90 therefore moves the value
+        // by 10 and is reported as delta +10 at power 100 — never as +25.
+        var state = CreateTestBattleState(power: 90);
+
+        var result = CardCastExecutor.Execute(state, PowerChargeCard);
+
+        Assert.Equal(100, result.State.PetState.Power);
+
+        var powerChanged = Assert.Single(
+            result.Events,
+            e => e.Type == BattleEventType.PowerChanged);
+
+        Assert.Equal(PowerChangeSource.Card, powerChanged.PowerChanged.Source);
+        Assert.Equal(10, powerChanged.PowerChanged.Delta);
+        Assert.Equal(100, powerChanged.PowerChanged.Power);
+    }
+
+    [Fact]
+    public void Execute_CardThatBothPaysACostAndGrantsPower_EmitsOneEventPerMutation_InOrder()
+    {
+        // D-8, the documented case: one CardCast performing two sequential Power
+        // mutations. GAME_EVENTS.md §2 item 4 / SIGNALR_PROTOCOL.md §3.2.24 item 6
+        // require one PowerChanged per mutation, in authoritative execution order,
+        // and forbid collapsing them into one net event.
+        //
+        //   Initial Power = 50
+        //   Cost  = -10  ->  50 -> 40
+        //   Effect = +25 ->  40 -> 65
+        //
+        // The collapsed form D-8 prohibits would be a single delta +15 at power 65.
+        var state = CreateTestBattleState(
+            power: 50,
+            equippedCards: [new EquippedCardIdentity("card-cost-and-power")]);
+
+        var result = CardCastExecutor.Execute(state, CostAndPowerCard);
+
+        Assert.True(result.IsAccepted);
+        Assert.Equal(65, result.State.PetState.Power);
+
+        var powerChanges = result.Events
+            .Where(e => e.Type == BattleEventType.PowerChanged)
+            .Select(e => e.PowerChanged)
+            .ToArray();
+
+        Assert.Equal(2, powerChanges.Length);
+
+        // Event 1 — the cost spend.
+        Assert.Equal(PowerChangeSource.Card, powerChanges[0].Source);
+        Assert.Equal(-10, powerChanges[0].Delta);
+        Assert.Equal(40, powerChanges[0].Power);
+
+        // Event 2 — the Power effect, applied to the state the cost left.
+        Assert.Equal(PowerChangeSource.Card, powerChanges[1].Source);
+        Assert.Equal(25, powerChanges[1].Delta);
+        Assert.Equal(65, powerChanges[1].Power);
+
+        // The order is the authoritative mutation order, and the events sit after
+        // the CardCast that records the cast itself.
+        Assert.Equal(
+            [
+                BattleEventType.CardCast,
+                BattleEventType.PowerChanged,
+                BattleEventType.PowerChanged,
+            ],
+            result.Events.Select(e => e.Type));
+
+        // Applying the deltas in delivered order reproduces the resulting Power
+        // (SIGNALR_PROTOCOL.md §3.2.24 item 6) — the property the collapsed form
+        // would also satisfy, which is why the per-mutation shape is asserted above.
+        Assert.Equal(result.State.PetState.Power, 50 + powerChanges.Sum(c => c.Delta));
+    }
+
+    [Fact]
+    public void Execute_CardWithNoPowerMutation_EmitsNoPowerChanged()
+    {
+        // D-8: "If the authoritative Card execution path determines that no Power
+        // mutation occurred, no PowerChanged event is emitted for that operation."
+        // A Shield Card at a composed cost of 0 both spends nothing and changes
+        // Power by nothing, so the cast emits only its own CardCast.
+        var freeShieldCard = new CardDefinition
+        {
+            CardDefinitionId = "card-free-shield",
+            Name = "Free Shield",
+            Category = CardCategory.Basic,
+            PowerCost = 0,
+            LoadoutCopyLimit = 1,
+            EffectDefinition = CardEffectDefinitions.Create(
+                CardEffectDefinition.Create(CardEffectType.Shield, CardEffectValueType.Flat, 10)),
+        };
+
+        var state = CreateTestBattleState(
+            power: 50,
+            equippedCards: [new EquippedCardIdentity("card-free-shield")]);
+
+        var result = CardCastExecutor.Execute(state, freeShieldCard);
+
+        Assert.True(result.IsAccepted);
+        Assert.Equal(50, result.State.PetState.Power);
+        Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.PowerChanged);
+        Assert.Equal([BattleEventType.CardCast], result.Events.Select(e => e.Type));
     }
 }

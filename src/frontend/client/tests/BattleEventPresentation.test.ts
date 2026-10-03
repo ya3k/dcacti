@@ -21,6 +21,8 @@ import type {
   PresentedPassiveCharged,
   PresentedPassiveTriggered,
   PresentedBossSkillCast,
+  PresentedRelicTriggered,
+  PresentedPowerChanged,
 } from '../src/game/scenes/BattleEventPresenter';
 
 vi.mock('phaser', () => ({
@@ -397,6 +399,100 @@ describe('TASK-088 — BattleEventPresenter parser & formatter', () => {
     expect(formatInBattleEvent(parsed!)).toBe('PetSkillCast: card-inferno');
   });
 
+  it('parses and formats RelicTriggered with verbatim relicId (SIGNALR_PROTOCOL.md §3.2.23)', () => {
+    const raw: PresentedRelicTriggered = {
+      type: 'RelicTriggered',
+      relicId: 'relic-instance-berserker-core',
+    };
+
+    const parsed = parseInBattleEvent(raw);
+    expect(parsed).toEqual(raw);
+    expect(formatInBattleEvent(parsed!)).toBe(
+      'RelicTriggered: relic-instance-berserker-core'
+    );
+  });
+
+  it('does not surface an effect summary on RelicTriggered (§3.2.23 item 2, §3.2.25)', () => {
+    const parsed = parseInBattleEvent({
+      type: 'RelicTriggered',
+      relicId: 'relic-instance-mana-crystal',
+      effectSummary: '+10 Power',
+    });
+
+    expect(parsed).toEqual({
+      type: 'RelicTriggered',
+      relicId: 'relic-instance-mana-crystal',
+    });
+    expect(formatInBattleEvent(parsed!)).not.toContain('+10 Power');
+  });
+
+  it('parses and formats PowerChanged with all documented members verbatim (SIGNALR_PROTOCOL.md §3.2.24)', () => {
+    const raw: PresentedPowerChanged = {
+      type: 'PowerChanged',
+      delta: 25,
+      power: 45,
+      source: 'card',
+    };
+
+    const parsed = parseInBattleEvent(raw);
+    expect(parsed).toEqual(raw);
+    expect(formatInBattleEvent(parsed!)).toBe('PowerChanged: +25 -> 45 (card)');
+  });
+
+  it('presents a negative PowerChanged delta as delivered without absolute-value conversion (§3.2.24 item 1)', () => {
+    const parsed = parseInBattleEvent({
+      type: 'PowerChanged',
+      delta: -30,
+      power: 12,
+      source: 'card',
+    });
+
+    expect(parsed).toEqual({
+      type: 'PowerChanged',
+      delta: -30,
+      power: 12,
+      source: 'card',
+    });
+    expect(formatInBattleEvent(parsed!)).toBe('PowerChanged: -30 -> 12 (card)');
+  });
+
+  it('accepts each documented PowerChanged source value without rejecting any (§3.2.24 item 3)', () => {
+    for (const source of ['match', 'card', 'relic']) {
+      const parsed = parseInBattleEvent({
+        type: 'PowerChanged',
+        delta: 5,
+        power: 5,
+        source,
+      });
+      expect(parsed).toEqual({ type: 'PowerChanged', delta: 5, power: 5, source });
+    }
+  });
+
+  it('carries PowerChanged source as the delivered string, never a number or ordinal (§3.2.4 item 3)', () => {
+    const parsed = parseInBattleEvent({
+      type: 'PowerChanged',
+      delta: 1,
+      power: 1,
+      source: 'relic',
+    });
+
+    expect(typeof (parsed as PresentedPowerChanged).source).toBe('string');
+    expect(parseInBattleEvent({ type: 'PowerChanged', delta: 1, power: 1, source: 0 })).toBeNull();
+  });
+
+  it('returns null for malformed RelicTriggered and PowerChanged payloads', () => {
+    expect(parseInBattleEvent({ type: 'RelicTriggered' })).toBeNull();
+    expect(parseInBattleEvent({ type: 'RelicTriggered', relicId: '' })).toBeNull();
+    expect(parseInBattleEvent({ type: 'RelicTriggered', relicId: 123 })).toBeNull();
+
+    expect(parseInBattleEvent({ type: 'PowerChanged' })).toBeNull();
+    expect(parseInBattleEvent({ type: 'PowerChanged', delta: 5, power: 5 })).toBeNull();
+    expect(parseInBattleEvent({ type: 'PowerChanged', power: 5, source: 'card' })).toBeNull();
+    expect(parseInBattleEvent({ type: 'PowerChanged', delta: 5, source: 'card' })).toBeNull();
+    expect(parseInBattleEvent({ type: 'PowerChanged', delta: '5', power: 5, source: 'card' })).toBeNull();
+    expect(parseInBattleEvent({ type: 'PowerChanged', delta: 5, power: '5', source: 'card' })).toBeNull();
+  });
+
   it('returns null for unknown event types or malformed events', () => {
     expect(parseInBattleEvent({ type: 'UnknownType', amount: 10 })).toBeNull();
     expect(parseInBattleEvent({ type: 'BattleStarted', battleId: 'b1' })).toBeNull();
@@ -555,6 +651,24 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
       },
       expectedTokens: ['PetSkillCast', 'card-inferno'],
     },
+    {
+      name: 'RelicTriggered',
+      event: {
+        type: 'RelicTriggered',
+        relicId: 'relic-instance-berserker-core',
+      },
+      expectedTokens: ['RelicTriggered', 'relic-instance-berserker-core'],
+    },
+    {
+      name: 'PowerChanged',
+      event: {
+        type: 'PowerChanged',
+        delta: 25,
+        power: 45,
+        source: 'card',
+      },
+      expectedTokens: ['PowerChanged', '+25', '45', 'card'],
+    },
   ])('presents $name verbatim when delivered in ReceiveEvents', ({ event, expectedTokens }) => {
     const { harness, scene, ctx } = createBattle();
     runScene(scene, ctx, 'create');
@@ -568,6 +682,43 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
     const rendered = harness.texts.map((t) => t.text).join('\n');
     for (const token of expectedTokens) {
       expect(rendered, `Expected rendered output to contain "${token}"`).toContain(token);
+    }
+  });
+
+  it('presents RelicTriggered and PowerChanged in delivered order alongside existing types (GAME_EVENTS.md §1)', () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+
+    harness.emitBattleEvents({
+      battleId: 'b-relic',
+      serverSequence: 9,
+      events: [
+        { type: 'ComboChanged', combo: 2 },
+        { type: 'PassiveCharged', passiveId: 'pet-passive', source: 'pet', sourceId: 'pet-inst-1', progress: 1, threshold: 3 },
+        { type: 'RelicTriggered', relicId: 'relic-instance-mana-crystal' },
+        { type: 'PowerChanged', delta: 10, power: 30, source: 'relic' },
+        { type: 'CardCast', cardId: 'card-shield' },
+      ],
+    });
+
+    const presented = (scene as unknown as { getPresentedEvents(): readonly string[] }).getPresentedEvents();
+    expect(presented).toEqual([
+      'Combo: 2',
+      'PassiveCharged: pet-passive (pet:pet-inst-1) 1/3',
+      'RelicTriggered: relic-instance-mana-crystal',
+      'PowerChanged: +10 -> 30 (relic)',
+      'CardCast: card-shield',
+    ]);
+  });
+
+  it('no longer drops RelicTriggered or PowerChanged at the parser default branch', () => {
+    for (const event of [
+      { type: 'RelicTriggered', relicId: 'relic-instance-berserker-core' },
+      { type: 'PowerChanged', delta: 25, power: 45, source: 'card' },
+    ]) {
+      const parsed = parseInBattleEvent(event);
+      expect(parsed, `${event.type} must be recognized`).not.toBeNull();
+      expect(formatInBattleEvent(parsed!).length).toBeGreaterThan(0);
     }
   });
 
@@ -782,6 +933,10 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
         outcome: 'victory',
         finalBossHp: 0,
         finalPlayerHp: 100,
+        // TASK-149: the handoff also carries the batch's battleId so
+        // ResultScene can read the persisted reward summary
+        // (API_CONTRACTS.md §4). The outcome members are unchanged.
+        battleId: 'b-final',
       },
     });
   });
@@ -821,6 +976,8 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
         outcome: 'defeat',
         finalBossHp: 400,
         finalPlayerHp: 0,
+        // TASK-149: the handoff also carries the batch's battleId.
+        battleId: 'b-defeat',
       },
     });
   });

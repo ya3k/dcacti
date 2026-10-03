@@ -1,6 +1,34 @@
 # Game Events
 
-**Version:** 2.8 (§2 `CardCast`/`PetSkillCast`, `RelicTriggered`, and
+**Version:** 2.11 (§2 `PowerChanged` reconciled with the TASK-150 Product Owner
+decisions D-1–D-8: the `source` value set is now the four values
+`"match"`, `"card"`, `"relic"`, and `"boss"`; the owning-stage emission rule
+replaces the stale "the `"match"` and `"card"` sources remain their own stages'"
+wording; and the one-event-per-mutation and authoritative-ordering rules are
+stated. **No event, payload member, or delivery path is changed** — the payload
+is still `Delta, new Power value, source`, this revision adds a `source`
+*value* and not a member, and no new event or ordering rule is introduced.
+Applying the decisions to the wire owner is
+`SIGNALR_PROTOCOL.md` §3.2.24; implementing the emission is a separate
+downstream task. Prior 2.10: (§2 `RelicTriggered` and `PowerChanged` emission items
+synchronized with the landed Relic stage — `GAME_RULES.md` §17 step 11 emits one
+`RelicTriggered` per Relic whose effect actually applies, in the equip-slot order
+`RELIC_RULES.md` §4.2 fixes, and emits `PowerChanged` with `source: "relic"` where
+a Relic's `Power` effect applies (TASK-133). **No event, payload member, ordering
+rule, or gameplay semantic is changed by this revision**: both payload lines were
+already authored and both emissions conform to them, so only the items that
+recorded the emission as *not implemented* are corrected. `RelicTriggered`'s
+`effect summary` remains unpopulated and omitted per `SIGNALR_PROTOCOL.md`
+§3.2.25. That entry also recorded that the Match and Card `PowerChanged`
+sources remained their own stages' — **superseded by 2.11**, which states the
+owning-stage emission rule for all four sources.
+Prior 2.9: (§2 `CardCast`'s cost item reworded — the value a cast pays is
+now the `EffectiveCardCost` `CARD_RULES.md` §3.6 owns (TASK-134 D4 plus the
+Product Owner `EffectiveCardCost` truncation decision), not the authored
+`CardDefinition.PowerCost` alone; `CardDefinition.PowerCost` remains the
+definition-side base value. This is a wording correction only: `CardCast`'s
+member set on the wire is unchanged, and the change authorizes no new member,
+event, or ordering. Prior 2.8: §2 `CardCast`/`PetSkillCast`, `RelicTriggered`, and
 `PowerChanged` payload items authored, and `PassiveTriggered` item 3 reworded —
 the wire schema these events are delivered by is now fixed by
 `SIGNALR_PROTOCOL.md` §3.2.20–§3.2.25 per the TASK-104 A-1A/A-2C/A-3/A-4B/A-5A
@@ -360,7 +388,7 @@ without a `MatchCreated` (`MATCH3_RULES.md` §5.5.5 item 8).
 ## PowerChanged
 ```text
 Trigger:  Power increases or decreases (GAME_RULES.md §12)
-Payload:  Delta, new Power value, source (Gem match / Card cost / Relic)
+Payload:  Delta, new Power value, source (Gem match / Card / Relic / Boss)
 ```
 
 1. **`Delta` is the signed change and `new Power value` is the resulting
@@ -368,20 +396,53 @@ Payload:  Delta, new Power value, source (Gem match / Card cost / Relic)
    reader renders the change and the resulting value without recomputing either.
    `GAME_RULES.md` §12 owns the 0–100 range; this event reports the state's
    value, it does not re-derive the invariant.
-2. **`source` answers "what changed Power"** — a Gem match, a Card cost, or a
-   Relic — and its three values are owned by this payload line. It shares the
-   member *name* `source` with the damage events and the Passive events, which
-   answer different questions and own different value sets; that is the same
-   shared-name convention `SIGNALR_PROTOCOL.md` §3.2.7 item 2 records for
-   `cascadeDepth`, and §3.2.24 item 3 states it for this event on the wire.
+2. **`source` answers "what changed Power"** — and it identifies the **stage
+   that owns the mutation**, not the direction of the change. Its four values
+   are owned by this payload line:
+
+   ```text
+   "match"   a Match-owned Power mutation       (GAME_RULES.md §17 step 13)
+   "card"    a Card-owned Power mutation        (GAME_RULES.md §17 step 14)
+   "relic"   a Relic-owned Power mutation       (GAME_RULES.md §17 step 11)
+   "boss"    a Boss-owned Power mutation        (GAME_RULES.md §17 step 18b)
+   ```
+
+   `"card"` is **not** a cost-only value: it covers any Power mutation a Card
+   cast owns, whether the cast pays its cost or applies a Power-granting effect
+   (`CARD_RULES.md` §2, §3.6). The signed `Delta` — not the source — says
+   whether that mutation was a gain or a spend.
+
+   It shares the member *name* `source` with the damage events and the Passive
+   events, which answer different questions and own different value sets; that
+   is the same shared-name convention `SIGNALR_PROTOCOL.md` §3.2.7 item 2
+   records for `cascadeDepth`, and §3.2.24 item 3 states it for this event on
+   the wire.
 3. **This event is the authoritative report of a Card cast's Power change.**
    `SIGNALR_PROTOCOL.md` §3.2.20 item 2 records that `CardCast` carries no cost
    member in MVP; where the Power change itself must be reported, it is reported
-   here rather than by re-adding a cost member to `CardCast`.
-4. **Emission is not implemented by this document.** Whether and when the Power
-   stage emits this event is owned by that stage (`GAME_EVENTS.md` §3 item 7's
-   sequencing position); `SIGNALR_PROTOCOL.md` §3.2.24 fixes only its wire
-   shape.
+   here rather than by re-adding a cost member to `CardCast`. A cast's Power
+   change is reported as the mutations it owns — the cost it pays and any Power
+   its effects apply — and each is reported by its own emission (item 4).
+4. **Emission is owned by the stage that owns the mutation.** Every
+   authoritative gameplay mutation of `PetState.Power` emits this event, and the
+   stage that performs the mutation is the stage that emits it: the Power stage
+   for a Match's resource generation, the Card stage for a cast's cost and its
+   Power effects, the Relic stage for a Relic's `Power` effect
+   (`GAME_RULES.md` §17 step 11), and the Boss Response stage for a Boss Skill's
+   Power-draining secondary effect (§17 step 18b). No separate or centralized
+   emission step exists, and no stage emits on another stage's behalf.
+   `SIGNALR_PROTOCOL.md` §3.2.24 fixes only this event's wire shape; the
+   sequencing position is `GAME_EVENTS.md` §3 item 7's.
+
+   **One mutation, one event.** When one action performs several Power
+   mutations — a Card cast that both pays a cost and applies a Power effect is
+   the documented case — each mutation emits **its own** `PowerChanged`
+   carrying that mutation's `Delta` and the resulting `Power`. They are never
+   combined into a single net event. The events preserve the authoritative
+   mutation order `GAME_RULES.md` §17 fixes, so a reader applying them in
+   delivered order reaches the same `Power` the state holds
+   (`SIGNALR_PROTOCOL.md` §3.2.24 item 6). A mutation that does not occur emits
+   nothing.
 
 ## PassiveCharged / PassiveTriggered
 ```text
@@ -475,6 +536,13 @@ Payload:  RelicId, effect summary, deterministic order index for this event
 4. **Whether a member is emitted is the wire owner's question.** For this event
    the answer is `SIGNALR_PROTOCOL.md` §3.2.23 for the members and §3.2.25 for
    any §2 element the wire cannot yet carry.
+5. **Emission point.** `GAME_RULES.md` §17 step 11's Relic stage emits one
+   `RelicTriggered` per Relic whose Effect actually applies, carrying the
+   triggered Relic's owned instance identity (`RELIC_RULES.md` §2.2 item 3), in
+   the equip-slot order §4.2 fixes. A Trigger that fires but whose Condition
+   fails, or whose effect cannot be resolved, emits nothing — the payload line's
+   trigger is "A Relic's Trigger+Condition is met" <b>and</b> its effect applied
+   (`RELIC_RULES.md` §7).
 
 ## CardCast / PetSkillCast
 ```text
@@ -496,13 +564,18 @@ Payload:  CardId, Power cost paid, effect summary
    (`CARD_RULES.md` §1 item 4) and present in the loadout snapshot
    (`GAME_STATE.md` §2.3), so no dedicated confirmation member is defined here or
    on the wire (`SIGNALR_PROTOCOL.md` §3.2.21 item 2).
-3. **`Power cost paid` is a definition value, not a wire member.** The Cost is
-   owned by `CARD_RULES.md` §2/§4.1; the authoritative record of what a cast did
-   to `PetState.Power` is the state value delivered by the push
-   (`GAME_STATE.md` §2.3), and where a Power change must be reported as an event
-   it is `PowerChanged` (below). `SIGNALR_PROTOCOL.md` §3.2.20 item 2 records
-   that MVP `CardCast` therefore carries no cost member — a decision by the wire
-   owner, which this document does not contradict.
+3. **`Power cost paid` is the effective cost actually deducted, and it is not a
+   wire member.** The cost a cast pays is `EffectiveCardCost`, owned by
+   `CARD_RULES.md` §3.6 — not the authored `CardDefinition.PowerCost` on its
+   own, which remains the definition-side base value (§2/§4.1 there). The
+   authoritative record of what a cast did to `PetState.Power` is the state
+   value delivered by the push (`GAME_STATE.md` §2.3), and where a Power change
+   must be reported as an event it is `PowerChanged` (below).
+   `SIGNALR_PROTOCOL.md` §3.2.20 item 2 records that MVP `CardCast` therefore
+   carries no cost member — a decision by the wire owner, which this document
+   does not contradict. Where a Relic has reduced the cost, the reduction is
+   already reflected in the paid amount and again in the resulting `Power`;
+   neither is a second member here.
 4. **`effect summary` is not populated yet**, on the same basis as
    `PassiveTriggered` item 3.
 5. **Emission order: `CardCast` precedes `PetSkillCast`.** Both fire at

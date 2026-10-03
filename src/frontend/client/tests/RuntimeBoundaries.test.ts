@@ -331,10 +331,25 @@ describe('Frontend architectural boundaries', () => {
       // SIGNALR_PROTOCOL.md §2.1 and on the server (BattleHub.Swap) and had no
       // client half; TASK-069 implements that half, so `'Swap'` now IS invoked.
       //
+      // TASK-144 stage advance. This assertion previously also required
+      // `GetBattleState` to be absent, because §7's snapshot request had no
+      // client half. TASK-143 implemented the server method and TASK-144
+      // implements the client invocation (§7.1), so `'GetBattleState'` now IS
+      // invoked — the historical TASK-120 *assertion* is superseded by the
+      // current authoritative protocol, not TASK-120 itself (completed tasks
+      // are immutable, TASK_LIFECYCLE.md §3).
+      //
       // Every property that still holds is preserved: the other documented
       // gameplay methods stay absent, and `JoinBattle` stays present.
       const invoked = [...code.matchAll(/invoke(?:<[^>]*>)?\(\s*'([^']+)'/g)].map((m) => m[1]);
-      expect(invoked.sort()).toEqual(['CardCast', 'JoinBattle', 'PetSkillCast', 'Ping', 'Swap']);
+      expect(invoked.sort()).toEqual([
+        'CardCast',
+        'GetBattleState',
+        'JoinBattle',
+        'PetSkillCast',
+        'Ping',
+        'Swap',
+      ]);
 
       // `Swap`, `CardCast`, and `PetSkillCast` are the documented client → server
       // gameplay methods (SIGNALR_PROTOCOL.md §2, §2.1).
@@ -342,12 +357,27 @@ describe('Frontend architectural boundaries', () => {
       expect(code).toMatch(/invoke<[^>]*>\(\s*'CardCast'/);
       expect(code).toMatch(/invoke<[^>]*>\(\s*'PetSkillCast'/);
 
-      // `GetBattleState` (§7) remains unimplemented on the client.
-      expect(code).not.toMatch(/'GetBattleState'/);
+      // `GetBattleState` (§7.1) is the documented reconnect/resync snapshot
+      // request. It is a request/response read, not a gameplay action, and it
+      // is the runtime — not a scene — that issues it.
+      expect(code).toMatch(/invoke<[^>]*>\(\s*'GetBattleState'/);
 
       // `JoinBattle` (§1.2) is still the documented group join, and it is not a
       // gameplay action.
       expect(code).toMatch(/'JoinBattle'/);
+    });
+
+    it('BattleScene stays independent of the transport, GetBattleState included', () => {
+      // SIGNALR_PROTOCOL.md §7 does not move the boundary: the recovered
+      // snapshot still reaches the scene through `runtime.onBattleState(...)`,
+      // so the scene names no hub method and imports no transport. The scene
+      // coverage in "Phaser is not coupled to SignalR or to any other
+      // transport" asserts the imports; this pins the method-level half.
+      const code = stripComments(readSource(join('game', 'scenes', 'BattleScene.ts')));
+
+      expect(code).not.toMatch(/'GetBattleState'/);
+      expect(code).not.toMatch(/SignalRService/);
+      expect(code).toMatch(/onBattleState/);
     });
 
     it('the runtime port carries capabilities, not models', () => {
@@ -367,6 +397,12 @@ describe('Frontend architectural boundaries', () => {
       );
       const members = [...port.matchAll(/^ {2}(\w+)\(/gm)].map((match) => match[1]).sort();
       expect(members).toEqual([
+        // TASK-149 stage advance: `getBattleResult` is the documented result
+        // read (`API_CONTRACTS.md` §4) `ResultScene` renders the persisted
+        // reward summary from. It is a capability, like the collection reads —
+        // it declares no model and re-exports nothing, which the assertions
+        // below this list still enforce.
+        'getBattleResult',
         'getBattleState',
         'getCards',
         'getPet',
@@ -385,7 +421,7 @@ describe('Frontend architectural boundaries', () => {
       // definition of a wire shape `services/api/` already owns.
       expect(code).not.toMatch(/export type \{/);
       expect(code).toMatch(
-        /import type \{ BattleStartRequest \} from '\.\.\/\.\.\/services\/api\/BattleModels'/
+        /import type \{ BattleResultResponse, BattleStartRequest \} from '\.\.\/\.\.\/services\/api\/BattleModels'/
       );
       expect(code).toMatch(
         /import type \{ CardResponse, PetResponse, RelicResponse \} from '\.\.\/\.\.\/services\/api\/CollectionModels'/

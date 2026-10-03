@@ -32,8 +32,8 @@ public class RelicPersistenceTests
         RelicDefinitionId = id,
         Name = "Berserker Core",
         Trigger = "OnMatchCount",
-        Condition = "every 3 Matches",
-        EffectDefinition = "atk_plus_5_percent",
+        Condition = TestRelicEffects.Condition,
+        EffectDefinition = TestRelicEffects.Effect,
     };
 
     private static Relic NewRelic(string instanceId, string playerId, string definitionId) => new()
@@ -272,8 +272,11 @@ public class RelicPersistenceTests
             Assert.Equal("relic_def_1", stored.RelicDefinitionId);
             Assert.Equal("Berserker Core", stored.Name);
             Assert.Equal("OnMatchCount", stored.Trigger);
-            Assert.Equal("every 3 Matches", stored.Condition);
-            Assert.Equal("atk_plus_5_percent", stored.EffectDefinition);
+
+            // RELIC_RULES.md §8.1/§8.2: both members round-trip as their
+            // STRUCTURED values, not as prose.
+            Assert.Equal(TestRelicEffects.Condition, stored.Condition);
+            Assert.Equal(TestRelicEffects.Effect, stored.EffectDefinition);
         }
     }
 
@@ -292,7 +295,7 @@ public class RelicPersistenceTests
                 Name = "Burning Curse",
                 Trigger = "OnDamageDealt",
                 Condition = null,
-                EffectDefinition = "burn_damage_plus_30_percent",
+                EffectDefinition = TestRelicEffects.Effect,
             });
             await context.SaveChangesAsync();
         }

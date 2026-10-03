@@ -464,6 +464,13 @@ public class BattleStateTests
         // the collection always-present, so it is asserted present here and its own
         // contract is covered by NextAttackCritModifierTests.
         //
+        // ATKModifiers and CardCostModifiers joined it with the Relic runtime
+        // carrier stage (TASK-140, GAME_STATE.md §2.3.7 and §2.3.5), on the same
+        // documented footing: §2.3.7 item 6 and §2.3.5 item 6 each make their
+        // collection always-present and never-null, so both are asserted present
+        // here and their own contracts are covered by ATKModifierTests and
+        // CardCostModifierTests.
+        //
         // Tier/Star/Level remain owned by the Pet progression stage and are still
         // not stubbed here (§0 item 4, §0 item 5).
         var dataMembers = typeof(PetState)
@@ -491,6 +498,16 @@ public class BattleStateTests
         // Status Effect stage's member (§2.3.1), the canonical never-null form of
         // the nullable constructor parameter. NextAttackCritModifiers is the
         // NextAttack Crit stage's member (§2.3.4), the same never-null form.
+        // ATKModifiers and CardCostModifiers are the runtime carrier stage's members
+        // (§2.3.7, §2.3.5), likewise the canonical never-null form and likewise not
+        // constructor parameters: each is a distinct collection for a distinct
+        // concept, so no name is shared (§0 item 5). No EffectivePetATK,
+        // EffectiveCardCost, DefaultATK, or other derived/second ATK or cost member
+        // appears — §2.3.7 item 9 and CARD_RULES.md §3.6 item 2 keep both composed
+        // values derived and unstored. The equality helpers
+        // (StatusEffectsEqual, NextAttackCritModifiersEqual, ATKModifiersEqual,
+        // CardCostModifiersEqual) are methods rather than properties and so are not
+        // part of this inventory.
         var declared = typeof(PetState)
             .GetProperties()
             .Select(p => p.Name)
@@ -500,7 +517,8 @@ public class BattleStateTests
         Assert.Equal(
             new[]
             {
-                "ATK", "ActiveStatusEffects", "Crit", "DEF", "Element", "EquippedCards",
+                "ATK", "ATKModifiers", "ActiveStatusEffects", "CardCostModifiers", "Crit",
+                "DEF", "Element", "EquippedCards",
                 "EquippedRelics", "HP",
                 "HasResetOverride", "MaxHP", "NextAttackCritModifiers",
                 "PassiveId", "PassiveProgress", "PassiveResetOverride", "PetId",

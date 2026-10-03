@@ -295,13 +295,13 @@ namespace GameServer.Infrastructure.Postgres.Migrations
                         .HasColumnType("character varying(64)");
 
                     b.Property<string>("Condition")
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
+                        .HasColumnType("jsonb")
+                        .HasColumnName("Condition");
 
                     b.Property<string>("EffectDefinition")
                         .IsRequired()
-                        .HasMaxLength(128)
-                        .HasColumnType("character varying(128)");
+                        .HasColumnType("jsonb")
+                        .HasColumnName("EffectDefinition");
 
                     b.Property<string>("Name")
                         .IsRequired()

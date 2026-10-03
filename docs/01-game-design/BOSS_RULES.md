@@ -1,6 +1,27 @@
 # Boss Rules
 
-**Version:** 2.6 (§6.2.1's Hỏa Long Rage damage-scope bullet reconciled per
+**Version:** 2.7 (§6.2.2 completed per TASK-155, applying the TASK-154 Product
+Owner decision (Option B): the Boss-carried Thủy Ma healing-reduction instance
+is now reconciled with the Pet-scoped Heal Resolution step that applies it.
+§6.2.2 states the **applicable-instance selector** — the Status Effect identity
+`Id = "boss-thuy-ma-heal"`, the value already recorded as Thủy Ma's `PassiveId`
+in §6.4, reused as the instance's `Id` under `GAME_STATE.md` §2.3.1 item 1 and
+item 6 rather than a new identity or a `TargetStat` value — and states the
+**explicitly authorized cross-entity read**: the Pet-side Heal Resolution step
+(`COMBAT_RULES.md` §4 item 7) reads that Boss-held instance at its Applicable
+Heal Modifiers stage, **one-directionally and non-mutating**, selecting by `Id`.
+§6.2.2 also records that the modifier is persistent/Turn-based, is not consumed
+by healing, by an action, or once, and is removed only by the existing step-19a
+Turn-duration lifecycle, and confirms the −50% applies to the Raw Heal before
+`COMBAT_RULES.md` §4 item 1's clamp, which stays last. The magnitude (`50%`),
+duration (`3 turns`), Battle Start trigger, Pet-only target, reapplication rule,
+and the "no new event or protocol" boundary are **UNCHANGED**. No new `TargetStat`
+value, no `PendingStatusEffects[]`, no second in-flight representation, no new
+Battle Event, SignalR member, `BattleState` member, Redis key, or database column
+is introduced, and `GAME_STATE.md` §2.3.1's invariants are unchanged. Mechanics
+remain referenced to their owners (`COMBAT_RULES.md` §4 items 1 and 7, §5.2
+item 2, §5.3, §5.4.5, §5.5.3) rather than restated. Decision source: TASK-154;
+applying task: TASK-155. Prior 2.6: (§6.2.1's Hỏa Long Rage damage-scope bullet reconciled per
 TASK-126 with the Boss Skill Step-1 composition TASK-125 decided and
 `COMBAT_RULES.md` §3.4 now owns. The bullet previously stated that Rage reaches
 "only Boss damage whose Step-1 `Attack` input derives from `BossState.ATK` — the
@@ -272,20 +293,53 @@ emits no `PassiveCharged`/`PassiveTriggered` from match progress.
 - **Representation:** the existing Turn-based Buff/Debuff Status Effect model
   (`GAME_STATE.md` §2.3.1), held in `BossState.StatusEffects[]` — no new
   trigger mechanism, no `PassiveTracker.Charge`, and no
-  `PassiveCharged`/`PassiveTriggered` from match progress.
+  `PassiveCharged`/`PassiveTriggered` from match progress. The instance's
+  `Type` does not select a stat consumer; the applicable-instance selector is
+  the **`Id`** (below).
+- **Applicable-instance selector:** the instance is identified by the Status
+  Effect identity `Id = "boss-thuy-ma-heal"` under `GAME_STATE.md` §2.3.1
+  item 1 (an `Id` is an identity, not a definition) and item 6 (at most one
+  instance per identity per entity, `Id` being the uniqueness key, so a
+  re-application refreshes that instance). The value is Thủy Ma's recorded
+  **`PassiveId`** (`BOSS_RULES.md` §6.4) — reused as this instance's `Id`, not
+  a new identity, and deliberately **not** a `TargetStat` value. A Pet-side
+  read selects the applicable Boss-held instance by that `Id` (the
+  `BOSS_RULES.md` §6.3.1 per-Boss declaration pattern); it does **not** select
+  by `Type` + `TargetStat`. This is a `BuffDebuff`-typed instance in the
+  documented element model, and it is **not** a `TargetStat`-consumed
+  `BuffDebuff`: it is not consumed by a stat rule, and
+  `COMBAT_RULES.md` §5.4.5 / §5.5.3 consequently open no new non-`"ATK"`
+  `TargetStat` case for it.
+- **The authorized cross-entity read:** the Pet-side **Heal Resolution** step
+  (`COMBAT_RULES.md` §4 item 7) is **explicitly authorized to read** this
+  Boss-held instance — the read direction is Pet-side step → Boss-owned
+  instance. It is **one-directional and non-mutating**: the step reads
+  `BossState.StatusEffects[]` and does not write `BossState`, and it does not
+  consume, decrement, remove, or otherwise alter the instance. The read is
+  evaluated at that step's **Applicable Heal Modifiers** stage, and it is the
+  only mechanism by which this effect reaches Pet healing; no other document
+  and no second carrier is involved.
 - **Where the −50% is applied:** at the shared **Heal Resolution** step
   (`COMBAT_RULES.md` §4 item 7), **before** the existing overheal clamp
   (`COMBAT_RULES.md` §4 item 1). It is **one applicable Heal modifier**, not a
   special-cased site. It reaches Pet healing from any existing source that uses
-  that resolution — explicitly including Card Heal and HP-Gem healing. It does
-  **not** modify MaxHP and does **not** affect Shield.
+  that resolution — explicitly including Card Heal and HP-Gem healing. The
+  modifier applies to the **Raw Heal**, through that stage, to produce the
+  Final Heal Amount; `COMBAT_RULES.md` §4 item 1's clamp remains unchanged and
+  still last. It does **not** modify MaxHP and does **not** affect Shield.
 - **Duration:** applied at Battle Start with `RemainingTurns = 3`; the
   Battle Start application is not a Turn and consumes no duration unit; the
   effect is active throughout Turns 1, 2, and 3; the existing Turn-based
   lifecycle decrements at the End Turn / step 19a boundary
   (`COMBAT_RULES.md` §5.3); after step 19a of Turn 3, `RemainingTurns` reaches 0
   and the effect expires before Turn 4. No new duration mechanism or lifecycle
-  phase is introduced.
+  phase is introduced. The modifier is **persistent / Turn-based**: it is
+  **not** consumed per heal, not consumed per action, and not consumed once,
+  and it survives Turn transitions, Swaps, non-healing actions, and multiple
+  heals for as long as it is active. It is removed **only** by the existing
+  Turn-duration lifecycle at the step 19a resolution that reaches
+  `RemainingTurns = 0` (`COMBAT_RULES.md` §5.3; `GAME_STATE.md` §5.1.1 item 5),
+  and a stored zero is never an active state (`GAME_STATE.md` §2.3.1 item 8).
 - **Reapplication:** a further application while an instance is active
   refreshes that instance to the full 3-turn duration. It does **not** stack
   additively (−50% + −50% = −100% is explicitly not the behavior); at most one

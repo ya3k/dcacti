@@ -7,7 +7,10 @@
 ```text
 Task ID:           TASK-024
 Type:              FEATURE
-Status:            BACKLOG
+Status:            DONE (direct execution proven by commit 9c06b3b;
+                   lifecycle reconciliation BACKLOG → DONE per
+                   TASK_LIFECYCLE.md §3 — read-only evidence audit
+                   established DONE_CANDIDATE.)
 Risk:              MEDIUM
 Priority:          HIGH
 Primary Agent:     persistence
@@ -60,13 +63,13 @@ No Pet/PetDefinition entities exist; `GameDbContext` has no sets. `BattleStateSe
 
 ## Acceptance Criteria
 
-- [ ] Pet and PetDefinition entities match DATABASE.md §1 and are registered with an applying EF migration
-- [ ] Pet Level is derived exclusively via the PET_RULES §5 formula reading Player Level and PetDefinition's stored multiplier, clamped per ADR-012 item 4
-- [ ] Stored Pet.Level is recomputed whenever Player Level or PetDefinition multiplier changes outside battle
-- [ ] No Pet XP column, no Evolution field, no Tier/Star derivation from Player Level exists
-- [ ] All relevant tests pass at the required validation depth (`core/validation.md` §2)
-- [ ] Quality review checklist passes (`quality/review.md` §1)
-- [ ] No authoritative rules or contracts violated (`AGENTS.md` §10 / ADR-001)
+- [x] Pet and PetDefinition entities match DATABASE.md §1 and are registered with an applying EF migration
+- [x] Pet Level is derived exclusively via the PET_RULES §5 formula reading Player Level and PetDefinition's stored multiplier, clamped per ADR-012 item 4
+- [x] Stored Pet.Level is recomputed whenever Player Level or PetDefinition multiplier changes outside battle
+- [x] No Pet XP column, no Evolution field, no Tier/Star derivation from Player Level exists
+- [x] All relevant tests pass at the required validation depth (`core/validation.md` §2)
+- [x] Quality review checklist passes (`quality/review.md` §1)
+- [x] No authoritative rules or contracts violated (`AGENTS.md` §10 / ADR-001)
 
 ---
 
@@ -116,11 +119,21 @@ No Pet/PetDefinition entities exist; `GameDbContext` has no sets. `BattleStateSe
 
 ## Completion Evidence
 
-### Changed Files
-- `<file path>` — <summary of change>
+Historical completion record (read-only evidence audit; manifest correction
+recorded at lifecycle reconciliation). Direct execution is proven by commit
+`9c06b3be2b7af8a2341969ab7e6ebd7221f70f27`.
+
+### Changed Files (all in commit 9c06b3b)
+- `src/backend/GameServer.Domain/Pets/Pet.cs`, `PetDefinition.cs`, `PetLevelDerivation.cs`, `PetTier.cs` — new entities; PET_RULES §5 derivation with documented clamp (no Pet XP).
+- `src/backend/GameServer.Infrastructure/Postgres/Configurations/PetConfiguration.cs`, `PetDefinitionConfiguration.cs` + migration `20260924163011_AddPetPersistence` — EF registration and applying migration; `PetLevelMultiplier` stored as PetDefinition configuration.
+- `src/backend/GameServer.Application/Pets/IPetRepository.cs`, `PetLevelService.cs`; `src/backend/GameServer.Infrastructure/Postgres/Repositories/PetRepository.cs` — persistence boundary, denormalized `Pet.Level` recompute on Player Level / multiplier change.
+- Tests: `PetLevelDerivationTests` (Domain), `PetLevelRecomputeTests`, `PetPersistenceTests`, `PetOwnershipResolutionTests` (Infrastructure).
 
 ### Validation Results
-- `<test command or suite>` — PASS (<N> tests)
+- Implementation, migration, and tests landed in commit 9c06b3b; backend suites verified green at audit time (current run: 2580 tests, 0 failed, 0 skipped).
+
+### Historical Contract Note
+- The `PetLevelMultiplier`-based derivation contract described in this manifest is TASK-024's historical contract exactly as executed; the mechanism was later retired by TASK-064 (contract retirement: TASK-059). This lifecycle correction does not rewrite that history.
 
 ### Server Authority & Scope Verification
 - [x] Confirmed zero client-authoritative gameplay logic

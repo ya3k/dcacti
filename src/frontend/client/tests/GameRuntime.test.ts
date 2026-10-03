@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { GameRuntime } from '../src/game/runtime/GameRuntime';
 import { RuntimeActionNotImplementedError } from '../src/game/runtime/GameRuntimeEvents';
 import type { SignalRConnectionHandlers } from '../src/services/realtime/SignalRService';
@@ -49,6 +51,24 @@ class FakeSignalR {
   public petSkillCastResult: { accepted: boolean; reason?: string | null } = { accepted: true };
   /** When set, `petSkillCast()` rejects with it — a transport failure (§8.3). */
   public petSkillCastBehaviour: (() => Promise<never>) | null = null;
+  /**
+   * Every `getBattleState()` call the runtime made, in order
+   * (`SIGNALR_PROTOCOL.md` §7.1) — the reconnect snapshot request.
+   */
+  public getBattleStateCalls: string[] = [];
+  /**
+   * The envelope `getBattleState()` resolves with; overridden per case. The
+   * default is an accepted snapshot so a recovery test only has to supply the
+   * state it wants recovered.
+   */
+  public getBattleStateResult: {
+    accepted: boolean;
+    serverSequence?: number | null;
+    state?: unknown;
+    reason?: string | null;
+  } = { accepted: true };
+  /** When set, `getBattleState()` rejects with it — a transport failure (§8.3). */
+  public getBattleStateBehaviour: (() => Promise<never>) | null = null;
   /**
    * Every `joinBattle()` call the runtime made, in order
    * (SIGNALR_PROTOCOL.md §1.2, §2 `JoinBattle`).
@@ -159,6 +179,30 @@ class FakeSignalR {
     this.invokedMethods.push('PetSkillCast');
     this.petSkillCastCalls.push([battleId, clientSequence]);
     return this.petSkillCastResult;
+  }
+
+  /**
+   * Mirrors `SignalRService.getBattleState` (`SIGNALR_PROTOCOL.md` §7.1): the
+   * reconnect snapshot request, addressed by the battle id the caller already
+   * holds.
+   */
+  async getBattleState(battleId: string): Promise<{
+    accepted: boolean;
+    serverSequence?: number | null;
+    state?: unknown;
+    reason?: string | null;
+  }> {
+    if (this.getBattleStateBehaviour) {
+      return await this.getBattleStateBehaviour();
+    }
+
+    if (!this.connected) {
+      throw new Error('SignalR connection is not established.');
+    }
+
+    this.invokedMethods.push('GetBattleState');
+    this.getBattleStateCalls.push(battleId);
+    return this.getBattleStateResult;
   }
 
   on<TArgs extends unknown[]>(
@@ -1112,6 +1156,284 @@ describe('GameRuntime', () => {
       transport.emit('BattleStateUpdated', payload());
 
       expect(runtime.getBattleState()).toBeNull();
+    });
+  });
+
+  describe('reconnect & resync recovery (SIGNALR_PROTOCOL.md §7, ADR-008)', () => {
+    /** A `GET /api/battle/{battleId}/result` body (`API_CONTRACTS.md` §4). */
+    function resultResponse() {
+      return {
+        battleId: 'battle-1',
+        outcome: 'victory',
+        rewards: {},
+        durationTurns: 5,
+      };
+    }
+
+    function createRecoveryRuntime() {
+      const transport = new FakeSignalR();
+      const api = { getBattleResult: vi.fn(async () => resultResponse()) };
+      const runtime = new GameRuntime(transport as never, api as never);
+      return { runtime, transport, api };
+    }
+
+    /** A joined, synchronized battle: what the §4 push established. */
+    async function joinedRuntime(overrides: Record<string, unknown> = {}) {
+      const context = createRecoveryRuntime();
+      await context.runtime.initialize();
+      context.transport.emit('BattleStateUpdated', payload(overrides));
+      return context;
+    }
+
+    /** The documented §7.1 reconnect cycle. */
+    function reconnect(transport: FakeSignalR): void {
+      transport.handlers.onReconnecting?.(new Error('lost'));
+      transport.handlers.onReconnected?.('conn-2');
+    }
+
+    it('requests the snapshot after a reconnect when a battle is known', async () => {
+      const { transport } = await joinedRuntime({ battleId: 'battle-7' });
+
+      reconnect(transport);
+
+      // §7.1: on reconnect the client calls `GetBattleState(battleId)` — for the
+      // battle the runtime already holds from the server's own state, never for
+      // a caller-supplied or locally invented id.
+      await vi.waitFor(() => {
+        expect(transport.getBattleStateCalls).toEqual(['battle-7']);
+      });
+    });
+
+    it('requests no snapshot when no battle is known', async () => {
+      const { runtime, transport } = createRecoveryRuntime();
+      await runtime.initialize();
+
+      reconnect(transport);
+      await Promise.resolve();
+
+      // Nothing to recover: no request is issued and no battle is fabricated.
+      expect(transport.getBattleStateCalls).toEqual([]);
+      expect(runtime.getBattleState()).toBeNull();
+      expect(runtime.getState().sync).toBe('awaiting_battle');
+    });
+
+    it('ingests the recovered snapshot through the existing §4 path', async () => {
+      const { runtime, transport } = await joinedRuntime();
+      const recovered = payload({
+        turn: 5,
+        sequence: 6,
+        playerState: { combo: 2, matchCount: 11 },
+      });
+      transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 6,
+        state: recovered,
+        reason: null,
+      };
+
+      const runtimeEvents: string[] = [];
+      const recoveredStates: unknown[] = [];
+      runtime.onRuntimeEvent((event) => runtimeEvents.push(event.type));
+      runtime.onBattleState((state) => recoveredStates.push(state));
+
+      reconnect(transport);
+
+      await vi.waitFor(() => {
+        expect(runtime.getBattleState()).toEqual(recovered);
+      });
+
+      // The same observable result the §4 push produces: `sync` reaches
+      // 'synchronized', `battle_state_changed` is emitted, and the existing
+      // battle-state listeners are dispatched — with no second ingestion path.
+      expect(runtime.getState().sync).toBe('synchronized');
+      expect(runtimeEvents).toContain('battle_state_changed');
+      expect(recoveredStates).toEqual([recovered]);
+    });
+
+    it('replaces the stale runtime copy instead of merging into it', async () => {
+      const { runtime, transport } = await joinedRuntime({
+        turn: 0,
+        sequence: 0,
+        playerState: { combo: 0, matchCount: 0 },
+      });
+
+      const recovered = payload({
+        turn: 4,
+        sequence: 9,
+        playerState: { combo: 4, matchCount: 12 },
+        board: { cells: serverCells().fill('POWER') },
+      });
+      transport.getBattleStateResult = { accepted: true, serverSequence: 9, state: recovered };
+
+      reconnect(transport);
+
+      await vi.waitFor(() => {
+        expect(runtime.getBattleState()).toEqual(recovered);
+      });
+
+      // Exact equality is the assertion: a merge would leave a value from the
+      // stale copy behind, and no local prediction survives §7.2.
+      expect(runtime.getBattleState()!.turn).toBe(4);
+      expect(runtime.getBattleState()!.playerState).toEqual({ combo: 4, matchCount: 12 });
+    });
+
+    it('does not compare the snapshot against a locally held sequence', async () => {
+      // GAME_STATE.md §5.2 item 3 / SIGNALR_PROTOCOL.md §2 item 1: `Sequence`
+      // is not the client's correlation id, and no document defines a
+      // "snapshot is stale, discard it" rule. A snapshot carrying a lower value
+      // than the copy the runtime holds is still the authoritative one and is
+      // ingested verbatim — no comparison, no rejection, no increment.
+      const { runtime, transport } = await joinedRuntime({ turn: 4, sequence: 9 });
+
+      const recovered = payload({ turn: 2, sequence: 3 });
+      transport.getBattleStateResult = { accepted: true, serverSequence: 3, state: recovered };
+
+      reconnect(transport);
+
+      await vi.waitFor(() => {
+        expect(runtime.getBattleState()).toEqual(recovered);
+      });
+
+      expect(runtime.getBattleState()!.sequence).toBe(3);
+    });
+
+    it('treats the battle as ended and falls back to the result route on BATTLE_NOT_FOUND', async () => {
+      const { runtime, transport, api } = await joinedRuntime({ battleId: 'battle-9' });
+      transport.getBattleStateResult = {
+        accepted: false,
+        serverSequence: null,
+        state: null,
+        reason: 'BATTLE_NOT_FOUND',
+      };
+
+      reconnect(transport);
+
+      // §7.3: the documented fallback is the existing battle-result route
+      // (API_CONTRACTS.md §4), addressed by the same battle.
+      await vi.waitFor(() => {
+        expect(api.getBattleResult).toHaveBeenCalledWith('battle-9');
+      });
+
+      // Treated as ended: no live battle remains, no state is fabricated to
+      // stand in for the snapshot, and the runtime does not stay 'synchronized'
+      // with a battle that no longer exists.
+      expect(runtime.getBattleState()).toBeNull();
+      expect(runtime.getState().sync).toBe('awaiting_battle');
+
+      // The ended battle can no longer be addressed by an action.
+      await expect(
+        runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 })
+      ).rejects.toThrow('No battle state is known');
+    });
+
+    it('exposes no store or ownership detail on BATTLE_NOT_FOUND', async () => {
+      const { runtime, transport, api } = await joinedRuntime({ battleId: 'battle-9' });
+      transport.getBattleStateResult = {
+        accepted: false,
+        serverSequence: null,
+        state: null,
+        reason: 'BATTLE_NOT_FOUND',
+      };
+
+      reconnect(transport);
+      await vi.waitFor(() => {
+        expect(api.getBattleResult).toHaveBeenCalled();
+      });
+
+      // REDIS_STATE.md §3 / API_CONTRACTS.md §4 notes 6–7: unknown, expired, and
+      // foreign are one indistinguishable answer, so the client must not infer
+      // (or report) which of them occurred.
+      const reported = JSON.stringify(runtime.getState()).toLowerCase();
+      for (const detail of ['redis', 'expired', 'foreign', 'ownership', 'store']) {
+        expect(reported).not.toContain(detail);
+      }
+    });
+
+    it('reports a malformed recovered snapshot instead of fabricating state', async () => {
+      const { runtime, transport } = await joinedRuntime();
+
+      // `sequence` missing — no default is substituted, exactly as the §4
+      // reader already handles a malformed push.
+      transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 4,
+        state: { battleId: 'battle-1', turn: 2 },
+      };
+
+      const runtimeEvents: string[] = [];
+      runtime.onRuntimeEvent((event) => runtimeEvents.push(event.type));
+
+      reconnect(transport);
+      await vi.waitFor(() => {
+        expect(runtimeEvents).toContain('runtime_error');
+      });
+
+      // The stale copy is neither replaced nor completed, and `sync` never
+      // claims synchronization with a payload that was not read.
+      expect(runtime.getBattleState()).toEqual(payload());
+      expect(runtime.getState().sync).not.toBe('synchronized');
+    });
+
+    it('reports a failed recovery request without fabricating state', async () => {
+      const { runtime, transport } = await joinedRuntime();
+      transport.getBattleStateBehaviour = async () => {
+        throw new Error('connection lost');
+      };
+
+      const runtimeEvents: string[] = [];
+      runtime.onRuntimeEvent((event) => runtimeEvents.push(event.type));
+
+      reconnect(transport);
+
+      await vi.waitFor(() => {
+        expect(runtime.getState().lastError).toBe('connection lost');
+      });
+
+      expect(runtimeEvents).toContain('runtime_error');
+      expect(runtime.getBattleState()).toEqual(payload());
+    });
+
+    it('replays no missed events during recovery', async () => {
+      const { runtime, transport } = await joinedRuntime();
+      transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 4,
+        state: payload({ sequence: 4 }),
+      };
+
+      const batches: unknown[] = [];
+      runtime.onBattleEvents((envelope) => batches.push(envelope));
+
+      reconnect(transport);
+      await vi.waitFor(() => {
+        expect(runtime.getState().sync).toBe('synchronized');
+      });
+
+      // §7.2 / §8 item 8 / ADR-008: a desynchronized client resynchronizes from
+      // a snapshot only — no missed events are requested, replayed, or
+      // synthesized, and there is no event log to replay from.
+      expect(batches).toEqual([]);
+    });
+
+    it('calculates no authoritative state and increments no server sequence', () => {
+      // AGENTS.md §10 / ADR-001 / GAME_STATE.md §5.2 item 3: the recovered
+      // values are the server's. The runtime holds them and derives nothing.
+      const source = readFileSync(resolve(__dirname, '../src/game/runtime/GameRuntime.ts'), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+      for (const forbidden of [
+        'sequence++',
+        'sequence +=',
+        'serverSequence++',
+        'serverSequence +=',
+        'Math.random',
+        'damage',
+        'crit',
+        'burn',
+      ]) {
+        expect(source, `GameRuntime must not contain "${forbidden}"`).not.toContain(forbidden);
+      }
     });
   });
 

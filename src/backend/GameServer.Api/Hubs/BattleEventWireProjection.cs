@@ -1,7 +1,9 @@
 using System.Text.Json.Serialization;
+using GameServer.Domain.Battle;
 using GameServer.Domain.Combat;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
+using GameServer.Domain.Relics;
 
 namespace GameServer.Api.Hubs;
 
@@ -15,17 +17,20 @@ namespace GameServer.Api.Hubs;
 /// <c>MatchCreated</c> / <c>CascadeCreated</c> / <c>ComboChanged</c> /
 /// <c>GemMatched</c> / <c>PassiveCharged</c> / <c>PassiveTriggered</c> /
 /// <c>DamageCalculated</c> / <c>DamageDealt</c> / <c>DamageTaken</c> /
-/// <c>BossSkillCast</c> / <c>BattleWon</c> / <c>BattleLost</c> — never
+/// <c>BossSkillCast</c> / <c>BattleWon</c> / <c>BattleLost</c> / <c>CardCast</c> /
+/// <c>PetSkillCast</c> / <c>RelicTriggered</c> / <c>PowerChanged</c> — never
 /// the Domain enum's ordinal, which is a Domain identity and not part of the
 /// wire contract (<c>§3.2.2</c> item 3). The first four are the board
 /// resolution's events (<c>§3.2.6–§3.2.9</c>); the next two are the Passive
 /// stage's (<c>§3.3</c>, the shared Pet/Boss events; <c>§3.2.16–§3.2.17</c>);
-/// the three after them are the Damage Pipeline's (<c>§3.2.13–§3.2.15</c>); and
-/// the last three are the Boss Response's and the outcome's
-/// (<c>§3.2.18–§3.2.19</c>). All travel in this same <c>events[]</c> array
-/// on the same path (<c>§3.1</c>, <c>§4.3</c> item 10).
+/// the three after them are the Damage Pipeline's (<c>§3.2.13–§3.2.15</c>); the
+/// next three are the Boss Response's and the outcome's (<c>§3.2.18–§3.2.19</c>);
+/// the two after those are the cast stages' (<c>§3.2.20–§3.2.21</c>); and the
+/// last two are the Relic stage's and the Power stage's (<c>§3.2.23–§3.2.24</c>).
+/// All travel in this same <c>events[]</c> array on the same path (<c>§3.1</c>,
+/// <c>§4.3</c> item 10).
 ///
-/// <b>One type, twelve shapes.</b> The schema defines a flat object per event, not a
+/// <b>One type, one shape per event.</b> The schema defines a flat object per event, not a
 /// shared envelope: a <c>CascadeCreated</c> carries <c>cascadeDepth</c> and
 /// nothing else, and a <c>ComboChanged</c> carries <c>combo</c> and nothing
 /// else. A cross-product record would therefore have to emit members that do
@@ -244,7 +249,13 @@ public sealed record BattleEventWireDto(
     [property: JsonPropertyName("finalPlayerHp")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? FinalPlayerHp = null,
     [property: JsonPropertyName("cardId")]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CardId = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? CardId = null,
+    [property: JsonPropertyName("relicId")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? RelicId = null,
+    [property: JsonPropertyName("delta")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Delta = null,
+    [property: JsonPropertyName("power")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Power = null)
 {
     /// <summary>
     /// The wire item for one <c>MatchCreated</c>
@@ -527,6 +538,54 @@ public sealed record BattleEventWireDto(
         new(
             Type: "PetSkillCast",
             CardId: cardId);
+
+    /// <summary>
+    /// The wire item for one <c>RelicTriggered</c>
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.23) — the triggered Relic's identity and
+    /// nothing else.
+    /// </summary>
+    /// <param name="relicId">
+    /// The triggered Relic's <b>owned instance</b> identity (<c>RELIC_RULES.md</c>
+    /// §2.2 item 3) — the same value <c>PetState.EquippedRelics[]</c> holds, read
+    /// and reported rather than re-derived (§3.2.23 item 1). It is never a
+    /// <c>RelicDefinitionId</c>.
+    /// </param>
+    public static BattleEventWireDto RelicTriggered(string relicId) =>
+        new(
+            Type: "RelicTriggered",
+            RelicId: relicId);
+
+    /// <summary>
+    /// The wire item for one <c>PowerChanged</c>
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.24) — the signed change, the resulting
+    /// Power, and what changed it.
+    /// </summary>
+    /// <param name="delta">
+    /// The signed change applied to <c>PetState.Power</c> (§3.2.24 item 1).
+    /// <c>0</c> is a real value where it occurs and is written as <c>0</c>, never
+    /// omitted.
+    /// </param>
+    /// <param name="power">
+    /// <c>PetState.Power</c> after the change (§3.2.24 item 2). <c>0</c> is a real
+    /// value here too and is written as <c>0</c>.
+    /// </param>
+    /// <param name="source">
+    /// <c>"match"</c>, <c>"card"</c>, <c>"relic"</c>, or <c>"boss"</c> (§3.2.24
+    /// item 3) — which stage owns the mutation, projected from the payload's own
+    /// value set. It never states the direction of the change.
+    /// </param>
+    public static BattleEventWireDto PowerChanged(
+        int delta,
+        int power,
+        string source) =>
+        new(
+            Type: "PowerChanged",
+            Delta: delta,
+            Power: power,
+            // §3.2.24 item 3 / §3.2.7 item 2: `source` is a shared wire member name
+            // carrying each event's own value set, so the shared slot carries this
+            // event's projected value.
+            Source: source);
 }
 
 /// <summary>
@@ -687,11 +746,41 @@ public static class BattleEventWireProjection
             BattleEventType.BattleLost => ProjectBattleLost(battleEvent.BattleLost),
             BattleEventType.CardCast => ProjectCardCast(battleEvent.CardCast),
             BattleEventType.PetSkillCast => ProjectPetSkillCast(battleEvent.PetSkillCast),
+            BattleEventType.RelicTriggered => ProjectRelicTriggered(battleEvent.RelicTriggered),
+            BattleEventType.PowerChanged => ProjectPowerChanged(battleEvent.PowerChanged),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(battleEvent),
                 battleEvent.Type,
-                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.21, §3.3)."),
+                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.24, §3.3)."),
         };
+
+    /// <summary>
+    /// Projects the <c>RelicTriggered</c> payload (<c>SIGNALR_PROTOCOL.md</c>
+    /// §3.2.23) — the triggered Relic's owned instance identity, and nothing else.
+    ///
+    /// No <c>effect summary</c> is projected: §3.2.23 item 2 omits it under
+    /// §3.2.25, and <c>RELIC_RULES.md</c> §7 fixes the shape as
+    /// <c>{ type, relicId }</c>. No order index is projected either — §3.2.23
+    /// item 3 reads the deterministic order from the batch position, which the
+    /// one-to-one order-preserving projection preserves.
+    /// </summary>
+    private static BattleEventWireDto ProjectRelicTriggered(RelicTriggeredEvent triggered) =>
+        BattleEventWireDto.RelicTriggered(triggered.RelicId);
+
+    /// <summary>
+    /// Projects the <c>PowerChanged</c> payload (<c>SIGNALR_PROTOCOL.md</c>
+    /// §3.2.24) — the signed delta, the resulting value, and the projected source
+    /// name.
+    ///
+    /// The source is projected to its documented lowercase contract name by the
+    /// same value-projection rule §3.2.14 item 1 applies to <c>DamageParty</c>, so
+    /// the Domain ordinal never reaches the wire (§3.2.24 item 3, §3.2.4).
+    /// </summary>
+    private static BattleEventWireDto ProjectPowerChanged(PowerChangedEvent changed) =>
+        BattleEventWireDto.PowerChanged(
+            delta: changed.Delta,
+            power: changed.Power,
+            source: changed.Source.ToString().ToLowerInvariant());
 
     /// <summary>
     /// Projects the <c>PetSkillCast</c> payload (<c>SIGNALR_PROTOCOL.md</c> §3.2.21).

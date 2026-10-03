@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SignalRService } from '../src/services/realtime/SignalRService';
 import type {
+  BattleStateSnapshotResponse,
   BattleStateUpdatedPayload,
   CellPayload,
 } from '../src/services/realtime/SignalRService';
@@ -574,6 +575,143 @@ describe('SignalRService', () => {
 
       const source = SignalRService.prototype.petSkillCast.toString();
       expect(source).toMatch(/["']PetSkillCast["']/);
+    });
+  });
+
+  describe('GetBattleState reconnect snapshot transport (SIGNALR_PROTOCOL.md §5, §7)', () => {
+    /**
+     * The snapshot the §4 push and the §7 request both carry — one projection,
+     * so one wire shape (`SIGNALR_PROTOCOL.md` §7.1, TASK-143).
+     */
+    function snapshotState(): BattleStateUpdatedPayload {
+      return {
+        battleId: 'battle-1',
+        turn: 3,
+        sequence: 4,
+        rngSeed: 42,
+        rngState: { state: 123456789, increment: 1 },
+        board: {
+          cells: Array.from(
+            { length: 64 },
+            (): CellPayload => ({ gemType: 'ATK', specialGem: null })
+          ),
+        },
+        playerState: { combo: 2, matchCount: 7 },
+        petState: {
+          passiveId: 'xich-lang',
+          passiveProgress: { threshold: 5, current: 3 },
+          equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+        },
+      };
+    }
+
+    it('invokes the documented GetBattleState method with exactly the battleId', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      await service.getBattleState('battle-1');
+
+      // §7.1: `GetBattleState(battleId)` — the documented method name and the
+      // one documented argument. No `clientSequence` is sent: §2's opaque
+      // correlation id belongs to the three gameplay actions, not to this read,
+      // and no server number is supplied by the client.
+      expect(hub.invokes).toEqual([{ method: 'GetBattleState', args: ['battle-1'] }]);
+    });
+
+    it('reuses the existing connection and opens no second one', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      await service.getBattleState('battle-1');
+
+      // One connection was built (§1 item 2, ARCHITECTURE.md §2.2.1 rule 6) and
+      // the read went over it.
+      expect(hub.withUrlOptions).toHaveLength(1);
+      expect(hub.connection.invoke).toHaveBeenCalledTimes(1);
+      expect(service.getConnectionId()).toBe('conn-under-test');
+    });
+
+    it('returns the documented envelope unchanged', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      // §5's envelope carrying §7.1's snapshot: `accepted`, the authoritative
+      // `serverSequence`, the §4-projected `state`, and `reason` null.
+      const response: BattleStateSnapshotResponse = {
+        accepted: true,
+        serverSequence: 4,
+        state: snapshotState(),
+        reason: null,
+      };
+      hub.setInvokeResult(response);
+
+      const result = await service.getBattleState('battle-1');
+
+      // Returned verbatim: the same object, the same `serverSequence`, and the
+      // same snapshot — nothing copied, merged, defaulted, or recomputed.
+      expect(result).toBe(response);
+      expect(result.state).toBe(response.state);
+      expect(result.serverSequence).toBe(4);
+    });
+
+    it('returns the BATTLE_NOT_FOUND rejection with no state', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      // §7.3: unknown, expired, and foreign are one indistinguishable answer,
+      // and it carries no state.
+      hub.setInvokeResult({
+        accepted: false,
+        serverSequence: null,
+        state: null,
+        reason: 'BATTLE_NOT_FOUND',
+      });
+
+      const result = await service.getBattleState('missing-battle');
+
+      expect(result).toEqual({
+        accepted: false,
+        serverSequence: null,
+        state: null,
+        reason: 'BATTLE_NOT_FOUND',
+      });
+
+      // The service decides nothing about what the reason means: §7.3's
+      // "treat the battle as ended and fall back to the battle-result route" is
+      // the runtime's behavior, not the transport's.
+      const surface = Object.getOwnPropertyNames(SignalRService.prototype);
+      expect(surface).not.toContain('handleBattleNotRecoverable');
+    });
+
+    it('throws on getBattleState when no connection is established', async () => {
+      await expect(service.getBattleState('battle-1')).rejects.toThrow(
+        'SignalR connection is not established.'
+      );
+    });
+
+    it('stays transport-focused: no state calculation, merge, or sequence work', () => {
+      // §7.1/§7.2 / GAME_RULES.md §18: the read reports the committed record.
+      // The service calculates no damage, Crit, or Burn, merges no gameplay
+      // state, increments no server number, compares the snapshot against
+      // nothing, and replays nothing (ADR-008, ARCHITECTURE.md §5.2).
+      const surface = Object.getOwnPropertyNames(SignalRService.prototype);
+
+      for (const forbidden of [
+        'calculateDamage',
+        'calculateCrit',
+        'applyBurn',
+        'mergeBattleState',
+        'incrementServerSequence',
+        'replayEvents',
+        'recoverBattleState',
+      ]) {
+        expect(surface).not.toContain(forbidden);
+      }
+
+      const source = SignalRService.prototype.getBattleState.toString();
+      expect(source).toMatch(/["']GetBattleState["']/);
+      expect(source).not.toContain('Math.');
+      expect(source).not.toMatch(/serverSequence\s*(\+\+|--|\+=|-=|=)/);
     });
   });
 

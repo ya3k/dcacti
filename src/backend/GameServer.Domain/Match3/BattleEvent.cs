@@ -1,5 +1,7 @@
+using GameServer.Domain.Battle;
 using GameServer.Domain.Combat;
 using GameServer.Domain.Passives;
+using GameServer.Domain.Relics;
 
 namespace GameServer.Domain.Match3;
 
@@ -10,9 +12,11 @@ namespace GameServer.Domain.Match3;
 /// The set is <b>closed and contract-owned</b>: it is exactly the event
 /// names <c>GAME_RULES.md</c> §16 lists and <c>GAME_EVENTS.md</c> §2 defines, and
 /// no member may be added for a name the documentation does not define
-/// (<c>AGENTS.md</c> §7). Events for later stages — <c>PowerChanged</c>,
-/// <c>RelicTriggered</c> — belong to their own owning tasks
-/// (<c>GAME_EVENTS.md</c> §3 item 7).
+/// (<c>AGENTS.md</c> §7). The later stages' events are members here too —
+/// <see cref="PowerChanged"/> for every stage that owns a <c>PetState.Power</c>
+/// mutation and <see cref="RelicTriggered"/> for the Relic stage
+/// (<c>GAME_EVENTS.md</c> §3 item 7) — because the model is the one ordered list
+/// a resolution emits, not the board stage's private list.
 ///
 /// <b>It is deliberately twelve members, not fifteen.</b> The Boss Response stage
 /// adds <see cref="BossSkillCast"/>, <see cref="BattleWon"/>, and
@@ -42,9 +46,9 @@ namespace GameServer.Domain.Match3;
 /// (<c>GAME_STATE.md</c> §2.2, <c>GAME_EVENTS.md</c> §3 item 7). No
 /// <c>TurnChanged</c>/<c>SequenceChanged</c>/<c>BoardChanged</c> exists —
 /// <c>Turn</c>, <c>Sequence</c>, and the board are delivered as state
-/// (<c>SIGNALR_PROTOCOL.md</c> §3.1 item 3, §4). No <c>RelicTriggered</c>,
-/// <c>CardCast</c>, <c>PetSkillCast</c>, or <c>BossSkillCast</c> exists here —
-/// those are other owning stages (<c>GAME_EVENTS.md</c> §2).
+/// (<c>SIGNALR_PROTOCOL.md</c> §3.1 item 3, §4), and no Match-count event exists
+/// because the count is <c>BattleState.MatchCount</c> (<c>GAME_EVENTS.md</c>
+/// §2 item 3).
 /// </summary>
 public enum BattleEventType
 {
@@ -204,6 +208,46 @@ public enum BattleEventType
     /// <c>CARD_RULES.md</c> §4, §6; <c>SIGNALR_PROTOCOL.md</c> §3.2.21).
     /// </summary>
     PetSkillCast = 13,
+
+    /// <summary>
+    /// A Relic's Effect actually applied (<c>GAME_EVENTS.md</c> §2
+    /// <c>RelicTriggered</c>, <c>RELIC_RULES.md</c> §7;
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.23).
+    ///
+    /// It is emitted at <c>GAME_RULES.md</c> §17 step 11 ("Trigger Relics") for
+    /// each Relic whose effect actually applies, in the deterministic equip-slot
+    /// order <c>RELIC_RULES.md</c> §4.2 fixes — **0..N per resolution**, and
+    /// nothing at all for a Trigger that fired but whose Condition failed or whose
+    /// effect did not apply (<c>RELIC_RULES.md</c> §7).
+    ///
+    /// Its payload is one identity — the triggered Relic's <b>owned instance</b>
+    /// identity, the value <c>PetState.EquippedRelics[]</c> holds
+    /// (<c>RELIC_RULES.md</c> §2.2 item 3) — and it carries no
+    /// <c>effect summary</c> (§7; <c>SIGNALR_PROTOCOL.md</c> §3.2.23 item 2,
+    /// §3.2.25) and no order index (§3.2.23 item 3: the order <b>is</b> the
+    /// position in this list).
+    /// </summary>
+    RelicTriggered = 14,
+
+    /// <summary>
+    /// The active Pet's Power changed (<c>GAME_EVENTS.md</c> §2
+    /// <c>PowerChanged</c>, <c>GAME_RULES.md</c> §12;
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.24).
+    ///
+    /// Its payload is the signed <c>delta</c>, the resulting <c>power</c>, and the
+    /// <c>source</c> that owns the mutation. Every authoritative
+    /// <c>PetState.Power</c> mutation emits one of these from the stage that owns
+    /// it (<c>GAME_EVENTS.md</c> §2 item 4) — the Power stage's Match generation
+    /// (<c>source = "match"</c>, §17 step 13), the Card stage's cost and Power
+    /// effects (<c>source = "card"</c>, step 14), the Relic stage's <c>Power</c>
+    /// effect (<c>source = "relic"</c>, step 11; <c>RELIC_RULES.md</c> §8.5's Mana
+    /// Crystal is the provisioned case), and the Boss Response stage's
+    /// Power-draining secondary effect (<c>source = "boss"</c>, step 18b;
+    /// <c>BOSS_RULES.md</c> §6.3.1 item 2's Drain Power). One mutation produces
+    /// one event, in authoritative mutation order
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.24 items 5–6).
+    /// </summary>
+    PowerChanged = 15,
 }
 
 /// <summary>
@@ -423,7 +467,9 @@ public readonly record struct BattleEvent
         BattleWonEvent? battleWon,
         BattleLostEvent? battleLost,
         CardCastEvent? cardCast,
-        PetSkillCastEvent? petSkillCast)
+        PetSkillCastEvent? petSkillCast,
+        RelicTriggeredEvent? relicTriggered = null,
+        PowerChangedEvent? powerChanged = null)
     {
         Type = type;
         _match = match;
@@ -440,6 +486,8 @@ public readonly record struct BattleEvent
         _battleLost = battleLost;
         _cardCast = cardCast;
         _petSkillCast = petSkillCast;
+        _relicTriggered = relicTriggered;
+        _powerChanged = powerChanged;
     }
 
     private readonly MatchResolution? _match;
@@ -456,6 +504,8 @@ public readonly record struct BattleEvent
     private readonly BattleLostEvent? _battleLost;
     private readonly CardCastEvent? _cardCast;
     private readonly PetSkillCastEvent? _petSkillCast;
+    private readonly RelicTriggeredEvent? _relicTriggered;
+    private readonly PowerChangedEvent? _powerChanged;
 
     /// <summary>Which documented event this is.</summary>
     public BattleEventType Type { get; }
@@ -632,6 +682,32 @@ public readonly record struct BattleEvent
         _petSkillCast ?? throw new InvalidOperationException(
             $"A {Type} event carries no PetSkillCast payload (GAME_EVENTS.md §2). "
             + "Check Type before reading PetSkillCast.");
+
+    /// <summary>
+    /// The <c>RelicTriggered</c> payload — the Relic whose Effect applied
+    /// (<c>GAME_EVENTS.md</c> §2, <c>RELIC_RULES.md</c> §7,
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.23).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// This event is not a <see cref="BattleEventType.RelicTriggered"/>.
+    /// </exception>
+    public RelicTriggeredEvent RelicTriggered =>
+        _relicTriggered ?? throw new InvalidOperationException(
+            $"A {Type} event carries no RelicTriggered payload (GAME_EVENTS.md §2). "
+            + "Check Type before reading RelicTriggered.");
+
+    /// <summary>
+    /// The <c>PowerChanged</c> payload — the signed change, the resulting Power,
+    /// and what changed it (<c>GAME_EVENTS.md</c> §2,
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.24).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// This event is not a <see cref="BattleEventType.PowerChanged"/>.
+    /// </exception>
+    public PowerChangedEvent PowerChanged =>
+        _powerChanged ?? throw new InvalidOperationException(
+            $"A {Type} event carries no PowerChanged payload (GAME_EVENTS.md §2). "
+            + "Check Type before reading PowerChanged.");
 
     /// <summary>
     /// A <c>MatchCreated</c> event for one detected Match.
@@ -872,6 +948,57 @@ public readonly record struct BattleEvent
     /// </summary>
     public static BattleEvent ForPetSkillCast(string cardId) => CreatePetSkillCast(cardId);
 
+    /// <summary>
+    /// A <c>RelicTriggered</c> event for one Relic whose Effect actually applied
+    /// (<c>GAME_EVENTS.md</c> §2, <c>RELIC_RULES.md</c> §4.2, §7;
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.23).
+    ///
+    /// Public for the same reason as the Passive and Damage factories: the Relic
+    /// stage is the Application-layer pipeline step that owns
+    /// <c>GAME_RULES.md</c> §17 step 11, and it hands the assembled list back
+    /// through <see cref="SwapExecutionResult.WithEvents"/>. The identity is the
+    /// resolver's own report carried unchanged — no member is added, and the
+    /// equip-slot order the events are appended in <b>is</b> the deterministic
+    /// order §3.2.23 item 3 reads from position rather than from a payload member.
+    /// </summary>
+    /// <param name="triggered">
+    /// The Relic stage's own report — the triggered Relic's owned instance
+    /// identity.
+    /// </param>
+    public static BattleEvent ForRelicTriggered(RelicTriggeredEvent triggered) =>
+        new(
+            BattleEventType.RelicTriggered,
+            null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            triggered,
+            null);
+
+    /// <summary>
+    /// A <c>PowerChanged</c> event for one authoritative Power mutation
+    /// (<c>GAME_EVENTS.md</c> §2, <c>SIGNALR_PROTOCOL.md</c> §3.2.24).
+    ///
+    /// Public for the same reason as the Relic factory: the Power write sites are
+    /// the stages that own the mutation — the Application-layer pipeline steps for
+    /// <c>GAME_RULES.md</c> §17 steps 11, 13, and 18b, and the Domain
+    /// <c>CardCastExecutor</c> for step 14, which owns the Card stage's own write.
+    /// Every member is the write site's own value — the source that owns the
+    /// mutation, the signed change it applied, and the state it left — carried
+    /// unchanged; nothing is re-derived here.
+    ///
+    /// <b>One mutation, one event</b> (<c>GAME_EVENTS.md</c> §2 item 4): a caller
+    /// that performs several mutations in one action calls this once per mutation,
+    /// in the order the mutations happened. It never sums them into one net report.
+    /// </summary>
+    /// <param name="changed">
+    /// The write site's own report: the source that owns the mutation, the signed
+    /// change applied, and the resulting <c>PetState.Power</c>.
+    /// </param>
+    public static BattleEvent ForPowerChanged(PowerChangedEvent changed) =>
+        new(
+            BattleEventType.PowerChanged,
+            null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            null,
+            changed);
+
     /// <summary>"MatchCreated (Horizontal x3 at 25 (Atk))" — for test diagnostics only.</summary>
     public override string ToString() => Type switch
     {
@@ -890,6 +1017,8 @@ public readonly record struct BattleEvent
         BattleEventType.BattleLost => BattleLost.ToString(),
         BattleEventType.CardCast => CardCast.ToString(),
         BattleEventType.PetSkillCast => PetSkillCast.ToString(),
+        BattleEventType.RelicTriggered => RelicTriggered.ToString(),
+        BattleEventType.PowerChanged => PowerChanged.ToString(),
         _ => Type.ToString(),
     };
 }

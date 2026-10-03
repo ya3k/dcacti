@@ -102,30 +102,25 @@ public class CardEffectDefinitionPersistenceTests
     }
 
     [Fact]
-    public void Model_ShouldLeaveTheRelicEffectColumnUnchanged()
+    public void MigrationSource_ShouldTouchTheCardTableOnly()
     {
-        // DATABASE.md §1 item 7: the supersession is scoped to CardDefinition.
-        // RelicDefinition.EffectDefinition still carries TASK-082 R2-7's verbatim
-        // prose in its 128-character column, and its mapping is not touched.
-        using var context = CreateContext(nameof(Model_ShouldLeaveTheRelicEffectColumnUnchanged));
+        // DATABASE.md §1 item 7 recorded, at the time, that the TASK-108/109
+        // supersession was scoped to CardDefinition and that
+        // RelicDefinition.EffectDefinition was untouched. TASK-132 has since
+        // landed the Relic-side structured storage (RELIC_RULES.md §8.6,
+        // TASK-131 D9), so this migration's own scope is what is asserted here:
+        // TASK-112's encoding rewrote the six Card rows and NOTHING else. The
+        // Relic half now has its own migration and its own suite
+        // (RelicStructuredStorageTests).
+        //
+        // The assertions are made against the EXECUTABLE statements rather than
+        // the whole source, because the class documentation legitimately
+        // discusses RelicDefinition while explaining that it is untouched.
+        var operations = ReadMigrationOperations();
 
-        var relicProperty = context.Model
-            .FindEntityType(typeof(Domain.Relics.RelicDefinition))!
-            .FindProperty(nameof(Domain.Relics.RelicDefinition.EffectDefinition))!;
-
-        Assert.Equal(typeof(string), relicProperty.ClrType);
-        Assert.Equal(128, relicProperty.GetMaxLength());
-        Assert.False(relicProperty.IsNullable);
-
-        // The Relic member has no value converter — it stores its prose string
-        // directly, unlike the Card member.
-        Assert.Null(relicProperty.GetValueConverter());
-
-        // And no migration of this task mentions the Relic column or table.
-        Assert.DoesNotContain(
-            "RelicDefinition",
-            ReadMigrationOperations(),
-            StringComparison.Ordinal);
+        Assert.DoesNotContain("\"RelicDefinition\"", operations, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"Relic\"", operations, StringComparison.Ordinal);
+        Assert.Contains("UPDATE \"CardDefinition\"", operations, StringComparison.Ordinal);
     }
 
     [Fact]

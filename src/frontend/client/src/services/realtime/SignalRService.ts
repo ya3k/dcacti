@@ -121,6 +121,54 @@ export interface BattleStateUpdatedPayload {
 }
 
 /**
+ * The direct invocation result of a `GetBattleState(battleId)` request — §7's
+ * reconnect/resync snapshot (`SIGNALR_PROTOCOL.md` §5, §7.1, §7.3).
+ *
+ * It is the documented §5 envelope carrying the §7 snapshot, and it is modelled
+ * at the transport level only: the service returns it verbatim, interprets
+ * nothing, defaults nothing, and mutates no state. The sibling
+ * `SwapResult`/`CardCastAcknowledgement`/`PetSkillCastAcknowledgement` types are
+ * the same treatment for the §2 gameplay requests.
+ *
+ * `accepted: true` carries:
+ *
+ * ```text
+ * serverSequence   the snapshot's authoritative BattleState.Sequence
+ *                  (GAME_STATE.md §5) — the server's value, never a client
+ *                  correlation id (§5.2 item 3), never seeded, compared, or
+ *                  incremented by the client
+ * state            the authoritative snapshot, projected exactly as the §4
+ *                  BattleStateUpdated push projects it (§7.1) — the same
+ *                  wire shape, so `BattleStateUpdatedPayload` is reused rather
+ *                  than duplicated. `BattleState.PlayerId` is server-only and
+ *                  absent from it (GAME_STATE.md §2.8, ADR-014)
+ * ```
+ *
+ * `accepted: false` carries the documented `reason` — `BATTLE_NOT_FOUND` on this
+ * path — and no state (§7.3). The reason is opaque presentation data: the
+ * client derives no gameplay meaning from it and cannot tell an expired record
+ * from a foreign battle, because the server contract makes them one answer.
+ */
+export interface BattleStateSnapshotResponse {
+  readonly accepted: boolean;
+  /**
+   * The snapshot's authoritative `BattleState.Sequence` (`GAME_STATE.md` §5),
+   * or `null`/absent when the request was rejected.
+   */
+  readonly serverSequence?: number | null;
+  /**
+   * The authoritative snapshot — the §4 projection — or `null`/absent when the
+   * request was rejected.
+   */
+  readonly state?: BattleStateUpdatedPayload | null;
+  /**
+   * The machine-readable rejection code (§5 item 3), or `null`/absent when
+   * accepted. `BATTLE_NOT_FOUND` is the one value on this path (§7.3).
+   */
+  readonly reason?: string | null;
+}
+
+/**
  * The wire projection of `PetState`'s delivered members (`GAME_STATE.md` §2.3,
  * `SIGNALR_PROTOCOL.md` §4.3).
  *
@@ -322,13 +370,17 @@ export interface SignalRConnectionHandlers {
  * transport implementation (ARCHITECTURE.md §2.2 rule 3, task §16).
  *
  * In-battle hub methods `CardCast` and `PetSkillCast` (SIGNALR_PROTOCOL.md §2)
- * are implemented. Reconnect recovery (`GetBattleState`, §7) remains out of scope.
- * `ReceiveEvents` (§3) is subscribed generically so the runtime can forward
- * server-authoritative event batches without modelling any event shape.
+ * are implemented. So is reconnect recovery: `getBattleState` (§7.1) issues the
+ * documented `GetBattleState(battleId)` request and returns the §5 envelope
+ * carrying the authoritative snapshot. `ReceiveEvents` (§3) is subscribed
+ * generically so the runtime can forward server-authoritative event batches
+ * without modelling any event shape.
  *
  * Three client → server gameplay actions are implemented here: `swap` (§2.1),
  * `cardCast` (§2), and `petSkillCast` (§2). None is client-authoritative: the
  * service sends requests and returns §5 acknowledgements verbatim.
+ * `getBattleState` (§7.1) is not a gameplay action — it requests the snapshot a
+ * reconnected client resynchronizes from and returns it uninterpreted.
  * `joinBattle` (§1.2) adds the connection to the battle's group, which triggers
  * the server's initial-state push (§4.1). The service decides nothing: it does
  * not detect matches, validate board state, resolve a cascade, or modify any
@@ -603,5 +655,44 @@ export class SignalRService {
       battleId,
       clientSequence
     );
+  }
+
+  /**
+   * Requests the current authoritative battle state snapshot for a reconnected
+   * client (`SIGNALR_PROTOCOL.md` §7.1) and returns the documented §5 envelope
+   * verbatim.
+   *
+   * The one argument is exactly the documented request —
+   * `GetBattleState(battleId)` — and the **existing** connection is reused: this
+   * invokes on the connection `connect` already built and opens no second
+   * connection path. `battleId` is the battle the runtime already holds from the
+   * server's own state; the caller never invents one.
+   *
+   * This is §7's reconnect/resync read, not §4's join push. §4 is an unsolicited
+   * server push on group join carrying the implemented stage's fields; §7 is a
+   * client-requested full snapshot used when the client has lost
+   * synchronization, and the two are not interchangeable (§7, ADR-008).
+   *
+   * It is transport only, and it is a **read**: it resolves no action, changes
+   * no battle state, and emits no Battle Event — the server's method increments
+   * no `Sequence` and reports the committed record as it stands. The service
+   * therefore performs no gameplay work of any kind. It does not calculate
+   * damage, Crit, Burn, or any other value, does not merge or reconcile state,
+   * does not seed, compare, increment, or reject on `serverSequence`
+   * (`GAME_STATE.md` §5.2 item 3), and replays nothing (§7.2, `ARCHITECTURE.md`
+   * §5.2). The snapshot is handed on as received; ingestion is the runtime's
+   * (`GameRuntime.receiveBattleState`, §4's existing path).
+   *
+   * `accepted: false` carries the documented reason and no state. This method
+   * does not decide what `BATTLE_NOT_FOUND` means — §7.3's behavior (the battle
+   * is treated as ended and the client falls back to the existing battle-result
+   * route) is the runtime's, not the transport's.
+   */
+  public async getBattleState(battleId: string): Promise<BattleStateSnapshotResponse> {
+    if (!this.connection || this.connection.state !== signalR.HubConnectionState.Connected) {
+      throw new Error('SignalR connection is not established.');
+    }
+
+    return await this.connection.invoke<BattleStateSnapshotResponse>('GetBattleState', battleId);
   }
 }

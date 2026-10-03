@@ -459,35 +459,16 @@ public static class SwapExecutor
         // into the documented pools — permanently for Power, transiently for the
         // three pools the downstream steps of this same resolution consume.
         //
-        // §17 places this after "Charge Passive" (step 10, owned by the
-        // Application-layer pipeline step) and before "Relics"/"Update Power". The
-        // board stages are sequenced inside this assembly, so the conversion runs
-        // here, in the same resolution and before the single write-back — it is not
-        // a second pass over the board, it reads the passes the resolution ran.
-        var generation = ResourceGenerator.Generate(resolution);
-
-        // COMBAT_RULES.md §2 / GAME_RULES.md §12: the generated Power is written
-        // into the persistent state's combat-stat home — the active Pet's
-        // PetState (GAME_STATE.md §2.3, ADR-011 item 5) — clamped to the documented
-        // 0–100 range.
-        // Base Damage Pool and Defense Pool have no persistent home and are carried
-        // on the result instead — they are Transient Resolution State
-        // (GAME_STATE.md §3) and are deliberately not written to PetState or
-        // BattleState. The HealPool is transient too, but it does have a documented
-        // consumer in this same resolution: §17 step 14, below.
-        var petState = ResourceGenerator.ApplyPower(state.PetState, generation);
-
-        // Step 6b (GAME_RULES.md §17 step 14, COMBAT_RULES.md §4 item 1): Resolve
-        // Player Effects. The HealPool this Swap's HP Gems generated is applied to
-        // the persistent HP, clamped to MaxHP — overheal is discarded. It is a pure
-        // state write with no event (GAME_EVENTS.md §2 has no heal event) and no
-        // RNG: reading the transient pool here does not move it off the result, and
-        // it is still not stored in PetState or BattleState (GAME_STATE.md §3).
+        // Step 12 ("Generate Resources") is recorded here on the result (Resources)
+        // as Transient Resolution State (GAME_STATE.md §3).
         //
-        // It runs in the same resolution, after the generation that produced the
-        // pool and before the single write-back below, so `petState` carries
-        // Power and HP together in the one value that is written.
-        petState = ResourceGenerator.ApplyHeal(petState, generation);
+        // Crucially, per GAME_RULES.md §17 and TASK-142, Step 11 ("Trigger Relics")
+        // evaluates and applies before Step 13 ("Update Power") and Step 14
+        // ("Resolve Player Effects"). SwapExecutor therefore does NOT finalize
+        // Steps 13 and 14 onto PetState; the returned State carries the post-Step-9
+        // PetState so that Step 10 (Charge Passive) and Step 11 (Trigger Relics)
+        // evaluate against the pre-step-12/13/14 state.
+        var generation = ResourceGenerator.Generate(resolution);
 
         // Step 7 (GAME_EVENTS.md §1, §1.1, §2): the ordered Battle Events that
         // describe the resolution just performed. They are produced from
@@ -531,10 +512,10 @@ public static class SwapExecutor
             Combo = combo,
             MatchCount = matchCount,
 
-            // §2.3 / §17 steps 12 and 14: the Pet's combat stats the resource stage
-            // wrote — Power and HP — carried in the same write-back. The rest of
-            // PetState is carried across unchanged by the `with` expression.
-            PetState = petState,
+            // Post-Step-9 PetState: carried across unchanged so that Step 10
+            // (Charge Passive) and Step 11 (Trigger Relics) evaluate against the
+            // state before Steps 12–14 have been finalized (GAME_RULES.md §17, TASK-142).
+            PetState = state.PetState,
 
             // §2.1.6 step 4 / GAME_STATE.md §2.1.10 item 5: the committed pair,
             // canonically (min, max) so either argument order records one value

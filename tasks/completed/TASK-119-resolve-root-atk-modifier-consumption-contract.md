@@ -58,21 +58,7 @@ Type:              GAMEPLAY-CHANGE (TASK_TYPES.md §3 — "A game rule needs to
                    author-the-missing-rule task. If the decision requires a
                    code, schema, or ADR change, that change is a SEPARATE
                    follow-up task — not this task's act.)
-Status:            IN REVIEW — REVIEW COMPLETE, PASS. The Product Owner
-                   answered all decisions; D-1–D-5 are recorded verbatim in
-                   "Product Owner Decisions", the resulting contract is
-                   recorded in "Resulting Contract" and "Required Authoritative
-                   Result — Coverage", and the canonical owner edit was
-                   authored in COMBAT_RULES.md §5.4 (version 1.8), because the
-                   decision requires no ADR and no new battle-state concept —
-                   see "Classification Outcome". All `quality/review.md` §1
-                   documentation-applicable items pass (see "Independent Review
-                   Verification" and the revised Acceptance Criteria). The
-                   remaining `IN REVIEW → DONE` transition (and its `active/` →
-                   `completed/` file move, TASK_LIFECYCLE.md §4) is left to the
-                   workflow that performs it — the executing agent does not
-                   relocate task files manually. This follows the TASK-113 /
-                   TASK-116 precedent.)
+Status:            DONE
 Risk:              HIGH (TASK_TYPES.md §4 — GAMEPLAY-CHANGE baseline is HIGH
                    ("Always HIGH — game rule changes are..."). HIGH also because
                    the decision governs how a Turn-based Buff/Debuff magnitude

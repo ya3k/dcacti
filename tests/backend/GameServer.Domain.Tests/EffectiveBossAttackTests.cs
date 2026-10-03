@@ -359,7 +359,7 @@ public class EffectiveBossAttackTests
         // Pet side (§5.4.1 item 3, unchanged): |30| always reduces, so Root's
         // authored -30% Pet ATK debuff stays exactly as BOSS_RULES.md §6.3.1 item 3
         // declares it.
-        Assert.Equal(70, StatusEffectLifecycle.EffectiveAttack(100, [positiveThirty]));
+        Assert.Equal(70, StatusEffectLifecycle.EffectiveAttack(100, [], [positiveThirty]));
 
         // A Boss-side ATK modifier that a future source declares as a decrease is
         // written as the negative 30 and is NOT reinterpreted as an increase.

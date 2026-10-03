@@ -835,11 +835,17 @@ export class BattleScene extends Phaser.Scene {
    *
    * 1. Outcome branch first (TASK-087): when the envelope contains BattleWon or BattleLost,
    *    transitions immediately to ResultScene without delay.
-   * 2. In-battle presentation: presents the ten non-outcome event types in exact array order
+   * 2. In-battle presentation: presents the non-outcome event types in exact array order
    *    while holding the scene-local input guard.
    *
    * It performs no result calculation: the server is authoritative for the
    * outcome and terminal HP values (GAME_RULES.md §18, ADR-001, AGENTS.md §10).
+   *
+   * The handoff also carries the batch's `battleId` (SIGNALR_PROTOCOL.md §3),
+   * which is what `ResultScene` addresses the documented result endpoint with to
+   * read the persisted reward summary (API_CONTRACTS.md §4). The outcome members
+   * themselves are unchanged; the id is transport metadata the envelope already
+   * carries, not a gameplay value.
    */
   private handleBattleEvents(envelope: BattleEventsEnvelope): void {
     if (this.outcomeHandled) {
@@ -849,7 +855,7 @@ export class BattleScene extends Phaser.Scene {
     const outcome = BattleScene.findOutcomeEvent(envelope.events);
     if (outcome) {
       this.outcomeHandled = true;
-      this.scene.start('ResultScene', outcome);
+      this.scene.start('ResultScene', { ...outcome, battleId: envelope.battleId });
       return;
     }
 

@@ -86,6 +86,27 @@ internal static class BattleStateJsonNames
     public const string NextAttackCritSourceIdentity = "sourceIdentity";
     public const string NextAttackCritContribution = "critContribution";
 
+    // ATKModifiers[] (GAME_STATE.md §2.3.7, §2.3.8 item 1; REDIS_STATE.md §7
+    // item 16) — a PetState-only collection. It is a DIFFERENT collection from the
+    // two above and deliberately carries a different member name: §2.3.7 makes it a
+    // separate representation of a separate concept, so sharing a name would be the
+    // collision §0 item 5 forbids.
+    public const string ATKModifiers = "atkModifiers";
+
+    // One ATKModifier element (GAME_STATE.md §2.3.7 items 4 and 8, §2.3.8 item 3 —
+    // exactly two members, both always present, and no third member of any kind).
+    public const string ATKModifierSourceIdentity = "sourceIdentity";
+    public const string ATKModifierPercentage = "atkModifierPercentage";
+
+    // CardCostModifiers[] (GAME_STATE.md §2.3.5, §2.3.6 item 1; REDIS_STATE.md §7
+    // item 15) — the sibling PetState-only collection, distinct by the same reason.
+    public const string CardCostModifiers = "cardCostModifiers";
+
+    // One CardCostModifier element (GAME_STATE.md §2.3.5 items 5 and 7, §2.3.6
+    // item 3 — exactly these two members, and no third).
+    public const string CardCostModifierSourceIdentity = "sourceIdentity";
+    public const string CardCostReductionPercentage = "costReductionPercentage";
+
     // One StatusEffect element (GAME_STATE.md §2.3.2 item 3 — the exact member
     // set, in the documented order). The four required members are always
     // written; the three optional ones carry an ignore-when-absent condition.
@@ -464,6 +485,127 @@ internal sealed record PetStateJson
     /// </summary>
     [JsonPropertyName(BattleStateJsonNames.NextAttackCritModifiers)]
     public required IReadOnlyList<NextAttackCritModifierJson>? NextAttackCritModifiers { get; init; }
+
+    /// <summary>
+    /// The active Pet's applied, Battle-scoped ATK modifiers, one entry per active
+    /// source (<c>GAME_STATE.md</c> §2.3.7; <c>TASK-136</c> D1/D2/D9).
+    ///
+    /// <b>It is always written, and it is never <c>null</c>.</b> §2.3.8 item 1: "A Pet
+    /// with no active modifier serializes an <b>empty array</b> — <c>[]</c> — because
+    /// the collection always exists (§2.3.7 item 6). It is never omitted and never
+    /// <c>null</c>." It therefore carries <b>no ignore condition</b>, exactly like
+    /// <see cref="StatusEffects"/> and <see cref="NextAttackCritModifiers"/> above.
+    ///
+    /// <b>It is nullable in the DTO so a violation is rejectable, not admissible.</b>
+    /// The mapping always writes an array, so the <c>null</c> branch is reachable only
+    /// from a stored document that broke the contract; the type admits it so the reader
+    /// can reject it with a message naming §2.3.7 item 6 rather than failing
+    /// incidentally. A <c>null</c> here is never a state the Domain accepts.
+    ///
+    /// <b>Order participates in the round trip, and it is deterministic.</b> §2.3.8
+    /// item 5 requires the same element order back, and §2.3.7 item 7 fixes that order
+    /// as the <c>SourceIdentity</c> sort — so the writer emits the collection as the
+    /// Domain holds it and neither re-sorts nor relies on insertion order
+    /// (<c>REDIS_STATE.md</c> §7 item 16: two serializations of the same state are
+    /// byte-identical).
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.ATKModifiers)]
+    public required IReadOnlyList<ATKModifierJson>? ATKModifiers { get; init; }
+
+    /// <summary>
+    /// The active Pet's applied, Battle-scoped Card-cost modifiers, one entry per
+    /// active source (<c>GAME_STATE.md</c> §2.3.5; <c>TASK-134</c> D1/D2).
+    ///
+    /// <b>It is always written, and it is never <c>null</c>.</b> §2.3.6 item 1: "A Pet
+    /// with no active modifier serializes an <b>empty array</b> — the collection always
+    /// exists (§2.3.5 item 6), so it is never omitted and never <c>null</c>." It
+    /// therefore carries <b>no ignore condition</b>.
+    ///
+    /// <b>It is nullable in the DTO so a violation is rejectable, not admissible.</b>
+    /// As with <see cref="ATKModifiers"/>, the mapping always writes an array.
+    ///
+    /// <b>Order participates in the round trip, and it is preserved rather than
+    /// sorted.</b> §2.3.6 item 5 requires "the same element order" back and item 6
+    /// states that "Order is preserved for round-trip fidelity, not for semantics" —
+    /// so the writer emits the order the state holds and imposes none of its own. This
+    /// is the deliberate contrast with <see cref="ATKModifiers"/> above, whose order is
+    /// the §2.3.7 item 7 identity sort.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.CardCostModifiers)]
+    public required IReadOnlyList<CardCostModifierJson>? CardCostModifiers { get; init; }
+}
+
+/// <summary>
+/// One <c>ATKModifier</c> element (<c>GAME_STATE.md</c> §2.3.7;
+/// <c>TASK-136</c> D2).
+///
+/// <b>Exactly two members, and there is no third.</b> §2.3.7 items 4 and 8 forbid a
+/// duration, a Turn counter, an <c>ExpiresAt</c>, an <c>ExpiryCondition</c>, a
+/// "consumed" flag, a priority, a stack count, an ordering index, a target reference,
+/// a remaining-use counter, and a timestamp — no rule reads any of them, so none is
+/// written and none may be added without a recorded owner decision.
+///
+/// <b>Both members are always present.</b> §2.3.8 item 1 states that absence of a
+/// <i>member within</i> an element does not arise, and §2.3.7 item 3 makes a blank
+/// identity unrepresentable — so neither member carries an ignore condition.
+/// </summary>
+internal sealed record ATKModifierJson
+{
+    /// <summary>
+    /// The stable source-scoped identity of the modifier's source
+    /// (<c>GAME_STATE.md</c> §2.3.7 item 3) — the replace/refresh and removal key
+    /// (§5.1.4). It is copied verbatim: the mapping applies no meaning to it and
+    /// derives no identity of its own.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.ATKModifierSourceIdentity)]
+    public required string SourceIdentity { get; init; }
+
+    /// <summary>
+    /// The modifier's ATK change in signed percentage points (§2.3.7 item 5, §2.3.8
+    /// item 3), copied verbatim and uninterpreted — no sign normalization, no scaling,
+    /// and no rounding. §2.3.7 item 5 states that what the number means is owned by
+    /// <c>COMBAT_RULES.md</c> §5.6.6's composition rule and is not interpreted here.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.ATKModifierPercentage)]
+    public required int ATKModifierPercentage { get; init; }
+}
+
+/// <summary>
+/// One <c>CardCostModifier</c> element (<c>GAME_STATE.md</c> §2.3.5;
+/// <c>TASK-134</c> D2).
+///
+/// <b>Exactly two members, and there is no third.</b> §2.3.5 item 5 forbids a
+/// <c>Duration</c>, a <c>RemainingTurns</c>, an <c>ExpiresAt</c>, an
+/// <c>ExpiryCondition</c>, a <c>StackCount</c>, a Turn counter, an expiry label, a
+/// "consumed" flag, a priority, an ordering index, a target reference, a
+/// remaining-use counter, and a timestamp — no rule reads any of them. In particular
+/// there is <b>no stack count</b>: a repeated application from one source is a
+/// replace/refresh (§5.1.3 item 1), never an increment of a counter.
+///
+/// <b>Both members are always present.</b> §2.3.5 item 6 states that absence of a
+/// <i>member within</i> an element does not arise, and item 7 makes both members
+/// required and non-nullable with a non-empty <c>SourceIdentity</c> — so neither
+/// member carries an ignore condition.
+/// </summary>
+internal sealed record CardCostModifierJson
+{
+    /// <summary>
+    /// The stable source-scoped identity of the modifier's source
+    /// (<c>GAME_STATE.md</c> §2.3.5 item 3) — the replace/refresh and removal key
+    /// (§5.1.3). For the provisioned <c>CardCost</c> source it is the Relic's identity
+    /// (<c>RELIC_RULES.md</c> §2.2 item 3). It is copied verbatim.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.CardCostModifierSourceIdentity)]
+    public required string SourceIdentity { get; init; }
+
+    /// <summary>
+    /// The modifier's Card-cost reduction in percentage points (§2.3.5 item 4, §2.3.6
+    /// item 3), copied verbatim and uninterpreted. §2.3.5 item 4 states that how
+    /// several of them compose, and the cap that composition is subject to, are owned
+    /// by <c>CARD_RULES.md</c> §3.6 and are not restated or applied here.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.CardCostReductionPercentage)]
+    public required int CostReductionPercentage { get; init; }
 }
 
 /// <summary>

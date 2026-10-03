@@ -32,7 +32,7 @@
 Task ID:           TASK-121
 Title:             Resolve Client Loadout and Active Pet Skill Visibility Contract
 Type:              DOCUMENTATION
-Status:            BACKLOG
+Status:            DONE
 Risk:              LOW
 Priority:          HIGH
 Primary Agent:     review

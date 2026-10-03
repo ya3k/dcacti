@@ -65,7 +65,7 @@ public class EffectiveAttackTests
         // TargetStat = "ATK" BuffDebuff present the Step-1 Attack input is the
         // stored stat itself (GAME_STATE.md §2.3.2 item 1: "no active effect" is
         // an empty array, never null).
-        Assert.Equal(attack, StatusEffectLifecycle.EffectiveAttack(attack, []));
+        Assert.Equal(attack, StatusEffectLifecycle.EffectiveAttack(attack, [], []));
     }
 
     // =======================================================================
@@ -76,7 +76,7 @@ public class EffectiveAttackTests
     public void EffectiveAttack_ShouldReduceAtkByTheInstancesMagnitude()
     {
         // §5.4.1 item 3 for Root's own magnitude: truncate(100 × 70 / 100) = 70.
-        Assert.Equal(70, StatusEffectLifecycle.EffectiveAttack(100, [Root(duration: 2)]));
+        Assert.Equal(70, StatusEffectLifecycle.EffectiveAttack(100, [], [Root(duration: 2)]));
     }
 
     [Theory]
@@ -90,7 +90,7 @@ public class EffectiveAttackTests
         // §5.4.2's worked values, asserted verbatim. 51 → 35 and 101 → 70 are the
         // cases that distinguish truncation from rounding-to-nearest (which would
         // give 36 and 71); 99 → 69 distinguishes it from a ceiling.
-        Assert.Equal(expected, StatusEffectLifecycle.EffectiveAttack(attack, [Root(duration: 1)]));
+        Assert.Equal(expected, StatusEffectLifecycle.EffectiveAttack(attack, [], [Root(duration: 1)]));
     }
 
     [Fact]
@@ -103,7 +103,7 @@ public class EffectiveAttackTests
         // a double multiply-then-cast could round differently; the documented
         // truncation is asserted exactly.
         // 77 × 70 / 100 = 53.9 → 53.
-        Assert.Equal(53, StatusEffectLifecycle.EffectiveAttack(77, [Root(duration: 1)]));
+        Assert.Equal(53, StatusEffectLifecycle.EffectiveAttack(77, [], [Root(duration: 1)]));
     }
 
     // =======================================================================
@@ -123,7 +123,7 @@ public class EffectiveAttackTests
         const int attack = 100;
         const int pool = 40;
 
-        var effective = StatusEffectLifecycle.EffectiveAttack(attack, [Root(duration: 2)]);
+        var effective = StatusEffectLifecycle.EffectiveAttack(attack, [], [Root(duration: 2)]);
 
         Assert.Equal(70, effective);
         Assert.Equal(110, effective + pool);
@@ -150,8 +150,8 @@ public class EffectiveAttackTests
         var effects = new[] { Root(duration: 2) };
         var before = effects[0];
 
-        var first = StatusEffectLifecycle.EffectiveAttack(100, effects);
-        var second = StatusEffectLifecycle.EffectiveAttack(100, effects);
+        var first = StatusEffectLifecycle.EffectiveAttack(100, [], effects);
+        var second = StatusEffectLifecycle.EffectiveAttack(100, [], effects);
 
         Assert.Equal(70, first);
         Assert.Equal(70, second);
@@ -165,7 +165,7 @@ public class EffectiveAttackTests
 
         // And the identical input still yields the identical output — the stored
         // stat was never consumed, decremented, or restored.
-        Assert.Equal(first, StatusEffectLifecycle.EffectiveAttack(100, effects));
+        Assert.Equal(first, StatusEffectLifecycle.EffectiveAttack(100, [], effects));
     }
 
     // =======================================================================
@@ -184,7 +184,7 @@ public class EffectiveAttackTests
             Debuff("Sluggish", "Crit", 50, duration: 2),
         ];
 
-        Assert.Equal(100, StatusEffectLifecycle.EffectiveAttack(100, effects));
+        Assert.Equal(100, StatusEffectLifecycle.EffectiveAttack(100, [], effects));
     }
 
     [Fact]
@@ -204,7 +204,7 @@ public class EffectiveAttackTests
                 StatusEffect.ShieldDepletedCondition),
         ];
 
-        Assert.Equal(100, StatusEffectLifecycle.EffectiveAttack(100, effects));
+        Assert.Equal(100, StatusEffectLifecycle.EffectiveAttack(100, [], effects));
     }
 
     [Fact]
@@ -219,7 +219,7 @@ public class EffectiveAttackTests
             Debuff("Armor Break", "ATK", 30, duration: 2),
         ];
 
-        Assert.Equal(70, StatusEffectLifecycle.EffectiveAttack(100, renamed));
+        Assert.Equal(70, StatusEffectLifecycle.EffectiveAttack(100, [], renamed));
     }
 
     [Fact]
@@ -233,13 +233,13 @@ public class EffectiveAttackTests
         // state transition rather than a special case in the consumer.
         StatusEffect[] active = [Root(duration: 1)];
 
-        Assert.Equal(70, StatusEffectLifecycle.EffectiveAttack(100, active));
+        Assert.Equal(70, StatusEffectLifecycle.EffectiveAttack(100, [], active));
 
         // Turn N+1's step 19a: 1 → 0 → the instance is removed.
         var afterExpiry = StatusEffectLifecycle.ConsumeAtStep19a(active);
 
         Assert.Empty(afterExpiry);
-        Assert.Equal(100, StatusEffectLifecycle.EffectiveAttack(100, afterExpiry));
+        Assert.Equal(100, StatusEffectLifecycle.EffectiveAttack(100, [], afterExpiry));
     }
 
     // =======================================================================
@@ -261,13 +261,13 @@ public class EffectiveAttackTests
 
         Assert.Single(afterTurnN);
         Assert.Equal(1, afterTurnN[0].RemainingTurns);
-        Assert.Equal(70, StatusEffectLifecycle.EffectiveAttack(100, afterTurnN));
+        Assert.Equal(70, StatusEffectLifecycle.EffectiveAttack(100, [], afterTurnN));
 
         var afterTurnNPlus1 = StatusEffectLifecycle.ConsumeAtStep19a(afterTurnN);
 
         // Turn N+2: inactive — Pet ATK is its normal derived value again.
         Assert.Empty(afterTurnNPlus1);
-        Assert.Equal(100, StatusEffectLifecycle.EffectiveAttack(100, afterTurnNPlus1));
+        Assert.Equal(100, StatusEffectLifecycle.EffectiveAttack(100, [], afterTurnNPlus1));
     }
 
     [Fact]
@@ -281,23 +281,25 @@ public class EffectiveAttackTests
 
         Assert.Single(refreshed);
         Assert.Equal(2, refreshed[0].RemainingTurns);
-        Assert.Equal(70, StatusEffectLifecycle.EffectiveAttack(100, refreshed));
+        Assert.Equal(70, StatusEffectLifecycle.EffectiveAttack(100, [], refreshed));
     }
 
     // =======================================================================
-    // Several simultaneous ATK modifiers — COMBAT_RULES.md §5.4.5
+    // Several simultaneous ATK modifiers — COMBAT_RULES.md §5.6.6
     // =======================================================================
 
     [Fact]
-    public void EffectiveAttack_ShouldApplyEachActiveInstanceAndBeOrderIndependent()
+    public void EffectiveAttack_ShouldSumTheActiveInstancesAndBeOrderIndependent()
     {
-        // §5.4 authors no stacking rule beyond applying each active instance's
-        // magnitude, and no MVP content produces two simultaneous
-        // TargetStat = "ATK" instances (GAME_STATE.md §2.3.1 item 6 bounds the
-        // collection to one instance per Id). This asserts only the documented
-        // property — that each active instance contributes its own percentage and
-        // that the result does not depend on array order (§2.3.1 item 10 makes
-        // position non-semantic; §5.1.1 item 6 fixes Id ordinal order).
+        // COMBAT_RULES.md §5.6.6 item 2 makes every applicable instance a signed
+        // percentage-point contribution to ONE TotalATKModifierPercentage, item 3
+        // makes the composition order-independent, and item 4 applies the combined
+        // percentage with a single truncation. Sequential per-instance application
+        // — the model §5.4.1 used before the TASK-138 decision — is explicitly
+        // prohibited (TASK-138 D3/D5), so this asserts the canonical reading: no
+        // MVP content produces two simultaneous TargetStat = "ATK" instances
+        // (GAME_STATE.md §2.3.1 item 6 bounds the collection to one instance per
+        // Id), and the documented property is the signed sum.
         StatusEffect[] forward =
         [
             Debuff("Debuff A", "ATK", 30, duration: 2),
@@ -306,8 +308,12 @@ public class EffectiveAttackTests
 
         StatusEffect[] reversed = [forward[1], forward[0]];
 
-        // Each instance applies in turn: 100 → 70 → 35.
-        Assert.Equal(35, StatusEffectLifecycle.EffectiveAttack(100, forward));
-        Assert.Equal(35, StatusEffectLifecycle.EffectiveAttack(100, reversed));
+        // TotalATKModifierPercentage = (-30) + (-50) = -80, applied once:
+        // truncate(100 × (100 − 80) / 100) = 20.
+        //
+        // The prohibited sequential model would give 100 → 70 → 35, which is the
+        // divergence §5.6.6 item 3 and item 4 forbid.
+        Assert.Equal(20, StatusEffectLifecycle.EffectiveAttack(100, [], forward));
+        Assert.Equal(20, StatusEffectLifecycle.EffectiveAttack(100, [], reversed));
     }
 }

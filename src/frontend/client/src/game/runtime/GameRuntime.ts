@@ -1,7 +1,8 @@
 import { ApiService } from '../../services/api/ApiService';
-import type { BattleStartRequest } from '../../services/api/ApiService';
+import type { BattleResultResponse, BattleStartRequest } from '../../services/api/ApiService';
 import type { CardResponse, PetResponse, RelicResponse } from '../../services/api/CollectionModels';
 import { SignalRService } from '../../services/realtime/SignalRService';
+import type { BattleStateSnapshotResponse } from '../../services/realtime/SignalRService';
 import {
   INITIAL_RUNTIME_STATE,
   type GameRuntimeState,
@@ -52,6 +53,18 @@ const BOARD_CELL_COUNT = 64;
 let clientSequenceCounter = 0;
 
 /**
+ * The rejection code `GetBattleState` returns when the snapshot cannot be
+ * recovered (`SIGNALR_PROTOCOL.md` §7.3).
+ *
+ * The code is the server contract's own value, not a client-invented state: it
+ * covers an unknown battle, an expired active-state record, and a battle owned
+ * by another Player as one indistinguishable answer (`REDIS_STATE.md` §3,
+ * `GAME_STATE.md` §2.8). The client therefore never tries to tell those cases
+ * apart, and exposes no Redis or ownership detail.
+ */
+const BATTLE_NOT_FOUND_REASON = 'BATTLE_NOT_FOUND';
+
+/**
  * `GameRuntime` — the client runtime coordination boundary.
  *
  * Responsibility (task §9): coordinate Phaser, SignalR, runtime state and
@@ -69,7 +82,10 @@ let clientSequenceCounter = 0;
  *   - the client → server request boundary for the documented Swap action
  *     (`requestAction`, SIGNALR_PROTOCOL.md §2.1) — coordination only,
  *   - battle-start orchestration (`startBattle`, SIGNALR_PROTOCOL.md §1
- *     items 1–2, §2 `JoinBattle`) — coordination only.
+ *     items 1–2, §2 `JoinBattle`) — coordination only,
+ *   - reconnect/resync recovery (`recoverBattleState`, SIGNALR_PROTOCOL.md §7,
+ *     ADR-008) — the documented `GetBattleState` snapshot request, ingested by
+ *     the same `receiveBattleState` path the §4 push uses.
  *
  * It deliberately does NOT (task §9, AGENTS.md §10, ADR-001):
  *   - calculate damage, match, combo, cascade, passive, or power,
@@ -163,14 +179,28 @@ export class GameRuntime implements GameRuntimePort {
         });
       },
       onReconnected: (connectionId) => {
+        // A runtime that holds a battle is not "awaiting" one: the §7 snapshot
+        // request below is what restores synchronization, and until it lands
+        // the client is synchronized with nothing (`unsynchronized`). A runtime
+        // that never had a battle is simply awaiting one, and no recovery is
+        // requested for it (see `recoverBattleState`).
+        const hasBattle = this.battleState !== null;
+
         this.updateState({
           connection: 'connected',
           connectionId: connectionId ?? this.state.connectionId,
-          sync: 'awaiting_battle',
+          sync: hasBattle ? 'unsynchronized' : 'awaiting_battle',
           runtime: 'ready',
           lastError: null,
         });
         this.emit({ type: 'reconnected', state: this.state });
+
+        // SIGNALR_PROTOCOL.md §7.1: on reconnect the client requests the
+        // authoritative snapshot. Requested only when a current battle is
+        // known; the request is asynchronous, so the transition above is
+        // reported first and the recovered state follows through the existing
+        // §4 ingestion path.
+        void this.recoverBattleState();
       },
       onClosed: (error) => {
         this.updateState({
@@ -352,8 +382,11 @@ export class GameRuntime implements GameRuntimePort {
    * decide staleness (`SIGNALR_PROTOCOL.md` §2 item 1, `MATCH3_RULES.md` §2.1.4
    * item 1).
    *
-   * Every other action kind — including `GetBattleState` — still rejects with
-   * `RuntimeActionNotImplementedError`.
+   * Every other action kind — including the `GetBattleState` snapshot request —
+   * still rejects with `RuntimeActionNotImplementedError`. §7's snapshot is not
+   * an action a caller submits: it is requested by the runtime's own reconnect
+   * handling (`recoverBattleState`), from the battle identity the runtime
+   * already holds.
    *
    * @throws RuntimeActionNotImplementedError for any action other than `Swap`, `CardCast`, or `PetSkillCast`.
    * @throws Error when no battle state is known, or the transport rejects the
@@ -515,6 +548,151 @@ export class GameRuntime implements GameRuntimePort {
   }
 
   // ---------------------------------------------------------------------------
+  // Reconnect / resync recovery (SIGNALR_PROTOCOL.md §7, ADR-008)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Requests the authoritative snapshot after a reconnect and synchronizes the
+   * runtime from it (`SIGNALR_PROTOCOL.md` §7.1–§7.3, `ADR-008`).
+   *
+   * ```text
+   * SignalR reconnect
+   *         ↓
+   * SignalRService.getBattleState(battleId)
+   *         ↓
+   * BattleHub.GetBattleState
+   *         ↓
+   * authoritative snapshot
+   *         ↓
+   * receiveBattleState()          ← the existing §4 ingestion path
+   * ```
+   *
+   * **Only a known battle is recovered.** The identity is the one the runtime
+   * already holds from the server's own state (`§4.9`) — the same source
+   * `requestAction` resolves an action's battle from, and the same source
+   * `BattleScene` reads through `getBattleState()`. There is no second battle-id
+   * store, no URL/localStorage/React/scene-sourced id, and no caller-supplied
+   * one. With no battle known there is nothing to recover, so no request is
+   * issued and no state is invented.
+   *
+   * **The snapshot is ingested by the existing path.** An accepted response is
+   * routed through `receiveBattleState` (`§4`), so recovery produces exactly
+   * what a push produces and no more: the recovered snapshot replaces the
+   * runtime's copy, `sync` reaches `'synchronized'`, and the existing
+   * `battle_state_changed` notification and `battleStateListeners` dispatch
+   * fire. No second ingestion path, no second state store, and no
+   * recovery-specific state model exists.
+   *
+   * **Local prediction is discarded, not merged.** §7.2 makes the snapshot
+   * authoritative: nothing the client previously held is merged into it, and a
+   * snapshot is never reconciled against or rejected in favour of a stale local
+   * copy. Missed events are not replayed and none is requested — a
+   * desynchronized client resynchronizes from a snapshot only (§8 item 8,
+   * `ARCHITECTURE.md` §5.2).
+   *
+   * **No sequence logic is invented.** The response's `serverSequence` is the
+   * server's `BattleState.Sequence` and is documented state metadata, not a
+   * client correlation id (`§5.2` item 3): the runtime does not seed
+   * `clientSequence` from it, does not compare the snapshot against it, does not
+   * increment it, and does not reject a snapshot on it. The value the runtime
+   * stores is the one the snapshot itself carries, exactly as sent.
+   */
+  private async recoverBattleState(): Promise<void> {
+    // §7.1's precondition: a current battle is known. `battleId` comes from the
+    // runtime's own synchronized state and nowhere else.
+    const battleId = this.battleState?.battleId;
+
+    if (battleId === undefined) {
+      return;
+    }
+
+    let response: BattleStateSnapshotResponse;
+
+    try {
+      response = await this.signalR.getBattleState(battleId);
+    } catch (error) {
+      // A transport failure is a technical failure, not battle state: nothing
+      // is fabricated and the runtime keeps whatever it held. The §4 push
+      // remains the only other way state arrives.
+      const detail = this.describeError(error);
+      this.updateState({ lastError: detail });
+      this.emit({ type: 'runtime_error', state: this.state, detail });
+      return;
+    }
+
+    if (response.accepted) {
+      // The documented §4 shape, validated and stored by the same reader the
+      // push uses — no recovery-only validator and no recovery-only model.
+      this.receiveBattleState(response.state);
+      return;
+    }
+
+    if (response.reason === BATTLE_NOT_FOUND_REASON) {
+      await this.handleBattleNotRecoverable(battleId);
+      return;
+    }
+
+    // Any other rejection: reported as a technical failure, with no state
+    // fabricated to fill the gap. No second error state is introduced.
+    const detail =
+      `GetBattleState was rejected (${response.reason ?? 'no reason given'}); ` +
+      'no snapshot was received.';
+    this.updateState({ lastError: detail });
+    this.emit({ type: 'runtime_error', state: this.state, detail });
+  }
+
+  /**
+   * `SIGNALR_PROTOCOL.md` §7.3's `BATTLE_NOT_FOUND` behavior.
+   *
+   * The snapshot cannot be recovered — the active-state record expired or was
+   * cleared, or the battle is not the caller's, which the contract makes one
+   * indistinguishable answer (`REDIS_STATE.md` §3, `API_CONTRACTS.md` §4 notes
+   * 6–7) — so the client **treats the battle as ended**.
+   *
+   * 1. **The stale copy is discarded, and nothing stands in for it.** The
+   *    runtime no longer holds a live battle, so `battleState` is cleared rather
+   *    than kept or merged: `getBattleState()` reports `null`, and
+   *    `requestAction` can no longer address a battle that has ended. No
+   *    gameplay value is derived, and the client does not try to work out
+   *    *which* of the indistinguishable cases occurred — no Redis detail and no
+   *    ownership information is exposed.
+   * 2. **The documented fallback is the existing battle-result route.**
+   *    `GET /api/battle/{battleId}/result` (`API_CONTRACTS.md` §4) is already
+   *    implemented client-side as `ApiService.getBattleResult`, so §7.3's
+   *    fallback reuses that path: no second recovery mechanism, no new SignalR
+   *    method or event, and no change to the server response contract. A battle
+   *    whose record expired before completion has no persisted result and
+   *    answers `404 BATTLE_NOT_FOUND` (`REDIS_STATE.md` §3, "no partial result
+   *    is written to PostgreSQL") — that is the documented outcome of the
+   *    fallback, not a client defect.
+   *
+   * The runtime neither stores nor interprets a completed battle's result: the
+   * persisted result is presentation data (`GAME_STATE.md` §4 — client
+   * presentation state, owned by the client), not part of the synchronized
+   * battle copy this runtime holds and versions. §7.3 requires the fallback to
+   * be taken, and it is.
+   */
+  private async handleBattleNotRecoverable(battleId: string): Promise<void> {
+    // Treated as ended: the synchronized copy is dropped, so no stale client
+    // state survives and no state is reconstructed locally. `sync` returns to
+    // the documented "connected, no current battle" value rather than adding a
+    // recovery-specific one.
+    this.battleState = null;
+    this.updateState({ sync: 'awaiting_battle', lastError: null });
+
+    try {
+      await this.api.getBattleResult(battleId);
+    } catch (error) {
+      // The fallback is best-effort by contract: an expired battle legitimately
+      // has no result row. A failure is reported through the existing technical
+      // error channel and fabricates no battle state.
+      const detail = this.describeError(error);
+      this.updateState({ lastError: detail });
+      this.emit({ type: 'runtime_error', state: this.state, detail });
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Pre-battle collection reads (selection source, not a selection)
   // ---------------------------------------------------------------------------
 
@@ -568,6 +746,35 @@ export class GameRuntime implements GameRuntimePort {
    */
   public async getRelics(): Promise<RelicResponse[]> {
     return await this.api.getRelics();
+  }
+
+  /**
+   * A completed battle's persisted result (`API_CONTRACTS.md` §4) —
+   * `GET /api/battle/{battleId}/result`.
+   *
+   * This is what `ResultScene` reads the persisted `rewards`
+   * (`RewardSummary`) from. §4 returns data only for a battle that has
+   * **already ended**, which is the only state in which a terminal outcome has
+   * reached the presentation layer — so the read is well-formed by
+   * construction and this method invents no "not yet ended" behavior.
+   *
+   * The runtime delegates to the existing `ApiService` method and nothing else:
+   * it adds no orchestration, does not cache the response, and does not hold it
+   * as state. The persisted result is client presentation data
+   * (`GAME_STATE.md` §4), not part of the synchronized battle copy this runtime
+   * versions, so it is deliberately not stored here.
+   *
+   * It computes no reward: no XP is summed, no Level is derived from XP, and no
+   * `null` member is promoted to a number. Reward amounts and the resulting
+   * progression are server-authored (`GAME_RULES.md` §18, `AGENTS.md` §10,
+   * ADR-001).
+   *
+   * This reuses the same route §7.3's fallback read already takes; it
+   * introduces no second endpoint, no query parameter, and no second retrieval
+   * mechanism.
+   */
+  public async getBattleResult(battleId: string): Promise<BattleResultResponse> {
+    return await this.api.getBattleResult(battleId);
   }
 
   // ---------------------------------------------------------------------------

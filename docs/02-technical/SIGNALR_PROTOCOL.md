@@ -1,6 +1,56 @@
 # SignalR Protocol
 
-**Version:** 2.9 (§4.3 `petState` wire projection extended per TASK-121 to include
+**Version:** 2.14 (§3.2.24 `PowerChanged` reconciled with the TASK-150 Product
+Owner decisions D-1–D-8, applying `GAME_EVENTS.md` §2's semantics to the wire
+owner: the `source` member's closed value set gains a fourth value, `"boss"`,
+so it is now `"match"`, `"card"`, `"relic"`, or `"boss"`; item 1 no longer ties
+`delta`'s sign to a source kind; item 3 projects the four-value set; item 5
+states the owning-stage emission rule and defines `"boss"` as a Boss-owned Power
+mutation; item 6 states the one-mutation-one-event rule and that the events
+preserve authoritative mutation order; and §3.2.2 item 5's emission
+cross-reference is corrected from "the Power stage" to the owning-stage rule.
+**No wire member, member set, event shape, delivery path, method, discriminator,
+or gameplay rule is added or removed by this revision** — the payload is still
+`type`, `delta`, `power`, `source`, and this revision adds a `source` *value*
+rather than a member. Implementing the emission is a separate downstream task.
+Prior 2.13: (§2.2 added to document `Ping` as an authenticated technical connectivity probe / non-gameplay transport utility alongside `JoinBattle`, resolving the contract ownership gap identified in TASK-146; zero wire member, event shape, delivery path, or gameplay rule is changed. Prior 2.12: §3.2.2 item 5, §3.2.23 item 4, and §3.2.24 item 5 synchronized
+with the landed Relic stage: `GAME_RULES.md` §17 step 11 now emits
+`RelicTriggered` for each Relic whose effect applies and `PowerChanged` with
+`source: "relic"` where a Relic changes Power (TASK-133). **No wire member,
+member set, event shape, delivery path, method, or gameplay rule is changed by
+this revision** — the two shapes were already final and both emissions conform to
+them; only the statements that recorded the emission as *not implemented* are
+corrected. That entry also recorded that the Match and Card `PowerChanged`
+sources remained their own stages' — **superseded by 2.14**, which states the
+owning-stage emission rule for all four sources.
+Prior 2.11: (§4 item 16 added and §4.3 item 2's exclusion list extended —
+`PetState.ATKModifiers[]` (`GAME_STATE.md` §2.3.7, TASK-136 D10) is **not** a
+wire member and adds no payload member, message, method, or subscription. TASK-136
+D10 made the treatment conditional on whether the existing projection already
+exposes the relevant `PetState` fields; §4.3 item 2 answers that it does **not**
+(`petState` carries exactly four members, and `ATKModifiers[]` is now named
+among the §2.3 members explicitly not delivered), so item 4 governs and no new
+ATK-specific network contract is introduced. The revision records explicitly that
+no `ATKModifierApplied`, `ATKModifierExpired`, or `ATKChanged` event exists or
+may be introduced, that the ATK value already reaches the client as
+`DamageCalculated.base` (§3.2.13) — a value change, not a member-set change —
+and that `RelicTriggered` (§3.2.23) keeps its `{ type, relicId }` shape. No
+§2/§3 member set, delivery path, event shape, or gameplay rule is changed by this
+revision. Prior 2.10: (§4 item 15 added and §4.3 item 2's exclusion list extended —
+`PetState.CardCostModifiers[]` (`GAME_STATE.md` §2.3.5, `ADR-018`, TASK-134
+D9) is **not** a wire member and adds no payload member, message, method, or
+subscription: item 4 governs, item 13's `PetState` exception was made for
+`PassiveProgress` because `PASSIVE_RULES.md` §6 item 1 requires that value to be
+visible to the player, and no document requires a Card-cost modifier to be
+exposed — the authoritative record of the resulting `Power` is the existing
+state push and the existing `PowerChanged` (§3.2.24), whose `"card"` source
+value already covers a Card-cost spend (a case that remains in the set — 2.14
+widens `"card"` beyond cost spends to any Card-owned Power mutation). The
+revision records explicitly that no
+`CardCostModifierApplied`, `CardCostModifierExpired`, or `CardCostChanged`
+event exists or may be introduced, and that `RelicTriggered` (§3.2.23) keeps its
+`{ type, relicId }` shape. No §2/§3 member set, delivery path, event shape, or
+gameplay rule is changed by this revision. Prior 2.9: §4.3 `petState` wire projection extended per TASK-121 to include
 `equippedCards` (readonly string[], 4 `CardDefinitionId` entries: 3 Basic Cards +
 1 derived Signature Skill Card); resolves the client loadout visibility contract
 for `CardCast` and `PetSkillCast` action paths in `BattleScene` without client
@@ -177,8 +227,11 @@ returns the `battleId` this hub is then scoped to (`§1.1`). Battle State
 Foundation adds no *gameplay* method here and does not change this contract; see
 §4 for how the joining client receives state.
 
-The group join required by §1.2 is the one non-gameplay client → server call in
-this protocol:
+### 2.2 Non-Gameplay Transport Calls
+
+Two non-gameplay client → server calls exist on `BattleHub`:
+
+#### `JoinBattle`
 
 ```text
 JoinBattle(battleId)
@@ -194,6 +247,37 @@ JoinBattle(battleId)
    `POST /api/battle/start` remains the only documented way to create a battle.
 4. `JoinBattle` is a transport step, not a state contract. It carries no battle
    field and introduces no `Status`/lifecycle value (§8.3).
+
+#### `Ping`
+
+```text
+Ping(clientSequence?)
+```
+
+1. **Purpose:** A technical connectivity probe and keepalive/latency check
+   retained for connection verification. It carries no gameplay meaning and is
+   not a gameplay action: it submits no game input, does not require an active
+   `battleId`, reads zero `BattleState`, mutates zero `BattleState`, touches
+   zero Redis state, and emits zero Battle Events.
+2. **Parameters:**
+   - `clientSequence` (optional `string?`): opaque correlation identifier
+     supplied by the caller, echoed back in the response.
+3. **Return payload (`PingResponse`):** Delivered directly to the caller only
+   (never broadcast):
+   - `accepted` (`boolean`): `true` upon receipt on the authenticated
+     connection.
+   - `clientSequence` (`string?`): the echoed correlation identifier provided
+     by the client, or `null`/absent if none was passed.
+   - `serverTime` (`string`): ISO 8601 UTC timestamp (`DateTimeOffset`)
+     recorded by the server when handling the probe.
+4. **Authentication:** Inherits connection authentication (§1 item 3,
+   `ADR-015`). The hub connection itself requires a valid JWT Bearer application
+   session; unauthenticated callers cannot establish a connection to invoke
+   `Ping`.
+5. **Protocol Isolation:** `Ping` is not sequenced by `BattleState.Sequence`
+   (§6, `GAME_STATE.md` §5). It does not advance or affect turns, combos,
+   matches, or actions, and has no relationship to battle recovery or reconnect
+   resynchronization (§7).
 
 ---
 
@@ -333,14 +417,16 @@ discriminator member and that event's own payload members at the same level.
 5. **Admitting a §2 event adds no method and no state-push member.** The
    gameplay methods remain exactly the three of §2 (§8 item 7), and the §4/§6
    delivery paths are unchanged. `RelicTriggered` and `PowerChanged` are
-   projected by schema here; **their emission is not implemented by this
-   contract** — `ROADMAP.md` Phase 1 states "No Relics yet", and
-   `PowerChanged` belongs to the Power stage. Their emission **points** are
-   owned elsewhere and are not restated here: `RelicTriggered` by
-   `RELIC_RULES.md` §7 (`GAME_RULES.md` §17 step 11), and `PowerChanged` by
-   the Power stage (`GAME_RULES.md` §12). This section fixes their shape for
-   whichever stage emits them (`GAME_EVENTS.md` §3 item 7's sequencing
-   position).
+   projected by schema here, and their emission is owned elsewhere and is not
+   restated here: `RelicTriggered` by `RELIC_RULES.md` §7 (`GAME_RULES.md` §17
+   step 11), and `PowerChanged` by whichever stage owns the `PetState.Power`
+   mutation — the Power, Card, Relic, or Boss Response stage, per
+   `GAME_EVENTS.md` §2 and §3.2.24 item 5. The Relic stage emits both for its
+   own Relic — `RelicTriggered` per Relic whose effect applies, and
+   `PowerChanged` with `source: "relic"` where a Relic changes Power
+   (§3.2.23, §3.2.24) — so this contract fixes their shape for whichever stage
+   emits them (`GAME_EVENTS.md` §3 item 7's sequencing position), and no member
+   is added to either by that stage.
 
 ### 3.2.3 Property Casing
 
@@ -1080,15 +1166,25 @@ event's shape.
    as it is for the resolution's other ordered events. The member is therefore
    declined rather than deferred, and `GAME_EVENTS.md` §2's payload list is left
    to its own owner for any wording correction.
-4. **Emission is not implemented by this contract.** `ROADMAP.md` Phase 1 states
-   "No Relics yet". The emission **point** is owned by `RELIC_RULES.md` §7 —
-   fired at `GAME_RULES.md` §17 step 11 ("Trigger Relics") — and the trigger,
-   condition, and deterministic order by `RELIC_RULES.md` §3/§4; those are the
-   specific governing rules, and this subsection does not restate them. The
-   Relic stage's own task emits the event (`GAME_EVENTS.md` §3 item 7's
-   sequencing position, applied to this event). This subsection fixes the wire
-   shape for whichever stage emits it, adds no Relic engine, and fires no
-   trigger (§3.2.2 item 5).
+4. **Emission is implemented by the Relic stage, and this contract fixes only the
+   shape.** The emission **point** is owned by `RELIC_RULES.md` §7 — fired at
+   `GAME_RULES.md` §17 step 11 ("Trigger Relics") — and the trigger, condition,
+   and deterministic order by `RELIC_RULES.md` §3/§4, with the
+   Trigger/Condition/Effect representation owned by `RELIC_RULES.md` §8
+   (TASK-131 D1–D11, `ADR-018`); those are the specific governing rules, and this
+   subsection does not restate them. The stage that owns that step emits the
+   event — one `RelicTriggered` per Relic whose effect actually applies
+   (`RELIC_RULES.md` §7), in the equip-slot order §4.2 fixes
+   (`GAME_EVENTS.md` §3 item 7's sequencing position, applied to this event).
+   This subsection fixes the wire shape for that emitter, adds no Relic engine,
+   and fires no trigger (§3.2.2 item 5).
+5. **The wire shape is confirmed final and carries no effect summary.**
+   (TASK-131 **D10**) This member set — `type` and `relicId` — is the decided
+   shape, not a placeholder awaiting a follow-up decision. A Relic's resulting
+   state reaches the client through the existing `BattleState` projection
+   (§4) and not through this event, which is why item 2's §3.2.25 omission
+   ruling stands unchanged. No member is added to `RelicTriggered` by
+   `RELIC_RULES.md` §8's contract.
 
 ### 3.2.24 `PowerChanged`
 
@@ -1106,11 +1202,16 @@ event's shape.
 | `type` | string | always | `"PowerChanged"` |
 | `delta` | int | always | the signed change applied to `PetState.Power` |
 | `power` | int | always | `PetState.Power` **after** the change |
-| `source` | string | always | `"match"`, `"card"`, or `"relic"` |
+| `source` | string | always | `"match"`, `"card"`, `"relic"`, or `"boss"` |
 
-1. **`delta` is signed.** A generation is positive and a Card cost spend is
-   negative; `delta = 0` is a real value where it occurs and is sent as `0`,
-   following §3.2.8 item 2's rule for a zero-valued member.
+1. **`delta` is signed, and its sign is the mutation's own.** The value is the
+   change the mutation actually applied to `PetState.Power` — positive for a
+   gain, negative for a spend — and `delta = 0` is a real value where it occurs
+   and is sent as `0`, following §3.2.8 item 2's rule for a zero-valued member.
+   The sign is a property of the **mutation**, not of the source: a `"card"`
+   delta is negative when the cast pays its cost and positive when the cast's
+   effect grants Power (item 5), and a `"boss"` delta is negative for a
+   Power-draining effect. A reader must not infer the direction from `source`.
 2. **`power` is the resulting value, not a delta and not the previous value.**
    It is `PetState.Power` (`GAME_STATE.md` §2.3) after this change, and
    `GAME_RULES.md` §12's 0–100 range is an invariant of that state, not
@@ -1120,23 +1221,47 @@ event's shape.
    which is why the name is shared (§3.2.7 item 2's convention for a shared
    member name); the *value set* each reports is owned by its own event
    definition. For this event it is the set `GAME_EVENTS.md` §2 names —
-   "source (Gem match / Card cost / Relic)" — projected to its documented
-   lowercase contract name: `"match"`, `"card"`, or `"relic"`. This is the
-   string-enum convention of §3.2.4 and the same value-projection rule §3.2.14
-   item 1 applies to `DamageParty`; the ordinal, if any, is a Domain identity
-   and never reaches the wire.
+   "source (Gem match / Card / Relic / Boss)" — projected to its documented
+   lowercase contract name: `"match"`, `"card"`, `"relic"`, or `"boss"`. This
+   is the string-enum convention of §3.2.4 and the same value-projection rule
+   §3.2.14 item 1 applies to `DamageParty`; the ordinal, if any, is a Domain
+   identity and never reaches the wire.
    It is **not** a `DamageParty` (§3.2.14's `"player"`/`"boss"`) and it is
    **not** §3.2.16's entity-owner `"pet"`/`"boss"`: those answer "which side"
-   and "which entity", while this answers "what changed Power". A consumer must
+   and "which entity", while this answers "which stage owns the Power
+   mutation". The shared spelling `"boss"` across these events is exactly the
+   shared-name convention above: the value sets are per-event, so `"boss"` here
+   denotes a Boss-owned **Power mutation** and not the damage or Passive
+   entity-owner meaning it carries at §3.2.14 and §3.2.16. A consumer must
    read `source` together with `type` — a member name alone does not fix a value
    set anywhere in this schema (§3.2.19 item 1, §3.2.7 item 2).
 4. **This is not the Card cost member.** `CardCast` deliberately carries no cost
    (§3.2.20 item 2, TASK-104 A-2C). Where a Power change must be reported, this
    event reports it authoritatively; the two are not reconciled by adding a cost
    member back to `CardCast`.
-5. **Emission is not implemented by this contract.** `PowerChanged` belongs to
-   the Power stage, which is not this contract's to build; this subsection fixes
-   its wire shape only, and §3.2.2 item 5 applies.
+5. **Emission is owned by the stage that owns the mutation.** Every
+   authoritative gameplay mutation of `PetState.Power` emits this event, and the
+   stage that performs the mutation is the stage that emits it:
+   `"match"` for the Power stage's resource generation, `"card"` for the Card
+   stage's cost and Power effects, `"relic"` for the Relic stage's `Power`
+   effect, and `"boss"` for the Boss Response stage's Power-draining secondary
+   effect — `BOSS_RULES.md` §6.3.1 item 2's Drain Power is the provisioned
+   case. What each source means, and which stage owns it, is
+   `GAME_EVENTS.md` §2's; this subsection fixes only the wire shape for
+   whichever stage emits it, and §3.2.2 item 5 applies. No separate or
+   centralized emission step is introduced. A `"card"` mutation is **not** a
+   cost-only case: `"card"` covers any Power mutation a Card cast owns.
+6. **One mutation, one event; the events preserve authoritative order.** When
+   one action performs several Power mutations — a Card cast that both pays a
+   cost and applies a Power effect is the documented case — each mutation emits
+   its own `PowerChanged` carrying that mutation's `delta` and the resulting
+   `power`, in the authoritative mutation order `GAME_RULES.md` §17 fixes.
+   Several mutations are never combined into one net event, and a consumer
+   applying the events in delivered order therefore reaches the same `power`
+   the state holds. This adds no ordering rule of its own: the order is the
+   resolution's existing order, carried by the batch like every other event's
+   (§3.2.1 item 3, §3.2.12 item 4). A mutation that does not occur emits
+   nothing.
 
 ### 3.2.25 The `effect summary` Convention — Omission
 
@@ -1325,6 +1450,67 @@ action: it reports state (§4 item 6).
     payload member is introduced by it (`GAME_STATE.md` §2.3.4 item 8), and it
     replaces nothing in item 12's or item 13's record.
 
+15. **`CardCostModifiers[]` is not delivered, and no new event carries it.**
+    `GAME_STATE.md` §2.3.5 adds `PetState.CardCostModifiers[]` to authoritative
+    state (`ADR-018`, TASK-134 D1/D2) — applied, Battle-scoped Card-cost
+    modifiers. It is **not** a member of this payload, and this section adds
+    none for it. Item 4 governs: the record carries exactly the implemented
+    stage's fields, and item 13's exception was made for `PassiveProgress`
+    specifically because `PASSIVE_RULES.md` §6 item 1 requires that value to be
+    exposed to the player. No document requires a Card-cost modifier to be
+    exposed: it changes the cost of a Card the server validates and charges
+    (`CARD_RULES.md` §3.6) and the authoritative record of the resulting
+    `Power` is the state push and `PowerChanged`
+    (`SIGNALR_PROTOCOL.md` §3.2.24) — which already carries the `"card"` source
+    value for a Card-cost spend. The client therefore neither receives nor
+    needs the collection. It is also not a field the client may infer: it must
+    never compute, predict, or reconstruct a Card-cost modifier from events,
+    from a `PowerChanged` delta, or from a Card's definition
+    (`GAME_RULES.md` §18, `ADR-001`). Delivering it would be a protocol change
+    owned by its own task (`GAME_STATE.md` §2.3.5 item 10).
+
+    **No new event, method, or subscription is introduced by it** — in
+    particular there is no `CardCostModifierApplied`,
+    `CardCostModifierExpired`, or `CardCostChanged` event. A modifier's apply,
+    refresh, and removal are state mutations (`GAME_STATE.md` §5.1.3) reported
+    by the existing state push and, where Power actually changes, by the
+    existing `PowerChanged` (`§3.2.24`); `RelicTriggered` (`§3.2.23`) remains
+    the only Relic-side event and keeps its `{ type, relicId }` shape. It
+    replaces nothing in item 12's, item 13's, or item 14's record.
+16. **`ATKModifiers[]` is not delivered, and no new event carries it.**
+    `GAME_STATE.md` §2.3.7 adds `PetState.ATKModifiers[]` to authoritative
+    state (TASK-136 D1/D2) — applied, Battle-scoped ATK modifiers. It is **not**
+    a member of this payload, and this section adds none for it. TASK-136 **D10**
+    decided exactly this, conditionally on whether the existing projection
+    already exposes the relevant `PetState` fields; item 4 and §4.3 item 2
+    answer that condition:
+
+    - **The existing projection does not expose it.** §4.3 item 2 fixes
+      `petState` to **four** members (`passiveId`, `passiveProgress`, the
+      conditional `passiveResetOverride`, `equippedCards`) and names
+      `ATKModifiers[]` among the §2.3 members that are explicitly **not**
+      delivered. `ATKModifiers[]` is therefore **not a wire member**, per
+      item 4's rule that a payload carries only the implemented stage's own
+      fields. Item 13's exception was made for `PassiveProgress` specifically
+      because `PASSIVE_RULES.md` §6 item 1 requires that value to be exposed to
+      the player; no document requires an ATK modifier to be exposed.
+    - **No new contract is introduced.** TASK-136 D10 forbids a new ATK-specific
+      network contract, and none is required: the ATK value the Relic modifier
+      produces already reaches the client as `DamageCalculated.base`
+      (`§3.2.13`) — a **value** change, not a member-set change, exactly as
+      `COMBAT_RULES.md` §5.4 and §5.6 state for their own rules.
+    - **The client neither receives nor needs the collection, and may not infer
+      it.** It must never compute, predict, or reconstruct an ATK modifier from
+      events, from a `DamageCalculated` value, or from a Relic's definition
+      (`GAME_RULES.md` §18, `ADR-001`).
+    - **No new event, method, or subscription is introduced by it** — in
+      particular there is no `ATKModifierApplied`, `ATKModifierExpired`, or
+      `ATKChanged` event. A modifier's apply, refresh, and removal are state
+      mutations (`GAME_STATE.md` §5.1.4) reported by the existing state push;
+      `RelicTriggered` (`§3.2.23`) remains the only Relic-side event and keeps
+      its `{ type, relicId }` shape. Delivering the collection would be a
+      protocol change owned by its own task (`GAME_STATE.md` §2.3.7 item 10).
+
 This method name is `BattleStateUpdated` for the `BattleState` it delivers,
 and is the only state-push method in this protocol. No second or parallel
 state-sync method exists — `GameStateSync`, `SyncEverything`, or similar are
@@ -1449,10 +1635,12 @@ petState
    conditional `passiveResetOverride`, and `equippedCards`. The rest of
    §2.3 — `PetId`/Identity, `Element`, `Tier`/`Star`/`Level`, combat stats
    (`HP`, `MaxHP`, `ATK`, `DEF`, `Crit`, `Power`), `StatusEffects[]`,
-   `NextAttackCritModifiers[]`, and `EquippedRelics[]` — belongs to other
-   subsystems or server-only calculation and is **not** delivered, per §4
-   item 4's rule that a payload carries only the implemented stage's own
-   fields. Referring to `petState` as a whole does not widen that rule.
+   `NextAttackCritModifiers[]`, `CardCostModifiers[]`, `ATKModifiers[]`, and
+   `EquippedRelics[]` —
+   belongs to other subsystems or server-only calculation and is **not**
+   delivered, per §4 item 4's rule that a payload carries only the implemented
+   stage's own fields. Referring to `petState` as a whole does not widen that
+   rule.
 3. **`passiveId` is always present and is the Passive's identity, not its
    definition.** It carries the same value `PetState.PassiveId` holds
    (`GAME_STATE.md` §2.3) — the identity `GAME_EVENTS.md` §2's
@@ -1532,8 +1720,7 @@ petState
     from whatever `BattleState` the server holds. Whether `PetState` is
     written to Redis is owned by `REDIS_STATE.md` §7 and is unchanged here:
     this section defines the payload member, not the storage contract.
-13. **`equippedCards` is the active Pet's battle-scoped loadout.** It carries
-    the 4 `CardDefinitionId` strings (`GAME_STATE.md` §2.3, `CARD_RULES.md`
+13. **`equippedCards` is the active Pet's battle-scoped loadout.** It carries    the 4 `CardDefinitionId` strings (`GAME_STATE.md` §2.3, `CARD_RULES.md`
     §1) — the 3 submitted Basic Cards plus the active Pet's derived Signature
     Skill Card. It is always present, non-empty, and non-nullable.
     - **Bootstrap and synchronization:** Snapshotted once at battle creation

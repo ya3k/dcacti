@@ -51,8 +51,8 @@ public class RelicLoadoutSnapshotTests
             RelicDefinitionId = DefinitionId,
             Name = "Berserker Core",
             Trigger = "OnMatchCount",
-            Condition = "every 3 Matches",
-            EffectDefinition = "atk_plus_5_percent",
+            Condition = TestRelicEffects.Condition,
+            EffectDefinition = TestRelicEffects.Effect,
         });
         await context.SaveChangesAsync();
     }

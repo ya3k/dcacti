@@ -7,6 +7,7 @@ using GameServer.Domain.Passives;
 using GameServer.Domain.Pets;
 using GameServer.Domain.Players;
 using GameServer.Infrastructure.Redis;
+using GameServer.Domain.Relics;
 using StackExchange.Redis;
 using Xunit;
 
@@ -650,6 +651,321 @@ public class RedisBattleStateRepositoryTests : IAsyncLifetime
     }
 
     // =======================================================================
+    // §7 items 15–16 — both PetState Relic runtime carriers
+    // =======================================================================
+
+    [Fact]
+    public async Task CreateAsync_ShouldRoundTripBothRelicRuntimeCarrierCollections()
+    {
+        // GAME_STATE.md §2.3.8 item 5 / §2.3.6 item 5 and REDIS_STATE.md §7 items 15–16:
+        // both carrier collections ride the existing battle:{battleId}:state record and
+        // must survive write → Redis → load → deserialize losslessly — the same
+        // elements, member values, order, and count. Neither introduces a Redis-only
+        // field, a second key, or a second record (§7 item 15: "no
+        // battle:{battleId}:cardcost key"; §7 item 16: "no battle:{battleId}:atk key").
+        //
+        // The assertions inspect the RAW STORED DOCUMENT as well as the documented read
+        // path, so "the repository returned the object the test still held" cannot be
+        // mistaken for a verified round trip.
+        RequireRedis();
+
+        var battleId = NewBattleId();
+        var state = NewBattle(battleId);
+
+        // Applied through the documented lifecycle helpers, with a refresh, a second
+        // distinct source, and a signed negative value (§5.1.4 items 1–2, §2.3.7 item 5).
+        var atkModifiers = ATKModifiers.Apply(state.PetState.ATKModifiers, new ATKModifier("berserker-core", 5));
+        atkModifiers = ATKModifiers.Apply(atkModifiers, new ATKModifier("berserker-core", 10));
+        atkModifiers = ATKModifiers.Apply(atkModifiers, new ATKModifier("assassin-eye", -30));
+
+        var cardCostModifiers = CardCostModifiers.Apply(
+            state.PetState.CardCostModifiers,
+            new CardCostModifier("emergency-core", 50));
+        cardCostModifiers = CardCostModifiers.Apply(
+            cardCostModifiers,
+            new CardCostModifier("mana-crystal", 25));
+
+        var stored = state with
+        {
+            PetState = state.PetState with
+            {
+                ATKModifiers = atkModifiers,
+                CardCostModifiers = cardCostModifiers,
+            },
+        };
+
+        try
+        {
+            await _repository.CreateAsync(stored);
+
+            // The documented key still holds the record, and it is still the ONLY key
+            // this battle created — neither carrier introduced a second key (§1).
+            Assert.Equal(
+                [$"battle:{battleId}:state"],
+                await KeysForBattleAsync(battleId));
+
+            var raw = await _connection!.GetDatabase().StringGetAsync($"battle:{battleId}:state");
+
+            Assert.True(raw.HasValue, "the documented key must hold the record");
+
+            using (var document = System.Text.Json.JsonDocument.Parse(raw.ToString()))
+            {
+                var petState = document.RootElement.GetProperty("petState");
+
+                // Both members are present as ARRAYS and are never null or omitted
+                // (§2.3.7 item 6, §2.3.5 item 6).
+                var atkElements = petState.GetProperty("atkModifiers");
+                var cardCostElements = petState.GetProperty("cardCostModifiers");
+
+                Assert.Equal(System.Text.Json.JsonValueKind.Array, atkElements.ValueKind);
+                Assert.Equal(System.Text.Json.JsonValueKind.Array, cardCostElements.ValueKind);
+
+                // The persisted values are the applied ones, written under the
+                // serializer's own explicit member names. The element order in the
+                // stored document is the §2.3.7 item 7 SourceIdentity sort, so the
+                // percentages must be read in THAT order: "assassin-eye" (-30) precedes
+                // "berserker-core" (10). This is the storage consequence REDIS_STATE.md
+                // §7 item 16 draws — the serialized order is reproducible from the
+                // element set alone and does not follow insertion order, and
+                // "berserker-core" retains the refreshed 10 rather than its first 5.
+                Assert.Equal(
+                    ["assassin-eye", "berserker-core"],
+                    atkElements.EnumerateArray().Select(e => e.GetProperty("sourceIdentity").GetString()));
+                Assert.Equal(
+                    [-30, 10],
+                    atkElements.EnumerateArray().Select(e => e.GetProperty("atkModifierPercentage").GetInt32()));
+
+                // CardCostModifiers is order-preserving rather than sorted (§2.3.6
+                // item 6), so its stored order IS the application order — the deliberate
+                // contrast with the member above.
+                Assert.Equal(
+                    ["emergency-core", "mana-crystal"],
+                    cardCostElements.EnumerateArray().Select(e => e.GetProperty("sourceIdentity").GetString()));
+                Assert.Equal(
+                    [50, 25],
+                    cardCostElements.EnumerateArray().Select(e => e.GetProperty("costReductionPercentage").GetInt32()));
+            }
+
+            // And the documented read path restores both collections exactly — the same
+            // elements, the same values, and the same order.
+            var reloaded = await _repository.GetAsync(battleId);
+
+            Assert.NotNull(reloaded);
+            Assert.True(stored.PetState.ATKModifiersEqual(reloaded!.PetState));
+            Assert.True(stored.PetState.CardCostModifiersEqual(reloaded.PetState));
+            Assert.Equal(2, reloaded.PetState.ATKModifiers.Length);
+            Assert.Equal(2, reloaded.PetState.CardCostModifiers.Length);
+        }
+        finally
+        {
+            await DeleteBattleKeysAsync(battleId);
+        }
+    }
+
+    [Fact]
+    public async Task CreateAsync_ShouldRoundTripBothCarriersAsEmptyArrays()
+    {
+        // GAME_STATE.md §2.3.8 item 1 / §2.3.6 item 1 and REDIS_STATE.md §7 items 15–16:
+        // a Pet with no active modifier serializes an EMPTY ARRAY — "it is never omitted
+        // and never null". A battle created through the documented factory holds both
+        // collections empty, so the stored record must carry [] for each and the no-
+        // modifier state must round-trip as the no-modifier state.
+        RequireRedis();
+
+        var battleId = NewBattleId();
+
+        try
+        {
+            var state = NewBattle(battleId);
+
+            Assert.Empty(state.PetState.ATKModifiers);
+            Assert.Empty(state.PetState.CardCostModifiers);
+
+            await _repository.CreateAsync(state);
+
+            var raw = await _connection!.GetDatabase().StringGetAsync($"battle:{battleId}:state");
+
+            Assert.True(raw.HasValue);
+
+            using (var document = System.Text.Json.JsonDocument.Parse(raw.ToString()))
+            {
+                var petState = document.RootElement.GetProperty("petState");
+
+                Assert.Equal(0, petState.GetProperty("atkModifiers").GetArrayLength());
+                Assert.Equal(0, petState.GetProperty("cardCostModifiers").GetArrayLength());
+
+                // Not the JSON null §2.3.8 item 1 rules out.
+                Assert.NotEqual(
+                    System.Text.Json.JsonValueKind.Null,
+                    petState.GetProperty("atkModifiers").ValueKind);
+                Assert.NotEqual(
+                    System.Text.Json.JsonValueKind.Null,
+                    petState.GetProperty("cardCostModifiers").ValueKind);
+            }
+
+            var reloaded = await _repository.GetAsync(battleId);
+
+            Assert.NotNull(reloaded);
+            Assert.NotNull(reloaded!.PetState.ATKModifiers);
+            Assert.NotNull(reloaded.PetState.CardCostModifiers);
+            Assert.Empty(reloaded.PetState.ATKModifiers);
+            Assert.Empty(reloaded.PetState.CardCostModifiers);
+        }
+        finally
+        {
+            await DeleteBattleKeysAsync(battleId);
+        }
+    }
+
+    [Fact]
+    public async Task TryUpdateAsync_ShouldCarryBothCarrierCollectionsThroughTheWriteBackUnderTheCas()
+    {
+        // REDIS_STATE.md §4 items 2 and 5 and §7 items 15–16: apply, refresh, and removal
+        // all occur inside one resolution and are written in the same single
+        // post-resolution write-back as the rest of the state, under the SAME Sequence
+        // compare-and-set — neither carrier is a concurrency token, and neither changes
+        // the CAS. §7 item 15: "under the unchanged §3 sliding TTL"; §7 item 16: "It is
+        // not a concurrency token; Sequence remains the only one."
+        RequireRedis();
+
+        var battleId = NewBattleId();
+        var state = NewBattle(battleId);
+
+        try
+        {
+            await _repository.CreateAsync(state);
+
+            // A resolution applies both carriers and advances Sequence once.
+            var resolved = state with
+            {
+                Sequence = state.Sequence + 1,
+                Turn = state.Turn + 1,
+                PetState = state.PetState with
+                {
+                    ATKModifiers = ATKModifiers.Apply(
+                        state.PetState.ATKModifiers,
+                        new ATKModifier("berserker-core", 5)),
+                    CardCostModifiers = CardCostModifiers.Apply(
+                        state.PetState.CardCostModifiers,
+                        new CardCostModifier("emergency-core", 50)),
+                },
+            };
+
+            Assert.True(await _repository.TryUpdateAsync(resolved, expectedSequence: state.Sequence));
+
+            var reloaded = await _repository.GetAsync(battleId);
+
+            Assert.NotNull(reloaded);
+            Assert.Equal(state.Sequence + 1, reloaded!.Sequence);
+            Assert.True(resolved.PetState.ATKModifiersEqual(reloaded.PetState));
+            Assert.True(resolved.PetState.CardCostModifiersEqual(reloaded.PetState));
+
+            // The CAS is unchanged: a stale attempt built from the ORIGINAL Sequence is
+            // still refused, and the refusal writes NOTHING — so it cannot carry its own
+            // carrier values into the record (§4 items 3 and 7, §7 item 16: "A rejected
+            // action writes nothing and therefore does not touch this key").
+            var stale = state with
+            {
+                Sequence = state.Sequence + 1,
+                PetState = state.PetState with
+                {
+                    ATKModifiers = [new ATKModifier("rejected-source", 999)],
+                },
+            };
+
+            Assert.False(await _repository.TryUpdateAsync(stale, expectedSequence: state.Sequence));
+
+            var afterRefusal = await _repository.GetAsync(battleId);
+
+            Assert.NotNull(afterRefusal);
+            Assert.True(resolved.PetState.ATKModifiersEqual(afterRefusal!.PetState));
+            Assert.DoesNotContain(
+                afterRefusal.PetState.ATKModifiers,
+                m => m.SourceIdentity == "rejected-source");
+
+            // A subsequent accepted resolution refreshes a source and removes another,
+            // and both mutations survive the write-back.
+            var next = resolved with
+            {
+                Sequence = resolved.Sequence + 1,
+                Turn = resolved.Turn + 1,
+                PetState = resolved.PetState with
+                {
+                    ATKModifiers = ATKModifiers.Remove(
+                        ATKModifiers.Apply(
+                            resolved.PetState.ATKModifiers,
+                            new ATKModifier("berserker-core", 10)),
+                        "berserker-core"),
+                },
+            };
+
+            Assert.True(await _repository.TryUpdateAsync(next, expectedSequence: resolved.Sequence));
+
+            var final = await _repository.GetAsync(battleId);
+
+            Assert.NotNull(final);
+            Assert.True(next.PetState.ATKModifiersEqual(final!.PetState));
+            Assert.Empty(final.PetState.ATKModifiers);
+            Assert.Single(final.PetState.CardCostModifiers);
+        }
+        finally
+        {
+            await DeleteBattleKeysAsync(battleId);
+        }
+    }
+
+    [Fact]
+    public async Task TryUpdateAsync_ShouldCarryTheCarriers_WithoutChangingTheTtl()
+    {
+        // REDIS_STATE.md §3 and §7 items 15–16: "Redis adds no TTL, sweep, or expiry for
+        // this collection beyond the record's own §3 sliding TTL" — so the carriers
+        // change the record's CONTENT and not its expiry rule. The documented 30-minute
+        // sliding refresh is observed on a write that carried both collections.
+        RequireRedis();
+
+        var battleId = NewBattleId();
+        var state = NewBattle(battleId);
+
+        try
+        {
+            await _repository.CreateAsync(state);
+
+            var database = _connection!.GetDatabase();
+
+            await database.KeyExpireAsync($"battle:{battleId}:state", TimeSpan.FromSeconds(45));
+
+            var shortened = await database.KeyTimeToLiveAsync($"battle:{battleId}:state");
+            Assert.True(shortened!.Value < TimeSpan.FromMinutes(5));
+
+            var resolved = state with
+            {
+                Sequence = state.Sequence + 1,
+                Turn = state.Turn + 1,
+                PetState = state.PetState with
+                {
+                    ATKModifiers = ATKModifiers.Apply(
+                        state.PetState.ATKModifiers,
+                        new ATKModifier("berserker-core", 5)),
+                    CardCostModifiers = CardCostModifiers.Apply(
+                        state.PetState.CardCostModifiers,
+                        new CardCostModifier("emergency-core", 50)),
+                },
+            };
+
+            Assert.True(await _repository.TryUpdateAsync(resolved, expectedSequence: state.Sequence));
+
+            var refreshed = await database.KeyTimeToLiveAsync($"battle:{battleId}:state");
+
+            Assert.NotNull(refreshed);
+            AssertWithinDocumentedTtl(refreshed!.Value);
+        }
+        finally
+        {
+            await DeleteBattleKeysAsync(battleId);
+        }
+    }
+
+    // =======================================================================
     // Fixtures
     // =======================================================================
 
@@ -736,5 +1052,91 @@ public class RedisBattleStateRepositoryTests : IAsyncLifetime
             observed <= StateTtl && observed >= StateTtl - TtlTolerance,
             $"REDIS_STATE.md §3 fixes the active state's expiry at 30 minutes of "
             + $"inactivity; observed {observed}.");
+    }
+
+    // =======================================================================
+    // GAME_RULES.md §17 step 11 → BattleState → serialize → Redis
+    // =======================================================================
+
+    [Fact]
+    public async Task RelicResolution_ShouldRideTheExistingStateRecord_WithNoNewKey()
+    {
+        // The whole persistence leg of the Relic stage's pipeline
+        // (GAME_RULES.md §17 step 11 → GAME_STATE.md §5.1 → REDIS_STATE.md §4):
+        // RelicResolver's output is written under the ONE documented key, under the
+        // Sequence compare-and-set, and reads back element-for-element.
+        //
+        // RELIC_RULES.md §8.1 item 3 and ADR-018 item 5 forbid a persistent Relic
+        // counter and REDIS_STATE.md §7 items 15–16 forbid a Relic-specific key, so
+        // the "no second key" assertion below is the storage half of that decision.
+        RequireRedis();
+
+        var battleId = NewBattleId();
+
+        EquippedRelicContent[] content =
+        [
+            new(new EquippedRelicIdentity("berserker-core-instance"), RelicProvisionedContent.Definition("relic-berserker-core")),
+            new(new EquippedRelicIdentity("emergency-core-instance"), RelicProvisionedContent.Definition("relic-emergency-core")),
+        ];
+
+        var baseline = NewBattle(battleId);
+
+        var state = baseline with
+        {
+            PetState = baseline.PetState with
+            {
+                HP = 200,
+                EquippedRelics =
+                [
+                    new EquippedRelicIdentity("berserker-core-instance"),
+                    new EquippedRelicIdentity("emergency-core-instance"),
+                ],
+            },
+        };
+
+        // Step 11 against the resolution state: cumulative Match count 3 satisfies
+        // Berserker Core's MatchCountAtLeast(3), and HP 200 of 1000 satisfies
+        // Emergency Core's HpPercentageBelow(30).
+        var resolution = RelicResolver.Resolve(content, state.PetState, matchCount: 3, combo: 2);
+
+        Assert.Equal(2, resolution.Triggered.Count);
+
+        var resolved = state with
+        {
+            PetState = resolution.PetState,
+            Sequence = state.Sequence + 1,
+        };
+
+        try
+        {
+            await _repository.CreateAsync(state);
+            Assert.True(await _repository.TryUpdateAsync(resolved, expectedSequence: state.Sequence));
+
+            // One key, and it is the documented one — the Relic stage introduced none
+            // (REDIS_STATE.md §1, §7 item 15).
+            Assert.Equal([$"battle:{battleId}:state"], await KeysForBattleAsync(battleId));
+
+            var reloaded = await _repository.GetAsync(battleId);
+
+            Assert.NotNull(reloaded);
+            Assert.True(resolved.PetState.ATKModifiersEqual(reloaded!.PetState));
+            Assert.True(resolved.PetState.CardCostModifiersEqual(reloaded.PetState));
+
+            var atk = Assert.Single(reloaded.PetState.ATKModifiers);
+            Assert.Equal("berserker-core-instance", atk.SourceIdentity);
+            Assert.Equal(5, atk.ATKModifierPercentage);
+
+            var cardCost = Assert.Single(reloaded.PetState.CardCostModifiers);
+            Assert.Equal("emergency-core-instance", cardCost.SourceIdentity);
+            Assert.Equal(50, cardCost.CostReductionPercentage);
+
+            // COMBAT_RULES.md §5.6.4: the stored base stat is the permanent one and the
+            // stage never wrote it.
+            Assert.Equal(PetState.DefaultATK, reloaded.PetState.ATK);
+        }
+        finally
+        {
+            await DeleteBattleKeysAsync(battleId);
+        }
     }
 }

@@ -570,28 +570,47 @@ public class BattleResultSmokeTest
         }
 
         /// <summary>
-        /// Inserts the scenario RelicDefinition unless the shared database already
-        /// holds it — the row the owned Relic instances' foreign key needs.
+        /// Seeds the scenario's <c>RelicDefinition</c> row — the row the owned Relic
+        /// instances' foreign key needs, and the row the battle-start path now reads
+        /// through <c>IRelicDefinitionLookup</c> to make each equipped Relic's
+        /// declared content readable (<c>RELIC_RULES.md</c> §8;
+        /// <c>GAME_RULES.md</c> §17 step 11).
+        ///
+        /// <b>The row is re-asserted on every run, not merely inserted once.</b> The
+        /// shared development database outlives a test run, and a row an earlier run
+        /// wrote predates TASK-132's structured <c>jsonb</c> columns: that migration
+        /// converts a row it does not re-encode into a JSON <i>string</i>
+        /// (<c>to_jsonb(prose)</c>), which the structured reader rejects loudly
+        /// because <c>RELIC_RULES.md</c> §8.2 item 5 defines no prose compatibility
+        /// reader. The content this fixture owns is therefore written to the
+        /// documented structured shape every run, so the scenario does not depend on
+        /// the database's history — and, because the row already exists after the
+        /// first run, the write is an upsert rather than an insert.
         /// </summary>
         private static async Task EnsureRelicDefinitionAsync(
             GameDbContext context,
-            string relicDefinitionId)
-        {
-            if (await context.RelicDefinitions.AnyAsync(
-                    definition => definition.RelicDefinitionId == relicDefinitionId))
-            {
-                return;
-            }
-
-            context.RelicDefinitions.Add(new RelicDefinition
-            {
-                RelicDefinitionId = relicDefinitionId,
-                Name = "Smoke Relic",
-                Trigger = "on_match",
-                Condition = "always",
-                EffectDefinition = "increase ATK by 5%",
-            });
-        }
+            string relicDefinitionId) =>
+            await context.Database.ExecuteSqlRawAsync(
+                """
+                INSERT INTO "RelicDefinition"
+                    ("RelicDefinitionId", "Name", "Trigger", "Condition", "EffectDefinition")
+                VALUES
+                    ({0}, {1}, {2}, {3}::jsonb, {4}::jsonb)
+                ON CONFLICT ("RelicDefinitionId") DO UPDATE
+                   SET "Name" = EXCLUDED."Name",
+                       "Trigger" = EXCLUDED."Trigger",
+                       "Condition" = EXCLUDED."Condition",
+                       "EffectDefinition" = EXCLUDED."EffectDefinition";
+                """,
+                relicDefinitionId,
+                "Smoke Relic",
+                // A RELIC_RULES.md §3 Trigger identity — the value form §8.5 item 3
+                // leaves as the prose §3 identity. OnMatchCount is one of the three
+                // GAME_RULES.md §17 step 11 evaluates, so the scenario exercises the
+                // step with real content present.
+                "OnMatchCount",
+                TestRelicEffects.Condition.ToPersistedPayload(),
+                TestRelicEffects.Effect.ToPersistedPayload());
 
         /// <summary>The relic instance ids this run seeded, for the start request.</summary>
         internal List<string> OwnedRelicInstanceIds { get; } = [];

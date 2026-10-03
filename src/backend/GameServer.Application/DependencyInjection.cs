@@ -88,6 +88,18 @@ public static class DependencyInjection
             new ScopedCardDefinitionLookup(
                 provider.GetRequiredService<IServiceScopeFactory>()));
 
+        // The shared/static RelicDefinition content read (DATABASE.md §1: the
+        // RelicDefinition row, by RelicDefinitionId), reached through the same
+        // scope-factory adaptation as the Card lookup above so a singleton
+        // consumer can read Relic content without capturing the scoped
+        // GameDbContext. It exposes the Domain RelicDefinition only — no EF
+        // entity, DbContext, or JSON payload crosses this boundary — and it
+        // resolves no Relic: trigger evaluation, condition evaluation, and effect
+        // application remain unimplemented (RELIC_RULES.md §8.7).
+        services.AddSingleton<IRelicDefinitionLookup>(provider =>
+            new ScopedRelicDefinitionLookup(
+                provider.GetRequiredService<IServiceScopeFactory>()));
+
         // Battle-start Relic loadout validation and snapshot preparation
         // (RELIC_RULES.md §2.1–§2.5; API_CONTRACTS.md §3). Scoped because it
         // resolves the scoped IRelicRepository boundary. It validates
@@ -108,13 +120,21 @@ public static class DependencyInjection
         services.AddScoped<CardLoadoutService>();
 
         // Battle-start orchestration boundary (API_CONTRACTS.md §3). Scoped
-        // because it resolves the scoped IPetRepository, CardLoadoutService, and
-        // RelicLoadoutService boundaries (BattleStateService itself is a
-        // singleton). It coordinates the documented flow — Pet resolution and
-        // ownership, Boss resolution, Card loadout validation + Signature Skill
-        // derivation, Relic loadout validation, then battle composition — and
+        // because it resolves the scoped IPetRepository, CardLoadoutService,
+        // RelicLoadoutService, and IRelicRepository boundaries (BattleStateService
+        // itself is a singleton, and the IRelicDefinitionLookup singleton is safe
+        // to consume from a scope). It coordinates the documented flow — Pet
+        // resolution and ownership, Boss resolution, Card loadout validation +
+        // Signature Skill derivation, Relic loadout validation, the equipped
+        // Relics' shared definition resolution, then battle composition — and
         // implements none of those rules itself. It creates a battle only after
         // every validation has passed, so a rejected request creates nothing.
+        //
+        // The Relic definition resolution happens HERE, at battle start, so that
+        // GAME_RULES.md §17 step 11 reads a Relic's declared content from the
+        // battle's own content configuration: TDD.md §4 item 3 keeps PostgreSQL off
+        // the path that resolves a single Swap, and Relic trigger/condition/effect
+        // resolution reads no PostgreSQL of its own.
         services.AddScoped<BattleStartService>();
 
         // Starter ownership composition (DATABASE.md §2 item 1). Scoped because

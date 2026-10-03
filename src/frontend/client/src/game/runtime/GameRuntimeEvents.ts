@@ -24,7 +24,7 @@
  */
 
 import type { GameRuntimeState } from '../../state/GameRuntimeState';
-import type { BattleStartRequest } from '../../services/api/BattleModels';
+import type { BattleResultResponse, BattleStartRequest } from '../../services/api/BattleModels';
 import type { CardResponse, PetResponse, RelicResponse } from '../../services/api/CollectionModels';
 
 /** Technical runtime lifecycle events emitted by `GameRuntime`. */
@@ -269,8 +269,13 @@ export interface GameRuntimePort {
    *
    * The documented **swap**, **cardCast**, and **petSkillCast** actions are
    * implemented: they submit through the transport and resolve with the §5
-   * acknowledgement. `GetBattleState` is NOT implemented, and no other action
-   * kind is accepted — those still reject with `RuntimeActionNotImplementedError`.
+   * acknowledgement. No other action kind is accepted — those still reject with
+   * `RuntimeActionNotImplementedError`.
+   *
+   * §7's `GetBattleState` snapshot is **not** an action on this boundary: it is
+   * requested by the runtime itself when the connection is re-established
+   * (`SIGNALR_PROTOCOL.md` §7.1), from the battle identity the runtime already
+   * holds, so no caller submits it and no caller supplies a `battleId` for it.
    *
    * The runtime coordinates the request and nothing else: it does not decide
    * whether an action is legal, does not compute a match, cascade, combo, or
@@ -336,6 +341,26 @@ export interface GameRuntimePort {
    * instance identity is what a `relicLoadout` selection submits (§3).
    */
   getRelics(): Promise<RelicResponse[]>;
+  /**
+   * A completed battle's persisted result (`API_CONTRACTS.md` §4) —
+   * `GET /api/battle/{battleId}/result`.
+   *
+   * This is the documented result read for a battle that has **already ended**;
+   * §4 states the endpoint returns data only in that case. It is what
+   * `ResultScene` renders the persisted `rewards` (`RewardSummary`) from, and it
+   * is **not** an action on the `requestAction` boundary — it resolves no
+   * action, changes no state, and emits no event.
+   *
+   * The runtime transports the read unchanged: it does not compute a reward,
+   * apply a grant, update Player or Pet progression, promote `null` to a
+   * number, or cache the response. Reward amounts and the resulting progression
+   * are server-authored (`GAME_RULES.md` §18, `AGENTS.md` §10, ADR-001).
+   *
+   * This is a second caller of the same route the runtime already reads on
+   * `SIGNALR_PROTOCOL.md` §7.3's fallback; it adds no endpoint, no query
+   * parameter, and no second retrieval mechanism.
+   */
+  getBattleResult(battleId: string): Promise<BattleResultResponse>;
 }
 
 /**
@@ -400,8 +425,9 @@ export interface RuntimePetSkillCastActionRequest {
  * Any client → server action request the runtime boundary accepts.
  *
  * An unknown or unimplemented action reaches the boundary as an unmodelled value
- * and is rejected with `RuntimeActionNotImplementedError`, which is what keeps
- * `GetBattleState` and unknown kinds unavailable (SIGNALR_PROTOCOL.md §7).
+ * and is rejected with `RuntimeActionNotImplementedError`. §7's `GetBattleState`
+ * snapshot is not an action a caller submits — the runtime requests it itself
+ * on reconnect — so it is not a member of this union either.
  */
 export type RuntimeActionRequest =
   | RuntimeSwapActionRequest
@@ -440,7 +466,7 @@ export class RuntimeActionNotImplementedError extends Error {
     super(
       `Runtime action "${kind}" is not implemented: the client implements ` +
         `Swap, CardCast, and PetSkillCast requests (SIGNALR_PROTOCOL.md §2). ` +
-        `GetBattleState is not implemented.`
+        `GetBattleState (§7) is not a caller-submitted action.`
     );
     this.name = 'RuntimeActionNotImplementedError';
   }

@@ -366,6 +366,138 @@ public class BattleStateSerializationLifecycleTests
         Assert.Null(created.LastCommittedSwapPair);
     }
 
+    [Fact]
+    public async Task CreatedBattle_ShouldInitializeBothRelicRuntimeCarrierCollections()
+    {
+        // GAME_STATE.md §2.3.7 item 6 / §2.3.5 item 6 and §5.1.4 item 1 / §5.1.3 item 5:
+        // both Relic runtime carriers are always present on the Pet and begin EMPTY at
+        // battle creation. A modifier is applied by a source whose Trigger+Condition is
+        // met at GAME_RULES.md §17 step 11 during a resolution, and battle creation is
+        // not a resolution — so empty is the documented initial state, and it is an
+        // empty collection rather than an omission or a null.
+        //
+        // This is asserted on the state the PRODUCTION creation path returns, so it
+        // would fail if the lifecycle ever produced a Pet whose carriers were absent.
+        var service = SeededService();
+
+        var created = await service.CreateBattleAsync(
+            "battle-lifecycle-carriers",
+            Owner,
+            RepresentativePetConfiguration(),
+            BossDefinitions.HoaLong);
+
+        Assert.NotNull(created.PetState.ATKModifiers);
+        Assert.NotNull(created.PetState.CardCostModifiers);
+        Assert.Empty(created.PetState.ATKModifiers);
+        Assert.Empty(created.PetState.CardCostModifiers);
+    }
+
+    [Fact]
+    public async Task CreatedBattle_ShouldRoundTripBothRelicRuntimeCarrierCollections()
+    {
+        // GAME_STATE.md §2.3.8 item 5 / §2.3.6 item 5: both collections must round-trip
+        // losslessly — the same elements, values, order, and count — including the empty
+        // case the creation path produces (§2.3.8 item 1 makes empty round-trip as
+        // empty) and a populated case carrying real modifiers.
+        var service = SeededService();
+
+        var created = await service.CreateBattleAsync(
+            "battle-lifecycle-carriers-roundtrip",
+            Owner,
+            RepresentativePetConfiguration(),
+            BossDefinitions.HoaLong);
+
+        // 1. The state creation actually produced round-trips with both carriers empty.
+        var emptyRestored = BattleStateSerializer.Deserialize(BattleStateSerializer.Serialize(created));
+
+        Assert.NotNull(emptyRestored.PetState.ATKModifiers);
+        Assert.NotNull(emptyRestored.PetState.CardCostModifiers);
+        Assert.Empty(emptyRestored.PetState.ATKModifiers);
+        Assert.Empty(emptyRestored.PetState.CardCostModifiers);
+
+        // 2. A populated state — applied through the documented lifecycle helpers, with
+        //    one source refreshed and one removed — round-trips losslessly.
+        var applied = created.PetState with
+        {
+            ATKModifiers = GameServer.Domain.Battle.ATKModifiers.Apply(
+                created.PetState.ATKModifiers,
+                new ATKModifier("berserker-core", 5)),
+            CardCostModifiers = GameServer.Domain.Battle.CardCostModifiers.Apply(
+                created.PetState.CardCostModifiers,
+                new CardCostModifier("emergency-core", 50)),
+        };
+
+        // A refresh of the same source replaces in place — never a second element
+        // (§5.1.4 item 1, §5.1.3 item 1).
+        applied = applied with
+        {
+            ATKModifiers = GameServer.Domain.Battle.ATKModifiers.Apply(
+                applied.ATKModifiers,
+                new ATKModifier("berserker-core", 10)),
+        };
+
+        // A second, distinct source coexists with the first (§2.3.7 item 3).
+        applied = applied with
+        {
+            ATKModifiers = GameServer.Domain.Battle.ATKModifiers.Apply(
+                applied.ATKModifiers,
+                new ATKModifier("assassin-eye", -30)),
+        };
+
+        var populated = created with { PetState = applied };
+
+        var restored = BattleStateSerializer.Deserialize(BattleStateSerializer.Serialize(populated));
+
+        Assert.True(populated.PetState.ATKModifiersEqual(restored.PetState));
+        Assert.True(populated.PetState.CardCostModifiersEqual(restored.PetState));
+
+        // The refreshed source holds the newly applied value, once
+        // (§5.1.4 item 2 — "Refresh uses the newly applied value").
+        var berserkerCore = Assert.Single(restored.PetState.ATKModifiers, m => m.SourceIdentity == "berserker-core");
+        Assert.Equal(10, berserkerCore.ATKModifierPercentage);
+
+        // The distinct source survived with its own signed value (§2.3.7 item 5).
+        var assassinEye = Assert.Single(restored.PetState.ATKModifiers, m => m.SourceIdentity == "assassin-eye");
+        Assert.Equal(-30, assassinEye.ATKModifierPercentage);
+
+        Assert.Equal(2, restored.PetState.ATKModifiers.Length);
+        Assert.Equal(50, Assert.Single(restored.PetState.CardCostModifiers).CostReductionPercentage);
+
+        // 3. A source-specific removal removes only that source, and the result
+        //    round-trips as the surviving set (§5.1.4 item 4, §5.1.3 item 4).
+        var afterRemoval = restored.PetState with
+        {
+            ATKModifiers = GameServer.Domain.Battle.ATKModifiers.Remove(
+                restored.PetState.ATKModifiers,
+                "berserker-core"),
+        };
+
+        var removalRestored = BattleStateSerializer.Deserialize(
+            BattleStateSerializer.Serialize(restored with { PetState = afterRemoval }));
+
+        Assert.Equal("assassin-eye", Assert.Single(removalRestored.PetState.ATKModifiers).SourceIdentity);
+    }
+
+    [Fact]
+    public async Task CreatedBattle_ShouldInitializeTheCarriersWithoutChangingTheBaseATK()
+    {
+        // GAME_STATE.md §2.3.7 item 9 / §5.1.4 item 6: PetState.ATK remains the
+        // permanent/base ATK at its documented MVP default, and the always-empty
+        // carrier collections at creation change nothing about it. COMBAT_RULES.md
+        // §5.6.6 item 8 keeps the composed EffectivePetATK derived and unstored, so no
+        // composition happens at creation.
+        var service = SeededService();
+
+        var created = await service.CreateBattleAsync(
+            "battle-lifecycle-base-atk",
+            Owner,
+            RepresentativePetConfiguration(),
+            BossDefinitions.HoaLong);
+
+        Assert.Equal(PetState.DefaultATK, created.PetState.ATK);
+        Assert.Empty(created.PetState.ATKModifiers);
+    }
+
     // =======================================================================
     // Fixture helper — drives the production Swap path to find a legal move.
     // =======================================================================

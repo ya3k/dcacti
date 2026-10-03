@@ -1,6 +1,22 @@
 # Core Game Rules
 
-**Version:** 3.1 (§9.3 Pet XP reference finalized per TASK-062 — the Pet XP
+**Version:** 3.3 (§17 gained one clarifying paragraph — step 11's evaluation
+point: "Trigger Relics" is evaluated, and its effects applied, after step 10
+("Charge Passive") and **before** step 12 ("Generate Resources"), step 13
+("Update Power"), and step 14 ("Resolve Player Effects"), so a Relic's Trigger
+and Condition read the resolution state before this Swap's own steps 12–14
+(TASK-142). **The order itself is unchanged**: no step is added, removed, or
+reordered; no Trigger, Condition form, effect, magnitude, threshold, lifetime,
+or gameplay value changes; `RELIC_RULES.md` §8 keeps ownership of the
+Condition forms and effect lifetimes. Prior 3.2: (§12 — one paragraph added:
+Power remains an integer-valued
+resource and a Card's cost is the integer `EffectiveCardCost` composed by
+`CARD_RULES.md` §3.6, including any Relic-applied reduction (TASK-134 D4/D5 plus
+the Product Owner `EffectiveCardCost` truncation decision). This is a
+cross-reference establishing that the new cost composition produces no
+fractional Power; §12's 0–100 range, generation rules, and the §17 resolution
+order (including step 11 "Trigger Relics" before step 14 "Resolve Player
+Effects") are unchanged, and no gameplay value is added. Prior 3.1: §9.3 Pet XP reference finalized per TASK-062 — the Pet XP
 balance/reward decisions are now decided, not open; `PET_RULES.md` §5.1–§5.5
 owns them. Prior 3.0: §9.3 rewritten — Pet Level is no longer derived from
 Player Level; the `Player.Level × Pet Level Multiplier` formula is
@@ -220,6 +236,12 @@ by POWER Gem matches, Special Matches, Relics, and other defined effects,
 and is spent to cast Cards/Pet Skills. Power must never exceed the
 configured maximum unless an explicit future mechanic allows it.
 
+Power remains an integer-valued resource: a Card's cost is the integer
+`EffectiveCardCost` its owning rule composes, so spending Power never
+produces a fractional pool. The amount a given Card costs at cast time —
+including any reduction a Relic applies — is owned by `CARD_RULES.md` §3.6
+and is not restated here.
+
 Exact generation rates: see `COMBAT_RULES.md` §2.
 
 ---
@@ -322,6 +344,46 @@ may expand individual steps but must not reorder them):
 18. Resolve Boss Response
 19. End Turn
 ```
+
+**Step 11's evaluation point, stated exactly.** Step 11 ("Trigger Relics") is
+evaluated, and its effects are applied, at the position the list above fixes:
+after step 10 ("Charge Passive") and **before** step 12 ("Generate Resources"),
+step 13 ("Update Power"), and step 14 ("Resolve Player Effects"). A Relic's
+Trigger and Condition therefore read the resolution state as it stands at that
+point — before this Swap's own steps 12–14 have been applied. Which value each
+Condition form reads is owned by `RELIC_RULES.md` §8.1 and is not restated here.
+
+```text
+step 10  Charge Passive
+   ↓
+step 11  Trigger Relics       ← condition evaluated here, effect applied here
+   ↓
+step 12  Generate Resources    \
+step 13  Update Power           >  not yet applied when step 11 evaluates
+step 14  Resolve Player Effects /
+   ↓
+step 15  Calculate Damage
+```
+
+1. **This constrains evaluation, not only reporting.** "The implementation may
+   split these into multiple internal steps" permits a step to be divided into
+   several internal operations (e.g. per-pass resource accounting); it never
+   permits executing step 11 after steps 12–14. No Relic is ever evaluated
+   against a state that already includes this Swap's steps 12–14.
+2. **The single write-back does not reorder the steps.** `GAME_STATE.md` §5.1
+   writes the whole resolved `BattleState` once, after the resolution, and
+   writes nothing mid-resolution. That defers when the resolution's combined
+   result becomes *visible*; it moves no evaluation point, and it does not
+   authorise evaluating step 11 against the post-write-back state.
+3. **Effect application happens at that same point.** A Relic's effect is
+   applied at step 11 — before this Swap's resource generation, Power update,
+   player-effect resolution, and damage. How long the applied effect then
+   persists is its declared `lifetime` (`RELIC_RULES.md` §8.3), which is that
+   document's and is unchanged.
+4. **Nothing else changes.** This paragraph states the observation point the
+   order above already fixes. It adds, removes, and reorders no step, and
+   authors no Trigger, Condition form, effect, magnitude, threshold, or
+   lifetime (`RELIC_RULES.md` §3, §8).
 
 Step 18 ("Resolve Boss Response") expands to:
 

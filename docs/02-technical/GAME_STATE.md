@@ -1,6 +1,55 @@
 # Game State
 
-**Version:** 2.14 (§2.4.1's stale sentence corrected per TASK-124 — the claim
+**Version:** 2.17 (§2.4.1 extended per TASK-155, applying the TASK-154 Product
+Owner decision (Option B): the Boss Status Effect carrier contract now records
+the **authorized cross-entity read** — `COMBAT_RULES.md` §4 item 7's Pet-scoped
+Heal Resolution step reads the applicable instance held in
+`BossState.StatusEffects[]` at its Applicable Heal Modifiers stage, at that
+step's own authorization, **one-directionally and non-mutating** (it does not
+write `BossState` and does not consume, decrement, or remove the instance, whose
+lifetime remains §5.1.1/§5.3's single step-19a lifecycle). The applicable-instance
+selector is the instance's Status Effect `Id`, under §2.3.1 item 1 and item 6, not
+a `TargetStat` value; its value is owned by `BOSS_RULES.md` §6.2.2 and is
+referenced, not restated. **§2.3.1 is substantively UNCHANGED** — no new
+`TargetStat` value, no `PendingStatusEffects[]`, no second in-flight
+representation, no sentinel `TargetStat`, no member, value, type, or collection
+added to the `BossState` tree or to §2.3.1's member set, and item 7's
+`TargetStat`-iff-`BuffDebuff` pairing still holds as written. No new Battle Event,
+SignalR member, Redis key, or database column is introduced. Decision source:
+TASK-154; applying task: TASK-155. Prior 2.16: (§2.3.7 and §2.3.8 added, §2.3's `PetState` tree extended, and
+§5.1.4 added — the `ATKModifiers[]` Battle State contract is now authored per
+TASK-136 D1–D12: the two-member element schema (`SourceIdentity` +
+`ATKModifierPercentage`), `target = Pet`, source-scoped identity used as the
+replace/refresh and removal key with at most one active entry per source, the
+always-present collection, deterministic `SourceIdentity` ordering, the `Battle`
+lifetime (no Turn countdown, no `ExpiresAt`, no step 19a participation, no
+cleanup; removal on source removal or battle end), the refresh-uses-the-newly-
+applied-value rule, the never-mutate-`PetState.ATK` rule, the JSON serialization
+and lossless round-trip shape with `[]` for the empty collection, and the
+not-a-wire-member and no-new-Redis-key statements. **The Effective Pet ATK
+composition — the formula, its rounding, and the absence of a cap — is owned by
+`COMBAT_RULES.md` and is referenced, not restated.** The modifier's interaction
+with an existing `BuffDebuff` ATK modifier is **not** determined by this
+revision and is recorded there as unresolved. No PostgreSQL persistence and no
+new Redis key are introduced. No existing field, value, lifecycle semantic, or
+section was changed, and §2.3.1's duration dichotomies, §2.3.4 and §2.3.5 are
+byte-identical in meaning. Prior 2.15: (§2.3.5 and §2.3.6 added, §2.3's `PetState` tree extended, and
+§5.1.3 added — the `CardCostModifiers[]` Battle State contract is now authored
+per TASK-134 D1–D11 (`ADR-018` amendment): the two-member element schema
+(`SourceIdentity` + `CostReductionPercentage`), `target = Pet` and
+`lifetime = Battle`, source-scoped identity used as the replace/refresh and
+removal key, the always-present collection, the lifetime (persists for the
+battle — no Turn countdown, no `ExpiresAt`, no step 19a participation, no
+cleanup), the continuous-re-evaluation-refreshes-don't-accumulate rule, the
+JSON serialization and round-trip shape, the not-a-wire-member and
+no-new-Redis-key statements, and the explicit boundary that §2.3.1 item 3's
+duration-model dichotomy and item 6's one-instance-per-identity rule are
+neither widened nor relaxed (the collection is separate from
+`StatusEffects[]`). The Card-cost composition and the `EffectiveCardCost`
+integer/truncation rule are owned by `CARD_RULES.md` §3.6 and are referenced,
+not restated. No PostgreSQL persistence and no new Redis key are introduced.
+No existing field, value, lifecycle semantic, or section was changed. Prior
+2.14: §2.4.1's stale sentence corrected per TASK-124 — the claim
 that "no content-defined Boss applies a Status Effect to itself" is false once
 Hỏa Long's Rage and Thủy Ma's healing reduction are held in
 `BossState.StatusEffects[]` (`BOSS_RULES.md` §6.2); the sentence now records
@@ -962,6 +1011,22 @@ PetState
 │                                attack — schema §2.3.4, lifecycle §5.1.2,
 │                                ADR-017. Separate from `StatusEffects[]`;
 │                                NOT Turn-based and NOT trigger-expired)
+├── CardCostModifiers[]          (applied, Battle-scoped Card-cost
+│                                modifiers on the active Pet — one entry
+│                                per active source — schema §2.3.5,
+│                                lifecycle §5.1.3, ADR-018. Separate from
+│                                `StatusEffects[]`; NOT Turn-based and NOT
+│                                trigger-expired; consumed by
+│                                `CARD_RULES.md` §3.6's cost composition)
+├── ATKModifiers[]               (applied, Battle-scoped ATK modifiers on
+│                                the active Pet — one entry per active
+│                                source — schema §2.3.7, lifecycle §5.1.4.
+│                                Separate from `StatusEffects[]`; NOT
+│                                Turn-based and NOT trigger-expired; consumed
+│                                by `COMBAT_RULES.md`'s Effective Pet ATK
+│                                composition. The composition, its rounding,
+│                                and its (absent) cap are owned there and are
+│                                referenced, not restated)
 ├── Power                      (0–100, GAME_RULES.md §12 — implemented in
 │                               the Domain model)
 ├── StatusEffects[]              (active Status Effect instances —
@@ -1434,6 +1499,304 @@ NextAttackCritModifier
     no documented Boss source produces a NextAttack Crit modifier, and the
     modifier a Pet carries applies to the Pet's own attacks.
 
+### 2.3.5 `CardCostModifiers[]` — Instance Schema
+
+`CardCostModifiers[]` is the collection of **applied, Battle-scoped Card-cost
+modifiers on the active Pet** — one entry per source currently reducing the
+cost of the Pet's Cards. It exists so a Relic can reduce a Card's cost for the
+duration of the battle without mutating authored
+`CardDefinition.PowerCost`, without a second cost representation, and without
+overwriting anything (`ADR-018`, TASK-134 D1/D2).
+
+```text
+CardCostModifier
+├── SourceIdentity           (string, required — the stable identity of the
+│                             source that applied this modifier; the
+│                             replace/refresh and removal key)
+└── CostReductionPercentage  (number, required — the cost reduction in
+                              percentage points; NOT interpreted here)
+```
+
+1. **This is a separate collection, and it is not `StatusEffects[]`.** A
+   modifier here is **not** a `StatusEffect` instance. It carries no
+   `RemainingTurns` and no `ExpiryCondition`, so it does **not** engage
+   §2.3.1 item 3's duration-model dichotomy — that rule is neither widened nor
+   relaxed by this collection — and it does **not** engage item 6's
+   one-instance-per-identity rule, which continues to govern
+   `StatusEffects[]` alone. §2.3.3's prohibition is honored: this is not a
+   pending/queued collection and not a second representation of an in-flight
+   application. A modifier present here has already been applied; it is
+   awaiting a Card cast that reads it, not a write-back.
+2. **Target is `Pet`, and the collection lives on `PetState` for that reason.**
+   `RELIC_RULES.md` §8.3 fixes the `CardCost` effect's `target` as `Pet`: §3
+   there fixes the active Pet as the trigger subject and §2 item 1 fixes
+   Relics as carried by the active Pet. The modifier therefore modifies the
+   **active Pet's own Card costs** and is held on that Pet's state. The Boss
+   carries no such collection (contrast the sibling §2.3.4 item 11): no
+   documented Boss source produces a Card-cost modifier, `BossState` (§2.4) is
+   unchanged, and Cards are cast by the active Pet (`CARD_RULES.md` §3).
+3. **`SourceIdentity` is the replace/refresh and removal key, and it is
+   source-scoped and stable.** It identifies the source that applied the
+   modifier so that a re-application replaces/refreshes **that** entry and
+   nothing else (§5.1.3). It is **not** a per-application unique key, a GUID, a
+   timestamp, an allocation order, or an array position: it must be
+   deterministic and reproducible for a given input state (`TDD.md` §6), so a
+   replayed or recovered battle re-derives the same identities. Because the
+   identity is per **source**, a source applying again updates its own existing
+   element rather than appending a second one — so **two simultaneous elements
+   always mean two distinct sources**, which is what makes independent sources
+   independently composable and independently removable. The identity is a
+   value, not a definition: no source's rule, magnitude, or lifetime is copied
+   into it (§0 item 5). Which token a given source uses is owned by that
+   source's rule document and is not fixed here; for the provisioned
+   `CardCost` source it is the Relic's identity
+   (`RELIC_RULES.md` §2.2 item 3 — the same identity `RelicTriggered` reports),
+   so Emergency Core holds exactly one entry however often its §6 note 2
+   condition re-evaluates.
+4. **`CostReductionPercentage` is typed but not interpreted here.** Its unit is
+   percentage points of the Card's cost. How several of them compose, the cap
+   that composition is subject to, and the arithmetic that reaches an actual
+   Card cost are gameplay rules owned by **`CARD_RULES.md` §3.6** and are not
+   restated here. This section fixes only that the value is stored on the
+   element.
+5. **Two members is the whole schema, and there is no third.** No `Duration`,
+   no `RemainingTurns`, no `ExpiresAt`, no `ExpiryCondition`, no `StackCount`,
+   no Turn counter, no expiry label, no "consumed" flag, no priority, no
+   ordering index, no target reference, no remaining-use counter, and no
+   timestamp is stored. No rule reads any of them, and a field kept "for later"
+   is the speculative representation §0 item 5 forbids. In particular there is
+   **no stack count**: a repeated application from one source is a
+   replace/refresh (§5.1.3 item 1), never an increment of a counter.
+6. **The collection is always present and is empty when no modifier is
+   active.** Absence of the *collection* is not a representable state — the
+   same always-present-collection convention §2.3.2 item 1 fixes for
+   `StatusEffects[]` and §2.3.4 item 5 fixes for `NextAttackCritModifiers[]`.
+   An empty collection is the statement "no Card-cost modifier is active", and
+   there is no sentinel element, no null, and no omitted member standing in for
+   it. Absence of a *member within* an element does not arise: both members are
+   always present (item 7).
+7. **Member types and requiredness.** Both members are required and neither is
+   nullable: `SourceIdentity` is a non-empty string and
+   `CostReductionPercentage` is a number carrying the source's percentage-point
+   reduction. A malformed element is not silently repaired, defaulted, or
+   dropped — the same loud-rejection position `RELIC_RULES.md` §8.2 item 5
+   takes for a malformed stored effect.
+8. **Ordering is not semantic, and it is nevertheless deterministic and
+   preserved.** No rule reads element positions: composition (§3.6) is a sum
+   over all elements and replace/refresh/removal are operations over
+   `SourceIdentity`, so the resulting `TotalReduction` does not depend on array
+   order — the same convention §2.3.1 item 10 records for `StatusEffects[]` and
+   §2.3.4 item 6 for `NextAttackCritModifiers[]`. A serializer must not imply
+   an order carries meaning, and a round trip must still return the elements in
+   the order they were written (§2.3.6 item 5). The array's own order is
+   therefore stable and reproducible but never gameplay-significant.
+9. **This section adds no gameplay rule and authors no value.** The modifier's
+   lifetime is `Battle` and its expiry boundary is stated in §5.1.3; every
+   magnitude, threshold, and configuration value remains owned by its current
+   document (`RELIC_RULES.md` §6/§8.5 for the provisioned `-50%`). No event,
+   payload member, wire member, or SignalR method is introduced.
+10. **Not a wire member, and not a Redis-only concern.** The collection is
+    **not** part of any current wire payload: `SIGNALR_PROTOCOL.md` §4.2 fixes
+    `playerState` to exactly `combo`/`matchCount` and §4.3 fixes `petState` to
+    the Passive trio plus `equippedCards`. Adding state is not adding a wire
+    member (§2.1.10 item 9, `SIGNALR_PROTOCOL.md` §4 item 4); delivering this
+    collection is a protocol change owned by its own task. Like
+    `StatusEffects[]`, it is part of `BattleState` and therefore serializes with
+    it under the existing round-trip obligation (`REDIS_STATE.md` §2 item 1,
+    §7 item 15): no new Redis key, no Redis-only field, and no second storage
+    representation. It is written in the same single post-resolution write-back
+    as the rest of the state (§5.1), under the unchanged `Sequence`
+    compare-and-set.
+11. **No PostgreSQL persistence and no second representation.** This is active
+    battle runtime state. No table, column, or migration is introduced for it
+    (`DATABASE.md` is unchanged), and the Relic **content** declaration remains
+    `RELIC_RULES.md` §8.2's structured `EffectDefinition[]` — this collection
+    does not add a member to that content shape (§0 item 5).
+
+### 2.3.6 `CardCostModifiers[]` — JSON Serialization and Round-Trip
+
+Serialization and storage are owned by `REDIS_STATE.md` / `DATABASE.md` (this
+document's purpose statement, above), and this subsection introduces no new
+serialization mechanism. It records only the shape consequences of §2.3.5 so
+the existing round-trip obligation (`REDIS_STATE.md` §7 item 9) is unambiguous
+for this collection — exactly as §2.3.2 does for `StatusEffects[]`.
+
+1. **The array serializes as a JSON array of modifier objects**, under a
+   `PetState` member, on the active Pet. A Pet with no active modifier
+   serializes an **empty array** — the collection always exists (§2.3.5 item 6),
+   so it is never omitted and never `null`. Absence of the *collection* is not a
+   representable state; absence of a *member within* an element does not arise
+   (§2.3.5 item 7).
+2. **Member names and casing are the serializer's implementation detail**
+   (`SIGNALR_PROTOCOL.md` §8 item 1, §2.1.7 item 4). What is owned here is the
+   *existence, type, and meaning* of the two members — not their spelling.
+3. **An element serializes exactly these members, with these types:**
+
+   ```text
+   sourceIdentity            string    required
+   costReductionPercentage   number    required
+   ```
+
+4. **The serialized shape matches this document exactly.** No additional
+   Redis-only field is introduced (`REDIS_STATE.md` §2 item 1): there is no
+   separate card-cost key, hash, set, index, or second record, and the
+   collection is written in the same single post-resolution write-back as the
+   rest of `BattleState` (§5.1, `REDIS_STATE.md` §4 item 5).
+5. **Round-trip is lossless for this collection.** Serializing a `BattleState`
+   and deserializing it must return `CardCostModifiers[]` with the same
+   elements, the same `sourceIdentity` and `costReductionPercentage` values, the
+   same element order, and the same element count. A round trip that drops an
+   element, alters a percentage, collapses two distinct source identities into
+   one, or reorders elements is a defect — the same obligation §2.1.7 item 5
+   states for the board and §2.3.2 item 5 states for `StatusEffects[]`. Because
+   an empty collection round-trips as an empty collection, the no-modifier state
+   is preserved too.
+6. **Order is preserved for round-trip fidelity, not for semantics.** No rule
+   reads element positions (§2.3.5 item 8). Preserving the order is required so
+   a round trip is a no-op, not because the order means anything.
+
+### 2.3.7 `ATKModifiers[]` — Instance Schema
+
+`ATKModifiers[]` is the collection of **applied, Battle-scoped ATK modifiers on
+the active Pet** — one entry per active source currently modifying the Pet's
+ATK. It exists so a Relic can modify the Pet's ATK for the duration of the
+battle without mutating the permanent `PetState.ATK`, without a second ATK
+representation, and without overwriting anything (TASK-136 D1/D2/D8).
+
+```text
+ATKModifier
+├── SourceIdentity          (string, required — the stable identity of the
+│                            source that applied this modifier; the
+│                            replace/refresh and removal key)
+└── ATKModifierPercentage   (number, required — the ATK modifier in signed
+                             percentage points; NOT interpreted here)
+```
+
+1. **This is a separate collection, and it is not `StatusEffects[]`.** A
+   modifier here is **not** a `StatusEffect` instance. It carries no
+   `RemainingTurns` and no `ExpiryCondition`, so it does **not** engage
+   §2.3.1 item 3's duration-model dichotomy — that rule is neither widened nor
+   relaxed by this collection — and it does **not** engage item 6's
+   one-instance-per-identity rule, which continues to govern
+   `StatusEffects[]` alone. §2.3.3's prohibition is honored: this is not a
+   pending/queued collection and not a second representation of an in-flight
+   application. A modifier present here has already been applied.
+2. **Target is `Pet`, and the collection lives on `PetState` for that reason.**
+   `RELIC_RULES.md` §8.3 fixes the `ATK` effect's `target` as `Pet`: §3 there
+   fixes the active Pet as the trigger subject and §2 item 1 fixes Relics as
+   carried by the active Pet. The modifier therefore modifies the **active
+   Pet's own ATK** and is held on that Pet's state. The Boss carries no such
+   collection: no documented Boss source produces a Pet ATK modifier,
+   `BossState` (§2.4) is unchanged, and the Boss-side equivalent is
+   `COMBAT_RULES.md` §5.5's separate rule.
+3. **`SourceIdentity` is the replace/refresh and removal key, and it is
+   source-scoped and stable.** It identifies the source that applied the
+   modifier so that a re-application replaces/refreshes **that** entry and
+   nothing else (§5.1.4). It is **not** a per-application unique key, a GUID, a
+   timestamp, an allocation order, or an array position — the same identity
+   discipline §2.3.4 item 2 and §2.3.5 item 3 require. Two different sources
+   must coexist (their identities differ), and a source re-applying must not
+   accumulate (its own identity collides). `TASK-136` **D7** fixes this: the
+   same source replaces/refreshes its existing modifier and does not create a
+   duplicate.
+4. **Each source has at most one active entry.** This is D7's refresh semantics
+   expressed as a storage invariant (`TASK-136` D2). A source re-applying while
+   its entry is present updates that entry's `ATKModifierPercentage`; it does
+   not append a second entry. A collection containing two entries with the same
+   `SourceIdentity` is therefore invalid state.
+5. **`ATKModifierPercentage` is a signed value and is not interpreted here.**
+   What the number means — and how several of them compose into the value the
+   Damage Pipeline reads — is owned by `COMBAT_RULES.md`'s Effective Pet ATK
+   composition rule, which `TASK-136` **D11** assigns to that document. This
+   section fixes only that the value is stored on the element so a refresh can
+   re-apply it, exactly as §2.3.1 item 2 does for `Magnitude`. It is **not**
+   stored as a resolved ATK value and must not be applied to the entry for a
+   second time.
+6. **The collection is always present.** A Pet with no active ATK modifier
+   holds an **empty** `ATKModifiers[]` — it is never omitted, never `null`, and
+   never represented by a stored zero or a stored inactive flag. Absence of the
+   collection is not a representable state. This is the same always-present
+   convention §2.3.4 item 1 and §2.3.5 item 6 state for the sibling
+   collections, and it is what makes an empty collection round-trip as empty
+   (§2.3.8 item 1).
+7. **Element order is deterministic: by `SourceIdentity`.** `TASK-136` **D2**
+   fixes the ordering. Unlike the sibling collections, whose order records
+   application or equip order, this collection's order is a deterministic sort
+   on the identity key, so the serialized order is reproducible from the
+   element set alone (`TDD.md` §6). No rule reads element positions; the
+   ordering exists so a round trip is a no-op and so the serialized form is
+   deterministic (§2.3.8 item 5).
+8. **`Battle` lifetime, and no Turn participation.** The modifier's lifetime is
+   `Battle` (`RELIC_RULES.md` §8.3 item 4). The collection is **not** Turn-based:
+   there is no Turn countdown, no `RemainingTurns`, no `ExpiresAt`, no step 19a
+   participation, and no automatic end-of-Turn cleanup. It is not carried into a
+   later battle — a new battle is a new `BattleState` (`TASK-136` D4). Removal
+   is source-scoped and is owned by §5.1.4.
+9. **The permanent stat is untouched by this collection.** `PetState.ATK`
+   remains the permanent/base ATK and is **never** mutated by an entry here
+   (`TASK-136` D5/D8). The composed value the Damage Pipeline consumes is
+   derived at attack resolution by `COMBAT_RULES.md`'s Effective Pet ATK rule; it
+   is **not** stored in `BattleState`, is not a member of this collection, and is
+   not a second representation of the ATK stat (§0 item 5). This is the same
+   non-destructive, derived-not-stored position §2.3.4 item 5 and §5.4.4 record
+   for the sibling temporary-modifier models.
+10. **Not a wire member, and no new Redis key.** `ATKModifiers[]` is **not** a
+    member of the `BattleStateUpdated` payload (`SIGNALR_PROTOCOL.md` §4.2/§4.3,
+    `TASK-136` D10), following the same "state added is not wire exposure added"
+    convention §2.3.4 item 10 and §2.3.5 item 10 state. No `ATKModifierApplied`,
+    `ATKModifierExpired`, or `ATKChanged` event or method exists. It introduces
+    **no** PostgreSQL persistence (no table, no column, no migration) and **no**
+    new Redis key: it rides the existing `battle:{battleId}:state` record under
+    the unchanged sliding TTL and unchanged `Sequence` compare-and-set
+    (`REDIS_STATE.md` §2, §4; `TASK-136` D9/D12).
+
+### 2.3.8 `ATKModifiers[]` — JSON Serialization and Round-Trip
+
+Serialization and storage are owned by `REDIS_STATE.md` / `DATABASE.md` (this
+document's purpose statement, above), and this subsection introduces no new
+serialization mechanism. It records only the shape consequences of §2.3.7 so the
+existing round-trip obligation (`REDIS_STATE.md` §7 item 9) is unambiguous for
+this collection — exactly as §2.3.2 does for `StatusEffects[]` and §2.3.6 for
+`CardCostModifiers[]`.
+
+1. **The array serializes as a JSON array of modifier objects**, under a
+   `PetState` member, on the active Pet. A Pet with no active modifier
+   serializes an **empty array** — `[]` — because the collection always exists
+   (§2.3.7 item 6). It is never omitted and never `null`. Absence of the
+   *collection* is not a representable state; absence of a *member within* an
+   element does not arise (§2.3.7 item 3).
+2. **Member names and casing are the serializer's implementation detail**
+   (`SIGNALR_PROTOCOL.md` §8 item 1, §2.1.7 item 4). What is owned here is the
+   *existence, type, and meaning* of the two members — not their spelling.
+3. **An element serializes exactly these members, with these types:**
+
+   ```text
+   sourceIdentity            string    required
+   atkModifierPercentage     number    required
+   ```
+
+4. **The serialized shape matches this document exactly.** No additional
+   Redis-only field is introduced (`REDIS_STATE.md` §2 item 1): there is no
+   separate ATK key, hash, set, index, or second record, and the collection is
+   written in the same single post-resolution write-back as the rest of
+   `BattleState` (§5.1, `REDIS_STATE.md` §4 item 5).
+5. **Round-trip is lossless for this collection, and the order is
+   deterministic.** Serializing a `BattleState` and deserializing it must return
+   `ATKModifiers[]` with the same elements, the same `sourceIdentity` and
+   `atkModifierPercentage` values, the same element order, and the same element
+   count. A round trip that drops an element, alters a percentage, collapses two
+   distinct source identities into one, or reorders elements is a defect — the
+   same obligation §2.1.7 item 5 states for the board, §2.3.2 item 5 for
+   `StatusEffects[]`, and §2.3.6 item 5 for `CardCostModifiers[]`. Because the
+   order is the deterministic `SourceIdentity` sort (§2.3.7 item 7), a correct
+   implementation reproduces it without depending on insertion order, and
+   because an empty collection round-trips as an empty collection, the
+   no-modifier state is preserved too (`TASK-136` D9).
+6. **Order is preserved for round-trip fidelity and determinism, not for
+   semantics.** No rule reads element positions (§2.3.7 item 7). Preserving the
+   order is required so a round trip is a no-op and so two serializations of the
+   same state are byte-identical, not because the order means anything.
+
 ## 2.4 BossState
 
 ```text
@@ -1490,6 +1853,19 @@ Turn-based instances held here (`BOSS_RULES.md` §6.2). The collection is also
 what Stun (§2.4.5) and future content are tracked through. The gameplay rule
 each instance consumes is owned by `COMBAT_RULES.md` (§5.3 duration, §5.5 Boss
 ATK modifiers, §4 item 7 Heal resolution) and is referenced, not restated.
+
+**The Boss-held Thủy Ma instance is read across entities by the Pet-side Heal
+Resolution step.** `COMBAT_RULES.md` §4 item 7's Heal Resolution step —
+Pet-scoped — is authorized to read the applicable instance held here, and its
+owning rule (`BOSS_RULES.md` §6.2.2) authors the selector: the instance's
+Status Effect `Id`, under §2.3.1 item 1 and item 6, not a `TargetStat` value.
+The read relationship is **one-directional and non-mutating**: the Pet-side step
+reads this collection and does not write `BossState` and does not consume,
+decrement, or remove the instance; the instance's lifetime remains
+§5.1.1/§5.3's single step-19a lifecycle. This is a read relationship between
+two existing collections in one authoritative `BattleState` — this section adds
+**no** member, value, type, or collection, and no second representation of the
+instance (§0 item 5, §2.3.3).
 
 ### 2.4.2 Boss Passive
 
@@ -2017,6 +2393,192 @@ Consumed       the owner's qualifying attack enters the Damage Pipeline;
 9. **This subsection adds no gameplay rule.** Every rule above either
    performs the mutation the owning gameplay rule defines or fixes the
    determinism and observability of that mutation.
+
+### 5.1.3 `CardCostModifiers[]` Lifecycle (Apply, Refresh, Expire)
+
+This subsection owns the **state mutation** of `CardCostModifiers[]` elements
+(§2.3.5). The gameplay rule it implements — what the modifier's `Battle`
+lifetime and the source's re-evaluation mean, and how the reductions compose
+into a Card cost — is owned by `CARD_RULES.md` §3.6 and `RELIC_RULES.md`
+§8.4/§8.5 and is **not** restated or reinterpreted here. The architectural
+decision is `ADR-018`.
+
+```text
+Created         the source's Trigger+Condition is met at GAME_RULES.md §17
+                step 11; the applied source adds one element (identity,
+                reduction) for its declared `Battle` lifetime
+   ↓
+Active          survives any number of Turns, any number of Swaps, and any
+across Turns    number of Card casts; the step 19a pass does not touch it
+   ↓
+Refreshed       re-evaluation by the SAME source updates that source's own
+                existing element in place — never a second element
+   ↓
+Expired         the battle ends: the collection does not survive into a
+                later battle
+```
+
+1. **Application creates or refreshes, never duplicates an identity.**
+   Applying a modifier appends one element when its `SourceIdentity` is not
+   already present, and otherwise sets that existing element's
+   `CostReductionPercentage` to the newly applied value. Two elements with the
+   same `SourceIdentity` are never observable in a committed state — the same
+   "set, not an increment" operation §5.1.1 item 1 defines for
+   `StatusEffects[]` and §5.1.2 item 1 defines for
+   `NextAttackCritModifiers[]`, applied here (§2.3.5 item 3).
+2. **Continuous re-evaluation refreshes; it does not accumulate.** A source
+   whose condition is re-evaluated while it remains satisfied (Emergency
+   Core's `RELIC_RULES.md` §6 note 2 is the provisioned case) resolves to the
+   *same* `SourceIdentity` on every evaluation, so each evaluation is a
+   replace/refresh of that one element. There is no counter, no stack, no
+   queue, and no second entry, and re-evaluation emits nothing — a
+   replace/refresh that changes no observable value is not an effect
+   application (`RELIC_RULES.md` §7 defines `RelicTriggered` as emitted only
+   when a Relic's Effect actually applies).
+3. **There is no Turn-based expiry, no timeout, and no cleanup pass.** The
+   declared lifetime is `Battle` (`RELIC_RULES.md` §8.3, §8.4 item 5), so this
+   collection is not a step 19a participant: `RemainingTurns` does not exist
+   on it (§2.3.5 item 5), and item 2 of the sibling subsection already states
+   that the step 19a pass is a **Turn-countdown** rule and must not invent a
+   duration for an element that does not use the countdown. That statement
+   applies here by the same reason. An implementation that decrements,
+   expires, or sweeps these elements at step 19a, or at any Turn boundary, is
+   inventing a Turn-based lifetime the contract does not define.
+4. **Removal is source-specific and is driven by the source's own condition.**
+   When the source's documented condition no longer holds, that source's
+   element is removed from the collection in that resolution — for the
+   provisioned `CardCost` source this is Emergency Core's `RELIC_RULES.md` §6
+   note 2 reversion when HP rises back above 30%. Removal is the deletion of
+   the identified element, never an arithmetic inverse and never a
+   recomputation. It removes **only** that source's element: another source's
+   modifier is untouched. **Expiry is a removal, not a stored zero or a
+   stored flag** — absence means "not active" (§2.3.5 item 6), and no
+   zero-percentage element stands in for a removed one.
+5. **The `Battle` lifetime ends with the battle.** `Battle` denotes a standing
+   modification for the remainder of the battle (`RELIC_RULES.md` §8.3 item 4),
+   so the boundary is the battle's own end — the same boundary
+   `GAME_RULES.md` §1.4 uses (a battle ends when either the Boss or the active
+   Pet reaches 0 HP) and the same point at which the active-state record is
+   cleared (`REDIS_STATE.md` §3). The collection is not carried into a later
+   battle and needs no separate expiry step: a new battle is a new
+   `BattleState` with an empty collection. No `ExpiresAt`, no countdown, and
+   no scheduled removal is introduced, and no Turn-based boundary is used.
+6. **Application, refresh, and removal are one write-back.** All three are
+   intermediate values of the resolution; the committed `BattleState` is
+   written once per §5.1. A reader therefore never observes a modifier
+   mid-refresh, and never observes a removed modifier still present (§5.1
+   item 2).
+7. **A rejected action mutates nothing.** A rejected action is not a
+   resolution (§5.1 item 6), so no modifier is created, refreshed, or removed
+   by it, and no other step runs.
+8. **Nothing here is published as an event.** This lifecycle adds no event, no
+   payload member, and no SignalR method — see §2.3.5 item 10 and
+   `SIGNALR_PROTOCOL.md` §4.2/§4.3. In particular there is no
+   `CardCostModifierApplied`, `CardCostModifierExpired`, or `CardCostChanged`
+   event, and none may be introduced by this lifecycle.
+9. **This subsection adds no gameplay rule.** Every rule above either performs
+   the mutation the owning gameplay rule defines or fixes the determinism and
+   observability of that mutation. The Card-cost arithmetic itself is
+   `CARD_RULES.md` §3.6's and is referenced, not restated.
+
+### 5.1.4 `ATKModifiers[]` Lifecycle (Apply, Refresh, Expire)
+
+This subsection owns the **state mutation** of `ATKModifiers[]` elements
+(§2.3.7). The gameplay rule it implements — what the modifier's `Battle`
+lifetime means and how the modifiers compose into the Pet ATK the Damage
+Pipeline reads — is owned by `COMBAT_RULES.md`'s Effective Pet ATK composition
+rule (`TASK-136` D5/D11) and `RELIC_RULES.md` §8.4 and is **not** restated or
+reinterpreted here.
+
+```text
+Created         the source's Trigger+Condition is met at GAME_RULES.md §17
+                step 11; the applied source adds one element (identity,
+                signed percentage) for its declared `Battle` lifetime
+   ↓
+Active          survives any number of Turns, any number of Swaps, and any
+across Turns    number of non-damaging actions; the step 19a pass does not
+                touch it
+   ↓
+Refreshed       re-application by the SAME source updates that source's own
+                existing element in place with the newly applied value —
+                never a second element
+   ↓
+Expired         the source is removed, or the battle ends: the collection
+                does not survive into a later battle
+```
+
+1. **Application creates or refreshes, never duplicates an identity.** Applying
+   a modifier appends one element when its `SourceIdentity` is not already
+   present, and otherwise sets that existing element's `ATKModifierPercentage`
+   to the newly applied value. Two elements with the same `SourceIdentity` are
+   never observable in a committed state — the same "set, not an increment"
+   operation §5.1.1 item 1 defines for `StatusEffects[]`, §5.1.2 item 1 defines
+   for `NextAttackCritModifiers[]`, and §5.1.3 item 1 defines for
+   `CardCostModifiers[]`, applied here (`TASK-136` D7, §2.3.7 item 4).
+2. **Refresh uses the newly applied value.** A re-application by the same source
+   replaces the stored `ATKModifierPercentage` with the value being applied; it
+   does not preserve the previously stored value, does not add the two, and does
+   not leave the entry unchanged (`TASK-136` D7). This is what makes the
+   collection's per-source state the source's *current* contribution rather
+   than an accumulating history.
+3. **There is no Turn-based expiry, no timeout, and no cleanup pass.** The
+   declared lifetime is `Battle` (`RELIC_RULES.md` §8.3 item 4, §8.4), so this
+   collection is not a step 19a participant: `RemainingTurns` does not exist on
+   it (§2.3.7 item 8), and §5.1.3 item 3's statement that the step 19a pass is a
+   **Turn-countdown** rule and must not invent a duration for an element that
+   does not use the countdown applies here by the same reason. An
+   implementation that decrements, expires, or sweeps these elements at step
+   19a, or at any Turn boundary, is inventing a Turn-based lifetime the contract
+   does not define (`TASK-136` D4).
+4. **Removal is source-specific, and the battle-end boundary ends the
+   collection.** A modifier is removed when its source is removed, or when the
+   battle ends (`TASK-136` D8). When a source's documented condition no longer
+   holds, that source's element is removed from the collection in that
+   resolution. Removal is the deletion of the identified element, never an
+   arithmetic inverse and never a recomputation of the stored stat. It removes
+   **only** that source's element: another source's modifier is untouched.
+   **Expiry is a removal, not a stored zero or a stored flag** — absence means
+   "not active" (§2.3.7 item 6), and no zero-percentage element stands in for a
+   removed one. `Battle` denotes a standing modification for the remainder of
+   the battle (`RELIC_RULES.md` §8.3 item 4), so the boundary is the battle's
+   own end — the same boundary `GAME_RULES.md` §1.4 uses (a battle ends when
+   either the Boss or the active Pet reaches 0 HP) and the same point at which
+   the active-state record is cleared (`REDIS_STATE.md` §3). The collection is
+   not carried into a later battle and needs no separate expiry step: a new
+   battle is a new `BattleState` with an empty collection. No `ExpiresAt`, no
+   countdown, and no scheduled removal is introduced, and no Turn-based boundary
+   is used.
+5. **Removal recalculates the effective value; it never restores a stored
+   stat.** Removing a modifier changes the derived Effective Pet ATK the
+   `COMBAT_RULES.md` composition produces from the unchanged `PetState.ATK` plus
+   the remaining modifiers (`TASK-136` D8). There is **no** "restore" step and no
+   write-back to `PetState.ATK`: the permanent stat was never changed by the
+   modifier, so there is nothing to undo (§2.3.7 item 9, `COMBAT_RULES.md`
+   §5.4.4's non-destructive precedent, adopted here by `TASK-136` D8 rather than
+   silently inherited).
+6. **`PetState.ATK` is never mutated.** The permanent/base stat holds the base
+   value for the whole battle and is never written by this lifecycle, never
+   reset to the configuration default, and never adjusted by an arithmetic
+   inverse. The configured default is an **initialization value only**
+   (`COMBAT_RULES.md` §1.1) and is **never** an expiry or reset mechanism —
+   `PetState.ATK = DefaultATK` is forbidden for the same source-blind reason
+   §3.3 item 10 forbids `DefaultCrit` (`TASK-136` D5/D8).
+7. **Application, refresh, and removal are one write-back.** All three are
+   intermediate values of the resolution; the committed `BattleState` is written
+   once per §5.1. A reader therefore never observes a modifier mid-refresh, and
+   never observes a removed modifier still present (§5.1 item 2).
+8. **A rejected action mutates nothing.** A rejected action is not a resolution
+   (§5.1 item 6), so no modifier is created, refreshed, or removed by it, and no
+   other step runs.
+9. **Nothing here is published as an event.** This lifecycle adds no event, no
+   payload member, and no SignalR method — see §2.3.7 item 10 and
+   `SIGNALR_PROTOCOL.md` §4.2/§4.3. In particular there is no
+   `ATKModifierApplied`, `ATKModifierExpired`, or `ATKChanged` event, and none
+   may be introduced by this lifecycle (`TASK-136` D10).
+10. **This subsection adds no gameplay rule.** Every rule above either performs
+    the mutation the owning gameplay rule defines or fixes the determinism and
+    observability of that mutation. The ATK composition arithmetic itself is
+    `COMBAT_RULES.md`'s and is referenced, not restated.
 
 ## 5.2 What `Sequence` Is Not
 

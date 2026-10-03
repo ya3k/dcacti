@@ -5,6 +5,7 @@ using GameServer.Domain.Battle;
 using GameServer.Domain.Bosses;
 using GameServer.Domain.Pets;
 using GameServer.Domain.Players;
+using GameServer.Domain.Relics;
 
 namespace GameServer.Application.Battle;
 
@@ -83,6 +84,21 @@ public sealed class BattleStartService
     private readonly BattleStateService _battles;
 
     /// <summary>
+    /// The Relic persistence boundary, read for the selected instances' definition
+    /// references (<c>DATABASE.md</c> §1: <c>Relic.RelicDefinitionId</c> →
+    /// <c>RelicDefinition</c>). It is the same boundary the loadout validator reads
+    /// ownership from; this step adds no rule of its own and writes nothing.
+    /// </summary>
+    private readonly IRelicRepository _relics;
+
+    /// <summary>
+    /// The shared/static Relic definition read (<c>DATABASE.md</c> §1), reached
+    /// through the Application-layer boundary <see cref="IRelicDefinitionLookup"/>
+    /// and never through a persistence type.
+    /// </summary>
+    private readonly IRelicDefinitionLookup _relicDefinitions;
+
+    /// <summary>
     /// Creates the battle-start orchestrator over the persistence, loadout, and
     /// battle-composition boundaries it coordinates.
     /// </summary>
@@ -97,16 +113,32 @@ public sealed class BattleStartService
     /// The authoritative battle-composition boundary
     /// (<c>GAME_STATE.md</c> §2.0.5).
     /// </param>
+    /// <param name="relics">
+    /// The Relic persistence boundary — read to map each equipped instance to the
+    /// definition it references (<c>RELIC_RULES.md</c> §2.2 item 1,
+    /// <c>DATABASE.md</c> §1).
+    /// </param>
+    /// <param name="relicDefinitions">
+    /// The Relic definition content read (<c>RELIC_RULES.md</c> §8,
+    /// <c>DATABASE.md</c> §1). It is resolved here, once per battle, so that
+    /// <c>GAME_RULES.md</c> §17 step 11 reads a Relic's declared content from the
+    /// battle's own configuration rather than querying PostgreSQL during a Swap
+    /// (<c>TDD.md</c> §4 item 3).
+    /// </param>
     public BattleStartService(
         IPetRepository pets,
         CardLoadoutService cardLoadout,
         RelicLoadoutService relicLoadout,
-        BattleStateService battles)
+        BattleStateService battles,
+        IRelicRepository relics,
+        IRelicDefinitionLookup relicDefinitions)
     {
         _pets = pets;
         _cardLoadout = cardLoadout;
         _relicLoadout = relicLoadout;
         _battles = battles;
+        _relics = relics;
+        _relicDefinitions = relicDefinitions;
     }
 
     /// <summary>
@@ -281,7 +313,32 @@ public sealed class BattleStartService
         }
 
         // ===============================================================
-        // Step 5: compose PetState from both snapshots and create the battle
+        // Step 5: resolve the equipped Relics' shared static definitions
+        // ===============================================================
+        // RELIC_RULES.md §2.2 items 1–2: a PetState.EquippedRelics[] element is one
+        // owned Relic instance's identity, and the instance references its
+        // definition through DATABASE.md §1's Relic N ── 1 RelicDefinition FK.
+        // GAME_RULES.md §17 step 11 must read a Relic's Trigger, Condition, and
+        // EffectDefinition, so those definitions are resolved ONCE here and handed
+        // to the battle as content configuration.
+        //
+        // Resolving them at battle start is what keeps TDD.md §4 item 3 true:
+        // "PostgreSQL is never queried on the hot path of resolving a single Swap".
+        // A definition is a PostgreSQL content read, so a per-Swap lookup would
+        // violate that contract; this step is the battle-start path, where the
+        // resolved loadout is already in hand.
+        //
+        // It implements no Relic rule: no Trigger is evaluated, no Condition is
+        // compared, and no Effect is applied here (RELIC_RULES.md §8.7 — that is
+        // GAME_RULES.md §17 step 11, in the resolution pipeline). This step only
+        // makes the declared content readable.
+        var equippedRelicDefinitions = await ResolveEquippedRelicDefinitionsAsync(
+            playerId,
+            relics.EquippedRelics,
+            cancellationToken);
+
+        // ===============================================================
+        // Step 6: compose PetState from both snapshots and create the battle
         // ===============================================================
         // PetConfiguration is the documented carrier of the battle's Pet
         // configuration (GAME_STATE.md §2.3): the owned Pet instance identity the
@@ -336,10 +393,94 @@ public sealed class BattleStartService
                 new PlayerId(playerId),
                 petConfiguration,
                 bossDefinition,
-                cancellationToken: cancellationToken)
+                cancellationToken: cancellationToken,
+                equippedRelicDefinitions: equippedRelicDefinitions)
             .ConfigureAwait(false);
 
         return BattleStartResult.Started(battleId);
+    }
+
+    /// <summary>
+    /// Resolves the shared static definition each equipped Relic instance
+    /// references, in <b>equip-slot order</b> (<c>RELIC_RULES.md</c> §2.2, §2.3;
+    /// <c>DATABASE.md</c> §1).
+    ///
+    /// <b>Two reads, and neither is a new rule.</b> The instance rows supply the
+    /// definition reference each slot carries (<c>Relic.RelicDefinitionId</c>), and
+    /// the content read supplies the definition itself
+    /// (<see cref="IRelicDefinitionLookup"/>, the Application boundary
+    /// <c>DATABASE.md</c> §1's shape is reached through). Both are
+    /// PostgreSQL reads on the battle-start path, which is not the Swap path
+    /// <c>TDD.md</c> §4 item 3 protects.
+    ///
+    /// <b>The order is positional and only positional.</b> Slot <c>i</c>'s
+    /// definition is written to element <c>i</c>; no definition is matched on, so
+    /// the equip-slot order <c>RELIC_RULES.md</c> §2.3 item 2 makes authoritative
+    /// cannot be disturbed.
+    ///
+    /// <b>A definition that does not resolve yields <c>null</c> in its slot.</b>
+    /// That is the documented miss outcome of the definition lookup, and no
+    /// placeholder, default threshold, or fallback effect array is fabricated for
+    /// it (<c>AGENTS.md</c> §7): step 11 then evaluates nothing for that slot,
+    /// because a Relic with no declared Trigger and no declared Effect has nothing
+    /// to evaluate. No documented battle-start outcome exists for an absent content
+    /// row, and none is invented here — this method adds no error code.
+    /// </summary>
+    /// <param name="playerId">
+    /// The requesting Player — the owner the instance read is scoped to, so the
+    /// definition reference is read from a row the Player actually owns
+    /// (<c>RELIC_RULES.md</c> §2.1 item 2, <c>GAME_RULES.md</c> §18).
+    /// </param>
+    /// <param name="equippedRelics">
+    /// The ordered loadout snapshot the Relic validator produced
+    /// (<c>RELIC_RULES.md</c> §2.5).
+    /// </param>
+    /// <param name="cancellationToken">Cancels both reads.</param>
+    private async Task<IReadOnlyList<RelicDefinition?>> ResolveEquippedRelicDefinitionsAsync(
+        string playerId,
+        IReadOnlyList<EquippedRelicIdentity> equippedRelics,
+        CancellationToken cancellationToken)
+    {
+        if (equippedRelics.Count == 0)
+        {
+            return [];
+        }
+
+        var instanceIds = new string[equippedRelics.Count];
+
+        for (var slot = 0; slot < equippedRelics.Count; slot++)
+        {
+            instanceIds[slot] = equippedRelics[slot].Value;
+        }
+
+        var ownedInstances = await _relics
+            .ListOwnedInstancesAsync(playerId, instanceIds, cancellationToken)
+            .ConfigureAwait(false);
+
+        var definitionIdByInstance = new Dictionary<string, string>(
+            ownedInstances.Count,
+            StringComparer.Ordinal);
+
+        foreach (var instance in ownedInstances)
+        {
+            definitionIdByInstance[instance.RelicInstanceId] = instance.RelicDefinitionId;
+        }
+
+        var definitions = new RelicDefinition?[equippedRelics.Count];
+
+        for (var slot = 0; slot < equippedRelics.Count; slot++)
+        {
+            if (!definitionIdByInstance.TryGetValue(equippedRelics[slot].Value, out var definitionId))
+            {
+                continue;
+            }
+
+            definitions[slot] = await _relicDefinitions
+                .GetDefinitionAsync(definitionId, cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return definitions;
     }
 
     /// <summary>
