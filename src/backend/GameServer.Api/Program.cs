@@ -1,5 +1,6 @@
 using GameServer.Application;
 using GameServer.Infrastructure;
+using GameServer.Infrastructure.Discord;
 using GameServer.Api.Authentication;
 using GameServer.Api.Hubs;
 using Microsoft.AspNetCore.Authorization;
@@ -12,6 +13,21 @@ var builder = WebApplication.CreateBuilder(args);
 // Add application and infrastructure layer services
 builder.Services.AddApplicationServices();
 builder.Services.AddInfrastructureServices(builder.Configuration);
+
+// The development-only authentication path (TASK-181).
+//
+// It substitutes the identity source behind the existing one authentication
+// endpoint, so a developer can play the MVP loop from a normal browser tab
+// without a Discord Activity iframe. Both conditions are required and are checked
+// inside the registration itself: the host's own Development environment — a host
+// fact, read here from IHostEnvironment rather than from an appsettings file — and
+// an explicit opt-in switch that no tracked file sets. Outside Development, or
+// without the opt-in, this call changes nothing: the composition stays exactly as
+// it is today, and the Discord identity exchange remains the only registered
+// resolver (AC-01/AC-02).
+builder.Services.AddDevelopmentDiscordIdentityResolver(
+    builder.Configuration,
+    builder.Environment.IsDevelopment());
 
 // The application session (API_CONTRACTS.md §2.8; ADR-015 D6): one JWT Bearer
 // authentication scheme, plus the authorization pipeline that enforces it on

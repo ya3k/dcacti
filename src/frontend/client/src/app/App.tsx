@@ -6,6 +6,10 @@ import { ViewportDebugOverlay } from '../ui/components/ViewportDebugOverlay';
 import { GameRuntime } from '../game/runtime/GameRuntime';
 import { DiscordService } from '../services/discord/DiscordService';
 import { ApiService } from '../services/api/ApiService';
+import {
+  DEVELOPMENT_AUTHORIZATION_CODE,
+  isDevelopmentAuthenticationEnabled,
+} from '../services/api/DevelopmentAuthentication';
 
 /** Default hub path (SIGNALR_PROTOCOL.md §1; mapped in vite.config.ts). */
 const BATTLE_HUB_URL = '/hubs/battle';
@@ -33,7 +37,7 @@ function getSharedRuntime(): GameRuntime {
  * Establishes the authenticated application session before connecting SignalR
  * (TDD.md §2.1 item 4, API_CONTRACTS.md §2, SIGNALR_PROTOCOL.md §1).
  *
- * Sequence:
+ * Discord Activity sequence (unchanged):
  *   DiscordService.initialize()
  *           ↓
  *   DiscordService.getAuthorizationCode()
@@ -47,24 +51,52 @@ function getSharedRuntime(): GameRuntime {
  *   GameRuntime.initialize(BATTLE_HUB_URL)
  *           ↓
  *   SignalR connection
+ *
+ * Development sequence (TASK-181, only when the development switch is on and the
+ * Discord Activity iframe is not present):
+ *   DiscordService.initialize()      ← reports isAvailable: false in a normal tab
+ *           ↓
+ *   ApiService.authenticateDiscord(DEVELOPMENT_AUTHORIZATION_CODE)
+ *           ↓
+ *   …the same session holder, the same status transition, the same SignalR
+ *   connect as above. Both paths converge before `setSessionStatus`, so exactly
+ *   one of them establishes the session and nothing downstream can tell them
+ *   apart.
+ *
+ * The Discord path is tried first and is unchanged: when the app *is* framed by
+ * Discord Activity it runs the Discord flow and the development branch is never
+ * reached. When it is not framed, the outcome is the development session if the
+ * developer opted in, and the pre-existing `error` status if they did not.
  */
 async function bootstrapApplication(runtime: GameRuntime): Promise<void> {
   runtime.setSessionStatus('authenticating');
 
   try {
     const discordContext = await DiscordService.getInstance().initialize();
-    if (!discordContext.isAvailable) {
+
+    if (discordContext.isAvailable) {
+      const code = await DiscordService.getInstance().getAuthorizationCode();
+      if (!code) {
+        runtime.setSessionStatus('error');
+        return;
+      }
+
+      await ApiService.getInstance().authenticateDiscord(code);
+    } else if (isDevelopmentAuthenticationEnabled()) {
+      // The development-only path. It is reached only in a development build that
+      // opted in (see DevelopmentAuthentication), and it still obtains a real
+      // application session from the backend — the server's own Development
+      // environment and opt-in switch decide whether it answers
+      // (DevelopmentAuthenticationOptions).
+      await ApiService.getInstance().authenticateDiscord(DEVELOPMENT_AUTHORIZATION_CODE);
+    } else {
+      // No Discord Activity iframe and no development opt-in: no session is
+      // obtainable, so the app reports the failure rather than connecting
+      // unauthenticated (task §12, `SIGNALR_PROTOCOL.md` §1).
       runtime.setSessionStatus('error');
       return;
     }
 
-    const code = await DiscordService.getInstance().getAuthorizationCode();
-    if (!code) {
-      runtime.setSessionStatus('error');
-      return;
-    }
-
-    await ApiService.getInstance().authenticateDiscord(code);
     runtime.setSessionStatus('authenticated');
 
     await runtime.initialize(BATTLE_HUB_URL);

@@ -28,6 +28,19 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+
+    <!-- The local configuration channel for the application session's signing
+         secret (ADR-015 D10): "in local development from an uncommitted .env
+         file or a dotnet user-secrets store". The host reads the store in
+         Development, and this identifier is what makes `dotnet user-secrets`
+         addressable for this project. It is an opaque identifier, not a secret:
+         the store itself lives outside the working tree, so no secret value is
+         ever in a tracked file, a build output, or this file.
+
+         The keys the secret is supplied under are named by
+         ApplicationSessionOptions (ApplicationSession:CurrentKey:Secret and
+         :KeyId); see src/backend/.env.example for the local setup. -->
+    <UserSecretsId>dcacti-gameserver-api-application-session</UserSecretsId>
   </PropertyGroup>
 
 </Project>

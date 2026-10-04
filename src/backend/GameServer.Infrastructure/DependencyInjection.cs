@@ -12,6 +12,7 @@ using GameServer.Infrastructure.Redis;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using StackExchange.Redis;
 
@@ -86,6 +87,11 @@ public static class DependencyInjection
         // built by TASK-023. Until it is registered, the resolver reports the
         // exchange as unavailable and produces no identity — so no Player is
         // ever written for an unverified caller.
+        //
+        // It is also the default pair TASK-181 leaves in place: the
+        // development-only identity source is substituted here by
+        // AddDevelopmentDiscordIdentityResolver, and only when the host is in
+        // Development *and* has explicitly opted in.
         services.AddSingleton<IDiscordIdentityResolver, UnconfiguredDiscordIdentityResolver>();
 
         // Redis connection boundary
@@ -107,6 +113,51 @@ public static class DependencyInjection
             // item 5 permit no in-process substitute.
             services.AddSingleton<IBattleStateRepository, BattleStateRepository>();
         }
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers the development-only identity source in place of the unavailable
+    /// Discord exchange (TASK-181).
+    ///
+    /// <b>Fail closed, structurally.</b> Both conditions are required — the host's
+    /// own Development environment, passed in by the composition root from
+    /// <c>IHostEnvironment</c>, and the explicit
+    /// <see cref="DevelopmentAuthenticationOptions.EnabledPath"/> opt-in switch —
+    /// and either one missing returns the collection untouched, leaving
+    /// <c>UnconfiguredDiscordIdentityResolver</c> as the registered implementation.
+    /// The gate therefore cannot be armed by configuration alone: a production
+    /// <c>appsettings.json</c> that sets the switch achieves nothing, because the
+    /// environment condition is not a configuration value this method reads from
+    /// the app's own files (TASK-181 AC-01/AC-02).
+    ///
+    /// The substitution happens at the <see cref="IDiscordIdentityResolver"/> seam
+    /// only. No endpoint, authorization policy, or session issuer is involved, so
+    /// the development path obtains a real application session through the
+    /// existing infrastructure rather than beside it (<c>ADR-015</c> D6).
+    /// </summary>
+    /// <param name="services">The composition root's service collection.</param>
+    /// <param name="configuration">The application configuration (opt-in switch).</param>
+    /// <param name="isDevelopmentEnvironment">
+    /// Whether the host is running in the Development environment. It is supplied
+    /// by the caller because it is a host fact, not an application setting.
+    /// </param>
+    public static IServiceCollection AddDevelopmentDiscordIdentityResolver(
+        this IServiceCollection services,
+        IConfiguration configuration,
+        bool isDevelopmentEnvironment)
+    {
+        if (!isDevelopmentEnvironment || !DevelopmentAuthenticationOptions.IsEnabled(configuration))
+        {
+            // Neither condition may be waived, and an un-enabled host gets the
+            // composition it has today: no development identity source exists at
+            // all, so there is nothing to reach (AC-01/AC-02).
+            return services;
+        }
+
+        services.Replace(ServiceDescriptor.Singleton<IDiscordIdentityResolver>(
+            _ => new DevelopmentDiscordIdentityResolver()));
 
         return services;
     }
