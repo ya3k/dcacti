@@ -237,9 +237,18 @@ function createRuntime() {
 /** The four documented Gem contract names (MATCH3_RULES.md §1.1). */
 const GEM_NAMES = ['ATK', 'DEF', 'HP', 'POWER'];
 
-/** A server-shaped board: exactly 64 cells (GAME_STATE.md §2.1.1). */
-function serverCells(): string[] {
-  return Array.from({ length: 64 }, (_, index) => GEM_NAMES[index % GEM_NAMES.length]);
+/**
+ * A server-shaped board: exactly 64 delivered cells.
+ *
+ * Each entry is the protocol's `CellPayload` — the cell's Gem type plus the
+ * optional Special Gem at that cell (`GAME_STATE.md` §2.1.1,
+ * `SIGNALR_PROTOCOL.md` §4.1 item 5), so a fixture is a bare Gem-name string
+ * only if the wire shape were, which it is not.
+ */
+function serverCells(): Array<{ gemType: string }> {
+  return Array.from({ length: 64 }, (_, index) => ({
+    gemType: GEM_NAMES[index % GEM_NAMES.length],
+  }));
 }
 
 /**
@@ -630,8 +639,8 @@ describe('GameRuntime', () => {
       await runtime.initialize();
 
       const cells = serverCells();
-      cells[0] = 'POWER';
-      cells[63] = 'ATK';
+      cells[0] = { gemType: 'POWER' };
+      cells[63] = { gemType: 'ATK' };
 
       transport.emit('BattleStateUpdated', payload({ board: { cells } }));
 
@@ -649,7 +658,9 @@ describe('GameRuntime', () => {
 
       const received = runtime.getBattleState()!;
       received.board.cells.forEach((cell, index) => {
-        expect(cell).toBe((sent.board as { cells: string[] }).cells[index]);
+        expect(cell.gemType).toBe(
+          (sent.board as { cells: Array<{ gemType: string }> }).cells[index].gemType
+        );
       });
     });
 
@@ -726,6 +737,73 @@ describe('GameRuntime', () => {
       runtime.onRuntimeEvent((e) => events.push(e.type));
 
       transport.emit('BattleStateUpdated', payload({ board: { cells: serverCells().slice(0, 63) } }));
+
+      expect(runtime.getBattleState()).toBeNull();
+      expect(events).toContain('runtime_error');
+    });
+
+    it('accepts the delivered cell shape, where each cell carries its Gem type', async () => {
+      // SIGNALR_PROTOCOL.md §4.1 item 5: the board "carries its Special Gem
+      // state, and needs nothing else" — each cell entry holds its Gem type and,
+      // optionally, the Special Gem at that cell. A reader that required bare
+      // Gem-name strings would reject every real server payload, which is exactly
+      // how the board failed to render before TASK-182.
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      transport.emit('BattleStateUpdated', payload());
+
+      const board = runtime.getBattleState()!.board;
+      expect(board.cells).toHaveLength(64);
+      expect(board.cells.every((cell) => typeof cell.gemType === 'string')).toBe(true);
+      // The four documented contract names (MATCH3_RULES.md §1.1) are what the
+      // server sent; nothing was substituted by the client.
+      expect(new Set(board.cells.map((c) => c.gemType))).toEqual(
+        new Set(['ATK', 'DEF', 'HP', 'POWER'])
+      );
+    });
+
+    it('keeps an absent Special Gem absent instead of materializing one', async () => {
+      // GAME_STATE.md §2.1.7 item 3: an omitted Special Gem member is the
+      // documented statement that the cell holds an ordinary Gem. It is not a
+      // null sentinel and not an invitation to predict one, so the reader must
+      // not write a placeholder value in its place.
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const cells = serverCells().map((cell, index) =>
+        index === 5 ? { gemType: cell.gemType, specialGem: { type: 'Burst' } } : cell
+      );
+
+      transport.emit('BattleStateUpdated', payload({ board: { cells } }));
+
+      const board = runtime.getBattleState()!.board;
+      expect(board.cells[5].specialGem).toEqual({ type: 'Burst' });
+      expect('specialGem' in board.cells[5]).toBe(true);
+
+      // Every other cell keeps the member absent rather than set to undefined,
+      // null, or a placeholder type.
+      const others = board.cells.filter((_, index) => index !== 5);
+      expect(others.every((cell) => !('specialGem' in cell) || cell.specialGem === undefined)).toBe(
+        true
+      );
+      expect(others.some((cell) => (cell.specialGem as unknown) === null)).toBe(false);
+    });
+
+    it('rejects a cell that carries no Gem type rather than defaulting one', async () => {
+      // `gemType` is always present on the wire (GAME_STATE.md §2.1.3 items 1–2),
+      // so its absence is malformed — reading a default would let the client
+      // decide a board value (GAME_RULES.md §18).
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const events: string[] = [];
+      runtime.onRuntimeEvent((e) => events.push(e.type));
+
+      const cells = serverCells();
+      cells[10] = {} as { gemType: string };
+
+      transport.emit('BattleStateUpdated', payload({ board: { cells } }));
 
       expect(runtime.getBattleState()).toBeNull();
       expect(events).toContain('runtime_error');
@@ -1355,7 +1433,7 @@ describe('GameRuntime', () => {
 
       // And the board is exactly the delivered board, not a client-derived one.
       expect(runtime.getBattleState()!.board.cells).toEqual(
-        (sent.board as { cells: string[] }).cells
+        (sent.board as { cells: Array<{ gemType: string }> }).cells
       );
     });
 
@@ -1563,7 +1641,7 @@ describe('GameRuntime', () => {
         turn: 4,
         sequence: 9,
         playerState: { combo: 4, matchCount: 12 },
-        board: { cells: serverCells().fill('POWER') },
+        board: { cells: serverCells().fill({ gemType: 'POWER' }) },
       });
       transport.getBattleStateResult = { accepted: true, serverSequence: 9, state: recovered };
 

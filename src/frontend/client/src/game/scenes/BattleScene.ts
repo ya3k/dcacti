@@ -278,7 +278,39 @@ export class BattleScene extends Phaser.Scene {
       })
       .setOrigin(0, 0);
 
-    this.boardLayer = this.add.container(0, 0);
+    // The board's cells are drawn into this container, and the container is the
+    // board's input target (see `registerBoardInput`). A Container has no
+    // implicit size and no texture, so it is only a valid input target once it is
+    // given a hit area: `setSize(BOARD_WIDTH, BOARD_WIDTH)` declares the board
+    // extent and `setInteractive(...)` supplies the shape Phaser hit-tests
+    // (`.ai/skills/phaser/input-keyboard-mouse-touch`, "Containers must specify a
+    // shape or call setSize first"; Phaser's `setHitAreaFromTexture` warns
+    // "Container.setInteractive must specify a Shape or call setSize() first").
+    //
+    // The hit area is an explicit rectangle rather than the one `setInteractive()`
+    // derives from `setSize`, because a Container reports `originX/originY = 0.5`
+    // unconditionally (`Phaser.GameObjects.Container#originX`) and Phaser
+    // normalizes that origin into the tested point
+    // (`InputManager.pointWithinHitArea` adds `displayOriginX/Y`). Phaser's
+    // derived rectangle `(0, 0, w, h)` would therefore be compared against local
+    // points shifted by half the board, leaving the real board area unpickable
+    // while a phantom region half a board away tested as inside.
+    //
+    // The rectangle below is positioned to cancel that shift, so the hit area
+    // covers exactly the drawn board: the cells are drawn between
+    // `BOARD_ORIGIN_X` and `BOARD_ORIGIN_X + BOARD_WIDTH` in the container's local
+    // space, and the `+ BOARD_WIDTH / 2` accounts for the origin Phaser adds.
+    const boardHitArea = new Phaser.Geom.Rectangle(
+      BOARD_ORIGIN_X + BOARD_WIDTH / 2,
+      BOARD_ORIGIN_Y + BOARD_WIDTH / 2,
+      BOARD_WIDTH,
+      BOARD_WIDTH
+    );
+
+    this.boardLayer = this.add
+      .container(0, 0)
+      .setSize(BOARD_WIDTH, BOARD_WIDTH)
+      .setInteractive(boardHitArea, Phaser.Geom.Rectangle.Contains);
     this.castControlsLayer = this.add.container(0, 0);
     this.feedbackLayer = this.add.container(0, 0);
   }
@@ -496,7 +528,11 @@ export class BattleScene extends Phaser.Scene {
         break;
       }
 
-      this.drawCell(row, column, cells[index]);
+      // Each delivered cell carries its Gem type and, optionally, the Special Gem
+      // at that cell (SIGNALR_PROTOCOL.md §4.1 item 5). Only the Gem type is
+      // presented: the scene paints no Special Gem state it was not asked to show
+      // and infers nothing from the cell (GAME_RULES.md §18).
+      this.drawCell(row, column, cells[index].gemType);
     }
   }
 
@@ -542,11 +578,24 @@ export class BattleScene extends Phaser.Scene {
    * `renderBoard` uses — one coordinate convention, used in both directions
    * (`MATCH3_RULES.md` §1.0). A tap that falls in a gap between cells, or
    * outside the board, resolves to no cell and is ignored.
+   *
+   * The handler is registered **at most once**. The board is redrawn on every
+   * authoritative push (`renderBoard` → `removeAll(true)`), and the scene can be
+   * re-entered, so a registration that assumed "one call per draw" would
+   * accumulate listeners and submit one gesture's Swap several times. Detaching
+   * the event's listeners before attaching makes the call idempotent without
+   * changing the lifecycle pattern — no new abstraction is introduced, and the
+   * board layer is the only object that listens here, so removing this event's
+   * listeners cannot detach anyone else's handler.
    */
   private registerBoardInput(): void {
     if (!this.boardLayer) {
       return;
     }
+
+    // Idempotent: any previously registered board pointer listener is removed
+    // first, so a repeated call leaves exactly one — never handler x 2.
+    this.boardLayer.off(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN);
 
     this.boardLayer.on(
       Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN,

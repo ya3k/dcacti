@@ -22,6 +22,37 @@ vi.mock('phaser', () => ({
   // The board layer registers its pointer input through this event constant
   // (Phaser's own `gameobjectdown` name).
   Input: { Events: { GAMEOBJECT_POINTER_DOWN: 'gameobjectdown' } },
+  // The board's hit area is a real `Phaser.Geom.Rectangle`. The mock keeps the
+  // constructor and its `Contains` predicate faithful, because the hit area's
+  // geometry is exactly what the board input-target tests assert on.
+  Geom: {
+    Rectangle: class MockRectangle {
+      constructor(x: number, y: number, width: number, height: number) {
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.height = height;
+      }
+      readonly x: number;
+      readonly y: number;
+      readonly width: number;
+      readonly height: number;
+      static Contains(
+        rect: { x: number; y: number; width: number; height: number },
+        x: number,
+        y: number
+      ): boolean {
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          rect.x <= x &&
+          x <= rect.x + rect.width &&
+          rect.y <= y &&
+          y <= rect.y + rect.height
+        );
+      }
+    },
+  },
 }));
 
 /**
@@ -61,8 +92,28 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
    * The board layer's registered gameobject input handlers, keyed by event name
    * (`Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN`). Phaser drives the scene's
    * input through these; the harness does the same.
+   *
+   * The stored function dispatches to **every** listener the scene registered,
+   * so a duplicate registration is observable as a duplicate effect rather than
+   * being silently collapsed by a single-entry map.
    */
   const boardInputHandlers = new Map<string, (pointer: { x: number; y: number }) => void>();
+  /** How many listeners the board layer holds per event name. */
+  const boardInputHandlerCounts = new Map<string, number>();
+  /** The board container itself, so the test can assert its input contract. */
+  const boardLayers: Array<{
+    readonly width: number;
+    readonly height: number;
+    readonly inputEnabled: boolean;
+    readonly hitArea: { x: number; y: number; width: number; height: number } | null;
+    /** The rectangle handed to `setInteractive`, i.e. the shape Phaser tests. */
+    readonly hitAreaForTest: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    } | null;
+  }> = [];
   /** Every action the scene submitted through the runtime port. */
   const requestedActions: Array<Record<string, unknown>> = [];
   /** Every action invocation sent to the runtime port (including in-flight or failed). */
@@ -171,11 +222,31 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       return obj;
     };
 
-    /** A container that models child ownership, including `removeAll`. */
+    /**
+     * A container that models child ownership, `removeAll`, and Phaser's real
+     * input-enabling contract.
+     *
+     * The input members are modelled because that is precisely where the board
+     * defect lived: a Phaser `Container` has no implicit size and no texture, so
+     * it only becomes a pickable input target once `setSize(width, height)` has
+     * declared an extent and `setInteractive()` has derived a hit area from it.
+     * A mock that accepts `.on('gameobjectdown', …)` without those two calls
+     * cannot represent "this container is not an input target" and therefore
+     * cannot fail on the real defect.
+     */
     const makeContainer = () => {
       containerIndex++;
       const isBoard = containerIndex === 1;
       let children: Array<{ kind: string; label?: string }> = [];
+      let size: { width: number; height: number } | null = null;
+      let interactive = false;
+      let explicitHitArea: { x: number; y: number; width: number; height: number } | null = null;
+
+      /** Handlers per Phaser event name; Phaser emits to every listener. */
+      const inputHandlers = new Map<
+        string,
+        Array<(pointer: { x: number; y: number }) => void>
+      >();
 
       const obj = {
         add: (added: unknown) => {
@@ -191,15 +262,72 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         },
         destroy: () => {
           children = [];
-          if (isBoard) syncBoard();
+          inputHandlers.clear();
+          if (isBoard) {
+            syncBoard();
+            syncBoardInputHandlers();
+          }
+        },
+        /** Phaser's `ComputedSize.setSize` — required before input on a Container. */
+        setSize: (width: number, height: number) => {
+          size = { width, height };
+          return obj;
+        },
+        /** The declared extent, or `null` when `setSize` was never called. */
+        get width() {
+          return size ? size.width : 0;
+        },
+        get height() {
+          return size ? size.height : 0;
+        },
+        /**
+         * Phaser's `setInteractive`. On a Container with no explicit shape it
+         * derives the hit area from the object's size and warns (then skips
+         * enabling) when no size was set — the exact behaviour the defect hit.
+         * An explicit shape is recorded as the tested hit area.
+         */
+        setInteractive: (hitArea?: { x: number; y: number; width: number; height: number }) => {
+          if (size === null) {
+            // Phaser: "Container.setInteractive must specify a Shape or call
+            // setSize() first" — input is NOT enabled and the object is never
+            // added to the input list.
+            return obj;
+          }
+          interactive = true;
+          explicitHitArea = hitArea ?? null;
+          return obj;
+        },
+        /** Whether Phaser actually enabled this object for input. */
+        get inputEnabled() {
+          return interactive;
+        },
+        /** The hit area Phaser derived, `null` when the object is not enabled. */
+        get hitArea() {
+          return interactive && size
+            ? { x: 0, y: 0, width: size.width, height: size.height }
+            : null;
+        },
+        /** The explicit shape passed to `setInteractive`, when one was given. */
+        get hitAreaForTest() {
+          return explicitHitArea;
         },
         /** The board layer's input registration (Phaser's gameobject events). */
         on: (event: string, handler: (pointer: { x: number; y: number }) => void) => {
-          boardInputHandlers.set(event, handler);
+          const existing = inputHandlers.get(event) ?? [];
+          existing.push(handler);
+          inputHandlers.set(event, existing);
+          if (isBoard) syncBoardInputHandlers();
           return obj;
         },
-        off: (event: string) => {
-          boardInputHandlers.delete(event);
+        off: (event: string, handler?: (pointer: { x: number; y: number }) => void) => {
+          if (handler === undefined) {
+            inputHandlers.delete(event);
+          } else {
+            const existing = (inputHandlers.get(event) ?? []).filter((h) => h !== handler);
+            inputHandlers.set(event, existing);
+          }
+          if (isBoard) syncBoardInputHandlers();
+          return obj;
         },
       };
 
@@ -207,6 +335,22 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         boardCells.length = 0;
         boardCells.push(...children);
       };
+
+      const syncBoardInputHandlers = () => {
+        boardInputHandlerCounts.clear();
+        for (const [event, handlers] of inputHandlers) {
+          boardInputHandlerCounts.set(event, handlers.length);
+        }
+        // Phaser emits to every registered listener; the harness does the same so
+        // a duplicated registration is observable as a duplicated effect.
+        boardInputHandlers.set('gameobjectdown', (pointer) => {
+          for (const handler of [...(inputHandlers.get('gameobjectdown') ?? [])]) {
+            handler(pointer);
+          }
+        });
+      };
+
+      if (isBoard) boardLayers.push(obj);
 
       return obj;
     };
@@ -276,6 +420,8 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     },
     boardCells,
     boardInputHandlers,
+    boardInputHandlerCounts,
+    boardLayers,
     clickables,
     clickOption: (pattern: string | RegExp) => {
       const match = clickables.find((c) =>
@@ -621,9 +767,19 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
   /** The four documented Gem contract names (MATCH3_RULES.md §1.1). */
   const GEM_NAMES = ['ATK', 'DEF', 'HP', 'POWER'];
 
-  /** A server-shaped board: exactly 64 cells in the documented order. */
-  function serverBoard(): string[] {
-    return Array.from({ length: 64 }, (_, index) => GEM_NAMES[index % GEM_NAMES.length]);
+  /**
+   * A server-shaped board: exactly 64 cells in the documented order.
+   *
+   * Each cell is the delivered `CellPayload` shape — its Gem type plus the
+   * optional Special Gem at that cell (`SIGNALR_PROTOCOL.md` §4.1 item 5), i.e.
+   * `{ gemType, specialGem }`. A bare Gem-name string is **not** what the
+   * protocol delivers, and modelling it as one is what previously let a
+   * mismatched client reader pass this suite.
+   */
+  function serverBoard(): Array<{ gemType: string; specialGem?: { type: string } }> {
+    return Array.from({ length: 64 }, (_, index) => ({
+      gemType: GEM_NAMES[index % GEM_NAMES.length],
+    }));
   }
 
   function serverState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
@@ -829,8 +985,8 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     // The scene presents `Cells[64]` verbatim: cell i is the i-th value of the
     // payload. It reorders, substitutes, and generates nothing.
     const cells = serverBoard();
-    cells[0] = 'POWER';
-    cells[63] = 'ATK';
+    cells[0] = { gemType: 'POWER' };
+    cells[63] = { gemType: 'ATK' };
 
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
       board: { cells },
@@ -1027,7 +1183,11 @@ describe('BattleScene — Swap input (MATCH3_RULES.md §2, SIGNALR_PROTOCOL.md �
       rngSeed: 42,
       rngState: { state: 123456789, increment: 1 },
       board: {
-        cells: Array.from({ length: 64 }, (_, index) => GEM_NAMES[index % GEM_NAMES.length]),
+        // The delivered `CellPayload` shape: each cell is its Gem type plus the
+        // optional Special Gem at that cell (SIGNALR_PROTOCOL.md §4.1 item 5).
+        cells: Array.from({ length: 64 }, (_, index) => ({
+          gemType: GEM_NAMES[index % GEM_NAMES.length],
+        })),
       },
       playerState: { combo: 0, matchCount: 0 },
       petState: {
@@ -1048,12 +1208,220 @@ describe('BattleScene — Swap input (MATCH3_RULES.md §2, SIGNALR_PROTOCOL.md �
     return { harness, scene, ctx };
   }
 
+  /**
+   * The board-layer-local centre of the cell at a §1.0 index, resolved the same
+   * way `drawCell` places it (`MATCH3_RULES.md` §1.0 provides the index; this is
+   * its presentation inverse, mirroring the scene's own `cellCoordinates`).
+   */
+  function cellCentre(index: number): { x: number; y: number } {
+    const row = Math.floor(index / BOARD_COLUMNS);
+    const column = index % BOARD_COLUMNS;
+    return {
+      x: BOARD_ORIGIN_X + column * BOARD_PITCH + CELL_SIZE / 2,
+      y: BOARD_ORIGIN_Y + row * BOARD_PITCH + CELL_SIZE / 2,
+    };
+  }
+
   it('registers board pointer input', () => {
     const { harness, scene, ctx } = createBattle();
 
     runScene(scene, ctx, 'create');
 
     expect(harness.boardInputHandlers.has('gameobjectdown')).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------------
+  // TASK-182 — the board input-target contract.
+  //
+  // Registering a handler with `.on('gameobjectdown', …)` is not the same as
+  // having a board Phaser can pick. A Container has no implicit size and no
+  // texture, so Phaser's input system only selects it once `setSize` declares an
+  // extent and `setInteractive` derives a hit area from it. The assertions below
+  // are on *that* contract, because it is the one the suite previously could not
+  // represent (and therefore could not fail on).
+  // ---------------------------------------------------------------------------
+
+  it('enables the board layer as an input target with a hit area covering the board', () => {
+    const { harness, scene, ctx } = createBattle();
+
+    runScene(scene, ctx, 'create');
+
+    expect(harness.boardLayers).toHaveLength(1);
+
+    const board = harness.boardLayers[0];
+
+    // AC-01: the layer is an input-enabled Game Object, not merely an emitter a
+    // handler was attached to.
+    expect(board.inputEnabled).toBe(true);
+
+    // AC-02: its hit area is exactly the drawn board extent — 8 cells at the
+    // existing cell pitch (`MATCH3_RULES.md` §1.0's 8 x 8 contract, presented by
+    // `drawCell`). The logical board size and the coordinate system are unchanged.
+    expect(board.width).toBe(BOARD_WIDTH);
+    expect(board.height).toBe(BOARD_WIDTH);
+    expect(board.hitArea?.width).toBe(BOARD_WIDTH);
+    expect(board.hitArea?.height).toBe(BOARD_WIDTH);
+
+    // The hit area must also be *positioned* so Phaser picks the drawn board.
+    // Phaser normalizes a Container's origin before testing the shape
+    // (`InputManager.pointWithinHitArea` adds `displayOriginX/Y`, and a Container's
+    // origin is always 0.5), so the rectangle is offset by half the board to
+    // cancel that shift. A hit area left at the origin would test a phantom region
+    // half a board away and leave every real cell unpickable.
+    expect(board.hitAreaForTest).toEqual({
+      x: BOARD_ORIGIN_X + BOARD_WIDTH / 2,
+      y: BOARD_ORIGIN_Y + BOARD_WIDTH / 2,
+      width: BOARD_WIDTH,
+      height: BOARD_WIDTH,
+    });
+
+    // Every drawn cell centre must fall inside that rectangle once Phaser's origin
+    // normalization is applied — i.e. the hit area really does cover the board.
+    const originOffset = BOARD_WIDTH / 2;
+    for (const index of [0, 7, 8, 27, 56, 63]) {
+      const centre = cellCentre(index);
+      const normalizedX = centre.x + originOffset;
+      const normalizedY = centre.y + originOffset;
+      const area = board.hitAreaForTest!;
+      const inside =
+        normalizedX >= area.x &&
+        normalizedX <= area.x + area.width &&
+        normalizedY >= area.y &&
+        normalizedY <= area.y + area.height;
+      expect(inside, `cell ${index} at (${centre.x}, ${centre.y}) must be pickable`).toBe(true);
+    }
+  });
+
+  it('sizes the board layer before attaching its pointer handler', () => {
+    // AC-01 requires the hit area to be established *before* any pointer handler
+    // is attached, because that ordering is what makes the target pickable. The
+    // scene draws the shell (which enables the layer) and only then registers the
+    // handler, so a layer that was never enabled cannot be masked by a handler
+    // that happens to be attached.
+    const { harness, scene, ctx } = createBattle();
+
+    runScene(scene, ctx, 'create');
+
+    const board = harness.boardLayers[0];
+    const handlerCount = harness.boardInputHandlerCounts.get('gameobjectdown') ?? 0;
+
+    expect(board.inputEnabled).toBe(true);
+    expect(handlerCount).toBe(1);
+  });
+
+  it('registers exactly one board pointer handler', () => {
+    // AC-08: registration is at most one handler, so one gesture cannot produce
+    // several Swap requests.
+    const { harness, scene, ctx } = createBattle();
+
+    runScene(scene, ctx, 'create');
+
+    expect(harness.boardInputHandlerCounts.get('gameobjectdown')).toBe(1);
+  });
+
+  it('adds no second board handler when the scene draws its shell again', async () => {
+    // AC-08: a redraw (or a scene re-entry through `create`) must not accumulate
+    // handlers. `drawRuntimeShell` is the only creator of the board layer, so the
+    // redraw path here is the one the scene actually has: a repeated `create`.
+    const { harness, scene, ctx } = createBattle();
+
+    runScene(scene, ctx, 'create');
+    runScene(scene, ctx, 'create');
+
+    // The second create replaces the board layer, so there is one layer and one
+    // handler on it — never handler x 2.
+    const totalHandlers = harness.boardInputHandlerCounts.get('gameobjectdown') ?? 0;
+    expect(totalHandlers).toBe(1);
+
+    // And one gesture still submits exactly one request, which is the behaviour
+    // the count exists to protect.
+    tapCell(harness, 12);
+    tapCell(harness, 13);
+    await flush();
+
+    expect(harness.requestedActions).toEqual([
+      { kind: 'Swap', fromCell: 12, toCell: 13 },
+    ]);
+  });
+
+  it('leaves exactly one board handler when input is registered twice on one layer', () => {
+    // AC-08's guard, driven directly: `registerBoardInput` is called twice against
+    // the *same* board layer, which is the shape a repeated shell draw would take
+    // if the layer were reused. The second registration must replace the first
+    // rather than stack on it, so one gesture still submits one request.
+    const { harness, scene, ctx } = createBattle();
+
+    runScene(scene, ctx, 'create');
+    runScene(scene, ctx, 'registerBoardInput');
+    runScene(scene, ctx, 'registerBoardInput');
+
+    expect(harness.boardInputHandlerCounts.get('gameobjectdown')).toBe(1);
+  });
+
+  it('submits one Swap for one interaction, not one per registered handler', async () => {
+    // AC-08's observable consequence: with a duplicated registration the real
+    // Phaser emitter would fire the handler twice, so the guard is verified
+    // through the request count as well as the listener list.
+    const { harness, scene, ctx } = createBattle();
+
+    runScene(scene, ctx, 'create');
+    runScene(scene, ctx, 'registerBoardInput');
+
+    tapCell(harness, 0);
+    tapCell(harness, 1);
+    await flush();
+
+    expect(harness.requestedActions).toHaveLength(1);
+    expect(harness.requestedActions).toEqual([
+      { kind: 'Swap', fromCell: 0, toCell: 1 },
+    ]);
+  });
+
+  it('keeps the board input target across an authoritative board redraw', async () => {
+    // AC-01: `renderBoard` calls `removeAll(true)` on each push. That clears the
+    // layer's *children*; the container, its hit area, and its handler survive, so
+    // the board remains interactive after the board is re-rendered.
+    const { harness, scene, ctx } = createBattle();
+
+    runScene(scene, ctx, 'create');
+
+    harness.setBattleState(serverState({ sequence: 1 }));
+    await flush();
+
+    const board = harness.boardLayers[0];
+    expect(board.inputEnabled).toBe(true);
+    expect(board.hitArea).toEqual({
+      x: 0,
+      y: 0,
+      width: BOARD_WIDTH,
+      height: BOARD_WIDTH,
+    });
+    expect(harness.boardInputHandlerCounts.get('gameobjectdown')).toBe(1);
+
+    // The redraw still presents all 64 cells, and a gesture still reaches the
+    // existing swap path.
+    expect(harness.boardCells.filter((c) => c.kind === 'label')).toHaveLength(64);
+
+    tapCell(harness, 20);
+    tapCell(harness, 21);
+    await flush();
+
+    expect(harness.requestedActions).toEqual([
+      { kind: 'Swap', fromCell: 20, toCell: 21 },
+    ]);
+  });
+
+  it('detaches the board pointer handler on shutdown', () => {
+    // The existing lifecycle pattern is unchanged: `shutdown()` disposes the
+    // layer, so no live handler is left behind for a restarted scene.
+    const { harness, scene, ctx } = createBattle();
+
+    runScene(scene, ctx, 'create');
+    expect(harness.boardInputHandlerCounts.get('gameobjectdown')).toBe(1);
+
+    runScene(scene, ctx, 'shutdown');
+
+    expect(harness.boardInputHandlerCounts.get('gameobjectdown') ?? 0).toBe(0);
   });
 
   it('submits the documented Swap request for two selected cells', async () => {
@@ -1272,7 +1640,11 @@ describe('BattleScene — CardCast and PetSkillCast input (SIGNALR_PROTOCOL.md �
       rngSeed: 42,
       rngState: { state: 123456789, increment: 1 },
       board: {
-        cells: Array.from({ length: 64 }, (_, index) => GEM_NAMES[index % GEM_NAMES.length]),
+        // The delivered `CellPayload` shape: each cell is its Gem type plus the
+        // optional Special Gem at that cell (SIGNALR_PROTOCOL.md §4.1 item 5).
+        cells: Array.from({ length: 64 }, (_, index) => ({
+          gemType: GEM_NAMES[index % GEM_NAMES.length],
+        })),
       },
       playerState: { combo: 0, matchCount: 0 },
       petState: {

@@ -21,12 +21,14 @@ import {
   type RuntimeBattleState,
   type RuntimeBoard,
   type RuntimeBossState,
+  type RuntimeCell,
   type RuntimeEvent,
   type RuntimeEventListener,
   type RuntimePassiveProgress,
   type RuntimePetState,
   type RuntimePlayerState,
   type RuntimeRngState,
+  type RuntimeSpecialGem,
   type RuntimeStatusEffect,
 } from './GameRuntimeEvents';
 
@@ -1286,13 +1288,21 @@ export class GameRuntime implements GameRuntimePort {
   }
 
   /**
-   * Reads the board's cells (`GAME_STATE.md` §2.1.1).
+   * Reads the board's cells (`GAME_STATE.md` §2.1.1, `SIGNALR_PROTOCOL.md`
+   * §4.1 item 5).
    *
-   * The runtime checks only that 64 cell entries arrived — the shape
+   * The runtime checks only that 64 well-formed cell entries arrived — the shape
    * `SIGNALR_PROTOCOL.md` §4.1 item 3 guarantees ("the client does not receive a
-   * partial board"). It deliberately does not inspect the Gem types or evaluate
-   * any board rule: the board is server-authored and this is not a second
-   * generator or validator.
+   * partial board"). It deliberately does not inspect the Gem *values* or
+   * evaluate any board rule: the board is server-authored and this is not a
+   * second generator or validator. Reading `gemType` is a shape check on a
+   * delivered member, not a board rule.
+   *
+   * A cell is an object because that is what the protocol delivers: §4.1 item 5
+   * states the board carries each cell's Gem type and, optionally, the Special
+   * Gem at that cell. Absence of `specialGem` is the documented spelling of
+   * "ordinary Gem" (`GAME_STATE.md` §2.1.7 item 3), so it is kept absent rather
+   * than materialized.
    */
   private readBoard(value: unknown): RuntimeBoard | null {
     if (typeof value !== 'object' || value === null) {
@@ -1305,11 +1315,81 @@ export class GameRuntime implements GameRuntimePort {
       return null;
     }
 
-    if (!candidate.cells.every((cell): cell is string => typeof cell === 'string')) {
+    const cells: RuntimeCell[] = [];
+
+    for (const entry of candidate.cells) {
+      const cell = this.readCell(entry);
+      if (cell === null) {
+        return null;
+      }
+      cells.push(cell);
+    }
+
+    return { cells };
+  }
+
+  /**
+   * Reads one delivered board cell (`SIGNALR_PROTOCOL.md` §4.1 item 5).
+   *
+   * `gemType` is required and must be a non-empty string — it is always present
+   * on the wire, including for a cell holding a Special Gem
+   * (`GAME_STATE.md` §2.1.3 items 1–2). `specialGem` is optional, and its
+   * absence is the documented statement that the cell holds an ordinary Gem
+   * (§2.1.7 item 3); when it is present, its `type` is required and its
+   * `orientation` is read only if it actually arrived, because orientation is
+   * present if and only if the type is `LineClear` (§2.1.4 item 2).
+   */
+  private readCell(value: unknown): RuntimeCell | null {
+    if (typeof value !== 'object' || value === null) {
       return null;
     }
 
-    return { cells: candidate.cells };
+    const candidate = value as { gemType?: unknown; specialGem?: unknown };
+
+    if (typeof candidate.gemType !== 'string' || candidate.gemType.length === 0) {
+      return null;
+    }
+
+    if (candidate.specialGem === undefined || candidate.specialGem === null) {
+      return { gemType: candidate.gemType };
+    }
+
+    const specialGem = this.readSpecialGem(candidate.specialGem);
+    if (specialGem === null) {
+      return null;
+    }
+
+    return { gemType: candidate.gemType, specialGem };
+  }
+
+  /**
+   * Reads a cell's optional Special Gem metadata (`GAME_STATE.md` §2.1.4).
+   *
+   * Nothing is derived or repaired: the type is read as sent, and the
+   * orientation is stored only when it arrived, so a `Burst`/`Area` entry stays
+   * without one rather than gaining an invented value no rule reads
+   * (`SIGNALR_PROTOCOL.md` §3.2.10 item 6).
+   */
+  private readSpecialGem(value: unknown): RuntimeSpecialGem | null {
+    if (typeof value !== 'object' || value === null) {
+      return null;
+    }
+
+    const candidate = value as { type?: unknown; orientation?: unknown };
+
+    if (typeof candidate.type !== 'string' || candidate.type.length === 0) {
+      return null;
+    }
+
+    if (candidate.orientation === undefined || candidate.orientation === null) {
+      return { type: candidate.type };
+    }
+
+    if (typeof candidate.orientation !== 'string' || candidate.orientation.length === 0) {
+      return null;
+    }
+
+    return { type: candidate.type, orientation: candidate.orientation };
   }
 
   private describeError(error: unknown): string | null {

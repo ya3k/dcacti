@@ -33,6 +33,25 @@ vi.mock('phaser', () => ({
   Structs: { Size: class MockSize {} },
   Loader: { Events: { COMPLETE: 'complete' } },
   Input: { Events: { GAMEOBJECT_POINTER_DOWN: 'gameobjectdown' } },
+  // The board's hit area is a real Phaser.Geom.Rectangle; BattleScene's shell
+  // constructs one, so the mock must provide the constructor.
+  Geom: {
+    Rectangle: class MockRectangle {
+      constructor(x: number, y: number, width: number, height: number) {
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.height = height;
+      }
+      readonly x: number;
+      readonly y: number;
+      readonly width: number;
+      readonly height: number;
+      static Contains(): boolean {
+        return true;
+      }
+    },
+  },
 }));
 
 interface SceneHarnessOptions {
@@ -104,6 +123,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
 
     const makeContainer = () => {
       const children: unknown[] = [];
+      let size: { width: number; height: number } | null = null;
       const obj = {
         add: (added: unknown) => {
           const list = Array.isArray(added) ? added : [added];
@@ -116,6 +136,24 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         },
         destroy: () => {
           children.length = 0;
+        },
+        // Phaser's Container has no implicit size and no texture, so it is only a
+        // valid input target once `setSize` declares an extent and
+        // `setInteractive` derives a hit area from it
+        // (.ai/skills/phaser/input-keyboard-mouse-touch).
+        setSize: (width: number, height: number) => {
+          size = { width, height };
+          return obj;
+        },
+        get width() {
+          return size ? size.width : 0;
+        },
+        get height() {
+          return size ? size.height : 0;
+        },
+        setInteractive: () => {
+          // Phaser warns and skips enabling input when a Container has no size.
+          return obj;
         },
         on: (event: string, handler: (pointer: { x: number; y: number }) => void) => {
           boardInputHandlers.set(event, handler);

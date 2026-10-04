@@ -297,14 +297,48 @@ export interface RuntimeRngState {
  * The client's synchronized copy of the authoritative board
  * (`GAME_STATE.md` §2.1.1).
  *
- * `cells` is exactly 64 Gem type names in row-major order —
- * `index = row * 8 + column` (`MATCH3_RULES.md` §1.0). At the Board Foundation
- * stage `Cells[64]` is the only part of `BoardState` that exists; rendering it at
- * `row = floor(index / 8)`, `column = index % 8` is a presentation concern
- * (`ARCHITECTURE.md` §2.2.2) and introduces no competing coordinate system.
+ * `cells` is exactly 64 cell entries in row-major order —
+ * `index = row * 8 + column` (`MATCH3_RULES.md` §1.0). Each entry is a
+ * `RuntimeCell`, because that is what the protocol delivers: `SIGNALR_PROTOCOL.md`
+ * §4.1 item 5 states the board "carries its Special Gem state, and needs nothing
+ * else", with each cell holding its Gem type and, optionally, the Special Gem at
+ * that cell (`CellPayload.gemType` / `CellPayload.specialGem`).
+ *
+ * This type mirrors the wire as delivered and derives nothing: the runtime never
+ * creates, places, moves, matches, activates, chains, or clears a Special Gem,
+ * and never infers one from anything but the state it was sent
+ * (`SIGNALR_PROTOCOL.md` §4.1 item 6, `GAME_RULES.md` §18).
  */
 export interface RuntimeBoard {
-  readonly cells: readonly string[];
+  readonly cells: readonly RuntimeCell[];
+}
+
+/**
+ * One delivered board cell (`SIGNALR_PROTOCOL.md` §4.1 item 5,
+ * `GAME_STATE.md` §2.1.1).
+ *
+ * `gemType` is always present — one of the four documented contract names
+ * (`MATCH3_RULES.md` §1.1) — including for a cell that holds a Special Gem,
+ * because a Special Gem adds metadata to a cell's occupant and does not replace
+ * its Gem type (`GAME_STATE.md` §2.1.3 items 1–2).
+ *
+ * `specialGem` is present exactly when the cell holds one
+ * (`GAME_STATE.md` §2.1.7 item 3): its absence *is* the statement "ordinary
+ * Gem", so it is modelled as optional and is never materialized as `null` or
+ * substituted with a placeholder type.
+ */
+export interface RuntimeCell {
+  readonly gemType: string;
+  readonly specialGem?: RuntimeSpecialGem;
+}
+
+/**
+ * The optional Special Gem metadata a board cell carries
+ * (`GAME_STATE.md` §2.1.4, `SIGNALR_PROTOCOL.md` §3.2.10).
+ */
+export interface RuntimeSpecialGem {
+  readonly type: string;
+  readonly orientation?: string;
 }
 
 /** Listener signature for authoritative battle-state pushes. */
