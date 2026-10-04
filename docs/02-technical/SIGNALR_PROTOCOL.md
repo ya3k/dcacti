@@ -1,6 +1,22 @@
 # SignalR Protocol
 
-**Version:** 2.14 (§3.2.24 `PowerChanged` reconciled with the TASK-150 Product
+**Version:** 2.15 (§4.3's `petState` projection widened by one member and §4's
+push widened by one nested object, applying the TASK-160 Product Owner
+decisions D-1A and D-2A. `petState` gains `statusEffects[]` — the **active
+Pet's currently active** Status Effect instances, rendered per instance by
+reference to `GAME_STATE.md` §2.3.2 item 1's `statusEffects` element shape —
+and the push gains a new `bossState` member carrying **exactly** `hp` and
+`maxHp`. §4 item 2's closing sentence, which stated that "delivering those
+instances remains a protocol change owned by its own task", now records that
+TASK-160's decision was that task. §4 item 17 and §4.4 are new and own the two
+projections' optionality, absence, ordering and client-boundary rules; §7.1
+states that the same projection serves the reconnect snapshot. **Nothing else
+changes:** §2's method list is unchanged (three gameplay methods, no fourth),
+`BattleStateUpdated` remains the only state-push method (§4 item 11), the two
+projections ride its existing trigger and its existing join/resolution pushes,
+`bossState` is a narrowed projection rather than `BossState`, and no `BossState`
+member beyond `hp`/`maxHp` becomes client-visible. Implementing the projection
+and consuming it on the client are separate downstream tasks. Prior 2.14: (§3.2.24 `PowerChanged` reconciled with the TASK-150 Product
 Owner decisions D-1–D-8, applying `GAME_EVENTS.md` §2's semantics to the wire
 owner: the `source` member's closed value set gains a fourth value, `"boss"`,
 so it is now `"match"`, `"card"`, `"relic"`, or `"boss"`; item 1 no longer ties
@@ -1320,7 +1336,7 @@ be built before gameplay exists (`GAME_STATE.md` §0, §2.0).
 
 ```text
 BattleStateUpdated(battleId, turn, sequence, board, rngSeed, rngState,
-                   playerState, petState)
+                   playerState, petState, bossState)
 ```
 
 Exactly the fields of the currently implemented `GAME_STATE.md` §0 stage,
@@ -1338,6 +1354,9 @@ Match / Combo accounting (GAME_STATE.md §2.2 — BattleState root; wire label `
 
 Pet / Passive state (GAME_STATE.md §2.3 — PetState)
     battleId, turn, sequence, board, rngSeed, rngState, playerState, petState
+
+Pet Status Effects / Boss HP (GAME_STATE.md §2.3.1, §2.4)
+    … , petState, bossState        (§4.3 items 2 and 14, §4.4)
 ```
 
 No gameplay field beyond the stage's own is carried, and no `Status`/lifecycle
@@ -1365,6 +1384,12 @@ action: it reports state (§4 item 6).
    above), projected one-to-one from that state. Casing is an implementation
    detail (§8.1). No other field may be added to this record: additional state
    is introduced by extending `GAME_STATE.md` §2.0, not by the wire shape.
+   Several members are **narrowed projections** of the state field they report
+   rather than the whole field: `playerState` (§4.2 item 2), `petState` (§4.3
+   item 2) and `bossState` (§4.4 item 2) each carry an enumerated member set,
+   and each section states that referring to the state field as a whole does
+   not widen it. Adding a member to one of those sets is a protocol change
+   owned by its own task, exactly as adding a top-level member is.
 5. **Initial values.** For a battle with no resolved action, `turn = 0` and
    `sequence = 0` (`GAME_STATE.md` §2.0.2, §2.0.5.2). Board generation is not
    an action resolution and changes neither, so these remain the values
@@ -1510,6 +1535,25 @@ action: it reports state (§4 item 6).
       `RelicTriggered` (`§3.2.23`) remains the only Relic-side event and keeps
       its `{ type, relicId }` shape. Delivering the collection would be a
       protocol change owned by its own task (`GAME_STATE.md` §2.3.7 item 10).
+17. **`PetState.StatusEffects[]` *is* delivered, for the active Pet and under
+    `petState`, and item 13 is not the precedent for it.** `GAME_STATE.md`
+    §2.3.1 defines the collection of active Status Effect instances on the
+    active Pet, and item 4 governs it in the ordinary way — it is a field of
+    the implemented stage, so it is delivered. The projection is **narrowed**,
+    not whole: only the active Pet's instances travel, only under the existing
+    `petState` member, and only through the element shape and rules §4.3
+    item 14 states. This is a **Product Owner decision**, not a derivable fact:
+    `TASK-160`'s **D-1A** ruling authorized it, and the exclusion sentence
+    item 2 previously carried closed with "delivering these instances remains a
+    protocol change owned by its own task" — this *is* that task, so item 2's
+    surviving exclusion list is re-worded there rather than contradicted here.
+    Nothing else about the collection changes: it adds no top-level member
+    (`petState` already exists), no method, no event, and no subscription, and
+    it delivers no `PetState` member beyond `statusEffects[]` itself — the
+    sibling collections item 14 (`NextAttackCritModifiers[]`), item 15
+    (`CardCostModifiers[]`) and item 16 (`ATKModifiers[]`) decline remain
+    **not delivered** and are unaffected by this item. `BossState.StatusEffects[]`
+    is likewise **not** delivered (§4.4 item 3).
 
 This method name is `BattleStateUpdated` for the `BattleState` it delivers,
 and is the only state-push method in this protocol. No second or parallel
@@ -1623,7 +1667,9 @@ petState
 ├── passiveProgress            { threshold, current }                    always present
 ├── passiveResetOverride       "Partial" | "NoReset"                     present only when
 │                                                                        non-default
-└── equippedCards              string[] (4 CardDefinitionId entries)     always present
+├── equippedCards              string[] (4 CardDefinitionId entries)     always present
+└── statusEffects[]            Status Effect instances of the ACTIVE Pet  always present
+                               — an array, `[]` when none is active      (§4.3 item 14)
 ```
 
 1. The client receives `petState` together with `battleId`, `turn`, `sequence`,
@@ -1631,16 +1677,20 @@ petState
    `BattleStateUpdated` push. It is delivered on join (§4.1 trigger) and on
    every committed Swap's resolved-state push (§2.1, §5).
 2. `petState` is the wire projection of `GAME_STATE.md` §2.3's implemented
-   fields, and carries **four members**: `passiveId`, `passiveProgress`, the
-   conditional `passiveResetOverride`, and `equippedCards`. The rest of
+   fields, and carries **five members**: `passiveId`, `passiveProgress`, the
+   conditional `passiveResetOverride`, `equippedCards`, and `statusEffects[]`.
+   The rest of
    §2.3 — `PetId`/Identity, `Element`, `Tier`/`Star`/`Level`, combat stats
-   (`HP`, `MaxHP`, `ATK`, `DEF`, `Crit`, `Power`), `StatusEffects[]`,
+   (`HP`, `MaxHP`, `ATK`, `DEF`, `Crit`, `Power`),
    `NextAttackCritModifiers[]`, `CardCostModifiers[]`, `ATKModifiers[]`, and
    `EquippedRelics[]` —
    belongs to other subsystems or server-only calculation and is **not**
    delivered, per §4 item 4's rule that a payload carries only the implemented
    stage's own fields. Referring to `petState` as a whole does not widen that
-   rule.
+   rule. `StatusEffects[]` was on that exclusion list until `TASK-160`'s
+   **D-1A** Product Owner decision delivered it (item 14); it is therefore the
+   one member this sentence's list no longer names, and every other named
+   member remains excluded.
 3. **`passiveId` is always present and is the Passive's identity, not its
    definition.** It carries the same value `PetState.PassiveId` holds
    (`GAME_STATE.md` §2.3) — the identity `GAME_EVENTS.md` §2's
@@ -1739,6 +1789,157 @@ petState
       `CARD_RULES.md` §4, `API_CONTRACTS.md` §5.3). Client-side invocation
       of `PetSkillCast(battleId, clientSequence)` (§2) does not require a card
       or skill identifier; the server resolves it from this same loadout.
+14. **`statusEffects[]` is the active Pet's own active instances, and it is
+    always present as an array.** It carries `PetState.StatusEffects[]`
+    (`GAME_STATE.md` §2.3, §2.3.1) for the **active Pet** — the subject
+    `petState` already describes — and for that entity: no other entity's
+    collection travels under it, and no second collection is introduced. This
+    is the `TASK-160` **D-1A** Product Owner decision, and §4 item 17 records
+    that it is a decision rather than a derived fact.
+
+    - **Source.** The value is `GAME_STATE.md` §2.3.1's collection on the
+      active Pet, which `GAME_STATE.md` §5.1.1 mutates and which the single
+      post-resolution write-back (`GAME_STATE.md` §5.1) commits. It is read
+      from that state and reported; the push derives nothing and filters
+      nothing beyond projecting the entity it already names.
+    - **Member name and casing.** `statusEffects` — the same name
+      `GAME_STATE.md` §2.3.2 item 1 fixes for the serialized collection, and
+      the same name the `petState` object's sibling members already use
+      (`equippedCards`). §3.2.3 item 1's camelCase rule governs it, and the
+      name is stated explicitly rather than left to a naming policy
+      (§3.2.3 item 2). It is a **new wire name** for this record: the member
+      did not exist on `petState` before this revision.
+    - **Type.** An **array** of Status Effect instance objects. Each element is
+      the element shape `GAME_STATE.md` §2.3.2 item 3 fixes for the serialized
+      collection — `id` (string, required), `type` (string, required; one of
+      `"DoT"`, `"BuffDebuff"`, `"Shield"`, `"State"`), `source` (string,
+      required; `"player"` or `"boss"`), `magnitude` (number, required),
+      `targetStat` (string, optional), `remainingTurns` (integer, optional),
+      `expiryCondition` (string, optional) — in the same `camelCase` spelling
+      and with the same optional-member presence rules. This subsection
+      **references** that shape and states no second one: `GAME_STATE.md`
+      §2.3.2 owns the element's existence, type and meaning, as it does for the
+      serialized record.
+    - **Always present, and the empty case is `[]`.** The member is never
+      omitted and never `null`, and an active Pet with no active effect is sent
+      an **empty array**. This is `GAME_STATE.md` §2.3.2 item 1's
+      always-present-collection rule — "it is never omitted and never `null`" —
+      carried onto the wire, and it is the **opposite** of §3.2.5's
+      omitted-when-not-applicable convention: §3.2.5 governs a member that does
+      not apply to an event, while this member always applies and its empty
+      value is a real published value, exactly as §4.2 item 3 states for
+      `combo`/`matchCount` and §4.3 item 4 for `current`. A client must
+      therefore **not** read an absent `statusEffects` as "no effect is active",
+      and a producer must never spell "no effect is active" by omitting it.
+    - **Per-element optionality stays omission.** Within an element, the three
+      optional members follow `GAME_STATE.md` §2.3.1 item 7 — absent when they
+      do not apply, never `null`, never a sentinel string. That is §3.2.5's
+      convention in its own domain, and it is unchanged here.
+    - **Ordering is not semantic, and it is preserved.** No rule reads element
+      positions (`GAME_STATE.md` §2.3.1 item 10), so this projection imposes no
+      ordering and a client must not infer one; the array is delivered in the
+      order the state holds it, which is what the round trip preserves
+      (`GAME_STATE.md` §2.3.2 item 6).
+    - **The client renders it and computes none of it.** It displays the
+      instances the active Pet actually holds. It does not apply, refresh,
+      decrement, expire, or remove one, does not evaluate a duration or an
+      expiry condition, and does not re-derive the collection from `board`,
+      `turn`, `sequence`, `playerState`, or any event. `GAME_STATE.md` §5.1.1
+      and `COMBAT_RULES.md` §5 own that lifecycle and the server performs it
+      (`GAME_RULES.md` §18, `ADR-001`).
+    - **The state push and the events are not interchangeable, and no event
+      carries this list.** §4 item 6 applies unchanged: `statusEffects[]`
+      reports the **settled** collection under the payload's `sequence`, once
+      per resolved action. No Battle Event carries a Status Effect instance
+      collection, and this item introduces none: `GAME_EVENTS.md` §2's events
+      report the *changes* a resolution made, this member reports the resulting
+      state, and neither replaces the other.
+    - **No new method, event, subscription, or persistence behavior.** The
+      member rides the existing `BattleStateUpdated` push on its existing
+      trigger — join (§4.1 item 1) and every committed Swap's resolved-state
+      push (§2.1, §5). It adds no method to §2's three, no event to §3, and no
+      subscription, and it changes no storage contract: the collection is
+      already part of `BattleState` and already serializes with it
+      (`REDIS_STATE.md` §2 item 1, §7 item 9), so this revision defines a wire
+      member and nothing about persistence.
+
+## 4.4 Delivering the Boss HP Projection
+
+The Boss HP projection (`GAME_STATE.md` §2.4, `BossState`) extends this same
+push — it does not add a delivery path, a subscription, or an event:
+
+```text
+bossState
+├── hp                          the Boss's current HP      always present
+└── maxHp                       the Boss's MaxHP            always present
+```
+
+1. The client receives `bossState` together with `battleId`, `turn`, `sequence`,
+   `board`, `rngSeed`, `rngState`, `playerState`, and `petState` in the single
+   `BattleStateUpdated` push. It is delivered on join (§4.1 trigger) and on
+   every committed Swap's resolved-state push (§2.1, §5).
+2. **`bossState` carries exactly two members, and it is a projection, not
+   `BossState`.** The record is `hp` and `maxHp` and nothing else. The two are
+   a **narrowed projection** of `GAME_STATE.md` §2.4's authoritative
+   `BossState`, in the same sense §4.2 item 2 and §4.3 item 2 use for their own
+   objects — and, as those sections state, referring to the state field as a
+   whole does not widen the enumerated member set. A client must not read the
+   object as the Boss's state.
+3. **Which `BossState` fields are NOT delivered — explicitly.** Every other
+   §2.4 member stays server-side: `BossId`/Identity, `Element`, `ATK`, `DEF`,
+   `State`, `PassiveId`, `PassiveProgress`, `SkillCharge`, `SkillCooldown`, and
+   `StatusEffects[]`. This list is exhaustive for the current tree, and no
+   member of it may be added to `bossState` without a protocol change owned by
+   its own task. In particular **Boss `StatusEffects[]` is not delivered**: the
+   `TASK-160` **D-2A** ruling authorized Boss live HP only, and §4 item 17
+   records the same boundary from the Pet side. `BossState` is therefore still
+   not a wire member — `bossState` is a two-member projection *of* it, which is
+   the opposite of exposing it.
+4. **Both members are always present, and neither is optional.** `HP` and
+   `MaxHP` are defined from battle creation (`GAME_STATE.md` §2.4: a battle
+   always has its one Boss, at full health in its Initial State), so there is
+   no absent or "Boss not yet available" case for either member: neither is
+   nullable, neither is omitted, and `hp = 0` is a real published value — the
+   terminal value of a won battle — that is sent as `0`. This is the
+   always-present convention §4.2 item 3 and §4.3 item 4 state for their own
+   members, not §3.2.5's omitted-when-not-applicable one. A client must not
+   read an absent `hp` as zero.
+5. **Types.** Both are integers, read from `BossState.HP` and `BossState.MaxHP`
+   (`GAME_STATE.md` §2.4) and reported unchanged: the projection applies no
+   unit, scale, clamp, or rounding, and it never re-derives one member from the
+   other. The wire spelling is `camelCase` per §3.2.3 item 1, `maxHp` matching
+   the casing the existing REST battle-start summary already uses for the same
+   state member (`API_CONTRACTS.md` §3).
+6. **There is no "Boss unavailable" or terminal-state variant.** A battle is
+   created against exactly one Boss, and the projection reports the Boss's
+   current HP for as long as the battle exists. When the battle ends, the
+   result is expressed by the existing events — `BattleWon`/`BattleLost` and
+   their terminal `finalBossHp` (`§3.2.19`, `GAME_EVENTS.md` §2) — and, if the
+   battle is then removed, by the documented state-read outcomes
+   (`§7 item 3`, `REDIS_STATE.md` §3), which are unchanged. This item adds no
+   third spelling of "the Boss's HP at the end".
+7. **The client neither computes nor derives either value.** It renders the two
+   numbers it was sent. It does not damage the Boss, clamp `hp` to `maxHp`,
+   infer `MaxHP` from a damage report, predict a remaining-HP percentage, or
+   re-derive either member from `DamageCalculated`/`DamageDealt`/`DamageTaken`
+   or from `finalBossHp` (`GAME_RULES.md` §18, `ADR-001`). This is
+   authoritative Boss state made renderable, not client-side Boss logic.
+8. **No new message, method, or subscription is introduced.** There is no
+   `BossStateUpdated`, `BossHpChanged`, `BossHpUpdated`, or similar delivery:
+   this is a state push, not an event (§4 item 6), and the values travel
+   exactly as the board and the counters do. `BattleStateUpdated` remains the
+   only state-push method (§4 item 11). §4 item 2's closing sentence — which
+   stated that "any requirement for client-visible Boss HP or Boss
+   StatusEffects is a separate future protocol decision" — is answered for Boss
+   HP by this section and for Boss Status Effects by item 3 above: the
+   requirement was made, the decision authorized `hp`/`maxHp`, and the rest of
+   `BossState` remains undelivered.
+9. **Persistence is not extended by this section.** `bossState` is delivered
+   from whatever `BattleState` the server holds. `BossState` is already part of
+   that state and already serializes with it under the existing round-trip
+   obligation (`REDIS_STATE.md` §2 item 1, §7 item 9); this section defines a
+   payload member and no storage contract, adds no Redis key and no Redis-only
+   field, and changes no lifecycle, TTL, or compare-and-set rule.
 
 ---
 
@@ -1815,6 +2016,14 @@ without waiting for/parsing the event broadcast.
    see `REDIS_STATE.md` §3 TTL), the client treats the battle as ended and
    falls back to `GET /api/battle/{battleId}/result` (`API_CONTRACTS.md` §4).
 
+The snapshot is **the same projection** the §4 push carries, member for member:
+the record's own members (§4 item 4), `playerState` (§4.2 item 2), `petState`
+including `statusEffects[]` (§4.3 items 2 and 14), and `bossState` (§4.4). §7
+therefore defines no member set of its own, and a recovery cannot report a
+different member set from the push that preceded it — which is what lets a
+client re-render from either path with one model (`ADR-008`). This adds no
+method, event, or member: it states that the two existing paths agree.
+
 This section is the **reconnect/resync** mechanism only. It is not the
 initial-synchronization path — that is §4. The two are not interchangeable:
 §4 is an unsolicited push on join carrying the `GAME_STATE.md` §2.0 subset,
@@ -1866,3 +2075,16 @@ while §7 is a client-requested full-snapshot recovery per `ADR-008`.
 8. **An event log or replay channel.** Events are delivered once per resolution
    and are not re-delivered; a desynchronized client resynchronizes from a
    snapshot (§7, ADR-008), never by requesting missed events.
+9. **Any Status-Effect- or Boss-HP-specific message.** The Pet's active Status
+   Effect instances (`§4.3` item 14) and the Boss's live HP (`§4.4`) are
+   delivered by the existing `BattleStateUpdated` push, so neither introduces a
+   message of its own: there is no `StatusEffectsUpdated`, no
+   `StatusEffectApplied`/`StatusEffectExpired`, no `BossStateUpdated`, no
+   `BossHpChanged`, and no additional subscription, and none may be introduced.
+   The gameplay methods remain exactly the three of §2 and the delivery paths
+   remain exactly the three of §0/§3/§4/§6 — extending the state is how new data
+   is delivered, and extending this protocol's method list is not
+   (`§4` item 11). Nor is a Boss member the exception that reopens the narrow
+   projections: `bossState` is the two-member projection §4.4 item 2 fixes, not
+   `BossState`, and the Pet-side projection gains one member rather than
+   becoming `PetState` (`§4.3` item 2).

@@ -227,19 +227,34 @@ public readonly record struct StatusEffect(
     /// <paramref name="type"/> is <see cref="StatusEffectType.Shield"/>, whose
     /// documented model is trigger-based (§2.3.1 item 3).
     /// </exception>
+    /// <summary>
+    /// Builds a Turn-based instance that does not modify a stat — one that carries
+    /// <see cref="RemainingTurns"/> and no <see cref="TargetStat"/> (absent).
+    /// Used for <see cref="StatusEffectType.DoT"/>, <see cref="StatusEffectType.State"/>,
+    /// and the documented non-stat <see cref="StatusEffectType.BuffDebuff"/> exception
+    /// ("boss-thuy-ma-heal", <c>GAME_STATE.md</c> §2.3.1 item 7, <c>BOSS_RULES.md</c> §6.2.2).
+    /// </summary>
+    /// <param name="id">The effect identity.</param>
+    /// <param name="type">The effect category.</param>
+    /// <param name="source">Which side applied it.</param>
+    /// <param name="magnitude">The applied magnitude, uninterpreted.</param>
+    /// <param name="duration">The duration in Turns (must be at least 1).</param>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="id"/> is null, empty, or whitespace;
+    /// <paramref name="type"/> is <see cref="StatusEffectType.Shield"/>;
+    /// <paramref name="duration"/> is less than 1; or
+    /// <paramref name="type"/> is <see cref="StatusEffectType.BuffDebuff"/> and
+    /// <paramref name="id"/> is not the documented non-stat exception.
+    /// </exception>
     public static StatusEffect TurnBased(
         string id,
         StatusEffectType type,
         StatusEffectSource source,
         double magnitude,
-        int duration,
-        string? targetStat = null)
+        int duration)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
 
-        // §2.3.1 item 3: Shield is the documented trigger-based type ("until
-        // Shield is depleted"). Building it on the Turn countdown would give one
-        // effect two duration models, which item 3 states never happens.
         if (type == StatusEffectType.Shield)
         {
             throw new ArgumentException(
@@ -248,14 +263,76 @@ public readonly record struct StatusEffect(
                 nameof(type));
         }
 
-        // §2.3.1 item 7: TargetStat is "present iff Type = BuffDebuff". Both
-        // halves of the pairing are enforced, so neither a BuffDebuff without its
-        // stat nor another type carrying one can be represented.
-        if (type == StatusEffectType.BuffDebuff)
+        // §2.3.1 item 7 (GAME_STATE.md v2.18 / TASK-156 / TASK-157):
+        // a BuffDebuff carries TargetStat iff its Magnitude is consumed as a stat modifier;
+        // a BuffDebuff consumed by a non-stat rule selects by Id and omits TargetStat.
+        // The documented non-stat BuffDebuff exception is "boss-thuy-ma-heal" (BOSS_RULES.md §6.2.2).
+        // Any other BuffDebuff modifies a stat and MUST specify a TargetStat.
+        if (type == StatusEffectType.BuffDebuff &&
+            !string.Equals(id, "boss-thuy-ma-heal", StringComparison.Ordinal))
         {
-            ArgumentException.ThrowIfNullOrWhiteSpace(targetStat);
+            throw new ArgumentException(
+                $"BuffDebuff '{id}' requires a TargetStat (GAME_STATE.md §2.3.1 item 7).",
+                nameof(id));
         }
-        else if (!string.IsNullOrWhiteSpace(targetStat))
+
+        if (duration < 1)
+        {
+            throw new ArgumentException(
+                "A Turn-based Status Effect duration must be at least 1 Turn "
+                + "(GAME_STATE.md §2.3.1 item 8: RemainingTurns = 0 is never an "
+                + "observable committed value).",
+                nameof(duration));
+        }
+
+        return new StatusEffect(
+            id,
+            type,
+            source,
+            magnitude,
+            TargetStat: null,
+            RemainingTurns: duration,
+            ExpiryCondition: null);
+    }
+
+    /// <summary>
+    /// Builds a Turn-based <see cref="StatusEffectType.BuffDebuff"/> instance that modifies
+    /// a stat — carrying <see cref="RemainingTurns"/> and a required non-null <see cref="TargetStat"/>
+    /// (<c>GAME_STATE.md</c> §2.3.1 item 7).
+    /// </summary>
+    /// <param name="id">The effect identity.</param>
+    /// <param name="type">The effect category (must be <see cref="StatusEffectType.BuffDebuff"/>).</param>
+    /// <param name="source">Which side applied it.</param>
+    /// <param name="magnitude">The applied magnitude, uninterpreted.</param>
+    /// <param name="duration">The duration in Turns (must be at least 1).</param>
+    /// <param name="targetStat">The modified stat (e.g. "ATK").</param>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="id"/> or <paramref name="targetStat"/> is null, empty, or whitespace;
+    /// <paramref name="type"/> is not <see cref="StatusEffectType.BuffDebuff"/>;
+    /// <paramref name="duration"/> is less than 1; or
+    /// <paramref name="id"/> is the documented non-stat exception "boss-thuy-ma-heal"
+    /// which must omit TargetStat.
+    /// </exception>
+    public static StatusEffect TurnBased(
+        string id,
+        StatusEffectType type,
+        StatusEffectSource source,
+        double magnitude,
+        int duration,
+        string targetStat)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(id);
+        ArgumentException.ThrowIfNullOrWhiteSpace(targetStat);
+
+        if (type == StatusEffectType.Shield)
+        {
+            throw new ArgumentException(
+                "A Shield instance uses the trigger-based expiry model (GAME_STATE.md "
+                + "§2.3.1 item 3); build it with StatusEffect.TriggerBased.",
+                nameof(type));
+        }
+
+        if (type != StatusEffectType.BuffDebuff)
         {
             throw new ArgumentException(
                 $"TargetStat applies only to a BuffDebuff instance (GAME_STATE.md §2.3.1 "
@@ -263,9 +340,15 @@ public readonly record struct StatusEffect(
                 nameof(targetStat));
         }
 
-        // §2.3.1 item 8: 0 is never an observable committed RemainingTurns, so an
-        // instance that begins expired cannot be constructed. COMBAT_RULES.md §5.3
-        // DR5 makes expiry the step-19a transition to 0, not a construction value.
+        // §2.3.1 item 7 (GAME_STATE.md v2.18 / TASK-156 / TASK-157):
+        // a BuffDebuff consumed by a non-stat rule selects by Id and omits TargetStat.
+        if (string.Equals(id, "boss-thuy-ma-heal", StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"Non-stat BuffDebuff '{id}' must omit TargetStat (GAME_STATE.md §2.3.1 item 7).",
+                nameof(targetStat));
+        }
+
         if (duration < 1)
         {
             throw new ArgumentException(

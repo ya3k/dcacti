@@ -320,6 +320,7 @@ public sealed class BattleStateService
     /// pattern, as <see cref="_petConfiguration"/>.
     /// </summary>
     private readonly ConcurrentDictionary<string, BossConfiguration> _bossConfiguration = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, IReadOnlyList<RelicDefinition?>?> _relicConfiguration = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Creates the battle-state boundary over the active-state store and the
@@ -448,7 +449,8 @@ public sealed class BattleStateService
         PetConfiguration petConfiguration,
         BossDefinition bossDefinition,
         BattleSeed? seed = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<RelicDefinition?>? equippedRelicDefinitions = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
 
@@ -490,6 +492,10 @@ public sealed class BattleStateService
         // record was written above and is what every later read returns.
         _petConfiguration[battleId] = petConfiguration;
         _bossConfiguration[battleId] = bossConfiguration;
+        if (equippedRelicDefinitions != null)
+        {
+            _relicConfiguration[battleId] = equippedRelicDefinitions;
+        }
 
         return state;
     }
@@ -538,6 +544,32 @@ public sealed class BattleStateService
         ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
 
         return await _repository.GetAsync(battleId, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Returns the authoritative battle state for <paramref name="battleId"/> only if
+    /// the battle is owned by <paramref name="callerPlayerId"/>; otherwise returns <c>null</c>.
+    /// </summary>
+    public async Task<BattleState?> GetOwnedBattleStateAsync(
+        string battleId,
+        string callerPlayerId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(callerPlayerId);
+
+        var state = await _repository.GetAsync(battleId, cancellationToken).ConfigureAwait(false);
+        if (state is null)
+        {
+            return null;
+        }
+
+        if (state.PlayerId.Value != callerPlayerId)
+        {
+            return null;
+        }
+
+        return state;
     }
 
     /// <summary>
@@ -1089,7 +1121,7 @@ public sealed class BattleStateService
         // the Passive's definition, not of a resolution.
         var resolved = result.State with
         {
-            PetState = petState with { PassiveProgress = charged.Progress },
+            PetState = result.State.PetState with { PassiveProgress = charged.Progress },
         };
 
         // GAME_EVENTS.md §1, §1.1 / GAME_RULES.md §17 step 10: the events of this
@@ -1111,6 +1143,66 @@ public sealed class BattleStateService
         events.AddRange(result.Events);
         events.AddRange(charged.Charges.Select(BattleEvent.ForPassiveCharged));
         events.AddRange(charged.Triggers.Select(BattleEvent.ForPassiveTriggered));
+
+        // ===================================================================
+        // Step 11: Trigger Relics — GAME_RULES.md §17 step 11
+        // ===================================================================
+        if (_relicConfiguration.TryGetValue(battleId, out var relicDefinitions) && relicDefinitions != null)
+        {
+            var equippedRelicContents = new List<EquippedRelicContent>();
+            var equippedRelics = resolved.PetState.EquippedRelics ?? [];
+            for (var i = 0; i < equippedRelics.Length; i++)
+            {
+                var definition = i < relicDefinitions.Count ? relicDefinitions[i] : null;
+                if (definition != null)
+                {
+                    equippedRelicContents.Add(new EquippedRelicContent(equippedRelics[i], definition));
+                }
+            }
+
+            var relicResolution = RelicResolver.Resolve(
+                equippedRelicContents,
+                state.PetState with
+                {
+                    ATKModifiers = resolved.PetState.ATKModifiers,
+                    CardCostModifiers = resolved.PetState.CardCostModifiers,
+                    NextAttackCritModifiers = resolved.PetState.NextAttackCritModifiers,
+                },
+                resolved.MatchCount,
+                resolved.Combo);
+
+            events.AddRange(relicResolution.Triggered.Select(BattleEvent.ForRelicTriggered));
+            events.AddRange(relicResolution.PowerChanges.Select(BattleEvent.ForPowerChanged));
+
+            var relicPowerDelta = relicResolution.PetState.Power - state.PetState.Power;
+            var currentPower = Math.Clamp(resolved.PetState.Power + relicPowerDelta, 0, 100);
+
+            resolved = resolved with
+            {
+                PetState = resolved.PetState with
+                {
+                    Power = currentPower,
+                    ATKModifiers = relicResolution.PetState.ATKModifiers,
+                    CardCostModifiers = relicResolution.PetState.CardCostModifiers,
+                    NextAttackCritModifiers = relicResolution.PetState.NextAttackCritModifiers,
+                },
+            };
+        }
+
+        // ===================================================================
+        // Step 13: Update Power — GAME_RULES.md §17 step 13
+        // ===================================================================
+        var powerBefore = resolved.PetState.Power;
+        var petAfterPower = ResourceGenerator.ApplyPower(resolved.PetState, result.Resources);
+        var matchPowerDelta = petAfterPower.Power - powerBefore;
+        if (matchPowerDelta != 0)
+        {
+            resolved = resolved with { PetState = petAfterPower };
+            events.Add(BattleEvent.ForPowerChanged(new PowerChangedEvent(
+                PowerChangeSource.Match,
+                matchPowerDelta,
+                petAfterPower.Power)));
+        }
 
         // ===================================================================
         // Steps 6 (GAME_RULES.md §17 steps 15–17): Player → Boss Damage
@@ -1147,6 +1239,7 @@ public sealed class BattleStateService
             new DamagePipeline.DamageInputs(
                 Attack: StatusEffectLifecycle.EffectiveAttack(
                     resolved.PetState.ATK,
+                    resolved.PetState.ATKModifiers,
                     resolved.PetState.ActiveStatusEffects),
                 BaseDamagePool: result.Resources.BaseDamagePool,
                 Combo: resolved.Combo,
@@ -1344,6 +1437,38 @@ public sealed class BattleStateService
             events.AddRange(bossPassive.Triggers.Select(
                 trigger => BattleEvent.ForPassiveTriggered(
                     trigger with { Source = PassiveEventSource.Boss, SourceId = bossState.BossId.Value })));
+
+            // GAME_RULES.md §17 step 18a / BOSS_RULES.md §6.2: MVP Boss Passive Effects
+            if (bossPassive.Triggers.Count > 0)
+            {
+                if (string.Equals(bossState.PassiveId.Value, "boss-hoa-long-rage", StringComparison.Ordinal))
+                {
+                    // BOSS_RULES.md §6.2.1: +20% ATK for 3 turns, Turn-based BuffDebuff with TargetStat = "ATK".
+                    // Re-trigger refreshes duration to 3 turns, does not stack.
+                    var rageEffect = StatusEffect.TurnBased(
+                        "boss-hoa-long-rage",
+                        StatusEffectType.BuffDebuff,
+                        StatusEffectSource.Boss,
+                        magnitude: 20,
+                        duration: 3,
+                        targetStat: "ATK");
+
+                    bossState = bossState with
+                    {
+                        ActiveStatusEffects = StatusEffectLifecycle.Apply(bossState.ActiveStatusEffects, rageEffect),
+                    };
+                }
+                else if (string.Equals(bossState.PassiveId.Value, "boss-moc-yeu-regen", StringComparison.Ordinal))
+                {
+                    // BOSS_RULES.md §6.2.3: heals 5% MaxHP per trigger, truncated toward zero, clamped to MaxHP.
+                    var regenPerTrigger = (bossState.MaxHP * 5) / 100;
+                    var totalRegen = regenPerTrigger * bossPassive.Triggers.Count;
+                    bossState = bossState with
+                    {
+                        HP = Math.Min(bossState.HP + totalRegen, bossState.MaxHP),
+                    };
+                }
+            }
         }
 
         // ===================================================================
@@ -1499,8 +1624,9 @@ public sealed class BattleStateService
         //
         // No event is emitted: GAME_RULES.md §16's canonical list is closed and
         // BOSS_RULES.md §7 enumerates step 18's events. The effects are
-        // authoritative BattleState mutation, not transport events — and
-        // StatusEffects[] is not a wire member (GAME_STATE.md §2.3.1's wire note).
+        // authoritative BattleState mutation, not transport events — they reach
+        // the client as settled state through the existing BattleStateUpdated
+        // projection (SIGNALR_PROTOCOL.md §4.3 item 14), never as a new event.
         if (skillFires && bossDefinition.SkillDefinition.SecondaryEffect is { } skillEffect)
         {
             switch (skillEffect.Kind)
@@ -1556,15 +1682,25 @@ public sealed class BattleStateService
                     //
                     // No duration, stacking, refresh, or reset behavior is
                     // invented: §6.3.1 item 2 gives the reduction none.
+                    var powerBeforeDrain = resolved.PetState.Power;
+                    var powerAfterDrain = Math.Max(
+                        0,
+                        resolved.PetState.Power - (int)skillEffect.Magnitude);
                     resolved = resolved with
                     {
                         PetState = resolved.PetState with
                         {
-                            Power = Math.Max(
-                                0,
-                                resolved.PetState.Power - (int)skillEffect.Magnitude),
+                            Power = powerAfterDrain,
                         },
                     };
+                    var drained = powerBeforeDrain - powerAfterDrain;
+                    if (drained > 0)
+                    {
+                        events.Add(BattleEvent.ForPowerChanged(new PowerChangedEvent(
+                            PowerChangeSource.Boss,
+                            -drained,
+                            powerAfterDrain)));
+                    }
                     break;
                 }
 
@@ -1600,7 +1736,7 @@ public sealed class BattleStateService
                         StatusEffectSource.Boss,
                         skillEffect.Magnitude,
                         skillEffect.DurationTurns!.Value,
-                        skillEffect.TargetStat);
+                        skillEffect.TargetStat!);
 
                     resolved = resolved with
                     {

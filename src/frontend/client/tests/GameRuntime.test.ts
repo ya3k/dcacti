@@ -245,8 +245,8 @@ function serverCells(): string[] {
 /**
  * A well-formed `BattleStateUpdated` payload — the implemented
  * `GAME_STATE.md` §0 stage's fields: the §2.0.5 Board Foundation State fields
- * plus §2.2's `playerState` and §2.3's `petState` (SIGNALR_PROTOCOL.md §4,
- * §4.2, §4.3).
+ * plus §2.2's `playerState`, §2.3's `petState`, and §2.4's `bossState`
+ * (SIGNALR_PROTOCOL.md §4, §4.2, §4.3, §4.4).
  */
 function payload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -259,15 +259,20 @@ function payload(overrides: Record<string, unknown> = {}): Record<string, unknow
     // GAME_STATE.md §2.2: both values exist from battle creation and are always
     // delivered — including at 0, which is a value, not an absence.
     playerState: { combo: 0, matchCount: 0 },
-    // SIGNALR_PROTOCOL.md §4.3: exactly the three delivered members. The
+    // SIGNALR_PROTOCOL.md §4.3: the enumerated delivered members. The
     // `current / threshold` pair is always present; `passiveResetOverride` is
     // omitted here because a default reset is spelled by its absence (§4.3
-    // item 7).
+    // item 7); and `statusEffects` is always present — an active Pet with no
+    // active effect is an empty array, never an omission (§4.3 item 14).
     petState: {
       passiveId: 'xich-lang',
       passiveProgress: { threshold: 5, current: 0 },
       equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+      statusEffects: [],
     },
+    // SIGNALR_PROTOCOL.md §4.4: the two-member Boss HP projection. Both members
+    // are always present and neither is nullable (§4.4 item 4).
+    bossState: { hp: 5000, maxHp: 5000 },
     ...overrides,
   };
 }
@@ -793,6 +798,7 @@ describe('GameRuntime', () => {
           passiveId: 'thanh-xa-poison',
           passiveProgress: { threshold: 7, current: 3 },
           equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+          statusEffects: [],
         },
       });
 
@@ -802,6 +808,7 @@ describe('GameRuntime', () => {
         passiveId: 'thanh-xa-poison',
         passiveProgress: { threshold: 7, current: 3 },
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+        statusEffects: [],
       });
 
       // Exactly what was sent — not derived from `board`, `turn`, `sequence`,
@@ -825,6 +832,7 @@ describe('GameRuntime', () => {
               passiveProgress: { threshold: 5, current: 4 },
               passiveResetOverride: contractName,
               equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+              statusEffects: [],
             },
           })
         );
@@ -849,7 +857,7 @@ describe('GameRuntime', () => {
       expect('passiveResetOverride' in petState).toBe(false);
       expect(petState.passiveResetOverride).toBeUndefined();
       expect(Object.keys(petState).sort()).toEqual(
-        ['equippedCards', 'passiveId', 'passiveProgress'].sort()
+        ['equippedCards', 'passiveId', 'passiveProgress', 'statusEffects'].sort()
       );
     });
 
@@ -943,9 +951,12 @@ describe('GameRuntime', () => {
     });
 
     it('models no undocumented PetState member', async () => {
-      // §4.3 item 2: `petState` carries the Passive trio and equippedCards.
-      // The rest of GAME_STATE.md §2.3 — identity, progression, combat stats,
-      // and relics — belongs to other stages and is not delivered.
+      // §4.3 item 2: `petState` carries the enumerated members — the Passive
+      // identity, its progress pair, the conditional reset override,
+      // `equippedCards`, and the active Pet's `statusEffects`. The rest of
+      // GAME_STATE.md §2.3 — identity, progression, combat stats, the sibling
+      // modifier collections, and the Relic loadout — belongs to other stages
+      // and is not delivered.
       const { runtime, transport } = createRuntime();
       await runtime.initialize();
 
@@ -956,6 +967,7 @@ describe('GameRuntime', () => {
             passiveId: 'xich-lang',
             passiveProgress: { threshold: 5, current: 0 },
             equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+            statusEffects: [],
             petId: 'pet-1',
             element: 'Hoa',
             tier: 1,
@@ -967,18 +979,35 @@ describe('GameRuntime', () => {
             def: 25,
             crit: 5,
             power: 0,
-            statusEffects: [],
             equippedRelics: ['relic-a'],
+            nextAttackCritModifiers: [],
+            cardCostModifiers: [],
+            atkModifiers: [],
+          },
+          bossState: {
+            hp: 4200,
+            maxHp: 5000,
+            bossId: 'boss-hoa-long',
+            element: 'Fire',
+            atk: 60,
+            def: 30,
+            state: 'Idle',
+            passiveId: 'boss-hoa-long-rage',
+            passiveProgress: { threshold: 3, current: 1 },
+            skillCharge: 2,
+            skillCooldown: 0,
+            statusEffects: [],
           },
         })
       );
 
-      const petState = runtime.getBattleState()!.petState;
+      const state = runtime.getBattleState()!;
+      const petState = state.petState;
 
       // Only the documented members are modelled; the rest are dropped rather
       // than carried as an invented shape.
       expect(Object.keys(petState).sort()).toEqual(
-        ['equippedCards', 'passiveId', 'passiveProgress'].sort()
+        ['equippedCards', 'passiveId', 'passiveProgress', 'statusEffects'].sort()
       );
 
       for (const undocumented of [
@@ -993,10 +1022,32 @@ describe('GameRuntime', () => {
         'def',
         'crit',
         'power',
-        'statusEffects',
         'equippedRelics',
+        'nextAttackCritModifiers',
+        'cardCostModifiers',
+        'atkModifiers',
       ]) {
         expect(petState).not.toHaveProperty(undocumented);
+      }
+
+      // §4.4 items 2–3: `bossState` is a two-member projection, not `BossState`.
+      // Every other §2.4 member — including the Boss's own `StatusEffects[]` —
+      // is dropped rather than modelled.
+      expect(Object.keys(state.bossState).sort()).toEqual(['hp', 'maxHp'].sort());
+
+      for (const hiddenBossMember of [
+        'bossId',
+        'element',
+        'atk',
+        'def',
+        'state',
+        'passiveId',
+        'passiveProgress',
+        'skillCharge',
+        'skillCooldown',
+        'statusEffects',
+      ]) {
+        expect(state.bossState).not.toHaveProperty(hiddenBossMember);
       }
     });
 
@@ -1012,11 +1063,202 @@ describe('GameRuntime', () => {
             passiveId: 'xich-lang',
             passiveProgress: { threshold: 5, current: 0 },
             equippedCards: loadout,
+            statusEffects: [],
           },
         })
       );
 
       expect(runtime.getBattleState()!.petState.equippedCards).toEqual(loadout);
+    });
+
+    it('carries the delivered statusEffects array verbatim', async () => {
+      // SIGNALR_PROTOCOL.md §4.3 item 14 / GAME_STATE.md §2.3.1: the active
+      // Pet's active Status Effect instances are delivered through the same push
+      // and are read as sent. The client renders them and derives nothing: it
+      // does not apply, refresh, decrement, expire, or remove an instance, and
+      // does not evaluate a duration or an expiry condition (GAME_RULES.md §18).
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const effects = [
+        // A Turn-based instance with no TargetStat: `targetStat` and
+        // `expiryCondition` do not apply and are absent (§2.3.1 item 7).
+        { id: 'Burn', type: 'DoT', source: 'boss', magnitude: 25, remainingTurns: 2 },
+        // A trigger-based instance: `remainingTurns` does not apply and is absent
+        // — the two duration models are mutually exclusive (§2.3.1 item 3).
+        { id: 'Shield', type: 'Shield', source: 'player', magnitude: 100, expiryCondition: 'ShieldDepleted' },
+        // A stat-modifying BuffDebuff: `targetStat` applies and is present.
+        { id: 'Root', type: 'BuffDebuff', source: 'boss', magnitude: -30, targetStat: 'ATK', remainingTurns: 3 },
+      ];
+
+      transport.emit(
+        'BattleStateUpdated',
+        payload({
+          petState: {
+            passiveId: 'xich-lang',
+            passiveProgress: { threshold: 5, current: 0 },
+            equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+            statusEffects: effects,
+          },
+        })
+      );
+
+      const delivered = runtime.getBattleState()!.petState.statusEffects;
+
+      // Exactly what was sent, element for element and order for order: element
+      // order is not semantic (§2.3.1 item 10) but is preserved, not reordered.
+      expect(delivered).toEqual(effects);
+
+      // A member that does not apply stays ABSENT rather than becoming `null` or
+      // an invented value (§2.3.1 item 7, §3.2.5).
+      expect('targetStat' in delivered[0]).toBe(false);
+      expect('expiryCondition' in delivered[0]).toBe(false);
+      expect('remainingTurns' in delivered[1]).toBe(false);
+    });
+
+    it('carries an empty statusEffects collection as an empty array, not an absence', async () => {
+      // §4.3 item 14: the member is always present and an active Pet with no
+      // active effect is sent an EMPTY ARRAY. This is the opposite of §3.2.5's
+      // omitted-when-not-applicable convention, and a consumer must not read an
+      // absent `statusEffects` as "no effect is active".
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      transport.emit('BattleStateUpdated', payload());
+
+      const statusEffects = runtime.getBattleState()!.petState.statusEffects;
+
+      expect(statusEffects).toEqual([]);
+      expect('statusEffects' in runtime.getBattleState()!.petState).toBe(true);
+    });
+
+    it('rejects a payload that omits statusEffects rather than reading it as empty', async () => {
+      // §4.3 item 14 / GAME_STATE.md §2.3.2 item 1: the collection "always
+      // exists ... it is never omitted and never null", so an omission is outside
+      // the contract. Reading it as "no effect is active" would accept a second
+      // spelling of that fact (GAME_STATE.md §0 item 5), so the payload is
+      // malformed and the runtime must not fabricate the member.
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      const events: string[] = [];
+      runtime.onRuntimeEvent((e) => events.push(e.type));
+
+      transport.emit(
+        'BattleStateUpdated',
+        payload({
+          petState: {
+            passiveId: 'xich-lang',
+            passiveProgress: { threshold: 5, current: 0 },
+            equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+          },
+        })
+      );
+
+      expect(runtime.getBattleState()).toBeNull();
+      expect(events).toContain('runtime_error');
+    });
+
+    it('rejects a malformed statusEffects element rather than defaulting it', async () => {
+      // §2.3.1 items 1–2: `id`, `type`, `source`, and `magnitude` are required on
+      // every instance, so an element missing one is malformed rather than
+      // defaultable. The client must not invent the missing member.
+      const malformedElements: unknown[][] = [
+        // No `id`.
+        [{ type: 'DoT', source: 'boss', magnitude: 25, remainingTurns: 2 }],
+        // No `type`.
+        [{ id: 'Burn', source: 'boss', magnitude: 25, remainingTurns: 2 }],
+        // No `source`.
+        [{ id: 'Burn', type: 'DoT', magnitude: 25, remainingTurns: 2 }],
+        // No `magnitude`.
+        [{ id: 'Burn', type: 'DoT', source: 'boss', remainingTurns: 2 }],
+        // Ill-typed members.
+        [{ id: 7, type: 'DoT', source: 'boss', magnitude: 25, remainingTurns: 2 }],
+        [{ id: 'Burn', type: 'DoT', source: 'boss', magnitude: '25', remainingTurns: 2 }],
+        [{ id: 'Burn', type: 'DoT', source: 'boss', magnitude: 25, remainingTurns: '2' }],
+        // Not an object.
+        ['Burn'],
+      ];
+
+      for (const statusEffects of malformedElements) {
+        const { runtime, transport } = createRuntime();
+        await runtime.initialize();
+
+        const events: string[] = [];
+        runtime.onRuntimeEvent((e) => events.push(e.type));
+
+        transport.emit(
+          'BattleStateUpdated',
+          payload({
+            petState: {
+              passiveId: 'xich-lang',
+              passiveProgress: { threshold: 5, current: 0 },
+              equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+              statusEffects,
+            },
+          })
+        );
+
+        expect(runtime.getBattleState()).toBeNull();
+        expect(events).toContain('runtime_error');
+      }
+    });
+
+    it('carries the delivered Boss hp and maxHp unchanged', async () => {
+      // SIGNALR_PROTOCOL.md §4.4 / GAME_STATE.md §2.4: the Boss's live health is
+      // delivered as the two-member `bossState` projection and is read as sent.
+      // The client does not damage the Boss, clamp `hp` to `maxHp`, infer one
+      // from the other, or re-derive either from `finalBossHp` (§4.4 items 5, 7).
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      transport.emit('BattleStateUpdated', payload({ bossState: { hp: 4200, maxHp: 5000 } }));
+
+      expect(runtime.getBattleState()!.bossState).toEqual({ hp: 4200, maxHp: 5000 });
+    });
+
+    it('carries an hp of 0 as a real published value', async () => {
+      // §4.4 item 4: `hp = 0` is the terminal value of a won battle and is a real
+      // published value sent as `0` — never an omission and never null.
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+
+      transport.emit('BattleStateUpdated', payload({ bossState: { hp: 0, maxHp: 5000 } }));
+
+      expect(runtime.getBattleState()!.bossState.hp).toBe(0);
+    });
+
+    it('rejects a payload missing a bossState member rather than defaulting it', async () => {
+      // §4.4 item 4: both members are always present and neither is optional —
+      // the Boss exists from battle creation at full health, so there is no
+      // absent case and a client must not read an absent `hp` as zero.
+      const malformed = [
+        // No `bossState` at all.
+        { bossState: undefined },
+        // No `hp`.
+        { bossState: { maxHp: 5000 } },
+        // No `maxHp`.
+        { bossState: { hp: 4200 } },
+        // Ill-typed members.
+        { bossState: { hp: '4200', maxHp: 5000 } },
+        { bossState: { hp: 4200, maxHp: null } },
+        // The empty array is not the absent case, but a non-number is still not a
+        // Boss HP value.
+        { bossState: [] },
+      ];
+
+      for (const override of malformed) {
+        const { runtime, transport } = createRuntime();
+        await runtime.initialize();
+
+        const events: string[] = [];
+        runtime.onRuntimeEvent((e) => events.push(e.type));
+
+        transport.emit('BattleStateUpdated', payload(override));
+
+        expect(runtime.getBattleState()).toBeNull();
+        expect(events).toContain('runtime_error');
+      }
     });
 
     it('rejects an explicit null reset override rather than reading it as a default', async () => {
@@ -1063,6 +1305,7 @@ describe('GameRuntime', () => {
           passiveId: 'xich-lang',
           passiveProgress: { threshold: 5, current: 3 },
           equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+          statusEffects: [],
         },
       });
 
@@ -1079,7 +1322,8 @@ describe('GameRuntime', () => {
       await runtime.initialize();
 
       // No Status/lifecycle value exists in the protocol (§8.3); an unexpected
-      // field is not modelled and not carried into the runtime's copy.
+      // field is not modelled and not carried into the runtime's copy. The
+      // board-foundation stage exposes exactly the enumerated §4 members.
       transport.emit('BattleStateUpdated', payload({ status: 'READY' }));
 
       expect(runtime.getBattleState()).toEqual(payload());
@@ -1092,6 +1336,7 @@ describe('GameRuntime', () => {
         'board',
         'playerState',
         'petState',
+        'bossState',
       ]);
     });
 
@@ -1248,6 +1493,63 @@ describe('GameRuntime', () => {
       expect(runtime.getState().sync).toBe('synchronized');
       expect(runtimeEvents).toContain('battle_state_changed');
       expect(recoveredStates).toEqual([recovered]);
+    });
+
+    it('recovers the same projection the §4 push carries, statusEffects and bossState included', async () => {
+      // SIGNALR_PROTOCOL.md §7.1: the reconnect snapshot "is the same projection
+      // the §4 push carries, member for member" — the record's own members,
+      // `playerState`, `petState` including `statusEffects[]`, and `bossState`.
+      // §7 therefore defines no member set of its own, and a recovered client must
+      // be able to re-render the active Pet's Status Effects and the Boss's live
+      // health from either path with one model (ADR-008).
+      const { runtime, transport } = await joinedRuntime();
+
+      const recovered = payload({
+        turn: 7,
+        sequence: 8,
+        bossState: { hp: 3100, maxHp: 5000 },
+        petState: {
+          passiveId: 'xich-lang',
+          passiveProgress: { threshold: 5, current: 2 },
+          equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+          statusEffects: [
+            { id: 'Burn', type: 'DoT', source: 'boss', magnitude: 25, remainingTurns: 2 },
+          ],
+        },
+      });
+
+      transport.getBattleStateResult = { accepted: true, serverSequence: 8, state: recovered };
+
+      reconnect(transport);
+
+      await vi.waitFor(() => {
+        expect(runtime.getBattleState()).toEqual(recovered);
+      });
+
+      const state = runtime.getBattleState()!;
+
+      // The recovered Pet collection is the delivered one, element for element.
+      expect(state.petState.statusEffects).toEqual([
+        { id: 'Burn', type: 'DoT', source: 'boss', magnitude: 25, remainingTurns: 2 },
+      ]);
+
+      // The recovered Boss HP is the delivered pair — not re-derived from the
+      // stale copy the runtime held before the reconnect.
+      expect(state.bossState).toEqual({ hp: 3100, maxHp: 5000 });
+
+      // And the recovered state carries exactly the §4 member set: recovery adds
+      // no member of its own, and the two new projections are present on it.
+      expect(Object.keys(state)).toEqual([
+        'battleId',
+        'turn',
+        'sequence',
+        'rngSeed',
+        'rngState',
+        'board',
+        'playerState',
+        'petState',
+        'bossState',
+      ]);
     });
 
     it('replaces the stale runtime copy instead of merging into it', async () => {

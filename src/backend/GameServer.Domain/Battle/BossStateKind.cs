@@ -33,10 +33,11 @@ namespace GameServer.Domain.Battle;
 /// client never computes it, and it is exposed only through emitted events and
 /// rendered state.
 ///
-/// <b>No wire representation is defined here.</b> <c>SIGNALR_PROTOCOL.md</c>
-/// declares no <c>bossState</c> payload member at this stage, so no
-/// contract-name mapping and no <c>JsonPropertyName</c> contract is declared by
-/// this type.
+/// <b>No wire representation is defined here.</b> <c>SIGNALR_PROTOCOL.md</c> §4.4
+/// fixes the <c>bossState</c> payload member to exactly <c>hp</c> and
+/// <c>maxHp</c> and names <c>State</c> among the <c>BossState</c> members that are
+/// <b>not</b> delivered, so no contract-name mapping and no
+/// <c>JsonPropertyName</c> contract is declared by this type.
 /// </summary>
 public enum BossStateKind
 {

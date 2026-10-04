@@ -154,8 +154,10 @@ internal static class BattleStateJsonNames
 /// <c>SIGNALR_PROTOCOL.md</c>'s and lives at the Api boundary
 /// (<c>BattleHub.ToPayload</c>); it delivers a different, protocol-fixed subset
 /// (for example, <c>LastCommittedSwapPair</c> is deliberately never delivered —
-/// §4 item 12). This mapping carries the whole authoritative state for
-/// persistence, which is a different question from what the client is sent.
+/// §4 item 12, and the <c>bossState</c> projection carries only <c>hp</c> and
+/// <c>maxHp</c> — §4.4 item 3). This mapping carries the whole authoritative
+/// state for persistence, which is a different question from what the client is
+/// sent.
 ///
 /// <b>Optional members are nullable and omitted when absent.</b>
 /// <c>LastCommittedSwapPair</c> is <c>null</c> until the first Swap is committed,

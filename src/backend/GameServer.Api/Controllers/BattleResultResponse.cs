@@ -104,12 +104,94 @@ public record BattleResultResponse(
     /// substituted value stands in for what the row actually holds
     /// (<c>AGENTS.md</c> §7).
     /// </summary>
-    private static JsonElement ParseRewards(string rewardSummary)
+    internal static JsonElement ParseRewards(string rewardSummary)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(rewardSummary);
 
         using var document = JsonDocument.Parse(rewardSummary);
 
         return document.RootElement.Clone();
+    }
+}
+
+/// <summary>
+/// One <c>GET /api/battle/history</c> element (<c>API_CONTRACTS.md</c> §4.5).
+///
+/// <code>
+/// {
+///   "battleId":      "string",
+///   "outcome":       "victory" | "defeat",
+///   "rewards":       { ...the 8-member RewardSummary... },
+///   "durationTurns": 0,
+///   "completedAt":   "string"
+/// }
+/// </code>
+///
+/// <b>It is the §4 shape plus exactly one member.</b> §4.5 note 2: the four
+/// members <c>battleId</c>, <c>outcome</c>, <c>rewards</c>, and
+/// <c>durationTurns</c> "carry exactly the same meaning, source, type, and value
+/// vocabulary as the <c>GET /api/battle/{battleId}/result</c> 200 response … A
+/// history element is a §4 result object plus exactly one further member (note
+/// 3)". That is why this type carries the §4 object and adds one member, rather
+/// than restating or re-mapping the four: the §4 projection is applied once
+/// (<see cref="BattleResultResponse.From"/>) so the two responses cannot drift
+/// into two vocabularies for one battle, and §4's own contract is untouched by
+/// this addition.
+///
+/// <b>It exposes no Boss or Pet identifier.</b> §4.5 note 12: neither
+/// <c>bossDefinitionId</c>/<c>bossId</c> nor <c>petInstanceId</c>/<c>petId</c> is
+/// a member of a history element, "even though <c>BattleResult</c> persists
+/// both". The element member set is exactly the five members above and no more —
+/// so the persisted <c>PetInstanceId</c>, <c>BossDefinitionId</c>, and
+/// <c>PlayerId</c> stay internal, as they do in §4.
+/// </summary>
+/// <param name="Result">
+/// The §4 result members (<c>API_CONTRACTS.md</c> §4.5 note 2) — the same
+/// <c>battleId</c>, <c>outcome</c>, <c>rewards</c>, and <c>durationTurns</c> the
+/// single-result endpoint returns for that battle.
+/// </param>
+/// <param name="CompletedAt">
+/// <c>BattleResult.CompletedAt</c> — the server clock reading captured on the
+/// battle-end path when the durable result was written
+/// (<c>API_CONTRACTS.md</c> §4.5 note 3; <c>DATABASE.md</c> §1 "Duration and
+/// completion sourcing" item 2). It is the row's own persisted instant: it is
+/// never generated or re-read while serving history, never client-sourced, and
+/// never modified here. §4.5 note 3 fixes its type and exact serialization as the
+/// persisted column's, which <c>DATABASE.md</c> §1 leaves to implementation and
+/// which asserts no timezone — so this boundary states no format of its own and
+/// lets the application's established <c>System.Text.Json</c> convention
+/// serialize the value (<c>DateTimeOffset</c>, round-trippable ISO 8601 with its
+/// offset).
+/// </param>
+public sealed record BattleHistoryItemResponse(
+    [property: JsonPropertyName("battleId")] string BattleId,
+    [property: JsonPropertyName("outcome")] string Outcome,
+    [property: JsonPropertyName("rewards")] JsonElement Rewards,
+    [property: JsonPropertyName("durationTurns")] int DurationTurns,
+    [property: JsonPropertyName("completedAt")] DateTimeOffset CompletedAt)
+{
+    /// <summary>
+    /// Builds the documented history element from a stored result — a pure field
+    /// mapping that decides nothing.
+    ///
+    /// The four §4 members come from <see cref="BattleResultResponse.From"/>, so
+    /// the history element and the single-result response are the same projection
+    /// rather than two implementations of §4. The one member this endpoint adds,
+    /// <c>completedAt</c>, is read straight from the row
+    /// (<c>API_CONTRACTS.md</c> §4.5 note 3).
+    /// </summary>
+    /// <param name="result">The stored result row.</param>
+    public static BattleHistoryItemResponse From(BattleResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+
+        var section4 = BattleResultResponse.From(result);
+
+        return new BattleHistoryItemResponse(
+            section4.BattleId,
+            section4.Outcome,
+            section4.Rewards,
+            section4.DurationTurns,
+            result.CompletedAt);
     }
 }

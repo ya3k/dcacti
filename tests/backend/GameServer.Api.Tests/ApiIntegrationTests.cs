@@ -418,16 +418,17 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         // BattleId, Turn, Sequence, RngSeed, RngState, BoardState (GAME_STATE.md §2.0.5)
-        // plus the root Combo/MatchCount accounting projected as `playerState` (§2.2)
-        // and PetState (§2.3, the combat-stat / Pet / Passive stage).
+        // plus the root Combo/MatchCount accounting projected as `playerState` (§2.2),
+        // PetState (§2.3, including the active Pet's active Status Effects per §2.3.1),
+        // and the Boss HP projection (§2.4).
         // SIGNALR_PROTOCOL.md §4 item 4: no other field may be added to this record.
         // §8.3: no Status/lifecycle value.
         var fields = payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal);
         Assert.Equal(
             new[]
             {
-                "battleId", "board", "petState", "playerState", "rngSeed", "rngState",
-                "sequence", "turn",
+                "battleId", "board", "bossState", "petState", "playerState", "rngSeed",
+                "rngState", "sequence", "turn",
             },
             fields);
 
@@ -441,11 +442,12 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             new[] { "combo", "matchCount" },
             playerState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
-        // §4.3 item 2 / item 13: the nested PetState object carries exactly the four
+        // §4.3 item 2 / items 13–14: the nested PetState object carries exactly the five
         // members the Pet / Passive stage fixes — the Passive identity, its progress pair,
-        // the conditional reset override, and equippedCards. The rest of GAME_STATE §2.3 (PetId,
-        // Element, Tier/Star/Level, combat stats, StatusEffects, EquippedRelics) belongs
-        // to other stages or server-only calculation and is not delivered.
+        // the conditional reset override, equippedCards, and the active Pet's active
+        // Status Effects. The rest of GAME_STATE §2.3 (PetId, Element, Tier/Star/Level,
+        // combat stats, the sibling modifier collections, EquippedRelics) belongs to
+        // other stages or server-only calculation and is not delivered.
         var petState = payload.GetProperty("petState");
         var petFields = petState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal);
 
@@ -453,7 +455,7 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         // non-default reset (§4.3 item 6), and the battle created here uses the
         // default (§4 item 1), so the member is omitted entirely — never written as
         // JSON null and never spelled "Default" (§4.3 item 7).
-        Assert.Equal(new[] { "equippedCards", "passiveId", "passiveProgress" }, petFields);
+        Assert.Equal(new[] { "equippedCards", "passiveId", "passiveProgress", "statusEffects" }, petFields);
         Assert.False(petState.TryGetProperty("passiveResetOverride", out _));
 
         // §4.3 item 13: `equippedCards` is the battle-scoped loadout snapshot (4 strings).
@@ -470,6 +472,30 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                 .EnumerateObject()
                 .Select(p => p.Name)
                 .OrderBy(n => n, StringComparer.Ordinal));
+
+        // §4.3 item 14 / GAME_STATE.md §2.3.2 item 1: `statusEffects` is an array and it
+        // is ALWAYS present — an active Pet with no active effect is sent an EMPTY array,
+        // never an omission and never null. A battle created here applies no effect
+        // (no content-defined source applies one at creation, GAME_STATE.md §5.1.1 item
+        // 1), so the empty case is the one delivered.
+        Assert.True(petState.TryGetProperty("statusEffects", out var statusEffects));
+        Assert.Equal(JsonValueKind.Array, statusEffects.ValueKind);
+        Assert.Empty(statusEffects.EnumerateArray());
+
+        // §4.4: `bossState` is the two-member Boss HP projection — `hp` and `maxHp` and
+        // nothing else. Both are always present and neither is nullable: the Boss exists
+        // from battle creation at full health (GAME_STATE.md §2.4.1), so `hp` equals
+        // `maxHp` here and is delivered as a real value rather than by absence.
+        var bossState = payload.GetProperty("bossState");
+        Assert.Equal(
+            new[] { "hp", "maxHp" },
+            bossState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        var bossHp = bossState.GetProperty("hp");
+        var bossMaxHp = bossState.GetProperty("maxHp");
+        Assert.Equal(JsonValueKind.Number, bossHp.ValueKind);
+        Assert.Equal(JsonValueKind.Number, bossMaxHp.ValueKind);
+        Assert.Equal(bossMaxHp.GetInt32(), bossHp.GetInt32());
 
         await hubConnection.StopAsync();
     }
@@ -588,8 +614,13 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
         var serialized = payload.GetRawText();
 
-        // GAME_STATE.md §2.0.3, §2.0.5, SIGNALR_PROTOCOL.md §8.3.
-        Assert.DoesNotContain("status", serialized, StringComparison.OrdinalIgnoreCase);
+        // GAME_STATE.md §2.0.3, §2.0.5, SIGNALR_PROTOCOL.md §8.3: no lifecycle value
+        // is carried anywhere in the protocol, and this record carries no `status`
+        // member. `statusEffects` (§4.3 item 14) is a different fact — the active
+        // Pet's active Status Effect instances — and is not a lifecycle value, so it
+        // is matched as a member name rather than excluded as a substring.
+        Assert.False(payload.TryGetProperty("status", out _));
+        Assert.False(payload.GetProperty("petState").TryGetProperty("status", out _));
 
         foreach (var lifecycle in new[]
                  {
@@ -619,13 +650,13 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
         var serialized = payload.GetRawText();
 
-        // GAME_STATE.md §2.0.5.3 / §2.2 / §2.3: BossState is still absent and owned
-        // by a later stage, and so is the rest of PetState (HP, Power, Status,
-        // Cards, Relics as wire members, PetId, Element, Tier). The board,
-        // RNG, and the two state objects `playerState`/`petState` ARE part of the
-        // implemented stage —
-        // §2.0.5 for the first two, §2.2 for combo/matchCount, and §2.3 for
-        // passiveId/passiveProgress — so they are not in this list.
+        // GAME_STATE.md §2.0.5.3 / §2.2 / §2.3: the gameplay-system fields that are
+        // still owned by later stages or by server-only calculation stay absent. The
+        // board, RNG, and the state objects `playerState`/`petState`/`bossState` ARE
+        // part of the implemented stage — §2.0.5 for the first two, §2.2 for
+        // combo/matchCount, §2.3 for the Passive trio, `equippedCards`, and the active
+        // Pet's `statusEffects`, and §2.4 for the Boss's `hp`/`maxHp` — so neither
+        // their names nor the two Boss-health members are in this list.
         //
         // PendingSpecialGems[] is in the list for a different reason: it is not a
         // deferred field at all — it does not exist in any form
@@ -633,7 +664,7 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         // cell entry of `board`, so no top-level field for it may appear.
         //
         // The list is matched against the *field names* of the top-level envelope and
-        // of the two nested state objects rather than against the raw payload: the
+        // of the nested state objects rather than against the raw payload: the
         // board's cell values legitimately include the Gem contract names (`HP`,
         // `POWER`, MATCH3_RULES.md §1.1), which are not gameplay state. Cell contents
         // are therefore outside this assertion's scope by construction — which is what
@@ -643,12 +674,20 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             .EnumerateObject()
             .Select(p => p.Name)
             .ToArray();
+        var petStateFields = payload.GetProperty("petState")
+            .EnumerateObject()
+            .Select(p => p.Name)
+            .ToArray();
+        var bossStateFields = payload.GetProperty("bossState")
+            .EnumerateObject()
+            .Select(p => p.Name)
+            .ToArray();
 
         foreach (var laterStageField in new[]
                  {
-                     "bossState", "pendingSpecialGems",
-                     "damage", "power", "hp", "maxHp", "atk", "def", "crit",
-                     "status", "statusEffects", "equippedRelics", "equippedCards",
+                     "pendingSpecialGems",
+                     "damage", "power", "atk", "def", "crit",
+                     "status", "equippedRelics",
                      "specialGems",
                  })
         {
@@ -660,6 +699,32 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                 laterStageField,
                 playerStateFields,
                 StringComparer.OrdinalIgnoreCase);
+            Assert.DoesNotContain(
+                laterStageField,
+                petStateFields,
+                StringComparer.OrdinalIgnoreCase);
+            Assert.DoesNotContain(
+                laterStageField,
+                bossStateFields,
+                StringComparer.OrdinalIgnoreCase);
+        }
+
+        // §4.4 item 3: every other BossState member stays server-side. The `bossState`
+        // projection is `hp`/`maxHp` and nothing else, so the Boss's identity, Element,
+        // ATK/DEF, State, Passive, Skill charge/cooldown, and its own StatusEffects[]
+        // are all absent — and their absence is a property of this projection, not of an
+        // empty Domain state, because the created battle's BossState really holds them.
+        foreach (var hiddenBossField in new[]
+                 {
+                     "bossId", "identity", "element", "state", "passiveId",
+                     "passiveProgress", "threshold", "current",
+                     "skillCharge", "skillCooldown", "statusEffects",
+                 })
+        {
+            Assert.DoesNotContain(
+                hiddenBossField,
+                bossStateFields,
+                StringComparer.OrdinalIgnoreCase);
         }
 
         // The stage's own fields are the only ones present, and the `playerState`
@@ -668,29 +733,35 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         Assert.Equal(
             new[]
             {
-                "battleId", "board", "petState", "playerState", "rngSeed", "rngState",
-                "sequence", "turn",
+                "battleId", "board", "bossState", "petState", "playerState", "rngSeed",
+                "rngState", "sequence", "turn",
             },
             fields.OrderBy(n => n, StringComparer.Ordinal));
         Assert.Equal(
             new[] { "combo", "matchCount" },
             playerStateFields.OrderBy(n => n, StringComparer.Ordinal));
 
-        // `petState` carries exactly the three members §4.3 fixes: the Passive
-        // identity, its progress pair, and the conditional reset override. The rest of
-        // PetState (PetId, Element, Tier/Star/Level) belongs to later stages and is not
-        // delivered (§2.3, SIGNALR_PROTOCOL.md §4.3 item 2).
+        // §4.4 items 2 and 4: `bossState` carries exactly the two Boss HP members, and
+        // both are always present — the Boss exists from battle creation at full
+        // health, so neither is nullable and neither is omitted.
+        Assert.Equal(
+            new[] { "hp", "maxHp" },
+            bossStateFields.OrderBy(n => n, StringComparer.Ordinal));
+
+        // `petState` carries exactly the members §4.3 fixes: the Passive identity, its
+        // progress pair, the conditional reset override, `equippedCards`, and the active
+        // Pet's `statusEffects`. The rest of PetState (PetId, Element,
+        // Tier/Star/Level, combat stats, EquippedRelics) belongs to later stages and is
+        // not delivered (§2.3, SIGNALR_PROTOCOL.md §4.3 item 2).
         //
         // `passiveResetOverride` is omitted when the reset behavior is default
         // (§4.3 item 6), so whether it appears depends on the created battle's Passive.
-        // The two always-present members are asserted here; the omission rule itself is
+        // The four always-present members are asserted here; the omission rule itself is
         // covered by the §4.3 contract tests.
-        var petStateFields = payload.GetProperty("petState")
-            .EnumerateObject()
-            .Select(p => p.Name)
-            .ToArray();
         Assert.Contains("passiveId", petStateFields);
         Assert.Contains("passiveProgress", petStateFields);
+        Assert.Contains("equippedCards", petStateFields);
+        Assert.Contains("statusEffects", petStateFields);
 
         // `passiveProgress` is the nested `{ threshold, current }` pair, both always
         // present — neither is nullable and neither is omitted, so `current = 0` is
@@ -848,7 +919,11 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             // presence (§4.3 items 3–4).
             Assert.Equal("xich-lang", payload.GetProperty("petState").GetProperty("passiveId").GetString());
             Assert.Equal(
-                new[] { "current", "equippedCards", "passiveId", "passiveProgress", "passiveResetOverride", "threshold" },
+                new[]
+                {
+                    "current", "equippedCards", "passiveId", "passiveProgress",
+                    "passiveResetOverride", "statusEffects", "threshold",
+                },
                 EnumeratePetStateMemberPaths(payload).OrderBy(n => n, StringComparer.Ordinal));
 
             await hubConnection.StopAsync();
@@ -960,9 +1035,10 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
     [Fact]
     public async Task BattleStateUpdated_PetState_ShouldCarryNoMemberOutsideTheDocumentedWireMembers()
     {
-        // SIGNALR_PROTOCOL.md §4.3 item 2: `petState` carries EXACTLY the four
+        // SIGNALR_PROTOCOL.md §4.3 item 2: `petState` carries EXACTLY the five
         // members the Pet / Passive stage fixes — `passiveId`, `passiveProgress`,
-        // `equippedCards`, and the conditional `passiveResetOverride`. The rest of
+        // `equippedCards`, `statusEffects`, and the conditional
+        // `passiveResetOverride`. The rest of
         // GAME_STATE.md §2.3 belongs to the Pet identity, progression, Combat, and
         // Relic stages and is NOT delivered: §4 item 4 admits only the implemented
         // stage's own fields, and referring to `petState` as a whole does not
@@ -989,21 +1065,23 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
         // The complete permitted member set of the object, including the nested
         // progress pair's members: `passiveId`, `passiveProgress`, `threshold`,
-        // `current`, `equippedCards`, and — only when the Passive declares a
-        // non-default reset — `passiveResetOverride` (§4.3 items 3–7, 13).
+        // `current`, `equippedCards`, `statusEffects`, and — only when the Passive
+        // declares a non-default reset — `passiveResetOverride` (§4.3 items 3–7,
+        // 13–14).
         var permitted = new[]
         {
-            "passiveId", "passiveProgress", "threshold", "current", "equippedCards", "passiveResetOverride",
+            "passiveId", "passiveProgress", "threshold", "current", "equippedCards",
+            "passiveResetOverride", "statusEffects",
         };
 
         Assert.All(
             EnumeratePetStateMemberPaths(payload),
             path => Assert.Contains(path, permitted));
 
-        // The four members §4.3 fixes are the only direct members of the object,
+        // The five members §4.3 fixes are the only direct members of the object,
         // and the progress pair's are the only members of the nested pair.
         Assert.Equal(
-            new[] { "equippedCards", "passiveId", "passiveProgress" },
+            new[] { "equippedCards", "passiveId", "passiveProgress", "statusEffects" },
             petState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
         Assert.Equal(
             new[] { "current", "threshold" },
@@ -1014,15 +1092,15 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
         // The no-gameplay-system-field blocklist, scoped to `petState`. Every
         // member below is authoritative Domain state at this stage — the combat
-        // stats, the status collection, and the relic loadout snapshot that
-        // TASK-027 implemented into PetState — and none of them is a
+        // stats, the sibling modifier collections, and the relic loadout snapshot
+        // that TASK-027 implemented into PetState — and none of them is a
         // §4.3 wire member (GAME_STATE.md §2.3: "Domain state implemented is not
         // the same as client wire delivery").
         foreach (var domainOnlyMember in new[]
                  {
                      "hp", "maxHp", "atk", "def", "crit", "power",
-                     "status", "statusEffects",
-                     "equippedRelics",
+                     "status", "equippedRelics",
+                     "nextAttackCritModifiers", "cardCostModifiers", "atkModifiers",
                      "petId", "identity", "element", "tier", "star", "level",
                      "bossState", "resetBehavior", "hasResetOverride",
                  })
@@ -1032,10 +1110,84 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                 $"petState must not carry the Domain-only member '{domainOnlyMember}' (§4.3 item 2)");
         }
 
+        // §4.3 item 14: `statusEffects` IS delivered, and it is always an array — the
+        // empty array is how "no effect is active" is spelled, never an omission.
+        var statusEffects = petState.GetProperty("statusEffects");
+        Assert.Equal(JsonValueKind.Array, statusEffects.ValueKind);
+        Assert.Empty(statusEffects.EnumerateArray());
+
         // `passiveResetOverride` is the one conditional member, and this battle's
         // Passive uses the default reset, so it is omitted rather than written
         // (§4.3 items 6–7).
         Assert.False(petState.TryGetProperty("passiveResetOverride", out _));
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task BattleStateUpdated_BossState_ShouldCarryExactlyTheDocumentedBossHpProjection()
+    {
+        // SIGNALR_PROTOCOL.md §4.4: `bossState` is a TWO-member projection of
+        // GAME_STATE.md §2.4's authoritative BossState — `hp` and `maxHp` and
+        // nothing else. It is a narrowed projection, not `BossState`: referring to
+        // the state field as a whole does not widen the enumerated member set, and
+        // the TASK-160 D-2A ruling authorized Boss live HP only.
+        //
+        // The battle created here holds a full Domain `BossState` — identity,
+        // Element, ATK/DEF, State, Passive, and Skill charge/cooldown are all real
+        // values in the authoritative state — so the hidden members' absence is a
+        // property of this projection, not of an empty Domain state.
+        const string battleId = "battle-bossstate-projection";
+        await CreateBattleOnServerAsync(battleId);
+
+        var hubConnection = BuildHubConnection();
+        var received = new TaskCompletionSource<JsonElement>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        hubConnection.On<JsonElement>("BattleStateUpdated", payload => received.TrySetResult(payload));
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+        var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(payload.TryGetProperty("bossState", out var bossState));
+        Assert.Equal(JsonValueKind.Object, bossState.ValueKind);
+
+        // §4.4 item 2: exactly these two members, and no third.
+        var members = bossState.EnumerateObject().Select(p => p.Name).ToArray();
+        Assert.Equal(
+            new[] { "hp", "maxHp" },
+            members.OrderBy(n => n, StringComparer.Ordinal));
+
+        // §4.4 items 3–5: every other §2.4 member stays server-side. This list is
+        // exhaustive for the current tree (§4.4 item 3), and Boss StatusEffects[] is
+        // explicitly among the excluded members.
+        foreach (var hiddenBossMember in new[]
+                 {
+                     "bossId", "bossDefinitionId", "identity", "element", "atk", "def",
+                     "state", "passiveId", "passiveProgress", "threshold", "current",
+                     "skillCharge", "skillCooldown", "statusEffects",
+                 })
+        {
+            Assert.False(
+                bossState.TryGetProperty(hiddenBossMember, out _),
+                $"bossState must not carry the hidden BossState member '{hiddenBossMember}' (§4.4 item 3)");
+        }
+
+        // §4.4 items 4–5: both are integers, both are always present, and neither is
+        // nullable. The battle begins at full health, so the two are equal at
+        // creation — and neither is derived from the other, so `maxHp` is read and
+        // not inferred.
+        var hp = bossState.GetProperty("hp");
+        var maxHp = bossState.GetProperty("maxHp");
+        Assert.Equal(JsonValueKind.Number, hp.ValueKind);
+        Assert.Equal(JsonValueKind.Number, maxHp.ValueKind);
+        Assert.True(hp.GetInt32() > 0, "the Boss begins a battle at full health (GAME_STATE.md §2.4.1)");
+        Assert.Equal(hp.GetInt32(), maxHp.GetInt32());
+
+        // §4.4 item 6: there is no "Boss unavailable" or terminal variant of this
+        // object, so no third spelling of the Boss's HP travels beside it.
+        Assert.Equal(2, members.Length);
 
         await hubConnection.StopAsync();
     }
@@ -1153,8 +1305,8 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         Assert.Equal(
             new[]
             {
-                "battleId", "board", "petState", "playerState", "rngSeed", "rngState",
-                "sequence", "turn",
+                "battleId", "board", "bossState", "petState", "playerState", "rngSeed",
+                "rngState", "sequence", "turn",
             },
             payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
@@ -1168,8 +1320,10 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         // §4 item 4, §7.1: adding identity to the authoritative state adds NO wire
         // exposure. `PlayerId` is server state only — delivered by no stage
         // projection, no Battle Event, and no snapshot — and the petState payload is
-        // fixed by §4.3 item 2 to the Passive trio, so the owned Pet instance
-        // identity is not a member either.
+        // fixed by §4.3 item 2 to its enumerated member set, so the owned Pet
+        // instance identity is not a member either. The `bossState` projection is
+        // likewise `hp`/`maxHp` alone (§4.4 item 3), so the Boss's identity is not
+        // exposed by it.
         //
         // This asserts the exclusion positively, at every depth of the real
         // serialized payload: neither the member names nor the recorded values may
@@ -1190,10 +1344,11 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
         var members = EnumerateMemberPaths(payload).ToArray();
 
+        // The identity member names, at any depth.
         foreach (var forbidden in new[]
                  {
-                     // The identity member names, at any depth.
                      "playerId", "petId", "petInstanceId", "petDefinitionId",
+                     "bossId", "bossDefinitionId",
                      // The state-store's own names for the same values.
                      "playerIdentity", "ownerId",
                  })
@@ -1213,15 +1368,15 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         Assert.Equal(
             new[]
             {
-                "battleId", "board", "petState", "playerState", "rngSeed", "rngState",
-                "sequence", "turn",
+                "battleId", "board", "bossState", "petState", "playerState", "rngSeed",
+                "rngState", "sequence", "turn",
             },
             payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
         // The petState object is likewise still exactly the §4.3 payload — the
-        // Passive trio plus equippedCards.
+        // Passive members, equippedCards, and the active Pet's own statusEffects.
         Assert.Equal(
-            new[] { "equippedCards", "passiveId", "passiveProgress" },
+            new[] { "equippedCards", "passiveId", "passiveProgress", "statusEffects" },
             payload.GetProperty("petState")
                 .EnumerateObject()
                 .Select(p => p.Name)
@@ -1814,15 +1969,15 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         // record is authoritative state that is deliberately NOT delivered. It is not
         // a member of this payload and no message carries it. The Swap delivers no
         // field of its own either: the resolved state travels through the same push,
-        // and `playerState` (§4.2) and `petState` (§4.3) are the implemented stages'
-        // own fields, not swap-specific ones.
+        // and `playerState` (§4.2), `petState` (§4.3), and `bossState` (§4.4) are the
+        // implemented stages' own fields, not swap-specific ones.
         var fields = payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal);
 
         Assert.Equal(
             new[]
             {
-                "battleId", "board", "petState", "playerState", "rngSeed", "rngState",
-                "sequence", "turn",
+                "battleId", "board", "bossState", "petState", "playerState", "rngSeed",
+                "rngState", "sequence", "turn",
             },
             fields);
 
@@ -1873,11 +2028,13 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
         // ---- 2. `petState` is still exactly the documented wire members ----------
         // SIGNALR_PROTOCOL.md §4.3 item 2: not one combat stat may appear here merely
-        // because PetState now stores them (GAME_STATE.md §2.3).
+        // because PetState now stores them (GAME_STATE.md §2.3). The delivered member
+        // set is the enumerated one — the Passive members, `equippedCards`, and the
+        // active Pet's `statusEffects` (§4.3 item 14).
         var petState = payload.GetProperty("petState");
 
         Assert.Equal(
-            new[] { "equippedCards", "passiveId", "passiveProgress" },
+            new[] { "equippedCards", "passiveId", "passiveProgress", "statusEffects" },
             petState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
         Assert.Equal(
@@ -1895,14 +2052,33 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             Assert.False(playerState.TryGetProperty(petCombatStat, out _));
         }
 
-        // ---- 3. The top-level envelope is unchanged ------------------------------
+        // ---- 3. The top-level envelope carries the documented members ------------
         Assert.Equal(
             new[]
             {
-                "battleId", "board", "petState", "playerState", "rngSeed", "rngState",
-                "sequence", "turn",
+                "battleId", "board", "bossState", "petState", "playerState", "rngSeed",
+                "rngState", "sequence", "turn",
             },
             payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        // ---- 4. `bossState` is the two-member projection, not the combat pool -----
+        // SIGNALR_PROTOCOL.md §4.4 item 2: the Boss's live HP arrives as `hp`/`maxHp`
+        // and nothing else, so no Boss combat stat beyond those two leaks in and the
+        // object is not `BossState`.
+        var bossState = payload.GetProperty("bossState");
+
+        Assert.Equal(
+            new[] { "hp", "maxHp" },
+            bossState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        foreach (var hiddenBossMember in new[]
+                 {
+                     "bossId", "element", "atk", "def", "state", "passiveId",
+                     "passiveProgress", "skillCharge", "skillCooldown", "statusEffects",
+                 })
+        {
+            Assert.False(bossState.TryGetProperty(hiddenBossMember, out _));
+        }
 
         // No `PlayerState` node reappears under any other spelling: ADR-011 items 1
         // and 5 forbid a second authoritative combat pool, and the wire has none.
@@ -2549,16 +2725,38 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                         >= bossDefinition.SkillChargeRequirement
                     && bossSkillCooldown == 0;
 
+                // GAME_RULES.md §17 step 18a runs BEFORE step 18b: the Boss Passive's
+                // EFFECT is applied first, and the step-18b/18c Boss attack then derives
+                // its Step-1 Attack from the state that application produced. For Hỏa
+                // Long that effect is Rage — +20% ATK for 3 turns as a Turn-based
+                // BuffDebuff with TargetStat = "ATK" (BOSS_RULES.md §6.2.1), applied
+                // when §6.2's "every 5 Player Matches" trigger fires
+                // (BattleStateService.cs step 18a). The expectation must therefore model
+                // the post-18a collection, exactly as the resolution's own step-18b read
+                // does — reading the pre-resolution snapshot would silently assume Rage
+                // is never active.
+                var bossEffectsAfterStep18a = bossPassive.Triggers.Count > 0
+                    && string.Equals(before.BossState.PassiveId.Value, "boss-hoa-long-rage", StringComparison.Ordinal)
+                        ? StatusEffectLifecycle.Apply(
+                            before.BossState.ActiveStatusEffects,
+                            StatusEffect.TurnBased(
+                                "boss-hoa-long-rage",
+                                StatusEffectType.BuffDebuff,
+                                StatusEffectSource.Boss,
+                                magnitude: 20,
+                                duration: 3,
+                                targetStat: "ATK"))
+                        : before.BossState.ActiveStatusEffects;
+
                 // COMBAT_RULES.md §3.4 "Boss Skill Step-1 composition": the Skill's
                 // Step 1 is EffectiveBossATK + the authored Skill Base Damage, and the
                 // Basic Attack's is EffectiveBossATK alone. §5.5.1 derives
                 // EffectiveBossATK from BossState.ATK and the Boss's active ATK
-                // modifiers — no MVP path applies one yet (Rage's application is the
-                // unimplemented step 18a half), so the derived value equals the stored
-                // stat here. It is still read through the documented consumer rather
-                // than assumed, so this expectation tracks the contract.
+                // modifiers as they stand at that read. The value stays derived through
+                // the documented consumer rather than assumed, so this expectation
+                // tracks the contract.
                 var effectiveBossAtk = StatusEffectLifecycle.EffectiveBossAttack(
-                    before.BossState.ATK, before.BossState.ActiveStatusEffects);
+                    before.BossState.ATK, bossEffectsAfterStep18a);
 
                 var bossAttack = skillFires
                     ? effectiveBossAtk + bossDefinition.SkillBaseDamage

@@ -464,11 +464,6 @@ describe('ApiService.startBattle (API_CONTRACTS.md §3)', () => {
     // validated 3-5 in equip-slot order.
     expect(petState.equippedCards).toEqual(['heal', 'shield', 'power_charge', 'pet-skill-001']);
     expect(petState.equippedRelics).toEqual(['relic_id_1', 'relic_id_2', 'relic_id_3']);
-
-    // §2.3: StatusEffects[] is a §2.3 member but is not yet implemented, so it
-    // is not on this payload — and an unimplemented member must not be
-    // invented here either.
-    expect(petState).not.toHaveProperty('statusEffects');
   });
 
   it('should deserialize bossState at its creation values', async () => {

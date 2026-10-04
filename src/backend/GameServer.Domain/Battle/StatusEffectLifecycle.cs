@@ -37,9 +37,9 @@ namespace GameServer.Domain.Battle;
 /// <item>It does not apply gameplay effects. No Boss Skill, Card, Passive, or any
 /// other producer creates instances here — only the operations that act on
 /// instances a producer supplied.</item>
-/// <item>It does not serialize. <c>StatusEffects[]</c> is not a wire member
-/// (<c>GAME_STATE.md</c> §2.3.1 wire note) and the runtime record's round trip is
-/// a separate task's obligation (§2.3.2).</item>
+/// <item>It does not serialize. The runtime record's round trip is a separate
+/// task's obligation (<c>GAME_STATE.md</c> §2.3.2), and this type owns only the
+/// apply/refresh/consume/expire mutations on the collection.</item>
 /// <item>It does not adopt <c>BossState.SkillCooldown</c>'s "decrements by 1 at
 /// each Turn increment" rule. §5.1.1 item 2 excludes it explicitly and
 /// <c>COMBAT_RULES.md</c> §5.3.4 repeats the exclusion; the Turn increment does

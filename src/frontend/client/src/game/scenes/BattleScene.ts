@@ -350,6 +350,17 @@ export class BattleScene extends Phaser.Scene {
         // item 9, PASSIVE_RULES.md §6 item 1).
         `Passive: ${state.petState.passiveId} ` +
           `${describePassiveProgress(state.petState)}`,
+        // The Boss's live health as the two delivered numbers
+        // (SIGNALR_PROTOCOL.md §4.4). Rendered verbatim: the scene does not
+        // damage the Boss, clamp `hp` to `maxHp`, or infer one from the other
+        // (§4.4 item 7).
+        `Boss HP: ${state.bossState.hp} / ${state.bossState.maxHp}`,
+        // The active Pet's active Status Effects (SIGNALR_PROTOCOL.md §4.3
+        // item 14). Rendered verbatim and never mutated: the scene does not
+        // apply, refresh, decrement, expire, or remove an instance, and does not
+        // evaluate a duration or an expiry condition (§4.3 item 14,
+        // GAME_STATE.md §5.1.1).
+        `Status Effects: ${describeStatusEffects(state.petState.statusEffects)}`,
       ].join('\n')
     );
 
@@ -1072,6 +1083,41 @@ function describePassiveProgress(state: RuntimeBattleState['petState']): string 
   const reset = state.passiveResetOverride ?? 'Default';
 
   return `(${current} / ${threshold} Matches, reset: ${reset})`;
+}
+
+/**
+ * Renders the active Pet's delivered Status Effect instances
+ * (`SIGNALR_PROTOCOL.md` §4.3 item 14, `GAME_STATE.md` §2.3.1).
+ *
+ * Presentation only: every value is printed as received. The scene does not
+ * apply, refresh, decrement, expire, or remove an instance, does not evaluate
+ * `remainingTurns` or `expiryCondition`, and interprets no `magnitude` — that
+ * lifecycle is `GAME_STATE.md` §5.1.1's and the server's (§4.3 item 14,
+ * `GAME_RULES.md` §18).
+ *
+ * The two duration models are mutually exclusive (`GAME_STATE.md` §2.3.1
+ * item 3), so whichever one the element carries is shown and no value is
+ * invented for the other. An empty collection is the documented spelling of
+ * "no effect is active" — it is displayed as such rather than as a missing
+ * member (§4.3 item 14).
+ */
+function describeStatusEffects(effects: RuntimeBattleState['petState']['statusEffects']): string {
+  if (effects.length === 0) {
+    return 'none';
+  }
+
+  return effects
+    .map((effect) => {
+      const duration =
+        effect.remainingTurns !== undefined
+          ? `${effect.remainingTurns} turns`
+          : effect.expiryCondition !== undefined
+            ? effect.expiryCondition
+            : 'no duration';
+
+      return `${effect.id} (${effect.type}, ${effect.source}, ${effect.magnitude}, ${duration})`;
+    })
+    .join('; ');
 }
 
 /**

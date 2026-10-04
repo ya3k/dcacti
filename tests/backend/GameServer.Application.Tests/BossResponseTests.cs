@@ -213,23 +213,20 @@ public class BossResponseTests
     }
 
     [Fact]
-    public async Task BossPassive_ShouldApplyNoEffect()
+    public async Task BossPassive_MocYeuRegen_ShouldApplyRegenAtStep18a()
     {
-        // BOSS_RULES.md §3 item 3 / §6.2, TASK-022 §3.8: this task implements charging
-        // and the trigger event only. Mộc Yêu's regeneration, Hỏa Long's Rage, and
-        // Thủy Ma's healing reduction are NOT applied — so a trigger changes no HP and
-        // no stat. This asserts the boundary: a triggered Mộc Yêu at Threshold 1 leaves
-        // its own HP and every stat exactly as the damage left them.
+        // BOSS_RULES.md §6.2.3, TASK-153: Step 18a applies Mộc Yêu's 5% MaxHP regeneration
+        // directly to BossState.HP, clamped to MaxHP.
         var service = NewService();
         var boss = BossDefinitions.MocYeu with
         {
             PassiveDefinition = BossDefinitions.MocYeu.PassiveDefinition with { Threshold = 1 },
         };
 
-        var created = await service.CreateBattleAsync("boss-passive-no-effect", Owner, Pet, boss);
+        var created = await service.CreateBattleAsync("boss-passive-moc-yeu", Owner, Pet, boss);
 
         var pair = FindMatchProducingPair(created);
-        var result = await service.ExecuteSwapAsync("boss-passive-no-effect", pair);
+        var result = await service.ExecuteSwapAsync("boss-passive-moc-yeu", pair);
 
         Assert.True(result!.Value.IsAccepted);
         Assert.Contains(
@@ -239,8 +236,6 @@ public class BossResponseTests
 
         var after = result.Value.State.BossState;
 
-        // The Boss's stats are still the definition's, and its HP is still exactly
-        // what the player's damage left — no regeneration was applied.
         Assert.Equal(boss.ATK, after.ATK);
         Assert.Equal(boss.DEF, after.DEF);
         Assert.Equal(boss.MaxHP, after.MaxHP);
@@ -250,7 +245,8 @@ public class BossResponseTests
                 && e.DamageDealt.Source == DamageParty.Player)
             .DamageDealt.Amount;
 
-        Assert.Equal(boss.MaxHP - playerDamage, after.HP);
+        var expectedHp = Math.Min(boss.MaxHP - playerDamage + (boss.MaxHP * 5) / 100, boss.MaxHP);
+        Assert.Equal(expectedHp, after.HP);
     }
 
     // =======================================================================

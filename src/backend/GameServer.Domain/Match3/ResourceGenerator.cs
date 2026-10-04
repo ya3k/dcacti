@@ -353,9 +353,9 @@ public static class ResourceGenerator
     /// </returns>
     public static Battle.PetState ApplyPower(
         Battle.PetState previous,
-        ResourceGeneration generation)
+        int powerDelta)
     {
-        var updated = previous.Power + generation.Power;
+        var updated = previous.Power + powerDelta;
 
         if (updated > MaxPower)
         {
@@ -368,6 +368,11 @@ public static class ResourceGenerator
 
         return previous with { Power = updated };
     }
+
+    public static Battle.PetState ApplyPower(
+        Battle.PetState previous,
+        ResourceGeneration generation) =>
+        ApplyPower(previous, generation.Power);
 
     /// <summary>
     /// Resolves the player effects of one committed Swap: applies the HealPool the
@@ -431,18 +436,13 @@ public static class ResourceGenerator
     /// </returns>
     public static Battle.PetState ApplyHeal(
         Battle.PetState previous,
-        ResourceGeneration generation)
-    {
-        var healed = previous.HP + generation.HealPool;
+        int rawHeal,
+        IReadOnlyList<Battle.StatusEffect>? bossStatusEffects = null) =>
+        Combat.HealResolution.ApplyPetHeal(previous, rawHeal, bossStatusEffects);
 
-        // COMBAT_RULES.md §4 item 1: heal effects restore HP "up to Max HP", so a
-        // heal that lands exactly on MaxHP is not reduced and one that would pass it
-        // stops there.
-        if (healed > previous.MaxHP)
-        {
-            healed = previous.MaxHP;
-        }
-
-        return previous with { HP = healed };
-    }
+    public static Battle.PetState ApplyHeal(
+        Battle.PetState previous,
+        ResourceGeneration generation,
+        IReadOnlyList<Battle.StatusEffect>? bossStatusEffects = null) =>
+        ApplyHeal(previous, generation.HealPool, bossStatusEffects);
 }

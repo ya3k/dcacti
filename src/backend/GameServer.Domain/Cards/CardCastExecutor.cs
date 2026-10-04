@@ -48,14 +48,16 @@ public static class CardCastExecutor
             return CardCastExecutionResult.Rejected(CardCastRejectionReason.InvalidCard);
         }
 
+        var effectiveCost = EffectiveCardCost.Compose(cardDefinition.PowerCost, state.PetState.CardCostModifiers);
+
         // 3. Verify sufficient Power (CARD_RULES.md §3 item 2)
-        if (state.PetState.Power < cardDefinition.PowerCost)
+        if (state.PetState.Power < effectiveCost)
         {
             return CardCastExecutionResult.Rejected(CardCastRejectionReason.InsufficientPower);
         }
 
         // 4. Deduct Power cost
-        var newPower = state.PetState.Power - cardDefinition.PowerCost;
+        var newPower = state.PetState.Power - effectiveCost;
         var newHp = state.PetState.HP;
         var newStatusEffects = state.PetState.ActiveStatusEffects;
 
@@ -76,8 +78,16 @@ public static class CardCastExecutor
 
         var events = new List<BattleEvent>
         {
-            BattleEvent.CreateCardCast(cardDefinition.CardDefinitionId, cardDefinition.PowerCost),
+            BattleEvent.CreateCardCast(cardDefinition.CardDefinitionId, effectiveCost),
         };
+
+        if (effectiveCost > 0)
+        {
+            events.Add(BattleEvent.ForPowerChanged(new PowerChangedEvent(
+                PowerChangeSource.Card,
+                -effectiveCost,
+                newPower)));
+        }
 
         if (cardDefinition.Category == CardCategory.PetSkill)
         {
@@ -100,7 +110,11 @@ public static class CardCastExecutor
                         CardEffectValueType.Flat => value,
                         _ => throw new InvalidOperationException($"Unsupported valueType {effect.ValueType} for Heal effect."),
                     };
-                    newHp = Math.Min(newHp + healAmount, state.PetState.MaxHP);
+                    var healed = Combat.HealResolution.ApplyPetHeal(
+                        state.PetState with { HP = newHp },
+                        healAmount,
+                        bossState.ActiveStatusEffects);
+                    newHp = healed.HP;
                     break;
                 }
 
@@ -129,7 +143,16 @@ public static class CardCastExecutor
                         CardEffectValueType.Flat => value,
                         _ => throw new InvalidOperationException($"Unsupported valueType {effect.ValueType} for Power effect."),
                     };
+                    var before = newPower;
                     newPower = Math.Clamp(newPower + powerAmount, 0, 100);
+                    var delta = newPower - before;
+                    if (delta != 0)
+                    {
+                        events.Add(BattleEvent.ForPowerChanged(new PowerChangedEvent(
+                            PowerChangeSource.Card,
+                            delta,
+                            newPower)));
+                    }
                     break;
                 }
 

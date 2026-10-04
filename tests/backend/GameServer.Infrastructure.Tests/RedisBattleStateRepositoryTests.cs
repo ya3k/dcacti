@@ -243,6 +243,59 @@ public class RedisBattleStateRepositoryTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task CreateAsync_ShouldOmitTargetStatForThuyMaInRedis_AndPreserveAbsenceOnRoundTrip()
+    {
+        // GAME_STATE.md §2.3.1 item 7 / REDIS_STATE.md §2 item 1:
+        // non-stat BuffDebuff boss-thuy-ma-heal omits TargetStat entirely;
+        // stored Redis document must not contain "targetStat":null and round-trips with TargetStat absent.
+        RequireRedis();
+
+        var battleId = NewBattleId();
+        var state = BattleState.Create(
+            battleId,
+            rngSeed: 20260722UL,
+            Owner,
+            OwnedPet,
+            Element.Hoa,
+            new PassiveId("xich-lang"),
+            passiveThreshold: 5,
+            BossDefinitions.ThuyMa);
+
+        try
+        {
+            await _repository.CreateAsync(state);
+
+            var stored = await _connection!.GetDatabase().StringGetAsync($"battle:{battleId}:state");
+            Assert.True(stored.HasValue);
+
+            var rawJson = stored.ToString();
+
+            // 1. Raw JSON in Redis must NEVER contain "targetStat":null anywhere
+            Assert.DoesNotContain("\"targetStat\":null", rawJson, StringComparison.Ordinal);
+
+            // 2. The serialized StatusEffect in Redis omits "targetStat" completely
+            var doc = System.Text.Json.JsonDocument.Parse(rawJson);
+            var bossEffects = doc.RootElement.GetProperty("bossState").GetProperty("statusEffects");
+            var effectElement = bossEffects.EnumerateArray().Single(e => e.GetProperty("id").GetString() == "boss-thuy-ma-heal");
+            Assert.False(effectElement.TryGetProperty("targetStat", out _));
+
+            // 3. Reload from repository restores the documented state with TargetStat absent
+            var reloaded = await _repository.GetAsync(battleId);
+            Assert.NotNull(reloaded);
+            var reloadedEffect = Assert.Single(reloaded!.BossState.ActiveStatusEffects);
+            Assert.Equal("boss-thuy-ma-heal", reloadedEffect.Id);
+            Assert.Null(reloadedEffect.TargetStat);
+
+            // 4. Re-serializing the reloaded state equals the stored Redis document
+            Assert.Equal(rawJson, BattleStateSerializer.Serialize(reloaded));
+        }
+        finally
+        {
+            await DeleteBattleKeysAsync(battleId);
+        }
+    }
+
+    [Fact]
     public async Task CreateAsync_ShouldRoundTripBothBattleIdentitiesThroughRedis()
     {
         // GAME_STATE.md §2.8 item 2 / §2.3 / REDIS_STATE.md §2 item 1, §3:

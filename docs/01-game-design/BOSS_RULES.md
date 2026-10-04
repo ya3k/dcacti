@@ -1,6 +1,18 @@
 # Boss Rules
 
-**Version:** 2.7 (§6.2.2 completed per TASK-155, applying the TASK-154 Product
+**Version:** 2.8 (§6.2.4 reconciled with the TASK-160 Product Owner decision
+**D-2A**, which authorized the Boss's live `HP` and `MaxHP` for MVP client
+synchronization. The deferral sentence — which recorded non-exposure as
+intentional and left "client-visible Boss HP or Boss StatusEffects" to "a
+separate future protocol decision" — is replaced by the recorded outcome: live
+Boss HP **is** delivered (`SIGNALR_PROTOCOL.md` §4.4 owns the wire contract, and
+`GAME_STATE.md` §2.4 owns the state boundary), while `BossState` itself and the
+Boss's `StatusEffects[]` remain **not** client-visible. **No gameplay rule,
+magnitude, duration, trigger, target, or effect changed**; §6.2.1–§6.2.3,
+§6.3–§6.4, and §7 are unchanged, and no new Battle Event, SignalR method,
+`BattleState` member, Redis key, or database column is introduced. Decision
+source: TASK-160; applying task: the downstream documentation-resolution task.
+Prior 2.7: (§6.2.2 completed per TASK-155, applying the TASK-154 Product
 Owner decision (Option B): the Boss-carried Thủy Ma healing-reduction instance
 is now reconciled with the Pet-scoped Heal Resolution step that applies it.
 §6.2.2 states the **applicable-instance selector** — the Status Effect identity
@@ -381,12 +393,27 @@ All three effects are **server-authoritative** (§8, `GAME_RULES.md` §18,
 `ADR-001`). The client does not calculate, predict, or authoritatively apply
 any of them.
 
-The current SignalR projection **intentionally does not expose `BossState`**,
-so these Boss Passive state changes are not directly client-visible through
-the state push in the current MVP protocol. **This is an intentional,
-recorded contract limitation, not a defect.** Any requirement for
-client-visible Boss HP or Boss StatusEffects is a separate future protocol
-decision, and is not authorized by these effect rules.
+**The Boss's live HP is client-visible; the rest of `BossState` is not.** The
+SignalR projection delivers the Boss's current `HP` and `MaxHP` — and only
+those two members — as the `bossState` member of the existing state push. That
+authorization is the Product Owner decision recorded by TASK-160 (**D-2A**), and
+the projection's member names, types, presence, and client-boundary rules are
+owned by `SIGNALR_PROTOCOL.md` §4.4; this document states the visibility
+constraint and does not restate the wire contract. `BossState` itself is **not**
+exposed: `BossId`/Identity, `Element`, `ATK`, `DEF`, `State`, `PassiveId`,
+`PassiveProgress`, `SkillCharge`, `SkillCooldown`, and the Boss's
+`StatusEffects[]` stay server-side (`GAME_STATE.md` §2.4), so the effects above
+remain **not** directly client-visible as state — the player sees their
+consequences through the Boss's changing HP and through the emitted events
+(§7), not by reading a status list.
+
+**Boss `StatusEffects[]` is explicitly not authorized for delivery**, then or
+now: D-2A named it among the excluded members, and delivering it would be a
+separate future protocol decision. Note that a *Boss-side* effect can still be
+observable through the *Pet's* delivered state where the effect is a Pet-held
+instance (e.g. `Root`'s ATK debuff, §6.3.1 item 3, sits in
+`PetState.StatusEffects[]`) — that is the Pet's collection being delivered, not
+the Boss's, and it does not widen this boundary.
 
 ### 6.3 Boss Skill Timing & Effect Details
 

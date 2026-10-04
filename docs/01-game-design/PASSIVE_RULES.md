@@ -1,6 +1,13 @@
 # Passive Rules
 
-**Version:** 1.2 (§8 — Bạch Hổ's "next attack gains increased Crit chance"
+**Version:** 1.3 (§8's closing `PassiveId` paragraph — **stale-reference
+correction only** per TASK-167: it described the Thanh Xà and Sơn Hùng rows as
+"deferred with their Pets (`PET_RULES.md` §8)", a status the TASK-166 Signature
+Skill decisions retired. The sentence now records that all five Pet rows are
+provisionable and that the two `PassiveId` values derive by the same unchanged
+rule. **No `PassiveId` value, format, threshold, trigger, or reset behavior
+changed** — the derivation rule is identical; only the deferral premise it
+referenced is gone. Prior 1.2: (§8 — Bạch Hổ's "next attack gains increased Crit chance"
 effect is now recorded as a `NextAttack` Crit modifier whose lifetime,
 consumption boundary, composition, and source-specific removal are owned by
 `COMBAT_RULES.md` §3.3 items 7–10 and whose state is
@@ -232,9 +239,9 @@ Huyền Quy  →  passive-huyen-quy
 
 This format and the values above are scoped to **Pet passives only**
 (R1-3): Boss PassiveIds are unchanged and remain the values fixed by
-`BOSS_RULES.md` §6.4. The Thanh Xà and Sơn Hùng rows are deferred with
-their Pets (`PET_RULES.md` §8); when their Skill Cards are authored and
-their rows are provisioned, their `PassiveId` values are derived by this
-same rule. The thresholds for all five Pets are the values in the table above
-and are sourced from this document when `PetDefinition.PassiveDefinition`
-is filled (`DATABASE.md` §1).
+`BOSS_RULES.md` §6.4. The Thanh Xà and Sơn Hùng rows are no longer deferred —
+their Signature Skills are now content-defined and all five Pet rows are
+provisionable (`PET_RULES.md` §8, TASK-167) — so their `PassiveId` values derive
+by this same rule when their rows are provisioned. The thresholds for all five
+Pets are the values in the table above and are sourced from this document when
+`PetDefinition.PassiveDefinition` is filled (`DATABASE.md` §1).

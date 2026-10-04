@@ -20,12 +20,14 @@ import {
   type RuntimeActionRequest,
   type RuntimeBattleState,
   type RuntimeBoard,
+  type RuntimeBossState,
   type RuntimeEvent,
   type RuntimeEventListener,
   type RuntimePassiveProgress,
   type RuntimePetState,
   type RuntimePlayerState,
   type RuntimeRngState,
+  type RuntimeStatusEffect,
 } from './GameRuntimeEvents';
 
 /**
@@ -893,15 +895,18 @@ export class GameRuntime implements GameRuntimePort {
    * (SIGNALR_PROTOCOL.md §4) and stores it as the runtime's synchronized copy.
    *
    * The payload is stored exactly as sent — `battleId`, `turn`, `sequence`,
-   * `rngSeed`, `rngState`, `board`, `playerState`, `petState` (`GAME_STATE.md`
-   * §2.2, §2.3, §2.0.5).
+   * `rngSeed`, `rngState`, `board`, `playerState`, `petState`, `bossState`
+   * (`GAME_STATE.md` §2.0.5, §2.2, §2.3, §2.4).
    * Nothing is derived from it, and no gameplay meaning is inferred: the server
    * owns these values (§4.9, ADR-001). In particular the board is stored as
    * received and is never generated, filled, repaired, or re-derived by the
    * client (§4 item 10), `playerState`'s Match/Combo values are rendered, never
-   * counted or recomputed (`MATCH3_RULES.md` §6.6 item 3), and `petState`'s
+   * counted or recomputed (`MATCH3_RULES.md` §6.6 item 3), `petState`'s
    * delivered members are stored verbatim — the runtime never charges a
-   * Passive, evaluates a Threshold, or resets progress (§4.3 item 9).
+   * Passive, evaluates a Threshold, or resets progress (§4.3 item 9), and never
+   * applies, refreshes, decrements, expires, or removes a Status Effect
+   * (§4.3 item 14) — and `bossState`'s two values are rendered, never damaged,
+   * clamped, or re-derived (§4.4 item 7).
    *
    * A malformed payload is reported as a technical runtime error and ignored —
    * the runtime never fabricates battle state to fill a gap.
@@ -926,9 +931,9 @@ export class GameRuntime implements GameRuntimePort {
   }
 
   /**
-   * Validates only the documented §4 shape — the `GAME_STATE.md` §2.2/§2.3/§2.0.5
-   * fields `battleId`, `turn`, `sequence`, `rngSeed`, `rngState`, `board`,
-   * `playerState`, `petState`.
+   * Validates only the documented §4 shape — the `GAME_STATE.md` §2.2/§2.3/§2.4/
+   * §2.0.5 fields `battleId`, `turn`, `sequence`, `rngSeed`, `rngState`, `board`,
+   * `playerState`, `petState`, `bossState`.
    *
    * The record carries no other field and no `Status`/lifecycle value
    * (SIGNALR_PROTOCOL.md §4 item 4 — the payload carries the implemented stage's
@@ -939,8 +944,9 @@ export class GameRuntime implements GameRuntimePort {
    * does not validate the board against any game rule, and cannot repair one.
    * Validating the board is the server's job (`MATCH3_RULES.md` §1.3–§1.4); a
    * client-side check would be a second, non-authoritative implementation. The
-   * same applies to `playerState` and `petState`: their values are read as sent
-   * and are never derived, clamped, or recomputed (`GAME_RULES.md` §18).
+   * same applies to `playerState`, `petState`, and `bossState`: their values are
+   * read as sent and are never derived, clamped, or recomputed
+   * (`GAME_RULES.md` §18).
    */
   private readBattleState(payload: unknown): RuntimeBattleState | null {
     if (typeof payload !== 'object' || payload === null) {
@@ -982,6 +988,11 @@ export class GameRuntime implements GameRuntimePort {
       return null;
     }
 
+    const bossState = this.readBossState(candidate.bossState);
+    if (bossState === null) {
+      return null;
+    }
+
     return {
       battleId: candidate.battleId,
       turn: candidate.turn,
@@ -991,6 +1002,7 @@ export class GameRuntime implements GameRuntimePort {
       board,
       playerState,
       petState,
+      bossState,
     };
   }
 
@@ -1031,17 +1043,28 @@ export class GameRuntime implements GameRuntimePort {
    * value to fill the gap (`GAME_RULES.md` §18). `current = 0` is a real value
    * and is delivered as `0`, never by absence (§4.3 item 4).
    *
-   * `passiveResetOverride` is the one optional member: it is present iff the
+   * `passiveResetOverride` is one optional member: it is present iff the
    * Passive's reset behavior is non-default, and its absence *is* the statement
    * "default" (§4.3 item 7). Absence is therefore tolerated and stored as
    * absence — the runtime never substitutes `"Default"`, `null`, or any other
    * value for it, because writing one would be a second spelling of one fact.
    *
+   * `statusEffects` is the other always-present member, and its empty case is
+   * spelled by an **empty array**, not by absence (§4.3 item 14): it is required
+   * here for exactly that reason — a client must not read a missing
+   * `statusEffects` as "no effect is active". Each element is read through
+   * `readStatusEffect`, which keeps the element's three optional members absent
+   * when they do not apply rather than materializing them as `null`
+   * (`GAME_STATE.md` §2.3.1 item 7).
+   *
    * Every value is read as sent. The runtime does not charge a Passive, evaluate
-   * a Threshold, reset progress, or apply an overflow (§4.3 item 9), and it does
-   * not widen the object to the rest of §2.3 — identity, progression, combat
-   * stats, and relics are not delivered (§4.3 item 2), while `equippedCards`
-   * is delivered per §4.3 item 13.
+   * a Threshold, reset progress, or apply an overflow (§4.3 item 9); it does not
+   * apply, refresh, decrement, expire, or remove a Status Effect and does not
+   * re-derive the collection from the board, the counters, or an event
+   * (§4.3 item 14); and it does not widen the object to the rest of §2.3 —
+   * identity, progression, combat stats, the sibling modifier collections, and
+   * the Relic loadout snapshot are not delivered (§4.3 item 2), while
+   * `equippedCards` is delivered per §4.3 item 13.
    */
   private readPetState(value: unknown): RuntimePetState | null {
     if (typeof value !== 'object' || value === null) {
@@ -1067,6 +1090,23 @@ export class GameRuntime implements GameRuntimePort {
       return null;
     }
 
+    // §4.3 item 14: the collection is always present and an active Pet with no
+    // active effect is sent an empty array — never an omission and never `null`.
+    // A payload that omits it is therefore outside the contract, and the runtime
+    // must not read the absence as "no effect is active".
+    if (!Array.isArray(candidate.statusEffects)) {
+      return null;
+    }
+
+    const statusEffects: RuntimeStatusEffect[] = [];
+    for (const raw of candidate.statusEffects) {
+      const effect = this.readStatusEffect(raw);
+      if (effect === null) {
+        return null;
+      }
+      statusEffects.push(effect);
+    }
+
     // The conditional member: absent means the default reset, and only the two
     // documented contract names are a non-default statement (§4.3 items 6–7).
     if (
@@ -1081,13 +1121,127 @@ export class GameRuntime implements GameRuntimePort {
           passiveId: candidate.passiveId,
           passiveProgress,
           equippedCards: [...candidate.equippedCards],
+          statusEffects,
         }
       : {
           passiveId: candidate.passiveId,
           passiveProgress,
           equippedCards: [...candidate.equippedCards],
+          statusEffects,
           passiveResetOverride: candidate.passiveResetOverride,
         };
+  }
+
+  /**
+   * Reads one delivered Status Effect instance (`GAME_STATE.md` §2.3.1, §2.3.2
+   * item 3; `SIGNALR_PROTOCOL.md` §4.3 item 14).
+   *
+   * The four required members are checked for type, because they are what makes
+   * the element an instance at all (§2.3.1 items 1–2): `id` names the effect,
+   * `type` and `source` select from their documented closed sets, and
+   * `magnitude` carries the applied value. An element missing one is malformed
+   * rather than defaultable.
+   *
+   * The three optional members are present iff they apply and are **absent**
+   * otherwise — never `null`, never a sentinel string (§2.3.1 item 7, §3.2.5).
+   * The reader therefore stores each of them only when it actually arrived, so
+   * "does not apply" stays distinguishable from a value the runtime invented.
+   * Nothing here decrements `remainingTurns`, evaluates `expiryCondition`, or
+   * interprets `magnitude` — those belong to `GAME_STATE.md` §5.1.1 /
+   * `COMBAT_RULES.md` §5 and to the server (`GAME_RULES.md` §18).
+   */
+  private readStatusEffect(value: unknown): RuntimeStatusEffect | null {
+    if (typeof value !== 'object' || value === null) {
+      return null;
+    }
+
+    const candidate = value as Partial<RuntimeStatusEffect>;
+
+    if (typeof candidate.id !== 'string' || candidate.id.length === 0) {
+      return null;
+    }
+    if (typeof candidate.type !== 'string' || candidate.type.length === 0) {
+      return null;
+    }
+    if (typeof candidate.source !== 'string' || candidate.source.length === 0) {
+      return null;
+    }
+    if (typeof candidate.magnitude !== 'number') {
+      return null;
+    }
+
+    // `remainingTurns` and `expiryCondition` are mutually exclusive duration
+    // models (§2.3.1 item 3), so neither may be read as a substitute for the
+    // other: each is either the delivered value or absent.
+    if (candidate.remainingTurns !== undefined && typeof candidate.remainingTurns !== 'number') {
+      return null;
+    }
+    if (candidate.targetStat !== undefined && typeof candidate.targetStat !== 'string') {
+      return null;
+    }
+    if (
+      candidate.expiryCondition !== undefined &&
+      typeof candidate.expiryCondition !== 'string'
+    ) {
+      return null;
+    }
+
+    const effect: {
+      id: string;
+      type: string;
+      source: string;
+      magnitude: number;
+      targetStat?: string;
+      remainingTurns?: number;
+      expiryCondition?: string;
+    } = {
+      id: candidate.id,
+      type: candidate.type,
+      source: candidate.source,
+      magnitude: candidate.magnitude,
+    };
+
+    if (candidate.targetStat !== undefined) {
+      effect.targetStat = candidate.targetStat;
+    }
+    if (candidate.remainingTurns !== undefined) {
+      effect.remainingTurns = candidate.remainingTurns;
+    }
+    if (candidate.expiryCondition !== undefined) {
+      effect.expiryCondition = candidate.expiryCondition;
+    }
+
+    return effect;
+  }
+
+  /**
+   * Reads the Boss HP projection (`GAME_STATE.md` §2.4,
+   * `SIGNALR_PROTOCOL.md` §4.4).
+   *
+   * Both values are required and neither is nullable: the Boss exists from battle
+   * creation at full health, so there is no absent or "Boss not yet available"
+   * case for either member and a payload missing one is malformed rather than
+   * implicitly zero (§4.4 item 4). In particular the runtime must not read an
+   * absent `hp` as `0`.
+   *
+   * The two are read independently: neither is derived from the other, `hp` is
+   * never clamped to `maxHp`, and no unit, scale, or rounding is applied
+   * (§4.4 item 5). The object is a projection, not `BossState` — the runtime
+   * models no other Boss member, and it does not re-derive these values from the
+   * events or from `finalBossHp` (§4.4 items 3 and 7, `GAME_RULES.md` §18).
+   */
+  private readBossState(value: unknown): RuntimeBossState | null {
+    if (typeof value !== 'object' || value === null) {
+      return null;
+    }
+
+    const candidate = value as Partial<RuntimeBossState>;
+
+    if (typeof candidate.hp !== 'number' || typeof candidate.maxHp !== 'number') {
+      return null;
+    }
+
+    return { hp: candidate.hp, maxHp: candidate.maxHp };
   }
 
   /**

@@ -723,6 +723,312 @@ public class BattleResultPersistenceTests
             repository.AddAsync(NewResult(battleResultId: "battle-store-unavailable")));
     }
 
+    // -----------------------------------------------------------------------
+    // The history query — API_CONTRACTS.md §4.5 notes 4, 5, 8, 10
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public async Task History_ShouldReturnOnlyTheRequestedPlayersResults()
+    {
+        // API_CONTRACTS.md §4.5 note 8: "the identity resolved from the
+        // authenticated session must equal BattleResult.PlayerId". The filter is
+        // the query's own, so another Player's rows are never materialized for this
+        // caller and the endpoint discloses nothing about whether another Player
+        // has any history.
+        var storeName = $"battle-result-history-scope-{Guid.NewGuid():N}";
+
+        await using var context = CreateContext(storeName);
+
+        await SeedReferencedRowsAsync(context);
+        await SeedSecondPlayerRowsAsync(context, "player_result_2", "pet_instance_result_2");
+
+        context.BattleResults.Add(NewResult(battleResultId: "battle-mine-1"));
+        context.BattleResults.Add(
+            NewResult(
+                battleResultId: "battle-theirs-1",
+                playerId: "player_result_2",
+                petInstanceId: "pet_instance_result_2"));
+        await context.SaveChangesAsync();
+
+        var repository = new BattleResultRepository(context);
+
+        var history = await repository.ListByPlayerIdAsync("player_result_1");
+
+        // Exactly the caller's own row — the other Player's row is absent, not
+        // filtered out afterwards.
+        var only = Assert.Single(history);
+
+        Assert.Equal("battle-mine-1", only.BattleResultId);
+        Assert.Equal("player_result_1", only.PlayerId);
+
+        // And the other Player's history is that Player's own single row.
+        var theirs = await repository.ListByPlayerIdAsync("player_result_2");
+
+        Assert.Equal("battle-theirs-1", Assert.Single(theirs).BattleResultId);
+    }
+
+    [Fact]
+    public async Task History_ShouldBeEmpty_ForAPlayerWithNoResults()
+    {
+        // API_CONTRACTS.md §4.5 note 9: a Player with no completed battles gets an
+        // empty collection — not an error, not a null, and not another Player's
+        // rows. It is decided by the query, so nothing needs to be loaded to
+        // establish it.
+        var storeName = $"battle-result-history-empty-{Guid.NewGuid():N}";
+
+        await using var context = CreateContext(storeName);
+
+        await SeedReferencedRowsAsync(context);
+
+        var repository = new BattleResultRepository(context);
+
+        Assert.Empty(await repository.ListByPlayerIdAsync("player_result_1"));
+        Assert.Empty(await repository.ListByPlayerIdAsync("player-never-fought"));
+    }
+
+    [Fact]
+    public async Task History_ShouldOrderMostRecentFirst()
+    {
+        // API_CONTRACTS.md §4.5 note 4: "Elements are ordered by CompletedAt
+        // descending (newest completed battle first)" — and clients MAY rely on it,
+        // so it is verified against rows deliberately seeded out of order.
+        var storeName = $"battle-result-history-order-{Guid.NewGuid():N}";
+
+        await using var context = CreateContext(storeName);
+
+        await SeedReferencedRowsAsync(context);
+
+        var oldest = new DateTimeOffset(2026, 9, 20, 8, 0, 0, TimeSpan.Zero);
+        var middle = new DateTimeOffset(2026, 9, 25, 12, 30, 0, TimeSpan.Zero);
+        var newest = new DateTimeOffset(2026, 9, 27, 23, 59, 59, TimeSpan.Zero);
+
+        // Inserted oldest-first, so insertion order is the reverse of the
+        // documented order and a query that omitted the ordering could not pass.
+        context.BattleResults.Add(NewResult(battleResultId: "battle-oldest") with { CompletedAt = oldest });
+        context.BattleResults.Add(NewResult(battleResultId: "battle-middle") with { CompletedAt = middle });
+        context.BattleResults.Add(NewResult(battleResultId: "battle-newest") with { CompletedAt = newest });
+        await context.SaveChangesAsync();
+
+        var repository = new BattleResultRepository(context);
+
+        var history = await repository.ListByPlayerIdAsync("player_result_1");
+
+        Assert.Equal(
+            new[] { "battle-newest", "battle-middle", "battle-oldest" },
+            history.Select(result => result.BattleResultId));
+
+        // The stored completion instants are the rows' own — the read neither
+        // re-stamps nor re-derives them (note 3).
+        Assert.Equal(newest, history[0].CompletedAt);
+        Assert.Equal(oldest, history[2].CompletedAt);
+    }
+
+    [Fact]
+    public async Task History_ShouldBreakCompletedAtTies_ByDescendingBattleResultId()
+    {
+        // API_CONTRACTS.md §4.5 note 4: "When two results share a CompletedAt, the
+        // tie is broken by BattleResultId descending (the higher BattleResultId
+        // first), so the total order is deterministic even though DATABASE.md §1
+        // does not require CompletedAt to be unique." Equal timestamps are
+        // therefore seeded deliberately, including the boundary ordering of the id
+        // values the tie-break must decide.
+        var storeName = $"battle-result-history-tie-{Guid.NewGuid():N}";
+
+        await using var context = CreateContext(storeName);
+
+        await SeedReferencedRowsAsync(context);
+
+        // One instant shared by every row — the case the tie-break exists for.
+        var shared = new DateTimeOffset(2026, 9, 27, 10, 0, 0, TimeSpan.Zero);
+
+        // Inserted in ascending id order for the same reason as above.
+        context.BattleResults.Add(NewResult(battleResultId: "battle-tie-1") with { CompletedAt = shared });
+        context.BattleResults.Add(NewResult(battleResultId: "battle-tie-2") with { CompletedAt = shared });
+        context.BattleResults.Add(NewResult(battleResultId: "battle-tie-10") with { CompletedAt = shared });
+        await context.SaveChangesAsync();
+
+        var repository = new BattleResultRepository(context);
+
+        var history = await repository.ListByPlayerIdAsync("player_result_1");
+
+        Assert.All(history, result => Assert.Equal(shared, result.CompletedAt));
+
+        // Descending by id. Note "battle-tie-2" precedes "battle-tie-10" because
+        // this is an ordinal string comparison, not a numeric one — which is the
+        // property that makes the documented order independent of any database
+        // collation.
+        Assert.Equal(
+            new[] { "battle-tie-2", "battle-tie-10", "battle-tie-1" },
+            history.Select(result => result.BattleResultId));
+    }
+
+    [Fact]
+    public async Task History_ShouldCombineTheCompletedAtOrder_WithTheTieBreak()
+    {
+        // The two ordering components together, which is what note 4 defines: an
+        // earlier-than-the-newest result still sorts below it, and results sharing
+        // an instant sort among themselves by descending id.
+        var storeName = $"battle-result-history-total-order-{Guid.NewGuid():N}";
+
+        await using var context = CreateContext(storeName);
+
+        await SeedReferencedRowsAsync(context);
+
+        var older = new DateTimeOffset(2026, 9, 26, 9, 0, 0, TimeSpan.Zero);
+        var newer = new DateTimeOffset(2026, 9, 27, 9, 0, 0, TimeSpan.Zero);
+
+        context.BattleResults.Add(NewResult(battleResultId: "battle-b") with { CompletedAt = older });
+        context.BattleResults.Add(NewResult(battleResultId: "battle-a") with { CompletedAt = older });
+        context.BattleResults.Add(NewResult(battleResultId: "battle-c") with { CompletedAt = newer });
+        await context.SaveChangesAsync();
+
+        var repository = new BattleResultRepository(context);
+
+        var history = await repository.ListByPlayerIdAsync("player_result_1");
+
+        Assert.Equal(
+            new[] { "battle-c", "battle-b", "battle-a" },
+            history.Select(result => result.BattleResultId));
+    }
+
+    [Fact]
+    public async Task History_ShouldNotBoundTheNumberOfRows()
+    {
+        // API_CONTRACTS.md §4.5 note 5: "the array is the full history ... however
+        // long it is; an unbounded array is the accepted MVP contract". No page,
+        // limit, offset, or cursor exists, so a Player with many results receives
+        // all of them.
+        var storeName = $"battle-result-history-unbounded-{Guid.NewGuid():N}";
+
+        await using var context = CreateContext(storeName);
+
+        await SeedReferencedRowsAsync(context);
+
+        var baseInstant = new DateTimeOffset(2026, 9, 1, 0, 0, 0, TimeSpan.Zero);
+
+        for (var index = 0; index < 25; index++)
+        {
+            context.BattleResults.Add(
+                NewResult(battleResultId: $"battle-many-{index:D3}")
+                    with { CompletedAt = baseInstant.AddMinutes(index) });
+        }
+
+        await context.SaveChangesAsync();
+
+        var repository = new BattleResultRepository(context);
+
+        var history = await repository.ListByPlayerIdAsync("player_result_1");
+
+        Assert.Equal(25, history.Count);
+
+        // The newest is still first across the whole unbounded set.
+        Assert.Equal("battle-many-024", history[0].BattleResultId);
+        Assert.Equal("battle-many-000", history[^1].BattleResultId);
+    }
+
+    [Fact]
+    public async Task History_ShouldReadEveryDocumentedMember_ForProjection()
+    {
+        // The endpoint projects §4.5's five members from the row
+        // (API_CONTRACTS.md §4.5 notes 2–3, 12), so the read must return the
+        // complete durable record — including the two identities and the reward
+        // summary the response deliberately does not expose. A read that trimmed
+        // the row would make the documented projection impossible.
+        var storeName = $"battle-result-history-members-{Guid.NewGuid():N}";
+
+        await using var context = CreateContext(storeName);
+
+        await SeedReferencedRowsAsync(context);
+
+        const string rewardSummary =
+            "{\"playerXpGained\":100,\"newPlayerXp\":200,\"playerLeveledUp\":false,"
+            + "\"newPlayerLevel\":1,\"petXpGained\":100,\"newPetXp\":200,"
+            + "\"petLeveledUp\":false,\"newPetLevel\":1}";
+
+        var completedAt = new DateTimeOffset(2026, 9, 27, 7, 45, 12, TimeSpan.Zero);
+
+        context.BattleResults.Add(
+            NewResult(rewardSummary: rewardSummary) with { CompletedAt = completedAt });
+        await context.SaveChangesAsync();
+
+        var repository = new BattleResultRepository(context);
+
+        var only = Assert.Single(await repository.ListByPlayerIdAsync("player_result_1"));
+
+        Assert.Equal("battle_result_1", only.BattleResultId);
+        Assert.Equal("player_result_1", only.PlayerId);
+        Assert.Equal("pet_instance_result_1", only.PetInstanceId);
+        Assert.Equal("boss-def-hoa-long", only.BossDefinitionId);
+        Assert.Equal(BattleOutcome.Victory, only.Outcome);
+        Assert.Equal(7, only.DurationTurns);
+        Assert.Equal(completedAt, only.CompletedAt);
+        Assert.Equal(rewardSummary, only.RewardSummary);
+    }
+
+    [Fact]
+    public async Task History_ShouldRejectAnAbsentPlayerIdentity()
+    {
+        // API_CONTRACTS.md §4.5 note 8 makes the authenticated identity the only
+        // scope. An absent identity names no Player, so it is refused rather than
+        // interpreted as "all Players" — which would be the disclosure the note
+        // forbids.
+        var storeName = $"battle-result-history-identity-{Guid.NewGuid():N}";
+
+        await using var context = CreateContext(storeName);
+
+        await SeedReferencedRowsAsync(context);
+
+        context.BattleResults.Add(NewResult());
+        await context.SaveChangesAsync();
+
+        var repository = new BattleResultRepository(context);
+
+        await Assert.ThrowsAnyAsync<ArgumentException>(
+            () => repository.ListByPlayerIdAsync("   "));
+    }
+
+    /// <summary>
+    /// Seeds a second Player and its owned Pet, so a history test can prove one
+    /// Player's read never returns another's rows (<c>DATABASE.md</c> §1, §2 — the
+    /// three foreign keys must be satisfiable).
+    /// </summary>
+    private static async Task SeedSecondPlayerRowsAsync(
+        GameDbContext context,
+        string playerId,
+        string petInstanceId)
+    {
+        context.Players.Add(new Player
+        {
+            PlayerId = playerId,
+            DiscordUserId = $"9{Random.Shared.NextInt64(1_000_000_000_000_000L):D16}",
+            Level = Player.InitialLevel,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+
+        context.PetDefinitions.Add(new PetDefinition
+        {
+            PetDefinitionId = $"pet_def_{playerId}",
+            Identity = "Thanh Xà",
+            Element = Element.Moc,
+            PassiveId = new PassiveId("thanh-xa-regen"),
+            PassiveThreshold = 5,
+            SignatureSkillCardId = $"card_skill_{playerId}",
+        });
+
+        context.Pets.Add(new Pet
+        {
+            PetInstanceId = petInstanceId,
+            PlayerId = playerId,
+            PetDefinitionId = $"pet_def_{playerId}",
+            Tier = PetTier.Common,
+            Star = 1,
+            Level = 1,
+            AcquiredAt = DateTimeOffset.UtcNow,
+        });
+
+        await context.SaveChangesAsync();
+    }
+
     [Fact]
     public async Task Repository_ShouldExposeAForeignKeyViolation_AsAStoreFailure()
     {

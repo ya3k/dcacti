@@ -10,13 +10,14 @@ namespace GameServer.Infrastructure.Postgres.Repositories;
 /// (<c>DATABASE.md</c> §1) — <c>ARCHITECTURE.md</c> §3's
 /// "PersistenceRepository (Postgres)", Infrastructure layer.
 ///
-/// <b>It writes one row and reads it back by its key, and does nothing else.</b>
+/// <b>It writes one row, reads it back by its key, and enumerates one Player's
+/// results in the documented order — and does nothing else.</b>
 /// <c>DATABASE.md</c> §1 sourcing item 1 makes <c>BattleResultId</c> the battle's
 /// own <c>BattleId</c>, and the result endpoint looks a row up by that key
-/// (<c>API_CONTRACTS.md</c> §4). There is deliberately no history query, no
-/// update, and no delete: <c>GET /api/battle/history</c> is listed in
-/// <c>API_CONTRACTS.md</c> §1 with no defining section, so no query is invented
-/// for it.
+/// (<c>API_CONTRACTS.md</c> §4). The history endpoint (<c>API_CONTRACTS.md</c>
+/// §4.5) reads the same table one Player at a time, ordered by the contract.
+/// There is deliberately no update and no delete: nothing in the documented
+/// surface asks for either, so neither is invented.
 ///
 /// <b>A repeated write for one battle cannot create a second row.</b>
 /// <c>BattleResultId</c> is the primary key, so the database's own uniqueness is
@@ -107,6 +108,54 @@ public sealed class BattleResultRepository : IBattleResultRepository
             .FirstOrDefaultAsync(
                 stored => stored.BattleResultId == battleResultId,
                 cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<BattleResult>> ListByPlayerIdAsync(
+        string playerId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(playerId);
+
+        // API_CONTRACTS.md §4.5 note 8: history is scoped to the authenticated
+        // PlayerId. The filter is in the query's own predicate, so another
+        // Player's rows are never read, materialized, or counted for this caller —
+        // the endpoint cannot disclose whether another Player has any history.
+        //
+        // Note 4: the ordering is part of the public contract. CompletedAt
+        // descending puts the newest completed battle first, and BattleResultId
+        // descending is the deterministic tie-break for two results sharing a
+        // CompletedAt — DATABASE.md §1 does not require CompletedAt to be unique,
+        // and BattleResultId is unique per row because it IS the battle's own
+        // BattleId. Both components are stated in the query itself rather than
+        // left to the provider's or the database's unspecified default: only the
+        // first is served by the documented index
+        // (DATABASE.md §4 — BattleResult(PlayerId, CompletedAt DESC)), so the
+        // second is what makes the total order deterministic.
+        //
+        // The comparison is explicit about being ordinal: the ids are opaque,
+        // server-authored strings, so a culture-sensitive collation must not be
+        // allowed to decide the tie-break. This mirrors the ordinal comparisons
+        // the ownership reads use, and keeps the documented order identical under
+        // any database collation.
+        //
+        // Note 5: the whole history is returned — no page, limit, offset, cursor,
+        // or other bounding is applied here, because MVP's contract is the
+        // complete array and any cap is deferred to post-MVP.
+        //
+        // Note 10/11: only durable rows exist to be read, so an active battle and
+        // a battle whose terminal write failed are both simply absent; nothing is
+        // synthesized to stand in for either.
+        //
+        // AsNoTracking because this is a read whose results are projected onto a
+        // response and never modified or written back.
+        return await _dbContext.BattleResults
+            .AsNoTracking()
+            .Where(stored => stored.PlayerId == playerId)
+            .OrderByDescending(stored => stored.CompletedAt)
+            .ThenByDescending(stored => stored.BattleResultId)
+            .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
 }

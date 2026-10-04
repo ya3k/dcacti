@@ -132,8 +132,8 @@ describe('Frontend architectural boundaries', () => {
       // The runtime carries the implemented stage's fields as a synchronized
       // presentation copy — `board` from the Board Foundation stage
       // (GAME_STATE.md §2.0.5), `playerState`'s `matchCount`/`combo` from the
-      // Match / Combo accounting stage (§2.2), and `petState`'s Passive trio from
-      // the Pet / Passive stage (§2.3) — so those names are part of the
+      // Match / Combo accounting stage (§2.2), and `petState`'s delivered members
+      // from the Pet / Passive stage (§2.3) — so those names are part of the
       // documented contract rather than violations. What remains forbidden is
       // every *gameplay system* the stage does not implement — resolution,
       // combat, and the later-stage systems (§2.0.5.3, §2.2, §2.3).
@@ -144,22 +144,33 @@ describe('Frontend architectural boundaries', () => {
       // item 3 makes rendering them the client's own job while computing them
       // remains the server's (`GAME_RULES.md` §18). `passiveid`, `passiveprogress`,
       // and `passiveresetoverride` are likewise NOT in it: SIGNALR_PROTOCOL.md
-      // §4.3 makes exactly those three members the delivered `petState`, and
+      // §4.3 makes exactly those members part of the delivered `petState`, and
       // PASSIVE_RULES.md §6 item 1 requires the progress pair to reach the client
-      // as a UI-facing value. The tests below assert the stronger property that
+      // as a UI-facing value. `statuseffects` and `bossstate` are NOT in it
+      // either, for the same reason: §4.3 item 14 delivers the active Pet's active
+      // instances (TASK-160 D-1A) and §4.4 delivers the Boss's `hp`/`maxHp`
+      // (TASK-160 D-2A), so both are documented contract members — and the
+      // dedicated assertions below pin that the runtime renders them without
+      // computing them. The tests below assert the stronger property that
       // matters: the runtime never *derives* any of these values.
+      //
+      // `boss` is likewise NOT in it any more, for the same reason as
+      // `statuseffects`: §4.4's `bossState` is a delivered projection, so the
+      // runtime legitimately names it. What stays forbidden is Boss *gameplay* —
+      // selection, and any Boss value beyond the two delivered numbers — which the
+      // assertion at "carries no Boss source beyond the fixed start value" pins.
       //
       // TASK-078 stage advance. `boss` and `relic` were in this list because the
       // runtime carried no Boss or Relic concept at all; ARCHITECTURE.md §2.2.3
       // rules 3–6 now make the *collection read* a documented port capability, so
       // `getRelics()` and the `RelicResponse` wire type it transports are part of
       // the contract rather than a violation. What remains forbidden is what
-      // always was: a gameplay system. The runtime carries no Boss selection or
-      // Boss read (the MVP Boss is one fixed request value the scene supplies),
-      // and it does not equip, trigger, or evaluate a Relic — it transports the
-      // owned-instance list the server returned. The dedicated assertions below
-      // pin exactly that, so widening this list cannot hide a failure to the
-      // generic term scan.
+      // always was: a gameplay system. The runtime carries no Boss selection (the
+      // MVP Boss is one fixed request value the scene supplies), and it does not
+      // equip, trigger, or evaluate a Relic — it transports the owned-instance
+      // list the server returned. The dedicated assertions below pin exactly
+      // that, so widening this list cannot hide a failure to the generic term
+      // scan.
       const forbidden = [
         'damage',
         'match3',
@@ -167,7 +178,6 @@ describe('Frontend architectural boundaries', () => {
         'crit',
         'gravity',
         'detonate',
-        'hp',
         'power',
       ];
 
@@ -221,6 +231,91 @@ describe('Frontend architectural boundaries', () => {
       ]) {
         expect(code, `${file} must not reference "${term}"`).not.toContain(term);
       }
+    });
+
+    it.each(runtimeFiles)('%s applies, expires, and evaluates no Status Effect', (file) => {
+      const code = stripComments(readSource(file));
+
+      // SIGNALR_PROTOCOL.md §4.3 item 14 / GAME_STATE.md §5.1.1 / COMBAT_RULES.md
+      // §5: the Status Effect lifecycle — apply, refresh, consume at step 19a,
+      // expire, and remove — is the server's. The runtime stores and exposes the
+      // delivered instances and never mutates or derives them
+      // (GAME_RULES.md §18, ADR-001).
+      //
+      // `statusEffects` itself is deliberately NOT in this list: §4.3 item 14
+      // makes it a delivered contract member, so naming it is required rather
+      // than forbidden. What stays forbidden is the gameplay: the runtime must
+      // not decrement a countdown, evaluate an expiry condition, or build a
+      // second, client-side Status Effect system.
+      for (const term of [
+        'StatusEffectLifecycle',
+        'ApplyStatusEffect',
+        'applyStatusEffect',
+        'RefreshStatusEffect',
+        'refreshStatusEffect',
+        'ExpireStatusEffect',
+        'expireStatusEffect',
+        'RemoveStatusEffect',
+        'removeStatusEffect',
+        'TickStatusEffect',
+        'tickStatusEffect',
+        'ConsumeStatusEffect',
+        'remainingTurns--',
+        'remainingTurns -=',
+        'remainingTurns++',
+        'remainingTurns +=',
+      ]) {
+        expect(code, `${file} must not reference "${term}"`).not.toContain(term);
+      }
+
+      // The delivered countdown and magnitude are only ever read and copied, never
+      // computed with: no arithmetic operator may touch them (`GAME_STATE.md`
+      // §5.1.1 item 2's single step-19a decrement is the server's). A plain copy
+      // assignment inside the reader is the read being stored, not a derivation.
+      expect(code, `${file} must not compute with the delivered remainingTurns`).not.toMatch(
+        /\.remainingTurns\s*(\+\+|--|\+=|-=|\*=|\/=)/
+      );
+      expect(code, `${file} must not compute with the delivered magnitude`).not.toMatch(
+        /\.magnitude\s*(\+\+|--|\+=|-=|\*=|\/=)/
+      );
+    });
+
+    it.each(runtimeFiles)('%s damages, clamps, and derives no Boss HP', (file) => {
+      const code = stripComments(readSource(file));
+
+      // SIGNALR_PROTOCOL.md §4.4 item 7 / GAME_STATE.md §2.4 / GAME_RULES.md §18:
+      // `bossState`'s `hp`/`maxHp` are authoritative server state made
+      // renderable, not client-side Boss logic. The runtime renders the two
+      // numbers it was sent.
+      //
+      // `bossState`, `hp`, and `maxHp` themselves are NOT in this list: §4.4
+      // makes them delivered contract members, so naming them is required. What
+      // stays forbidden is the computation — damaging the Boss, clamping `hp` to
+      // `maxHp`, inferring either from the other, or re-deriving them from the
+      // events or `finalBossHp`.
+      for (const term of [
+        'ApplyDamageToBoss',
+        'DamageBoss',
+        'damageBoss',
+        'BossHp --',
+        'bossHp--',
+        'ComputedBossHp',
+        'derivedBossHp',
+        'PredictedBossHp',
+        'RemainingBossHpPercentage',
+      ]) {
+        expect(code, `${file} must not reference "${term}"`).not.toContain(term);
+      }
+
+      // The delivered Boss values are copied through, never computed with: no
+      // arithmetic may touch `hp` or `maxHp`, so neither can be damaged, clamped,
+      // or re-derived from the other (§4.4 items 5 and 7).
+      expect(code, `${file} must not compute with the delivered Boss hp`).not.toMatch(
+        /\.hp\s*(\+\+|--|\+=|-=|\*=|\/=)/
+      );
+      expect(code, `${file} must not compute with the delivered Boss maxHp`).not.toMatch(
+        /\.maxHp\s*(\+\+|--|\+=|-=|\*=|\/=)/
+      );
     });
 
     it.each(runtimeFiles)('%s derives no Match or Combo value from anything', (file) => {

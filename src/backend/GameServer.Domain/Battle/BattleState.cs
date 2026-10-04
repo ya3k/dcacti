@@ -284,8 +284,10 @@ namespace GameServer.Domain.Battle;
 /// <see cref="LastCommittedSwapPair"/>, and because
 /// <c>PASSIVE_RULES.md</c> §6 item 1 requires the progress to be exposed as a
 /// UI-facing value (<c>SIGNALR_PROTOCOL.md</c> §4 item 13, §4.3). That payload
-/// carries the Passive trio only; the combat stats are state and are not wire
-/// members (§4.3 item 2). It adds no message, method, or subscription.
+/// carries the Passive identity, its progress pair, the conditional reset
+/// override, <c>equippedCards</c>, and the active Pet's <c>statusEffects[]</c>;
+/// the combat stats and the sibling modifier collections are state and are not
+/// wire members (§4.3 item 2). It adds no message, method, or subscription.
 /// </param>
 /// <param name="BossState">
 /// The battle's one Boss (<c>GAME_STATE.md</c> §2.4,

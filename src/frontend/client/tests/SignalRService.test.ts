@@ -123,9 +123,9 @@ describe('SignalRService', () => {
       service.on('BattleStateUpdated', (payload) => received.push(payload));
 
       // The transport-level shape of the implemented stage: battleId, turn,
-      // sequence, board, rngSeed, rngState, playerState, petState — and no other
-      // member (`SIGNALR_PROTOCOL.md` §4 item 4, §4.2, §4.3). No Status or
-      // lifecycle value exists in the protocol (§8.3).
+      // sequence, board, rngSeed, rngState, playerState, petState, bossState —
+      // and no other member (`SIGNALR_PROTOCOL.md` §4 item 4, §4.2, §4.3, §4.4).
+      // No Status or lifecycle value exists in the protocol (§8.3).
       //
       // Each board cell is an entry carrying its Gem type plus an optional
       // Special Gem (`GAME_STATE.md` §2.1.1, §4.1 item 5). A generated board
@@ -133,8 +133,9 @@ describe('SignalRService', () => {
       //
       // Typed against the contract so the test also proves the declared payload
       // shape accepts every documented member — including the delivered
-      // `petState` trio (§4.3) with its conditional reset override omitted for a
-      // default reset (§4.3 item 7).
+      // `petState` members (§4.3) with its conditional reset override omitted for
+      // a default reset (§4.3 item 7) and its always-present `statusEffects`
+      // array (§4.3 item 14), and the two-member `bossState` projection (§4.4).
       const payload: BattleStateUpdatedPayload = {
         battleId: 'battle-1',
         turn: 0,
@@ -149,7 +150,9 @@ describe('SignalRService', () => {
           passiveId: 'xich-lang',
           passiveProgress: { threshold: 5, current: 0 },
           equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+          statusEffects: [],
         },
+        bossState: { hp: 5000, maxHp: 5000 },
       };
       hub.handlers.get('BattleStateUpdated')?.(payload);
 
@@ -183,7 +186,9 @@ describe('SignalRService', () => {
           passiveProgress: { threshold: 7, current: 5 },
           passiveResetOverride: 'Partial',
           equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+          statusEffects: [],
         },
+        bossState: { hp: 4200, maxHp: 5000 },
       };
       hub.handlers.get('BattleStateUpdated')?.(payload);
 
@@ -581,7 +586,10 @@ describe('SignalRService', () => {
   describe('GetBattleState reconnect snapshot transport (SIGNALR_PROTOCOL.md §5, §7)', () => {
     /**
      * The snapshot the §4 push and the §7 request both carry — one projection,
-     * so one wire shape (`SIGNALR_PROTOCOL.md` §7.1, TASK-143).
+     * so one wire shape (`SIGNALR_PROTOCOL.md` §7.1, TASK-143). It carries the
+     * two-member `bossState` and the active Pet's always-present
+     * `statusEffects[]`, which §7.1 states the recovered state matches the push
+     * on member for member.
      */
     function snapshotState(): BattleStateUpdatedPayload {
       return {
@@ -601,7 +609,9 @@ describe('SignalRService', () => {
           passiveId: 'xich-lang',
           passiveProgress: { threshold: 5, current: 3 },
           equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+          statusEffects: [],
         },
+        bossState: { hp: 3800, maxHp: 5000 },
       };
     }
 

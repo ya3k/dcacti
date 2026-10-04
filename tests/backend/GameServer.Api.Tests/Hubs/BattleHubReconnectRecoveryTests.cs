@@ -313,13 +313,15 @@ public sealed class BattleHubReconnectRecoveryTests : IClassFixture<ApiIntegrati
         // §4 item 4: the snapshot carries exactly the implemented stage's fields —
         // the same member set the §4 push enumerates — and no other field. The
         // expected set is exactly the one ApiIntegrationTests asserts for the §4
-        // push, which is the compatibility this test exists to prove.
+        // push, which is the compatibility this test exists to prove. §7.1 states
+        // that the two paths agree member for member, `petState.statusEffects[]`
+        // (§4.3 items 2 and 14) and `bossState` (§4.4) included.
         var state = envelope.GetProperty("state");
         Assert.Equal(
             new[]
             {
-                "battleId", "board", "petState", "playerState", "rngSeed", "rngState",
-                "sequence", "turn",
+                "battleId", "board", "bossState", "petState", "playerState", "rngSeed",
+                "rngState", "sequence", "turn",
             },
             state.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
@@ -331,10 +333,11 @@ public sealed class BattleHubReconnectRecoveryTests : IClassFixture<ApiIntegrati
                 .Select(p => p.Name)
                 .OrderBy(n => n, StringComparer.Ordinal));
 
-        // §4.3 items 2 and 13: `petState` carries `passiveId`, `passiveProgress`,
-        // the conditional `passiveResetOverride`, and `equippedCards` — the loadout
-        // snapshot that CardCast/PetSkillCast action paths read. It is always
-        // present, non-empty, and non-nullable.
+        // §4.3 items 2, 13 and 14: `petState` carries `passiveId`, `passiveProgress`,
+        // the conditional `passiveResetOverride`, `equippedCards` — the loadout
+        // snapshot that CardCast/PetSkillCast action paths read, always present,
+        // non-empty, and non-nullable — and the active Pet's active Status Effects,
+        // which are always an array.
         var petState = state.GetProperty("petState");
         Assert.Equal("xich-lang", petState.GetProperty("passiveId").GetString());
         Assert.Equal(
@@ -352,6 +355,22 @@ public sealed class BattleHubReconnectRecoveryTests : IClassFixture<ApiIntegrati
         Assert.Equal(
             new[] { "card-heal", "card-shield", "card-power-charge", "card-inferno" },
             equippedCards);
+
+        // §4.3 item 14: the collection is always present and an active Pet with no
+        // active effect is sent an EMPTY array — never an omission and never null.
+        Assert.True(petState.TryGetProperty("statusEffects", out var statusEffects));
+        Assert.Equal(JsonValueKind.Array, statusEffects.ValueKind);
+        Assert.Empty(statusEffects.EnumerateArray());
+
+        // §4.4: the snapshot carries the same two-member Boss HP projection the push
+        // does, so a recovered client re-renders the Boss's live health from either
+        // path with one model (§7.1, ADR-008).
+        Assert.Equal(
+            new[] { "hp", "maxHp" },
+            state.GetProperty("bossState")
+                .EnumerateObject()
+                .Select(p => p.Name)
+                .OrderBy(n => n, StringComparer.Ordinal));
 
         // §4.1: `board` is exactly the 64-cell authoritative board.
         Assert.Equal(64, state.GetProperty("board").GetProperty("cells").GetArrayLength());

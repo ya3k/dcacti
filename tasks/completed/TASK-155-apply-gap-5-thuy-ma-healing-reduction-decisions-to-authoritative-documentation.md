@@ -53,8 +53,7 @@ Type:              DOCUMENTATION (TASK_TYPES.md §2 — "Change `docs/` content 
                    TASK-154, and this task authors no rule of its own. It
                    records a decided contract at its canonical owners, exactly
                    as TASK-124 and TASK-151 did for TASK-123 and TASK-150.)
-Status:            BACKLOG (per tasks/README.md §6 item 6 — created at
-                   BACKLOG; moves to READY when the Orchestrator sequences it)
+Status:            DONE
 Risk:              MEDIUM (TASK_TYPES.md §4 — DOCUMENTATION LOW–MEDIUM; MEDIUM
                    because it resolves a cross-referenced contract gap across
                    three authoritative documents and is the sole gate on

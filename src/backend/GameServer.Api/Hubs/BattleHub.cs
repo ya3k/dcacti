@@ -80,9 +80,15 @@ public record PingResponse(bool Accepted, string? ClientSequence, DateTimeOffset
 /// </param>
 /// <param name="PetState">
 /// The authoritative <c>PetState</c> projection (<c>GAME_STATE.md</c> §2.3) — the
-/// active Pet's Passive identity, its progress pair, and its non-default Reset
-/// Behavior when it declares one, projected one-to-one from the authoritative
-/// state (<c>SIGNALR_PROTOCOL.md</c> §4.3).
+/// active Pet's Passive identity, its progress pair, its non-default Reset
+/// Behavior when it declares one, its battle-scoped Card loadout, and its active
+/// Status Effect instances, projected one-to-one from the authoritative state
+/// (<c>SIGNALR_PROTOCOL.md</c> §4.3).
+/// </param>
+/// <param name="BossState">
+/// The authoritative Boss HP projection (<c>GAME_STATE.md</c> §2.4) — the Boss's
+/// current <c>HP</c> and <c>MaxHP</c> and nothing else, projected one-to-one from
+/// the authoritative state (<c>SIGNALR_PROTOCOL.md</c> §4.4).
 /// </param>
 public record BattleStateUpdated(
     string BattleId,
@@ -92,7 +98,8 @@ public record BattleStateUpdated(
     RngStatePayload RngState,
     BoardPayload Board,
     PlayerStatePayload PlayerState,
-    PetStatePayload PetState);
+    PetStatePayload PetState,
+    BossStatePayload BossState);
 
 /// <summary>
 /// The wire projection of <c>PetState</c> (<c>GAME_STATE.md</c> §2.3,
@@ -100,25 +107,33 @@ public record BattleStateUpdated(
 ///
 /// <code>
 /// petState
-/// ├── passiveId                 the active Pet's Passive identity   always present
-/// ├── passiveProgress            { threshold, current }             always present
-/// ├── passiveResetOverride       "Partial" | "NoReset"              present only when
-/// │                                                                 non-default
-/// └── equippedCards              string[] (4 CardDefinitionId)      always present
+/// ├── passiveId                 the active Pet's Passive identity    always present
+/// ├── passiveProgress            { threshold, current }              always present
+/// ├── passiveResetOverride       "Partial" | "NoReset"               present only when
+/// │                                                                  non-default
+/// ├── equippedCards              string[] (4 CardDefinitionId)       always present
+/// └── statusEffects             Status Effect instances of the       always present
+///                               ACTIVE Pet — an array, `[]` when     (§4.3 item 14)
+///                               none is active
 /// </code>
 ///
-/// The members are exactly the four <c>PetState</c> fields this stage implements
+/// The members are exactly the five <c>PetState</c> fields this stage implements
 /// and nothing else (§4.3 item 2): the Passive's <c>Threshold</c>, <c>Trigger
 /// Type</c>, <c>Effect</c>, and <c>Reset Behavior</c> are its <b>definition</b>
 /// and are not members here (<c>PASSIVE_RULES.md</c> §1, §4.3 item 3), and the
 /// rest of §2.3 — <c>PetId</c>/Identity, <c>Element</c>,
-/// <c>Tier</c>/<c>Star</c>/<c>Level</c>, combat stats, StatusEffects, and EquippedRelics —
-/// belongs to other subsystems or server-only calculation and is not delivered.
+/// <c>Tier</c>/<c>Star</c>/<c>Level</c>, the combat stats, the sibling
+/// <c>NextAttackCritModifiers[]</c>/<c>CardCostModifiers[]</c>/<c>ATKModifiers[]</c>
+/// collections, and <c>EquippedRelics[]</c> — belongs to other subsystems or
+/// server-only calculation and is not delivered.
 ///
 /// The client renders what it receives and derives nothing: it does not charge a
 /// Passive, evaluate a Threshold, reset progress, or apply an overflow, and it
 /// never re-derives any of it from <c>board</c>, <c>turn</c>, <c>sequence</c>,
 /// <c>combo</c>, or <c>matchCount</c> (<c>GAME_RULES.md</c> §18, §4.3 item 9).
+/// It likewise applies, refreshes, decrements, expires, and removes no Status
+/// Effect — that lifecycle is the server's (§4.3 item 14, <c>GAME_STATE.md</c>
+/// §5.1.1, <c>COMBAT_RULES.md</c> §5).
 /// </summary>
 /// <param name="PassiveId">
 /// The active Pet's Passive identity (<c>GAME_STATE.md</c> §2.3) — the same value
@@ -152,12 +167,192 @@ public record BattleStateUpdated(
 /// stands in for it — writing one would be a second spelling of one fact, which
 /// <c>GAME_STATE.md</c> §0 item 5 forbids.
 /// </param>
+/// <param name="StatusEffects">
+/// The active Pet's active Status Effect instances (<c>GAME_STATE.md</c> §2.3,
+/// §2.3.1; <c>SIGNALR_PROTOCOL.md</c> §4.3 item 14) — the subject <c>petState</c>
+/// already describes, so no other entity's collection travels here and no second
+/// collection is introduced.
+///
+/// <b>It is an array and it is always present.</b> An active Pet with no active
+/// effect is sent an <b>empty array</b> — the member is never omitted and never
+/// <c>null</c> (§4.3 item 14, <c>GAME_STATE.md</c> §2.3.2 item 1). This is the
+/// always-present convention, the <b>opposite</b> of §3.2.5's
+/// omitted-when-not-applicable one, so a client must <b>not</b> read an absent
+/// <c>statusEffects</c> as "no effect is active".
+///
+/// Each element is the shape <c>GAME_STATE.md</c> §2.3.2 item 3 fixes —
+/// <c>id</c>, <c>type</c>, <c>source</c>, <c>magnitude</c>, and the three
+/// optional members <c>targetStat</c>, <c>remainingTurns</c>,
+/// <c>expiryCondition</c> — carried by <see cref="StatusEffectPayload"/>, which
+/// references that shape rather than restating it. Within an element the
+/// optional members are <b>omitted</b> when they do not apply,
+/// per §4.3 item 14 and §3.2.5.
+///
+/// Element order is not semantic (<c>GAME_STATE.md</c> §2.3.1 item 10) and this
+/// projection imposes none: the array is delivered in the order the state holds
+/// it, which the round trip preserves (§2.3.2 item 6).
+/// </param>
 public record PetStatePayload(
     [property: JsonPropertyName("passiveId")] string PassiveId,
     [property: JsonPropertyName("passiveProgress")] PassiveProgressPayload PassiveProgress,
     [property: JsonPropertyName("equippedCards")] IReadOnlyList<string> EquippedCards,
+    [property: JsonPropertyName("statusEffects")]
+    IReadOnlyList<StatusEffectPayload> StatusEffects,
     [property: JsonPropertyName("passiveResetOverride")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PassiveResetOverride = null);
+
+/// <summary>
+/// The wire projection of one active Status Effect instance
+/// (<c>GAME_STATE.md</c> §2.3.1, §2.3.2 item 3;
+/// <c>SIGNALR_PROTOCOL.md</c> §4.3 item 14).
+///
+/// <code>
+/// id              string    required
+/// type            string    required    ("DoT" | "BuffDebuff" | "Shield" | "State")
+/// source          string    required    ("player" | "boss")
+/// magnitude       number    required
+/// targetStat      string    optional
+/// remainingTurns  integer   optional
+/// expiryCondition string    optional
+/// </code>
+///
+/// <b>The element shape is <c>GAME_STATE.md</c> §2.3.2 item 3's, referenced and
+/// not restated.</b> That section owns the members' existence, types, and
+/// meaning; this type only spells them for the wire, which is what makes
+/// <c>petState.statusEffects[]</c> one shape rather than two.
+///
+/// <b>Identity, not definition.</b> <c>id</c> names which Status Effect the
+/// instance is; the effect's rules are owned by <c>COMBAT_RULES.md</c> §5 and
+/// <c>BOSS_RULES.md</c> §6.3.1 and are not copied into the element
+/// (<c>GAME_STATE.md</c> §2.3.1 item 1, §0 item 5). <c>magnitude</c> carries the
+/// applied value only and is not interpreted here (§2.3.1 item 2).
+///
+/// <b>The three optional members are omitted when they do not apply, never
+/// <c>null</c> and never a sentinel string</b> (§2.3.1 item 7,
+/// <c>SIGNALR_PROTOCOL.md</c> §3.2.5, §4.3 item 14) — the same convention the
+/// conditional <c>passiveResetOverride</c> uses, applied per element. Within an
+/// element the omission is a <i>statement about that element</i> and does not
+/// weaken the collection's always-present rule: the array itself is always sent,
+/// empty when no effect is active.
+///
+/// <b><c>type</c> and <c>source</c> are enum-valued and carry their contract
+/// name, never an ordinal</b> (<c>SIGNALR_PROTOCOL.md</c> §3.2.4) — the same
+/// rule <c>passiveResetOverride</c> follows. The permitted values are
+/// <c>GAME_STATE.md</c> §2.3.1's closed sets and are not re-authored here.
+/// </summary>
+/// <param name="Id">
+/// The Status Effect identity (<c>GAME_STATE.md</c> §2.3.1 item 1), e.g.
+/// <c>"Burn"</c>, <c>"Root"</c>, <c>"Shield"</c>, <c>"Stun"</c>. It is the
+/// identity, not the definition: the effect's rules are owned by
+/// <c>COMBAT_RULES.md</c> §5 / <c>BOSS_RULES.md</c> §6.3.1 and are <b>not</b>
+/// copied beside it (§0 item 5). It is always present — §2.3.1 item 6's
+/// one-instance-per-identity rule is what a reader de-duplicates by, so an
+/// element without one is not a representable instance.
+/// </param>
+/// <param name="Type">
+/// The effect category — <c>"DoT"</c>, <c>"BuffDebuff"</c>, <c>"Shield"</c>, or
+/// <c>"State"</c> (<c>GAME_STATE.md</c> §2.3.1) — as its contract name and never
+/// the numeric enum ordinal (§3.2.4).
+/// </param>
+/// <param name="Source">
+/// Which side applied the instance — <c>"player"</c> or <c>"boss"</c>
+/// (<c>GAME_STATE.md</c> §2.3.1) — as its contract name. It follows the same
+/// source vocabulary <c>GAME_EVENTS.md</c> §2's events use.
+/// </param>
+/// <param name="Magnitude">
+/// The applied magnitude, uninterpreted (<c>GAME_STATE.md</c> §2.3.1 item 2):
+/// what the number means — flat damage, a percentage, an absorption pool — is
+/// owned by the effect's rule document and is not restated here. It is required
+/// and carries the value the state holds.
+/// </param>
+/// <param name="TargetStat">
+/// The modified stat for a <c>BuffDebuff</c> whose magnitude is consumed as a
+/// stat modifier, e.g. <c>"ATK"</c> (<c>GAME_STATE.md</c> §2.3.1 item 7, §2.3.2
+/// item 3). It is <b>present iff it applies</b> — absent, never <c>null</c> and
+/// never a sentinel string, otherwise. The absence <i>is</i> the statement "this
+/// member does not apply", so nothing is written in its place.
+/// </param>
+/// <param name="RemainingTurns">
+/// The per-instance duration counter of a Turn-based instance
+/// (<c>GAME_STATE.md</c> §2.3.1 items 3–4; <c>COMBAT_RULES.md</c> §5.3 DR1). It
+/// is a plain integer — never fractional, never nullable, never a
+/// duration-and-elapsed pair — and it is present iff the instance uses the Turn
+/// countdown, so it is absent for a trigger-based instance.
+///
+/// The server owns the countdown (<c>GAME_STATE.md</c> §5.1.1); the client
+/// renders the number it was sent and never decrements, expires, or re-derives
+/// it (<c>SIGNALR_PROTOCOL.md</c> §4.3 item 14).
+/// </param>
+/// <param name="ExpiryCondition">
+/// The trigger-based expiry label for an instance that does not use the Turn
+/// countdown, e.g. <c>"ShieldDepleted"</c> (<c>GAME_STATE.md</c> §2.3.1 items
+/// 3 and 5). It is present iff <paramref name="RemainingTurns"/> is absent — the
+/// two models are mutually exclusive, so exactly one is present.
+///
+/// It is a <b>condition label, not a rule</b>: the condition's behavior is owned
+/// by <c>COMBAT_RULES.md</c> §4/§5.1, and the client does not evaluate it
+/// (<c>SIGNALR_PROTOCOL.md</c> §4.3 item 14).
+/// </param>
+public record StatusEffectPayload(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("type")] string Type,
+    [property: JsonPropertyName("source")] string Source,
+    [property: JsonPropertyName("magnitude")] double Magnitude,
+    [property: JsonPropertyName("targetStat")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? TargetStat = null,
+    [property: JsonPropertyName("remainingTurns")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? RemainingTurns = null,
+    [property: JsonPropertyName("expiryCondition")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ExpiryCondition = null);
+
+/// <summary>
+/// The wire projection of the Boss's live health (<c>GAME_STATE.md</c> §2.4,
+/// <c>SIGNALR_PROTOCOL.md</c> §4.4).
+///
+/// <code>
+/// bossState
+/// ├── hp                          the Boss's current HP      always present
+/// └── maxHp                       the Boss's MaxHP            always present
+/// </code>
+///
+/// <b>It is a two-member projection of <c>BossState</c>, not <c>BossState</c>.</b>
+/// The enumerated member set is <c>hp</c> and <c>maxHp</c> and nothing else
+/// (§4.4 item 2), and referring to the state field as a whole does not widen it.
+/// Every other §2.4 member stays server-side: <c>BossId</c>/Identity,
+/// <c>Element</c>, <c>ATK</c>, <c>DEF</c>, <c>State</c>, <c>PassiveId</c>,
+/// <c>PassiveProgress</c>, <c>SkillCharge</c>, <c>SkillCooldown</c>, and
+/// <c>StatusEffects[]</c> (§4.4 item 3). A client must not read this object as
+/// the Boss's state.
+///
+/// <b>Both members are always present and neither is optional.</b> The Boss
+/// exists from battle creation at full health (<c>GAME_STATE.md</c> §2.4,
+/// §2.4.1), so there is no absent or "Boss not yet available" case: neither is
+/// nullable, neither is omitted, and <c>hp = 0</c> is a real published value —
+/// the terminal value of a won battle — sent as <c>0</c> (§4.4 item 4). A client
+/// must not read an absent <c>hp</c> as zero.
+///
+/// <b>The client neither computes nor derives either value.</b> It renders the
+/// two numbers it was sent and does not damage the Boss, clamp <c>hp</c> to
+/// <c>maxHp</c>, infer <c>MaxHP</c> from a damage report, or re-derive either
+/// from the events or from <c>finalBossHp</c> (<c>GAME_RULES.md</c> §18,
+/// <c>ADR-001</c>, §4.4 item 7).
+/// </summary>
+/// <param name="Hp">
+/// The Boss's current HP (<c>GAME_STATE.md</c> §2.4), read from
+/// <c>BossState.HP</c> and reported unchanged. The projection applies no unit,
+/// scale, clamp, or rounding, and <c>0</c> is a real value.
+/// </param>
+/// <param name="MaxHp">
+/// The Boss's maximum HP (<c>GAME_STATE.md</c> §2.4), read from
+/// <c>BossState.MaxHP</c> and reported unchanged. It is never re-derived from
+/// <paramref name="Hp"/> and <paramref name="Hp"/> is never clamped to it: the
+/// two are reported independently (§4.4 item 5). The camelCase spelling matches
+/// the casing the existing REST battle-start summary already uses for this state
+/// member (<c>API_CONTRACTS.md</c> §3).
+/// </param>
+public record BossStatePayload(
+    [property: JsonPropertyName("hp")] int Hp,
+    [property: JsonPropertyName("maxHp")] int MaxHp);
 
 /// <summary>
 /// The wire projection of <c>GAME_STATE.md</c> §2.3's <c>PassiveProgress</c>
@@ -360,7 +555,8 @@ public record PetSkillCastResponse(bool Accepted, string? Reason);
 /// <b>The snapshot is the same projection the <c>BattleStateUpdated</c> push
 /// carries.</b> <c>state</c> is the §4 payload itself — <c>battleId</c>,
 /// <c>turn</c>, <c>sequence</c>, <c>board</c>, <c>rngSeed</c>, <c>rngState</c>,
-/// <c>playerState</c>, and <c>petState</c> — produced by the one
+/// <c>playerState</c>, <c>petState</c> (including its <c>statusEffects[]</c>), and
+/// <c>bossState</c> — produced by the one
 /// <see cref="BattleHub.ToPayload(BattleState)"/> mapping the push uses, so
 /// recovery and join cannot drift apart and neither a recovery-only schema nor a
 /// second state-push method is introduced (§4 item 11, §7). Because the client
@@ -970,10 +1166,11 @@ public class BattleHub : Hub
     /// Projects the domain state onto the §4 wire payload.
     ///
     /// A pure field mapping — no calculation is performed. The board, the seed,
-    /// the RNG state, the player's Match/Combo state, and the Pet's Passive state
-    /// are projected one-to-one from the authoritative server state
-    /// (<c>SIGNALR_PROTOCOL.md</c> §4 item 4, §4.9); the hub derives nothing,
-    /// validates nothing, generates nothing, and computes no Passive value.
+    /// the RNG state, the player's Match/Combo state, the Pet's Passive state and
+    /// active Status Effects, and the Boss's live health are projected one-to-one
+    /// from the authoritative server state (<c>SIGNALR_PROTOCOL.md</c> §4 item 4,
+    /// §4.9); the hub derives nothing, validates nothing, generates nothing,
+    /// filters nothing, and computes no Passive, Status Effect, or Boss value.
     /// </summary>
     private static BattleStateUpdated ToPayload(BattleState state) =>
         new(
@@ -1000,23 +1197,36 @@ public class BattleHub : Hub
             new PlayerStatePayload(state.Combo, state.MatchCount),
             // GAME_STATE.md §2.3 / SIGNALR_PROTOCOL.md §4.3: the implemented
             // PetState members, projected one-to-one. The progress pair is nested
-            // because the two values are read together (§4.3 item 4), and the reset
+            // because the two values are read together (§4.3 item 4), the reset
             // override is carried only when the Passive declares a non-default
             // behavior — §4.3 item 7 makes the member's absence the statement
-            // "default", so nothing is written in its place.
-            ToPetStatePayload(state.PetState));
+            // "default", so nothing is written in its place — and the active Pet's
+            // active Status Effects ride the same object because it is that entity's
+            // collection (§4.3 item 14: only the ACTIVE Pet's instances travel, and
+            // the array is always present, empty when none is active).
+            ToPetStatePayload(state.PetState),
+            // GAME_STATE.md §2.4 / SIGNALR_PROTOCOL.md §4.4: the two-member Boss HP
+            // projection, read from BossState — the Boss's live health and nothing
+            // else. The rest of §2.4 (identity, Element, ATK/DEF, State, Passive,
+            // Skill charge/cooldown, and the Boss's own StatusEffects[]) stays
+            // server-side (§4.4 item 3), so no member beyond hp/maxHp is read here.
+            // Both values are always present and neither is clamped or derived from
+            // the other: a terminal `hp = 0` is published as 0 (§4.4 items 4–5).
+            new BossStatePayload(state.BossState.HP, state.BossState.MaxHP));
 
     /// <summary>
     /// Projects the authoritative <c>PetState</c> onto the §4.3 <c>petState</c>
     /// object — a pure field mapping.
     ///
-    /// The Passive identity, the progress pair, and the non-default Reset Behavior
-    /// are carried across one-to-one; the rest of <c>GAME_STATE.md</c> §2.3
-    /// (<c>PetId</c>, <c>Element</c>, <c>Tier</c>/<c>Star</c>/<c>Level</c>) is not
-    /// part of this stage and is not projected (<c>SIGNALR_PROTOCOL.md</c> §4.3
-    /// item 2). Nothing is derived: the client renders the values it was sent and
-    /// never charges a Passive, evaluates a Threshold, or applies a reset
-    /// (<c>GAME_RULES.md</c> §18, §4.3 item 9).
+    /// The Passive identity, the progress pair, the non-default Reset Behavior,
+    /// the battle-scoped Card loadout, and the active Pet's active Status Effect
+    /// instances are carried across one-to-one; the rest of <c>GAME_STATE.md</c>
+    /// §2.3 (<c>PetId</c>, <c>Element</c>, <c>Tier</c>/<c>Star</c>/<c>Level</c>,
+    /// the combat stats, the sibling modifier collections, and
+    /// <c>EquippedRelics[]</c>) is not part of this stage and is not projected
+    /// (<c>SIGNALR_PROTOCOL.md</c> §4.3 item 2). Nothing is derived: the client
+    /// renders the values it was sent and never charges a Passive, evaluates a
+    /// Threshold, or applies a reset (<c>GAME_RULES.md</c> §18, §4.3 item 9).
     /// </summary>
     private static PetStatePayload ToPetStatePayload(PetState petState) =>
         new(
@@ -1041,6 +1251,18 @@ public class BattleHub : Hub
                 .Select(card => card.Value)
                 .ToArray(),
 
+            // §4.3 item 14 / GAME_STATE.md §2.3.2 item 1: the active Pet's own
+            // active Status Effect instances. The collection is always present — an
+            // active Pet with no active effect is sent an empty array, never an
+            // omission and never null — and it is delivered in the order the state
+            // holds it, because no rule reads element positions (§2.3.1 item 10) and
+            // the round trip preserves the order (§2.3.2 item 6). Nothing is
+            // filtered or re-derived: what is projected is the state's collection,
+            // entry for entry.
+            (petState.ActiveStatusEffects ?? [])
+                .Select(ToStatusEffectPayload)
+                .ToArray(),
+
             // §4.3 items 6–7: the Reset Behavior's contract name when — and only
             // when — it is non-default. "Partial"/"NoReset" are the two non-default
             // behaviors PASSIVE_RULES.md §4 item 2 defines, spelled as §3.2.4
@@ -1049,6 +1271,42 @@ public class BattleHub : Hub
             // condition omits it from the JSON entirely rather than writing
             // `null` or a "Default" string.
             petState.PassiveResetOverride?.ToString());
+
+    /// <summary>
+    /// Projects one authoritative Status Effect instance onto the §4.3 item 14
+    /// element shape — a pure field mapping.
+    ///
+    /// The element carries <c>GAME_STATE.md</c> §2.3.2 item 3's member set and
+    /// nothing else, exactly as the state holds it: the identity, the two
+    /// enum-valued members as their contract names (§3.2.4), the magnitude
+    /// uninterpreted, and the three optional members present iff they apply.
+    /// Nothing is derived, defaulted, or normalized here — in particular the
+    /// projection does not invent a duration, does not convert a trigger-based
+    /// instance into a Turn-based one, and does not evaluate an expiry condition.
+    /// </summary>
+    private static StatusEffectPayload ToStatusEffectPayload(StatusEffect effect) =>
+        new(
+            // §2.3.1 item 1: the identity, not the definition. The effect's rules
+            // stay in COMBAT_RULES.md §5 / BOSS_RULES.md §6.3.1 and are not copied
+            // into the element (GAME_STATE.md §0 item 5).
+            effect.Id,
+
+            // §3.2.4: an enum-valued member carries its contract name, never the
+            // ordinal. ToString() renders the documented name for both members.
+            effect.Type.ToString(),
+            effect.Source.ToString(),
+
+            // §2.3.1 item 2: the applied value only. Its meaning is the effect
+            // rule's and is not interpreted here.
+            effect.Magnitude,
+
+            // §2.3.1 item 7 / §3.2.5: each optional member is present iff it
+            // applies, and its absence is the statement that it does not apply —
+            // the null condition below omits it from the JSON entirely rather than
+            // writing `null` or a sentinel string.
+            effect.TargetStat,
+            effect.RemainingTurns,
+            effect.ExpiryCondition);
 
     /// <summary>
     /// Projects one cell entry onto the §4 wire shape — a pure field mapping.

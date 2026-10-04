@@ -39,8 +39,9 @@ Goal: One playable battle, start to finish, against Bosses.
 ```text
 Goal: Full MVP scope, see MVP_SCOPE.md §1.
 ```
-- All 5 Pets (including the 2 Signature Skills not yet content-defined —
-  see PET_RULES.md §8 note)
+- All 5 Pets (all 5 Signature Skills are now content-defined — `CARD_RULES.md`
+  §4.1; the Thanh Xà and Sơn Hùng rows remain to be provisioned, see
+  PET_RULES.md §8 note)
 - All 5 Bosses (2 not yet content-defined — see BOSS_RULES.md §6 note;
   each requires Element, Passive, Skill, stats)
 - All ~10 Relics + trigger/stacking system

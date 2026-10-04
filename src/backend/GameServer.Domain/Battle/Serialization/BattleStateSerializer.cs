@@ -834,13 +834,20 @@ public static class BattleStateSerializer
         // violation surfaces as the ArgumentException the domain already raises
         // for it, rather than as a second, weaker spelling of the same rule.
         return hasTurnCountdown
-            ? StatusEffect.TurnBased(
-                dto.Id,
-                type,
-                source,
-                dto.Magnitude,
-                dto.RemainingTurns!.Value,
-                dto.TargetStat)
+            ? (dto.TargetStat is not null
+                ? StatusEffect.TurnBased(
+                    dto.Id,
+                    type,
+                    source,
+                    dto.Magnitude,
+                    dto.RemainingTurns!.Value,
+                    dto.TargetStat)
+                : StatusEffect.TurnBased(
+                    dto.Id,
+                    type,
+                    source,
+                    dto.Magnitude,
+                    dto.RemainingTurns!.Value))
             : StatusEffect.TriggerBased(
                 dto.Id,
                 type,

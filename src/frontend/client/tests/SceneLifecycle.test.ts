@@ -637,15 +637,21 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
       // GAME_STATE.md §2.2: both values exist from battle creation and are always
       // delivered — including at 0, which is a value, not an absence.
       playerState: { combo: 0, matchCount: 0 },
-      // SIGNALR_PROTOCOL.md §4.3: exactly the Passive trio. The delivered
-      // `current / threshold` pair is always present; `passiveResetOverride` is
-      // omitted for the default reset, which is the documented representation
-      // (§4.3 items 4, 7).
+      // SIGNALR_PROTOCOL.md §4.3: the enumerated `petState` members. The
+      // delivered `current / threshold` pair is always present;
+      // `passiveResetOverride` is omitted for the default reset, which is the
+      // documented representation (§4.3 items 4, 7); and `statusEffects` is
+      // always present — an active Pet with no active effect is an empty array,
+      // never an omission (§4.3 item 14).
       petState: {
         passiveId: 'xich-lang',
         passiveProgress: { threshold: 5, current: 0 },
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+        statusEffects: [],
       },
+      // SIGNALR_PROTOCOL.md §4.4: the two-member Boss HP projection. Both members
+      // are always present and neither is nullable (§4.4 item 4).
+      bossState: { hp: 5000, maxHp: 5000 },
       ...overrides,
     };
   }
@@ -694,6 +700,7 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
         passiveId: 'thanh-xa-poison',
         passiveProgress: { threshold: 7, current: 3 },
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+        statusEffects: [],
       },
     }));
 
@@ -717,6 +724,7 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
         passiveProgress: { threshold: 5, current: 4 },
         passiveResetOverride: 'Partial',
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+        statusEffects: [],
       },
     }));
 
@@ -726,6 +734,70 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
 
     expect(rendered).toContain('4 / 5');
     expect(rendered).toContain('reset: Partial');
+  });
+
+  it('renders the delivered Boss hp and maxHp verbatim', () => {
+    // SIGNALR_PROTOCOL.md §4.4: the Boss's live health reaches the client as the
+    // two-member `bossState` projection. The scene prints both numbers as
+    // received — it damages nothing, clamps nothing, and infers neither value
+    // from the other (§4.4 item 7).
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
+      bossState: { hp: 4200, maxHp: 5000 },
+    }));
+
+    runScene(scene, ctx, 'create');
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+
+    expect(rendered).toContain('Boss HP: 4200 / 5000');
+  });
+
+  it('renders the delivered Status Effects verbatim, and none as an empty collection', () => {
+    // SIGNALR_PROTOCOL.md §4.3 item 14 / GAME_STATE.md §2.3.1: the active Pet's
+    // active instances are presented as delivered. The scene applies, refreshes,
+    // decrements, expires, and removes nothing, and evaluates no duration or
+    // expiry condition (§4.3 item 14, GAME_STATE.md §5.1.1).
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
+      petState: {
+        passiveId: 'xich-lang',
+        passiveProgress: { threshold: 5, current: 0 },
+        equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+        statusEffects: [
+          // A Turn-based instance: the countdown model is shown, because that is
+          // the one the element carries (§2.3.1 item 3). `targetStat` does not
+          // apply here and stays absent.
+          { id: 'Burn', type: 'DoT', source: 'boss', magnitude: 25, remainingTurns: 2 },
+          // A trigger-based instance: the expiry condition is shown instead, and
+          // no countdown is invented for it.
+          { id: 'Shield', type: 'Shield', source: 'player', magnitude: 100, expiryCondition: 'ShieldDepleted' },
+        ],
+      },
+    }));
+
+    runScene(scene, ctx, 'create');
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+
+    expect(rendered).toContain('Burn');
+    expect(rendered).toContain('DoT');
+    expect(rendered).toContain('2 turns');
+    expect(rendered).toContain('Shield');
+    expect(rendered).toContain('ShieldDepleted');
+    // The empty collection is not this payload's case, so "none" is not shown.
+    expect(rendered).not.toContain('Status Effects: none');
+  });
+
+  it('renders the empty Status Effect collection as the documented no-effect case', () => {
+    // §4.3 item 14: an active Pet with no active effect is sent an EMPTY ARRAY —
+    // never an omission. The scene states that as the documented empty case
+    // rather than leaving the line blank.
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
+
+    runScene(scene, ctx, 'create');
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+
+    expect(rendered).toContain('Status Effects: none');
   });
 
   it('renders the 8x8 board as exactly 64 cells', () => {
@@ -874,18 +946,28 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     expect(harness.boardCells).toHaveLength(0);
   });
 
-  it('presents no lifecycle or status value', () => {
-    // GAME_STATE.md §2.0.3 / SIGNALR_PROTOCOL.md §8.3: no Status and no
+  it('presents no lifecycle value', () => {
+    // GAME_STATE.md §2.0.3 / SIGNALR_PROTOCOL.md §8.3: no
     // READY/STARTING/ACTIVE/PAUSED/FINISHED/WON/LOST exists in this contract.
+    //
+    // `Status` is no longer excluded as a substring: §4.3 item 14 delivers the
+    // active Pet's `statusEffects[]`, so "Status Effects" is a documented,
+    // rendered member rather than a lifecycle value. What the protocol has no
+    // member for is a battle `status`, and the assertion below pins that.
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
 
     runScene(scene, ctx, 'create');
 
     const rendered = harness.texts.map((t) => t.text).join(' ');
     expect(rendered).not.toMatch(/READY/i);
-    for (const forbidden of ['Status', 'STARTING', 'ACTIVE', 'PAUSED', 'FINISHED', 'WON', 'LOST']) {
+    for (const forbidden of ['STARTING', 'ACTIVE', 'PAUSED', 'FINISHED', 'WON', 'LOST']) {
       expect(rendered).not.toMatch(new RegExp(forbidden, 'i'));
     }
+
+    // The rendered line is the documented Status Effect collection, not a
+    // battle-lifecycle value.
+    expect(rendered).toContain('Status Effects:');
+    expect(rendered).not.toMatch(/\bStatus:\s/);
   });
 
   it('presents no gameplay system state alongside the board', () => {
@@ -893,12 +975,30 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
 
     runScene(scene, ctx, 'create');
 
-    // The board and its four Gem types are part of this stage; the later-stage
-    // gameplay systems are not (GAME_STATE.md §2.0.5.3). Card casts are implemented
-    // in TASK-120, while remaining systems remain unmodelled.
+    // The board and its four Gem types are part of this stage, as are the
+    // delivered `petState` members (the Passive, §4.3) and the two-member Boss HP
+    // projection (§4.4). Card casts are implemented in TASK-120. The gameplay
+    // systems this stage does not implement remain unmodelled and unrendered:
+    // resolution, Combo accounting, Damage, and Relics (GAME_STATE.md §2.0.5.3).
     const rendered = harness.texts.map((t) => t.text).join(' ');
-    for (const forbidden of ['Boss', 'Combo', 'Damage', 'Pet', 'Relic', 'PendingSpecial']) {
+    for (const forbidden of ['Combo', 'Damage', 'Relic', 'PendingSpecial']) {
       expect(rendered).not.toMatch(new RegExp(forbidden, 'i'));
+    }
+
+    // The Boss line is the delivered `hp`/`maxHp` pair and nothing else: no
+    // Boss ATK/DEF, no Element, no State, no Passive progress, no Skill
+    // charge/cooldown, and no Boss Status Effects (§4.4 item 3).
+    expect(rendered).toContain('Boss HP:');
+    for (const hiddenBossMember of [
+      'Boss ATK',
+      'Boss DEF',
+      'Boss Element',
+      'Boss State',
+      'Boss Passive',
+      'SkillCharge',
+      'SkillCooldown',
+    ]) {
+      expect(rendered).not.toContain(hiddenBossMember);
     }
   });
 
@@ -934,7 +1034,9 @@ describe('BattleScene — Swap input (MATCH3_RULES.md §2, SIGNALR_PROTOCOL.md �
         passiveId: 'xich-lang',
         passiveProgress: { threshold: 5, current: 0 },
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+        statusEffects: [],
       },
+      bossState: { hp: 5000, maxHp: 5000 },
       ...overrides,
     };
   }
@@ -1177,7 +1279,9 @@ describe('BattleScene — CardCast and PetSkillCast input (SIGNALR_PROTOCOL.md �
         passiveId: 'xich-lang',
         passiveProgress: { threshold: 5, current: 0 },
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+        statusEffects: [],
       },
+      bossState: { hp: 5000, maxHp: 5000 },
       ...overrides,
     };
   }

@@ -459,16 +459,8 @@ public static class SwapExecutor
         // into the documented pools — permanently for Power, transiently for the
         // three pools the downstream steps of this same resolution consume.
         //
-        // Step 12 ("Generate Resources") is recorded here on the result (Resources)
-        // as Transient Resolution State (GAME_STATE.md §3).
-        //
-        // Crucially, per GAME_RULES.md §17 and TASK-142, Step 11 ("Trigger Relics")
-        // evaluates and applies before Step 13 ("Update Power") and Step 14
-        // ("Resolve Player Effects"). SwapExecutor therefore does NOT finalize
-        // Steps 13 and 14 onto PetState; the returned State carries the post-Step-9
-        // PetState so that Step 10 (Charge Passive) and Step 11 (Trigger Relics)
-        // evaluate against the pre-step-12/13/14 state.
         var generation = ResourceGenerator.Generate(resolution);
+        var petState = ResourceGenerator.ApplyHeal(state.PetState, generation, state.BossState.ActiveStatusEffects);
 
         // Step 7 (GAME_EVENTS.md §1, §1.1, §2): the ordered Battle Events that
         // describe the resolution just performed. They are produced from
@@ -512,10 +504,10 @@ public static class SwapExecutor
             Combo = combo,
             MatchCount = matchCount,
 
-            // Post-Step-9 PetState: carried across unchanged so that Step 10
-            // (Charge Passive) and Step 11 (Trigger Relics) evaluate against the
-            // state before Steps 12–14 have been finalized (GAME_RULES.md §17, TASK-142).
-            PetState = state.PetState,
+            // §2.3 / §17 steps 12 and 14: the Pet's combat stats the resource stage
+            // wrote — Power and HP — carried in the same write-back. The rest of
+            // PetState is carried across unchanged by the `with` expression.
+            PetState = petState,
 
             // §2.1.6 step 4 / GAME_STATE.md §2.1.10 item 5: the committed pair,
             // canonically (min, max) so either argument order records one value

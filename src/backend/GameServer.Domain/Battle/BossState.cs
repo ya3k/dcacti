@@ -95,7 +95,11 @@ namespace GameServer.Domain.Battle;
 ///
 /// It is <b>always present</b>: §2.3.2 item 1 makes an entity with no active
 /// effect hold an <b>empty array</b>, never <c>null</c> and never omitted. It is
-/// <b>not a wire member</b> (§2.3.1's wire note).
+/// <b>not a wire member</b>: §2.4.1 and <c>SIGNALR_PROTOCOL.md</c> §4.4 item 3
+/// keep the Boss's collection server-side — the <c>bossState</c> projection
+/// carries exactly <c>hp</c> and <c>maxHp</c>, and the Boss's
+/// <c>StatusEffects[]</c> is named among the members that are not delivered
+/// (<c>TASK-160</c> D-2A).
 /// </param>
 /// <param name="BossId">
 /// The identity of the Boss being fought (<c>GAME_STATE.md</c> §2.4,
@@ -303,6 +307,37 @@ public readonly record struct BossState(
     public bool StatusEffectsEqual(BossState other) =>
         StatusEffectLifecycle.EffectsEqual(ActiveStatusEffects, other.ActiveStatusEffects);
 
+    public bool Equals(BossState other) =>
+        BossId == other.BossId
+        && Element == other.Element
+        && HP == other.HP
+        && MaxHP == other.MaxHP
+        && ATK == other.ATK
+        && DEF == other.DEF
+        && State == other.State
+        && PassiveId == other.PassiveId
+        && PassiveProgress.Equals(other.PassiveProgress)
+        && SkillCharge == other.SkillCharge
+        && SkillCooldown == other.SkillCooldown
+        && StatusEffectsEqual(other);
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.Add(BossId);
+        hash.Add(Element);
+        hash.Add(HP);
+        hash.Add(MaxHP);
+        hash.Add(ATK);
+        hash.Add(DEF);
+        hash.Add(State);
+        hash.Add(PassiveId);
+        hash.Add(PassiveProgress);
+        hash.Add(SkillCharge);
+        hash.Add(SkillCooldown);
+        return hash.ToHashCode();
+    }
+
     /// <summary>
     /// The documented <c>BossState</c> of a newly created battle: the Boss's
     /// identity, its Element, and its stats at full health, in the Initial State,
@@ -374,13 +409,31 @@ public readonly record struct BossState(
         int atk,
         int def,
         PassiveId passiveId,
-        int passiveThreshold) =>
+        int passiveThreshold)
+    {
         // §2.4 / BOSS_RULES.md §6.1: a battle begins with the Boss at full health
         // and in the Idle State. §2.4.2–§2.4.3: the Passive's identity is set at
         // creation with its progress at the start of its first charge, and the
         // Skill is neither charged nor on cooldown. All are the documented initial
         // values, not chosen here, and nothing is derived from the player's stats.
-        new(
+        var initialEffects = Array.Empty<StatusEffect>();
+
+        // BOSS_RULES.md §6.2.2: Thủy Ma passive triggers at Battle Start, applying
+        // a 3-turn -50% healing reduction BuffDebuff in BossState.StatusEffects[].
+        if (string.Equals(passiveId.Value, "boss-thuy-ma-heal", StringComparison.Ordinal))
+        {
+            initialEffects =
+            [
+                StatusEffect.TurnBased(
+                    "boss-thuy-ma-heal",
+                    StatusEffectType.BuffDebuff,
+                    StatusEffectSource.Boss,
+                    magnitude: -50,
+                    duration: 3),
+            ];
+        }
+
+        return new(
             bossId,
             element,
             maxHp,
@@ -391,5 +444,9 @@ public readonly record struct BossState(
             passiveId,
             PassiveProgress.AtStart(passiveThreshold),
             SkillCharge: 0,
-            SkillCooldown: 0);
+            SkillCooldown: 0)
+        {
+            ActiveStatusEffects = initialEffects,
+        };
+    }
 }

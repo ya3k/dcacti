@@ -1,6 +1,17 @@
 # Card Rules
 
-**Version:** 1.7 (§3.6 added — the canonical owner of **Effective Card Cost**,
+**Version:** 1.8 (§4.1 — the two remaining MVP Pet Skill Cards are now
+content-defined per the TASK-166 Product Owner decisions D-1/D-2: **Thanh Xà —
+Venomous Bloom** (80 Power; 80 flat Mộc damage → Boss; Burn 25/tick for 2 Turns,
+Element Hỏa) and **Sơn Hùng — Earthshaker** (100 Power; 150 flat Thổ damage →
+Boss). Both resolve immediately at `GAME_RULES.md` §17 step 14 and introduce no
+cooldown, resource, pending state, event, or `EffectDefinition` member. §4.1
+gains a statement that each effect carries its own Element and an
+immediate-resolution statement covering all four Pet Skill Cards; the closing
+"not yet content-defined" sentence is retired because all five Pets' Skills are
+now authored. **No existing Skill, magnitude, cost, or column is changed** —
+Inferno, Tidal Barrier, and Iron Fang are untouched, and `DATABASE.md` §1's
+storage shape and vocabulary are unchanged. Prior 1.7: (§3.6 added — the canonical owner of **Effective Card Cost**,
 per TASK-134 D4/D5 and the explicit Product Owner `EffectiveCardCost`
 fractional-value decision: `TotalReduction = min(sum(CostReductionPercentage),
 100)`, `RawEffectiveCardCost = CardDefinition.PowerCost × (100 − TotalReduction)
@@ -339,11 +350,44 @@ Bạch Hổ — Iron Fang
   Effect: Deal 120 damage (flat base value, entering the Damage Pipeline as
           the Card/Skill base value — COMBAT_RULES.md §3 step 1); increase
           Crit chance by 10 percentage points for the next attack only
+
+Thanh Xà — Venomous Bloom
+  Cost:   80 Power
+  Effect: Deal 80 Mộc (Wood) damage (flat base value, entering the Damage
+          Pipeline as the Card/Skill base value — COMBAT_RULES.md §3 step 1);
+          apply Burn 25 damage per tick for 2 Turns, Element Hỏa (Fire)
+
+Sơn Hùng — Earthshaker
+  Cost:   100 Power
+  Effect: Deal 150 Thổ (Earth) damage (flat base value, entering the Damage
+          Pipeline as the Card/Skill base value — COMBAT_RULES.md §3 step 1)
 ```
 
 Effect magnitudes above are the Product Owner's decided values and are owned
 by this section. Burn ticks and Shield application follow the frozen contracts
 cited inline; neither is restated here.
+
+**Each effect carries its own Element.** A damage-dealing Pet Skill Card's
+Element is stated per effect, and an effect's Element is what the Damage
+Pipeline's Element Modifier step reads for that damage instance
+(`ELEMENT_RULES.md` §1.1, §5; `COMBAT_RULES.md` §3 step 3). Venomous Bloom's two
+effects therefore carry **different** Elements: its damage is Mộc (the Pet's own
+Element, `ELEMENT_RULES.md` §6) while its Burn is Hỏa — the Element
+`COMBAT_RULES.md` §5.1 assigns to Burn generally. The Skill's Mộc Element is
+**not** inherited by its Burn effect, and Earthshaker's single effect carries
+Thổ (`ELEMENT_RULES.md` §6). This states which Element each authored effect
+carries; it changes no Element rule, which `ELEMENT_RULES.md` owns.
+
+**All four §4.1 Pet Skill Cards resolve at the same point.** A Pet Skill's
+effects resolve when the player casts it, at `GAME_RULES.md` §17 step 14
+("Resolve Player Effects"), and emit the existing `PetSkillCast` event
+(`§6` below; `GAME_EVENTS.md` §2). **Venomous Bloom and Earthshaker are
+immediate**: once the cast resolves, nothing of the Skill persists as pending or
+active state, and Burn's lifetime is the applied Status Effect's own, governed
+by `COMBAT_RULES.md` §5.1–§5.3 and the single `GAME_RULES.md` §17 step 19a
+duration decrement. No Pet Skill Card defined by this document has a cooldown,
+consumes a resource other than `Power`, or introduces an event, and none adds a
+member to `EffectDefinition` (`DATABASE.md` §1).
 
 **Iron Fang's Crit increase is the Card's own value.** It is **independent**
 of Bạch Hổ's Pet Passive configuration value (`PASSIVE_RULES.md` §7/§8) — the
@@ -368,9 +412,9 @@ cast's own damage and the modifier's consumption can occur in the same Swap
 is a consequence of `GAME_RULES.md` §17's fixed order, not a separate rule
 here.
 
-Thanh Xà and Sơn Hùng Signature Skills are not yet content-defined; when
-authored they must follow this same structure (Cost + Effect, consistent with
-§4).
+Thanh Xà and Sơn Hùng Signature Skills are now content-defined above
+(**Venomous Bloom** and **Earthshaker**); all five MVP Pets' Signature Skills
+are authored in this section.
 
 ---
 

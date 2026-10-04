@@ -127,8 +127,9 @@ namespace GameServer.Domain.Battle;
 ///
 /// <b>The combat stats exist in the state but are not delivered on the wire.</b>
 /// <c>SIGNALR_PROTOCOL.md</c> §4.3 item 2 fixes the <c>petState</c> payload
-/// member to exactly the Passive trio — the Passive identity, its progress pair,
-/// and the non-default override — and <c>GAME_STATE.md</c> §2.3 records that not
+/// member to its enumerated five — the Passive identity, its progress pair, the
+/// non-default override, <c>equippedCards</c>, and the active Pet's
+/// <c>statusEffects[]</c> — and <c>GAME_STATE.md</c> §2.3 records that not
 /// all members here are part of any wire payload. This type does not change
 /// that: the combat stats are authoritative state, exactly as
 /// <c>LastCommittedSwapPair</c> is (§2.1.10 item 9, <c>SIGNALR_PROTOCOL.md</c>
@@ -363,9 +364,12 @@ namespace GameServer.Domain.Battle;
 /// <see cref="StatusEffectLifecycle"/>. The gameplay rule behind the countdown is
 /// <c>COMBAT_RULES.md</c> §5.3 and is not restated here.
 ///
-/// It is <b>not a wire member</b>: §2.3.1's wire note states <c>StatusEffects[]</c>
-/// is not part of any current wire payload, so carrying it here adds no member to
-/// <c>BattleStateUpdated</c> and no message, method, or subscription.
+/// It is a wire member, delivered as <c>petState.statusEffects[]</c>
+/// (<c>SIGNALR_PROTOCOL.md</c> §4.3 item 14, the <c>TASK-160</c> D-1A Product
+/// Owner decision): the active Pet's own active instances ride the existing
+/// <c>BattleStateUpdated</c> push, always present as an array and empty when no
+/// effect is active. Carrying it here still adds no method, event, or
+/// subscription, and the sibling collections below remain undelivered.
 /// </param>
 /// <param name="PetId">
 /// The owned Pet instance this battle's active Pet is (<c>GAME_STATE.md</c>
@@ -417,8 +421,9 @@ public readonly record struct PetState(
     ///
     /// Its mutation — apply, refresh, consume at <c>GAME_RULES.md</c> §17 step 19a,
     /// and expire — is owned by <c>GAME_STATE.md</c> §5.1.1 (see
-    /// <see cref="StatusEffectLifecycle"/>). It is <b>not a wire member</b>
-    /// (§2.3.1's wire note), and it is carried here as state, not delivered.
+    /// <see cref="StatusEffectLifecycle"/>). It <b>is</b> delivered, as
+    /// <c>petState.statusEffects[]</c> (<c>SIGNALR_PROTOCOL.md</c> §4.3 item 14);
+    /// this member is the state the projection reads.
     /// </summary>
     public StatusEffect[] ActiveStatusEffects { get; init; } = [];
 

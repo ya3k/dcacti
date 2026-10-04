@@ -104,6 +104,58 @@ internal sealed class InMemoryBattleResultRepository : IBattleResultRepository
         return Task.FromResult(
             _rows.TryGetValue(battleResultId, out var row) ? row : null);
     }
+
+    /// <summary>
+    /// The Player-scoped ordered history read
+    /// (<c>API_CONTRACTS.md</c> §4.5 notes 4 and 8).
+    ///
+    /// <b>It models the two documented semantics the history read depends on</b>,
+    /// so an Application-layer test cannot pass against a double more permissive
+    /// than the contract:
+    /// <list type="bullet">
+    /// <item><b>The Player filter is part of the read</b> (note 8): another
+    /// Player's rows are never returned, which is what lets a test prove the
+    /// caller's scope is the authenticated identity.</item>
+    /// <item><b>The order is the contract's</b> (note 4): <c>CompletedAt</c>
+    /// descending, then <c>BattleResultId</c> descending as the deterministic
+    /// tie-break — the same total order the production query expresses, so a test
+    /// that asserts "newest first" asserts the documented order rather than
+    /// insertion order.</item>
+    /// </list>
+    ///
+    /// The comparisons are ordinal for the same reason the production query's are:
+    /// the ids are opaque server-authored strings, so the tie-break must not depend
+    /// on a culture-sensitive collation.
+    /// </summary>
+    public Task<IReadOnlyList<BattleResult>> ListByPlayerIdAsync(
+        string playerId,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(playerId);
+
+        IReadOnlyList<BattleResult> history = _rows.Values
+            .Where(row => string.Equals(row.PlayerId, playerId, StringComparison.Ordinal))
+            .OrderByDescending(row => row.CompletedAt)
+            .ThenByDescending(row => row.BattleResultId, StringComparer.Ordinal)
+            .ToList();
+
+        return Task.FromResult(history);
+    }
+
+    /// <summary>
+    /// Seeds a stored result directly, so a history test can establish exactly the
+    /// rows it needs — including two results that share a <c>CompletedAt</c>, which
+    /// the tie-break rule exists for (<c>API_CONTRACTS.md</c> §4.5 note 4).
+    ///
+    /// It writes through <see cref="AddAsync"/> so the double's own key semantics
+    /// ("one row per battle", the primary-key guard) hold for seeded rows too.
+    /// </summary>
+    public void Seed(BattleResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+
+        _rows[result.BattleResultId] = result;
+    }
 }
 
 /// <summary>

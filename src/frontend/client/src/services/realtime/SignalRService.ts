@@ -58,16 +58,16 @@ export type PetSkillCastResult = PetSkillCastAcknowledgement;
 
 /**
  * The authoritative battle state pushed on group join
- * (SIGNALR_PROTOCOL.md §4, §4.2, §4.3).
+ * (SIGNALR_PROTOCOL.md §4, §4.2, §4.3, §4.4).
  *
  * Exactly the currently implemented `GAME_STATE.md` §0 stage's fields —
  * `battleId`, `turn`, `sequence`, `board`, `rngSeed`, `rngState`,
- * `playerState`, `petState` — and no others (§4 item 4: the record carries the
- * implemented stage's own fields and nothing else; §8.1 leaves only the
- * serializer's mechanics to the implementation, never the resulting member set).
- * No gameplay field beyond the stage's own is carried, and no `Status`/lifecycle
- * value exists anywhere in the protocol (§8.3). The values are server-authored
- * (`GAME_RULES.md` §18, ADR-001).
+ * `playerState`, `petState`, `bossState` — and no others (§4 item 4: the record
+ * carries the implemented stage's own fields and nothing else; §8.1 leaves only
+ * the serializer's mechanics to the implementation, never the resulting member
+ * set). No gameplay field beyond the stage's own is carried, and no
+ * `Status`/lifecycle value exists anywhere in the protocol (§8.3). The values are
+ * server-authored (`GAME_RULES.md` §18, ADR-001).
  *
  * `board` carries the server-generated `Cells[64]` (`GAME_STATE.md` §2.1.1,
  * `MATCH3_RULES.md` §1.2). The client renders the received board and must not
@@ -78,12 +78,21 @@ export type PetSkillCastResult = PetSkillCastAcknowledgement;
  * fields, not because the client computes them: the client renders them and
  * never authors, adjusts, or recomputes either (§4.9, `GAME_RULES.md` §18).
  *
- * `petState` carries the active Pet's Passive (`GAME_STATE.md` §2.3, §4.3). It
- * is delivered because it is a `BattleState` field and because
- * `PASSIVE_RULES.md` §6 item 1 requires the Passive's progress to be exposed as
- * a UI-facing value. The client renders the `current / threshold` pair and the
- * Passive identity it was sent; it does not charge a Passive, evaluate a
- * Threshold, or reset progress (§4.3 item 9).
+ * `petState` carries the active Pet's Passive and its active Status Effects
+ * (`GAME_STATE.md` §2.3, §4.3). The Passive is delivered because it is a
+ * `BattleState` field and because `PASSIVE_RULES.md` §6 item 1 requires its
+ * progress to be exposed as a UI-facing value; the active Status Effect
+ * instances are delivered by the `TASK-160` **D-1A** Product Owner decision
+ * (§4.3 item 14). The client renders the `current / threshold` pair, the Passive
+ * identity, and the instance list it was sent; it does not charge a Passive,
+ * evaluate a Threshold, reset progress (§4.3 item 9), or apply, refresh,
+ * decrement, expire, or remove a Status Effect (§4.3 item 14).
+ *
+ * `bossState` carries the Boss's live `hp` and `maxHp` (`GAME_STATE.md` §2.4,
+ * §4.4) — a two-member projection, not `BossState`. The client renders the two
+ * numbers it was sent: it does not damage the Boss, clamp `hp` to `maxHp`, infer
+ * one from the other, or re-derive either from the events or `finalBossHp`
+ * (§4.4 item 7, `GAME_RULES.md` §18).
  *
  * This is a transport-level shape only. The service does not interpret it,
  * derive from it, or recompute it; it hands it to the runtime unchanged.
@@ -114,10 +123,16 @@ export interface BattleStateUpdatedPayload {
   readonly playerState: PlayerStatePayload;
   /**
    * The authoritative `petState` projection (`GAME_STATE.md` §2.3,
-   * `SIGNALR_PROTOCOL.md` §4.3) — the active Pet's Passive trio and nothing
-   * else. The rest of §2.3 belongs to later stages and is not delivered.
+   * `SIGNALR_PROTOCOL.md` §4.3) — the active Pet's Passive, its Card loadout,
+   * and its active Status Effect instances. The rest of §2.3 is not delivered.
    */
   readonly petState: PetStatePayload;
+  /**
+   * The authoritative Boss HP projection (`GAME_STATE.md` §2.4,
+   * `SIGNALR_PROTOCOL.md` §4.4) — the Boss's live `hp` and `maxHp` and nothing
+   * else. No other `BossState` member is delivered (§4.4 item 3).
+   */
+  readonly bossState: BossStatePayload;
 }
 
 /**
@@ -172,20 +187,25 @@ export interface BattleStateSnapshotResponse {
  * The wire projection of `PetState`'s delivered members (`GAME_STATE.md` §2.3,
  * `SIGNALR_PROTOCOL.md` §4.3).
  *
- * `SIGNALR_PROTOCOL.md` §4.3 item 2 fixes this object to exactly three members —
- * `passiveId`, `passiveProgress`, and the conditional `passiveResetOverride`:
+ * `SIGNALR_PROTOCOL.md` §4.3 item 2 fixes this object to exactly five members —
+ * `passiveId`, `passiveProgress`, the conditional `passiveResetOverride`,
+ * `equippedCards`, and `statusEffects[]`:
  *
  * ```text
  * petState
  * ├── passiveId                 the active Pet's Passive identity   always present
  * ├── passiveProgress            { threshold, current }             always present
- * └── passiveResetOverride       "Partial" | "NoReset"              present only when
- *                                                                   non-default
+ * ├── passiveResetOverride       "Partial" | "NoReset"              present only when
+ * │                                                                 non-default
+ * ├── equippedCards              string[] (4 CardDefinitionId)      always present
+ * └── statusEffects              Status Effect instances of the     always present
+ *                               ACTIVE Pet — `[]` when none         (§4.3 item 14)
  * ```
  *
  * The rest of `GAME_STATE.md` §2.3 — `PetId`/Identity, `Element`,
  * `Tier`/`Star`/`Level`, the combat stats (`HP`/`MaxHP`/`ATK`/`DEF`/`Crit`/
- * `Power`), and the `EquippedRelics[]`/`EquippedCards[]` loadout snapshots —
+ * `Power`), the sibling `NextAttackCritModifiers[]`/`CardCostModifiers[]`/
+ * `ATKModifiers[]` collections, and the `EquippedRelics[]` loadout snapshot —
  * belongs to other stages and is **not** delivered (§4.3 item 2: referring to
  * `petState` as a whole does not widen §4 item 4's rule). Modelling those
  * members here would be a second, undocumented wire shape.
@@ -226,6 +246,104 @@ export interface PetStatePayload {
    * 1 Pet Skill Card). Always present, non-empty, and non-nullable.
    */
   readonly equippedCards: readonly string[];
+  /**
+   * The active Pet's active Status Effect instances (`GAME_STATE.md` §2.3,
+   * §2.3.1; `SIGNALR_PROTOCOL.md` §4.3 item 14).
+   *
+   * It is an **array and it is always present**: an active Pet with no active
+   * effect is sent an **empty array**, and the member is never omitted and never
+   * `null` (§4.3 item 14). This is the opposite of §3.2.5's
+   * omitted-when-not-applicable convention, so a consumer must **not** read an
+   * absent `statusEffects` as "no effect is active" — the empty array is how
+   * that is spelled.
+   *
+   * Element order is not semantic (`GAME_STATE.md` §2.3.1 item 10) and must not
+   * be inferred: the array arrives in the order the state holds it.
+   */
+  readonly statusEffects: readonly StatusEffectPayload[];
+}
+
+/**
+ * One active Status Effect instance on the wire (`GAME_STATE.md` §2.3.1,
+ * §2.3.2 item 3; `SIGNALR_PROTOCOL.md` §4.3 item 14).
+ *
+ * ```text
+ * id              string    required
+ * type            string    required    ("DoT" | "BuffDebuff" | "Shield" | "State")
+ * source          string    required    ("player" | "boss")
+ * magnitude       number    required
+ * targetStat      string    optional
+ * remainingTurns  integer   optional
+ * expiryCondition string    optional
+ * ```
+ *
+ * `id` is an **identity, not a definition**: it names which Status Effect the
+ * instance is, and the effect's rules live in `COMBAT_RULES.md` §5 /
+ * `BOSS_RULES.md` §6.3.1 rather than being duplicated here
+ * (`GAME_STATE.md` §2.3.1 item 1, §0 item 5). `magnitude` carries the applied
+ * value only and is not interpreted (`§2.3.1` item 2).
+ *
+ * `type` and `source` carry their contract name, never an enum ordinal
+ * (`SIGNALR_PROTOCOL.md` §3.2.4).
+ *
+ * The three optional members are **absent when they do not apply** — never
+ * `null`, never a sentinel string (§2.3.1 item 7, §3.2.5). `remainingTurns` and
+ * `expiryCondition` are mutually exclusive: an instance uses either the Turn
+ * countdown or a trigger-based expiry, never both and never neither (§2.3.1
+ * item 3).
+ *
+ * Every value is presentation data read as sent. The client applies, refreshes,
+ * decrements, expires, and removes no instance, and evaluates no duration or
+ * expiry condition — that lifecycle is `GAME_STATE.md` §5.1.1's and the
+ * server's (§4.3 item 14, `GAME_RULES.md` §18).
+ */
+export interface StatusEffectPayload {
+  /** The Status Effect identity (`GAME_STATE.md` §2.3.1 item 1), e.g. `"Burn"`. */
+  readonly id: string;
+  /** The effect category, as its contract name (`§2.3.1`). */
+  readonly type: string;
+  /** Which side applied it — `"player"` or `"boss"` (`§2.3.1`). */
+  readonly source: string;
+  /** The applied magnitude, uninterpreted (`§2.3.1` item 2). */
+  readonly magnitude: number;
+  /** The modified stat, present iff it applies (`§2.3.1` item 7). */
+  readonly targetStat?: string;
+  /** The Turn countdown, present iff the instance uses it (`§2.3.1` item 4). */
+  readonly remainingTurns?: number;
+  /** The trigger-based expiry label, present iff it applies (`§2.3.1` item 5). */
+  readonly expiryCondition?: string;
+}
+
+/**
+ * The wire projection of the Boss's live health (`GAME_STATE.md` §2.4,
+ * `SIGNALR_PROTOCOL.md` §4.4).
+ *
+ * ```text
+ * bossState
+ * ├── hp                          the Boss's current HP      always present
+ * └── maxHp                       the Boss's MaxHP            always present
+ * ```
+ *
+ * It is a **two-member projection of `BossState`, not `BossState`** (§4.4
+ * item 2). Every other §2.4 member stays server-side — `BossId`/Identity,
+ * `Element`, `ATK`, `DEF`, `State`, `PassiveId`, `PassiveProgress`,
+ * `SkillCharge`, `SkillCooldown`, and the Boss's own `StatusEffects[]`
+ * (§4.4 item 3) — and a consumer must not read this object as the Boss's state.
+ *
+ * Both members are **always present and neither is optional**: the Boss exists
+ * from battle creation at full health, so there is no absent case, and `hp = 0`
+ * is a real published value sent as `0` (§4.4 item 4). A consumer must not read
+ * an absent `hp` as zero.
+ *
+ * Both are read as sent. The client does not damage the Boss, clamp `hp` to
+ * `maxHp`, infer either from the other, or re-derive them from the events or
+ * `finalBossHp` (§4.4 item 7, `GAME_RULES.md` §18).
+ */
+export interface BossStatePayload {
+  /** The Boss's current HP (`GAME_STATE.md` §2.4). `0` is a real value. */
+  readonly hp: number;
+  /** The Boss's maximum HP (`GAME_STATE.md` §2.4), reported independently. */
+  readonly maxHp: number;
 }
 
 /**

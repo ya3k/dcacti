@@ -23,8 +23,11 @@ namespace GameServer.Domain.Pets;
 /// writes it and no event changes it.
 ///
 /// <b>It is not a wire member of this stage.</b> <c>SIGNALR_PROTOCOL.md</c>
-/// §4.3 item 2 fixes the <c>petState</c> wire payload to the Passive trio
-/// only, so carrying this value in the state adds no member to
+/// §4.3 item 2 fixes the <c>petState</c> wire payload to its enumerated five
+/// members — the Passive identity, its progress pair, the conditional reset
+/// override, <c>equippedCards</c>, and the active Pet's <c>statusEffects[]</c> —
+/// and names <c>PetId</c>/Identity among the members it does **not** deliver, so
+/// carrying this value in the state adds no member to
 /// <c>BattleStateUpdated</c> and no message, method, or subscription
 /// (<c>SIGNALR_PROTOCOL.md</c> §4 item 4).
 ///

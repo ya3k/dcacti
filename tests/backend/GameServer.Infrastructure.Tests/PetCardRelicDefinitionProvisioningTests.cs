@@ -372,11 +372,19 @@ public class PetCardRelicDefinitionProvisioningTests
     }
 
     [Fact]
-    public void MigrationSource_ShouldInsertNoAdditionalOrDeferredCard()
+    public void MigrationSource_ShouldInsertNoAdditionalOrInventedCard()
     {
-        // TASK-085 / CARD_RULES.md §4.1: exactly six cards. The Thanh Xà and
-        // Sơn Hùng Signature Skills are not content-defined, so no placeholder
-        // and no invented card may be inserted.
+        // TASK-085 / CARD_RULES.md §4.1: exactly six cards in THIS migration. The
+        // two Thanh Xà / Sơn Hùng Signature Skills are authored now
+        // (CARD_RULES.md §4.1, TASK-167) but belong to the separate TASK-168
+        // provisioning migration — not to this historical one. What this assertion
+        // still guarantees is that TASK-085's own four-card-beyond-the-Basics set
+        // is unedited and that no PLACEHOLDER, invented, or guessed key was ever
+        // written into it.
+        //
+        // The earlier wording justified the absence of the two Skills by their
+        // being "not content-defined", which TASK-167 made false; the guarantee
+        // asserted here does not depend on that premise.
         var operations = ReadMigrationOperations();
 
         Assert.DoesNotContain("card-thanh-xa", operations);
@@ -390,6 +398,11 @@ public class PetCardRelicDefinitionProvisioningTests
         {
             Assert.Contains($"\"{id}\"", operations);
         }
+
+        // The two now-authored Skill Cards are supplied by TASK-168's migration,
+        // never by this one — so this historical row set stays exactly six.
+        Assert.DoesNotContain("card-venomous-bloom", operations);
+        Assert.DoesNotContain("card-earthshaker", operations);
     }
 
     // -----------------------------------------------------------------------
@@ -442,12 +455,31 @@ public class PetCardRelicDefinitionProvisioningTests
     }
 
     [Fact]
-    public void MigrationSource_ShouldInsertTheDeferredPetsNowhere()
+    public void MigrationSource_ShouldInsertOnlyItsOwnDocumentedThanhXaAndSonHungRows()
     {
-        // PET_RULES.md §8: Thanh Xà and Sơn Hùng are deferred until their
-        // Signature Skills are content-defined — their SignatureSkillCardId
-        // targets do not exist (CARD_RULES.md §4.1) and the FK is required.
-        // No placeholder row and no invented value may be provisioned.
+        // TASK-085's row set is FINAL and unchanged: this migration provisions
+        // exactly the thirteen rows TASK-085 transcribed, and the two Pets and two
+        // Signature Skill Cards are supplied by the SEPARATE provisioning migration
+        // TASK-168 (20261004055006_ProvisionThanhXaAndSonHungSignatureSkills),
+        // which this test does not read.
+        //
+        // WHY THE EARLIER WORDING CHANGED. This assertion previously read
+        // "ShouldInsertTheDeferredPetsNowhere" and justified itself by the
+        // pre-TASK-167 deferral — Thanh Xà and Sơn Hùng were held back because
+        // their SignatureSkillCardId targets did not exist (CARD_RULES.md §4.1
+        // authored no content for either Skill) and the FK is required
+        // (DATABASE.md §1/§2). TASK-167 has since authored both Skills
+        // (CARD_RULES.md §4.1; PET_RULES.md §8), and DATABASE.md §5 item 4 records
+        // the rows as "provisioned-later, not content-blocked". The deferral
+        // premise is therefore false, and TASK-168 provisions the rows.
+        //
+        // What remains TEXTUALLY true, and is what this corrected assertion now
+        // guarantees, is the narrower and still-binding fact: TASK-085's migration
+        // has not been retro-edited to carry them. A completed migration is a
+        // historical record (TASK-168 Out of Scope: "must not be merged into
+        // TASK-085's migration — completed migrations are historical records"), so
+        // these tokens must still appear NOWHERE in ITS source. The rows themselves
+        // are asserted by TASK-168's own migration and tests.
         var operations = ReadMigrationOperations();
 
         Assert.DoesNotContain("Thanh Xà", operations);
@@ -456,6 +488,8 @@ public class PetCardRelicDefinitionProvisioningTests
         Assert.DoesNotContain("pet-son-hung", operations);
         Assert.DoesNotContain("passive-thanh-xa", operations);
         Assert.DoesNotContain("passive-son-hung", operations);
+        Assert.DoesNotContain("card-venomous-bloom", operations);
+        Assert.DoesNotContain("card-earthshaker", operations);
     }
 
     [Fact]

@@ -2051,6 +2051,55 @@ public class BattleStateSerializationTests
     }
 
     [Fact]
+    public void Deserialize_ShouldRejectNonStatBuffDebuffWithATargetStat()
+    {
+        // GAME_STATE.md §2.3.1 item 7 / TASK-156 / TASK-157:
+        // boss-thuy-ma-heal is a documented non-stat BuffDebuff and must omit TargetStat.
+        var json = WithMalformedPetEffect(
+            """
+            {
+              "id": "boss-thuy-ma-heal",
+              "type": "BuffDebuff",
+              "source": "Boss",
+              "magnitude": -50,
+              "remainingTurns": 3,
+              "targetStat": "HEAL"
+            }
+            """);
+
+        Assert.ThrowsAny<ArgumentException>(() => BattleStateSerializer.Deserialize(json));
+    }
+
+    [Fact]
+    public void Serialize_ShouldOmitTargetStatForNonStatBuffDebuff()
+    {
+        // GAME_STATE.md §2.3.1 item 7: TargetStat is absent (never null, never a sentinel string).
+        var original = StateWithEffects(
+            [],
+            [
+                StatusEffect.TurnBased(
+                    "boss-thuy-ma-heal",
+                    StatusEffectType.BuffDebuff,
+                    StatusEffectSource.Boss,
+                    -50,
+                    3)
+            ]);
+
+        var json = BattleStateSerializer.Serialize(original);
+
+        Assert.DoesNotContain("\"targetStat\":null", json, StringComparison.Ordinal);
+
+        var doc = JsonDocument.Parse(json);
+        var bossEffects = doc.RootElement.GetProperty("bossState").GetProperty("statusEffects");
+        var effectElement = bossEffects.EnumerateArray().Single(e => e.GetProperty("id").GetString() == "boss-thuy-ma-heal");
+        Assert.False(effectElement.TryGetProperty("targetStat", out _));
+
+        var restored = BattleStateSerializer.Deserialize(json);
+        var restoredEffect = Assert.Single(restored.BossState.ActiveStatusEffects);
+        Assert.Null(restoredEffect.TargetStat);
+    }
+
+    [Fact]
     public void Deserialize_ShouldRejectAnUnknownStatusEffectTypeName()
     {
         // The type vocabulary is GAME_STATE.md §2.3.1 item 3's four members.

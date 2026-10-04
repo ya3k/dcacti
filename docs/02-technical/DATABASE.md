@@ -1,6 +1,13 @@
 # Database
 
-**Version:** 1.29 (§1's Relic contract note item 5 synchronized with the landed
+**Version:** 1.30 (§5 item 4 rule (a) — **stale-example correction only** per
+TASK-167: the rule cited "the two TBD Signature Skills — `CARD_RULES.md` §4.1" as
+an example of a deferred row, which the TASK-166 Signature Skill decisions
+retired. The rule itself is **unchanged** — only content-defined rows may be
+inserted — and its example now records that no Pet row remains content-deferred
+while the Relic deferral stands. **No table, column, constraint, index,
+migration, stored value, schema shape, or vocabulary changes**, and no row is
+provisioned by this edit. Prior 1.29: (§1's Relic contract note item 5 synchronized with the landed
 Relic resolution stage — `GAME_RULES.md` §17 step 11 now evaluates the stored
 `Trigger`/`Condition`/`EffectDefinition` values, so the item no longer records
 that step as unimplemented (TASK-133). **This is a status synchronization only: no
@@ -1410,9 +1417,12 @@ when a real query pattern requires them (anti-overengineering,
    new persistence mechanism. Two rules bind those migrations: (a) only
    **content-defined rows** may be inserted — a row whose required
    members have no documented value stays unprovisioned and deferred in
-   its owning domain document (the deferred rows are recorded in
-   `PET_RULES.md` §8, `RELIC_RULES.md` §6, and — for the two TBD
-   Signature Skills — `CARD_RULES.md` §4.1); (b) the
+   its owning domain document (the rows still deferred are recorded in
+   `RELIC_RULES.md` §6, and **no Pet row remains deferred** as of TASK-167 —
+   all five MVP Pets' Signature Skills are now content-defined in
+   `CARD_RULES.md` §4.1, so the Thanh Xà and Sơn Hùng rows are merely
+   **provisioned-later**, not content-blocked; they are inserted by the
+   separate provisioning task, not by this rule); (b) the
    migration's row values (keys, names, and each table's own members —
    `LoadoutCopyLimit`, `EffectDefinition`, `Trigger`, per the `§1`
    entity blocks) are copied from the owning domain documents, never

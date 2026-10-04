@@ -1,6 +1,37 @@
 # Game State
 
-**Version:** 2.17 (§2.4.1 extended per TASK-155, applying the TASK-154 Product
+**Version:** 2.19 (§2.3.1's "Not a wire member" note replaced by the
+membership/delivery split, and §2.4 gained the two-member client-visible
+boundary — applying the TASK-160 Product Owner decisions D-1A and D-2A. The
+contradiction this revision closes: §2.3.1 stated `StatusEffects[]` "is not part
+of any current wire payload", while TASK-160 D-1A has now authorized the active
+Pet's active instances for delivery. The resolution is not to delete the
+exclusion but to state the two facts separately — **authoritative `BattleState`
+membership** (this document's) versus **wire projection membership**
+(`SIGNALR_PROTOCOL.md` §4's) — with `StatusEffects[]` present in the first on
+both entities and delivered in the second for the active Pet only
+(`petState.statusEffects[]`) and not for the Boss. The Boss's delivered set is
+`HP`/`MaxHP` alone. **What did NOT change:** no new `StatusEffect` member,
+value, or `Type`; no `PendingStatusEffects[]`; no queued or second in-flight
+representation; no duplicate `StatusEffects` storage; no change to §2.3.1's
+member set, §2.3.2's element shape or serialization rules, §2.3.3–§2.3.8,
+§2.4.1–§2.4.5, §5.1.1–§5.1.4, or §0 item 5; no new `BossState` member; no
+make-whole-`BossState` exposure; no new Battle Event, SignalR method, Redis key,
+or database column. Decision source: TASK-160; applying task: the downstream
+documentation-resolution task. Prior 2.18: (§2.3.1 item 7 and the `TargetStat` schema line relaxed per
+the TASK-156 Product Owner decision (Option B); §2.3.2 item 3 reconciled to match:
+a `BuffDebuff` carries `TargetStat` iff its `Magnitude` is consumed as a stat
+modifier; a `BuffDebuff` consumed by a non-stat rule selects by `Id` and omits
+`TargetStat`. §2.3.1 item 3 consistency pass performed — type and duration-model
+assignment unchanged. **What did NOT change:** no new `TargetStat` value, no
+sentinel `TargetStat`, no `null` representation, no new `StatusEffect` `Type`,
+no `PendingStatusEffects[]`, no second in-flight representation, no
+member/value/type/collection added to §2.3.1's member set or the `BossState`
+tree, no change to §2.3.3, §2.4, §2.4.1, §5.1.1, or §0 item 5, and no new
+Battle Event, SignalR member, Redis key, or database column. Root's and Hỏa
+Long's Rage's `TargetStat = "ATK"` instances and Burn/Shield/Stun semantics are
+unaffected. Decision source: TASK-156; applying task: TASK-157. Prior 2.17:
+(§2.4.1 extended per TASK-155, applying the TASK-154 Product
 Owner decision (Option B): the Boss Status Effect carrier contract now records
 the **authorized cross-entity read** — `COMBAT_RULES.md` §4 item 7's Pet-scoped
 Heal Resolution step reads the applicable instance held in
@@ -1077,7 +1108,11 @@ see §2.2 Implementation note and ADR-011.)
 **Domain state implemented is not the same as client wire delivery.**
 Not all members here are part of any wire payload — see
 `SIGNALR_PROTOCOL.md` §4.2 (only `combo`/`matchCount` under the
-`playerState` label) and §4.3 (the Passive trio plus `equippedCards` under `petState`).
+`playerState` label), §4.3 (the Passive trio, `equippedCards`, and — since
+TASK-160 D-1A — the active Pet's `statusEffects[]` under `petState`), and §4.4
+(the Boss's `hp`/`maxHp` under `bossState`). The two facts are stated separately
+and neither implies the other; §2.3.1 records the split for `StatusEffects[]`
+and §2.4 for the Boss's delivered pair.
 
 The combat-stats stage owns `HP`, `MaxHP`, `ATK`, `DEF`, `Power`, and
 `Crit` as `int` members, each initialized at battle creation to its
@@ -1156,10 +1191,11 @@ order carries no gameplay significance — no rule reads card array
 positions, unlike `EquippedRelics[]` above, whose order is the equip
 slot order.
 
-**The combat stats are state, and they are not yet delivered on the wire.**
+**The combat stats are state, and they are not delivered on the wire.**
 `SIGNALR_PROTOCOL.md` §4.2 fixes the `playerState` payload member to exactly
-`combo` and `matchCount`, and §4.3 fixes `petState` to the Passive trio plus
-`equippedCards` — so no combat member of this section reaches the client today,
+`combo` and `matchCount`, and §4.3 fixes `petState` to the Passive trio,
+`equippedCards`, and the active Pet's `statusEffects[]` — so no combat member of
+this section reaches the client today,
 per §4 item 4's rule that a payload carries only the implemented stage's own
 fields. The combat stats do not change that by themselves: as with
 `LastCommittedSwapPair` (§2.1.10 item 9, `SIGNALR_PROTOCOL.md` §4 item 12),
@@ -1226,8 +1262,11 @@ StatusEffect
 │                    GAME_EVENTS.md §2 source convention)
 ├── Magnitude       (number, required — the effect's magnitude as the
 │                    owning rule defines it; NOT interpreted here)
-├── TargetStat      (string, optional — the modified stat for Type =
-│                    "BuffDebuff", e.g. "ATK"; absent otherwise)
+├── TargetStat      (string, optional — the modified stat for a BuffDebuff
+│                    whose Magnitude is consumed as a stat modifier, e.g.
+│                    "ATK"; absent — never null, never a sentinel string —
+│                    for a BuffDebuff consumed by a non-stat rule, and absent
+│                    otherwise)
 ├── RemainingTurns  (integer, optional — the per-instance duration counter,
 │                    COMBAT_RULES.md §5.3 DR1; present iff the instance uses
 │                    the Turn countdown, §2.3.1 item 3)
@@ -1282,7 +1321,9 @@ StatusEffect
    second representation of it is introduced (§0 item 5).
 7. **Absence conventions.** `TargetStat` and `ExpiryCondition` are absent when
    they do not apply (never `null`, never a sentinel string), following the
-   absent-member convention of §2.1.7 item 3. `RemainingTurns` and
+   absent-member convention of §2.1.7 item 3: a BuffDebuff carries TargetStat
+   iff its Magnitude is consumed as a stat modifier; a BuffDebuff consumed by a
+   non-stat rule selects by Id and omits TargetStat. `RemainingTurns` and
    `ExpiryCondition` are mutually exclusive by item 3, so exactly one of them
    is present. `Magnitude` and `Source` are always present — an instance is
    never created without them (`COMBAT_RULES.md` §5.2 item 1 requires a
@@ -1318,12 +1359,38 @@ StatusEffect
     §2.3.1's member set is unchanged, and no second representation of a
     modified stat exists.
 
-**Not a wire member.** `StatusEffects[]` is not part of any current wire
-payload: `SIGNALR_PROTOCOL.md` §4.2 fixes `playerState` to exactly
-`combo`/`matchCount` and §4.3 fixes `petState` to the Passive trio. Adding
-state is not adding a wire member (§2.1.10 item 9); delivering these
-instances is a protocol change owned by its own task. This contract does not
-add an event, a payload member, or a SignalR method.
+**Authoritative membership is not wire membership — and the two are stated
+separately.** This collection is part of `BattleState` on both entities, and
+`SIGNALR_PROTOCOL.md` §4 item 4 governs what reaches the client: a payload
+carries only the implemented stage's own fields. Since the TASK-160 Product
+Owner decision **D-1A**, the **active Pet's** active instances are delivered —
+under `petState`'s `statusEffects[]` member, whose member name, type,
+optionality, absence and client-boundary rules are owned by
+`SIGNALR_PROTOCOL.md` §4.3 item 14 and referenced, not restated, here.
+
+```text
+authoritative BattleState membership        wire projection membership
+─────────────────────────────────────       ─────────────────────────────
+PetState.StatusEffects[]    present    →    petState.statusEffects[]  DELIVERED
+                                            (§4.3 item 14)
+BossState.StatusEffects[]   present    →    not delivered (§4.4 item 3)
+```
+
+The distinction is the point: **a member's presence in `BattleState` never
+implies its delivery, and a member's delivery never removes it from
+`BattleState`.** This section owns the first column — the instance schema, its
+lifecycle reference, and its serialization — and `SIGNALR_PROTOCOL.md` owns the
+second. Neither column is a second representation of the other: the delivered
+value **is** this state's value, reported, and no parallel collection, queued
+state, or second in-flight representation is introduced for a pending or
+in-progress application (§2.3.3; an application during a resolution is
+Transient Resolution State — §3 — until the §5.1 item 2 write-back).
+
+The Boss's collection is **not** delivered: TASK-160's **D-2A** ruling
+authorized the Boss's live `HP`/`MaxHP` only, and §2.4 records that boundary.
+The sibling collections `NextAttackCritModifiers[]` (§2.3.4),
+`CardCostModifiers[]` (§2.3.5) and `ATKModifiers[]` (§2.3.7) remain **not
+delivered** and are unaffected by D-1A.
 
 **Not a Redis-only concern.** These instances are part of `BattleState` and
 therefore serialize with it under the existing round-trip obligation
@@ -1355,7 +1422,9 @@ unambiguous for this collection.
    type            string    required    ("DoT" | "BuffDebuff" | "Shield" | "State")
    source          string    required    ("player" | "boss")
    magnitude       number    required
-   targetStat      string    optional    (present iff type = "BuffDebuff")
+   targetStat      string    optional    (present iff type = "BuffDebuff" and
+                                          Magnitude is consumed as a stat modifier;
+                                          §2.3.1 item 7)
    remainingTurns  integer   optional    (present iff the instance uses the
                                           Turn countdown; §2.3.1 item 3)
    expiryCondition string    optional    (present iff the instance does not)
@@ -1867,6 +1936,22 @@ two existing collections in one authoritative `BattleState` — this section add
 **no** member, value, type, or collection, and no second representation of the
 instance (§0 item 5, §2.3.3).
 
+**Two `BossState` members are client-visible, and no others are.** TASK-160's
+Product Owner decision **D-2A** authorized the Boss's live health for MVP;
+`SIGNALR_PROTOCOL.md` §4.4 delivers it as the push's `bossState` member,
+carrying **exactly** `HP` and `MaxHP`. `bossState` is a **narrowed projection**
+of this section's state, not the tree itself: `BossId`/Identity, `Element`,
+`ATK`, `DEF`, `State`, `PassiveId`, `PassiveProgress`, `SkillCharge`,
+`SkillCooldown`, and `StatusEffects[]` remain server-side and are **not**
+delivered, exactly as §2.3.1's membership/delivery split states for the Pet's
+collection. Referring to `BossState` as a whole does not widen that member set.
+The member names, types, presence, and client-boundary rules are owned by
+`SIGNALR_PROTOCOL.md` §4.4 and referenced, not restated, here; `BOSS_RULES.md`
+§6.2.4 records the gameplay-visibility constraint this boundary satisfies.
+Delivering anything further from this tree is a protocol change owned by its own
+task, and this contract adds no Redis key, no Redis-only field, and no second
+storage representation for the two delivered members.
+
 ### 2.4.2 Boss Passive
 
 Boss Passive is reactive and match-based, mirroring the Pet Passive structure
@@ -2306,8 +2391,10 @@ Sequence (§5.1)
    step 19a. A reader never observes an instance mid-count, and never observes
    an expired instance still present (§5.1 item 2).
 10. **Nothing here is published.** This lifecycle adds no event, no payload
-    member, and no SignalR method — see §2.3.1's "Not a wire member" note and
-    `SIGNALR_PROTOCOL.md` §4.2/§4.3.
+    member, and no SignalR method. It is the state mutation only: the resulting
+    collection is *read* by the existing state push for the active Pet —
+    §2.3.1's membership/delivery split and `SIGNALR_PROTOCOL.md` §4.3 item 14 —
+    and this subsection adds no delivery of its own.
 11. **A rejected action mutates nothing.** A rejected action is not a
     resolution (§5.1 item 6), so no instance is applied, decremented, or
     removed, and step 19a does not run.

@@ -1,6 +1,13 @@
 # Pet Rules
 
-**Version:** 3.1 (§1 Pet identity model recorded per TASK-082 decision B /
+**Version:** 3.2 (§8 — the two remaining MVP Pet rows are no longer deferred per
+TASK-167: Thanh Xà's Signature Skill **Venomous Bloom** and Sơn Hùng's
+**Earthshaker** are now content-defined in `CARD_RULES.md` §4.1 (TASK-166
+Product Owner decisions D-1/D-2), replacing their "(Signature Skill: TBD
+content)" placeholder. All five MVP Pets' Signature Skills are authored, so the
+"Provisioned vs. deferred row set" paragraph now records **all five rows as
+provisionable** and no MVP Pet row as deferred. Every Element, Passive,
+threshold, Tier, and other §8 value is unchanged. Prior 3.1: (§1 Pet identity model recorded per TASK-082 decision B /
 R2-10 — `PetDefinitionId` is the technical identity, `Identity` is display
 text, no new column; §8 MVP provisioned/deferred row set recorded per
 TASK-082 decision A — 3 Pets with content-defined Signature Skills
@@ -371,9 +378,9 @@ numbers."
 ```text
 Pet         Element   Passive (see PASSIVE_RULES.md)         Signature Skill (see CARD_RULES.md)
 ---------   -------   --------------------------------       ------------------------------------
-Thanh Xà    Mộc       Every 7 Matches → Restore 8% HP         (Signature Skill: TBD content)
+Thanh Xà    Mộc       Every 7 Matches → Restore 8% HP         Venomous Bloom
 Xích Lang   Hỏa       Every 5 Matches → Empower + Burn        Inferno
-Sơn Hùng    Thổ       Every 5 Matches → Temp Defense          (Signature Skill: TBD content)
+Sơn Hùng    Thổ       Every 5 Matches → Temp Defense          Earthshaker
 Bạch Hổ     Kim       Every 4 Matches → Crit chance up        Iron Fang
 Huyền Quy   Thủy      Every 6 Matches → Shield 15% Max HP     Tidal Barrier
 ```
@@ -382,12 +389,17 @@ Each MVP Pet ships as a single Tier instance for MVP; the Tier/Star/Level
 system above governs how these (and future) Pets scale, not how many Tier
 variants exist at MVP launch (GAME_RULES.md §19 scope: "5 Pets").
 
-**Provisioned vs. deferred row set.** (TASK-082 decision A) Only Pets
-whose Signature Skill is content-defined in `CARD_RULES.md` §4.1 may be
-provisioned: **Xích Lang (Inferno), Bạch Hổ (Iron Fang), and Huyền Quy
-(Tidal Barrier)**. The **Thanh Xà and Sơn Hùng rows are deferred** until
-their Signature Skills are content-defined — their
-`SignatureSkillCardId` targets do not exist (`CARD_RULES.md` §4.1) and
-the FK is required (`DATABASE.md` §1). Their Passive thresholds above
-are unchanged and stay documented; no placeholder row, invented Skill
-Card, or invented value may be provisioned (`DATABASE.md` §5 item 4).
+**Provisioned vs. deferred row set.** (TASK-082 decision A; extended by
+TASK-167) Every MVP Pet's Signature Skill is now content-defined in
+`CARD_RULES.md` §4.1 — **Xích Lang (Inferno), Bạch Hổ (Iron Fang), Huyền Quy
+(Tidal Barrier), Thanh Xà (Venomous Bloom), and Sơn Hùng (Earthshaker)** — so
+**all five Pet rows are provisionable** and no MVP Pet row remains deferred.
+`SignatureSkillCardId` is a required FK to `CardDefinition`
+(`DATABASE.md` §1), and each of the five now has a documented Skill Card target
+to reference.
+
+The two rows previously deferred here (Thanh Xà and Sơn Hùng) are unblocked by
+the TASK-166 Product Owner content decisions applied in `CARD_RULES.md` §4.1.
+Their Passive thresholds above are unchanged and stay documented; provisioning
+still requires authored values only — no placeholder row, invented Skill Card,
+or invented value may be provisioned (`DATABASE.md` §5 item 4).

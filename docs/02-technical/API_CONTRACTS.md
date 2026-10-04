@@ -1,6 +1,24 @@
 # API Contracts
 
-**Version:** 1.16 (§4 `GET /api/battle/{battleId}/result` response example and contract
+**Version:** 1.17 (§4.5 `GET /api/battle/history` response contract defined per
+TASK-163's 24 recorded Product Owner decisions, applied by TASK-164 — the last
+endpoint in §1's summary that had no defining section now has one: a bare JSON
+array (no wrapper), each element carrying the full §4 result members
+[`battleId`, `outcome`, `rewards` with the complete 8-member `RewardSummary`,
+`durationTurns`] plus the additional `completedAt` member; ordering
+`CompletedAt` DESC with a `BattleResultId` DESC tie-break, explicitly
+client-reliable; no pagination, filter, sort, or search parameter in MVP (the
+array is the full history); authenticated session required with `401
+UNAUTHENTICATED` for a caller presenting none; history scoped to the
+server-derived authenticated `PlayerId` and never a client-supplied one; empty
+history is `200 []`; an active battle and a failed durable write are both
+absent; no Boss/Pet identifying member is exposed. **No endpoint behaviour,
+gameplay rule, schema, index, SignalR member, or Redis contract changes** —
+the contract is a projection of the existing `BattleResult` row and the
+existing `BattleResult(PlayerId, CompletedAt DESC)` index, so `DATABASE.md` is
+unmodified and no ADR is required. §1's summary gains a §4.5 pointer and §4's
+own semantics are untouched; §5.5 retains its §5.1/§5.3/§5.4 scope. Prior 1.16:
+(§4 `GET /api/battle/{battleId}/result` response example and contract
 notes synchronized with the landed 8-member `RewardSummary` contract per TASK-089 —
 replaces `"rewards": {}` with the full 8-member object projection [`playerXpGained`,
 `newPlayerXp`, `playerLeveledUp`, `newPlayerLevel`, `petXpGained`, `newPetXp`,
@@ -122,8 +140,8 @@ GET     /api/relics                       List the player's owned Relics
 POST    /api/battle/start                 Start a battle session, returns a
                                             BattleId + SignalR connection info
 GET     /api/battle/{battleId}/result       Get the final result of a
-                                            completed battle
-GET     /api/battle/history                 List past Battle Results
+                                            completed battle (§4)
+GET     /api/battle/history                 List past Battle Results (§4.5)
 ```
 
 No endpoint accepts Damage, HP, Power, Match, or Combo values from the
@@ -661,6 +679,146 @@ state is only available via the SignalR connection, not this endpoint.
    identity (`GAME_RULES.md` §18, ADR-001, ADR-014). The authenticated
    identity is derived server-side from the session (§1, ADR-007 item 4) and
    is never re-derived from client input at read time (§2.8).
+
+## 4.5 GET /api/battle/history
+
+The battle-history read. It returns the authenticated Player's completed
+battle results, most recent first. Its response contract is defined here
+and nowhere else (one concept, one owner — `docs/AGENTS.md` §2); the
+persisted row it reads is `BattleResult` (`DATABASE.md` §1), and the
+contract is a projection of that row plus the ordering rule below.
+
+```json
+Response 200:
+[
+  {
+    "battleId": "string",
+    "outcome": "victory" | "defeat",
+    "rewards": {
+      "playerXpGained": 100,
+      "newPlayerXp": 100,
+      "playerLeveledUp": false,
+      "newPlayerLevel": 1,
+      "petXpGained": 100,
+      "newPetXp": 100,
+      "petLeveledUp": false,
+      "newPetLevel": 1
+    },
+    "durationTurns": 0,
+    "completedAt": "string"
+  }
+]
+```
+
+```json
+Response 401: { "error": "UNAUTHENTICATED" }
+```
+
+**Contract notes:**
+
+1. **The response is a bare JSON array — never a wrapper object.** No
+   `{ "battles": [...] }` envelope, no `total`, no `nextCursor`, and no
+   other metadata member exists. The array **is** the response body.
+
+2. **Each element is the full §4 result shape.** The four members `battleId`,
+   `outcome`, `rewards`, and `durationTurns` carry exactly the same meaning,
+   source, type, and value vocabulary as the `GET /api/battle/{battleId}/result`
+   200 response (§4 and its notes 1–5) — they are **not** restated here, and no
+   reduced history-summary member list exists. A history element is a §4 result
+   object plus exactly one further member (note 3).
+
+3. **`completedAt` is the history element's own additional member.** It is
+   `BattleResult.CompletedAt` — the server clock reading captured on the
+   battle-end path (`DATABASE.md` §1, "Duration and completion sourcing for
+   `BattleResult`" item 2). It is server-authoritative and is never
+   client-sourced or re-derived. The §4 single-result response does **not**
+   expose this member; this endpoint does, because it is the member that makes
+   the ordering in note 4 observable to a client. This is an additive,
+   deliberate extension of the §4 shape for the history element only, and it
+   does not change §4. Its type and exact serialization are the persisted
+   column's, whose exact column type `DATABASE.md` §1 explicitly leaves to
+   implementation; no timezone is asserted (`DATABASE.md` §1 item 2).
+
+4. **Ordering — most recent first, and it is part of this contract.** Elements
+   are ordered by `CompletedAt` **descending** (newest completed battle first).
+   When two results share a `CompletedAt`, the tie is broken by `BattleResultId`
+   **descending** (the higher `BattleResultId` first), so the total order is
+   deterministic even though `DATABASE.md` §1 does not require `CompletedAt` to
+   be unique. `BattleResultId` is the battle's own `BattleId` and is unique per
+   row (`DATABASE.md` §1). **Clients MAY rely on this ordering** — it is a
+   documented contract, not an incidental storage order, and the
+   `BattleResult(PlayerId, CompletedAt DESC)` index (`DATABASE.md` §4) has this
+   endpoint as its documented consumer. This ordering is deliberately **not**
+   §5.5's: that subsection's "ordering none defined" line is scoped by its own
+   heading to §5.1 / §5.3 / §5.4 and does not govern this endpoint.
+
+5. **No pagination in MVP — the array is the full history.** This endpoint
+   accepts no `page`, `limit`, `offset`, `cursor`, or any other bounding
+   parameter, and the response carries no `total` or `nextCursor` member (note
+   1). The response is the authenticated Player's **complete** history, however
+   long it is; an unbounded array is the accepted MVP contract, and any cap or
+   bounding is deferred to post-MVP. This matches §5.5's "none in MVP" pagination
+   convention, whose pagination statement is the one part of §5.5 that is not
+   scoped away by note 4.
+
+6. **No filter, sort, or search parameter is accepted.** There is no `bossId`
+   filter, no `outcome` filter, no date-range filter, no sort parameter, and no
+   search parameter. The endpoint has no query parameters at all. Selecting a
+   subset of history is not part of the MVP contract.
+
+7. **Authentication is required, and the unauthenticated response is
+   explicit.** This endpoint is subject to §1's global rule that all endpoints
+   except `/api/auth/discord` require an authenticated session (`ADR-007`
+   item 4, `ADR-015`). A caller presenting no authenticated session receives
+   `401` with the §6 envelope and the error code `UNAUTHENTICATED` — exactly as
+   §4 note 6 establishes, and never a `404`. The §2.8 failure contract applies
+   unchanged: a missing, invalid/tampered, or expired session all resolve to
+   this same response, with no distinct code and no token-validation detail
+   disclosed.
+
+8. **History is scoped to the authenticated PlayerId, derived server-side.**
+   The caller reads only their own `BattleResult` rows: the identity resolved
+   from the authenticated session must equal `BattleResult.PlayerId` (whose
+   value comes from `BattleState.PlayerId` — `DATABASE.md` §1, `ADR-014`).
+   **`PlayerId` is never client-supplied:** no `playerId` request member, query
+   parameter, header, or body field may select, override, or stand in for the
+   caller's identity, and there is no route parameter for ownership — reading
+   another Player's history is not expressible in this contract
+   (`GAME_RULES.md` §18, `ADR-001`, `ADR-014`; same rule as §4 note 7).
+   Because the scope is fixed by the session, the endpoint discloses nothing
+   about whether another Player has any history.
+
+9. **Empty history is `200` with an empty array.** A player with no completed
+   battles receives `200` and `[]` — not `404`, not `204`, and not an error.
+   This matches §5.5's "empty collection `200` with `[]`" convention.
+
+10. **A still-active battle never appears.** Only durable `BattleResult` rows
+    are returned, and such a row exists only after terminal persistence
+    (`DATABASE.md` §1) — the same boundary §4 states when it says it "only
+    returns data for a battle that has already ended". While a battle is
+    active, its state is available only via the SignalR connection, not through
+    this endpoint.
+
+11. **A battle whose durable result write failed is simply absent.** If the
+    terminal `BattleResult` write does not succeed, there is no history entry —
+    no error member, no placeholder, and no partial or pending entry. Absence is
+    reported as absence, consistent with §4 and `DATABASE.md` §1's sourcing
+    rules. There is no `pending`, `partial`, or `failed` history record of any
+    kind.
+
+12. **No Boss or Pet identifying member is exposed.** Neither
+    `bossDefinitionId`/`bossId` nor `petInstanceId`/`petId` is a member of a
+    history element, even though `BattleResult` persists both
+    (`DATABASE.md` §1, §2). The element member set is exactly the five members
+    in the response block above and no more.
+
+13. **This endpoint is REST-only and introduces no other contract.** It adds no
+    Battle Event, no SignalR method, member, or event, and no Redis key: it
+    reads durable `BattleResult` data through the existing PostgreSQL
+    persistence boundary (`ARCHITECTURE.md` §3) and nothing else. No new
+    database column, table, or index is required — the contract is served
+    entirely by the existing `BattleResult` row and the existing
+    `BattleResult(PlayerId, CompletedAt DESC)` index (`DATABASE.md` §1, §4).
 
 ---
 

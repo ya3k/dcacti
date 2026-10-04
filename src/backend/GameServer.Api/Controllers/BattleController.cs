@@ -25,6 +25,12 @@ namespace GameServer.Api.Controllers;
 /// BattleResultQueryService        (Application — owner-scoped read)
 ///         ↓
 /// { battleId, outcome, rewards, durationTurns }
+///
+/// GET /api/battle/history
+///         ↓
+/// BattleResultQueryService        (Application — player-scoped ordered read)
+///         ↓
+/// [ { battleId, outcome, rewards, durationTurns, completedAt } ]
 /// </code>
 ///
 /// <b>It is a thin boundary</b> (<c>ARCHITECTURE.md</c> §2.1 item 4): it
@@ -236,6 +242,78 @@ public class BattleController : ControllerBase
         }
 
         return Ok(BattleResultResponse.From(result));
+    }
+
+    /// <summary>
+    /// Returns the authenticated Player's completed-battle history, most recent
+    /// first (<c>API_CONTRACTS.md</c> §4.5).
+    ///
+    /// <b>Success (200).</b> A <b>bare JSON array</b> — that is, the array itself
+    /// is the response body. §4.5 note 1: "No <c>{ "battles": [...] }</c>
+    /// envelope, no <c>total</c>, no <c>nextCursor</c>, and no other metadata
+    /// member exists." Each element is the §4 result shape plus <c>completedAt</c>
+    /// (note 2, note 3), and carries no Boss or Pet identifier (note 12). The
+    /// array is the <b>complete</b> history: note 5 makes the unbounded array the
+    /// accepted MVP contract.
+    ///
+    /// <b>Empty history (200).</b> §4.5 note 9: a Player with no completed battles
+    /// receives <c>200</c> and <c>[]</c> — not <c>404</c>, not <c>204</c>, and not
+    /// an error. This endpoint has no not-found outcome at all: a history is a
+    /// collection, and an empty one is a valid answer.
+    ///
+    /// <b>No request input.</b> §4.5 note 6: "The endpoint has no query parameters
+    /// at all" — no <c>bossId</c>, <c>outcome</c>, or date filter, and no sort or
+    /// search parameter is accepted or invented. There is no route parameter
+    /// either: §4.5 note 8 makes another Player's history inexpressible in this
+    /// contract, so no <c>{playerId}</c> segment exists.
+    ///
+    /// <b>Unauthenticated (401).</b> The §6 envelope with <c>UNAUTHENTICATED</c>,
+    /// produced by the class-level <c>[Authorize]</c> and the session pipeline
+    /// before this method runs — one outcome for a missing, invalid, tampered, or
+    /// expired session (<c>API_CONTRACTS.md</c> §2.8, §4.5 note 7; <c>ADR-015</c>
+    /// D5), and never a <c>404</c>. The guard below covers the remaining case the
+    /// pipeline allows through: a principal that carries no <c>player_id</c>,
+    /// which identifies nobody and must therefore not be answered with a history.
+    ///
+    /// <b>The caller's identity comes from the session, never the request.</b>
+    /// §4.5 note 8 forbids any <c>playerId</c> request member, query parameter,
+    /// header, or body field from selecting, overriding, or standing in for the
+    /// caller's identity, so this action binds no input at all and reads the
+    /// identity from the request context the authentication boundary published
+    /// (<see cref="AuthenticatedPlayer"/>, <c>ADR-015</c> D3).
+    ///
+    /// <b>It is a read of durable results only.</b> Only persisted terminal
+    /// <c>BattleResult</c> rows are returned, so an active battle never appears
+    /// (note 10) and a battle whose durable write failed is simply absent (note
+    /// 11). Nothing here resolves a Swap, replays a battle, calculates a reward,
+    /// or reconstructs an outcome: the response is the stored rows' own values.
+    /// </summary>
+    /// <param name="cancellationToken">Cancels the read with the request.</param>
+    [HttpGet("history")]
+    public async Task<IActionResult> History(CancellationToken cancellationToken)
+    {
+        var playerId = ResolveRequestingPlayerId();
+
+        if (string.IsNullOrWhiteSpace(playerId))
+        {
+            // API_CONTRACTS.md §1 / §2.8 / §4.5 note 7: an identity that
+            // identifies nobody is not an authenticated session, and §4.5 note 8
+            // permits no request-supplied substitute for it. The response is the
+            // documented unauthenticated one — there is no BATTLE_NOT_FOUND-style
+            // alternative here, since this endpoint has no not-found outcome.
+            return Unauthorized(new
+            {
+                error = UnauthenticatedResponse.ErrorCode,
+                message = "An authenticated session is required to read battle history.",
+            });
+        }
+
+        var history = await _battleResults.ListHistoryAsync(playerId, cancellationToken);
+
+        // API_CONTRACTS.md §4.5 note 1: the array IS the response body — no
+        // envelope wraps it, and Ok() over the sequence serializes exactly that.
+        // An empty history serializes as [] (note 9).
+        return Ok(history.Select(BattleHistoryItemResponse.From));
     }
 
     /// <summary>
