@@ -323,6 +323,41 @@ public sealed class BattleStateService
     private readonly ConcurrentDictionary<string, IReadOnlyList<RelicDefinition?>?> _relicConfiguration = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// The Boss Passive firing eligibility each battle session has already
+    /// consumed (<c>BOSS_RULES.md</c> §6.2.4; <c>PASSIVE_RULES.md</c> §4).
+    ///
+    /// <b>Why a battle-session record rather than a state member.</b>
+    /// <c>PASSIVE_RULES.md</c> §4's Boss Passive clause makes a Boss Passive whose
+    /// definition declares the non-default <c>Persistent</c> reset behavior
+    /// (<c>PassiveResetBehavior.NoReset</c>; <c>DATABASE.md</c> §1 note item 3)
+    /// eligible to fire <b>at most once per battle</b>, and
+    /// <c>BOSS_RULES.md</c> §6.2.4 states that the firing eligibility is consumed
+    /// upon the first activation and is <b>not</b> restored when the applied effect
+    /// expires at step 19a. Neither the transient
+    /// <c>BossState.StatusEffects[]</c> instance — whose removal with the effect
+    /// would re-arm the Passive — nor a new <c>BossState</c> member can carry that:
+    /// §6.2.4 introduces no state field and <c>GAME_STATE.md</c> §2.4's tree is
+    /// unchanged. The eligibility is therefore tracked for the lifetime of the
+    /// battle session a resolution runs in, alongside the other per-battle inputs
+    /// this boundary attaches at creation (<see cref="_petConfiguration"/>,
+    /// <see cref="_bossConfiguration"/>, <see cref="_relicConfiguration"/>).
+    ///
+    /// <b>It is keyed by the battle session and the Passive identity.</b> A battle
+    /// id identifies one battle session and is authored by the server when that
+    /// battle is created (<c>GAME_STATE.md</c> §2.0.1, <c>API_CONTRACTS.md</c> §3),
+    /// so a new battle begins with no consumed entry — fresh firing eligibility —
+    /// and one battle's consumption can never affect another's.
+    ///
+    /// <b>It is not a second representation of any stored value.</b> No
+    /// active-state record holds it; it is written once per battle, after the
+    /// resolution that activated the firing was accepted by the store's
+    /// <c>Sequence</c> compare-and-set (<c>REDIS_STATE.md</c> §4 items 2–3, 6); it
+    /// is never released or re-armed; and it is read only to answer the eligibility
+    /// question itself.
+    /// </summary>
+    private readonly ConcurrentDictionary<(string BattleId, string PassiveId), bool> _consumedBossPassiveFiring = new();
+
+    /// <summary>
     /// Creates the battle-state boundary over the active-state store and the
     /// server's seed source.
     ///
@@ -477,6 +512,30 @@ public sealed class BattleStateService
             playerId,
             petConfiguration.ToPetState(),
             bossConfiguration.ToBossState());
+
+        // RELIC_RULES.md §3 / §6 note 1: Burning Curse's declared Trigger is
+        // OnBattleStart — "fires once, at battle start" — so the Relic stage's
+        // battle-start firing point runs here, once, against the state battle
+        // creation produced, before the record is written. The applied modifier is
+        // therefore part of the created state's single write-back rather than a
+        // second write: a Relic whose effect is standing for the battle
+        // (`RELIC_RULES.md` §8.3 item 4) is in the record from its first moment, and
+        // no later action re-checks battle state to decide whether it applies.
+        //
+        // Battle creation emits no Battle Event (`GAME_STATE.md` §2.0.5.2 item 2),
+        // so this pass collects no reports: the created state is the whole result,
+        // and the effect reaches the client through the existing state projection
+        // rather than through a new event.
+        if (equippedRelicDefinitions != null)
+        {
+            state = ApplyRelicFiringPoint(
+                equippedRelicDefinitions,
+                state,
+                RelicFiringPoint.BattleStart,
+                matchCount: 0,
+                combo: 0,
+                events: null);
+        }
 
         // REDIS_STATE.md §3 "Created: on POST /api/battle/start": the record is
         // written as part of creation, so a created battle has a stored state
@@ -785,8 +844,9 @@ public sealed class BattleStateService
         {
             var expectedSequence = state.Sequence;
 
-            var committed = await ResolveSwapAsync(battleId, state, request, cancellationToken)
+            var resolution = await ResolveSwapAsync(battleId, state, request, cancellationToken)
                 .ConfigureAwait(false);
+            var committed = resolution.Result;
 
             // A rejected Swap writes nothing at all (§4 item 7, MATCH3_RULES.md
             // §2.1.5): no store call is made, so the record, its TTL, and its
@@ -805,6 +865,16 @@ public sealed class BattleStateService
 
             if (written)
             {
+                // BOSS_RULES.md §6.2.4 / PASSIVE_RULES.md §4: the resolution was
+                // accepted, so a once-per-battle Boss Passive firing it activated is
+                // now the authoritative one and its eligibility is consumed. The
+                // consumption follows the commit rather than preceding it for the
+                // §4 item 6 reason — a refused attempt must leave the retried
+                // resolution able to reproduce the same activation.
+                ConsumeOncePerBattleBossPassiveFiring(
+                    battleId,
+                    resolution.ActivatedOncePerBattleBossPassive);
+
                 // ARCHITECTURE.md §4 item 4: a committed resolution that emitted
                 // BattleWon/BattleLost has ended the battle, so its durable result
                 // is recorded and its active state is cleared. This runs AFTER the
@@ -821,6 +891,11 @@ public sealed class BattleStateService
             // was refused rather than allowed to overwrite a newer authoritative
             // state. The documented behaviour is to abort and retry against the
             // fresh state — re-read and resolve again.
+            //
+            // Nothing is consumed for a refused attempt: the eligibility is read by
+            // the resolution, not written by it, so the retry re-evaluates the same
+            // trigger against fresh state and (§4 item 6) produces the same
+            // activation when the condition still holds.
             if (await _repository.GetAsync(battleId, cancellationToken).ConfigureAwait(false)
                 is not { } fresh)
             {
@@ -850,16 +925,25 @@ public sealed class BattleStateService
         var lastAttempt = await ResolveSwapAsync(battleId, state, request, cancellationToken)
             .ConfigureAwait(false);
 
-        if (lastAttempt.IsRejected)
+        if (lastAttempt.Result.IsRejected)
         {
-            return lastAttempt;
+            return lastAttempt.Result;
         }
 
-        return await _repository
-            .TryUpdateAsync(lastAttempt.State, state.Sequence, cancellationToken)
-            .ConfigureAwait(false)
-            ? lastAttempt
-            : null;
+        if (!await _repository
+            .TryUpdateAsync(lastAttempt.Result.State, state.Sequence, cancellationToken)
+            .ConfigureAwait(false))
+        {
+            return null;
+        }
+
+        // This final resolution is the authoritative one, so its activation is
+        // consumed exactly as the loop's committed path does above.
+        ConsumeOncePerBattleBossPassiveFiring(
+            battleId,
+            lastAttempt.ActivatedOncePerBattleBossPassive);
+
+        return lastAttempt.Result;
     }
 
     /// <summary>
@@ -1053,8 +1137,13 @@ public sealed class BattleStateService
     /// </param>
     /// <param name="request">The two §1.0 cell indices the player is exchanging.</param>
     /// <param name="cancellationToken">Cancels the store reads this stage performs.</param>
-    /// <returns>The rejection, or the committed result carrying its finished state.</returns>
-    private async Task<SwapExecutionResult> ResolveSwapAsync(
+    /// <returns>
+    /// The rejection, or the committed result carrying its finished state, together
+    /// with the once-per-battle Boss Passive firing this resolution activated — if
+    /// any — for the caller to consume on the commit path
+    /// (<see cref="SwapResolution.ActivatedOncePerBattleBossPassive"/>).
+    /// </returns>
+    private async Task<SwapResolution> ResolveSwapAsync(
         string battleId,
         BattleState state,
         SwapRequest request,
@@ -1069,8 +1158,14 @@ public sealed class BattleStateService
         // continues.
         if (result.IsRejected)
         {
-            return result;
+            return new SwapResolution(result, ActivatedOncePerBattleBossPassive: null);
         }
+
+        // BOSS_RULES.md §6.2.4: the once-per-battle Boss Passive firing this
+        // resolution activated, if any. It is reported to the caller rather than
+        // consumed here, so the eligibility is spent only when this resolution is
+        // the one the store accepted (REDIS_STATE.md §4 item 6).
+        PassiveId? activatedOncePerBattleBossPassive = null;
 
         // ===================================================================
         // Step 3 (BOSS_RULES.md §6.3, MATCH3_RULES.md §8.1): SkillCooldown--
@@ -1147,46 +1242,74 @@ public sealed class BattleStateService
         // ===================================================================
         // Step 11: Trigger Relics — GAME_RULES.md §17 step 11
         // ===================================================================
-        if (_relicConfiguration.TryGetValue(battleId, out var relicDefinitions) && relicDefinitions != null)
+        // The committed Swap's resolution state is one root event, and
+        // RELIC_RULES.md §8.1 item 8 fixes the point its Conditions are read at:
+        // after step 10 and before steps 12–14. `OnMatchCount`, `OnCombo`, and
+        // `OnHpBelow` are that event's Triggers.
+        //
+        // The observation state states that point exactly. The board-resolution
+        // stage applied this Swap's step-14 healing to `resolved.PetState` in the
+        // same write-back (SwapExecutor's documented "steps 13 and 14 are state
+        // writes that land on the same PetState"), but GAME_RULES.md §17 orders step
+        // 11 before step 14, so `HpPercentageBelow` must not read the healed value:
+        // for the Swap it is evaluated in, it "never reads a post-healing HP"
+        // (§8.1 item 8). The Pet's HP at step 11 is therefore the value the Swap
+        // began with — nothing between the Swap's start and step 11 writes it — and
+        // every other member is read from the resolution's current state, because
+        // those are the carriers an effect is applied to.
+        resolved = ApplyRelicFiringPoint(
+            battleId,
+            resolved,
+            RelicFiringPoint.BoardResolution,
+            resolved.MatchCount,
+            resolved.Combo,
+            events,
+            powerGainSource: null,
+            observationState: resolved.PetState with { HP = state.PetState.HP });
+
+        // RELIC_RULES.md §3.2 item 1: cascade iteration identity is
+        // MATCH3_RULES.md §4.2's — depth 1 is the pass run on the board the
+        // committed Swap produced and is NOT a Cascade, while depth ≥ 2 is, with
+        // the Cascade's index within the Swap being d − 1. The resolution's passes
+        // are exactly the passes that detected a Match, in depth order, so element
+        // i of that list is detection pass i + 1 and therefore a Cascade exactly
+        // when i ≥ 1.
+        //
+        // §3.2 items 2–3: each actual cascade iteration is an INDEPENDENT OnCascade
+        // event, so the stage runs once per qualifying iteration and the cascades of
+        // one Swap are never collapsed into one aggregated event. §3.2 item 4 adds
+        // that this is not a §5 self-loop: §5 item 2's once-per-root-event safeguard
+        // already carves out a Trigger that naturally repeats, and one iteration is
+        // one such occurrence. Each call is its own root event, so the resolver's
+        // per-instance safeguard is per iteration; a Relic that fires once per
+        // iteration is firing once per occurrence, which is the documented behavior.
+        //
+        // Each iteration's own §17 step 11 point is the point the swap-level pass
+        // just used (§3.2 item 2: "each is evaluated against the state at that
+        // iteration's own GAME_RULES.md §17 step 11 point"), so the same observation
+        // point is supplied: the HP the Swap began with, over the resolution's
+        // current carriers. The observations are taken per call, so an iteration's
+        // pass never rewrites what an earlier pass applied.
+        //
+        // The loop is empty when the Swap produced no Cascade, which is the
+        // documented case of §4.3 item 1's terminating pass detecting no Match:
+        // no Cascade occurs, so no OnCascade event is produced.
+        if (result.Resolution.Passes.Count > 1
+            && _relicConfiguration.TryGetValue(battleId, out var cascadeRelics)
+            && cascadeRelics != null)
         {
-            var equippedRelicContents = new List<EquippedRelicContent>();
-            var equippedRelics = resolved.PetState.EquippedRelics ?? [];
-            for (var i = 0; i < equippedRelics.Length; i++)
+            for (var cascadeIndex = 1; cascadeIndex < result.Resolution.Passes.Count; cascadeIndex++)
             {
-                var definition = i < relicDefinitions.Count ? relicDefinitions[i] : null;
-                if (definition != null)
-                {
-                    equippedRelicContents.Add(new EquippedRelicContent(equippedRelics[i], definition));
-                }
+                resolved = ApplyRelicFiringPoint(
+                    cascadeRelics,
+                    resolved,
+                    RelicFiringPoint.CascadeIteration,
+                    matchCount: 0,
+                    combo: 0,
+                    events,
+                    powerGainSource: null,
+                    observationState: resolved.PetState with { HP = state.PetState.HP });
             }
-
-            var relicResolution = RelicResolver.Resolve(
-                equippedRelicContents,
-                state.PetState with
-                {
-                    ATKModifiers = resolved.PetState.ATKModifiers,
-                    CardCostModifiers = resolved.PetState.CardCostModifiers,
-                    NextAttackCritModifiers = resolved.PetState.NextAttackCritModifiers,
-                },
-                resolved.MatchCount,
-                resolved.Combo);
-
-            events.AddRange(relicResolution.Triggered.Select(BattleEvent.ForRelicTriggered));
-            events.AddRange(relicResolution.PowerChanges.Select(BattleEvent.ForPowerChanged));
-
-            var relicPowerDelta = relicResolution.PetState.Power - state.PetState.Power;
-            var currentPower = Math.Clamp(resolved.PetState.Power + relicPowerDelta, 0, 100);
-
-            resolved = resolved with
-            {
-                PetState = resolved.PetState with
-                {
-                    Power = currentPower,
-                    ATKModifiers = relicResolution.PetState.ATKModifiers,
-                    CardCostModifiers = relicResolution.PetState.CardCostModifiers,
-                    NextAttackCritModifiers = relicResolution.PetState.NextAttackCritModifiers,
-                },
-            };
         }
 
         // ===================================================================
@@ -1202,6 +1325,33 @@ public sealed class BattleStateService
                 PowerChangeSource.Match,
                 matchPowerDelta,
                 petAfterPower.Power)));
+        }
+
+        // RELIC_RULES.md §3.1: OnPowerGain reacts to qualifying Power gains — the
+        // ones originating OUTSIDE Relic effect resolution. Step 12 generated this
+        // Swap's Power from its cleared POWER Gems and step 13 wrote it, so an
+        // increase here is exactly such a gain (PowerChangeSource.Match), and the
+        // mutation just reported is the event the Trigger observes. A Swap that
+        // generated none, or whose generation the 0–100 cap wholly absorbed, leaves
+        // Power unchanged and therefore produces no qualifying gain.
+        //
+        // The source is passed to the stage so the qualification is decided by the
+        // canonical rule rather than by this call site: a Power gain whose source is
+        // Relic effect resolution resolves no Relic at all (§3.1 items 1–2, §8.5
+        // item 7), which is what makes
+        // OnPowerGain → Arcane Battery → +5 Power → OnPowerGain impossible. The
+        // Power an eligible Relic grants below is itself a Relic-owned mutation and
+        // is never re-dispatched as a gain — no depth limit is involved.
+        if (matchPowerDelta > 0)
+        {
+            resolved = ApplyRelicFiringPoint(
+                battleId,
+                resolved,
+                RelicFiringPoint.PowerGain,
+                matchCount: 0,
+                combo: 0,
+                events,
+                PowerChangeSource.Match);
         }
 
         // ===================================================================
@@ -1282,25 +1432,36 @@ public sealed class BattleStateService
             };
         }
 
-        // COMBAT_RULES.md §3.3 items 7–10 / GAME_STATE.md §5.1.2 item 4 —
-        // NextAttack Crit modifier consumption.
+        // COMBAT_RULES.md §3.3 items 7–10 / GAME_STATE.md §5.1.2 item 4, §5.1.4
+        // item 4 — NextAttack modifier consumption.
         //
         // The Swap's player damage above is an explicit owner attack action that
         // entered the Damage Pipeline, so it is a QUALIFYING ATTACK (item 8). Its
         // composition already included the applicable modifiers (item 7, passed as
-        // NextAttackCritContribution), and the modifiers that applied to it are
-        // consumed here — after the instance that used them, in the same resolution
-        // and therefore the same single write-back (§5.1.2 item 6).
+        // NextAttackCritContribution and, for ATK, through the Effective Pet ATK
+        // composition), and the modifiers that applied to it are consumed here —
+        // after the instance that used them, in the same resolution and therefore
+        // the same single write-back (§5.1.2 item 6, §5.1.4 item 8).
+        //
+        // Both NextAttack-lifetime stat modifications are consumed by this one
+        // mechanism: the Crit collection (§2.3.4) and the NextAttack-lifetime ATK
+        // elements of ATKModifiers[] (§2.3.7 item 11). TASK-178 Product Owner
+        // decision Q-1 = A makes that explicit — the ATK modifier is consumed "at
+        // the same qualifying-attack boundary the Crit modifier uses", and this
+        // document defines no second consumption rule. Consumption is therefore one
+        // operation over both carriers, never two.
         //
         // Item 10: all applicable NextAttack modifiers for the qualifying attack are
         // consumed together. Iron Fang's and Bạch Hổ's contributions are both removed
-        // by this one attack; neither is left behind merely because the two share the
-        // attack scope.
+        // by this one attack, and so is every unconsumed NextAttack ATK element;
+        // neither is left behind merely because the sources share the attack scope.
         //
-        // Item 9 / §5.1.2 item 4: consumption removes ONLY the identified elements.
-        // It does not write PetState.Crit, does not touch Passive or Relic Crit, and
-        // is not an arithmetic inverse — the base stat is simply never written here,
-        // which is what makes source-specific removal possible without one.
+        // Item 9 / §5.1.2 item 4 / §5.1.4 item 4: consumption removes ONLY the
+        // identified elements, and it is lifetime-scoped. It does not write
+        // PetState.Crit or PetState.ATK, does not touch Passive or Relic Crit or a
+        // Battle-lifetime ATK element, and is not an arithmetic inverse — the base
+        // stats are simply never written here, which is what makes source-specific
+        // removal possible without one.
         //
         // The previous implementation compared the composed stat against the
         // configuration constant and reset it (PetState.Crit != PetState.DefaultCrit
@@ -1314,10 +1475,10 @@ public sealed class BattleStateService
         // attack are not the owner's qualifying attack action (item 8), so the later
         // step 19a and step 18b/18c instances below deliberately do not consume —
         // even though item 4 makes them Crit-eligible and they therefore do compose
-        // against the modifier while it is active.
+        // against the modifiers while they are active.
         resolved = resolved with
         {
-            PetState = ConsumeNextAttackCritModifiers(resolved.PetState),
+            PetState = ConsumeNextAttackModifiers(resolved.PetState),
         };
 
         // GAME_EVENTS.md §1/§2: the three Damage events follow the Passive stage's
@@ -1388,10 +1549,15 @@ public sealed class BattleStateService
             // 19a's once-per-resolved-Turn consumption runs here too, before the
             // single write-back (§5.1.1 items 2 and 9). Skipping it would make the
             // consumption depend on which side died, which no rule states.
-            return result
-                .WithEvents(events)
-                .WithState(StatusEffectLifecycle.ConsumeAtStep19a(
-                    resolved with { BossState = bossState }));
+            //
+            // No Boss Passive ran on this path (§5 item 4: no Boss Response), so no
+            // once-per-battle firing was activated and none is reported.
+            return new SwapResolution(
+                result
+                    .WithEvents(events)
+                    .WithState(StatusEffectLifecycle.ConsumeAtStep19a(
+                        resolved with { BossState = bossState })),
+                ActivatedOncePerBattleBossPassive: null);
         }
 
         // ===================================================================
@@ -1468,6 +1634,143 @@ public sealed class BattleStateService
                         HP = Math.Min(bossState.HP + totalRegen, bossState.MaxHP),
                     };
                 }
+            }
+        }
+
+        // ===================================================================
+        // Step 9b: Non-match-charged Boss Passives — GAME_RULES.md §17 step 18a
+        // ===================================================================
+        // The block above is driven by PassiveTracker.Charge, which is the
+        // MATCH-CHARGED path (PASSIVE_RULES.md §2): it only runs when
+        // PassiveThreshold > 0. A Boss whose PassiveId records a `null` threshold
+        // is by definition NOT match-charged (DATABASE.md §1 note item 3), so it
+        // never reaches it — `null` means "no match-charging threshold", NOT
+        // "always active", and it must never fall through to an unconditional
+        // application.
+        //
+        // BOSS_RULES.md §6.2.4/§6.2.5 give those two Passives an explicit
+        // THRESHOLD trigger instead, evaluated at the same documented point —
+        // step 18a, against the POST-DAMAGE battle state (§3.3 item 1). This is
+        // the same trigger-evaluation point, not a second one: the Passive fires
+        // once per player action, after all player damage is resolved, and before
+        // the Skill (step 18b), exactly as §3.3 orders it.
+        //
+        // Sơn Thạch Vệ (§6.2.4) — `Boss HP ≤ 50%`, category Boss HP:
+        //   * §6.2.4 is explicit that this is NOT the Enrage transition. The two
+        //     boundaries coincide numerically (EnrageThreshold 1500 with MaxHP 3000
+        //     is 50%) but are separate contract concepts with different operators:
+        //     §5 item 4's Enrage uses strict `<`, this trigger uses `≤`. So the
+        //     guard below reads bossState.HP directly and does NOT test
+        //     `State == Enraged`.
+        //   * It is ONE-TIME — at most once per battle. §6.2.4 states "it does not
+        //     re-trigger once it has activated", and its reset behavior is the
+        //     non-default No reset / persistent form whose storage token is
+        //     `Persistent` (PASSIVE_RULES.md §4's Boss Passive clause, items 2–3;
+        //     DATABASE.md §1 note item 3). That clause makes `Persistent` govern
+        //     FIRING ELIGIBILITY for a Boss Passive: eligibility is consumed by the
+        //     first activation and is NOT restored when the 3-Turn effect expires at
+        //     step 19a, nor by remaining at or below 50% HP, nor by leaving and
+        //     re-entering the threshold.
+        //   * The guard is therefore the battle session's consumed-firing record for
+        //     this Boss Passive, keyed by the battle and the Passive identity
+        //     (TryConsumeOncePerBattleBossPassiveFiring below) — NOT the presence of
+        //     the temporary instance. The instance is removed with the effect at
+        //     step 19a, so reading it as the fired marker re-armed the Passive on
+        //     the next Turn that satisfied `HP ≤ 50%`; the consumed-firing record
+        //     survives the effect and keeps the Passive one-time. §6.2.4 adds no
+        //     `BossState` member and `PassiveProgress.Current` is not repurposed, so
+        //     the eligibility is session-scoped rather than state.
+        //   * Applying it here rather than in a later Turn is what makes the
+        //     one-time property hold: the activation and its consumption happen in
+        //     the same resolution that first satisfies the trigger.
+        //
+        // Kim Lôi Vương (§6.2.5) — `Player Combo ≥ 4`, category Combo:
+        //   * `Player Combo` is the resolution's own root Combo counter
+        //     (GAME_STATE.md §2.2), read here — not re-derived and not a second
+        //     Combo source.
+        //   * Reset behavior is the documented Default (PASSIVE_RULES.md §4 item
+        //     1) and a re-trigger follows the existing refresh-not-stack default
+        //     (COMBAT_RULES.md §5.2 item 2, §5.5.5). StatusEffectLifecycle.Apply
+        //     already implements exactly that (one instance per identity, refresh
+        //     duration, never stack magnitude), so this reuses it unchanged and
+        //     authors no new stacking model.
+        //
+        // Both effects reuse the existing Boss ATK modifier representation — a
+        // Turn-based `BuffDebuff` in BossState.StatusEffects[] with
+        // `TargetStat = "ATK"` and `Magnitude = +20` — consumed by the unchanged
+        // COMBAT_RULES.md §5.5 rule. No new status type, `TargetStat`, event, or
+        // state member is introduced. BOSS_RULES.md §6.2.4/§6.2.5 each state that
+        // the application does not retroactively modify damage already resolved
+        // earlier in that Turn, which is why it is applied here, after step 6.
+        if (string.Equals(bossState.PassiveId.Value, "son-thach-ve-enrage", StringComparison.Ordinal))
+        {
+            // §6.2.4: `Boss HP ≤ 50%` of MaxHP, evaluated against the post-damage
+            // HP. The operator is `≤`, deliberately distinct from §5 item 4's
+            // strict `<` for the Enrage transition.
+            var halfMaxHp = bossState.MaxHP * 50 / 100;
+
+            // §6.2.4 / PASSIVE_RULES.md §4's Boss Passive clause: the Passive may
+            // fire AT MOST ONCE PER BATTLE. The definition declares the non-default
+            // Persistent reset behavior (§6.2), which is what selects the
+            // once-per-battle firing limit, and this battle session's record of an
+            // already-consumed firing is what refuses every later Turn.
+            //
+            // The guard is deliberately NOT the presence of the applied instance:
+            // that instance is the effect, not the fired marker, and it is removed
+            // at step 19a — reading it would let the next eligible Turn re-apply the
+            // Rage, which is the retrigger defect this contract closes.
+            //
+            // The eligibility is READ here and consumed by the caller only once this
+            // resolution is the committed one, so a refused Sequence compare-and-set
+            // leaves the retried resolution able to activate the same firing
+            // (REDIS_STATE.md §4 item 6).
+            if (bossState.HP <= halfMaxHp
+                && IsBossPassiveFiringEligible(battleId, bossDefinition, bossState.PassiveId))
+            {
+                activatedOncePerBattleBossPassive = bossState.PassiveId;
+
+                // §6.2.4: +20% ATK for 3 Turns, the §6.2.1 Rage representation.
+                // Applied with the existing StatusEffectLifecycle.Apply, so at
+                // most one instance exists per identity.
+                var rageOnHpThreshold = StatusEffect.TurnBased(
+                    "son-thach-ve-enrage",
+                    StatusEffectType.BuffDebuff,
+                    StatusEffectSource.Boss,
+                    magnitude: 20,
+                    duration: 3,
+                    targetStat: "ATK");
+
+                bossState = bossState with
+                {
+                    ActiveStatusEffects = StatusEffectLifecycle.Apply(
+                        bossState.ActiveStatusEffects,
+                        rageOnHpThreshold),
+                };
+            }
+        }
+        else if (string.Equals(bossState.PassiveId.Value, "kim-loi-vuong-combo", StringComparison.Ordinal))
+        {
+            // §6.2.5: `Player Combo ≥ 4`, against the post-damage battle state.
+            if (resolved.Combo >= 4)
+            {
+                // §6.2.5: +20% ATK for 1 Turn, the §6.2.1 Rage representation. The
+                // existing Apply refreshes the instance to the full 1-Turn
+                // duration without stacking magnitude (COMBAT_RULES.md §5.2 item
+                // 2, §5.5.5) — the documented Default reset/reapplication behavior.
+                var rageOnComboThreshold = StatusEffect.TurnBased(
+                    "kim-loi-vuong-combo",
+                    StatusEffectType.BuffDebuff,
+                    StatusEffectSource.Boss,
+                    magnitude: 20,
+                    duration: 1,
+                    targetStat: "ATK");
+
+                bossState = bossState with
+                {
+                    ActiveStatusEffects = StatusEffectLifecycle.Apply(
+                        bossState.ActiveStatusEffects,
+                        rageOnComboThreshold),
+                };
             }
         }
 
@@ -1597,6 +1900,27 @@ public sealed class BattleStateService
         events.Add(BattleEvent.ForDamageCalculated(bossDamage.Calculation));
         events.Add(BattleEvent.ForDamageDealt(bossDamage.DamageDealt));
         events.Add(BattleEvent.ForDamageTaken(bossDamage.DamageTaken));
+
+        // RELIC_RULES.md §3: OnDamageTaken "fires when the active Pet takes
+        // damage". The Boss Response's damage instance above is a resolved instance
+        // whose target is the Pet (COMBAT_RULES.md §3.4: Source = Boss, Target =
+        // Player, where the player's side is the active Pet), and the Pet's
+        // post-damage HP has just been written, so this is the documented firing
+        // point. It is the existing damage-taken report, not a second
+        // damage-resolution path: nothing here re-runs the pipeline, re-derives the
+        // damage, or re-applies HP.
+        //
+        // It is deliberately not fired by anything else: healing is a state change
+        // with no damage instance (COMBAT_RULES.md §4), a rejected action resolves
+        // nothing (MATCH3_RULES.md §2.1.5), and this point is reached only after the
+        // instance's Final Damage was applied.
+        resolved = ApplyRelicFiringPoint(
+            battleId,
+            resolved,
+            RelicFiringPoint.DamageTaken,
+            matchCount: 0,
+            combo: 0,
+            events);
 
         // -------------------------------------------------------------------
         // Step 10b: Boss Skill secondary effect — BOSS_RULES.md §6.3.1
@@ -1848,7 +2172,8 @@ public sealed class BattleStateService
                         Target: DamageParty.Boss,
                         DefenderShieldPool: StatusEffectLifecycle.ShieldPool(bossState.ActiveStatusEffects),
                         AttackerCrit: resolved.PetState.Crit,
-                        RngState: resolved.RngState),
+                        RngState: resolved.RngState,
+                        OtherModifiers: BurnTickOtherModifiers(resolved.PetState, dot)),
                     ComboModifiers.Default,
                     ElementModifiers.Default);
 
@@ -1911,7 +2236,8 @@ public sealed class BattleStateService
                         Target: DamageParty.Player,
                         DefenderShieldPool: StatusEffectLifecycle.ShieldPool(resolved.PetState.ActiveStatusEffects),
                         AttackerCrit: 0,
-                        RngState: resolved.RngState),
+                        RngState: resolved.RngState,
+                        OtherModifiers: BurnTickOtherModifiers(resolved.PetState, dot)),
                     ComboModifiers.Default,
                     ElementModifiers.Default);
 
@@ -1948,6 +2274,20 @@ public sealed class BattleStateService
                 events.Add(BattleEvent.ForDamageDealt(dotDamage.DamageDealt));
                 events.Add(BattleEvent.ForDamageTaken(dotDamage.DamageTaken));
 
+                // RELIC_RULES.md §3: a DoT tick whose target is the Pet is damage
+                // the active Pet took, so it is an OnDamageTaken firing point on the
+                // same terms as the Boss Response's instance above. Each tick is its
+                // own damage instance and therefore its own event; a re-triggering
+                // source refreshes its own element rather than accumulating one
+                // (non-stacking).
+                resolved = ApplyRelicFiringPoint(
+                    battleId,
+                    resolved,
+                    RelicFiringPoint.DamageTaken,
+                    matchCount: 0,
+                    combo: 0,
+                    events);
+
                 if (resolved.PetState.HP <= 0)
                 {
                     events.Add(BattleEvent.ForBattleLost(bossState.HP, resolved.PetState.HP));
@@ -1970,9 +2310,15 @@ public sealed class BattleStateService
         // resolution emitted BattleLost — the documented battle-end step that
         // follows it (ARCHITECTURE.md §4 item 4, DATABASE.md §1). A non-terminal
         // resolution emits neither outcome event, so nothing durable follows it.
-        return result
-            .WithEvents(events)
-            .WithState(resolved with { BossState = bossState });
+        //
+        // The activated once-per-battle firing (BOSS_RULES.md §6.2.4) travels back
+        // with the result: it is consumed by the caller on the accepted-write path,
+        // not here, so that a refused write leaves it for the retried resolution.
+        return new SwapResolution(
+            result
+                .WithEvents(events)
+                .WithState(resolved with { BossState = bossState }),
+            activatedOncePerBattleBossPassive);
     }
     /// <summary>
     /// Stores a resolved state under the documented <c>Sequence</c>
@@ -1998,52 +2344,440 @@ public sealed class BattleStateService
         _repository.TryUpdateAsync(resolved, expectedSequence, cancellationToken);
 
     /// <summary>
-    /// Consumes every active <c>NextAttack</c> Crit modifier on the Pet, returning
-    /// the resulting state (<c>COMBAT_RULES.md</c> §3.3 items 8–10;
-    /// <c>GAME_STATE.md</c> §5.1.2 item 4).
+    /// Consumes every active <c>NextAttack</c> modifier on the Pet — both carriers,
+    /// through the one consumption mechanism — returning the resulting state
+    /// (<c>COMBAT_RULES.md</c> §3.3 items 8–10; <c>GAME_STATE.md</c> §5.1.2 item 4,
+    /// §5.1.4 item 4).
+    ///
+    /// <b>Both NextAttack stat modifications are consumed together, by this one
+    /// operation.</b> TASK-178 Product Owner decision <b>Q-1 = A</b> makes the
+    /// <c>NextAttack</c>-lifetime <c>ATK</c> modifier's consumption boundary
+    /// "exactly the boundary <c>COMBAT_RULES.md</c> §3.3 item 8 defines" — the same
+    /// boundary the Crit modifier uses — and states that "no second consumption
+    /// rule is defined for <c>ATK</c>". The Crit collection
+    /// (<c>NextAttackCritModifiers[]</c>, <c>GAME_STATE.md</c> §2.3.4) and the
+    /// <c>NextAttack</c> elements of <c>ATKModifiers[]</c> (§2.3.7 item 11) are
+    /// therefore consumed here, in the same resolution as the attack that used them
+    /// and in the same single write-back (§5.1.2 item 6).
     ///
     /// <b>Every active modifier is consumed, because they all applied.</b> §3.3
-    /// item 10: "A qualifying attack consumes <b>all applicable</b> NextAttack Crit
+    /// item 10: "A qualifying attack consumes <b>all applicable</b> NextAttack
     /// modifiers assigned to that attack", and they "stack additively and do not
-    /// replace one another". The composition this attack used was the sum over the
-    /// whole collection (<see cref="NextAttackCritModifiers.TotalContribution"/>),
-    /// so the identities consumed are exactly the collection's — the removal set and
-    /// the composition set are the same set by construction, which is what keeps
-    /// "consumed together" (item 10) true rather than merely asserted.
+    /// replace one another". The compositions this attack used were the sums over
+    /// both collections (the Crit sum passed as <c>NextAttackCritContribution</c>,
+    /// and every <c>ATKModifiers[]</c> element through the Effective Pet ATK
+    /// composition), so the identities consumed are exactly the elements that
+    /// composed — the removal set and the composition set are the same set by
+    /// construction, which is what keeps "consumed together" (item 10) true rather
+    /// than merely asserted.
     ///
-    /// <b>Only the collection is written.</b> §5.1.2 item 4 enumerates the
-    /// prohibitions this honors: it never writes <c>PetState.Crit</c>, never assigns
-    /// the configuration default, and never removes, resets, or adjusts any other
-    /// Crit source — so the base value, Passive Crit, and Relic Crit are carried
-    /// across untouched. The base stat is not carried in this method at all, which is
-    /// the strongest form of "must NOT reset <c>PetState.Crit</c> after the attack".
+    /// <b>It is lifetime-scoped, and that is §5.1.4 item 4's requirement.</b> A
+    /// qualifying attack removes the <c>NextAttack</c> elements it consumed; it must
+    /// <b>not</b> remove a <c>Battle</c>-lifetime ATK element — so Berserker Core's
+    /// standing modifier survives every attack, while Battle Instinct's element does
+    /// not survive the attack it applied to.
     ///
-    /// <b>An empty collection consumes nothing.</b> §2.3.4 item 5 makes no-modifier
-    /// an empty collection, and an attack with no applicable modifier has nothing to
-    /// consume — no branch is needed for it, and none is added.
+    /// <b>Only the two collections are written.</b> §5.1.2 item 4 and §5.1.4 item 7
+    /// enumerate the prohibitions this honors: it never writes <c>PetState.Crit</c>
+    /// or <c>PetState.ATK</c>, never assigns a configuration default, and never
+    /// removes, resets, or adjusts any other source — so the base stats, Passive
+    /// contributions, and every <c>Battle</c>-lifetime modifier are carried across
+    /// untouched.
+    ///
+    /// <b>Empty collections consume nothing.</b> "No modifier active" is an empty
+    /// collection, and an attack with no applicable modifier has nothing to consume —
+    /// no branch is needed for it, and none is added.
     /// </summary>
     /// <param name="petState">The Pet state whose modifiers are consumed.</param>
-    /// <returns>The Pet state with every previously active modifier removed.</returns>
-    private static PetState ConsumeNextAttackCritModifiers(PetState petState)
+    /// <returns>
+    /// The Pet state with the previously active <c>NextAttack</c> Crit modifiers
+    /// and <c>NextAttack</c>-lifetime ATK modifiers removed.
+    /// </returns>
+    private static PetState ConsumeNextAttackModifiers(PetState petState)
     {
-        var modifiers = petState.NextAttackCritModifiers;
+        var critModifiers = petState.NextAttackCritModifiers;
+        var atkModifiers = petState.ATKModifiers;
 
-        if (modifiers.Length == 0)
+        if (critModifiers.Length == 0 && atkModifiers.Length == 0)
         {
             return petState;
         }
 
-        var consumedIdentities = new string[modifiers.Length];
-        for (var index = 0; index < modifiers.Length; index++)
+        var consumedIdentities = new string[critModifiers.Length];
+        for (var index = 0; index < critModifiers.Length; index++)
         {
-            consumedIdentities[index] = modifiers[index].SourceIdentity;
+            consumedIdentities[index] = critModifiers[index].SourceIdentity;
         }
 
         return petState with
         {
-            NextAttackCritModifiers = NextAttackCritModifiers.Consume(modifiers, consumedIdentities),
+            NextAttackCritModifiers = NextAttackCritModifiers.Consume(critModifiers, consumedIdentities),
+            ATKModifiers = ATKModifiers.ConsumeForQualifyingAttack(atkModifiers),
         };
     }
+
+    /// <summary>
+    /// The step 4 "Other Modifiers" factor a damage-over-time tick's damage is
+    /// scaled by — the applied <c>BurnDamage</c> percentage when the tick's Burn is
+    /// one the Pet owns, and the identity factor otherwise.
+    ///
+    /// <code>
+    /// Pet-owned Burn   (Source = Player)  → 1 + (Σ BurnDamageModifiers) / 100
+    /// Boss-owned Burn  (Source = Boss)    → 1.00  (unmodified)
+    /// </code>
+    ///
+    /// <b>§5.2 item 4 and §6 note 1 own the scoping, and the test is the Burn
+    /// instance's source.</b> "A <c>BurnDamage</c> modifier applies only to Burn
+    /// instances owned by the source that modifier belongs to", and for Burning
+    /// Curse the owned/source context is the Pet: Burn the Pet applied is modified
+    /// and Burn the Boss applied is not, regardless of which entity is receiving the
+    /// tick's damage (TASK-178 Product Owner decision <b>Q-4 = C</b>).
+    /// <see cref="BurnDamageModifiers.AppliesTo"/> is that predicate, so a
+    /// Boss-applied Burn ticking on the Pet reads <c>1.00</c> here and receives no
+    /// bonus.
+    ///
+    /// <b>The modifier changes damage and nothing else.</b> It is supplied as step
+    /// 4's existing factor input — <c>COMBAT_RULES.md</c> §3 step 4 already lists
+    /// Relic bonuses — so it scales this tick's damage and the tick's own Burn
+    /// instance, its magnitude, its identity, and its duration are all untouched:
+    /// no Burn event is emitted, no Burn instance is created or refreshed, and the
+    /// step 19a pass below is the only thing that consumes a turn of its duration
+    /// (§5.2 item 3, §5.3). That is what keeps the MVP Relic case terminating.
+    ///
+    /// <b>No new pipeline step or input is introduced.</b> Step 4 is already a
+    /// factor the caller supplies, and the identity it carries when nothing applies
+    /// is <see cref="DamagePipeline.NoOtherModifiers"/>.
+    /// </summary>
+    /// <param name="petState">
+    /// The active Pet's state — the owner whose <c>BurnDamageModifiers[]</c> are the
+    /// modifiers in force for the Pet's own Burn.
+    /// </param>
+    /// <param name="burn">The Status Effect instance this tick resolves.</param>
+    /// <returns>The step 4 factor for this tick.</returns>
+    private static double BurnTickOtherModifiers(PetState petState, StatusEffect burn)
+    {
+        if (!BurnDamageModifiers.AppliesTo(burn))
+        {
+            return DamagePipeline.NoOtherModifiers;
+        }
+
+        var percentage = BurnDamageModifiers.AppliedPercentage(petState.BurnDamageModifiers);
+
+        return (100 + percentage) / 100.0;
+    }
+
+    /// <summary>
+    /// Runs the Relic stage's firing point for a battle whose content this boundary
+    /// attached at creation — the instance-side wrapper over
+    /// <see cref="ApplyRelicFiringPoint(IReadOnlyList{RelicDefinition?}, BattleState, RelicFiringPoint, int, int, List{BattleEvent}?, PowerChangeSource?)"/>
+    /// that reads the battle's own loaded definitions.
+    ///
+    /// <b>A battle with no attached Relic content resolves nothing.</b> The registry
+    /// is populated at creation (<see cref="CreateBattleAsync"/>); an absent or
+    /// <c>null</c> entry means the battle carries no Relic definitions this boundary
+    /// can resolve, which is the documented staging position and not an invented
+    /// empty loadout (<c>RELIC_RULES.md</c> §2.1 item 1 defines no zero-Relic
+    /// battle). The state is returned unchanged.
+    /// </summary>
+    /// <param name="battleId">The battle session whose Relic content is read.</param>
+    /// <param name="state">The resolution state at this firing point.</param>
+    /// <param name="firingPoint">Which documented event is being processed.</param>
+    /// <param name="matchCount">The Match count this point reads, if any.</param>
+    /// <param name="combo">The Combo value this point reads, if any.</param>
+    /// <param name="events">The resolution's ordered event list, appended to.</param>
+    /// <param name="powerGainSource">
+    /// The stage that owns the Power mutation, for
+    /// <see cref="RelicFiringPoint.PowerGain"/> — the qualification
+    /// <c>RELIC_RULES.md</c> §3.1 fixes.
+    /// </param>
+    /// <returns>The state after this firing point.</returns>
+    private BattleState ApplyRelicFiringPoint(
+        string battleId,
+        BattleState state,
+        RelicFiringPoint firingPoint,
+        int matchCount,
+        int combo,
+        List<BattleEvent> events,
+        PowerChangeSource? powerGainSource = null,
+        PetState? observationState = null)
+    {
+        if (!_relicConfiguration.TryGetValue(battleId, out var relicDefinitions)
+            || relicDefinitions is null)
+        {
+            return state;
+        }
+
+        return ApplyRelicFiringPoint(
+            relicDefinitions,
+            state,
+            firingPoint,
+            matchCount,
+            combo,
+            events,
+            powerGainSource,
+            observationState);
+    }
+
+    /// <summary>
+    /// Runs one Relic firing point over a battle's state and merges what the stage
+    /// produced — the <c>GAME_RULES.md</c> §17 stage the Relic resolution owns,
+    /// called once per documented event (<c>RELIC_RULES.md</c> §3).
+    ///
+    /// <b>It decides no Relic rule.</b> Which Relics are eligible, whether their
+    /// Conditions hold, which effect each applies, and where the effect is carried
+    /// are all <see cref="RelicResolver.Resolve(IReadOnlyList{EquippedRelicContent}, PetState, RelicFiringPoint, int, int, PowerChangeSource?)"/>'s
+    /// and the declared content's. This method supplies the battle's equipped
+    /// content in equip-slot order, hands back the reports the stage produced, and
+    /// writes the state it returned into the resolution's single write-back
+    /// (<c>GAME_STATE.md</c> §5.1).
+    ///
+    /// <b>The equipped content is the loadout snapshot in slot order.</b> Element
+    /// <c>i</c> of <c>PetState.EquippedRelics[]</c> is equip slot <c>i + 1</c> and is
+    /// paired with the definition resolved for that slot
+    /// (<c>RELIC_RULES.md</c> §2.3, §2.5); nothing is sorted, filtered,
+    /// de-duplicated, or re-ranked here, because §2.3 item 2 forbids ordering slots
+    /// by any property of the Relic. A slot whose definition did not resolve is
+    /// simply not handed to the stage — the Relic does nothing rather than having a
+    /// rule invented for it (<c>AGENTS.md</c> §7).
+    ///
+    /// <b>Every carrier the effect can reach is written back, and nothing else is.</b>
+    /// The five carriers are <c>Power</c> (<c>Immediate</c>,
+    /// <c>RELIC_RULES.md</c> §8.3 item 3), <c>ATKModifiers[]</c> and
+    /// <c>CardCostModifiers[]</c> (<c>Battle</c>), <c>NextAttackCritModifiers[]</c>
+    /// and the <c>NextAttack</c>-lifetime elements of <c>ATKModifiers[]</c>
+    /// (<c>NextAttack</c>), and <c>BurnDamageModifiers[]</c> (<c>Battle</c>). The
+    /// rest of <paramref name="state"/> is carried across untouched — including the
+    /// Pet's Passive progress, its base stats, and the Boss's state — so this stage
+    /// cannot disturb a value it does not own.
+    ///
+    /// <b>Power is merged by its clamped change.</b> The stage writes
+    /// <c>PetState.Power</c> through the one write site that enforces
+    /// <c>GAME_RULES.md</c> §12's 0–100 range, so the change it reports is the change
+    /// the cap allowed; applying that change to the resolution's own Power keeps the
+    /// single clamp point and the reported delta identical, and cannot double-apply a
+    /// grant.
+    ///
+    /// <b>One call is one root event.</b> The stage's per-instance safeguard is
+    /// scoped to the call, so the caller's granularity is the contract's: once per
+    /// Swap for the step-11 event, once per cascade iteration for
+    /// <c>OnCascade</c>, once per qualifying gain, and once per resolved damage
+    /// instance the Pet took.
+    ///
+    /// <b>The observation state is the firing point's own, for the step-11
+    /// points.</b> A Condition is read from the state the stage is given, so that
+    /// state must be the one the firing point's documented observation point
+    /// describes (<c>RELIC_RULES.md</c> §8.1 item 8). The step-11 points pass one
+    /// whose <c>HP</c> is the Swap's starting value, because this Swap's own step-14
+    /// healing has already been written into <paramref name="state"/> by the
+    /// board-resolution stage while <c>GAME_RULES.md</c> §17 orders step 11 before
+    /// step 14. Only the readings differ: the effects are still applied to
+    /// <paramref name="state"/>'s current carriers and merged back into it.
+    /// </summary>
+    /// <param name="relicDefinitions">
+    /// The battle's equipped Relic definitions in equip-slot order, or <c>null</c>
+    /// for a battle whose Relic content was not attached.
+    /// </param>
+    /// <param name="state">The resolution state at this firing point.</param>
+    /// <param name="firingPoint">Which documented event is being processed.</param>
+    /// <param name="matchCount">The Match count this point reads, if any.</param>
+    /// <param name="combo">The Combo value this point reads, if any.</param>
+    /// <param name="events">
+    /// The resolution's ordered event list, appended to with the stage's reports, or
+    /// <c>null</c> when the caller is not a resolution that publishes events (battle
+    /// creation emits none — <c>GAME_STATE.md</c> §2.0.5.2 item 2).
+    /// </param>
+    /// <param name="powerGainSource">
+    /// The stage that owns the Power mutation, for
+    /// <see cref="RelicFiringPoint.PowerGain"/>.
+    /// </param>
+    /// <param name="observationState">
+    /// The Pet state the stage's Condition evaluation and effect application are
+    /// read against, or <c>null</c> to read <paramref name="state"/>'s current Pet
+    /// state. It is supplied only by the step-11 firing points; every other point
+    /// observes the resolution as it stands, which is its own observation point.
+    /// </param>
+    /// <returns>The state after this firing point.</returns>
+    private static BattleState ApplyRelicFiringPoint(
+        IReadOnlyList<RelicDefinition?> relicDefinitions,
+        BattleState state,
+        RelicFiringPoint firingPoint,
+        int matchCount,
+        int combo,
+        List<BattleEvent>? events,
+        PowerChangeSource? powerGainSource = null,
+        PetState? observationState = null)
+    {
+        var equippedRelics = state.PetState.EquippedRelics ?? [];
+
+        if (equippedRelics.Length == 0)
+        {
+            return state;
+        }
+
+        var equippedRelicContents = new List<EquippedRelicContent>(equippedRelics.Length);
+
+        for (var slot = 0; slot < equippedRelics.Length; slot++)
+        {
+            var definition = slot < relicDefinitions.Count ? relicDefinitions[slot] : null;
+
+            if (definition != null)
+            {
+                equippedRelicContents.Add(new EquippedRelicContent(equippedRelics[slot], definition));
+            }
+        }
+
+        var observed = observationState ?? state.PetState;
+
+        var resolution = RelicResolver.Resolve(
+            equippedRelicContents,
+            observed,
+            firingPoint,
+            matchCount,
+            combo,
+            powerGainSource);
+
+        if (events != null)
+        {
+            events.AddRange(resolution.Triggered.Select(BattleEvent.ForRelicTriggered));
+            events.AddRange(resolution.PowerChanges.Select(BattleEvent.ForPowerChanged));
+        }
+
+        var relicPowerDelta = resolution.PetState.Power - observed.Power;
+        var currentPower = Math.Clamp(state.PetState.Power + relicPowerDelta, 0, 100);
+
+        return state with
+        {
+            PetState = state.PetState with
+            {
+                Power = currentPower,
+                ATKModifiers = resolution.PetState.ATKModifiers,
+                CardCostModifiers = resolution.PetState.CardCostModifiers,
+                NextAttackCritModifiers = resolution.PetState.NextAttackCritModifiers,
+                BurnDamageModifiers = resolution.PetState.BurnDamageModifiers,
+            },
+        };
+    }
+
+    /// <summary>
+    /// Whether the Boss Passive identified by <paramref name="passiveId"/> is still
+    /// eligible to fire in the battle session <paramref name="battleId"/>
+    /// (<c>BOSS_RULES.md</c> §6.2.4; <c>PASSIVE_RULES.md</c> §4's Boss Passive
+    /// clause).
+    ///
+    /// <b>The rule is the definition's; this method only reads it.</b>
+    /// <c>PASSIVE_RULES.md</c> §4 gives the <b>once-per-battle firing eligibility</b>
+    /// to a Boss Passive whose definition declares the non-default <c>Persistent</c>
+    /// reset behavior (storage token <c>Persistent</c>, Domain
+    /// <see cref="PassiveResetBehavior.NoReset"/>; <c>DATABASE.md</c> §1 note
+    /// item 3), and §4 item 3 requires that declaration to be on the definition —
+    /// which is where this reads it. A definition declaring the default keeps the
+    /// unchanged match-charging reset semantics and has no firing limit, so nothing
+    /// about the default behavior is redefined here and no second reset vocabulary
+    /// is introduced.
+    ///
+    /// <b>It reads; it does not consume.</b> Eligibility is consumed by
+    /// <see cref="ConsumeOncePerBattleBossPassiveFiring"/> on the resolution's
+    /// accepted-write path, so a resolution the store refused does not spend it
+    /// (<c>REDIS_STATE.md</c> §4 item 6).
+    /// </summary>
+    /// <param name="battleId">
+    /// The battle session the resolution runs in — the scope the eligibility belongs
+    /// to (<c>GAME_STATE.md</c> §2.0.1).
+    /// </param>
+    /// <param name="bossDefinition">
+    /// The Boss's definition, whose <c>PassiveResetBehavior</c> selects whether the
+    /// once-per-battle firing limit applies at all (<c>PASSIVE_RULES.md</c> §4
+    /// item 3).
+    /// </param>
+    /// <param name="passiveId">
+    /// The Boss Passive's identity (<c>BOSS_RULES.md</c> §6.4), which is what a
+    /// battle's own consumption is recorded against.
+    /// </param>
+    /// <returns>Whether the Passive may fire in this battle.</returns>
+    private bool IsBossPassiveFiringEligible(
+        string battleId,
+        BossDefinition bossDefinition,
+        PassiveId passiveId)
+    {
+        // PASSIVE_RULES.md §4 item 1: the default reset behavior is the
+        // match-charging one (progress resets after the trigger), and §4's Boss
+        // Passive clause scopes the once-per-battle firing limit to the Persistent
+        // declaration alone. A definition that declares the default therefore keeps
+        // its existing semantics untouched, and nothing is recorded for it.
+        if (bossDefinition.PassiveResetBehavior != PassiveResetBehavior.NoReset)
+        {
+            return true;
+        }
+
+        // The one-way consumption: the first activation that the store accepted
+        // inserted the entry, and every later Turn of this battle finds it present
+        // and is refused. A different battle is a different key and starts eligible.
+        return !_consumedBossPassiveFiring.ContainsKey((battleId, passiveId.Value));
+    }
+
+    /// <summary>
+    /// Consumes the battle's once-per-battle firing eligibility for the Boss Passive
+    /// a <b>committed</b> resolution activated (<c>BOSS_RULES.md</c> §6.2.4;
+    /// <c>PASSIVE_RULES.md</c> §4's Boss Passive clause).
+    ///
+    /// <b>It runs after the write-back, never before it.</b>
+    /// <c>REDIS_STATE.md</c> §4 item 6 requires a refused resolution to be retried
+    /// against fresh state and to produce the same result; a resolution that spent
+    /// the eligibility before the <c>Sequence</c> compare-and-set accepted it could
+    /// not, because its activation would have been discarded with the refused state
+    /// while the eligibility stayed spent. Consuming on the accepted path is the
+    /// same order <see cref="PersistTerminalResultAsync"/> follows for the
+    /// battle-end step (<c>REDIS_STATE.md</c> §4 items 2–3).
+    ///
+    /// <b>It is idempotent and never re-arms.</b> The entry is inserted once per
+    /// (battle session, Passive identity) and is never removed, so a second
+    /// committed resolution of the same battle cannot authorize the Passive again —
+    /// not when the applied effect expires at step 19a, not while the Boss remains
+    /// at or below the trigger, and not when the Boss leaves and later re-enters it.
+    ///
+    /// <b>A new battle is a new key.</b> A battle id identifies one battle session
+    /// and is authored by the server when that battle is created
+    /// (<c>GAME_STATE.md</c> §2.0.1, <c>API_CONTRACTS.md</c> §3), so a new battle
+    /// session has no consumed entry and the Passive is eligible again.
+    /// </summary>
+    /// <param name="battleId">The battle session the committed resolution belongs to.</param>
+    /// <param name="passiveId">
+    /// The Passive the committed resolution activated, or <c>null</c> when it
+    /// activated none — the value <see cref="SwapResolution"/> reports. A battle that
+    /// activated no once-per-battle Passive records nothing.
+    /// </param>
+    private void ConsumeOncePerBattleBossPassiveFiring(string battleId, PassiveId? passiveId)
+    {
+        if (passiveId is not { } activated)
+        {
+            return;
+        }
+
+        _consumedBossPassiveFiring.TryAdd((battleId, activated.Value), true);
+    }
+
+    /// <summary>
+    /// One Swap resolution's result together with the once-per-battle Boss Passive
+    /// firing that resolving it activated, if any (<c>BOSS_RULES.md</c> §6.2.4;
+    /// <c>PASSIVE_RULES.md</c> §4's Boss Passive clause).
+    ///
+    /// <b>Why the activation is reported rather than consumed inside the
+    /// resolution.</b> <c>REDIS_STATE.md</c> §4 item 6 makes a refused
+    /// <c>Sequence</c> compare-and-set retry the same computation against fresh
+    /// state and produce the same result. The resolution is therefore kept a pure
+    /// function of the state it read: it reports the firing it activated, and
+    /// <see cref="ExecuteSwapAsync"/> consumes the eligibility only on the path
+    /// where the store accepted that resolution.
+    /// </summary>
+    /// <param name="Result">The rejection, or the finished post-resolution result.</param>
+    /// <param name="ActivatedOncePerBattleBossPassive">
+    /// The identity of the once-per-battle Boss Passive this resolution activated, or
+    /// <c>null</c> when it activated none. It is non-null only for a firing the
+    /// resolution's own eligibility read authorized.
+    /// </param>
+    private readonly record struct SwapResolution(
+        SwapExecutionResult Result,
+        PassiveId? ActivatedOncePerBattleBossPassive);
 
     /// <summary>
     /// Persists the durable result for a resolution that reached a terminal

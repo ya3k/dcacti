@@ -471,6 +471,12 @@ public class BattleStateTests
         // here and their own contracts are covered by ATKModifierTests and
         // CardCostModifierTests.
         //
+        // BurnDamageModifiers joined it with TASK-177, the approved MVP Relic
+        // runtime contracts, on the same footing: it is the applied form of the
+        // Relic `BurnDamage` effect (RELIC_RULES.md §8.2 item 1, §8.5 item 5;
+        // COMBAT_RULES.md §5.2 item 4) and follows the same always-present,
+        // never-null convention as the sibling modifier collections.
+        //
         // Tier/Star/Level remain owned by the Pet progression stage and are still
         // not stubbed here (§0 item 4, §0 item 5).
         var dataMembers = typeof(PetState)
@@ -501,13 +507,15 @@ public class BattleStateTests
         // ATKModifiers and CardCostModifiers are the runtime carrier stage's members
         // (§2.3.7, §2.3.5), likewise the canonical never-null form and likewise not
         // constructor parameters: each is a distinct collection for a distinct
-        // concept, so no name is shared (§0 item 5). No EffectivePetATK,
+        // concept, so no name is shared (§0 item 5). BurnDamageModifiers is
+        // TASK-177's applied-Burn-damage collection, on the same footing and for the
+        // same reason. No EffectivePetATK,
         // EffectiveCardCost, DefaultATK, or other derived/second ATK or cost member
         // appears — §2.3.7 item 9 and CARD_RULES.md §3.6 item 2 keep both composed
         // values derived and unstored. The equality helpers
         // (StatusEffectsEqual, NextAttackCritModifiersEqual, ATKModifiersEqual,
-        // CardCostModifiersEqual) are methods rather than properties and so are not
-        // part of this inventory.
+        // CardCostModifiersEqual, BurnDamageModifiersEqual) are methods rather than
+        // properties and so are not part of this inventory.
         var declared = typeof(PetState)
             .GetProperties()
             .Select(p => p.Name)
@@ -517,7 +525,8 @@ public class BattleStateTests
         Assert.Equal(
             new[]
             {
-                "ATK", "ATKModifiers", "ActiveStatusEffects", "CardCostModifiers", "Crit",
+                "ATK", "ATKModifiers", "ActiveStatusEffects", "BurnDamageModifiers",
+                "CardCostModifiers", "Crit",
                 "DEF", "Element", "EquippedCards",
                 "EquippedRelics", "HP",
                 "HasResetOverride", "MaxHP", "NextAttackCritModifiers",

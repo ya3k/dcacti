@@ -31,10 +31,12 @@ namespace GameServer.Domain.Battle;
 ///     ├── StatusEffects[]        active Status Effect instances           (§2.3.1)
 ///     ├── NextAttackCritModifiers[]  temporary Crit modifiers awaiting a
 ///     │                          qualifying attack's consumption           (§2.3.4)
-///     ├── ATKModifiers[]         applied, Battle-scoped ATK modifiers,
+///     ├── ATKModifiers[]         applied ATK modifiers, both lifetimes,
 ///     │                          ordered by SourceIdentity                 (§2.3.7)
-///     └── CardCostModifiers[]    applied, Battle-scoped Card-cost
-///                                modifiers, in written order               (§2.3.5)
+///     ├── CardCostModifiers[]    applied, Battle-scoped Card-cost
+///     │                          modifiers, in written order               (§2.3.5)
+///     └── BurnDamageModifiers[]  applied, Battle-scoped Burn-damage
+///                                modifiers, in written order
 /// </code>
 ///
 /// <b>This is the documented owner, not a new decision.</b> <c>GAME_STATE.md</c>
@@ -525,17 +527,19 @@ public readonly record struct PetState(
     /// "empty" are the same documented state, so they must compare equal
     /// (§2.3.8 item 5's round-trip obligation).
     ///
-    /// <b>It is ordered deterministically, and the order is not a gameplay rule.</b>
-    /// §2.3.7 item 7 fixes the element order as a <b>sort on
-    /// <see cref="ATKModifier.SourceIdentity"/></b> — "Unlike the sibling collections,
+    /// <b>Its element order is deterministic, and it carries both lifetimes.</b>
+    /// §2.3.7 item 7 fixes the element order as a sort on
+    /// <see cref="ATKModifier.SourceIdentity"/> — "Unlike the sibling collections,
     /// whose order records application or equip order, this collection's order is a
     /// deterministic sort on the identity key, so the serialized order is reproducible
     /// from the element set alone" — while §2.3.8 item 6 states that no rule reads
     /// element positions. <c>REDIS_STATE.md</c> §7 item 16 draws the storage
-    /// consequence: a store must not be relied on to preserve insertion order for this
-    /// member, because two serializations of the same state are byte-identical. The
-    /// ordering is maintained by <see cref="ATKModifiers"/>, so a caller never sorts
-    /// this member itself.
+    /// consequence, and item 11 there and §2.3.7 item 11 here record that an element
+    /// declares <c>Battle</c> or <c>NextAttack</c> and that neither is Turn-based: a
+    /// <c>NextAttack</c> element is consumed by the owner's qualifying attack
+    /// (<c>COMBAT_RULES.md</c> §3.3 items 7–11) and a <c>Battle</c> element lasts
+    /// until its source is removed or the battle ends. The ordering is maintained by
+    /// <see cref="ATKModifiers"/>, so a caller never sorts this member itself.
     ///
     /// <b>It is not a second representation of ATK.</b> §2.3.7 item 9 keeps
     /// <see cref="ATK"/> the permanent/base value, never mutated by an entry here, and
@@ -544,11 +548,14 @@ public readonly record struct PetState(
     /// in <c>BattleState</c>, not a member here, and not a second representation of
     /// the ATK stat (<c>GAME_STATE.md</c> §0 item 5).
     ///
-    /// <b>Its lifetime is <c>Battle</c>, and it is not Turn-based.</b> §2.3.7 item 8:
-    /// there is no Turn countdown, no <c>RemainingTurns</c>, no <c>ExpiresAt</c>, no
-    /// step 19a participation, and no automatic end-of-Turn cleanup, and it is not
-    /// carried into a later battle — a new battle is a new <c>BattleState</c>. Removal
-    /// is source-scoped and is owned by §5.1.4 (see <see cref="ATKModifiers"/>).
+    /// <b>Neither lifetime is Turn-based, and the collection is not Battle-only.</b>
+    /// §2.3.7 item 8: for <b>both</b> lifetimes there is no Turn countdown, no
+    /// <c>RemainingTurns</c>, no <c>ExpiresAt</c>, no step 19a participation, and no
+    /// automatic end-of-Turn cleanup, and the collection is not carried into a later
+    /// battle — a new battle is a new <c>BattleState</c>. Removal is source-scoped for
+    /// a <c>Battle</c> element and consumption-driven by the qualifying attack for a
+    /// <c>NextAttack</c> element; both are owned by §5.1.4 (see
+    /// <see cref="ATKModifiers"/>).
     ///
     /// Its mutation — apply/refresh and source-specific removal — is owned by §5.1.4.
     /// It is <b>not a wire member</b> (§2.3.7 item 10: no <c>ATKModifierApplied</c>,
@@ -640,6 +647,85 @@ public readonly record struct PetState(
     /// <param name="other">The state to compare the collection against.</param>
     public bool CardCostModifiersEqual(PetState other) =>
         Battle.CardCostModifiers.ModifiersEqual(CardCostModifiers, other.CardCostModifiers);
+
+    /// <summary>
+    /// The Pet's applied, <c>Battle</c>-scoped Burn-damage modifiers — one entry
+    /// per active source currently modifying the Pet's own Burn damage ticks.
+    ///
+    /// <code>
+    /// BurnDamageModifier
+    /// ├── SourceIdentity         the replace/refresh and removal key
+    /// └── BurnDamagePercentage   percentage points
+    /// </code>
+    ///
+    /// <b>It is the applied form of the Relic <c>BurnDamage</c> effect</b>
+    /// (<c>RELIC_RULES.md</c> §8.2 item 1, §8.5 item 5): a percentage modifier to
+    /// Burn damage-over-time ticks (<c>COMBAT_RULES.md</c> §5). It lives on
+    /// <c>PetState</c> because the effect's declared <c>target</c> is <c>Pet</c>
+    /// and §6 note 1 reads that value as the Pet being the <b>owner/source
+    /// context</b> of the modification — the modifier scales the Burn damage the
+    /// Pet owns, so it is carried by the Pet and not by the Boss or by a Burn
+    /// instance.
+    ///
+    /// <b>It is never <c>null</c>.</b> "No Burn-damage modifier active" is an
+    /// <b>empty collection</b>, following the same always-present convention the
+    /// sibling modifier collections above state; it is initialized to the empty
+    /// collection and every write goes through this one member, which
+    /// <see cref="BurnDamageModifiers"/> is the only code that does. That matters
+    /// for value equality as well as for reads: two states differing only in
+    /// "unset" versus "empty" are the same documented state, so they must compare
+    /// equal.
+    ///
+    /// <b>Ownership scoping is the Burn instance's own source, not this member's
+    /// placement.</b> <c>COMBAT_RULES.md</c> §5.2 item 4 scopes a
+    /// <c>BurnDamage</c> modifier to the Burn instances "owned by the source that
+    /// modifier belongs to", and <c>RELIC_RULES.md</c> §6 note 1 fixes which those
+    /// are: Pet-owned Burn is modified, Boss-owned Burn is not, and the
+    /// distinction is the instance's <see cref="StatusEffect.Source"/> rather than
+    /// the entity receiving the tick's damage (TASK-178 Product Owner decision
+    /// <b>Q-4 = C</b>). <see cref="BurnDamageModifiers.AppliesTo"/> is that test;
+    /// a tick reader must apply it rather than assuming this collection reaches
+    /// every Burn the Pet can see.
+    ///
+    /// <b>Its lifetime is <c>Battle</c>, and it is not Turn-based.</b> Every
+    /// element's lifetime is fixed as <c>Battle</c> by
+    /// <c>RELIC_RULES.md</c> §8.3's <c>BurnDamage</c> row, so no lifetime member
+    /// is carried: there is nothing to distinguish, exactly as the sibling
+    /// <see cref="CardCostModifiers"/> collection records for its own single
+    /// lifetime. There is no Turn countdown, no <c>RemainingTurns</c>, no
+    /// <c>ExpiresAt</c>, and no automatic cleanup, and the collection is not
+    /// carried into a later battle — a new battle is a new <c>BattleState</c>.
+    /// Removal is source-specific and is owned by
+    /// <see cref="BurnDamageModifiers"/>.
+    ///
+    /// <b>It changes damage and nothing else.</b> <c>COMBAT_RULES.md</c> §5.2
+    /// item 4: a <c>BurnDamage</c> modifier must not emit, create, re-enter, or
+    /// refresh a Burn event or Burn instance, and must not extend or consume an
+    /// instance's duration. This collection therefore carries no Burn instance, no
+    /// duration, and no tick state — the instance and its countdown remain
+    /// <see cref="ActiveStatusEffects"/>' and <see cref="StatusEffectLifecycle"/>'s.
+    ///
+    /// <b>It is not a wire member.</b> No <c>BurnDamageModifierApplied</c>,
+    /// <c>BurnDamageChanged</c>, or equivalent event or method exists, following
+    /// the same "state added is not wire exposure added" convention the sibling
+    /// collections state, so it is carried here as state, not delivered. It
+    /// introduces no PostgreSQL persistence and no new Redis key: it rides the
+    /// existing <c>battle:{battleId}:state</c> record under the unchanged sliding
+    /// TTL and unchanged <c>Sequence</c> compare-and-set.
+    /// </summary>
+    public BurnDamageModifier[] BurnDamageModifiers { get; init; } = [];
+
+    /// <summary>
+    /// Whether this state's Burn-damage modifier collection holds the same
+    /// elements in the same order as another's — the structural comparison a
+    /// round-trip obligation requires for this collection.
+    ///
+    /// This is the same need <see cref="CardCostModifiersEqual"/> answers for its
+    /// sibling, applied to this one.
+    /// </summary>
+    /// <param name="other">The state to compare the collection against.</param>
+    public bool BurnDamageModifiersEqual(PetState other) =>
+        Battle.BurnDamageModifiers.ModifiersEqual(BurnDamageModifiers, other.BurnDamageModifiers);
 
     /// <summary>
     /// The documented MVP starting <c>MaxHP</c> (<c>COMBAT_RULES.md</c> §1.1:
@@ -852,5 +938,13 @@ public readonly record struct PetState(
             // rule, and §5.1.3 item 5 adds that it "needs no separate expiry step: a
             // new battle is a new BattleState with an empty collection".
             CardCostModifiers = [],
+
+            // The Burn-damage modifier collection begins empty on the same
+            // documented basis: it is the applied form of the Relic effect resolved
+            // at its own Trigger's firing point during a resolution, and battle
+            // creation is not a resolution. "No modifier active" is the empty
+            // collection rather than an omission or a null, and a new battle is a
+            // new BattleState with an empty collection.
+            BurnDamageModifiers = [],
         };
 }

@@ -7,7 +7,8 @@ namespace GameServer.Domain.Battle;
 ///
 /// <code>
 /// PetState.ATK                                        permanent base stat
-///   + Σ PetState.ATKModifiers[].ATKModifierPercentage  Relic, Battle lifetime
+///   + Σ PetState.ATKModifiers[].ATKModifierPercentage  Relic modifiers, both
+///                                                      lifetimes while active
 ///   + Σ signed BuffDebuff ATK contributions            Turn-based StatusEffects
 ///   = TotalATKModifierPercentage                       one signed percentage
 ///         ↓
@@ -15,6 +16,16 @@ namespace GameServer.Domain.Battle;
 ///         ↓
 /// EffectivePetATK                                      derived, never stored
 /// </code>
+///
+/// <b>Every element of <c>ATKModifiers[]</c> that is active participates,
+/// whatever lifetime it declares.</b> The collection carries <c>Battle</c> and
+/// <c>NextAttack</c> elements (<c>GAME_STATE.md</c> §2.3.7 item 11), and a
+/// <c>NextAttack</c> element is composed while it is awaiting its attack —
+/// <c>COMBAT_RULES.md</c> §3.3 item 8 states that a Burn/DoT tick and the Boss's
+/// own attack "do participate in Effective Crit composition while a modifier is
+/// active" and that "eligibility and consumption are different questions", and
+/// <c>GAME_STATE.md</c> §5.1.4 item 4 applies the same split here: the element is
+/// consumed by the owner's next qualifying attack, not before it.
 ///
 /// <b>This is the canonical composition model, and it is the only one.</b>
 /// <c>COMBAT_RULES.md</c> §5.6.6 is the canonical owner and governs all three
@@ -143,12 +154,15 @@ public static class EffectivePetATK
     /// overwriting it and forbids resetting it to a configuration default.
     /// </param>
     /// <param name="atkModifiers">
-    /// The Pet's applied, Battle-scoped Relic ATK modifiers
-    /// (<c>GAME_STATE.md</c> §2.3.7), always a collection and never <c>null</c>
-    /// (§2.3.7 item 6). Each entry is already a <b>signed</b> percentage-point
-    /// contribution (§2.3.7 item 5), so each is summed with its own sign
-    /// (<c>COMBAT_RULES.md</c> §5.6.6 item 2: "Berserker Core <c>+5%</c> contributes
-    /// <c>+5</c>").
+    /// The Pet's applied Relic ATK modifiers (<c>GAME_STATE.md</c> §2.3.7), always a
+    /// collection and never <c>null</c> (§2.3.7 item 6). Each entry is already a
+    /// <b>signed</b> percentage-point contribution (§2.3.7 item 5), so each is summed
+    /// with its own sign (<c>COMBAT_RULES.md</c> §5.6.6 item 2: "Berserker Core
+    /// <c>+5%</c> contributes <c>+5</c>"). Both of the collection's lifetimes
+    /// participate while their element is active — §2.3.7 item 11 carries
+    /// <c>Battle</c> and <c>NextAttack</c> elements in this one collection, and a
+    /// <c>NextAttack</c> element is consumed by the qualifying attack this composition
+    /// feeds, not before it (§5.1.4 item 4).
     /// </param>
     /// <param name="statusEffects">
     /// The Pet's active Status Effects (<c>GAME_STATE.md</c> §2.3.1), always a
@@ -185,6 +199,11 @@ public static class EffectivePetATK
         // cannot overflow before it is applied.
         var totalPercentage = 0L;
 
+        // Every element participates while it is active, whatever lifetime it
+        // declares: a `NextAttack` element is awaiting its attack, not excluded from
+        // the composition (GAME_STATE.md §2.3.7 item 11, §5.1.4 item 4), and the
+        // qualifying attack that consumes it is the same attack this composition
+        // feeds (COMBAT_RULES.md §3.3 items 7–8).
         for (var index = 0; index < atkModifiers.Count; index++)
         {
             totalPercentage += atkModifiers[index].ATKModifierPercentage;

@@ -521,8 +521,8 @@ public enum BossSkillSecondaryEffectKind
 }
 
 /// <summary>
-/// The <c>BOSS_RULES.md</c> §6.1 MVP Boss base-stat values, shared by the three
-/// content-defined Bosses. They are the documented defaults a
+/// The <c>BOSS_RULES.md</c> §6.1 MVP Boss base-stat defaults that the three
+/// earliest content-defined Bosses share. They are the documented values a
 /// <see cref="BossDefinition"/> carries when its scenario does not restate them
 /// (§6.1: "MVP base configuration — not universal balance invariants … used at
 /// battle creation").
@@ -531,16 +531,22 @@ public enum BossSkillSecondaryEffectKind
 /// (<c>DATABASE.md</c> §1 note item 1): they live on the Domain definition, and
 /// a definition read back from persistence takes these documented values rather
 /// than a column's.
+///
+/// <b>They are not a per-Boss rule.</b> §6.1 gives Hỏa Long, Thủy Ma, and
+/// Mộc Yêu this one row (5000 / 100 / 50 / 30%), while Sơn Thạch Vệ
+/// (3000 / 120 / 0 / 50%) and Kim Lôi Vương (2800 / 140 / 0 / 75%) carry their
+/// own §6.1 values explicitly. No value here is derived from, or scaled to,
+/// another Boss's.
 /// </summary>
 public static class BossRules
 {
-    /// <summary><c>BOSS_RULES.md</c> §6.1: 5000 for each MVP Boss.</summary>
+    /// <summary><c>BOSS_RULES.md</c> §6.1: 5000 for the three earliest MVP Bosses.</summary>
     public const int BaseMaxHP = 5000;
 
-    /// <summary><c>BOSS_RULES.md</c> §6.1: 100 for each MVP Boss.</summary>
+    /// <summary><c>BOSS_RULES.md</c> §6.1: 100 for the three earliest MVP Bosses.</summary>
     public const int BaseATK = 100;
 
-    /// <summary><c>BOSS_RULES.md</c> §6.1: 50 for each MVP Boss.</summary>
+    /// <summary><c>BOSS_RULES.md</c> §6.1: 50 for the three earliest MVP Bosses.</summary>
     public const int BaseDEF = 50;
 
     /// <summary><c>BOSS_RULES.md</c> §6.1: "1500 (30%)" of MaxHP.</summary>

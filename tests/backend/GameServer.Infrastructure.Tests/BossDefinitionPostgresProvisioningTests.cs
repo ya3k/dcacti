@@ -9,18 +9,18 @@ namespace GameServer.Infrastructure.Tests;
 
 /// <summary>
 /// The applied <c>BossDefinition</c> provisioning as PostgreSQL actually holds
-/// it — the authoritative proof that the three canonical rows exist after
+/// it — the authoritative proof that the five canonical rows exist after
 /// <c>dotnet ef database update</c> (<c>DATABASE.md</c> §1 note item 5).
 ///
 /// The migration-source assertions in <see cref="BossPersistenceTests"/> prove
-/// *what* the migration contains; the InMemory provider cannot prove the rows
+/// *what* each migration contains; the InMemory provider cannot prove the rows
 /// actually landed, because it never applies migrations. These tests therefore
 /// run against a real PostgreSQL instance and are skipped when one is not
 /// reachable, following the existing <see cref="PlayerPostgresConstraintTests"/>
 /// convention — so the suite still runs hermetically where no database is
 /// available.
 ///
-/// What is verified is the documented contract only: exactly three canonical
+/// What is verified is the documented contract only: exactly five canonical
 /// rows, the exact <c>BossDefinitionId</c>/<c>Identity</c> values, no
 /// duplicates, the <c>Element</c> and both JSON documents round-tripping to the
 /// Domain definitions, and the three-way identity contract (no display-name
@@ -107,16 +107,21 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Postgres_ShouldHoldExactlyTheThreeCanonicalBossDefinitionRows()
+    public async Task Postgres_ShouldHoldExactlyTheFiveCanonicalBossDefinitionRows()
     {
         var rows = await ReadProvisionedRowsAsync();
         if (rows is null) return; // no live PostgreSQL / schema — covered by the migration-source assertion
 
-        // DATABASE.md §1 note item 5 "Row set — exactly three rows". No fourth
-        // row and no placeholder; the applied end state is identical whether the
-        // migration ran once or was retried (migration history).
+        // DATABASE.md §1 note item 5: the MVP Boss set is complete at five —
+        // the three TASK-053 rows plus the two TASK-172 adds. No sixth row and
+        // no placeholder; the applied end state is identical whether the
+        // migrations ran once or were retried (migration history).
         Assert.Equal(
-            new[] { "boss-def-hoa-long", "boss-def-moc-yeu", "boss-def-thuy-ma" },
+            new[]
+            {
+                "boss-def-hoa-long", "boss-def-kim-loi-vuong", "boss-def-moc-yeu",
+                "boss-def-son-thach-ve", "boss-def-thuy-ma",
+            },
             rows.Select(r => r.BossDefinitionId).ToArray());
     }
 
@@ -183,23 +188,54 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Postgres_ShouldPreserveTheAlwaysActiveNullThreshold()
+    public async Task Postgres_ShouldPreserveTheNonMatchChargedNullThreshold()
     {
         var rows = await ReadProvisionedRowsAsync();
         if (rows is null) return;
 
-        // DATABASE.md §1 note item 3 / §3: Thủy Ma's always-active Passive is
-        // stored as JSON null — never the 0 sentinel.
-        var thuyMa = rows.Single(r => r.BossDefinitionId == "boss-def-thuy-ma");
+        // DATABASE.md §1 note item 3 / §3: a non-match-charged Passive is stored
+        // as JSON null — never the 0 sentinel. BOSS_RULES.md §6.2 gives Thủy Ma
+        // the Battle Start trigger, Sơn Thạch Vệ the "Boss HP ≤ 50%" trigger, and
+        // Kim Lôi Vương the "Player Combo ≥ 4" trigger — none is match-charged.
+        foreach (var id in new[]
+                 {
+                     "boss-def-thuy-ma", "boss-def-son-thach-ve", "boss-def-kim-loi-vuong",
+                 })
+        {
+            var row = rows.Single(r => r.BossDefinitionId == id);
 
-        Assert.Null(thuyMa.PassiveDefinition.Threshold);
-        Assert.Equal("boss-thuy-ma-heal", thuyMa.PassiveDefinition.PassiveId.Value);
-        Assert.Equal("Default", thuyMa.PassiveDefinition.ResetBehavior);
+            Assert.Null(row.PassiveDefinition.Threshold);
+        }
 
         // The two match-charged Passives keep their real threshold.
         foreach (var id in new[] { "boss-def-hoa-long", "boss-def-moc-yeu" })
         {
             Assert.Equal(5, rows.Single(r => r.BossDefinitionId == id).PassiveDefinition.Threshold);
+        }
+    }
+
+    [Fact]
+    public async Task Postgres_ShouldStoreTheDocumentedResetBehaviorPerRow()
+    {
+        var rows = await ReadProvisionedRowsAsync();
+        if (rows is null) return;
+
+        // BOSS_RULES.md §6.2.4 authors Sơn Thạch Vệ's Passive one-time / no
+        // re-trigger after activation — the non-default No reset / persistent form
+        // (PASSIVE_RULES.md §4 items 2–3), stored as the existing `Persistent`
+        // token. Every other MVP Boss leaves the documented default
+        // (DATABASE.md §1 note item 3, §3).
+        var byId = rows.ToDictionary(r => r.BossDefinitionId, r => r.PassiveDefinition.ResetBehavior, StringComparer.Ordinal);
+
+        Assert.Equal("Persistent", byId["boss-def-son-thach-ve"]);
+
+        foreach (var id in new[]
+                 {
+                     "boss-def-hoa-long", "boss-def-thuy-ma", "boss-def-moc-yeu",
+                     "boss-def-kim-loi-vuong",
+                 })
+        {
+            Assert.Equal("Default", byId[id]);
         }
     }
 
@@ -213,7 +249,7 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
         // database-level guarantee against duplicates. Both keys are asserted
         // to be unique across the applied table — not merely the PK the
         // provider enforces anyway.
-        Assert.Equal(3, rows.Count);
+        Assert.Equal(5, rows.Count);
 
         Assert.Equal(
             rows.Count,
@@ -255,7 +291,9 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
 
         foreach (var row in rows)
         {
-            Assert.DoesNotContain(row.BossId.Value, new[] { "Hỏa Long", "Thủy Ma", "Mộc Yêu" });
+            Assert.DoesNotContain(
+                row.BossId.Value,
+                new[] { "Hỏa Long", "Thủy Ma", "Mộc Yêu", "Sơn Thạch Vệ", "Kim Lôi Vương" });
         }
     }
 }

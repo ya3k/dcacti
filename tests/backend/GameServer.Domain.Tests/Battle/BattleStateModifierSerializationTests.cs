@@ -115,13 +115,15 @@ public sealed class BattleStateModifierSerializationTests
     // =======================================================================
 
     [Fact]
-    public void AnElement_SerializesExactlyTheTwoDocumentedMembers()
+    public void AnElement_SerializesExactlyTheThreeDocumentedMembers()
     {
-        // §2.3.8 item 3: "An element serializes exactly these members, with these
-        // types: sourceIdentity string required; atkModifierPercentage number required."
-        // §2.3.6 item 3 fixes the Card-cost element's pair. Both members are always
-        // present (§2.3.8 item 1, §2.3.5 item 6), so neither carries an ignore
-        // condition — and no third member is written.
+        // §2.3.8 item 3, as TASK-178 extended it (Product Owner decision Q-1 = A):
+        // "An element serializes exactly these members, with these types:
+        // sourceIdentity string required; atkModifierPercentage number required;
+        // lifetime string required (`Battle` | `NextAttack`)." §2.3.6 item 3 fixes
+        // the Card-cost element's pair. Every member is always present (§2.3.8
+        // item 1, §2.3.5 item 6), so none carries an ignore condition — and no
+        // fourth member is written.
         var state = WithModifiers(
             BattleState.CreateWith("battle-element-members", 4242),
             atkModifiers: [new ATKModifier("berserker-core", 5)],
@@ -132,10 +134,11 @@ public sealed class BattleStateModifierSerializationTests
 
         var atkElement = Assert.Single(petState.GetProperty("atkModifiers").EnumerateArray().ToArray());
         Assert.Equal(
-            ["atkModifierPercentage", "sourceIdentity"],
+            ["atkModifierPercentage", "lifetime", "sourceIdentity"],
             atkElement.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
         Assert.Equal("berserker-core", atkElement.GetProperty("sourceIdentity").GetString());
         Assert.Equal(5, atkElement.GetProperty("atkModifierPercentage").GetInt32());
+        Assert.Equal("Battle", atkElement.GetProperty("lifetime").GetString());
 
         var cardCostElement = Assert.Single(petState.GetProperty("cardCostModifiers").EnumerateArray().ToArray());
         Assert.Equal(

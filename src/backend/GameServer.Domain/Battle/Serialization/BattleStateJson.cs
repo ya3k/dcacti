@@ -93,10 +93,14 @@ internal static class BattleStateJsonNames
     // collision §0 item 5 forbids.
     public const string ATKModifiers = "atkModifiers";
 
-    // One ATKModifier element (GAME_STATE.md §2.3.7 items 4 and 8, §2.3.8 item 3 —
-    // exactly two members, both always present, and no third member of any kind).
+    // One ATKModifier element (GAME_STATE.md §2.3.7 item 11, §2.3.8 item 3 — exactly
+    // three members, all always present, and no fourth member of any kind). The
+    // `lifetime` member is TASK-178's addition (Product Owner decision Q-1 = A): the
+    // one collection carries both the `Battle` and the `NextAttack` lifetime, so the
+    // element states which one it declares and a reader never infers it from absence.
     public const string ATKModifierSourceIdentity = "sourceIdentity";
     public const string ATKModifierPercentage = "atkModifierPercentage";
+    public const string ATKModifierLifetime = "lifetime";
 
     // CardCostModifiers[] (GAME_STATE.md §2.3.5, §2.3.6 item 1; REDIS_STATE.md §7
     // item 15) — the sibling PetState-only collection, distinct by the same reason.
@@ -106,6 +110,21 @@ internal static class BattleStateJsonNames
     // item 3 — exactly these two members, and no third).
     public const string CardCostModifierSourceIdentity = "sourceIdentity";
     public const string CardCostReductionPercentage = "costReductionPercentage";
+
+    // BurnDamageModifiers[] — the Pet's applied Burn-damage modifiers, the runtime
+    // form of the Relic `BurnDamage` effect (RELIC_RULES.md §8.2 item 1, §8.5
+    // item 5; COMBAT_RULES.md §5.2 item 4). A PetState-only collection, distinct
+    // from the three above and from StatusEffects[]: it is a modification applied to
+    // Burn damage, not a Burn instance, so sharing a name with any of them would be
+    // the collision GAME_STATE.md §0 item 5 forbids.
+    public const string BurnDamageModifiers = "burnDamageModifiers";
+
+    // One BurnDamageModifier element (exactly the same two-member shape as the
+    // sibling CardCost element: a source-scoped key and one percentage, with the
+    // lifetime fixed as `Battle` by RELIC_RULES.md §8.3's BurnDamage row and
+    // therefore not carried).
+    public const string BurnDamageModifierSourceIdentity = "sourceIdentity";
+    public const string BurnDamagePercentage = "burnDamagePercentage";
 
     // One StatusEffect element (GAME_STATE.md §2.3.2 item 3 — the exact member
     // set, in the documented order). The four required members are always
@@ -535,21 +554,48 @@ internal sealed record PetStateJson
     /// </summary>
     [JsonPropertyName(BattleStateJsonNames.CardCostModifiers)]
     public required IReadOnlyList<CardCostModifierJson>? CardCostModifiers { get; init; }
+
+    /// <summary>
+    /// The active Pet's applied Burn-damage modifiers, one entry per active source
+    /// — the runtime form of the Relic <c>BurnDamage</c> effect
+    /// (<c>RELIC_RULES.md</c> §8.2 item 1, §8.5 item 5;
+    /// <c>COMBAT_RULES.md</c> §5.2 item 4).
+    ///
+    /// <b>It is always written, and it is never <c>null</c>.</b> "No Burn-damage
+    /// modifier active" is an <b>empty array</b>, on the same always-present
+    /// convention the three sibling collections above follow, so it carries
+    /// <b>no ignore condition</b>.
+    ///
+    /// <b>It is nullable in the DTO so a violation is rejectable, not
+    /// admissible.</b> As with <see cref="ATKModifiers"/>, the mapping always
+    /// writes an array, so the <c>null</c> branch is reachable only from a stored
+    /// document that broke the contract.
+    ///
+    /// <b>Order is preserved rather than sorted</b>, exactly as
+    /// <see cref="CardCostModifiers"/> states for its own collection: this
+    /// collection's single lifetime leaves no identity-sort contract, so the
+    /// writer emits the order the state holds.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.BurnDamageModifiers)]
+    public required IReadOnlyList<BurnDamageModifierJson>? BurnDamageModifiers { get; init; }
 }
 
 /// <summary>
 /// One <c>ATKModifier</c> element (<c>GAME_STATE.md</c> §2.3.7;
-/// <c>TASK-136</c> D2).
+/// <c>TASK-136</c> D2; <c>TASK-178</c> Q-1 = A).
 ///
-/// <b>Exactly two members, and there is no third.</b> §2.3.7 items 4 and 8 forbid a
+/// <b>Exactly three members, and there is no fourth.</b> §2.3.7 items 4 and 8 forbid a
 /// duration, a Turn counter, an <c>ExpiresAt</c>, an <c>ExpiryCondition</c>, a
 /// "consumed" flag, a priority, a stack count, an ordering index, a target reference,
 /// a remaining-use counter, and a timestamp — no rule reads any of them, so none is
 /// written and none may be added without a recorded owner decision.
 ///
-/// <b>Both members are always present.</b> §2.3.8 item 1 states that absence of a
-/// <i>member within</i> an element does not arise, and §2.3.7 item 3 makes a blank
-/// identity unrepresentable — so neither member carries an ignore condition.
+/// <b>All three members are always present.</b> §2.3.8 item 1 states that absence of a
+/// <i>member within</i> an element does not arise, §2.3.7 item 3 makes a blank
+/// identity unrepresentable, and §2.3.8 item 3 makes <c>lifetime</c> required on
+/// <b>every</b> element — "there is no omitted-member and no defaulted-lifetime form,
+/// so a reader never infers a lifetime from absence" — so none of them carries an
+/// ignore condition.
 /// </summary>
 internal sealed record ATKModifierJson
 {
@@ -570,6 +616,63 @@ internal sealed record ATKModifierJson
     /// </summary>
     [JsonPropertyName(BattleStateJsonNames.ATKModifierPercentage)]
     public required int ATKModifierPercentage { get; init; }
+
+    /// <summary>
+    /// The element's declared lifetime — <c>Battle</c> or <c>NextAttack</c>
+    /// (<c>GAME_STATE.md</c> §2.3.7 item 11, §2.3.8 item 3) — written as the member
+    /// <b>name</b>, like every other persisted vocabulary token in this mapping
+    /// (<c>DATABASE.md</c> §1 item 2), and copied verbatim.
+    ///
+    /// <b>The reader must not default it.</b> §2.3.8 item 5 makes a round trip that
+    /// "alters or drops a <c>lifetime</c> (which would silently turn a
+    /// <c>NextAttack</c> modifier into a <c>Battle</c> one, or the reverse)" a defect,
+    /// and §2.3.7 item 11 requires a consumer to read the element's own member rather
+    /// than infer the lifetime from the collection or the source. The reader therefore
+    /// rejects an absent or non-carrier value instead of substituting one.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.ATKModifierLifetime)]
+    public required string Lifetime { get; init; }
+}
+
+/// <summary>
+/// One <c>BurnDamageModifier</c> element — the applied form of the Relic
+/// <c>BurnDamage</c> effect (<c>RELIC_RULES.md</c> §8.2 item 1, §8.5 item 5;
+/// <c>COMBAT_RULES.md</c> §5.2 item 4).
+///
+/// <b>Exactly two members, and there is no third.</b> The element mirrors the
+/// sibling <see cref="CardCostModifierJson"/>: a source-scoped key and one
+/// percentage, with the lifetime fixed as <c>Battle</c> by
+/// <c>RELIC_RULES.md</c> §8.3's <c>BurnDamage</c> row and therefore not carried —
+/// there is nothing to distinguish, exactly as the Card-cost element records. No
+/// duration, Turn counter, expiry label, "consumed" flag, stack count, ordering
+/// index, or target reference exists: none is read by any rule, and the
+/// modifier creates no Burn event and no Burn instance
+/// (<c>COMBAT_RULES.md</c> §5.2 item 4).
+///
+/// <b>Both members are always present.</b> A blank identity is unrepresentable, so
+/// neither member carries an ignore condition.
+/// </summary>
+internal sealed record BurnDamageModifierJson
+{
+    /// <summary>
+    /// The stable source-scoped identity of the modifier's source — the
+    /// replace/refresh and removal key. For the provisioned <c>BurnDamage</c>
+    /// source it is the equipped Relic instance identity
+    /// (<c>RELIC_RULES.md</c> §2.2 item 3), so Burning Curse holds exactly one
+    /// element. It is copied verbatim.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.BurnDamageModifierSourceIdentity)]
+    public required string SourceIdentity { get; init; }
+
+    /// <summary>
+    /// The modifier's Burn-damage change in percentage points — Burning Curse's
+    /// <c>30</c> (<c>RELIC_RULES.md</c> §8.5 item 5) — copied verbatim and
+    /// uninterpreted. Which Burn instances it reaches is
+    /// <c>COMBAT_RULES.md</c> §5.2 item 4's ownership rule and is not applied
+    /// here; this mapping stores the value and reads it back unchanged.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.BurnDamagePercentage)]
+    public required int BurnDamagePercentage { get; init; }
 }
 
 /// <summary>

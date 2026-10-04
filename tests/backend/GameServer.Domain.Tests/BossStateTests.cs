@@ -371,43 +371,125 @@ public class BossStateTests
     }
 
     [Fact]
-    public void Definitions_ShouldBeExactlyTheThreeContentDefinedBosses()
+    public void Definitions_ShouldCarryTheApprovedSonThachVeValues()
     {
-        // BOSS_RULES.md §6 defines exactly three Bosses; §6.1 records that two
-        // further MVP Bosses are "not yet content-defined". They are deliberately
-        // absent rather than invented to reach GAME_RULES.md §19's five-Boss scope.
-        var ids = BossDefinitions.All.Select(b => b.BossId.Value).ToArray();
+        // BOSS_RULES.md §6.1: Sơn Thạch Vệ — Thổ — 3000 / 3000 / 120 / 0 — Idle.
+        var boss = BossDefinitions.SonThachVe;
 
-        Assert.Equal(new[] { "boss-hoa-long", "boss-thuy-ma", "boss-moc-yeu" }, ids);
+        Assert.Equal("boss-son-thach-ve", boss.BossId.Value);
+        Assert.Equal(Element.Tho, boss.Element);
+        Assert.Equal(3000, boss.MaxHP);
+        Assert.Equal(120, boss.ATK);
+        Assert.Equal(0, boss.DEF);
+
+        var initial = boss.ToInitialState();
+        Assert.Equal(3000, initial.HP);
+        Assert.Equal(3000, initial.MaxHP);
+        Assert.Equal(BossStateKind.Idle, initial.State);
     }
 
     [Fact]
-    public void Definitions_ShouldGiveEveryMvpBossTheSameApprovedBaseStats()
+    public void Definitions_ShouldCarryTheApprovedKimLoiVuongValues()
     {
-        // BOSS_RULES.md §6.1 gives all three content-defined Bosses the same base
-        // stats (5000 / 100 / 50) — they are configuration, not per-Boss balance
-        // differentiation, and no Boss receives different stats.
+        // BOSS_RULES.md §6.1: Kim Lôi Vương — Kim — 2800 / 2800 / 140 / 0 — Idle.
+        var boss = BossDefinitions.KimLoiVuong;
+
+        Assert.Equal("boss-kim-loi-vuong", boss.BossId.Value);
+        Assert.Equal(Element.Kim, boss.Element);
+        Assert.Equal(2800, boss.MaxHP);
+        Assert.Equal(140, boss.ATK);
+        Assert.Equal(0, boss.DEF);
+
+        var initial = boss.ToInitialState();
+        Assert.Equal(2800, initial.HP);
+        Assert.Equal(2800, initial.MaxHP);
+        Assert.Equal(BossStateKind.Idle, initial.State);
+    }
+
+    [Fact]
+    public void Definitions_ShouldBeExactlyTheFiveContentDefinedBosses()
+    {
+        // BOSS_RULES.md §6 defines exactly five MVP Bosses — the three original
+        // plus Sơn Thạch Vệ and Kim Lôi Vương, authored by TASK-172 from the
+        // TASK-171 Product Owner decisions. §6.3.1's closing note records the set
+        // as complete at five (MVP_SCOPE.md §1, ROADMAP.md §1 Phase 2), so no
+        // sixth Boss may appear and none of the five may be dropped.
+        var ids = BossDefinitions.All.Select(b => b.BossId.Value).ToArray();
+
+        Assert.Equal(
+            new[]
+            {
+                "boss-hoa-long", "boss-thuy-ma", "boss-moc-yeu",
+                "boss-son-thach-ve", "boss-kim-loi-vuong",
+            },
+            ids);
+
+        Assert.Equal(5, ids.Length);
+    }
+
+    [Fact]
+    public void Definitions_ShouldNotDuplicateAnyIdentityOrPersistenceKey()
+    {
+        // BOSS_RULES.md §6.4 fixes one BossId per Boss and DATABASE.md §1 note
+        // item 2 one BossDefinitionId per row. §3's PK and unique Identity are the
+        // database-level guarantee; this asserts the same uniqueness in the content
+        // set, so no duplicate can be introduced by transcription.
+        Assert.Equal(
+            BossDefinitions.All.Count,
+            BossDefinitions.All.Select(b => b.BossId.Value).Distinct(StringComparer.Ordinal).Count());
+
+        Assert.Equal(
+            BossDefinitions.All.Count,
+            BossDefinitions.All.Select(b => b.BossDefinitionId).Distinct(StringComparer.Ordinal).Count());
+
+        Assert.Equal(
+            BossDefinitions.All.Count,
+            BossDefinitions.All.Select(b => b.PassiveId.Value).Distinct(StringComparer.Ordinal).Count());
+
+        Assert.Equal(
+            BossDefinitions.All.Count,
+            BossDefinitions.All.Select(b => b.SkillId).Distinct(StringComparer.Ordinal).Count());
+
+        // BossDefinitionId, BossId, PassiveId, and SkillId are four distinct
+        // namespaces, and the persistence key is never the technical Identity
+        // (DATABASE.md §1 note item 2).
         Assert.All(
             BossDefinitions.All,
-            boss =>
-            {
-                Assert.Equal(5000, boss.MaxHP);
-                Assert.Equal(100, boss.ATK);
-                Assert.Equal(50, boss.DEF);
-            });
+            boss => Assert.NotEqual(boss.BossDefinitionId, boss.BossId.Value));
+    }
+
+    [Fact]
+    public void Definitions_ShouldCarryEachBossesOwnDocumentedBaseStats()
+    {
+        // BOSS_RULES.md §6.1 gives the three earliest Bosses one shared row
+        // (5000 / 100 / 50 / 30%), and TASK-172's two Bosses their own rows:
+        // Sơn Thạch Vệ 3000 / 120 / 0 / 50% and Kim Lôi Vương 2800 / 140 / 0 / 75%.
+        // They are configuration, not per-Boss differentiation derived from one
+        // another, and no value is copied between rows.
+        Assert.Equal((5000, 100, 50, 0.30), Stats(BossDefinitions.HoaLong));
+        Assert.Equal((5000, 100, 50, 0.30), Stats(BossDefinitions.ThuyMa));
+        Assert.Equal((5000, 100, 50, 0.30), Stats(BossDefinitions.MocYeu));
+        Assert.Equal((3000, 120, 0, 0.50), Stats(BossDefinitions.SonThachVe));
+        Assert.Equal((2800, 140, 0, 0.75), Stats(BossDefinitions.KimLoiVuong));
+
+        static (int MaxHP, int ATK, int DEF, double Enrage) Stats(BossDefinition boss) =>
+            (boss.MaxHP, boss.ATK, boss.DEF, boss.EnrageThreshold);
     }
 
     [Fact]
     public void Definitions_ShouldAssignTheDocumentedElementToEachBoss()
     {
         // BOSS_RULES.md §6 assigns one Element per Boss: Hỏa Long = Hỏa, Thủy Ma =
-        // Thủy, Mộc Yêu = Mộc. ELEMENT_RULES.md §1.2 states each Boss has exactly
-        // one Element, and §7 defers dual-element entities to a future expansion.
+        // Thủy, Mộc Yêu = Mộc, Sơn Thạch Vệ = Thổ, Kim Lôi Vương = Kim.
+        // ELEMENT_RULES.md §1.2 states each Boss has exactly one Element, and §7
+        // defers dual-element entities to a future expansion.
         var byId = BossDefinitions.All.ToDictionary(b => b.BossId.Value, b => b.Element);
 
         Assert.Equal(Element.Hoa, byId["boss-hoa-long"]);
         Assert.Equal(Element.Thuy, byId["boss-thuy-ma"]);
         Assert.Equal(Element.Moc, byId["boss-moc-yeu"]);
+        Assert.Equal(Element.Tho, byId["boss-son-thach-ve"]);
+        Assert.Equal(Element.Kim, byId["boss-kim-loi-vuong"]);
     }
 
     // =======================================================================
@@ -419,10 +501,14 @@ public class BossStateTests
     // "fixed here so no task invents its own". BossId is the canonical technical
     // Identity (boss-<ascii-kebab-case-name>), never a display name; PassiveId
     // follows the Pet PassiveId kebab-case pattern; SkillId is the Skill's own
-    // name.
+    // name. The two newest rows are recorded verbatim as the Product Owner fixed
+    // them (TASK-171 / TASK-172), deliberately not normalized to the earlier rows'
+    // observed spellings.
     [InlineData("boss-hoa-long", "boss-hoa-long-rage", "flame-burst")]
     [InlineData("boss-thuy-ma", "boss-thuy-ma-heal", "drain-power")]
     [InlineData("boss-moc-yeu", "boss-moc-yeu-regen", "root")]
+    [InlineData("boss-son-thach-ve", "son-thach-ve-enrage", "earthquake")]
+    [InlineData("boss-kim-loi-vuong", "kim-loi-vuong-combo", "thunder-strike")]
     public void Definitions_ShouldCarryTheDocumentedIdentities(
         string bossId,
         string passiveId,
@@ -436,25 +522,40 @@ public class BossStateTests
     }
 
     [Theory]
-    // BOSS_RULES.md §6.2's Passive thresholds, with §6.2's Thủy Ma note: its trigger
-    // is "Passive (always active)" — an alternate trigger (PASSIVE_RULES.md §3), not
-    // a Match count — so 0 is stored as the Always-Active marker and it is never
-    // charged via PassiveTracker.Charge.
+    // BOSS_RULES.md §6.2's Passive thresholds. Only Hỏa Long and Mộc Yêu are
+    // match-charged. Thủy Ma (Battle Start), Sơn Thạch Vệ ("Boss HP ≤ 50%"), and
+    // Kim Lôi Vương ("Player Combo ≥ 4") use alternate triggers
+    // (PASSIVE_RULES.md §3), so each stores the documented `null` — no
+    // match-charging threshold — never the `0` sentinel (DATABASE.md §1 note
+    // item 3, §3). `null` is NOT a statement that the Passive is always-active.
     [InlineData("boss-hoa-long", 5)]
-    [InlineData("boss-thuy-ma", 0)]
+    [InlineData("boss-thuy-ma", null)]
     [InlineData("boss-moc-yeu", 5)]
-    public void Definitions_ShouldCarryTheDocumentedPassiveThreshold(string bossId, int threshold)
+    [InlineData("boss-son-thach-ve", null)]
+    [InlineData("boss-kim-loi-vuong", null)]
+    public void Definitions_ShouldCarryTheDocumentedPassiveThreshold(string bossId, int? threshold)
     {
         var boss = BossDefinitions.All.Single(b => b.BossId.Value == bossId);
 
-        Assert.Equal(threshold, boss.PassiveThreshold);
+        Assert.Equal(threshold, boss.PassiveDefinition.Threshold);
+
+        // The projection onto the documented Domain surface: a non-match-charged
+        // Passive projects to 0, which the resolution reads as "do not charge"
+        // rather than "threshold reached immediately".
+        Assert.Equal(threshold ?? 0, boss.PassiveThreshold);
     }
 
     [Theory]
-    // BOSS_RULES.md §6.3's Skill timing table: Charge Req. / CD / Skill Base Dmg.
+    // BOSS_RULES.md §6.3's Skill timing and Base Damage, transcribed per Boss.
+    // CD 0 (Sơn Thạch Vệ, Kim Lôi Vương) needs no special case: §6.3's post-fire
+    // reset stores the Boss's cooldown value (0), so `SkillCooldown = 0` is
+    // immediately satisfiable on recharge and the "blocked while CD > 0" rule
+    // simply never binds.
     [InlineData("boss-hoa-long", 5, 2, 150)]
     [InlineData("boss-thuy-ma", 4, 3, 120)]
     [InlineData("boss-moc-yeu", 6, 2, 100)]
+    [InlineData("boss-son-thach-ve", 5, 0, 150)]
+    [InlineData("boss-kim-loi-vuong", 5, 0, 180)]
     public void Definitions_ShouldCarryTheDocumentedSkillTiming(
         string bossId,
         int chargeRequirement,
@@ -469,60 +570,93 @@ public class BossStateTests
     }
 
     [Fact]
-    public void Definitions_ShouldCarryTheDocumentedEnrageThreshold()
+    public void Definitions_ShouldCarryEachBossesOwnDocumentedEnrageThreshold()
     {
-        // BOSS_RULES.md §6.1 gives every content-defined MVP Boss "1500 (30%)" of
-        // MaxHP 5000 — the same fraction for all three, so no Boss receives a
-        // different Enrage threshold.
-        Assert.All(
-            BossDefinitions.All,
-            boss => Assert.Equal(0.30, boss.EnrageThreshold, precision: 9));
+        // BOSS_RULES.md §6.1's EnrageThreshold column, per Boss: "1500 (30%)" of
+        // MaxHP 5000 for the three earliest Bosses, "1500 (50%)" of MaxHP 3000 for
+        // Sơn Thạch Vệ, and "2100 (75%)" of MaxHP 2800 for Kim Lôi Vuong. The
+        // fraction and the absolute value in the table are the same rule, so each
+        // Boss's product must equal its stated absolute threshold.
+        Assert.Equal(0.30, BossDefinitions.HoaLong.EnrageThreshold, precision: 9);
+        Assert.Equal(0.30, BossDefinitions.ThuyMa.EnrageThreshold, precision: 9);
+        Assert.Equal(0.30, BossDefinitions.MocYeu.EnrageThreshold, precision: 9);
+        Assert.Equal(0.50, BossDefinitions.SonThachVe.EnrageThreshold, precision: 9);
+        Assert.Equal(0.75, BossDefinitions.KimLoiVuong.EnrageThreshold, precision: 9);
 
-        // 30% of 5000 is the 1500 §6.1 states, which is what makes the fraction and
-        // the absolute value in the table the same rule.
-        Assert.All(
-            BossDefinitions.All,
-            boss => Assert.Equal(1500d, boss.MaxHP * boss.EnrageThreshold, precision: 9));
+        Assert.Equal(1500d, AbsoluteEnrage(BossDefinitions.HoaLong), precision: 9);
+        Assert.Equal(1500d, AbsoluteEnrage(BossDefinitions.ThuyMa), precision: 9);
+        Assert.Equal(1500d, AbsoluteEnrage(BossDefinitions.MocYeu), precision: 9);
+        Assert.Equal(1500d, AbsoluteEnrage(BossDefinitions.SonThachVe), precision: 9);
+        Assert.Equal(2100d, AbsoluteEnrage(BossDefinitions.KimLoiVuong), precision: 9);
+
+        static double AbsoluteEnrage(BossDefinition boss) =>
+            boss.MaxHP * boss.EnrageThreshold;
     }
 
     [Fact]
-    public void Definitions_ShouldDeclareNoNonDefaultPassiveResetBehavior()
+    public void Definitions_ShouldDeclareOnlySonThachVeAsANonDefaultPassiveResetBehavior()
     {
-        // BOSS_RULES.md §6.2 declares no non-default Reset Behavior for any MVP Boss,
-        // so each definition leaves it absent — which PASSIVE_RULES.md §4 item 1
-        // reads as the default (progress resets to 0 after the trigger). A
-        // non-default behavior would have to be declared here, never assumed.
-        Assert.All(BossDefinitions.All, boss => Assert.Null(boss.PassiveResetBehavior));
+        // BOSS_RULES.md §6.2.4 authors Sơn Thạch Vệ's Passive one-time — "it does
+        // not re-trigger once it has activated" — which is the non-default No
+        // reset / persistent form (PASSIVE_RULES.md §4 items 2–3), declared on the
+        // specific definition as §4 item 3 requires and stored as the existing
+        // `Persistent` token (DATABASE.md §1 note item 3). Every other MVP Boss
+        // leaves the documented Default, which PASSIVE_RULES.md §4 item 1 reads as
+        // "progress resets to 0 after the trigger".
+        Assert.Equal(
+            PassiveResetBehavior.NoReset,
+            BossDefinitions.SonThachVe.PassiveResetBehavior);
+
+        foreach (var boss in BossDefinitions.All.Where(b => b.BossId.Value != "boss-son-thach-ve"))
+        {
+            Assert.Null(boss.PassiveResetBehavior);
+        }
+
+        // The storage token is the documented one, not a new token.
+        Assert.Equal(
+            "Persistent",
+            BossDefinitions.SonThachVe.PassiveDefinition.ResetBehavior);
     }
 
     [Fact]
-    public void Definitions_ShouldGiveThuyMaTheAlwaysActiveMarkerAndNoMatchThreshold()
+    public void Definitions_ShouldGiveEveryNonMatchChargedBossNoMatchThreshold()
     {
-        // BOSS_RULES.md §6.2 is explicit for Thủy Ma: its trigger "is never charged
-        // via PassiveTracker.Charge on Player Matches, and emits no
-        // PassiveCharged/PassiveTriggered from match progress". A stored
-        // PassiveThreshold of 0 is that Always-Active marker — it is NOT a threshold
-        // that is reached immediately, which is why the resolution skips the charge
-        // rather than calling the tracker with it.
+        // BOSS_RULES.md §6.2 is explicit for every non-match-charged Boss: its
+        // trigger "is never charged via PassiveTracker.Charge on Player Matches,
+        // and emits no PassiveCharged/PassiveTriggered from match progress". That
+        // covers Thủy Ma (Battle Start), Sơn Thạch Vệ ("Boss HP ≤ 50%"), and
+        // Kim Lôi Vương ("Player Combo ≥ 4"). Each projects to a PassiveThreshold
+        // of 0 — the Domain's non-charged marker, NOT a threshold that is reached
+        // immediately, which is why the resolution skips the charge rather than
+        // calling the tracker with it.
         //
         // PassiveTracker itself rejects Threshold < 1 (PASSIVE_RULES.md §1 defines a
         // Threshold as a Match count), which is the second, independent reason the
         // call is skipped.
-        var thuyMa = BossDefinitions.ThuyMa;
+        foreach (var boss in BossDefinitions.All.Where(b => b.PassiveDefinition.Threshold is null))
+        {
+            Assert.Equal(0, boss.PassiveThreshold);
 
-        Assert.Equal(0, thuyMa.PassiveThreshold);
-        Assert.Throws<ArgumentOutOfRangeException>(
-            () => PassiveTracker.Charge(
-                PassiveProgress.AtStart(thuyMa.PassiveThreshold),
-                matchCount: 3,
-                thuyMa.PassiveId));
+            Assert.Throws<ArgumentOutOfRangeException>(
+                () => PassiveTracker.Charge(
+                    PassiveProgress.AtStart(boss.PassiveThreshold),
+                    matchCount: 3,
+                    boss.PassiveId));
 
-        // Its Skill timing is nonetheless fully declared — the Always-Active Passive
-        // is not an absent Passive.
-        Assert.Equal("drain-power", thuyMa.SkillId);
-        Assert.Equal(4, thuyMa.SkillChargeRequirement);
-        Assert.Equal(3, thuyMa.SkillCooldownTurns);
-        Assert.Equal(120, thuyMa.SkillBaseDamage);
+            // Each one's Skill timing is nonetheless fully declared — a
+            // non-match-charged Passive is not an absent Passive.
+            Assert.NotEmpty(boss.SkillId);
+            Assert.True(boss.SkillChargeRequirement > 0);
+            Assert.True(boss.SkillBaseDamage > 0);
+        }
+
+        // The documented set: exactly the three alternate-trigger Bosses.
+        Assert.Equal(
+            new[] { "boss-thuy-ma", "boss-son-thach-ve", "boss-kim-loi-vuong" },
+            BossDefinitions.All
+                .Where(b => b.PassiveDefinition.Threshold is null)
+                .Select(b => b.BossId.Value)
+                .ToArray());
     }
 
     [Fact]

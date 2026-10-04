@@ -295,24 +295,58 @@ public static class BattleStateSerializer
             CardCostModifiers = petState.CardCostModifiers
                 .Select(ToCardCostModifierJson)
                 .ToArray(),
+
+            // The Burn-damage modifier collection on the same always-present terms:
+            // a distinct member, never null and never omitted — no modifier active
+            // writes []. Its written order is the collection's own, preserved rather
+            // than sorted, exactly as the Card-cost member above.
+            BurnDamageModifiers = petState.BurnDamageModifiers
+                .Select(ToBurnDamageModifierJson)
+                .ToArray(),
         };
 
     /// <summary>
     /// Projects one ATK modifier (<c>GAME_STATE.md</c> §2.3.7) — a pure field copy of
-    /// both members and nothing else.
+    /// all three members and nothing else.
     ///
-    /// <b>No third member is written.</b> §2.3.7 items 4 and 8 fix the element at
-    /// exactly two members, so this projection has nothing to derive, default, or
-    /// synthesize: the identity and the signed percentage are carried verbatim and the
-    /// mapping interprets neither. In particular it does <b>not</b> compute or store an
-    /// effective ATK value — §2.3.7 item 9 and <c>COMBAT_RULES.md</c> §5.6.6 item 8
-    /// leave that derived value to attack resolution and forbid storing it.
+    /// <b>No fourth member is written.</b> §2.3.7 items 4, 8, and 11 fix the element
+    /// at exactly three members — the identity, the signed percentage, and the
+    /// declared <c>lifetime</c> — so this projection has nothing to derive, default,
+    /// or synthesize: the three are carried verbatim and the mapping interprets none
+    /// of them. In particular it does <b>not</b> compute or store an effective ATK
+    /// value — §2.3.7 item 9 and <c>COMBAT_RULES.md</c> §5.6.6 item 8 leave that
+    /// derived value to attack resolution and forbid storing it.
+    ///
+    /// <b>The lifetime is written as its member name, and it is never omitted.</b>
+    /// §2.3.8 item 3 requires it on <b>every</b> element — including a
+    /// <c>Battle</c>-lifetime one — so that a reader never infers a lifetime from
+    /// absence; §2.3.8 item 5 makes a round trip that drops or alters it a defect.
     /// </summary>
     private static ATKModifierJson ToATKModifierJson(ATKModifier modifier) =>
         new()
         {
             SourceIdentity = modifier.SourceIdentity,
             ATKModifierPercentage = modifier.ATKModifierPercentage,
+            Lifetime = modifier.Lifetime.ToString(),
+        };
+
+    /// <summary>
+    /// Projects one Burn-damage modifier — a pure field copy of both members and
+    /// nothing else.
+    ///
+    /// <b>No third member is written.</b> The element's lifetime is fixed as
+    /// <c>Battle</c> by <c>RELIC_RULES.md</c> §8.3's <c>BurnDamage</c> row, so
+    /// there is nothing to distinguish and nothing to carry — the same shape the
+    /// sibling Card-cost element records. The scale the modifier produces is not
+    /// computed or stored here: <c>COMBAT_RULES.md</c> §5.2 item 4 leaves it to
+    /// the Burn tick's own resolution.
+    /// </summary>
+    private static BurnDamageModifierJson ToBurnDamageModifierJson(
+        BurnDamageModifier modifier) =>
+        new()
+        {
+            SourceIdentity = modifier.SourceIdentity,
+            BurnDamagePercentage = modifier.BurnDamagePercentage,
         };
 
     /// <summary>
@@ -540,6 +574,10 @@ public static class BattleStateSerializer
             // Card-cost collection on the same terms, with its written order
             // preserved (§2.3.6 item 6).
             CardCostModifiers = FromCardCostModifiersJson(dto.CardCostModifiers),
+
+            // The Burn-damage modifier collection on the same always-present,
+            // order-preserving terms.
+            BurnDamageModifiers = FromBurnDamageModifiersJson(dto.BurnDamageModifiers),
         };
 
     /// <summary>
@@ -591,7 +629,30 @@ public static class BattleStateSerializer
     /// <exception cref="JsonException">The element carries no usable identity.</exception>
     private static ATKModifier FromATKModifierJson(ATKModifierJson dto)
     {
-        var modifier = new ATKModifier(dto.SourceIdentity, dto.ATKModifierPercentage);
+        // §2.3.8 item 3: `lifetime` is required on every element and is never
+        // defaulted — "there is no omitted-member and no defaulted-lifetime form, so
+        // a reader never infers a lifetime from absence" — and §2.3.7 item 11
+        // requires the element's own member to be read rather than the lifetime
+        // inferred from the collection or the source. An absent value is therefore
+        // reported, not substituted.
+        if (string.IsNullOrWhiteSpace(dto.Lifetime))
+        {
+            throw new JsonException(
+                "atkModifiers element has no lifetime member; GAME_STATE.md §2.3.8 item 3 "
+                + "requires it on every element — including a Battle-lifetime one — and "
+                + "states that a reader never infers a lifetime from absence.");
+        }
+
+        if (!Enum.TryParse<RelicEffectLifetime>(dto.Lifetime, ignoreCase: false, out var lifetime))
+        {
+            throw new JsonException(
+                $"atkModifiers element names a lifetime this contract does not define "
+                + $"('{dto.Lifetime}'). The defined lifetimes are "
+                + $"{string.Join(", ", Enum.GetNames<RelicEffectLifetime>())}; GAME_STATE.md "
+                + "§2.3.7 item 11 admits Battle and NextAttack here.");
+        }
+
+        var modifier = new ATKModifier(dto.SourceIdentity, dto.ATKModifierPercentage, lifetime);
 
         if (!modifier.HasSourceIdentity)
         {
@@ -599,6 +660,75 @@ public static class BattleStateSerializer
                 "atkModifiers element has a blank sourceIdentity; GAME_STATE.md §2.3.7 "
                 + "item 3 makes it the replace/refresh and removal key that "
                 + "source-specific removal matches on.");
+        }
+
+        // §2.3.7 items 8 and 11: `Immediate` "leaves no standing modification behind
+        // and therefore never produces an element here", so a stored element
+        // declaring it is not a state this collection can hold and is rejected
+        // rather than admitted as a standing modifier.
+        if (!modifier.HasCarrierLifetime)
+        {
+            throw new JsonException(
+                $"atkModifiers element declares lifetime '{modifier.Lifetime}'; GAME_STATE.md "
+                + "§2.3.7 items 8 and 11 state that the carrier holds Battle and NextAttack "
+                + "elements only.");
+        }
+
+        return modifier;
+    }
+
+    /// <summary>
+    /// Rebuilds a <c>BurnDamageModifiers[]</c> collection — the applied form of the
+    /// Relic <c>BurnDamage</c> effect (<c>RELIC_RULES.md</c> §8.2 item 1, §8.5
+    /// item 5; <c>COMBAT_RULES.md</c> §5.2 item 4).
+    ///
+    /// <b>A <c>null</c> member is rejected as the contract violation it is.</b>
+    /// "No Burn-damage modifier active" is an <b>empty collection</b>, never an
+    /// omitted member and never <c>null</c> — the same always-present rule the
+    /// sibling modifier collections follow — so a stored <c>null</c> is refused
+    /// rather than read as empty.
+    ///
+    /// <b>The stored order is carried across unchanged.</b> The collection's order
+    /// is written order and is preserved for round-trip fidelity; nothing here
+    /// reorders the elements.
+    /// </summary>
+    /// <param name="modifiers">The deserialized member, which may be <c>null</c> only
+    /// if the stored document violated the contract.</param>
+    /// <exception cref="JsonException">The member is <c>null</c>.</exception>
+    private static BurnDamageModifier[] FromBurnDamageModifiersJson(
+        IReadOnlyList<BurnDamageModifierJson>? modifiers)
+    {
+        if (modifiers is null)
+        {
+            throw new JsonException(
+                "burnDamageModifiers is null; a Pet with no active Burn-damage modifier "
+                + "holds an empty array, and there is no null spelling for the collection.");
+        }
+
+        return modifiers.Select(FromBurnDamageModifierJson).ToArray();
+    }
+
+    /// <summary>
+    /// Rebuilds one Burn-damage modifier.
+    ///
+    /// <b>It validates rather than trusts.</b> The modifier is rebuilt through the
+    /// same invariant the apply path enforces — a non-blank source identity, which
+    /// is the replace/refresh and removal key — so a stored element that could not
+    /// be refreshed or removed source-specifically is rejected at the read rather
+    /// than admitted into the state. No Burn instance is created, refreshed, or
+    /// touched: the modifier changes damage only (<c>COMBAT_RULES.md</c> §5.2
+    /// item 4).
+    /// </summary>
+    /// <exception cref="JsonException">The element carries no usable identity.</exception>
+    private static BurnDamageModifier FromBurnDamageModifierJson(BurnDamageModifierJson dto)
+    {
+        var modifier = new BurnDamageModifier(dto.SourceIdentity, dto.BurnDamagePercentage);
+
+        if (!modifier.HasSourceIdentity)
+        {
+            throw new JsonException(
+                "burnDamageModifiers element has a blank sourceIdentity; the member is the "
+                + "replace/refresh and removal key that source-specific removal matches on.");
         }
 
         return modifier;

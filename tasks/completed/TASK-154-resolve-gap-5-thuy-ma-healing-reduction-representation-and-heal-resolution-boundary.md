@@ -60,19 +60,21 @@ Type:              GAMEPLAY-CHANGE (TASK_TYPES.md §2 — "A gameplay mechanic
                    DECISION-RECORDING half of GAMEPLAY-CHANGE per
                    development/gameplay-change.md §3; the documentation-apply
                    half is a separate task.
-Status:            DECIDED — the Product Owner supplied a complete decision
-                   covering all 12 required coverage items; it is recorded in
-                   the "Decision Record" section below. The decision is
-                   Option B (Boss-side carrier, `BossState.StatusEffects[]`),
-                   with an explicitly authorized cross-entity read by the
-                   Pet-side Heal Resolution step, §2.3.1's invariants
-                   unchanged, and COMBAT_RULES.md §4 item 7's scope left
-                   "Pet HP only".
-                   The recorded decision is the DECISION-INPUT half only. No
+Status:            DONE (lifecycle reconciliation — the deliverable this task
+                   names was DIRECTLY EXECUTED: the Product Owner supplied a
+                   complete decision covering all 12 required coverage items and
+                   it is recorded in the "Decision Record" section below. The
+                   recorded decision is the DECISION-INPUT half only; no
                    authoritative document was modified by this task and no
-                   implementation was performed. The documentation-apply task
-                   (see "Blocks") applies it at its canonical owners and must
-                   be created by the Orchestrator.
+                   implementation was performed. Its downstream
+                   documentation-apply task, TASK-155, applied it at its
+                   canonical owners and is DONE in tasks/completed/.
+                   Per tasks/TASK_LIFECYCLE.md §1, DONE is the correct terminal
+                   state because the task WAS directly executed — a recording
+                   task is executed by recording. It is expressly NOT
+                   SUPERSEDED. The file is moved to tasks/completed/ per
+                   tasks/TASK_LIFECYCLE.md §4; the ledger/original status text
+                   is preserved verbatim in "Lifecycle Reconciliation" below.)
 Risk:              HIGH (TASK_TYPES.md §4 — GAMEPLAY-CHANGE baseline HIGH,
                    "Always HIGH — game rule changes are the riskiest
                    category". This touches the Pet healing path, the Boss
@@ -1061,3 +1063,100 @@ EVALUATED — NO CHANGE REQUIRED
 - [x] Confirmed adherence to MVP Scope (`MVP_SCOPE.md` §1)
 - [x] Confirmed no new task was created (the follow-up documentation task is
       the Orchestrator's act, not this task's)
+
+---
+
+## Lifecycle Reconciliation
+
+<!--
+  LIFECYCLE METADATA ONLY. Appended by the lifecycle-reconciliation pass.
+  No substantive content above this section was changed: the "Decision
+  Request", "Decision Record", "Scope", "Acceptance Criteria",
+  "Implementation Notes", "Testing Requirements", "Stop Conditions", and
+  "Completion Evidence" sections are byte-identical to their recorded state.
+-->
+
+```text
+Reconciled status:   DECIDED → DONE
+File move:           tasks/backlog/ → tasks/completed/
+Authority:           tasks/TASK_LIFECYCLE.md §1 (DONE), §2 (allowed
+                     transitions), §4 (file movement summary)
+Recorded by:         lifecycle reconciliation pass
+```
+
+**Why DONE and not SUPERSEDED** (`tasks/TASK_LIFECYCLE.md` §1/§3):
+
+```text
+DONE        "All core/completion.md §1 criteria are satisfied by DIRECT
+             EXECUTION of the task."
+SUPERSEDED  "All intended deliverables ... 100% satisfied or rendered
+             obsolete by downstream/decomposition tasks WITHOUT the task
+             itself being directly executed."
+
+This task WAS directly executed. Its Objective is to "obtain and record" an
+explicit Product Owner decision; the decision is recorded in this file's
+"Decision Record" section with all 12 coverage items explicitly answered, and
+its "Completion Evidence" section is fully populated with "Decision Status:
+DECIDED". A recording task is executed by recording, so the DONE definition is
+satisfied by this task's own act. SUPERSEDED would misstate that the task was
+never directly executed.
+```
+
+**Evidence that the deliverable is complete** (read from this file's own body —
+not inferred from a downstream reference):
+
+```text
+E-154-1  §"Decision Record" → "Status of decision: SUPPLIED"; selected
+         candidate OPTION B; coverage items 1–12 each explicitly answered.
+E-154-2  §"Decision Record" → "Decision completeness check" block: all twelve
+         boxes [x] and "No Stop Condition is met. The decision is COMPLETE."
+E-154-3  §"Completion Evidence" is fully populated: "Changed Files",
+         "Decision Recorded", "Documents That Will Need Updating", and
+         "[x]" Validation Results.
+E-154-4  §"Scope Verification" carries six "[x]" confirmations including
+         "Confirmed zero files under docs/ modified" and "Confirmed TASK-153
+         unmodified (still BLOCKED)".
+→ DIRECT EXECUTION IS EVIDENCED.
+```
+
+**Downstream application is terminal** (independent repository corroboration —
+read, not modified):
+
+```text
+TASK-155  Status: DONE, resides in tasks/completed/.
+          It applied this task's D-1…D-12 at the canonical owners
+          (BOSS_RULES.md §6.2.2, COMBAT_RULES.md §4 item 7 / §5.4.5 / §5.5.3,
+          GAME_STATE.md §2.4.1) and authored the applicable-instance selector
+          Id = "boss-thuy-ma-heal".
+          Corroboration: BOSS_RULES.md §6.2.2 records
+          Id = "boss-thuy-ma-heal" and the authorized cross-entity read.
+
+No dependent action remains that is uniquely this task's:
+the decision is recorded (this task) and applied (TASK-155).
+```
+
+**Recorded status history (preserved verbatim, not rewritten):**
+
+```text
+Original Status field value: "DECIDED — the Product Owner supplied a complete
+decision covering all 12 required coverage items; it is recorded in the
+'Decision Record' section below. ... The documentation-apply task (see
+'Blocks') applies it at its canonical owners and must be created by the
+Orchestrator."
+```
+
+**Boundary honoured by this reconciliation:**
+
+```text
+[x] No source file created, modified, renamed, or deleted.
+[x] No test file created, modified, renamed, or deleted.
+[x] No migration or database change.
+[x] No authoritative document under docs/ created, modified, renamed, or
+    deleted.
+[x] No gameplay rule, magnitude, duration, trigger, or target changed.
+[x] The substantive decision record (D-1 … D-12), Scope, Acceptance Criteria,
+    Implementation Notes, Testing Requirements, Stop Conditions, and
+    Completion Evidence above are unchanged.
+[x] TASK-153 was not modified.
+[x] No new task was created.
+```

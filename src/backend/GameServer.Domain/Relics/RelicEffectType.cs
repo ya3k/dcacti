@@ -6,24 +6,32 @@ namespace GameServer.Domain.Relics;
 /// the Relic representation <c>RELIC_RULES.md</c> §8.2 defines.
 ///
 /// <code>
-/// ATK        a stat modifier
-/// Power      a Power grant (GAME_RULES.md §12)
-/// Crit       a Crit-chance increase
-/// CardCost   a Card-cost modifier
+/// ATK          a stat modifier
+/// Power        a Power grant (GAME_RULES.md §12)
+/// Crit         a Crit-chance increase
+/// CardCost     a Card-cost modifier
+/// BurnDamage   a percentage modifier to Burn damage-over-time ticks
+///              (COMBAT_RULES.md §5)
 /// </code>
 ///
-/// <b>The four members are exactly the closed set §8.2 item 1 defines</b>
-/// (<c>ATK</c> | <c>Power</c> | <c>Crit</c> | <c>CardCost</c>), "carrying the
-/// effect identities §6's rows declare". A fifth identity is a gameplay rule no
-/// document authors, and adding one would invent content (<c>AGENTS.md</c> §7).
+/// <b>The five members are exactly the closed set §8.2 item 1 defines</b>
+/// (<c>ATK</c> | <c>Power</c> | <c>Crit</c> | <c>CardCost</c> |
+/// <c>BurnDamage</c>), "carrying the effect identities §6's rows declare". A
+/// sixth identity is a gameplay rule no document authors, and adding one would
+/// invent content (<c>AGENTS.md</c> §7). <c>BurnDamage</c> is the only member
+/// TASK-176 added; it is the identity Burning Curse's §6 row declares
+/// (<c>RELIC_RULES.md</c> §8.5 item 5).
 ///
 /// <b>It is a Relic-specific set, and it is NOT the Card set.</b> Reusing
 /// <c>CardEffectType</c> would be wrong rather than merely convenient: the Card
 /// set is <c>Heal | Shield | Power | Damage | Burn | Crit</c>
 /// (<c>DATABASE.md</c> §1's Card contract), and the two sets overlap on
-/// <c>Power</c> and <c>Crit</c> while differing on the other four members —
-/// <c>ATK</c> and <c>CardCost</c> are Relic effects, <c>Heal</c>, <c>Shield</c>,
-/// <c>Damage</c>, and <c>Burn</c> are Card effects. §8.2 item 1 says the Relic
+/// <c>Power</c> and <c>Crit</c> while differing on the others — <c>ATK</c>,
+/// <c>CardCost</c>, and <c>BurnDamage</c> are Relic effects, <c>Heal</c>,
+/// <c>Shield</c>, <c>Damage</c>, and <c>Burn</c> are Card effects (the Card
+/// <c>Burn</c> is a Burn-applying effect; the Relic <c>BurnDamage</c> is a
+/// modifier on an existing Burn tick, which §8.2 item 1 defines and
+/// <c>COMBAT_RULES.md</c> §5.2 item 4 scopes). §8.2 item 1 says the Relic
 /// representation follows the Card contract's <i>shape</i>; it does not say the
 /// vocabulary is shared, and a shared enum would make each side accept
 /// identities its own owner document does not define.
@@ -59,15 +67,18 @@ public enum RelicEffectType
 {
     /// <summary>
     /// A stat modifier — §8.2 item 1: "<c>ATK</c> is a stat modifier". Its
-    /// allowed combination is <c>target: Pet</c>, <c>lifetime: Battle</c>,
-    /// <c>valueType: Percentage</c> (§8.3).
+    /// allowed combinations are <c>target: Pet</c> with
+    /// <c>valueType: Percentage</c> and the <b>two</b> lifetimes §8.3's table
+    /// lists for it — <c>Battle</c> (Berserker Core, §8.5 item 4) and
+    /// <c>NextAttack</c> (Battle Instinct, §8.5 item 10; TASK-178 Product Owner
+    /// decision <b>Q-1 = A</b>).
     ///
-    /// <b>Storing this identity executes nothing and decides no carrier.</b> How
-    /// an applied <c>ATK</c> modification is represented in battle state is
-    /// <b>not</b> defined by §8.2–§8.4, which declare the content only; this
-    /// task stores the declaration and introduces no ATK modifier carrier, no
-    /// <c>StatusEffect</c>, and no temporary-ATK collection
-    /// (<c>AGENTS.md</c> §9/§16).
+    /// <b>Both lifetimes ride one carrier.</b> §8.5 item 10 records that an
+    /// applied <c>ATK</c> modification is carried by
+    /// <c>PetState.ATKModifiers[]</c> (<c>GAME_STATE.md</c> §2.3.7/§5.1.4), whose
+    /// element carries its declared <c>Lifetime</c>; no
+    /// <c>NextAttackATKModifiers[]</c> and no generic
+    /// <c>NextAttackModifiers[]</c> is introduced (<c>AGENTS.md</c> §9/§16).
     /// </summary>
     ATK = 0,
 
@@ -111,4 +122,26 @@ public enum RelicEffectType
     /// member and none of which is touched by this task.
     /// </summary>
     CardCost = 3,
+
+    /// <summary>
+    /// A percentage modifier to Burn damage-over-time ticks — §8.2 item 1:
+    /// "<c>BurnDamage</c> is a percentage modifier to Burn damage-over-time ticks
+    /// (<c>COMBAT_RULES.md</c> §5)". Its allowed combination is
+    /// <c>target: Pet</c>, <c>lifetime: Battle</c>, <c>valueType: Percentage</c>
+    /// (§8.3). Burning Curse is its one provisioned identity (§8.5 item 5).
+    ///
+    /// <b>It modifies Pet-owned Burn only.</b> §6 note 1 and
+    /// <c>COMBAT_RULES.md</c> §5.2 item 4 scope the modifier by the Burn
+    /// instance's <b>source/ownership</b>: Burn the Pet applied is modified, Burn
+    /// the Boss applied is not, and the distinction is never the entity receiving
+    /// the tick's damage (TASK-178 Product Owner decision <b>Q-4 = C</b>).
+    /// <c>target: Pet</c> names the Pet as the owner/source context of the
+    /// modifier, not a damage recipient.
+    ///
+    /// <b>It changes damage and nothing else.</b> §5.2 item 4: it must not emit,
+    /// create, re-enter, or refresh a Burn event or Burn instance, and it must not
+    /// extend or consume a Burn instance's duration. It is one percentage applied
+    /// to the tick's damage, not a second Burn system.
+    /// </summary>
+    BurnDamage = 4,
 }

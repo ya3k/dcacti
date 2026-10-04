@@ -49,17 +49,23 @@ Type:              DOCUMENTATION (TASK_TYPES.md §2 — "Change docs/ content �
                    recorded decision artifact. See "Type classification note".
                    This task itself edits no docs/ file; it collects the input
                    the downstream documentation task consumes.
-Status:            READY (both `Decision:` slots are now filled by the Product
-                   Owner and C-1…C-12 are resolved — see §"Coverage resolution".
-                   TASK-166's deliverable, the decision record, is complete.
-                   Lifecycle note: `tasks/TASK_LIFECYCLE.md` §4 permits only
-                   `IN REVIEW → DONE` as a path into `completed/`, and requires
-                   `READY → IN PROGRESS` (backlog/ → active/) first. This task
-                   has not been picked up, so the file correctly remains in
-                   `tasks/backlog/` with `Status: READY`. Moving it to
-                   `completed/` is the Orchestrator's lifecycle act
-                   (`tasks/TASK_LIFECYCLE.md` §4, `core/completion.md`), not
-                   this recording step.)
+Status:            DONE (lifecycle reconciliation — both `Decision:` slots were
+                   filled by the Product Owner and C-1…C-12 are resolved — see
+                   §"Coverage resolution". TASK-166's deliverable, the decision
+                   record, is complete, and this file's own §"Lifecycle
+                   reconciliation" recorded at the time that the move to
+                   `completed/` was the Orchestrator's lifecycle act rather
+                   than the recording step's. That act is performed now, after
+                   every downstream consumer became terminal: TASK-167 applied
+                   both decisions to the canonical owners (DONE),
+                   TASK-168 provisioned the rows (DONE), and TASK-169
+                   reconciled `DATABASE.md` (DONE). Per
+                   tasks/TASK_LIFECYCLE.md §1, DONE is the correct terminal
+                   state because the task WAS directly executed — a recording
+                   task is executed by recording. It is expressly NOT
+                   SUPERSEDED. The file is moved to tasks/completed/ per
+                   tasks/TASK_LIFECYCLE.md §4; the original status text is
+                   preserved verbatim in §"Lifecycle Reconciliation" below.)
 Risk:              LOW (input capture only — no authoritative document is
                    edited, no rule is changed, no magnitude is authored, no
                    schema is touched, and no code exists in scope.
@@ -1513,3 +1519,140 @@ lifecycle act. **No file was moved, and no `Status: DONE` was set.**
 - [x] Confirmed no new task, ADR, event, SignalR method, database column, or
       `BattleState` structure created — **PASS**
 - [x] Confirmed adherence to MVP Scope (`MVP_SCOPE.md` §1) — **PASS**
+
+---
+
+## Lifecycle Reconciliation
+
+<!--
+  LIFECYCLE METADATA ONLY. Appended by the lifecycle-reconciliation pass.
+  No substantive content above this section was changed: "Why This Task Is
+  Required", "Authoritative References", "Current Contract", "Exact
+  Ambiguity", "Decision Options", "Required Decision Coverage", "Recording
+  Discipline", "Out of Scope", "Stop Conditions", "Downstream Dependency",
+  "Acceptance Criteria", "Implementation Notes", "Testing Requirements",
+  "Completion Evidence", and "Scope Verification" are byte-identical to their
+  recorded state.
+-->
+
+```text
+Reconciled status:   READY → DONE
+File move:           tasks/backlog/ → tasks/completed/
+Authority:           tasks/TASK_LIFECYCLE.md §1 (DONE), §2 (allowed
+                     transitions), §4 (file movement summary)
+Recorded by:         lifecycle reconciliation pass
+```
+
+**Why this file's own deferral is now discharged.** This file's
+§"Lifecycle reconciliation" (recorded at the time the decisions were captured)
+stated the move was "the Orchestrator's lifecycle act ... No file was moved, and
+no `Status: DONE` was set." That deferral was correct then and is honoured now:
+the move is performed by the reconciliation pass, not by re-opening the
+recording step.
+
+**Why DONE and not SUPERSEDED** (`tasks/TASK_LIFECYCLE.md` §1/§3):
+
+```text
+DONE        "All core/completion.md §1 criteria are satisfied by DIRECT
+             EXECUTION of the task."
+SUPERSEDED  "All intended deliverables ... 100% satisfied or rendered
+             obsolete by downstream/decomposition tasks WITHOUT the task
+             itself being directly executed."
+
+This task WAS directly executed. Its Objective is to "obtain and record" the
+Product Owner's explicit decisions on the two unresolved Signature Skills; both
+`Decision:` slots (D-1 "Venomous Bloom", D-2 "Earthshaker") are filled and all
+of C-1…C-12 are resolved in §"Coverage resolution", with §"Completion Evidence"
+fully populated and closing "No item remains OPEN or PENDING". A recording task
+is executed by recording. SUPERSEDED would misstate that the task was never
+directly executed.
+```
+
+**Evidence that the deliverable is complete** (read from this file's own body —
+not inferred from a downstream reference):
+
+```text
+E-166-1  §"D-1 — Thanh Xà's Signature Skill" → `Decision:` slot FILLED with
+         the Product Owner's verbatim content (Venomous Bloom, 80 Power,
+         Damage 80 Flat Mộc → Boss, Burn 25 Flat Hỏa for 2 Turns), plus the
+         §"Recorded verbatim" resolution notes.
+E-166-2  §"D-2 — Sơn Hùng's Signature Skill" → `Decision:` slot FILLED
+         (Earthshaker, 100 Power, Damage 150 Flat Thổ → Boss), with "No open
+         wording point."
+E-166-3  §"Coverage resolution" → C-1 … C-12 each read RESOLVED, closing
+         "No item remains PENDING PRODUCT-OWNER DECISION."
+E-166-4  §"Completion Evidence" populated: "Decision Source", both Pet answer
+         blocks with "STATUS: COMPLETE", "Changed Files", and PASS
+         "Validation Results"; the Burn-element wording point was the last
+         open item and is recorded as decided.
+→ DIRECT EXECUTION IS EVIDENCED.
+```
+
+**Downstream chain is terminal** (independent repository corroboration — read,
+not modified):
+
+```text
+TASK-167  Status: DONE, resides in tasks/completed/.
+          It applied both decisions to the canonical owners —
+          CARD_RULES.md §4.1 (v1.7 → 1.8) and PET_RULES.md §8 (v3.1 → 3.2) —
+          plus three dependent stale-reference corrections.
+          Corroboration: CARD_RULES.md §4.1 carries both authored entries and
+          the closing sentence "all five MVP Pets' Signature Skills are
+          authored in this section."
+
+TASK-168  Status: DONE, resides in tasks/completed/.
+          It provisioned card-venomous-bloom, card-earthshaker, pet-thanh-xa,
+          and pet-son-hung.
+          Corroboration: migration
+          20261004055006_ProvisionThanhXaAndSonHungSignatureSkills.cs carries
+          all four inserts.
+
+TASK-169  Status: DONE, resides in tasks/completed/.
+          It reconciled the DATABASE.md CardDefinition content-set references
+          to the post-TASK-168 state.
+
+No dependent action remains that is uniquely this task's: the decisions are
+recorded (this task), applied (TASK-167), provisioned (TASK-168), and their
+documentation reconciled (TASK-169).
+```
+
+**Recorded status history (preserved verbatim, not rewritten):**
+
+```text
+Original Status field value: "READY (both `Decision:` slots are now filled by
+the Product Owner and C-1…C-12 are resolved — see §'Coverage resolution'.
+TASK-166's deliverable, the decision record, is complete. Lifecycle note:
+`tasks/TASK_LIFECYCLE.md` §4 permits only `IN REVIEW → DONE` as a path into
+`completed/`, and requires `READY → IN PROGRESS` (backlog/ → active/) first.
+This task has not been picked up, so the file correctly remains in
+`tasks/backlog/` with `Status: READY`. Moving it to `completed/` is the
+Orchestrator's lifecycle act (`tasks/TASK_LIFECYCLE.md` §4,
+`core/completion.md`), not this recording step.)"
+```
+
+**Precedent.** This is the third lifecycle reconciliation in the repository,
+following `TASK-162` and `TASK-165`. Both established the shape applied here:
+per-task evidence rows, a lifecycle-rule citation block, and an
+isolation-checked record. The `TASK-165` reconciliation supplies the closest
+precedent for this exact case — a decision-recording task whose own
+§"Completion Evidence" records completion while its `Status` field and folder
+lag behind (its `TASK-163`).
+
+**Boundary honoured by this reconciliation:**
+
+```text
+[x] No source file created, modified, renamed, or deleted.
+[x] No test file created, modified, renamed, or deleted.
+[x] No migration or database change.
+[x] No authoritative document under docs/ created, modified, renamed, or
+    deleted.
+[x] No gameplay rule, Card, Pet, cost, magnitude, Element, duration, or
+    interaction changed.
+[x] The substantive decision record (D-1/D-2, C-1…C-12), Coverage resolution,
+    Recording Discipline, Out of Scope, Stop Conditions, Downstream
+    Dependency, Acceptance Criteria, Implementation Notes, Testing
+    Requirements, Completion Evidence, and Scope Verification above are
+    unchanged.
+[x] TASK-167, TASK-168, and TASK-169 were not modified.
+[x] No new task was created.
+```

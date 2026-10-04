@@ -36,7 +36,8 @@ namespace GameServer.Domain.Relics;
 /// the same problem class, one contract for it. The members are therefore the
 /// same five names, but the <b>vocabularies are Relic-specific</b> and this type
 /// uses them: <see cref="RelicEffectType"/> is
-/// <c>ATK | Power | Crit | CardCost</c> (§8.2 item 1, not the Card set), and
+/// <c>ATK | Power | Crit | CardCost | BurnDamage</c> (§8.2 item 1, not the Card
+/// set), and
 /// <see cref="RelicEffectValueType"/> is
 /// <c>Flat | Percentage | PercentagePoints | Undetermined</c> (§8.2 item 2, not
 /// the Card set's <c>PercentMaxHp</c>). The Card members <c>duration</c> (Burn)
@@ -52,10 +53,12 @@ namespace GameServer.Domain.Relics;
 /// instead of storing it:
 ///
 /// <code>
-/// ATK       Pet   Battle       Percentage
-/// Power     Pet   Immediate    Flat
-/// Crit      Pet   NextAttack   PercentagePoints
-/// CardCost  Pet   Battle       Percentage
+/// ATK        Pet   Battle       Percentage
+/// ATK        Pet   NextAttack   Percentage
+/// Power      Pet   Immediate    Flat
+/// Crit       Pet   NextAttack   PercentagePoints
+/// CardCost   Pet   Battle       Percentage
+/// BurnDamage Pet   Battle       Percentage
 /// </code>
 ///
 /// <b>It is data, and it executes nothing.</b> The type names an effect and
@@ -328,7 +331,8 @@ public readonly record struct RelicEffectDefinition
     /// <summary>
     /// The <c>valueType</c> <c>RELIC_RULES.md</c> §8.3's table fixes for
     /// <paramref name="effectType"/> — the interpretation that effect's magnitude
-    /// is stated in.
+    /// is stated in. Each <c>effectType</c> has exactly one such row, including
+    /// the two <c>ATK</c> rows, which differ only in their lifetime.
     /// </summary>
     public static RelicEffectValueType RequiredValueTypeFor(RelicEffectType effectType) =>
         effectType switch
@@ -337,16 +341,66 @@ public readonly record struct RelicEffectDefinition
             RelicEffectType.Power => RelicEffectValueType.Flat,
             RelicEffectType.Crit => RelicEffectValueType.PercentagePoints,
             RelicEffectType.CardCost => RelicEffectValueType.Percentage,
+            RelicEffectType.BurnDamage => RelicEffectValueType.Percentage,
             _ => throw new ArgumentOutOfRangeException(
                 nameof(effectType),
                 effectType,
                 "The effect identity must be a RelicEffectType member; RELIC_RULES.md §8.2 "
-                + "item 1 closes the set at ATK | Power | Crit | CardCost."),
+                + "item 1 closes the set at ATK | Power | Crit | CardCost | BurnDamage."),
+        };
+
+    /// <summary>
+    /// The lifetimes <c>RELIC_RULES.md</c> §8.3's table lists for
+    /// <paramref name="effectType"/> — every value that effect type's row(s)
+    /// define, in table order.
+    ///
+    /// <b>One effect type has two rows, and the rest have one.</b> §8.3's table
+    /// carries <c>ATK</c> twice — <c>Battle</c> (Berserker Core, §8.5 item 4) and
+    /// <c>NextAttack</c> (Battle Instinct, §8.5 item 10; TASK-178 Product Owner
+    /// decision <b>Q-1 = A</b>). <c>Power</c>, <c>Crit</c>, <c>CardCost</c>, and
+    /// <c>BurnDamage</c> each keep the single lifetime their own row fixes, so
+    /// this is the one place the table's arity per effect type is stated.
+    /// §8.3's closing rule still governs: a combination the table does not list is
+    /// not defined and may not be inferred, so a lifetime outside the returned
+    /// set is rejected rather than tolerated.
+    /// </summary>
+    /// <param name="effectType">The effect identity to read the table's rows for.</param>
+    /// <returns>
+    /// The table's lifetimes for that effect type, in table order and never
+    /// empty.
+    /// </returns>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="effectType"/> is not a <see cref="RelicEffectType"/> member.
+    /// </exception>
+    public static RelicEffectLifetime[] AllowedLifetimesFor(RelicEffectType effectType) =>
+        effectType switch
+        {
+            // §8.3's table, in its own row order: `Battle` first, then the
+            // `NextAttack` row TASK-176 added.
+            RelicEffectType.ATK => [RelicEffectLifetime.Battle, RelicEffectLifetime.NextAttack],
+            RelicEffectType.Power => [RelicEffectLifetime.Immediate],
+            RelicEffectType.Crit => [RelicEffectLifetime.NextAttack],
+            RelicEffectType.CardCost => [RelicEffectLifetime.Battle],
+            RelicEffectType.BurnDamage => [RelicEffectLifetime.Battle],
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(effectType),
+                effectType,
+                "The effect identity must be a RelicEffectType member; RELIC_RULES.md §8.2 "
+                + "item 1 closes the set at ATK | Power | Crit | CardCost | BurnDamage."),
         };
 
     /// <summary>
     /// The <c>lifetime</c> <c>RELIC_RULES.md</c> §8.3's table fixes for
     /// <paramref name="effectType"/>.
+    ///
+    /// <b>It is the effect type's first table row, and it is not the whole
+    /// contract for <c>ATK</c>.</b> <c>ATK</c> is the one effect type §8.3 lists
+    /// twice, so its <c>NextAttack</c> row is not returned here — the complete
+    /// allowed set is <see cref="AllowedLifetimesFor"/>, which is what
+    /// validation uses. This member answers "which single lifetime does this
+    /// effect type's row fix", which is the question a single-lifetime effect
+    /// type has and the one §8.5's single-lifetime rows are read with; it is
+    /// kept so an existing reader that asks that question keeps its meaning.
     /// </summary>
     public static RelicEffectLifetime RequiredLifetimeFor(RelicEffectType effectType) =>
         effectType switch
@@ -355,11 +409,12 @@ public readonly record struct RelicEffectDefinition
             RelicEffectType.Power => RelicEffectLifetime.Immediate,
             RelicEffectType.Crit => RelicEffectLifetime.NextAttack,
             RelicEffectType.CardCost => RelicEffectLifetime.Battle,
+            RelicEffectType.BurnDamage => RelicEffectLifetime.Battle,
             _ => throw new ArgumentOutOfRangeException(
                 nameof(effectType),
                 effectType,
                 "The effect identity must be a RelicEffectType member; RELIC_RULES.md §8.2 "
-                + "item 1 closes the set at ATK | Power | Crit | CardCost."),
+                + "item 1 closes the set at ATK | Power | Crit | CardCost | BurnDamage."),
         };
 
     /// <summary>
@@ -683,8 +738,8 @@ public readonly record struct RelicEffectDefinition
                 nameof(effectType),
                 effectType,
                 "The effect identity must be a RelicEffectType member; RELIC_RULES.md §8.2 "
-                + "item 1 closes the set at ATK | Power | Crit | CardCost, and an undefined "
-                + "value must not become a silent no-op (AGENTS.md §7).");
+                + "item 1 closes the set at ATK | Power | Crit | CardCost | BurnDamage, and "
+                + "an undefined value must not become a silent no-op (AGENTS.md §7).");
         }
     }
 
@@ -752,26 +807,39 @@ public readonly record struct RelicEffectDefinition
 
     /// <summary>
     /// Requires the (<paramref name="effectType"/>, <paramref name="lifetime"/>)
-    /// pair to be the one <c>RELIC_RULES.md</c> §8.3's table fixes.
+    /// pair to be one <c>RELIC_RULES.md</c> §8.3's table lists for that effect
+    /// type.
     ///
     /// It is the half of the combination that is checkable without a
     /// <c>valueType</c>, so the undetermined factory uses it too.
+    ///
+    /// <b>It checks membership, not equality with one fixed value.</b> §8.3's
+    /// table lists <c>ATK</c> twice — <c>Battle</c> and <c>NextAttack</c> — so
+    /// both are accepted for it while <c>Immediate</c> and any undefined value
+    /// remain rejected; every other effect type has one row and therefore one
+    /// accepted lifetime (<see cref="AllowedLifetimesFor"/>). Validation is
+    /// widened to the table's rows, never removed.
     /// </summary>
     private static void RequireLifetimeForEffectType(
         RelicEffectType effectType,
         RelicEffectLifetime lifetime)
     {
-        var required = RequiredLifetimeFor(effectType);
+        var allowed = AllowedLifetimesFor(effectType);
 
-        if (lifetime != required)
+        foreach (var candidate in allowed)
         {
-            throw new ArgumentException(
-                $"The Relic effect element pairs effectType '{effectType}' with lifetime "
-                + $"'{lifetime}'. RELIC_RULES.md §8.3's table fixes that effect type's "
-                + $"lifetime as '{required}'; a combination the table does not list is not "
-                + "defined and may not be inferred.",
-                nameof(lifetime));
+            if (lifetime == candidate)
+            {
+                return;
+            }
         }
+
+        throw new ArgumentException(
+            $"The Relic effect element pairs effectType '{effectType}' with lifetime "
+            + $"'{lifetime}'. RELIC_RULES.md §8.3's table lists "
+            + $"{string.Join(" | ", allowed)} for that effect type; a combination the table "
+            + "does not list is not defined and may not be inferred.",
+            nameof(lifetime));
     }
 
     /// <summary>

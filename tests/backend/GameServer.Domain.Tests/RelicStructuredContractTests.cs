@@ -60,25 +60,30 @@ public class RelicStructuredContractTests
     }
 
     [Fact]
-    public void EffectType_ShouldBeExactlyTheFourDocumentedIdentities()
+    public void EffectType_ShouldBeExactlyTheFiveDocumentedIdentities()
     {
         // RELIC_RULES.md §8.2 item 1 closes the set at ATK | Power | Crit |
-        // CardCost. A fifth identity is a gameplay rule no document authors.
+        // CardCost | BurnDamage. BurnDamage is the identity TASK-176 added with the
+        // 10-Relic MVP content contract (§8.5 item 5, Burning Curse); a sixth
+        // identity is a gameplay rule no document authors, so the count is asserted
+        // as well as the members.
         var identities = Enum.GetNames<RelicEffectType>();
 
         Assert.Equal(
-            new[] { "ATK", "CardCost", "Crit", "Power" },
+            new[] { "ATK", "BurnDamage", "CardCost", "Crit", "Power" },
             identities.OrderBy(name => name, StringComparer.Ordinal));
-        Assert.Equal(4, identities.Length);
+        Assert.Equal(5, identities.Length);
     }
 
     [Fact]
     public void EffectType_ShouldNotReuseTheCardVocabulary()
     {
         // RELIC_RULES.md §8.2 item 1's set is NOT DATABASE.md §1's Card set: the
-        // two overlap on Power and Crit and differ on the other four members.
-        // Reusing CardEffectType would make this contract accept identities its
-        // own owner document does not define.
+        // two overlap on Power and Crit and differ on the others. Reusing
+        // CardEffectType would make this contract accept identities its
+        // own owner document does not define. Note that the Card set's `Burn` is a
+        // Burn-applying effect while the Relic set's `BurnDamage` is a modifier on
+        // an existing Burn tick, so the tokens are deliberately not shared.
         var identities = Enum.GetNames<RelicEffectType>();
 
         foreach (var cardOnly in new[] { "Heal", "Shield", "Damage", "Burn" })
@@ -209,16 +214,38 @@ public class RelicStructuredContractTests
     public void Create_ShouldRejectALifetimeOtherThanTheEffectTypesOwn()
     {
         // §8.3 item 2: "A value outside the allowed combination for its
-        // `effectType` is not defined." ATK is `Battle`, so `Immediate` and
-        // `NextAttack` are both wrong for it.
+        // `effectType` is not defined." ATK's rows are `Battle` and `NextAttack`
+        // (TASK-176 widened §8.3's table; TASK-178 Q-1 = A), so `Immediate` — and
+        // any value outside the lifetime vocabulary — is wrong for it. The
+        // `NextAttack` row is accepted, which the assertion below records.
+        Assert.Throws<ArgumentException>(() => RelicEffectDefinition.Create(
+            RelicEffectType.ATK,
+            RelicEffectValueType.Percentage,
+            5,
+            RelicEffectTarget.Pet,
+            RelicEffectLifetime.Immediate));
+
+        // The second ATK row is a defined combination, so it is stored rather than
+        // rejected: §8.5 item 10's Battle Instinct declares exactly it.
+        var nextAttackAtk = RelicEffectDefinition.Create(
+            RelicEffectType.ATK,
+            RelicEffectValueType.Percentage,
+            10,
+            RelicEffectTarget.Pet,
+            RelicEffectLifetime.NextAttack);
+
+        Assert.Equal(RelicEffectLifetime.NextAttack, nextAttackAtk.Lifetime);
+
+        // A single-lifetime effect type keeps rejecting its other lifetimes:
+        // Power is `Immediate` only.
         foreach (var lifetime in new[]
                  {
-                     RelicEffectLifetime.Immediate, RelicEffectLifetime.NextAttack,
+                     RelicEffectLifetime.Battle, RelicEffectLifetime.NextAttack,
                  })
         {
             Assert.Throws<ArgumentException>(() => RelicEffectDefinition.Create(
-                RelicEffectType.ATK,
-                RelicEffectValueType.Percentage,
+                RelicEffectType.Power,
+                RelicEffectValueType.Flat,
                 5,
                 RelicEffectTarget.Pet,
                 lifetime));

@@ -7,11 +7,13 @@ namespace GameServer.Domain.Bosses;
 /// The static MVP Boss definitions (<c>BOSS_RULES.md</c> §6, §6.1–§6.4).
 ///
 /// <code>
-/// Boss        Element   HP / MaxHP   ATK   DEF   Enrage   Initial State
-/// ---------   -------   ----------   ---   ---   ------   -------------
-/// Hỏa Long    Hỏa       5000         100   50    30%      Idle
-/// Thủy Ma     Thủy      5000         100   50    30%      Idle
-/// Mộc Yêu     Mộc       5000         100   50    30%      Idle
+/// Boss          Element   HP / MaxHP   ATK   DEF   Enrage   Initial State
+/// -----------   -------   ----------   ---   ---   ------   -------------
+/// Hỏa Long      Hỏa       5000         100   50    30%      Idle
+/// Thủy Ma       Thủy      5000         100   50    30%      Idle
+/// Mộc Yêu       Mộc       5000         100   50    30%      Idle
+/// Sơn Thạch Vệ  Thổ       3000         120   0     50%      Idle
+/// Kim Lôi Vương Kim       2800         140   0     75%      Idle
 /// </code>
 ///
 /// <b>These are the approved values, transcribed — not computed.</b>
@@ -21,22 +23,23 @@ namespace GameServer.Domain.Bosses;
 /// below. This type therefore holds them as plain data. It defines no stat
 /// formula: HP is not derived from the active Pet's HP, and ATK/DEF are not derived
 /// from the active Pet's ATK/DEF — no such scaling rule exists in any document, and
-/// §6.1 states the values "do not represent formulas or scaling rules". Nothing
-/// here varies per Boss either: §6.1 gives all three content-defined Bosses the
-/// same base stats, and only their Elements and identities differ.
+/// §6.1 states the values "do not represent formulas or scaling rules". The first
+/// three Bosses share one base-stat row; the two authored by TASK-172 carry their
+/// own, as §6.1 records.
 ///
 /// <b>Only content-defined Bosses appear.</b> <c>BOSS_RULES.md</c> §6 defines
-/// exactly these three. §6.1 records that two further MVP Bosses are "not yet
-/// content-defined" and lists what each must declare when authored; they are
-/// deliberately absent here rather than invented to reach the five-Boss scope of
-/// <c>GAME_RULES.md</c> §19. Adding one is a content change owned by the Boss
-/// rules, not a value to guess.
+/// exactly these five. §6.1's earlier "two further MVP Bosses are not yet
+/// content-defined" note was retired by TASK-172, which applied the TASK-171
+/// Product Owner decisions for Sơn Thạch Vệ and Kim Lôi Vương; the MVP Boss set
+/// is now complete at five (<c>MVP_SCOPE.md</c> §1, <c>ROADMAP.md</c> §1 Phase 2).
+/// The two newest entries are transcribed from §6.1–§6.4 and are never invented or
+/// derived from the three earlier ones.
 ///
 /// <b>Element assignments are <c>BOSS_RULES.md</c> §6's.</b> Hỏa Long is Hỏa,
-/// Thủy Ma is Thủy, and Mộc Yêu is Mộc. Each Boss has exactly one Element and
-/// MVP supports no dual/multi element entity (<c>ELEMENT_RULES.md</c> §1.2, §7);
-/// the assignments are transcribed from §6.1 and are neither re-derived nor
-/// reassigned here.
+/// Thủy Ma is Thủy, Mộc Yêu is Mộc, Sơn Thạch Vệ is Thổ, and Kim Lôi Vương is
+/// Kim. Each Boss has exactly one Element and MVP supports no dual/multi element
+/// entity (<c>ELEMENT_RULES.md</c> §1.2, §7); the assignments are transcribed from
+/// §6.1 and are neither re-derived nor reassigned here.
 ///
 /// <b>The identities are <c>BOSS_RULES.md</c> §6.4's, verbatim.</b> §6.4 is the
 /// identity contract for <c>BossId</c>, <c>PassiveId</c>, and <c>SkillId</c> —
@@ -59,27 +62,40 @@ namespace GameServer.Domain.Bosses;
 /// item 1).
 ///
 /// <b>The Passive mechanics are configuration; their effects are not
-/// implemented.</b> §6.2–§6.3 give each Boss a Passive trigger and a Skill
+/// implemented here.</b> §6.2–§6.3 give each Boss a Passive trigger and a Skill
 /// timing, and this type carries those values so the resolution can charge,
-/// trigger, and cast. The Passive <i>effects</i> — Hỏa Long's Rage, Thủy Ma's
-/// healing reduction, Mộc Yêu's regeneration — remain unimplemented and are
-/// owned by their own stages (<c>BOSS_RULES.md</c> §3 item 3). The Skill
+/// trigger, and cast. For the three earlier Bosses the Passive <i>effects</i> —
+/// Hỏa Long's Rage, Thủy Ma's healing reduction, Mộc Yêu's regeneration — are
+/// owned by their own stages (<c>BOSS_RULES.md</c> §3 item 3). The two Bosses
+/// authored by TASK-172 declare their effects in §6.2.4/§6.2.5, and their Passive
+/// <i>effects</i> — both a Turn-based +20% ATK Rage modifier — are likewise a
+/// separate implementation stage; this type carries the declaration only. The Skill
 /// <i>effects</i> — Burn, Power drain, ATK reduction — are carried here as each
 /// Skill's <see cref="BossSkillDefinition.SecondaryEffect"/> declaration and
 /// are applied by the step 18b resolution (<c>BOSS_RULES.md</c> §4 item 4,
 /// §6.3.1); the Root declaration's <c>-30%</c> is consumed by the Pet's own
-/// attack through <c>COMBAT_RULES.md</c> §5.4. Nothing here applies an effect.
+/// attack through <c>COMBAT_RULES.md</c> §5.4. Earthquake and Thunder Strike
+/// declare no secondary effect (§6.3.1 items 4–5), so their
+/// <see cref="BossSkillDefinition.SecondaryEffect"/> is absent — an explicit
+/// declaration of "None", not an omission. Nothing here applies an effect.
 ///
-/// <b>Thủy Ma's <c>PassiveThreshold</c> is <c>0</c> — the Always-Active
-/// marker.</b> §6.2 gives its trigger as "Passive (always active)", an alternate
-/// trigger (<c>PASSIVE_RULES.md</c> §3) rather than a Match count, and states it
-/// "is never charged via <c>PassiveTracker.Charge</c> on Player Matches, and
-/// emits no <c>PassiveCharged</c>/<c>PassiveTriggered</c> from match progress".
-/// Storing <c>0</c> makes that explicit in the configuration; the resolution
-/// reads it as "do not charge", never as "threshold reached immediately".
+/// <b><c>PassiveThreshold</c> is <c>null</c> for every non-match-charged
+/// Passive.</b> §6.2 gives Thủy Ma the <b>Battle Start</b> trigger, Sơn Thạch Vệ
+/// the <b>Boss HP ≤ 50%</b> trigger, and Kim Lôi Vương the <b>Player Combo ≥ 4</b>
+/// trigger — every one an alternate trigger (<c>PASSIVE_RULES.md</c> §3) rather
+/// than a Match count, so each "is never charged via
+/// <c>PassiveTracker.Charge</c> on Player Matches, and emits no
+/// <c>PassiveCharged</c>/<c>PassiveTriggered</c> from match progress". Storage
+/// records the documented <c>null</c> for that case, never a <c>0</c> sentinel
+/// (<c>DATABASE.md</c> §1 note item 3). <c>null</c> means <b>no match-charging
+/// threshold</b>; it is <b>not</b> a statement that the Passive is always-active —
+/// every one of the three is threshold- or event-triggered. The Domain reads it
+/// back as its non-charged marker, so the resolution never calls
+/// <c>PassiveTracker.Charge</c> for such a Boss. Only Hỏa Long and Mộc Yêu carry a
+/// real threshold (<c>5</c>).
 ///
 /// <b>This is configuration, not a registry.</b> It is one static class holding
-/// the three transcribed definitions, per <c>ARCHITECTURE.md</c> §5 item 1
+/// the five transcribed definitions, per <c>ARCHITECTURE.md</c> §5 item 1
 /// ("a concrete Domain type with data-driven configuration (numbers only)").
 /// It has no lookup, no indexing, and no discovery mechanism, because nothing in
 /// the documented contract requires one yet: resolving a <c>bossId</c> is the
@@ -229,12 +245,94 @@ public static class BossDefinitions
     };
 
     /// <summary>
-    /// The three content-defined MVP Bosses of <c>BOSS_RULES.md</c> §6, in the
+    /// Sơn Thạch Vệ — persistence key <c>"boss-def-son-thach-ve"</c>, canonical
+    /// technical Identity <c>"boss-son-thach-ve"</c> (display name
+    /// "Sơn Thạch Vệ"), <c>Element = Thổ</c>, Passive
+    /// <c>"son-thach-ve-enrage"</c> on the <c>Boss HP ≤ 50%</c> trigger, Skill
+    /// <c>"earthquake"</c> at 5 Matches / 0 Turn cooldown / 150 base damage
+    /// (<c>BOSS_RULES.md</c> §6.1–§6.4; <c>DATABASE.md</c> §1).
+    /// </summary>
+    public static readonly BossDefinition SonThachVe = new(
+        BossDefinitionId: "boss-def-son-thach-ve",
+        new BossId("boss-son-thach-ve"),
+        Element.Tho,
+        // §6.2/§6.2.4: the trigger is "Boss HP ≤ 50%" — the alternate Boss HP
+        // category (§3 item 2), NOT a Match count — so storage records the
+        // documented `null` threshold (never 0 — DATABASE.md §1 note item 3); the
+        // Domain reads that back as its non-charged marker.
+        //
+        // §6.2.4: the reset behavior is the one documented NON-default override —
+        // "No reset / persistent": the Passive is authored one-time and does not
+        // re-trigger once it has activated. PASSIVE_RULES.md §4 item 3 requires
+        // that be declared on the specific definition, and DATABASE.md §1 note
+        // item 3 / §3 fix its storage token as exactly `Persistent` (the Domain's
+        // PassiveResetBehavior.NoReset). No new token is introduced.
+        PassiveDefinition: new BossPassiveDefinition(
+            new PassiveId("son-thach-ve-enrage"), null, "Persistent"),
+        SkillDefinition: new BossSkillDefinition(
+            // §6.3: Charge Req. 5, CD 0T, Skill Base Dmg 150.
+            SkillId: "earthquake",
+            BaseDamage: 150,
+            ChargeRequirement: 5,
+            CooldownTurns: 0))
+    {
+        // §6.1: MaxHP 3000, ATK 120, DEF 0, Enrage "1500 (50%)".
+        // §6.3.1 item 4: Earthquake declares NO secondary effect ("The Skill
+        // applies no debuff, no status effect, and no resource change") and NO
+        // board effect, so SecondaryEffect stays absent — the explicit "None" of
+        // §6.3's Secondary Effect column, not an omission.
+        MaxHP = 3000,
+        ATK = 120,
+        DEF = 0,
+        EnrageThreshold = 0.50,
+    };
+
+    /// <summary>
+    /// Kim Lôi Vương — persistence key <c>"boss-def-kim-loi-vuong"</c>, canonical
+    /// technical Identity <c>"boss-kim-loi-vuong"</c> (display name
+    /// "Kim Lôi Vương"), <c>Element = Kim</c>, Passive
+    /// <c>"kim-loi-vuong-combo"</c> on the <c>Player Combo ≥ 4</c> trigger, Skill
+    /// <c>"thunder-strike"</c> at 5 Matches / 0 Turn cooldown / 180 base damage
+    /// (<c>BOSS_RULES.md</c> §6.1–§6.4; <c>DATABASE.md</c> §1).
+    /// </summary>
+    public static readonly BossDefinition KimLoiVuong = new(
+        BossDefinitionId: "boss-def-kim-loi-vuong",
+        new BossId("boss-kim-loi-vuong"),
+        Element.Kim,
+        // §6.2/§6.2.5: the trigger is "Player Combo ≥ 4" — the alternate Combo
+        // category (§3 item 2), NOT a Match count — so storage records the
+        // documented `null` threshold (never 0 — DATABASE.md §1 note item 3).
+        //
+        // §6.2.5: Reset Behavior is the documented Default (PASSIVE_RULES.md §4
+        // item 1), and a re-trigger follows the existing refresh-not-stack default
+        // (COMBAT_RULES.md §5.2 item 2, §5.5.5) — so no non-default token is
+        // declared, exactly as the three earlier Bosses leave it.
+        PassiveDefinition: new BossPassiveDefinition(
+            new PassiveId("kim-loi-vuong-combo"), null, "Default"),
+        SkillDefinition: new BossSkillDefinition(
+            // §6.3: Charge Req. 5, CD 0T, Skill Base Dmg 180.
+            SkillId: "thunder-strike",
+            BaseDamage: 180,
+            ChargeRequirement: 5,
+            CooldownTurns: 0))
+    {
+        // §6.1: MaxHP 2800, ATK 140, DEF 0, Enrage "2100 (75%)".
+        // §6.3.1 item 5: Thunder Strike declares NO secondary effect ("The Skill
+        // applies no debuff, no status effect, and no resource change") and NO
+        // board effect, so SecondaryEffect stays absent.
+        MaxHP = 2800,
+        ATK = 140,
+        DEF = 0,
+        EnrageThreshold = 0.75,
+    };
+
+    /// <summary>
+    /// The five content-defined MVP Bosses of <c>BOSS_RULES.md</c> §6, in the
     /// order that document lists them.
     ///
     /// It is a reading aid for a caller that needs every definition (a test
     /// iterating the MVP set, for example). It is not a registry, holds no
-    /// lookup, and is not a second source for any of the three values above —
+    /// lookup, and is not a second source for any of the five values above —
     /// each element is the same instance.
     /// </summary>
     public static readonly IReadOnlyList<BossDefinition> All =
@@ -242,5 +340,7 @@ public static class BossDefinitions
         HoaLong,
         ThuyMa,
         MocYeu,
+        SonThachVe,
+        KimLoiVuong,
     ];
 }

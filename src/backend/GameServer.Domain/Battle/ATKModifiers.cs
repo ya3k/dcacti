@@ -1,13 +1,24 @@
+using GameServer.Domain.Relics;
+
 namespace GameServer.Domain.Battle;
 
 /// <summary>
-/// The <c>ATKModifiers[]</c> state mutation lifecycle — apply/refresh and removal
-/// (<c>GAME_STATE.md</c> §5.1.4; <c>TASK-136</c> D2/D7/D8).
+/// The <c>ATKModifiers[]</c> state mutation lifecycle — apply/refresh,
+/// lifetime-scoped removal, and the qualifying attack's consumption
+/// (<c>GAME_STATE.md</c> §5.1.4; <c>TASK-136</c> D2/D7/D8; TASK-178 Product Owner
+/// decision <b>Q-1 = A</b>).
 ///
 /// <code>
-/// Apply    append, or refresh the existing element in place (never a duplicate)
-/// Remove   delete exactly the identified source's element
+/// Apply      append, or refresh the existing element in place (never a duplicate)
+/// Remove     delete exactly the identified source's element
+/// Consume    delete exactly the `NextAttack` elements a qualifying attack consumed
 /// </code>
+///
+/// <b>This collection carries both lifetimes</b> — <c>Battle</c> and
+/// <c>NextAttack</c> (<c>GAME_STATE.md</c> §2.3.7 item 11) — so every operation
+/// below is stated per lifetime: a <c>NextAttack</c> element is removed only by
+/// the owner's qualifying attack, and a <c>Battle</c> element only by its source's
+/// removal or the battle's end (§5.1.4 item 4).
 ///
 /// <b>This type owns the state mutation. It does not own the rule.</b>
 /// <c>GAME_STATE.md</c> §5.1.4 states the same split §5.1.2 records for
@@ -28,9 +39,12 @@ namespace GameServer.Domain.Battle;
 /// <item>It does not expire anything at a Turn boundary. §5.1.4 item 3 states there
 /// is no Turn-based expiry, no timeout, and no cleanup pass: these elements carry no
 /// <c>RemainingTurns</c>, so the step 19a pass — a Turn-countdown rule — must not
-/// invent a duration for them. The lifetime is <c>Battle</c>, so its boundary is the
-/// battle's own end, where the whole <c>BattleState</c> ceases to exist
-/// (item 4).</item>
+/// invent a duration for them. For <b>both</b> lifetimes the only boundaries are the
+/// element's own: a <c>NextAttack</c> element is removed by the qualifying attack's
+/// consumption and a <c>Battle</c> element by its source's removal or the battle's
+/// own end, where the whole <c>BattleState</c> ceases to exist (item 4). In
+/// particular a <c>NextAttack</c> element must not be expired, consumed, or swept at
+/// a Turn boundary (§5.1.4 item 3).</item>
 /// <item>It does not compose <c>EffectivePetATK</c>. §5.1.4 item 5 and
 /// <c>COMBAT_RULES.md</c> §5.6.6 item 8 leave the composition to the Damage
 /// Pipeline and make the composed value derived state that is never stored; no
@@ -125,6 +139,20 @@ public static class ATKModifiers
                 nameof(modifier));
         }
 
+        // §2.3.7 items 8 and 11: the carrier holds `Battle` and `NextAttack`
+        // elements. `Immediate` "leaves no standing modification behind and
+        // therefore never produces an element here", so an element declaring it —
+        // or any value outside the lifetime vocabulary — is not a state this
+        // collection admits, and it is reported rather than stored.
+        if (!modifier.HasCarrierLifetime)
+        {
+            throw new ArgumentException(
+                $"An ATK modifier's Lifetime must be Battle or NextAttack; GAME_STATE.md "
+                + $"§2.3.7 items 8 and 11 state that the carrier holds exactly those two "
+                + $"lifetimes, so '{modifier.Lifetime}' never produces an element here.",
+                nameof(modifier));
+        }
+
         var result = new List<ATKModifier>(modifiers.Count + 1);
         var replaced = false;
 
@@ -213,6 +241,112 @@ public static class ATKModifiers
             // §5.1.4 item 4: only the identified source's element is deleted; another
             // source's modifier is untouched and needs no recomputation.
             if (!string.Equals(modifier.SourceIdentity, sourceIdentity, StringComparison.Ordinal))
+            {
+                remaining.Add(modifier);
+            }
+        }
+
+        return SortedBySourceIdentity(remaining);
+    }
+
+    /// <summary>
+    /// Removes only the elements of a specific source that declare a specific
+    /// lifetime — the <b>lifetime-scoped</b> removal <c>GAME_STATE.md</c> §5.1.4
+    /// requires now that one collection carries two lifetimes.
+    ///
+    /// <b>Why lifetime scoping is required.</b> §5.1.4 item 4 states it directly:
+    /// "Because both lifetimes share this collection, consumption must be
+    /// lifetime-scoped. Consuming a qualifying attack removes the
+    /// <c>NextAttack</c> elements it consumed; it must <b>not</b> remove a
+    /// <c>Battle</c>-lifetime element, and it must not remove a
+    /// <c>NextAttack</c> element belonging to a source the attack did not
+    /// consume." The two lifetimes have different removal boundaries — a
+    /// <c>Battle</c> element's is its source's removal or the battle's end, a
+    /// <c>NextAttack</c> element's is consumption by the qualifying attack
+    /// (§5.1.4 items 4–5) — so an operation that removes "the source's element"
+    /// must say which boundary it is acting on.
+    ///
+    /// <b>Only the matching elements go.</b> Everything else — the same source's
+    /// other-lifetime element and every other source's elements — is carried
+    /// across untouched, with no recomputation and no arithmetic inverse. A
+    /// removal that finds nothing is an idempotent no-op; the result is re-sorted
+    /// by <see cref="ATKModifier.SourceIdentity"/> (§2.3.7 item 7).
+    /// </summary>
+    /// <param name="modifiers">The Pet's active modifiers (§2.3.7). Never <c>null</c>.</param>
+    /// <param name="sourceIdentity">
+    /// The identity of the source whose element is removed — the value
+    /// <see cref="ATKModifier.SourceIdentity"/> carries.
+    /// </param>
+    /// <param name="lifetime">
+    /// Which of that source's declared lifetimes is being removed. A value the
+    /// carrier does not admit (<c>Immediate</c>) removes nothing: no element here
+    /// can declare it (§2.3.7 item 8).
+    /// </param>
+    /// <returns>The resulting collection, ordered by identity ordinal ascending.</returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="modifiers"/> is <c>null</c> (§2.3.7 item 6), or
+    /// <paramref name="sourceIdentity"/> is <c>null</c>.
+    /// </exception>
+    public static ATKModifier[] RemoveLifetime(
+        IReadOnlyList<ATKModifier> modifiers,
+        string sourceIdentity,
+        RelicEffectLifetime lifetime)
+    {
+        ArgumentNullException.ThrowIfNull(modifiers);
+        ArgumentNullException.ThrowIfNull(sourceIdentity);
+
+        var remaining = new List<ATKModifier>(modifiers.Count);
+
+        foreach (var modifier in modifiers)
+        {
+            var isRemoved = modifier.Lifetime == lifetime
+                && string.Equals(modifier.SourceIdentity, sourceIdentity, StringComparison.Ordinal);
+
+            if (!isRemoved)
+            {
+                remaining.Add(modifier);
+            }
+        }
+
+        return SortedBySourceIdentity(remaining);
+    }
+
+    /// <summary>
+    /// Consumes every <c>NextAttack</c>-lifetime element — the mutation the
+    /// owner's <b>qualifying attack</b> performs when it resolves
+    /// (<c>GAME_STATE.md</c> §5.1.4 item 4; <c>COMBAT_RULES.md</c> §3.3 items
+    /// 7–11).
+    ///
+    /// <b>Every unconsumed <c>NextAttack</c> element is consumed, because every
+    /// one of them applied.</b> The composition the attack used sums the whole
+    /// collection (<c>COMBAT_RULES.md</c> §5.6.6 item 2; §3.3 item 10's "a
+    /// qualifying attack consumes <b>all applicable</b> modifiers assigned to
+    /// that attack"), so the removal set and the composition set are the same set
+    /// by construction.
+    ///
+    /// <b>It is lifetime-scoped, and it is the only consumption operation
+    /// here.</b> Every <c>Battle</c>-lifetime element survives a qualifying
+    /// attack untouched (§5.1.4 item 4), which is what makes "a <c>NextAttack</c>
+    /// ATK modifier does not remain active for subsequent attacks" true while
+    /// Berserker Core's standing modifier keeps applying.
+    ///
+    /// <b>Consuming nothing is a no-op.</b> A collection with no
+    /// <c>NextAttack</c> element — the ordinary case — is returned unchanged, and
+    /// a Burn/DoT tick or the Boss's own attack never reaches this operation at
+    /// all: they are not the owner's qualifying attack action (§3.3 item 8).
+    /// </summary>
+    /// <param name="modifiers">The Pet's active modifiers (§2.3.7). Never <c>null</c>.</param>
+    /// <returns>The collection with every <c>NextAttack</c> element removed.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="modifiers"/> is <c>null</c> (§2.3.7 item 6).</exception>
+    public static ATKModifier[] ConsumeForQualifyingAttack(IReadOnlyList<ATKModifier> modifiers)
+    {
+        ArgumentNullException.ThrowIfNull(modifiers);
+
+        var remaining = new List<ATKModifier>(modifiers.Count);
+
+        foreach (var modifier in modifiers)
+        {
+            if (!modifier.IsConsumedByQualifyingAttack)
             {
                 remaining.Add(modifier);
             }

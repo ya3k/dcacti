@@ -665,6 +665,15 @@ public class BattleStateServiceTests
         // through, the seed source, and the durable battle result boundary the
         // terminal paths invoke (ARCHITECTURE.md §4 item 4, DATABASE.md §1). No
         // cache, bus, logger, or second store was introduced.
+        //
+        // The consumed-firing record added by TASK-173 is a fourth per-battle
+        // session input, not a store: BOSS_RULES.md §6.2.4 / PASSIVE_RULES.md §4
+        // make a Persistent Boss Passive eligible to fire at most once per battle,
+        // and that eligibility cannot be a BossState member (§6.2.4 adds none) or
+        // the presence of the transient instance (which expires at step 19a). It is
+        // written once per battle at the activation it authorizes and is read only
+        // to answer the eligibility question, so it persists nothing, caches
+        // nothing, and reaches no database.
         var fields = typeof(BattleStateService)
             .GetFields(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
             .Select(f => f.Name)
@@ -675,6 +684,7 @@ public class BattleStateServiceTests
                 "_battleResults",
                 "_bossConfiguration",
                 "_cardDefinitions",
+                "_consumedBossPassiveFiring",
                 "_petConfiguration",
                 "_relicConfiguration",
                 "_repository",

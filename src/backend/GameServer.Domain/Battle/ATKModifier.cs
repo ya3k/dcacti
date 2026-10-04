@@ -1,7 +1,9 @@
+using GameServer.Domain.Relics;
+
 namespace GameServer.Domain.Battle;
 
 /// <summary>
-/// One applied, Battle-scoped ATK modifier on the active Pet — an element of
+/// One applied ATK modifier on the active Pet — an element of
 /// <c>PetState.ATKModifiers[]</c> (<c>GAME_STATE.md</c> §2.3.7; <c>TASK-136</c>
 /// D1/D2).
 ///
@@ -9,10 +11,24 @@ namespace GameServer.Domain.Battle;
 /// ATKModifier
 /// ├── SourceIdentity          string, required — the replace/refresh and
 /// │                                             removal key
-/// └── ATKModifierPercentage   int, required    — signed percentage points
+/// ├── ATKModifierPercentage   int, required    — signed percentage points
+/// └── Lifetime                string, required — `Battle` | `NextAttack`
 /// </code>
 ///
-/// <b>Exactly two members is the whole schema, and there is no third.</b>
+/// <b>It carries both lifetimes, and the element's own member distinguishes
+/// them</b> (TASK-178, applying Product Owner decision <b>Q-1 = A</b>;
+/// <c>GAME_STATE.md</c> §2.3.7 item 11, §2.3.8 item 3). <c>RELIC_RULES.md</c>
+/// §8.3's table lists <c>ATK</c> twice — <c>Battle</c> (Berserker Core, §8.5
+/// item 4) and <c>NextAttack</c> (Battle Instinct, §8.5 item 10) — and this one
+/// collection carries both, so a <c>NextAttack</c> ATK modifier rides the
+/// existing carrier. There is <b>no</b> <c>NextAttackATKModifiers[]</c>, <b>no</b>
+/// generic <c>NextAttackModifiers[]</c>, and no second ATK-modifier collection
+/// of any kind: no stat's <c>NextAttack</c> modification has two
+/// representations. A consumer must read <see cref="Lifetime"/> from the element
+/// and must not infer it from the collection, from the source's kind, or from
+/// the <c>effectType</c> (§2.3.7 item 11).
+///
+/// <b>The three members are the whole schema, and there is no fourth.</b>
 /// <c>GAME_STATE.md</c> §2.3.7 items 4 and 8 forbid a duration, a Turn counter,
 /// an <c>ExpiresAt</c>, an <c>ExpiryCondition</c>, a "consumed" flag, a priority, a
 /// stack count, an ordering index, a target reference, a remaining-use counter,
@@ -51,7 +67,10 @@ namespace GameServer.Domain.Battle;
 /// element rather than appending a second one
 /// (<see cref="ATKModifiers.Apply"/>), so two simultaneous elements always mean two
 /// distinct sources — which is what makes them independently composable and
-/// independently removable (<c>TASK-136</c> D7, §2.3.7 item 4).
+/// independently removable (<c>TASK-136</c> D7, §2.3.7 item 4). The <b>lifetime is
+/// not part of that key</b>: a distinguishing property is part of the element, so a
+/// <c>NextAttack</c> source that re-triggers before consumption refreshes its one
+/// element instead of accumulating duplicates (§2.3.7 items 4 and 11).
 ///
 /// This type is deliberately minimal and framework-independent
 /// (<c>ARCHITECTURE.md</c> §2.1): it references no ASP.NET Core, SignalR, EF Core,
@@ -90,10 +109,52 @@ namespace GameServer.Domain.Battle;
 /// every one of those boundaries and would invite the two representations §0 item 5
 /// forbids — the same reasoning <c>PetState.Crit</c>'s percentage unit records.
 /// </param>
+/// <param name="Lifetime">
+/// The element's declared lifetime — <c>Battle</c> or <c>NextAttack</c>
+/// (<c>GAME_STATE.md</c> §2.3.7 item 11; <c>RELIC_RULES.md</c> §8.3's two
+/// <c>ATK</c> rows).
+///
+/// <b>What each lifetime means is owned elsewhere and is not interpreted
+/// here.</b> §2.3.7 item 11 and §5.1.4 item 4 reference
+/// <c>COMBAT_RULES.md</c> §3.3 items 7–11 for the <c>NextAttack</c>
+/// boundary — the <b>same</b> boundary the <c>NextAttackCritModifiers[]</c>
+/// element uses, not a second one — and <c>RELIC_RULES.md</c> §8.3 item 4 for
+/// what a <c>Battle</c> modification means ("a standing modification for the
+/// remainder of the battle"). This member only states which of the two the
+/// element declares.
+///
+/// <b>It is never <c>Immediate</c>.</b> §2.3.7 item 8 states that
+/// <c>Immediate</c> "leaves no standing modification behind" and "therefore never
+/// produces an element here", so the apply and read paths reject it rather than
+/// admitting an element the contract cannot have.
+/// </param>
 public readonly record struct ATKModifier(
     string SourceIdentity,
-    int ATKModifierPercentage)
+    int ATKModifierPercentage,
+    RelicEffectLifetime Lifetime)
 {
+    /// <summary>
+    /// The <c>Battle</c>-lifetime element this type carried before the second
+    /// lifetime existed — an <c>ATK</c> modification a source applies for the
+    /// remainder of the battle (<c>RELIC_RULES.md</c> §8.3 item 4), which is what
+    /// §8.5 item 4's Berserker Core declares.
+    ///
+    /// <b>It states the lifetime rather than defaulting it.</b>
+    /// <c>GAME_STATE.md</c> §2.3.8 item 3 requires the serialized member on
+    /// <b>every</b> element, including a <c>Battle</c>-lifetime one, and states
+    /// that "there is no omitted-member and no defaulted-lifetime form, so a
+    /// reader never infers a lifetime from absence". This overload keeps the
+    /// pre-existing two-member call shape spelling the <c>Battle</c> case
+    /// explicitly; it is not a third representation of an element, and the
+    /// primary constructor still requires the lifetime to be stated.
+    /// </summary>
+    /// <param name="sourceIdentity">The source identity, on the same terms as the primary constructor.</param>
+    /// <param name="atkModifierPercentage">The signed percentage points, on the same terms as the primary constructor.</param>
+    public ATKModifier(string sourceIdentity, int atkModifierPercentage)
+        : this(sourceIdentity, atkModifierPercentage, RelicEffectLifetime.Battle)
+    {
+    }
+
     /// <summary>
     /// Whether this modifier carries a well-formed identity — the condition
     /// <c>GAME_STATE.md</c> §2.3.7 item 3 makes the replace/refresh and removal key
@@ -104,4 +165,30 @@ public readonly record struct ATKModifier(
     /// which is the one property the identity exists to provide.
     /// </summary>
     public bool HasSourceIdentity => !string.IsNullOrWhiteSpace(SourceIdentity);
+
+    /// <summary>
+    /// Whether this element's declared lifetime is one the carrier admits —
+    /// <c>Battle</c> or <c>NextAttack</c> (<c>GAME_STATE.md</c> §2.3.7 items 8
+    /// and 11).
+    ///
+    /// <c>Immediate</c> is not one of them: §2.3.7 item 8 states it "leaves no
+    /// standing modification behind and which therefore never produces an element
+    /// here", and an undefined value (a value outside
+    /// <see cref="RelicEffectLifetime"/>'s closed set) is not a lifetime any
+    /// document authors.
+    /// </summary>
+    public bool HasCarrierLifetime =>
+        Lifetime is RelicEffectLifetime.Battle or RelicEffectLifetime.NextAttack;
+
+    /// <summary>
+    /// Whether this element is one the qualifying owner attack consumes
+    /// (<c>GAME_STATE.md</c> §5.1.4 item 4; <c>COMBAT_RULES.md</c> §3.3 items
+    /// 7–11).
+    ///
+    /// It is a reading of the element's own declared lifetime, never an
+    /// inference from the collection or the source: a <c>Battle</c> element
+    /// survives every qualifying attack and is removed only when its source is
+    /// removed or the battle ends (§5.1.4 items 4–5).
+    /// </summary>
+    public bool IsConsumedByQualifyingAttack => Lifetime == RelicEffectLifetime.NextAttack;
 }

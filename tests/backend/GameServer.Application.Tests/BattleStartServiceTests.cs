@@ -313,12 +313,18 @@ public class BattleStartServiceTests
     }
 
     [Theory]
+    // BOSS_RULES.md §6 defines exactly five content-defined MVP Bosses; §6.4
+    // fixes each canonical technical Identity, and the resolution compares
+    // against BossId.Value ("fixed here so no task invents its own"). TASK-172
+    // added the last two, so all five must resolve — a Boss the set contains may
+    // never be rejected.
     [InlineData("boss-hoa-long")]
     [InlineData("boss-thuy-ma")]
     [InlineData("boss-moc-yeu")]
+    [InlineData("boss-son-thach-ve")]
+    [InlineData("boss-kim-loi-vuong")]
     public async Task Start_ShouldAcceptEveryContentDefinedMvpBoss(string bossId)
     {
-        // BOSS_RULES.md §6 defines exactly these three.
         var harness = new Harness();
 
         var result = await harness.StartAsync(
@@ -327,6 +333,45 @@ public class BattleStartServiceTests
             relicLoadout: ["relic_1", "relic_2", "relic_3"]);
 
         Assert.True(result.Succeeded);
+    }
+
+    [Theory]
+    // The Boss's display name is presentation-only content (§6.4) and is never a
+    // technical identifier in state, events, persistence, or the API — so it must
+    // not be accepted where a bossId belongs.
+    [InlineData("Hỏa Long")]
+    [InlineData("Thủy Ma")]
+    [InlineData("Mộc Yêu")]
+    [InlineData("Sơn Thạch Vệ")]
+    [InlineData("Kim Lôi Vương")]
+    public async Task Start_WithADisplayName_ShouldRejectWithBossNotFound(string displayName)
+    {
+        var harness = new Harness();
+
+        var result = await harness.StartAsync(
+            bossId: displayName,
+            cardLoadout: [BasicA, BasicB, BasicC],
+            relicLoadout: ["relic_1", "relic_2", "relic_3"]);
+
+        Assert.Equal(BattleStartOutcome.BossNotFound, result.Outcome);
+    }
+
+    [Fact]
+    public async Task Start_ShouldResolveEveryDefinitionInTheMvpSet()
+    {
+        // The set the resolution reads is BossDefinitions.All, so every member
+        // must resolve — this closes the gap an All/BossId mismatch would open.
+        var harness = new Harness();
+
+        foreach (var boss in BossDefinitions.All)
+        {
+            var result = await harness.StartAsync(
+                bossId: boss.BossId.Value,
+                cardLoadout: [BasicA, BasicB, BasicC],
+                relicLoadout: ["relic_1", "relic_2", "relic_3"]);
+
+            Assert.True(result.Succeeded);
+        }
     }
 
     // -----------------------------------------------------------------------
