@@ -1,6 +1,51 @@
 # Database
 
-**Version:** 1.30 (§5 item 4 rule (a) — **stale-example correction only** per
+**Version:** 1.34 (§1 note item 5 and §5 item 4 `BossDefinition` provisioning
+references **reconciled** per TASK-175: all five MVP `BossDefinition` rows are
+now provisioned via EF Core migrations — the initial three via
+`20260926151112_ProvisionBossDefinitions` (TASK-053) and the remaining two
+(`boss-def-son-thach-ve`, `boss-def-kim-loi-vuong`) via
+`20261004094100_ProvisionTwoRemainingMvpBosses`. **No table, column, constraint,
+index, migration, stored value, schema shape, token, enum mapping, or gameplay
+value changes**; the clarification aligns the documentation with the existing
+provisioning migrations. Decision source: TASK-175. Prior 1.33: (§1 note item 3's `resetBehavior` contract **clarified** per
+TASK-173: for a **Boss** Passive, the existing `Persistent` token additionally
+carries the once-per-battle firing eligibility contract defined in
+`PASSIVE_RULES.md` §4 and `BOSS_RULES.md` §6.2.4, so the runtime reads that
+eligibility from the definition's declared value. **No table, column,
+constraint, index, migration, stored value, schema shape, token, enum mapping, or
+gameplay value changes**; the token set remains exactly
+`Default` | `Partial` | `Persistent` with `Persistent` → `NoReset`, and the
+clarification is a statement about the existing value's meaning. Decision
+source: TASK-173. Prior 1.32 (§1 `BossDefinition` **content-set reconciliation** per
+TASK-172: the document described the content-defined Boss set as **3** and the
+row set as **exactly three**, all written before the TASK-171 Product Owner
+decisions were applied to `BOSS_RULES.md` §6. The set is now stated as
+**content-defined: 5** — the three provisioned rows plus **Sơn Thạch Vệ /
+`boss-def-son-thach-ve`** and **Kim Lôi Vương / `boss-def-kim-loi-vuong`** —
+correcting §1's `BossDefinition` entity block, the §1 item-2 canonical-value
+list, the §1 note item 5 row-set and row-content statements, and §5 item 4's
+rule-(a) deferral record. **No table, column, constraint, index, migration,
+stored value, schema shape, vocabulary, gameplay value, or provisioned row
+changes**: every corrected count, key, and identity is transcribed from
+`BOSS_RULES.md` §6/§6.4 and TASK-171, and the TASK-052/TASK-053 provisioning
+record is preserved as statements about what those tasks did at the time. The
+two new rows remain **provisioned-later**, not content-blocked — no row is
+inserted by this document. Prior 1.31 (§1 CardDefinition content-set reconciliation per TASK-169:
+the document described the complete content-defined `CardDefinition` set as
+**3 Basic + 3 Pet Skill = six rows** in five places, all written before TASK-168
+provisioned the two remaining Pet Skill Cards. The set is now stated as **3 Basic
+Cards (`CARD_RULES.md` §2) + 5 Pet Skill Cards (`CARD_RULES.md` §4.1)** — the
+three authored first plus **Venomous Bloom / `card-venomous-bloom`** and
+**Earthshaker / `card-earthshaker`** — correcting §1's `CardDefinition` block,
+§1 Card contract item 7, §1 Card contract item 8, §3's `effectType`
+constraint-line parenthetical, and §5 item 4's provisioning record.
+**No table, column, constraint, index, migration, stored value, schema shape,
+vocabulary, or gameplay value changes**: every corrected count, key, and name is
+transcribed from `CARD_RULES.md` §2/§4.1 and from what TASK-168 already
+provisioned, and the historical migration records (TASK-085's six-row Card set,
+TASK-112's encoding, TASK-132's Relic re-encoding) are preserved as statements
+about what those tasks did at the time. Prior 1.30 (§5 item 4 rule (a) — **stale-example correction only** per
 TASK-167: the rule cited "the two TBD Signature Skills — `CARD_RULES.md` §4.1" as
 an example of a deferred row, which the TASK-166 Signature Skill decisions
 retired. The rule itself is **unchanged** — only content-defined rows may be
@@ -309,8 +354,13 @@ CardDefinition                    (static content — MVP scope target
 │                                  `MVP_SCOPE.md` §1; only content-defined
 │                                  rows may be provisioned, §5 item 4; the
 │                                  defined rows are the 3 Basic Cards
-│                                  (`CARD_RULES.md` §2) and the 3 Pet Skill
-│                                  Cards (`CARD_RULES.md` §4.1) — TASK-082
+│                                  (`CARD_RULES.md` §2) and the 5 Pet Skill
+│                                  Cards (`CARD_RULES.md` §4.1) — the three
+│                                  authored first (TASK-110) plus Venomous
+│                                  Bloom / `card-venomous-bloom` and
+│                                  Earthshaker / `card-earthshaker`
+│                                  (TASK-166 decisions, authored by TASK-167,
+│                                  provisioned by TASK-168) — TASK-082
 │                                  decision A / R1-1)
 ├── CardDefinitionId (PK)         (value form `card-<ascii-kebab-case-name>`,
 │                                  e.g. "card-heal" — ASCII kebab-case of the
@@ -361,9 +411,8 @@ PlayerUnlockedCard               (Player owns Card unlocks — ADR-012;
 RelicDefinition                    (static content — MVP scope target
 │                                   `MVP_SCOPE.md` §1; only content-defined
 │                                   rows may be provisioned, §5 item 4; the
-│                                   defined rows and any deferred row are
-│                                   owned by `RELIC_RULES.md` §6 — TASK-082
-│                                   decision A / R2-8)
+│                                   canonical defined rows are owned by
+│                                   `RELIC_RULES.md` §6 — TASK-176)
 ├── RelicDefinitionId (PK)         (value form `relic-<ascii-kebab-case-name>`,
 │                                   e.g. "relic-berserker-core" — ASCII
 │                                   kebab-case of the Relic's documented name
@@ -409,7 +458,7 @@ Relic                                (a player's OWNED instance, if Relics
 
 BossDefinition                       (static content — MVP scope target:
  │                                    5 Bosses, MVP_SCOPE.md §1;
- │                                    content-defined: 3, BOSS_RULES.md
+ │                                    content-defined: 5, BOSS_RULES.md
  │                                    §6; only content-defined rows may
  │                                    ever be provisioned — see contract
  │                                    note below)
@@ -596,19 +645,30 @@ extended by TASK-111 D-1/D-2/D-3/D-4/D-5)
    - Only the `CardDefinition` rows in provisioning were migrated, per
      `CARD_RULES.md` §2/§4.1. The three Basic Cards carry a full structured
      effect because §2 authors their effect completely. The three Pet Skill
-     Cards carry the effect identity §4.1 names, because §4.1 now authors their
-     magnitudes (TASK-110) — **see item 8, which now records their encoded
-     state.**
+     Cards authored at that time carry the effect identity §4.1 named, because
+     §4.1 now authors their magnitudes (TASK-110) — **see item 8, which now
+     records the current encoded state.** The **five** Pet Skill Cards §4.1 now
+     defines are the current set (item 8); the two later-authored ones
+     (Venomous Bloom, Earthshaker) were provisioned already encoded, so no
+     identity-only stage applies to them.
    - TASK-082 itself is not modified, re-opened, or re-statused
      (`TASK_LIFECYCLE.md` §3 — completed tasks are immutable).
-8. **The six provisioned rows are encoded in this shape.** (TASK-111 **D-6**;
-   encoded by TASK-112) All six content-defined `CardDefinition` rows now hold
-   the array shape above. The three §2 Basic Card rows are **contract-compatible**
-   with it — their single effect is the array's single element, stored as a
-   one-element array (D-1b) — and the three Pet Skill rows store **one element
-   per effect** §4.1 states (two each), with every magnitude transcribed from
-   `CARD_RULES.md` §2/§4.1 and no value computed or invented (§5 item 4 rule
-   (b)). Under **D-6b** the three `Undetermined` markers are **retired**: §4.1
+8. **The provisioned rows are encoded in this shape.** (TASK-111 **D-6**;
+   encoded by TASK-112; extended by TASK-168) **All eight** content-defined
+   `CardDefinition` rows now hold the array shape above — the three §2 Basic
+   Cards, the three §4.1 Pet Skill rows authored at the time of the encoding,
+   and the two §4.1 Pet Skill rows added since (Venomous Bloom /
+   `card-venomous-bloom` and Earthshaker / `card-earthshaker`, TASK-166
+   decisions applied by TASK-167). The three §2 Basic Card rows are
+   **contract-compatible** with the shape — their single effect is the array's
+   single element, stored as a one-element array (D-1b) — and the §4.1 Pet
+   Skill rows store **one element per effect** §4.1 states (two each for
+   Inferno, Tidal Barrier, and Venomous Bloom; one for Iron Fang and
+   Earthshaker), with every magnitude transcribed from `CARD_RULES.md`
+   §2/§4.1 and no value computed or invented (§5 item 4 rule (b)). The two
+   TASK-168 rows were written **directly in that ARRAY shape** at provisioning
+   time — no further encoding migration exists or is needed for them. Under
+   **D-6b** the three `Undetermined` markers are **retired**: §4.1
    now authors every Pet Skill magnitude (TASK-110), so **no provisioned content
    row remains in that state** — the member itself stays valid for an effect
    whose magnitude is not yet authored (item 9), but nothing provisioned needs
@@ -619,8 +679,9 @@ extended by TASK-111 D-1/D-2/D-3/D-4/D-5)
    chance) rather than the superseded `Power` placeholder. **Every row now
    conforms to the full contract**, and a reader may treat the present rows as
    the contract's encoded form. No rule, magnitude, or schema shape was changed
-   by that encoding: the column remained `jsonb NOT NULL`, no column or table was
-   added, `RelicDefinition` was untouched, and no effect is applied anywhere
+   by that encoding or by the later provisioning: the column remained
+   `jsonb NOT NULL`, no column or table was added, `RelicDefinition` was
+   untouched, and no effect is applied anywhere
    (item 5).
 9. **An unauthored magnitude is represented, never invented.** (TASK-111
    **D-3**: `Undetermined` "remains valid for effects whose authored magnitude
@@ -729,8 +790,12 @@ D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
      (`§5` item 4 rule (b)). No provisioned row carries an `Undetermined`
      element, because §8.5 authors every magnitude; the member itself remains
      valid for an effect whose magnitude is not yet authored (`RELIC_RULES.md`
-     §8.2 item 2). **`Burning Curse` remains unprovisioned** — §6 note 3 / §8.5
-     item 4 keep it deferred, and no placeholder row, Trigger, value, or
+     §8.2 item 2). **`Burning Curse` and the five new MVP Relics remain unprovisioned** —
+      under TASK-176 all 10 Relics are content-defined in `RELIC_RULES.md` §6/§8.5
+      (Burning Curse's static-modifier conflict resolved to `OnBattleStart`), with
+      their provisioning pending a downstream migration task; no placeholder row was
+      inserted for them. [Prior note: §6 note 3 / §8.5
+     item 4 kept it deferred prior to TASK-176, and no placeholder row, Trigger, value, or
      condition is inserted for it. The column set, the `Relic` ownership table,
      and every other table are unchanged by that migration.
 
@@ -762,12 +827,17 @@ D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
      — ASCII only, lowercase, kebab-case, stable, no Vietnamese diacritics,
      no display/localization text, no spaces, no runtime-generated or
      runtime-slugified identifiers.
-   - **Canonical values** for the three content-defined MVP Bosses
-     (`BOSS_RULES.md` §6), which are **not** the `Identity` values:
+   - **Canonical values** for the content-defined MVP Bosses
+     (`BOSS_RULES.md` §6), which are **not** the `Identity` values. All
+     five rows are provisioned through migrations
+     `20260926151112_ProvisionBossDefinitions` and
+     `20261004094100_ProvisionTwoRemainingMvpBosses`:
      ```text
-     Hỏa Long    boss-def-hoa-long      (Identity: boss-hoa-long)
-     Thủy Ma     boss-def-thuy-ma       (Identity: boss-thuy-ma)
-     Mộc Yêu     boss-def-moc-yeu       (Identity: boss-moc-yeu)
+     Hỏa Long      boss-def-hoa-long       (Identity: boss-hoa-long)
+     Thủy Ma       boss-def-thuy-ma        (Identity: boss-thuy-ma)
+     Mộc Yêu       boss-def-moc-yeu        (Identity: boss-moc-yeu)
+     Sơn Thạch Vệ  boss-def-son-thach-ve   (Identity: boss-son-thach-ve)
+     Kim Lôi Vương boss-def-kim-loi-vuong  (Identity: boss-kim-loi-vuong)
      ```
    - **Source / ownership:** supplied by game content/Domain, **not**
      database-generated. The Domain `BossDefinition` record carries it
@@ -828,7 +898,14 @@ D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
      (`PassiveResetBehavior`): `Default` → `Default`, `Partial` →
      `Partial`, `Persistent` → `NoReset` — the JSON/storage names are
      the contract; internal representation maps to them, not vice
-     versa.
+     versa. For a **Boss** Passive, the `Persistent` token additionally
+     carries the once-per-battle firing eligibility contract defined in
+     `PASSIVE_RULES.md` §4 and `BOSS_RULES.md` §6.2.4 — the
+     definition-level declaration is what selects it, so the runtime
+     reads it from this stored value rather than from any new member.
+     That is a statement about the existing value's meaning: the token
+     set, the mapping above, the stored shape, and the schema are
+     unchanged, and no row, column, or migration is added.
 4. **`SkillDefinition` members** (JSON object, NOT NULL — every Boss has
    exactly one Skill, `BOSS_RULES.md` §1/§6.4):
    ```json
@@ -851,14 +928,20 @@ D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
    canonical Boss definitions: provisioning must be deterministic, must
    be idempotent, and must never depend on a player's runtime battle.
    Only content-defined Bosses
-   (currently 3 — `BOSS_RULES.md` §6) may ever be provisioned; the
+   (all 5 — `BOSS_RULES.md` §6) may ever be provisioned; the
    5-Boss figure is the MVP scope target (`MVP_SCOPE.md` §1), not
-   permission to create placeholder rows for undefined content. The
+   permission to create placeholder rows for undefined content. All five
+   Bosses are content-defined (`BOSS_RULES.md` §6), and all five
+   rows are provisioned via EF Core migrations: the initial three
+   (`boss-def-hoa-long`, `boss-def-thuy-ma`, `boss-def-moc-yeu`) via
+   `20260926151112_ProvisionBossDefinitions` (TASK-053), and the remaining two
+   (`boss-def-son-thach-ve`, `boss-def-kim-loi-vuong`) via
+   `20261004094100_ProvisionTwoRemainingMvpBosses`. The
    `BossDefinitionId` of item 2 adds no seed of its own: no `HasData`,
    seed, or startup loader exists for this model, and the only
    provisioning path is the migration INSERT decided below.
-   - **Mechanism — decided.** (TASK-052) The three rows are provisioned
-     by an **EF Core migration that INSERTs them** into `BossDefinition`,
+   - **Mechanism — decided.** (TASK-052) The rows are provisioned
+     by **EF Core migrations that INSERT them** into `BossDefinition`,
      applied through the project's existing `dotnet ef database update`
      workflow. `HasData`, a seed, a startup loader/upsert, a separate
      manual-SQL deployment path, and any runtime provisioning
@@ -867,12 +950,15 @@ D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
      `BossDefinition`: no other content table's provisioning
      (`PetDefinition`, `CardDefinition`, `RelicDefinition`, …) is decided
      here, and each remains open (`§5` item 4).
-   - **Row set — exactly three rows.** The canonical `BossDefinitionId`
+   - **Row set — all five content-defined rows are provisioned.**
+     The five provisioned rows are the canonical `BossDefinitionId`
      values of item 2 (`boss-def-hoa-long`, `boss-def-thuy-ma`,
-     `boss-def-moc-yeu`), each with its `Identity` from `BOSS_RULES.md`
-     §6.4 (`boss-hoa-long`, `boss-thuy-ma`, `boss-moc-yeu`). No
-     placeholder rows (first paragraph), and no rows for the two MVP
-     Bosses that are not yet content-defined.
+     `boss-def-moc-yeu`, `boss-def-son-thach-ve`, `boss-def-kim-loi-vuong`),
+     each with its `Identity` from `BOSS_RULES.md` §6.4 (`boss-hoa-long`,
+     `boss-thuy-ma`, `boss-moc-yeu`, `boss-son-thach-ve`, `boss-kim-loi-vuong`).
+     No placeholder rows (first paragraph). The initial three were provisioned
+     by `20260926151112_ProvisionBossDefinitions` (TASK-053), and the remaining
+     two were provisioned by `20261004094100_ProvisionTwoRemainingMvpBosses`.
    - **Row content — transcribed, never invented.** Each row's five
      columns are sourced per column, with no value computed or invented
      at provisioning time: `BossDefinitionId` from item 2; `Identity`
@@ -881,9 +967,16 @@ D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
      `threshold` from `BOSS_RULES.md` §6.2/§6.4 (including `null` for
       Thủy Ma's non-match-charged Passive — `§3`: `threshold = null`
       means no match-charging threshold, **not** always-active; the
-      trigger is Battle Start, `BOSS_RULES.md` §6.2) and `resetBehavior` = `Default` (the documented
-     default when a rule states no override — no Boss Passive documents
-     one, `PASSIVE_RULES.md` §4 item 3); `SkillDefinition` per item 4's
+      trigger is Battle Start, `BOSS_RULES.md` §6.2 — and the same `null`
+      for Sơn Thạch Vệ's and Kim Lôi Vương's non-match-charged Passives,
+      whose triggers are `Boss HP ≤ 50%` and `Player Combo ≥ 4`,
+      `BOSS_RULES.md` §6.2) and `resetBehavior` from `PASSIVE_RULES.md` §4 (the documented
+     default when a rule states no override is `Default`; Sơn Thạch Vệ's
+     Passive is the one documented override — the non-default
+     **No reset / persistent** form, `BOSS_RULES.md` §6.2.4,
+     `PASSIVE_RULES.md` §4 item 3 — whose storage token is the existing
+     `Persistent`, no new token being introduced);
+     `SkillDefinition` per item 4's
      member list with `skillId`, `baseDamage`, `chargeRequirement`, and
      `cooldownTurns` from `BOSS_RULES.md` §6.3/§6.4. The authoritative
      documents own the values and remain the only source for them —
@@ -892,21 +985,21 @@ D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
      (item 1) and are never written by provisioning; the storage
      encoding of `Element` is an implementation detail (header, `§5`
      item 1).
-   - **Idempotency and uniqueness.** The migration inserts each row at
-     most once and is tracked in EF's migration history, so re-running
+   - **Idempotency and uniqueness.** The migrations insert each row at
+     most once and are tracked in EF's migration history, so re-running
      `dotnet ef database update` inserts nothing further; the end state
-     is identical whether the migration ran once or was retried —
-     exactly three rows with identical content (first paragraph).
+     is identical whether the migrations ran once or were retried —
+     all five rows with identical content (first paragraph).
      `§3`'s `BossDefinitionId` primary key and `Identity NOT NULL,
      UNIQUE` are the database-level guarantee against duplicates.
      Provisioning never updates, overwrites, or deletes an existing row.
    - **Availability guarantee (ordering, every battle-capable
-     environment).** (TASK-052) The migration is applied in **every
+     environment).** (TASK-052) The migrations are applied in **every
      battle-capable environment** — any environment in which a battle can
-     be started and ended — and within each such environment it is
-     applied **before that environment's first battle-end write**: the
-     three rows exist before any `BattleResult` insert can attempt the
-     FK. Until the migration has been applied in an environment, no
+     be started and ended — and within each such environment are
+     applied **before that environment's first battle-end write**: all
+     five rows exist before any `BattleResult` insert can attempt the
+     FK. Until the migrations have been applied in an environment, no
      `BossDefinition` row exists there and the FK cannot be satisfied.
    - **Missing provisioning surfaces only as the documented fail-closed
      behaviour.** When the rows are absent, the failure occurs on the
@@ -1269,7 +1362,9 @@ CardDefinition.EffectDefinition     jsonb, NOT NULL — an ARRAY of effect      
                                           member only)
 CardDefinition.EffectDefinition.effectType ∈ {Heal, Shield, Power, Damage,   (§1; CARD_RULES.md §2 for the
   Burn, Crit}                            first three, §4.1 for the last three
-                                          — D-2 named all six; `Damage` is
+                                          — D-2 named all six; the §4.1 Pet
+                                          Skill set is since five Cards, which
+                                          adds no member — `Damage` is
                                           distinct from `Power`, which
                                           denotes Power Charge — D-4)
 CardDefinition.EffectDefinition.valueType ∈ {Flat, PercentMaxHp,              (§1; §2's two interpretations,
@@ -1357,7 +1452,7 @@ BossDefinition.Identity           NOT NULL, UNIQUE                   (canonical 
                                                                       §6.4; the unique target of the FK lookup in §1)
 BossDefinition.PassiveDefinition.resetBehavior ∈ {Default, Partial, Persistent}   (PASSIVE_RULES.md §4)
 BossDefinition.PassiveDefinition.threshold = null ⇔ no match-charging threshold (NOT always-active;   (BOSS_RULES.md §6.2,
-                                              the trigger is defined per Passive, not by null)          BOSS_RULES.md §6.2.1-§6.2.3)
+                                              the trigger is defined per Passive, not by null)          BOSS_RULES.md §6.2.1-§6.2.5)
 Player.PlayerId (per battle) must own exactly one active Pet selection
   at battle start — enforced at the Application layer (ARCHITECTURE.md),
   not purely at the DB level, since it is a request-time rule
@@ -1403,7 +1498,7 @@ when a real query pattern requires them (anti-overengineering,
 4. Provisioning mechanisms for static-content rows: for
    `BossDefinition` the mechanism **is** defined by this document
    (TASK-052): an EF Core migration that INSERTs the three
-   content-defined rows, applied through the existing
+   content-defined rows **that were defined at that time**, applied through the existing
    `dotnet ef database update` workflow in every battle-capable
    environment before that environment's first `BattleResult` write —
    no `HasData`, no seed, no startup loader, no separate manual-SQL
@@ -1418,11 +1513,14 @@ when a real query pattern requires them (anti-overengineering,
    **content-defined rows** may be inserted — a row whose required
    members have no documented value stays unprovisioned and deferred in
    its owning domain document (the rows still deferred are recorded in
-   `RELIC_RULES.md` §6, and **no Pet row remains deferred** as of TASK-167 —
+   `RELIC_RULES.md` §6; **no Pet row remains deferred** as of TASK-167 —
    all five MVP Pets' Signature Skills are now content-defined in
    `CARD_RULES.md` §4.1, so the Thanh Xà and Sơn Hùng rows are merely
-   **provisioned-later**, not content-blocked; they are inserted by the
-   separate provisioning task, not by this rule); (b) the
+   **provisioned-later**, not content-blocked; and **no Boss row remains
+   content-blocked** — all five MVP Bosses are content-defined in
+   `BOSS_RULES.md` §6 and provisioned across migrations
+   `20260926151112_ProvisionBossDefinitions` and
+   `20261004094100_ProvisionTwoRemainingMvpBosses`); (b) the
    migration's row values (keys, names, and each table's own members —
    `LoadoutCopyLimit`, `EffectDefinition`, `Trigger`, per the `§1`
    entity blocks) are copied from the owning domain documents, never
@@ -1433,16 +1531,26 @@ when a real query pattern requires them (anti-overengineering,
    `PetDefinition` (3), `CardDefinition` (6), and `RelicDefinition` (4)
    content-defined rows through the same `dotnet ef database update`
    workflow, and the TASK-083 starter-ownership initialization grants the
-   §2 starter rows in a single scoped `GameDbContext.SaveChangesAsync`. The
-   four `RelicDefinition` rows were subsequently **re-encoded into the
+   §2 starter rows in a single scoped `GameDbContext.SaveChangesAsync`. Those
+   six `CardDefinition` rows were the complete content-defined Card set at the
+   time of that migration; **two further `CardDefinition` rows and two further
+   `PetDefinition` rows are now provisioned** by a second, same-mechanism
+   data-only migration (TASK-168: `card-venomous-bloom`, `card-earthshaker`,
+   `pet-thanh-xa`, `pet-son-hung`, in migration
+   `20261004055006_ProvisionThanhXaAndSonHungSignatureSkills`), so the
+   currently provisioned content-defined set is **`PetDefinition` (5),
+   `CardDefinition` (8), and `RelicDefinition` (4)**. The four `RelicDefinition`
+   rows were subsequently **re-encoded into the
    structured shape** `RELIC_RULES.md` §8 defines (TASK-132, migration
    `20261003074309_StructureRelicDefinitionStructuredColumns`) — a
    representation migration over the same four rows, with every value
    transcribed from `RELIC_RULES.md` §8.5 and none computed or invented
    (rule (b) above). That migration provisions no row: it inserts none,
    deletes none, and leaves `Burning Curse` deferred (rule (a) above,
-   `RELIC_RULES.md` §6 note 3). The `BossDefinition` migration is **complete**
-   (TASK-053) — migration `20260926151112_ProvisionBossDefinitions` was
-   applied through `dotnet ef database update`, so the three canonical
-   rows are provisioned and every `BattleResult` write's FK target exists
-   wherever the migration has been applied (TASK-051 decision A3).
+   `RELIC_RULES.md` §6 note 3). The `BossDefinition` migrations are
+   **complete** — migration `20260926151112_ProvisionBossDefinitions`
+   (TASK-053) provisioned the initial three canonical rows, and migration
+   `20261004094100_ProvisionTwoRemainingMvpBosses` provisioned the final two
+   MVP rows (`boss-def-son-thach-ve`, `boss-def-kim-loi-vuong`); all five
+   canonical rows are provisioned and every `BattleResult` write's FK target
+   exists wherever the migrations have been applied (TASK-051 decision A3).

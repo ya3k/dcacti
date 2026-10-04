@@ -1,6 +1,25 @@
 # Redis State
 
-**Version:** 1.10 (§7 item 16 added — `PetState.ATKModifiers[]`
+**Version:** 1.12 (§7 item 17 added — `PetState.BurnDamageModifiers[]`
+(`GAME_STATE.md` §2.3.9/§2.3.10/§5.1.5) adds no Redis key, no Redis-only field,
+and no persistence work: it is a `PetState` member of the `BattleState` shape §2
+item 1 already covers, it round-trips under the existing obligation with an empty
+array as the no-modifier form and its written order preserved rather than sorted,
+it is written in the same single post-resolution write-back under the unchanged
+`Sequence` compare-and-set and the unchanged §3 sliding TTL, and it has no wire
+consequence because adding state is not adding a wire member
+(`SIGNALR_PROTOCOL.md` §4 item 4). A modified Burn tick's damage itself is
+derived, not stored. **This changes no key, no structure, no lifecycle, no TTL,
+and no concurrency rule**; §1–§6 and §7 items 1–16 are unchanged. Prior 1.11 (§7 item 16 reconciled per **TASK-178** with the
+Product-Owner-approved runtime decision **Q-1 = A**: `PetState.ATKModifiers[]`
+elements now carry their declared `lifetime` (`Battle` | `NextAttack`,
+`GAME_STATE.md` §2.3.7 item 11), and the round-trip obligation therefore covers
+that member too — a record that drops or alters an element's `lifetime` does not
+round-trip. **This changes no key, no structure, no lifecycle, no TTL, and no
+concurrency rule**: the collection remains a `PetState` member of the §2 shape
+item 1 already covers, written in the same single post-resolution write-back
+under the unchanged `Sequence` compare-and-set, with no new Redis key and no
+Redis-only field. §1–§6 and §7 items 1–15 are unchanged. Prior 1.10: (§7 item 16 added — `PetState.ATKModifiers[]`
 (`GAME_STATE.md` §2.3.7, TASK-136 D1/D2) adds no Redis key, no Redis-only field,
 and no persistence work: it is a `PetState` member of the `BattleState` shape §2
 item 1 already covers, it round-trips under the existing obligation with an
@@ -604,9 +623,10 @@ Full active battle state          Full BattleState (GAME_STATE.md §2)
     **structure** change to the store.
 16. **`PetState.ATKModifiers[]` adds no key, no Redis-only field, and no
     persistence work.** `GAME_STATE.md` §2.3.7 defines one new `PetState`
-    collection (TASK-136 D1/D2) — applied, Battle-scoped ATK modifiers, each
-    element carrying a source identity and a signed percentage-point
-    contribution. Its consequences here are these, and nothing more:
+    collection (TASK-136 D1/D2) — applied ATK modifiers, each element carrying a
+    source identity, a signed percentage-point contribution, and its declared
+    `lifetime` (`Battle` | `NextAttack`, `GAME_STATE.md` §2.3.7 item 11,
+    TASK-178). Its consequences here are these, and nothing more:
 
     - **It is part of the §2 shape, so §2 item 1 covers it unchanged.**
       `BattleState` is serialized as JSON matching `GAME_STATE.md` §2 exactly,
@@ -617,8 +637,9 @@ Full active battle state          Full BattleState (GAME_STATE.md §2)
       `Sequence` remains the only one (§4 item 6).
     - **Round-trip losslessness covers it, and an empty collection round-trips
       as empty.** A record that drops an element, alters an
-      `atkModifierPercentage`, reorders elements, or collapses two distinct
-      source identities into one does not round-trip (`GAME_STATE.md` §2.3.8
+      `atkModifierPercentage`, **drops or alters the element's `lifetime`**,
+      reorders elements, or collapses two distinct source identities into one
+      does not round-trip (`GAME_STATE.md` §2.3.8
       items 3 and 5, §2.1.7 item 5). The collection is always present
       (`GAME_STATE.md` §2.3.7 item 6), so a Pet with no active modifier
       serializes an **empty array** — it is never omitted and never `null`,
@@ -655,4 +676,66 @@ Full active battle state          Full BattleState (GAME_STATE.md §2)
 
     Like the Special Gem, commit-record, accounting, Card-cost, and
     Crit-modifier changes above, this is a **content** change to the record
+    rather than a **structure** change to the store.
+17. **`PetState.BurnDamageModifiers[]` adds no key, no Redis-only field, and no
+    persistence work.** `GAME_STATE.md` §2.3.9 defines one new `PetState`
+    collection (TASK-179, documenting the carrier TASK-177 implemented) —
+    applied, `Battle`-scoped Burn-damage modifiers on the active Pet, each
+    element carrying a source identity and a Burn-damage modification in
+    percentage points, and deliberately **no `lifetime` member** because
+    `RELIC_RULES.md` §8.3's `BurnDamage` row fixes the single `Battle` lifetime
+    (`GAME_STATE.md` §2.3.9 item 6). Its consequences here are these, and nothing
+    more:
+
+    - **It is part of the §2 shape, so §2 item 1 covers it unchanged.**
+      `BattleState` is serialized as JSON matching `GAME_STATE.md` §2 exactly,
+      and this collection is a `PetState` member. It introduces no Redis-only
+      field, and §1's key structure is untouched: no
+      `battle:{battleId}:burndamage` key, no hash field, no set, no index, and
+      no second record exists for it. It is **not** a concurrency token;
+      `Sequence` remains the only one (§4 item 6), and it is not a staged
+      subset.
+    - **Round-trip losslessness covers it, and an empty collection round-trips
+      as empty.** A record that drops an element, alters a
+      `burnDamagePercentage`, reorders elements, or collapses two distinct source
+      identities into one does not round-trip (`GAME_STATE.md` §2.3.10 items 3
+      and 5, §2.1.7 item 5). The collection is always present
+      (`GAME_STATE.md` §2.3.9 item 7), so a Pet with no active modifier
+      serializes an **empty array** — it is never omitted and never `null`,
+      unlike `LastCommittedSwapPair` (item 11), whose absence is itself a
+      documented statement. A stored element carrying a blank `sourceIdentity` is
+      a contract violation and is rejected at the read rather than repaired
+      (`GAME_STATE.md` §2.3.10 item 7).
+    - **The ordering obligation is preservation, not a sort.** The collection's
+      order is its written order and is preserved for round-trip fidelity
+      (`GAME_STATE.md` §2.3.9 item 9, §2.3.10 item 6) — the same obligation
+      items 13 and 15 state for the sibling collections, and the deliberate
+      contrast with item 16's deterministic `SourceIdentity` sort for
+      `ATKModifiers[]`. No sorting rule is introduced for this member.
+    - **The lifecycle and concurrency rules are untouched.** Creation,
+      replace/refresh, and source-specific removal all occur inside one
+      resolution and are written in the same single post-resolution write-back as
+      the rest of the state (§4 item 5), under the same `Sequence`
+      compare-and-set (§4 item 2), and under the unchanged §3 sliding TTL. A
+      reader never observes a modifier mid-refresh (`GAME_STATE.md` §5.1.5
+      item 7). A rejected action writes nothing and therefore does not touch this
+      key, reset the TTL, or change this collection (§4 item 7).
+    - **No Burn damage is stored here.** The collection stores the *modifiers*;
+      a modified Burn tick's damage is a value the Damage Pipeline derives at
+      tick resolution (`COMBAT_RULES.md` §3 step 4, §5.2 item 4) and is not a
+      stored field, a Redis-only field, or a second representation of a Burn
+      instance's damage (`GAME_STATE.md` §2.3.9 item 14).
+    - **No expiry of its own is introduced by storage.** The modifier's `Battle`
+      lifetime is owned by `RELIC_RULES.md` §8.3/§8.4 and mutated by
+      `GAME_STATE.md` §5.1.5; Redis adds no TTL, sweep, or expiry for this
+      collection beyond the record's own §3 sliding TTL. In particular, storing
+      it creates no step-19a participation and no cross-battle carry
+      (`GAME_STATE.md` §5.1.5 items 4 and 6).
+    - **No Burn instance is affected.** A value stored here creates, refreshes,
+      extends, or consumes no Burn event and no Burn instance
+      (`COMBAT_RULES.md` §5.2 item 4); the instance and its countdown remain
+      `StatusEffects[]`' and its own §7 item 13 sibling lifecycle.
+
+    Like the Special Gem, commit-record, accounting, Card-cost, ATK-modifier,
+    and Crit-modifier changes above, this is a **content** change to the record
     rather than a **structure** change to the store.

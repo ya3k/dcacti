@@ -1,6 +1,43 @@
 # Boss Rules
 
-**Version:** 2.8 (§6.2.4 reconciled with the TASK-160 Product Owner decision
+**Version:** 2.10 (§6.2.4 **Sơn Thạch Vệ** amended per TASK-173, applying the
+recorded Product Owner decision (Option B): the ambiguous retrigger-guard
+sentence — "The retrigger guard is the authored one-time behavior above, not a
+new state field." — is retired and replaced by the explicit contract. The
+Passive's reset behavior
+is the existing non-default `Persistent` token, and `PASSIVE_RULES.md` §4's Boss
+Passive clause makes that behavior govern **firing eligibility**: the Passive is
+eligible to fire at most once per battle, eligibility is consumed on the first
+activation, and the 3-Turn effect's expiry at step 19a does **not** restore it —
+remaining at or below 50% HP, or leaving and re-entering the threshold, produces
+no further activation. A new battle creates fresh eligibility. **No magnitude,
+duration, trigger, operator, representation, or `TargetStat` changed**; §6.1's
+Enrage contract stays separate, and no new `BossState` field, reset token, event,
+SignalR member, `BattleState` member, Redis key, or database column is
+introduced. Decision source: TASK-173. Prior 2.9: (§6 MVP Boss reference **completed** per TASK-172, applying the
+TASK-171 Product Owner decisions: the two remaining MVP Bosses are now
+content-defined, so §6/§6.1/§6.2/§6.3/§6.4 each gain one row per Boss and §6.3.1's
+closing "not yet content-defined" deferral note is retired. §6.1 gains **Sơn
+Thạch Vệ** (Thổ, HP/MaxHP 3000, ATK 120, DEF 0, EnrageThreshold 1500,
+Initial State `Idle`) and **Kim Lôi Vương** (Kim, HP/MaxHP 2800, ATK 140, DEF 0,
+EnrageThreshold 2100, Initial State `Idle`). §6.2 gains their two Passive rows and
+the `PassiveThreshold = null` disposition for both (neither is match-charged), and
+§6.2 gains §6.2.4/§6.2.5 — their per-Passive detail — with the former §6.2.4
+renumbered to §6.2.6. §6.3 gains their two Skill rows and §6.3.1 items 4 and 5.
+§6.4 gains their two identity rows. **Both new Passives reuse the unchanged
+existing contracts**: the Turn-based `BuffDebuff` `TargetStat = "ATK"` modifier of
+`COMBAT_RULES.md` §5.5 (the §6.2.1 Rage shape), the §5.3 Turn-based lifecycle,
+`PASSIVE_RULES.md` §4's reset forms, and §3 item 2's closed trigger list (`Boss
+HP`, `Combo`). Both Skills are direct damage through the unchanged Damage
+Pipeline using §6.3's unchanged charge/cooldown mechanism. **No new Element,
+trigger category, status type, `TargetStat`, damage type, Boss State, resource,
+representation, event, SignalR member, `BattleState` member, Redis key, or
+database column is introduced, and no schema or provisioning change is made** —
+`MaxHP`/`ATK`/`DEF`/`EnrageThreshold` remain non-column Domain content
+(`DATABASE.md` §1). The `BossDefinition` rows and Domain `BossDefinitions`
+entries for both Bosses remain a separate, later provisioning task. Decision
+source: TASK-171; applying task: TASK-172.
+Prior 2.8: (§6.2.4 reconciled with the TASK-160 Product Owner decision
 **D-2A**, which authorized the Boss's live `HP` and `MaxHP` for MVP client
 synchronization. The deferral sentence — which recorded non-exposure as
 intentional and left "client-visible Boss HP or Boss StatusEffects" to "a
@@ -224,6 +261,8 @@ Boss        Element   Passive (trigger)                          Skill (Effect M
 Hỏa Long    Hỏa       Every 5 Player Matches → gain Rage          Flame Burst → 150 Dmg + Burn (50 dmg/tick, 2 Turns)       Charge: 5 matches, CD: 2T
 Thủy Ma     Thủy      Battle Start → healing received reduced    Drain Power → 120 Dmg + −20 flat Pet Power                Charge: 4 matches, CD: 3T
 Mộc Yêu     Mộc       Every 5 Player Matches → Regen HP           Root → 100 Dmg + −30% Pet ATK (2 Turns)                   Charge: 6 matches, CD: 2T
+Sơn Thạch Vệ Thổ      Boss HP ≤ 50% → gain Rage                    Earthquake → 150 Dmg                                       Charge: 5 matches, CD: 0T
+Kim Lôi Vương Kim     Player Combo ≥ 4 → gain Rage                Thunder Strike → 180 Dmg                                   Charge: 5 matches, CD: 0T
 ```
 
 Skill effect targets (`−Pet Power`, `−Pet ATK`) are the active Pet's
@@ -237,6 +276,8 @@ Boss        Element   HP / MaxHP   ATK   DEF   EnrageThreshold   Initial State
 Hỏa Long    Hỏa       5000         100   50    1500 (30%)        Idle
 Thủy Ma     Thủy      5000         100   50    1500 (30%)        Idle
 Mộc Yêu     Mộc       5000         100   50    1500 (30%)        Idle
+Sơn Thạch Vệ Thổ      3000         120   0     1500 (50%)        Idle
+Kim Lôi Vương Kim     2800         140   0     2100 (75%)        Idle
 ```
 
 ### 6.2 Boss Passive Details
@@ -252,6 +293,8 @@ Boss        Passive Effect                                    Passive Trigger
 Hỏa Long    Gain +20% ATK (Rage) for 3 turns                  Every 5 Player Matches
 Thủy Ma     Active Pet healing reduced by 50% for 3 turns     Battle Start
 Mộc Yêu     Regenerate 5% MaxHP                               Every 5 Player Matches
+Sơn Thạch Vệ Gain +20% ATK (Rage) for 3 turns                 Boss HP ≤ 50%
+Kim Lôi Vương Gain +20% ATK (Rage) for 1 turn                 Player Combo ≥ 4
 ```
 
 **PassiveThreshold (match-charged passives only):** Hỏa Long and Mộc Yêu
@@ -261,6 +304,16 @@ is **Battle Start** (`PASSIVE_RULES.md` §3 — "Battle Start (one-time
 trigger)"), **not** match-based: it has no PassiveThreshold for match
 counting, is never charged via `PassiveTracker.Charge` on Player Matches, and
 emits no `PassiveCharged`/`PassiveTriggered` from match progress.
+
+Sơn Thạch Vệ's trigger (`Boss HP ≤ 50%`) and Kim Lôi Vương's trigger
+(`Player Combo ≥ 4`) are likewise **not** match-based — they are evaluated
+against the post-damage battle state at Boss Response step 18a (§3.3 item 1),
+not accumulated per Player Match. Both therefore have **`PassiveThreshold =
+null`**: neither is charged via `PassiveTracker.Charge` on Player Matches, and
+neither emits `PassiveCharged` from match progress. Per `DATABASE.md` §1 note
+item 3, `null` means **no match-charging threshold**; it is **not** a statement
+that either Passive is always-active — each is threshold-triggered, exactly as
+Thủy Ma's is event-triggered.
 
 #### 6.2.1 Hỏa Long — Rage
 
@@ -387,9 +440,106 @@ emits no `PassiveCharged`/`PassiveTriggered` from match progress.
 - **Repetition:** each valid Mộc Yêu Passive activation applies **one** 5%
   MaxHP regeneration. It does **not** stack as a persistent modifier.
 
-#### 6.2.4 Applied effects and client visibility
+#### 6.2.4 Sơn Thạch Vệ — Rage on an HP threshold
 
-All three effects are **server-authoritative** (§8, `GAME_RULES.md` §18,
+- **Magnitude and duration:** `+20% ATK` for 3 turns. These are this
+  document's values and are not restated elsewhere.
+- **Trigger:** `Boss HP ≤ 50%`, category **Boss HP** (§3 item 2's closed
+  trigger list). It is evaluated at Boss Response step 18a against the
+  **post-damage** battle state (§3.3 item 1) — the HP after the player's damage
+  for that Turn, not before. It is **not** match-charged and is **not**
+  always-active: it is a threshold trigger, and its `PassiveThreshold` is
+  `null` (see §6.2's paragraph above).
+- **This trigger is NOT the Enrage transition.** `EnrageThreshold` is the
+  separate §6.1 base-stat field, and §5 item 4 owns the permanent
+  `Idle → Enraged` transition at `BossHP < EnrageThreshold`. The two boundaries
+  coincide numerically at this Boss (`EnrageThreshold = 1500` with
+  `MaxHP = 3000` is 50%), but they remain **separate contract concepts** with
+  different boundary operators: §5 item 4's Enrage uses strict `<`, while this
+  Passive's trigger uses `≤`. Enrage is defined per Boss in §6; this Passive
+  does not re-express it, and no second Enrage mechanism exists.
+- **Representation and consumption:** a Turn-based `BuffDebuff` Status Effect
+  instance in `BossState.StatusEffects[]` with `TargetStat = "ATK"`,
+  `Magnitude = +20%`, `RemainingTurns = 3` — the same representation the §6.2.1
+  Rage uses, under the existing consumption rule `COMBAT_RULES.md` §5.5
+  (§5.5.1 the rule, §5.5.2 the damage it reaches, §5.5.4 the base stat is never
+  overwritten). `BossState.ATK` remains the immutable/base value and is never
+  overwritten; this effect is **not** a separate `BossState` field
+  (`GAME_STATE.md` §2.3.1, §2.4.1).
+- **Duration and reapplication:** the instance's duration is consumed by the
+  unchanged Turn-based lifecycle (`COMBAT_RULES.md` §5.3) at the step-19a
+  boundary. This Passive is authored as **one-time**, and its reset behavior is
+  the non-default **No reset / persistent** form whose storage token is the
+  existing `Persistent` (`DATABASE.md` §1 note item 3) — documented here per
+  `PASSIVE_RULES.md` §4 item 3, whose Boss Passive clause makes that behavior
+  govern **firing eligibility**:
+  1. It triggers at `Boss HP ≤ 50%`, evaluated against the post-damage state at
+     step 18a (§3.3 item 1).
+  2. It applies `+20% ATK` for 3 Turns, in the representation above.
+  3. Its firing eligibility is **consumed** upon the first activation.
+  4. When the 3-Turn effect expires at step 19a, firing eligibility is **not**
+     restored: the Passive does not re-trigger, even if Boss HP remains
+     `≤ 50%` for any number of later Turns, and even if the Boss leaves the
+     threshold and later re-enters it.
+  5. A new battle creates fresh firing eligibility.
+
+  Consequently no second application source exists within a battle, and no
+  refresh or stacking behavior arises. `Persistent` here does **not** mean the
+  effect lasts indefinitely, and no new reset token is introduced.
+- **When it applies:** at Boss Response step 18a (`GAME_RULES.md` §17 step
+  18a). The application does not retroactively modify damage already resolved
+  earlier in that Turn. Because §3.3 item 2 fixes the Skill evaluation after
+  the Passive resolves, the Skill sees this Rage's updated state.
+- **No new state or protocol:** adds no `BossState` member, no Battle Event, no
+  SignalR member, no status type, and no `TargetStat` value. Firing eligibility
+  is governed by the definition's `Persistent` reset behavior under
+  `PASSIVE_RULES.md` §4 and is consumed upon first activation; no new
+  `BossState` field is added.
+
+#### 6.2.5 Kim Lôi Vương — Rage on a Combo threshold
+
+- **Magnitude and duration:** `+20% ATK` for 1 turn. These are this document's
+  values and are not restated elsewhere.
+- **Trigger:** `Player Combo ≥ 4`, category **Combo** (§3 item 2's closed
+  trigger list; `PASSIVE_RULES.md` §3's alternate form "Combo (e.g. `on Combo
+  ≥ N`)"). It is evaluated at Boss Response step 18a against the post-damage
+  battle state (§3.3 item 1). It is **not** match-charged: its
+  `PassiveThreshold` is `null` (see §6.2's paragraph above).
+- **This trigger is NOT the Enrage transition.** `EnrageThreshold` is the
+  separate §6.1 base-stat field, owned by §5 item 4's permanent
+  `Idle → Enraged` transition at `BossHP < EnrageThreshold` — here `2100` with
+  `MaxHP = 2800`. The Combo trigger does not drive Enrage, the Enrage
+  transition does not trigger this Passive, and the two mechanics are not
+  merged.
+- **Representation and consumption:** a Turn-based `BuffDebuff` Status Effect
+  instance in `BossState.StatusEffects[]` with `TargetStat = "ATK"`,
+  `Magnitude = +20%`, `RemainingTurns = 1` — the same representation the §6.2.1
+  Rage uses, under the existing consumption rule `COMBAT_RULES.md` §5.5
+  (§5.5.1 the rule, §5.5.2 the damage it reaches, §5.5.4 the base stat is never
+  overwritten). `BossState.ATK` remains the immutable/base value and is never
+  overwritten; this effect is **not** a separate `BossState` field
+  (`GAME_STATE.md` §2.3.1, §2.4.1). No `BossNextAttackATKModifier`, no
+  `ComboPunishmentModifier`, and no new `StatusEffect` type is introduced: the
+  stated intent — the Boss's next relevant attack is stronger — is reached
+  through the existing Step-1 `EffectiveBossATK` contribution, which is present
+  in every Boss damage instance (`COMBAT_RULES.md` §5.5.2).
+- **Duration and reapplication:** the instance's duration is consumed by the
+  unchanged Turn-based lifecycle (`COMBAT_RULES.md` §5.3) at the step-19a
+  boundary. Reset behavior is the documented **Default** (`PASSIVE_RULES.md`
+  §4 item 1), and a re-trigger while the instance is active follows the existing
+  refresh-not-stack default (`COMBAT_RULES.md` §5.2 item 2, §5.5.5) — it
+  refreshes the existing instance and does **not** stack magnitude or create a
+  second instance. No new stacking behavior is authored.
+- **When it applies:** at Boss Response step 18a (`GAME_RULES.md` §17 step
+  18a). The application does not retroactively modify damage already resolved
+  earlier in that Turn. Because §3.3 item 2 fixes the Skill evaluation after
+  the Passive resolves, the Skill sees this Rage's updated state.
+- **No new state or protocol:** adds no `BossState` member, no Battle Event, no
+  SignalR member, no status type, and no `TargetStat` value.
+
+#### 6.2.6 Applied effects and client visibility
+
+All five effects are **server-authoritative** (§8, `GAME_RULES.md` §18,
 `ADR-001`). The client does not calculate, predict, or authoritatively apply
 any of them.
 
@@ -438,6 +588,8 @@ Boss        Skill         Charge Req.   CD (T)   Base Dmg   Secondary Effect & M
 Hỏa Long    Flame Burst   5 matches     2        150        Burn: 50 fixed damage/tick for 2 Turns (step 19a ticks)
 Thủy Ma     Drain Power   4 matches     3        120        -20 flat Pet Power (instant, no duration)
 Mộc Yêu     Root          6 matches     2        100        -30% Pet ATK debuff for 2 Turns
+Sơn Thạch Vệ Earthquake   5 matches     0        150        None
+Kim Lôi Vương Thunder Strike 5 matches   0        180        None
 ```
 
 These are **MVP base configuration** — not universal balance invariants. The
@@ -461,23 +613,30 @@ battle creation; they do not represent formulas or scaling rules.
    - **Secondary Effect (Root):** Applies a -30% Pet ATK debuff to the active Pet (`COMBAT_RULES.md` §5.1 Buff/Debuff).
    - **Representation:** Percentage-based ATK reduction (-30% active Pet ATK).
    - **Root Duration:** 2 Turns using the authoritative Turn model (`MATCH3_RULES.md` §8.1 / `GAME_RULES.md` §17). Root is a Turn-based Buff/Debuff, so its one-Turn-of-duration consumption point is governed by the canonical rule in `COMBAT_RULES.md` §5.3 and is not restated here.
+4. **Earthquake (Sơn Thạch Vệ):**
+   - **Base Damage:** 150 (deals damage through Damage Pipeline to active Pet).
+   - **Secondary Effect:** **None.** The Skill applies no debuff, no status effect, and no resource change.
+   - **Duration:** None applies — no secondary effect exists to persist.
+   - **Board Effect:** **None.** The Skill performs no board transformation, gem destruction, gem conversion, freeze, lock, or any other board mechanic.
+5. **Thunder Strike (Kim Lôi Vương):**
+   - **Base Damage:** 180 (deals damage through Damage Pipeline to active Pet).
+   - **Secondary Effect:** **None.** The Skill applies no debuff, no status effect, and no resource change.
+   - **Duration:** None applies — no secondary effect exists to persist.
+   - **Board Effect:** **None.** The Skill performs no board transformation, gem destruction, gem conversion, freeze, lock, or any other board mechanic.
 
-Two additional MVP Bosses (5 total per GAME_RULES.md §19 scope) are not yet
-content-defined. When authored, each must:
-
-1. Declare an Element (distinct pairing with the other Bosses is encouraged
-   but not mandated — multiple Bosses may share an Element; only trigger
-   *pattern* diversity is required, per §3.2).
-2. Declare a Passive with an explicit trigger category from §3.2.
-3. Declare a Skill with an explicit timing rule and effect.
-4. Avoid duplicating an existing Boss's trigger category where reasonably
-   possible (e.g. avoid a third "every N Player Matches" Passive if the
-   other four Bosses already cover Match-count, HP-based, and Turn-based
-   patterns).
+**All five MVP Bosses are now content-defined.** The set is complete at five
+(`MVP_SCOPE.md` §1; `ROADMAP.md` §1 Phase 2). Each has an Element, a Passive with
+an explicit trigger category from §3.2, a Skill with an explicit timing rule and
+effect, and its §6.1 base stats and §6.4 identities recorded above. Every Boss's
+Passive trigger category is distinct from the others' (§3.2): Match Count (Hỏa
+Long, Mộc Yêu), Battle Start (Thủy Ma), Boss HP (Sơn Thạch Vệ), and Combo
+(Kim Lôi Vương). No Boss-specific value remains to be authored — the definitions
+in §6, §6.1–§6.4 are the contract a downstream provisioning task transcribes
+(`DATABASE.md` §1 note item 5).
 
 ### 6.4 Identity Contract (BossId, PassiveId, SkillId)
 
-Canonical string identities for the three content-defined MVP Bosses. These
+Canonical string identities for the five content-defined MVP Bosses. These
 are the values the Domain `BossDefinition` / `BossState` identity fields carry
 and the values emitted on events (`PassiveCharged`/`PassiveTriggered.sourceId`,
 `BossSkillCast.sourceId`, `BattleStarted.BossId`). They are fixed here so no
@@ -509,13 +668,16 @@ Boss        BossId (BossState.BossId)    Display Name   PassiveId               
 Hỏa Long    "boss-hoa-long"              "Hỏa Long"     "boss-hoa-long-rage"         "flame-burst"
 Thủy Ma     "boss-thuy-ma"               "Thủy Ma"      "boss-thuy-ma-heal"          "drain-power"
 Mộc Yêu     "boss-moc-yeu"               "Mộc Yêu"      "boss-moc-yeu-regen"         "root"
+Sơn Thạch Vệ "boss-son-thach-ve"          "Sơn Thạch Vệ" "son-thach-ve-enrage"        "earthquake"
+Kim Lôi Vương "boss-kim-loi-vuong"        "Kim Lôi Vương" "kim-loi-vuong-combo"       "thunder-strike"
 ```
 
 - **BossId** is the canonical technical Identity — machine-readable, never
-  the display name. All three content-defined MVP Bosses have a recorded
-  technical Identity (`"boss-hoa-long"`, `"boss-thuy-ma"`, `"boss-moc-yeu"`),
-  following the convention above; neither the display name nor any
-  runtime-derived slug is used as a technical identifier.
+  the display name. All five content-defined MVP Bosses have a recorded
+  technical Identity (`"boss-hoa-long"`, `"boss-thuy-ma"`, `"boss-moc-yeu"`,
+  `"boss-son-thach-ve"`, `"boss-kim-loi-vuong"`), following the convention
+  above; neither the display name nor any runtime-derived slug is used as a
+  technical identifier.
 - **Display name** is content/presentation only — the human-readable name in
   this document's §6 reference tables. It is never used as a technical
   identifier in state, events, persistence, or the API.
@@ -525,12 +687,20 @@ Mộc Yêu     "boss-moc-yeu"               "Mộc Yêu"      "boss-moc-yeu-rege
 - **PassiveId** identifies the Boss Passive in `PassiveCharged`/
   `PassiveTriggered` payloads (`source = "boss"`). Values follow the
   kebab-case pattern of Pet PassiveIds (e.g. `PassiveId("xich-lang")`).
+  This section states no more specific value form for a Boss's `PassiveId` or
+  `SkillId` than it states for the five entries above; the two newest entries
+  are the values the Product Owner fixed, recorded verbatim and not normalized
+  to the earlier rows' observed spellings.
 - **SkillId** identifies the Boss Skill in `BossSkillCast.skillId`
   (`SIGNALR_PROTOCOL.md` §3.2.18).
 - Examples in `SIGNALR_PROTOCOL.md` §3.2.16–§3.2.18 use these exact values.
 - Source and tests carry these exact values — the three Domain Boss
-  definitions use these canonical Identities and emit them as `sourceId`,
-  so source code, tests, and this contract are aligned (TASK-047).
+  definitions authored before this contract's completion use these canonical
+  Identities and emit them as `sourceId`, so source code, tests, and this
+  contract are aligned (TASK-047). The two newest rows are **content-defined
+  here only**: their Domain `BossDefinitions` entries and `BossDefinition` rows
+  are not yet authored or provisioned, so no source or test value exists for
+  them yet (`DATABASE.md` §1 note item 5).
 
 ---
 

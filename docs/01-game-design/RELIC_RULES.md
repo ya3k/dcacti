@@ -1,6 +1,38 @@
 # Relic Rules
 
-**Version:** 1.12 (§8.1 gained item 8 — the three Condition forms' exact
+**Version:** 1.14 (§3 and §6/§8 gained the **TASK-178 canonical runtime
+clarifications** of the four Product Owner-approved decisions **Q-1 = A**,
+**Q-2 = B**, **Q-3 = A**, **Q-4 = C** — the blockers TASK-177 reported. No
+Relic, Trigger, Condition, effect, magnitude, target, or lifetime value is
+changed or added. **Q-2** — §3.1 added: `OnPowerGain` reacts only to
+**qualifying non-Relic-generated** Power gains; Power granted by a Relic effect
+is not a qualifying gain, so `OnPowerGain → Arcane Battery → +5 Power →
+OnPowerGain` cannot recur (§8.5 item 7). **Q-3** — §3.2 added: **each actual
+cascade iteration is an independent `OnCascade` event**, so Cascade Core resolves
+once per iteration and several cascades in one Swap are not collapsed into one
+event (§8.5 item 9). **Q-4** — §6 note 1 and §8.5 item 5 now state that Burning
+Curse modifies **Pet-owned/source Burn only** and not Boss-owned Burn, and that
+`target: Pet` identifies the Pet as the owner/source context rather than "every
+Burn tick the Pet receives"; the TASK-176 contract (`OnBattleStart`, no
+Condition, `BurnDamage` `+30%`, `Battle`, non-stacking) is unchanged. **Q-1** —
+§8.3 item 4 and §8.5 item 10 now record that `ATK`'s `Battle` and `NextAttack`
+lifetimes share the **one** carrier `PetState.ATKModifiers[]`
+(`GAME_STATE.md` §2.3.7/§5.1.4), consumed at `COMBAT_RULES.md` §3.3 items 7–11's
+existing qualifying-attack boundary; **no** `NextAttackATKModifiers[]` and **no**
+generic `NextAttackModifiers[]` is introduced. §3's closed Trigger list, §8.1's
+Condition forms, §8.2's `effectType` set, §8.3's table rows, and §6's 10 rows are
+unchanged. Prior 1.13: (§6 and §8 updated per TASK-176: Product Owner approved the
+full 10-Relic MVP content contract. Burning Curse's static-modifier conflict is
+resolved: it declares `OnBattleStart`, no Condition, and `BurnDamage` (+30%,
+`Battle` lifetime). Five new canonical Relics authored: Combo Fang (`OnCombo`,
+`ComboAtLeast(5)`, +20pp `Crit`, `NextAttack`), Arcane Battery (`OnPowerGain`, +5
+`Power`, `Immediate`), Execution Mark (`OnHpBelow`, `HpPercentageBelow(30)`, +15pp
+`Crit`, `NextAttack`), Cascade Core (`OnCascade`, +5 `Power`, `Immediate`), and
+Battle Instinct (`OnDamageTaken`, +10% `ATK`, `NextAttack`). `BurnDamage` is
+formally defined as an approved effect type (§8.2, §8.3); `ATK` scope is expanded
+to allow `NextAttack` lifetime; all 10 Relics are content-defined, with 4 provisioned
+and 6 pending downstream provisioning. No runtime code or migrations changed.)
+Prior 1.12: (§8.1 gained item 8 — the three Condition forms' exact
 observation point, resolving the step-11 ordering question TASK-133 reported:
 `GAME_RULES.md` §17 fixes step 11 after step 10 ("Charge Passive") and before
 steps 12–14, so `HpPercentageBelow` reads the active Pet's HP **before** this
@@ -438,7 +470,8 @@ OnMatchCount       fires when cumulative Match count crosses a threshold
                     analogous to Passive charging — see PASSIVE_RULES.md §2)
 OnCombo            fires when Combo reaches/crosses a threshold within one Swap
 OnCascade          fires on each Cascade iteration (MATCH3_RULES.md §4)
-OnPowerGain        fires when the active Pet's Power increases
+OnPowerGain        fires when the active Pet's Power increases from a
+                    qualifying non-Relic-generated Power gain (§3.1)
 OnDamageDealt      fires when the active Pet deals damage
 OnDamageTaken      fires when the active Pet takes damage
 OnHpBelow          fires when the active Pet's HP crosses below a
@@ -451,6 +484,128 @@ OnTurnEnd           fires at the end of a Turn
 A Relic must declare exactly one primary Trigger from this list (plus an
 optional Condition, §1). New trigger types are a rule change and must go
 through GAME_RULES.md §20 before implementation.
+
+## 3.1 `OnPowerGain` — the Qualifying Power-Gain Surface
+
+**Decided** (TASK-178, Product Owner decision **Q-2 = B**). This subsection
+fixes **what counts as the Power increase** `OnPowerGain` reacts to. It
+introduces **no** new Trigger, **no** new Condition form, **no** new Power
+source, and **no** new event type: `OnPowerGain` remains the §3 value it already
+is, and the Power it observes is the existing Power surface
+(`GAME_RULES.md` §12, `COMBAT_RULES.md` §2).
+
+> **`OnPowerGain` reacts to qualifying non-Relic-generated Power gains.** Power
+> granted by a Relic effect is **not** itself a qualifying `OnPowerGain` event.
+
+```text
+Match / gameplay Power gain
+  → qualifying
+
+Other existing non-Relic gameplay Power gain
+  → qualifying when it is an existing Power-gain event
+
+Relic effect grants Power
+  → NOT qualifying: it does not create another OnPowerGain event
+```
+
+1. **The rule, stated once.** A Power gain qualifies iff it originates **outside
+   Relic effect resolution**. Power that a Relic's own effect grants — Arcane
+   Battery's `+5`, Cascade Core's `+5`, Mana Crystal's `+10`, or any future
+   Relic's — does not qualify, and therefore does not fire `OnPowerGain`.
+2. **This is what makes the Relic chain terminate.** Power generated by a Relic
+   effect does not create another qualifying `OnPowerGain` event **in that Relic
+   chain**, so the recursive shape §5's anti-infinite-chain rule forbids cannot
+   be constructed:
+
+   ```text
+   OnPowerGain
+   → Arcane Battery
+   → +5 Power
+   → OnPowerGain      ← BLOCKED: Relic-generated Power does not qualify
+   → Arcane Battery
+   → …
+   ```
+
+   This applies **regardless of which Relic generated the Power**: the
+   exclusion is a property of the gain's origin, not of the Relic observing it.
+   A Relic-generated gain therefore cannot re-enter the chain through a
+   *different* Relic instance either.
+3. **The excluded gains are exactly "Power granted by a Relic effect".** The
+   exclusion is stated as that property, not as a per-Relic list: it covers any
+   Relic whose effect grants Power (`effectType: Power`, §8.2 item 1), present
+   or future, without enumerating them and without this section having to be
+   amended when one is added.
+4. **No new vocabulary is introduced.** This subsection adds no Trigger
+   (§8.5 item 3: §3's closed 12-value list is unchanged), no Condition form
+   (§8.1's three forms are unchanged), no Effect (`effectType` remains the
+   §8.2 item 1 set), no Target and no Lifetime (§8.3's table is unchanged), and
+   no event (`GAME_RULES.md` §16's list is unchanged). It states a qualification
+   boundary on an existing Trigger only.
+5. **Who owns what.** The Power surface itself — the 0–100 range and the
+   resource-generation step that produces it — is `GAME_RULES.md` §12 and
+   §17 step 12/step 13's and `COMBAT_RULES.md` §2's, and is referenced, not
+   restated. This subsection owns the qualification boundary alone. The
+   anti-recursion requirement it serves is §5's.
+
+## 3.2 `OnCascade` — the Event Boundary
+
+**Decided** (TASK-178, Product Owner decision **Q-3 = A**). This subsection
+fixes **how many `OnCascade` events one Swap produces**. It introduces **no**
+new Trigger, **no** new root-event Trigger, and changes **no** Match-3 cascade
+mechanic and **no** Combo accounting.
+
+> **Each actual cascade iteration is an independent `OnCascade` event.**
+
+```text
+Swap
+ ├─ initial resolution   (MATCH3_RULES.md §4.2 depth 1 — NOT a Cascade)
+ ├─ Cascade #1           → one OnCascade event
+ ├─ Cascade #2           → one OnCascade event
+ └─ Cascade #3           → one OnCascade event
+```
+
+1. **The boundary is the Cascade iteration, and `MATCH3_RULES.md` §4.2 owns
+   iteration identity.** §4.2 item 1 fixes detection pass depth 1 as the pass run
+   on the board produced by the committed Swap and states it is **not** a
+   Cascade; §4.2 item 2 fixes `d ≥ 2` as a Cascade, whose index within the Swap
+   is `d − 1`; §4.2 item 3 fixes the passes as strictly sequential; §4.3 fixes
+   when the loop ends. A pass that detects no match produces no Cascade and
+   therefore no `OnCascade` event. This subsection **references** that identity;
+   it does not restate, widen, or re-derive it.
+2. **Therefore a Relic whose Trigger is `OnCascade` may fire once per cascade
+   iteration, not once per Swap.** Each qualifying iteration is its own event,
+   and each is evaluated against the state at that iteration's own
+   `GAME_RULES.md` §17 step 11 point:
+
+   ```text
+   Cascade #1 → Cascade Core: +5 Power
+   Cascade #2 → Cascade Core: +5 Power
+   Cascade #3 → Cascade Core: +5 Power
+   ```
+
+   Three cascade iterations are three independent resolutions of Cascade Core.
+3. **Cascades from one Swap are NOT collapsed into one aggregated `OnCascade`.**
+   An implementation that emits a single `OnCascade` for a Swap-and-all-its-
+   cascades, or that aggregates their effects into one application, does not
+   implement this contract.
+4. **This is not a self-loop, and §5 is unchanged.** §5 item 2's
+   once-per-root-event safeguard already carves this case out explicitly: a
+   Relic whose declared Trigger "is itself the kind of event that naturally
+   repeats" legitimately fires once per such event, and a Cascade iteration is
+   one such event. Each iteration is the qualifying event for its own firing;
+   the Relic does not re-trigger from an effect **it itself caused** within one
+   iteration. §5's anti-infinite-chain rule therefore continues to operate as
+   written and is neither widened nor relaxed.
+5. **Power granted by a Cascade Core firing is not a further cascade.** Granting
+   Power must not synthesize a Cascade iteration and must not make
+   `OnCascade` eligible again within the same iteration. That is §3.1 item 2's
+   qualification boundary (a Relic-generated gain is not a qualifying gain) plus
+   `MATCH3_RULES.md` §4.2's iteration identity — a Power grant is neither a
+   Match nor a detection pass.
+6. **No new Trigger and no new root event.** `GAME_RULES.md` §16's event list is
+   unchanged (`CascadeCreated` remains the event that reports a cascade), no
+   "root-event" Trigger is invented, and `OnMatch`'s own per-Match semantics
+   (§3) and the Combo accounting `MATCH3_RULES.md` §6.3 owns are unaffected.
 
 ---
 
@@ -502,41 +657,108 @@ trigger chains. MVP safeguard:
    output within one event must be flagged as a conflict (GAME_RULES.md §20)
    rather than implemented ad hoc.
 
+**The two boundaries that make item 2 operative** are stated by §3 and are
+referenced here rather than restated (TASK-178):
+
+```text
+§3.1  OnPowerGain reacts only to qualifying non-Relic-generated Power
+      gains — Power granted by a Relic effect is NOT a qualifying gain,
+      so a Relic's own Power output cannot re-enter the chain.
+      This is what forbids: OnPowerGain → Arcane Battery → +5 Power →
+      OnPowerGain → Arcane Battery → …
+
+§3.2  Each actual cascade iteration is an independent OnCascade event
+      (MATCH3_RULES.md §4.2 owns iteration identity). This is NOT a
+      self-loop: it is item 2's "the declared Trigger is itself the kind
+      of event that naturally repeats" case, so a per-Cascade-iteration
+      firing is legitimate and item 2 is neither widened nor relaxed.
+```
+
+Neither boundary adds a Trigger, a Condition, an effect, a Power source, or an
+event. Item 1's one-full-pass limit, item 2's once-per-root-event rule, and
+item 3's conflict-reporting requirement are unchanged.
+
 ---
 
 # 6. MVP Relic Reference
 
 ```text
-Relic             Trigger        Condition        Effect
----------------   ------------   --------------   --------------------------------
-Berserker Core    OnMatchCount   every 3 Matches   +5% ATK
-Mana Crystal      OnMatchCount   every 4 Matches   +10 Power
-Assassin Eye      OnCombo        Combo ≥ 3         Increased Crit chance
-Burning Curse     (passive mod)  —                 +30% Burn damage
-Emergency Core    OnHpBelow      HP < 30%          Heal Card cost −50%
+Relic             Trigger        Condition              Effect
+---------------   ------------   --------------------   --------------------------------
+Berserker Core    OnMatchCount   MatchCountAtLeast(3)   +5% ATK (Battle)
+Mana Crystal      OnMatchCount   MatchCountAtLeast(4)   +10 Power (Immediate)
+Assassin Eye      OnCombo        ComboAtLeast(3)        +10pp Crit (NextAttack)
+Emergency Core    OnHpBelow      HpPercentageBelow(30)  Heal Card cost −50% (Battle)
+Burning Curse     OnBattleStart  —                      +30% Burn damage (Battle)
+Combo Fang        OnCombo        ComboAtLeast(5)        +20pp Crit (NextAttack)
+Arcane Battery    OnPowerGain    —                      +5 Power (Immediate)
+Execution Mark    OnHpBelow      HpPercentageBelow(30)  +15pp Crit (NextAttack)
+Cascade Core      OnCascade      —                      +5 Power (Immediate)
+Battle Instinct   OnDamageTaken  —                      +10% ATK (NextAttack)
 ```
 
 Notes:
 
-1. "Burning Curse" is a **static modifier**, not an event-triggered Relic in
-   the strict sense — it continuously modifies the Burn damage formula
-   (COMBAT_RULES.md §5) rather than firing on a discrete event. Static
-   modifier Relics are allowed in MVP and apply during the relevant
-   COMBAT_RULES.md calculation step rather than through the Event trigger
-   table in §3.
-2. "Emergency Core" re-evaluates continuously (it is "armed" whenever
+1. **"Burning Curse"** triggers once per battle at battle start (`OnBattleStart`,
+   GAME_RULES.md §17), granting the active Pet a standing `+30%` Burn damage
+   modifier with `Battle` lifetime that enhances Burn damage ticks
+   (COMBAT_RULES.md §5). The prior static-modifier tension (§6 note 1 / §8.5 item 5)
+   is resolved per TASK-176.
+
+   **It modifies Burn damage owned by the Pet, and not Burn damage owned by the
+   Boss** (TASK-178, Product Owner decision **Q-4 = C**):
+
+   > **Burning Curse applies to Pet-owned / Pet-sourced Burn damage. It does not
+   > modify Boss-owned Burn damage.**
+
+   ```text
+   Pet applies Burn to Boss
+     → the Pet is the source/owner → Burning Curse applies
+
+   Pet-owned Burn tick resolves
+     → +30% applies to that tick's damage
+
+   Boss applies Burn to Pet
+     → the Boss is the source/owner → Burning Curse does NOT apply
+
+   Boss-owned Burn tick resolves
+     → unmodified Burn damage
+   ```
+
+   - **The distinction is Burn source/ownership, not the damage recipient.** The
+     test is who applied/owns the Burn instance, never which entity receives the
+     damage. A Burn instance the Boss applied and that damages the Pet is
+     Boss-owned and therefore outside Burning Curse, even though the Pet is the
+     entity taking the damage.
+   - **`target: Pet` identifies the Pet as the owned/source context of this
+     modifier.** It does **not** mean "increase every Burn tick received by the
+     Pet". The `target` vocabulary is §8.3 item 1's: §3 fixes the active Pet as
+     the trigger subject, and the effect modifies the Pet's own outgoing Burn
+     damage. Burning Curse's `target` is unchanged by this clarification.
+   - **The Relic's own contract is unchanged** (TASK-176): `OnBattleStart`, no
+     Condition, `BurnDamage` `+30%`, `Percentage`, `target: Pet`, `Battle`
+     lifetime, non-stacking, once per battle. The row and §8.5 item 5 are
+     unaltered; only the ownership the modifier applies to is now stated.
+   - **No second Burn effect system is introduced.** `BurnDamage` remains the
+     §8.2 item 1 percentage modifier on the existing Burn Status Effect; it does
+     not create, emit, or re-enter a Burn instance, and it does not add a
+     parallel DoT path (`COMBAT_RULES.md` §5.2 item 2's refresh-not-stack default
+     is unchanged).
+2. **"Emergency Core"** re-evaluates continuously (it is "armed" whenever
    HP < 30%, not a one-shot fire) — it modifies Heal Card cost for as long as
    the condition holds, reverting when HP rises back above 30%.
-3. **Provisioned vs. deferred row set.** (TASK-082 decisions A / R2-8)
-   Only **Berserker Core, Mana Crystal, Assassin Eye, and Emergency Core**
-   — the rows whose `Trigger` and `Condition` are declared per §3 — are
-   provisioned now. The **"Burning Curse" row is deferred**: §3 requires
-   a Relic to declare exactly one primary Trigger from the §3 list, while
-   note 1 describes Burning Curse as a static modifier with no such event
-   trigger. This §3-vs-note-1 tension is **reported, not resolved**
-   (`AGENTS.md` §4): a documented static-modifier `Trigger` must exist
-   before that row may be provisioned. No placeholder row, invented
-   `Trigger`, or invented value may be inserted (`DATABASE.md` §5 item 4).
+3. **"Execution Mark"** fires via `OnHpBelow` when active Pet HP is below 30%
+   (`HpPercentageBelow(30)`), granting `+15pp` Crit to the Pet's next attack
+   with `NextAttack` lifetime. It conforms to existing `OnHpBelow` and
+   `HpPercentageBelow` semantics.
+4. **Provisioned vs. unprovisioned row set.** (TASK-176)
+   All 10 Relics are content-defined. The first four (**Berserker Core**,
+   **Mana Crystal**, **Assassin Eye**, and **Emergency Core**) were provisioned
+   under migrations `20260929152651_ProvisionPetCardRelicContentDefinitions` and
+   `20261003074309_StructureRelicDefinitionStructuredColumns`. The remaining six
+   (**Burning Curse**, **Combo Fang**, **Arcane Battery**, **Execution Mark**,
+   **Cascade Core**, and **Battle Instinct**) are content-defined and ready for
+   provisioning in a downstream migration task.
 
 ---
 
@@ -651,13 +873,14 @@ Each element carries **its own** `effectType` / `valueType` / `value` triple
 plus the target and lifetime members §8.3 and §8.4 define.
 
 1. **`effectType` (string)** — which domain effect the Relic applies. The
-   defined set is `ATK` | `Power` | `Crit` | `CardCost`, carrying the effect
+   defined set is `ATK` | `Power` | `Crit` | `CardCost` | `BurnDamage`, carrying the effect
    identities §6's rows declare. It is the effect identity carrier: the runtime
    must never derive a Relic's effect from parsed prose, from the Relic's
    `Name`, from `RelicDefinitionId` mapping, or from hardcoded per-Relic logic.
    `ATK` is a stat modifier, `Power` is a Power grant (`GAME_RULES.md` §12),
    `Crit` is a Crit-chance increase participating in `COMBAT_RULES.md` §2 item 7's
-   `EffectiveCrit` composition, and `CardCost` is a Card-cost modifier.
+   `EffectiveCrit` composition, `CardCost` is a Card-cost modifier, and
+   `BurnDamage` is a percentage modifier to Burn damage-over-time ticks (`COMBAT_RULES.md` §5).
 2. **`valueType` (string)** — how `value` is interpreted:
    `Flat` | `Percentage` | `PercentagePoints` | `Undetermined`.
    `Flat` is an absolute amount; `Percentage` is a proportion of the stat's own
@@ -687,16 +910,18 @@ plus the target and lifetime members §8.3 and §8.4 define.
 
 ## 8.3 Effect Target and Scope Vocabulary
 
-**Decided** (TASK-131 **D3**). Each effect element carries an explicit target
+**Decided** (TASK-131 **D3**, extended by TASK-176). Each effect element carries an explicit target
 and lifetime vocabulary. The combinations allowed per `effectType` are fixed
 below; a combination not listed is not defined and may not be inferred.
 
 | `effectType` | `target` | `lifetime` | `valueType` |
 | --- | --- | --- | --- |
 | `ATK` | `Pet` | `Battle` | `Percentage` |
+| `ATK` | `Pet` | `NextAttack` | `Percentage` |
 | `Power` | `Pet` | `Immediate` | `Flat` |
 | `Crit` | `Pet` | `NextAttack` | `PercentagePoints` |
 | `CardCost` | `Pet` | `Battle` | `Percentage` |
+| `BurnDamage` | `Pet` | `Battle` | `Percentage` |
 
 1. **`target` (string)** — which entity the effect modifies. The defined value
    is `Pet`: §3 fixes the active Pet as the trigger subject, and §2 item 1 fixes
@@ -713,6 +938,35 @@ below; a combination not listed is not defined and may not be inferred.
    Card `Crit` effect (`DATABASE.md` §1; `COMBAT_RULES.md` §2 item 7;
    `ADR-017`). This contract reuses that established boundary and introduces no
    second consumption rule.
+
+   **Where each lifetime is carried, and the single carrier per stat.** The
+   applied modification's runtime carrier is not authored here; §8.5 references
+   it per effect. Two consequences follow, and both are recorded so this
+   vocabulary is not read as creating a carrier (TASK-178, Product Owner
+   decision **Q-1 = A**):
+
+   ```text
+   ATK   | Battle      → GAME_STATE.md §2.3.7 / §5.1.4
+   ATK   | NextAttack  → GAME_STATE.md §2.3.7 / §5.1.4   (the SAME carrier)
+   Crit  | NextAttack  → GAME_STATE.md §2.3.4 / §5.1.2
+   CardCost | Battle   → GAME_STATE.md §2.3.5 / §5.1.3
+   ```
+
+   - **`ATK`'s two lifetimes share one carrier, `PetState.ATKModifiers[]`.** The
+     element carries its declared `lifetime`; the collection is therefore **not**
+     `Battle`-only. No `NextAttackATKModifiers[]` and no generic
+     `NextAttackModifiers[]` is introduced — the `NextAttack` ATK modifier rides
+     the existing collection, so no stat's `NextAttack` modification has two
+     representations.
+   - **`NextAttack` is consumed at the qualifying-attack boundary
+     `COMBAT_RULES.md` §3.3 items 7–11 own** — the same boundary the Crit
+     modifier uses, not a second one. It is not Turn-based, it does not expire
+     on a Trigger, and an unconsumed element persists across Turns until a
+     qualifying attack consumes it.
+   - **A re-triggering `NextAttack` source refreshes rather than accumulates.**
+     The stacking behavior a Relic declares (§8.5) plus the one-entry-per-source
+     invariant (`GAME_STATE.md` §2.3.7 item 4) produce that result; this
+     contract adds no second mechanism.
 5. **No member is defined beyond `target` and `lifetime`.** Additional members
    may not be added without a recorded owner decision.
 
@@ -733,10 +987,12 @@ re-evaluation** are two separate things.
    producing its own effect with its own lifetime.
 4. **This section adds no cooldown, no charge, and no per-Relic reset state.**
    §5's anti-infinite-chain rule remains the only constraint on repeated firing.
-5. **The provisioned lifetimes are** (TASK-131 **D6**): Berserker Core `Battle`,
-   Mana Crystal `Immediate`, Assassin Eye `NextAttack`, Emergency Core `Battle`.
+5. **The canonical lifetimes are** (TASK-131 **D6**, TASK-176): Berserker Core `Battle`,
+   Mana Crystal `Immediate`, Assassin Eye `NextAttack`, Emergency Core `Battle`,
+   Burning Curse `Battle`, Combo Fang `NextAttack`, Arcane Battery `Immediate`,
+   Execution Mark `NextAttack`, Cascade Core `Immediate`, Battle Instinct `NextAttack`.
 
-## 8.5 The Provisioned Relic Contract
+## 8.5 The Canonical Relic Contract
 
 Transcribed from §6 and this section. No value below is authored here.
 
@@ -746,6 +1002,12 @@ Transcribed from §6 and this section. No value below is authored here.
 | Mana Crystal | `OnMatchCount` | `MatchCountAtLeast(4)` | `[{ "effectType": "Power", "valueType": "Flat", "value": 10, "target": "Pet", "lifetime": "Immediate" }]` |
 | Assassin Eye | `OnCombo` | `ComboAtLeast(3)` | `[{ "effectType": "Crit", "valueType": "PercentagePoints", "value": 10, "target": "Pet", "lifetime": "NextAttack" }]` |
 | Emergency Core | `OnHpBelow` | `HpPercentageBelow(30)` | `[{ "effectType": "CardCost", "valueType": "Percentage", "value": 50, "target": "Pet", "lifetime": "Battle" }]` |
+| Burning Curse | `OnBattleStart` | `null` | `[{ "effectType": "BurnDamage", "valueType": "Percentage", "value": 30, "target": "Pet", "lifetime": "Battle" }]` |
+| Combo Fang | `OnCombo` | `ComboAtLeast(5)` | `[{ "effectType": "Crit", "valueType": "PercentagePoints", "value": 20, "target": "Pet", "lifetime": "NextAttack" }]` |
+| Arcane Battery | `OnPowerGain` | `null` | `[{ "effectType": "Power", "valueType": "Flat", "value": 5, "target": "Pet", "lifetime": "Immediate" }]` |
+| Execution Mark | `OnHpBelow` | `HpPercentageBelow(30)` | `[{ "effectType": "Crit", "valueType": "PercentagePoints", "value": 15, "target": "Pet", "lifetime": "NextAttack" }]` |
+| Cascade Core | `OnCascade` | `null` | `[{ "effectType": "Power", "valueType": "Flat", "value": 5, "target": "Pet", "lifetime": "Immediate" }]` |
+| Battle Instinct | `OnDamageTaken` | `null` | `[{ "effectType": "ATK", "valueType": "Percentage", "value": 10, "target": "Pet", "lifetime": "NextAttack" }]` |
 
 1. **`Assassin Eye`'s magnitude is `+10` percentage points** (TASK-131 **D4**),
    resolving the qualitative "Increased Crit chance" of §6. This is the
@@ -786,9 +1048,10 @@ Transcribed from §6 and this section. No value below is authored here.
    reversion semantics; `CARD_RULES.md` §3.6 then reads a TotalReduction that
    no longer includes it. The `-50%` value is the §6 row's, transcribed
    through §8.2's `valueType: Percentage`.
-3. **`Trigger` remains §3's closed list** (TASK-131 **D8**). §3 is unchanged and
-   no value is added, removed, or reinterpreted. `Trigger` stays a single
-   primary Trigger as §3 and §1 require.
+3. **`Trigger` remains §3's closed list** (TASK-131 **D8**, TASK-176). §3 is unchanged and
+   no value is added, removed, or reinterpreted. All 10 Relics declare a single primary
+   Trigger from §3's closed 12-value list (`OnBattleStart`, `OnMatchCount`, `OnCombo`,
+   `OnPowerGain`, `OnHpBelow`, `OnCascade`, `OnDamageTaken`).
 4. **`Berserker Core`'s effect is an ATK modifier on the active Pet**
    (`ATK`, `+5%` as the §6 row states, `Battle` lifetime). This section declares
    the effect; it does not define where an applied ATK modifier lives, how
@@ -820,11 +1083,151 @@ Transcribed from §6 and this section. No value below is authored here.
    **`COMBAT_RULES.md` §5.6.6**: the two coexist and compose additively as
    signed percentage points against base `PetState.ATK` before a single
    truncation toward zero, with independent carrier lifecycles.
-5. **`Burning Curse` remains deferred** (TASK-131 **D7**). §6 note 3's reported
-   conflict — §3's "exactly one primary Trigger from this list" versus §6 note 1's
-   description of Burning Curse as a static modifier with no event trigger — is
-   **not resolved** by this section, and no `Trigger` is invented for it. The row
-   stays unprovisioned and no placeholder may be inserted (TASK-082 A / R2-8).
+5. **`Burning Curse` resolved to `OnBattleStart`** (TASK-176). The previous static-modifier
+   tension is resolved per explicit Product Owner decision: Burning Curse declares `OnBattleStart`
+   (firing once at battle start per §3), no extra Condition (`null`), and an effect of
+   `+30%` `BurnDamage` with `Battle` lifetime targeting `Pet`. It enhances Burn
+   damage-over-time ticks (`COMBAT_RULES.md` §5) for the remainder of the battle. The row is
+   now fully content-defined and ready for provisioning in a downstream migration task.
+
+   **It modifies Pet-owned Burn only, and its `target: Pet` is not a "damage
+   received" reading** (TASK-178, Product Owner decision **Q-4 = C**). Which Burn
+   instances the `+30%` reaches is §6 note 1's rule and is owned there; it is
+   referenced, not restated:
+
+   ```text
+   the declaration itself      §8.2–§8.4 (this section) — unchanged
+   whose Burn damage it        §6 note 1
+   modifies                    (Pet-owned / Pet-sourced Burn applies;
+                                Boss-owned Burn does NOT apply. The
+                                distinction is Burn source/ownership, not
+                                the entity receiving the damage)
+   the Burn Status Effect      COMBAT_RULES.md §5.1 / §5.2
+   it modifies                 (the existing Burn DoT; §5.2 item 2's
+                                refresh-not-stack default is unchanged)
+   the runtime state carrier   GAME_STATE.md §2.3.9
+                               (PetState.BurnDamageModifiers[], the applied
+                                modifier — SourceIdentity +
+                                BurnDamagePercentage; no `lifetime` member,
+                                the lifetime being fixed as `Battle` by
+                                §8.3's `BurnDamage` row)
+   its mutation lifecycle      GAME_STATE.md §5.1.5
+                               (create / replace-or-refresh / remove)
+   ```
+
+   **What `target: Pet` does and does not mean here.** By §8.3 item 1 the value
+   `Pet` identifies the entity whose own modification this is — for `BurnDamage`
+   it identifies the Pet as the **owner/source context** whose outgoing Burn
+   damage is modified. It is **not** a statement that every Burn tick the Pet
+   *receives* is increased: a Burn the Boss applied to the Pet is Boss-owned and
+   receives nothing from this modifier (`§6` note 1). The `target` value is
+   unchanged from TASK-176.
+6. **`Combo Fang`'s effect is a Crit modifier on the active Pet** (`Crit`, `+20` percentage
+   points, `NextAttack` lifetime). Triggered by `OnCombo` with `ComboAtLeast(5)` condition.
+   Once consumed by the next qualifying attack, it re-fires when the trigger condition is
+   met again.
+7. **`Arcane Battery`'s effect is a flat Power grant on the active Pet** (`Power`, `+5`,
+   `Immediate` lifetime). Triggered by `OnPowerGain` with no condition. Re-fires on each
+   qualifying Power gain.
+
+   **It does not re-trigger itself, and it does not re-trigger another
+   `OnPowerGain` Relic** (TASK-178, Product Owner decision **Q-2 = B**). Which
+   gains qualify is §3.1's rule and is owned there; it is referenced, not
+   restated:
+
+   ```text
+   OnPowerGain
+   → Arcane Battery
+   → +5 Power
+   → OnPowerGain      ← BLOCKED: a Relic-granted Power gain does NOT qualify
+   → Arcane Battery
+   → …
+   ```
+
+   The `+5` this Relic grants originates in Relic effect resolution, so it is
+   **not** a qualifying `OnPowerGain` event — not for this Relic instance and
+   not for any other `OnPowerGain` Relic either (§3.1 items 1–2). Each
+   qualifying non-Relic Power gain still resolves independently, and `Immediate`
+   (§8.3 item 3) means the `+5` leaves no standing modification behind. No new
+   Trigger, Condition, Power source, or event is introduced to achieve this.
+8. **`Execution Mark`'s effect is a Crit modifier on the active Pet** (`Crit`, `+15`
+   percentage points, `NextAttack` lifetime). Triggered by `OnHpBelow` with
+   `HpPercentageBelow(30)` condition. It conforms to the existing `OnHpBelow` and
+   `HpPercentageBelow` semantics and re-evaluation model.
+9. **`Cascade Core`'s effect is a flat Power grant on the active Pet** (`Power`, `+5`,
+   `Immediate` lifetime). Triggered by `OnCascade` with no condition. Re-fires on each
+   qualifying Cascade iteration.
+
+   **Each cascade iteration is its own `OnCascade` event, so each iteration
+   fires this Relic independently** (TASK-178, Product Owner decision
+   **Q-3 = A**). The event boundary is §3.2's rule and is owned there; it is
+   referenced, not restated:
+
+   ```text
+   Cascade #1 → Cascade Core: +5 Power
+   Cascade #2 → Cascade Core: +5 Power
+   Cascade #3 → Cascade Core: +5 Power
+   ```
+
+   Three cascade iterations are three independent resolutions — the cascades of
+   one Swap are **not** collapsed into a single aggregated `OnCascade`. The
+   `+5` this Relic grants must **not** synthesize a Cascade iteration or make
+   `OnCascade` eligible again within the same iteration (§3.1 item 2's
+   Relic-generated-gain exclusion and `MATCH3_RULES.md` §4.2's iteration
+   identity). This is not a §5 self-loop: a naturally repeating Trigger fires
+   once per occurrence of its own event (§5 item 2). No new Trigger, root event,
+   or Cascade mechanic is introduced.
+10. **`Battle Instinct`'s effect is an ATK modifier on the active Pet** (`ATK`, `+10%`,
+    `NextAttack` lifetime). Triggered by `OnDamageTaken` with no condition. Once consumed
+    by the next qualifying attack, it re-fires after each qualifying damage event.
+
+    **Its runtime carrier is `PetState.ATKModifiers[]`, and it is not a second
+    collection** (TASK-178, Product Owner decision **Q-1 = A**). This section
+    declares the effect; the carrier, its lifecycle, and the consumption boundary
+    are owned elsewhere and are referenced, not restated:
+
+    ```text
+    the declaration itself        §8.2–§8.4 (this section)
+    the runtime state carrier     GAME_STATE.md §2.3.7
+                                  (PetState.ATKModifiers[] — the applied
+                                   modifier, SourceIdentity +
+                                   ATKModifierPercentage + its declared
+                                   `Lifetime`. This is the same carrier
+                                   item 4 records for Berserker Core's
+                                   `Battle` modifier; the two lifetimes
+                                   coexist in it, distinguished by the
+                                   element's own `Lifetime` member)
+    its mutation lifecycle        GAME_STATE.md §5.1.4
+                                  (create / replace-or-refresh / consume /
+                                   remove)
+    its consumption boundary      COMBAT_RULES.md §3.3 items 7–11
+                                  (the qualifying owner attack; the SAME
+                                   boundary the Crit modifier uses — this
+                                   document defines no second one)
+    its ATK composition and       COMBAT_RULES.md §5.6 / §5.6.6
+    the value the Damage          (TotalATKModifierPercentage, EffectivePetATK)
+    Pipeline reads
+    ```
+
+    **What a `NextAttack` ATK modifier is and is not**, stated once here because
+    §8.3's table newly allows the combination:
+
+    - it applies to the **next qualifying Pet attack** and is **consumed when
+      that attack resolves** (`COMBAT_RULES.md` §3.3 item 8's boundary);
+    - it does **not** modify the Pet's base ATK permanently —
+      `PetState.ATK` is never written (`GAME_STATE.md` §5.1.4 item 7);
+    - it does **not** remain active for subsequent attacks: consumption deletes
+      it, and later attacks compose without it;
+    - it is **non-stacking**: a re-trigger by the same source before consumption
+      refreshes that source's one element rather than accumulating a duplicate
+      (TASK-176's `Battle Instinct` contract; `GAME_STATE.md` §2.3.7 item 4);
+    - it is **not** a Turn-scoped, trigger-expired, or Status Effect
+      modification (`GAME_STATE.md` §2.3.7 item 8, `COMBAT_RULES.md` §3.3
+      item 11);
+    - **no `NextAttackATKModifiers[]` and no generic `NextAttackModifiers[]`
+      exists.** Berserker Core (item 4) and Battle Instinct differ only in their
+      declared `lifetime` and their Trigger; both flow through this one
+      collection and the one composition rule.
 
 ## 8.6 Storage Consequence
 
@@ -868,9 +1271,11 @@ effect reaches the runtime carrier §8.5 references for it, the equip-slot
 resolution order is §4's, and the once-per-root-event safeguard is §5's. No
 Trigger, Condition, effect, magnitude, threshold, lifetime, state member, event,
 or wire member is added by it, and no Relic is recognised by its `Name` or its
-`RelicDefinitionId` (§8.2 item 1). `Burning Curse` remains deferred and
-unprovisioned (§6 note 3, §8.5 item 5): step 11 evaluates no static-modifier
-Relic, and no placeholder was inserted for one.
+`RelicDefinitionId` (§8.2 item 1). The four initially provisioned rows (Berserker
+Core, Mana Crystal, Assassin Eye, Emergency Core) are executed server-side; Burning
+Curse and the five new Relics (Combo Fang, Arcane Battery, Execution Mark, Cascade
+Core, Battle Instinct) are now canonically defined content contracts, awaiting
+downstream runtime implementation and database provisioning.
 
 **Runtime contracts are now complete for two effect types.** `CardCost`'s runtime
 carrier and composition were decided by TASK-134 and applied (`GAME_STATE.md`

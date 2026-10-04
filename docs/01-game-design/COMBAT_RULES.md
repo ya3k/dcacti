@@ -1,6 +1,23 @@
 # Combat Rules
 
-**Version:** 2.4 (§4 item 7, §5.4.5, and §5.5.3 reconciled per TASK-155, applying
+**Version:** 2.5 (§3.3 item 8 and §5.2 item 4 extended per **TASK-178** — the
+canonicalization of the Product Owner-approved runtime decisions **Q-1 = A** and
+**Q-4 = C**. §3.3 item 8, which is the canonical owner of the `NextAttack`
+lifetime and the qualifying-attack consumption boundary, now states explicitly
+that **the same boundary governs a Relic `ATK` modifier declaring
+`lifetime: NextAttack`** (Battle Instinct), carried on
+`PetState.ATKModifiers[]` (`GAME_STATE.md` §2.3.7/§5.1.4) — **no second
+consumption rule and no second carrier**. §5.2 item 3 additionally records that a
+DoT tick consumes no `NextAttack` modifier (item 8's rule, applied). §5.2 item 4
+added: a **`BurnDamage` modifier applies only to Burn instances owned by the
+source it belongs to** — Pet-owned Burn is modified, Boss-owned Burn is not — and
+it changes damage only, creating no Burn event and no second Burn instance; the
+rule's owner for the MVP Relic case is `RELIC_RULES.md` §6 note 1/§8.5 item 5 and
+is referenced, not restated. **No magnitude, threshold, duration, lifetime,
+Status Effect, `TargetStat` value, or `BattleState` member is authored here**, and
+§5.1's Burn tick schedule, §5.2 items 1–3's existing rules, §5.3's duration
+consumption, §5.4, §5.5, and §5.6/§5.6.6 are unchanged. Decision source:
+TASK-178. Prior 2.4 (§4 item 7, §5.4.5, and §5.5.3 reconciled per TASK-155, applying
 the TASK-154 Product Owner decision (Option B): an applicable Heal modifier may
 be **held on the Boss**, and the Pet-scoped Heal Resolution step is **explicitly
 authorized** to perform a **cross-entity read** of `BossState.StatusEffects[]` at
@@ -425,6 +442,29 @@ separate Player entity (`ELEMENT_RULES.md` §5).
    is `GAME_STATE.md` §5.1.2; `ADR-017` records why it is represented that
    way. This item authors the gameplay rule; it does not describe storage.
 
+   **This item is also the canonical owner of the `NextAttack` boundary for a
+   Relic `ATK` modifier**, which is the **same** boundary — not a second one
+   (TASK-178, Product Owner decision **Q-1 = A**; `RELIC_RULES.md` §8.3's table
+   carries an `ATK` | `Pet` | `NextAttack` row). A `NextAttack`-lifetime `ATK`
+   modifier (Battle Instinct, `RELIC_RULES.md` §8.5 item 10) is carried on
+   `PetState.ATKModifiers[]` (`GAME_STATE.md` §2.3.7/§5.1.4) and is consumed by
+   **exactly the boundary this item defines**:
+
+   ```text
+   what qualifies as the consuming attack      this item
+   when consumption happens (first qualifying   this item
+     damage instance of that attack)
+   what consumption removes (only the           this item
+     source-specific elements consumed)
+   ```
+
+   Everything below that is stated for the Crit modifier holds for it
+   equivalently — an unconsumed modifier persists across Turns, a Burn/DoT tick
+   and the Boss's own attack consume nothing, and the permanent stat is never
+   written. **No second consumption rule is defined for `ATK`**, and the
+   `NextAttack` lifetime concept therefore has one consumption boundary
+   regardless of which stat it modifies.
+
    ```text
    lifetime      active until the owner's next qualifying attack consumes it
    not           Turn-based: no Turn countdown, no step 19a decrement, no
@@ -793,7 +833,42 @@ Buff/Debuff  temporary stat modification (ATK/DEF/Crit/etc.), with duration
    Effect's own Element, and participate in the step 4 Crit evaluation per
    §3.3, but do not consume Combo (Combo Modifier step uses Combo = 1 /
    neutral for DoT ticks, since a DoT tick is not itself part of a Swap's Combo
-   chain).
+   chain). A DoT tick is also not the owner's qualifying attack action, so it
+   consumes no `NextAttack` modifier (§3.3 item 8) even though it participates
+   in Crit composition.
+4. **A Burn instance's source/ownership is tracked, and a modifier on Burn
+   damage is scoped by that ownership.** Every Burn instance has the source
+   item 1 requires; a `BurnDamage` modifier applies only to Burn instances
+   **owned by the source that modifier belongs to**. For the MVP Relic case,
+   `RELIC_RULES.md` §6 note 1 and §8.5 item 5 own the rule and it is referenced,
+   not restated here:
+
+   ```text
+   Pet-owned Burn (the Pet applied it)     → a Pet-scoped BurnDamage
+                                             modifier applies
+   Boss-owned Burn (the Boss applied it)   → it does NOT apply
+   ```
+
+   The distinction is the Burn's **source/ownership**, never the entity
+   receiving the tick's damage — a Boss-owned Burn ticking on the Pet is
+   Boss-owned and outside a Pet-scoped modifier. This item states the
+   ownership **scoping** principle only. It does not author a modifier's
+   magnitude, its lifetime, or its trigger (`RELIC_RULES.md` §8.3/§8.5 own
+   those), it introduces **no** second Burn effect system and **no** new Burn
+   instance, and item 2's refresh-not-stack default is unchanged.
+
+   **A `BurnDamage` modifier changes damage and nothing else.** It scales the
+   damage the Burn tick produces; it must **not** emit, create, re-enter, or
+   refresh a Burn event or Burn instance, and it must **not** extend or consume
+   the instance's duration (§5.3 owns duration, and this item is not a duration
+   rule). That is what keeps the MVP Relic case terminating:
+
+   ```text
+   Burn calculation
+   → BurnDamage modifier
+   → modified damage only
+   → no recursive Burn event, and no second Burn instance
+   ```
 
 ## 5.3 Duration Consumption Timing
 

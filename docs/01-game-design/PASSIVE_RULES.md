@@ -1,6 +1,18 @@
 # Passive Rules
 
-**Version:** 1.3 (§8's closing `PassiveId` paragraph — **stale-reference
+**Version:** 1.4 (§4 gains the **Boss Passive** clause per TASK-173, applying the
+recorded Product Owner decision (Option B): for a Boss Passive, the non-default
+`Persistent` reset behavior (storage token `Persistent`, Domain
+`PassiveResetBehavior.NoReset`) governs **firing eligibility** — the Passive is
+eligible to fire at most once per battle, its eligibility is consumed upon the
+first activation and is not restored when the applied effect expires, and a new
+battle creates fresh eligibility. The clause is **Boss-scoped**: Pet Passives
+keep the items 1–3 match-charging reading of `Persistent`, and §4 item 3's
+declaration requirement is unchanged. **No new reset token, no new enum member,
+no `PassiveId` value, no threshold, no trigger, and no Pet Passive behavior
+changed**; the storage token and its Domain mapping are exactly as
+`DATABASE.md` §1 note item 3 already records. Decision source: TASK-173.
+Prior 1.3 (§8's closing `PassiveId` paragraph — **stale-reference
 correction only** per TASK-167: it described the Thanh Xà and Sơn Hùng rows as
 "deferred with their Pets (`PET_RULES.md` §8)", a status the TASK-166 Signature
 Skill decisions retired. The sentence now records that all five Pet rows are
@@ -108,6 +120,27 @@ as armed/not-armed rather than a counter).
      one-time Battle Start Passive).
 3. Any non-default reset behavior must be documented on the specific Pet's
    Passive definition (see PET_RULES.md), not assumed.
+
+**Boss Passives: `Persistent` governs firing eligibility.** For a **Boss**
+Passive, the same non-default behavior — storage token `Persistent`, Domain
+`PassiveResetBehavior.NoReset` (`DATABASE.md` §1 note item 3) — governs the
+Passive's **firing eligibility** rather than match-charge progress. The
+declaration is made on the Boss's Passive definition (`BOSS_RULES.md` §6.2),
+which is where items 1–3 above place a non-default behavior:
+
+1. A `Persistent` Boss Passive is eligible to fire **at most once per battle**.
+2. Upon triggering, its firing eligibility is **consumed** for the remainder of
+   that battle. Firing eligibility and effect duration are separate contracts:
+   the effect lasts for its own authored duration (e.g. 3 Turns), but the
+   effect's expiry does **not** restore the eligibility, and neither does the
+   trigger condition remaining satisfied.
+3. A new battle creates fresh firing eligibility; the consumed state is scoped
+   to that battle and is never carried across battles.
+
+`Persistent` therefore does **not** mean the effect instance lasts
+indefinitely. For **Pet** Passives, `Persistent` keeps its items 1–3 meaning —
+it retains match-charge progress across triggers and imposes no firing limit.
+That Pet-scoped reading is unchanged by this paragraph.
 
 ---
 
