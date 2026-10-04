@@ -1,7 +1,11 @@
 # Game Design Document (GDD)
 
 **Project:** Match-3 RPG Discord Activity
-**Version:** 2.4 (§6 Pet System finalized per TASK-062 — Pet progression is
+**Version:** 2.5 (§2 Core Gameplay Loop's pre-battle step list now includes the
+Boss choice per TASK-185 — the MVP Lobby lets the player explicitly choose one
+of the five canonical MVP Bosses (`BOSS_RULES.md` §6/§6.4) before starting, so
+the loop names that step; no Boss rule, stat, Element, Passive, Skill, formula,
+or content value changed. Prior 2.4: §6 Pet System finalized per TASK-062 — Pet progression is
 fed by battle rewards to the active combat Pet and is hard-capped at Pet
 Level 50; the Pet XP balance values are now decided, not open. Prior 2.3:
 §6/§14 updated per TASK-059 — Player XP / Level and
@@ -9,7 +13,7 @@ Pet XP / Level are two independent progression tracks; Pet Level is no
 longer derived from Player Level; ADR-016. Prior 2.2: Player Level defined
 for MVP — persistent account
 attribute, 1–50, source of Pet Level; ADR-012; prior 2.1: Player =
-account/owner / Pet = combat character clarified)
+account/owner / Pet = combat character clarified))
 **Status:** MVP Design
 **Platform:** Discord Activity
 **Genre:** Match-3 RPG / Boss Battler
@@ -60,7 +64,7 @@ management rather than relying only on raw character statistics.
 # 2. Core Gameplay Loop
 
 ```text
-Enter Battle → Choose Pet → Equip Cards → Equip Relics → Start Battle
+Enter Battle → Choose Pet → Equip Cards → Equip Relics → Choose Boss → Start Battle
   → Swap Gems → Match → Cascade → Combo → Generate Resources
   → Charge Passive → Trigger Relics → Use Cards / Pet Skill
   → Calculate Damage → Apply Element Modifier → Boss Responds

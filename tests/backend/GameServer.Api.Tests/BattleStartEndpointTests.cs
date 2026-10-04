@@ -256,16 +256,19 @@ public class BattleStartEndpointTests
     [InlineData("boss-hoa-long", "Fire")]
     [InlineData("boss-thuy-ma", "Water")]
     [InlineData("boss-moc-yeu", "Wood")]
+    [InlineData("boss-son-thach-ve", "Earth")]
+    [InlineData("boss-kim-loi-vuong", "Metal")]
     public async Task Start_ShouldEmitTheDocumentedWireValueForTheBossElement(
         string bossId,
         string expected)
     {
-        // BOSS_RULES.md §6: exactly three content-defined MVP Bosses, so
-        // bossState.element can only ever reach three of the five values here.
-        // Earth and Metal are not reachable through the MVP roster and no Boss is
-        // invented to exercise them (AGENTS.md §7) — the shared mapping's
-        // exhaustiveness over all five is covered on petState.element and by
-        // ElementWireValuesTests.
+        // BOSS_RULES.md §6 defines exactly five content-defined MVP Bosses and
+        // §6.4 fixes their canonical Identities, so all five are accepted by the
+        // endpoint and every one of the five wire Element values is reachable
+        // through the roster (TASK-171/TASK-172 completed the set; TASK-185
+        // covers the two the Lobby could not previously reach). Each row asserts
+        // the identity the response reports for the Boss the request selected,
+        // which is the server's own statement of the created Boss.
         using var factory = new BattleStartFactory();
         var client = factory.CreateClient();
         var playerId = await factory.SeedPlayerAsync(client);
@@ -293,9 +296,15 @@ public class BattleStartEndpointTests
     {
         // The regression this task fixes: both members were produced with
         // Element.ToString(), which answered "Moc"/"Hoa" — a value §5.1 excludes
-        // and no document on the REST surface binds. Asserted over every MVP Boss
-        // as well as the Pet, so a re-introduced enum projection fails here.
-        foreach (var bossId in new[] { "boss-hoa-long", "boss-thuy-ma", "boss-moc-yeu" })
+        // and no document on the REST surface binds. Asserted over all five
+        // canonical MVP Boss identities (BOSS_RULES.md §6.4; TASK-185 completes
+        // the roster coverage) as well as the Pet, so a re-introduced enum
+        // projection fails here.
+        foreach (var bossId in new[]
+                 {
+                     "boss-hoa-long", "boss-thuy-ma", "boss-moc-yeu",
+                     "boss-son-thach-ve", "boss-kim-loi-vuong",
+                 })
         {
             using var factory = new BattleStartFactory { PetElement = Element.Hoa };
             var client = factory.CreateClient();

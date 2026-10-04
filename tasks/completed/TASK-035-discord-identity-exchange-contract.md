@@ -116,7 +116,7 @@ Application session mechanism   TASK-034 (BLOCKED) — ADR-007 item 4. This
                                 contract deliberately does not define it;
                                 POST /api/auth/discord continues to return the
                                 opaque development session placeholder.
-Credential storage/hygiene      TASK-036 (BLOCKED) — how the Client Secret is
+Credential storage/hygiene      TASK-036 (READY) — how the Client Secret is
                                 stored locally. This contract only fixes how
                                 the credential is supplied (config-bound) and
                                 never exposed.
@@ -474,8 +474,9 @@ satisfied by this task.
   to the existing `Postgres/`, `Redis/`, and `SignalR/` modules.
 - `ADR-007` item 1's frontend SDK boundary stands: the Discord SDK never runs on
   the backend, and `DiscordService.ts` is untouched by this task.
-- See also **TASK-036 — Discord Credential Secret Hygiene**, which covers the
-  credential-handling side of this boundary.
+- See also **TASK-036 — Discord Credential Secret Hygiene** (now `READY`; its
+  decisions are recorded in `ADR-019`), which covers the credential-handling
+  side of this boundary.
 - Do not modify `tasks/completed/`.
 
 ---

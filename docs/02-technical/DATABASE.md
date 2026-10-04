@@ -1,6 +1,18 @@
 # Database
 
-**Version:** 1.34 (§1 note item 5 and §5 item 4 `BossDefinition` provisioning
+**Version:** 1.35 (§1's Relic contract "encoded in these shapes" note, §2's
+starter-relic exclusion note, and §5 item 4's provisioning record
+**synchronized** with TASK-184: the six remaining canonical `RelicDefinition`
+rows (`relic-burning-curse`, `relic-combo-fang`, `relic-arcane-battery`,
+`relic-execution-mark`, `relic-cascade-core`, `relic-battle-instinct`) are now
+provisioned via migration `20261004153916_ProvisionRemainingMvpRelicDefinitions`,
+so the provisioned content-defined set is `PetDefinition` (5),
+`CardDefinition` (8), and `RelicDefinition` (10) and **no Relic row remains
+deferred**. **No table, column, constraint, index, schema shape, token, enum
+mapping, vocabulary, or gameplay value changes**, and no value is authored: the
+six rows' every value is transcribed from `RELIC_RULES.md` §8.5, and the
+statements about what TASK-132/TASK-168 did at the time are preserved. Prior
+1.34 (§1 note item 5 and §5 item 4 `BossDefinition` provisioning
 references **reconciled** per TASK-175: all five MVP `BossDefinition` rows are
 now provisioned via EF Core migrations — the initial three via
 `20260926151112_ProvisionBossDefinitions` (TASK-053) and the remaining two
@@ -784,20 +796,24 @@ D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
    - Array order is **not** semantic (`RELIC_RULES.md` §8.2 item 4), and a
      Relic's resolution order is §4's equip-slot order rather than an effect's
      index within one Relic.
-   - **The four provisioned rows are encoded in these shapes.** (TASK-132) All
-     four content-defined `RelicDefinition` rows now hold them, with every value
+   - **The six remaining rows are encoded in these shapes too.** (TASK-184)
+     All ten canonical `RelicDefinition` rows now hold them. The six that
+     followed the original four — Burning Curse, Combo Fang, Arcane Battery,
+     Execution Mark, Cascade Core, and Battle Instinct — were written **born
+     structured** by migration
+     `20261004153916_ProvisionRemainingMvpRelicDefinitions`, with every value
      transcribed from `RELIC_RULES.md` §8.5 and none computed or invented
-     (`§5` item 4 rule (b)). No provisioned row carries an `Undetermined`
-     element, because §8.5 authors every magnitude; the member itself remains
-     valid for an effect whose magnitude is not yet authored (`RELIC_RULES.md`
-     §8.2 item 2). **`Burning Curse` and the five new MVP Relics remain unprovisioned** —
-      under TASK-176 all 10 Relics are content-defined in `RELIC_RULES.md` §6/§8.5
-      (Burning Curse's static-modifier conflict resolved to `OnBattleStart`), with
-      their provisioning pending a downstream migration task; no placeholder row was
-      inserted for them. [Prior note: §6 note 3 / §8.5
-     item 4 kept it deferred prior to TASK-176, and no placeholder row, Trigger, value, or
+     (`§5` item 4 rule (b)). TASK-176 had content-defined all 10 Relics in
+     `RELIC_RULES.md` §6/§8.5 (Burning Curse's static-modifier conflict resolved
+     to `OnBattleStart`), and that downstream provisioning task has now landed:
+     **no `RelicDefinition` row remains unprovisioned.** No provisioned row
+     carries an `Undetermined` element, because §8.5 authors every magnitude; the
+     member itself remains valid for an effect whose magnitude is not yet
+     authored (`RELIC_RULES.md` §8.2 item 2). No placeholder row was inserted for
+     any of the ten. [Prior note: §6 note 3 / §8.5 item 4 kept Burning Curse
+     deferred prior to TASK-176, and no placeholder row, Trigger, value, or
      condition is inserted for it. The column set, the `Relic` ownership table,
-     and every other table are unchanged by that migration.
+     and every other table are unchanged by those migrations.
 
 **Persistence contract for `BossDefinition`.** (TASK-045)
 
@@ -1287,7 +1303,8 @@ can be exercised without a separate acquisition system.
   Eye**). Exactly one owned instance is granted per selected definition; each row
   carries a distinct, server-minted `RelicInstanceId` (never collapsed with
   `RelicDefinitionId`, `RELIC_RULES.md` §2.2) and `AcquiredAt` server timestamp.
-  *Excluded:* `Burning Curse` is deferred (`RELIC_RULES.md` §6 note 3); `Emergency
+  *Excluded:* `Burning Curse` is provisioned but deliberately not selected for
+  the 3-Relic starter set (`RELIC_RULES.md` §6); `Emergency
   Core` is provisioned but deliberately not selected for the 3-Relic starter set.
   *Selection basis:* The starter definitions are an explicit named Product Owner
   selection, NOT derived from document ordering, alphabetical ordering, migration
@@ -1539,15 +1556,24 @@ when a real query pattern requires them (anti-overengineering,
    `pet-thanh-xa`, `pet-son-hung`, in migration
    `20261004055006_ProvisionThanhXaAndSonHungSignatureSkills`), so the
    currently provisioned content-defined set is **`PetDefinition` (5),
-   `CardDefinition` (8), and `RelicDefinition` (4)**. The four `RelicDefinition`
+   `CardDefinition` (8), and `RelicDefinition` (10)**. The four `RelicDefinition`
    rows were subsequently **re-encoded into the
    structured shape** `RELIC_RULES.md` §8 defines (TASK-132, migration
    `20261003074309_StructureRelicDefinitionStructuredColumns`) — a
    representation migration over the same four rows, with every value
    transcribed from `RELIC_RULES.md` §8.5 and none computed or invented
-   (rule (b) above). That migration provisions no row: it inserts none,
-   deletes none, and leaves `Burning Curse` deferred (rule (a) above,
-   `RELIC_RULES.md` §6 note 3). The `BossDefinition` migrations are
+   (rule (b) above). That migration provisions no row: it inserts none and
+   deletes none. **The remaining six canonical `RelicDefinition` rows were
+   subsequently provisioned** by a third, same-mechanism data-only migration
+   (TASK-184: `relic-burning-curse`, `relic-combo-fang`,
+   `relic-arcane-battery`, `relic-execution-mark`, `relic-cascade-core`, and
+   `relic-battle-instinct`, in migration
+   `20261004153916_ProvisionRemainingMvpRelicDefinitions`), each written born
+   structured from `RELIC_RULES.md` §8.5. **No Relic row remains deferred** as
+   of TASK-184: rule (a) above is satisfied for the complete canonical set,
+   because TASK-176 content-defined all ten Relics and resolved the Trigger
+   tension that had deferred `Burning Curse` (`RELIC_RULES.md` §6 note 3,
+   §8.5 item 5). The `BossDefinition` migrations are
    **complete** — migration `20260926151112_ProvisionBossDefinitions`
    (TASK-053) provisioned the initial three canonical rows, and migration
    `20261004094100_ProvisionTwoRemainingMvpBosses` provisioned the final two

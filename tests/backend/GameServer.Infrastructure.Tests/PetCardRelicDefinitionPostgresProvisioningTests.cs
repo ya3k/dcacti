@@ -128,6 +128,9 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
     [
         "relic-berserker-core", "relic-mana-crystal",
         "relic-assassin-eye", "relic-emergency-core",
+        "relic-burning-curse", "relic-combo-fang",
+        "relic-arcane-battery", "relic-execution-mark",
+        "relic-cascade-core", "relic-battle-instinct",
     ];
 
     private async Task<List<CardDefinition>?> ReadCardsAsync()
@@ -170,11 +173,11 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
     }
 
     // -----------------------------------------------------------------------
-    // Row set — exactly 8 / 5 / 4 canonical rows
+    // Row set — exactly 8 / 5 / 10 canonical rows
     //
-    // 6+3 (TASK-085) plus 2+2 (TASK-168) = 8 Cards and 5 Pets; the Relic set is
-    // unchanged at 4, because TASK-168 provisions no Relic row and Burning Curse
-    // stays deferred (RELIC_RULES.md §6 note 3).
+    // 6+3 (TASK-085) plus 2+2 (TASK-168) = 8 Cards and 5 Pets. The Relic set is
+    // the complete canonical MVP set of TEN: the four TASK-085 provisioned rows
+    // plus the six TASK-184 provisions (RELIC_RULES.md §6, §8.5).
     // -----------------------------------------------------------------------
 
     [Fact]
@@ -209,16 +212,22 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Postgres_ShouldHoldExactlyFourCanonicalRelicDefinitions()
+    public async Task Postgres_ShouldHoldExactlyTenCanonicalRelicDefinitions()
     {
         var relics = await ReadRelicsAsync();
         if (relics is null) return;
 
+        // TASK-184: the complete canonical MVP Relic set — the four TASK-085 rows
+        // plus the six rows TASK-176 content-defined and TASK-184 provisions
+        // (RELIC_RULES.md §6, §8.5). Each read returns exactly one row per canonical
+        // id, so a missing row and a duplicated row both fail here.
         Assert.Equal(
             new[]
             {
-                "relic-assassin-eye", "relic-berserker-core",
-                "relic-emergency-core", "relic-mana-crystal",
+                "relic-arcane-battery", "relic-assassin-eye", "relic-battle-instinct",
+                "relic-berserker-core", "relic-burning-curse", "relic-cascade-core",
+                "relic-combo-fang", "relic-emergency-core", "relic-execution-mark",
+                "relic-mana-crystal",
             },
             relics.Select(relic => relic.RelicDefinitionId).ToArray());
     }
@@ -232,17 +241,18 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
 
         if (cards is null || pets is null || relics is null) return;
 
-        // TASK-085: 6 + 3 + 4 = 13. TASK-168 adds 2 Cards + 2 Pets, so 8 + 5 + 4
-        // = 17. Each read returns exactly one row per canonical id, so a missing
-        // row and a duplicated row both fail here.
+        // TASK-085: 6 + 3 + 4 = 13. TASK-168 adds 2 Cards + 2 Pets, so 8 + 5 = 13
+        // for those two tables; TASK-184 adds the six remaining Relic rows, bringing
+        // the Relic table to the canonical ten. Each read returns exactly one row per
+        // canonical id, so a missing row and a duplicated row both fail here.
         Assert.Equal(8, cards.Count);
         Assert.Equal(5, pets.Count);
-        Assert.Equal(4, relics.Count);
-        Assert.Equal(17, cards.Count + pets.Count + relics.Count);
+        Assert.Equal(10, relics.Count);
+        Assert.Equal(23, cards.Count + pets.Count + relics.Count);
 
-        // The pre-existing thirteen remain exactly thirteen of the seventeen —
-        // TASK-168 adds rows and re-encodes none (AGENTS.md §16).
-        Assert.Equal(13, cards.Count + pets.Count + relics.Count - 4);
+        // TASK-184 contributed exactly the six Relics its task owns and re-encoded
+        // none of the four that already existed (AGENTS.md §16).
+        Assert.Equal(6, relics.Count - 4);
     }
 
     [Fact]
@@ -423,20 +433,31 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
         // migration stored.
         //
         // TASK-132 migrated Condition and EffectDefinition from prose to the
-        // structured contract RELIC_RULES.md §8 defines (DATABASE.md §1), so this
+        // structured contract RELIC_RULES.md §8 defines (DATABASE.md §1), and
+        // TASK-184 added the six remaining canonical rows born structured. This
         // test asserts the identity/Trigger here and the STRUCTURED §8.5 values
         // per row. Asserting the encoded shape twice would give the same fact two
         // owners (GAME_STATE.md §0 item 5) — the persistence-level twin of these
         // assertions lives in RelicStructuredStorageTests.
+        //
+        // All TEN canonical rows are covered: the four TASK-085/TASK-132 rows and
+        // the six TASK-184 rows (RELIC_RULES.md §6, §8.5).
         var expected = new (string Id, string Name, string Trigger)[]
         {
             ("relic-berserker-core", "Berserker Core", "OnMatchCount"),
             ("relic-mana-crystal", "Mana Crystal", "OnMatchCount"),
             ("relic-assassin-eye", "Assassin Eye", "OnCombo"),
             ("relic-emergency-core", "Emergency Core", "OnHpBelow"),
+            ("relic-burning-curse", "Burning Curse", "OnBattleStart"),
+            ("relic-combo-fang", "Combo Fang", "OnCombo"),
+            ("relic-arcane-battery", "Arcane Battery", "OnPowerGain"),
+            ("relic-execution-mark", "Execution Mark", "OnHpBelow"),
+            ("relic-cascade-core", "Cascade Core", "OnCascade"),
+            ("relic-battle-instinct", "Battle Instinct", "OnDamageTaken"),
         };
 
         Assert.Equal(expected.Length, relics.Count);
+        Assert.Equal(10, expected.Length);
 
         foreach (var (id, name, trigger) in expected)
         {
@@ -480,15 +501,19 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
         // §1: `card-<ascii-kebab-case-name>` of the CARD'S documented name, so
         // "Thanh Xà's Skill" was never the source of the key at all).
         //
-        // The RELIC half is unchanged and still asserted below: Burning Curse
-        // remains deferred (RELIC_RULES.md §6 note 3), which is the only content
-        // deferral TASK-167 left standing.
+        // The RELIC half is CORRECTED FOR TASK-184. It previously asserted
+        // Burning Curse was absent, on the premise that RELIC_RULES.md §6 note 3 /
+        // §8.5 item 4 left it deferred. TASK-176 resolved that tension — §8.5
+        // item 5 records `OnBattleStart`, no Condition, `BurnDamage` `+30%`,
+        // `Battle` — and TASK-184 provisions it, so the row now exists exactly
+        // once and the old absence assertion is false. The positive half (that the
+        // row exists with its documented values) is asserted by
+        // Postgres_ShouldHoldTheDocumentedRelicValuesPerRow and by the repository
+        // lookup below, so the row's existence cannot silently regress.
         //
-        // The positive half of the correction — that the four rows now EXIST with
-        // their documented values — is asserted by
-        // Postgres_ShouldHoldTheDocumentedCardValuesPerRow / ...PetValuesPerRow and
-        // by the repository lookups below, so the deferral premise cannot silently
-        // return.
+        // What remains a real INVARIANT, and is asserted below, is that the
+        // pre-TASK-167 guessed Card key form stays absent — it was never derived
+        // from a documented Card name and no row may carry it.
         await using var command = _dataSource!.CreateCommand(
             """
             SELECT
@@ -518,8 +543,9 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
         // from a documented Card name and no row may carry it.
         Assert.Equal(0, reader.GetInt64(2));
 
-        // RELIC_RULES.md §6 note 3: Burning Curse stays deferred.
-        Assert.Equal(0, reader.GetInt64(3));
+        // RELIC_RULES.md §6 / §8.5 (TASK-176, TASK-184): Burning Curse is
+        // content-defined and provisioned, so it exists exactly once.
+        Assert.Equal(1, reader.GetInt64(3));
     }
 
     [Fact]
@@ -623,11 +649,7 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
         await using var context = CreateContext();
         var repository = new RelicRepository(context);
 
-        foreach (var id in new[]
-                 {
-                     "relic-berserker-core", "relic-mana-crystal",
-                     "relic-assassin-eye", "relic-emergency-core",
-                 })
+        foreach (var id in CanonicalRelicIds)
         {
             var definition = await repository.GetDefinitionAsync(id);
 
@@ -690,7 +712,7 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Repositories_ShouldStillReturnNullForTheDeferredRelic()
+    public async Task Repositories_ShouldResolveTheSixRemainingCanonicalRelics()
     {
         if (!_available || !_schemaApplied) return;
 
@@ -698,17 +720,47 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
 
         var relics = new RelicRepository(context);
 
-        // RELIC_RULES.md §6 note 3: Burning Curse is the one content deferral
-        // TASK-167 left standing — TASK-168 provisions no Relic row, so its
-        // lookup still resolves to nothing. The guessed pre-TASK-167 Card key form
-        // likewise remains unresolvable (DATABASE.md §1 value forms).
-        Assert.Null(await relics.GetDefinitionAsync("relic-burning-curse"));
+        // CORRECTED FOR TASK-184. This test previously read
+        // "Repositories_ShouldStillReturnNullForTheDeferredRelic" and asserted
+        // `Assert.Null(await relics.GetDefinitionAsync("relic-burning-curse"))`, on
+        // RELIC_RULES.md §6 note 3's deferral. TASK-176 authored the full
+        // 10-Relic contract (§8.5 item 5 records Burning Curse as `OnBattleStart`
+        // with no Condition) and TASK-184 provisions all six, so the repository must
+        // now RESOLVE every one of them. The deferred-content premise is gone, and
+        // the six rows' exact documented values are asserted rather than merely
+        // their existence.
+        foreach (var row in RelicProvisionedContent.Rows.Where(row => !CanonicalPreTask184RelicIds.Contains(row.Id)))
+        {
+            var resolved = await relics.GetDefinitionAsync(row.Id);
 
+            Assert.NotNull(resolved);
+            Assert.Equal(row.Id, resolved!.RelicDefinitionId);
+            Assert.Equal(row.Name, resolved.Name);
+            Assert.Equal(row.Trigger, resolved.Trigger);
+            Assert.Equal(row.Condition, resolved.Condition);
+            Assert.Equal(row.Effects, resolved.EffectDefinition);
+        }
+
+        // The guessed pre-TASK-167 Card key form remains unresolvable
+        // (DATABASE.md §1 value forms) — it was never a documented key. This half
+        // of the original assertion is still true and is kept.
         var cards = new CardRepository(context);
 
         Assert.Null(await cards.GetDefinitionAsync("card-thanh-xa-skill"));
         Assert.Null(await cards.GetDefinitionAsync("card-son-hung-skill"));
     }
+
+    /// <summary>
+    /// The four Relics that existed before TASK-184 — migration
+    /// <c>20260929152651_ProvisionPetCardRelicContentDefinitions</c> provisioned
+    /// them and <c>20261003074309_StructureRelicDefinitionStructuredColumns</c>
+    /// re-encoded them.
+    /// </summary>
+    private static readonly HashSet<string> CanonicalPreTask184RelicIds =
+    [
+        "relic-berserker-core", "relic-mana-crystal",
+        "relic-assassin-eye", "relic-emergency-core",
+    ];
 
     [Fact]
     public async Task Repositories_ShouldResolveTheSignatureSkillCardThroughItsRepository()

@@ -1,7 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { LobbyScene, MVP_BOSS_ID } from '../src/game/scenes/LobbyScene';
+import {
+  LobbyScene,
+  MVP_BOSSES,
+  SELECTION_TEXT_BOTTOM_OFFSET,
+  REVIEW_TEXT_BOTTOM_OFFSET,
+  MESSAGE_TEXT_BOTTOM_OFFSET,
+  ERROR_TEXT_BOTTOM_OFFSET,
+} from '../src/game/scenes/LobbyScene';
 import { RUNTIME_REGISTRY_KEY } from '../src/game/runtime/RuntimeRegistry';
 import { INITIAL_RUNTIME_STATE } from '../src/state/GameRuntimeState';
 import type { BattleStartRequest } from '../src/services/api/BattleModels';
@@ -65,6 +72,10 @@ const STARTER_RELICS = [
 interface Clickable {
   readonly text: string;
   readonly interactive: boolean;
+  readonly x?: number;
+  readonly y?: number;
+  readonly width?: number;
+  readonly height?: number;
   click(): void;
 }
 
@@ -141,7 +152,7 @@ function createLobbyHarness(options: SceneHarnessOptions = {}) {
   };
 
   /** A text object with a registered pointer handler. */
-  const makeText = (label: string): Clickable => {
+  const makeText = (x: number, y: number, label: string): Clickable => {
     const handlers: Array<() => void> = [];
     let current = label;
     let interactive = false;
@@ -149,6 +160,8 @@ function createLobbyHarness(options: SceneHarnessOptions = {}) {
     texts.push(label);
 
     const obj = {
+      x,
+      y,
       get text() {
         return current;
       },
@@ -192,11 +205,15 @@ function createLobbyHarness(options: SceneHarnessOptions = {}) {
   };
 
   /** A rectangle (the shell background and the Start Battle button). */
-  const makeRectangle = (): Clickable => {
+  const makeRectangle = (x = 0, y = 0, width = 0, height = 0): Clickable => {
     const handlers: Array<() => void> = [];
     let interactive = false;
 
     const obj = {
+      x,
+      y,
+      width,
+      height,
       // The shell background has no text; the button is found by this label.
       text: 'START BATTLE',
       get interactive() {
@@ -235,8 +252,9 @@ function createLobbyHarness(options: SceneHarnessOptions = {}) {
     return Object.assign(Object.create(scene), {
       scene: { start: (key: string) => sceneStarted.push({ key }) },
       add: {
-        rectangle: () => makeRectangle(),
-        text: (_x: number, _y: number, value: string) => makeText(value),
+        rectangle: (x: number, y: number, width: number, height: number) =>
+          makeRectangle(x, y, width, height),
+        text: (x: number, y: number, value: string) => makeText(x, y, value),
       },
       registry: {
         get: (key: string) => (withRuntime && key === RUNTIME_REGISTRY_KEY ? runtime : undefined),
@@ -302,16 +320,26 @@ async function flush(): Promise<void> {
 }
 
 /**
- * Selects the full documented loadout (1 Pet / 3 Basic Cards / 3 Relics)
+ * Selects the full documented loadout (1 Pet / 3 Basic Cards / 3 Relics / 1 Boss)
  * through the scene's own option objects, using the collection's own labels.
+ *
+ * The Boss is chosen explicitly — there is no default selection to fall back on
+ * (`MVP_BOSSES` starts unselected) — and the caller names which one, so a test
+ * that cares about the Boss identity cannot be satisfied by a fixed value.
  */
-function selectFullLoadout(harness: ReturnType<typeof createLobbyHarness>): void {
+function selectFullLoadout(
+  harness: ReturnType<typeof createLobbyHarness>,
+  bossDisplayName: string | null = 'Hỏa Long'
+): void {
   harness.optionContaining('Xích Lang').click();
   harness.optionContaining('Heal').click();
   harness.optionContaining('Shield').click();
   harness.optionContaining('Power Charge').click();
   for (const label of ['Berserker Core', 'Mana Crystal', 'Assassin Eye']) {
     harness.optionContaining(label).click();
+  }
+  if (bossDisplayName !== null) {
+    harness.optionContaining(bossDisplayName).click();
   }
 }
 
@@ -403,17 +431,74 @@ describe('LobbyScene — selection interaction (GDD.md §2; ARCHITECTURE.md §2.
     expect(rendered).toContain('1. CHOOSE PET');
     expect(rendered).toContain('2. EQUIP CARDS');
     expect(rendered).toContain('3. EQUIP RELICS');
-    expect(rendered).toContain('4. REVIEW');
+    expect(rendered).toContain('4. CHOOSE BOSS');
+    expect(rendered).toContain('5. REVIEW');
   });
 
-  it('presents the fixed MVP Boss target and offers no Boss selection', async () => {
+  it('offers exactly the five canonical MVP Bosses and nothing else', async () => {
     const { harness } = await createLobby();
 
-    expect(harness.rendered()).toContain(`Boss: ${MVP_BOSS_ID}`);
-    // No interactive control chooses a Boss, and no second Boss appears.
-    expect(harness.clickables.filter((c) => c.interactive && /Boss/i.test(c.text))).toEqual([]);
-    expect(harness.rendered()).not.toContain('boss-thuy-ma');
-    expect(harness.rendered()).not.toContain('boss-moc-yeu');
+    // BOSS_RULES.md §6 defines exactly five content-defined Bosses and §6.4 fixes
+    // these identities; the presentation shows the §6 display names.
+    expect(MVP_BOSSES.map((boss) => boss.bossId)).toEqual([
+      'boss-hoa-long',
+      'boss-thuy-ma',
+      'boss-moc-yeu',
+      'boss-son-thach-ve',
+      'boss-kim-loi-vuong',
+    ]);
+
+    for (const boss of MVP_BOSSES) {
+      expect(harness.rendered()).toContain(`${boss.displayName}  ${boss.element}`);
+      // Each Boss is a real, interactive option.
+      expect(harness.optionContaining(boss.displayName).interactive).toBe(true);
+    }
+
+    // No sixth entry, placeholder, or invented Boss: the rendered pass contains
+    // exactly one option row per canonical Boss and no other Boss row.
+    const bossLines = harness
+      .rendered()
+      .split('\n')
+      .filter((line) => /^[○●] /.test(line));
+    expect(bossLines.filter((line) => MVP_BOSSES.some((b) => line.includes(b.displayName)))).toHaveLength(5);
+    expect(harness.rendered()).not.toContain('boss-def-');
+  });
+
+  it('selects no Boss until the player chooses one', async () => {
+    const { harness } = await createLobby();
+
+    // The initial state is `selectedBossId = null`: the review line and every
+    // Boss option show an unfilled selection.
+    expect(harness.rendered()).toContain('5. REVIEW — Boss: (none chosen)');
+    for (const boss of MVP_BOSSES) {
+      expect(harness.rendered()).toContain(`○ ${boss.displayName}  ${boss.element}`);
+    }
+  });
+
+  it('selects each of the five Bosses, replacing the previous choice', async () => {
+    const { harness } = await createLobby();
+
+    for (const boss of MVP_BOSSES) {
+      harness.optionContaining(boss.displayName).click();
+
+      const rendered = harness.rendered();
+      expect(rendered).toContain(`5. REVIEW — Boss: ${boss.bossId}`);
+      // Exactly one Boss is marked selected — the one just chosen.
+      expect(rendered).toContain(`● ${boss.displayName}  ${boss.element}`);
+      for (const other of MVP_BOSSES.filter((entry) => entry.bossId !== boss.bossId)) {
+        expect(rendered).toContain(`○ ${other.displayName}  ${other.element}`);
+      }
+    }
+  });
+
+  it('clears the Boss choice when the same Boss is tapped twice', async () => {
+    const { harness } = await createLobby();
+
+    harness.optionContaining('Kim Lôi Vương').click();
+    expect(harness.rendered()).toContain('5. REVIEW — Boss: boss-kim-loi-vuong');
+
+    harness.optionContaining('Kim Lôi Vương').click();
+    expect(harness.rendered()).toContain('5. REVIEW — Boss: (none chosen)');
   });
 
   it('selects exactly one Pet, replacing the previous choice', async () => {
@@ -526,14 +611,46 @@ describe('LobbyScene — BattleStartRequest construction (API_CONTRACTS.md §3)'
     expect(harness.startRequests[0].petId).toBe('pet-instance-77');
   });
 
-  it('submits the fixed MVP Boss identity', async () => {
+  it("submits the Boss the player selected, never a fixed identity", async () => {
+    // The central case: a NON-default Boss must reach the request, so this is
+    // not satisfied by the flow merely still succeeding.
     const { harness } = await createLobby();
 
     selectFullLoadout(harness);
+    harness.optionContaining('Kim Lôi Vương').click();
     harness.startTrigger().click();
     await flush();
 
-    expect(harness.startRequests[0].bossId).toBe('boss-hoa-long');
+    expect(harness.startRequests[0].bossId).toBe('boss-kim-loi-vuong');
+  });
+
+  it('submits each canonical Boss identity exactly, including the diacritic spellings', async () => {
+    for (const boss of MVP_BOSSES) {
+      const { harness } = await createLobby();
+
+      // Everything but the Boss, then the Boss itself — chosen once, through its
+      // own row, so re-selection cannot clear it.
+      selectFullLoadout(harness, null);
+      harness.optionContaining(boss.displayName).click();
+      harness.startTrigger().click();
+      await flush();
+
+      // §6.4's exact values: no runtime slugification of the display name, no
+      // dropped `boss-` prefix, and no `BossDefinitionId`.
+      expect(harness.startRequests[0].bossId).toBe(boss.bossId);
+    }
+  });
+
+  it('submits only the last-selected Boss when the selection is replaced', async () => {
+    const { harness } = await createLobby();
+
+    selectFullLoadout(harness);
+    harness.optionContaining('Hỏa Long').click();
+    harness.optionContaining('Thủy Ma').click();
+    harness.startTrigger().click();
+    await flush();
+
+    expect(harness.startRequests[0].bossId).toBe('boss-thuy-ma');
   });
 
   it('submits exactly three Basic Card ids and no PetSkill card', async () => {
@@ -561,6 +678,7 @@ describe('LobbyScene — BattleStartRequest construction (API_CONTRACTS.md §3)'
     harness.optionContaining('Assassin Eye').click();
     harness.optionContaining('Berserker Core').click();
     harness.optionContaining('Mana Crystal').click();
+    harness.optionContaining('Sơn Thạch Vệ').click();
 
     harness.startTrigger().click();
     await flush();
@@ -584,6 +702,7 @@ describe('LobbyScene — BattleStartRequest construction (API_CONTRACTS.md §3)'
     harness.optionContaining('Assassin Eye').click();
     harness.optionContaining('Berserker Core').click();
     harness.optionContaining('Mana Crystal').click();
+    harness.optionContaining('Thủy Ma').click();
 
     harness.startTrigger().click();
     await flush();
@@ -610,13 +729,16 @@ describe('LobbyScene — BattleStartRequest construction (API_CONTRACTS.md §3)'
     for (const label of ['Alpha', 'Beta', 'Gamma', 'One', 'Two', 'Three']) {
       harness.optionContaining(label).click();
     }
+    // A non-default Boss, so the submission proves the Boss member follows the
+    // selection rather than a fixed value.
+    harness.optionContaining('Mộc Yêu').click();
 
     harness.startTrigger().click();
     await flush();
 
     expect(harness.startRequests[0]).toEqual({
       petId: 'own-pet-9',
-      bossId: 'boss-hoa-long',
+      bossId: 'boss-moc-yeu',
       cardLoadout: ['own-card-a', 'own-card-b', 'own-card-c'],
       relicLoadout: ['own-relic-1', 'own-relic-2', 'own-relic-3'],
     });
@@ -636,6 +758,28 @@ describe('LobbyScene — BattleStartRequest construction (API_CONTRACTS.md §3)'
 
     expect(harness.startRequests).toHaveLength(0);
     expect(harness.rendered()).toContain('Choose a Pet first.');
+  });
+
+  it('does not submit a complete loadout that has no Boss selected', async () => {
+    const { harness } = await createLobby();
+
+    // Everything except the Boss: no Boss is defaulted, so the request has no
+    // documented `bossId` and must not be sent.
+    harness.optionContaining('Xích Lang').click();
+    harness.optionContaining('Heal').click();
+    harness.optionContaining('Shield').click();
+    harness.optionContaining('Power Charge').click();
+    for (const label of ['Berserker Core', 'Mana Crystal', 'Assassin Eye']) {
+      harness.optionContaining(label).click();
+    }
+
+    harness.startTrigger().click();
+    await flush();
+
+    expect(harness.startRequests).toHaveLength(0);
+    expect(harness.sceneStarted).toEqual([]);
+    expect(harness.rendered()).toContain('Choose a Boss.');
+    expect(harness.rendered()).toContain('5. REVIEW — Boss: (none chosen)');
   });
 
   it('does not submit an under-filled Relic loadout', async () => {
@@ -816,6 +960,7 @@ describe('LobbyScene — shutdown cleanup (ARCHITECTURE.md §2.2.3 rules 1–2)'
     expect(rendered).toContain('Pet:   —');
     expect(rendered).toContain('Cards: 0/3');
     expect(rendered).toContain('Relics: 0/5');
+    expect(rendered).toContain('5. REVIEW — Boss: (none chosen)');
     expect(rendered).toContain('Pet:   (none chosen)');
     expect(rendered).toContain('Cards: (none chosen)');
     expect(rendered).toContain('Relics: (none chosen)');
@@ -922,12 +1067,183 @@ describe('LobbyScene — architectural boundaries (AGENTS.md §10, §13; ARCHITE
     }
   });
 
-  it('holds no Boss collection or Boss selection state', () => {
+  it('holds no Boss collection read and no Boss definition system', () => {
     const source = readFileSync(resolve(__dirname, '../src/game/scenes/LobbyScene.ts'), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/(^|[^:])\/\/.*$/gm, '$1');
 
-    expect(source).not.toMatch(/getBosses|getBoss\b|bossList|selectedBossId/);
+    // TASK-185: the Boss choice is scene-local selection state built from the
+    // static `BOSS_RULES.md` §6.4 catalog. What stays forbidden is a Boss data
+    // source of the client's own — a Boss read capability, a Boss response
+    // model, or a Boss-definition/passive/combat subsystem
+    // (ARCHITECTURE.md §2.2.3 rules 3–6, AGENTS.md §9/§10).
+    expect(source).not.toMatch(/getBosses|getBoss\b|BossResponse|bossList|BossDefinition\b/);
+
+    // The selection is one scene field holding one canonical identity, and it is
+    // the only source of the submitted `bossId`.
+    expect(source).toMatch(/private selectedBossId: string \| null = null;/);
+    expect(source).toContain('bossId: this.selectedBossId as string');
+  });
+
+  it('carries no Boss gameplay value in its selection catalog', () => {
+    const source = readFileSync(resolve(__dirname, '../src/game/scenes/LobbyScene.ts'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+    // The catalog is presentation/selection metadata only (BOSS_RULES.md §6
+    // owns stats, Passives, Skills, and magnitudes; the server is authoritative
+    // for all of them). A stat, threshold, or passive value appearing here would
+    // be a second Boss-definition system.
+    for (const forbidden of [
+      'maxHp',
+      'enrage',
+      'passive',
+      'baseDamage',
+      'chargeRequirement',
+      'cooldownTurns',
+    ]) {
+      expect(source.toLowerCase()).not.toContain(forbidden.toLowerCase());
+    }
+  });
+
+  describe('bottom text band layout (TASK-186)', () => {
+    const LINE_HEIGHT = 15;
+    const MIN_GAP = 4;
+    const SAFE_AREA_BOTTOM = 696;
+    const LAST_BOSS_ROW_BOTTOM = 531;
+
+    it('spaces the bottom-left text blocks so they never overlap (AC-01..AC-03, AC-07, AC-09)', async () => {
+      const { ctx } = await createLobby();
+
+      const selection = (ctx as any).selectionText;
+      const review = (ctx as any).reviewText;
+      const message = (ctx as any).messageText;
+      const error = (ctx as any).errorText;
+
+      const selectionLines = selection.text.split('\n').length;
+      const reviewLines = review.text.split('\n').length;
+      const messageLines = Math.max(1, message.text.split('\n').length);
+      const errorLines = Math.max(1, (error.text || '').split('\n').filter(Boolean).length);
+
+      expect(selectionLines).toBe(3);
+      expect(reviewLines).toBe(4);
+      expect(messageLines).toBe(1);
+
+      const selectionHeight = selectionLines * LINE_HEIGHT;
+      const reviewHeight = reviewLines * LINE_HEIGHT;
+      const messageHeight = messageLines * LINE_HEIGHT;
+      const errorHeight = errorLines * LINE_HEIGHT;
+
+      // AC-01: selectionText.bottom < reviewText.top with at least MIN_GAP
+      expect(selection.y).toBeGreaterThanOrEqual(LAST_BOSS_ROW_BOTTOM + MIN_GAP);
+      expect(review.y - selection.y).toBeGreaterThanOrEqual(selectionHeight + MIN_GAP);
+
+      // AC-02: reviewText.bottom < messageText.top with at least MIN_GAP
+      expect(message.y - review.y).toBeGreaterThanOrEqual(reviewHeight + MIN_GAP);
+
+      // AC-03: messageText.bottom < errorText.top with at least MIN_GAP
+      expect(error.y - message.y).toBeGreaterThanOrEqual(messageHeight + MIN_GAP);
+
+      // AC-09: All blocks within safe area and errorText.top <= 670
+      expect(error.y).toBeLessThanOrEqual(670);
+      expect(error.y + errorHeight).toBeLessThanOrEqual(SAFE_AREA_BOTTOM);
+      expect(message.y + messageHeight).toBeLessThanOrEqual(SAFE_AREA_BOTTOM);
+      expect(review.y + reviewHeight).toBeLessThanOrEqual(SAFE_AREA_BOTTOM);
+      expect(selection.y + selectionHeight).toBeLessThanOrEqual(SAFE_AREA_BOTTOM);
+
+      // Direct offset verification against exported named constants
+      expect(selection.y).toBe(SAFE_AREA_BOTTOM - SELECTION_TEXT_BOTTOM_OFFSET);
+      expect(review.y).toBe(SAFE_AREA_BOTTOM - REVIEW_TEXT_BOTTOM_OFFSET);
+      expect(message.y).toBe(SAFE_AREA_BOTTOM - MESSAGE_TEXT_BOTTOM_OFFSET);
+      expect(error.y).toBe(SAFE_AREA_BOTTOM - ERROR_TEXT_BOTTOM_OFFSET);
+    });
+
+    it('proves that pre-fix offsets violate the non-overlapping contract', () => {
+      // Historical offsets from safe area bottom (696):
+      // selectionText: 696 - 132 = 564
+      // reviewText:    696 - 96  = 600
+      // messageText:   696 - 58  = 638
+      // errorText:     696 - 26  = 670
+      const oldSelectionY = SAFE_AREA_BOTTOM - 132;
+      const oldReviewY = SAFE_AREA_BOTTOM - 96;
+      const oldMessageY = SAFE_AREA_BOTTOM - 58;
+
+      const selectionHeight = 3 * LINE_HEIGHT; // 45
+      const reviewHeight = 4 * LINE_HEIGHT; // 60
+
+      // Reverting selection/review gap produces 36 px < 45 px + 4 px (9 px overlap)
+      expect(oldReviewY - oldSelectionY).toBeLessThan(selectionHeight + MIN_GAP);
+      expect(oldReviewY - oldSelectionY).toBeLessThan(selectionHeight);
+
+      // Reverting review/message gap produces 38 px < 60 px + 4 px (22 px overlap)
+      expect(oldMessageY - oldReviewY).toBeLessThan(reviewHeight + MIN_GAP);
+      expect(oldMessageY - oldReviewY).toBeLessThan(reviewHeight);
+    });
+
+    it('maintains non-overlapping geometry across dynamic selection updates and error states', async () => {
+      const { harness, scene, ctx } = await createLobby();
+
+      selectFullLoadout(harness);
+
+      const selection = (ctx as any).selectionText;
+      const review = (ctx as any).reviewText;
+      const message = (ctx as any).messageText;
+      const error = (ctx as any).errorText;
+
+      const selectionLines = selection.text.split('\n').length;
+      const reviewLines = review.text.split('\n').length;
+      const messageLines = Math.max(1, message.text.split('\n').length);
+
+      expect(selectionLines).toBe(3);
+      expect(reviewLines).toBe(4);
+      expect(messageLines).toBe(1);
+
+      expect(review.y - selection.y).toBeGreaterThanOrEqual(selectionLines * LINE_HEIGHT + MIN_GAP);
+      expect(message.y - review.y).toBeGreaterThanOrEqual(reviewLines * LINE_HEIGHT + MIN_GAP);
+
+      // Now populate errorText
+      (ctx as any).startError = 'Server connection failed.';
+      runScene(scene, ctx, 'render');
+
+      const errorLines = Math.max(1, (error.text || '').split('\n').filter(Boolean).length);
+      expect(error.text).toBe('Server connection failed.');
+      expect(error.y - message.y).toBeGreaterThanOrEqual(messageLines * LINE_HEIGHT + MIN_GAP);
+      expect(error.y + errorLines * LINE_HEIGHT).toBeLessThanOrEqual(SAFE_AREA_BOTTOM);
+    });
+
+    it('guarantees that no bottom text block intersects the START BATTLE trigger rectangle (AC-05, AC-09)', async () => {
+      const { harness, ctx } = await createLobby();
+      const trigger = harness.startTrigger();
+
+      expect(trigger.x).toBeDefined();
+      expect(trigger.y).toBeDefined();
+      expect(trigger.width).toBe(300);
+      expect(trigger.height).toBe(44);
+
+      // Trigger center (1080, 600) -> [930..1230, 578..622]
+      const triggerLeft = (trigger.x as number) - (trigger.width as number) / 2;
+      const triggerRight = (trigger.x as number) + (trigger.width as number) / 2;
+      const triggerTop = (trigger.y as number) - (trigger.height as number) / 2;
+      const triggerBottom = (trigger.y as number) + (trigger.height as number) / 2;
+
+      expect(triggerLeft).toBe(930);
+      expect(triggerRight).toBe(1230);
+      expect(triggerTop).toBe(578);
+      expect(triggerBottom).toBe(622);
+
+      const review = (ctx as any).reviewText;
+      const message = (ctx as any).messageText;
+      const error = (ctx as any).errorText;
+
+      // Lines of reviewText that could extend horizontally towards the button:
+      // Line 4 (Relics) starts at review.y + 3 * LINE_HEIGHT = 585 + 45 = 630.
+      const reviewLine4Top = review.y + 3 * LINE_HEIGHT;
+      expect(reviewLine4Top).toBeGreaterThan(triggerBottom);
+
+      // Message and error blocks are strictly below the trigger
+      expect(message.y).toBeGreaterThan(triggerBottom);
+      expect(error.y).toBeGreaterThan(triggerBottom);
+    });
   });
 });
 

@@ -158,15 +158,17 @@ describe('Frontend architectural boundaries', () => {
       // `statuseffects`: §4.4's `bossState` is a delivered projection, so the
       // runtime legitimately names it. What stays forbidden is Boss *gameplay* —
       // selection, and any Boss value beyond the two delivered numbers — which the
-      // assertion at "carries no Boss source beyond the fixed start value" pins.
+      // assertion at "carries no Boss source of its own" pins.
       //
       // TASK-078 stage advance. `boss` and `relic` were in this list because the
       // runtime carried no Boss or Relic concept at all; ARCHITECTURE.md §2.2.3
       // rules 3–6 now make the *collection read* a documented port capability, so
       // `getRelics()` and the `RelicResponse` wire type it transports are part of
       // the contract rather than a violation. What remains forbidden is what
-      // always was: a gameplay system. The runtime carries no Boss selection (the
-      // MVP Boss is one fixed request value the scene supplies), and it does not
+      // always was: a gameplay system. The runtime carries no Boss selection —
+      // since TASK-185 the *scene* holds the player's Boss choice and submits the
+      // selected identity as the request's `bossId`, which is transport data the
+      // runtime forwards — and it does not
       // equip, trigger, or evaluate a Relic — it transports the owned-instance
       // list the server returned. The dedicated assertions below pin exactly
       // that, so widening this list cannot hide a failure to the generic term
@@ -189,13 +191,15 @@ describe('Frontend architectural boundaries', () => {
       }
     });
 
-    it.each(runtimeFiles)('%s carries no Boss source beyond the fixed start value', (file) => {
+    it.each(runtimeFiles)('%s carries no Boss source of its own', (file) => {
       const code = stripComments(readSource(file));
 
-      // ARCHITECTURE.md §2.2.3 rule 6 + BOSS_RULES.md §6.4: the MVP has exactly
-      // one Boss the request names, and the client holds no Boss source. There is
-      // no Boss collection read and no Boss selection state anywhere in the
-      // runtime, so no second Boss identity can reach the wire through it.
+      // ARCHITECTURE.md §2.2.3 rule 6 + BOSS_RULES.md §6.4: the client holds no
+      // Boss source in the runtime — no Boss collection read and no Boss
+      // selection state anywhere in it, so no Boss identity can reach the wire
+      // through the runtime. Since TASK-185 the Lobby's own static selection
+      // catalog supplies the submitted `bossId`; that is scene state, and the
+      // runtime only transports the request it is handed.
       for (const term of [
         'getBoss',
         'getBosses',

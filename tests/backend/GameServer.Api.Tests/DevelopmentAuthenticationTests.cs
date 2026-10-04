@@ -655,6 +655,17 @@ public class DevelopmentAuthenticationTests
                 builder.UseSetting(key, value);
             }
 
+            // The Discord credential's presence, which a non-Development host now
+            // requires before it will start (ADR-019 D4). The Production case below
+            // deliberately enables the development opt-in to prove the switch alone
+            // cannot arm this path, so its host has to compose — and it can only do
+            // so with a credential present. The values are dummies: nothing here
+            // performs a Discord exchange, and the gate under test is untouched.
+            foreach (var (key, value) in TestDiscordCredentials.Configuration)
+            {
+                builder.UseSetting(key, value);
+            }
+
             if (EnableDevelopmentAuthentication)
             {
                 builder.UseSetting(DevelopmentAuthenticationOptions.EnabledPath, "true");

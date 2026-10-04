@@ -1,6 +1,19 @@
 # Architecture Decision Records (ADR)
 
-**Version:** 1.11 (§7 — ADR-018 amended per TASK-134 D11: the `CardCost` effect's
+**Version:** 1.12 (§7 — ADR-019 added per TASK-036: the Discord credential
+secret-hygiene decision. The developer-local channel is the project's .NET
+user-secrets store and the deployment channel a host environment variable (D1);
+`src/backend/.env.example` keeps a Discord section but is corrected to document
+configuration key names and the approved channels rather than the unread,
+un-ignored `src/backend/GameServer.Api/.env` path (D2); the tracked
+`appsettings.json` placeholder stays an empty string, with "absent" defined as
+null/empty/whitespace (D3); a missing credential fails startup in Production
+while Development starts and keeps the unchanged `503 DISCORD_UNAVAILABLE`,
+leaving TASK-181's opt-in development authentication independent (D4); rotation
+is manual, operator-owned, and event-triggered with no scheduled cadence and a
+restart/redeploy required (D5); and the existing local credential is rotated once
+as a precaution, recorded as an operator action (D6). ADR-007, ADR-013, and
+ADR-015 are unchanged, and TASK-036 is unblocked. Prior 1.11: §7 — ADR-018 amended per TASK-134 D11: the `CardCost` effect's
 runtime state carrier is now recorded as Decision 12 —
 `PetState.CardCostModifiers[]` (`SourceIdentity` + `CostReductionPercentage`), a
 dedicated source-specific `BattleState` collection separate from
@@ -178,6 +191,7 @@ technical document.
 | ADR-016 | Independent Player XP and Pet XP progression tracks — Player owns account XP / Level (capped Level 50, uncapped XP); Pet owns per-instance XP / Level (range 1–50, hard-capped at 4900); `Player.Level × PetLevelMultiplier` derivation and the `PetLevelMultiplier` field RETIRED; Pet XP balance decided in `PET_RULES.md` §5.1–§5.5 | Accepted |
 | ADR-017 | `PetState.NextAttackCritModifiers[]` as authoritative battle state — a dedicated source-specific collection separate from `StatusEffects[]`, persisting across Turns until consumed by a qualifying owner attack; additive Crit composition capped at 100 percentage points; consumed modifiers removed source-specifically; `DefaultCrit` is never a runtime reset mechanism | Accepted |
 | ADR-018 | Structured Relic Trigger/Condition/Effect contract — `EffectDefinition` is a structured `EffectDefinition[]` with `valueType` `Flat`/`Percentage`/`PercentagePoints`/`Undetermined` and explicit `target`/`lifetime`; `Condition` is structured and evaluated against the current resolution state with no persistent Relic counters; effect lifetime is independent of trigger re-evaluation; the closed Trigger list is unchanged; `Burning Curse` remains deferred; `varchar(128)` storage is insufficient and migration is a separate task; `RelicTriggered` stays `{ type, relicId }`; supersedes TASK-082 R2-7 for the Relic member. **Amended (Decision 12)** — the `CardCost` effect's runtime state carrier is `PetState.CardCostModifiers[]` (`SourceIdentity` + `CostReductionPercentage`), a dedicated source-specific `BattleState` collection separate from `StatusEffects[]`, with `target = Pet` and `lifetime = Battle`, same-source replace/refresh, additive composition capped at 100% for `CardCost` only, no PostgreSQL persistence, no new Redis key, and no new SignalR event/method | Accepted (amended) |
+| ADR-019 | Discord credential secret hygiene — the developer-local channel is the `GameServer.Api` .NET user-secrets store and the deployment channel a host environment variable; `.env.example` documents key names and approved channels, not an unread `.env` path; the tracked `appsettings.json` `ClientSecret` placeholder stays empty with "absent" = null/empty/whitespace; a missing credential fails startup in Production but leaves Development's unchanged `503 DISCORD_UNAVAILABLE`; rotation is manual, operator-owned, event-triggered, restart-required, with no scheduled cadence; the existing local credential is rotated once as a precaution | Accepted |
 
 **Partial supersession (ADR-016).** ADR-011 and ADR-012 remain in force
 except for the specific items named below, which ADR-016 supersedes. Their
@@ -250,6 +264,21 @@ Product Owner's decision (TASK-119 D-1–D-5) resolves it inside the existing
 requires **no** ADR. The resolved rule is authored at its canonical owner,
 `COMBAT_RULES.md` §5.4. This item is recorded here as checked-and-closed
 rather than added to the open list above.
+
+**Checked and closed (TASK-036 / ADR-019).** Discord credential secret
+hygiene — how the `Discord ClientSecret` is supplied locally and in
+deployment, the tracked `appsettings.json` placeholder, absent-credential
+startup behavior, and rotation — was **not** an entry in this section. It was
+tracked as a BLOCKED task instead
+(`tasks/backlog/TASK-036-discord-credential-secret-hygiene.md`, at the time
+under `tasks/blocked/`), because
+`ADR-015`'s D7–D11 deliberately scoped themselves to the JWT signing key and
+left Discord credential hygiene open. It was an ADR-level open item, and it is
+now **resolved**: the Product Owner's decisions D1–D6 are recorded as
+`ADR-019`, which TASK-036 implements. It is recorded here as checked-and-closed
+so its absence from the open list above is not mistaken for an oversight.
+`ADR-007` item 3's boundary, `ADR-013` item 11's configuration keys, and
+`ADR-015` D7–D11 are all unchanged by that resolution.
 
 When any of these is resolved, add a new ADR (next sequential number) rather
 than retroactively editing an existing one.

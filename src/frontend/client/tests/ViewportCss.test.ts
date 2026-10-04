@@ -137,4 +137,20 @@ describe('Game viewport CSS foundation', () => {
     // ...so the panel itself does not expose page scroll.
     expect(panel).toMatch(/overflow:\s*hidden/);
   });
+
+  /**
+   * TASK-183. The status card is read-only diagnostics sitting above the Phaser
+   * canvas in the bottom-right corner. `.game-shell__overlay > *` opts overlay
+   * children back into pointer input, so the card must opt out again — an opaque
+   * panel that accepts pointer input swallows canvas clicks beneath it (the
+   * Lobby's Start Battle trigger lives in that corner).
+   */
+  it('the status overlay opts out of pointer input so it cannot swallow canvas clicks', () => {
+    const panel = ruleBody('.status-overlay-card');
+    expect(panel).not.toBe('');
+
+    expect(panel).toMatch(/pointer-events:\s*none/);
+    // The opt-out has to beat the overlay's blanket opt-in.
+    expect(panel).not.toMatch(/pointer-events:\s*auto/);
+  });
 });

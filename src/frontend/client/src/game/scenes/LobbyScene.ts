@@ -6,17 +6,61 @@ import type { BattleStartRequest } from '../../services/api/BattleModels';
 import type { CardResponse, PetResponse, RelicResponse } from '../../services/api/CollectionModels';
 
 /**
- * The MVP Boss identity the battle-start request carries
- * (`BOSS_RULES.md` §6.4 — the canonical technical Identity, never the display
- * name "Hỏa Long" and never a `BossDefinitionId`).
+ * One selectable entry of the Lobby's static Boss catalog.
  *
- * It is one fixed value: the MVP flow has **no Boss-selection step**
- * (`TDD.md` §2.1 — "There is no MVP Boss-selection step"), so the scene holds no
- * Boss list, performs no Boss fetch, and has no Boss selection state. The server
- * validates it and answers `400 BOSS_NOT_FOUND` for anything else
- * (`API_CONTRACTS.md` §3), which this scene reports like any other rejection.
+ * It carries **selection/presentation metadata only** (`BOSS_RULES.md` §6): the
+ * identity the request submits and the two content values the UI shows. It holds
+ * no Boss stat, threshold, Passive, Skill, effect, or balance value, and none is
+ * needed here — the server is authoritative for every one of them
+ * (`GAME_RULES.md` §18, ADR-001).
  */
-export const MVP_BOSS_ID = 'boss-hoa-long';
+export interface MvpBossOption {
+  /**
+   * The Boss's canonical technical Identity (`BOSS_RULES.md` §6.4) — the value
+   * this scene submits as the request's `bossId` (never the display name, and
+   * never a `BossDefinitionId`, which is the persistence key of `DATABASE.md`
+   * §1).
+   */
+  readonly bossId: string;
+  /**
+   * The human-readable content name (`BOSS_RULES.md` §6). Presentation only: it
+   * is never submitted, and never used as a technical identifier.
+   */
+  readonly displayName: string;
+  /**
+   * The Boss's Element as the design documents name it (`BOSS_RULES.md` §6.1 —
+   * `Hỏa`/`Thủy`/`Mộc`/`Thổ`/`Kim`). Display only, for the player's own
+   * comparison; the Element that reaches the wire is the server's
+   * `bossState.element` (`API_CONTRACTS.md` §3), not this label.
+   */
+  readonly element: string;
+}
+
+/**
+ * The five canonical MVP Bosses the player may choose between.
+ *
+ * `BOSS_RULES.md` §6 defines exactly five content-defined MVP Bosses and §6.4
+ * fixes each canonical technical Identity, so this list is a **transcription of
+ * that contract, not a second definition of it**: every `bossId` below is the
+ * §6.4 value verbatim, and each `displayName`/`element` is §6's own
+ * presentation content. The client has no Boss data source — there is no Boss
+ * collection read and no Boss endpoint (`API_CONTRACTS.md` §1) — and Bosses are
+ * global static content with no ownership, so the five identities are held here
+ * rather than fetched (`ARCHITECTURE.md` §5, `AGENTS.md` §9).
+ *
+ * The list is closed: it is not a registry, it is not extensible at runtime, and
+ * adding a sixth entry would be inventing Boss content that `BOSS_RULES.md` §6
+ * does not define. It contains no gameplay: the server resolves the submitted
+ * identity through its own `BossDefinitions.All` and answers `400
+ * BOSS_NOT_FOUND` for anything else (`API_CONTRACTS.md` §3).
+ */
+export const MVP_BOSSES: readonly MvpBossOption[] = [
+  { bossId: 'boss-hoa-long', displayName: 'Hỏa Long', element: 'Hỏa' },
+  { bossId: 'boss-thuy-ma', displayName: 'Thủy Ma', element: 'Thủy' },
+  { bossId: 'boss-moc-yeu', displayName: 'Mộc Yêu', element: 'Mộc' },
+  { bossId: 'boss-son-thach-ve', displayName: 'Sơn Thạch Vệ', element: 'Thổ' },
+  { bossId: 'boss-kim-loi-vuong', displayName: 'Kim Lôi Vương', element: 'Kim' },
+];
 
 /**
  * The documented loadout cardinalities the interaction is designed around:
@@ -40,6 +84,41 @@ const ROW_HEIGHT = 30;
 const MAX_LIST_ROWS = 8;
 
 /**
+ * The Boss-selection band, in game pixels.
+ *
+ * Step 4 sits **below** the three collection columns rather than beside them:
+ * those three present owned collections read from the server, while the Boss
+ * choice is the five global static options this scene holds itself. The band
+ * starts below the tallest possible collection list (the columns reach
+ * `LIST_TOP + MAX_LIST_ROWS * ROW_HEIGHT`) and lists one option per canonical
+ * Boss, at the same row pitch the collection lists use, so all five are fully
+ * legible and clear of the Runtime Status overlay's corner.
+ */
+const BOSS_HEADER_TOP = LIST_TOP + MAX_LIST_ROWS * ROW_HEIGHT + 22;
+const BOSS_LIST_TOP = BOSS_HEADER_TOP + 26;
+
+/**
+ * Vertical offsets from the safe area bottom for the bottom-left text band.
+ *
+ * Derived from the measured line height (15 px for 14px monospace) and the line
+ * counts of the four blocks:
+ *   selectionText (3 lines = 45 px)
+ *   reviewText    (4 lines = 60 px)
+ *   messageText   (1 line  = 15 px)
+ *   errorText     (1 line  = 15 px)
+ * in the 165 px band between the 5th Boss row (bottom y = 531) and the safe
+ * area bottom (y = 696), leaving >= 4 px positive gap between all blocks:
+ *   selectionText: bottom - 161 (y = 535..580, gap to boss row = 4 px)
+ *   reviewText:    bottom - 111 (y = 585..645, gap to selection = 5 px)
+ *   messageText:   bottom -  46 (y = 650..665, gap to review = 5 px)
+ *   errorText:     bottom -  26 (y = 670..685, gap to message = 5 px, inset = 11 px)
+ */
+export const SELECTION_TEXT_BOTTOM_OFFSET = 161;
+export const REVIEW_TEXT_BOTTOM_OFFSET = 111;
+export const MESSAGE_TEXT_BOTTOM_OFFSET = 46;
+export const ERROR_TEXT_BOTTOM_OFFSET = 26;
+
+/**
  * The pre-battle presentation colours. Display only: a Card's `category` is a
  * documented wire member (`API_CONTRACTS.md` §5.3) and is coloured per value so
  * the two categories are distinguishable; an unrecognised value falls back to a
@@ -55,8 +134,8 @@ const CATEGORY_COLORS: Readonly<Record<string, string>> = {
  * (`TDD.md` §2.1).
  *
  * It owns the MVP pre-battle selection flow of `GDD.md` §2 — Choose Pet →
- * Equip Cards → Equip Relics → Start Battle — as presentation and interaction
- * only:
+ * Equip Cards → Equip Relics → Choose Boss → Start Battle — as presentation and
+ * interaction only:
  *
  * ```text
  * getPets() / getCards() / getRelics()      (selection source, ARCHITECTURE.md §2.2.3 rule 4)
@@ -72,7 +151,12 @@ const CATEGORY_COLORS: Readonly<Record<string, string>> = {
  * imports neither `@microsoft/signalr`, nor `fetch`, nor `ApiService`, nor the
  * Discord SDK: `services/api/` and `services/realtime/` are transport layers and
  * a scene reaching either would bypass the boundary
- * (`ARCHITECTURE.md` §2.2.1 rule 1, §2.2.3 rule 3).
+ * (`ARCHITECTURE.md` §2.2.1 rule 1, §2.2.3 rule 3). The one content list it does
+ * hold — the five canonical MVP Bosses of {@link MVP_BOSSES} — is a static
+ * transcription of `BOSS_RULES.md` §6.4, not a collection read: Bosses are
+ * global content with no ownership and no endpoint serves them
+ * (`API_CONTRACTS.md` §1), so there is nothing to fetch and no port capability
+ * to add (`ARCHITECTURE.md` §2.2.3 rule 6).
  *
  * **The in-progress selection is scene state and lives nowhere else.** It is
  * created with the scene, held in the scene's own fields, and discarded on
@@ -115,6 +199,20 @@ export class LobbyScene extends Phaser.Scene {
    */
   private selectedRelicIds: string[] = [];
 
+  /**
+   * The selected Boss's canonical technical Identity (`BOSS_RULES.md` §6.4) —
+   * one of {@link MVP_BOSSES}'s `bossId` values, and the single source of the
+   * request's `bossId`.
+   *
+   * It starts `null` and stays `null` until the player explicitly picks a Boss:
+   * the MVP has **no default Boss**, so no Boss is pre-selected and nothing
+   * substitutes one if the player never chooses (`requestStart` reports the
+   * unfilled slot instead of submitting). Selecting a different Boss replaces
+   * this value; there is no second, parallel record of the choice
+   * (`ARCHITECTURE.md` §2.2.3 rule 1).
+   */
+  private selectedBossId: string | null = null;
+
   // --- Loaded collection (mirrors exactly what the reads returned) ---
 
   private ownedPets: PetResponse[] = [];
@@ -146,6 +244,7 @@ export class LobbyScene extends Phaser.Scene {
   private petsHeaderText: Phaser.GameObjects.Text | null = null;
   private cardsHeaderText: Phaser.GameObjects.Text | null = null;
   private relicsHeaderText: Phaser.GameObjects.Text | null = null;
+  private bossHeaderText: Phaser.GameObjects.Text | null = null;
   private selectionText: Phaser.GameObjects.Text | null = null;
   private reviewText: Phaser.GameObjects.Text | null = null;
   private messageText: Phaser.GameObjects.Text | null = null;
@@ -190,6 +289,7 @@ export class LobbyScene extends Phaser.Scene {
     this.selectedPetId = null;
     this.selectedCardIds = [];
     this.selectedRelicIds = [];
+    this.selectedBossId = null;
 
     this.ownedPets = [];
     this.ownedCards = [];
@@ -204,6 +304,7 @@ export class LobbyScene extends Phaser.Scene {
     this.petsHeaderText = null;
     this.cardsHeaderText = null;
     this.relicsHeaderText = null;
+    this.bossHeaderText = null;
     this.selectionText = null;
     this.reviewText = null;
     this.messageText = null;
@@ -327,12 +428,37 @@ export class LobbyScene extends Phaser.Scene {
   }
 
   /**
+   * Chooses the Boss the battle is fought against (`BOSS_RULES.md` §1 — a battle
+   * has exactly one Boss) from the five canonical MVP Bosses.
+   *
+   * Selecting another Boss replaces the current choice; selecting the current
+   * one clears it — the same single-selection behaviour `selectPet` has. The
+   * stored value is the catalog entry's canonical technical Identity (§6.4), and
+   * it is taken from the catalog rather than derived from the display name, so
+   * `boss-son-thach-ve` and `boss-kim-loi-vuong` are submitted with the exact
+   * spellings §6.4 fixes.
+   *
+   * The scene decides no Boss legality here: it does not check that the choice
+   * is owned, unlocked, or otherwise fightable — the server resolves the
+   * submitted identity and answers `400 BOSS_NOT_FOUND` for an unknown one,
+   * through the same `startError` path as any other rejection
+   * (`API_CONTRACTS.md` §3, `ARCHITECTURE.md` §2.2.3 rule 5).
+   */
+  private selectBoss(bossId: string): void {
+    this.selectionMessage = '';
+    this.selectedBossId = this.selectedBossId === bossId ? null : bossId;
+    this.render();
+  }
+
+  /**
    * The Start Battle trigger.
    *
-   * It requires the slot counts to be filled (1 / 3 / 3–5) before it submits,
-   * because an incomplete selection has no documented request shape at all —
-   * `cardLoadout` is exactly three elements and `relicLoadout` is three to five
-   * (`API_CONTRACTS.md` §3). That check is about *completeness*, not legality:
+   * It requires the slot counts to be filled (1 / 3 / 3–5) and a Boss to be
+   * chosen before it submits, because an incomplete selection has no documented
+   * request shape at all — `cardLoadout` is exactly three elements,
+   * `relicLoadout` is three to five, and `bossId` names the Boss the battle is
+   * created against (`API_CONTRACTS.md` §3), which this scene does not default.
+   * That check is about *completeness*, not legality:
    * the scene never decides whether the chosen items are owned, distinct, or
    * within a copy limit — the server does (§3, `ARCHITECTURE.md` §2.2.3 rule 5).
    */
@@ -404,11 +530,16 @@ export class LobbyScene extends Phaser.Scene {
    *
    * ```text
    * petId         the selected owned Pet instance id from the collection read
-   * bossId        the fixed MVP Boss identity (BOSS_RULES.md §6.4)
+   * bossId        the selected Boss's canonical technical Identity
+   *               (BOSS_RULES.md §6.4), taken from the scene's own selection
    * cardLoadout   the three selected Basic Card ids, as chosen
    * relicLoadout  the three-to-five selected owned Relic instance ids, in the
    *               order chosen — position i is equip slot i + 1 (§2.3)
    * ```
+   *
+   * The Boss member is the **player's choice**: no Boss literal, no default, and
+   * no fallback is substituted for it, so whichever of the five the player
+   * selected is exactly what the server resolves.
    *
    * No `playerId` (the caller is resolved server-side from the session,
    * §2.8), no Signature/PetSkill card (derived by the server, §3), and no
@@ -424,7 +555,7 @@ export class LobbyScene extends Phaser.Scene {
       // Slot completeness is enforced by `requestStart` before this runs, so the
       // selected ids are present here. No fallback value is substituted.
       petId: this.selectedPetId as string,
-      bossId: MVP_BOSS_ID,
+      bossId: this.selectedBossId as string,
       cardLoadout: [...this.selectedCardIds],
       relicLoadout: [...this.selectedRelicIds],
     };
@@ -440,6 +571,12 @@ export class LobbyScene extends Phaser.Scene {
     }
     if (this.selectedRelicIds.length < MIN_RELIC_LOADOUT_SIZE) {
       return `Choose at least ${MIN_RELIC_LOADOUT_SIZE} Relics.`;
+    }
+    // There is no default Boss, so the choice is a required slot like the others
+    // (step 4 of the flow). Choosing *which* Boss is the player's to make; the
+    // server remains the one that decides whether the identity is a real Boss.
+    if (this.selectedBossId === null) {
+      return 'Choose a Boss.';
     }
     return null;
   }
@@ -485,8 +622,7 @@ export class LobbyScene extends Phaser.Scene {
       .setOrigin(0, 0);
 
     // Step 1 — Choose Pet, step 2 — Equip Cards, step 3 — Equip Relics
-    // (GDD.md §2). The fixed Boss target is stated here because the MVP has no
-    // Boss-selection step (TDD.md §2.1).
+    // (GDD.md §2).
     this.petsHeaderText = title(COLUMN_ORIGIN_X, SAFE_AREA.y + 58, '');
     this.cardsHeaderText = title(
       COLUMN_ORIGIN_X + COLUMN_PITCH,
@@ -499,17 +635,38 @@ export class LobbyScene extends Phaser.Scene {
       ''
     );
 
+    // Step 4 — Choose Boss (GDD.md §2; BOSS_RULES.md §6). Its own band below the
+    // three collection columns: those read server-owned collections, this is the
+    // five canonical MVP Bosses the scene holds itself.
+    this.bossHeaderText = title(COLUMN_ORIGIN_X, BOSS_HEADER_TOP, '');
+
     // Slot counters — the selection affordance.
-    this.selectionText = small(SAFE_AREA.x + 26, SAFE_AREA.y + SAFE_AREA.height - 132, '#93c5fd');
+    this.selectionText = small(
+      SAFE_AREA.x + 26,
+      SAFE_AREA.y + SAFE_AREA.height - SELECTION_TEXT_BOTTOM_OFFSET,
+      '#93c5fd'
+    );
 
-    // Step 4 — loadout Review. Presentational only: it restates the selection
+    // Step 5 — loadout Review. Presentational only: it restates the selection
     // that would be submitted, and asserts nothing about its validity.
-    this.reviewText = small(SAFE_AREA.x + 26, SAFE_AREA.y + SAFE_AREA.height - 96, '#94a3b8');
+    this.reviewText = small(
+      SAFE_AREA.x + 26,
+      SAFE_AREA.y + SAFE_AREA.height - REVIEW_TEXT_BOTTOM_OFFSET,
+      '#94a3b8'
+    );
 
-    this.messageText = small(SAFE_AREA.x + 26, SAFE_AREA.y + SAFE_AREA.height - 58, '#fbbf24');
+    this.messageText = small(
+      SAFE_AREA.x + 26,
+      SAFE_AREA.y + SAFE_AREA.height - MESSAGE_TEXT_BOTTOM_OFFSET,
+      '#fbbf24'
+    );
     this.messageText.setWordWrapWidth(SAFE_AREA.width - 100);
 
-    this.errorText = small(SAFE_AREA.x + 26, SAFE_AREA.y + SAFE_AREA.height - 26, '#f87171');
+    this.errorText = small(
+      SAFE_AREA.x + 26,
+      SAFE_AREA.y + SAFE_AREA.height - ERROR_TEXT_BOTTOM_OFFSET,
+      '#f87171'
+    );
     this.errorText.setWordWrapWidth(SAFE_AREA.width - 100);
   }
 
@@ -527,10 +684,12 @@ export class LobbyScene extends Phaser.Scene {
     this.petsHeaderText?.setText('1. CHOOSE PET');
     this.cardsHeaderText?.setText('2. EQUIP CARDS');
     this.relicsHeaderText?.setText('3. EQUIP RELICS');
+    this.bossHeaderText?.setText('4. CHOOSE BOSS');
 
     this.renderPets();
     this.renderCards();
     this.renderRelics();
+    this.renderBosses();
 
     this.selectionText?.setText(
       [
@@ -541,12 +700,13 @@ export class LobbyScene extends Phaser.Scene {
       ].join('\n')
     );
 
-    // Step 4 — Review. The Boss line states the fixed target; the loadout lines
-    // restate the selection. This is a summary of a request the player is about
-    // to submit, not a validation of it.
+    // Step 5 — Review. The Boss line states the selected Boss — `(none chosen)`
+    // until the player picks one, since no Boss is defaulted — and the loadout
+    // lines restate the selection. This is a summary of a request the player is
+    // about to submit, not a validation of it.
     this.reviewText?.setText(
       [
-        `4. REVIEW — Boss: ${MVP_BOSS_ID}`,
+        `5. REVIEW — Boss: ${this.selectedBossId ?? '(none chosen)'}`,
         `Pet:   ${this.selectedPetId ?? '(none chosen)'}`,
         `Cards: ${this.selectedCardIds.length > 0 ? this.selectedCardIds.join(', ') : '(none chosen)'}`,
         `Relics: ${this.selectedRelicIds.length > 0 ? this.selectedRelicIds.join(', ') : '(none chosen)'}`,
@@ -687,6 +847,30 @@ export class LobbyScene extends Phaser.Scene {
           (slot >= 0 ? `  slot ${slot + 1}` : ''),
         slot >= 0,
         () => this.toggleRelic(relic.relicId)
+      );
+    });
+  }
+
+  /**
+   * One Boss option per canonical MVP Boss, always all five
+   * (`BOSS_RULES.md` §6 — the catalog is closed).
+   *
+   * Unlike the three collection lists there is no read to wait for and no empty
+   * case: the options are this scene's own static content, so they render on the
+   * first pass and survive a collection re-render unchanged. The selected Boss is
+   * marked the same way the other single-choice list is (`selectPet`): a filled
+   * marker and the selected tone.
+   */
+  private renderBosses(): void {
+    MVP_BOSSES.forEach((boss, index) => {
+      const selected = this.selectedBossId === boss.bossId;
+
+      this.renderOption(
+        COLUMN_ORIGIN_X,
+        BOSS_LIST_TOP + index * ROW_HEIGHT,
+        `${selected ? '●' : '○'} ${boss.displayName}  ${boss.element}`,
+        selected,
+        () => this.selectBoss(boss.bossId)
       );
     });
   }

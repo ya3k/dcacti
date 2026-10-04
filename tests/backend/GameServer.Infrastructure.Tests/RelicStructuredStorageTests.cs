@@ -349,7 +349,7 @@ public class RelicStructuredStorageTests
     {
         // The documented chain "Database row → EF → Domain → serialization →
         // same contract shape", asserted on real PostgreSQL. The read is scoped
-        // to the four exact keys rather than to a `relic-` prefix, because the
+        // to the ten canonical keys rather than to a `relic-` prefix, because the
         // shared development database is also written by the API suites' smoke
         // fixtures — those rows are not this contract's content.
         await using var dataSource = await TryConnectAsync();
@@ -362,11 +362,14 @@ public class RelicStructuredStorageTests
             FROM "RelicDefinition"
             WHERE "RelicDefinitionId" IN (
               'relic-berserker-core', 'relic-mana-crystal',
-              'relic-assassin-eye', 'relic-emergency-core')
+              'relic-assassin-eye', 'relic-emergency-core',
+              'relic-burning-curse', 'relic-combo-fang',
+              'relic-arcane-battery', 'relic-execution-mark',
+              'relic-cascade-core', 'relic-battle-instinct')
             ORDER BY "RelicDefinitionId"
             """);
 
-        var stored = new Dictionary<string, (string Trigger, string Condition, string Effect)>(
+        var stored = new Dictionary<string, (string? Trigger, string? Condition, string Effect)>(
             StringComparer.Ordinal);
 
         await using (var reader = await command.ExecuteReaderAsync())
@@ -374,11 +377,13 @@ public class RelicStructuredStorageTests
             while (await reader.ReadAsync())
             {
                 stored[reader.GetString(0)] = (
-                    reader.GetString(1), reader.GetString(2), reader.GetString(3));
+                    reader.GetString(1),
+                    await reader.IsDBNullAsync(2) ? null : reader.GetString(2),
+                    reader.GetString(3));
             }
         }
 
-        Assert.Equal(4, stored.Count);
+        Assert.Equal(10, stored.Count);
 
         foreach (var row in RelicProvisionedContent.Rows)
         {
@@ -390,7 +395,10 @@ public class RelicStructuredStorageTests
             Assert.Equal(row.Trigger, trigger);
 
             // The reader accepts the applied value...
-            var condition = RelicCondition.FromPersistedPayload(conditionPayload);
+            RelicCondition? condition = conditionPayload is null
+                ? null
+                : RelicCondition.FromPersistedPayload(conditionPayload);
+
             var effects = RelicEffectDefinitions.FromPersistedPayload(effectPayload);
 
             // ...yields exactly the documented §8.5 values...
@@ -400,8 +408,21 @@ public class RelicStructuredStorageTests
             // ...and serializes back to a shape the reader accepts again, with
             // the same elements in the same order, so no position-based rule was
             // applied.
-            Assert.Equal(condition, RelicCondition.FromPersistedPayload(
-                condition.ToPersistedPayload()));
+            //
+            // The absent case is asserted as an absent COLUMN (SQL NULL), not as
+            // a serialized "null": §8.1 item 4's "no extra condition" is the
+            // absence of a value, and emitting JSON null would be a second
+            // representation of it.
+            if (row.Condition is null)
+            {
+                Assert.Null(conditionPayload);
+            }
+            else
+            {
+                Assert.Equal(condition, RelicCondition.FromPersistedPayload(
+                    condition.Value.ToPersistedPayload()));
+            }
+
             Assert.Equal(effects, RelicEffectDefinitions.FromPersistedPayload(
                 effects.ToPersistedPayload()));
 
@@ -419,11 +440,22 @@ public class RelicStructuredStorageTests
     [Fact]
     public async Task AppliedRows_ShouldStoreBothMembersAsJsonAndHoldNoProse()
     {
-        // The migrated rows contain STRUCTURED data rather than the superseded
-        // prose: the effect column is an ARRAY, and the (required) condition
-        // column is an OBJECT. The condition check is shape-based rather than a
-        // list of the old strings, so it cannot pass merely because one spelling
-        // was missed.
+        // The provisioned rows contain STRUCTURED data rather than the superseded
+        // prose: the effect column is an ARRAY in every row, and the condition
+        // column is an OBJECT wherever a condition exists. The condition check is
+        // shape-based rather than a list of the old strings, so it cannot pass
+        // merely because one spelling was missed.
+        //
+        // CORRECTED FOR TASK-184. This test previously asserted the condition
+        // column was an OBJECT in ALL four rows, which was true only while §8.5's
+        // provisioned set happened to have a condition on every row. §8.1 item 4
+        // makes the member OPTIONAL and §8.5 records `null` for four of the ten
+        // canonical Relics (Burning Curse, Arcane Battery, Cascade Core, Battle
+        // Instinct), so "every row has a condition object" is not the contract and
+        // never was — it was a property of the first four rows. The corrected
+        // assertion is the actual contract: every row's effect is an array, every
+        // row's condition is either an object or SQL NULL, and no row holds any
+        // other shape (e.g. the superseded prose string).
         await using var dataSource = await TryConnectAsync();
         if (dataSource is null) return;
 
@@ -432,20 +464,34 @@ public class RelicStructuredStorageTests
             SELECT
               COUNT(*) FILTER (WHERE jsonb_typeof("EffectDefinition") = 'array'),
               COUNT(*) FILTER (WHERE jsonb_typeof("Condition") = 'object'),
-              COUNT(*) FILTER (WHERE jsonb_typeof("Condition") <> 'object')
+              COUNT(*) FILTER (WHERE "Condition" IS NULL),
+              COUNT(*) FILTER (WHERE "Condition" IS NOT NULL
+                                 AND jsonb_typeof("Condition") <> 'object')
             FROM "RelicDefinition"
             WHERE "RelicDefinitionId" IN (
               'relic-berserker-core', 'relic-mana-crystal',
-              'relic-assassin-eye', 'relic-emergency-core')
+              'relic-assassin-eye', 'relic-emergency-core',
+              'relic-burning-curse', 'relic-combo-fang',
+              'relic-arcane-battery', 'relic-execution-mark',
+              'relic-cascade-core', 'relic-battle-instinct')
             """);
 
         await using var reader = await command.ExecuteReaderAsync();
 
         Assert.True(await reader.ReadAsync());
 
-        Assert.Equal(4L, reader.GetInt64(0));
-        Assert.Equal(4L, reader.GetInt64(1));
-        Assert.Equal(0L, reader.GetInt64(2));
+        // Every one of the ten rows stores an ARRAY of effects.
+        Assert.Equal(10L, reader.GetInt64(0));
+
+        // Six carry a structured condition object and four carry none (SQL NULL)
+        // — exactly RELIC_RULES.md §8.5's `Condition` column, which records a form
+        // for six rows and `null` for four.
+        Assert.Equal(6L, reader.GetInt64(1));
+        Assert.Equal(4L, reader.GetInt64(2));
+
+        // No row holds a shape that is neither: in particular no row holds the
+        // superseded prose text.
+        Assert.Equal(0L, reader.GetInt64(3));
 
         // The superseded R2-7 prose appears in no row at all. Each old value is
         // matched as the JSON *string* it was stored as, which is exactly the
@@ -456,7 +502,10 @@ public class RelicStructuredStorageTests
             FROM "RelicDefinition"
             WHERE "RelicDefinitionId" IN (
               'relic-berserker-core', 'relic-mana-crystal',
-              'relic-assassin-eye', 'relic-emergency-core')
+              'relic-assassin-eye', 'relic-emergency-core',
+              'relic-burning-curse', 'relic-combo-fang',
+              'relic-arcane-battery', 'relic-execution-mark',
+              'relic-cascade-core', 'relic-battle-instinct')
               AND ("Condition"::text LIKE '%"every 3 Matches"%'
                    OR "Condition"::text LIKE '%"every 4 Matches"%'
                    OR "Condition"::text LIKE '%"Combo ≥ 3"%'
@@ -473,7 +522,7 @@ public class RelicStructuredStorageTests
     [Fact]
     public async Task AppliedRows_ShouldHoldNoUndeterminedMagnitudeAndNoCardOnlyMember()
     {
-        // §8.5 authors every magnitude of all four rows, so none may hold the
+        // §8.5 authors every magnitude of all ten rows, so none may hold the
         // unauthored marker; and §8.3 item 5 defines no member beyond target and
         // lifetime, so no Card-only `duration`/`scope` member may appear.
         await using var dataSource = await TryConnectAsync();
@@ -485,7 +534,10 @@ public class RelicStructuredStorageTests
             FROM "RelicDefinition"
             WHERE "RelicDefinitionId" IN (
               'relic-berserker-core', 'relic-mana-crystal',
-              'relic-assassin-eye', 'relic-emergency-core')
+              'relic-assassin-eye', 'relic-emergency-core',
+              'relic-burning-curse', 'relic-combo-fang',
+              'relic-arcane-battery', 'relic-execution-mark',
+              'relic-cascade-core', 'relic-battle-instinct')
               AND ("EffectDefinition"::text LIKE '%Undetermined%'
                    OR "EffectDefinition"::text LIKE '%duration%'
                    OR "EffectDefinition"::text LIKE '%scope%')
@@ -498,8 +550,13 @@ public class RelicStructuredStorageTests
     public async Task AppliedRows_ShouldHoldTheDocumentedThresholdPerRow()
     {
         // RELIC_RULES.md §8.1 item 1: the threshold is part of the value. Each of
-        // §8.5's four thresholds is asserted from the applied database, so a
-        // prose value could not satisfy it.
+        // §8.5's SIX thresholds is asserted from the applied database, so a prose
+        // value could not satisfy it.
+        //
+        // CORRECTED FOR TASK-184: the scope is now all ten canonical rows, and the
+        // read is filtered to those that HAVE a condition. §8.1 item 4 makes the
+        // member optional, so a row with no condition carries none and is asserted
+        // as such rather than read as a threshold.
         await using var dataSource = await TryConnectAsync();
         if (dataSource is null) return;
 
@@ -511,7 +568,11 @@ public class RelicStructuredStorageTests
             FROM "RelicDefinition"
             WHERE "RelicDefinitionId" IN (
               'relic-berserker-core', 'relic-mana-crystal',
-              'relic-assassin-eye', 'relic-emergency-core')
+              'relic-assassin-eye', 'relic-emergency-core',
+              'relic-burning-curse', 'relic-combo-fang',
+              'relic-arcane-battery', 'relic-execution-mark',
+              'relic-cascade-core', 'relic-battle-instinct')
+              AND "Condition" IS NOT NULL
             ORDER BY "RelicDefinitionId"
             """);
 
@@ -525,24 +586,45 @@ public class RelicStructuredStorageTests
             }
         }
 
-        Assert.Equal(4, stored.Count);
+        // Exactly the six rows §8.5 records a Condition for: Berserker Core,
+        // Mana Crystal, Assassin Eye, Emergency Core, Combo Fang, Execution Mark.
+        Assert.Equal(6, stored.Count);
 
         foreach (var row in RelicProvisionedContent.Rows)
         {
+            if (row.Condition is null)
+            {
+                // §8.1 item 4 / §8.5: no condition object is stored for this row —
+                // the Trigger alone is its complete condition.
+                Assert.False(
+                    stored.ContainsKey(row.Id),
+                    $"'{row.Id}' declares no Condition (RELIC_RULES.md §8.5) and must store none.");
+
+                continue;
+            }
+
             var (form, threshold) = stored[row.Id];
 
-            Assert.Equal(row.Condition.ConditionType.ToString(), form);
-            Assert.Equal(row.Condition.Threshold, threshold);
+            Assert.Equal(row.Condition.Value.ConditionType.ToString(), form);
+            Assert.Equal(row.Condition.Value.Threshold, threshold);
         }
     }
 
     [Fact]
-    public async Task AppliedRows_ShouldHoldNoBurningCurseRow()
+    public async Task AppliedRows_ShouldHoldTheBurningCurseRowWithItsCanonicalValues()
     {
-        // RELIC_RULES.md §6 note 3 / §8.5 item 4: Burning Curse stays deferred,
-        // because §3 requires a primary Trigger from its closed list while §6
-        // note 1 describes that Relic as a static modifier with none. No
-        // placeholder row, Trigger, or value may be inserted by TASK-132.
+        // RELIC_RULES.md §6 note 3 / §8.5 item 4 recorded Burning Curse as deferred
+        // pending a documented Trigger, and TASK-176 resolved that tension by
+        // authoring it as `OnBattleStart` with no extra Condition (§8.5 item 5).
+        // TASK-184 therefore provisions it, and this test asserts the POSITIVE
+        // contract in place of the previous absence assertion:
+        //
+        //   RELIC_RULES.md §8.5: Burning Curse | `OnBattleStart` | `null` |
+        //   BurnDamage, Percentage, 30, Pet, Battle
+        //
+        // The old `AppliedRows_ShouldHoldNoBurningCurseRow` assertion is false now
+        // and was deleted rather than left standing (its deferral premise is what
+        // TASK-176 removed and TASK-184 acts on).
         await using var dataSource = await TryConnectAsync();
         if (dataSource is null) return;
 
@@ -550,9 +632,19 @@ public class RelicStructuredStorageTests
             """
             SELECT COUNT(*) FROM "RelicDefinition"
             WHERE "RelicDefinitionId" = 'relic-burning-curse'
+              AND "Name" = 'Burning Curse'
+              AND "Trigger" = 'OnBattleStart'
+              AND "Condition" IS NULL
+              AND "EffectDefinition" = jsonb_build_array(
+                    jsonb_build_object(
+                      'effectType', 'BurnDamage',
+                      'valueType', 'Percentage',
+                      'value', 30,
+                      'target', 'Pet',
+                      'lifetime', 'Battle'))
             """);
 
-        Assert.Equal(0L, (long)(await command.ExecuteScalarAsync())!);
+        Assert.Equal(1L, (long)(await command.ExecuteScalarAsync())!);
     }
 
     // -----------------------------------------------------------------------
@@ -771,12 +863,21 @@ public class RelicStructuredStorageTests
     [Fact]
     public void MigrationSource_ShouldTranscribeEveryProvisionedValueFromRelicRules()
     {
-        // Each of §8.5's four rows is written with its documented values,
-        // asserted member by member so a transcription error fails here.
+        // Each of §8.5's four rows THIS migration owns is written with its
+        // documented values, asserted member by member so a transcription error
+        // fails here.
+        //
+        // The scope is the four rows TASK-132 re-encoded — not all ten canonical
+        // rows. TASK-184 provisions the other six in a separate migration which
+        // this test does not read (its own source-level assertions live in
+        // RemainingMvpRelicDefinitionProvisioningTests).
         var up = ReadUpOperations();
 
         // The four exact keys — never a prefix, never a LIKE pattern.
-        foreach (var id in RelicProvisionedContent.Ids)
+        foreach (var id in RelicProvisionedContent.Ids.Where(
+                     id => id is not ("relic-burning-curse" or "relic-combo-fang"
+                         or "relic-arcane-battery" or "relic-execution-mark"
+                         or "relic-cascade-core" or "relic-battle-instinct")))
         {
             Assert.Contains($"\"RelicDefinitionId\" = '{id}'", up, StringComparison.Ordinal);
         }
@@ -836,9 +937,14 @@ public class RelicStructuredStorageTests
     [Fact]
     public void MigrationSource_ShouldInsertNoBurningCurseRowAndDeleteNothing()
     {
-        // RELIC_RULES.md §6 note 3 / §8.5 item 4: Burning Curse stays deferred,
-        // and this migration is a content rewrite rather than a provisioning
-        // change — so it inserts no row and deletes none.
+        // RELIC_RULES.md §6 note 3 / §8.5 item 4 recorded Burning Curse as
+        // deferred, and this migration is a content rewrite rather than a
+        // provisioning change — so it inserts no row and deletes none.
+        //
+        // This remains TRUE FOR THIS MIGRATION after TASK-184: the deferral was
+        // lifted by TASK-176 and acted on by TASK-184's SEPARATE migration, which
+        // this one neither performs nor anticipates. A completed migration is a
+        // historical record, so the assertion is unchanged.
         var operations = ReadMigrationOperations();
 
         Assert.DoesNotContain("relic-burning-curse", operations, StringComparison.Ordinal);
@@ -851,9 +957,15 @@ public class RelicStructuredStorageTests
     [Fact]
     public void MigrationSource_ShouldScopeItsContentStatementsToTheFourExactKeys()
     {
-        // The row scope is exact: the content statements match the four keys and
-        // nothing else — no pattern matching, no prefix, no discovery by name or
-        // by current value — so no fifth row can be swept in.
+        // The row scope is exact: THIS migration's content statements match the
+        // four keys it owns and nothing else — no pattern matching, no prefix, no
+        // discovery by name or by current value — so no fifth row can be swept
+        // in.
+        //
+        // CORRECTED FOR TASK-184: the expectation is the four TASK-132 keys, not
+        // the ten canonical rows. TASK-132 rewrote exactly four rows, and
+        // TASK-184's six additions are a different migration's content. Asserting
+        // all ten here would assert a row set this migration never wrote.
         var up = ReadUpOperations();
 
         var keys = System.Text.RegularExpressions.Regex
@@ -863,7 +975,13 @@ public class RelicStructuredStorageTests
             .OrderBy(key => key, StringComparer.Ordinal)
             .ToArray();
 
-        Assert.Equal(RelicProvisionedContent.Ids.OrderBy(id => id, StringComparer.Ordinal), keys);
+        string[] task132Keys =
+        [
+            "relic-assassin-eye", "relic-berserker-core",
+            "relic-emergency-core", "relic-mana-crystal",
+        ];
+
+        Assert.Equal(task132Keys, keys);
 
         Assert.DoesNotContain("LIKE", up, StringComparison.Ordinal);
     }

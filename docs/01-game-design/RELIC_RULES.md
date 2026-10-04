@@ -1,6 +1,15 @@
 # Relic Rules
 
-**Version:** 1.14 (§3 and §6/§8 gained the **TASK-178 canonical runtime
+**Version:** 1.15 (§6 note 4 and §8.7's trailing status paragraph synchronized
+with the landed provisioning of the six remaining canonical Relics: TASK-184
+provisions Burning Curse, Combo Fang, Arcane Battery, Execution Mark, Cascade
+Core, and Battle Instinct under migration
+`20261004153916_ProvisionRemainingMvpRelicDefinitions`, so all 10 canonical MVP
+Relics now have a `RelicDefinition` row and no Relic row remains pending.
+**This is a provisioning-status synchronization only: no Trigger, Condition,
+effect, magnitude, threshold, target, lifetime, or gameplay rule is added,
+removed, or altered; §3's closed Trigger list, §8.1–§8.5, and §6's row set are
+unchanged.** Prior 1.14: (§3 and §6/§8 gained the **TASK-178 canonical runtime
 clarifications** of the four Product Owner-approved decisions **Q-1 = A**,
 **Q-2 = B**, **Q-3 = A**, **Q-4 = C** — the blockers TASK-177 reported. No
 Relic, Trigger, Condition, effect, magnitude, target, or lifetime value is
@@ -751,14 +760,21 @@ Notes:
    (`HpPercentageBelow(30)`), granting `+15pp` Crit to the Pet's next attack
    with `NextAttack` lifetime. It conforms to existing `OnHpBelow` and
    `HpPercentageBelow` semantics.
-4. **Provisioned vs. unprovisioned row set.** (TASK-176)
+4. **Provisioned vs. unprovisioned row set.** (TASK-176; completed by
+   TASK-184)
    All 10 Relics are content-defined. The first four (**Berserker Core**,
    **Mana Crystal**, **Assassin Eye**, and **Emergency Core**) were provisioned
    under migrations `20260929152651_ProvisionPetCardRelicContentDefinitions` and
    `20261003074309_StructureRelicDefinitionStructuredColumns`. The remaining six
    (**Burning Curse**, **Combo Fang**, **Arcane Battery**, **Execution Mark**,
-   **Cascade Core**, and **Battle Instinct**) are content-defined and ready for
-   provisioning in a downstream migration task.
+   **Cascade Core**, and **Battle Instinct**) were content-defined and ready for
+   provisioning in a downstream migration task; that task has landed —
+   migration `20261004153916_ProvisionRemainingMvpRelicDefinitions` provisions
+   all six from the §8.5 contract, so **all 10 canonical MVP Relics are now
+   provisioned** and no Relic row remains pending. This is a provisioning
+   status change only: no Trigger, Condition, effect, magnitude, threshold,
+   target, or lifetime is added, removed, or altered, and §3's closed Trigger
+   list, §8.1–§8.5, and §6's row set are unchanged.
 
 ---
 
@@ -1271,11 +1287,14 @@ effect reaches the runtime carrier §8.5 references for it, the equip-slot
 resolution order is §4's, and the once-per-root-event safeguard is §5's. No
 Trigger, Condition, effect, magnitude, threshold, lifetime, state member, event,
 or wire member is added by it, and no Relic is recognised by its `Name` or its
-`RelicDefinitionId` (§8.2 item 1). The four initially provisioned rows (Berserker
-Core, Mana Crystal, Assassin Eye, Emergency Core) are executed server-side; Burning
-Curse and the five new Relics (Combo Fang, Arcane Battery, Execution Mark, Cascade
-Core, Battle Instinct) are now canonically defined content contracts, awaiting
-downstream runtime implementation and database provisioning.
+`RelicDefinitionId` (§8.2 item 1). All ten canonical rows are now provisioned
+server-side and executed by it: the four initially provisioned rows (Berserker
+Core, Mana Crystal, Assassin Eye, Emergency Core), and Burning Curse and the five
+new Relics (Combo Fang, Arcane Battery, Execution Mark, Cascade Core, Battle
+Instinct), which TASK-184 provisioned under migration
+`20261004153916_ProvisionRemainingMvpRelicDefinitions`. The last six were
+canonically defined content contracts awaiting that provisioning; that status
+sentence is superseded — every §6/§8.5 Relic now has a database row.
 
 **Runtime contracts are now complete for two effect types.** `CardCost`'s runtime
 carrier and composition were decided by TASK-134 and applied (`GAME_STATE.md`

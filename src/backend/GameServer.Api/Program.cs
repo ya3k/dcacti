@@ -29,6 +29,25 @@ builder.Services.AddDevelopmentDiscordIdentityResolver(
     builder.Configuration,
     builder.Environment.IsDevelopment());
 
+// The Discord credential's presence (ADR-019 D4). Discord is production's only
+// identity path, so a host that is not Development refuses to start when
+// `Discord:ClientId` or `Discord:ClientSecret` is absent — where "absent" means
+// null, empty, or whitespace-only (D3). The check reads presence only: it never
+// reads, echoes, or logs a credential value, and it substitutes no fallback, no
+// generated credential, and no default.
+//
+// Development is deliberately unaffected: the host starts without the
+// credential, and POST /api/auth/discord keeps the unchanged 503
+// DISCORD_UNAVAILABLE, so the TASK-181 development path (whose own two
+// conditions are unchanged) still works.
+//
+// The environment is a host fact read from IHostEnvironment, not a setting an
+// appsettings file could supply — the same reason
+// AddDevelopmentDiscordIdentityResolver is given it above.
+DiscordCredentialOptions.ValidateForEnvironment(
+    builder.Configuration,
+    builder.Environment.IsDevelopment());
+
 // The application session (API_CONTRACTS.md §2.8; ADR-015 D6): one JWT Bearer
 // authentication scheme, plus the authorization pipeline that enforces it on
 // every endpoint unless the endpoint opts out. The signing key is read from

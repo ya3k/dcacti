@@ -1,6 +1,11 @@
 # Architecture
 
-**Version:** 1.4 (§2.2.1 implementation-status wording synchronized — the
+**Version:** 1.5 (§2.2.3 pre-battle selection boundary synchronized per
+TASK-185 — the flow's step list, its diagram, and rule 1 now include the Boss
+choice the Lobby makes. The five canonical Boss identities are static selection
+content the `LobbyScene` holds, not a collection read and not a new port
+capability, so rule 6 is unchanged. No boundary, port capability, endpoint,
+wire member, or contract changed. Version 1.4 (§2.2.1 implementation-status wording synchronized — the
 `CardCast`/`PetSkillCast` clause and the reconnect/resync recovery clause are
 corrected from "not implemented yet" to implemented per TASK-107, TASK-115,
 TASK-120, TASK-143, and TASK-144, and the sentence's contract-ownership
@@ -22,7 +27,7 @@ read it is built from reaches the scene through the runtime port rather than
 restated as transport-general — it now covers `fetch`/`ApiService` as well as
 `@microsoft/signalr` — which resolves the scope `TASK-079` recorded as
 "currently unstated in docs/". No API contract, gameplay rule, endpoint, or
-client source file changed.))
+client source file changed.)))
 **Status:** Draft — depends on TDD.md §0 assumption (ASP.NET Core backend)
 
 > This document answers: **"How is the software structured?"** It does not
@@ -259,7 +264,8 @@ restated in the client runtime.
 ### 2.2.3 Pre-Battle Selection Boundary
 
 The MVP pre-battle selection flow (Choose Pet, Equip Cards, Equip Relics,
-Start Battle) is `LobbyScene`'s responsibility (`TDD.md` §2.1, TASK-080). This
+Choose Boss, Start Battle) is `LobbyScene`'s responsibility (`TDD.md` §2.1,
+TASK-080, TASK-185). This
 section owns the boundary that flow runs on: where its in-progress selection
 lives, how it reads the owned collection, and what the runtime port exposes to
 it.
@@ -268,7 +274,7 @@ it.
         LobbyScene                        ← interaction surface (TDD.md §2.1)
    ┌────────┴─────────┐
    │ in-progress      │  ephemeral, scene-local, discarded on shutdown
-   │ selection        │  petId · cardLoadout[] · relicLoadout[]
+   │ selection        │  petId · bossId · cardLoadout[] · relicLoadout[]
    └────────┬─────────┘
             │  (GameRuntimePort)
             ▼
@@ -285,8 +291,9 @@ it.
 **Rules:**
 
 1. **The in-progress selection is ephemeral scene state, and `LobbyScene` owns
-   it.** It is the player's not-yet-submitted choice of one Pet and the Card
-   and Relic sets for the upcoming battle. It is created when the scene is,
+   it.** It is the player's not-yet-submitted choice of one Pet, one Boss, and
+   the Card and Relic sets for the upcoming battle. It is created when the
+   scene is,
    lives only in the scene's own fields, and is discarded when the scene shuts
    down. It is the same category as `BattleScene`'s selected board cell: client
    presentation state that no other layer reads and that the server never
@@ -325,8 +332,9 @@ it.
    runtime performs the documented start sequence (REST → connect → join). The
    scene does not validate the loadout, does not decide whether the selection
    is legal, and does not handle the battle: the server validates the submitted
-   request (count, ownership, category, copy limit, distinctness) and is
-   authoritative for the resulting `BattleState` (`GAME_RULES.md` §18,
+   request (count, ownership, category, copy limit, distinctness), resolves the
+   submitted Boss identity, and is authoritative for the resulting
+   `BattleState` (`GAME_RULES.md` §18,
    ADR-001). A rejected request leaves the scene active with its selection
    intact and no battle created.
 6. **The port carries capabilities, not models.** It exposes the start

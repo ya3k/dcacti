@@ -134,6 +134,16 @@ body {
   display: flex;
   flex-direction: column;
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+  /*
+   * This panel is read-only diagnostics: it has no buttons, links, inputs or
+   * other interactive controls, so it must never receive pointer input.
+   * `.game-shell__overlay > *` opts overlay children back into pointer events;
+   * this card explicitly opts out again, because the card is opaque and sits
+   * above the Phaser canvas (z-index 5) — without this it swallows clicks aimed
+   * at whatever the canvas renders beneath it (e.g. the Lobby's Start Battle
+   * trigger in the bottom-right corner of the game surface).
+   */
+  pointer-events: none;
 }
 
 /*

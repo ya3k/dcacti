@@ -1,12 +1,20 @@
 # Technical Design Document (TDD)
 
-**Version:** 1.2 (§2.1 staging note synchronized with implemented work per
-TASK-100 — the deferred-scene clause was falsified by TASK-087/TASK-090, which
-implemented `ResultScene` and `MainMenuScene` and changed the implemented
-transition order; the note now records the staging as completed and agrees with
+**Version:** 1.3 (§2.1 Boss-selection step recorded per TASK-185 — the
+`LobbyScene` bullet no longer states that no MVP Boss-selection step exists: the
+player explicitly chooses one of the five canonical MVP Bosses
+(`BOSS_RULES.md` §6/§6.4) and that choice is what the existing
+`POST /api/battle/start` request's `bossId` carries. `MVP_SCOPE.md` §1 already
+puts "5 Bosses" IN scope; this note records the product decision that the Lobby
+gains the selection step, and changes no gameplay rule, Boss definition, API
+contract, or request shape. Version 1.2 (§2.1 staging note synchronized with
+implemented work per TASK-100 — the deferred-scene clause was falsified by
+TASK-087/TASK-090, which implemented `ResultScene` and `MainMenuScene` and
+changed the implemented transition order; the note now records the staging as
+completed and agrees with
 `GameConfig.ts`. Version 1.1 (§2.1 scene-lifecycle MVP staging note added per
 TASK-078 — staged scene order recorded explicitly; no lifecycle, gameplay rule,
-API contract, or code changed by this note))
+API contract, or code changed by this note)))
 **Status:** Draft — contains ASSUMPTIONs pending confirmation (see §0)
 
 > This document answers: **"What technical approach are we using to
@@ -124,18 +132,25 @@ ResultScene
 - **MainMenuScene:** Main game menu presentation and navigation.
 - **LobbyScene:** Battle preparation, loadout review, and match start trigger.
   The MVP pre-battle selection flow (`GDD.md` §2 — Choose Pet, Equip Cards,
-  Equip Relics, Start Battle) is **LobbyScene's responsibility**: game-related
-  interactive flows belong inside Phaser, while React owns the application/
-  platform shell (`§2.1` Phaser/React split). LobbyScene therefore owns the
-  player-facing Pet, Card, and Relic selection steps and the Start Battle
+  Equip Relics, Choose Boss, Start Battle) is **LobbyScene's responsibility**:
+  game-related interactive flows belong inside Phaser, while React owns the
+  application/platform shell (`§2.1` Phaser/React split). LobbyScene therefore
+  owns the player-facing Pet, Card, Relic, and Boss selection steps and the
+  Start Battle
   trigger UI. It owns **presentation and interaction only**: it submits a
   *request* through the runtime port, and never becomes authoritative for
   `BattleState`, `PetState`, `EquippedCards[]`, `EquippedRelics[]`, Turn,
   Sequence, RNG, or any combat result (`§2.1` Server-Authoritative Boundary,
-  `GAME_RULES.md` §18, ADR-001). There is **no MVP Boss-selection step** — the
-  Boss is supplied by the battle-start flow, not chosen by the player, and no
-  Boss-selection UI exists. Equip/loadout state is battle-scoped and is not
-  read from the collection endpoints (`API_CONTRACTS.md` §5.5–§5.6).
+  `GAME_RULES.md` §18, ADR-001). There **is** an MVP Boss-selection step: the
+  player explicitly chooses one of the five canonical MVP Bosses
+  (`BOSS_RULES.md` §6/§6.4), and the chosen canonical technical Identity is what
+  the request's `bossId` carries. No Boss is pre-selected, so the choice is
+  required before a battle can start; the scene publishes no Boss content of its
+  own and decides no Boss legality — the server resolves the submitted identity
+  through its existing Boss resolution and answers `400 BOSS_NOT_FOUND` for
+  anything else (`API_CONTRACTS.md` §3, ADR-001). Equip/loadout state is
+  battle-scoped and is not read from the collection endpoints
+  (`API_CONTRACTS.md` §5.5–§5.6).
 - **BattleScene:** In-battle visual presentation, board animations, VFX, and
   Phaser runtime.
 - **ResultScene:** Battle outcome presentation (Victory/Defeat, summary).

@@ -105,8 +105,14 @@ public class RelicDefinitionLookupTests
     {
         // RELIC_RULES.md §8.5 / DATABASE.md §1: an identity with no row yields
         // null. No empty definition, no default threshold, and no fallback effect
-        // array is fabricated (AGENTS.md §7) — and the deferred "Burning Curse"
-        // row is a genuine absence, not a placeholder (RELIC_RULES.md §6 note 3).
+        // array is fabricated (AGENTS.md §7).
+        //
+        // CORRECTED FOR TASK-184. This assertion previously probed
+        // "relic-burning-curse" as its genuine-absence case, on RELIC_RULES.md §6
+        // note 3's deferral. TASK-176 content-defined that row (§8.5 item 5 gives
+        // it `OnBattleStart`) and TASK-184 provisions it, so it now RESOLVES and
+        // can no longer serve as an absent identity — the probe was replaced with
+        // a key no document defines.
         var storeName = nameof(Repository_ShouldReturnNullForAnUnknownIdentity);
 
         await SeedProvisionedRowsAsync(storeName);
@@ -115,7 +121,10 @@ public class RelicDefinitionLookupTests
         var repository = new RelicRepository(context);
 
         Assert.Null(await repository.GetDefinitionAsync("relic-non-existent"));
-        Assert.Null(await repository.GetDefinitionAsync("relic-burning-curse"));
+
+        // Burning Curse is provisioned now, so the lookup must RESOLVE it rather
+        // than return null (TASK-184 AC-02).
+        Assert.NotNull(await repository.GetDefinitionAsync("relic-burning-curse"));
     }
 
     // -----------------------------------------------------------------------
@@ -143,8 +152,19 @@ public class RelicDefinitionLookupTests
 
             Assert.NotNull(found);
             Assert.Equal(row.Condition, found!.Condition);
-            Assert.Equal(row.Condition.ConditionType, found.Condition!.Value.ConditionType);
-            Assert.Equal(row.Condition.Threshold, found.Condition!.Value.Threshold);
+
+            // RELIC_RULES.md §8.1 item 4: a Relic whose Trigger alone is its
+            // complete condition carries none, so the four §8.5 rows that record
+            // `null` read back as an absent Condition — never a sentinel.
+            if (row.Condition is null)
+            {
+                Assert.Null(found.Condition);
+            }
+            else
+            {
+                Assert.Equal(row.Condition.Value.ConditionType, found.Condition!.Value.ConditionType);
+                Assert.Equal(row.Condition.Value.Threshold, found.Condition!.Value.Threshold);
+            }
         }
     }
 
@@ -318,10 +338,19 @@ public class RelicDefinitionLookupTests
             Assert.Equal(row.Trigger, found.Trigger);
 
             // §8.1's form and its threshold, as the object DATABASE.md §1 item 7
-            // stores rather than the superseded prose.
+            // stores rather than the superseded prose. A §8.5 row that records
+            // `null` reads back as an absent Condition (§8.1 item 4).
             Assert.Equal(row.Condition, found.Condition);
-            Assert.Equal(row.Condition.ConditionType, found.Condition!.Value.ConditionType);
-            Assert.Equal(row.Condition.Threshold, found.Condition!.Value.Threshold);
+
+            if (row.Condition is null)
+            {
+                Assert.Null(found.Condition);
+            }
+            else
+            {
+                Assert.Equal(row.Condition.Value.ConditionType, found.Condition!.Value.ConditionType);
+                Assert.Equal(row.Condition.Value.Threshold, found.Condition!.Value.Threshold);
+            }
 
             // §8.2's array, element for element and member for member, in stored
             // order.
@@ -350,8 +379,14 @@ public class RelicDefinitionLookupTests
 
         Assert.Null(await repository.GetDefinitionAsync("relic-non-existent"));
 
-        // RELIC_RULES.md §6 note 3: the deferred row is a genuine absence.
-        Assert.Null(await repository.GetDefinitionAsync("relic-burning-curse"));
+        // CORRECTED FOR TASK-184: Burning Curse was the "deferred row is a genuine
+        // absence" probe; TASK-176 content-defined it and TASK-184 provisions it, so
+        // it now resolves against the applied database (TASK-184 AC-02).
+        var burningCurse = await repository.GetDefinitionAsync("relic-burning-curse");
+
+        Assert.NotNull(burningCurse);
+        Assert.Equal("OnBattleStart", burningCurse!.Trigger);
+        Assert.Null(burningCurse.Condition);
     }
 
     [Fact]
