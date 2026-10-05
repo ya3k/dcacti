@@ -1,3 +1,4 @@
+using GameServer.Domain.Accounts;
 using GameServer.Domain.Battle;
 using GameServer.Domain.Bosses;
 using GameServer.Domain.Cards;
@@ -15,6 +16,11 @@ public class GameDbContext : DbContext
         : base(options)
     {
     }
+
+    /// <summary>
+    /// The persistent Account table (ADR-020, DATABASE.md §1).
+    /// </summary>
+    public DbSet<Account> Accounts => Set<Account>();
 
     /// <summary>
     /// The persistent Player account table (<c>DATABASE.md</c> §1).

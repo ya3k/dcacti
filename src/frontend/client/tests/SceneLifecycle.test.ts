@@ -3,10 +3,13 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { BattleScene } from '../src/game/scenes/BattleScene';
 import { BootScene } from '../src/game/scenes/BootScene';
+import { CollectionViewerScene } from '../src/game/scenes/CollectionViewerScene';
+import { LobbyScene } from '../src/game/scenes/LobbyScene';
 import { MainMenuScene } from '../src/game/scenes/MainMenuScene';
 import { PreloaderScene } from '../src/game/scenes/PreloaderScene';
 import { ResultScene } from '../src/game/scenes/ResultScene';
 import { RUNTIME_REGISTRY_KEY } from '../src/game/runtime/RuntimeRegistry';
+import { createGameConfig } from '../src/game/GameConfig';
 import { GAME_WIDTH, SAFE_AREA } from '../src/game/GameViewport';
 import { INITIAL_RUNTIME_STATE } from '../src/state/GameRuntimeState';
 import type { GameRuntimeState } from '../src/state/GameRuntimeState';
@@ -197,6 +200,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
           entry.color = next;
           return obj;
         },
+        setWordWrapWidth: () => obj,
         setInteractive: () => {
           interactive = true;
           return obj;
@@ -208,6 +212,9 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         off: () => {
           handlers.length = 0;
           return obj;
+        },
+        destroy: () => {
+          handlers.length = 0;
         },
         click: () => {
           for (const h of [...handlers]) h();
@@ -382,6 +389,9 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
               handlers.length = 0;
               return rect;
             },
+            destroy: () => {
+              handlers.length = 0;
+            },
             click: () => {
               for (const h of [...handlers]) h();
             },
@@ -536,8 +546,105 @@ describe('Phaser scene lifecycle', () => {
     expect(new BootScene()).toBeInstanceOf(BootScene);
     expect(new PreloaderScene()).toBeInstanceOf(PreloaderScene);
     expect(new MainMenuScene()).toBeInstanceOf(MainMenuScene);
+    expect(new LobbyScene()).toBeInstanceOf(LobbyScene);
+    expect(new CollectionViewerScene()).toBeInstanceOf(CollectionViewerScene);
     expect(new BattleScene()).toBeInstanceOf(BattleScene);
     expect(new ResultScene()).toBeInstanceOf(ResultScene);
+  });
+
+  it('registers every scene, with CollectionViewerScene alongside the battle lifecycle', () => {
+    // TASK-190: `CollectionViewerScene` joins the registered scene list. It is
+    // registered by class, so Phaser keys it by the scene's own configured key.
+    const config = createGameConfig(document.createElement('div'));
+
+    expect(config.scene).toEqual([
+      BootScene,
+      PreloaderScene,
+      MainMenuScene,
+      LobbyScene,
+      CollectionViewerScene,
+      BattleScene,
+      ResultScene,
+    ]);
+  });
+});
+
+describe('MainMenuScene navigation', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('places START BATTLE at (640, 324) and COLLECTION at (640, 394)', () => {
+    // The coordinate contract TASK-190 fixes: the battle entry keeps the centre
+    // `standalone-web-smoke.mjs` clicks, and the collection entry sits one clear
+    // button-height below it, so the two hit areas never overlap.
+    const harness = createSceneHarness();
+    const scene = new MainMenuScene();
+    const positions: Array<{ x: number; y: number; width: number; height: number }> = [];
+    const ctx = Object.assign(harness.context(scene, 'MainMenuScene'), {
+      add: {
+        rectangle: (x = 0, y = 0, width = 0, height = 0) => {
+          positions.push({ x, y, width, height });
+          const obj = {
+            setStrokeStyle: () => obj,
+            setInteractive: () => obj,
+            on: () => obj,
+          };
+          return obj;
+        },
+        text: () => ({ setOrigin: () => undefined }),
+      },
+    });
+
+    runScene(scene, ctx, 'create');
+
+    // The first rectangle is the safe-area background; then the two buttons.
+    expect(positions).toHaveLength(3);
+    expect(positions[1]).toEqual({ x: 640, y: 324, width: 280, height: 50 });
+    expect(positions[2]).toEqual({ x: 640, y: 394, width: 280, height: 50 });
+
+    // No vertical overlap between the two targets: 324 + 25 = 349 < 394 - 25 = 369.
+    const startBottom = positions[1].y + positions[1].height / 2;
+    const collectionTop = positions[2].y - positions[2].height / 2;
+    expect(collectionTop).toBeGreaterThan(startBottom);
+  });
+
+  it('opens CollectionViewerScene from the COLLECTION navigation action', () => {
+    const harness = createSceneHarness();
+    const scene = new MainMenuScene();
+    const ctx = harness.context(scene, 'MainMenuScene');
+
+    runScene(scene, ctx, 'create');
+    runScene(scene, ctx, 'openCollection' as never);
+
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['CollectionViewerScene']);
+  });
+
+  it('cannot open both scenes from repeated activation of either button', () => {
+    const harness = createSceneHarness();
+    const scene = new MainMenuScene();
+    const ctx = harness.context(scene, 'MainMenuScene');
+
+    runScene(scene, ctx, 'create');
+    runScene(scene, ctx, 'openCollection' as never);
+    runScene(scene, ctx, 'openCollection' as never);
+    runScene(scene, ctx, 'startBattle' as never);
+
+    // The single-use guard is shared: whichever action fires first wins, and the
+    // other button cannot start a second scene from the same instance.
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['CollectionViewerScene']);
+  });
+
+  it('offers a COLLECTION entry point alongside START BATTLE', () => {
+    const harness = createSceneHarness();
+    const scene = new MainMenuScene();
+    const ctx = harness.context(scene, 'MainMenuScene');
+
+    runScene(scene, ctx, 'create');
+
+    const rendered = harness.texts.map((t) => t.text);
+    expect(rendered).toContain('START BATTLE');
+    expect(rendered).toContain('COLLECTION');
   });
 });
 
@@ -2046,5 +2153,95 @@ describe('MainMenuScene', () => {
     runScene(scene, ctx, 'shutdown');
 
     expect(harness.sceneStarted).toHaveLength(0);
+  });
+});
+
+describe('CollectionViewerScene', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('creates its presentation through the shared harness without throwing', () => {
+    const harness = createSceneHarness();
+    const scene = new CollectionViewerScene();
+    const ctx = harness.context(scene, 'CollectionViewerScene');
+
+    expect(() => runScene(scene, ctx, 'create')).not.toThrow();
+    expect(harness.texts.map((t) => t.text)).toContain('COLLECTION VIEWER');
+  });
+
+  it('subscribes to no runtime stream and opens no battle state', () => {
+    // TASK-190: unlike `BattleScene`, the viewer is a request/response screen.
+    // §5 defines no push for a collection read, so there is nothing to subscribe
+    // to and no battle to synchronize (`SIGNALR_PROTOCOL.md` §2, §4).
+    const harness = createSceneHarness();
+    const scene = new CollectionViewerScene();
+    const ctx = harness.context(scene, 'CollectionViewerScene');
+
+    runScene(scene, ctx, 'create');
+
+    expect(harness.listeners.size).toBe(0);
+    expect(harness.battleStateListeners.size).toBe(0);
+    expect(harness.battleEventListeners.size).toBe(0);
+  });
+
+  it('reads the collection through the runtime port and no other capability', () => {
+    const harness = createSceneHarness();
+    const scene = new CollectionViewerScene();
+    const ctx = harness.context(scene, 'CollectionViewerScene');
+
+    runScene(scene, ctx, 'create');
+
+    expect(harness.runtime.getPets).toHaveBeenCalled();
+    expect(harness.runtime.getCards).toHaveBeenCalled();
+    expect(harness.runtime.getRelics).toHaveBeenCalled();
+    // The read-only viewer starts no battle and submits no action.
+    expect(harness.requestedActions).toHaveLength(0);
+    expect(harness.actionInvocations).toHaveLength(0);
+  });
+
+  it('transitions back to MainMenuScene', () => {
+    const harness = createSceneHarness();
+    const scene = new CollectionViewerScene();
+    const ctx = harness.context(scene, 'CollectionViewerScene');
+
+    runScene(scene, ctx, 'create');
+    runScene(scene, ctx, 'goBack' as never);
+
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['MainMenuScene']);
+  });
+
+  it('shutdown is safe and leaves nothing subscribed or transitioning', () => {
+    const harness = createSceneHarness();
+    const scene = new CollectionViewerScene();
+    const ctx = harness.context(scene, 'CollectionViewerScene');
+
+    runScene(scene, ctx, 'create');
+    runScene(scene, ctx, 'shutdown');
+
+    expect(harness.sceneStarted).toHaveLength(0);
+    expect(harness.listeners.size).toBe(0);
+    expect(harness.battleStateListeners.size).toBe(0);
+  });
+
+  it('is a side branch: no other scene starts it and it starts nothing but the menu', () => {
+    // The MainMenu is its only entry point, and MainMenuScene its only exit, so
+    // the viewer cannot be reached from — or lead into — the battle lifecycle.
+    const viewerSource = readFileSync(
+      resolve(__dirname, '../src/game/scenes/CollectionViewerScene.ts'),
+      'utf8'
+    ).replace(/\/\*[\s\S]*?\*\//g, '');
+
+    const startedByViewer = [...viewerSource.matchAll(/scene\.start\('([^']+)'\)/g)].map(
+      (match) => match[1]
+    );
+    expect(startedByViewer).toEqual(['MainMenuScene']);
+
+    const menuSource = readFileSync(
+      resolve(__dirname, '../src/game/scenes/MainMenuScene.ts'),
+      'utf8'
+    ).replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(menuSource).toContain("'CollectionViewerScene'");
+    expect(menuSource).toContain("'LobbyScene'");
   });
 });

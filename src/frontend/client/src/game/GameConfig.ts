@@ -3,6 +3,7 @@ import { BootScene } from './scenes/BootScene';
 import { PreloaderScene } from './scenes/PreloaderScene';
 import { MainMenuScene } from './scenes/MainMenuScene';
 import { LobbyScene } from './scenes/LobbyScene';
+import { CollectionViewerScene } from './scenes/CollectionViewerScene';
 import { BattleScene } from './scenes/BattleScene';
 import { ResultScene } from './scenes/ResultScene';
 import { GAME_WIDTH, GAME_HEIGHT } from './GameViewport';
@@ -36,8 +37,10 @@ import { RUNTIME_REGISTRY_KEY } from './runtime/RuntimeRegistry';
  *
  *   BootScene → PreloaderScene → MainMenuScene → LobbyScene → BattleScene → ResultScene
  *
- * All six scenes are now registered and the implemented order matches the
- * documented lifecycle exactly.
+ * `CollectionViewerScene` is registered alongside them as the meta-progression
+ * viewer `MainMenuScene` reaches through its `COLLECTION` button. It is not part
+ * of the battle lifecycle above: it is a read-only side branch off the main menu,
+ * and the branch points back to `MainMenuScene`.
  *
  * The `runtime` is injected into Phaser's game-wide registry (`game.registry`,
  * a `Phaser.Data.DataManager`) from the `postBoot` hook — the point at which
@@ -61,7 +64,15 @@ export function createGameConfig(
       autoRound: true,
       expandParent: false,
     },
-    scene: [BootScene, PreloaderScene, MainMenuScene, LobbyScene, BattleScene, ResultScene],
+    scene: [
+      BootScene,
+      PreloaderScene,
+      MainMenuScene,
+      LobbyScene,
+      CollectionViewerScene,
+      BattleScene,
+      ResultScene,
+    ],
     callbacks: {
       // Runs at the end of the boot sequence: all game systems (including the
       // registry and Scene Manager) are live, and the first scene has not yet

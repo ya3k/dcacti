@@ -1,4 +1,5 @@
 using GameServer.Domain.Battle;
+using GameServer.Domain.Battle.Serialization;
 using GameServer.Domain.Cards;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
@@ -537,12 +538,71 @@ public sealed class CardCastExecutorTests
         var first = CardCastExecutor.Execute(state, critOnlyCard);
         Assert.True(first.IsAccepted);
 
-        var second = CardCastExecutor.Execute(first.State, critOnlyCard);
+        // CARD_RULES.md §3 item 6 / ADR-021: at most one Card cast per committed
+        // Match-3 Turn, so the second cast that this refresh-not-stack property is
+        // observed through happens in the NEXT committed Turn. The Turn advance is
+        // exactly what a committed Swap's write-back performs
+        // (MATCH3_RULES.md §8.1 item 1, §8.3) — the allowance is restored there
+        // and nowhere else. The property under test (two casts from one source
+        // refresh that element rather than stacking a second) is unchanged; only
+        // the Turn the two casts occur in is now explicit.
+        var nextTurn = first.State with
+        {
+            Turn = first.State.Turn + 1,
+            CardCastsUsedThisTurn = BattleState.InitialCardCastsUsedThisTurn,
+        };
+
+        var second = CardCastExecutor.Execute(nextTurn, critOnlyCard);
         Assert.True(second.IsAccepted);
 
         var modifier = Assert.Single(second.State.PetState.NextAttackCritModifiers);
         Assert.Equal("card-crit-only", modifier.SourceIdentity);
         Assert.Equal(10, modifier.CritContribution);
+    }
+
+    [Fact]
+    public void Execute_SecondCastInTheSameCommittedTurn_IsRejected()
+    {
+        // CARD_RULES.md §3 item 6 / ADR-021: a player may successfully cast at
+        // most one Card during each committed Match-3 Turn. The cast is rejected
+        // on the Turn's spent allowance — a cast-count constraint, not Turn
+        // consumption.
+        var state = CreateTestBattleState(power: 50);
+
+        var first = CardCastExecutor.Execute(state, HealCard);
+        Assert.True(first.IsAccepted);
+        Assert.Equal(1, first.State.CardCastsUsedThisTurn);
+
+        var second = CardCastExecutor.Execute(first.State, ShieldCard);
+
+        Assert.True(second.IsRejected);
+        Assert.Equal(CardCastRejectionReason.CardCastAlreadyUsedThisTurn, second.Reason);
+    }
+
+    [Fact]
+    public void Execute_SecondCastInTheSameTurn_LeavesTurnAndStateUnchanged()
+    {
+        // CARD_RULES.md §3 items 3 and 5 / ADR-021: the rejection is a no-op. The
+        // cast neither consumes a Turn nor writes the allowance, and no Power is
+        // spent — a rejected cast changes nothing at all.
+        var state = CreateTestBattleState(power: 50);
+        var first = CardCastExecutor.Execute(state, HealCard);
+        Assert.True(first.IsAccepted);
+
+        var powerAfterFirst = first.State.PetState.Power;
+        var turnAfterFirst = first.State.Turn;
+        var sequenceAfterFirst = first.State.Sequence;
+
+        var second = CardCastExecutor.Execute(first.State, ShieldCard);
+        Assert.True(second.IsRejected);
+
+        // The allowance is still exactly one spent cast, and the rejection wrote
+        // no state of its own (a rejected cast produces no state at all — the
+        // result exposes none).
+        Assert.Equal(1, first.State.CardCastsUsedThisTurn);
+        Assert.Equal(powerAfterFirst, first.State.PetState.Power);
+        Assert.Equal(turnAfterFirst, first.State.Turn);
+        Assert.Equal(sequenceAfterFirst, first.State.Sequence);
     }
 
     [Fact]
@@ -773,5 +833,253 @@ public sealed class CardCastExecutorTests
         Assert.Equal(50, result.State.PetState.Power);
         Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.PowerChanged);
         Assert.Equal([BattleEventType.CardCast], result.Events.Select(e => e.Type));
+    }
+
+    // ======================================================================
+    // B-02 — one successful Card cast per committed Match-3 Turn
+    // (CARD_RULES.md §3 item 6, MATCH3_RULES.md §8.1 item 6, ADR-021)
+    // ======================================================================
+
+    [Fact]
+    public void Execute_FirstCastOfTheTurn_SucceedsAndSpendsTheAllowance()
+    {
+        // Scenario 1: a new Turn allows one cast, and that cast spends the allowance.
+        var state = CreateTestBattleState(power: 50);
+        Assert.Equal(BattleState.InitialCardCastsUsedThisTurn, state.CardCastsUsedThisTurn);
+
+        var result = CardCastExecutor.Execute(state, HealCard);
+
+        Assert.True(result.IsAccepted);
+        Assert.Equal(1, result.State.CardCastsUsedThisTurn);
+    }
+
+    [Fact]
+    public void Execute_RejectedForInsufficientPower_DoesNotSpendTheAllowance()
+    {
+        // Scenario 3: only a SUCCESSFUL cast spends the allowance
+        // (CARD_RULES.md §3 item 3 — a rejected cast changes nothing).
+        var state = CreateTestBattleState(power: 10); // Heal costs 20
+
+        var rejected = CardCastExecutor.Execute(state, HealCard);
+        Assert.True(rejected.IsRejected);
+        Assert.Equal(CardCastRejectionReason.InsufficientPower, rejected.Reason);
+
+        // The allowance is untouched: the same Turn still permits one cast.
+        var stillUnspent = CardCastExecutor.Execute(
+            state with { PetState = state.PetState with { Power = 50 } },
+            HealCard);
+        Assert.True(stillUnspent.IsAccepted);
+        Assert.Equal(1, stillUnspent.State.CardCastsUsedThisTurn);
+    }
+
+    [Fact]
+    public void Execute_RejectedForCardNotInLoadoutAndInvalidCard_DoNotSpendTheAllowance()
+    {
+        // Scenario 3, remaining rejection reasons: neither spends the allowance,
+        // because the allowance is only consumed by the accepted write-back.
+        var state = CreateTestBattleState(
+            power: 50,
+            equippedCards: [new EquippedCardIdentity("card-heal")]);
+
+        // Not in the loadout — rejected by the loadout check.
+        var notEquipped = CardCastExecutor.Execute(state, ShieldCard);
+        Assert.Equal(CardCastRejectionReason.CardNotInLoadout, notEquipped.Reason);
+
+        // An undefined category is rejected as an invalid Card. It is placed in
+        // the loadout so the category check — not the loadout check, which runs
+        // first (CARD_RULES.md §3 item 2's order) — is the one that reports.
+        var invalidCard = new CardDefinition
+        {
+            CardDefinitionId = "card-heal",
+            Name = "Invalid",
+            Category = (CardCategory)99,
+            PowerCost = 10,
+            LoadoutCopyLimit = 1,
+            EffectDefinition = CardEffectDefinitions.Create(
+                CardEffectDefinition.Create(CardEffectType.Heal, CardEffectValueType.Flat, 10)),
+        };
+        var invalid = CardCastExecutor.Execute(state, invalidCard);
+        Assert.Equal(CardCastRejectionReason.InvalidCard, invalid.Reason);
+
+        // Neither rejection spent the allowance: a valid cast still succeeds.
+        var valid = CardCastExecutor.Execute(state, HealCard);
+        Assert.True(valid.IsAccepted);
+        Assert.Equal(1, valid.State.CardCastsUsedThisTurn);
+    }
+
+    [Fact]
+    public void Execute_AllowanceIsRestoredByTheNextCommittedTurn()
+    {
+        // Scenario 4: the allowance resets when the next committed Match-3 Turn
+        // begins — the committed Swap's write-back (MATCH3_RULES.md §8.1 item 1)
+        // restores it to the documented initial value.
+        var state = CreateTestBattleState(power: 100);
+
+        var first = CardCastExecutor.Execute(state, HealCard);
+        Assert.True(first.IsAccepted);
+
+        var blocked = CardCastExecutor.Execute(first.State, ShieldCard);
+        Assert.Equal(CardCastRejectionReason.CardCastAlreadyUsedThisTurn, blocked.Reason);
+
+        // A committed Swap's write-back is the only reset point. It is modelled
+        // here exactly as SwapExecution performs it: Turn advanced and the
+        // allowance returned to its initial value in the same write-back.
+        var nextTurn = first.State with
+        {
+            Turn = first.State.Turn + 1,
+            CardCastsUsedThisTurn = BattleState.InitialCardCastsUsedThisTurn,
+        };
+
+        var afterReset = CardCastExecutor.Execute(nextTurn, ShieldCard);
+        Assert.True(afterReset.IsAccepted);
+        Assert.Equal(1, afterReset.State.CardCastsUsedThisTurn);
+    }
+
+    [Fact]
+    public void Execute_CardCastDoesNotConsumeATurn()
+    {
+        // Scenario 7: CARD_RULES.md §3 item 5 — a cast consumes no Turn. The
+        // allowance changes; `Turn` does not.
+        var state = CreateTestBattleState(power: 50);
+        var turnBefore = state.Turn;
+
+        var result = CardCastExecutor.Execute(state, HealCard);
+
+        Assert.True(result.IsAccepted);
+        Assert.Equal(turnBefore, result.State.Turn);
+        Assert.Equal(1, result.State.CardCastsUsedThisTurn);
+
+        // It does resolve as one authoritative action, so Sequence advances once.
+        Assert.Equal(state.Sequence + 1, result.State.Sequence);
+    }
+
+    [Fact]
+    public void Execute_CardCastAlone_ProducesNoBossResponse()
+    {
+        // Scenario 8: CARD_RULES.md §3 item 5 — a cast does not independently
+        // trigger the normal Boss response. Nothing the cast emits targets the
+        // player, and the Boss's HP/cooldown/charge are untouched by a non-damaging
+        // cast, so the Step-18 pipeline is never reached (GAME_RULES.md §17).
+        var state = CreateTestBattleState(power: 50);
+        var bossBefore = state.BossState;
+
+        var result = CardCastExecutor.Execute(state, HealCard);
+
+        Assert.True(result.IsAccepted);
+
+        // No damage was dealt to the player, and no boss skill was cast.
+        Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.DamageDealt);
+        Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.BossSkillCast);
+
+        // The Boss State is carried across unchanged — the cast did not advance
+        // its cooldown, charge, or HP.
+        Assert.Equal(bossBefore.HP, result.State.BossState.HP);
+        Assert.Equal(bossBefore.SkillCooldown, result.State.BossState.SkillCooldown);
+        Assert.Equal(bossBefore.SkillCharge, result.State.BossState.SkillCharge);
+    }
+
+    [Fact]
+    public void Execute_PowerChargeExploit_CannotChainFourCastsIntoADamageCard()
+    {
+        // REGRESSION — the TASK-191 B-02 exploit, reproduced exactly:
+        //
+        //     Power Charge ×4 → Damage Card → Boss dies
+        //
+        // with 0 Turns consumed and 0 Boss responses. Under CARD_RULES.md §3
+        // item 6 / ADR-021 the chain is impossible: the FIRST Power Charge
+        // succeeds and the second is rejected, so the player can never accumulate
+        // the four free Power grants the loop needs inside one committed Turn.
+        //
+        // The Card definitions and Power Charge's 0 cost are deliberately the
+        // real ones — this regression proves the rule removes the loop WITHOUT
+        // changing any Card value (B-01 is a separate, undecided item).
+        var damageCard = new CardDefinition
+        {
+            CardDefinitionId = "card-damage",
+            Name = "Damage",
+            Category = CardCategory.Basic,
+            // Costed low enough that the spent allowance — not insufficient
+            // Power — is the check that rejects it, so this regression exercises
+            // the B-02 rule specifically.
+            PowerCost = 20,
+            LoadoutCopyLimit = 1,
+            EffectDefinition = CardEffectDefinitions.Create(
+                CardEffectDefinition.Create(CardEffectType.Damage, CardEffectValueType.Flat, 150)),
+        };
+
+        var state = CreateTestBattleState(
+            power: 0,
+            equippedCards:
+            [
+                new EquippedCardIdentity("card-power-charge"),
+                new EquippedCardIdentity("card-damage"),
+            ]);
+
+        // Power Charge #1 — succeeds. This is the whole of the Turn's allowance.
+        var first = CardCastExecutor.Execute(state, PowerChargeCard);
+        Assert.True(first.IsAccepted);
+        Assert.Equal(25, first.State.PetState.Power);
+
+        // Power Charge #2 — rejected. The old exploit relied on this succeeding.
+        var second = CardCastExecutor.Execute(first.State, PowerChargeCard);
+        Assert.True(second.IsRejected);
+        Assert.Equal(CardCastRejectionReason.CardCastAlreadyUsedThisTurn, second.Reason);
+
+        // Power Charge #3 and #4 — likewise rejected, for the same reason.
+        var third = CardCastExecutor.Execute(first.State, PowerChargeCard);
+        var fourth = CardCastExecutor.Execute(first.State, PowerChargeCard);
+        Assert.Equal(CardCastRejectionReason.CardCastAlreadyUsedThisTurn, third.Reason);
+        Assert.Equal(CardCastRejectionReason.CardCastAlreadyUsedThisTurn, fourth.Reason);
+
+        // The damage Card is also rejected: the allowance is spent regardless of
+        // which Card was cast first.
+        var damage = CardCastExecutor.Execute(first.State, damageCard);
+        Assert.True(damage.IsRejected);
+        Assert.Equal(CardCastRejectionReason.CardCastAlreadyUsedThisTurn, damage.Reason);
+
+        // The exploit's premise — free Power accumulated inside one Turn — is
+        // therefore gone. Power after the only successful cast is 25, not the 100
+        // the four-cast chain produced, and the Boss was never touched.
+        Assert.Equal(25, first.State.PetState.Power);
+        Assert.Equal(0, first.State.Turn);
+        Assert.Equal(state.BossState.HP, first.State.BossState.HP);
+        Assert.DoesNotContain(first.Events, e => e.Type == BattleEventType.DamageDealt);
+    }
+
+    [Fact]
+    public void Execute_DamageCardCastThatKillsTheBoss_StillWinsWithinItsOneCast()
+    {
+        // The rule bounds how many casts a Turn allows; it does not remove a
+        // legitimate one-cast win. A damage cast that takes the Boss to 0 still
+        // emits BattleWon (unchanged behavior — normal victory is preserved).
+        var state = CreateTestBattleState(power: 50) with
+        {
+            BossState = CreateTestBattleState(power: 50).BossState with { HP = 1 },
+        };
+
+        var result = CardCastExecutor.Execute(state, PetSkillCard);
+
+        Assert.True(result.IsAccepted);
+        Assert.Contains(result.Events, e => e.Type == BattleEventType.BattleWon);
+    }
+
+    [Fact]
+    public void Execute_AllowanceSurvivesAStateRoundTrip()
+    {
+        // The spent allowance is authoritative battle state, so it must survive
+        // persistence and reload: a battle re-read from the store still enforces
+        // the same Turn's one-cast limit rather than granting a second cast.
+        var state = CreateTestBattleState(power: 100);
+
+        var first = CardCastExecutor.Execute(state, HealCard);
+        Assert.True(first.IsAccepted);
+        Assert.Equal(1, first.State.CardCastsUsedThisTurn);
+
+        var reloaded = BattleStateSerializer.Deserialize(BattleStateSerializer.Serialize(first.State));
+        Assert.Equal(1, reloaded.CardCastsUsedThisTurn);
+
+        var second = CardCastExecutor.Execute(reloaded, ShieldCard);
+        Assert.True(second.IsRejected);
+        Assert.Equal(CardCastRejectionReason.CardCastAlreadyUsedThisTurn, second.Reason);
     }
 }

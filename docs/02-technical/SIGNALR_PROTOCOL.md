@@ -1,6 +1,6 @@
 # SignalR Protocol
 
-**Version:** 2.15 (§4.3's `petState` projection widened by one member and §4's
+**Version:** 2.16 (§1 authentication aligned with ADR-020 — standalone web account JWT ApplicationSession replaces residual Discord access-token references; prior 2.15: §4.3's `petState` projection widened by one member and §4's
 push widened by one nested object, applying the TASK-160 Product Owner
 decisions D-1A and D-2A. `petState` gains `statusEffects[]` — the **active
 Pet's currently active** Status Effect instances, rendered per instance by
@@ -172,19 +172,19 @@ projection only (ADR-011).
 2. Client connects to the `BattleHub` and joins a group scoped to
    `battleId`.
 3. Connection is authenticated using the application session established
-   during initial authentication (`POST /api/auth/discord`, `API_CONTRACTS.md` §2,
-   ADR-007): that session is the self-contained signed JWT defined by
-   `API_CONTRACTS.md` §2.8 (`ADR-015`), supplied through SignalR's standard
-   access-token mechanism.
-4. The Discord access token is never accepted as a `BattleHub`
-   authentication credential (`API_CONTRACTS.md` §2.7 item 4).
+   during web authentication (`POST /api/auth/register` or `POST /api/auth/login`,
+   `API_CONTRACTS.md` §2, `ADR-020`): that session is the self-contained signed JWT
+   `ApplicationSession` defined by `API_CONTRACTS.md` §2.3 (`ADR-015`), supplied
+   through SignalR's standard access-token mechanism.
+4. Only valid JWT `ApplicationSession` tokens are accepted as `BattleHub`
+   authentication credentials; raw external identity tokens are never accepted.
 5. A connection presenting a missing, invalid/tampered, or expired session
    is rejected by the authentication/authorization boundary before the hub
    is usable. `BattleHub` defines no second authentication mechanism of its
    own — it remains transport-focused (`ADR-015` D6).
 6. `BattleHub` and realtime game handlers deal exclusively with the
-   authenticated application player session, with zero direct dependency on
-   Discord Embedded App SDK internals.
+   authenticated application player session (`ApplicationSession`), with zero direct
+   dependency on external client SDKs or embedded platform runtimes.
 
 ---
 

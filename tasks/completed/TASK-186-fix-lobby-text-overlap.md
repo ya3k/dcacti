@@ -35,7 +35,7 @@ Type:              BUG (development/bug-fix.md — implementation/presentation
                    presentation the code itself declares, `TDD.md` §2.1's
                    LobbyScene flow and `ARCHITECTURE.md` §2.2.2 rule 5's
                    safe-area rule)
-Status:            BACKLOG
+Status:            DONE
 Risk:              LOW (one presentation file plus focused tests/tooling; no
                    game rule, no state, no transport, no backend, no schema,
                    no CSS, no auth)

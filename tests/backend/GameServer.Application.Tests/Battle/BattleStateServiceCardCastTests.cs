@@ -240,6 +240,193 @@ public sealed class BattleStateServiceCardCastTests
         Assert.Null(result);
     }
 
+    // =======================================================================
+    // B-02 — one successful Card cast per committed Match-3 Turn
+    // (CARD_RULES.md §3 item 6, ADR-021)
+    //
+    // These exercise the rule through the Application service, i.e. the path the
+    // SignalR hub actually calls, with the authoritative repository in the loop.
+    // =======================================================================
+
+    [Fact]
+    public async Task ExecuteCardCastAsync_SecondCastInTheSameTurn_IsRejectedAndPersistsTheAllowance()
+    {
+        // The first cast succeeds and its spent allowance is PERSISTED, so the
+        // rejection is decided from stored authoritative state — not from anything
+        // held in the request, the connection, or the client.
+        var (service, repo) = CreateService();
+        var initial = await service.CreateBattleAsync("battle-b02-second", Owner, PetConfig, BossDef);
+
+        var stateWithPower = initial with
+        {
+            PetState = initial.PetState with { Power = 100 },
+        };
+        await repo.TryUpdateAsync(stateWithPower, initial.Sequence);
+
+        var first = await service.ExecuteCardCastAsync("battle-b02-second", "card-heal");
+        Assert.NotNull(first);
+        Assert.True(first.Value.IsAccepted);
+        Assert.Equal(1, first.Value.State.CardCastsUsedThisTurn);
+
+        var storedAfterFirst = await repo.GetAsync("battle-b02-second");
+        Assert.NotNull(storedAfterFirst);
+        Assert.Equal(1, storedAfterFirst!.CardCastsUsedThisTurn);
+
+        var second = await service.ExecuteCardCastAsync("battle-b02-second", "card-shield");
+
+        Assert.NotNull(second);
+        Assert.True(second.Value.IsRejected);
+        Assert.Equal(CardCastRejectionReason.CardCastAlreadyUsedThisTurn, second.Value.Reason);
+
+        // The rejection wrote nothing: the stored allowance and Power are exactly
+        // what the first cast left.
+        var storedAfterSecond = await repo.GetAsync("battle-b02-second");
+        Assert.NotNull(storedAfterSecond);
+        Assert.Equal(1, storedAfterSecond!.CardCastsUsedThisTurn);
+        Assert.Equal(first.Value.State.PetState.Power, storedAfterSecond.PetState.Power);
+        Assert.Equal(first.Value.State.Sequence, storedAfterSecond.Sequence);
+    }
+
+    [Fact]
+    public async Task ExecuteCardCastAsync_ThirdAndFourthAttempts_StayRejected()
+    {
+        // The allowance is a per-Turn limit, not a one-shot guard: every further
+        // attempt in the same Turn is rejected for the same reason.
+        var (service, repo) = CreateService();
+        var initial = await service.CreateBattleAsync("battle-b02-repeat", Owner, PetConfig, BossDef);
+
+        var stateWithPower = initial with
+        {
+            PetState = initial.PetState with { Power = 100 },
+        };
+        await repo.TryUpdateAsync(stateWithPower, initial.Sequence);
+
+        var first = await service.ExecuteCardCastAsync("battle-b02-repeat", "card-heal");
+        Assert.True(first!.Value.IsAccepted);
+
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var again = await service.ExecuteCardCastAsync("battle-b02-repeat", "card-heal");
+            Assert.NotNull(again);
+            Assert.True(again.Value.IsRejected);
+            Assert.Equal(CardCastRejectionReason.CardCastAlreadyUsedThisTurn, again.Value.Reason);
+        }
+    }
+
+    [Fact]
+    public async Task ExecuteCardCastAsync_PowerChargeExploit_IsBlockedAtTheSecondCast()
+    {
+        // REGRESSION, at the Application level: the TASK-191 B-02 exploit was
+        // "Power Charge ×4 → Damage Card" driven by repeated hub calls. The second
+        // Power Charge is now rejected, so the chain cannot reach four casts and
+        // the Boss is never touched. Power Charge's 0 cost is unchanged (B-01 is a
+        // separate, undecided item).
+        var (service, repo) = CreateService();
+        var initial = await service.CreateBattleAsync("battle-b02-exploit", Owner, PetConfig, BossDef);
+
+        var stateWithZeroPower = initial with
+        {
+            PetState = initial.PetState with { Power = 0 },
+        };
+        await repo.TryUpdateAsync(stateWithZeroPower, initial.Sequence);
+
+        var bossHpBefore = initial.BossState.HP;
+
+        // Cast #1 — succeeds, grants its 25 Power.
+        var first = await service.ExecuteCardCastAsync("battle-b02-exploit", "card-power-charge");
+        Assert.NotNull(first);
+        Assert.True(first.Value.IsAccepted);
+        Assert.Equal(25, first.Value.State.PetState.Power);
+
+        // Casts #2–#4 — every one rejected. The old loop required these to succeed.
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var rejected = await service.ExecuteCardCastAsync("battle-b02-exploit", "card-power-charge");
+            Assert.NotNull(rejected);
+            Assert.True(rejected.Value.IsRejected);
+            Assert.Equal(CardCastRejectionReason.CardCastAlreadyUsedThisTurn, rejected.Value.Reason);
+        }
+
+        // The damage Card is rejected as well, so the loop's kill step is
+        // unreachable. It reports InsufficientPower because that check precedes
+        // the allowance check (CARD_RULES.md §3 item 2's validation order): after
+        // the single allowed Power Charge the Pet holds 25 Power against Inferno's
+        // 40. Either way the cast does not resolve — and the reason is reported in
+        // its own documented vocabulary, which is what the rule requires.
+        var damage = await service.ExecuteCardCastAsync("battle-b02-exploit", "card-inferno");
+        Assert.NotNull(damage);
+        Assert.True(damage.Value.IsRejected);
+        Assert.Equal(CardCastRejectionReason.InsufficientPower, damage.Value.Reason);
+
+        // The exploit's outcome is unreachable: Power is 25 rather than the ~100 the
+        // four-cast chain produced, the Boss is undamaged, and no Turn was consumed.
+        var stored = await repo.GetAsync("battle-b02-exploit");
+        Assert.NotNull(stored);
+        Assert.Equal(25, stored!.PetState.Power);
+        Assert.Equal(bossHpBefore, stored.BossState.HP);
+        Assert.Equal(0, stored.Turn);
+        Assert.Equal(1, stored.CardCastsUsedThisTurn);
+    }
+
+    [Fact]
+    public async Task ExecuteCardCastAsync_CommittedSwap_RestoresTheAllowanceInStoredState()
+    {
+        // The reset rides the committed Swap's own write-back through the service,
+        // so a re-read battle offers the next Turn's cast.
+        var (service, repo) = CreateService();
+        var initial = await service.CreateBattleAsync("battle-b02-reset", Owner, PetConfig, BossDef);
+
+        var stateWithPower = initial with
+        {
+            PetState = initial.PetState with { Power = 100 },
+        };
+        await repo.TryUpdateAsync(stateWithPower, initial.Sequence);
+
+        var first = await service.ExecuteCardCastAsync("battle-b02-reset", "card-heal");
+        Assert.True(first!.Value.IsAccepted);
+
+        // A committed Swap restores the allowance. The board is generated, so this
+        // finds a committing swap deterministically from the stored state rather
+        // than assuming a fixed fixture index.
+        var afterSwap = await CommitAnySwapAsync(service, repo, "battle-b02-reset");
+        Assert.True(afterSwap, "expected at least one committing swap on a generated board");
+
+        var stored = await repo.GetAsync("battle-b02-reset");
+        Assert.NotNull(stored);
+        Assert.Equal(BattleState.InitialCardCastsUsedThisTurn, stored!.CardCastsUsedThisTurn);
+
+        var nextTurnCast = await service.ExecuteCardCastAsync("battle-b02-reset", "card-shield");
+        Assert.NotNull(nextTurnCast);
+        Assert.True(nextTurnCast.Value.IsAccepted);
+    }
+
+    /// <summary>
+    /// Finds and commits one valid Swap on the battle's current board.
+    /// </summary>
+    /// <returns><c>true</c> when a Swap was committed.</returns>
+    private static async Task<bool> CommitAnySwapAsync(
+        BattleStateService service,
+        InMemoryBattleStateRepository repository,
+        string battleId)
+    {
+        var state = await repository.GetAsync(battleId);
+        Assert.NotNull(state);
+
+        for (var from = 0; from < BoardState.CellCount; from++)
+        {
+            for (var to = 0; to < BoardState.CellCount; to++)
+            {
+                var swap = await service.ExecuteSwapAsync(battleId, new SwapRequest(from, to));
+                if (swap is { IsAccepted: true })
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     [Fact]
     public async Task ExecuteCardCastAsync_UnknownCard_ReturnsRejectedInvalidCard()
     {

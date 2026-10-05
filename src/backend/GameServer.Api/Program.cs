@@ -1,6 +1,5 @@
 using GameServer.Application;
 using GameServer.Infrastructure;
-using GameServer.Infrastructure.Discord;
 using GameServer.Api.Authentication;
 using GameServer.Api.Hubs;
 using Microsoft.AspNetCore.Authorization;
@@ -14,41 +13,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddApplicationServices();
 builder.Services.AddInfrastructureServices(builder.Configuration);
 
-// The development-only authentication path (TASK-181).
-//
-// It substitutes the identity source behind the existing one authentication
-// endpoint, so a developer can play the MVP loop from a normal browser tab
-// without a Discord Activity iframe. Both conditions are required and are checked
-// inside the registration itself: the host's own Development environment — a host
-// fact, read here from IHostEnvironment rather than from an appsettings file — and
-// an explicit opt-in switch that no tracked file sets. Outside Development, or
-// without the opt-in, this call changes nothing: the composition stays exactly as
-// it is today, and the Discord identity exchange remains the only registered
-// resolver (AC-01/AC-02).
-builder.Services.AddDevelopmentDiscordIdentityResolver(
-    builder.Configuration,
-    builder.Environment.IsDevelopment());
-
-// The Discord credential's presence (ADR-019 D4). Discord is production's only
-// identity path, so a host that is not Development refuses to start when
-// `Discord:ClientId` or `Discord:ClientSecret` is absent — where "absent" means
-// null, empty, or whitespace-only (D3). The check reads presence only: it never
-// reads, echoes, or logs a credential value, and it substitutes no fallback, no
-// generated credential, and no default.
-//
-// Development is deliberately unaffected: the host starts without the
-// credential, and POST /api/auth/discord keeps the unchanged 503
-// DISCORD_UNAVAILABLE, so the TASK-181 development path (whose own two
-// conditions are unchanged) still works.
-//
-// The environment is a host fact read from IHostEnvironment, not a setting an
-// appsettings file could supply — the same reason
-// AddDevelopmentDiscordIdentityResolver is given it above.
-DiscordCredentialOptions.ValidateForEnvironment(
-    builder.Configuration,
-    builder.Environment.IsDevelopment());
-
-// The application session (API_CONTRACTS.md §2.8; ADR-015 D6): one JWT Bearer
+// The application session (API_CONTRACTS.md §2.3; ADR-015 D6): one JWT Bearer
 // authentication scheme, plus the authorization pipeline that enforces it on
 // every endpoint unless the endpoint opts out. The signing key is read from
 // configuration here (D10), so a host that cannot validate sessions refuses to

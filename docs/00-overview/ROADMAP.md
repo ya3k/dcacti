@@ -1,6 +1,6 @@
 # Roadmap
 
-**Version:** 1.0
+**Version:** 1.1 (Phase 3 updated per ADR-020 — Standalone Web Polish & Meta Progression; prior 1.0: initial roadmap)
 **Status:** Planning
 
 > This document answers: **"What are we planning to build, and in what
@@ -53,13 +53,13 @@ Goal: Full MVP scope, see MVP_SCOPE.md §1.
   (`DATABASE.md`)
 - Active battle state in Redis (`REDIS_STATE.md`)
 
-## Phase 3 — Discord Activity Integration & Polish
+## Phase 3 — Standalone Web Polish & Meta Progression
 ```text
-Goal: Shippable inside Discord.
+Goal: Shippable standalone web application.
 ```
-- Discord Activity SDK integration on the client
+- Standalone web client integration & authentication polish (ADR-020)
 - Reconnect / resync behavior (`SIGNALR_PROTOCOL.md`)
-- Meta progression UI (Pet Collection, Card Collection, Relic Collection)
+- Meta progression UI / Collection Viewer (Pet Collection, Card Collection, Relic Collection)
 - Balance pass on all configurable values
 
 ---

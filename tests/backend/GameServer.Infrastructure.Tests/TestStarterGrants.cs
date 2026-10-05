@@ -123,6 +123,11 @@ internal static class TestStarterGrants
         Postgres.GameDbContext context,
         string playerId)
     {
+        var accountId = await context.Players
+            .Where(p => p.PlayerId == playerId)
+            .Select(p => (Guid?)p.AccountId)
+            .FirstOrDefaultAsync();
+
         await context.Pets
             .Where(pet => pet.PlayerId == playerId)
             .ExecuteDeleteAsync();
@@ -138,5 +143,12 @@ internal static class TestStarterGrants
         await context.Players
             .Where(player => player.PlayerId == playerId)
             .ExecuteDeleteAsync();
+
+        if (accountId is not null)
+        {
+            await context.Accounts
+                .Where(account => account.AccountId == accountId.Value)
+                .ExecuteDeleteAsync();
+        }
     }
 }

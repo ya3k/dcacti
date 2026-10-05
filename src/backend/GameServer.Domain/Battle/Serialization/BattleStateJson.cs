@@ -38,6 +38,7 @@ internal static class BattleStateJsonNames
     public const string PetState = "petState";
     public const string BossState = "bossState";
     public const string LastCommittedSwapPair = "lastCommittedSwapPair";
+    public const string CardCastsUsedThisTurn = "cardCastsUsedThisTurn";
 
     // RngState pair (GAME_STATE.md §2.6.2 item 1 — the two components stay together).
     public const string RngStateValue = "state";
@@ -251,6 +252,23 @@ internal sealed record BattleStateJson
     [JsonPropertyName(BattleStateJsonNames.LastCommittedSwapPair)]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public CommittedSwapPairJson? LastCommittedSwapPair { get; init; }
+
+    /// <summary>
+    /// How many Card casts have been successfully resolved during the current
+    /// committed Match-3 Turn (<c>CARD_RULES.md</c> §3 item 6, <c>ADR-021</c>).
+    ///
+    /// Like <see cref="Combo"/>, it is written even at <c>0</c>: zero is a real
+    /// value — the Turn's allowance is unspent — not an absence. It is written as
+    /// an ordinary root member with a default of <c>0</c>, so a record produced
+    /// before this member existed still reads as an unspent allowance rather than
+    /// failing to deserialize. That default is not a silent invention of
+    /// gameplay state: <c>0</c> is the documented initial value
+    /// (<see cref="Battle.BattleState.InitialCardCastsUsedThisTurn"/>), and the
+    /// alternative — rejecting a battle record mid-flight — would end a battle
+    /// the rule does not end.
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.CardCastsUsedThisTurn)]
+    public int CardCastsUsedThisTurn { get; init; }
 }
 
 /// <summary>

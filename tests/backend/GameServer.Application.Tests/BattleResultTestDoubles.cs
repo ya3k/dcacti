@@ -266,7 +266,7 @@ internal sealed class InMemoryPlayerRepository : IPlayerRepository
         var player = new Player
         {
             PlayerId = playerId,
-            DiscordUserId = $"discord-{playerId}",
+            AccountId = Guid.NewGuid(),
             XP = xp,
             Level = level ?? Player.LevelForXp(xp),
             CreatedAt = DateTimeOffset.UtcNow,
@@ -281,30 +281,15 @@ internal sealed class InMemoryPlayerRepository : IPlayerRepository
     public Player? Find(string playerId) =>
         _players.TryGetValue(playerId, out var player) ? player : null;
 
-    /// <inheritdoc />
-    /// <remarks>
-    /// The starter grant is accepted and deliberately <b>not</b> modelled: this
-    /// double exists for the battle-reward path, which reads and writes one
-    /// Player progression row and observes no ownership. Modelling the seven
-    /// starter rows here would add state no test of this double's purpose could
-    /// assert — the atomic starter bootstrap is verified against real
-    /// persistence in the Infrastructure suite
-    /// (<c>PlayerStarterOwnershipTests</c>, <c>PlayerStarterOwnershipPostgresTests</c>).
-    ///
-    /// The composition callback is invoked exactly where the real boundary
-    /// invokes it — on the creation branch — so a test that asserts the starter
-    /// set is composed only for a new Player observes the same behavior here as
-    /// in the production path.
-    /// </remarks>
-    public async Task<Player> GetOrCreateByDiscordUserIdAsync(
-        string discordUserId,
+    public async Task<Player> GetOrCreateForAccountAsync(
+        Guid accountId,
         Func<CancellationToken, Task<PlayerStarterGrant>> composeStarterGrant,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(composeStarterGrant);
 
         var existing = _players.Values
-            .FirstOrDefault(player => player.DiscordUserId == discordUserId);
+            .FirstOrDefault(player => player.AccountId == accountId);
 
         if (existing is not null)
         {
@@ -316,7 +301,7 @@ internal sealed class InMemoryPlayerRepository : IPlayerRepository
         var created = new Player
         {
             PlayerId = $"player_{Guid.NewGuid():N}",
-            DiscordUserId = discordUserId,
+            AccountId = accountId,
             XP = Player.InitialXp,
             Level = Player.InitialLevel,
             CreatedAt = DateTimeOffset.UtcNow,
@@ -325,6 +310,14 @@ internal sealed class InMemoryPlayerRepository : IPlayerRepository
         _players[created.PlayerId] = created;
 
         return created;
+    }
+
+    public Task<Player?> GetByAccountIdAsync(
+        Guid accountId,
+        CancellationToken cancellationToken = default)
+    {
+        var player = _players.Values.FirstOrDefault(p => p.AccountId == accountId);
+        return Task.FromResult(player);
     }
 
     /// <inheritdoc />

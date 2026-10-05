@@ -203,12 +203,22 @@ public class PlayerXpSchemaTests : IAsyncLifetime
 
         var playerId = $"player_xp_schema_{Guid.NewGuid():N}";
 
+        var accountId = Guid.NewGuid();
+
         await using (var context = new GameDbContext(options))
         {
+            context.Accounts.Add(new Domain.Accounts.Account
+            {
+                AccountId = accountId,
+                Username = $"u_{accountId:N}"[..20],
+                PasswordHash = "hash",
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+
             context.Players.Add(new Player
             {
                 PlayerId = playerId,
-                DiscordUserId = $"9{Random.Shared.NextInt64(1_000_000_000_000_000L):D16}",
+                AccountId = accountId,
                 XP = 12_345,
                 Level = Player.LevelForXp(12_345),
                 CreatedAt = DateTimeOffset.UtcNow,
@@ -237,8 +247,17 @@ public class PlayerXpSchemaTests : IAsyncLifetime
             if (entity is not null)
             {
                 cleanup.Players.Remove(entity);
-                await cleanup.SaveChangesAsync();
             }
+
+            var acc = await cleanup.Accounts
+                .SingleOrDefaultAsync(a => a.AccountId == accountId);
+
+            if (acc is not null)
+            {
+                cleanup.Accounts.Remove(acc);
+            }
+
+            await cleanup.SaveChangesAsync();
         }
     }
 }

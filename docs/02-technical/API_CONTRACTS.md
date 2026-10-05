@@ -116,11 +116,10 @@ is battle-scoped for the active Pet)
 > does not redefine game rules; it references the owning domain document for
 > validation logic.
 
-All endpoints (except `/api/auth/discord`) require an authenticated
-session established via Discord Activity authentication (`ADR-007`). The
-identity exchange that `POST /api/auth/discord` performs is specified in §2
-(mechanics decided in `ADR-013`); the application session mechanism itself
-is specified in §2.8 (a self-contained signed JWT, decided in `ADR-015`).
+All endpoints (except `/api/auth/register` and `/api/auth/login`) require an authenticated
+session established via web account authentication (`ADR-020`). The
+application session mechanism itself is specified in §2.3 (a self-contained
+signed JWT, decided in `ADR-015`).
 
 ---
 
@@ -129,10 +128,10 @@ is specified in §2.8 (a self-contained signed JWT, decided in `ADR-015`).
 ```text
 Method  Path                          Purpose
 ------  ----------------------------  ------------------------------------
-POST    /api/auth/discord             Exchange Discord OAuth code for the
-                                        Discord identity, match/create the
-                                        Player, and establish an application
-                                        session (§2, ADR-013)
+POST    /api/auth/register            Register a new user account, create Player,
+                                        and establish an application session (§2.1, ADR-020)
+POST    /api/auth/login               Authenticate with username/password, and
+                                        establish an application session (§2.2, ADR-020)
 GET     /api/pets                      List the player's owned Pets
 GET     /api/pets/{petId}               Get one Pet's detail (§5)
 GET     /api/cards                       List the player's owned Cards
@@ -158,236 +157,88 @@ the complete REST surface of a battle.
 
 ---
 
-# 2. POST /api/auth/discord (Authentication Boundary)
+# 2. Authentication Endpoints: POST /api/auth/register & POST /api/auth/login (ADR-020)
 
 Architectural boundary for establishing an authenticated application session
-from a Discord Activity client, and for resolving the caller's Discord identity.
+via standalone web username/password credentials (`ADR-020`).
 
 ```text
-Frontend (Discord SDK)
-         │  (authorization code)
+Frontend (Web Auth Screen)
+         │  (username, password)
          ▼
-POST /api/auth/discord
-         │  (server-side OAuth2 token exchange — Client Secret, never client-side)
+POST /api/auth/register  OR  POST /api/auth/login
+         │  (server-side password hashing / verification)
          ▼
-Discord OAuth2 Token Endpoint
-         │  (access token)
-         ▼
-Discord Identity Endpoint (GET /users/@me)
-         │  (Discord User object)
-         ▼
-DiscordUserId  ──►  Player match/create (DATABASE.md §1)
+Account & Player match/create (DATABASE.md §1)
          │
          ▼
-Application Session (Player authenticated)
+Application Session (Player authenticated with JWT token)
 ```
 
-The exchange mechanics are fixed by `ADR-013`. The protocol facts below are the
-official Discord OAuth2 contract; the repository decisions are the selection of
-that grant, the scope, and the failure mapping.
+## 2.1 POST /api/auth/register
 
-## 2.1 Endpoint
+Registers a new user account, creates the persistent Player record initialized at Level 1, provisions the starter grant (Pet, Cards, Relics per `DATABASE.md` §2 item 1), and issues an authenticated application session token.
 
 ```text
 Method   POST
-Path     /api/auth/discord
-Auth     None — this endpoint establishes the session
+Path     /api/auth/register
+Auth     None — public endpoint
 ```
 
 ```json
 Request:
 {
-  "code": "string (Discord authorization code)"
+  "username": "string (3–32 characters, [a-zA-Z0-9_])",
+  "password": "string (minimum 6 characters)"
 }
 ```
 
-`code` is obtained by the frontend via the Discord Embedded App SDK
-(`DiscordService.ts`, `ADR-007` item 1) and is the only request member.
+Validation rules:
+1. `username` is required, trimmed length between 3 and 32 characters, regex `^[a-zA-Z0-9_]{3,32}$`. Normalized to lowercase.
+2. `password` is required, minimum length 6 characters.
+3. If username is already registered, returns `409 Conflict` with `USERNAME_ALREADY_EXISTS`.
 
-## 2.2 Step 1 — Authorization-code exchange
+Successful response (200 OK):
+```json
+{
+  "sessionToken": "string",
+  "playerId": "string",
+  "username": "string"
+}
+```
 
-The backend exchanges the code for an access token:
+## 2.2 POST /api/auth/login
+
+Authenticates an existing user account using username and password, returning an application session token for the associated Player.
 
 ```text
 Method   POST
-URL      https://discord.com/api/oauth2/token
-Headers  Content-Type: application/x-www-form-urlencoded
-         Authorization: Basic base64(client_id:client_secret)
-Body     grant_type=authorization_code
-         &code=<authorization code>
-         &redirect_uri=<registered redirect URI, url-encoded>
+Path     /api/auth/login
+Auth     None — public endpoint
 ```
 
-1. **Grant type.** `authorization_code`.
-2. **Encoding.** The token endpoint accepts **only**
-   `application/x-www-form-urlencoded`. JSON is not permitted and returns an
-   error — this is a Discord protocol constraint, not a repository choice.
-3. **Credentials.** `client_id` and `client_secret` are supplied via **HTTP
-   Basic** authentication, so the Client Secret never appears in the request
-   body.
-4. **`redirect_uri`.** Must match the URI registered for the application and
-   used during authorization. A mismatch is an upstream rejection (§2.6).
-5. **Scopes are not sent here.** The scope set is determined by the
-   authorization request that produced the code (§2.4).
-
-Successful response:
-
 ```json
+Request:
 {
-  "access_token": "string",
-  "token_type": "Bearer",
-  "expires_in": 604800,
-  "refresh_token": "string",
-  "scope": "identify"
+  "username": "string",
+  "password": "string"
 }
 ```
 
-The response carries **no user identity**. Identity is a separate request
-(§2.3).
+Validation & Verification rules:
+1. `username` and `password` are required non-empty strings.
+2. If account does not exist or password hash does not match, returns `401 Unauthorized` with `INVALID_CREDENTIALS`.
 
-## 2.3 Step 2 — Identity retrieval
-
-Using the access token from §2.2, the backend requests the authenticated user:
-
-```text
-Method   GET
-URL      https://discord.com/api/users/@me
-Headers  Authorization: Bearer <access_token>
-```
-
-Returns the Discord **User object**. The members this contract relies on:
-
+Successful response (200 OK):
 ```json
-{
-  "id": "80351110224678912",
-  "username": "Nelly",
-  "global_name": null,
-  "avatar": "8342729096ea3675442027381ff50dfe"
-}
-```
-
-1. **Required scope:** `identify`. Discord documents `identify` as allowing
-   `/users/@me` *without* `email`. The `email` scope is deliberately **not**
-   requested: identity mapping needs only the user id.
-2. **`DiscordUserId` source field: `id`.** This field — documented as "the
-   user's id" — is what populates `Player.DiscordUserId` (`DATABASE.md` §1).
-3. **`id` is a snowflake, serialized as a string.** Discord returns IDs as
-   strings to avoid integer overflow, so `id` must be handled as an opaque
-   string, never parsed into a numeric type.
-4. **The response is an external contract.** Discord may add fields; unknown
-   additional members must be ignored rather than treated as an error.
-5. **The deprecated `discriminator` is not used for identity.** It is not
-   unique across the platform and is not stable. `id` is the identity.
-
-## 2.4 Identity output — `DiscordUserId`
-
-```text
-DiscordUserId = Discord User object . id      (a snowflake string)
-```
-
-This is the contract's sole output to Player persistence. It is:
-
-- **stable** — the same Discord account yields the same `id` on every
-  successful exchange, so repeated authentication resolves to one Player row;
-- **unique per account** — matching `DATABASE.md` §1's unique constraint;
-- **verified server-side** — it comes from an authenticated `/users/@me` call
-  made with a token the backend obtained using the protected Client Secret.
-
-**`DiscordUserId` is not any of the following, and none of them may be
-substituted for it:**
-
-```text
-DiscordUserId  ≠  the Discord authorization code     (short-lived, single-use)
-DiscordUserId  ≠  the Discord access token           (a credential, not an identity)
-DiscordUserId  ≠  the application session token      (ADR-007 item 4, ADR-015)
-```
-
-## 2.5 Response
-
-```json
-Response 200:
 {
   "sessionToken": "string",
-  "playerId": "string"
+  "playerId": "string",
+  "username": "string"
 }
 ```
 
-The response shape is unchanged. `playerId` is the matched-or-created Player's
-`PlayerId` (`DATABASE.md` §1).
-
-`sessionToken` is the application session defined in §2.8 (`ADR-015`): a
-self-contained signed JWT issued by this endpoint only after §2's identity
-exchange succeeds. §2.5 fixes what the two response members are; §2.8 fixes
-the mechanism (identity claim, propagation, lifetime, failure behavior,
-coverage).
-
-## 2.6 Failure contract
-
-All failures return the §6 error envelope and **never** include upstream Discord
-error detail, the Client Secret, the access token, or the authorization code.
-
-```text
-Condition                              Response   error code
-─────────────────────────────────────  ─────────  ──────────────────────
-Missing/empty `code` in the request    400        INVALID_CODE
-Authorization code missing/undefined   400        INVALID_CODE
-Authorization code invalid             401        DISCORD_AUTH_FAILED
-Authorization code expired             401        DISCORD_AUTH_FAILED
-Authorization code already used        401        DISCORD_AUTH_FAILED
-Authorization code revoked/rejected    401        DISCORD_AUTH_FAILED
-redirect_uri mismatch                  401        DISCORD_AUTH_FAILED
-Discord token exchange transport error 503        DISCORD_UNAVAILABLE
-Discord token endpoint 5xx / 429       503        DISCORD_UNAVAILABLE
-Identity request transport error       503        DISCORD_UNAVAILABLE
-Identity endpoint 5xx / 429            503        DISCORD_UNAVAILABLE
-Malformed / unparseable Discord body   502        DISCORD_BAD_RESPONSE
-Identity response missing/empty `id`   502        DISCORD_BAD_RESPONSE
-Identity response `id` not a string    502        DISCORD_BAD_RESPONSE
-```
-
-Rules:
-
-1. **`INVALID_CODE` (400)** is the existing, already-implemented precondition
-   for a missing code and is retained unchanged.
-2. **`DISCORD_AUTH_FAILED` (401)** covers every case where Discord rejects the
-   authorization code. The client's remedy is to obtain a new code; the
-   specific upstream reason is not disclosed.
-3. **`DISCORD_BAD_RESPONSE` (502)** covers a reachable Discord that returned
-   something this contract cannot use. A missing or empty `id` **must** be
-   treated as a failure, never coerced into an empty `DiscordUserId`.
-4. **`DISCORD_UNAVAILABLE` (503)** covers transport failure and upstream
-   `5xx`/`429` — a transient upstream condition, distinguishable from a rejected
-   code so the client can retry rather than re-authorize.
-5. **No Player is created or matched on any failure path.** A Player row may be
-   written only after §2.4's identity is successfully verified (§2.4, and
-   `ADR-013` item 12).
-6. **Codes are grouped, not enumerated per upstream error.** Distinct upstream
-   causes that are indistinguishable to the client share one code; Discord's
-   numeric JSON error codes are upstream detail and are not part of this
-   contract's surface.
-
-## 2.7 Security requirements
-
-1. **The exchange is server-side.** The authorization code, the Client Secret,
-   and the resulting access token never reach the frontend (`ADR-007` items
-   2–3).
-2. **The Client Secret is backend-only configuration.** It is never sent to the
-   frontend, never returned in any response, and never committed (`ADR-007`
-   item 3).
-3. **Neither the code nor the access token becomes the player identity.** Only
-   §2.4's verified `DiscordUserId` is (see the inequality list in §2.4).
-4. **The access token is not the application session.** It is used solely for
-   the §2.3 identity request within this request and is not issued to the
-   client.
-5. **Secrets and tokens are never logged.** The Client Secret, access token,
-   refresh token, and authorization code must not appear in logs, error
-   messages, or telemetry.
-6. **The identity response is validated before any Player write.** A response
-   that fails §2.6's `DISCORD_BAD_RESPONSE` conditions produces no Player row.
-7. **Scope is minimal.** Only `identify` is requested.
-8. **The frontend never performs any part of §2.2 or §2.3** (`ADR-007` item 1).
-
-## 2.8 Application Session Mechanism (`ADR-015`)
+## 2.3 Application Session Mechanism (`ADR-015`)
 
 The application session issued by §2.5 is a **self-contained signed JWT**
 (`ADR-015`). This subsection is the authoritative wire/behavior contract for
@@ -434,9 +285,9 @@ No application-session cookie. A Discord access token is never accepted as a
 
 **Coverage**
 
-§1's global rule applies unchanged: every endpoint except
-`POST /api/auth/discord` requires an authenticated session;
-`/api/auth/discord` stays the unauthenticated exchange endpoint (§2.1).
+§1's global rule applies: every endpoint except
+`POST /api/auth/register` and `POST /api/auth/login` requires an authenticated session;
+those two remain the unauthenticated endpoints (§2.1, §2.2).
 `BattleHub` requires the same session (`SIGNALR_PROTOCOL.md` §1).
 
 **Failure behavior**
@@ -653,8 +504,8 @@ state is only available via the SignalR connection, not this endpoint.
    derivation (source, terminal-Turn rule, and edge values).
 6. **Authentication is required, and the unauthenticated response is
    explicit.** (TASK-051) This endpoint is subject to §1's global rule that
-   all endpoints except `/api/auth/discord` require an authenticated session
-   (ADR-007 item 4). A caller that presents no authenticated session receives
+   all endpoints except `/api/auth/register` and `/api/auth/login` require an authenticated session
+   (ADR-020). A caller that presents no authenticated session receives
    `401` with the §6 envelope and the error code `UNAUTHENTICATED` — **not**
    `404 BATTLE_NOT_FOUND`. `BATTLE_NOT_FOUND` describes only the case of an
    authenticated caller asking for a battle result that does not exist or is
@@ -768,8 +619,8 @@ Response 401: { "error": "UNAUTHENTICATED" }
 
 7. **Authentication is required, and the unauthenticated response is
    explicit.** This endpoint is subject to §1's global rule that all endpoints
-   except `/api/auth/discord` require an authenticated session (`ADR-007`
-   item 4, `ADR-015`). A caller presenting no authenticated session receives
+   except `/api/auth/register` and `/api/auth/login` require an authenticated session (`ADR-020`,
+   `ADR-015`). A caller presenting no authenticated session receives
    `401` with the §6 envelope and the error code `UNAUTHENTICATED` — exactly as
    §4 note 6 establishes, and never a `404`. The §2.8 failure contract applies
    unchanged: a missing, invalid/tampered, or expired session all resolve to

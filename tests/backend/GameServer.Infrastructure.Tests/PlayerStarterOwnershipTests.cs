@@ -44,6 +44,9 @@ public class PlayerStarterOwnershipTests
 
     private static PlayerRepository CreateRepository(GameDbContext context) => new(context);
 
+    private static Guid ToAccountId(string id) =>
+        new(System.Security.Cryptography.MD5.HashData(System.Text.Encoding.UTF8.GetBytes(id)));
+
     // -----------------------------------------------------------------------
     // A. First creation
     // -----------------------------------------------------------------------
@@ -232,7 +235,7 @@ public class PlayerStarterOwnershipTests
         context.Players.Add(new Player
         {
             PlayerId = "player_legacy_without_ownership",
-            DiscordUserId = discordUserId,
+            AccountId = ToAccountId(discordUserId),
             Level = Player.InitialLevel,
             CreatedAt = DateTimeOffset.UtcNow,
         });
@@ -356,7 +359,7 @@ public class PlayerStarterOwnershipTests
         var winner = new Player
         {
             PlayerId = "player_winner",
-            DiscordUserId = discordUserId,
+            AccountId = ToAccountId(discordUserId),
             Level = Player.InitialLevel,
             CreatedAt = DateTimeOffset.UtcNow,
         };
@@ -398,7 +401,7 @@ public class PlayerStarterOwnershipTests
         context.Players.Add(new Player
         {
             PlayerId = "player_winner",
-            DiscordUserId = discordUserId,
+            AccountId = ToAccountId(discordUserId),
             Level = Player.InitialLevel,
             CreatedAt = DateTimeOffset.UtcNow,
         });

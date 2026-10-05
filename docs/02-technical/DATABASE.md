@@ -306,9 +306,16 @@ combat-stat columns on Player; equip is battle-scoped)
 # 1. Entities
 
 ```text
+Account                          (web user account; ADR-020)
+├── AccountId (PK)                (UUID, primary key)
+├── Username                     (varchar(32), NOT NULL, UNIQUE, case-insensitive,
+│                                 alphanumeric + underscore, 3–32 chars)
+├── PasswordHash                 (varchar, NOT NULL — PBKDF2 hash with salt)
+└── CreatedAt                    (timestamp with time zone, NOT NULL)
+
 Player
 ├── PlayerId (PK)
-├── DiscordUserId (unique)
+├── AccountId (FK → Account, unique, NOT NULL; ADR-020)
 ├── XP                              (int, NOT NULL, default 0 — persisted
 │                                    account progression; UNCAPPED, keeps
 │                                    accumulating after Level 50;
@@ -1125,7 +1132,7 @@ D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
      define.
    - **The Player entity gains no column and no state member.** `Player`
      gains nothing from this item: its documented columns are the ones in
-     the entity block above (`PlayerId`, `DiscordUserId`, `XP`, `Level`,
+     the entity block above (`PlayerId`, `AccountId`, `XP`, `Level`,
      `CreatedAt`), unchanged by TASK-056 (`ADR-011`, `ADR-012`,
      `ADR-016`); `BattleState` gains no lifecycle or readiness
      member (`GAME_STATE.md` §2.0.3).
@@ -1340,8 +1347,8 @@ without altering the underlying collection ownership model (`DATABASE.md` §1–
 - **Commit-scope surface:** Because existing repository methods (`PlayerRepository`,
   `PetRepository`, etc.) each commit independently, TASK-083 must expose exactly
   one combined commit-scope surface on the existing boundary.
-- **Concurrency race-safety:** On concurrent first-login for the same Discord
-  identity, the `DiscordUserId` UNIQUE constraint rolls back the losing batch.
+- **Concurrency race-safety:** On concurrent registration for the same username,
+  the `Username` UNIQUE constraint on `Accounts` rolls back the losing batch.
   The error-handling catch (`PlayerRepository.cs:69-85`) must discard/detach the
   **entire staged batch** (Player + 7 ownership entities), not only the `Player`
   entity, ensuring no orphaned ownership entities remain tracked. TASK-083 must

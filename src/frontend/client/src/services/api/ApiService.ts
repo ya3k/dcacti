@@ -1,5 +1,9 @@
 import { ApplicationSession } from './ApplicationSession';
-import type { DiscordAuthResponse } from './ApplicationSession';
+import type {
+  AuthResponse,
+  LoginRequest,
+  RegisterRequest,
+} from './ApplicationSession';
 import type { CardResponse, PetResponse, RelicResponse } from './CollectionModels';
 import type { BattleResultResponse, BattleStartRequest, BattleStartResponse } from './BattleModels';
 
@@ -29,13 +33,7 @@ export type {
   RewardSummaryResponse,
 } from './BattleModels';
 
-/**
- * The `POST /api/auth/discord` response (API_CONTRACTS.md §2.5).
- *
- * Re-exported from {@link ApplicationSession} so the wire shape has one
- * definition — the session holder is what consumes it.
- */
-export type { DiscordAuthResponse };
+export type { AuthResponse, LoginRequest, RegisterRequest };
 
 export class ApiService {
   private static instance: ApiService | null = null;
@@ -64,31 +62,48 @@ export class ApiService {
   }
 
   /**
-   * Establishes the application session from a Discord authorization code
-   * (API_CONTRACTS.md §2).
-   *
-   * This is the one endpoint that does not require an authenticated session
-   * (§2.1, §2.8 "Coverage"), so it deliberately sends no `Authorization` header
-   * even when a session already exists. On success the returned session is
-   * recorded, which is what makes every later request authenticated.
+   * Registers a new account and establishes the application session (ADR-020).
    */
-  public async authenticateDiscord(code: string): Promise<DiscordAuthResponse> {
-    const response = await fetch(`${this.baseUrl}/api/auth/discord`, {
+  public async register(request: RegisterRequest): Promise<AuthResponse> {
+    const response = await fetch(`${this.baseUrl}/api/auth/register`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ code }),
+      body: JSON.stringify(request),
     });
 
     if (!response.ok) {
-      throw new Error(`Authentication failed with status ${response.status}`);
+      const err = await response.json().catch(() => null);
+      const code = err?.error || `HTTP ${response.status}`;
+      throw new Error(code);
     }
 
-    const body = (await response.json()) as DiscordAuthResponse;
-
+    const body = (await response.json()) as AuthResponse;
     ApplicationSession.getInstance().establish(body);
+    return body;
+  }
 
+  /**
+   * Logs into an existing account and establishes the application session (ADR-020).
+   */
+  public async login(request: LoginRequest): Promise<AuthResponse> {
+    const response = await fetch(`${this.baseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(request),
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => null);
+      const code = err?.error || `HTTP ${response.status}`;
+      throw new Error(code);
+    }
+
+    const body = (await response.json()) as AuthResponse;
+    ApplicationSession.getInstance().establish(body);
     return body;
   }
 
@@ -97,7 +112,7 @@ export class ApiService {
    * `Authorization: Bearer <sessionToken>` (API_CONTRACTS.md §2.8 "Transport";
    * ADR-015 D4).
    *
-   * Every REST endpoint except `POST /api/auth/discord` requires that session,
+   * Every REST endpoint except `/api/auth/*` requires that session,
    * and an unauthenticated response is `401 { "error": "UNAUTHENTICATED" }`
    * (§2.8 "Failure behavior").
    */

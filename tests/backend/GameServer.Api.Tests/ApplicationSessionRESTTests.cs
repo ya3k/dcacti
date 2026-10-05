@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using GameServer.Api.Controllers;
 using GameServer.Application.Battle;
 using GameServer.Application.Identity;
 using GameServer.Domain.Battle;
@@ -48,80 +49,56 @@ namespace GameServer.Api.Tests;
 public class ApplicationSessionRESTTests
 {
     // -----------------------------------------------------------------------
-    // §2.5 — issuance happens only through the documented endpoint
+    // §2.2 — issuance happens through the documented web auth endpoint
     // -----------------------------------------------------------------------
 
     [Fact]
-    public async Task AuthDiscord_ShouldIssueTheDocumentedJwt_ForTheMatchedPlayer()
+    public async Task AuthLogin_ShouldIssueTheDocumentedJwt_ForTheMatchedPlayer()
     {
-        // API_CONTRACTS.md §2.5 / §2.8: the exchange succeeds, so the response
-        // carries the matched Player's id and a self-contained signed JWT whose
-        // player_id claim is that same id (ADR-015 D1/D3).
         using var factory = new SessionFactory();
         var client = factory.CreateClient();
 
         var response = await client.PostAsJsonAsync(
-            "/api/auth/discord",
-            new { code = "authorization-code" });
+            "/api/auth/login",
+            new LoginRequest("session_user", "password123"));
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
-        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        var sessionToken = body.GetProperty("sessionToken").GetString();
-        var playerId = body.GetProperty("playerId").GetString();
+        var body = await response.Content.ReadFromJsonAsync<AuthResponse>();
+        var sessionToken = body!.SessionToken;
+        var playerId = body.PlayerId;
 
         Assert.True(JwtTokenShape.IsThreePartJwt(sessionToken));
 
-        // D3: the token's identity is the PlayerId the exchange resolved — not the
-        // Discord identity, and not a client value.
-        var payload = TestApplicationSession.ReadPayload(sessionToken!);
+        var payload = TestApplicationSession.ReadPayload(sessionToken);
         Assert.Equal(playerId, payload["player_id"]);
-
-        // The Discord identity is NOT the authenticated application identity: the
-        // claim the session carries is the Player's, which is a different value.
-        Assert.NotEqual(SessionFactory.DiscordUserId, payload["player_id"]);
     }
 
     [Fact]
-    public async Task AuthDiscord_ShouldCarryTheDocumentedClaimsAndLifetime()
+    public async Task AuthLogin_ShouldCarryTheDocumentedClaimsAndLifetime()
     {
-        // ADR-015 D3 (player_id), D5 (24h absolute), D9 (aud = dcacti-backend),
-        // D8 (no iss), D11 (kid).
         using var factory = new SessionFactory();
         var client = factory.CreateClient();
 
         var body = await (await client.PostAsJsonAsync(
-            "/api/auth/discord",
-            new { code = "authorization-code" })).Content.ReadFromJsonAsync<JsonElement>();
+            "/api/auth/login",
+            new LoginRequest("session_user", "password123"))).Content.ReadFromJsonAsync<AuthResponse>();
 
-        var sessionToken = body.GetProperty("sessionToken").GetString()!;
+        var sessionToken = body!.SessionToken;
         var header = TestApplicationSession.ReadHeader(sessionToken);
         var payload = TestApplicationSession.ReadPayload(sessionToken);
 
-        // D7: the algorithm is exactly HS256.
         Assert.Equal("HS256", header["alg"]);
-
-        // D11: every token carries a kid header, naming the key it was signed with.
         Assert.Equal(TestApplicationSession.CurrentKeyId, header["kid"]);
-
-        // D9: aud = "dcacti-backend", the one value both consumers share.
         Assert.Equal("dcacti-backend", payload["aud"]);
-
-        // D8: no iss claim at all — not an empty one, absent.
         Assert.False(payload.ContainsKey("iss"));
-
-        // D3: the identity claim, and it is the only identity claim.
         Assert.True(payload.ContainsKey("player_id"));
-        Assert.False(payload.ContainsKey("discordUserId"));
-        Assert.False(payload.ContainsKey("DiscordUserId"));
 
-        // D5: 24 hours absolute.
         var issuedAt = payload.Iat is null
             ? payload.ValidFrom
             : DateTimeOffset.FromUnixTimeSeconds(payload.Iat.Value);
 
         var lifetime = payload.ValidTo - issuedAt;
-
         Assert.Equal(TimeSpan.FromHours(24), lifetime);
     }
 
@@ -418,48 +395,39 @@ public class ApplicationSessionRESTTests
     // -----------------------------------------------------------------------
 
     [Fact]
-    public async Task TheIdentityExchangeEndpoint_ShouldRemainTheOnlyUnauthenticatedEndpoint()
+    public async Task TheAuthEndpoints_ShouldRemainUnauthenticatedEndpoints()
     {
-        // §1 / §2.1 / §2.8 "Coverage": every endpoint except POST /api/auth/discord
-        // requires an authenticated session. The exchange is reached without one,
-        // which is what makes it the exception — and its own failure contract
-        // (here: an unverified code) is unchanged by the session work.
+        // §1 / §2.1 / §2.8 "Coverage": auth endpoints require no prior authenticated session.
+        // Reaching them without a session evaluates their own logic rather than being
+        // challenged by the JWT authorization filter with UNAUTHENTICATED.
         using var factory = new SessionFactory();
         var client = factory.CreateClient();
 
         var response = await client.PostAsJsonAsync(
-            "/api/auth/discord",
-            new { code = "rejected-code" });
+            "/api/auth/login",
+            new LoginRequest("non_existent_user", "password123"));
 
-        // It was reached (not challenged with 401 UNAUTHENTICATED by the pipeline);
-        // the status comes from the exchange's own §2.6 mapping.
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
 
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
 
-        // §2.6 rule 2: a rejected code maps to DISCORD_AUTH_FAILED — NOT to the
-        // session contract's UNAUTHENTICATED, which would mean the pipeline had
-        // challenged the endpoint.
-        Assert.Equal("DISCORD_AUTH_FAILED", body.GetProperty("error").GetString());
+        Assert.Equal("INVALID_CREDENTIALS", body.GetProperty("error").GetString());
     }
 
     [Fact]
-    public async Task AuthDiscord_WithAMissingCode_ShouldStillReturnInvalidCode()
+    public async Task AuthLogin_WithMissingInput_ShouldReturnBadRequest()
     {
-        // §2.6 rule 1: INVALID_CODE (400) is the existing precondition for a
-        // missing code and is retained unchanged — the session work does not alter
-        // the exchange's failure contract.
         using var factory = new SessionFactory();
         var client = factory.CreateClient();
 
         var response = await client.PostAsJsonAsync(
-            "/api/auth/discord",
-            new { code = "" });
+            "/api/auth/login",
+            new LoginRequest("", ""));
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
 
         var body = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Equal("INVALID_CODE", body.GetProperty("error").GetString());
+        Assert.Equal("INVALID_INPUT", body.GetProperty("error").GetString());
     }
 
     // -----------------------------------------------------------------------
@@ -653,10 +621,19 @@ public class ApplicationSessionRESTTests
             using var scope = Services.CreateScope();
             var context = scope.ServiceProvider.GetRequiredService<GameDbContext>();
 
+            var accountId = Guid.NewGuid();
+            context.Accounts.Add(new Domain.Accounts.Account
+            {
+                AccountId = accountId,
+                Username = "session_user",
+                PasswordHash = new GameServer.Infrastructure.Accounts.Pbkdf2PasswordHasher().HashPassword("password123"),
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+
             context.Players.Add(new Player
             {
                 PlayerId = OwnerPlayerId,
-                DiscordUserId = DiscordUserId,
+                AccountId = accountId,
                 Level = Player.InitialLevel,
                 CreatedAt = DateTimeOffset.UtcNow,
             });

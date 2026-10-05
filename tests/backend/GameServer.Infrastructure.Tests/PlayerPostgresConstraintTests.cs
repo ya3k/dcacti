@@ -69,27 +69,59 @@ public class PlayerPostgresConstraintTests : IAsyncLifetime
         return new GameDbContext(options);
     }
 
-    private static string NewDiscordUserId() => $"9{Random.Shared.NextInt64(1_000_000_000_000_000L):D16}";
+    private static Guid NewAccountId() => Guid.NewGuid();
+
+    private static async Task<Domain.Accounts.Account> SeedAccountAsync(GameDbContext context, Guid? accountId = null)
+    {
+        var id = accountId ?? NewAccountId();
+        var account = new Domain.Accounts.Account
+        {
+            AccountId = id,
+            Username = $"u_{id:N}"[..20],
+            PasswordHash = "hash",
+            CreatedAt = DateTimeOffset.UtcNow,
+        };
+        context.Accounts.Add(account);
+        await context.SaveChangesAsync();
+        return account;
+    }
+
+    private static async Task CleanupPlayerAndAccountAsync(GameDbContext cleanup, string playerId, Guid accountId)
+    {
+        var player = await cleanup.Players.SingleOrDefaultAsync(p => p.PlayerId == playerId);
+        if (player is not null)
+        {
+            cleanup.Players.Remove(player);
+        }
+        var account = await cleanup.Accounts.SingleOrDefaultAsync(a => a.AccountId == accountId);
+        if (account is not null)
+        {
+            cleanup.Accounts.Remove(account);
+        }
+        await cleanup.SaveChangesAsync();
+    }
 
     [Fact]
-    public async Task Postgres_ShouldRejectASecondPlayerWithTheSameDiscordUserId()
+    public async Task Postgres_ShouldRejectASecondPlayerWithTheSameAccountId()
     {
         if (!_available) return; // no live PostgreSQL — covered by the model assertion
 
         await using var context = CreateContext();
         var repository = new PlayerRepository(context);
 
-        var discordUserId = NewDiscordUserId();
-        var created = await repository.GetOrCreateByDiscordUserIdAsync(discordUserId, TestStarterGrants.ResolvedCallback(context));
+        var accountId = NewAccountId();
+        var created = await repository.GetOrCreateForAccountAsync(accountId, TestStarterGrants.ResolvedCallback(context));
 
         try
         {
+            context.ChangeTracker.Clear();
+
             // A direct second insert of the same identity must be rejected by
             // the unique constraint (DATABASE.md §1/§3).
             context.Players.Add(new Player
             {
                 PlayerId = $"player_dup_{Guid.NewGuid():N}",
-                DiscordUserId = discordUserId,
+                AccountId = accountId,
                 Level = Player.InitialLevel,
                 CreatedAt = DateTimeOffset.UtcNow,
             });
@@ -113,10 +145,11 @@ public class PlayerPostgresConstraintTests : IAsyncLifetime
 
         await using var context = CreateContext();
 
+        var account = await SeedAccountAsync(context);
         var player = new Player
         {
             PlayerId = $"player_range_{Guid.NewGuid():N}",
-            DiscordUserId = NewDiscordUserId(),
+            AccountId = account.AccountId,
             Level = Player.MaxLevel,
             CreatedAt = DateTimeOffset.UtcNow,
         };
@@ -142,12 +175,7 @@ public class PlayerPostgresConstraintTests : IAsyncLifetime
         finally
         {
             await using var cleanup = CreateContext();
-            var entity = await cleanup.Players.SingleOrDefaultAsync(p => p.PlayerId == player.PlayerId);
-            if (entity is not null)
-            {
-                cleanup.Players.Remove(entity);
-                await cleanup.SaveChangesAsync();
-            }
+            await CleanupPlayerAndAccountAsync(cleanup, player.PlayerId, player.AccountId);
         }
     }
 
@@ -159,8 +187,8 @@ public class PlayerPostgresConstraintTests : IAsyncLifetime
         await using var context = CreateContext();
         var repository = new PlayerRepository(context);
 
-        var discordUserId = NewDiscordUserId();
-        var created = await repository.GetOrCreateByDiscordUserIdAsync(discordUserId, TestStarterGrants.ResolvedCallback(context));
+        var accountId = NewAccountId();
+        var created = await repository.GetOrCreateForAccountAsync(accountId, TestStarterGrants.ResolvedCallback(context));
 
         try
         {
@@ -170,7 +198,7 @@ public class PlayerPostgresConstraintTests : IAsyncLifetime
             Assert.Equal(1, created.Level);
 
             var stored = await context.Players.AsNoTracking()
-                .SingleAsync(p => p.DiscordUserId == discordUserId);
+                .SingleAsync(p => p.AccountId == accountId);
 
             Assert.Equal(0, stored.XP);
             Assert.Equal(1, stored.Level);
@@ -189,10 +217,11 @@ public class PlayerPostgresConstraintTests : IAsyncLifetime
 
         await using var context = CreateContext();
 
+        var account = await SeedAccountAsync(context);
         var player = new Player
         {
             PlayerId = $"player_xp_{Guid.NewGuid():N}",
-            DiscordUserId = NewDiscordUserId(),
+            AccountId = account.AccountId,
             // Past the Level-50 boundary: COMBAT_RULES.md §7.5 item 1 keeps the
             // XP uncapped, so the applied schema must store it verbatim.
             XP = 12_345,
@@ -219,12 +248,7 @@ public class PlayerPostgresConstraintTests : IAsyncLifetime
         finally
         {
             await using var cleanup = CreateContext();
-            var entity = await cleanup.Players.SingleOrDefaultAsync(p => p.PlayerId == player.PlayerId);
-            if (entity is not null)
-            {
-                cleanup.Players.Remove(entity);
-                await cleanup.SaveChangesAsync();
-            }
+            await CleanupPlayerAndAccountAsync(cleanup, player.PlayerId, player.AccountId);
         }
     }
 
@@ -235,10 +259,11 @@ public class PlayerPostgresConstraintTests : IAsyncLifetime
 
         await using var context = CreateContext();
 
+        var account = await SeedAccountAsync(context);
         var player = new Player
         {
             PlayerId = $"player_xp_neg_{Guid.NewGuid():N}",
-            DiscordUserId = NewDiscordUserId(),
+            AccountId = account.AccountId,
             XP = 0,
             Level = Player.InitialLevel,
             CreatedAt = DateTimeOffset.UtcNow,
@@ -258,12 +283,7 @@ public class PlayerPostgresConstraintTests : IAsyncLifetime
         finally
         {
             await using var cleanup = CreateContext();
-            var entity = await cleanup.Players.SingleOrDefaultAsync(p => p.PlayerId == player.PlayerId);
-            if (entity is not null)
-            {
-                cleanup.Players.Remove(entity);
-                await cleanup.SaveChangesAsync();
-            }
+            await CleanupPlayerAndAccountAsync(cleanup, player.PlayerId, player.AccountId);
         }
     }
 }

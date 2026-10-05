@@ -44,13 +44,14 @@ function walk(dir: string): string[] {
 describe('Frontend architectural boundaries', () => {
   describe('Phaser is not coupled to SignalR or to any other transport', () => {
     // TASK-078: `LobbyScene` is a scene like any other and is covered by the same
-    // rules. The list is the registered scene set (GameConfig.ts), so a new
-    // scene is covered as soon as it exists.
+    // rules. TASK-190: so is `CollectionViewerScene`. The list is the registered
+    // scene set (GameConfig.ts), so a new scene is covered as soon as it exists.
     const sceneFiles = [
       'BootScene.ts',
       'PreloaderScene.ts',
       'MainMenuScene.ts',
       'LobbyScene.ts',
+      'CollectionViewerScene.ts',
       'BattleScene.ts',
       'ResultScene.ts',
     ].map((f) => join('game', 'scenes', f));

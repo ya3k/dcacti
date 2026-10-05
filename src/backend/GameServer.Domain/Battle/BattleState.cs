@@ -332,6 +332,27 @@ namespace GameServer.Domain.Battle;
 /// item 3, §2.1.10 item 8). It is not a version and is never used for
 /// concurrency control (§5 item 3, §2.1.10 item 11).
 /// </param>
+/// <param name="CardCastsUsedThisTurn">
+/// How many Card casts have been **successfully** resolved during the current
+/// committed Match-3 Turn (<c>CARD_RULES.md</c> §3 item 6, <c>ADR-021</c>).
+///
+/// <b>It is a cast-count allowance, not a Turn counter.</b> §3 item 5's rule
+/// that a Card cast consumes no Turn is unchanged: this member records how much
+/// of the current Turn's one-cast allowance is spent, and the cast itself
+/// neither increments <see cref="Turn"/> nor resolves the board.
+///
+/// <b>Initial value is 0</b> (<see cref="InitialCardCastsUsedThisTurn"/>) — the
+/// documented "this Turn's allowance is unspent" reading. Zero is a real value
+/// here, not an absence convention: there is no nullable or omitted form.
+///
+/// <b>The reset point is the committed Swap, and only the committed Swap.</b>
+/// It is set back to <c>0</c> in the same single post-resolution write-back that
+/// advances <see cref="Turn"/> (<c>MATCH3_RULES.md</c> §8.1 item 1, §8.3), so the
+/// allowance is restored exactly when the next committed Match-3 Turn begins. A
+/// rejected action never writes it: a rejected Swap begins no Turn
+/// (<c>MATCH3_RULES.md</c> §2.1.5 item 2) and a rejected Card cast spends nothing
+/// (<c>CARD_RULES.md</c> §3 item 3), so neither restores nor consumes it.
+/// </param>
 public sealed record BattleState(
     string BattleId,
     PlayerId PlayerId,
@@ -344,7 +365,8 @@ public sealed record BattleState(
     int MatchCount,
     PetState PetState,
     BossState BossState,
-    CommittedSwapPair? LastCommittedSwapPair = null)
+    CommittedSwapPair? LastCommittedSwapPair = null,
+    int CardCastsUsedThisTurn = BattleState.InitialCardCastsUsedThisTurn)
 {
     /// <summary>
     /// Initial <c>Turn</c> for a battle with no resolved action
@@ -374,6 +396,17 @@ public sealed record BattleState(
     /// <c>GAME_STATE.md</c> §2.1.7 item 5).
     /// </summary>
     public const int InitialCombo = 0;
+
+    /// <summary>
+    /// The initial <c>CardCastsUsedThisTurn</c> for a battle whose current
+    /// committed Match-3 Turn has spent none of its one-cast allowance
+    /// (<c>CARD_RULES.md</c> §3 item 6, <c>ADR-021</c>).
+    ///
+    /// <c>0</c> is a real value — "the allowance is unspent" — not an absence
+    /// convention. It is the value a newly created battle reads, and the value
+    /// every committed Swap restores (<c>MATCH3_RULES.md</c> §8.1 item 1).
+    /// </summary>
+    public const int InitialCardCastsUsedThisTurn = 0;
 
     /// <summary>
     /// Creates the authoritative state for a newly created battle session: the

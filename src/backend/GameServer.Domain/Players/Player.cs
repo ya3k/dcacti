@@ -7,7 +7,7 @@ namespace GameServer.Domain.Players;
 /// <code>
 /// Player
 /// ├── PlayerId        (PK)
-/// ├── DiscordUserId   (unique)
+/// ├── AccountId       (FK → Account, unique; ADR-020)
 /// ├── XP              (int — persistent account progression; uncapped;
 /// │                    COMBAT_RULES.md §7)
 /// ├── Level           (1–50 — the documented function of XP; persistent
@@ -114,24 +114,10 @@ public class Player
     public required string PlayerId { get; init; }
 
     /// <summary>
-    /// The stable Discord identity this Player belongs to
-    /// (<c>DATABASE.md</c> §1: <c>DiscordUserId</c> (unique)).
-    ///
-    /// It is the Discord User object's <c>id</c> field as returned by
-    /// <c>GET https://discord.com/api/users/@me</c> — a snowflake serialized
-    /// by Discord as a string (<c>API_CONTRACTS.md</c> §2.3 item 3, §2.4,
-    /// <c>ADR-013</c> item 6). It is stored and compared as an opaque string
-    /// and is never parsed into a numeric type.
-    ///
-    /// It is <b>not</b> the authorization code, the Discord access token, or
-    /// the application session (<c>API_CONTRACTS.md</c> §2.4), and none of
-    /// those may be substituted for it.
-    ///
-    /// Uniqueness is enforced by the persistence layer
-    /// (<c>DATABASE.md</c> §3), which is the authoritative protection against
-    /// duplicate ownership records for one Discord account.
+    /// The unique Account identity this Player belongs to
+    /// (<c>DATABASE.md</c> §1: <c>AccountId</c> (unique, FK → Account)).
     /// </summary>
-    public required string DiscordUserId { get; init; }
+    public required Guid AccountId { get; init; }
 
     /// <summary>
     /// The Player's persistent account XP — cumulative lifetime progression

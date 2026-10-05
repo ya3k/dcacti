@@ -52,7 +52,7 @@ public class CardPersistenceTests
     private static Domain.Players.Player NewPlayer(string id) => new()
     {
         PlayerId = id,
-        DiscordUserId = $"discord_{id}",
+        AccountId = Guid.NewGuid(),
         Level = 1,
         CreatedAt = DateTimeOffset.UtcNow,
     };
@@ -329,6 +329,7 @@ public class CardPersistenceTests
         Assert.Equal(
             new[]
             {
+                "Account",
                 "BattleResult",
                 "BossDefinition",
                 "CardDefinition",

@@ -28,6 +28,18 @@ public enum CardCastRejectionReason
     /// (<c>CARD_RULES.md</c> §1, §3).
     /// </summary>
     InvalidCard = 3,
+
+    /// <summary>
+    /// The player has already successfully cast a Card during the current
+    /// committed Match-3 Turn (<c>CARD_RULES.md</c> §3 item 6).
+    ///
+    /// A cast-count constraint, not Turn consumption: this cast is rejected
+    /// because the Turn's one-cast allowance is spent, and the allowance is
+    /// restored when the next committed Match-3 Turn begins. A rejected cast
+    /// never consumes the allowance, so this reason is only produced by a cast
+    /// the Turn would otherwise have accepted.
+    /// </summary>
+    CardCastAlreadyUsedThisTurn = 4,
 }
 
 /// <summary>
@@ -46,6 +58,7 @@ public static class CardCastRejectionCodes
         CardCastRejectionReason.CardNotInLoadout => "CARD_NOT_IN_LOADOUT",
         CardCastRejectionReason.InsufficientPower => "INSUFFICIENT_POWER",
         CardCastRejectionReason.InvalidCard => "INVALID_CARD",
+        CardCastRejectionReason.CardCastAlreadyUsedThisTurn => "CARD_CAST_ALREADY_USED_THIS_TURN",
         _ => throw new ArgumentOutOfRangeException(
             nameof(reason),
             reason,

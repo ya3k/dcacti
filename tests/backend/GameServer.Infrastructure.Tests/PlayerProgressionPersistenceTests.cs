@@ -33,12 +33,12 @@ public class PlayerProgressionPersistenceTests
     private static GameDbContext CreateContext(string storeName) =>
         TestGameDbContextFactory.Create(storeName);
 
-    private static Player SeedPlayer(GameDbContext context, string playerId)
+    private static Player SeedPlayer(GameDbContext context, string playerId, Guid? accountId = null)
     {
         var player = new Player
         {
             PlayerId = playerId,
-            DiscordUserId = $"discord-{playerId}",
+            AccountId = accountId ?? Guid.NewGuid(),
             XP = Player.InitialXp,
             Level = Player.InitialLevel,
             CreatedAt = DateTimeOffset.UtcNow,
@@ -129,16 +129,17 @@ public class PlayerProgressionPersistenceTests
     [Fact]
     public async Task SaveProgression_ShouldLeaveIdentityAndCreationValuesUnchanged()
     {
-        // DATABASE.md §1: PlayerId, DiscordUserId, and CreatedAt are creation-time
+        // DATABASE.md §1: PlayerId, AccountId, and CreatedAt are creation-time
         // values. A progression update maintains XP and Level only — it must not
-        // rewrite the row's identity, its Discord link, or its creation instant.
+        // rewrite the row's identity, its Account link, or its creation instant.
         var store = $"progression-identity-{Guid.NewGuid():N}";
 
         DateTimeOffset originalCreatedAt;
+        var originalAccountId = Guid.NewGuid();
 
         await using (var context = CreateContext(store))
         {
-            originalCreatedAt = SeedPlayer(context, "player_identity").CreatedAt;
+            originalCreatedAt = SeedPlayer(context, "player_identity", originalAccountId).CreatedAt;
         }
 
         await using (var context = CreateContext(store))
@@ -156,7 +157,7 @@ public class PlayerProgressionPersistenceTests
                 .SingleAsync(p => p.PlayerId == "player_identity");
 
             Assert.Equal("player_identity", stored.PlayerId);
-            Assert.Equal("discord-player_identity", stored.DiscordUserId);
+            Assert.Equal(originalAccountId, stored.AccountId);
             Assert.Equal(originalCreatedAt, stored.CreatedAt);
             Assert.Equal(100, stored.XP);
         }
@@ -176,7 +177,7 @@ public class PlayerProgressionPersistenceTests
         var unknown = new Player
         {
             PlayerId = "player_does_not_exist",
-            DiscordUserId = "discord-unknown",
+            AccountId = Guid.NewGuid(),
             XP = Player.BattleWonXpReward,
             Level = Player.LevelForXp(Player.BattleWonXpReward),
             CreatedAt = DateTimeOffset.UtcNow,

@@ -26,7 +26,8 @@ Task ID:           TASK-181
 Type:              FEATURE (Infrastructure) — TASK_TYPES.md §2; crosses
                    backend auth configuration + frontend bootstrap, so
                    core/validation.md §2's integration depth applies.
-Status:            BACKLOG
+Status:            SUPERSEDED
+Superseded by:     ADR-020, TASK-187
 Risk:              HIGH (the change adds an authentication path. A mistake
                    is an authorization bypass, not a cosmetic defect. Every
                    acceptance criterion below exists to bound that risk.)
@@ -42,12 +43,16 @@ Skills:            discovery/documentation-discovery,
                    quality/architecture-conformance,
                    quality/scope-validation,
                    testing/test-scenario-generation
-Dependencies:      TASK-180 (audit — source of this work; see "TASK-180
-                   Audit Report Availability"), TASK-036 (BLOCKED —
-                   constrains AC-15/AC-16), TASK-023 (Player
-                   ownership/authentication), TASK-034 (application session
-                   mechanism), TASK-035 (Discord identity exchange
-                   contract — NOT implemented by this task)
+Dependencies:      None
+```
+
+---
+
+## Supersession Notice (2026-10-06)
+
+**Status:** SUPERSEDED by `ADR-020` and `TASK-187`.
+
+All intended deliverables of this task (providing local browser playability without a Discord Activity iframe) have been 100% satisfied and superseded by the official architectural adoption of `ADR-020` (*Standalone Web Account Authentication*) and `TASK-187`. Standalone web registration and login with real PostgreSQL-backed accounts and JWT session tokens is now the primary, permanent platform architecture. The temporary development mock authentication and Discord mock resolvers have been retired cleanly; zero actionable independent scope remains in TASK-181.
 ```
 
 ---

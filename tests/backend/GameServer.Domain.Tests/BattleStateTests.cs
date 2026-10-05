@@ -53,9 +53,10 @@ public class BattleStateTests
         // BoardState — nothing else, plus the Swap stage's LastCommittedSwapPair
         // (§2.1.10), the Match / Combo accounting the root owns (§2.2 — Combo and
         // MatchCount, with no nested PlayerState node), the combat-stat / Pet /
-        // Passive stage's PetState (§2.3), the Boss stage's BossState (§2.4), and
-        // the Battle Identity member PlayerId (§2.8), each added to this same
-        // record by its own owning stage.
+        // Passive stage's PetState (§2.3), the Boss stage's BossState (§2.4), the
+        // Battle Identity member PlayerId (§2.8), and the Card-cast allowance the
+        // Card stage owns (CardCastsUsedThisTurn — CARD_RULES.md §3 item 6,
+        // ADR-021), each added to this same record by its own owning stage.
         var properties = typeof(BattleState)
             .GetProperties()
             .Select(p => p.Name)
@@ -65,9 +66,9 @@ public class BattleStateTests
         Assert.Equal(
             new[]
             {
-                "BattleId", "BoardState", "BossState", "Combo", "LastCommittedSwapPair",
-                "MatchCount", "PetState", "PlayerId", "RngSeed", "RngState",
-                "Sequence", "Turn",
+                "BattleId", "BoardState", "BossState", "CardCastsUsedThisTurn", "Combo",
+                "LastCommittedSwapPair", "MatchCount", "PetState", "PlayerId", "RngSeed",
+                "RngState", "Sequence", "Turn",
             },
             properties);
     }

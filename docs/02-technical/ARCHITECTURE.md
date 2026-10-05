@@ -98,12 +98,10 @@ client/
 │   │       └── ResultScene.ts    # Battle outcome presentation
 │   │
 │   ├── services/                 # Isolated external communication layers
-│   │   ├── discord/              # Discord Embedded App SDK integration
-│   │   │   └── DiscordService.ts # Discord Activity SDK lifecycle, auth initiation
 │   │   ├── realtime/             # SignalR Hub client wrapper & event dispatcher
 │   │   │   └── SignalRService.ts # SignalR connection lifecycle — the only
 │   │   │                         #   SignalR implementation in the client
-│   │   └── api/                  # REST API client
+│   │   └── api/                  # REST API client (auth, collections, battle)
 │   │
 │   ├── state/                    # Client runtime state contract
 │   │   └── GameRuntimeState.ts   # Technical/session state only — no gameplay state
@@ -427,50 +425,33 @@ runtime resize path, which remains the Scale Manager.
 ## 2.3 Discord SDK & Authentication Boundaries
 
 ```text
-Discord Client
-      │
-      ▼
 React + Vite (Frontend)
       │
-      │ Discord Embedded App SDK (services/discord/DiscordService.ts)
-      │
-      │ authorization code / auth data
+      │ User credentials (username, password)
       ▼
-ASP.NET Core Backend (POST /api/auth/discord)
+ASP.NET Core Backend (POST /api/auth/register or POST /api/auth/login; ADR-020)
       │
-      │ server-side Discord OAuth / token exchange (using Client Secret)
-      ▼
-Discord OAuth API
-      │
+      │ server-side password verification / hashing (IPasswordHasher<Account>)
+      │ Account + Player match/create (DATABASE.md §1)
       ▼
 ASP.NET Core Backend
       │
-      │ authenticated application session
+      │ authenticated application session (JWT Bearer Token, ADR-015)
       ▼
 REST API / SignalR Hub (BattleHub)
 ```
 
-1. **SDK Location:** The Discord Embedded App SDK runs strictly on the frontend
-   within `client/src/services/discord/DiscordService.ts`. It never runs on the
-   backend.
-2. **Client Secret Security:**
-   - **Frontend:** May contain the `Discord Client ID`. Must NEVER contain or
-     expose the `Discord Client Secret`.
-   - **Backend:** Manages `Discord Client ID` and `Discord Client Secret`
-     through secure server-side configuration/environment secrets.
+1. **Authentication (ADR-020):** Standalone Web authentication via standard username/password replaces the former Discord Activity OAuth boundary. Discord SDK and Discord Activity dependencies are retired.
+2. **Account & Password Security:**
+   - Password hashes are stored securely in PostgreSQL using PBKDF2 with unique cryptographic salt.
+   - Passwords are never logged, echoed, or stored in plaintext.
 3. **Authentication Boundary:**
-   - Frontend initiates Discord SDK authentication and passes the authorization
-     code to the backend (`POST /api/auth/discord`).
-   - Backend validates credentials, exchanges the code with the Discord OAuth
-     API server-side, identifies/creates the player, and returns an application
-     session token.
+   - Frontend passes credentials to `/api/auth/register` or `/api/auth/login`.
+   - Backend creates or authenticates the Account, links/retrieves the Player, and returns the application session token (`ADR-015`).
 4. **SignalR Authentication:**
-   - SignalR Hub (`BattleHub`) connects using the authenticated application
-     session, never by directly invoking the Discord SDK.
+   - SignalR Hub (`BattleHub`) connects using the authenticated application session token.
 5. **Architectural Isolation:**
-   - Discord platform details remain strictly behind `DiscordService.ts`.
-   - No direct coupling exists between Discord SDK and `BattleScene`, `Domain`,
-     `Combat`, `Match3`, `Redis`, or `PostgreSQL`.
+   - No direct coupling exists between authentication presentation and `BattleScene`, `Domain`, `Combat`, `Match3`, `Redis`, or `PostgreSQL`.
 
 ---
 

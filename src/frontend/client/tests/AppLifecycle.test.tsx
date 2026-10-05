@@ -1,17 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { MockInstance } from 'vitest';
-import { render, act } from '@testing-library/react';
-import React from 'react';
-import { App, resetSharedRuntime } from '../src/app/App';
-import { GameRuntime } from '../src/game/runtime/GameRuntime';
-import { DiscordService } from '../src/services/discord/DiscordService';
+import { render, screen, fireEvent, act } from '@testing-library/react';
+import { App, resetSharedRuntime, getSharedRuntime } from '../src/app/App';
 import { ApiService } from '../src/services/api/ApiService';
 import { ApplicationSession } from '../src/services/api/ApplicationSession';
 import { SignalRService } from '../src/services/realtime/SignalRService';
 
 vi.mock('phaser', () => {
-  // Mirrors tests/setup.ts: `new Phaser.Game(config)` must yield an object with
-  // a `destroy` method, because PhaserGame calls it during cleanup.
   const Game = vi.fn(function MockGame(this: { destroy: () => void }) {
     this.destroy = vi.fn();
   });
@@ -26,57 +21,38 @@ vi.mock('phaser', () => {
   };
 });
 
-/**
- * Application-level lifecycle and authentication orchestration tests (TASK-086).
- *
- * Requirements (TDD.md §2.1 item 4, API_CONTRACTS.md §2, SIGNALR_PROTOCOL.md §1):
- *   mount
- *     ↓
- *   Discord initialization (DiscordService.initialize)
- *     ↓
- *   authorization (DiscordService.getAuthorizationCode)
- *     ↓
- *   API authentication (ApiService.authenticateDiscord)
- *     ↓
- *   ApplicationSession authenticated (ApplicationSession.establish)
- *     ↓
- *   GameRuntime.setSessionStatus('authenticated')
- *     ↓
- *   SignalR connect (SignalRService.connect)
- *
- * Invariant:
- *   NO AUTHENTICATED APPLICATION SESSION → NO SIGNALR CONNECTION
- */
-describe('App runtime lifecycle and authentication orchestration', () => {
+describe('App runtime lifecycle and Web Account authentication orchestration', () => {
   let connectSpy: MockInstance;
-  let disconnectSpy: MockInstance;
-  let discordInitSpy: MockInstance;
-  let discordAuthCodeSpy: MockInstance;
-  let apiAuthSpy: MockInstance;
+  let apiLoginSpy: MockInstance;
+  let apiRegisterSpy: MockInstance;
 
   beforeEach(() => {
     resetSharedRuntime();
     ApplicationSession.getInstance().clear();
+    window.localStorage.clear();
 
     const signalR = SignalRService.getInstance();
     connectSpy = vi.spyOn(signalR, 'connect').mockResolvedValue(undefined);
-    disconnectSpy = vi.spyOn(signalR, 'disconnect').mockResolvedValue(undefined);
+    vi.spyOn(signalR, 'disconnect').mockResolvedValue(undefined);
     vi.spyOn(signalR, 'on').mockReturnValue(() => {});
     vi.spyOn(signalR, 'setHandlers').mockImplementation(() => {});
 
-    const discord = DiscordService.getInstance();
-    discordInitSpy = vi.spyOn(discord, 'initialize').mockResolvedValue({
-      isAvailable: true,
-    });
-    discordAuthCodeSpy = vi
-      .spyOn(discord, 'getAuthorizationCode')
-      .mockResolvedValue('test-auth-code-123');
-
     const api = ApiService.getInstance();
-    apiAuthSpy = vi.spyOn(api, 'authenticateDiscord').mockImplementation(async (_code: string) => {
+    apiLoginSpy = vi.spyOn(api, 'login').mockImplementation(async (req) => {
       const response = {
         sessionToken: 'test.jwt.session.token',
         playerId: 'player_test_1',
+        username: req.username,
+      };
+      ApplicationSession.getInstance().establish(response);
+      return response;
+    });
+
+    apiRegisterSpy = vi.spyOn(api, 'register').mockImplementation(async (req) => {
+      const response = {
+        sessionToken: 'test.jwt.session.token',
+        playerId: 'player_test_new',
+        username: req.username,
       };
       ApplicationSession.getInstance().establish(response);
       return response;
@@ -86,51 +62,40 @@ describe('App runtime lifecycle and authentication orchestration', () => {
   afterEach(() => {
     vi.restoreAllMocks();
     ApplicationSession.getInstance().clear();
+    window.localStorage.clear();
     resetSharedRuntime();
   });
 
-  describe('successful authentication ordering', () => {
-    it('renders the application shell', async () => {
-      const { container } = render(<App />);
+  describe('unauthenticated initial state', () => {
+    it('renders the AuthScreen when no session exists in localStorage', async () => {
+      render(<App />);
 
       await act(async () => {
         await Promise.resolve();
       });
 
-      expect(container.querySelector('.game-shell')).not.toBeNull();
+      expect(screen.getByTestId('auth-screen')).not.toBeNull();
+      expect(screen.getByTestId('input-username')).not.toBeNull();
+      expect(screen.getByTestId('input-password')).not.toBeNull();
     });
 
-    it('executes the full authentication sequence before connecting SignalR', async () => {
-      const executionOrder: string[] = [];
+    it('INVARIANT: does NOT connect to SignalR while unauthenticated', async () => {
+      render(<App />);
 
-      discordInitSpy.mockImplementation(async () => {
-        executionOrder.push('discord:initialize');
-        return { isAvailable: true };
+      await act(async () => {
+        await Promise.resolve();
       });
 
-      discordAuthCodeSpy.mockImplementation(async () => {
-        executionOrder.push('discord:getAuthorizationCode');
-        return 'test-auth-code-123';
-      });
+      expect(connectSpy).not.toHaveBeenCalled();
+    });
+  });
 
-      apiAuthSpy.mockImplementation(async (code: string) => {
-        executionOrder.push(`api:authenticateDiscord(${code})`);
-        const response = {
-          sessionToken: 'test.jwt.session.token',
-          playerId: 'player_test_1',
-        };
-        ApplicationSession.getInstance().establish(response);
-        return response;
-      });
-
-      let sessionAuthenticatedAtConnect: boolean | null = null;
-      let sessionTokenAtConnect: string | null = null;
-
-      connectSpy.mockImplementation(async () => {
-        executionOrder.push('signalr:connect');
-        sessionAuthenticatedAtConnect = ApplicationSession.getInstance().isAuthenticated();
-        sessionTokenAtConnect = ApplicationSession.getInstance().getSessionToken();
-        return Promise.resolve();
+  describe('restoring session from localStorage', () => {
+    it('automatically transitions to authenticated and connects SignalR if session exists', async () => {
+      ApplicationSession.getInstance().establish({
+        sessionToken: 'persisted.jwt.token',
+        playerId: 'player_persisted',
+        username: 'saved_hero',
       });
 
       render(<App />);
@@ -139,260 +104,112 @@ describe('App runtime lifecycle and authentication orchestration', () => {
         await Promise.resolve();
       });
 
-      // Proof of ordering: authenticate completed BEFORE SignalR connect attempted
-      expect(executionOrder).toEqual([
-        'discord:initialize',
-        'discord:getAuthorizationCode',
-        'api:authenticateDiscord(test-auth-code-123)',
-        'signalr:connect',
-      ]);
-
-      // Proof of authenticated session at connect time
-      expect(sessionAuthenticatedAtConnect).toBe(true);
-      expect(sessionTokenAtConnect).toBe('test.jwt.session.token');
       expect(connectSpy).toHaveBeenCalledTimes(1);
-      expect(connectSpy).toHaveBeenCalledWith('/hubs/battle');
+      expect(screen.queryByTestId('auth-screen')).toBeNull();
+      expect(screen.getByTestId('game-shell')).not.toBeNull();
     });
+  });
 
-    it('transitions session status from unauthenticated to authenticating to authenticated', async () => {
-      const sessionStatusCalls: string[] = [];
-      vi.spyOn(GameRuntime.prototype, 'setSessionStatus').mockImplementation(function (
-        this: GameRuntime,
-        status: string
-      ) {
-        sessionStatusCalls.push(status);
-        // Call actual implementation to update state
-        (this as unknown as { updateState: (patch: { session: string }) => void }).updateState({
-          session: status,
-        });
-      });
-
-      discordInitSpy.mockResolvedValue({ isAvailable: true });
-      discordAuthCodeSpy.mockResolvedValue('test-auth-code-123');
-      apiAuthSpy.mockImplementation(async () => {
-        const response = {
-          sessionToken: 'test.jwt.session.token',
-          playerId: 'player_test_1',
-        };
-        ApplicationSession.getInstance().establish(response);
-        return response;
-      });
-
+  describe('interactive login and registration flow', () => {
+    it('authenticates through login form and mounts GameShell', async () => {
       render(<App />);
 
       await act(async () => {
         await Promise.resolve();
       });
 
-      // Transitions: authenticating -> authenticated (initial was unauthenticated)
-      expect(sessionStatusCalls).toEqual(['authenticating', 'authenticated']);
-      expect(ApplicationSession.getInstance().isAuthenticated()).toBe(true);
-    });
+      const userInput = screen.getByTestId('input-username');
+      const passInput = screen.getByTestId('input-password');
+      const submitBtn = screen.getByTestId('button-submit');
 
-    it('ensures SignalR receives the application session JWT through accessTokenFactory after authentication', async () => {
-      render(<App />);
-
-      await act(async () => {
-        await Promise.resolve();
-      });
-
-      expect(ApplicationSession.getInstance().isAuthenticated()).toBe(true);
-      expect(ApplicationSession.getInstance().getSessionToken()).toBe('test.jwt.session.token');
-    });
-  });
-
-  describe('authentication failure paths', () => {
-    it('does not connect SignalR and transitions session to error when Discord SDK is unavailable', async () => {
-      const sessionStatusCalls: string[] = [];
-      vi.spyOn(GameRuntime.prototype, 'setSessionStatus').mockImplementation((status: string) => {
-        sessionStatusCalls.push(status);
-      });
-
-      discordInitSpy.mockResolvedValue({
-        isAvailable: false,
-        error: 'Not running inside Discord Activity iframe (Local Development Mode)',
-      });
-
-      const { container } = render(<App />);
+      fireEvent.change(userInput, { target: { value: 'hero123' } });
+      fireEvent.change(passInput, { target: { value: 'secretpass' } });
 
       await act(async () => {
-        await Promise.resolve();
+        fireEvent.click(submitBtn);
       });
 
-      expect(sessionStatusCalls).toEqual(['authenticating', 'error']);
-      expect(discordInitSpy).toHaveBeenCalledTimes(1);
-      expect(discordAuthCodeSpy).not.toHaveBeenCalled();
-      expect(apiAuthSpy).not.toHaveBeenCalled();
-      expect(connectSpy).not.toHaveBeenCalled();
-      expect(ApplicationSession.getInstance().isAuthenticated()).toBe(false);
-      expect(container.querySelector('.game-shell')).not.toBeNull();
-    });
-
-    it('does not connect SignalR and transitions session to error when Discord initialization throws', async () => {
-      const sessionStatusCalls: string[] = [];
-      vi.spyOn(GameRuntime.prototype, 'setSessionStatus').mockImplementation((status: string) => {
-        sessionStatusCalls.push(status);
+      expect(apiLoginSpy).toHaveBeenCalledWith({
+        username: 'hero123',
+        password: 'secretpass',
       });
 
-      discordInitSpy.mockRejectedValue(new Error('SDK init threw'));
-
-      const { container } = render(<App />);
-
-      await act(async () => {
-        await Promise.resolve();
-      });
-
-      expect(sessionStatusCalls).toEqual(['authenticating', 'error']);
-      expect(discordInitSpy).toHaveBeenCalledTimes(1);
-      expect(discordAuthCodeSpy).not.toHaveBeenCalled();
-      expect(apiAuthSpy).not.toHaveBeenCalled();
-      expect(connectSpy).not.toHaveBeenCalled();
-      expect(ApplicationSession.getInstance().isAuthenticated()).toBe(false);
-      expect(container.querySelector('.game-shell')).not.toBeNull();
-    });
-
-    it('does not connect SignalR and transitions session to error when authorize returns null', async () => {
-      const sessionStatusCalls: string[] = [];
-      vi.spyOn(GameRuntime.prototype, 'setSessionStatus').mockImplementation((status: string) => {
-        sessionStatusCalls.push(status);
-      });
-
-      discordAuthCodeSpy.mockResolvedValue(null);
-
-      const { container } = render(<App />);
-
-      await act(async () => {
-        await Promise.resolve();
-      });
-
-      expect(sessionStatusCalls).toEqual(['authenticating', 'error']);
-      expect(discordInitSpy).toHaveBeenCalledTimes(1);
-      expect(discordAuthCodeSpy).toHaveBeenCalledTimes(1);
-      expect(apiAuthSpy).not.toHaveBeenCalled();
-      expect(connectSpy).not.toHaveBeenCalled();
-      expect(ApplicationSession.getInstance().isAuthenticated()).toBe(false);
-      expect(container.querySelector('.game-shell')).not.toBeNull();
-    });
-
-    it('does not connect SignalR and transitions session to error when authorize throws', async () => {
-      const sessionStatusCalls: string[] = [];
-      vi.spyOn(GameRuntime.prototype, 'setSessionStatus').mockImplementation((status: string) => {
-        sessionStatusCalls.push(status);
-      });
-
-      discordAuthCodeSpy.mockRejectedValue(new Error('User denied access'));
-
-      const { container } = render(<App />);
-
-      await act(async () => {
-        await Promise.resolve();
-      });
-
-      expect(sessionStatusCalls).toEqual(['authenticating', 'error']);
-      expect(discordInitSpy).toHaveBeenCalledTimes(1);
-      expect(discordAuthCodeSpy).toHaveBeenCalledTimes(1);
-      expect(apiAuthSpy).not.toHaveBeenCalled();
-      expect(connectSpy).not.toHaveBeenCalled();
-      expect(ApplicationSession.getInstance().isAuthenticated()).toBe(false);
-      expect(container.querySelector('.game-shell')).not.toBeNull();
-    });
-
-    it('does not connect SignalR and transitions session to error when API authentication returns non-2xx', async () => {
-      const sessionStatusCalls: string[] = [];
-      vi.spyOn(GameRuntime.prototype, 'setSessionStatus').mockImplementation((status: string) => {
-        sessionStatusCalls.push(status);
-      });
-
-      apiAuthSpy.mockRejectedValue(new Error('Authentication failed with status 401'));
-
-      const { container } = render(<App />);
-
-      await act(async () => {
-        await Promise.resolve();
-      });
-
-      expect(sessionStatusCalls).toEqual(['authenticating', 'error']);
-      expect(discordInitSpy).toHaveBeenCalledTimes(1);
-      expect(discordAuthCodeSpy).toHaveBeenCalledTimes(1);
-      expect(apiAuthSpy).toHaveBeenCalledWith('test-auth-code-123');
-      expect(connectSpy).not.toHaveBeenCalled();
-      expect(ApplicationSession.getInstance().isAuthenticated()).toBe(false);
-      expect(container.querySelector('.game-shell')).not.toBeNull();
-    });
-
-    it('does not connect SignalR and transitions session to error on network failure during API authentication', async () => {
-      const sessionStatusCalls: string[] = [];
-      vi.spyOn(GameRuntime.prototype, 'setSessionStatus').mockImplementation((status: string) => {
-        sessionStatusCalls.push(status);
-      });
-
-      apiAuthSpy.mockRejectedValue(new TypeError('Failed to fetch'));
-
-      const { container } = render(<App />);
-
-      await act(async () => {
-        await Promise.resolve();
-      });
-
-      expect(sessionStatusCalls).toEqual(['authenticating', 'error']);
-      expect(discordInitSpy).toHaveBeenCalledTimes(1);
-      expect(discordAuthCodeSpy).toHaveBeenCalledTimes(1);
-      expect(apiAuthSpy).toHaveBeenCalledWith('test-auth-code-123');
-      expect(connectSpy).not.toHaveBeenCalled();
-      expect(ApplicationSession.getInstance().isAuthenticated()).toBe(false);
-      expect(container.querySelector('.game-shell')).not.toBeNull();
-    });
-  });
-
-  describe('StrictMode and idempotency', () => {
-    it('executes authentication and connects exactly once under StrictMode remounting', async () => {
-      const { unmount } = render(
-        <React.StrictMode>
-          <App />
-        </React.StrictMode>
-      );
-
-      await act(async () => {
-        await Promise.resolve();
-      });
-
-      unmount();
-
-      await act(async () => {
-        await Promise.resolve();
-      });
-
-      // StrictMode double-invocation must not cause duplicate auth or duplicate connect
-      expect(discordInitSpy).toHaveBeenCalledTimes(1);
-      expect(discordAuthCodeSpy).toHaveBeenCalledTimes(1);
-      expect(apiAuthSpy).toHaveBeenCalledTimes(1);
       expect(connectSpy).toHaveBeenCalledTimes(1);
+      expect(screen.queryByTestId('auth-screen')).toBeNull();
+      expect(screen.getByTestId('game-shell')).not.toBeNull();
     });
 
-    it('does not tear down the connection on a StrictMode effect cleanup', async () => {
-      const { unmount } = render(
-        <React.StrictMode>
-          <App />
-        </React.StrictMode>
-      );
+    it('authenticates through register form and mounts GameShell', async () => {
+      render(<App />);
 
       await act(async () => {
         await Promise.resolve();
       });
 
-      // The runtime intentionally outlives an individual effect run, because the
-      // transport it owns is a process-wide singleton.
-      expect(disconnectSpy).not.toHaveBeenCalled();
+      const registerTab = screen.getByTestId('tab-register');
+      fireEvent.click(registerTab);
 
-      unmount();
+      const userInput = screen.getByTestId('input-username');
+      const passInput = screen.getByTestId('input-password');
+      const submitBtn = screen.getByTestId('button-submit');
+
+      fireEvent.change(userInput, { target: { value: 'newhero' } });
+      fireEvent.change(passInput, { target: { value: 'secretpass' } });
+
+      await act(async () => {
+        fireEvent.click(submitBtn);
+      });
+
+      expect(apiRegisterSpy).toHaveBeenCalledWith({
+        username: 'newhero',
+        password: 'secretpass',
+      });
+
+      expect(connectSpy).toHaveBeenCalledTimes(1);
+      expect(screen.queryByTestId('auth-screen')).toBeNull();
+      expect(screen.getByTestId('game-shell')).not.toBeNull();
+    });
+
+    it('shows error banner when credentials are rejected and never connects SignalR', async () => {
+      apiLoginSpy.mockRejectedValue(new Error('INVALID_CREDENTIALS'));
+
+      render(<App />);
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      const userInput = screen.getByTestId('input-username');
+      const passInput = screen.getByTestId('input-password');
+      const submitBtn = screen.getByTestId('button-submit');
+
+      fireEvent.change(userInput, { target: { value: 'wronguser' } });
+      fireEvent.change(passInput, { target: { value: 'wrongpass' } });
+
+      await act(async () => {
+        fireEvent.click(submitBtn);
+      });
+
+      expect(screen.getByTestId('auth-error-banner')).not.toBeNull();
+      expect(connectSpy).not.toHaveBeenCalled();
+      expect(screen.getByTestId('auth-screen')).not.toBeNull();
     });
   });
 
-  describe('instance verification', () => {
-    it('creates the runtime as a GameRuntime instance', () => {
-      const runtime = new GameRuntime();
-      expect(runtime).toBeInstanceOf(GameRuntime);
-      expect(runtime.isInitialized()).toBe(false);
+  describe('document unload', () => {
+    it('disposes the shared runtime on pagehide', async () => {
+      render(<App />);
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      const runtime = getSharedRuntime();
+      const disposeSpy = vi.spyOn(runtime, 'dispose');
+
+      window.dispatchEvent(new Event('pagehide'));
+
+      expect(disposeSpy).toHaveBeenCalledTimes(1);
     });
   });
 });

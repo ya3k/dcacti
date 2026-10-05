@@ -183,7 +183,7 @@ const INSPECT = `(() => {
     canvasAttrs: canvas ? { width: canvas.width, height: canvas.height } : null,
     runtimeStatus: {
       present: Boolean(statusCard),
-      discord: badgeText('Discord'),
+      account: badgeText('Account'),
       backend: badgeText('Backend'),
       signalr: badgeText('SignalR'),
       phaser: badgeText('Phaser'),

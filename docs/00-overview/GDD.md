@@ -1,7 +1,7 @@
 # Game Design Document (GDD)
 
-**Project:** Match-3 RPG Discord Activity
-**Version:** 2.5 (§2 Core Gameplay Loop's pre-battle step list now includes the
+**Project:** Match-3 RPG Standalone Web Application
+**Version:** 2.6 (Platform and Project updated to Standalone Web Application per ADR-020; prior 2.5: §2 Core Gameplay Loop's pre-battle step list now includes the
 Boss choice per TASK-185 — the MVP Lobby lets the player explicitly choose one
 of the five canonical MVP Bosses (`BOSS_RULES.md` §6/§6.4) before starting, so
 the loop names that step; no Boss rule, stat, Element, Passive, Skill, formula,
@@ -15,7 +15,7 @@ for MVP — persistent account
 attribute, 1–50, source of Pet Level; ADR-012; prior 2.1: Player =
 account/owner / Pet = combat character clarified))
 **Status:** MVP Design
-**Platform:** Discord Activity
+**Platform:** Standalone Web Application
 **Genre:** Match-3 RPG / Boss Battler
 **Players:** Single-player battle experience
 **Core Technology:** React + TypeScript + Vite + Phaser 4

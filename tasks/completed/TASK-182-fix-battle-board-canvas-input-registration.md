@@ -27,7 +27,7 @@
 ```text
 Task ID:           TASK-182
 Title:             Fix Battle Board Canvas Input Registration
-Status:            BACKLOG
+Status:            DONE
 Type:              Bug Fix (development/bug-fix.md §1 — Implementation bug)
 Priority:          High
 Risk:              LOW (one presentation-layer file plus tests; no protocol,

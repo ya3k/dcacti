@@ -3,11 +3,10 @@ import { ApplicationSession } from '../src/services/api/ApplicationSession';
 import { ApiService } from '../src/services/api/ApiService';
 
 /**
- * Application-session propagation on the client
- * (`API_CONTRACTS.md` §2.8 "Transport"; `ADR-015` D4).
+ * Application-session propagation on the client (ADR-015, ADR-020).
  *
  * ```text
- * Discord identity exchange
+ * Web authentication (Register / Login)
  *         ↓
  * sessionToken (self-contained signed JWT)
  *         ↓
@@ -30,57 +29,72 @@ describe('ApplicationSession', () => {
     expect(session.isAuthenticated()).toBe(false);
     expect(session.getSessionToken()).toBeNull();
     expect(session.getPlayerId()).toBeNull();
+    expect(session.getUsername()).toBeNull();
 
-    // §2.8 "Transport": with no session there is no Authorization header to
-    // send — an empty header, not a placeholder credential.
+    // With no session there is no Authorization header to send
     expect(session.getAuthorizationHeader()).toEqual({});
   });
 
-  it('should hold the session established by a successful exchange', () => {
-    session.establish({ sessionToken: 'header.payload.signature', playerId: 'player_1' });
+  it('should hold the session established by successful authentication', () => {
+    session.establish({
+      sessionToken: 'header.payload.signature',
+      playerId: 'player_1',
+      username: 'testuser',
+    });
 
     expect(session.isAuthenticated()).toBe(true);
     expect(session.getSessionToken()).toBe('header.payload.signature');
     expect(session.getPlayerId()).toBe('player_1');
+    expect(session.getUsername()).toBe('testuser');
+  });
+
+  it('should persist session to localStorage and restore successfully', () => {
+    session.establish({
+      sessionToken: 'header.payload.signature',
+      playerId: 'player_1',
+      username: 'testuser',
+    });
+
+    expect(window.localStorage.getItem('dcacti_session_token')).toBe('header.payload.signature');
+    expect(window.localStorage.getItem('dcacti_player_id')).toBe('player_1');
+    expect(window.localStorage.getItem('dcacti_username')).toBe('testuser');
+
+    // Create fresh instance or clear memory without clearing storage
+    (session as any).sessionToken = null;
+    (session as any).playerId = null;
+    (session as any).username = null;
+    expect(session.isAuthenticated()).toBe(false);
+
+    const restored = session.restoreFromStorage();
+    expect(restored).toBe(true);
+    expect(session.isAuthenticated()).toBe(true);
+    expect(session.getSessionToken()).toBe('header.payload.signature');
+    expect(session.getUsername()).toBe('testuser');
   });
 
   it('should present the session as a Bearer header', () => {
-    session.establish({ sessionToken: 'header.payload.signature', playerId: 'player_1' });
+    session.establish({
+      sessionToken: 'header.payload.signature',
+      playerId: 'player_1',
+      username: 'testuser',
+    });
 
-    // §2.8 "Transport": REST uses `Authorization: Bearer <sessionToken>`.
     expect(session.getAuthorizationHeader()).toEqual({
       Authorization: 'Bearer header.payload.signature',
     });
   });
 
-  it('should forget the session when cleared', () => {
-    session.establish({ sessionToken: 'header.payload.signature', playerId: 'player_1' });
+  it('should forget the session and clear storage when cleared', () => {
+    session.establish({
+      sessionToken: 'header.payload.signature',
+      playerId: 'player_1',
+      username: 'testuser',
+    });
     session.clear();
 
     expect(session.isAuthenticated()).toBe(false);
     expect(session.getAuthorizationHeader()).toEqual({});
-  });
-
-  it('should hold no session in browser storage', () => {
-    // ADR-015 D5 has no revocation and no refresh, so a persisted token could
-    // outlive its usefulness with no way to withdraw it. The session is held in
-    // memory only: the holder exposes no persistence surface, and the token it
-    // holds appears in neither storage area.
-    session.establish({ sessionToken: 'header.payload.signature', playerId: 'player_1' });
-
-    const surface = Object.getOwnPropertyNames(ApplicationSession.prototype);
-
-    for (const forbidden of ['persist', 'save', 'store', 'load', 'restore']) {
-      expect(surface).not.toContain(forbidden);
-    }
-
-    const stored = JSON.stringify([
-      Object.entries(window.localStorage ?? {}),
-      Object.entries(window.sessionStorage ?? {}),
-    ]);
-
-    expect(stored).not.toContain('header.payload.signature');
-    expect(stored).not.toContain('sessionToken');
+    expect(window.localStorage.getItem('dcacti_session_token')).toBeNull();
   });
 });
 
@@ -93,43 +107,83 @@ describe('ApiService credential propagation', () => {
     vi.stubGlobal('fetch', fetchMock);
   });
 
-  it('should send no Authorization header to the session-establishing endpoint', async () => {
-    // §2.1 / §2.8 "Coverage": `POST /api/auth/discord` is the one endpoint that
-    // does not require an authenticated session — it establishes one.
-    ApplicationSession.getInstance().establish({
-      sessionToken: 'existing.token.value',
-      playerId: 'player_1',
-    });
-
+  it('should register a new account without Authorization header and establish session', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
-      json: async () => ({ sessionToken: 'new.token.value', playerId: 'player_1' }),
+      json: async () => ({
+        sessionToken: 'registered.token.value',
+        playerId: 'player_new',
+        username: 'alice',
+      }),
     });
 
-    await ApiService.getInstance().authenticateDiscord('authorization-code');
+    const result = await ApiService.getInstance().register({
+      username: 'alice',
+      password: 'password123',
+    });
 
-    const [, init] = fetchMock.mock.calls[0];
+    expect(result.username).toBe('alice');
+    expect(result.sessionToken).toBe('registered.token.value');
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/auth/register');
     expect(init.headers).not.toHaveProperty('Authorization');
+    expect(JSON.parse(init.body)).toEqual({
+      username: 'alice',
+      password: 'password123',
+    });
+
+    expect(ApplicationSession.getInstance().isAuthenticated()).toBe(true);
+    expect(ApplicationSession.getInstance().getUsername()).toBe('alice');
   });
 
-  it('should record the session returned by the exchange', async () => {
+  it('should login an existing account without Authorization header and establish session', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
-      json: async () => ({ sessionToken: 'issued.token.value', playerId: 'player_9' }),
+      json: async () => ({
+        sessionToken: 'logged_in.token.value',
+        playerId: 'player_existing',
+        username: 'bob',
+      }),
     });
 
-    await ApiService.getInstance().authenticateDiscord('authorization-code');
+    const result = await ApiService.getInstance().login({
+      username: 'bob',
+      password: 'password123',
+    });
 
-    // The token the exchange issued is the one subsequent REST and hub traffic
-    // presents (§2.5, §2.8 "Transport").
-    expect(ApplicationSession.getInstance().getSessionToken()).toBe('issued.token.value');
-    expect(ApplicationSession.getInstance().getPlayerId()).toBe('player_9');
+    expect(result.username).toBe('bob');
+    expect(result.sessionToken).toBe('logged_in.token.value');
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/auth/login');
+    expect(init.headers).not.toHaveProperty('Authorization');
+    expect(JSON.parse(init.body)).toEqual({
+      username: 'bob',
+      password: 'password123',
+    });
+
+    expect(ApplicationSession.getInstance().isAuthenticated()).toBe(true);
+    expect(ApplicationSession.getInstance().getUsername()).toBe('bob');
+  });
+
+  it('should throw an error on failed login', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: async () => ({ error: 'INVALID_CREDENTIALS' }),
+    });
+
+    await expect(
+      ApiService.getInstance().login({ username: 'bob', password: 'bad' })
+    ).rejects.toThrow('INVALID_CREDENTIALS');
   });
 
   it('should send the session as Bearer on authenticated REST requests', async () => {
     ApplicationSession.getInstance().establish({
       sessionToken: 'issued.token.value',
       playerId: 'player_9',
+      username: 'charlie',
     });
 
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ battleId: 'battle_1' }) });
@@ -145,6 +199,7 @@ describe('ApiService credential propagation', () => {
     ApplicationSession.getInstance().establish({
       sessionToken: 'issued.token.value',
       playerId: 'player_9',
+      username: 'charlie',
     });
 
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ battleId: 'battle_1' }) });
@@ -155,13 +210,11 @@ describe('ApiService credential propagation', () => {
     expect(init.headers.Authorization).toBe('Bearer issued.token.value');
   });
 
-  it('should never send a PlayerId as authentication material', async () => {
-    // API_CONTRACTS.md §4 note 7 / ADR-015 D3: ownership is never established
-    // from client-supplied input. The server derives the identity from the
-    // session's `player_id` claim, so the client has no PlayerId to send.
+  it('should never send a PlayerId as authentication material in request body or headers', async () => {
     ApplicationSession.getInstance().establish({
       sessionToken: 'issued.token.value',
       playerId: 'player_9',
+      username: 'charlie',
     });
 
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({}) });
@@ -170,6 +223,6 @@ describe('ApiService credential propagation', () => {
 
     const serialized = JSON.stringify(fetchMock.mock.calls[0]);
     expect(serialized).not.toContain('X-Player-Id');
-    expect(serialized).not.toContain('playerId');
+    expect(serialized).not.toContain('player_9');
   });
 });

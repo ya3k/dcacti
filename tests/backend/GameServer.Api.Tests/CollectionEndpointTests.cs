@@ -1031,7 +1031,7 @@ public class CollectionEndpointTests
             await MutateAsync(context => context.Players.Add(new Player
             {
                 PlayerId = playerId,
-                DiscordUserId = $"9{Random.Shared.NextInt64(1_000_000_000_000_000L):D16}",
+                AccountId = Guid.NewGuid(),
                 Level = Player.InitialLevel,
                 CreatedAt = DateTimeOffset.UtcNow,
             }));

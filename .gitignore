@@ -14,8 +14,9 @@ src/backend/.env
 src/frontend/client/dist/
 
 # ─── Local verification artifacts ────────────────────────────────────────────
-# Screenshots produced by src/frontend/client/scripts/viewport-shots.mjs
+# Screenshots and reports produced by smoke test and viewport scripts
 src/frontend/client/viewport-shots/
+**/*-shots/
 
 # ─── Dependencies ────────────────────────────────────────────────────────────
 **/node_modules/

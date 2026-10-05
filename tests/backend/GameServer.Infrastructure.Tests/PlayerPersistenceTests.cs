@@ -48,7 +48,7 @@ public class PlayerPersistenceTests
             .ToArray();
 
         Assert.Equal(
-            new[] { "CreatedAt", "DiscordUserId", "Level", "PlayerId", "XP" },
+            new[] { "AccountId", "CreatedAt", "Level", "PlayerId", "XP" },
             properties);
 
         using var context = CreateContext($"player-fields-{Guid.NewGuid():N}");
@@ -61,7 +61,7 @@ public class PlayerPersistenceTests
             .ToArray();
 
         Assert.Equal(
-            new[] { "CreatedAt", "DiscordUserId", "Level", "PlayerId", "XP" },
+            new[] { "AccountId", "CreatedAt", "Level", "PlayerId", "XP" },
             storedColumns);
     }
 
@@ -134,45 +134,33 @@ public class PlayerPersistenceTests
     }
 
     [Fact]
-    public void Model_ShouldConstrainDiscordUserIdToBeUnique()
+    public void Model_ShouldConstrainAccountIdToBeUnique()
     {
-        // DATABASE.md §1/§3: DiscordUserId is unique. The uniqueness
+        // DATABASE.md §1/§3: AccountId is unique. The uniqueness
         // constraint is the authoritative protection against duplicate
-        // ownership records for one Discord account, and it is what a
-        // concurrent first-login race resolves against.
-        var model = CreateDesignTimeModel(nameof(Model_ShouldConstrainDiscordUserIdToBeUnique));
+        // ownership records for one Account, and it is what a
+        // concurrent registration/login race resolves against.
+        var model = CreateDesignTimeModel(nameof(Model_ShouldConstrainAccountIdToBeUnique));
 
         var entity = model.FindEntityType(typeof(Player))!;
-        var index = entity.GetIndexes().Single(i => i.Properties.Any(p => p.Name == "DiscordUserId"));
+        var index = entity.GetIndexes().Single(i => i.Properties.Any(p => p.Name == "AccountId"));
 
-        Assert.True(index.IsUnique, "DiscordUserId must carry a unique index (DATABASE.md §1/§3).");
+        Assert.True(index.IsUnique, "AccountId must carry a unique index (DATABASE.md §1/§3).");
     }
 
     [Fact]
-    public async Task Database_ShouldRejectASecondPlayerWithTheSameDiscordUserId()
+    public async Task Database_ShouldRejectASecondPlayerWithTheSameAccountId()
     {
-        // Two Players cannot share one DiscordUserId (DATABASE.md §1/§3). The
-        // uniqueness is a database constraint — the authoritative protection —
-        // so the check asserts the constraint the model actually declares
-        // rather than relying on a provider that enforces it in memory.
-        //
-        // The in-memory provider does not enforce unique indexes, so the
-        // assertion is made against the relational model the migration is
-        // generated from: a unique index on DiscordUserId. That is the same
-        // model the migration below renders as
-        // `CREATE UNIQUE INDEX "IX_Player_DiscordUserId"`.
-        await using var context = CreateContext(nameof(Database_ShouldRejectASecondPlayerWithTheSameDiscordUserId));
+        await using var context = CreateContext(nameof(Database_ShouldRejectASecondPlayerWithTheSameAccountId));
 
         var designTimeModel = context.GetService<IDesignTimeModel>().Model;
         var entity = designTimeModel.FindEntityType(typeof(Player))!;
 
         var index = entity.GetIndexes()
-            .Single(i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { "DiscordUserId" }));
+            .Single(i => i.Properties.Select(p => p.Name).SequenceEqual(new[] { "AccountId" }));
 
-        Assert.True(index.IsUnique, "DiscordUserId must be unique (DATABASE.md §1/§3).");
+        Assert.True(index.IsUnique, "AccountId must be unique (DATABASE.md §1/§3).");
 
-        // A second row with the same identity is therefore rejected by the
-        // store; the repository's race handling depends on exactly that.
         Assert.NotNull(index);
     }
 
@@ -203,7 +191,7 @@ public class PlayerPersistenceTests
         var created = new Player
         {
             PlayerId = "player_new",
-            DiscordUserId = "1",
+            AccountId = Guid.NewGuid(),
         };
 
         Assert.Equal(Player.InitialXp, created.XP);
@@ -296,7 +284,7 @@ public class PlayerPersistenceTests
         var player = new Player
         {
             PlayerId = "player_uncapped_xp",
-            DiscordUserId = "999",
+            AccountId = Guid.NewGuid(),
             XP = 12_345,
             Level = Player.LevelForXp(12_345),
             CreatedAt = DateTimeOffset.UtcNow,

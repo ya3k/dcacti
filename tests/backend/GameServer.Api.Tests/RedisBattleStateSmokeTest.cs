@@ -186,10 +186,14 @@ public class RedisBattleStateSmokeTest
             // documents, recorded at creation and carried in the record so the
             // battle-end persistence path can source BattleResult.PlayerId
             // (DATABASE.md §1, ADR-014 decision 1).
+            // `cardCastsUsedThisTurn` is present: the Card stage's per-Turn cast
+            // allowance (CARD_RULES.md §3 item 6, ADR-021), written even at 0
+            // because zero is a real value — an unspent allowance.
             Assert.Equal(
                 [
                     "battleId", "playerId", "turn", "sequence", "rngSeed", "rngState",
                     "boardState", "combo", "matchCount", "petState", "bossState",
+                    "cardCastsUsedThisTurn",
                 ],
                 rootNames);
 
@@ -516,7 +520,7 @@ public class RedisBattleStateSmokeTest
             context.Players.Add(new Player
             {
                 PlayerId = playerId,
-                DiscordUserId = $"8035{Random.Shared.NextInt64(1_000_000_000_000_000L):D16}",
+                AccountId = Guid.NewGuid(),
                 Level = Player.InitialLevel,
                 CreatedAt = DateTimeOffset.UtcNow,
             });

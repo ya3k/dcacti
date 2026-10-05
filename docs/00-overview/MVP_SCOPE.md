@@ -1,6 +1,6 @@
 # MVP Scope
 
-**Version:** 1.4 (§1 Pets block finalized per TASK-062 — the Pet XP
+**Version:** 1.5 (§1 Player account updated per ADR-020 — standalone web account with username/password registration/login, PostgreSQL Accounts, and JWT/ApplicationSession; prior 1.4: §1 Pets block finalized per TASK-062 — the Pet XP
 balance/reward decisions are now decided (`PET_RULES.md` §5.1–§5.5):
 Pet Level range 1–50, Pet XP hard-capped at 4900. Prior 1.3: §1 Player and
 Pets blocks updated per TASK-059 — Player
@@ -40,7 +40,7 @@ Element damage modifiers (Advantage / Neutral / Disadvantage)
 
 ## Player
 ```text
-Player account (Discord identity, collection owner)
+Player account (standalone web account with username/password registration/login, PostgreSQL Accounts, JWT/ApplicationSession, collection owner)
 Player XP / Level — persistent account progression (COMBAT_RULES.md §7).
   XP uncapped; Level 1–50. BattleWon +100 XP, BattleLost +0 XP.
   No combat stats.

@@ -94,6 +94,9 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
     private static string NewDiscordUserId() =>
         $"9{Random.Shared.NextInt64(1_000_000_000_000_000L):D16}";
 
+    private static Guid ToAccountId(string id) =>
+        new(System.Security.Cryptography.MD5.HashData(System.Text.Encoding.UTF8.GetBytes(id)));
+
     private bool Skip => !_available || !_schemaApplied;
 
     // -----------------------------------------------------------------------
@@ -350,7 +353,7 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
         // for that identity.
         await using var verify = CreateContext();
 
-        Assert.Equal(0, await verify.Players.CountAsync(p => p.DiscordUserId == discordUserId));
+        Assert.Equal(0, await verify.Players.CountAsync(p => p.AccountId == ToAccountId(discordUserId)));
     }
 
     [Fact]
@@ -404,7 +407,7 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
         // of any of the three kinds. The starter set is all-or-nothing.
         await using var verify = CreateContext();
 
-        Assert.Equal(0, await verify.Players.CountAsync(p => p.DiscordUserId == discordUserId));
+        Assert.Equal(0, await verify.Players.CountAsync(p => p.AccountId == ToAccountId(discordUserId)));
 
         // The ownership rows carry the PlayerId minted for the rejected insert,
         // which was never written — so none can exist.
@@ -446,7 +449,7 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
 
             await using var verify = CreateContext();
 
-            Assert.Equal(1, await verify.Players.CountAsync(p => p.DiscordUserId == discordUserId));
+            Assert.Equal(1, await verify.Players.CountAsync(p => p.AccountId == ToAccountId(discordUserId)));
 
             // Exactly one starter set — no duplicate ownership of any kind.
             var petCount = await verify.Pets.CountAsync(pet => pet.PlayerId == playerId);
@@ -508,7 +511,7 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
 
             await using var verify = CreateContext();
 
-            Assert.Equal(1, await verify.Players.CountAsync(p => p.DiscordUserId == discordUserId));
+            Assert.Equal(1, await verify.Players.CountAsync(p => p.AccountId == ToAccountId(discordUserId)));
             Assert.Equal(1, await verify.Pets.CountAsync(pet => pet.PlayerId == first.PlayerId));
             Assert.Equal(3, await verify.PlayerUnlockedCards.CountAsync(c => c.PlayerId == first.PlayerId));
             Assert.Equal(3, await verify.Relics.CountAsync(r => r.PlayerId == first.PlayerId));

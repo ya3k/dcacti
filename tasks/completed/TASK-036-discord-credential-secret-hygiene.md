@@ -7,7 +7,8 @@
 ```text
 Task ID:           TASK-036
 Type:              ARCHITECTURE
-Status:            READY
+Status:            SUPERSEDED
+Superseded by:     ADR-020, TASK-187
 Risk:              HIGH
 Priority:          HIGH
 Primary Agent:     backend
@@ -20,8 +21,16 @@ Skills:            discovery/documentation-discovery,
                    quality/documentation-consistency,
                    quality/scope-validation
 Dependencies:      None
-Blocked by:        None — resolved by ADR-019 (2026-10-04)
+Blocked by:        None — superseded by ADR-020 / TASK-187
 ```
+
+---
+
+## Supersession Notice (2026-10-06)
+
+**Status:** SUPERSEDED by `ADR-020` and `TASK-187`.
+
+All intended deliverables of this task have been rendered 100% obsolete by `ADR-020` (*Standalone Web Account Authentication & Retirement of Discord Activity Dependency*) and `TASK-187`. `ADR-020` explicitly supersedes `ADR-019`, `ADR-013`, and `ADR-007`, retiring the Discord Embedded App SDK, backend OAuth token exchange endpoints, and all Discord configuration keys (`Discord:ClientId`, `Discord:ClientSecret`). No Discord credentials exist in the architecture or codebase; zero actionable scope remains.
 
 ---
 

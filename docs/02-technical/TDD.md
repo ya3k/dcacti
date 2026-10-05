@@ -47,8 +47,8 @@ language-specific detail need to change — game design docs are unaffected.
 # 1. Technology Stack
 
 ```text
-Client        React + TypeScript + Vite + Phaser 4 + Discord Embedded App SDK,
-               running inside a Discord Activity (iframe), with Vitest for testing
+Client        React + TypeScript + Vite + Phaser 4 (Standalone Web SPA; ADR-020),
+               running in modern desktop and mobile browsers, with Vitest for testing
 Realtime       SignalR (ASP.NET Core Hub)      [ASSUMPTION, see §0]
 Backend        ASP.NET Core (C#)               [ASSUMPTION, see §0]
 Active State   Redis                            (per MVP_SCOPE.md §1)
@@ -193,65 +193,39 @@ the gameplay (`ARCHITECTURE.md` §2.2.2).
 
 ### Service Boundaries
 
-- `services/discord/`: Encapsulates Discord Embedded App SDK lifecycle, client
-  context acquisition, and authentication initiation (`DiscordService.ts`).
+- `services/api/`: Encapsulates REST API calls including authentication (`POST /api/auth/register`, `POST /api/auth/login`), collections, and battle start.
 - `services/realtime/`: Encapsulates SignalR Hub connection and event dispatch.
-- `services/api/`: Encapsulates REST API calls.
-- Discord SDK and SignalR transport details must remain isolated and never leak
-  directly into Phaser gameplay objects.
+- SignalR transport details must remain isolated and never leak directly into Phaser gameplay objects.
 
-### Discord Embedded App SDK & Authentication Architecture
+### Standalone Web Authentication Architecture (ADR-020)
 
-1. **Frontend SDK Ownership:**
-   - Discord Embedded App SDK runs exclusively on the frontend
-     (`client/src/services/discord/DiscordService.ts`).
-   - Responsible for SDK initialization, fetching Discord Activity context,
-     and initiating authentication flows.
-   - The SDK does NOT run on the backend and is NOT imported into Phaser
-     Scenes or gameplay logic.
-
-2. **Backend Authentication & Token Exchange:**
-   - The ASP.NET Core backend owns server-side Discord OAuth token exchange and
-     verification (`POST /api/auth/discord`, `API_CONTRACTS.md` §2).
-   - Exchange flow:
+1. **Authentication Boundary:**
+   - Standalone Web authentication via standard username/password replaces Discord Activity OAuth (`ADR-020`).
+   - Flow:
      ```text
-     Discord Client
-          │
+     Frontend (React Auth Screen)
+          │  (username, password)
           ▼
-     Frontend (React + Vite)
-          │  (Discord Embedded App SDK acquires authorization code)
-          ▼
-     ASP.NET Core Backend (POST /api/auth/discord)
-          │  (Server-side token exchange using Client Secret)
-          ▼
-     Discord OAuth API
-          │  (Returns Discord user identity)
+     ASP.NET Core Backend (POST /api/auth/register or POST /api/auth/login)
+          │  (Server-side PBKDF2 hash verification, Account + Player lookup/creation)
           ▼
      ASP.NET Core Backend
-          │  (Issues authenticated application session)
+          │  (Issues authenticated application session JWT, ADR-015)
           ▼
-     REST API & SignalR Hub
+     REST API & SignalR Hub (BattleHub)
      ```
 
-3. **Client Secret Security Boundary:**
-   - **Frontend:** May contain `Discord Client ID`. MUST NEVER contain
-     `Discord Client Secret`.
-   - **Backend:** Contains `Discord Client ID` and `Discord Client Secret`
-     stored securely in server configuration / environment secrets.
-   - Client Secret is never exposed via browser bundles, Vite env vars,
-     React config, Phaser code, public assets, or Git.
+2. **Credential & Password Security Boundary:**
+   - Password hashes are stored securely in PostgreSQL using PBKDF2 with unique cryptographic salt.
+   - Plaintext passwords are never logged, stored, or echoed back.
 
-4. **SignalR Authentication Sequence:**
-   - SignalR Hub connections are established only *after* the application
-     session is authenticated.
-   - `BattleHub` and backend game domain logic interact with authenticated
-     application user identities, never with Discord SDK internals.
+3. **SignalR Authentication Sequence:**
+   - SignalR Hub connections are established only *after* the application session is authenticated.
+   - `BattleHub` and backend game domain logic interact with authenticated application user identities (`PlayerId`), carried by JWT Bearer token.
 
-5. **Separation of Concerns:**
-   - Strict boundary: Discord SDK → `DiscordService` → Application Auth
-     Session → REST / SignalR → Game Backend.
-   - No direct dependency between Discord SDK and BattleScene, Battle Domain,
-     Combat, Match-3, Redis, or PostgreSQL.
+4. **Separation of Concerns:**
+   - Strict boundary: React Auth Screen → ApiService → ApplicationSession → REST / SignalR → Game Backend.
+   - No direct dependency between Auth UI and BattleScene, Battle Domain, Combat, Match-3, Redis, or PostgreSQL.
 
 ## 2.2 Backend (ASP.NET Core)
 

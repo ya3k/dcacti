@@ -35,14 +35,14 @@ public class RelicLoadoutSnapshotTests
         context.Players.Add(new Player
         {
             PlayerId = Owner,
-            DiscordUserId = "discord_1",
+            AccountId = Guid.NewGuid(),
             Level = 1,
             CreatedAt = DateTimeOffset.UtcNow,
         });
         context.Players.Add(new Player
         {
             PlayerId = OtherPlayer,
-            DiscordUserId = "discord_2",
+            AccountId = Guid.NewGuid(),
             Level = 1,
             CreatedAt = DateTimeOffset.UtcNow,
         });

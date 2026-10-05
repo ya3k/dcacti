@@ -39,7 +39,7 @@ public class PlayerXpProgressionTests
     private static Player NewPlayer(int xp = Player.InitialXp) => new()
     {
         PlayerId = "player_xp_test",
-        DiscordUserId = "123456789012345678",
+        AccountId = Guid.NewGuid(),
         XP = xp,
         Level = Player.LevelForXp(xp),
     };
@@ -157,7 +157,7 @@ public class PlayerXpProgressionTests
         var player = new Player
         {
             PlayerId = "player_new",
-            DiscordUserId = "1",
+            AccountId = Guid.NewGuid(),
         };
 
         Assert.Equal(Player.InitialXp, player.XP);

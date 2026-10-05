@@ -1,18 +1,18 @@
 import React from 'react';
 import { useGameRuntimeState } from '../../game/runtime/GameRuntimeContext';
+import { ApplicationSession } from '../../services/api/ApplicationSession';
 import type { ConnectionStatus, GameRuntimeState } from '../../state/GameRuntimeState';
 
 /**
  * Minimal technical runtime status overlay.
  *
- * This is debugging/infrastructure UI (task §18): it reports whether the
- * Discord SDK, backend, SignalR transport, Phaser engine and runtime are
- * available. It is NOT the game HUD and shows no gameplay state — no HP, board,
- * gems, Power, damage, or any other authoritative value.
+ * This is debugging/infrastructure UI: it reports whether the
+ * backend, SignalR transport, Phaser engine and runtime are
+ * available. It is NOT the game HUD and shows no gameplay state.
  *
  * It is absolutely positioned inside the shell overlay and contributes nothing
  * to document size, so it can never change the game viewport dimensions or
- * introduce scrollbars (task §18, ARCHITECTURE.md §2.2.1 rule 4).
+ * introduce scrollbars.
  */
 export const StatusOverlay: React.FC = () => {
   const runtime = useGameRuntimeState();
@@ -21,12 +21,12 @@ export const StatusOverlay: React.FC = () => {
     <div className="status-overlay-card" data-testid="runtime-status-overlay">
       <div className="status-header">
         <h2>Runtime Status</h2>
-        <span className="platform-tag">Discord Activity / Local Dev</span>
+        <span className="platform-tag">Web Standalone</span>
       </div>
 
       <div className="status-body">
         <div className="status-grid">
-          <StatusItem label="Discord" value={describeDiscord()} state="neutral" />
+          <StatusItem label="Account" value={describeAccount()} state="neutral" />
           <StatusItem
             label="Backend"
             value={runtime.connection === 'connected' ? 'Connected' : 'Unknown'}
@@ -94,15 +94,9 @@ const StatusItem: React.FC<StatusItemProps> = ({ label, value, state }) => (
   </div>
 );
 
-/**
- * Discord SDK presence. The SDK lifecycle is owned by `DiscordService`
- * (ARCHITECTURE.md §2.3); runtime state deliberately does not track it, so this
- * reports the SDK's declared availability without reaching into the runtime.
- */
-function describeDiscord(): string {
-  return typeof window !== 'undefined' && window.self !== window.top
-    ? 'Activity'
-    : 'Local Dev';
+function describeAccount(): string {
+  const username = ApplicationSession.getInstance().getUsername();
+  return username ? username : 'Unauthenticated';
 }
 
 function describeConnection(connection: ConnectionStatus): string {

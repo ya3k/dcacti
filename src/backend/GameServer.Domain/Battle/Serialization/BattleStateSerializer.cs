@@ -191,6 +191,11 @@ public static class BattleStateSerializer
             Combo = state.Combo,
             MatchCount = state.MatchCount,
 
+            // CARD_RULES.md §3 item 6 / ADR-021: the current committed Turn's
+            // spent cast allowance, written as it is held. Zero is a real value
+            // (the allowance is unspent), so it is written unconditionally.
+            CardCastsUsedThisTurn = state.CardCastsUsedThisTurn,
+
             PetState = ToPetStateJson(state.PetState),
             BossState = ToBossStateJson(state.BossState),
 
@@ -505,7 +510,15 @@ public static class BattleStateSerializer
             // including the (0, 0) stand-in the contract explicitly rules out.
             dto.LastCommittedSwapPair is { } pair
                 ? new CommittedSwapPair(pair.MinCellIndex, pair.MaxCellIndex)
-                : null);
+                : null)
+        {
+            // CARD_RULES.md §3 item 6 / ADR-021: the spent cast allowance is
+            // restored as stored. It is carried across a round-trip unchanged so a
+            // reloaded battle enforces the same Turn's one-cast limit it did
+            // before the reload — the allowance is per committed Turn, not per
+            // process or per connection.
+            CardCastsUsedThisTurn = dto.CardCastsUsedThisTurn,
+        };
 
     /// <summary>
     /// Rebuilds one cell entry, parsing the documented contract names back into

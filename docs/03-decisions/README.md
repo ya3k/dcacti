@@ -1,6 +1,17 @@
 # Architecture Decision Records (ADR)
 
-**Version:** 1.12 (§7 — ADR-019 added per TASK-036: the Discord credential
+**Version:** 1.13 (§7 — ADR-021 added per `TASK-191` Q-4: the Card-cast
+restriction decision. The Product Owner approved **OPTION B — ONE CARD CAST PER
+TURN**: a player may successfully cast at most one Card during each committed
+Match-3 Turn, and the restriction is a **cast-count constraint, not Turn
+consumption** — a Card cast still consumes no Turn, does not resolve the Match-3
+board, and does not independently trigger the Boss response, so
+`CARD_RULES.md` §3 item 5 and `MATCH3_RULES.md` §8.1 item 5 remain in force. The
+Match-3 Turn remains the authoritative unit of combat progression and the Boss
+response is reached only through a committed Swap (`GAME_RULES.md` §17 step 18).
+Options A (cast consumes a Turn and triggers the Boss response) and C (keep
+unlimited free casts and change only Power Charge's cost) are recorded as
+rejected. ADR-020 remains Accepted and unchanged. Prior 1.12: §7 — ADR-019 added per TASK-036: the Discord credential
 secret-hygiene decision. The developer-local channel is the project's .NET
 user-secrets store and the deployment channel a host environment variable (D1);
 `src/backend/.env.example` keeps a Discord section but is corrected to document
@@ -179,19 +190,21 @@ technical document.
 | ADR-004 | SignalR for realtime communication                        | Accepted |
 | ADR-005 | Redis for active battle state                              | Accepted |
 | ADR-006 | PostgreSQL for persistent data                              | Accepted |
-| ADR-007 | Discord SDK integration & server-side auth boundary    | Accepted |
+| ADR-007 | Discord SDK integration & server-side auth boundary    | Superseded by ADR-020 |
 | ADR-008 | Snapshot-based battle reconnection                             | Accepted |
 | ADR-009 | Deterministic PRNG for server-authoritative gameplay randomness | Proposed |
 | ADR-010 | Committed-swap state for idempotent Swap rejection            | Accepted |
 | ADR-011 | Player = account owner; Pet = combat character; PetState = battle combat runtime (no PlayerState) | Accepted (item 7 partially superseded by ADR-016) |
 | ADR-012 | Player Level + Pet Level clamp formula; Relic/Card ownership vs battle equip; MVP scope closure; no Evolution | Accepted (items 3, 4, 6 partially superseded by ADR-016) |
-| ADR-013 | Discord authorization-code → identity exchange contract (OAuth2 code grant, token endpoint, `/users/@me`, `DiscordUserId` source) | Accepted |
+| ADR-013 | Discord authorization-code → identity exchange contract (OAuth2 code grant, token endpoint, `/users/@me`, `DiscordUserId` source) | Superseded by ADR-020 |
 | ADR-014 | `BattleState.PlayerId` = battle-end owner-identity source (not a wire member); `PetState.PetId` = owned Pet instance; `BattleResultId` = `BattleId` | Accepted |
 | ADR-015 | Application session authentication contract (signed JWT, stateless, `player_id` claim, Bearer + SignalR access-token propagation, 24h absolute expiry, ASP.NET Core JWT Bearer enforcement) | Accepted |
 | ADR-016 | Independent Player XP and Pet XP progression tracks — Player owns account XP / Level (capped Level 50, uncapped XP); Pet owns per-instance XP / Level (range 1–50, hard-capped at 4900); `Player.Level × PetLevelMultiplier` derivation and the `PetLevelMultiplier` field RETIRED; Pet XP balance decided in `PET_RULES.md` §5.1–§5.5 | Accepted |
 | ADR-017 | `PetState.NextAttackCritModifiers[]` as authoritative battle state — a dedicated source-specific collection separate from `StatusEffects[]`, persisting across Turns until consumed by a qualifying owner attack; additive Crit composition capped at 100 percentage points; consumed modifiers removed source-specifically; `DefaultCrit` is never a runtime reset mechanism | Accepted |
 | ADR-018 | Structured Relic Trigger/Condition/Effect contract — `EffectDefinition` is a structured `EffectDefinition[]` with `valueType` `Flat`/`Percentage`/`PercentagePoints`/`Undetermined` and explicit `target`/`lifetime`; `Condition` is structured and evaluated against the current resolution state with no persistent Relic counters; effect lifetime is independent of trigger re-evaluation; the closed Trigger list is unchanged; `Burning Curse` remains deferred; `varchar(128)` storage is insufficient and migration is a separate task; `RelicTriggered` stays `{ type, relicId }`; supersedes TASK-082 R2-7 for the Relic member. **Amended (Decision 12)** — the `CardCost` effect's runtime state carrier is `PetState.CardCostModifiers[]` (`SourceIdentity` + `CostReductionPercentage`), a dedicated source-specific `BattleState` collection separate from `StatusEffects[]`, with `target = Pet` and `lifetime = Battle`, same-source replace/refresh, additive composition capped at 100% for `CardCost` only, no PostgreSQL persistence, no new Redis key, and no new SignalR event/method | Accepted (amended) |
-| ADR-019 | Discord credential secret hygiene — the developer-local channel is the `GameServer.Api` .NET user-secrets store and the deployment channel a host environment variable; `.env.example` documents key names and approved channels, not an unread `.env` path; the tracked `appsettings.json` `ClientSecret` placeholder stays empty with "absent" = null/empty/whitespace; a missing credential fails startup in Production but leaves Development's unchanged `503 DISCORD_UNAVAILABLE`; rotation is manual, operator-owned, event-triggered, restart-required, with no scheduled cadence; the existing local credential is rotated once as a precaution | Accepted |
+| ADR-019 | Discord credential secret hygiene — the developer-local channel is the `GameServer.Api` .NET user-secrets store and the deployment channel a host environment variable; `.env.example` documents key names and approved channels, not an unread `.env` path; the tracked `appsettings.json` `ClientSecret` placeholder stays empty with "absent" = null/empty/whitespace; a missing credential fails startup in Production but leaves Development's unchanged `503 DISCORD_UNAVAILABLE`; rotation is manual, operator-owned, event-triggered, restart-required, with no scheduled cadence; the existing local credential is rotated once as a precaution | Superseded by ADR-020 |
+| ADR-020 | Standalone Web account authentication (Username/Password), new `Accounts` table, dropping `DiscordUserId` from `Players`, public `POST /api/auth/register` and `POST /api/auth/login`, retiring Discord Embedded App SDK and OAuth dependency completely | Accepted |
+| ADR-021 | One Card cast per committed Match-3 Turn — a player may successfully cast at most one Card during each committed Match-3 Turn; the restriction is a cast-count constraint, **not** Turn consumption, so a Card cast still consumes no Turn, does not resolve the Match-3 board, and does not independently trigger the Boss response; the Match-3 Turn remains the authoritative unit of combat progression and the Boss response is reached only through a committed Swap. Option A (cast consumes a Turn and triggers the Boss response) and Option C (keep unlimited free casts, change only Power Charge's cost) are rejected. Records `TASK-191` §6 Q-4 = OPTION B and unblocks B-02 for implementation | Accepted |
 
 **Partial supersession (ADR-016).** ADR-011 and ADR-012 remain in force
 except for the specific items named below, which ADR-016 supersedes. Their

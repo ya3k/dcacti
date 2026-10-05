@@ -1,6 +1,17 @@
 # Core Game Rules
 
-**Version:** 3.3 (§17 gained one clarifying paragraph — step 11's evaluation
+**Version:** 3.4 (§11 and §17 — the Card-cast restriction approved by `TASK-191`
+Q-4 (OPTION B) is recorded: §11 gains item 4 stating that a Card cast is an
+**auxiliary action within the current Turn** — it does not increment `Turn`, does
+not resolve the board, does not independently trigger the Boss response, and is
+limited to one successful cast per committed Turn, with the precise constraint
+owned by `CARD_RULES.md` §3 item 6; §17 gains a paragraph fixing where a Card cast
+sits relative to the swap resolution order — a cast is **not** a step of that
+order, does not advance it, and does not reach step 18, so the Boss response is
+reached only through a committed Swap. **The order itself is unchanged**: no step
+is added, removed, or reordered, and the Match-3 Turn remains the authoritative
+unit of combat progression. Rationale: ADR-021. No gameplay value is changed.
+Prior 3.3: (§17 gained one clarifying paragraph — step 11's evaluation
 point: "Trigger Relics" is evaluated, and its effects applied, after step 10
 ("Charge Passive") and **before** step 12 ("Generate Resources"), step 13
 ("Update Power"), and step 14 ("Resolve Player Effects"), so a Relic's Trigger
@@ -220,6 +231,14 @@ MVP has two Card categories: **Basic Card** (shared) and **Pet Skill Card**
 2. Cards consume or generate Power according to their definition and cannot
    bypass server validation.
 3. A Card cast is an explicit game event and may trigger Relics.
+4. A Card cast is an **auxiliary action within the current Turn**, not a Turn
+   of its own: it does not increment `Turn`, does not resolve the board, and
+   does not independently trigger the Boss response (§17 step 18). Exactly one
+   successful Card cast is allowed per committed Turn; after it, further casts
+   are rejected until the next committed Turn. The Match-3 Swap remains the
+   authoritative unit of combat progression, and it is the Swap's resolution
+   that advances `Turn` and resolves the Boss response. The precise constraint
+   is owned by `CARD_RULES.md` §3 item 6 and is not restated here.
 
 Exact Power costs and effects: see `CARD_RULES.md`.
 
@@ -430,6 +449,18 @@ Step 19 ("End Turn") expands to:
 
 The implementation may split these into multiple internal steps, but
 observable game behavior must preserve this logical ordering.
+
+**Where a Card cast sits relative to this order.** The list above is the
+resolution order of a **committed Swap**, and it is unchanged. A Card cast is
+not one of its steps and is not inserted into it: a cast is an auxiliary action
+resolved between Swaps, on the player's request, against the current committed
+state. It therefore does not advance this sequence, does not increment `Turn`,
+does not resolve the board, and does not itself reach step 18 — the Boss
+response is reached only through a committed Swap's resolution. What bounds the
+cast is a cast-count rule, not a position in this order: at most one successful
+Card cast per committed Turn (`CARD_RULES.md` §3 item 6, §11 item 4). Once that
+one cast has resolved, further casts are rejected until the next committed Turn,
+so a player cannot chain casts in place of resolving the Swap above.
 
 ---
 

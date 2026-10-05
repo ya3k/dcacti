@@ -3,16 +3,13 @@ import './App.css';
 import { GameShell } from './GameShell';
 import { StatusOverlay } from '../ui/components/StatusOverlay';
 import { ViewportDebugOverlay } from '../ui/components/ViewportDebugOverlay';
+import { AuthScreen } from '../ui/components/AuthScreen';
 import { GameRuntime } from '../game/runtime/GameRuntime';
-import { DiscordService } from '../services/discord/DiscordService';
-import { ApiService } from '../services/api/ApiService';
-import {
-  DEVELOPMENT_AUTHORIZATION_CODE,
-  isDevelopmentAuthenticationEnabled,
-} from '../services/api/DevelopmentAuthentication';
+import { ApplicationSession } from '../services/api/ApplicationSession';
+import type { SessionStatus } from '../state/GameRuntimeState';
 
 /** Default hub path (SIGNALR_PROTOCOL.md §1; mapped in vite.config.ts). */
-const BATTLE_HUB_URL = '/hubs/battle';
+export const BATTLE_HUB_URL = '/hubs/battle';
 
 /**
  * The process-wide runtime.
@@ -20,13 +17,12 @@ const BATTLE_HUB_URL = '/hubs/battle';
  * `SignalRService` is itself a singleton, so there is exactly one connection per
  * document regardless. Keeping the runtime at module scope makes the ownership
  * explicit: React attaches to and detaches from one long-lived runtime rather
- * than creating a runtime per effect run, which is what produces the StrictMode
- * mount → cleanup → mount race against the shared transport.
+ * than creating a runtime per effect run.
  */
 let sharedRuntime: GameRuntime | null = null;
 let bootstrapPromise: Promise<void> | null = null;
 
-function getSharedRuntime(): GameRuntime {
+export function getSharedRuntime(): GameRuntime {
   if (sharedRuntime === null) {
     sharedRuntime = new GameRuntime();
   }
@@ -34,74 +30,25 @@ function getSharedRuntime(): GameRuntime {
 }
 
 /**
- * Establishes the authenticated application session before connecting SignalR
- * (TDD.md §2.1 item 4, API_CONTRACTS.md §2, SIGNALR_PROTOCOL.md §1).
- *
- * Discord Activity sequence (unchanged):
- *   DiscordService.initialize()
- *           ↓
- *   DiscordService.getAuthorizationCode()
- *           ↓
- *   ApiService.authenticateDiscord(code)
- *           ↓
- *   ApplicationSession.establish(...) (called by ApiService.authenticateDiscord)
- *           ↓
- *   GameRuntime.setSessionStatus('authenticated')
- *           ↓
- *   GameRuntime.initialize(BATTLE_HUB_URL)
- *           ↓
- *   SignalR connection
- *
- * Development sequence (TASK-181, only when the development switch is on and the
- * Discord Activity iframe is not present):
- *   DiscordService.initialize()      ← reports isAvailable: false in a normal tab
- *           ↓
- *   ApiService.authenticateDiscord(DEVELOPMENT_AUTHORIZATION_CODE)
- *           ↓
- *   …the same session holder, the same status transition, the same SignalR
- *   connect as above. Both paths converge before `setSessionStatus`, so exactly
- *   one of them establishes the session and nothing downstream can tell them
- *   apart.
- *
- * The Discord path is tried first and is unchanged: when the app *is* framed by
- * Discord Activity it runs the Discord flow and the development branch is never
- * reached. When it is not framed, the outcome is the development session if the
- * developer opted in, and the pre-existing `error` status if they did not.
+ * Checks for an existing session on startup. If found, connects SignalR.
+ * Otherwise transitions session status to unauthenticated so the login/register
+ * screen is displayed (ADR-020).
  */
-async function bootstrapApplication(runtime: GameRuntime): Promise<void> {
-  runtime.setSessionStatus('authenticating');
+export async function bootstrapApplication(runtime: GameRuntime): Promise<void> {
+  const session = ApplicationSession.getInstance();
+  const restored = session.restoreFromStorage();
 
-  try {
-    const discordContext = await DiscordService.getInstance().initialize();
-
-    if (discordContext.isAvailable) {
-      const code = await DiscordService.getInstance().getAuthorizationCode();
-      if (!code) {
-        runtime.setSessionStatus('error');
-        return;
-      }
-
-      await ApiService.getInstance().authenticateDiscord(code);
-    } else if (isDevelopmentAuthenticationEnabled()) {
-      // The development-only path. It is reached only in a development build that
-      // opted in (see DevelopmentAuthentication), and it still obtains a real
-      // application session from the backend — the server's own Development
-      // environment and opt-in switch decide whether it answers
-      // (DevelopmentAuthenticationOptions).
-      await ApiService.getInstance().authenticateDiscord(DEVELOPMENT_AUTHORIZATION_CODE);
-    } else {
-      // No Discord Activity iframe and no development opt-in: no session is
-      // obtainable, so the app reports the failure rather than connecting
-      // unauthenticated (task §12, `SIGNALR_PROTOCOL.md` §1).
-      runtime.setSessionStatus('error');
-      return;
-    }
-
+  if (restored) {
     runtime.setSessionStatus('authenticated');
-
-    await runtime.initialize(BATTLE_HUB_URL);
-  } catch {
-    runtime.setSessionStatus('error');
+    try {
+      await runtime.initialize(BATTLE_HUB_URL);
+    } catch {
+      // Hub connect error or expired token: clear session and ask to re-login
+      session.clear();
+      runtime.setSessionStatus('unauthenticated');
+    }
+  } else {
+    runtime.setSessionStatus('unauthenticated');
   }
 }
 
@@ -114,36 +61,29 @@ export function resetSharedRuntime(): void {
 /**
  * Application shell.
  *
- * Owns the `GameRuntime` lifecycle and the Discord Activity SDK integration
- * boundary. React owns the shell, overlays and platform integration; Phaser owns
- * the game surface (TDD.md §2.1).
- *
- * React does not connect to SignalR itself and does not read gameplay state:
- * the runtime is the single authority for connection state and forwards
- * server-authoritative events to the presentation layer (task §15–§17).
- *
- * StrictMode (task §20). Effects run mount → cleanup → mount in development.
- * The bootstrap sequence is executed once and `initialize()` is idempotent,
- * so the second mount attaches to the already-authenticating/connecting runtime
- * and the app never opens a duplicate connection or duplicates authentication.
+ * Owns the `GameRuntime` lifecycle and the authentication state.
+ * When unauthenticated, displays the AuthScreen.
+ * Once authenticated, displays the GameShell and starts Phaser.
  */
 export const App: React.FC = () => {
   const [runtime, setRuntime] = useState<GameRuntime | null>(null);
+  const [sessionStatus, setSessionStatus] = useState<SessionStatus>('authenticating');
 
   useEffect(() => {
     const activeRuntime = getSharedRuntime();
-
     setRuntime(activeRuntime);
+    setSessionStatus(activeRuntime.getState().session);
+
+    const unsubscribe = activeRuntime.onRuntimeEvent((event) => {
+      setSessionStatus(event.state.session);
+    });
 
     if (!bootstrapPromise) {
       bootstrapPromise = bootstrapApplication(activeRuntime);
     }
 
     return () => {
-      // The runtime outlives an individual effect run: `SignalRService` is a
-      // singleton and the runtime is module-scoped, so disposal here would tear
-      // down the connection the next mount reuses. It is disposed on page
-      // teardown instead (see disposeSharedRuntime).
+      unsubscribe();
       setRuntime((current) => (current === activeRuntime ? null : current));
     };
   }, []);
@@ -158,15 +98,30 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('pagehide', onPageHide);
   }, []);
 
+  const handleAuthenticated = useCallback(async () => {
+    const activeRuntime = getSharedRuntime();
+    activeRuntime.setSessionStatus('authenticated');
+    try {
+      await activeRuntime.initialize(BATTLE_HUB_URL);
+    } catch {
+      activeRuntime.setSessionStatus('error');
+    }
+  }, []);
+
   const handlePhaserInit = useCallback(() => {
-    // The Phaser engine is running; reflect it on the shared runtime.
     runtime?.setEngineStatus('running');
   }, [runtime]);
 
-  // The shell and the Phaser canvas only mount once a runtime exists, so the
-  // game is never created without the runtime it coordinates through.
   if (runtime === null) {
     return <div className="game-shell" data-testid="game-shell-bootstrapping" />;
+  }
+
+  if (sessionStatus !== 'authenticated') {
+    return (
+      <div className="game-shell">
+        <AuthScreen onAuthenticated={handleAuthenticated} />
+      </div>
+    );
   }
 
   return (

@@ -34,7 +34,8 @@ Type:              DOCUMENTATION (TASK_TYPES.md §2 — "Change docs/ content" i
                    it is executed under the documentation workflow with review
                    posture. See "Type classification note" — no code-change
                    type applies because this task changes nothing at all.)
-Status:            BACKLOG
+Status:            SUPERSEDED
+Superseded by:     TASK-171, TASK-172, TASK-173, TASK-174, TASK-176, TASK-177, TASK-178, TASK-179, TASK-185
 Risk:              LOW (read-only audit. No source file, test file, migration,
                    or authoritative document is written. The task produces a
                    classification and a stop/decision report; it cannot break
@@ -110,6 +111,18 @@ is and who must authorize it.
 **This task does NOT modify TASK-036.** `tasks/blocked/TASK-036-discord-credential-secret-hygiene.md`
 is unrelated (Discord credential hygiene) and was inspected only to confirm it
 owns neither gap.
+
+---
+
+## Supersession Notice
+
+**Status:** SUPERSEDED (per `tasks/TASK_LIFECYCLE.md` §1/§3)
+
+All intended deliverables of this audit and classification task have been 100% satisfied or rendered obsolete by downstream tasks:
+- **GAP-A (Boss count and deferral alignment):** Fully addressed and reconciled across `MVP_SCOPE.md`, `BOSS_RULES.md`, and downstream boss definition and implementation tasks (`TASK-171`, `TASK-172`, `TASK-173`, `TASK-174`, `TASK-185`). All 5 MVP Bosses are content-defined, provisioned, and selectable.
+- **GAP-B (Card/Effect Element semantics and EffectDefinition storage):** Fully resolved in `TASK-167`, `TASK-168`, `TASK-176`, `TASK-177`, `TASK-178`, and `TASK-179`. `EffectDefinition` storage members remain closed without adding an Element member, and Burn DoT damage calculation correctly respects the effect's Element (Hỏa).
+
+Zero actionable independent scope remains in TASK-170.
 
 ---
 
@@ -749,30 +762,21 @@ architecture or gameplay decision is required to *classify* them.
 
 ## Completion Evidence
 
-<!--
-  TO BE COMPLETED BY THE EXECUTING AGENT after reaching DONE.
-  Keep concise and factual.
--->
+### Status
+SUPERSEDED (per `tasks/TASK_LIFECYCLE.md` §1/§3)
 
 ### Changed Files
-- `tasks/backlog/TASK-170-audit-classify-boss-count-and-effect-element-gaps.md`
-  — this audit/classification task (status field updates only, if the task is
-  later moved through the lifecycle)
+- `tasks/completed/TASK-170-audit-classify-boss-count-and-effect-element-gaps.md` — moved from `tasks/backlog/` to `tasks/completed/` with Status: SUPERSEDED.
 
-### Validation Results
-- Documentation consistency review (`quality/documentation-consistency.md`) —
-  PENDING
-- Scope validation (`quality/scope-validation.md` vs `MVP_SCOPE.md` §1/§2/§4) —
-  PENDING
-- File-diff verification that this task file is the only addition and that zero
-  files are modified — PENDING
+### Supersession Evidence
+- GAP-A was fully resolved by TASK-171, TASK-172, TASK-173, TASK-174, and TASK-185.
+- GAP-B was verified and resolved in TASK-167, TASK-168, TASK-176, TASK-177, TASK-178, and TASK-179.
+- Zero actionable independent scope remains in TASK-170.
 
 ### Server Authority & Scope Verification
-- [ ] Confirmed zero client-authoritative gameplay logic (no code changed)
-- [ ] Confirmed adherence to MVP Scope (`MVP_SCOPE.md` §1) — both gaps concern
-      IN-scope content; no OUT item touched
-- [ ] Confirmed no source code changes
-- [ ] Confirmed no documentation changes
-- [ ] Confirmed no gameplay decisions made
-- [ ] Confirmed no new architecture introduced
-- [ ] Confirmed no new task created by TASK-170
+- [x] Confirmed zero client-authoritative gameplay logic (no code changed)
+- [x] Confirmed adherence to MVP Scope (`MVP_SCOPE.md` §1)
+- [x] Confirmed no source code changes
+- [x] Confirmed no gameplay decisions made
+- [x] Confirmed no new architecture introduced
+- [x] Confirmed no new task created by TASK-170

@@ -493,6 +493,13 @@ public static class SwapExecutor
             // new Turn — never one per Match, per pass, or per Cascade.
             Turn = state.Turn + 1,
 
+            // CARD_RULES.md §3 item 6 / ADR-021: a new committed Match-3 Turn
+            // restores the Turn's one-cast allowance. This is the reset point and
+            // the only one — it rides the same write-back that advances `Turn`, so
+            // the allowance is restored exactly when the committed Turn begins and
+            // never by a request, a rejection, a state read, or a reconnect.
+            CardCastsUsedThisTurn = BattleState.InitialCardCastsUsedThisTurn,
+
             // §8.2 item 1: one successfully resolved action increments Sequence by
             // exactly 1, after the board is stable. Not per Match, per pass, or per
             // Cascade.

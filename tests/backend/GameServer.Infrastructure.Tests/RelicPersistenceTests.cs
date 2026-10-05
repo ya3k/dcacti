@@ -243,7 +243,7 @@ public class RelicPersistenceTests
         Assert.Equal(
             new[]
             {
-                "BattleResult", "BossDefinition", "CardDefinition", "Pet",
+                "Account", "BattleResult", "BossDefinition", "CardDefinition", "Pet",
                 "PetDefinition", "Player", "PlayerUnlockedCard", "Relic",
                 "RelicDefinition",
             },
@@ -320,7 +320,7 @@ public class RelicPersistenceTests
             context.Players.Add(new Domain.Players.Player
             {
                 PlayerId = "player_1",
-                DiscordUserId = "discord_1",
+                AccountId = Guid.NewGuid(),
                 Level = 1,
                 CreatedAt = DateTimeOffset.UtcNow,
             });
@@ -358,7 +358,7 @@ public class RelicPersistenceTests
             context.Players.Add(new Domain.Players.Player
             {
                 PlayerId = "player_1",
-                DiscordUserId = "discord_1",
+                AccountId = Guid.NewGuid(),
                 Level = 1,
                 CreatedAt = DateTimeOffset.UtcNow,
             });

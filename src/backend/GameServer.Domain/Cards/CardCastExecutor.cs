@@ -10,6 +10,16 @@ namespace GameServer.Domain.Cards;
 public static class CardCastExecutor
 {
     /// <summary>
+    /// How many Card casts one committed Match-3 Turn allows
+    /// (<c>CARD_RULES.md</c> §3 item 6: "at most one Card during each committed
+    /// Match-3 Turn", <c>ADR-021</c>).
+    ///
+    /// It is a cast-count limit, not a Turn cost: the allowance is spent by a
+    /// successful cast and restored by the next committed Swap's write-back.
+    /// </summary>
+    public const int MaxCardCastsPerTurn = 1;
+
+    /// <summary>
     /// Validates and applies a Card or Pet Skill cast.
     /// </summary>
     /// <param name="state">The authoritative battle state before the cast.</param>
@@ -56,7 +66,25 @@ public static class CardCastExecutor
             return CardCastExecutionResult.Rejected(CardCastRejectionReason.InsufficientPower);
         }
 
-        // 4. Deduct Power cost
+        // 4. Verify the current committed Match-3 Turn's one-cast allowance is
+        //    unspent (CARD_RULES.md §3 item 6, ADR-021).
+        //
+        // This is a CAST-COUNT constraint, not Turn consumption: the cast still
+        // consumes no Turn (item 5) and begins no Turn (MATCH3_RULES.md §8.1
+        // item 5). The allowance is restored only by the committed Swap's
+        // write-back, which is the same write-back that advances `Turn`
+        // (SwapExecution, §8.3).
+        //
+        // The check is placed AFTER every other validation so that a cast which
+        // would have been rejected for another reason reports that reason: only a
+        // cast the Turn would otherwise have accepted consumes the allowance
+        // (§3 item 3 — a rejected cast changes nothing, including this counter).
+        if (state.CardCastsUsedThisTurn >= MaxCardCastsPerTurn)
+        {
+            return CardCastExecutionResult.Rejected(CardCastRejectionReason.CardCastAlreadyUsedThisTurn);
+        }
+
+        // 5. Deduct Power cost
         var newPower = state.PetState.Power - effectiveCost;
         var newHp = state.PetState.HP;
         var newStatusEffects = state.PetState.ActiveStatusEffects;
@@ -94,7 +122,7 @@ public static class CardCastExecutor
             events.Add(BattleEvent.CreatePetSkillCast(cardDefinition.CardDefinitionId));
         }
 
-        // 5. Apply effects from structured EffectDefinition[]
+        // 6. Apply effects from structured EffectDefinition[]
         for (var i = 0; i < cardDefinition.EffectDefinition.Count; i++)
         {
             var effect = cardDefinition.EffectDefinition[i];
@@ -393,6 +421,16 @@ public static class CardCastExecutor
         var committedState = state with
         {
             Sequence = state.Sequence + 1,
+
+            // CARD_RULES.md §3 item 6 / ADR-021: this cast is the committed Turn's
+            // one successful cast, so the allowance is now spent. The counter is
+            // written here — the single write-back for an accepted cast — and is
+            // never written on any rejection path above, which is what makes a
+            // rejected cast consume nothing.
+            //
+            // `Turn` is deliberately NOT written: a Card cast consumes no Turn
+            // (§3 item 5), so this transition changes the allowance only.
+            CardCastsUsedThisTurn = state.CardCastsUsedThisTurn + 1,
             PetState = newPetState,
             BossState = bossState,
             RngState = currentRngState,

@@ -92,10 +92,19 @@ public class BattleResultPostgresTests : IAsyncLifetime
         var petInstanceId = NewId("pet_instance_result_pg");
         var signatureSkillCardId = NewId("card_skill_pg");
 
+        var accountId = Guid.NewGuid();
+        context.Accounts.Add(new Domain.Accounts.Account
+        {
+            AccountId = accountId,
+            Username = $"u_{accountId:N}"[..20],
+            PasswordHash = "hash",
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+
         context.Players.Add(new Player
         {
             PlayerId = playerId,
-            DiscordUserId = $"9{Random.Shared.NextInt64(1_000_000_000_000_000L):D16}",
+            AccountId = accountId,
             Level = Player.InitialLevel,
             CreatedAt = DateTimeOffset.UtcNow,
         });
@@ -192,9 +201,21 @@ public class BattleResultPostgresTests : IAsyncLifetime
 
         if (playerId is not null)
         {
+            var accountId = await context.Players
+                .Where(p => p.PlayerId == playerId)
+                .Select(p => (Guid?)p.AccountId)
+                .FirstOrDefaultAsync();
+
             await context.Database.ExecuteSqlRawAsync(
                 "DELETE FROM \"Player\" WHERE \"PlayerId\" = {0}",
                 playerId);
+
+            if (accountId is not null)
+            {
+                await context.Database.ExecuteSqlRawAsync(
+                    "DELETE FROM \"Account\" WHERE \"AccountId\" = {0}",
+                    accountId.Value);
+            }
         }
     }
 

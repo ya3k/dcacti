@@ -361,9 +361,16 @@ public class BattleStateSerializationLifecycleTests
             [
                 "battleId", "playerId", "turn", "sequence", "rngSeed", "rngState",
                 "boardState", "combo", "matchCount", "petState", "bossState",
+                "cardCastsUsedThisTurn",
             ],
             rootNames);
         Assert.Null(created.LastCommittedSwapPair);
+
+        // A newly created battle has spent none of its first Turn's cast
+        // allowance (CARD_RULES.md §3 item 6, ADR-021), and that zero round-trips
+        // as an ordinary member — it is a real value, not an absence.
+        Assert.Equal(BattleState.InitialCardCastsUsedThisTurn, created.CardCastsUsedThisTurn);
+        Assert.Equal(created.CardCastsUsedThisTurn, reloaded.CardCastsUsedThisTurn);
     }
 
     [Fact]

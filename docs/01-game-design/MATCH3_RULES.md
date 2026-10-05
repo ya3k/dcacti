@@ -2575,7 +2575,9 @@ Special Gem effect clearing N  → does NOT change Combo by N
    activation adds nothing — or as an explicit detonation outside a Swap's
    resolution, in which case there is no Swap Combo to affect (`CARD_RULES.md`
    §3 item 5: a Card cast does not consume a Turn and does not interact with
-   Combo). The ruling in items 1–3 therefore covers the same ground from the
+   Combo; §3 item 6 additionally bounds a player to at most one successful cast
+   per committed Match-3 Turn, which likewise changes no Combo value and begins
+   no Turn). The ruling in items 1–3 therefore covers the same ground from the
    other direction, not a third case.
 5. **Why no change is warranted.** `GAME_RULES.md` §5 item 1 defines Combo as
    "consecutive Matches caused by one Swap", and §5 item 4 makes Combo a damage
@@ -2804,7 +2806,30 @@ this section rather than restating it.
 5. **A Card cast begins no Turn** (`CARD_RULES.md` §3 item 5). The Turn rule
    applies to the Swap/Action that starts it; Card casts are independent of the
    Match-3 Turn/Combo system and are not board resolution.
-6. This document fixes the *order* in which the counter changes relative to the
+6. **A Card cast is nonetheless bounded to one per committed Match-3 Turn.**
+   `CARD_RULES.md` §3 item 6 owns the rule: at most one successful Card cast may
+   occur during a committed Match-3 Turn. It is a **cast-count constraint, not
+   Turn consumption** — it does not contradict item 5, because the cast still
+   begins no Turn. The lifecycle is:
+
+   ```text
+   New committed Match-3 Turn      (§8.1 item 1 — a committed Swap)
+        ↓
+   Card cast available
+        ↓
+   Card successfully cast          (auxiliary action — no Turn, no board change)
+        ↓
+   Card cast unavailable for the remainder of that Turn
+        ↓
+   Match-3 Turn commits, Turn++    (§8.3), boss response
+        ↓
+   Next Turn — Card cast available again
+   ```
+
+   A rejected Swap begins no Turn (§2.1.5 item 2), so it neither consumes nor
+   restores the allowance. The allowance is per **committed** Turn: it is not
+   restored by a rejection and not consumed by one.
+7. This document fixes the *order* in which the counter changes relative to the
    resolution (§8.3). `GAME_RULES.md` §2 owns what a Turn is,
    `GAME_STATE.md` §2.0.2 owns the counter's stored representation and initial
    value, and `GAME_STATE.md` §5.1 owns the state write-back that persists it.
@@ -2823,7 +2848,10 @@ this section rather than restating it.
 4. **A card cast increments nothing on the board.** Non-Swap actions are not
    board resolution; their own `Sequence` treatment is owned by the task that
    implements them and by `GAME_STATE.md` §5, which states the resolution
-   counter rule they must satisfy.
+   counter rule they must satisfy. A card cast is additionally bounded to one
+   per committed Match-3 Turn (§8.1 item 6, `CARD_RULES.md` §3 item 6) — a
+   cast-count constraint that changes nothing about `Sequence`, `Turn`, or the
+   board.
 5. **Board generation increments nothing.** `Sequence = 0` remains the only
    valid value until the first action resolution succeeds (`GAME_STATE.md`
    §2.0.2, §2.0.5.2 item 1).

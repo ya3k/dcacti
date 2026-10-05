@@ -3,47 +3,51 @@ export interface HealthStatus {
 }
 
 /**
- * The `POST /api/auth/discord` response (API_CONTRACTS.md §2.5).
- *
- * The shape is unchanged by the session contract. `sessionToken` is the
- * application session defined in §2.8 (ADR-015): a self-contained signed JWT
- * issued after the §2 identity exchange succeeds. It is **not** the Discord
- * access token — that is used only for the §2.3 identity request server-side and
- * is never issued to the client (§2.7 item 4).
- *
- * The token is application authentication material, so it is held in memory for
- * the session's lifetime and never persisted: ADR-015 D5 defines no revocation
- * and no refresh, so a stored token would outlive its usefulness with no way to
- * withdraw it, and D10's secret boundary is about never placing sessions in
- * artifacts the client controls.
+ * Authoritative web session payload returned by POST /api/auth/register
+ * and POST /api/auth/login (ADR-020).
  */
-export interface DiscordAuthResponse {
+export interface AuthResponse {
   sessionToken: string;
   playerId: string;
+  username: string;
 }
 
+export interface RegisterRequest {
+  username: string;
+  password: string;
+}
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+const STORAGE_KEYS = {
+  SESSION_TOKEN: 'dcacti_session_token',
+  PLAYER_ID: 'dcacti_player_id',
+  USERNAME: 'dcacti_username',
+} as const;
+
 /**
- * The application session's client-side holder (ADR-015 D3/D4).
+ * The application session's client-side holder (ADR-015, ADR-020).
  *
  * <code>
- * Discord identity exchange
+ * Web account authentication (Register / Login)
  *         ↓
- * sessionToken (self-contained signed JWT)
+ * sessionToken (self-contained signed JWT) + playerId + username
  *         ↓
  * Authorization: Bearer on REST + SignalR access-token mechanism
  * </code>
  *
- * `playerId` is kept alongside the token only so the UI can label the
- * authenticated player. It is **not** an authority: every ownership decision is
- * made by the server from the token's `player_id` claim, and the client never
- * sends a PlayerId to establish identity (API_CONTRACTS.md §2.8 "Identity", §4
- * note 7).
+ * `playerId` and `username` are kept alongside the token for UI presentation.
+ * Ownership decisions are made server-side from the token's `player_id` claim.
  */
 export class ApplicationSession {
   private static instance: ApplicationSession | null = null;
 
   private sessionToken: string | null = null;
   private playerId: string | null = null;
+  private username: string | null = null;
 
   private constructor() {}
 
@@ -55,17 +59,66 @@ export class ApplicationSession {
   }
 
   /**
-   * Records the session established by a successful §2 exchange.
+   * Records the session established by successful registration or login.
    */
-  public establish(response: DiscordAuthResponse): void {
+  public establish(response: { sessionToken: string; playerId: string; username?: string }): void {
     this.sessionToken = response.sessionToken;
     this.playerId = response.playerId;
+    this.username = response.username ?? 'player';
+
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        window.localStorage.setItem(STORAGE_KEYS.SESSION_TOKEN, response.sessionToken);
+        window.localStorage.setItem(STORAGE_KEYS.PLAYER_ID, response.playerId);
+        window.localStorage.setItem(STORAGE_KEYS.USERNAME, this.username);
+      } catch {
+        // Storage might fail in sandboxed iframes or private browsing; ignore.
+      }
+    }
   }
 
-  /** Forgets the session. There is no server-side logout in MVP (D5). */
+  /**
+   * Attempts to restore an existing session from localStorage.
+   * Returns true if a valid session was restored.
+   */
+  public restoreFromStorage(): boolean {
+    if (typeof window === 'undefined' || !window.localStorage) {
+      return false;
+    }
+
+    try {
+      const token = window.localStorage.getItem(STORAGE_KEYS.SESSION_TOKEN);
+      const playerId = window.localStorage.getItem(STORAGE_KEYS.PLAYER_ID);
+      const username = window.localStorage.getItem(STORAGE_KEYS.USERNAME);
+
+      if (token && playerId && username) {
+        this.sessionToken = token;
+        this.playerId = playerId;
+        this.username = username;
+        return true;
+      }
+    } catch {
+      // Storage access failure.
+    }
+
+    return false;
+  }
+
+  /** Forgets the session and clears localStorage. */
   public clear(): void {
     this.sessionToken = null;
     this.playerId = null;
+    this.username = null;
+
+    if (typeof window !== 'undefined' && window.localStorage) {
+      try {
+        window.localStorage.removeItem(STORAGE_KEYS.SESSION_TOKEN);
+        window.localStorage.removeItem(STORAGE_KEYS.PLAYER_ID);
+        window.localStorage.removeItem(STORAGE_KEYS.USERNAME);
+      } catch {
+        // Storage access failure.
+      }
+    }
   }
 
   public getSessionToken(): string | null {
@@ -76,13 +129,17 @@ export class ApplicationSession {
     return this.playerId;
   }
 
+  public getUsername(): string | null {
+    return this.username;
+  }
+
   public isAuthenticated(): boolean {
     return this.sessionToken !== null;
   }
 
   /**
    * The `Authorization` header value for REST requests (§2.8 "Transport"), or
-   * `null` when no session has been established.
+   * empty object when no session has been established.
    */
   public getAuthorizationHeader(): Record<string, string> {
     return this.sessionToken === null

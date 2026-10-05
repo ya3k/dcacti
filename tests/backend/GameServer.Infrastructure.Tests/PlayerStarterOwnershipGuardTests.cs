@@ -54,6 +54,7 @@ public class PlayerStarterOwnershipGuardTests
 
         Assert.Equal(
             [
+                "Account",
                 "BattleResult",
                 "BossDefinition",
                 "CardDefinition",

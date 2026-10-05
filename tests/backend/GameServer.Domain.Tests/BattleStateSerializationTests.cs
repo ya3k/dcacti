@@ -740,8 +740,10 @@ public class BattleStateSerializationTests
     {
         // GAME_STATE.md §2 is the whole contract: BattleId, Sequence, RngSeed/
         // RngState, BoardState, LastCommittedSwapPair?, Combo, MatchCount, PetState,
-        // BossState, Turn — and nothing else. REDIS_STATE.md §2 item 1 requires the
-        // record to match §2 "exactly — no additional Redis-only fields".
+        // BossState, Turn, PlayerId, and the Card stage's CardCastsUsedThisTurn
+        // (CARD_RULES.md §3 item 6, ADR-021) — and nothing else. REDIS_STATE.md §2
+        // item 1 requires the record to match §2 "exactly — no additional
+        // Redis-only fields".
         using var document = JsonDocument.Parse(
             BattleStateSerializer.Serialize(RepresentativeState()));
 
@@ -755,6 +757,7 @@ public class BattleStateSerializationTests
                 "battleId",
                 "boardState",
                 "bossState",
+                "cardCastsUsedThisTurn",
                 "combo",
                 "lastCommittedSwapPair",
                 "matchCount",

@@ -461,10 +461,19 @@ public class BattleResultSmokeTest
             // (see the Ensure* helpers below).
             var petDefinitionId = $"{PetDefinitionId}_{Guid.NewGuid():N}";
 
+            var accountId = Guid.NewGuid();
+            context.Accounts.Add(new Domain.Accounts.Account
+            {
+                AccountId = accountId,
+                Username = $"u_{accountId:N}"[..20],
+                PasswordHash = "hash",
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+
             context.Players.Add(new Player
             {
                 PlayerId = playerId,
-                DiscordUserId = $"8035{Random.Shared.NextInt64(1_000_000_000_000_000L):D16}",
+                AccountId = accountId,
                 Level = Player.InitialLevel,
                 CreatedAt = DateTimeOffset.UtcNow,
             });

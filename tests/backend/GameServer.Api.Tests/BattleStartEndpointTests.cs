@@ -823,7 +823,7 @@ public class BattleStartEndpointTests
             context.Players.Add(new Player
             {
                 PlayerId = playerId,
-                DiscordUserId = $"{DiscordUserId}{Random.Shared.Next(1000, 9999)}",
+                AccountId = Guid.NewGuid(),
                 Level = Player.InitialLevel,
                 CreatedAt = DateTimeOffset.UtcNow,
             });

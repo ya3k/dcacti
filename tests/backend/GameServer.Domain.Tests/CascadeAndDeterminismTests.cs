@@ -592,8 +592,10 @@ public class CascadeAndDeterminismTests
         // the Match / Combo accounting values, documented as root members in §2.2 with
         // no nested PlayerState node; PetState is the combat-stat / Pet / Passive
         // stage's field, documented in §2.3; BossState is the
-        // Boss stage's field, documented in §2.4; and PlayerId is the Battle
-        // Identity member documented in §2.8 — none of them is
+        // Boss stage's field, documented in §2.4; PlayerId is the Battle
+        // Identity member documented in §2.8; and CardCastsUsedThisTurn is the
+        // Card stage's per-Turn cast allowance (CARD_RULES.md §3 item 6,
+        // ADR-021) — none of them is
         // Special Gem state and none was added here.)
         var properties = typeof(BattleState)
             .GetProperties()
@@ -605,9 +607,9 @@ public class CascadeAndDeterminismTests
         Assert.Equal(
             new[]
             {
-                "BattleId", "BoardState", "BossState", "Combo", "LastCommittedSwapPair",
-                "MatchCount", "PetState", "PlayerId", "RngSeed", "RngState",
-                "Sequence", "Turn",
+                "BattleId", "BoardState", "BossState", "CardCastsUsedThisTurn", "Combo",
+                "LastCommittedSwapPair", "MatchCount", "PetState", "PlayerId", "RngSeed",
+                "RngState", "Sequence", "Turn",
             },
             properties);
     }

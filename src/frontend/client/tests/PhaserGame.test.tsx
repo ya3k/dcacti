@@ -51,9 +51,20 @@ describe('PhaserGame Component', () => {
     const config = vi.mocked(Phaser.Game).mock.calls[0][0] as Record<string, any>;
     const sceneKeys = (config.scene as Array<{ name?: string }>).map((s) => s.name);
 
-    // TASK-090: the registered scene lifecycle is now the full documented order:
+    // TASK-090: the registered scene lifecycle is the full documented order:
     // BootScene → PreloaderScene → MainMenuScene → LobbyScene → BattleScene → ResultScene.
-    expect(sceneKeys).toEqual(['BootScene', 'PreloaderScene', 'MainMenuScene', 'LobbyScene', 'BattleScene', 'ResultScene']);
+    // TASK-190: `CollectionViewerScene` is registered alongside it as the
+    // meta-progression viewer, a side branch off the main menu rather than a
+    // step in the battle lifecycle.
+    expect(sceneKeys).toEqual([
+      'BootScene',
+      'PreloaderScene',
+      'MainMenuScene',
+      'LobbyScene',
+      'CollectionViewerScene',
+      'BattleScene',
+      'ResultScene',
+    ]);
   });
 
   it('publishes the runtime to the Phaser registry for scenes', () => {

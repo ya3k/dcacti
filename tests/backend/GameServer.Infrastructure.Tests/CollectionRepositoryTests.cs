@@ -481,7 +481,7 @@ public class CollectionRepositoryTests
     private static Player NewPlayer(string playerId) => new()
     {
         PlayerId = playerId,
-        DiscordUserId = $"discord_{playerId}",
+        AccountId = Guid.NewGuid(),
         Level = Player.InitialLevel,
         CreatedAt = DateTimeOffset.UtcNow,
     };

@@ -1,3 +1,4 @@
+using GameServer.Application.Accounts;
 using GameServer.Application.Battle;
 using GameServer.Application.Cards;
 using GameServer.Application.Identity;
@@ -5,6 +6,7 @@ using GameServer.Application.Pets;
 using GameServer.Application.Players;
 using GameServer.Domain.Players;
 using GameServer.Application.Relics;
+using GameServer.Infrastructure.Accounts;
 using GameServer.Infrastructure.Discord;
 using GameServer.Infrastructure.Postgres;
 using GameServer.Infrastructure.Postgres.Repositories;
@@ -32,6 +34,10 @@ public static class DependencyInjection
             services.AddDbContext<GameDbContext>(options =>
                 options.UseNpgsql(pgConnectionString));
         }
+
+        // Account persistence boundary & password hashing (ADR-020).
+        services.AddScoped<IAccountRepository, AccountRepository>();
+        services.AddSingleton<IPasswordHasher, Pbkdf2PasswordHasher>();
 
         // Player ownership persistence boundary (DATABASE.md §1).
         //

@@ -46,7 +46,7 @@ public class PetProgressionPersistenceTests
         var player = new Player
         {
             PlayerId = playerId,
-            DiscordUserId = $"discord-{playerId}",
+            AccountId = Guid.NewGuid(),
             XP = Player.InitialXp,
             Level = Player.InitialLevel,
             CreatedAt = DateTimeOffset.UtcNow,

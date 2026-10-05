@@ -79,34 +79,43 @@ public class ApiAuthorityRegressionTests
     }
 
     [Fact]
-    public void DiscordAuthResponse_ShouldCarryOnlyTheDocumentedMembers()
+    public void AuthResponse_ShouldCarryOnlyTheDocumentedMembers()
     {
-        // API_CONTRACTS.md §2.5 / TASK-083 §"Acceptance Criteria": the auth
-        // response is byte-shape identical to before — `sessionToken` and
-        // `playerId`, and no member reporting the starter ownership. The client
-        // observes ownership only through the §5 collection reads.
-        var members = typeof(GameServer.Api.Controllers.DiscordAuthResponse)
+        // API_CONTRACTS.md §2 / ADR-020: the auth response carries
+        // `sessionToken`, `playerId`, and `username`.
+        var members = typeof(GameServer.Api.Controllers.AuthResponse)
             .GetProperties()
             .Select(property => property.Name)
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToArray();
 
-        Assert.Equal(["PlayerId", "SessionToken"], members);
+        Assert.Equal(["PlayerId", "SessionToken", "Username"], members);
     }
 
     [Fact]
-    public void DiscordAuthRequest_ShouldCarryOnlyTheDocumentedMember()
+    public void RegisterRequest_ShouldCarryOnlyTheDocumentedMembers()
     {
-        // API_CONTRACTS.md §2: the request carries exactly one member (`code`).
-        // No starter-selection member exists — the starter set is fixed
-        // server-side and unreachable from client input (GAME_RULES.md §18,
-        // ADR-001).
-        var members = typeof(GameServer.Api.Controllers.DiscordAuthRequest)
+        // API_CONTRACTS.md §2.1: RegisterRequest carries Username and Password.
+        var members = typeof(GameServer.Api.Controllers.RegisterRequest)
             .GetProperties()
             .Select(property => property.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
             .ToArray();
 
-        Assert.Equal(["Code"], members);
+        Assert.Equal(["Password", "Username"], members);
+    }
+
+    [Fact]
+    public void LoginRequest_ShouldCarryOnlyTheDocumentedMembers()
+    {
+        // API_CONTRACTS.md §2.2: LoginRequest carries Username and Password.
+        var members = typeof(GameServer.Api.Controllers.LoginRequest)
+            .GetProperties()
+            .Select(property => property.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(["Password", "Username"], members);
     }
 
     [Fact]

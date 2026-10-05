@@ -1,6 +1,18 @@
 # Game State
 
-**Version:** 2.23 (§2.3's `PetState` tree extended, and §2.3.9, §2.3.10, and
+**Version:** 2.24 (§2's tree and a new **§2.2.2** record the root
+`BattleState.CardCastsUsedThisTurn` member per the approved **TASK-191 Q-4
+(OPTION B)** Card-cast rule — "a player may successfully cast at most one Card
+during each committed Match-3 Turn" (`CARD_RULES.md` §3 item 6, `ADR-021`).
+`CardCastsUsedThisTurn` is an **integer cast-count allowance, not a Turn
+counter**: it is `0` at battle creation and after every committed Swap,
+incremented once per successful Card cast, written in exactly those two places,
+never written by a rejected action or a read path, and **not** a
+`SIGNALR_PROTOCOL.md` wire member. §2.2 (`Combo`/`MatchCount`), §2.2.1,
+§2.3.4, §2.3.5, §2.3.7, §2.3.9, §2.3.10, §2.4, §5.1, and §2.6 are unchanged;
+no other member's shape, lifetime, or semantics moves, and the `Turn` counter's
+rule (`MATCH3_RULES.md` §8.1) is untouched — a Card cast still begins no Turn.
+Prior 2.23: (§2.3's `PetState` tree extended, and §2.3.9, §2.3.10, and
 §5.1.5 added, per **TASK-179** — the canonicalization of the `BurnDamage`
 runtime state carrier **TASK-177** already implemented: **`PetState.
 BurnDamageModifiers[]`**, the applied, `Battle`-scoped Burn-damage modifiers on
@@ -312,6 +324,9 @@ BattleState
 │                            §2.1.10, MATCH3_RULES.md §2.1.4)
 ├── Combo                   (Match/Combo accounting — §2.2)
 ├── MatchCount              (Match/Combo accounting — §2.2)
+├── CardCastsUsedThisTurn   (the current committed Match-3 Turn's spent
+│                            Card-cast allowance — §2.2.2; CARD_RULES.md
+│                            §3 item 6, ADR-021)
 ├── PetState                (the one active Pet for this battle — combat
 │                            character; combat stats, loadout, Passive —
 │                            §2.3; ADR-011)
@@ -1064,6 +1079,53 @@ nested these two values under a type named `PlayerState`. That type name
 does not appear in this contract; it was an implementation-side mismatch
 recorded under ADR-011 Implementation Impact / `tasks/completed` impact,
 not a second authoritative path and not a wire rename.
+
+### 2.2.2 Card-Cast Allowance (`BattleState.CardCastsUsedThisTurn`)
+
+`CardCastsUsedThisTurn` is a root `BattleState` member: how many Card casts
+have been **successfully** resolved during the current committed Match-3
+Turn. It is the state that `CARD_RULES.md` §3 item 6 reads to enforce its
+one-cast-per-Turn limit; that subsection owns the rule, and `ADR-021`
+records why it was chosen. This subsection owns only the member's shape.
+
+```text
+BattleState
+└── CardCastsUsedThisTurn        (int; 0 at battle creation and after every
+                                  committed Swap; incremented once per
+                                  successful Card cast)
+```
+
+1. **It is the cast allowance's state, not a Turn counter.** It does not
+   change what a Turn is: `CARD_RULES.md` §3 item 5 and `MATCH3_RULES.md`
+   §8.1 item 5 keep a Card cast out of the Turn counter, and this member
+   neither increments `Turn` nor causes it to be incremented. It records
+   only how much of the current Turn's allowance is spent.
+2. **There is exactly one representation of it, and it is an integer.** It
+   is not nullable, has no omitted form, and carries no second spelling —
+   no boolean "cast used this Turn" flag alongside it, and no per-Card
+   counter. Zero is a real value here, the same way `Combo = 0` is
+   (§2.2.1 item 1): it means "the allowance is unspent".
+3. **Initial value is `0`.** A newly created battle carries it at `0`
+   (§2.0.5.2 item 1 — creation is not a resolution). Board generation
+   neither sets nor consumes it.
+4. **It is written in exactly two places.** A successful Card cast writes
+   `previous + 1` in the cast's own single write-back; a **committed** Swap
+   writes `0` in the resolution's single write-back (§5.1, `MATCH3_RULES.md`
+   §8.3) — the same write-back that advances `Turn`, which is what makes the
+   allowance and the Turn it belongs to change together.
+5. **A rejected action never writes it.** A rejected Card cast changes no
+   state at all (`CARD_RULES.md` §3 item 3), so it neither spends nor
+   restores the allowance; a rejected Swap begins no Turn
+   (`MATCH3_RULES.md` §2.1.5 item 2), so it does not restore it either. No
+   read path — a state push, a snapshot request, or a reconnect — writes it.
+6. **It is persisted with the rest of Active Battle State and is not a wire
+   member.** It travels in the same runtime record as `Turn` and `Sequence`
+   (§5.1, `REDIS_STATE.md` §4), so a battle reloaded mid-Turn enforces the
+   same Turn's limit rather than granting a fresh cast. Like
+   `LastCommittedSwapPair` (§2.1.10 item 9), it is **not** delivered to the
+   client under any `SIGNALR_PROTOCOL.md` payload: the client learns the
+   outcome from the cast acknowledgement (§5 of that document), which is
+   the rejection/acceptance feedback for the request, not state.
 
 ## 2.3 PetState
 

@@ -22,6 +22,32 @@ namespace GameServer.Infrastructure.Postgres.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("GameServer.Domain.Accounts.Account", b =>
+                {
+                    b.Property<Guid>("AccountId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PasswordHash")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Username")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)");
+
+                    b.HasKey("AccountId");
+
+                    b.HasIndex("Username")
+                        .IsUnique();
+
+                    b.ToTable("Account", (string)null);
+                });
+
             modelBuilder.Entity("GameServer.Domain.Battle.BattleResult", b =>
                 {
                     b.Property<string>("BattleResultId")
@@ -231,13 +257,11 @@ namespace GameServer.Infrastructure.Postgres.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("DiscordUserId")
-                        .IsRequired()
-                        .HasMaxLength(32)
-                        .HasColumnType("character varying(32)");
 
                     b.Property<int>("Level")
                         .ValueGeneratedOnAdd()
@@ -251,7 +275,7 @@ namespace GameServer.Infrastructure.Postgres.Migrations
 
                     b.HasKey("PlayerId");
 
-                    b.HasIndex("DiscordUserId")
+                    b.HasIndex("AccountId")
                         .IsUnique();
 
                     b.ToTable("Player", null, t =>
@@ -375,6 +399,15 @@ namespace GameServer.Infrastructure.Postgres.Migrations
                         .WithMany()
                         .HasForeignKey("SignatureSkillCardId")
                         .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("GameServer.Domain.Players.Player", b =>
+                {
+                    b.HasOne("GameServer.Domain.Accounts.Account", null)
+                        .WithOne()
+                        .HasForeignKey("GameServer.Domain.Players.Player", "AccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });
 

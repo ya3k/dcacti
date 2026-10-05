@@ -232,12 +232,22 @@ public class PetXpSchemaTests : IAsyncLifetime
         var definitionId = $"pet-def-xp-schema-{suffix}";
         var petInstanceId = $"pet_xp_schema_{suffix}";
 
+        var accountId = Guid.NewGuid();
+
         await using (var context = new GameDbContext(options))
         {
+            context.Accounts.Add(new Domain.Accounts.Account
+            {
+                AccountId = accountId,
+                Username = $"u_{accountId:N}"[..20],
+                PasswordHash = "hash",
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+
             context.Players.Add(new Player
             {
                 PlayerId = playerId,
-                DiscordUserId = $"8{Random.Shared.NextInt64(1_000_000_000_000_000L):D16}",
+                AccountId = accountId,
                 XP = Player.InitialXp,
                 Level = Player.InitialLevel,
                 CreatedAt = DateTimeOffset.UtcNow,
@@ -333,8 +343,16 @@ public class PetXpSchemaTests : IAsyncLifetime
             if (player is not null)
             {
                 cleanup.Players.Remove(player);
-                await cleanup.SaveChangesAsync();
             }
+
+            var account = await cleanup.Accounts.SingleOrDefaultAsync(a => a.AccountId == accountId);
+
+            if (account is not null)
+            {
+                cleanup.Accounts.Remove(account);
+            }
+
+            await cleanup.SaveChangesAsync();
         }
     }
 }

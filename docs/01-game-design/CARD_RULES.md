@@ -1,6 +1,16 @@
 # Card Rules
 
-**Version:** 1.8 (§4.1 — the two remaining MVP Pet Skill Cards are now
+**Version:** 1.9 (§3 — the Card-cast restriction approved by `TASK-191` Q-4
+(OPTION B) is recorded: **a player may successfully cast at most one Card during
+each committed Match-3 Turn** (new §3 item 6; former item 6 promoted to item 7).
+This is a **cast-count constraint, not Turn consumption** — §3 item 5's rule that
+a Card cast consumes no Turn and does not interact with Combo is **unchanged and
+explicitly preserved**, and item 6 states that a cast does not resolve the
+Match-3 board and does not by itself trigger the boss response. The Match-3 Turn
+remains the authoritative unit of combat progression, and the boss response
+still arrives through `GAME_RULES.md` §17 step 18 on the committed Swap. No Card
+cost, effect, magnitude, column, or category is changed — Power Charge's `0`
+cost (§2 item 3) is explicitly retained. Rationale: ADR-021. Prior 1.8: (§4.1 — the two remaining MVP Pet Skill Cards are now
 content-defined per the TASK-166 Product Owner decisions D-1/D-2: **Thanh Xà —
 Venomous Bloom** (80 Power; 80 flat Mộc damage → Boss; Burn 25/tick for 2 Turns,
 Element Hỏa) and **Sơn Hùng — Earthshaker** (100 Power; 150 flat Thổ damage →
@@ -163,8 +173,34 @@ Rules:
    ```
 5. Casting a Card does NOT consume a Turn and does NOT interact with Combo —
    it is independent of the Match-3 Turn/Combo system (GAME_RULES.md §2, §5)
-   unless a specific Card/Relic explicitly says otherwise.
-6. Card casts are never authoritative from the client; the client sends a
+   unless a specific Card/Relic explicitly says otherwise. A cast does NOT
+   resolve the Match-3 board and does NOT trigger the boss response on its own.
+6. **A player may successfully cast at most one Card during each committed
+   Match-3 Turn.** This is a **cast-count constraint, not Turn consumption**:
+   the cast still consumes no Turn (item 5), and the Match-3 Turn remains the
+   authoritative unit of combat progression (MATCH3_RULES.md §8.1). After one
+   successful cast, any further cast request is rejected (item 3) until the next
+   committed Match-3 Turn begins. The lifecycle is:
+
+   ```text
+   New committed Match-3 Turn
+        ↓
+   Card cast available
+        ↓
+   Card successfully cast
+        ↓
+   Card cast unavailable for the remainder of that Turn
+        ↓
+   Match-3 Turn resolves — Turn++, boss response
+        ↓
+   Next Turn — Card cast available again
+   ```
+
+   The limit applies per **committed** Match-3 Turn. A rejected Swap begins no
+   Turn (MATCH3_RULES.md §2.1.5 item 2), so it neither restores nor consumes the
+   allowance. The constraint is enforced by the server at cast validation
+   (item 2); the client only reflects the server's result.
+7. Card casts are never authoritative from the client; the client sends a
    cast *request*, and the server computes and emits the actual result
    (GAME_RULES.md §18).
 

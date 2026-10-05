@@ -38,7 +38,7 @@ public class PetOwnershipResolutionTests
         context.Players.Add(new Player
         {
             PlayerId = PetOwner,
-            DiscordUserId = "80351110224678912",
+            AccountId = Guid.NewGuid(),
             Level = Player.InitialLevel,
             CreatedAt = DateTimeOffset.UtcNow,
         });
@@ -184,7 +184,7 @@ public class PetOwnershipResolutionTests
             context.Players.Add(new Player
             {
                 PlayerId = OtherPlayer,
-                DiscordUserId = "80351110224678913",
+                AccountId = Guid.NewGuid(),
                 Level = Player.InitialLevel,
                 CreatedAt = DateTimeOffset.UtcNow,
             });
