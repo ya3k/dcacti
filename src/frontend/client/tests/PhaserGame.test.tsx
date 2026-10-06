@@ -56,12 +56,15 @@ describe('PhaserGame Component', () => {
     // TASK-190: `CollectionViewerScene` is registered alongside it as the
     // meta-progression viewer, a side branch off the main menu rather than a
     // step in the battle lifecycle.
+    // TASK-206: `BattleHistoryScene` is the second such side branch — the
+    // read-only completed-battle and account-progression surface.
     expect(sceneKeys).toEqual([
       'BootScene',
       'PreloaderScene',
       'MainMenuScene',
       'LobbyScene',
       'CollectionViewerScene',
+      'BattleHistoryScene',
       'BattleScene',
       'ResultScene',
     ]);

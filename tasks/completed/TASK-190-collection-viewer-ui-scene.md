@@ -22,7 +22,7 @@
 Task ID:           TASK-190
 Type:              FEATURE — TASK_TYPES.md §2; implements documented meta-progression UI
                    from ROADMAP.md Phase 3 using existing API_CONTRACTS.md §5 endpoints.
-Status:            BACKLOG
+Status:            DONE
 Risk:              MEDIUM (Phaser scene lifecycle, UI coordinate layout, memory cleanup,
                    E2E smoke test integration; zero gameplay logic or schema change)
 Priority:          MEDIUM

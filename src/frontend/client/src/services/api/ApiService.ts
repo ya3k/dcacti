@@ -5,7 +5,12 @@ import type {
   RegisterRequest,
 } from './ApplicationSession';
 import type { CardResponse, PetResponse, RelicResponse } from './CollectionModels';
-import type { BattleResultResponse, BattleStartRequest, BattleStartResponse } from './BattleModels';
+import type {
+  BattleHistoryItemResponse,
+  BattleResultResponse,
+  BattleStartRequest,
+  BattleStartResponse,
+} from './BattleModels';
 
 export interface HealthStatus {
   status: string;
@@ -18,6 +23,7 @@ export type { CardResponse, PetResponse, RelicResponse };
  * is what states them, and this is the service that transports them.
  */
 export type {
+  BattleHistoryItemResponse,
   BattleOutcome,
   BattleResultResponse,
   BattleStartBoard,
@@ -248,6 +254,50 @@ export class ApiService {
     return await this.get<BattleResultResponse>(
       `/api/battle/${encodeURIComponent(battleId)}/result`,
     );
+  }
+
+  /**
+   * Reads the authenticated Player's completed-battle history
+   * (`API_CONTRACTS.md` §4.5) — `GET /api/battle/history`.
+   *
+   * ```text
+   * GET /api/battle/history  →  200 [ BattleHistoryItemResponse, … ]
+   *                             401 { "error": "UNAUTHENTICATED" }   (§2.3, §6)
+   * ```
+   *
+   * **The path carries nothing but the route.** §4.5 notes 5–6 state that the
+   * endpoint accepts no `page`, `limit`, `offset`, `cursor`, `bossId`,
+   * `outcome`, date range, sort, or search parameter — there are no query
+   * parameters at all — so this method builds the single documented path and
+   * nothing else, and no request member, query parameter, or header selects a
+   * `playerId` (note 8: the scope is the session-derived identity, and reading
+   * another Player's history is not expressible in this contract).
+   *
+   * **The array is returned as delivered.** §4.5 note 1 makes the bare JSON
+   * array the response body (never a `{ "battles": … }` wrapper, and never a
+   * `total`/`nextCursor`), and note 4 fixes its order — `CompletedAt`
+   * descending, tie-broken by `BattleResultId` descending — as a documented
+   * contract clients MAY rely on. So nothing here sorts, reverses, filters,
+   * de-duplicates, infers an order from `battleId`, or interprets
+   * `completedAt`: the server is authoritative for the order and for every
+   * value, and the array is handed on unchanged.
+   *
+   * **The empty history is the empty array.** §4.5 note 9 makes a Player with
+   * no completed battles `200` with `[]` — not `404`, not `204`, and not an
+   * error — so this method returns the empty array as it arrived rather than
+   * collapsing it into an absence or treating it as a failure. A still-active
+   * battle never appears (note 10) and a battle whose durable result write
+   * failed is simply absent (note 11); none of those is a client-side state the
+   * caller has to distinguish, because the response carries no placeholder for
+   * any of them.
+   *
+   * A failure — the §2.3/§6 `401 UNAUTHENTICATED` for a missing, invalid, or
+   * expired session, a transport error, or any other unexpected status —
+   * propagates from the shared authenticated `get<T>()` transport as a
+   * rejection. Nothing is fabricated to stand in for the missing history.
+   */
+  public async getBattleHistory(): Promise<BattleHistoryItemResponse[]> {
+    return await this.get<BattleHistoryItemResponse[]>('/api/battle/history');
   }
 
   /**

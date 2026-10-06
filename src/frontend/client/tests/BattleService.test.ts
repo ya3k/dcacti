@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ApplicationSession } from '../src/services/api/ApplicationSession';
 import { ApiService } from '../src/services/api/ApiService';
 import type {
+  BattleHistoryItemResponse,
   BattleResultResponse,
   BattleStartRequest,
   BattleStartResponse,
@@ -10,21 +11,22 @@ import type {
 } from '../src/services/api/ApiService';
 
 /**
- * Client consumption of the two battle REST endpoints
- * (`API_CONTRACTS.md` §3, §4).
+ * Client consumption of the three battle REST endpoints
+ * (`API_CONTRACTS.md` §3, §4, §4.5).
  *
  * ```text
  * ApplicationSession  →  ApiService  →  POST /api/battle/start
  *                                    →  GET  /api/battle/{battleId}/result
+ *                                    →  GET  /api/battle/history
  * ```
  *
  * Every expected value below is taken from the contract's own text: §3's
  * request/response blocks and `GAME_STATE.md` §2's `BattleState` members for
- * the start response, and §4 plus `DATABASE.md` §1's "Reward semantics for
- * `RewardSummary`" for the result response. The fixtures carry exactly the
- * documented members and nothing else — they are contract fixtures, not
- * minimal ones, because a payload that omitted a required member would let a
- * model drift from the document without failing a test.
+ * the start response, §4 plus `DATABASE.md` §1's "Reward semantics for
+ * `RewardSummary`" for the result response, and §4.5 for the history response.
+ * The fixtures carry exactly the documented members and nothing else — they are
+ * contract fixtures, not minimal ones, because a payload that omitted a required
+ * member would let a model drift from the document without failing a test.
  */
 
 /** The §5.1 Element value set, which §3 binds the battle-start members to. */
@@ -944,6 +946,191 @@ describe('ApiService.getBattleResult (API_CONTRACTS.md §4)', () => {
     });
 
     await ApiService.getInstance().getBattleResult('battle-001');
+
+    expect(requestedInit().headers).toEqual({});
+  });
+});
+
+describe('ApiService.getBattleHistory (API_CONTRACTS.md §4.5)', () => {
+  /**
+   * A `GET /api/battle/history` element: the §4 result shape plus the one
+   * additional `completedAt` member (note 3). The five members are exactly the
+   * contract's element member set (note 12).
+   */
+  function historyItem(overrides: Partial<BattleHistoryItemResponse> = {}): BattleHistoryItemResponse {
+    return {
+      battleId: 'battle-001',
+      outcome: 'victory',
+      rewards: victoryRewards(),
+      durationTurns: 12,
+      completedAt: '2026-10-05T09:15:00Z',
+      ...overrides,
+    };
+  }
+
+  it('should GET /api/battle/history with no query parameter', async () => {
+    establishSession();
+    respondWith([historyItem()]);
+
+    await ApiService.getInstance().getBattleHistory();
+
+    // §4.5 notes 5–6: the endpoint accepts no `page`, `limit`, `offset`,
+    // `cursor`, `bossId`, `outcome`, date-range, sort, or search parameter —
+    // "The endpoint has no query parameters at all."
+    expect(requestedUrl()).toBe('/api/battle/history');
+    expect(requestedUrl()).not.toContain('?');
+    expect(requestedInit().method).toBe('GET');
+    expect(requestedInit().body).toBeUndefined();
+  });
+
+  it('should carry the session as Authorization: Bearer', async () => {
+    establishSession('header.payload.signature');
+    respondWith([historyItem()]);
+
+    await ApiService.getInstance().getBattleHistory();
+
+    // §4.5 note 7: the endpoint requires an authenticated session and is
+    // subject to §2.3/§6 (missing, invalid/tampered, and expired all resolve to
+    // the same 401 UNAUTHENTICATED). The session travels exactly as it does for
+    // every other application endpoint.
+    expect(requestedInit().headers).toEqual({
+      Authorization: 'Bearer header.payload.signature',
+    });
+  });
+
+  it('should send no playerId or identity input', async () => {
+    establishSession();
+    respondWith([historyItem()]);
+
+    await ApiService.getInstance().getBattleHistory();
+
+    // §4.5 note 8: history is scoped to the session-derived PlayerId, and
+    // "`PlayerId` is never client-supplied" — no request member, query
+    // parameter, header, or body field may select it, and there is no route
+    // parameter for ownership.
+    const serialized = JSON.stringify(fetchMock.mock.calls[0]);
+    expect(serialized).not.toContain('playerId');
+    expect(serialized).not.toContain('player_9');
+    expect(serialized).not.toContain('discord');
+  });
+
+  it('should return the delivered array in the delivered order', async () => {
+    establishSession();
+    // Deliberately NOT ordered by battleId and NOT ordered by a locally
+    // parseable timestamp: §4.5 note 4 fixes the order as `CompletedAt`
+    // descending with a `BattleResultId` descending tie-break, so the client
+    // renders what it was sent and re-sorts nothing. A client that re-ordered
+    // would fail here.
+    const delivered: BattleHistoryItemResponse[] = [
+      historyItem({ battleId: 'battle-zzz', completedAt: '2026-10-05T09:15:00Z' }),
+      historyItem({ battleId: 'battle-aaa', completedAt: '2026-10-05T09:15:00Z' }),
+      historyItem({ battleId: 'battle-mmm', completedAt: '2026-10-04T21:00:00Z' }),
+    ];
+    respondWith(delivered);
+
+    const history = await ApiService.getInstance().getBattleHistory();
+
+    expect(history).toEqual(delivered);
+    expect(history.map((entry) => entry.battleId)).toEqual([
+      'battle-zzz',
+      'battle-aaa',
+      'battle-mmm',
+    ]);
+  });
+
+  it('should return each element as the §4 shape plus completedAt', async () => {
+    establishSession();
+    respondWith([historyItem({ battleId: 'battle-004' })]);
+
+    const [entry] = await ApiService.getInstance().getBattleHistory();
+
+    // §4.5 note 2: the four shared members carry exactly the same meaning,
+    // source, type, and value vocabulary as §4; note 3 adds `completedAt`; note
+    // 12 fixes the member set at those five. Nothing else is read from the row.
+    expect(Object.keys(entry).sort()).toEqual([
+      'battleId',
+      'completedAt',
+      'durationTurns',
+      'outcome',
+      'rewards',
+    ]);
+    expect(entry.battleId).toBe('battle-004');
+    expect(entry.durationTurns).toBe(12);
+    expect(entry.completedAt).toBe('2026-10-05T09:15:00Z');
+    expect(entry.rewards).toEqual(victoryRewards());
+  });
+
+  it('should return a 200 [] history as an empty array, not as an absence', async () => {
+    establishSession();
+    respondWith([]);
+
+    const history = await ApiService.getInstance().getBattleHistory();
+
+    // §4.5 note 9: a Player with no completed battles receives 200 and `[]` —
+    // not 404, not 204, and not an error — so the client reads the empty array
+    // as the delivered answer rather than collapsing it into a failure.
+    expect(Array.isArray(history)).toBe(true);
+    expect(history).toEqual([]);
+  });
+
+  it('should read a history element’s null resulting value as null, not as zero', async () => {
+    establishSession();
+    respondWith([
+      historyItem({
+        rewards: {
+          ...victoryRewards(),
+          newPlayerXp: null,
+          newPlayerLevel: null,
+          playerLeveledUp: null,
+          newPetXp: null,
+          newPetLevel: null,
+          petLeveledUp: null,
+        },
+      }),
+    ]);
+
+    const [entry] = await ApiService.getInstance().getBattleHistory();
+
+    // DATABASE.md §1 item 4: a battle whose owning Player or Pet row does not
+    // exist has no progression to record, so the value is null rather than an
+    // invented number. The transport neither substitutes 0 nor drops the member.
+    expect(entry.rewards.newPlayerXp).toBeNull();
+    expect(entry.rewards.newPlayerLevel).toBeNull();
+    expect(entry.rewards.playerLeveledUp).toBeNull();
+  });
+
+  it('should propagate 401 UNAUTHENTICATED', async () => {
+    respondWithError(401, {
+      error: 'UNAUTHENTICATED',
+      message: 'An authenticated session is required to read battle history.',
+    });
+
+    // §4.5 note 7: an unauthenticated caller receives 401 UNAUTHENTICATED —
+    // never a 404 — and the shared transport surfaces that failure.
+    await expect(ApiService.getInstance().getBattleHistory()).rejects.toThrow('401');
+  });
+
+  it('should propagate an unexpected API error', async () => {
+    establishSession();
+    respondWithError(500, {
+      error: 'INTERNAL_ERROR',
+      message: 'An unexpected error occurred.',
+    });
+
+    await expect(ApiService.getInstance().getBattleHistory()).rejects.toThrow('500');
+  });
+
+  it('should propagate a network failure', async () => {
+    establishSession();
+    fetchMock.mockRejectedValue(new Error('Failed to fetch'));
+
+    await expect(ApiService.getInstance().getBattleHistory()).rejects.toThrow('Failed to fetch');
+  });
+
+  it('should send no Authorization header when no session is established', async () => {
+    respondWith([]);
+
+    await ApiService.getInstance().getBattleHistory();
 
     expect(requestedInit().headers).toEqual({});
   });

@@ -13,6 +13,7 @@ import type {
   BattleResultResponse,
   RewardSummaryResponse,
 } from '../src/services/api/BattleModels';
+import { SceneEventEmitter } from './support/SceneEventEmitter';
 
 vi.mock('phaser', () => ({
   AUTO: 'AUTO',
@@ -22,6 +23,15 @@ vi.mock('phaser', () => ({
   Structs: { Size: class MockSize {} },
   Loader: { Events: { COMPLETE: 'complete' } },
   Input: { Events: { GAMEOBJECT_POINTER_DOWN: 'gameobjectdown' } },
+  // Phaser's scene lifecycle events (TASK-204): the engine emits SHUTDOWN /
+  // DESTROY on `scene.events` and never calls a scene method by name, so a
+  // scene's teardown is attached to these events.
+  Scenes: {
+    Events: {
+      SHUTDOWN: 'shutdown',
+      DESTROY: 'destroy',
+    },
+  },
   // The board's hit area is a real Phaser.Geom.Rectangle; BattleScene's shell
   // constructs one, so the mock must provide the constructor.
   Geom: {
@@ -68,6 +78,20 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
   const texts: Array<{ text: string; color?: string }> = [];
   const sceneStarted: Array<{ key: string; data?: unknown }> = [];
   const battleResultRequests: string[] = [];
+  /**
+   * Every object the scene created that can receive a pointer activation, with
+   * its geometry — so a test can activate a control by the label a player reads
+   * (Phaser draws a control as an interactive rectangle with its label on top at
+   * the same centre).
+   */
+  const clickables: Array<{
+    kind: 'tile' | 'label';
+    text: string;
+    x: number;
+    y: number;
+    readonly interactive: boolean;
+    click: () => void;
+  }> = [];
 
   const runtime = {
     getState: () => state,
@@ -91,6 +115,13 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       };
     },
     requestAction: () => Promise.resolve({ accepted: true }),
+    /**
+     * The documented client-local post-result cleanup (TASK-203,
+     * `GameRuntimePort.clearActiveBattleState`). It is a spy here: the scene's
+     * obligation is to ask for the cleanup exactly once per exit, and the
+     * runtime's own behavior is covered in `GameRuntime.test.ts`.
+     */
+    clearActiveBattleState: vi.fn(),
     getBattleResult: (battleId: string) => {
       battleResultRequests.push(battleId);
       if (battleResult instanceof Error) {
@@ -105,13 +136,27 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
   };
 
   function context(scene: object, sceneKey: string): object {
-    const makeText = (value: string) => {
+    /** The scene's own emitter (Phaser's `scene.events`) — see TASK-204. */
+    const events = new SceneEventEmitter();
+
+    const makeText = (x: number, y: number, value: string) => {
       const entry = { text: value, color: undefined as string | undefined };
       texts.push(entry);
+
+      const handlers: Array<() => void> = [];
+      let interactive = false;
 
       const obj = {
         kind: 'label' as const,
         label: value,
+        x,
+        y,
+        get text() {
+          return entry.text;
+        },
+        get interactive() {
+          return interactive;
+        },
         setOrigin: () => obj,
         setText: (next: string) => {
           entry.text = next;
@@ -121,7 +166,28 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
           entry.color = next;
           return obj;
         },
+        setWordWrapWidth: () => obj,
+        setInteractive: () => {
+          interactive = true;
+          return obj;
+        },
+        on: (_event: string, handler: () => void) => {
+          handlers.push(handler);
+          return obj;
+        },
+        off: () => {
+          handlers.length = 0;
+          return obj;
+        },
+        destroy: () => {
+          handlers.length = 0;
+        },
+        click: () => {
+          for (const handler of [...handlers]) handler();
+        },
       };
+
+      clickables.push(obj);
       return obj;
     };
 
@@ -166,15 +232,51 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     };
 
     return Object.assign(Object.create(scene), {
+      // Phaser's injected scene event emitter (`this.events` / `sys.events`).
+      events,
       scene: {
         start: (key: string, data?: unknown) => sceneStarted.push({ key, data }),
       },
       add: {
-        rectangle: () => {
-          const rect = { kind: 'tile', setStrokeStyle: () => rect };
+        rectangle: (x = 0, y = 0, width = 0, height = 0) => {
+          const handlers: Array<() => void> = [];
+          let interactive = false;
+
+          const rect = {
+            kind: 'tile' as const,
+            text: '',
+            x,
+            y,
+            width,
+            height,
+            get interactive() {
+              return interactive;
+            },
+            setStrokeStyle: () => rect,
+            setInteractive: () => {
+              interactive = true;
+              return rect;
+            },
+            on: (_event: string, handler: () => void) => {
+              handlers.push(handler);
+              return rect;
+            },
+            off: () => {
+              handlers.length = 0;
+              return rect;
+            },
+            destroy: () => {
+              handlers.length = 0;
+            },
+            click: () => {
+              for (const handler of [...handlers]) handler();
+            },
+          };
+
+          clickables.push(rect);
           return rect;
         },
-        text: (_x: number, _y: number, value: string) => makeText(value),
+        text: (x: number, y: number, value: string) => makeText(x, y, value),
         container: () => makeContainer(),
       },
       registry: {
@@ -187,6 +289,26 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
   return {
     runtime,
     texts,
+    clickables,
+    /**
+     * Activates the control a player reads as `label`: the interactive hit area
+     * drawn at that label's own centre.
+     */
+    clickControl: (label: string) => {
+      const labels = clickables.filter((c) => c.kind === 'label' && c.text === label);
+      const text = labels[labels.length - 1];
+      if (!text) {
+        throw new Error(`No control labelled "${label}" was rendered.`);
+      }
+      const targets = clickables.filter(
+        (c) => c.interactive && c.kind === 'tile' && c.x === text.x && c.y === text.y
+      );
+      const target = targets[targets.length - 1];
+      if (!target) {
+        throw new Error(`The control labelled "${label}" is not an interactive control.`);
+      }
+      target.click();
+    },
     runtimeListeners,
     battleStateListeners,
     battleEventListeners,
@@ -197,6 +319,14 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       }
     },
     sceneStarted,
+    /**
+     * Takes a scene down exactly as Phaser does: `SceneManager` →
+     * `Systems#shutdown` → `scene.events.emit(Phaser.Scenes.Events.SHUTDOWN)`.
+     * Nothing here calls a scene method by name (TASK-204).
+     */
+    shutdownScene: (ctx: object) => {
+      (ctx as { events?: SceneEventEmitter }).events?.emit('shutdown');
+    },
     context,
   };
 }
@@ -285,7 +415,10 @@ describe('ResultScene presentation (TDD.md §2.1, SIGNALR_PROTOCOL.md §3.2.19)'
     expect(rendered).toContain('NO RESULT');
   });
 
-  it('cleans up references on shutdown', () => {
+  it('cleans up references when Phaser takes the scene down', () => {
+    // The engine's own teardown path (TASK-205) — not a call to the scene's
+    // method: `Systems#shutdown` emits SHUTDOWN and only a handler registered
+    // against that event runs.
     const harness = createSceneHarness();
     const scene = new ResultScene();
     const ctx = harness.context(scene, 'ResultScene');
@@ -296,7 +429,38 @@ describe('ResultScene presentation (TDD.md §2.1, SIGNALR_PROTOCOL.md §3.2.19)'
       finalPlayerHp: 50,
     });
 
-    expect(() => runScene(scene, ctx, 'shutdown')).not.toThrow();
+    expect(() => harness.shutdownScene(ctx)).not.toThrow();
+    expect((ctx as { resultData: unknown }).resultData).toBeNull();
+
+    // The stage's own assertions are unchanged: the scene still reaches no
+    // transport and derives no outcome from HP.
+    expect(harness.sceneStarted).toEqual([]);
+  });
+
+  it('attaches its teardown to the engine lifecycle events, not to a method name', () => {
+    const harness = createSceneHarness();
+    const scene = new ResultScene();
+    const ctx = harness.context(scene, 'ResultScene');
+
+    runScene(scene, ctx, 'create', {
+      outcome: 'victory',
+      finalBossHp: 0,
+      finalPlayerHp: 50,
+    });
+
+    expect((ctx as { events: SceneEventEmitter }).events.listenerCount('shutdown')).toBe(1);
+    expect((ctx as { events: SceneEventEmitter }).events.listenerCount('destroy')).toBe(1);
+
+    // A shut-down and restarted scene keeps exactly one teardown per event.
+    harness.shutdownScene(ctx);
+    runScene(scene, ctx, 'create', {
+      outcome: 'defeat',
+      finalBossHp: 10,
+      finalPlayerHp: 0,
+    });
+
+    expect((ctx as { events: SceneEventEmitter }).events.listenerCount('shutdown')).toBe(1);
+    expect((ctx as { events: SceneEventEmitter }).events.listenerCount('destroy')).toBe(1);
   });
 
   it('contains no client-side outcome derivation or direct transport access', () => {
@@ -339,6 +503,143 @@ describe('ResultScene presentation (TDD.md §2.1, SIGNALR_PROTOCOL.md §3.2.19)'
     // URL or fetched by the scene (ARCHITECTURE.md §2.2.1 rule 1).
     expect(source).not.toMatch(/\bfetch\s*\(/);
     expect(source).toContain('readRuntime');
+  });
+});
+
+describe('ResultScene post-result navigation (TASK-203, D-202-01 = C, D-202-02 = A, D-202-04 = A)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** A completed battle's outcome handoff, exactly as BattleScene delivers it. */
+  const completedBattle: ResultSceneData = {
+    outcome: 'victory',
+    finalBossHp: 0,
+    finalPlayerHp: 850,
+    battleId: 'battle-1',
+  };
+
+  function present(data: ResultSceneData = completedBattle) {
+    const harness = createSceneHarness();
+    const scene = new ResultScene();
+    const ctx = harness.context(scene, 'ResultScene');
+
+    runScene(scene, ctx, 'create', data);
+
+    return { harness, scene, ctx };
+  }
+
+  it('renders exactly the two approved explicit controls', () => {
+    const { harness } = present();
+
+    const rendered = harness.texts.map((t) => t.text);
+    expect(rendered).toContain('PLAY AGAIN');
+    expect(rendered).toContain('MAIN MENU');
+
+    // Two interactive hit areas, and the shell background is not one of them:
+    // the controls are the scene's only input surface (D-202-02 = A).
+    expect(harness.clickables.filter((c) => c.interactive)).toHaveLength(2);
+  });
+
+  it('does not navigate on its own — no automatic transition', async () => {
+    const { harness } = present();
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(harness.sceneStarted).toEqual([]);
+  });
+
+  it('PLAY AGAIN clears the completed battle and opens LobbyScene with the preserved loadout', () => {
+    const { harness } = present();
+
+    harness.clickControl('PLAY AGAIN');
+
+    // D-202-04 = A: the completed battle's active battle state is cleared before
+    // the scene is left, and D-202-03 = D: the Lobby is told to restore the
+    // loadout the battle just ended with (ADR-022).
+    expect(harness.runtime.clearActiveBattleState).toHaveBeenCalledTimes(1);
+    expect(harness.sceneStarted).toEqual([
+      { key: 'LobbyScene', data: { restorePreservedLoadout: true } },
+    ]);
+  });
+
+  it('MAIN MENU clears the completed battle and opens MainMenuScene only', () => {
+    const { harness } = present();
+
+    harness.clickControl('MAIN MENU');
+
+    expect(harness.runtime.clearActiveBattleState).toHaveBeenCalledTimes(1);
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['MainMenuScene']);
+    // Nothing carries the preserve flag on this destination.
+    expect(harness.sceneStarted[0].data).toBeUndefined();
+  });
+
+  it('fires at most once per scene instance, whichever control is activated', () => {
+    const { harness } = present();
+
+    harness.clickControl('PLAY AGAIN');
+    harness.clickControl('PLAY AGAIN');
+    harness.clickControl('MAIN MENU');
+
+    expect(harness.sceneStarted).toHaveLength(1);
+    expect(harness.sceneStarted[0].key).toBe('LobbyScene');
+    // The guard is claimed before the cleanup, so a repeat activation does not
+    // even ask for a second cleanup.
+    expect(harness.runtime.clearActiveBattleState).toHaveBeenCalledTimes(1);
+  });
+
+  it('still navigates when no runtime is published', () => {
+    const harness = createSceneHarness({ withRuntime: false });
+    const scene = new ResultScene();
+    const ctx = harness.context(scene, 'ResultScene');
+    runScene(scene, ctx, 'create', completedBattle);
+
+    expect(() => harness.clickControl('PLAY AGAIN')).not.toThrow();
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['LobbyScene']);
+  });
+
+  it('keeps the outcome presentation while offering the controls', () => {
+    const { harness } = present();
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toMatch(/VICTORY/i);
+    expect(rendered).toContain('Boss HP: 0');
+    expect(rendered).toContain('Player HP: 850');
+
+    harness.clickControl('PLAY AGAIN');
+
+    // Leaving does not rewrite what the completed battle delivered.
+    const afterLeave = harness.texts.map((t) => t.text).join('\n');
+    expect(afterLeave).toContain('Boss HP: 0');
+  });
+
+  it('navigates through the runtime port only, with no other input mechanism', () => {
+    const source = readFileSync(
+      resolve(__dirname, '../src/game/scenes/ResultScene.ts'),
+      'utf8'
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+    // The approved destinations, by their documented scene keys.
+    expect(source).toContain("'LobbyScene'");
+    expect(source).toContain("'MainMenuScene'");
+    expect(source).toContain('PLAY AGAIN');
+    expect(source).toContain('MAIN MENU');
+
+    // D-202-04 = A + ARCHITECTURE.md §2.2.1: the cleanup is a port capability,
+    // never a transport call.
+    expect(source).toContain('clearActiveBattleState');
+    expect(source).toContain('readRuntime');
+
+    // D-202-02 = A: no keyboard-only path, no full-screen tap, no automatic
+    // timed transition is the way forward.
+    expect(source).not.toMatch(/keyboard/i);
+    expect(source).not.toMatch(/delayedCall|setTimeout|setInterval/);
+
+    // The stale pre-TASK-202 lifecycle comment must not survive.
+    expect(source).not.toContain('Navigation after ResultScene is not in scope');
   });
 });
 
@@ -571,14 +872,15 @@ describe('ResultScene reward presentation (TASK-149, API_CONTRACTS.md §4 note 1
     expect(rendered).toContain('Boss HP: 0');
   });
 
-  it('cleans up reward presentation references on shutdown', () => {
+  it('cleans up reward presentation references when Phaser takes the scene down', () => {
     const harness = createSceneHarness({ battleResult: deliveredResult(deliveredRewards()) });
     const scene = new ResultScene();
     const ctx = harness.context(scene, 'ResultScene');
 
     runScene(scene, ctx, 'create', outcomeData);
 
-    expect(() => runScene(scene, ctx, 'shutdown')).not.toThrow();
+    expect(() => harness.shutdownScene(ctx)).not.toThrow();
+    expect((ctx as { rewardText: unknown }).rewardText).toBeNull();
   });
 });
 
@@ -645,13 +947,13 @@ describe('BattleScene outcome handoff (TASK-087, SIGNALR_PROTOCOL.md §3.2.19)',
     expect(harness.battleEventListeners.size).toBe(1);
   });
 
-  it('unsubscribes from onBattleEvents on shutdown()', () => {
+  it('unsubscribes from onBattleEvents on the engine teardown', () => {
     const { harness, scene, ctx } = createBattle();
 
     runScene(scene, ctx, 'create');
     expect(harness.battleEventListeners.size).toBe(1);
 
-    runScene(scene, ctx, 'shutdown');
+    harness.shutdownScene(ctx);
     expect(harness.battleEventListeners.size).toBe(0);
   });
 
@@ -820,10 +1122,10 @@ describe('BattleScene outcome handoff (TASK-087, SIGNALR_PROTOCOL.md §3.2.19)',
     expect(harness.sceneStarted).toHaveLength(1);
   });
 
-  it('does NOT transition if BattleScene shuts down before outcome arrives', () => {
+  it('does NOT transition if BattleScene is shut down before the outcome arrives', () => {
     const { harness, scene, ctx } = createBattle();
     runScene(scene, ctx, 'create');
-    runScene(scene, ctx, 'shutdown');
+    harness.shutdownScene(ctx);
 
     harness.emitBattleEvents({
       battleId: 'b-1',

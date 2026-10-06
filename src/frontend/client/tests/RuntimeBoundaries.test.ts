@@ -44,14 +44,16 @@ function walk(dir: string): string[] {
 describe('Frontend architectural boundaries', () => {
   describe('Phaser is not coupled to SignalR or to any other transport', () => {
     // TASK-078: `LobbyScene` is a scene like any other and is covered by the same
-    // rules. TASK-190: so is `CollectionViewerScene`. The list is the registered
-    // scene set (GameConfig.ts), so a new scene is covered as soon as it exists.
+    // rules. TASK-190: so is `CollectionViewerScene`, and TASK-206 adds
+    // `BattleHistoryScene`. The list is the registered scene set (GameConfig.ts),
+    // so a new scene is covered as soon as it exists.
     const sceneFiles = [
       'BootScene.ts',
       'PreloaderScene.ts',
       'MainMenuScene.ts',
       'LobbyScene.ts',
       'CollectionViewerScene.ts',
+      'BattleHistoryScene.ts',
       'BattleScene.ts',
       'ResultScene.ts',
     ].map((f) => join('game', 'scenes', f));
@@ -117,6 +119,94 @@ describe('Frontend architectural boundaries', () => {
       );
 
       expect(realtimeFiles).toHaveLength(1);
+    });
+  });
+
+  describe('the preserved post-result loadout is client presentation state (TASK-203, ADR-022)', () => {
+    const CARRIER = join('game', 'state', 'PreservedLoadout.ts');
+
+    it('is reachable without a transport and declares no model of its own', () => {
+      const code = stripComments(readSource(CARRIER));
+
+      // ARCHITECTURE.md §2.2.3 rules 1–3: the carrier is client presentation
+      // state. It imports no transport implementation and no HTTP client.
+      expect(code).not.toMatch(/@microsoft\/signalr/);
+      expect(code).not.toMatch(/HubConnection/);
+      expect(code).not.toMatch(/services\/realtime/);
+      expect(code).not.toMatch(/ApiService/);
+      expect(code).not.toMatch(/\bfetch\s*\(/);
+
+      // The only `services/api/` import is the type-only wire model whose four
+      // members it holds — no transport implementation, and no second
+      // loadout/selection type (rule 6).
+      const apiImports = [
+        ...code.matchAll(/from '[^']*services\/api\/([^']+)'/g),
+      ].map((match) => match[1]);
+      expect(apiImports).toEqual(['BattleModels']);
+      expect(code).toMatch(/import type \{[^}]*\} from '\.\.\/\.\.\/services\/api\/BattleModels'/);
+      expect(code).not.toMatch(/export (interface|type) \w*(Loadout|Selection|Collection)\w*/);
+
+      // It is client presentation state, not a persistent store: nothing is
+      // written to browser storage or to the document (ADR-022 D3).
+      expect(code).not.toMatch(/localStorage|sessionStorage|indexedDB/);
+      expect(code).not.toMatch(/\bwindow\b|\bdocument\b/);
+    });
+
+    it('is not technical runtime state and is not carried by the runtime', () => {
+      // ARCHITECTURE.md §2.2.1 rule 5 / §2.2.3 rule 2: the technical runtime
+      // state contract carries connection/session/runtime/synchronization
+      // status only, and the runtime holds no selection.
+      const runtimeState = stripComments(readSource(join('state', 'GameRuntimeState.ts')));
+      for (const forbidden of ['petId', 'bossId', 'cardLoadout', 'relicLoadout', 'loadout', 'selection']) {
+        expect(runtimeState.toLowerCase()).not.toContain(forbidden.toLowerCase());
+      }
+
+      const port = stripComments(readSource(join('game', 'runtime', 'GameRuntimeEvents.ts')));
+      for (const forbidden of ['PreservedLoadout', 'preserveLoadout', 'readPreservedLoadout']) {
+        expect(port).not.toContain(forbidden);
+      }
+
+      const runtime = stripComments(readSource(join('game', 'runtime', 'GameRuntime.ts')));
+      for (const forbidden of ['PreservedLoadout', 'preserveLoadout', 'readPreservedLoadout']) {
+        expect(runtime).not.toContain(forbidden);
+      }
+    });
+
+    it('is never cleared by the post-result active-battle cleanup', () => {
+      // D-202-04 = A clears ACTIVE BATTLE state. The preserved pre-battle
+      // loadout is not battle state, so the cleanup must not touch it — the
+      // two have independent lifetimes (ADR-022, ARCHITECTURE.md §2.2.3).
+      const runtime = stripComments(readSource(join('game', 'runtime', 'GameRuntime.ts')));
+      const cleanup = /public clearActiveBattleState\(\)[\s\S]*?\n  \}/.exec(runtime)?.[0] ?? '';
+
+      expect(cleanup).toContain('this.battleState = null');
+      expect(cleanup).not.toMatch(/preserve|loadout|registry/i);
+      // And it performs no transport operation (D-202-04 = A is not C/D).
+      expect(cleanup).not.toMatch(/signalR|disconnect|connect\(/i);
+    });
+
+    it('is read by exactly one scene entry, the approved PLAY AGAIN return', () => {
+      // The carrier is consulted only where the approved continuation asks for
+      // it. Every scene that names the accessor must be a scene the approved
+      // flow reaches, and the flag must be the documented start data.
+      const sceneDir = join(SRC, 'game', 'scenes');
+      const readers = walk(sceneDir).filter((file) =>
+        /readPreservedLoadout/.test(stripComments(readFileSync(file, 'utf8')))
+      );
+
+      expect(readers.map((file) => file.split(/[\\/]/).pop())).toEqual(['LobbyScene.ts']);
+
+      const lobby = stripComments(readSource(join('game', 'scenes', 'LobbyScene.ts')));
+      expect(lobby).toContain('restorePreservedLoadout');
+      expect(lobby).toContain('readPreservedLoadout');
+      expect(lobby).toContain('preserveLoadout');
+
+      // And the flag is passed by the approved continuation only.
+      const result = stripComments(readSource(join('game', 'scenes', 'ResultScene.ts')));
+      expect(result).toMatch(/restorePreservedLoadout: true/);
+
+      const menu = stripComments(readSource(join('game', 'scenes', 'MainMenuScene.ts')));
+      expect(menu).not.toContain('restorePreservedLoadout');
     });
   });
 
@@ -497,6 +587,21 @@ describe('Frontend architectural boundaries', () => {
       );
       const members = [...port.matchAll(/^ {2}(\w+)\(/gm)].map((match) => match[1]).sort();
       expect(members).toEqual([
+        // TASK-203 stage advance: `clearActiveBattleState` is the documented
+        // client-local post-result cleanup (D-202-04 = A, ARCHITECTURE.md
+        // §2.2.1, ADR-022). It is a capability like the others — it declares no
+        // model and re-exports nothing, which the assertions below still
+        // enforce — and it is deliberately NOT a carrier for the preserved
+        // loadout: the runtime holds no selection (ARCHITECTURE.md §2.2.3
+        // rule 2).
+        'clearActiveBattleState',
+        // TASK-206 stage advance: `getBattleHistory` is the documented
+        // completed-battle read (`API_CONTRACTS.md` §4.5) the read-only Battle
+        // History surface presents. It is a capability like the others — it
+        // declares no model (the element type stays in `services/api/`) and the
+        // runtime holds none of its response, which the assertions below still
+        // enforce.
+        'getBattleHistory',
         // TASK-149 stage advance: `getBattleResult` is the documented result
         // read (`API_CONTRACTS.md` §4) `ResultScene` renders the persisted
         // reward summary from. It is a capability, like the collection reads —
@@ -518,11 +623,16 @@ describe('Frontend architectural boundaries', () => {
 
       // The model types it names are imported as types from their owner, never
       // re-declared or re-exported. A re-export would make the port a second
-      // definition of a wire shape `services/api/` already owns.
+      // definition of a wire shape `services/api/` already owns. TASK-206 adds
+      // `BattleHistoryItemResponse` to that type-only list; it stays a service
+      // model, not a port model.
       expect(code).not.toMatch(/export type \{/);
-      expect(code).toMatch(
-        /import type \{ BattleResultResponse, BattleStartRequest \} from '\.\.\/\.\.\/services\/api\/BattleModels'/
-      );
+      const battleModelImport =
+        /import type \{([^}]*)\} from '\.\.\/\.\.\/services\/api\/BattleModels'/.exec(code);
+      expect(battleModelImport).not.toBeNull();
+      expect(
+        [...(battleModelImport?.[1] ?? '').matchAll(/(\w+)/g)].map((match) => match[1]).sort()
+      ).toEqual(['BattleHistoryItemResponse', 'BattleResultResponse', 'BattleStartRequest']);
       expect(code).toMatch(
         /import type \{ CardResponse, PetResponse, RelicResponse \} from '\.\.\/\.\.\/services\/api\/CollectionModels'/
       );

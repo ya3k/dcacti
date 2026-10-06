@@ -1,7 +1,14 @@
 # Game Design Document (GDD)
 
 **Project:** Match-3 RPG Standalone Web Application
-**Version:** 2.6 (Platform and Project updated to Standalone Web Application per ADR-020; prior 2.5: §2 Core Gameplay Loop's pre-battle step list now includes the
+**Version:** 2.7 (§2 Core Gameplay Loop now records the Product Owner-approved
+post-result player flow per TASK-202 — D-202-01 = C, D-202-02 = A, D-202-03 = D,
+D-202-04 = A. The loop no longer terminates at Rewards: after the result the
+player leaves through explicit UI choices, PLAY AGAIN returns to battle
+preparation with the previous loadout preserved and still editable, MAIN MENU
+returns to the main menu, and completed battle state is cleared before the next
+battle. Player-facing flow only: no game rule, formula, stat, cost, or content
+value changed. Prior 2.6: Platform and Project updated to Standalone Web Application per ADR-020; prior 2.5: §2 Core Gameplay Loop's pre-battle step list now includes the
 Boss choice per TASK-185 — the MVP Lobby lets the player explicitly choose one
 of the five canonical MVP Bosses (`BOSS_RULES.md` §6/§6.4) before starting, so
 the loop names that step; no Boss rule, stat, Element, Passive, Skill, formula,
@@ -69,11 +76,42 @@ Enter Battle → Choose Pet → Equip Cards → Equip Relics → Choose Boss →
   → Charge Passive → Trigger Relics → Use Cards / Pet Skill
   → Calculate Damage → Apply Element Modifier → Boss Responds
   → Continue Battle → Boss Defeated → Rewards
+  → Result
+      ├── PLAY AGAIN → back to Choose Pet
+      │                  (previous loadout preserved, still editable)
+      └── MAIN MENU  → back to the Main Menu
 ```
 
 Exact step-by-step resolution order is defined in `GAME_RULES.md`
 ("Event Resolution Rules"). The battle ends when either the Boss or the
 active Pet reaches 0 HP.
+
+## 2.1 After the Battle
+
+A battle result is not the end of the loop. Once the result has been presented,
+the player chooses how to continue through **explicit UI choices** — the result
+screen does not advance by itself and does not treat a full-screen tap or any
+key press as the way forward.
+
+```text
+PLAY AGAIN   Returns the player to battle preparation (LobbyScene) so another
+             battle can be started. The loadout used in the battle that just
+             ended is still selected, so the player does not have to rebuild
+             it — and it is not locked: every part of it (Pet, Cards, Relics,
+             Boss) can still be changed before the next battle is started.
+
+MAIN MENU    Returns the player to the main menu (MainMenuScene), where the
+             battle and collection entry points live.
+```
+
+Before the next battle begins, the completed battle's battle state is cleared,
+so a finished battle cannot carry stale state into the next one. Nothing about
+the previous battle is reused as game state: each new battle is a new,
+server-authoritative battle started from the loadout the player submits.
+
+Scope of this flow: it adds no progression, no stamina/energy gate, no campaign
+map, and no new game system — it only lets the player continue from the result
+screen into screens that already exist (`MVP_SCOPE.md` §1, §2, §3).
 
 ---
 

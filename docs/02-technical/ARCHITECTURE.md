@@ -1,6 +1,29 @@
 # Architecture
 
-**Version:** 1.5 (§2.2.3 pre-battle selection boundary synchronized per
+**Version:** 1.7 (§2.2.3's post-result loadout carrier requirement is now
+**decided and implemented** per TASK-203 / ADR-022 — the carrier is a second
+documented key in Phaser's game-wide registry, behind the
+`game/state/PreservedLoadout.ts` accessor; it is owned by the client
+game-presentation layer, lives for the running game instance, is written on a
+successful battle start, and is read only on the approved `ResultScene` →
+`PLAY AGAIN` entry, with `LobbyScene` remaining the editing surface. §2.2.3
+rule 1 gains that one documented lifetime exception; §2.2.3's
+"deliberately not decided here" note is discharged; §2.2.1 records the
+client-local `clearActiveBattleState()` capability the post-result exit uses —
+no disconnect, no wire message, and it never clears the preserved loadout — and
+§1's client tree lists the accessor module. No game rule, API contract, wire
+member, Redis key, or database column changes. Prior 1.6 (§2.2.3 records the **post-result loadout carrier** as an
+architectural requirement/boundary per TASK-202 — the approved Product Owner
+decision `D-202-03 = D` requires the previous loadout to survive the
+`LobbyScene` → `BattleScene` → `ResultScene` → `LobbyScene` round trip, which the
+ephemeral scene-local selection of §2.2.3 rule 1 cannot do. This version records
+**why a carrier is required and what it must and must not be**; it deliberately
+chooses no mechanism, no owner, and no lifetime — that remains an open
+architecture decision to be recorded before implementation (`AGENTS.md` §18).
+§2.2 item 2's transition reference now defers the approved post-result
+continuations to `TDD.md` §2.1 instead of ending the list at `ResultScene`. No
+boundary, port capability, endpoint, wire member, state model, or contract is
+changed by this version. Version 1.5 (§2.2.3 pre-battle selection boundary synchronized per
 TASK-185 — the flow's step list, its diagram, and rule 1 now include the Boss
 choice the Lobby makes. The five canonical Boss identities are static selection
 content the `LobbyScene` holds, not a collection read and not a new port
@@ -89,6 +112,8 @@ client/
 │   │   │   │                           #   touches Phaser internals)
 │   │   │   ├── GameRuntimeEvents.ts    # Runtime event contract & GameRuntimePort
 │   │   │   └── RuntimeRegistry.ts      # Publishes the runtime to Phaser scenes
+│   │   ├── state/                # Client game-presentation state carriers
+│   │   │   └── PreservedLoadout.ts     # Post-result preserved loadout (ADR-022)
 │   │   └── scenes/               # Phaser Scenes
 │   │       ├── BootScene.ts      # Technical init (scales, asset pre-setup)
 │   │       ├── PreloaderScene.ts # Asset loading & load progress presentation
@@ -160,7 +185,9 @@ Backend (SignalR Hub / REST API)
    manages HTML overlays, menus, settings, and Discord Activity SDK lifecycle.
 2. **Phaser 4 Game Runtime:** Drives the game canvas, scene transitions
    (`BootScene` → `PreloaderScene` → `MainMenuScene` → `LobbyScene` →
-   `BattleScene` → `ResultScene`), sprites, tweens, animations, and user pointer
+   `BattleScene` → `ResultScene`, and on from `ResultScene` to the approved
+   post-result continuations — `TDD.md` §2.1 owns that lifecycle and is not
+   restated here), sprites, tweens, animations, and user pointer
    input on the board.
 3. **Services Isolation:**
    - `services/discord/` isolates Discord Embedded App SDK interactions.
@@ -228,6 +255,25 @@ Application Runtime        connection lifecycle tracking only
    singleton and `GameRuntime.initialize()` is idempotent, so React
    StrictMode's development double-invocation cannot create a second SignalR
    connection or a second Phaser instance.
+
+The runtime also owns the client-local cleanup the approved post-result
+lifecycle requires. When the player leaves a completed battle, `ResultScene`
+asks the runtime to drop its synchronized battle copy through
+
+```text
+clearActiveBattleState(): void
+```
+
+— a coordination-only capability with no transport participation. It clears
+`battleState`, returns `sync` to the documented no-current-battle value for the
+connection it actually has (`awaiting_battle` when connected, `unsynchronized`
+otherwise — `state/GameRuntimeState.ts`'s `SyncStatus`), and performs no hub
+call, no disconnect, and no result read. It is **not**
+`SIGNALR_PROTOCOL.md` §7.3's `BATTLE_NOT_FOUND` path, which is a failed
+recovery that additionally takes the result fallback, and it introduces no wire
+message (§8.3). It never touches the preserved pre-battle selection: active
+battle state and the preserved loadout are different concepts with independent
+lifetimes (§2.2.3, ADR-022).
 
 `GameRuntime` coordinates the initial state subscription
 (`SIGNALR_PROTOCOL.md` §4): it receives the server-pushed
@@ -298,7 +344,9 @@ it.
    receives except as the request it is submitted in. It is **not** modelled in
    `state/GameRuntimeState.ts` (rule 5), is **not** put on `GameRuntime`, and
    is **not** given a store, manager, or module of its own
-   (`ARCHITECTURE.md` §5.5, `AGENTS.md` §9).
+   (`ARCHITECTURE.md` §5.5, `AGENTS.md` §9). The one documented exception is the
+   post-result preserved-loadout carrier below, which extends this state's
+   **lifetime** — never its nature, its owner, or its authority.
 2. **The in-progress selection is not owned by the runtime, and the runtime
    does not hold it.** `GameRuntime` coordinates the request the scene submits;
    coordinating a request is not owning the state the request was built from.
@@ -341,9 +389,109 @@ it.
    Those wire shapes stay where they already live (`services/api/`), as they do
    for `RuntimeBattleState`'s relation to the server's state contract.
 
-**What this boundary is not.** The three concepts it separates are distinct and
-must not be collapsed into one state model (`AGENTS.md` §12, §13; ADR-011
-item 4):
+#### Post-Result Loadout Carrier — Architectural Requirement
+
+The approved post-result lifecycle (`TDD.md` §2.1, `GDD.md` §2.1) has
+`ResultScene` continue to `LobbyScene` on `PLAY AGAIN`, and requires the loadout
+used in the battle that just ended to still be selected when the player arrives
+there — while remaining fully editable before the next battle is started
+(Product Owner decision `D-202-03 = D`, recorded in TASK-202).
+
+Rules 1 and 2 above make the current model unable to satisfy that requirement.
+The in-progress selection is created with the `LobbyScene` instance and discarded
+when it shuts down; the `LobbyScene` that started the battle is already gone by
+the time `ResultScene` is presented, and the runtime keeps no selection on its
+behalf. **The approved decision therefore requires a state carrier that outlives
+a `LobbyScene` instance.** This subsection recorded that requirement and its
+boundary; the mechanism it left open is now decided and recorded below
+(ADR-022) and implemented by TASK-203.
+
+**What the carrier must be.**
+
+```text
+1. It carries the same category of state rule 1 describes: the player's
+   not-yet-submitted choice of one Pet, one Boss, and the Card and Relic sets
+   for the UPCOMING battle. Preserving it changes its LIFETIME, not its nature.
+2. It is client presentation/interaction state, never authoritative. It becomes
+   authoritative only when the server validates it inside
+   POST /api/battle/start (rule 5, API_CONTRACTS.md §3, GAME_RULES.md §18,
+   ADR-001). Restoring it must not become client-side legality checking.
+3. LobbyScene remains the editing surface. A restored selection is a starting
+   point the player may change in any part — Pet, Cards, Relics, Boss — before
+   starting the next battle (D-202-03 = D, second clause).
+4. It must be reachable without breaking rule 3: the scene still obtains
+   collection read data and submits the start request only through the runtime
+   port, and imports no transport client.
+```
+
+**What the carrier must not be.**
+
+```text
+1. NOT gameplay state. It is not BattleState, PetState, or any server-owned
+   value, and it is not corroborated by the collection reads
+   (API_CONTRACTS.md §5.6 — no equip state).
+2. NOT technical runtime state. It must not be added to
+   state/GameRuntimeState.ts, whose contract is connection/session/runtime/
+   synchronization status only (§2.2.1 rule 5).
+3. NOT a second source of truth. It does not own, mirror, or modify the owned
+   collection (DATABASE.md §2) and does not replace the server's loadout
+   snapshot (GAME_STATE.md §2.3).
+4. NOT a heavy state store or a new state-management framework
+   (`ARCHITECTURE.md` §5.5, `AGENTS.md` §9). A carrier is required; an
+   infrastructure layer is not.
+5. NOT active battle state. D-202-04 = A clears ACTIVE BATTLE state when the
+   player leaves the completed battle; the preserved pre-battle selection is a
+   different concept and must not be cleared by that cleanup, or D-202-03 = D
+   could not hold. The converse also holds: preserving the selection does not
+   license retaining stale battle state.
+```
+
+**The carrier decision (recorded by TASK-203 / ADR-022).** The requirement above
+was recorded without a mechanism by TASK-202. TASK-203, which implements the
+approved flow, recorded the mechanism before implementing it (`AGENTS.md` §18,
+`.ai/workflow/architecture/architecture-change.md`). It is:
+
+```text
+Carrier    A second documented key in Phaser's game-wide registry
+           (game.registry — the mechanism §2.2.1 rule 2 already uses to publish
+           the runtime), published and read through its own accessor module
+           game/state/PreservedLoadout.ts (preserveLoadout / readPreservedLoadout
+           / clearPreservedLoadout).
+
+Value      Exactly the four documented BattleStartRequest members of the
+           loadout most recently submitted (API_CONTRACTS.md §3) — no new
+           loadout/selection type is declared (rule 6).
+
+Owner      The client game-presentation layer (the Phaser game instance that
+           owns the registry and the scene manager). NOT GameRuntime: rule 2 is
+           unchanged, and the runtime port gains no carrier capability.
+
+Lifetime   The running game instance. It survives every scene shutdown/start;
+           a new game (page reload) starts empty. Nothing is persisted to
+           localStorage, sessionStorage, the URL, the backend, or a database.
+
+Access     Written by LobbyScene when a battle start SUCCEEDS — that accepted
+           request is the loadout the battle is fought with. Read by LobbyScene
+           only when it was entered through the approved ResultScene PLAY AGAIN
+           continuation, which passes { restorePreservedLoadout: true } as scene
+           start data (the documented scene.start(key, data) mechanism
+           BattleScene → ResultScene already uses). No other Lobby entry reads
+           it, so MainMenuScene → LobbyScene and a first-ever Lobby entry keep
+           exactly today's behavior.
+
+Editing    A restored selection is a starting point, never a lock: every part of
+           it (Pet, Cards, Relics, Boss) can still be changed before Start
+           Battle, and the submitted request carries the edited values. The
+           scene restores the ids verbatim and validates nothing — the server
+           validates the submitted request (rule 5).
+
+Cleanup    Never cleared by the D-202-04 = A active-battle cleanup (the two are
+           different concepts — see below). Overwritten by the next successful
+           battle start. Explicitly clearable through the accessor.
+```
+
+The concepts this boundary separates are distinct and must not be collapsed
+into one state model (`AGENTS.md` §12, §13; ADR-011 item 4):
 
 ```text
 Owned collection      Player owns Pet/Card/Relic — persistent, server-side
@@ -351,8 +499,30 @@ Owned collection      Player owns Pet/Card/Relic — persistent, server-side
 
       ≠
 
-In-progress selection Player selected items for THIS upcoming battle —
-                      ephemeral, scene-local, unpersisted (rule 1)
+In-progress selection Player selected items for the UPCOMING battle — created
+                      with the LobbyScene, ephemeral and scene-local (rule 1).
+                      Once the battle starts it is what the carrier below holds.
+
+      ≠
+
+Preserved loadout     That same selection, kept past the LobbyScene's shutdown
+                      so PLAY AGAIN does not rebuild it (ADR-022). Client-owned,
+                      presentation-only, alive for the running game instance,
+                      cleared by nothing but an explicit call.
+
+      ≠
+
+Active battle state   The runtime's synchronized presentation copy of the
+                      server's last BattleStateUpdated push for the battle in
+                      progress. Dropped by clearActiveBattleState() when the
+                      player leaves the completed battle (§2.2.1, D-202-04 = A).
+
+      ≠
+
+Battle result data    The persisted BattleResult the result route returns
+                      (API_CONTRACTS.md §4, DATABASE.md §1). Read on demand by
+                      ResultScene, stored as no state, never promoted into
+                      active battle state.
 
       ≠
 
@@ -361,10 +531,18 @@ BattleState snapshot  Server validated the request and snapshotted the loadout
                       server-authoritative (GAME_STATE.md §2.3)
 ```
 
-Only the third is authoritative, and the client authors none of it. This
-section introduces no new client state, no new endpoint, and no change to any
-API contract: it records where the existing documented flow's state and reads
-belong (`API_CONTRACTS.md` §3, §5.5, §5.6 unchanged).
+Only the server-authored entries are authoritative, and the client authors none
+of them. `D-202-04 = A` clears the **active battle state**; the preserved
+loadout is not battle state, so clearing it would make `D-202-03 = D`
+impossible — and the converse holds too, because preserving the loadout
+licenses retaining no stale battle state.
+
+This section introduces no new endpoint and no change to any API contract: it
+records where the existing documented flow's state and reads belong
+(`API_CONTRACTS.md` §3, §5.5, §5.6 unchanged). The carrier it now names
+(ADR-022) is a client presentation state carrier — it adds no state model to
+the server and declares no type of its own, holding the wire request the client
+already builds.
 
 ### 2.2.2 Game Viewport & Scaling
 

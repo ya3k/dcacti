@@ -129,8 +129,10 @@ const CARD_CATEGORY_COLORS: Readonly<Record<string, string>> = {
  * `getCards()`, and `getRelics()` in one `Promise.all` and holds the result for
  * the scene's lifetime, so switching tabs re-renders from what is already in
  * hand and issues no further request. There is no cache: the arrays are plain
- * scene fields, replaced wholesale by a reload and dropped on `shutdown()` —
- * the same ephemeral scene state `LobbyScene` keeps its selection in
+ * scene fields, replaced wholesale by a reload and dropped by the scene's own
+ * teardown, which `create()` attaches to Phaser's actual scene lifecycle events
+ * (`Phaser.Scenes.Events.SHUTDOWN` / `DESTROY`) — the same ephemeral scene state
+ * `LobbyScene` keeps its selection in
  * (`ARCHITECTURE.md` §2.2.3 rules 1–2, `AGENTS.md` §9).
  *
  * **A failed read is one error state, not a partial view.** §5 defines three
@@ -171,8 +173,10 @@ export class CollectionViewerScene extends Phaser.Scene {
   // --- Scene-owned display objects -------------------------------------------
   //
   // The shell is built once in `drawShell()` and kept; the content area is
-  // rebuilt on every render pass. Both lists are cleared and detached in
-  // `shutdown()`, so a shut-down viewer leaves no interactive object behind.
+  // rebuilt on every render pass. Both lists are cleared and detached by the
+  // teardown `create()` attaches to Phaser's scene lifecycle events, so a
+  // shut-down viewer leaves no interactive object behind and a reopened viewer
+  // starts from an empty pair of lists.
 
   /** The persistent shell text objects, created once by `drawShell()`. */
   private shellObjects: Phaser.GameObjects.GameObject[] = [];
@@ -198,6 +202,35 @@ export class CollectionViewerScene extends Phaser.Scene {
   create(): void {
     this.runtime = readRuntime(this);
 
+    // Attach this scene's teardown to Phaser's own scene lifecycle events,
+    // before any of the objects it releases is created.
+    //
+    // A scene method that merely *exists* is never invoked: Phaser 4.2.1 calls
+    // `init`/`preload`/`create`/`update` by name (`SceneManager.bootScene` /
+    // `SceneManager.create`) and nothing else, and `Phaser.Scene` declares no
+    // `shutdown` method at all. What the engine actually emits when it takes a
+    // scene down is `Phaser.Scenes.Events.SHUTDOWN` — from
+    // `Phaser.Scenes.Systems#shutdown`, which `SceneManager` calls for a queued
+    // `stop` and when restarting a running scene — and `DESTROY` from
+    // `Systems#destroy`. That is the documented scene-event mechanism
+    // (`.ai/skills/client/phaser-architecture` "Resource Lifecycle & Cleanup";
+    // `.ai/skills/phaser/scenes` gotcha 14); without it the teardown below never
+    // runs in the browser, so a shut-down viewer keeps the ended run's shell
+    // objects and loaded collections in its own fields and a reopened viewer
+    // accumulates them.
+    //
+    // The registration is idempotent — the pair is detached first, then attached
+    // with `once` — so a scene that is shut down and later reopened holds
+    // exactly one teardown handler per event instead of stacking another one on
+    // every run (`once` alone would leave the run's unfired `DESTROY` handler
+    // behind). This is the same "detach before attach" idempotency
+    // `BattleScene.registerBoardInput` already uses, and `once` means the
+    // handler is consumed by the event that fired it.
+    this.events.off(Phaser.Scenes.Events.SHUTDOWN, this.shutdown, this);
+    this.events.off(Phaser.Scenes.Events.DESTROY, this.shutdown, this);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.shutdown, this);
+    this.events.once(Phaser.Scenes.Events.DESTROY, this.shutdown, this);
+
     // A reopened scene starts from a clean slate: Phaser reuses the instance, so
     // state left by a previous run must not survive into this one.
     this.resetViewerState();
@@ -214,12 +247,24 @@ export class CollectionViewerScene extends Phaser.Scene {
   }
 
   /**
-   * Scene shutdown — reached when this scene stops or the game is destroyed.
+   * Scene teardown — the handler subscribed to Phaser's own
+   * `Phaser.Scenes.Events.SHUTDOWN` / `DESTROY` events by `create()`.
+   *
+   * It is a plain method invoked *by the engine's event*, not an engine hook:
+   * Phaser never calls a scene method named `shutdown` on its own, so before
+   * this registration existed the body below never ran in the browser.
    *
    * Every object the scene created is destroyed and every interactive handler is
    * detached, so reopening the viewer cannot accumulate UI, listeners, or
    * callbacks. The loaded collections and the selection are dropped with it: a
    * shut-down viewer holds nothing, and the runtime keeps none on its behalf.
+   *
+   * Phaser's own `DisplayList#shutdown` handles the same event and destroys
+   * every child before this handler runs, so the `off` / `destroy` calls below
+   * are made against already-destroyed game objects; `GameObject#destroy` is a
+   * documented no-op once `scene` is released, and the `off` calls are
+   * harmless — what remains to release here is the scene's own references and
+   * handler registrations. The body is idempotent and safe on both events.
    */
   shutdown(): void {
     for (const object of this.shellObjects) {

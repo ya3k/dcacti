@@ -6,6 +6,7 @@ import { RUNTIME_REGISTRY_KEY } from '../src/game/runtime/RuntimeRegistry';
 import { INITIAL_RUNTIME_STATE } from '../src/state/GameRuntimeState';
 import type { GameRuntimeState } from '../src/state/GameRuntimeState';
 import type { BattleEventsEnvelope, RuntimeBattleState } from '../src/game/runtime/GameRuntimeEvents';
+import { SceneEventEmitter } from './support/SceneEventEmitter';
 import {
   parseInBattleEvent,
   formatInBattleEvent,
@@ -33,6 +34,14 @@ vi.mock('phaser', () => ({
   Structs: { Size: class MockSize {} },
   Loader: { Events: { COMPLETE: 'complete' } },
   Input: { Events: { GAMEOBJECT_POINTER_DOWN: 'gameobjectdown' } },
+  // Phaser's scene lifecycle events (TASK-204): the engine emits SHUTDOWN /
+  // DESTROY on `scene.events` and never calls a scene method by name.
+  Scenes: {
+    Events: {
+      SHUTDOWN: 'shutdown',
+      DESTROY: 'destroy',
+    },
+  },
   // The board's hit area is a real Phaser.Geom.Rectangle; BattleScene's shell
   // constructs one, so the mock must provide the constructor.
   Geom: {
@@ -167,6 +176,8 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     };
 
     return Object.assign(Object.create(scene), {
+      // Phaser's injected scene event emitter (`this.events` / `sys.events`).
+      events: new SceneEventEmitter(),
       scene: {
         start: (key: string, data?: unknown) => sceneStarted.push({ key, data }),
       },
@@ -206,6 +217,14 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       }
     },
     sceneStarted,
+    /**
+     * Takes a scene down exactly as Phaser does: `SceneManager` →
+     * `Systems#shutdown` → `scene.events.emit(Phaser.Scenes.Events.SHUTDOWN)`.
+     * Nothing here calls a scene method by name (TASK-204).
+     */
+    shutdownScene: (ctx: object) => {
+      (ctx as { events?: SceneEventEmitter }).events?.emit('shutdown');
+    },
     context,
   };
 }
@@ -890,7 +909,7 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
     });
   });
 
-  it('releases input guard on scene shutdown', () => {
+  it('releases input guard on scene teardown', () => {
     const { harness, scene, ctx } = createBattle();
     runScene(scene, ctx, 'create');
 
@@ -900,7 +919,7 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
       events: [{ type: 'ComboChanged', combo: 5 }],
     });
 
-    runScene(scene, ctx, 'shutdown');
+    harness.shutdownScene(ctx);
     // Calling isInputLocked on scene prototype
     expect((scene as BattleScene).isInputLocked()).toBe(false);
   });
@@ -1020,7 +1039,7 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
     });
   });
 
-  it('cleans up all subscriptions, tweens, and presentation state across create/shutdown cycles', () => {
+  it('cleans up all subscriptions and presentation state across create/teardown cycles', () => {
     const { harness, scene, ctx } = createBattle();
 
     runScene(scene, ctx, 'create');
@@ -1032,14 +1051,14 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
       events: [{ type: 'ComboChanged', combo: 4 }],
     });
 
-    runScene(scene, ctx, 'shutdown');
+    harness.shutdownScene(ctx);
     expect(harness.battleEventListeners.size).toBe(0);
 
     // Recreate
     runScene(scene, ctx, 'create');
     expect(harness.battleEventListeners.size).toBe(1);
 
-    runScene(scene, ctx, 'shutdown');
+    harness.shutdownScene(ctx);
     expect(harness.battleEventListeners.size).toBe(0);
   });
 

@@ -1,6 +1,23 @@
 # Technical Design Document (TDD)
 
-**Version:** 1.3 (§2.1 Boss-selection step recorded per TASK-185 — the
+**Version:** 1.5 (§2.1's post-result continuations are now **implemented** per
+TASK-203: `ResultScene` exposes the two approved explicit buttons and clears the
+completed battle's active battle state on both exits without disconnecting the
+transport; `LobbyScene` restores the preserved loadout on the `PLAY AGAIN` entry
+and remains the editing surface. The loadout carrier the `D-202-03 = D` rule
+requires is no longer an open architecture question: it is the Phaser game-wide
+registry carrier recorded in ADR-022 and `ARCHITECTURE.md` §2.2.3, and it is
+deliberately not cleared by the battle-state cleanup. The staging note now
+records the implemented graph as matching the design graph. No gameplay rule, API
+contract, wire member, Redis, or database contract changed. Version 1.4 (§2.1 scene lifecycle updated per TASK-202 — the lifecycle no
+longer terminates at `ResultScene`. The approved lifecycle now records the
+Product Owner decisions D-202-01 = C (`PLAY AGAIN → LobbyScene`,
+`MAIN MENU → MainMenuScene`), D-202-02 = A (explicit UI buttons as the primary
+navigation mechanism), D-202-03 = D (the previous loadout is preserved through
+`PLAY AGAIN` and stays editable in `LobbyScene`), and D-202-04 = A (completed
+battle state is cleared before the next battle). The staging note now separates
+the approved design from what is currently implemented. No gameplay rule, API
+contract, wire member, Redis, or database contract changed. Version 1.3 (§2.1 Boss-selection step recorded per TASK-185 — the
 `LobbyScene` bullet no longer states that no MVP Boss-selection step exists: the
 player explicitly chooses one of the five canonical MVP Bosses
 (`BOSS_RULES.md` §6/§6.4) and that choice is what the existing
@@ -110,7 +127,41 @@ LobbyScene
 BattleScene
     ↓
 ResultScene
+    ├── PLAY AGAIN → LobbyScene
+    └── MAIN MENU → MainMenuScene
 ```
+
+**Post-result continuations (approved per TASK-202).** `ResultScene` is not the
+permanent end of the lifecycle. The player leaves it through **explicit UI
+buttons** only; the scene does not advance on a full-screen tap, an any-key
+press, or an automatic timer, and no such mechanism may be introduced as the
+primary way forward (`D-202-02 = A`). The two approved continuations are:
+
+```text
+PLAY AGAIN   → LobbyScene      (D-202-01 = C)
+MAIN MENU    → MainMenuScene   (D-202-01 = C)
+```
+
+- **Loadout on `PLAY AGAIN`.** Returning to `LobbyScene` preserves the loadout
+  used in the battle that just ended, and `LobbyScene` remains the editing
+  surface: the player may change any part of the preserved loadout (Pet, Cards,
+  Relics, Boss) before starting the next battle (`D-202-03 = D`). Preservation
+  is a convenience, never a lock and never a legality decision — the submitted
+  request is validated by the server exactly as before
+  (`API_CONTRACTS.md` §3, `ARCHITECTURE.md` §2.2.3 rule 5). Because the
+  in-progress selection is ephemeral scene-local state
+  (`ARCHITECTURE.md` §2.2.3 rule 1), this decision requires a documented state
+  carrier. That carrier is now decided and recorded — the Phaser game-wide
+  registry, behind the `game/state/PreservedLoadout.ts` accessor, owned by the
+  client game-presentation layer and alive for the running game instance
+  (`ARCHITECTURE.md` §2.2.3, ADR-022) — and it is written on a successful battle
+  start and read only on this `PLAY AGAIN` entry.
+- **Battle-state cleanup.** When the player leaves the completed battle, active
+  battle state is cleared, and stale battle state must not reach the next battle
+  (`D-202-04 = A`). The SignalR connection is **not** disconnected by this
+  action, and the preserved pre-battle loadout is **not** battle state and is
+  **not** cleared by it. No battle lifecycle/status wire message is introduced:
+  `SIGNALR_PROTOCOL.md` §8.3 records that none exists.
 
 > **MVP staging note (recorded per TASK-078's Product Owner decision; completed
 > by TASK-087 and TASK-090).** The MVP staged this lifecycle for
@@ -121,11 +172,23 @@ ResultScene
 > since implemented `MainMenuScene` and TASK-087 `ResultScene`, so the
 > implemented transition order is now `BootScene → PreloaderScene →
 > MainMenuScene → LobbyScene → BattleScene → ResultScene`, matching the
-> lifecycle above and the registered order in `GameConfig.ts`. `LobbyScene`
+> registered order in `GameConfig.ts`. `LobbyScene`
 > still transitions to `BattleScene` after a successful battle start. The
 > lifecycle above remains the design this document specifies; the staging was
 > an implementation-order decision recorded here so it is not left implicit,
 > not a change to the lifecycle.
+>
+> **Implementation status of the post-result continuations.** The
+> `ResultScene → LobbyScene` and `ResultScene → MainMenuScene` transitions above
+> are **implemented** (TASK-203): `ResultScene` renders `PLAY AGAIN` and
+> `MAIN MENU` as explicit interactive controls, each fireable at most once per
+> scene instance, and it exposes no full-screen tap, any-key, or automatic
+> transition. Both exits clear the completed battle's active battle state
+> (`clearActiveBattleState()`, `ARCHITECTURE.md` §2.2.1) without disconnecting
+> the SignalR connection, and the `PLAY AGAIN` exit opens `LobbyScene` with the
+> preserved loadout still selected and fully editable (ADR-022). The implemented
+> graph therefore matches the design graph above; no continuation beyond the two
+> approved ones exists.
 
 - **BootScene:** Technical initialization only (scales, engine config).
 - **PreloaderScene:** Asset loading and loading progress presentation.
@@ -153,7 +216,12 @@ ResultScene
   (`API_CONTRACTS.md` §5.5–§5.6).
 - **BattleScene:** In-battle visual presentation, board animations, VFX, and
   Phaser runtime.
-- **ResultScene:** Battle outcome presentation (Victory/Defeat, summary).
+- **ResultScene:** Battle outcome presentation (Victory/Defeat, summary) and the
+  two approved explicit UI buttons that continue the lifecycle — `PLAY AGAIN`
+  (→ `LobbyScene`) and `MAIN MENU` (→ `MainMenuScene`). It presents the outcome,
+  the terminal HP values, and the persisted reward summary exactly as delivered
+  and decides nothing (`§2.1` Server-Authoritative Boundary, `GAME_RULES.md`
+  §18, ADR-001).
 
 ### Server-Authoritative Boundary
 

@@ -2523,4 +2523,277 @@ describe('GameRuntime', () => {
       ]);
     });
   });
+
+  describe('battle history read (API_CONTRACTS.md §4.5, TASK-206)', () => {
+    /**
+     * TASK-206. The Battle History surface reads the Player's completed battles
+     * through the runtime port (`ARCHITECTURE.md` §2.2.1 rule 1, §2.2.3 rule 3).
+     * These tests assert the capability is pure delegation: no orchestration, no
+     * caching, no reordering, no state held, and no computation of any member.
+     */
+
+    /** Two `GET /api/battle/history` elements, newest first (§4.5 note 4). */
+    const newest = {
+      battleId: 'battle-zzz',
+      outcome: 'victory' as const,
+      rewards: {
+        playerXpGained: 100,
+        newPlayerXp: 400,
+        playerLeveledUp: true,
+        newPlayerLevel: 5,
+        petXpGained: 100,
+        newPetXp: 900,
+        petLeveledUp: false,
+        newPetLevel: 10,
+      },
+      durationTurns: 12,
+      completedAt: '2026-10-05T09:15:00Z',
+    };
+    const older = {
+      battleId: 'battle-aaa',
+      outcome: 'defeat' as const,
+      rewards: {
+        playerXpGained: 0,
+        newPlayerXp: 300,
+        playerLeveledUp: false,
+        newPlayerLevel: 4,
+        petXpGained: 0,
+        newPetXp: 900,
+        petLeveledUp: false,
+        newPetLevel: 10,
+      },
+      durationTurns: 3,
+      completedAt: '2026-10-04T21:00:00Z',
+    };
+
+    /** A runtime with a history-read double on the injected `ApiService`. */
+    function createHistoryRuntime() {
+      const transport = new FakeSignalR();
+      const api = {
+        getBattleHistory: vi.fn(async () => [newest, older]),
+      };
+      const runtime = new GameRuntime(transport as never, api as never);
+      return { runtime, transport, api };
+    }
+
+    it('delegates getBattleHistory to the existing ApiService method', async () => {
+      const { runtime, api } = createHistoryRuntime();
+
+      await expect(runtime.getBattleHistory()).resolves.toEqual([newest, older]);
+      expect(api.getBattleHistory).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends no argument: the scope is the session, and there is no query parameter', async () => {
+      const { runtime, api } = createHistoryRuntime();
+
+      await runtime.getBattleHistory();
+
+      // §4.5 notes 5–6 and 8: no pagination, filter, sort, or search parameter
+      // exists, and no client input selects the Player.
+      expect(api.getBattleHistory).toHaveBeenCalledWith();
+    });
+
+    it('preserves the delivered order exactly', async () => {
+      const { runtime, api } = createHistoryRuntime();
+      // Deliberately not ordered by id or by a locally parseable timestamp: the
+      // contract's order is the server's (§4.5 note 4) and the runtime re-sorts
+      // nothing.
+      const sent = [newest, older];
+      api.getBattleHistory.mockResolvedValue(sent as never);
+
+      const received = await runtime.getBattleHistory();
+
+      expect(received.map((entry) => entry.battleId)).toEqual(['battle-zzz', 'battle-aaa']);
+      expect(received.map((entry) => entry.battleId)).not.toEqual(
+        [...sent.map((entry) => entry.battleId)].sort()
+      );
+    });
+
+    it('computes nothing: every member arrives exactly as the server sent it', async () => {
+      const { runtime } = createHistoryRuntime();
+
+      const [entry] = await runtime.getBattleHistory();
+
+      expect(entry).toEqual(newest);
+      // XP is not summed, Level is not derived, the level-up flag is not
+      // re-derived, and `completedAt` is not parsed or reformatted.
+      expect(entry.rewards.newPlayerXp).toBe(400);
+      expect(entry.rewards.newPlayerLevel).toBe(5);
+      expect(entry.rewards.playerLeveledUp).toBe(true);
+      expect(entry.completedAt).toBe('2026-10-05T09:15:00Z');
+    });
+
+    it('returns a 200 [] history as the empty array, not as an absence', async () => {
+      const { runtime, api } = createHistoryRuntime();
+      api.getBattleHistory.mockResolvedValue([] as never);
+
+      // §4.5 note 9: a Player with no completed battles receives 200 and `[]`,
+      // which is a delivered answer rather than a failure or a `null`.
+      await expect(runtime.getBattleHistory()).resolves.toEqual([]);
+    });
+
+    it('propagates a history-read rejection unchanged', async () => {
+      const { runtime, api } = createHistoryRuntime();
+      api.getBattleHistory.mockRejectedValue(
+        new Error('Request to /api/battle/history failed with status 401')
+      );
+
+      // The §2.3/§6 `401 UNAUTHENTICATED` reaches the caller as the transport
+      // raised it; the runtime records nothing, caches nothing, and fabricates no
+      // history.
+      await expect(runtime.getBattleHistory()).rejects.toThrow('status 401');
+
+      expect(runtime.getBattleState()).toBeNull();
+    });
+
+    it('holds no history state on the runtime', async () => {
+      const { runtime } = createHistoryRuntime();
+
+      await runtime.getBattleHistory();
+
+      // §4.5's response is ephemeral presentation data (GAME_STATE.md §4,
+      // ARCHITECTURE.md §2.2.3 rules 1–2): the calling scene owns it, so nothing
+      // about it is kept here — not on the instance and not in the technical
+      // state contract.
+      for (const key of ['history', 'battles', 'battleHistory', 'results', 'progression']) {
+        expect(Object.keys(runtime.getState())).not.toContain(key);
+        expect(Object.keys(runtime)).not.toContain(key);
+      }
+    });
+
+    it('performs no transport operation for the read', async () => {
+      const { runtime, transport } = createHistoryRuntime();
+
+      await runtime.getBattleHistory();
+
+      // The history read is REST-only (§4.5 note 13): it introduces no hub
+      // method, no event, and no subscription, so the SignalR port is untouched.
+      expect(transport.invokedMethods).toEqual([]);
+      expect(transport.subscriptions.size).toBe(0);
+    });
+  });
+
+  describe('post-result active battle cleanup (TASK-203, D-202-04 = A, ADR-022)', () => {
+    /**
+     * TASK-203. When the player leaves a completed battle, `ResultScene` asks the
+     * runtime to drop its synchronized battle copy through
+     * `clearActiveBattleState()` (`ARCHITECTURE.md` §2.2.1, §2.2.3). The cleanup
+     * is client-local state behavior: it clears the copy, retains the
+     * connection, reads no result, introduces no wire message, and cannot affect
+     * the preserved pre-battle loadout — which this runtime does not hold at all
+     * (`GameRuntimePort.clearActiveBattleState`).
+     */
+
+    /** A joined, synchronized battle — the §4 push a completed battle leaves behind. */
+    async function completedBattle(overrides: Record<string, unknown> = {}) {
+      const context = createRuntime();
+      await context.runtime.initialize();
+      context.transport.emit('BattleStateUpdated', payload(overrides));
+      return context;
+    }
+
+    it('drops the synchronized battle copy and returns to connected-with-no-battle', async () => {
+      const { runtime } = await completedBattle({ battleId: 'battle-ended' });
+      expect(runtime.getBattleState()!.battleId).toBe('battle-ended');
+      expect(runtime.getState().sync).toBe('synchronized');
+
+      runtime.clearActiveBattleState();
+
+      expect(runtime.getBattleState()).toBeNull();
+      // `awaiting_battle` is the documented "connected, no current battle" value
+      // (state/GameRuntimeState.ts, SyncStatus).
+      expect(runtime.getState().sync).toBe('awaiting_battle');
+      expect(runtime.getState().connection).toBe('connected');
+      expect(runtime.getState().lastError).toBeNull();
+    });
+
+    it('does not disconnect or disturb the transport', async () => {
+      const { runtime, transport } = await completedBattle();
+      const connectCalls = [...transport.connectCalls];
+      const invokedMethods = [...transport.invokedMethods];
+
+      runtime.clearActiveBattleState();
+
+      // D-202-04 = A is not C/D: clearing the SignalR battle connection was not
+      // approved, so the process-wide connection survives untouched
+      // (ARCHITECTURE.md §2.2.1 rule 6).
+      expect(transport.disconnectCalls).toBe(0);
+      expect(transport.isConnected()).toBe(true);
+      expect(transport.connectCalls).toEqual(connectCalls);
+      expect(transport.invokedMethods).toEqual(invokedMethods);
+      expect(runtime.getState().connection).toBe('connected');
+    });
+
+    it('takes no §7.3 result fallback read', async () => {
+      // `handleBattleNotRecoverable` is the BATTLE_NOT_FOUND path and it reads
+      // the result route; a normal post-result exit is not that path and must
+      // read no result (SIGNALR_PROTOCOL.md §7.3, API_CONTRACTS.md §4).
+      const transport = new FakeSignalR();
+      const api = { getBattleResult: vi.fn(async () => ({ battleId: 'battle-1' })) };
+      const runtime = new GameRuntime(transport as never, api as never);
+      await runtime.initialize();
+      transport.emit('BattleStateUpdated', payload());
+
+      runtime.clearActiveBattleState();
+
+      expect(api.getBattleResult).not.toHaveBeenCalled();
+      expect(runtime.getBattleState()).toBeNull();
+    });
+
+    it('is idempotent, never throws, and reports the value the connection warrants', () => {
+      const { runtime } = createRuntime();
+
+      expect(() => {
+        runtime.clearActiveBattleState();
+        runtime.clearActiveBattleState();
+      }).not.toThrow();
+
+      expect(runtime.getBattleState()).toBeNull();
+      // With no connection there is no "connected, no current battle" claim to
+      // make, so the status stays `unsynchronized` rather than inventing one.
+      expect(runtime.getState().connection).toBe('disconnected');
+      expect(runtime.getState().sync).toBe('unsynchronized');
+    });
+
+    it('leaves the completed battle unaddressable', async () => {
+      const { runtime, transport } = await completedBattle({ battleId: 'battle-ended' });
+
+      runtime.clearActiveBattleState();
+
+      // No stale battle id can reach the next battle's action path.
+      await expect(
+        runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 })
+      ).rejects.toThrow(/No battle state is known/);
+      expect(transport.swapCalls).toEqual([]);
+    });
+
+    it('accepts the next battle as a fresh push of its own id', async () => {
+      const { runtime, transport } = await completedBattle({ battleId: 'battle-ended' });
+
+      runtime.clearActiveBattleState();
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-next', turn: 0, sequence: 0 }));
+
+      // The next battle's state is the server's new push through the existing
+      // §4 path — never a revision of the copy that was dropped.
+      expect(runtime.getState().sync).toBe('synchronized');
+      expect(runtime.getBattleState()!.battleId).toBe('battle-next');
+
+      await runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 });
+      expect(transport.swapCalls).toHaveLength(1);
+      expect(transport.swapCalls[0][0]).toBe('battle-next');
+    });
+
+    it('holds no result data as battle state', async () => {
+      // The completed battle's persisted result is presentation data read on
+      // demand (GAME_STATE.md §4, API_CONTRACTS.md §4); it is never promoted into
+      // the synchronized battle copy, and after the cleanup there is no copy.
+      const { runtime } = await completedBattle();
+      runtime.clearActiveBattleState();
+
+      expect(runtime.getBattleState()).toBeNull();
+      for (const key of ['outcome', 'rewards', 'result', 'battleId']) {
+        expect(Object.keys(runtime.getState())).not.toContain(key);
+      }
+    });
+  });
 });

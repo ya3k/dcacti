@@ -4,11 +4,12 @@ import { SAFE_AREA, GAME_WIDTH } from '../GameViewport';
 /**
  * MainMenuScene — main game menu presentation and navigation (TDD.md §2.1).
  *
- * Presentation only: renders a minimal menu and provides the two documented
+ * Presentation only: renders a minimal menu and provides the three documented
  * navigation actions — `START BATTLE`, which starts `LobbyScene` and the battle
- * lifecycle, and `COLLECTION`, which opens the read-only
- * `CollectionViewerScene`. It owns no state, no authority, and performs no API
- * calls, SignalR interaction, or gameplay computation.
+ * lifecycle, `COLLECTION`, which opens the read-only `CollectionViewerScene`,
+ * and `BATTLE HISTORY`, which opens the read-only `BattleHistoryScene`. It owns
+ * no state, no authority, and performs no API calls, SignalR interaction, or
+ * gameplay computation.
  */
 export class MainMenuScene extends Phaser.Scene {
   /** Guards against starting the next scene more than once. */
@@ -19,6 +20,32 @@ export class MainMenuScene extends Phaser.Scene {
   }
 
   create(): void {
+    // Attach this scene's teardown to Phaser's own scene lifecycle events.
+    //
+    // A scene method that merely *exists* is never invoked: Phaser 4.2.1 calls
+    // `init`/`preload`/`create`/`update` by name (`SceneManager.bootScene` /
+    // `SceneManager.create`) and nothing else, and `Phaser.Scene` declares no
+    // `shutdown` method at all. What the engine actually emits when it takes a
+    // scene down is `Phaser.Scenes.Events.SHUTDOWN` — from
+    // `Phaser.Scenes.Systems#shutdown`, which `SceneManager` calls for a queued
+    // `stop` and when restarting a running scene — and `DESTROY` from
+    // `Systems#destroy`. That is the documented scene-event mechanism
+    // (`.ai/skills/client/phaser-architecture` "Resource Lifecycle & Cleanup";
+    // `.ai/skills/phaser/scenes` gotcha 14); without it the teardown below is
+    // dead code in the browser.
+    //
+    // The registration is idempotent — the pair is detached first, then attached
+    // with `once` — so a scene that is shut down and later restarted holds
+    // exactly one teardown handler per event instead of stacking another one on
+    // every run (`once` alone would leave the run's unfired `DESTROY` handler
+    // behind). This is the same "detach before attach" idempotency
+    // `BattleScene.registerBoardInput` already uses, and `once` means the
+    // handler is consumed by the event that fired it.
+    this.events.off(Phaser.Scenes.Events.SHUTDOWN, this.shutdown, this);
+    this.events.off(Phaser.Scenes.Events.DESTROY, this.shutdown, this);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.shutdown, this);
+    this.events.once(Phaser.Scenes.Events.DESTROY, this.shutdown, this);
+
     this.hasTransitioned = false;
     this.drawMenu();
   }
@@ -68,6 +95,20 @@ export class MainMenuScene extends Phaser.Scene {
       'COLLECTION',
       () => this.openCollection()
     );
+
+    // BATTLE HISTORY — the read-only completed-battle and account-progression
+    // surface. It sits one button pitch below COLLECTION, so no hit area
+    // overlaps another and the two existing entries keep their own coordinates:
+    // `START BATTLE` stays at (640, 324), which `standalone-web-smoke.mjs`
+    // clicks, and `COLLECTION` stays at (640, 394).
+    this.drawButton(
+      buttonX,
+      SAFE_AREA.y + 440,
+      buttonWidth,
+      buttonHeight,
+      'BATTLE HISTORY',
+      () => this.openBattleHistory()
+    );
   }
 
   /** Draws one interactive menu button using the menu's own visual conventions. */
@@ -108,6 +149,17 @@ export class MainMenuScene extends Phaser.Scene {
     this.transitionTo('CollectionViewerScene');
   }
 
+  /**
+   * Navigation action — opens the read-only `BattleHistoryScene`.
+   *
+   * It uses the same single-use transition as the other two entries, so
+   * whichever navigation action fires first claims this scene instance and no
+   * second scene can be started from the same presentation.
+   */
+  private openBattleHistory(): void {
+    this.transitionTo('BattleHistoryScene');
+  }
+
   /** Starts the given scene, at most once per scene instance. */
   private transitionTo(sceneKey: string): void {
     if (this.hasTransitioned) {
@@ -117,7 +169,24 @@ export class MainMenuScene extends Phaser.Scene {
     this.scene.start(sceneKey);
   }
 
+  /**
+   * Scene teardown — the handler subscribed to Phaser's own
+   * `Phaser.Scenes.Events.SHUTDOWN` / `DESTROY` events by `create()`.
+   *
+   * It is a plain method invoked *by the engine's event*, not an engine hook:
+   * Phaser never calls a scene method named `shutdown` on its own.
+   *
+   * Ownership audit: the only thing this scene owns is its per-run navigation
+   * guard. It subscribes to no `GameRuntime` stream, registers no timer or
+   * tween, holds no runtime, battle, or preserved-loadout value, and its game
+   * objects belong to the scene's `DisplayList`, which Phaser destroys by
+   * itself (`DisplayList#shutdown` handles the same event). Resetting
+   * `hasTransitioned` here is the same per-run reset `create()` performs, so a
+   * reused instance carries no claim on a transition into the next
+   * presentation; the reset is idempotent, so running it on both events or
+   * twice on one event is harmless.
+   */
   shutdown(): void {
-    // No subscriptions to clean up — this scene is purely presentational.
+    this.hasTransitioned = false;
   }
 }

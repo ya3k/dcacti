@@ -1,9 +1,31 @@
 import * as Phaser from 'phaser';
 import { SAFE_AREA, GAME_WIDTH } from '../GameViewport';
 import { readRuntime } from '../runtime/RuntimeRegistry';
+import { preserveLoadout, readPreservedLoadout } from '../state/PreservedLoadout';
 import type { GameRuntimePort } from '../runtime/GameRuntimeEvents';
 import type { BattleStartRequest } from '../../services/api/BattleModels';
 import type { CardResponse, PetResponse, RelicResponse } from '../../services/api/CollectionModels';
+
+/**
+ * The scene start data `LobbyScene` accepts.
+ *
+ * `ResultScene`'s approved `PLAY AGAIN` continuation passes
+ * `{ restorePreservedLoadout: true }` (`D-202-01 = C`, `D-202-03 = D`; the
+ * documented `scene.start(key, data)` mechanism `BattleScene → ResultScene`
+ * already uses). That flag is the **only** thing that makes the scene consult
+ * the preserved-loadout carrier: `MainMenuScene`'s `START BATTLE` starts this
+ * scene without it, so a main-menu entry and a first-ever entry keep exactly
+ * their existing behavior. Preservation is approved for the `PLAY AGAIN`
+ * return only, and nothing here invents behavior for the other entries
+ * (`ARCHITECTURE.md` §2.2.3, ADR-022).
+ */
+export interface LobbySceneData {
+  /**
+   * Restore the loadout preserved by the battle that just ended
+   * (`ResultScene`'s `PLAY AGAIN`). Absent or `false` on every other entry.
+   */
+  readonly restorePreservedLoadout?: boolean;
+}
 
 /**
  * One selectable entry of the Lobby's static Boss catalog.
@@ -159,10 +181,24 @@ const CATEGORY_COLORS: Readonly<Record<string, string>> = {
  * to add (`ARCHITECTURE.md` §2.2.3 rule 6).
  *
  * **The in-progress selection is scene state and lives nowhere else.** It is
- * created with the scene, held in the scene's own fields, and discarded on
- * `shutdown()`. It is not in `state/GameRuntimeState.ts` (rule 5), not on
+ * created with the scene, held in the scene's own fields, and discarded by the
+ * scene's own teardown — which is attached to Phaser's actual scene lifecycle
+ * events (`Phaser.Scenes.Events.SHUTDOWN` / `DESTROY`) in `create()`, because a
+ * method named `shutdown()` is not itself an engine hook. It is not in
+ * `state/GameRuntimeState.ts` (rule 5), not on
  * `GameRuntime` (rule 2), and has no store, manager, or module of its own
  * (rule 1, `AGENTS.md` §9).
+ *
+ * **The one documented exception is the preserved loadout** (ADR-022,
+ * `ARCHITECTURE.md` §2.2.3). When this scene successfully starts a battle it
+ * publishes the submitted request to the client game-presentation layer's
+ * preserved-loadout carrier, and when it is entered through the approved
+ * `ResultScene → PLAY AGAIN` continuation it restores that selection before the
+ * first render. Preservation changes the selection's lifetime, not its nature:
+ * the restored selection is the scene's own editable state, never a lock and
+ * never a client-side legality decision, and the scene's teardown still discards
+ * the scene's copy while leaving the carrier alone — the carrier is not battle
+ * state and is not cleared by the post-result cleanup (`D-202-04 = A`).
  *
  * **The scene decides no legality.** The UI limits how many items can be picked;
  * it does not compute whether the selection is valid. Count, ownership,
@@ -175,6 +211,16 @@ const CATEGORY_COLORS: Readonly<Record<string, string>> = {
  */
 export class LobbyScene extends Phaser.Scene {
   private runtime: GameRuntimePort | null = null;
+
+  /**
+   * Whether this instance was entered through the approved `ResultScene` →
+   * `PLAY AGAIN` continuation and must therefore restore the preserved loadout.
+   *
+   * Set from the scene start data (`LobbySceneData`) and reset by the scene's
+   * teardown, so a normal entry — `MainMenuScene`'s `START BATTLE`, or a restart
+   * — never restores anything.
+   */
+  private restorePreservedLoadout = false;
 
   // --- In-progress selection (ephemeral scene state; cleared on shutdown) ---
 
@@ -254,8 +300,51 @@ export class LobbyScene extends Phaser.Scene {
     super('LobbyScene');
   }
 
+  /**
+   * Scene start — reads the entry's start data before `create()` renders.
+   *
+   * Phaser calls this on every start, with `undefined` when the scene was
+   * started without data, so the flag never survives from a previous run.
+   */
+  init(data?: LobbySceneData): void {
+    this.restorePreservedLoadout = data?.restorePreservedLoadout === true;
+  }
+
   create(): void {
     this.runtime = readRuntime(this);
+
+    // Attach this scene's teardown to Phaser's own scene lifecycle events,
+    // before any of the resources it releases is created.
+    //
+    // A scene method that merely *exists* is never invoked: Phaser 4.2.1 calls
+    // `init`/`preload`/`create`/`update` by name (`SceneManager.bootScene` /
+    // `SceneManager.create`) and nothing else, and `Phaser.Scene` declares no
+    // `shutdown` method at all. What the engine actually emits when it takes a
+    // scene down is `Phaser.Scenes.Events.SHUTDOWN` — from
+    // `Phaser.Scenes.Systems#shutdown`, which `SceneManager` calls for a queued
+    // `stop` and when restarting a running scene — and `DESTROY` from
+    // `Systems#destroy`. That is the documented scene-event mechanism
+    // (`.ai/skills/client/phaser-architecture` "Resource Lifecycle & Cleanup";
+    // `.ai/skills/phaser/scenes` gotcha 14); without it the teardown below never
+    // runs in the browser and this instance's in-progress selection survives
+    // into the next run, against `ARCHITECTURE.md` §2.2.3 rule 1.
+    //
+    // The registration is idempotent — the pair is detached first, then attached
+    // with `once` — so a scene that is shut down and later restarted holds
+    // exactly one teardown handler per event instead of stacking another one on
+    // every run (`once` alone would leave the run's unfired `DESTROY` handler
+    // behind). This is the same "detach before attach" idempotency
+    // `BattleScene.registerBoardInput` already uses, and `once` means the
+    // handler is consumed by the event that fired it.
+    this.events.off(Phaser.Scenes.Events.SHUTDOWN, this.shutdown, this);
+    this.events.off(Phaser.Scenes.Events.DESTROY, this.shutdown, this);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.shutdown, this);
+    this.events.once(Phaser.Scenes.Events.DESTROY, this.shutdown, this);
+
+    // Restore before the first render, so the preserved selection is what the
+    // player sees immediately — including while the collection read is still in
+    // flight. Only the approved PLAY AGAIN entry reads the carrier.
+    this.applyPreservedLoadout();
 
     this.drawShell();
     this.render();
@@ -272,12 +361,30 @@ export class LobbyScene extends Phaser.Scene {
   }
 
   /**
-   * Scene shutdown — reached when this scene stops or the game is destroyed.
+   * Scene teardown — the handler subscribed to Phaser's own
+   * `Phaser.Scenes.Events.SHUTDOWN` / `DESTROY` events by `create()`.
+   *
+   * It is a plain method invoked *by the engine's event*, not an engine hook:
+   * Phaser never calls a scene method named `shutdown` on its own, so before
+   * this registration existed the body below never ran in the browser.
    *
    * Everything the scene owned is dropped here, including the in-progress
    * selection: a shut-down lobby has no selection, and the runtime keeps none on
    * its behalf (`ARCHITECTURE.md` §2.2.3 rules 1–2). Detaching the hit areas
-   * prevents pointer handlers from surviving a scene restart.
+   * prevents pointer handlers from surviving a scene restart — Phaser has
+   * already destroyed those game objects by the time its `DisplayList#shutdown`
+   * has handled this same event, so only the scene's own handler registrations
+   * and references are left to release.
+   *
+   * The **preserved-loadout carrier is deliberately not cleared here**: it is
+   * not this scene's copy of the selection but the game instance's
+   * presentation state, and it exists precisely so it can outlive this scene
+   * (`ARCHITECTURE.md` §2.2.3, ADR-022). This is also why the post-result
+   * active-battle cleanup leaves it untouched.
+   *
+   * The body is idempotent and safe on both events: every assignment is a plain
+   * reset, detaching an already-detached handler is harmless, and running it
+   * twice simply repeats the reset.
    */
   shutdown(): void {
     for (const object of this.interactiveObjects) {
@@ -290,6 +397,7 @@ export class LobbyScene extends Phaser.Scene {
     this.selectedCardIds = [];
     this.selectedRelicIds = [];
     this.selectedBossId = null;
+    this.restorePreservedLoadout = false;
 
     this.ownedPets = [];
     this.ownedCards = [];
@@ -355,6 +463,41 @@ export class LobbyScene extends Phaser.Scene {
   // ---------------------------------------------------------------------------
   // Selection interaction
   // ---------------------------------------------------------------------------
+
+  /**
+   * Applies the preserved loadout when — and only when — this instance was
+   * entered through the approved `ResultScene` → `PLAY AGAIN` continuation
+   * (`D-202-03 = D`, `ARCHITECTURE.md` §2.2.3, ADR-022).
+   *
+   * The restored ids become this scene's own selection, so they are presented
+   * through the existing Lobby UI and remain fully editable: the player may
+   * deselect or replace any of them, and `buildStartRequest` carries whatever
+   * the selection is at submit time. Nothing is validated here — restoring is a
+   * starting point, not a legality decision, and the server validates the
+   * submitted request (rule 5).
+   *
+   * The ids are restored verbatim, including an id the collection read does not
+   * return: filtering them would be a client-side ownership/legality decision
+   * the client must not make. With no preserved loadout — or on any entry that
+   * did not ask for one — the scene keeps its empty selection, so a normal
+   * entry behaves exactly as before.
+   */
+  private applyPreservedLoadout(): void {
+    if (!this.restorePreservedLoadout) {
+      return;
+    }
+
+    const preserved = readPreservedLoadout(this);
+
+    if (preserved === null) {
+      return;
+    }
+
+    this.selectedPetId = preserved.petId;
+    this.selectedCardIds = [...preserved.cardLoadout];
+    this.selectedRelicIds = [...preserved.relicLoadout];
+    this.selectedBossId = preserved.bossId;
+  }
 
   /**
    * Chooses the active Pet (`PET_RULES.md` §2 — exactly one per battle).
@@ -493,6 +636,11 @@ export class LobbyScene extends Phaser.Scene {
    * active, shows the error, and keeps the selection intact so the player can
    * correct and retry (`ARCHITECTURE.md` §2.2.3 rule 5).
    *
+   * A successful start also **preserves the submitted loadout** (`D-202-03 = D`,
+   * ADR-022): the request the server accepted is the loadout the battle is
+   * fought with, so it is what `ResultScene` → `PLAY AGAIN` must restore. A
+   * rejected start creates no battle and therefore preserves nothing.
+   *
    * The scene does not duplicate the runtime's REST → connect → join
    * orchestration, and it computes no gameplay value: it hands over a request
    * and reports the outcome (`TASK-077`).
@@ -507,12 +655,18 @@ export class LobbyScene extends Phaser.Scene {
     this.startError = null;
     this.render();
 
+    // Exactly the request that is submitted, kept so the preserved loadout is
+    // the battle's own loadout rather than a second, later reading of the
+    // scene's selection.
+    const request = this.buildStartRequest();
+
     try {
-      await runtime.startBattle(this.buildStartRequest());
+      await runtime.startBattle(request);
     } catch (error) {
       // The documented rejections (401 UNAUTHENTICATED, 400 INVALID_LOADOUT /
       // PET_NOT_OWNED / BOSS_NOT_FOUND) and transport failures all arrive here.
-      // No battle exists after any of them, so the scene stays put.
+      // No battle exists after any of them, so the scene stays put and nothing
+      // is preserved.
       this.startError = `Battle start failed: ${describeError(error)}`;
       this.startPending = false;
       this.render();
@@ -520,6 +674,7 @@ export class LobbyScene extends Phaser.Scene {
     }
 
     this.startPending = false;
+    preserveLoadout(this, request);
     this.scene.start('BattleScene');
   }
 

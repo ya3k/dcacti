@@ -4,6 +4,7 @@ import { PreloaderScene } from './scenes/PreloaderScene';
 import { MainMenuScene } from './scenes/MainMenuScene';
 import { LobbyScene } from './scenes/LobbyScene';
 import { CollectionViewerScene } from './scenes/CollectionViewerScene';
+import { BattleHistoryScene } from './scenes/BattleHistoryScene';
 import { BattleScene } from './scenes/BattleScene';
 import { ResultScene } from './scenes/ResultScene';
 import { GAME_WIDTH, GAME_HEIGHT } from './GameViewport';
@@ -38,9 +39,11 @@ import { RUNTIME_REGISTRY_KEY } from './runtime/RuntimeRegistry';
  *   BootScene → PreloaderScene → MainMenuScene → LobbyScene → BattleScene → ResultScene
  *
  * `CollectionViewerScene` is registered alongside them as the meta-progression
- * viewer `MainMenuScene` reaches through its `COLLECTION` button. It is not part
- * of the battle lifecycle above: it is a read-only side branch off the main menu,
- * and the branch points back to `MainMenuScene`.
+ * viewer `MainMenuScene` reaches through its `COLLECTION` button, and
+ * `BattleHistoryScene` as the completed-battle and account-progression surface
+ * it reaches through `BATTLE HISTORY`. Neither is part of the battle lifecycle
+ * above: they are read-only side branches off the main menu, and each branch
+ * points back to `MainMenuScene`.
  *
  * The `runtime` is injected into Phaser's game-wide registry (`game.registry`,
  * a `Phaser.Data.DataManager`) from the `postBoot` hook — the point at which
@@ -70,6 +73,7 @@ export function createGameConfig(
       MainMenuScene,
       LobbyScene,
       CollectionViewerScene,
+      BattleHistoryScene,
       BattleScene,
       ResultScene,
     ],

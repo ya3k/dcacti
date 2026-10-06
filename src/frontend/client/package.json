@@ -12,6 +12,7 @@
     "verify:runtime": "node scripts/runtime-smoke.mjs",
     "verify:e2e:smoke": "node scripts/standalone-web-smoke.mjs",
     "verify:e2e:collection": "node scripts/collection-viewer-smoke.mjs",
+    "verify:e2e:history": "node scripts/battle-history-smoke.mjs",
     "verify:viewport": "node scripts/viewport-check.mjs",
     "verify:viewport:overflow": "node scripts/viewport-overflow-check.mjs",
     "verify:viewport:shots": "node scripts/viewport-shots.mjs"

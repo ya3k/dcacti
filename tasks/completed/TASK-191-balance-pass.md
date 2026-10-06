@@ -22,10 +22,9 @@
 ```text
 Task ID:           TASK-191
 Type:              BALANCE — analysis & specification (no implementation)
-Status:            READY (Q-4 = OPTION B — ONE CARD CAST PER TURN — approved and
-                    implemented by TASK-192; Q-12 = harness APPROVED and
-                    Q-1 = QUALITATIVE — both recorded in §6 and specified by
-                    TASK-193. All other Q/B items remain OPEN.)
+Status:            SUPERSEDED (downstream satisfaction by TASK-192, TASK-193,
+                    TASK-194, TASK-195, TASK-196, TASK-197, TASK-198, and
+                    TASK-200)
 Risk:              MEDIUM (specification introduces no behavior change; findings may
                     require follow-up rule/content decisions before implementation)
 Priority:          HIGH (balance gates playtesting and MVP feel; several findings

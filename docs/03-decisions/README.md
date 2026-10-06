@@ -1,6 +1,21 @@
 # Architecture Decision Records (ADR)
 
-**Version:** 1.13 (§7 — ADR-021 added per `TASK-191` Q-4: the Card-cast
+**Version:** 1.14 (§7 — ADR-022 added per `TASK-203`: the post-result
+preserved-loadout carrier. `D-202-03 = D` requires the loadout used in the battle
+that just ended to survive the `LobbyScene` → `BattleScene` → `ResultScene` →
+`LobbyScene` round trip and stay editable, which the ephemeral scene-local
+selection of `ARCHITECTURE.md` §2.2.3 rule 1 cannot do. The ADR records the
+carrier the requirement left open: a second documented key in Phaser's game-wide
+registry, behind the `game/state/PreservedLoadout.ts` accessor, owned by the
+client game-presentation layer, alive for the running game instance, written on
+a successful battle start, and read only on the approved `ResultScene` →
+`PLAY AGAIN` entry — so the preserved loadout, active battle state, and battle
+result data stay three distinct concepts and `clearActiveBattleState()` never
+clears the preserved loadout. It also records the dedicated client-local
+`clearActiveBattleState()` port capability for `D-202-04 = A` (no disconnect, no
+wire message) as distinct from `SIGNALR_PROTOCOL.md` §7.3's
+`BATTLE_NOT_FOUND` path. No game rule, API contract, wire member, Redis key, or
+database column changes; ADR-021 remains Accepted and unchanged. Prior 1.13: §7 — ADR-021 added per `TASK-191` Q-4: the Card-cast
 restriction decision. The Product Owner approved **OPTION B — ONE CARD CAST PER
 TURN**: a player may successfully cast at most one Card during each committed
 Match-3 Turn, and the restriction is a **cast-count constraint, not Turn
@@ -205,6 +220,7 @@ technical document.
 | ADR-019 | Discord credential secret hygiene — the developer-local channel is the `GameServer.Api` .NET user-secrets store and the deployment channel a host environment variable; `.env.example` documents key names and approved channels, not an unread `.env` path; the tracked `appsettings.json` `ClientSecret` placeholder stays empty with "absent" = null/empty/whitespace; a missing credential fails startup in Production but leaves Development's unchanged `503 DISCORD_UNAVAILABLE`; rotation is manual, operator-owned, event-triggered, restart-required, with no scheduled cadence; the existing local credential is rotated once as a precaution | Superseded by ADR-020 |
 | ADR-020 | Standalone Web account authentication (Username/Password), new `Accounts` table, dropping `DiscordUserId` from `Players`, public `POST /api/auth/register` and `POST /api/auth/login`, retiring Discord Embedded App SDK and OAuth dependency completely | Accepted |
 | ADR-021 | One Card cast per committed Match-3 Turn — a player may successfully cast at most one Card during each committed Match-3 Turn; the restriction is a cast-count constraint, **not** Turn consumption, so a Card cast still consumes no Turn, does not resolve the Match-3 board, and does not independently trigger the Boss response; the Match-3 Turn remains the authoritative unit of combat progression and the Boss response is reached only through a committed Swap. Option A (cast consumes a Turn and triggers the Boss response) and Option C (keep unlimited free casts, change only Power Charge's cost) are rejected. Records `TASK-191` §6 Q-4 = OPTION B and unblocks B-02 for implementation | Accepted |
+| ADR-022 | Post-result preserved-loadout carrier — the loadout used in the battle that just ended is held as a second documented key in Phaser's game-wide registry behind the `game/state/PreservedLoadout.ts` accessor; owned by the client game-presentation layer (not `GameRuntime`), alive for the running game instance, written only on a successful battle start, and read only on the approved `ResultScene` → `PLAY AGAIN` entry, with `LobbyScene` remaining the editing surface. Records that the preserved loadout, active battle state, and battle result data are three distinct concepts, that the `D-202-04 = A` cleanup never clears the preserved loadout, and that the post-result exit clears active battle state through the dedicated client-local `clearActiveBattleState()` port capability (no disconnect, no wire message) rather than `SIGNALR_PROTOCOL.md` §7.3's `BATTLE_NOT_FOUND` path. Discharges the carrier requirement `ARCHITECTURE.md` §2.2.3 recorded without a mechanism per `TASK-202` `D-202-03 = D` | Accepted |
 
 **Partial supersession (ADR-016).** ADR-011 and ADR-012 remain in force
 except for the specific items named below, which ADR-016 supersedes. Their

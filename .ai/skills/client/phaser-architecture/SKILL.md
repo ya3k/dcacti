@@ -27,7 +27,7 @@ Standardize Phaser 4 scene implementation in DCacti to ensure:
 
 - Creating or modifying Phaser scenes in `src/frontend/client/src/game/scenes/`.
 - Adding visual sub-components / View classes (e.g. `BoardView`, `PetView`, `BossView`).
-- Configuring scene lifecycle hooks (`init`, `preload`, `create`, `update`, `shutdown`).
+- Configuring the scene lifecycle: the methods Phaser invokes by name (`init`, `preload`, `create`, `update`) and the teardown **events** the engine emits (`Phaser.Scenes.Events.SHUTDOWN` / `DESTROY`).
 - Integrating Phaser scenes with `GameRuntimePort`.
 - Implementing canvas resizing, viewport calculations, or safe area letterboxing.
 
@@ -92,7 +92,28 @@ BattleScene
 
 - Scenes must **never** import `SignalRService` or `@microsoft/signalr`.
 - Retrieve `GameRuntimePort` from `RuntimeRegistry.getInstance().getRuntime()` or scene `init(data)`.
-- Subscribe to runtime events in `create()` and unsubscribe in `shutdown` / `destroy`.
+- Subscribe to runtime events in `create()` and release the subscriptions in the teardown registered on the `Phaser.Scenes.Events.SHUTDOWN` / `DESTROY` events.
+
+### 5. Scene Lifecycle: Methods vs Events
+
+Phaser invokes exactly four scene methods **by name** — `init`, `preload`, `create`,
+`update` (`SceneManager.bootScene` / `SceneManager.create`) — and no others.
+`Phaser.Scene` declares **no** `shutdown` method, and neither `shutdown()` nor
+`destroy()` is an engine hook.
+
+Teardown reaches a scene only as an **event on its own emitter**:
+
+```text
+Phaser.Scenes.Systems#shutdown   → scene.events.emit(Phaser.Scenes.Events.SHUTDOWN)
+Phaser.Scenes.Systems#destroy    → scene.events.emit(Phaser.Scenes.Events.DESTROY)
+```
+
+`SHUTDOWN` is emitted for a queued `stop` and when a running scene is
+restarted/started again; `DESTROY` when the scene (or the game) is destroyed.
+Declaring a method named `shutdown()` without registering it on those events
+means the cleanup never runs — and a scene that is stopped keeps its
+subscriptions pointed at game objects `DisplayList#shutdown` has already
+destroyed.
 
 ---
 
@@ -104,6 +125,11 @@ create() {
     this.runtime = RuntimeRegistry.getInstance().getRuntime();
     this.unsubscribe = this.runtime.onBattleEvents((batch) => this.handleEvents(batch));
 
+    // Detach before attaching: `once` alone would leave this run's *unfired*
+    // DESTROY handler behind, so a scene that is stopped and started again
+    // would stack another handler on every run.
+    this.events.off(Phaser.Scenes.Events.SHUTDOWN, this.cleanup, this);
+    this.events.off(Phaser.Scenes.Events.DESTROY, this.cleanup, this);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.cleanup, this);
     this.events.once(Phaser.Scenes.Events.DESTROY, this.cleanup, this);
 }
@@ -118,6 +144,24 @@ cleanup() {
 }
 ```
 
+Rules for the teardown:
+
+```text
+1. Register it on both events in create(), before the resources it releases are
+   created, and `off` the pair first so the registration is idempotent.
+2. Release only what the scene owns: its own subscriptions, timers, tweens,
+   caches and per-run guards. Never the runtime's synchronized state, the
+   preserved loadout carrier (ADR-022), or any other scene's/global state.
+3. Make it idempotent and reference-safe: Phaser destroys the scene's game
+   objects itself (`DisplayList#shutdown` handles the same event), so the
+   teardown runs against already-destroyed children. Every handle must be
+   null-safe, and re-running it must be harmless.
+4. Cancel asynchronous continuations: a promise the scene started (an API read,
+   say) can settle after teardown or after the instance has been reused. Capture
+   a per-run token in create(), bump it in the teardown, and check it before the
+   continuation writes to any game object.
+```
+
 ---
 
 ## Do / Don't
@@ -127,7 +171,8 @@ cleanup() {
 | Break scene presentation into modular View classes. | Write 2,000-line monolithic scene classes containing all game rendering. |
 | Use 1280x720 logical coordinates mapped via `GameViewport.ts`. | Use raw DOM pixel coordinates that break across resolutions. |
 | Consume `GameRuntimePort` for server events. | Import SignalR Hub connections directly into scenes. |
-| Clean up tweens, timers, and runtime subscriptions on scene shutdown. | Leave dangling event listeners that cause memory leaks across scene reloads. |
+| Clean up tweens, timers, caches, and runtime subscriptions in the teardown registered on `Phaser.Scenes.Events.SHUTDOWN` / `DESTROY`. | Leave dangling event listeners that cause memory leaks across scene reloads. |
+| Treat `shutdown()` / `destroy()` as event names, and register your own cleanup method on them. | Assume a scene method named `shutdown()` is a Phaser lifecycle hook — the engine never calls it. |
 
 ---
 

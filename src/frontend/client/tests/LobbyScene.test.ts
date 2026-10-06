@@ -9,10 +9,17 @@ import {
   MESSAGE_TEXT_BOTTOM_OFFSET,
   ERROR_TEXT_BOTTOM_OFFSET,
 } from '../src/game/scenes/LobbyScene';
+import type { LobbySceneData } from '../src/game/scenes/LobbyScene';
+import {
+  clearPreservedLoadout,
+  preserveLoadout,
+  readPreservedLoadout,
+} from '../src/game/state/PreservedLoadout';
 import { RUNTIME_REGISTRY_KEY } from '../src/game/runtime/RuntimeRegistry';
 import { INITIAL_RUNTIME_STATE } from '../src/state/GameRuntimeState';
 import type { BattleStartRequest } from '../src/services/api/BattleModels';
 import type { CardResponse, PetResponse, RelicResponse } from '../src/services/api/CollectionModels';
+import { SceneEventEmitter } from './support/SceneEventEmitter';
 
 /**
  * TASK-078 — LobbyScene.
@@ -36,6 +43,16 @@ vi.mock('phaser', () => ({
   Structs: { Size: class MockSize {} },
   Loader: { Events: { COMPLETE: 'complete' } },
   Input: { Events: { GAMEOBJECT_POINTER_DOWN: 'gameobjectdown' } },
+  // Phaser's scene lifecycle events (TASK-205). The engine emits SHUTDOWN /
+  // DESTROY on `scene.events` (`Phaser.Scenes.Systems#shutdown` / `#destroy`)
+  // and never calls a scene method merely because one exists, so this scene
+  // attaches its teardown to these events and so does this suite.
+  Scenes: {
+    Events: {
+      SHUTDOWN: 'shutdown',
+      DESTROY: 'destroy',
+    },
+  },
 }));
 
 /** A `GET /api/pets` element (API_CONTRACTS.md §5.1) — the owned instance. */
@@ -114,6 +131,15 @@ function createLobbyHarness(options: SceneHarnessOptions = {}) {
   /** Every `startBattle` request the scene submitted, in order. */
   const startRequests: BattleStartRequest[] = [];
   const sceneStarted: Array<{ key: string }> = [];
+  /**
+   * The Phaser game-wide registry's contents.
+   *
+   * It is one store per game instance — shared by every scene context this
+   * harness builds, exactly as `game.registry` is in Phaser — which is what
+   * makes the preserved-loadout carrier (ADR-022) reachable across scenes and
+   * across a scene restart.
+   */
+  const registryValues = new Map<string, unknown>();
 
   const doubleOf = <T,>(value: T): Promise<T> =>
     collectionFailure ? Promise.reject(collectionFailure) : Promise.resolve(value);
@@ -249,7 +275,13 @@ function createLobbyHarness(options: SceneHarnessOptions = {}) {
   };
 
   function context(scene: object): object {
+    // The scene's own emitter (Phaser's `scene.events`). The engine raises its
+    // lifecycle events here and never calls a scene method because one exists
+    // (TASK-205), so the harness raises them here too.
+    const events = new SceneEventEmitter();
+
     return Object.assign(Object.create(scene), {
+      events,
       scene: { start: (key: string) => sceneStarted.push({ key }) },
       add: {
         rectangle: (x: number, y: number, width: number, height: number) =>
@@ -257,7 +289,18 @@ function createLobbyHarness(options: SceneHarnessOptions = {}) {
         text: (x: number, y: number, value: string) => makeText(x, y, value),
       },
       registry: {
-        get: (key: string) => (withRuntime && key === RUNTIME_REGISTRY_KEY ? runtime : undefined),
+        get: (key: string) => {
+          if (withRuntime && key === RUNTIME_REGISTRY_KEY) {
+            return runtime;
+          }
+          return registryValues.get(key);
+        },
+        set: (key: string, value: unknown) => {
+          registryValues.set(key, value);
+        },
+        remove: (key: string) => {
+          registryValues.delete(key);
+        },
       },
       sys: { settings: { key: 'LobbyScene' } },
     });
@@ -271,6 +314,21 @@ function createLobbyHarness(options: SceneHarnessOptions = {}) {
     startRequests,
     sceneStarted,
     context,
+    /**
+     * Takes a scene down exactly as Phaser does (TASK-205):
+     * `SceneManager` → `Systems#shutdown` → `scene.events.emit(SHUTDOWN)`.
+     * Nothing here calls a scene method by name.
+     */
+    shutdownScene: (ctx: object) => {
+      (ctx as { events?: SceneEventEmitter }).events?.emit('shutdown');
+    },
+    /** `Phaser.Scenes.Systems#destroy` → `Phaser.Scenes.Events.DESTROY`. */
+    destroyScene: (ctx: object) => {
+      (ctx as { events?: SceneEventEmitter }).events?.emit('destroy');
+    },
+    /** How many listeners the scene's own emitter holds for one lifecycle event. */
+    sceneListenerCount: (ctx: object, event: string) =>
+      (ctx as { events?: SceneEventEmitter }).events?.listenerCount(event) ?? 0,
     /** The live render pass's text, as the player would read it. */
     rendered: () => [...liveTexts].map((t) => t.text).join('\n'),
     /** The interactive option whose text contains `fragment`. */
@@ -298,16 +356,29 @@ function createLobbyHarness(options: SceneHarnessOptions = {}) {
 }
 
 /** Invokes a scene method with the harness context, as Phaser itself would. */
-function runScene(scene: object, ctx: object, method: string): void {
-  const fn = Object.getPrototypeOf(scene)[method] as (this: object) => void;
-  fn.call(ctx);
+function runScene(scene: object, ctx: object, method: string, ...args: unknown[]): void {
+  const fn = Object.getPrototypeOf(scene)[method] as
+    | ((this: object, ...args: unknown[]) => void)
+    | undefined;
+  fn?.call(ctx, ...args);
+}
+
+/**
+ * The preserved-loadout carrier as the scene reads and writes it (ADR-022).
+ *
+ * The accessors take the scene because that is where Phaser's game-wide
+ * registry lives; the harness context carries the same registry.
+ */
+function preservedIn(ctx: object): BattleStartRequest | null {
+  return readPreservedLoadout(ctx as never);
 }
 
 /** Runs `create()` and lets the collection reads settle. */
-async function createLobby(options: SceneHarnessOptions = {}) {
+async function createLobby(options: SceneHarnessOptions = {}, startData?: LobbySceneData) {
   const harness = createLobbyHarness(options);
   const scene = new LobbyScene();
   const ctx = harness.context(scene);
+  runScene(scene, ctx, 'init', startData);
   runScene(scene, ctx, 'create');
   await flush();
   return { harness, scene, ctx };
@@ -929,25 +1000,42 @@ describe('LobbyScene — start routing and rejection (ARCHITECTURE.md §2.2.3 ru
   });
 });
 
-describe('LobbyScene — shutdown cleanup (ARCHITECTURE.md §2.2.3 rules 1–2)', () => {
+describe('LobbyScene — teardown on the engine lifecycle (ARCHITECTURE.md §2.2.3 rules 1–2, TASK-205)', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('is safe to shut down without creating anything', () => {
-    const harness = createLobbyHarness();
-    const scene = new LobbyScene();
+  it('attaches its teardown to the engine lifecycle events, not to a method name', async () => {
+    // `Phaser.Scene` declares no `shutdown` method and the engine never calls
+    // one: `Systems#shutdown` / `#destroy` emit SHUTDOWN / DESTROY on the
+    // scene's own emitter, so a teardown that exists only as a method is dead
+    // code in the browser — which is why the documented "discarded on shutdown"
+    // was not true before this task.
+    const { harness, ctx } = await createLobby();
 
-    expect(() => runScene(scene, harness.context(scene), 'shutdown')).not.toThrow();
+    expect(harness.sceneListenerCount(ctx, 'shutdown')).toBe(1);
+    expect(harness.sceneListenerCount(ctx, 'destroy')).toBe(1);
   });
 
-  it('discards the in-progress selection on shutdown', async () => {
+  it('is safe to be taken down before it created anything', () => {
+    const harness = createLobbyHarness();
+    const scene = new LobbyScene();
+    const ctx = harness.context(scene);
+
+    // No `create()` ran, so nothing was registered and there is nothing to
+    // release: the engine's teardown is still safe.
+    expect(() => harness.shutdownScene(ctx)).not.toThrow();
+    expect(() => harness.destroyScene(ctx)).not.toThrow();
+  });
+
+  it('discards the in-progress selection when Phaser shuts the scene down', async () => {
     const { harness, scene, ctx } = await createLobby();
 
     selectFullLoadout(harness);
     expect(harness.rendered()).toContain('Cards: card-heal, card-shield, card-power-charge');
 
-    runScene(scene, ctx, 'shutdown');
+    // The engine's own teardown path — not a call to the scene's method.
+    harness.shutdownScene(ctx);
 
     // ARCHITECTURE.md §2.2.3 rules 1–2: a shut-down lobby has no selection and
     // keeps none. A restart therefore begins from an empty one — the previous
@@ -972,11 +1060,27 @@ describe('LobbyScene — shutdown cleanup (ARCHITECTURE.md §2.2.3 rules 1–2)'
     expect(harness.sceneStarted).toEqual([]);
   });
 
+  it('discards the in-progress selection when Phaser destroys the scene', async () => {
+    const { harness, scene, ctx } = await createLobby();
+
+    selectFullLoadout(harness);
+    harness.destroyScene(ctx);
+
+    expect((ctx as { selectedPetId: string | null }).selectedPetId).toBeNull();
+    expect((ctx as { selectedBossId: string | null }).selectedBossId).toBeNull();
+    expect((ctx as { selectedCardIds: string[] }).selectedCardIds).toEqual([]);
+    expect((ctx as { selectedRelicIds: string[] }).selectedRelicIds).toEqual([]);
+
+    runScene(scene, ctx, 'create');
+    await flush();
+    expect(harness.rendered()).toContain('Pet:   —');
+  });
+
   it('detaches the previous render pass when the scene is restarted', async () => {
     const { harness, scene, ctx } = await createLobby();
 
     selectFullLoadout(harness);
-    runScene(scene, ctx, 'shutdown');
+    harness.shutdownScene(ctx);
 
     // The option objects of the shut-down pass are destroyed, so a click on one
     // cannot reach a handler — the leak the cleanup exists to prevent.
@@ -994,11 +1098,233 @@ describe('LobbyScene — shutdown cleanup (ARCHITECTURE.md §2.2.3 rules 1–2)'
 
     expect(harness.collectionReads).toHaveLength(3);
 
-    runScene(scene, ctx, 'shutdown');
+    harness.shutdownScene(ctx);
     runScene(scene, ctx, 'create');
     await flush();
 
     expect(harness.collectionReads).toHaveLength(6);
+  });
+
+  it('does not accumulate lifecycle listeners across a shutdown/start cycle', async () => {
+    const { harness, scene, ctx } = await createLobby();
+
+    harness.shutdownScene(ctx);
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    // One teardown handler per run — never the previous run's plus a new one.
+    expect(harness.sceneListenerCount(ctx, 'shutdown')).toBe(1);
+
+    // And the handler that is registered is the live one: taking the reused
+    // scene down still discards its selection.
+    selectFullLoadout(harness);
+    harness.shutdownScene(ctx);
+    expect((ctx as { selectedPetId: string | null }).selectedPetId).toBeNull();
+  });
+});
+
+describe('LobbyScene — preserved loadout (TASK-203, D-202-03 = D, ADR-022)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * The loadout the battle that just ended was fought with, exactly as
+   * `POST /api/battle/start` carried it (`API_CONTRACTS.md` §3): the owned Pet
+   * instance, the Boss's canonical Identity, three Basic Cards, and three owned
+   * Relic instances in equip-slot order.
+   */
+  const PRESERVED: BattleStartRequest = {
+    petId: 'pet-instance-1',
+    bossId: 'boss-kim-loi-vuong',
+    cardLoadout: ['card-heal', 'card-shield', 'card-power-charge'],
+    relicLoadout: ['relic-instance-1', 'relic-instance-2', 'relic-instance-3'],
+  };
+
+  /**
+   * Enters the Lobby the way the approved `ResultScene → PLAY AGAIN`
+   * continuation does: the completed battle already published its loadout to the
+   * carrier, and this scene instance is started with the restore flag.
+   */
+  async function enterThroughPlayAgain(preserved: BattleStartRequest = PRESERVED) {
+    const harness = createLobbyHarness();
+    const scene = new LobbyScene();
+    const ctx = harness.context(scene);
+
+    preserveLoadout(ctx as never, preserved);
+    runScene(scene, ctx, 'init', { restorePreservedLoadout: true } satisfies LobbySceneData);
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    return { harness, scene, ctx };
+  }
+
+  it('restores the previous loadout and shows it through the Lobby UI', async () => {
+    const { harness } = await enterThroughPlayAgain();
+
+    const rendered = harness.rendered();
+    expect(rendered).toContain('Pet:   pet-instance-1');
+    expect(rendered).toContain('Cards: 3/3');
+    expect(rendered).toContain('Relics: 3/5');
+    expect(rendered).toContain('5. REVIEW — Boss: boss-kim-loi-vuong');
+    expect(rendered).toContain('Cards: card-heal, card-shield, card-power-charge');
+    expect(rendered).toContain('Relics: relic-instance-1, relic-instance-2, relic-instance-3');
+
+    // The restored entries are the selected rows of the loaded collection, so
+    // the player sees the loadout rather than a summary of it.
+    expect(harness.optionContaining('Xích Lang').text).toContain('●');
+    expect(harness.optionContaining('Kim Lôi Vương').text).toContain('●');
+  });
+
+  it('submits the restored loadout when the next battle is started', async () => {
+    const { harness } = await enterThroughPlayAgain();
+
+    harness.startTrigger().click();
+    await flush();
+
+    expect(harness.startRequests).toEqual([PRESERVED]);
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['BattleScene']);
+  });
+
+  it('keeps the restored loadout editable — the next battle uses the edited values', async () => {
+    const { harness } = await enterThroughPlayAgain();
+
+    // A different Boss, and a Relic re-picked last so the equip-slot order
+    // changes: `RELIC_RULES.md` §2.3 makes position i slot i + 1, so the order
+    // is part of the submitted loadout.
+    harness.optionContaining('Hỏa Long').click();
+    harness.optionContaining('Berserker Core').click();
+    harness.optionContaining('Berserker Core').click();
+
+    harness.startTrigger().click();
+    await flush();
+
+    // The preserved selection was a starting point, not a lock: the request
+    // carries exactly the player's current selection and no validation of it
+    // happened on the client (ARCHITECTURE.md §2.2.3 rule 5).
+    expect(harness.startRequests).toEqual([
+      {
+        petId: 'pet-instance-1',
+        bossId: 'boss-hoa-long',
+        cardLoadout: ['card-heal', 'card-shield', 'card-power-charge'],
+        relicLoadout: ['relic-instance-2', 'relic-instance-3', 'relic-instance-1'],
+      },
+    ]);
+  });
+
+  it('does not restore on a normal entry — MainMenu → Lobby keeps today’s behavior', async () => {
+    const harness = createLobbyHarness();
+    const scene = new LobbyScene();
+    const ctx = harness.context(scene);
+
+    // A loadout is preserved (a battle happened), but this entry is not the
+    // approved PLAY AGAIN return: MainMenuScene starts LobbyScene with no start
+    // data, so the scene must not consult the carrier.
+    preserveLoadout(ctx as never, PRESERVED);
+    runScene(scene, ctx, 'init', undefined);
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    const rendered = harness.rendered();
+    expect(rendered).toContain('Pet:   —');
+    expect(rendered).toContain('Cards: 0/3');
+    expect(rendered).toContain('5. REVIEW — Boss: (none chosen)');
+
+    // And the carrier is left alone rather than consumed by the entry.
+    expect(preservedIn(ctx)).toEqual(PRESERVED);
+  });
+
+  it('restores nothing when the carrier is empty', async () => {
+    const harness = createLobbyHarness();
+    const scene = new LobbyScene();
+    const ctx = harness.context(scene);
+    clearPreservedLoadout(ctx as never);
+
+    runScene(scene, ctx, 'init', { restorePreservedLoadout: true } satisfies LobbySceneData);
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    // An empty carrier is not an error and is not a fallback loadout: the scene
+    // simply opens unselected, exactly as a first-ever entry does.
+    const rendered = harness.rendered();
+    expect(rendered).toContain('Pet:   —');
+    expect(rendered).toContain('Cards: 0/3');
+    expect(rendered).toContain('5. REVIEW — Boss: (none chosen)');
+    expect(preservedIn(ctx)).toBeNull();
+  });
+
+  it('preserves exactly the loadout a successful start submitted', async () => {
+    const { harness, ctx } = await createLobby();
+    expect(preservedIn(ctx)).toBeNull();
+
+    selectFullLoadout(harness);
+    harness.startTrigger().click();
+    await flush();
+
+    expect(harness.startRequests).toHaveLength(1);
+    // `D-202-03 = D`: the battle that just started is fought with this loadout,
+    // so it is what PLAY AGAIN must restore (ADR-022).
+    expect(preservedIn(ctx)).toEqual(harness.startRequests[0]);
+    // And the copy is the carrier's own: the scene's later edits cannot rewrite
+    // the preserved loadout behind its back.
+    harness.optionContaining('Xích Lang').click();
+    expect(preservedIn(ctx)).toEqual(harness.startRequests[0]);
+  });
+
+  it('preserves nothing when the start is rejected', async () => {
+    const harness = createLobbyHarness({
+      startBehaviour: () => Promise.reject(new Error('400 INVALID_LOADOUT')),
+    });
+    const scene = new LobbyScene();
+    const ctx = harness.context(scene);
+
+    // The loadout of the battle that actually happened, still preserved.
+    preserveLoadout(ctx as never, PRESERVED);
+    runScene(scene, ctx, 'init', { restorePreservedLoadout: true } satisfies LobbySceneData);
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    harness.optionContaining('Hỏa Long').click();
+    harness.startTrigger().click();
+    await flush();
+
+    // No battle was created, so nothing was preserved for one: the carrier still
+    // holds the battle that really ended (ARCHITECTURE.md §2.2.3 rule 5).
+    expect(harness.sceneStarted).toEqual([]);
+    expect(preservedIn(ctx)).toEqual(PRESERVED);
+  });
+
+  it('leaves the preserved loadout untouched on shutdown', async () => {
+    const { harness, scene, ctx } = await enterThroughPlayAgain();
+
+    harness.shutdownScene(ctx);
+
+    // The scene's own copy of the selection is dropped...
+    runScene(scene, ctx, 'init', undefined);
+    runScene(scene, ctx, 'create');
+    await flush();
+    expect(harness.rendered()).toContain('Pet:   —');
+
+    // ...but the carrier is not the scene's copy, and the scene's teardown is not
+    // the post-result active-battle cleanup: neither clears it (`D-202-04 = A`'s
+    // cleanup clears ACTIVE BATTLE state only).
+    expect(preservedIn(ctx)).toEqual(PRESERVED);
+  });
+
+  it('reaches the carrier without any transport access', () => {
+    const source = readFileSync(
+      resolve(__dirname, '../src/game/scenes/LobbyScene.ts'),
+      'utf8'
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+    // The carrier is client presentation state, read through its own accessor
+    // (ADR-022, ARCHITECTURE.md §2.2.3) — never through the runtime or a
+    // transport, and never through a persistent store.
+    expect(source).toContain('readPreservedLoadout');
+    expect(source).toContain('preserveLoadout');
+    expect(source).not.toMatch(/localStorage|sessionStorage/);
   });
 });
 

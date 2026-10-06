@@ -434,7 +434,7 @@ For detailed API reference tables and source file maps, see [the reference guide
 
 9. **Scene render order = array order.** Scenes later in the array render on top. Use `bringToTop()`, `sendToBack()`, `moveAbove()`, `moveBelow()` to control layering.
 
-10. **`shutdown` vs `destroy`.** Shutdown puts a scene into hibernation (can restart). Destroy permanently removes it. Listen to `'shutdown'` to free resources that should be recreated on restart. Listen to `'destroy'` for final cleanup.
+10. **`shutdown` vs `destroy`.** Shutdown puts a scene into hibernation (can restart). Destroy permanently removes it. Listen to `'shutdown'` to free resources that should be recreated on restart. Listen to `'destroy'` for final cleanup. Both are **events on `scene.events`** (`Phaser.Scenes.Events.SHUTDOWN` / `DESTROY`), emitted by `Systems#shutdown` / `Systems#destroy` — they are not methods Phaser calls on the Scene, and a scene method named `shutdown()` or `destroy()` is never invoked by name.
 
 11. **Plugin properties like `this.physics` and `this.matter` are only available if the physics system is configured.** They will be undefined otherwise.
 
@@ -442,7 +442,7 @@ For detailed API reference tables and source file maps, see [the reference guide
 
 13. **Reset state in `init()`, not the constructor.** The constructor only runs once when the scene is first instantiated. `init()` runs every time the scene starts/restarts. Place state resets there.
 
-14. **Clean up on `shutdown` to avoid stale references.** Listen for `this.events.once('shutdown', ...)` to clear arrays holding game objects, remove external event listeners, etc. Stale references to destroyed game objects cause errors on restart.
+14. **Clean up on `shutdown` to avoid stale references.** Listen for `this.events.once('shutdown', ...)` — the **event**, not a method name — to clear arrays holding game objects, remove external event listeners, etc. Stale references to destroyed game objects cause errors on restart. Register the handler in every run (`create()`), and detach it first (`this.events.off(...)`) if the scene can be started again, so repeated runs cannot stack handlers.
 
 15. **`switch()` restarts a paused scene, never resumes it.** If you need resume behavior, use `run()` instead.
 

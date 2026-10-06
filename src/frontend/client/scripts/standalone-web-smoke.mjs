@@ -27,6 +27,15 @@
  *     ↓
  *   Battle Outcome & ResultScene (Deterministic completion → ResultScene → VICTORY & HP readouts)
  *     ↓
+ *   Post-Result Lifecycle (TASK-203 / TASK-204): PLAY AGAIN → LobbyScene with the
+ *     loadout restored and editable → edited loadout submitted → Battle 2 reaches
+ *     its own outcome → ResultScene again → MAIN MENU → MainMenuScene
+ *     ↓
+ *   Scene Lifecycle Consistency (TASK-205): every stopped scene's own teardown
+ *     ran on the engine's SHUTDOWN event (MainMenu / Lobby / Battle / Result),
+ *     one teardown handler per scene event across scene reuse, and no stale
+ *     scene subscriptions at the end of the flow
+ *     ↓
  *   Zero Fatal Runtime Errors & Zero Discord Dependencies
  *
  * Usage:
@@ -280,7 +289,7 @@ const CAPTURE_GAME = `
 const ACTIVE_SCENE = `
 (() => {
   if (!window.__game) return null;
-  for (const key of ['MainMenuScene', 'LobbyScene', 'BattleScene', 'ResultScene']) {
+  for (const key of ['MainMenuScene', 'BattleHistoryScene', 'LobbyScene', 'BattleScene', 'ResultScene']) {
     const s = window.__game.scene.getScene(key);
     if (s && s.scene && s.scene.isActive && s.scene.isActive()) return key;
   }
@@ -328,8 +337,22 @@ const BATTLE_SNAPSHOT = `
   const rect = canvas.getBoundingClientRect();
   const gameWidth = window.__game.scale.gameSize.width;
   const gameHeight = window.__game.scale.gameSize.height;
+  const runtime = s.runtime || null;
   return {
     active: true,
+    battleId: runtime && runtime.getBattleState ? (runtime.getBattleState() || {}).battleId || null : null,
+    // The scene's own per-battle guard. It must start false for every battle:
+    // a scene instance is reused, so a value left over from the previous battle
+    // would swallow the next battle's outcome (TASK-204).
+    outcomeHandled: s.outcomeHandled === true,
+    // How many subscribers the shared runtime currently holds. Exactly one of
+    // each is correct while this scene is the only battle scene running: a
+    // number above one means a shut-down scene is still subscribed.
+    listenerCounts: runtime ? {
+      runtime: runtime.runtimeListeners ? runtime.runtimeListeners.size : null,
+      battle: runtime.battleListeners ? runtime.battleListeners.size : null,
+      battleState: runtime.battleStateListeners ? runtime.battleStateListeners.size : null,
+    } : null,
     boardChildCount: s.boardLayer && s.boardLayer.list ? s.boardLayer.list.length : 0,
     boardLabels: s.boardLayer && s.boardLayer.list
       ? s.boardLayer.list.filter((o) => o.type === 'Text').map((o) => o.text)
@@ -346,16 +369,147 @@ const BATTLE_SNAPSHOT = `
 const RESULT_SNAPSHOT = `
 (() => {
   const s = window.__game && window.__game.scene.getScene('ResultScene');
-  if (!s || !s.scene.isActive()) return { active: false };
+  if (!s || !s.scene.isActive()) return { active: false, controls: [] };
+  // The scene's navigation controls are the interactive rectangles, each with
+  // its label drawn at the same centre (ResultScene.drawButton). Reading them
+  // from the live display list is what makes "exactly two explicit controls"
+  // an assertion about the scene rather than about this script's constants.
+  const list = s.children.list;
+  const labels = list.filter((o) => o.type === 'Text');
+  const controls = list
+    .filter((o) => o.type === 'Rectangle' && o.input && o.input.enabled)
+    .map((b) => {
+      const label = labels.find((t) => t.x === b.x && t.y === b.y);
+      return { label: label ? label.text : null, x: b.x, y: b.y, width: b.width, height: b.height };
+    });
   return {
     active: true,
     outcomeText: s.outcomeText && typeof s.outcomeText.text === 'string' ? s.outcomeText.text : '',
     bossHpText: s.bossHpText && typeof s.bossHpText.text === 'string' ? s.bossHpText.text : '',
     playerHpText: s.playerHpText && typeof s.playerHpText.text === 'string' ? s.playerHpText.text : '',
     rewardText: s.rewardText && typeof s.rewardText.text === 'string' ? s.rewardText.text : '',
+    controls,
   };
 })()
 `;
+
+/**
+ * The BattleHistoryScene's observable presentation state (TASK-206).
+ *
+ * `entries` are the scene's own rendered history blocks (one per delivered
+ * `GET /api/battle/history` element, in the delivered order), `progression` is
+ * the account-progression line it drew from the newest delivered element, and
+ * `controls` are the interactive rectangles with the captions drawn over them —
+ * so `< BACK` / `RETRY` are identified the way a player reads them.
+ */
+const BATTLE_HISTORY_SNAPSHOT = `
+(() => {
+  const s = window.__game && window.__game.scene.getScene('BattleHistoryScene');
+  if (!s || !s.scene.isActive()) return { active: false };
+  const canvas = document.querySelector('canvas');
+  const rect = canvas.getBoundingClientRect();
+  const gameWidth = window.__game.scale.gameSize.width;
+  const gameHeight = window.__game.scale.gameSize.height;
+  const list = s.children.list || [];
+  const live = (o) => list.indexOf(o) !== -1;
+  const labels = list.filter((o) => o.type === 'Text' && live(o));
+  const controls = list
+    .filter((o) => o.type === 'Rectangle' && live(o) && o.input && o.input.enabled)
+    .map((b) => {
+      const label = labels.find((t) => t.x === b.x && t.y === b.y);
+      return { label: label ? label.text : null, x: b.x, y: b.y, width: b.width, height: b.height };
+    });
+  const entryTexts = (s.renderedTexts || [])
+    .filter((t) => typeof t.text === 'string' && t.text.startsWith('Battle #'))
+    .map((t) => t.text);
+  return {
+    active: true,
+    loading: !!s.loading,
+    loadError: s.loadError === null || s.loadError === undefined ? null : s.loadError,
+    // The loaded array, exactly as the read returned it (never reordered).
+    history: (s.history || []).map((e) => ({
+      battleId: e.battleId,
+      outcome: e.outcome,
+      durationTurns: e.durationTurns,
+      completedAt: e.completedAt,
+      rewards: e.rewards,
+    })),
+    progression: s.progressionText && typeof s.progressionText.text === 'string' ? s.progressionText.text : '',
+    status: s.statusText && typeof s.statusText.text === 'string' ? s.statusText.text : '',
+    entries: entryTexts,
+    texts: labels.map((t) => t.text),
+    controls,
+    // TASK-205: this scene's own teardown wiring, counted by function identity.
+    teardownShutdownHandlers: (s.events.listeners('shutdown') || []).filter((fn) => fn === s.shutdown).length,
+    teardownDestroyHandlers: (s.events.listeners('destroy') || []).filter((fn) => fn === s.shutdown).length,
+    shellObjectCount: (s.shellObjects || []).length,
+    renderedTextCount: (s.renderedTexts || []).length,
+    interactiveObjectCount: (s.interactiveObjects || []).length,
+    viewport: { left: rect.left, top: rect.top, scaleX: rect.width / gameWidth, scaleY: rect.height / gameHeight },
+  };
+})()
+`;
+
+/**
+ * Every registered scene's scene-lifecycle wiring and the scene-owned state its
+ * teardown releases (TASK-205).
+ *
+ * The engine's teardown signal is the `shutdown` / `destroy` **event** on the
+ * scene's own emitter (`Phaser.Scenes.Systems#shutdown` / `#destroy`): Phaser
+ * 4.2.1 invokes a scene method by name only for `init` / `preload` / `create` /
+ * `update`, and `Phaser.Scene` declares no `shutdown` method. So a scene whose
+ * cleanup is not in these listener lists never runs it, and the per-scene state
+ * below is exactly what a stopped scene should have released.
+ */
+const SCENE_LIFECYCLE_SNAPSHOT = `
+(() => {
+  const keys = ['MainMenuScene', 'LobbyScene', 'BattleScene', 'CollectionViewerScene', 'BattleHistoryScene', 'ResultScene'];
+  // Counts *this scene's own* teardown method on an event, by function identity:
+  // create() registers this.shutdown, so a count of one means the scene's
+  // cleanup is wired to that engine event and did not stack across runs. (Other
+  // Phaser systems register their own shutdown methods on the same emitter, so
+  // counting by name would not identify the scene's.)
+  const countTeardown = (s, event) =>
+    (s.events && typeof s.events.listeners === 'function' ? s.events.listeners(event) : [])
+      .filter((fn) => typeof fn === 'function' && fn === s.shutdown)
+      .length;
+  const snapshot = {};
+  for (const key of keys) {
+    const s = window.__game && window.__game.scene.getScene(key);
+    if (!s) { snapshot[key] = null; continue; }
+    snapshot[key] = {
+      active: !!(s.scene && s.scene.isActive && s.scene.isActive()),
+      shutdownHandlers: countTeardown(s, 'shutdown'),
+      destroyHandlers: countTeardown(s, 'destroy'),
+      // The scene's own state, released only by its own teardown. Each field is
+      // read from the scene that owns it, so this reports the scene rather than
+      // this script's constants.
+      hasTransitioned: s.hasTransitioned === true,
+      selectedPetId: s.selectedPetId === undefined ? null : s.selectedPetId,
+      selectedItemId: s.selectedItemId === undefined ? null : s.selectedItemId,
+      resultData: s.resultData === undefined ? null : s.resultData,
+      rewardTextIsNull: s.rewardText === undefined ? null : s.rewardText === null,
+      outcomeHandled: s.outcomeHandled === true,
+      shellObjects: Array.isArray(s.shellObjects) ? s.shellObjects.length : null,
+      // TASK-206: the Battle History scene's own loaded presentation state, which
+      // only its teardown releases.
+      historyLength: Array.isArray(s.history) ? s.history.length : null,
+      progressionTextIsNull: s.progressionText === undefined ? null : s.progressionText === null,
+    };
+  }
+  return snapshot;
+})()
+`;
+
+/**
+ * The game instance's preserved pre-battle loadout carrier (ADR-022).
+ *
+ * It is written by `LobbyScene` on a successful battle start and read only on
+ * the approved `ResultScene → PLAY AGAIN` entry, so its value after an exit is
+ * exactly what the post-result lifecycle preserved. The registry it lives in is
+ * the game-wide one, reachable from any scene.
+ */
+const PRESERVED_LOADOUT = `s.registry.get('preservedLoadout') || null`;
 
 /** Finds adjacent cell pair that forms a Match-3 */
 function findMatchingSwaps(labels, size = BOARD_SIZE) {
@@ -452,6 +606,8 @@ export async function runSmokeTest(runNumber = 1) {
     const consoleErrors = [];
     const apiResponses = new Map();
     const discordEvents = [];
+    /** Every `POST /api/battle/start` request body, in submission order. */
+    const battleStartRequests = [];
 
     cdp.on('Runtime.exceptionThrown', (p) => {
       uncaughtExceptions.push(p.exceptionDetails);
@@ -475,6 +631,13 @@ export async function runSmokeTest(runNumber = 1) {
       const url = p.request?.url || '';
       if (url.includes('discord.com') || url.includes('@discord')) {
         discordEvents.push({ type: 'request', url });
+      }
+      // The loadout the client actually submitted. Capturing it is how the
+      // post-result lifecycle is verified end to end: Battle 2 must carry the
+      // loadout preserved by Battle 1 with the player's edit applied, and no
+      // battle identity or state from Battle 1 (API_CONTRACTS.md §3).
+      if (url.includes('/api/battle/start') && p.request?.method === 'POST') {
+        battleStartRequests.push(p.request.postData ?? null);
       }
     });
 
@@ -654,6 +817,123 @@ export async function runSmokeTest(runNumber = 1) {
     };
 
     const menuStartPoint = await toScreen(640, 324);
+
+    // -------------------------------------------------------------
+    // PHASE 3b: BATTLE HISTORY ON A FRESH ACCOUNT (TASK-206)
+    // -------------------------------------------------------------
+    // This run registered a brand-new account in Phase 1, so its battle history
+    // is the documented empty case: `GET /api/battle/history` → `200 []`
+    // (API_CONTRACTS.md §4.5 note 9). The endpoint is the only thing this
+    // surface reads, and no battle of this account has reached a durable
+    // terminal result yet (note 10), so an explicit empty state is the only
+    // correct presentation.
+    console.log('\n--- Phase 3b: Battle History on a fresh account ---');
+
+    /** The live click point of the history scene's control captioned `label`. */
+    const historyControlPoint = async (label) => {
+      const snap = await evaluate(cdp, BATTLE_HISTORY_SNAPSHOT);
+      const control = (snap.controls || []).find((c) => c.label === label);
+      if (!control) throw new Error(`BattleHistoryScene rendered no "${label}" control.`);
+      return toScreen(control.x, control.y);
+    };
+
+    for (let i = 0; i < 8; i++) {
+      if ((await evaluate(cdp, ACTIVE_SCENE)) === 'BattleHistoryScene') break;
+      await realClick(cdp, await toScreen(640, 464));
+      await delay(1000);
+    }
+    await waitForCondition(
+      async () => (await evaluate(cdp, ACTIVE_SCENE)) === 'BattleHistoryScene',
+      'BattleHistoryScene active after the BATTLE HISTORY click',
+      10000
+    );
+    record('phase3b.battleHistoryOpened', true);
+
+    const emptyHistory = await waitForCondition(
+      async () => {
+        const snap = await evaluate(cdp, BATTLE_HISTORY_SNAPSHOT);
+        return snap.active && !snap.loading ? snap : false;
+      },
+      'Battle History read settled on the fresh account',
+      10000
+    );
+    await captureScreenshot(cdp, `run${runNumber}-03b-history-empty`);
+
+    record(
+      'phase3b.emptyStateShown',
+      emptyHistory.loadError === null &&
+        emptyHistory.history.length === 0 &&
+        emptyHistory.status.includes('No battles yet') &&
+        emptyHistory.entries.length === 0,
+      { status: emptyHistory.status, entries: emptyHistory.entries, error: emptyHistory.loadError }
+    );
+
+    // §4.5 note 9's empty history is not a starting progression: no Level and no
+    // XP may be invented for an account that has completed no battle. The scene
+    // prints "—" instead (AGENTS.md §7).
+    record(
+      'phase3b.noFabricatedLevelOrXp',
+      !/Level \d/.test(emptyHistory.progression) &&
+        !/XP \d/.test(emptyHistory.progression) &&
+        !emptyHistory.texts.some((t) => /Level \d/.test(t) || /XP \d/.test(t)),
+      emptyHistory.progression
+    );
+
+    // An empty history is a delivered answer, not a failure: no RETRY, and BACK
+    // is the only control.
+    record(
+      'phase3b.emptyIsNotAnErrorState',
+      !(emptyHistory.controls || []).some((c) => c.label === 'RETRY') &&
+        (emptyHistory.controls || []).some((c) => c.label === '< BACK'),
+      (emptyHistory.controls || []).map((c) => c.label)
+    );
+
+    record(
+      'phase3b.teardownRegisteredOnEngineLifecycleEvents',
+      emptyHistory.teardownShutdownHandlers === 1 && emptyHistory.teardownDestroyHandlers === 1,
+      {
+        shutdownHandlers: emptyHistory.teardownShutdownHandlers,
+        destroyHandlers: emptyHistory.teardownDestroyHandlers,
+      }
+    );
+
+    // The read really went through the frozen endpoint, authenticated, and
+    // returned the documented `200`.
+    const historyResponses = Array.from(apiResponses.values()).filter((r) =>
+      r.url.includes('/api/battle/history')
+    );
+    record(
+      'phase3b.historyReadWasAuthenticated200',
+      historyResponses.length >= 1 && historyResponses.every((r) => r.status === 200),
+      historyResponses
+    );
+
+    // `< BACK` returns to the main menu, and the stopped scene ran its own
+    // teardown: it keeps no shell, no interactive object, and no loaded history
+    // (TASK-205's lifecycle contract, applied to the new scene).
+    for (let i = 0; i < 8; i++) {
+      if ((await evaluate(cdp, ACTIVE_SCENE)) === 'MainMenuScene') break;
+      await realClick(cdp, await historyControlPoint('< BACK'));
+      await delay(600);
+    }
+    await waitForCondition(
+      async () => (await evaluate(cdp, ACTIVE_SCENE)) === 'MainMenuScene',
+      'MainMenuScene active after < BACK',
+      10000
+    );
+    record('phase3b.backReturnedToMainMenu', true);
+
+    const stoppedHistory = (await evaluate(cdp, SCENE_LIFECYCLE_SNAPSHOT)).BattleHistoryScene;
+    record(
+      'phase3b.stoppedHistorySceneRanItsTeardown',
+      stoppedHistory.active === false &&
+        stoppedHistory.historyLength === 0 &&
+        stoppedHistory.shellObjects === 0 &&
+        stoppedHistory.progressionTextIsNull === true &&
+        stoppedHistory.shutdownHandlers === 0 &&
+        stoppedHistory.destroyHandlers === 1,
+      stoppedHistory
+    );
     for (let i = 0; i < 8; i++) {
       if ((await evaluate(cdp, ACTIVE_SCENE)) === 'LobbyScene') break;
       await realClick(cdp, menuStartPoint);
@@ -763,6 +1043,22 @@ export async function runSmokeTest(runNumber = 1) {
     record('phase4.bossSelected', lobby.selectedBossId === targetBoss.bossId, lobby.selectedBossId);
     await captureScreenshot(cdp, `run${runNumber}-05-lobby-selected`);
 
+    // TASK-205: the Lobby's teardown wiring on its first run, so the same scene
+    // instance's second run (after PLAY AGAIN) can be compared against it. One
+    // teardown per event is correct; a higher number on the second run means the
+    // first run's handlers were left behind.
+    const lobbyFirstRun = (await evaluate(cdp, SCENE_LIFECYCLE_SNAPSHOT)).LobbyScene;
+
+    // The loadout Battle 1 is submitted with. The post-result lifecycle must
+    // preserve exactly this and hand it back editable on PLAY AGAIN
+    // (D-202-03 = D, ADR-022).
+    const battle1Loadout = {
+      petId: lobby.selectedPetId,
+      bossId: lobby.selectedBossId,
+      cardIds: [...lobby.selectedCardIds],
+      relicIds: [...lobby.selectedRelicIds],
+    };
+
     // Click START BATTLE with complete loadout and Boss selected
     await realClick(cdp, startButtonPoint);
 
@@ -773,6 +1069,35 @@ export async function runSmokeTest(runNumber = 1) {
       15000
     );
     record('phase4.battleSceneReached', true);
+
+    // Battle 1's authoritative identity, as the server pushed it
+    // (SIGNALR_PROTOCOL.md §4.2). It is what Battle 2's identity is compared
+    // against, so a reused battle cannot pass as a new one.
+    const battle1Snapshot = await waitForCondition(
+      async () => {
+        const snap = await evaluate(cdp, BATTLE_SNAPSHOT);
+        return snap.active && snap.battleId ? snap : false;
+      },
+      'Battle 1 synchronized with an authoritative battleId',
+      15000
+    );
+    const battle1Id = battle1Snapshot.battleId;
+    record('phase4.battle1Identity', typeof battle1Id === 'string' && battle1Id.length > 0, battle1Id);
+
+    // A fresh scene subscribes exactly once to each battle stream and has not
+    // handled any outcome yet (TASK-204). The runtime-state stream has other
+    // subscribers (the React shell), so it is asserted as "unchanged between
+    // battles" below rather than as an absolute count.
+    record(
+      'phase4.battle1SubscribedExactlyOnce',
+      battle1Snapshot.listenerCounts !== null &&
+        battle1Snapshot.listenerCounts.battle === 1 &&
+        battle1Snapshot.listenerCounts.battleState === 1 &&
+        typeof battle1Snapshot.listenerCounts.runtime === 'number' &&
+        battle1Snapshot.listenerCounts.runtime >= 1,
+      battle1Snapshot.listenerCounts
+    );
+    record('phase4.battle1OutcomeNotHandled', battle1Snapshot.outcomeHandled === false);
 
     // -------------------------------------------------------------
     // PHASE 5: BATTLE SCENE & MATCH-3 INTERACTION
@@ -920,17 +1245,18 @@ export async function runSmokeTest(runNumber = 1) {
     // PHASE 7: BATTLE COMPLETION & RESULTSCENE
     // -------------------------------------------------------------
     console.log('\n--- Phase 7: Deterministic Battle Outcome & ResultScene ---');
-    // Extract current battleId from live scene or network
-    const battleId = await evaluate(cdp, `(() => {
-      const s = window.__game.scene.getScene('BattleScene');
-      return s.runtime ? s.runtime.getState().battleId : null;
-    })()`);
+    // The battle's own identity, from the state the server pushed. (The runtime's
+    // *technical* state carries no battleId — `state/GameRuntimeState.ts` is
+    // connection/session/sync status only — so it is read from the synchronized
+    // battle copy, which is the record the outcome is handed off with.)
+    const battle1Live = await evaluate(cdp, BATTLE_SNAPSHOT);
+    const battleId = battle1Live.battleId || battle1Id;
 
     // Dispatch deterministic battle outcome event via documented client runtime port hook
     await evaluate(cdp, `(() => {
       const s = window.__game.scene.getScene('BattleScene');
       s.handleBattleEvents({
-        battleId: ${JSON.stringify(battleId || 'battle-smoke-test')},
+        battleId: ${JSON.stringify(battleId)},
         events: [{
           type: 'BattleWon',
           outcome: 'victory',
@@ -966,10 +1292,326 @@ export async function runSmokeTest(runNumber = 1) {
     );
     await captureScreenshot(cdp, `run${runNumber}-08-result`);
 
+    // TASK-204: ResultScene is terminal until the player says otherwise. A hold
+    // with no input must not move the lifecycle on (D-202-02 = A: no automatic
+    // transition), and it must not be a keyboard path either.
+    await delay(1500);
+    record(
+      'phase7.noAutomaticTransition',
+      (await evaluate(cdp, ACTIVE_SCENE)) === 'ResultScene',
+      await evaluate(cdp, ACTIVE_SCENE)
+    );
+
+    // TASK-205: by now three scenes have been stopped by the engine — the
+    // MainMenu (entering the Lobby), the Lobby (starting Battle 1) and Battle 1
+    // itself (its outcome handed off here) — and each one's own teardown must
+    // have run on the engine's SHUTDOWN event. Each scene's released state is
+    // read from that scene, so this is evidence about the browser, not about
+    // this script: the MainMenu no longer claims a transition, the Lobby holds
+    // no in-progress selection (`ARCHITECTURE.md` §2.2.3 rule 1), and Battle 1 no
+    // longer holds its outcome guard. Every scene keeps exactly one DESTROY
+    // handler (never zero, never stacked) and the active scene one SHUTDOWN
+    // handler, which is what `create()` registers.
+    const stoppedScenes = await evaluate(cdp, SCENE_LIFECYCLE_SNAPSHOT);
+    record(
+      'phase7.stoppedScenesRanTheirTeardown',
+      stoppedScenes.MainMenuScene.hasTransitioned === false &&
+        stoppedScenes.LobbyScene.selectedPetId === null &&
+        stoppedScenes.BattleScene.outcomeHandled === false,
+      {
+        mainMenu: stoppedScenes.MainMenuScene,
+        lobby: stoppedScenes.LobbyScene,
+        battle: stoppedScenes.BattleScene,
+      }
+    );
+    record(
+      'phase7.everySceneRegisteredItsTeardownOnce',
+      stoppedScenes.MainMenuScene.destroyHandlers === 1 &&
+        stoppedScenes.LobbyScene.destroyHandlers === 1 &&
+        stoppedScenes.BattleScene.destroyHandlers === 1 &&
+        stoppedScenes.ResultScene.destroyHandlers === 1 &&
+        stoppedScenes.ResultScene.shutdownHandlers === 1 &&
+        stoppedScenes.MainMenuScene.shutdownHandlers === 0 &&
+        stoppedScenes.LobbyScene.shutdownHandlers === 0 &&
+        stoppedScenes.BattleScene.shutdownHandlers === 0,
+      {
+        MainMenuScene: stoppedScenes.MainMenuScene,
+        LobbyScene: stoppedScenes.LobbyScene,
+        BattleScene: stoppedScenes.BattleScene,
+        ResultScene: stoppedScenes.ResultScene,
+      }
+    );
+
     // -------------------------------------------------------------
-    // PHASE 8: HEALTH & SAFETY GATES
+    // PHASE 8: POST-RESULT LIFECYCLE (TASK-203 / TASK-204)
     // -------------------------------------------------------------
-    console.log('\n--- Phase 8: Error & Health Safety Gates ---');
+    console.log('\n--- Phase 8: Post-Result Lifecycle (PLAY AGAIN / MAIN MENU / Battle 2) ---');
+
+    const canvasRect = async () =>
+      evaluate(cdp, `(() => {
+        const c = document.querySelector('canvas');
+        if (!c) return { left: 0, top: 0, width: 1280, height: 720 };
+        const r = c.getBoundingClientRect();
+        return { left: r.left, top: r.top, width: r.width, height: r.height };
+      })()`);
+
+    /** A logical game-space point → a screen point for a real pointer click. */
+    const logicalToScreen = async (gx, gy) => {
+      const rect = await canvasRect();
+      return {
+        x: rect.left + gx * (rect.width / 1280),
+        y: rect.top + gy * (rect.height / 720),
+      };
+    };
+
+    /** Reads ResultScene's live navigation controls from its display list. */
+    const resultControls = async () => (await evaluate(cdp, RESULT_SNAPSHOT)).controls;
+
+    /** Activates one ResultScene control by its label, the way a player does. */
+    const activateResultControl = async (label) => {
+      for (let attempt = 1; attempt <= 4; attempt++) {
+        const control = (await resultControls()).find((c) => c.label === label);
+        if (control) {
+          await realClick(cdp, await logicalToScreen(control.x, control.y));
+          await delay(500);
+          if ((await evaluate(cdp, ACTIVE_SCENE)) !== 'ResultScene') return true;
+        }
+      }
+      return false;
+    };
+
+    const controls = await resultControls();
+    record(
+      'phase8.resultControlsAreTwoExplicitButtons',
+      controls.length === 2 &&
+        controls.map((c) => c.label).sort().join('|') === 'MAIN MENU|PLAY AGAIN' &&
+        controls.every((c) => c.width > 0 && c.height > 0),
+      controls.map((c) => c.label)
+    );
+
+    // --- PLAY AGAIN ---------------------------------------------------------
+    const playedAgain = await activateResultControl('PLAY AGAIN');
+    record('phase8.playAgainReachedLobby', playedAgain && (await evaluate(cdp, ACTIVE_SCENE)) === 'LobbyScene');
+
+    // The completed battle's active battle state is gone, and the transport was
+    // never disconnected by the exit (D-202-04 = A).
+    const clearedState = await evaluate(cdp, `(() => {
+      const s = window.__game.scene.getScene('LobbyScene');
+      const runtime = s.runtime;
+      return {
+        battleState: runtime && runtime.getBattleState ? runtime.getBattleState() : null,
+        connection: runtime && runtime.getState ? runtime.getState().connection : null,
+        sync: runtime && runtime.getState ? runtime.getState().sync : null,
+      };
+    })()`);
+    record('phase8.activeBattleStateCleared', clearedState.battleState === null, clearedState.sync);
+    record('phase8.transportNotDisconnected', clearedState.connection === 'connected', clearedState.connection);
+
+    // TASK-205: this is the Lobby instance's second run, and its teardown was
+    // registered (and consumed) by the first one. Exactly one handler per event
+    // is correct; more would mean the first run's registration survived.
+    const lobbySecondRun = (await evaluate(cdp, SCENE_LIFECYCLE_SNAPSHOT)).LobbyScene;
+    record(
+      'phase8.noDuplicateSceneSubscription',
+      lobbySecondRun.shutdownHandlers === lobbyFirstRun.shutdownHandlers &&
+        lobbySecondRun.destroyHandlers === lobbyFirstRun.destroyHandlers &&
+        lobbySecondRun.shutdownHandlers === 1 &&
+        lobbySecondRun.destroyHandlers === 1,
+      { firstRun: lobbyFirstRun, secondRun: lobbySecondRun }
+    );
+
+    // The preserved loadout is restored and still selected, and it is the
+    // loadout Battle 1 was fought with (D-202-03 = D, ADR-022).
+    let nextLobby = await waitForCondition(
+      async () => {
+        const snap = await evaluate(cdp, LOBBY_SNAPSHOT);
+        return snap.active && snap.ownedPetsCount > 0 && snap.ownedCardsCount >= 3 && snap.ownedRelicsCount >= 3 ? snap : false;
+      },
+      'Lobby (PLAY AGAIN) collection reloaded',
+      12000
+    );
+    const sorted = (list) => [...list].sort().join(',');
+    record(
+      'phase8.preservedLoadoutRestored',
+      nextLobby.selectedPetId === battle1Loadout.petId &&
+        nextLobby.selectedBossId === battle1Loadout.bossId &&
+        sorted(nextLobby.selectedCardIds) === sorted(battle1Loadout.cardIds) &&
+        sorted(nextLobby.selectedRelicIds) === sorted(battle1Loadout.relicIds),
+      {
+        expected: battle1Loadout,
+        restored: {
+          petId: nextLobby.selectedPetId,
+          bossId: nextLobby.selectedBossId,
+          cardIds: nextLobby.selectedCardIds,
+          relicIds: nextLobby.selectedRelicIds,
+        },
+      }
+    );
+    await captureScreenshot(cdp, `run${runNumber}-09-lobby-restored`);
+
+    // --- Edit the preserved loadout ----------------------------------------
+    const editedBoss = CANONICAL_BOSSES.find((b) => b.bossId !== battle1Loadout.bossId);
+    const nextCentreOf = (o) =>
+      logicalToScreen(o.x + o.width / 2, o.y + o.height / 2);
+    for (let attempt = 1; attempt <= 3 && nextLobby.selectedBossId !== editedBoss.bossId; attempt++) {
+      const option = bossOptionsOf(nextLobby).find((o) => o.text.includes(editedBoss.displayName));
+      if (option) {
+        await realClick(cdp, await nextCentreOf(option));
+      }
+      nextLobby = await evaluate(cdp, LOBBY_SNAPSHOT);
+    }
+    record(
+      'phase8.preservedLoadoutIsEditable',
+      nextLobby.selectedBossId === editedBoss.bossId,
+      `bossId=${nextLobby.selectedBossId} (was ${battle1Loadout.bossId})`
+    );
+
+    // --- Battle 2 ----------------------------------------------------------
+    const startButton2 = nextLobby.interactive.find((o) => o.type === 'Rectangle' && o.enabled);
+    if (!startButton2) {
+      throw new Error('The restored Lobby rendered no interactive START BATTLE control.');
+    }
+    const startButtonPoint2 = await nextCentreOf(startButton2);
+    await realClick(cdp, startButtonPoint2);
+
+    await waitForCondition(
+      async () => (await evaluate(cdp, ACTIVE_SCENE)) === 'BattleScene',
+      'Battle 2 reached BattleScene',
+      15000
+    );
+    record('phase8.battle2SceneReached', true);
+
+    const battle2 = await waitForCondition(
+      async () => {
+        const snap = await evaluate(cdp, BATTLE_SNAPSHOT);
+        return snap.active && snap.battleId && snap.boardChildCount === 128 ? snap : false;
+      },
+      'Battle 2 board rendered from its own authoritative push',
+      15000
+    );
+    record('phase8.battle2Board64CellsRendered', battle2.boardChildCount === 128, `${battle2.boardLabels.length} labels`);
+    record('phase8.battle2NewBattleIdentity', battle2.battleId !== battle1Id, { battle1Id, battle2Id: battle2.battleId });
+
+    // The defect's second consequence: a reused scene must start with a fresh
+    // guard and exactly one subscription per battle stream — and the runtime
+    // must hold no MORE runtime-state subscribers than it did for Battle 1, or
+    // the shut-down scene is still attached (TASK-204).
+    record('phase8.battle2OutcomeNotHandled', battle2.outcomeHandled === false);
+    record(
+      'phase8.noDuplicateRuntimeListener',
+      battle2.listenerCounts !== null &&
+        battle2.listenerCounts.battle === 1 &&
+        battle2.listenerCounts.battleState === 1 &&
+        battle2.listenerCounts.runtime === battle1Snapshot.listenerCounts.runtime,
+      { battle1: battle1Snapshot.listenerCounts, battle2: battle2.listenerCounts }
+    );
+
+    // The edited loadout is what Battle 2 was actually started with.
+    const battle2Request = (() => {
+      if (battleStartRequests.length < 2) return null;
+      try {
+        return JSON.parse(battleStartRequests[battleStartRequests.length - 1]);
+      } catch {
+        return null;
+      }
+    })();
+    record(
+      'phase8.battle2RequestCarriesEditedLoadout',
+      battle2Request !== null &&
+        battle2Request.bossId === editedBoss.bossId &&
+        battle2Request.petId === battle1Loadout.petId &&
+        sorted(battle2Request.cardLoadout || []) === sorted(battle1Loadout.cardIds) &&
+        sorted(battle2Request.relicLoadout || []) === sorted(battle1Loadout.relicIds) &&
+        Object.keys(battle2Request).sort().join(',') === 'bossId,cardLoadout,petId,relicLoadout',
+      { request: battle2Request, editedBossId: editedBoss.bossId }
+    );
+    await captureScreenshot(cdp, `run${runNumber}-10-battle2`);
+
+    // --- Battle 2 outcome --------------------------------------------------
+    await evaluate(cdp, `(() => {
+      const s = window.__game.scene.getScene('BattleScene');
+      s.handleBattleEvents({
+        battleId: ${JSON.stringify(battle2.battleId)},
+        events: [{
+          type: 'BattleLost',
+          outcome: 'defeat',
+          finalBossHp: 2400,
+          finalPlayerHp: 0
+        }]
+      });
+    })()`);
+
+    await waitForCondition(
+      async () => (await evaluate(cdp, ACTIVE_SCENE)) === 'ResultScene',
+      'Battle 2 outcome reached ResultScene again',
+      10000
+    );
+    record('phase8.battle2ReachedResult', true);
+
+    const result2 = await waitForCondition(
+      async () => {
+        const snap = await evaluate(cdp, RESULT_SNAPSHOT);
+        return snap.active && snap.outcomeText.length > 0 ? snap : false;
+      },
+      'Battle 2 ResultScene rendered',
+      8000
+    );
+    record('phase8.battle2OutcomeRendered', result2.outcomeText === 'DEFEAT', result2.outcomeText);
+    await captureScreenshot(cdp, `run${runNumber}-11-result-2`);
+
+    // --- MAIN MENU --------------------------------------------------------
+    const wentToMenu = await activateResultControl('MAIN MENU');
+    record('phase8.mainMenuReachedMainMenu', wentToMenu && (await evaluate(cdp, ACTIVE_SCENE)) === 'MainMenuScene');
+
+    // The exit cleared the completed battle's active battle state and left the
+    // preserved loadout alone (ADR-022 D5).
+    const afterMenu = await evaluate(cdp, `(() => {
+      const s = window.__game.scene.getScene('MainMenuScene');
+      const runtime = s.registry ? s.registry.get('gameRuntime') : null;
+      return {
+        battleState: runtime && runtime.getBattleState ? runtime.getBattleState() : null,
+        preserved: s.registry ? (${PRESERVED_LOADOUT}) : null,
+      };
+    })()`);
+    record('phase8.mainMenuClearedActiveBattleState', afterMenu.battleState === null);
+    record(
+      'phase8.preservedLoadoutSurvivedMainMenu',
+      afterMenu.preserved !== null &&
+        afterMenu.preserved.bossId === editedBoss.bossId &&
+        afterMenu.preserved.petId === battle1Loadout.petId,
+      afterMenu.preserved
+    );
+
+    // TASK-205: leaving ResultScene shut it down, so its own teardown must have
+    // released the presentation it was holding — including the asynchronous
+    // reward read's target (the second battle's reward `Text`), which no
+    // continuation may write to once the scene is over. The MainMenu is active
+    // again, and the scene lifecycle wiring across the whole run is checked once
+    // more: one DESTROY handler per scene, one SHUTDOWN handler for the scene
+    // that is running, and none for the scenes the engine has stopped.
+    const finalScenes = await evaluate(cdp, SCENE_LIFECYCLE_SNAPSHOT);
+    record(
+      'phase8.resultSceneTeardownReleasedItsPresentation',
+      finalScenes.ResultScene.active === false &&
+        finalScenes.ResultScene.resultData === null &&
+        finalScenes.ResultScene.rewardTextIsNull === true,
+      finalScenes.ResultScene
+    );
+    record(
+      'phase8.noStaleSceneSubscriptions',
+      finalScenes.MainMenuScene.active === true &&
+        finalScenes.MainMenuScene.shutdownHandlers === 1 &&
+        finalScenes.MainMenuScene.destroyHandlers === 1 &&
+        ['LobbyScene', 'BattleScene', 'ResultScene'].every(
+          (key) => finalScenes[key].shutdownHandlers === 0 && finalScenes[key].destroyHandlers === 1
+        ),
+      finalScenes
+    );
+
+    // -------------------------------------------------------------
+    // PHASE 9: HEALTH & SAFETY GATES
+    // -------------------------------------------------------------
+    console.log('\n--- Phase 9: Error & Health Safety Gates ---');
     record('safety.zeroDiscordDependencies', discordEvents.length === 0, `${discordEvents.length} Discord events`);
     record('safety.zeroUncaughtExceptions', uncaughtExceptions.length === 0, uncaughtExceptions);
     record('safety.zeroFatalConsoleErrors', consoleErrors.length === 0, consoleErrors);

@@ -1,10 +1,11 @@
 /**
- * The client-side battle read/write models — the wire shapes of the two
- * battle endpoints (`API_CONTRACTS.md` §3, §4).
+ * The client-side battle read/write models — the wire shapes of the three
+ * battle endpoints (`API_CONTRACTS.md` §3, §4, §4.5).
  *
  * ```text
  * POST /api/battle/start              → BattleStartResponse
  * GET  /api/battle/{battleId}/result  → BattleResultResponse
+ * GET  /api/battle/history            → BattleHistoryItemResponse[]
  * ```
  *
  * These are **transport shapes only**. Every value in a response is authored by
@@ -481,6 +482,56 @@ export interface BattleResultResponse {
    * records `0`, which is a value, not an absence.
    */
   readonly durationTurns: number;
+}
+
+/**
+ * One `GET /api/battle/history` element (`API_CONTRACTS.md` §4.5).
+ *
+ * ```json
+ * [
+ *   {
+ *     "battleId": "string",
+ *     "outcome": "victory" | "defeat",
+ *     "rewards": {},
+ *     "durationTurns": 0,
+ *     "completedAt": "string"
+ *   }
+ * ]
+ * ```
+ *
+ * **It is the §4 result object plus exactly one further member** — §4.5 note 2
+ * makes the four shared members carry "exactly the same meaning, source, type,
+ * and value vocabulary" as `GET /api/battle/{battleId}/result`, so this type
+ * extends {@link BattleResultResponse} rather than restating them, and reuses
+ * `BattleOutcome` and `RewardSummaryResponse` unchanged. There is deliberately
+ * no history-specific reward or outcome representation: §4.5 note 12 fixes the
+ * element's member set at exactly these five, and note 2 states that "no reduced
+ * history-summary member list exists".
+ *
+ * **`completedAt` is the one additive member** (note 3): `BattleResult.CompletedAt`,
+ * the server clock reading captured on the battle-end path
+ * (`DATABASE.md` §1). It is server-authoritative and is never derived from a
+ * battle id, from any other member, or from the client's own clock — §4.5 notes
+ * 3–4 make it the member that makes the delivered ordering observable, and the
+ * ordering it expresses is read, never recomputed.
+ *
+ * **The array is the whole history, in the delivered order.** §4.5 note 1 makes
+ * the bare array the response body (no wrapper), note 5 makes it complete (no
+ * pagination), note 6 makes it unfiltered and unsorted on the request side, and
+ * note 4 fixes its order as `CompletedAt` descending with a `BattleResultId`
+ * descending tie-break that "clients MAY rely on". A client therefore renders
+ * the array as sent: it does not sort, reverse, re-number by timestamp, or
+ * infer an order from `battleId`.
+ */
+export interface BattleHistoryItemResponse extends BattleResultResponse {
+  /**
+   * `BattleResult.CompletedAt` (§4.5 note 3, `DATABASE.md` §1) — the
+   * server-authoritative completion reading, as serialized. §4.5 note 3 leaves
+   * the exact serialization and any timezone to the persisted column, so this is
+   * a `string` read as delivered: it is never parsed into a locale, a timezone,
+   * or a locally formatted date, and never re-derived.
+   */
+  readonly completedAt: string;
 }
 
 /**

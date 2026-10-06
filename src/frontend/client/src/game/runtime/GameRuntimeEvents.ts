@@ -24,7 +24,11 @@
  */
 
 import type { GameRuntimeState } from '../../state/GameRuntimeState';
-import type { BattleResultResponse, BattleStartRequest } from '../../services/api/BattleModels';
+import type {
+  BattleHistoryItemResponse,
+  BattleResultResponse,
+  BattleStartRequest,
+} from '../../services/api/BattleModels';
 import type { CardResponse, PetResponse, RelicResponse } from '../../services/api/CollectionModels';
 
 /** Technical runtime lifecycle events emitted by `GameRuntime`. */
@@ -374,6 +378,31 @@ export interface GameRuntimePort {
    * `board` (SIGNALR_PROTOCOL.md §4.9–§4.10).
    */
   getBattleState(): RuntimeBattleState | null;
+  /**
+   * Drops the runtime's synchronized battle copy — the client-local cleanup the
+   * approved post-result lifecycle requires when the player leaves a completed
+   * battle (`D-202-04 = A`, `ARCHITECTURE.md` §2.2.1, §2.2.3, ADR-022).
+   *
+   * `ResultScene` calls this on both approved exits (`PLAY AGAIN`,
+   * `MAIN MENU`), before it starts the next scene. Afterwards
+   * `getBattleState()` reports `null`, so no stale battle id, turn, sequence,
+   * board, or terminal outcome can be addressed or rendered by the next battle,
+   * and `requestAction` can no longer address the battle that ended.
+   *
+   * `sync` returns to the documented value for the connection the runtime
+   * actually has: `awaiting_battle` ("connected, no current battle") when the
+   * connection is `connected`, and `unsynchronized` otherwise. It performs **no
+   * transport operation** — it never connects, disconnects, or invokes a hub
+   * method — and it reads no result route. It introduces no wire message:
+   * no battle lifecycle/status message exists (SIGNALR_PROTOCOL.md §8.3). It is
+   * therefore **not** §7.3's `BATTLE_NOT_FOUND` path, which is a failed
+   * recovery that additionally takes the result fallback.
+   *
+   * The preserved pre-battle loadout is **not** battle state and is **not**
+   * cleared by this: it is what `PLAY AGAIN` restores (ADR-022). This is safe to
+   * call repeatedly, safe when no battle is held, and never throws.
+   */
+  clearActiveBattleState(): void;
   /** Subscribes to technical runtime lifecycle events. Returns an unsubscribe. */
   onRuntimeEvent(listener: RuntimeEventListener): () => void;
   /** Subscribes to server-authoritative battle event batches. */
@@ -481,6 +510,41 @@ export interface GameRuntimePort {
    * parameter, and no second retrieval mechanism.
    */
   getBattleResult(battleId: string): Promise<BattleResultResponse>;
+  /**
+   * The authenticated Player's completed-battle history
+   * (`API_CONTRACTS.md` §4.5) — `GET /api/battle/history`.
+   *
+   * This is the read-only account-progression capability the Battle History
+   * surface presents: the server's history of durable `BattleResult` rows, in
+   * the contract's own order. It is a plain request/response read — it opens no
+   * battle, subscribes to no push, resolves no action, and changes no state
+   * (`SIGNALR_PROTOCOL.md` §2, §4 defines no history message).
+   *
+   * **It is a capability of this port, not a scene's own transport call**
+   * (`ARCHITECTURE.md` §2.2.1 rule 1, §2.2.3 rule 3): a scene reads the history
+   * through this method and never imports `ApiService`, `fetch`, or a SignalR
+   * client. `GameRuntime` is what calls `ApiService`.
+   *
+   * **The array is transported unchanged.** §4.5 note 4's ordering
+   * (`CompletedAt` descending, `BattleResultId` descending tie-break) is the
+   * server's and is part of the contract, so the runtime does not sort, filter,
+   * reverse, paginate, or cache it, does not re-derive `completedAt`, and does
+   * not compute any member of an element: every value, including the Player
+   * track's XP and Level, is server-authored (`GAME_RULES.md` §18, ADR-001).
+   *
+   * **It is not runtime state.** The history is ephemeral presentation data
+   * (`GAME_STATE.md` §4, `ARCHITECTURE.md` §2.2.3 rules 1–2): the runtime holds
+   * none of it, so this adds nothing to `GameRuntimeState`, nothing to the
+   * synchronized battle copy, and no global store or cache
+   * (`ARCHITECTURE.md` §5 item 5, ADR-022). The caller owns what it loaded and
+   * releases it with its own scene.
+   *
+   * **The empty history is `200 []`** (note 9), returned as the empty array
+   * rather than as an absence, and a failure — including the §2.3/§6 `401
+   * UNAUTHENTICATED` — rejects unchanged, with nothing fabricated to fill the
+   * gap.
+   */
+  getBattleHistory(): Promise<BattleHistoryItemResponse[]>;
 }
 
 /**

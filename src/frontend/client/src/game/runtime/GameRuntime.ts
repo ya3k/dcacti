@@ -1,5 +1,9 @@
 import { ApiService } from '../../services/api/ApiService';
-import type { BattleResultResponse, BattleStartRequest } from '../../services/api/ApiService';
+import type {
+  BattleHistoryItemResponse,
+  BattleResultResponse,
+  BattleStartRequest,
+} from '../../services/api/ApiService';
 import type { CardResponse, PetResponse, RelicResponse } from '../../services/api/CollectionModels';
 import { SignalRService } from '../../services/realtime/SignalRService';
 import type { BattleStateSnapshotResponse } from '../../services/realtime/SignalRService';
@@ -89,7 +93,12 @@ const BATTLE_NOT_FOUND_REASON = 'BATTLE_NOT_FOUND';
  *     items 1–2, §2 `JoinBattle`) — coordination only,
  *   - reconnect/resync recovery (`recoverBattleState`, SIGNALR_PROTOCOL.md §7,
  *     ADR-008) — the documented `GetBattleState` snapshot request, ingested by
- *     the same `receiveBattleState` path the §4 push uses.
+ *     the same `receiveBattleState` path the §4 push uses,
+ *   - the client-local post-result cleanup (`clearActiveBattleState`) — dropping
+ *     the synchronized copy when the player leaves a completed battle
+ *     (`D-202-04 = A`, ARCHITECTURE.md §2.2.3, ADR-022): state only, no
+ *     transport operation, no result read, and no effect on the preserved
+ *     pre-battle loadout, which this runtime does not hold.
  *
  * It deliberately does NOT (task §9, AGENTS.md §10, ADR-001):
  *   - calculate damage, match, combo, cascade, passive, or power,
@@ -326,6 +335,58 @@ export class GameRuntime implements GameRuntimePort {
    */
   public getBattleState(): RuntimeBattleState | null {
     return this.battleState;
+  }
+
+  /**
+   * Drops the synchronized battle copy when the player leaves a completed
+   * battle (`D-202-04 = A`, `ARCHITECTURE.md` §2.2.1, §2.2.3, ADR-022,
+   * `GameRuntimePort.clearActiveBattleState`).
+   *
+   * ```text
+   * ResultScene PLAY AGAIN / MAIN MENU
+   *         ↓
+   * clearActiveBattleState()
+   *         ├── battleState = null            → getBattleState() reports null
+   *         ├── sync = awaiting_battle        → when the connection is 'connected'
+   *         │        unsynchronized           → otherwise
+   *         └── no transport call, no result read, no preserved-loadout change
+   * ```
+   *
+   * **Nothing is recomputed or fabricated.** The copy is dropped, not adjusted:
+   * the next battle arrives as a fresh server push (`SIGNALR_PROTOCOL.md` §4)
+   * through the existing `receiveBattleState` path, and the completed battle's
+   * persisted result is not consulted or stored
+   * (`API_CONTRACTS.md` §4, `GAME_STATE.md` §4).
+   *
+   * **The transport is untouched.** No connect, disconnect, or hub invocation
+   * happens here — `D-202-04 = C/D` (clearing the SignalR battle connection)
+   * was not approved — and the process-wide connection rule is unaffected
+   * (§2.2.1 rule 6). No wire message is introduced either: §8.3 records that no
+   * battle lifecycle/status message exists.
+   *
+   * **This is not §7.3's `BATTLE_NOT_FOUND` path.** That path is a failed
+   * recovery and additionally takes the result fallback read
+   * (`handleBattleNotRecoverable`); this is a normal lifecycle step and takes
+   * no fallback.
+   *
+   * **The preserved pre-battle loadout is not touched.** It is not battle
+   * state: it lives in the client game-presentation layer's carrier, not on
+   * this runtime (ADR-022), and clearing it would make `D-202-03 = D`
+   * impossible.
+   *
+   * Safe to call repeatedly, safe when no battle is held, and never throws.
+   */
+  public clearActiveBattleState(): void {
+    this.battleState = null;
+
+    // The documented no-current-battle value is defined relative to the
+    // connection the runtime actually has (`state/GameRuntimeState.ts`,
+    // `SyncStatus`): a connected runtime with no battle is `awaiting_battle`,
+    // while a runtime that is not connected is simply `unsynchronized`.
+    this.updateState({
+      sync: this.state.connection === 'connected' ? 'awaiting_battle' : 'unsynchronized',
+      lastError: null,
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -779,6 +840,40 @@ export class GameRuntime implements GameRuntimePort {
    */
   public async getBattleResult(battleId: string): Promise<BattleResultResponse> {
     return await this.api.getBattleResult(battleId);
+  }
+
+  /**
+   * The authenticated Player's completed-battle history
+   * (`API_CONTRACTS.md` §4.5) — `GET /api/battle/history`.
+   *
+   * This is the read-only account-progression source the Battle History surface
+   * presents. The runtime delegates to the existing `ApiService` method and
+   * nothing else: no orchestration, no second retrieval mechanism, and no query
+   * parameter — §4.5 notes 5–6 make the bare route the entire request surface
+   * (no pagination, filter, sort, or search), and the path carries no
+   * `playerId` because the scope is the session-derived identity (note 8).
+   *
+   * **The order is the server's.** §4.5 note 4 fixes it — `CompletedAt`
+   * descending, tie-broken by `BattleResultId` descending — as a documented
+   * contract clients MAY rely on, so the array is handed back exactly as it
+   * arrived: it is not sorted, reversed, filtered, re-numbered, or trimmed, and
+   * no order is inferred from `battleId` or from `completedAt`.
+   *
+   * **Nothing is computed and nothing is held.** No XP is summed, no Level is
+   * derived, no `leveledUp` flag is recomputed, no `durationTurns` or
+   * `completedAt` value is re-derived, and `null` is never promoted to a number
+   * (`DATABASE.md` §1, `GAME_RULES.md` §18, AGENTS.md §10). The response is not
+   * cached and is not stored as runtime state — it is ephemeral presentation
+   * data (`GAME_STATE.md` §4, `ARCHITECTURE.md` §2.2.3 rules 1–2) that the
+   * calling scene owns and releases (`ADR-022`'s carrier is a different
+   * concept and is untouched here).
+   *
+   * An empty history arrives as the empty array (§4.5 note 9) and is returned
+   * as such; a rejection — including §2.3/§6's `401 UNAUTHENTICATED` — propagates
+   * unchanged, with no fabricated or partial history.
+   */
+  public async getBattleHistory(): Promise<BattleHistoryItemResponse[]> {
+    return await this.api.getBattleHistory();
   }
 
   // ---------------------------------------------------------------------------

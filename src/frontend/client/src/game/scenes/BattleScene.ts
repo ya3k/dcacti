@@ -156,11 +156,81 @@ export class BattleScene extends Phaser.Scene {
         this.handleBattleEvents(envelope);
       });
     }
+
+    // The cleanup below is attached to Phaser's own scene lifecycle events.
+    //
+    // A scene method that merely *exists* is never invoked: Phaser 4.2.1 calls
+    // `init`/`preload`/`create`/`update` by name (`SceneManager.bootScene` /
+    // `SceneManager.create`) and nothing else. What the engine actually emits
+    // when it takes a scene down is `Phaser.Scenes.Events.SHUTDOWN` — from
+    // `Phaser.Scenes.Systems#shutdown`, which `SceneManager` calls for a queued
+    // `stop` and when restarting a running scene — and `DESTROY` from
+    // `Systems#destroy`. `Phaser.Scene` declares no `shutdown` method at all.
+    //
+    // So the subscription handles created just above are released by listening
+    // for those events, the documented scene-event mechanism
+    // (`.ai/skills/client/phaser-architecture` "Resource Lifecycle & Cleanup";
+    // `.ai/skills/phaser/scenes` gotcha 14). Without this, a scene that is shut
+    // down stays subscribed: the next `GameRuntime` state push or battle event
+    // would reach a listener whose game objects Phaser has already destroyed
+    // (`DisplayList#shutdown` destroys every child), and this scene's
+    // per-instance state — `outcomeHandled` included — would survive into the
+    // next time the same instance is started.
+    //
+    // `once` per event: a scene that is shut down and later restarted registers
+    // exactly one handler per run, and the handler is consumed by the event
+    // that fired it. Releasing twice is harmless — every handle is null-safe
+    // and re-nulling an already-null reference is idempotent.
+    //
+    // The pair is detached before it is attached, so the registration itself is
+    // idempotent: `once` alone would leave the run's *unfired* `DESTROY` handler
+    // on the emitter, and a scene that is stopped and started again would stack
+    // one more on every run (TASK-205's repo-wide audit; the same "detach before
+    // attach" idempotency `registerBoardInput` below already uses).
+    this.events.off(Phaser.Scenes.Events.SHUTDOWN, this.shutdown, this);
+    this.events.off(Phaser.Scenes.Events.DESTROY, this.shutdown, this);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.shutdown, this);
+    this.events.once(Phaser.Scenes.Events.DESTROY, this.shutdown, this);
   }
 
   /**
-   * Scene shutdown — reached when this scene stops or the game is destroyed.
-   * Detaching here prevents listener leaks across scene restarts.
+   * Scene teardown — the handler subscribed to Phaser's own
+   * `Phaser.Scenes.Events.SHUTDOWN` / `DESTROY` events by `create()`.
+   *
+   * It detaches every runtime subscription, so no stale listener survives the
+   * scene (the runtime's `runtimeListeners` / `battleStateListeners` /
+   * `battleListeners` must not contain this scene after teardown), and it drops
+   * the scene's own references and per-instance state so a later `create()` on
+   * the same instance starts a battle from a clean slate.
+   *
+   * It is a plain method invoked *by the engine's event*, not an engine hook:
+   * Phaser never calls a scene method named `shutdown` on its own.
+   *
+   * What is released, and why (`ARCHITECTURE.md` §2.2.1 rule 3 — the scene owns
+   * presentation, the runtime owns coordination, the server owns the battle):
+   *
+   * ```text
+   * subscriptions          scene-owned handles on shared streams — released, so a
+   *                        shut-down scene is not an observer of the next battle
+   * game objects / layers  scene-owned presentation — Phaser's DisplayList has
+   *                        already destroyed them, so re-destroying is a no-op;
+   *                        dropping the references is what stops a stale write
+   * per-battle guards      selectedCell, swapPending, actionInFlight,
+   *                        presentationLocked, outcomeHandled — each describes the
+   *                        battle that just ended, so the NEXT battle must start
+   *                        from its initial value (`outcomeHandled` in
+   *                        particular: left true, it discards the next outcome)
+   * per-battle caches      presentedEventsLog and cardDefinitions — presentation
+   *                        data of the ended battle; no authoritative value is in
+   *                        them, so nothing is lost by clearing them
+   * synchronized copy      currentBattleState — a snapshot of what the server last
+   *                        pushed; `create()` re-reads it from the runtime
+   * ```
+   *
+   * It deliberately touches nothing it does not own: the runtime's synchronized
+   * copy is dropped by `GameRuntime.clearActiveBattleState()` and not here, and
+   * the preserved pre-battle loadout (ADR-022) is not battle state, so neither
+   * this teardown nor that cleanup clears it.
    */
   shutdown(): void {
     this.runtimeUnsubscribe?.();

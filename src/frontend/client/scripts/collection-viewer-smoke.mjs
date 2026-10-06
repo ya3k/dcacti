@@ -376,6 +376,19 @@ const COLLECTION_SNAPSHOT = `
      */
     allTexts: list.filter((o) => o.type === 'Text' && live(o)).map((o) => ({ text: o.text, x: o.x, y: o.y })),
     texts: list.filter((o) => o.type === 'Text' && live(o)).map((o) => o.text),
+    /**
+     * TASK-205: the scene's own lifecycle wiring and the references its teardown
+     * owns. create() registers this.shutdown on the engine's SHUTDOWN / DESTROY
+     * events, so counting by function identity tells whether this scene's cleanup
+     * is wired and whether a run left a handler behind (other Phaser systems
+     * register their own shutdown methods on the same emitter, so counting by
+     * name would not identify the scene's).
+     */
+    teardownShutdownHandlers: (s.events.listeners('shutdown') || []).filter((fn) => fn === s.shutdown).length,
+    teardownDestroyHandlers: (s.events.listeners('destroy') || []).filter((fn) => fn === s.shutdown).length,
+    shellObjectCount: (s.shellObjects || []).length,
+    renderedTextCount: (s.renderedTexts || []).length,
+    interactiveObjectCount: (s.interactiveObjects || []).length,
     viewport: { left: rect.left, top: rect.top, scaleX: rect.width / gameWidth, scaleY: rect.height / gameHeight },
   };
 })()
@@ -630,6 +643,20 @@ export async function runCollectionViewerSmokeTest(runNumber = 1) {
     record('phase3.defaultTabIsPets', viewer.tab === 'pets', viewer.tab);
     record('phase3.noLoadError', viewer.loadError === null, viewer.loadError);
 
+    // TASK-205: this first run's own lifecycle wiring, so the reopened run below
+    // can be compared against it. A scene method named `shutdown` is not a
+    // Phaser hook, so the teardown must be registered on the engine's events —
+    // and exactly once per event, however many times the scene is reopened.
+    const viewerFirstRun = viewer;
+    record(
+      'phase3.teardownRegisteredOnEngineLifecycleEvents',
+      viewer.teardownShutdownHandlers === 1 && viewer.teardownDestroyHandlers === 1,
+      {
+        shutdownHandlers: viewer.teardownShutdownHandlers,
+        destroyHandlers: viewer.teardownDestroyHandlers,
+      }
+    );
+
     // Each tab shows the count of the collection the read returned.
     record('phase3.petCountBadge', viewer.tabs.includes(`PETS (${viewer.ownedPets.length})`), viewer.tabs);
     record('phase3.cardCountBadge', viewer.tabs.includes(`CARDS (${viewer.ownedCards.length})`), viewer.tabs);
@@ -864,6 +891,33 @@ export async function runCollectionViewerSmokeTest(runNumber = 1) {
         reopened.tabs.filter((t) => t.startsWith('PETS')).length === 1 &&
         reopened.backButton === true,
       { rows: reopened.rows, tabs: reopened.tabs }
+    );
+
+    // TASK-205: this is the viewer instance's second run, and `< BACK` shut the
+    // first one down — so the engine's SHUTDOWN event must have run the scene's
+    // own teardown. Its own object lists are the evidence: the shell was rebuilt
+    // from empty lists (no second shell stacked on the ended run's), and the
+    // registration did not accumulate (one teardown handler per event, exactly as
+    // on the first run).
+    record(
+      'phase7.reopenRanTheSceneTeardown',
+      reopened.shellObjectCount === viewerFirstRun.shellObjectCount &&
+        reopened.teardownShutdownHandlers === viewerFirstRun.teardownShutdownHandlers &&
+        reopened.teardownDestroyHandlers === viewerFirstRun.teardownDestroyHandlers &&
+        reopened.teardownShutdownHandlers === 1 &&
+        reopened.teardownDestroyHandlers === 1,
+      {
+        firstRun: {
+          shellObjects: viewerFirstRun.shellObjectCount,
+          shutdownHandlers: viewerFirstRun.teardownShutdownHandlers,
+          destroyHandlers: viewerFirstRun.teardownDestroyHandlers,
+        },
+        secondRun: {
+          shellObjects: reopened.shellObjectCount,
+          shutdownHandlers: reopened.teardownShutdownHandlers,
+          destroyHandlers: reopened.teardownDestroyHandlers,
+        },
+      }
     );
 
     // Return once more, so the run ends on the menu as it began.

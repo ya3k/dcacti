@@ -5,6 +5,7 @@ import { CollectionViewerScene, COLLECTION_TABS } from '../src/game/scenes/Colle
 import { RUNTIME_REGISTRY_KEY } from '../src/game/runtime/RuntimeRegistry';
 import { INITIAL_RUNTIME_STATE } from '../src/state/GameRuntimeState';
 import type { CardResponse, PetResponse, RelicResponse } from '../src/services/api/CollectionModels';
+import { SceneEventEmitter } from './support/SceneEventEmitter';
 
 /**
  * TASK-190 — CollectionViewerScene.
@@ -28,6 +29,16 @@ vi.mock('phaser', () => ({
   Structs: { Size: class MockSize {} },
   Loader: { Events: { COMPLETE: 'complete' } },
   Input: { Events: { GAMEOBJECT_POINTER_DOWN: 'gameobjectdown' } },
+  // Phaser's scene lifecycle events (TASK-205). The engine emits SHUTDOWN /
+  // DESTROY on `scene.events` (`Phaser.Scenes.Systems#shutdown` / `#destroy`)
+  // and never calls a scene method merely because one exists, so this scene
+  // attaches its teardown to these events and so does this suite.
+  Scenes: {
+    Events: {
+      SHUTDOWN: 'shutdown',
+      DESTROY: 'destroy',
+    },
+  },
 }));
 
 /** A `GET /api/pets` element (API_CONTRACTS.md §5.1) — the owned instance. */
@@ -274,7 +285,13 @@ function createViewerHarness(options: SceneHarnessOptions = {}) {
   let uncaptionedRectangle: { label: { readonly text: string } | null } | null = null;
 
   function context(scene: object): object {
+    // The scene's own emitter (Phaser's `scene.events`). The engine raises its
+    // lifecycle events here and never calls a scene method because one exists
+    // (TASK-205), so the harness raises them here too.
+    const events = new SceneEventEmitter();
+
     return Object.assign(Object.create(scene), {
+      events,
       scene: { start: (key: string) => sceneStarted.push({ key }) },
       add: {
         rectangle: (x: number, y: number, width: number, height: number) => {
@@ -336,6 +353,40 @@ function createViewerHarness(options: SceneHarnessOptions = {}) {
     },
     /** The interactive objects that are still live, i.e. clickable right now. */
     liveInteractive: (): Clickable[] => clickables.filter((c) => c.interactive && isLive(c)),
+    /**
+     * The engine's own half of taking a scene down, on its own.
+     *
+     * Phaser's `DisplayList` destroys every child of a stopped scene whether or
+     * not the scene registered a teardown of its own, so this is what the
+     * scene's game objects look like after teardown even when no teardown of the
+     * scene's own ran. It exists so a test can show what the defect looks like.
+     */
+    destroySceneDisplayList: (_ctx?: object) => {
+      for (const object of [...liveTexts, ...liveRectangles]) {
+        (object as { destroy?: () => void }).destroy?.();
+      }
+    },
+    /**
+     * Takes a scene down exactly as Phaser does (TASK-205):
+     * `SceneManager` → `Systems#shutdown` → `scene.events.emit(SHUTDOWN)`, with
+     * the engine's own `DisplayList` having destroyed every child first.
+     * Nothing here calls a scene method by name.
+     */
+    shutdownScene: (ctx: object) => {
+      for (const object of [...liveTexts, ...liveRectangles]) {
+        // The engine's half of teardown: `DisplayList#shutdown` destroys the
+        // scene's game objects whether or not the scene registered anything.
+        (object as { destroy?: () => void }).destroy?.();
+      }
+      (ctx as { events?: SceneEventEmitter }).events?.emit('shutdown');
+    },
+    /** `Phaser.Scenes.Systems#destroy` → `Phaser.Scenes.Events.DESTROY`. */
+    destroyScene: (ctx: object) => {
+      (ctx as { events?: SceneEventEmitter }).events?.emit('destroy');
+    },
+    /** How many listeners the scene's own emitter holds for one lifecycle event. */
+    sceneListenerCount: (ctx: object, event: string) =>
+      (ctx as { events?: SceneEventEmitter }).events?.listenerCount(event) ?? 0,
   };
 }
 
@@ -857,41 +908,72 @@ describe('CollectionViewerScene — back navigation', () => {
   });
 });
 
-describe('CollectionViewerScene — shutdown cleanup', () => {
+describe('CollectionViewerScene — teardown on the engine lifecycle (TASK-205)', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('is safe to shut down without creating anything', () => {
-    const harness = createViewerHarness();
-    const scene = new CollectionViewerScene();
+  it('attaches its teardown to the engine lifecycle events, not to a method name', async () => {
+    // `Phaser.Scene` declares no `shutdown` method and the engine never calls
+    // one: `Systems#shutdown` / `#destroy` emit SHUTDOWN / DESTROY on the
+    // scene's own emitter, so a teardown that exists only as a method is dead
+    // code in the browser.
+    const { harness, ctx } = await createViewer();
 
-    expect(() => runScene(scene, harness.context(scene), 'shutdown')).not.toThrow();
+    expect(harness.sceneListenerCount(ctx, 'shutdown')).toBe(1);
+    expect(harness.sceneListenerCount(ctx, 'destroy')).toBe(1);
   });
 
-  it('destroys every dynamic object it created', async () => {
-    const { harness, scene, ctx } = await createViewer();
+  it('is safe to be taken down before it created anything', () => {
+    const harness = createViewerHarness();
+    const scene = new CollectionViewerScene();
+    const ctx = harness.context(scene);
+
+    // No `create()` ran, so nothing was registered and there is nothing to
+    // release: the engine's teardown is still safe.
+    expect(() => harness.shutdownScene(ctx)).not.toThrow();
+    expect(() => harness.destroyScene(ctx)).not.toThrow();
+  });
+
+  it('releases its own references when Phaser shuts the scene down', async () => {
+    const { harness, ctx } = await createViewer();
 
     expect(harness.liveInteractive().length).toBeGreaterThan(0);
 
-    runScene(scene, ctx, 'shutdown');
+    // The engine's own teardown path — not a call to the scene's method.
+    harness.shutdownScene(ctx);
 
     // No object survives the shutdown: the shell, the tabs, the rows, the back
-    // button, and any retry have all been destroyed.
+    // button, and any retry have all been released, and the scene's own lists of
+    // them are empty rather than full of the ended run's objects.
     expect(harness.liveInteractive()).toHaveLength(0);
     expect((ctx as { renderedTexts: unknown[] }).renderedTexts).toHaveLength(0);
     expect((ctx as { interactiveObjects: unknown[] }).interactiveObjects).toHaveLength(0);
     expect((ctx as { shellObjects: unknown[] }).shellObjects).toHaveLength(0);
   });
 
-  it('detaches the handlers of the shut-down pass', async () => {
-    const { harness, scene, ctx } = await createViewer();
+  it('can fail on the defect: with no attached teardown the scene keeps everything', async () => {
+    // The harness's own guard, in the spirit of TASK-204's. Phaser destroys the
+    // stopped scene's children whether or not the scene registered a teardown,
+    // but only the scene can drop its own references and lists — so a scene
+    // whose teardown is not attached keeps the ended run's objects in
+    // `shellObjects` and would carry them into the next run.
+    const { harness, ctx } = await createViewer();
 
-    // Snapshot the objects of the live pass, then shut down.
+    harness.destroySceneDisplayList(ctx);
+
+    expect((ctx as { shellObjects: unknown[] }).shellObjects).not.toHaveLength(0);
+    expect((ctx as { ownedPets: unknown[] }).ownedPets).not.toHaveLength(0);
+  });
+
+  it('detaches the handlers of the shut-down pass', async () => {
+    const { harness, ctx } = await createViewer();
+
+    // Snapshot the objects of the live pass, then take the scene down.
     const staleBack = harness.objectContaining('< BACK');
     const stalePet = harness.objectContaining('Xích Lang');
 
-    runScene(scene, ctx, 'shutdown');
+    harness.shutdownScene(ctx);
 
     // A click on a destroyed object reaches no handler — the leak the cleanup
     // exists to prevent.
@@ -901,13 +983,13 @@ describe('CollectionViewerScene — shutdown cleanup', () => {
     expect(harness.sceneStarted).toEqual([]);
   });
 
-  it('discards the loaded collection and the selection on shutdown', async () => {
-    const { harness, scene, ctx } = await createViewer();
+  it('discards the loaded collection and the selection when Phaser shuts the scene down', async () => {
+    const { harness, ctx } = await createViewer();
 
     harness.objectContaining('Xích Lang').click();
     expect((ctx as { selectedItemId: string | null }).selectedItemId).toBe('pet-instance-1');
 
-    runScene(scene, ctx, 'shutdown');
+    harness.shutdownScene(ctx);
 
     expect((ctx as { ownedPets: unknown[] }).ownedPets).toHaveLength(0);
     expect((ctx as { ownedCards: unknown[] }).ownedCards).toHaveLength(0);
@@ -917,17 +999,32 @@ describe('CollectionViewerScene — shutdown cleanup', () => {
     expect((ctx as { loadError: string | null }).loadError).toBeNull();
   });
 
+  it('discards the loaded collection and the selection when Phaser destroys the scene', async () => {
+    const { harness, ctx } = await createViewer();
+
+    harness.objectContaining('Xích Lang').click();
+    harness.destroyScene(ctx);
+
+    expect((ctx as { ownedPets: unknown[] }).ownedPets).toHaveLength(0);
+    expect((ctx as { selectedItemId: string | null }).selectedItemId).toBeNull();
+    expect((ctx as { shellObjects: unknown[] }).shellObjects).toHaveLength(0);
+  });
+
   it('re-reads the collection and starts clean when the scene is reopened', async () => {
     const { harness, scene, ctx } = await createViewer();
 
     expect(harness.collectionReads).toHaveLength(3);
 
-    runScene(scene, ctx, 'shutdown');
+    harness.shutdownScene(ctx);
     runScene(scene, ctx, 'create');
     await flush();
 
     // The reopened viewer performed its own load...
     expect(harness.collectionReads).toHaveLength(6);
+
+    // ...and its own shell was rebuilt from an empty set of lists rather than
+    // stacking a second one on the ended run's.
+    expect((ctx as { shellObjects: unknown[] }).shellObjects).toHaveLength(5);
 
     // ...and presents a single, fresh pass: one back button, one tab per
     // category, one row per Pet — no duplicated UI from the previous run.
@@ -940,13 +1037,29 @@ describe('CollectionViewerScene — shutdown cleanup', () => {
     expect(live.filter((c) => c.text === 'Xích Lang' || c.text.includes('Xích Lang'))).toHaveLength(1);
   });
 
+  it('does not accumulate lifecycle listeners across a shutdown/start cycle', async () => {
+    const { harness, scene, ctx } = await createViewer();
+
+    harness.shutdownScene(ctx);
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    // One teardown handler per run — never the previous run's plus a new one —
+    // and the handler that is registered is the live one.
+    expect(harness.sceneListenerCount(ctx, 'shutdown')).toBe(1);
+    expect(harness.sceneListenerCount(ctx, 'destroy')).toBe(1);
+
+    harness.shutdownScene(ctx);
+    expect((ctx as { shellObjects: unknown[] }).shellObjects).toHaveLength(0);
+  });
+
   it('transitions at most once even when reopened after a back navigation', async () => {
     const { harness, scene, ctx } = await createViewer();
 
     harness.clickLabel('< BACK');
     expect(harness.sceneStarted).toHaveLength(1);
 
-    runScene(scene, ctx, 'shutdown');
+    harness.shutdownScene(ctx);
     runScene(scene, ctx, 'create');
     await flush();
 

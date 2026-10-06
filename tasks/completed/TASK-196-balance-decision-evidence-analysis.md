@@ -23,7 +23,8 @@
 ```text
 Task ID:           TASK-196
 Type:              Analysis / Decision Support (Specification Only)
-Status:            READY
+Status:            SUPERSEDED (downstream satisfaction by TASK-197, TASK-198,
+                    and TASK-200)
 Date:              2026-10-05
 Evidence Base:     TASK-194 baseline simulation results (tasks/artifacts/TASK-194-baseline-simulation-results.json;
                    SHA-256 4F9B5077B9320B09BD83C9144FF9B1234566D067B5FE0EF9BCD85FCB1CE6059F),
