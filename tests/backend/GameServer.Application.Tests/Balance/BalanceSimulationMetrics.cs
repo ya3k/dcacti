@@ -125,8 +125,10 @@ internal sealed record BalanceSimulationMetrics
     public required int PowerGeneratedTotal { get; init; }
 
     /// <summary>
-    /// M-08 — cumulative Power the active Pet spent, as the absolute value of the
-    /// negative deltas of the same reports.
+    /// M-07 — cumulative Power the active Pet spent/lost across all sinks, as the
+    /// absolute value of the negative deltas of <c>PowerChanged</c> reports.
+    /// This includes both Card cast expenditures and external resource drains
+    /// (such as Thủy Ma's Drain Power skill effect; <c>TASK-195</c> §4.6).
     /// </summary>
     public required int PowerSpentTotal { get; init; }
 
@@ -136,50 +138,50 @@ internal sealed record BalanceSimulationMetrics
     public required int PowerFinal { get; init; }
 
     // ------------------------------------------------------------------
-    // M-09 — Cards cast
+    // M-08 — Cards cast
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// M-09 — successful casts per Card definition identity, counted from the
+    /// M-08 — successful casts per Card definition identity, counted from the
     /// resolution's own <c>CardCast</c> reports (<c>CARD_RULES.md</c> §6).
     /// </summary>
     public required IReadOnlyDictionary<string, int> CastsByCard { get; init; }
 
     /// <summary>
-    /// M-09 — total successful casts. It is the sum of
+    /// M-08 — total successful casts. It is the sum of
     /// <see cref="CastsByCard"/> and is stated separately because the per-Card
     /// breakdown is what B-08/B-09 read.
     /// </summary>
     public required int CastsTotal { get; init; }
 
     /// <summary>
-    /// M-09 — the Turn number during which each cast resolved, in cast order
+    /// M-08 — the Turn number during which each cast resolved, in cast order
     /// (1-based: a cast during the first resolved Turn records <c>1</c>).
     /// </summary>
     public required IReadOnlyList<int> CastTurns { get; init; }
 
     // ------------------------------------------------------------------
-    // M-10 — Relic triggers
+    // M-09 — Relic triggers
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// M-10 — <c>RelicTriggered</c> counts per Relic instance identity
+    /// M-09 — <c>RelicTriggered</c> counts per Relic instance identity
     /// (<c>RELIC_RULES.md</c> §7, <c>SIGNALR_PROTOCOL.md</c> §3.2.23). Empty when
     /// the battle carries no Relic content.
     /// </summary>
     public required IReadOnlyDictionary<string, int> RelicTriggersByRelic { get; init; }
 
     /// <summary>
-    /// M-10 — total Relic triggers.
+    /// M-09 — total Relic triggers.
     /// </summary>
     public required int RelicTriggersTotal { get; init; }
 
     // ------------------------------------------------------------------
-    // M-11 — Combo
+    // M-10 — Combo
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// M-11 — the Combo value each resolved Turn ended at, in Turn order
+    /// M-10 — the Combo value each resolved Turn ended at, in Turn order
     /// (<c>MATCH3_RULES.md</c> §6). One entry per committed Swap, because a
     /// committed Swap always produces at least one Match and therefore a Combo of
     /// at least 1 (§6.5 item 3).
@@ -187,23 +189,23 @@ internal sealed record BalanceSimulationMetrics
     public required IReadOnlyList<int> ComboPerTurn { get; init; }
 
     /// <summary>
-    /// M-11 — the highest Combo observed. B-11 reads this against the documented
+    /// M-10 — the highest Combo observed. B-11 reads this against the documented
     /// Combo table's thresholds (<c>GAME_RULES.md</c> §5).
     /// </summary>
     public required int ComboMax { get; init; }
 
     /// <summary>
-    /// M-11 — how many times each Combo value occurred, so the distribution's
+    /// M-10 — how many times each Combo value occurred, so the distribution's
     /// shape is reportable without re-walking the per-Turn list.
     /// </summary>
     public required IReadOnlyDictionary<int, int> ComboDistribution { get; init; }
 
     // ------------------------------------------------------------------
-    // M-12 — Element modifiers
+    // M-11 — Element modifiers
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// M-12 — damage instances that resolved at the advantage modifier, read from
+    /// M-11 — damage instances that resolved at the advantage modifier, read from
     /// the pipeline's own <c>DamageCalculation.ElementModifier</c>
     /// (<c>COMBAT_RULES.md</c> §3 step 3, <c>ELEMENT_RULES.md</c> §2.2). The
     /// classification compares the observed factor against the documented
@@ -212,22 +214,28 @@ internal sealed record BalanceSimulationMetrics
     /// </summary>
     public required int ElementAdvantageCount { get; init; }
 
-    /// <summary>M-12 — damage instances that resolved at the neutral modifier.</summary>
+    /// <summary>M-11 — damage instances that resolved at the neutral modifier.</summary>
     public required int ElementNeutralCount { get; init; }
 
-    /// <summary>M-12 — damage instances that resolved at the disadvantage modifier.</summary>
+    /// <summary>M-11 — damage instances that resolved at the disadvantage modifier.</summary>
     public required int ElementDisadvantageCount { get; init; }
 
     // ------------------------------------------------------------------
-    // M-13 — Boss regeneration and threshold events
+    // M-12 — Boss regeneration
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// M-13 — total HP the Boss restored through regeneration across the run. It
+    /// M-12 — total HP the Boss restored through regeneration across the run. It
     /// is measured as the sum of positive Boss-HP movements between consecutive
     /// Turns, which is how <c>BOSS_RULES.md</c> §6.2.3's regeneration manifests
-    /// (the stage reports no dedicated event). Zero for a Boss without a
+    /// (the production stage reports no dedicated event). Zero for a Boss without a
     /// regeneration Passive.
+    ///
+    /// <b>Authoritative lower bound:</b> Because regeneration resolves inside the same
+    /// Turn as player damage and no <c>BossHealed</c> event exists in the production
+    /// pipeline, any regeneration smaller than that Turn's damage is masked. The
+    /// harness preserves authoritative lower-bound semantics and does not invent
+    /// synthetic calculations or un-emitted events (<c>TASK-195</c> §4.3).
     ///
     /// <b>This measures; it does not judge.</b> B-07's question — whether that
     /// regen is too strong — is Q-8's, and remains open.
@@ -235,11 +243,15 @@ internal sealed record BalanceSimulationMetrics
     public required int BossRegenerationTotal { get; init; }
 
     /// <summary>
-    /// M-13 — the number of Turns on which the Boss regained HP. Reported
+    /// M-12 — the number of Turns on which the Boss regained HP. Reported
     /// alongside the total because a single large heal and many small ones differ
     /// in gameplay even at an equal sum.
     /// </summary>
     public required int BossRegenerationTurns { get; init; }
+
+    // ------------------------------------------------------------------
+    // M-13 — Boss threshold events and cadence
+    // ------------------------------------------------------------------
 
     /// <summary>
     /// M-13 — how many Boss Skill casts fired, counted from <c>BossSkillCast</c>

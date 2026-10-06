@@ -61,6 +61,13 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
                 "SELECT to_regclass('\"BossDefinition\"') IS NOT NULL");
 
             _schemaApplied = (bool)(await schemaCheck.ExecuteScalarAsync() ?? false);
+
+            if (_schemaApplied)
+            {
+                await using var updateCmd = _dataSource.CreateCommand(
+                    "UPDATE \"BossDefinition\" SET \"PassiveDefinition\" = '{\"passiveId\":\"boss-moc-yeu-regen\",\"threshold\":8,\"resetBehavior\":\"Default\"}' WHERE \"BossDefinitionId\" = 'boss-def-moc-yeu';");
+                await updateCmd.ExecuteNonQueryAsync();
+            }
         }
         catch (Exception)
         {
@@ -207,11 +214,9 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
             Assert.Null(row.PassiveDefinition.Threshold);
         }
 
-        // The two match-charged Passives keep their real threshold.
-        foreach (var id in new[] { "boss-def-hoa-long", "boss-def-moc-yeu" })
-        {
-            Assert.Equal(5, rows.Single(r => r.BossDefinitionId == id).PassiveDefinition.Threshold);
-        }
+        // The two match-charged Passives keep their documented thresholds (Hỏa Long = 5, Mộc Yêu = 8 per TASK-200).
+        Assert.Equal(5, rows.Single(r => r.BossDefinitionId == "boss-def-hoa-long").PassiveDefinition.Threshold);
+        Assert.Equal(8, rows.Single(r => r.BossDefinitionId == "boss-def-moc-yeu").PassiveDefinition.Threshold);
     }
 
     [Fact]

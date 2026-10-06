@@ -106,7 +106,7 @@ internal sealed class BalanceSimulator
             return Invalid(invalid);
         }
 
-        var mode = BalanceSimulationMode.Baseline;
+        var mode = _configuration.Mode;
 
         BattleState state;
 
@@ -151,12 +151,15 @@ internal sealed class BalanceSimulator
                     $"reached the configured maximum of {_configuration.MaxTurns} Turns without a terminal result");
             }
 
-            var turnNumber = state.Turn + 1;
+            if (attemptedSwaps.Count == 0)
+            {
+                var turnNumber = state.Turn + 1;
 
-            // Open this Turn for accumulation. All of its resolutions — the
-            // auxiliary Card cast and the committed Swap — contribute to the same
-            // Turn's metrics, which EndTurn flushes exactly once.
-            accumulator.BeginTurn(turnNumber);
+                // Open this Turn for accumulation. All of its resolutions — the
+                // auxiliary Card cast and the committed Swap — contribute to the same
+                // Turn's metrics, which EndTurn flushes exactly once.
+                accumulator.BeginTurn(turnNumber);
+            }
 
             // --- Card cast (an auxiliary action within the Turn) ------------
             // CARD_RULES.md §3 item 6 permits at most one successful cast per
@@ -182,11 +185,12 @@ internal sealed class BalanceSimulator
                     state = cast.Value.State;
                     accumulator.RecordResolution(cast.Value.Events);
 
-                    // A cast that ended the battle still closes its Turn, so its
-                    // metrics are flushed before the result is built.
+                    // A cast that ended the battle reconciles terminal state and damage
+                    // without emitting an uncommitted phantom Turn T+1 record into the
+                    // per-Turn series (TASK-195 §4.2, §5.1.2).
                     if (Terminal(cast.Value.Events) is { } castOutcome)
                     {
-                        accumulator.EndTurn(state);
+                        accumulator.ReconcileTerminalCardCast(state);
                         return Build(state, accumulator, mode, castOutcome, $"Card cast resolved the battle ({castOutcome}).");
                     }
                 }
@@ -353,7 +357,7 @@ internal sealed class BalanceSimulator
     private BalanceSimulationResult Invalid(string reason) => new()
     {
         Seed = _configuration.Seed,
-        Mode = BalanceSimulationMode.Baseline,
+        Mode = _configuration.Mode,
         PolicyName = _policy.Name,
         Outcome = BalanceSimulationOutcome.InvalidSimulation,
         OutcomeDetail = reason,

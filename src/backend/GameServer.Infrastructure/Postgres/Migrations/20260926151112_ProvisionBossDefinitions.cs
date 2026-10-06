@@ -82,13 +82,13 @@ namespace GameServer.Infrastructure.Postgres.Migrations
                 values: new object[] { "boss-def-thuy-ma", "boss-thuy-ma", 2, "{\"passiveId\":\"boss-thuy-ma-heal\",\"threshold\":null,\"resetBehavior\":\"Default\"}", "{\"skillId\":\"drain-power\",\"baseDamage\":120,\"chargeRequirement\":4,\"cooldownTurns\":3}" });
 
             // Mộc Yêu (§6, §6.1–§6.4). Element = Mộc (0). Passive
-            // "boss-moc-yeu-regen", match-charged threshold 5, documented
+            // "boss-moc-yeu-regen", match-charged threshold 8 (TASK-200), documented
             // default reset behavior. Skill "root": base damage 100, charge
             // requirement 6, cooldown 2.
             migrationBuilder.InsertData(
                 table: "BossDefinition",
                 columns: new[] { "BossDefinitionId", "Identity", "Element", "PassiveDefinition", "SkillDefinition" },
-                values: new object[] { "boss-def-moc-yeu", "boss-moc-yeu", 0, "{\"passiveId\":\"boss-moc-yeu-regen\",\"threshold\":5,\"resetBehavior\":\"Default\"}", "{\"skillId\":\"root\",\"baseDamage\":100,\"chargeRequirement\":6,\"cooldownTurns\":2}" });
+                values: new object[] { "boss-def-moc-yeu", "boss-moc-yeu", 0, "{\"passiveId\":\"boss-moc-yeu-regen\",\"threshold\":8,\"resetBehavior\":\"Default\"}", "{\"skillId\":\"root\",\"baseDamage\":100,\"chargeRequirement\":6,\"cooldownTurns\":2}" });
         }
 
         /// <inheritdoc />

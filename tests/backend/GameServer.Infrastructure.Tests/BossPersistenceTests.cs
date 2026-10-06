@@ -948,11 +948,14 @@ public class BossPersistenceTests
         Assert.Contains(PassAsCSharpStringLiteral(notChargedJson), migration);
 
         // No row may encode the non-match-charged case as `0`. Exactly the two
-        // match-charged Bosses (Hỏa Long, Mộc Yêu) carry the real threshold 5;
-        // only Thủy Ma carries null in THIS migration.
-        Assert.Equal(2, CountOccurrences(
+        // match-charged Bosses carry their documented thresholds (Hỏa Long = 5,
+        // Mộc Yêu = 8 per TASK-200); only Thủy Ma carries null in THIS migration.
+        Assert.Equal(1, CountOccurrences(
             migration,
             PassAsCSharpStringLiteral("\"threshold\":5")));
+        Assert.Equal(1, CountOccurrences(
+            migration,
+            PassAsCSharpStringLiteral("\"threshold\":8")));
         Assert.Equal(1, CountOccurrences(
             migration,
             PassAsCSharpStringLiteral("\"threshold\":null")));

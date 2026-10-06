@@ -465,4 +465,241 @@ public class BossPassiveEffectsTests
             .Sum(e => e.DamageDealt.Amount);
         Assert.Equal(500 + turn4Result.Value.Resources.HealPool - bossDmg4, turn4Result.Value.State.PetState.HP);
     }
+
+    // =======================================================================
+    // 4. TASK-200 — Mộc Yêu Threshold 8 Regression Suite
+    // =======================================================================
+
+    [Fact]
+    public async Task TASK200_MocYeuRegen_ShouldNotTriggerBeforeEightQualifyingMatches()
+    {
+        var repo = new InMemoryBattleStateRepository();
+        var service = new BattleStateService(repo, new FixedRngSeedSource());
+        var boss = BossDefinitions.MocYeu;
+
+        Assert.Equal(8, boss.PassiveThreshold);
+
+        var created = await service.CreateBattleAsync("task200-under-thresh", Owner, Pet, boss);
+        var setup = created with
+        {
+            BoardState = Match3Board(),
+            BossState = created.BossState with
+            {
+                HP = 3000,
+                // Match3Board() swap (26,34) produces 7 matches.
+                // Setting initial Current to 0 produces 0 + 7 = 7 matches (< 8).
+                PassiveProgress = new PassiveProgress(Current: 0, Threshold: 8),
+            },
+        };
+        await repo.TryUpdateAsync(setup, setup.Sequence);
+
+        var result = await service.ExecuteSwapAsync("task200-under-thresh", new SwapRequest(26, 34));
+        Assert.NotNull(result);
+        Assert.True(result!.Value.IsAccepted);
+
+        var bossState = result.Value.State.BossState;
+        Assert.Equal(7, bossState.PassiveProgress.Current);
+        Assert.Equal(8, bossState.PassiveProgress.Threshold);
+
+        // No PassiveTriggered event emitted
+        Assert.DoesNotContain(result.Value.Events, e => e.Type == BattleEventType.PassiveTriggered && e.PassiveTriggered.PassiveId.Value == "boss-moc-yeu-regen");
+
+        // Boss HP does NOT receive 250 HP regen
+        var playerDmg = result.Value.Events
+            .First(e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Player)
+            .DamageDealt.Amount;
+        Assert.Equal(3000 - playerDmg, bossState.HP);
+    }
+
+    [Fact]
+    public async Task TASK200_MocYeuRegen_ShouldTriggerAtExactThresholdOfEightMatches()
+    {
+        var repo = new InMemoryBattleStateRepository();
+        var service = new BattleStateService(repo, new FixedRngSeedSource());
+        var boss = BossDefinitions.MocYeu;
+
+        var created = await service.CreateBattleAsync("task200-exact-thresh", Owner, Pet, boss);
+        var setup = created with
+        {
+            BoardState = Match3Board(),
+            BossState = created.BossState with
+            {
+                HP = 3000,
+                // Match3Board() swap (26,34) produces 7 matches.
+                // Setting initial Current to 1 produces 1 + 7 = 8 matches (== 8) -> triggers!
+                PassiveProgress = new PassiveProgress(Current: 1, Threshold: 8),
+            },
+        };
+        await repo.TryUpdateAsync(setup, setup.Sequence);
+
+        var result = await service.ExecuteSwapAsync("task200-exact-thresh", new SwapRequest(26, 34));
+        Assert.NotNull(result);
+        Assert.True(result!.Value.IsAccepted);
+
+        var bossState = result.Value.State.BossState;
+        // Default reset behavior resets to 0
+        Assert.Equal(0, bossState.PassiveProgress.Current);
+        Assert.Equal(8, bossState.PassiveProgress.Threshold);
+
+        // PassiveTriggered event emitted for boss-moc-yeu-regen
+        Assert.Contains(result.Value.Events, e => e.Type == BattleEventType.PassiveTriggered && e.PassiveTriggered.PassiveId.Value == "boss-moc-yeu-regen");
+
+        // Boss HP receives exactly 5% MaxHP (250 HP)
+        var playerDmg = result.Value.Events
+            .First(e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Player)
+            .DamageDealt.Amount;
+        Assert.Equal(3000 - playerDmg + 250, bossState.HP);
+    }
+
+    [Fact]
+    public async Task TASK200_MocYeuRegen_Magnitude_RemainsExactlyFivePercentMaxHp()
+    {
+        var repo = new InMemoryBattleStateRepository();
+        var service = new BattleStateService(repo, new FixedRngSeedSource());
+        var boss = BossDefinitions.MocYeu;
+
+        var created = await service.CreateBattleAsync("task200-magnitude", Owner, Pet, boss);
+        var setup = created with
+        {
+            BoardState = Match3Board(),
+            BossState = created.BossState with
+            {
+                HP = 2000,
+                PassiveProgress = new PassiveProgress(Current: 1, Threshold: 8),
+            },
+        };
+        await repo.TryUpdateAsync(setup, setup.Sequence);
+
+        var result = await service.ExecuteSwapAsync("task200-magnitude", new SwapRequest(26, 34));
+        Assert.NotNull(result);
+
+        var playerDmg = result!.Value.Events
+            .First(e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Player)
+            .DamageDealt.Amount;
+
+        // 5000 * 5 / 100 = 250 exactly
+        const int expectedRegen = 250;
+        Assert.Equal(2000 - playerDmg + expectedRegen, result.Value.State.BossState.HP);
+    }
+
+    [Fact]
+    public async Task TASK200_MocYeuRegen_RepeatedThresholds_ShouldBehaveDeterministically()
+    {
+        var repo = new InMemoryBattleStateRepository();
+        var service = new BattleStateService(repo, new FixedRngSeedSource());
+        var boss = BossDefinitions.MocYeu;
+
+        var created = await service.CreateBattleAsync("task200-repeated", Owner, Pet, boss);
+
+        // Cycle 1: 1 + 7 -> 8 (trigger 1)
+        var setup1 = created with
+        {
+            BoardState = Match3Board(),
+            BossState = created.BossState with
+            {
+                HP = 3000,
+                PassiveProgress = new PassiveProgress(Current: 1, Threshold: 8),
+            },
+        };
+        await repo.TryUpdateAsync(setup1, setup1.Sequence);
+        var res1 = await service.ExecuteSwapAsync("task200-repeated", new SwapRequest(26, 34));
+        Assert.NotNull(res1);
+        Assert.Equal(0, res1!.Value.State.BossState.PassiveProgress.Current);
+
+        // Cycle 2: set to 1 again with fresh board state and LastCommittedSwapPair = null
+        var setup2 = res1.Value.State with
+        {
+            BoardState = Match3Board(),
+            LastCommittedSwapPair = null,
+            BossState = res1.Value.State.BossState with
+            {
+                PassiveProgress = new PassiveProgress(Current: 1, Threshold: 8),
+            },
+        };
+        await repo.TryUpdateAsync(setup2, setup2.Sequence);
+        var res2 = await service.ExecuteSwapAsync("task200-repeated", new SwapRequest(26, 34));
+        Assert.NotNull(res2);
+        Assert.Equal(0, res2!.Value.State.BossState.PassiveProgress.Current);
+        Assert.Contains(res2.Value.Events, e => e.Type == BattleEventType.PassiveTriggered && e.PassiveTriggered.PassiveId.Value == "boss-moc-yeu-regen");
+    }
+
+    [Fact]
+    public async Task TASK200_MocYeuRegen_TurnAndSequenceSemantics_RemainUnchanged()
+    {
+        var repo = new InMemoryBattleStateRepository();
+        var service = new BattleStateService(repo, new FixedRngSeedSource());
+        var boss = BossDefinitions.MocYeu;
+
+        var created = await service.CreateBattleAsync("task200-turn-seq", Owner, Pet, boss);
+        Assert.Equal(0, created.Sequence);
+        Assert.Equal(0, created.Turn);
+
+        var setup = created with { BoardState = Match3Board() };
+        await repo.TryUpdateAsync(setup, setup.Sequence);
+
+        var result = await service.ExecuteSwapAsync("task200-turn-seq", new SwapRequest(26, 34));
+        Assert.NotNull(result);
+        Assert.True(result!.Value.IsAccepted);
+
+        // Turn increments by 1; Sequence increments by 1
+        Assert.Equal(1, result.Value.State.Turn);
+        Assert.Equal(1, result.Value.State.Sequence);
+    }
+
+    [Fact]
+    public async Task TASK200_MocYeuRegen_RejectedSwap_ShouldProduceZeroProgressAndZeroRegen()
+    {
+        var repo = new InMemoryBattleStateRepository();
+        var service = new BattleStateService(repo, new FixedRngSeedSource());
+        var boss = BossDefinitions.MocYeu;
+
+        var created = await service.CreateBattleAsync("task200-rejected", Owner, Pet, boss);
+        var initialBossHp = created.BossState.HP;
+        var initialProgress = created.BossState.PassiveProgress;
+
+        // Invalid non-adjacent swap
+        var result = await service.ExecuteSwapAsync("task200-rejected", new SwapRequest(0, 7));
+        Assert.NotNull(result);
+        Assert.False(result!.Value.IsAccepted);
+
+        var current = await repo.GetAsync("task200-rejected");
+        Assert.NotNull(current);
+        Assert.Equal(0, current!.Sequence);
+        Assert.Equal(0, current.Turn);
+        Assert.Equal(initialBossHp, current.BossState.HP);
+        Assert.Equal(initialProgress.Current, current.BossState.PassiveProgress.Current);
+    }
+
+    [Fact]
+    public async Task TASK200_MocYeuRegen_TerminalResolution_RemainsCorrect()
+    {
+        var repo = new InMemoryBattleStateRepository();
+        var service = new BattleStateService(repo, new FixedRngSeedSource());
+        var boss = BossDefinitions.MocYeu;
+
+        var created = await service.CreateBattleAsync("task200-terminal", Owner, Pet, boss);
+        var setup = created with
+        {
+            BoardState = Match3Board(),
+            BossState = created.BossState with
+            {
+                HP = 1, // 1 HP remaining — will die from player match
+                DEF = 0,
+                PassiveProgress = new PassiveProgress(Current: 7, Threshold: 8), // Threshold reaches 8 on this swap
+            },
+        };
+        await repo.TryUpdateAsync(setup, setup.Sequence);
+
+        var result = await service.ExecuteSwapAsync("task200-terminal", new SwapRequest(26, 34));
+        Assert.NotNull(result);
+        Assert.True(result!.Value.IsAccepted);
+
+        // Boss reached 0 HP: Battle ends in BattleWon; regeneration does NOT revive the boss
+        var wonEvent = Assert.Single(result.Value.Events, e => e.Type == BattleEventType.BattleWon);
+        Assert.Equal(0, wonEvent.BattleWon.FinalBossHp);
+        Assert.Equal(0, result.Value.State.BossState.HP);
+
+        // No PassiveTriggered event on terminal path (GAME_RULES.md §17 step 18 skipped on boss death)
+        Assert.DoesNotContain(result.Value.Events, e => e.Type == BattleEventType.PassiveTriggered && e.PassiveTriggered.PassiveId.Value == "boss-moc-yeu-regen");
+    }
 }

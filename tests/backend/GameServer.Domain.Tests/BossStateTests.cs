@@ -530,7 +530,7 @@ public class BossStateTests
     // item 3, §3). `null` is NOT a statement that the Passive is always-active.
     [InlineData("boss-hoa-long", 5)]
     [InlineData("boss-thuy-ma", null)]
-    [InlineData("boss-moc-yeu", 5)]
+    [InlineData("boss-moc-yeu", 8)]
     [InlineData("boss-son-thach-ve", null)]
     [InlineData("boss-kim-loi-vuong", null)]
     public void Definitions_ShouldCarryTheDocumentedPassiveThreshold(string bossId, int? threshold)

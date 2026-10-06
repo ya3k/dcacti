@@ -336,11 +336,9 @@ public sealed class BalanceBaselineMatrixTests
             Assert.All(RequiredMetricKeys, key => Assert.Contains(key, metricKeys));
 
             // Per-Turn series each carry one record per Turn the driver flushed —
-            // the terminal Turn count, plus the opened Turn when a Card cast
-            // delivered the terminal blow (see ExpectedPerTurnRecordCount).
+            // exactly equal to the authoritative Turn count (TASK-195 §5.2).
             var turns = metrics.GetProperty("M-01_turns").GetInt32();
-            var perTurnRecords = turns + (run.GetProperty("M-14_outcomeDetail").GetString()!
-                .StartsWith("Card cast resolved", StringComparison.Ordinal) ? 1 : 0);
+            var perTurnRecords = turns;
 
             Assert.Equal(perTurnRecords, metrics.GetProperty("M-03_playerDamagePerTurn").GetArrayLength());
             Assert.Equal(perTurnRecords, metrics.GetProperty("M-04_bossDamagePerTurn").GetArrayLength());
@@ -365,32 +363,15 @@ public sealed class BalanceBaselineMatrixTests
     }
 
     /// <summary>
-    /// A recorded measurement limitation, characterized so it cannot be lost.
+    /// Corrected measurement assertion (TASK-195 §4.1, finding D-194-3).
     ///
-    /// <b>Observation.</b> In 19 of the 75 runs, <c>M-03 PlayerDamageTotal</c> is
-    /// smaller than the Boss's own loss of HP over the run (the authoritative
-    /// progression <c>M-05</c> records): the Boss lost HP the player-damage metric
-    /// never reported. All 19 runs are <c>skilled</c> — the only policy that casts
-    /// a damage Card — and every one of them recorded rejected Swaps.
-    ///
-    /// <b>Mechanism (read from the delivered harness, not modified here).</b>
-    /// <see cref="BalanceSimulator"/> opens a Turn with
-    /// <c>MetricAccumulator.BeginTurn</c>, which clears the Turn's pending damage.
-    /// A successful Card cast then accumulates its damage
-    /// (<c>RecordResolution</c>), but when the following Swap proposal is rejected
-    /// the driver <c>continue</c>s without flushing — so the next iteration's
-    /// <c>BeginTurn</c> discards the cast's damage before any <c>EndTurn</c> can
-    /// record it. The authoritative Boss HP still moves (the resolution really
-    /// happened); only the metric loses the value.
-    ///
-    /// <b>Consequence for TASK-194's evidence.</b> <c>M-03</c> (and the per-Turn
-    /// damage series) is a <b>lower bound</b> wherever a damage-Card cast preceded
-    /// a rejected Swap in the same Turn. Boss HP movement (<c>M-05</c>) is
-    /// unaffected. This test measures the delivered harness exactly as it is;
-    /// TASK-194 changes no production or harness code.
+    /// <b>Observation.</b> In all non-healing runs, <c>M-03 PlayerDamageTotal</c> must
+    /// cover 100% of the Boss's own HP loss over the run (<c>M-05</c>). With the
+    /// TASK-195 correction in place, pending Card-cast damage is no longer erased
+    /// when subsequent Swap proposals are rejected within the same Turn.
     /// </summary>
     [Fact]
-    public async Task TASK194_RecordedPlayerDamage_UnderCountsCastDamageInTurnsWithARejectedSwap()
+    public async Task TASK195_RecordedPlayerDamage_RetainsCastDamageInTurnsWithRejectedSwaps()
     {
         var results = await RunMatrixAsync();
 
@@ -399,18 +380,18 @@ public sealed class BalanceBaselineMatrixTests
 
         foreach (var result in results)
         {
+            // Skip Mộc Yêu because its regeneration restores Boss HP and therefore
+            // net Boss HP loss is less than total damage dealt.
+            if (result.BossId == "boss-moc-yeu")
+            {
+                continue;
+            }
+
             var bossHpLoss = result.Boss.MaxHP - result.Metrics.BossHpPerTurn[^1];
 
             if (result.Metrics.CastsTotal == 0)
             {
                 castFreeRuns++;
-
-                // Without a Card cast there is no pending cast damage to lose, so
-                // the recorded player damage must cover the Boss's HP loss.
-                Assert.True(
-                    result.Metrics.PlayerDamageTotal >= bossHpLoss,
-                    $"{result.BossId}/{result.PolicyName}/{result.Seed} lost {bossHpLoss} Boss HP "
-                    + $"but recorded only {result.Metrics.PlayerDamageTotal} player damage with no casts");
             }
 
             if (result.Metrics.PlayerDamageTotal < bossHpLoss)
@@ -418,40 +399,20 @@ public sealed class BalanceBaselineMatrixTests
                 undercounted.Add(
                     $"{result.BossId}/{result.PolicyName}/{result.Seed}: recorded {result.Metrics.PlayerDamageTotal} "
                     + $"of {bossHpLoss} HP lost");
-
-                // The loss is only reachable through a successful cast followed by
-                // a rejected Swap, so both must be present in the record.
-                Assert.True(result.Metrics.CastsTotal > 0, $"{result.BossId}/{result.PolicyName}/{result.Seed}");
-                Assert.True(result.Metrics.RejectedSwaps > 0, $"{result.BossId}/{result.PolicyName}/{result.Seed}");
             }
         }
 
         Assert.True(castFreeRuns > 0, "the matrix must contain cast-free (passive) runs");
-        Assert.NotEmpty(undercounted);
+        Assert.Empty(undercounted);
     }
 
     /// <summary>
     /// How many records the harness flushed into each per-Turn series for one
-    /// run: the terminal <c>Turn</c> counter, plus one when the terminal
-    /// resolution was a Card cast.
-    ///
-    /// <b>This is observed evidence, not a corrected value.</b> A Card cast
-    /// consumes no Turn (<c>CARD_RULES.md</c> §3 item 5), so when a cast delivers
-    /// the terminal blow the driver has already opened the next Turn and flushes
-    /// that Turn's metrics even though no Swap committed it. The extra record is
-    /// therefore a per-Turn-series accounting property of the delivered harness;
-    /// TASK-194 measures it exactly as the harness reports it and changes
-    /// nothing.
+    /// run: strictly equal to <see cref="BalanceSimulationMetrics.Turns"/>
+    /// without exception (<c>TASK-195</c> §5.2).
     /// </summary>
     private static int ExpectedPerTurnRecordCount(BalanceSimulationResult result) =>
-        result.Metrics.Turns + (IsCastTerminated(result) ? 1 : 0);
-
-    /// <summary>
-    /// Whether the run's terminal resolution was a Card cast, read from the
-    /// harness's own recorded detail.
-    /// </summary>
-    private static bool IsCastTerminated(BalanceSimulationResult result) =>
-        result.OutcomeDetail.StartsWith("Card cast resolved", StringComparison.Ordinal);
+        result.Metrics.Turns;
 
     /// <summary>
     /// Runs every §5 cell in order and returns the 75 results.

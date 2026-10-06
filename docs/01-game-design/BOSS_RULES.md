@@ -1,9 +1,13 @@
 # Boss Rules
 
-**Version:** 2.10 (§6.2.4 **Sơn Thạch Vệ** amended per TASK-173, applying the
-recorded Product Owner decision (Option B): the ambiguous retrigger-guard
-sentence — "The retrigger guard is the authored one-time behavior above, not a
-new state field." — is retired and replaced by the explicit contract. The
+**Version:** 2.11 (§6/§6.2/§6.2.3 **Mộc Yêu** passive trigger threshold updated
+from every 5 player matches to every 8 player matches per Product Owner MVP balance
+decision TASK-200 / Q-8 in TASK-191. Regeneration magnitude remains strictly 5%
+MaxHP (250 HP); event ordering, turn semantics, deterministic behavior, and server
+authority are preserved. Prior 2.10: §6.2.4 **Sơn Thạch Vệ** amended per TASK-173,
+applying the recorded Product Owner decision (Option B): the ambiguous
+retrigger-guard sentence — "The retrigger guard is the authored one-time behavior
+above, not a new state field." — is retired and replaced by the explicit contract. The
 Passive's reset behavior
 is the existing non-default `Persistent` token, and `PASSIVE_RULES.md` §4's Boss
 Passive clause makes that behavior govern **firing eligibility**: the Passive is
@@ -260,7 +264,7 @@ Boss        Element   Passive (trigger)                          Skill (Effect M
 ---------   -------   -----------------------------------------  ---------------------------------------------------------  ----------------------
 Hỏa Long    Hỏa       Every 5 Player Matches → gain Rage          Flame Burst → 150 Dmg + Burn (50 dmg/tick, 2 Turns)       Charge: 5 matches, CD: 2T
 Thủy Ma     Thủy      Battle Start → healing received reduced    Drain Power → 120 Dmg + −20 flat Pet Power                Charge: 4 matches, CD: 3T
-Mộc Yêu     Mộc       Every 5 Player Matches → Regen HP           Root → 100 Dmg + −30% Pet ATK (2 Turns)                   Charge: 6 matches, CD: 2T
+Mộc Yêu     Mộc       Every 8 Player Matches → Regen HP           Root → 100 Dmg + −30% Pet ATK (2 Turns)                   Charge: 6 matches, CD: 2T
 Sơn Thạch Vệ Thổ      Boss HP ≤ 50% → gain Rage                    Earthquake → 150 Dmg                                       Charge: 5 matches, CD: 0T
 Kim Lôi Vương Kim     Player Combo ≥ 4 → gain Rage                Thunder Strike → 180 Dmg                                   Charge: 5 matches, CD: 0T
 ```
@@ -292,14 +296,15 @@ Boss        Passive Effect                                    Passive Trigger
 ---------   -----------------------------------------------   ----------------------
 Hỏa Long    Gain +20% ATK (Rage) for 3 turns                  Every 5 Player Matches
 Thủy Ma     Active Pet healing reduced by 50% for 3 turns     Battle Start
-Mộc Yêu     Regenerate 5% MaxHP                               Every 5 Player Matches
+Mộc Yêu     Regenerate 5% MaxHP                               Every 8 Player Matches
 Sơn Thạch Vệ Gain +20% ATK (Rage) for 3 turns                 Boss HP ≤ 50%
 Kim Lôi Vương Gain +20% ATK (Rage) for 1 turn                 Player Combo ≥ 4
 ```
 
-**PassiveThreshold (match-charged passives only):** Hỏa Long and Mộc Yêu
-use PassiveThreshold = 5 (PASSIVE_RULES.md §2 — progress increments per
-Player Match, Threshold evaluated once per Cascade batch). Thủy Ma's trigger
+**PassiveThreshold (match-charged passives only):** Hỏa Long uses
+PassiveThreshold = 5 and Mộc Yêu uses PassiveThreshold = 8
+(TASK-200 / PASSIVE_RULES.md §2 — progress increments per Player Match,
+Threshold evaluated once per Cascade batch). Thủy Ma's trigger
 is **Battle Start** (`PASSIVE_RULES.md` §3 — "Battle Start (one-time
 trigger)"), **not** match-based: it has no PassiveThreshold for match
 counting, is never charged via `PassiveTracker.Charge` on Player Matches, and
@@ -420,6 +425,9 @@ Thủy Ma's is event-triggered.
 
 #### 6.2.3 Mộc Yêu — regeneration
 
+- **Trigger cadence:** `PassiveThreshold = 8` (every 8 Player Matches, charged via
+  `PassiveTracker.Charge` using the default reset behavior; updated from 5 matches
+  under Product Owner MVP balance decision TASK-200 / Q-8 in TASK-191).
 - **Magnitude:** heals exactly `5%` of Mộc Yêu's MaxHP — this document's
   value. At the §6.1 MVP MaxHP of `5000`, the amount is
   `truncate(5000 × 5 / 100) = 250`.

@@ -27,6 +27,12 @@ namespace GameServer.Application.Tests.Balance;
 internal sealed record BalanceSimulationConfiguration
 {
     /// <summary>
+    /// The simulation mode this run is configured for (<c>TASK-193</c> §5.2, <c>TASK-195</c> §4.5).
+    /// Defaults to <see cref="BalanceSimulationMode.Baseline"/>.
+    /// </summary>
+    public BalanceSimulationMode Mode { get; init; } = BalanceSimulationMode.Baseline;
+
+    /// <summary>
     /// The battle's PRNG seed (<c>GAME_STATE.md</c> §2.6.1). It selects the
     /// generated board and nothing else: no Gem value, damage number, or rule
     /// outcome is derived from it directly (<c>ADR-009</c> §2). It is a

@@ -45,9 +45,23 @@ internal static class BalanceBaselineMatrix
 
     /// <summary>
     /// The five MVP content Bosses, in <c>BOSS_RULES.md</c> §6.1 order — the same
-    /// instances <c>TASK-194</c> §5.1 names.
+    /// instances <c>TASK-194</c> §5.1 names. Preserves the historical baseline
+    /// configuration of Mộc Yêu at Threshold 5 for historical baseline reproducibility.
     /// </summary>
-    public static readonly IReadOnlyList<BossDefinition> Bosses = BossDefinitions.All;
+    public static readonly IReadOnlyList<BossDefinition> Bosses =
+    [
+        BossDefinitions.HoaLong,
+        BossDefinitions.ThuyMa,
+        BossDefinitions.MocYeu with
+        {
+            PassiveDefinition = new BossPassiveDefinition(
+                new PassiveId("boss-moc-yeu-regen"),
+                5,
+                "Default"),
+        },
+        BossDefinitions.SonThachVe,
+        BossDefinitions.KimLoiVuong,
+    ];
 
     /// <summary>
     /// The per-run safety bound (<c>TASK-194</c> §5.2) — the harness default, a

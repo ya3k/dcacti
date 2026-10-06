@@ -196,7 +196,7 @@ public static class BossDefinitions
     /// <summary>
     /// Mộc Yêu — persistence key <c>"boss-def-moc-yeu"</c>, canonical technical
     /// Identity <c>"boss-moc-yeu"</c> (display name "Mộc Yêu"),
-    /// <c>Element = Mộc</c>, Passive <c>"boss-moc-yeu-regen"</c> every 5 Player
+    /// <c>Element = Mộc</c>, Passive <c>"boss-moc-yeu-regen"</c> every 8 Player
     /// Matches, Skill <c>"root"</c> at 6 Matches / 2 Turn cooldown / 100 base
     /// damage (<c>BOSS_RULES.md</c> §6.1–§6.4; <c>DATABASE.md</c> §1).
     /// </summary>
@@ -204,9 +204,9 @@ public static class BossDefinitions
         BossDefinitionId: "boss-def-moc-yeu",
         new BossId("boss-moc-yeu"),
         Element.Moc,
-        // §6.2/§6.4: "Every 5 Player Matches" — a match-charged Passive.
+        // §6.2/§6.4: "Every 8 Player Matches" — a match-charged Passive (TASK-200).
         PassiveDefinition: new BossPassiveDefinition(
-            new PassiveId("boss-moc-yeu-regen"), 5, "Default"),
+            new PassiveId("boss-moc-yeu-regen"), 8, "Default"),
         SkillDefinition: new BossSkillDefinition(
             // §6.3: Charge Req. 6, CD 2T, Skill Base Dmg 100.
             SkillId: "root",

@@ -135,7 +135,7 @@ internal sealed class MetricAccumulator
 
                 case BattleEventType.DamageCalculated:
                 {
-                    // M-12: the Element Modifier the pipeline itself composed
+                    // M-11: the Element Modifier the pipeline itself composed
                     // (COMBAT_RULES.md §3 step 3). Classification compares it with
                     // the documented Default table — the harness chooses no
                     // threshold of its own.
@@ -145,9 +145,9 @@ internal sealed class MetricAccumulator
 
                 case BattleEventType.PowerChanged:
                 {
-                    // M-07 / M-08: the signed delta and resulting value the
-                    // authoritative mutation reported (SIGNALR_PROTOCOL.md
-                    // §3.2.24). Positive joins generation, negative joins spend.
+                    // M-07: the signed delta and resulting value the authoritative
+                    // mutation reported (SIGNALR_PROTOCOL.md §3.2.24). Positive joins
+                    // generation, negative joins spend/drain (TASK-195 §4.6).
                     var changed = battleEvent.PowerChanged;
 
                     if (changed.Delta > 0)
@@ -164,7 +164,7 @@ internal sealed class MetricAccumulator
 
                 case BattleEventType.CardCast:
                 {
-                    // M-09: one report per successful cast (CARD_RULES.md §6).
+                    // M-08: one report per successful cast (CARD_RULES.md §6).
                     var cast = battleEvent.CardCast;
                     _castsTotal++;
                     _castTurns.Add(_currentTurn);
@@ -174,7 +174,7 @@ internal sealed class MetricAccumulator
 
                 case BattleEventType.RelicTriggered:
                 {
-                    // M-10: one report per Relic whose effect actually applied
+                    // M-09: one report per Relic whose effect actually applied
                     // (RELIC_RULES.md §7).
                     var relicId = battleEvent.RelicTriggered.RelicId;
                     _relicTriggersTotal++;
@@ -189,7 +189,8 @@ internal sealed class MetricAccumulator
                 case BattleEventType.PassiveTriggered:
                 {
                     // M-13: the Boss's own Passive firings. The tracker reports
-                    // source="boss" for these (PASSIVE_RULES.md §7).
+                    // source="boss" for these (PASSIVE_RULES.md §7). Pet passive
+                    // firings are excluded (finding D-194-6, TASK-195 §4.8).
                     if (battleEvent.PassiveTriggered.Source == PassiveEventSource.Boss)
                     {
                         _bossPassiveTriggers++;
@@ -203,11 +204,17 @@ internal sealed class MetricAccumulator
 
     /// <summary>
     /// Opens the current Turn for accumulation. Called once per committed Turn,
-    /// before any of that Turn's resolutions.
+    /// before any of that Turn's resolutions. Preserves pending damage if called
+    /// for the already-open Turn (<c>TASK-195</c> §5.1.3).
     /// </summary>
     /// <param name="turnNumber">The 1-based Turn number.</param>
     public void BeginTurn(int turnNumber)
     {
+        if (_currentTurn == turnNumber)
+        {
+            return;
+        }
+
         _currentTurn = turnNumber;
         _pendingPlayerDamage = 0;
         _pendingBossDamage = 0;
@@ -225,15 +232,18 @@ internal sealed class MetricAccumulator
         _bossDamagePerTurn.Add(_pendingBossDamage);
         _playerDamageTotal += _pendingPlayerDamage;
         _bossDamageTotal += _pendingBossDamage;
+        _pendingPlayerDamage = 0;
+        _pendingBossDamage = 0;
 
         _bossHpPerTurn.Add(state.BossState.HP);
         _playerHpPerTurn.Add(state.PetState.HP);
         _comboPerTurn.Add(state.Combo);
         _comboDistribution[state.Combo] = _comboDistribution.GetValueOrDefault(state.Combo) + 1;
 
-        // M-13: Boss regeneration. BOSS_RULES.md §6.2.3 applies it at step 18a
+        // M-12: Boss regeneration. BOSS_RULES.md §6.2.3 applies it at step 18a
         // and reports no dedicated event, so it is measured as a positive Boss-HP
         // movement between consecutive Turns — the same progression M-05 records.
+        // This is an empirical lower bound (TASK-195 §4.3).
         if (_previousBossHp is { } previous && state.BossState.HP > previous)
         {
             _bossRegenerationTotal += state.BossState.HP - previous;
@@ -259,6 +269,48 @@ internal sealed class MetricAccumulator
             BossHp: state.BossState.HP,
             PlayerStatusCount: state.PetState.ActiveStatusEffects.Length,
             BossStatusCount: state.BossState.ActiveStatusEffects.Length));
+    }
+
+    /// <summary>
+    /// Reconciles terminal battle resolution from a Card cast (<c>TASK-195</c> §5.1.3, §5.2).
+    ///
+    /// Under authoritative rules (<c>CARD_RULES.md</c> §3 item 5, <c>DATABASE.md</c> §1 item 1),
+    /// a Card cast does not begin or advance a Turn; <c>BattleState.Turn</c> remains equal to
+    /// the count of committed Swaps (T). This method attributes the terminal card cast damage and
+    /// terminal combat state to the final resolving combat state (the T-th turn record) without
+    /// emitting an uncommitted phantom Turn T+1 record into the per-Turn series.
+    /// </summary>
+    /// <param name="state">The terminal authoritative state.</param>
+    public void ReconcileTerminalCardCast(BattleState state)
+    {
+        _playerDamageTotal += _pendingPlayerDamage;
+        _bossDamageTotal += _pendingBossDamage;
+
+        if (_playerDamagePerTurn.Count > 0)
+        {
+            _playerDamagePerTurn[^1] += _pendingPlayerDamage;
+            _bossDamagePerTurn[^1] += _pendingBossDamage;
+            _bossHpPerTurn[^1] = state.BossState.HP;
+            _playerHpPerTurn[^1] = state.PetState.HP;
+
+            var lastTrace = _trace[^1];
+            _trace[^1] = new BalanceResourceCheckpoint(
+                Turn: lastTrace.Turn,
+                PlayerHp: state.PetState.HP,
+                PlayerMaxHp: state.PetState.MaxHP,
+                PlayerPower: state.PetState.Power,
+                BossHp: state.BossState.HP,
+                PlayerStatusCount: state.PetState.ActiveStatusEffects.Length,
+                BossStatusCount: state.BossState.ActiveStatusEffects.Length);
+        }
+
+        if (_castTurns.Count > 0 && _castTurns[^1] > state.Turn)
+        {
+            _castTurns[^1] = state.Turn;
+        }
+
+        _pendingPlayerDamage = 0;
+        _pendingBossDamage = 0;
     }
 
     /// <summary>
