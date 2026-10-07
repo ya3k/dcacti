@@ -95,6 +95,31 @@ public sealed class CardRepository : ICardRepository
     }
 
     /// <inheritdoc />
+    public async Task<IReadOnlyList<CardDefinition>> ListDefinitionsAsync(
+        IReadOnlyCollection<string> cardDefinitionIds,
+        CancellationToken cancellationToken = default)
+    {
+        // API_CONTRACTS.md §5.1: the collection projection resolves each owned
+        // Pet's derived Signature Skill through its definition row, and this
+        // bulk read is what keeps that from becoming one query per Pet.
+        //
+        // No Player filter is applied: a Signature Skill Card is derived from
+        // the Pet's definition rather than unlocked, so it has no
+        // PlayerUnlockedCard row (CARD_RULES.md §1 item 4, ADR-012 item 9) and an
+        // ownership filter would report it as absent. This is the same
+        // unrestricted content read GetDefinitionAsync already performs for the
+        // battle-start path. The ownership scoping of GET /api/pets is the
+        // owned-instance read's (API_CONTRACTS.md §5).
+        //
+        // No ordering is applied or promised: no rule reads Card array positions
+        // (GAME_STATE.md §2.3), and the caller must not depend on this result's
+        // order. A definition that does not exist is simply absent.
+        return await _dbContext.CardDefinitions
+            .Where(definition => cardDefinitionIds.Contains(definition.CardDefinitionId))
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <inheritdoc />
     public async Task<CardDefinition?> GetDefinitionAsync(
         string cardDefinitionId,
         CancellationToken cancellationToken = default)

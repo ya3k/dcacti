@@ -3,6 +3,10 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
   LobbyScene,
+  LOBBY_BACK_BUTTON,
+  LOBBY_RETRY_BUTTON,
+  LOBBY_RELIC_PREV_BUTTON,
+  LOBBY_RELIC_NEXT_BUTTON,
   MVP_BOSSES,
   SELECTION_TEXT_BOTTOM_OFFSET,
   REVIEW_TEXT_BOTTOM_OFFSET,
@@ -10,12 +14,14 @@ import {
   ERROR_TEXT_BOTTOM_OFFSET,
 } from '../src/game/scenes/LobbyScene';
 import type { LobbySceneData } from '../src/game/scenes/LobbyScene';
+import { SAFE_AREA } from '../src/game/GameViewport';
 import {
   clearPreservedLoadout,
   preserveLoadout,
   readPreservedLoadout,
 } from '../src/game/state/PreservedLoadout';
 import { RUNTIME_REGISTRY_KEY } from '../src/game/runtime/RuntimeRegistry';
+import { ApiRequestError } from '../src/services/api/ApiService';
 import { INITIAL_RUNTIME_STATE } from '../src/state/GameRuntimeState';
 import type { BattleStartRequest } from '../src/services/api/BattleModels';
 import type { CardResponse, PetResponse, RelicResponse } from '../src/services/api/CollectionModels';
@@ -57,33 +63,106 @@ vi.mock('phaser', () => ({
 
 /** A `GET /api/pets` element (API_CONTRACTS.md §5.1) — the owned instance. */
 function pet(petId: string, identity: string): PetResponse {
-  return { petId, identity, element: 'Fire', tier: 'Common', star: 1, level: 1 };
+  return {
+    petId,
+    identity,
+    element: 'Fire',
+    tier: 'Common',
+    star: 1,
+    level: 1,
+    // §5.1: the Pet's derived Signature Skill reference — always present, and
+    // never a member of the Card collection the Lobby selects from (§5.3).
+    signatureSkill: { cardId: 'card-inferno', name: 'Inferno', category: 'PetSkill' },
+  };
 }
 
 /** A `GET /api/cards` element (API_CONTRACTS.md §5.3). */
-function card(cardId: string, name: string, category: 'Basic' | 'PetSkill'): CardResponse {
-  return { cardId, name, category };
+function card(
+  cardId: string,
+  name: string,
+  category: 'Basic' | 'PetSkill',
+  effectDefinition: CardResponse['effectDefinition'] = []
+): CardResponse {
+  return { cardId, name, category, effectDefinition };
 }
 
 /** A `GET /api/relics` element (API_CONTRACTS.md §5.4) — the owned instance. */
-function relic(relicId: string, name: string): RelicResponse {
-  return { relicId, name };
+function relic(
+  relicId: string,
+  name: string,
+  content: Partial<Pick<RelicResponse, 'trigger' | 'condition' | 'effectDefinition'>> = {}
+): RelicResponse {
+  return {
+    relicId,
+    name,
+    trigger: content.trigger ?? 'OnMatchCount',
+    condition: content.condition ?? null,
+    effectDefinition: content.effectDefinition ?? [],
+  };
 }
+
+/**
+ * The starter consequences the server ships — the three Basic Cards'
+ * `effectDefinition` (`CARD_RULES.md` §2) and the three starter-owned Relics'
+ * §5.4 content (`RELIC_RULES.md` §6/§8.5).
+ *
+ * These are the **responses' own members**, transcribed so a rendering can be
+ * asserted value by value. They are not a content source: `LobbyScene` holds no
+ * per-id table, and every assertion over them is over text the scene produced
+ * from the response it was handed.
+ */
+const STARTER_CARD_EFFECTS: Readonly<Record<string, CardResponse['effectDefinition']>> = {
+  'card-heal': [{ effectType: 'Heal', valueType: 'PercentMaxHp', value: 20 }],
+  'card-shield': [{ effectType: 'Shield', valueType: 'PercentMaxHp', value: 20 }],
+  'card-power-charge': [{ effectType: 'Power', valueType: 'Flat', value: 25 }],
+};
+
+const STARTER_RELIC_CONTENT: Readonly<
+  Record<string, Pick<RelicResponse, 'trigger' | 'condition' | 'effectDefinition'>>
+> = {
+  'relic-instance-1': {
+    trigger: 'OnMatchCount',
+    condition: { conditionType: 'MatchCountAtLeast', threshold: 3 },
+    effectDefinition: [
+      { effectType: 'ATK', valueType: 'Percentage', value: 5, target: 'Pet', lifetime: 'Battle' },
+    ],
+  },
+  'relic-instance-2': {
+    trigger: 'OnMatchCount',
+    condition: { conditionType: 'MatchCountAtLeast', threshold: 4 },
+    effectDefinition: [
+      { effectType: 'Power', valueType: 'Flat', value: 10, target: 'Pet', lifetime: 'Immediate' },
+    ],
+  },
+  'relic-instance-3': {
+    trigger: 'OnCombo',
+    condition: { conditionType: 'ComboAtLeast', threshold: 3 },
+    effectDefinition: [
+      {
+        effectType: 'Crit',
+        valueType: 'PercentagePoints',
+        value: 10,
+        target: 'Pet',
+        lifetime: 'NextAttack',
+      },
+    ],
+  },
+};
 
 /** The starter ownership DATABASE.md §2 records the server grants. */
 const STARTER_PETS = [pet('pet-instance-1', 'Xích Lang')];
 const STARTER_CARDS = [
-  card('card-heal', 'Heal', 'Basic'),
-  card('card-shield', 'Shield', 'Basic'),
-  card('card-power-charge', 'Power Charge', 'Basic'),
+  card('card-heal', 'Heal', 'Basic', STARTER_CARD_EFFECTS['card-heal']),
+  card('card-shield', 'Shield', 'Basic', STARTER_CARD_EFFECTS['card-shield']),
+  card('card-power-charge', 'Power Charge', 'Basic', STARTER_CARD_EFFECTS['card-power-charge']),
   // A PetSkill card is never submitted (`API_CONTRACTS.md` §3); it is present
   // here so the test can prove the scene never puts one in `cardLoadout`.
   card('card-inferno', 'Inferno', 'PetSkill'),
 ];
 const STARTER_RELICS = [
-  relic('relic-instance-1', 'Berserker Core'),
-  relic('relic-instance-2', 'Mana Crystal'),
-  relic('relic-instance-3', 'Assassin Eye'),
+  relic('relic-instance-1', 'Berserker Core', STARTER_RELIC_CONTENT['relic-instance-1']),
+  relic('relic-instance-2', 'Mana Crystal', STARTER_RELIC_CONTENT['relic-instance-2']),
+  relic('relic-instance-3', 'Assassin Eye', STARTER_RELIC_CONTENT['relic-instance-3']),
 ];
 
 interface Clickable {
@@ -102,6 +181,11 @@ interface SceneHarnessOptions {
   cards?: CardResponse[];
   relics?: RelicResponse[];
   collectionFailure?: Error | null;
+  /**
+   * When given, the three collection reads stay in flight until it resolves —
+   * the "loading" state, which several TASK-211 scenarios occupy deliberately.
+   */
+  collectionGate?: Promise<void>;
   startBehaviour?: (() => Promise<void>) | null;
 }
 
@@ -111,9 +195,18 @@ function createLobbyHarness(options: SceneHarnessOptions = {}) {
     pets = STARTER_PETS,
     cards = STARTER_CARDS,
     relics = STARTER_RELICS,
-    collectionFailure = null,
+    collectionGate,
     startBehaviour = null,
   } = options;
+
+  /**
+   * The failure the next collection read rejects with, or `null`.
+   *
+   * It is mutable because recovery is what is being tested: a read that fails
+   * once and succeeds on `RETRY` is the documented recoverable failure, and a
+   * fixed failure could only ever prove the first half of it.
+   */
+  let collectionFailure: Error | null = options.collectionFailure ?? null;
 
   const texts: string[] = [];
   /** Every clickable object the scene created, in creation order. */
@@ -123,9 +216,20 @@ function createLobbyHarness(options: SceneHarnessOptions = {}) {
    * previous pass's objects, so only the live ones are readable — the same thing
    * a player would see.
    */
-  const liveTexts = new Set<{ readonly text: string }>();
-  /** The live rectangles of the latest render pass (the shell and the button). */
+  const liveTexts = new Set<{
+    readonly text: string;
+    readonly x?: number;
+    readonly y?: number;
+  }>();
+  /** The live rectangles of the latest render pass (the shell and the buttons). */
   const liveRectangles = new Set<{ readonly text: string }>();
+  /**
+   * Every game object this harness created, so the engine's half of a scene
+   * teardown can be modelled: Phaser's `DisplayList` handles the same SHUTDOWN
+   * event by destroying each child, whether or not the scene released its own
+   * references to them.
+   */
+  const createdObjects: Array<{ destroy: () => void }> = [];
   /** Every collection read the scene performed, in order. */
   const collectionReads: string[] = [];
   /** Every `startBattle` request the scene submitted, in order. */
@@ -141,8 +245,12 @@ function createLobbyHarness(options: SceneHarnessOptions = {}) {
    */
   const registryValues = new Map<string, unknown>();
 
-  const doubleOf = <T,>(value: T): Promise<T> =>
-    collectionFailure ? Promise.reject(collectionFailure) : Promise.resolve(value);
+  const doubleOf = <T,>(value: T): Promise<T> => {
+    if (collectionFailure) {
+      return Promise.reject(collectionFailure);
+    }
+    return collectionGate ? collectionGate.then(() => value) : Promise.resolve(value);
+  };
 
   const runtime = {
     getState: () => INITIAL_RUNTIME_STATE,
@@ -227,10 +335,11 @@ function createLobbyHarness(options: SceneHarnessOptions = {}) {
 
     liveTexts.add(obj);
     clickables.push(obj as unknown as Clickable);
+    createdObjects.push(obj);
     return obj as unknown as Clickable;
   };
 
-  /** A rectangle (the shell background and the Start Battle button). */
+  /** A rectangle (the shell background and the controls). */
   const makeRectangle = (x = 0, y = 0, width = 0, height = 0): Clickable => {
     const handlers: Array<() => void> = [];
     let interactive = false;
@@ -240,8 +349,19 @@ function createLobbyHarness(options: SceneHarnessOptions = {}) {
       y,
       width,
       height,
-      // The shell background has no text; the button is found by this label.
-      text: 'START BATTLE',
+      /**
+       * The caption a player reads on this control.
+       *
+       * The scene draws a control the way Phaser controls are conventionally
+       * drawn: an interactive rectangle with its caption as a separate `Text` at
+       * the same centre. The lookup is lazy, so the caption created after the
+       * rectangle is found — and a control is identified by what it says rather
+       * than by assuming which rectangle is which.
+       */
+      get text() {
+        const caption = [...liveTexts].find((t) => t.x === x && t.y === y);
+        return caption ? caption.text : '';
+      },
       get interactive() {
         return interactive;
       },
@@ -271,7 +391,23 @@ function createLobbyHarness(options: SceneHarnessOptions = {}) {
 
     liveRectangles.add(obj);
     clickables.push(obj as unknown as Clickable);
+    createdObjects.push(obj);
     return obj as unknown as Clickable;
+  };
+
+  /**
+   * The live interactive control a player reads as `label`, or a failure naming
+   * the label that is missing.
+   */
+  const controlLabelled = (label: string): Clickable => {
+    const found = clickables.filter(
+      (c) => c.interactive && liveRectangles.has(c) && c.text === label
+    );
+    const control = found[found.length - 1];
+    if (!control) {
+      throw new Error(`LobbyScene rendered no "${label}" control.`);
+    }
+    return control;
   };
 
   function context(scene: object): object {
@@ -316,14 +452,26 @@ function createLobbyHarness(options: SceneHarnessOptions = {}) {
     context,
     /**
      * Takes a scene down exactly as Phaser does (TASK-205):
-     * `SceneManager` → `Systems#shutdown` → `scene.events.emit(SHUTDOWN)`.
-     * Nothing here calls a scene method by name.
+     * `SceneManager` → `Systems#shutdown` → the engine's own `DisplayList`
+     * destroys every child → `scene.events.emit(SHUTDOWN)`. Nothing here calls a
+     * scene method by name.
+     *
+     * Modelling the display-list half is what makes "a reused scene accumulates
+     * nothing" observable: Phaser destroys a stopped scene's game objects
+     * whether or not the scene dropped its references, so a control that is live
+     * after a restart can only be one the new run created.
      */
     shutdownScene: (ctx: object) => {
+      for (const object of [...createdObjects]) {
+        object.destroy();
+      }
       (ctx as { events?: SceneEventEmitter }).events?.emit('shutdown');
     },
     /** `Phaser.Scenes.Systems#destroy` → `Phaser.Scenes.Events.DESTROY`. */
     destroyScene: (ctx: object) => {
+      for (const object of [...createdObjects]) {
+        object.destroy();
+      }
       (ctx as { events?: SceneEventEmitter }).events?.emit('destroy');
     },
     /** How many listeners the scene's own emitter holds for one lifecycle event. */
@@ -341,16 +489,29 @@ function createLobbyHarness(options: SceneHarnessOptions = {}) {
       }
       return found[found.length - 1];
     },
+    /** The live interactive control a player reads as `label`. */
+    controlLabelled,
     /** The Start Battle trigger. */
-    startTrigger: (): Clickable => {
-      const candidates = clickables.filter(
-        (c) => c.interactive && c.text.includes('START BATTLE') && liveRectangles.has(c)
-      );
-      const button = candidates[candidates.length - 1];
-      if (!button) {
-        throw new Error('LobbyScene rendered no Start Battle trigger.');
-      }
-      return button;
+    startTrigger: (): Clickable => controlLabelled('START BATTLE'),
+    /** The `< BACK` control. */
+    backControl: (): Clickable => controlLabelled('< BACK'),
+    /** The `RETRY` control behind a failed, repeatable operation. */
+    retryControl: (): Clickable => controlLabelled('RETRY'),
+    /** Whether a control a player could read right now carries this label. */
+    rendersControl: (label: string): boolean =>
+      clickables.some((c) => c.interactive && liveRectangles.has(c) && c.text === label),
+    /**
+     * The captions of the live interactive controls, in creation order.
+     *
+     * A render pass destroys the previous pass's controls, so this is the set a
+     * player could actually activate — which is what "a re-render accumulates no
+     * control and no listener" has to be asserted against.
+     */
+    liveControlLabels: (): string[] =>
+      clickables.filter((c) => c.interactive && liveRectangles.has(c)).map((c) => c.text),
+    /** Sets (or clears) the failure the next collection read rejects with. */
+    setCollectionFailure: (failure: Error | null) => {
+      collectionFailure = failure;
     },
   };
 }
@@ -457,6 +618,158 @@ describe('LobbyScene — lifecycle and collection load (ARCHITECTURE.md §2.2.3)
     expect(harness.rendered()).toContain('Heal  [Basic]');
   });
 
+  it('states what each Card changes (API_CONTRACTS.md §5.3)', async () => {
+    const { harness } = await createLobby();
+
+    const rendered = harness.rendered();
+
+    // Each Card's own structured `effectDefinition`, rendered from the response
+    // the read returned: identity, magnitude, and interpretation. Before this
+    // existed the row communicated a name and a category only.
+    expect(rendered).toContain('Heal 20% Max HP');
+    expect(rendered).toContain('Shield 20% Max HP');
+    expect(rendered).toContain('Power 25');
+
+    // The identity line is unchanged, so the content is additive.
+    expect(rendered).toContain('○ Heal  [Basic]');
+  });
+
+  it('states what each Relic changes and when (API_CONTRACTS.md §5.4)', async () => {
+    const { harness } = await createLobby();
+
+    const rendered = harness.rendered();
+
+    // trigger + condition + effect, read from the response alone.
+    expect(rendered).toContain('OnMatchCount MatchCountAtLeast 3 | ATK 5% (Pet, Battle)');
+    expect(rendered).toContain('OnMatchCount MatchCountAtLeast 4 | Power 10 (Pet, Immediate)');
+    expect(rendered).toContain('OnCombo ComboAtLeast 3 | Crit 10 percentage points (Pet, NextAttack)');
+  });
+
+  it('omits the condition segment for a Relic that declares none', async () => {
+    const { harness } = await createLobby({
+      relics: [
+        relic('relic-instance-9', 'Burning Curse', {
+          trigger: 'OnBattleStart',
+          condition: null,
+          effectDefinition: [
+            {
+              effectType: 'BurnDamage',
+              valueType: 'Percentage',
+              value: 30,
+              target: 'Pet',
+              lifetime: 'Battle',
+            },
+          ],
+        }),
+      ],
+    });
+
+    const rendered = harness.rendered();
+
+    // RELIC_RULES.md §8.1 item 4's nullable condition renders as no condition
+    // segment — never a guessed form and never a fabricated threshold.
+    expect(rendered).toContain('OnBattleStart | BurnDamage 30% (Pet, Battle)');
+    expect(rendered).not.toContain('null');
+    expect(rendered).not.toContain('undefined');
+  });
+
+  it('renders unknown content tokens verbatim rather than guessing', async () => {
+    const { harness } = await createLobby({
+      cards: [
+        card('card-future', 'Future Card', 'Basic', [
+          { effectType: 'FutureEffect', valueType: 'FutureUnit', value: 7 },
+        ]),
+      ],
+      relics: [
+        relic('relic-future', 'Future Relic', {
+          trigger: 'OnFuture',
+          condition: { conditionType: 'FutureForm', threshold: 9 },
+          effectDefinition: [
+            {
+              effectType: 'FutureEffect',
+              valueType: 'FutureUnit',
+              value: 4,
+              target: 'FutureTarget',
+              lifetime: 'FutureLifetime',
+            },
+          ],
+        }),
+      ],
+    });
+
+    const rendered = harness.rendered();
+
+    expect(rendered).toContain('FutureEffect 7 (FutureUnit)');
+    expect(rendered).toContain('OnFuture FutureForm 9 | FutureEffect 4 (FutureUnit) (FutureTarget, FutureLifetime)');
+    expect(rendered).not.toContain('undefined');
+  });
+
+  it('draws no content line when the response carries no usable rule', async () => {
+    const { harness } = await createLobby({
+      cards: [card('card-empty', 'Empty Card', 'Basic')],
+      relics: [relic('relic-empty', 'Empty Relic', { trigger: '', condition: null })],
+    });
+
+    const rendered = harness.rendered();
+
+    expect(rendered).toContain('○ Empty Card  [Basic]');
+    expect(rendered).toContain('○ Empty Relic');
+    // Nothing was invented to fill either row's empty rule.
+    expect(rendered).not.toMatch(/\(Undetermined\)|\(\s*\)/);
+  });
+
+  it('treats a row’s content line as part of that option', async () => {
+    const { harness, ctx } = await createLobby();
+
+    const cardContent = harness.optionContaining('Heal 20% Max HP');
+    expect(cardContent.interactive).toBe(true);
+    cardContent.click();
+    expect((ctx as { selectedCardIds: string[] }).selectedCardIds).toEqual(['card-heal']);
+
+    const relicContent = harness.optionContaining('OnCombo ComboAtLeast 3');
+    relicContent.click();
+    expect((ctx as { selectedRelicIds: string[] }).selectedRelicIds).toEqual(['relic-instance-3']);
+  });
+
+  it('keeps every content line inside its own row', async () => {
+    const { harness } = await createLobby();
+
+    // Cards: line 1 at the row's own y, content at y + 15, at a 12 px font
+    // (≈13 px line box). The pair must clear the next row's own line by at least
+    // the documented minimum gap, so a 30 px pitch can never be overrun.
+    const rows = [
+      ['Heal  [Basic]', 'Heal 20% Max HP', 'Shield  [Basic]'],
+      ['Shield  [Basic]', 'Shield 20% Max HP', 'Power Charge  [Basic]'],
+      ['Berserker Core', 'OnMatchCount MatchCountAtLeast 3', 'Mana Crystal'],
+      ['Mana Crystal', 'OnMatchCount MatchCountAtLeast 4', 'Assassin Eye'],
+    ] as const;
+
+    for (const [rowLabel, contentLabel, nextRowLabel] of rows) {
+      const row = harness.optionContaining(rowLabel);
+      const content = harness.optionContaining(contentLabel);
+      const next = harness.optionContaining(nextRowLabel);
+
+      expect(content.y).toBe((row.y ?? 0) + 15);
+      // 13 px is the line box of the 12 px monospace content line; the next
+      // row starts 30 px below this one's own line, so nothing can touch.
+      expect(next.y!).toBeGreaterThanOrEqual((content.y ?? 0) + 13);
+    }
+  });
+
+  it('keeps the last collection row clear of the Boss band', async () => {
+    const { harness } = await createLobby();
+
+    // Eight rows is the documented maximum the columns render; the Boss band
+    // begins below `LIST_TOP + 8 * 30`, so even a full column's content lines
+    // stay inside the list block.
+    const lastRelic = harness.optionContaining('Assassin Eye');
+    expect(lastRelic.y).toBeLessThan(108 + 8 * 30);
+    expect(harness.optionContaining('OnCombo ComboAtLeast 3').y).toBe(
+      (lastRelic.y ?? 0) + 15
+    );
+    expect(harness.rendered()).toContain('4. CHOOSE BOSS');
+  });
+
   it('reflects an empty collection exactly, with no fallback loadout', async () => {
     const { harness } = await createLobby({ pets: [], cards: [], relics: [] });
 
@@ -471,13 +784,21 @@ describe('LobbyScene — lifecycle and collection load (ARCHITECTURE.md §2.2.3)
 
   it('reports a failed collection read without throwing or substituting data', async () => {
     const { harness } = await createLobby({
-      collectionFailure: new Error('Request to /api/pets failed with status 401'),
+      collectionFailure: new ApiRequestError(
+        401,
+        'UNAUTHENTICATED',
+        'An authenticated session is required.'
+      ),
     });
 
     const rendered = harness.rendered();
-    expect(rendered).toContain('Collection load failed');
-    expect(rendered).toContain('401');
+    expect(rendered).toContain('Collection load failed: An authenticated session is required.');
     expect(harness.startRequests).toHaveLength(0);
+    // The player is told what the server said, and never this client's HTTP
+    // internals: no status, no request path (TASK-211 §4).
+    expect(rendered).not.toContain('401');
+    expect(rendered).not.toContain('/api/');
+    expect(rendered).not.toContain('failed with status');
   });
 
   it('does not present a Relic the collection read did not return', async () => {
@@ -937,36 +1258,67 @@ describe('LobbyScene — start routing and rejection (ARCHITECTURE.md §2.2.3 ru
     expect(harness.sceneStarted).toEqual([]);
   });
 
-  it.each([
-    ['401 UNAUTHENTICATED', 'Request to /api/battle/start failed with status 401'],
-    ['400 INVALID_LOADOUT', 'Request to /api/battle/start failed with status 400'],
-    ['400 PET_NOT_OWNED', 'Request to /api/battle/start failed with status 400'],
-    ['400 BOSS_NOT_FOUND', 'Request to /api/battle/start failed with status 400'],
-    ['transport failure', 'SignalR connection is not established.'],
-  ])('stays active with error feedback on a %s rejection', async (_case, message) => {
-    const { harness } = await createLobby({
-      startBehaviour: async () => {
-        throw new Error(message);
-      },
-    });
+  /**
+   * The documented rejections of `POST /api/battle/start`, each as the shared
+   * transport now reports it: the §6 envelope's `message` is the statement a
+   * player may be shown, and the machine code and status stay on the error
+   * (`API_CONTRACTS.md` §3, §6, §2.8).
+   */
+  const documentedRejections: Array<[string, unknown]> = [
+    [
+      '401 UNAUTHENTICATED',
+      new ApiRequestError(
+        401,
+        'UNAUTHENTICATED',
+        'An authenticated session is required to start a battle.'
+      ),
+    ],
+    ['400 INVALID_LOADOUT', new ApiRequestError(400, 'INVALID_LOADOUT', 'The Card loadout is invalid.')],
+    [
+      '400 PET_NOT_OWNED',
+      new ApiRequestError(400, 'PET_NOT_OWNED', 'A Pet must be selected and it must be owned by the player.'),
+    ],
+    [
+      '400 BOSS_NOT_FOUND',
+      new ApiRequestError(400, 'BOSS_NOT_FOUND', 'The selected Boss is not a valid MVP Boss.'),
+    ],
+    ['transport failure', new Error('The connection to the game server was lost.')],
+  ];
 
-    selectFullLoadout(harness);
-    harness.startTrigger().click();
-    await flush();
+  it.each(documentedRejections)(
+    'stays active with readable error feedback on a %s rejection',
+    async (_case, failure) => {
+      const { harness } = await createLobby({
+        startBehaviour: async () => {
+          throw failure;
+        },
+      });
 
-    // No transition, the error is displayed, and the selection survives so the
-    // player can correct and retry.
-    expect(harness.sceneStarted).toEqual([]);
-    expect(harness.rendered()).toContain('Battle start failed');
-    expect(harness.rendered()).toContain(message);
-    expect(harness.rendered()).toContain('Pet:   pet-instance-1');
-    expect(harness.rendered()).toContain('Cards: card-heal, card-shield, card-power-charge');
-  });
+      selectFullLoadout(harness);
+      harness.startTrigger().click();
+      await flush();
+
+      // No transition, the error is displayed, and the selection survives so the
+      // player can correct and retry.
+      const rendered = harness.rendered();
+      expect(harness.sceneStarted).toEqual([]);
+      expect(rendered).toContain('Battle start failed');
+      expect(rendered).toContain((failure as Error).message);
+      expect(rendered).toContain('Pet:   pet-instance-1');
+      expect(rendered).toContain('Cards: card-heal, card-shield, card-power-charge');
+
+      // The player-facing line never leads with an HTTP status, a request path,
+      // or a machine code (TASK-211 §4).
+      expect(rendered).not.toContain('failed with status');
+      expect(rendered).not.toContain('/api/');
+      expect(rendered).not.toMatch(/\bUNAUTHENTICATED\b|\bINVALID_LOADOUT\b|\bPET_NOT_OWNED\b|\bBOSS_NOT_FOUND\b/);
+    }
+  );
 
   it('re-submits the same selection when the trigger is retried', async () => {
     const { harness } = await createLobby({
       startBehaviour: async () => {
-        throw new Error('Request to /api/battle/start failed with status 400');
+        throw new ApiRequestError(400, 'INVALID_LOADOUT', 'The Card loadout is invalid.');
       },
     });
 
@@ -975,12 +1327,10 @@ describe('LobbyScene — start routing and rejection (ARCHITECTURE.md §2.2.3 ru
     await flush();
 
     // The guard is released on rejection, so the player can retry.
-    const { startBehaviour } = { startBehaviour: null };
-    void startBehaviour;
     harness.startTrigger().click();
     await flush();
 
-    expect(harness.rendered()).toContain('Battle start failed');
+    expect(harness.rendered()).toContain('Battle start failed: The Card loadout is invalid.');
   });
 
   it('reports the no-runtime path without throwing', async () => {
@@ -1372,6 +1722,31 @@ describe('LobbyScene — architectural boundaries (AGENTS.md §10, §13; ARCHITE
     expect(source).not.toMatch(/crypto\./);
   });
 
+  it('holds no client-side Card or Relic content catalog', () => {
+    const source = readFileSync(resolve(__dirname, '../src/game/scenes/LobbyScene.ts'), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+    // The loadout row text is a function of the response alone. A per-content
+    // identity table here — or a hardcoded magnitude beside one — would be a
+    // second source of truth (RELIC_RULES.md §8.2 item 1, GAME_STATE.md §0 item
+    // 5, AGENTS.md §7/§9), so no provisioned identity may appear in the scene.
+    for (const forbidden of [
+      'card-heal',
+      'card-shield',
+      'card-power-charge',
+      'relic-berserker-core',
+      'relic-mana-crystal',
+      'relic-assassin-eye',
+    ]) {
+      expect(source, `LobbyScene must not reference "${forbidden}"`).not.toContain(forbidden);
+    }
+
+    // The content vocabulary lives in the shared presentation module, which is
+    // the one formatter both this scene and the Collection viewer use.
+    expect(source).toContain('presentation/ContentEffectFormat');
+  });
+
   it('contains no client-authoritative gameplay or loadout validation', () => {
     const source = readFileSync(resolve(__dirname, '../src/game/scenes/LobbyScene.ts'), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '')
@@ -1573,3 +1948,754 @@ describe('LobbyScene — architectural boundaries (AGENTS.md §10, §13; ARCHITE
   });
 });
 
+describe('LobbyScene — exit, retry and asynchronous lifecycle (TASK-211 §1–§3)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** A deferred the test releases by hand. */
+  function deferred(): { readonly promise: Promise<void>; readonly release: () => void } {
+    let release: () => void = () => {};
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
+  }
+
+  /**
+   * The loadout `ResultScene → PLAY AGAIN` hands back (ADR-022): a complete
+   * selection, which is what makes a "click START during the read" scenario
+   * meaningful rather than merely incomplete.
+   */
+  const PRESERVED: BattleStartRequest = {
+    petId: 'pet-instance-1',
+    bossId: 'boss-kim-loi-vuong',
+    cardLoadout: ['card-heal', 'card-shield', 'card-power-charge'],
+    relicLoadout: ['relic-instance-1', 'relic-instance-2', 'relic-instance-3'],
+  };
+
+  it('renders a < BACK control in every state, and START BATTLE beside it', async () => {
+    const ready = await createLobby();
+    expect(ready.harness.rendersControl('< BACK')).toBe(true);
+    expect(ready.harness.rendersControl('START BATTLE')).toBe(true);
+
+    // Loading: the collection read has not settled.
+    const gate = deferred();
+    const loading = await createLobby({ collectionGate: gate.promise });
+    expect(loading.harness.rendered()).toContain('Loading the collection…');
+    expect(loading.harness.rendersControl('< BACK')).toBe(true);
+
+    // Error: the start was rejected.
+    const failed = await createLobby({
+      startBehaviour: async () => {
+        throw new ApiRequestError(400, 'INVALID_LOADOUT', 'The Card loadout is invalid.');
+      },
+    });
+    selectFullLoadout(failed.harness);
+    failed.harness.startTrigger().click();
+    await flush();
+
+    expect(failed.harness.rendersControl('< BACK')).toBe(true);
+    expect(failed.harness.rendersControl('RETRY')).toBe(true);
+  });
+
+  it('returns to MainMenuScene from the ready state, and nowhere else', async () => {
+    const { harness } = await createLobby();
+
+    harness.backControl().click();
+
+    // The one documented exit: not the Collection, not the Battle History, and
+    // not a battle (`GDD.md` §2.1, `D-202-01 = C`).
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['MainMenuScene']);
+    expect(harness.startRequests).toHaveLength(0);
+  });
+
+  it('returns to MainMenuScene while the collection read is still in flight', async () => {
+    const gate = deferred();
+    const { harness } = await createLobby({ collectionGate: gate.promise });
+
+    expect(harness.rendered()).toContain('Loading the collection…');
+
+    harness.backControl().click();
+
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['MainMenuScene']);
+  });
+
+  it('returns to MainMenuScene after a rejected start', async () => {
+    const { harness } = await createLobby({
+      startBehaviour: () => Promise.reject(new Error('The connection was lost.')),
+    });
+
+    selectFullLoadout(harness);
+    harness.startTrigger().click();
+    await flush();
+
+    expect(harness.rendersControl('RETRY')).toBe(true);
+
+    harness.backControl().click();
+
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['MainMenuScene']);
+  });
+
+  it('BACK invalidates an in-flight start attempt — a stale completion cannot navigate', async () => {
+    /** Released by the test once the attempt is in flight. */
+    let resolveStart: () => void = () => {};
+    let attempts = 0;
+
+    const harness = createLobbyHarness({
+      startBehaviour: () => {
+        attempts += 1;
+        return new Promise<void>((resolve) => {
+          resolveStart = resolve;
+        });
+      },
+    });
+    const scene = new LobbyScene();
+    const ctx = harness.context(scene);
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    selectFullLoadout(harness);
+    harness.startTrigger().click();
+    await flush();
+
+    expect(attempts).toBe(1);
+
+    // The player leaves while the request is outstanding.
+    harness.backControl().click();
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['MainMenuScene']);
+
+    // The attempt the Lobby abandoned now succeeds. It must not preserve a
+    // loadout and must not open a battle from a scene the player has left.
+    resolveStart();
+    await flush();
+
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['MainMenuScene']);
+    expect(preservedIn(ctx)).toBeNull();
+  });
+
+  it('discards a collection read that settles after BACK', async () => {
+    const gate = deferred();
+    const { harness, ctx } = await createLobby({ collectionGate: gate.promise });
+
+    expect((ctx as { ownedPets: unknown[] }).ownedPets).toHaveLength(0);
+
+    harness.backControl().click();
+    gate.release();
+    await flush();
+
+    // The read's own answer never reached the presentation that left.
+    expect((ctx as { ownedPets: unknown[] }).ownedPets).toHaveLength(0);
+    expect(harness.rendered()).not.toContain('Xích Lang');
+  });
+
+  it('RETRY behind a rejected start repeats the start operation, and can succeed', async () => {
+    let attempts = 0;
+
+    const harness = createLobbyHarness({
+      startBehaviour: async () => {
+        attempts += 1;
+        if (attempts === 1) {
+          throw new ApiRequestError(400, 'PET_NOT_OWNED', 'The selected Pet is not owned by the player.');
+        }
+      },
+    });
+    const scene = new LobbyScene();
+    const ctx = harness.context(scene);
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    selectFullLoadout(harness);
+    harness.startTrigger().click();
+    await flush();
+
+    expect(attempts).toBe(1);
+    expect(harness.sceneStarted).toEqual([]);
+    expect(harness.retryControl().interactive).toBe(true);
+
+    harness.retryControl().click();
+    await flush();
+
+    // The retry submitted a second, complete attempt — the same selection — and
+    // its success is what enters the battle.
+    expect(attempts).toBe(2);
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['BattleScene']);
+    // The failed attempt preserved nothing; the successful one preserved the
+    // loadout it actually submitted.
+    expect(preservedIn(ctx)).toEqual({
+      petId: 'pet-instance-1',
+      bossId: 'boss-hoa-long',
+      cardLoadout: ['card-heal', 'card-shield', 'card-power-charge'],
+      relicLoadout: ['relic-instance-1', 'relic-instance-2', 'relic-instance-3'],
+    });
+  });
+
+  it('RETRY behind a failed collection read re-invokes that read exactly once', async () => {
+    const { harness } = await createLobby({
+      collectionFailure: new ApiRequestError(401, 'UNAUTHENTICATED', 'An authenticated session is required.'),
+    });
+
+    expect(harness.collectionReads).toEqual(['getPets', 'getCards', 'getRelics']);
+    expect(harness.rendered()).toContain('Collection load failed');
+
+    // The read recovers: the same control now completes the load and clears the
+    // error, without a second concurrent read being issued.
+    harness.setCollectionFailure(null);
+    harness.retryControl().click();
+    await flush();
+
+    expect(harness.collectionReads).toEqual([
+      'getPets',
+      'getCards',
+      'getRelics',
+      'getPets',
+      'getCards',
+      'getRelics',
+    ]);
+    const rendered = harness.rendered();
+    expect(rendered).not.toContain('Collection load failed');
+    expect(rendered).not.toContain('401');
+    expect(rendered).toContain('Xích Lang');
+    expect(harness.rendersControl('RETRY')).toBe(false);
+  });
+
+  it('ignores repeated activation while the repeated start attempt is in flight', async () => {
+    /** Released by the test once the retried attempt is in flight. */
+    let resolveRetry: () => void = () => {};
+    let attempts = 0;
+
+    const harness = createLobbyHarness({
+      startBehaviour: () => {
+        attempts += 1;
+        if (attempts === 1) {
+          return Promise.reject(new Error('The connection was lost.'));
+        }
+        return new Promise<void>((resolve) => {
+          resolveRetry = resolve;
+        });
+      },
+    });
+    const scene = new LobbyScene();
+    const ctx = harness.context(scene);
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    selectFullLoadout(harness);
+    harness.startTrigger().click();
+    await flush();
+
+    expect(attempts).toBe(1);
+    expect(harness.rendersControl('RETRY')).toBe(true);
+
+    // The retried attempt is now outstanding: the failure state — and with it
+    // the RETRY control — is gone, and every further activation is inert.
+    harness.retryControl().click();
+    await flush();
+
+    expect(attempts).toBe(2);
+    expect(harness.rendersControl('RETRY')).toBe(false);
+
+    harness.startTrigger().click();
+    harness.startTrigger().click();
+    await flush();
+
+    expect(attempts).toBe(2);
+
+    resolveRetry();
+    await flush();
+
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['BattleScene']);
+  });
+
+  it('cannot submit a start while the collection read is in flight', async () => {
+    const gate = deferred();
+    const harness = createLobbyHarness({ collectionGate: gate.promise });
+    const scene = new LobbyScene();
+    const ctx = harness.context(scene);
+
+    // The `PLAY AGAIN` entry: a complete selection is already restored before
+    // the read settles, so only the loading gate stops the submission.
+    preserveLoadout(ctx as never, PRESERVED);
+    runScene(scene, ctx, 'init', { restorePreservedLoadout: true } satisfies LobbySceneData);
+    runScene(scene, ctx, 'create');
+
+    expect(harness.rendered()).toContain('Pet:   pet-instance-1');
+    expect(harness.rendered()).toContain('Loading the collection…');
+
+    harness.startTrigger().click();
+    await flush();
+
+    expect(harness.startRequests).toHaveLength(0);
+    expect(harness.sceneStarted).toEqual([]);
+
+    // Once the read settles the same control submits normally.
+    gate.release();
+    await flush();
+    harness.startTrigger().click();
+    await flush();
+
+    expect(harness.startRequests).toHaveLength(1);
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['BattleScene']);
+  });
+
+  it('transitions once however often START is pressed', async () => {
+    const { harness } = await createLobby();
+
+    selectFullLoadout(harness);
+    harness.startTrigger().click();
+    harness.startTrigger().click();
+    harness.startTrigger().click();
+    await flush();
+
+    expect(harness.startRequests).toHaveLength(1);
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['BattleScene']);
+  });
+
+  it('keeps the hint line informative on the error path', async () => {
+    const { harness } = await createLobby({
+      startBehaviour: async () => {
+        throw new ApiRequestError(400, 'INVALID_LOADOUT', 'The Card loadout is invalid.');
+      },
+    });
+
+    selectFullLoadout(harness);
+    harness.startTrigger().click();
+    await flush();
+
+    const rendered = harness.rendered();
+    // The guidance line does not go blank when the error line fills: it states
+    // what the next attempt needs (TASK-211 NG-06).
+    expect(rendered).toContain('START BATTLE — ready to retry.');
+    expect(rendered).toContain('Battle start failed: The Card loadout is invalid.');
+  });
+
+  it('does not accumulate controls across a shutdown/start cycle', async () => {
+    const { harness, scene, ctx } = await createLobby();
+
+    expect(harness.liveControlLabels().sort()).toEqual(['< BACK', 'START BATTLE']);
+
+    harness.shutdownScene(ctx);
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    // A reused instance holds exactly one of each control: the previous run's
+    // objects were released by the render pass, not stacked on top of.
+    expect(harness.liveControlLabels().sort()).toEqual(['< BACK', 'START BATTLE']);
+    expect(harness.sceneListenerCount(ctx, 'shutdown')).toBe(1);
+    expect(harness.sceneListenerCount(ctx, 'destroy')).toBe(1);
+  });
+
+  it('leaves the preserved loadout untouched on Lobby → BACK → MainMenu', async () => {
+    const harness = createLobbyHarness();
+    const scene = new LobbyScene();
+    const ctx = harness.context(scene);
+
+    preserveLoadout(ctx as never, PRESERVED);
+    runScene(scene, ctx, 'init', { restorePreservedLoadout: true } satisfies LobbySceneData);
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    harness.backControl().click();
+
+    // The exit is not the post-result active-battle cleanup and does not own the
+    // carrier: leaving the Lobby must not discard the loadout PLAY AGAIN
+    // preserved (ADR-022, `D-202-04 = A`).
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['MainMenuScene']);
+    expect(preservedIn(ctx)).toEqual(PRESERVED);
+  });
+
+  describe('control layout (TASK-211 §1)', () => {
+    const SAFE_LEFT = SAFE_AREA.x;
+    const SAFE_TOP = SAFE_AREA.y;
+    const SAFE_RIGHT = SAFE_AREA.x + SAFE_AREA.width;
+    const SAFE_BOTTOM = SAFE_AREA.y + SAFE_AREA.height;
+
+    it('places both controls inside the safe area and clear of the trigger', () => {
+      for (const control of [LOBBY_BACK_BUTTON, LOBBY_RETRY_BUTTON]) {
+        expect(control.x - control.width / 2).toBeGreaterThanOrEqual(SAFE_LEFT);
+        expect(control.x + control.width / 2).toBeLessThanOrEqual(SAFE_RIGHT);
+        expect(control.y - control.height / 2).toBeGreaterThanOrEqual(SAFE_TOP);
+        expect(control.y + control.height / 2).toBeLessThanOrEqual(SAFE_BOTTOM);
+      }
+
+      // The two controls do not overlap each other...
+      const backLeft = LOBBY_BACK_BUTTON.x - LOBBY_BACK_BUTTON.width / 2;
+      const retryRight = LOBBY_RETRY_BUTTON.x + LOBBY_RETRY_BUTTON.width / 2;
+      expect(retryRight).toBeLessThan(backLeft);
+
+      // ...and neither reaches the columns' title band or the START BATTLE row.
+      const controlBottom = LOBBY_BACK_BUTTON.y + LOBBY_BACK_BUTTON.height / 2;
+      expect(controlBottom).toBeLessThan(SAFE_AREA.y + 58);
+      expect(controlBottom).toBeLessThan(578);
+    });
+
+    it('draws the controls where the exported layout says they are', async () => {
+      const { harness } = await createLobby({
+        startBehaviour: () => Promise.reject(new Error('The connection was lost.')),
+      });
+
+      selectFullLoadout(harness);
+      harness.startTrigger().click();
+      await flush();
+
+      const back = harness.backControl();
+      const retry = harness.retryControl();
+
+      expect({ x: back.x, y: back.y, width: back.width, height: back.height }).toEqual({
+        x: LOBBY_BACK_BUTTON.x,
+        y: LOBBY_BACK_BUTTON.y,
+        width: LOBBY_BACK_BUTTON.width,
+        height: LOBBY_BACK_BUTTON.height,
+      });
+      expect({ x: retry.x, y: retry.y, width: retry.width, height: retry.height }).toEqual({
+        x: LOBBY_RETRY_BUTTON.x,
+        y: LOBBY_RETRY_BUTTON.y,
+        width: LOBBY_RETRY_BUTTON.width,
+        height: LOBBY_RETRY_BUTTON.height,
+      });
+    });
+  });
+});
+
+/**
+ * TASK-221 — the Relic column's capacity.
+ *
+ * `MVP_SCOPE.md` §1 grants a new account all ten MVP Relics, and the column grid
+ * has room for eight rows before the Boss band begins. These tests are about the
+ * consequence TASK-213 §3.2 C-2 recorded: every owned Relic must be reachable and
+ * selectable, and the selection must remain the loadout the request carries —
+ * with no client-side ownership or legality decision anywhere in it.
+ */
+describe('LobbyScene — the Relic column presents every owned instance (TASK-221)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** The five Pets the grant owns (`MVP_SCOPE.md` §1, `PET_RULES.md` §8). */
+  const GRANTED_PETS: PetResponse[] = [
+    pet('pet-instance-1', 'Xích Lang'),
+    pet('pet-instance-2', 'Bạch Hổ'),
+    pet('pet-instance-3', 'Huyền Quy'),
+    pet('pet-instance-4', 'Thanh Xà'),
+    pet('pet-instance-5', 'Sơn Hùng'),
+  ];
+
+  /** The ten Relic names in the order the grant declares them (`RELIC_RULES.md` §6). */
+  const GRANTED_RELIC_NAMES = [
+    'Berserker Core',
+    'Mana Crystal',
+    'Assassin Eye',
+    'Emergency Core',
+    'Burning Curse',
+    'Combo Fang',
+    'Arcane Battery',
+    'Execution Mark',
+    'Cascade Core',
+    'Battle Instinct',
+  ] as const;
+
+  /**
+   * The ten Relics the grant owns, each with its own delivered §5.4 content, so
+   * a row is a realistic one: a second line whose text comes from the response
+   * and never from this fixture's shape.
+   */
+  const GRANTED_RELICS: RelicResponse[] = GRANTED_RELIC_NAMES.map((name, index) =>
+    relic(`relic-instance-${index + 1}`, name, {
+      trigger: 'OnMatchCount',
+      condition: { conditionType: 'MatchCountAtLeast', threshold: index + 1 },
+      effectDefinition: [
+        { effectType: 'ATK', valueType: 'Percentage', value: 5, target: 'Pet', lifetime: 'Battle' },
+      ],
+    })
+  );
+
+  /** A Lobby whose collection read returns the whole granted ownership set. */
+  const createGrantedLobby = (options: SceneHarnessOptions = {}) =>
+    createLobby({ pets: GRANTED_PETS, cards: STARTER_CARDS, relics: GRANTED_RELICS, ...options });
+
+  /** The Relic rows the current page is showing, as their owned names. */
+  const shownRelicNames = (harness: ReturnType<typeof createLobbyHarness>): string[] =>
+    GRANTED_RELIC_NAMES.filter((name) =>
+      harness
+        .rendered()
+        .split('\n')
+        .some((line) => /^[○●] /.test(line) && line.includes(name))
+    );
+
+  it('shows one page of the owned Relics and offers the rest through its own controls', async () => {
+    const { harness } = await createGrantedLobby();
+
+    // Eight rows is the column grid's own capacity (the Boss band begins below
+    // it), so the first page is the first eight owned instances.
+    const shown = shownRelicNames(harness);
+    expect(shown).toHaveLength(8);
+    expect(shown).toEqual(GRANTED_RELIC_NAMES.slice(0, 8));
+
+    // The two that do not fit are not silently dropped: they are one control
+    // away, and the indicator says so.
+    expect(harness.rendersControl('NEXT')).toBe(true);
+    expect(harness.rendersControl('PREV')).toBe(true);
+    expect(harness.rendered()).toContain('1-8 of 10');
+  });
+
+  it('reaches every one of the ten owned Relics by paging', async () => {
+    const { harness } = await createGrantedLobby();
+
+    const visited = new Set(shownRelicNames(harness));
+
+    harness.controlLabelled('NEXT').click();
+
+    expect(harness.rendered()).toContain('9-10 of 10');
+    for (const name of shownRelicNames(harness)) {
+      visited.add(name);
+    }
+
+    expect(shownRelicNames(harness)).toEqual(['Cascade Core', 'Battle Instinct']);
+
+    // Every owned Relic was presented on some page — the requirement TASK-213
+    // §3.2 C-2 records, and the whole point of the page.
+    expect([...visited].sort()).toEqual([...GRANTED_RELIC_NAMES].sort());
+
+    // And the way back is offered too.
+    harness.controlLabelled('PREV').click();
+    expect(harness.rendered()).toContain('1-8 of 10');
+    expect(shownRelicNames(harness)).toEqual(GRANTED_RELIC_NAMES.slice(0, 8));
+  });
+
+  it('does not page past either end', async () => {
+    const { harness } = await createGrantedLobby();
+
+    // `PREV` on the first page and `NEXT` on the last are no-ops rather than a
+    // wrap-around, so a player can never be shown an instance as if it were on
+    // the far side of the column.
+    harness.controlLabelled('PREV').click();
+    expect(harness.rendered()).toContain('1-8 of 10');
+
+    harness.controlLabelled('NEXT').click();
+    harness.controlLabelled('NEXT').click();
+    expect(harness.rendered()).toContain('9-10 of 10');
+  });
+
+  it('offers no paging at all when the whole column fits one page', async () => {
+    // The starter fixture owns three Relics, so the column fits: a collection
+    // that fits must render exactly as it did before paging existed, and no
+    // control a player cannot use may be drawn.
+    const { harness } = await createLobby();
+
+    expect(harness.rendersControl('NEXT')).toBe(false);
+    expect(harness.rendersControl('PREV')).toBe(false);
+    expect(harness.rendered()).not.toContain('of 3');
+  });
+
+  it('keeps the selection when the page changes, in selection order', async () => {
+    const { harness } = await createGrantedLobby();
+
+    harness.optionContaining('Berserker Core').click();
+    harness.controlLabelled('NEXT').click();
+    harness.optionContaining('Battle Instinct').click();
+    harness.optionContaining('Cascade Core').click();
+    harness.controlLabelled('PREV').click();
+
+    // Paging presents a different slice of the same owned set; it never edits
+    // the selection, and the selection's own order stays the equip-slot order
+    // (RELIC_RULES.md §2.3) even when one of its entries is off-page.
+    expect(harness.rendered()).toContain(
+      'Relics: relic-instance-1, relic-instance-10, relic-instance-9'
+    );
+
+    // The on-page selected row shows its own slot, and the off-page ones keep
+    // the slots they were given.
+    expect(harness.optionContaining('Berserker Core').text).toContain('slot 1');
+    harness.controlLabelled('NEXT').click();
+    expect(harness.optionContaining('Battle Instinct').text).toContain('slot 2');
+    expect(harness.optionContaining('Cascade Core').text).toContain('slot 3');
+  });
+
+  it('submits exactly the three selected Relics of the ten owned', async () => {
+    const { harness } = await createGrantedLobby();
+
+    harness.optionContaining('Xích Lang').click();
+    harness.optionContaining('Heal').click();
+    harness.optionContaining('Shield').click();
+    harness.optionContaining('Power Charge').click();
+    harness.optionContaining('Hỏa Long').click();
+
+    // One from the first page, two from the second: the smallest documented
+    // Relic loadout (RELIC_RULES.md §2.1 item 1 — 3–5) built from instances that
+    // are only reachable because the column pages.
+    harness.optionContaining('Berserker Core').click();
+    harness.controlLabelled('NEXT').click();
+    harness.optionContaining('Cascade Core').click();
+    harness.optionContaining('Battle Instinct').click();
+
+    harness.startTrigger().click();
+    await flush();
+
+    expect(harness.startRequests).toHaveLength(1);
+    expect(harness.startRequests[0].relicLoadout).toEqual([
+      'relic-instance-1',
+      'relic-instance-9',
+      'relic-instance-10',
+    ]);
+    // Exactly the four documented members, and nothing carrying the page.
+    expect(Object.keys(harness.startRequests[0]).sort()).toEqual([
+      'bossId',
+      'cardLoadout',
+      'petId',
+      'relicLoadout',
+    ]);
+  });
+
+  it('restores a ten-Relic loadout through PLAY AGAIN and keeps every entry editable', async () => {
+    // The loadout the battle that just ended was fought with, including two
+    // instances that live on the column's second page.
+    const preserved: BattleStartRequest = {
+      petId: 'pet-instance-1',
+      bossId: 'boss-kim-loi-vuong',
+      cardLoadout: ['card-heal', 'card-shield', 'card-power-charge'],
+      relicLoadout: ['relic-instance-9', 'relic-instance-10', 'relic-instance-8'],
+    };
+
+    const harness = createLobbyHarness({
+      pets: GRANTED_PETS,
+      cards: STARTER_CARDS,
+      relics: GRANTED_RELICS,
+    });
+    const scene = new LobbyScene();
+    const ctx = harness.context(scene);
+
+    preserveLoadout(ctx as never, preserved);
+    runScene(scene, ctx, 'init', { restorePreservedLoadout: true } satisfies LobbySceneData);
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    // Restoring is a starting point, not a lock: the review restates all three,
+    // including the two the first page does not show.
+    expect(harness.rendered()).toContain(
+      'Relics: relic-instance-9, relic-instance-10, relic-instance-8'
+    );
+    expect(harness.rendered()).toContain('Relics: 3/5');
+
+    // Paging to them shows them marked as the selected rows they are.
+    harness.controlLabelled('NEXT').click();
+    expect(harness.optionContaining('Cascade Core').text).toContain('●');
+    expect(harness.optionContaining('Battle Instinct').text).toContain('●');
+
+    // Editing the restored selection changes the outgoing loadout: deselect one
+    // off-page instance, then pick a first-page one.
+    harness.optionContaining('Cascade Core').click();
+    harness.controlLabelled('PREV').click();
+    harness.optionContaining('Arcane Battery').click();
+
+    harness.startTrigger().click();
+    await flush();
+
+    expect(harness.startRequests).toEqual([
+      {
+        petId: 'pet-instance-1',
+        bossId: 'boss-kim-loi-vuong',
+        cardLoadout: ['card-heal', 'card-shield', 'card-power-charge'],
+        relicLoadout: ['relic-instance-10', 'relic-instance-8', 'relic-instance-7'],
+      },
+    ]);
+  });
+
+  it('discards the page with the rest of the in-progress state on teardown', async () => {
+    const { harness, ctx } = await createGrantedLobby();
+
+    harness.controlLabelled('NEXT').click();
+    expect(harness.rendered()).toContain('9-10 of 10');
+
+    harness.shutdownScene(ctx);
+
+    // The page is this run's own presentation state, like the selection: a
+    // shut-down Lobby keeps neither (ARCHITECTURE.md §2.2.3 rule 1).
+    expect((ctx as { relicPage: number }).relicPage).toBe(0);
+  });
+
+  describe('page layout (TASK-221 §4 — inside the 1280×720 safe area)', () => {
+    const SAFE_LEFT = SAFE_AREA.x;
+    const SAFE_TOP = SAFE_AREA.y;
+    const SAFE_RIGHT = SAFE_AREA.x + SAFE_AREA.width;
+    const SAFE_BOTTOM = SAFE_AREA.y + SAFE_AREA.height;
+
+    /** The columns' list block: the band the pager must stay clear of. */
+    const LIST_TOP = SAFE_AREA.y + 84;
+
+    it('places both page controls inside the safe area and clear of every row band', () => {
+      for (const control of [LOBBY_RELIC_PREV_BUTTON, LOBBY_RELIC_NEXT_BUTTON]) {
+        expect(control.x - control.width / 2).toBeGreaterThanOrEqual(SAFE_LEFT);
+        expect(control.x + control.width / 2).toBeLessThanOrEqual(SAFE_RIGHT);
+        expect(control.y - control.height / 2).toBeGreaterThanOrEqual(SAFE_TOP);
+        expect(control.y + control.height / 2).toBeLessThanOrEqual(SAFE_BOTTOM);
+
+        // The pager lives on the Relic column's header line, above the first
+        // collection row, so it can never cover an option — on any page.
+        expect(control.y + control.height / 2).toBeLessThan(LIST_TOP);
+      }
+
+      // The two controls do not overlap each other...
+      expect(LOBBY_RELIC_PREV_BUTTON.x + LOBBY_RELIC_PREV_BUTTON.width / 2).toBeLessThan(
+        LOBBY_RELIC_NEXT_BUTTON.x - LOBBY_RELIC_NEXT_BUTTON.width / 2
+      );
+
+      // ...and neither reaches the `< BACK` / `RETRY` band above them.
+      const topControlsBottom = LOBBY_BACK_BUTTON.y + LOBBY_BACK_BUTTON.height / 2;
+      expect(LOBBY_RELIC_PREV_BUTTON.y - LOBBY_RELIC_PREV_BUTTON.height / 2).toBeGreaterThan(
+        topControlsBottom
+      );
+
+      // Nor the Relic column's own header literal, which is left-aligned at the
+      // column origin: the pager sits in the free room to its right.
+      const relicColumnX = SAFE_AREA.x + 26 + 372 * 2;
+      expect(LOBBY_RELIC_PREV_BUTTON.x - LOBBY_RELIC_PREV_BUTTON.width / 2).toBeGreaterThan(
+        relicColumnX + 200
+      );
+    });
+
+    it('draws the page controls where the exported layout says they are', async () => {
+      const { harness } = await createGrantedLobby();
+
+      const prev = harness.controlLabelled('PREV');
+      const next = harness.controlLabelled('NEXT');
+
+      expect({ x: prev.x, y: prev.y, width: prev.width, height: prev.height }).toEqual({
+        x: LOBBY_RELIC_PREV_BUTTON.x,
+        y: LOBBY_RELIC_PREV_BUTTON.y,
+        width: LOBBY_RELIC_PREV_BUTTON.width,
+        height: LOBBY_RELIC_PREV_BUTTON.height,
+      });
+      expect({ x: next.x, y: next.y, width: next.width, height: next.height }).toEqual({
+        x: LOBBY_RELIC_NEXT_BUTTON.x,
+        y: LOBBY_RELIC_NEXT_BUTTON.y,
+        width: LOBBY_RELIC_NEXT_BUTTON.width,
+        height: LOBBY_RELIC_NEXT_BUTTON.height,
+      });
+    });
+
+    it('keeps every rendered Relic row and its content line inside the list block', async () => {
+      const { harness } = await createGrantedLobby();
+
+      // The Boss band begins below `LIST_TOP + 8 * 30`, so the eighth row and its
+      // content line stay inside the list block on every page.
+      for (const page of [0, 1]) {
+        if (page === 1) {
+          harness.controlLabelled('NEXT').click();
+        }
+
+        const rows = GRANTED_RELIC_NAMES.filter((name) =>
+          harness
+            .rendered()
+            .split('\n')
+            .some((line) => /^[○●] /.test(line) && line.includes(name))
+        );
+
+        rows.forEach((name, index) => {
+          const row = harness.optionContaining(name);
+          expect(row.y).toBe(LIST_TOP + index * 30);
+          expect((row.y ?? 0) + 15).toBeLessThan(LIST_TOP + 8 * 30);
+        });
+      }
+    });
+  });
+});

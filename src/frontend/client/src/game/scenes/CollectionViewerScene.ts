@@ -1,6 +1,7 @@
 import * as Phaser from 'phaser';
 import { SAFE_AREA, GAME_WIDTH } from '../GameViewport';
 import { readRuntime } from '../runtime/RuntimeRegistry';
+import { formatCardSummary, formatRelicSummary } from '../presentation/ContentEffectFormat';
 import type { GameRuntimePort } from '../runtime/GameRuntimeEvents';
 import type { CardResponse, PetResponse, RelicResponse } from '../../services/api/CollectionModels';
 
@@ -124,6 +125,15 @@ const CARD_CATEGORY_COLORS: Readonly<Record<string, string>> = {
  * no level, tier, star, rarity, combat power, or progression — those are server
  * values that arrive in the response (`API_CONTRACTS.md` §5.1) and are printed
  * as sent (`GAME_RULES.md` §18, ADR-001, `AGENTS.md` §10).
+ *
+ * **The Card and Relic content members are rendered by the shared formatter.**
+ * The §5.3 `effectDefinition` and the §5.4 `trigger`/`condition`/
+ * `effectDefinition` are drawn through `presentation/ContentEffectFormat` — the
+ * same module the Lobby's loadout rows use — so this viewer and the loadout
+ * decision point cannot describe one Card or Relic two different ways
+ * (`docs/AGENTS.md` §2). The scene itself holds no token table, no per-id
+ * lookup, and no magnitude: it passes the delivered response in and draws what
+ * comes back.
  *
  * **All three reads happen once, together.** `create()` issues `getPets()`,
  * `getCards()`, and `getRelics()` in one `Promise.all` and holds the result for
@@ -717,10 +727,13 @@ export class CollectionViewerScene extends Phaser.Scene {
    * Draws the detail panel for the selected entry.
    *
    * The rows are the selected entry's **own wire members**, printed verbatim:
-   * a Pet shows the six `§5.1` members, a Card the three `§5.3` members, and a
-   * Relic the two `§5.4` members. Nothing is added to them — no description,
-   * lore, stat, rarity, bonus, or upgrade level exists in these responses and
-   * none is invented here (`AGENTS.md` §7, §10).
+   * a Pet shows the six `§5.1` members, a Card the four `§5.3` members, and a
+   * Relic the five `§5.4` members. The Card and Relic content members are
+   * rendered by the same `presentation/ContentEffectFormat` the Lobby's loadout
+   * rows use, so the two surfaces cannot contradict each other about what a
+   * Card or Relic changes. Nothing is added to them — no description, lore,
+   * stat, rarity, bonus, upgrade level, cost, or affordability state exists in
+   * these responses and none is invented here (`AGENTS.md` §7, §10).
    *
    * The panel is presentation only: it reads the loaded arrays and writes text.
    * It does not modify the entry it is showing.
@@ -746,6 +759,10 @@ export class CollectionViewerScene extends Phaser.Scene {
    * response that carries the id. Every value is the member's own value; none is
    * formatted into a different meaning, and an id that is somehow no longer in
    * the loaded arrays yields the placeholder rather than a fabricated row.
+   *
+   * A Card's or Relic's content row is drawn only when the response actually
+   * carried content to render, so an empty rule omits the line instead of
+   * showing a blank or guessed one.
    */
   private detailRows(itemId: string): string[] {
     const pet = this.ownedPets.find((entry) => entry.petId === itemId);
@@ -764,18 +781,37 @@ export class CollectionViewerScene extends Phaser.Scene {
 
     const card = this.ownedCards.find((entry) => entry.cardId === itemId);
     if (card !== undefined) {
-      return [
+      const rows = [
         'ITEM DETAIL',
         '',
         `Card: ${card.name}`,
         `Category: ${card.category}`,
-        `Card ID: ${card.cardId}`,
       ];
+
+      const effect = formatCardSummary(card);
+
+      if (effect !== '') {
+        rows.push(`Effect: ${effect}`);
+      }
+
+      rows.push(`Card ID: ${card.cardId}`);
+
+      return rows;
     }
 
     const relic = this.ownedRelics.find((entry) => entry.relicId === itemId);
     if (relic !== undefined) {
-      return ['ITEM DETAIL', '', `Relic: ${relic.name}`, `Relic ID: ${relic.relicId}`];
+      const rows = ['ITEM DETAIL', '', `Relic: ${relic.name}`];
+
+      const content = formatRelicSummary(relic);
+
+      if (content !== '') {
+        rows.push(`Changes: ${content}`);
+      }
+
+      rows.push(`Relic ID: ${relic.relicId}`);
+
+      return rows;
     }
 
     return ['Select an item to view details'];

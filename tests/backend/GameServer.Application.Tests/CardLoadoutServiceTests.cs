@@ -559,6 +559,17 @@ public class CardLoadoutServiceTests
                     .OrderByDescending(definition => definition.CardDefinitionId, StringComparer.Ordinal)
                     .ToList());
 
+        public Task<IReadOnlyList<CardDefinition>> ListDefinitionsAsync(
+            IReadOnlyCollection<string> cardDefinitionIds,
+            CancellationToken cancellationToken = default) =>
+            // The unrestricted content read the collection projection uses for
+            // each Pet's derived Signature Skill (API_CONTRACTS.md §5.1). Like
+            // GetDefinitionAsync it is a content read, not an ownership check.
+            Task.FromResult<IReadOnlyList<CardDefinition>>(
+                _definitions.Values
+                    .Where(definition => cardDefinitionIds.Contains(definition.CardDefinitionId))
+                    .ToList());
+
         public Task<CardDefinition?> GetDefinitionAsync(
             string cardDefinitionId,
             CancellationToken cancellationToken = default) =>

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ApplicationSession } from '../src/services/api/ApplicationSession';
-import { ApiService } from '../src/services/api/ApiService';
+import { ApiRequestError, ApiService } from '../src/services/api/ApiService';
 import type {
   BattleHistoryItemResponse,
   BattleResultResponse,
@@ -205,6 +205,28 @@ function respondWith(body: unknown): void {
 /** Queues the documented §6 error envelope at `status`. */
 function respondWithError(status: number, envelope: ErrorEnvelope): void {
   fetchMock.mockResolvedValue({ ok: false, status, json: async () => envelope });
+}
+
+/**
+ * Awaits a rejected request and returns the rejection.
+ *
+ * `API_CONTRACTS.md` §6 defines the error response as a machine-readable `error`
+ * plus a human-readable `message`, and the shared authenticated transport reads
+ * both: the message is the statement a caller may show a player, and the code
+ * and the HTTP status stay on the error for diagnostics. Asserting all three is
+ * what makes these cases pin the envelope rather than merely "something failed"
+ * — the previous assertion (`rejects.toThrow('400')`) was satisfied by the
+ * discarded-status string this change removes.
+ */
+async function captureRejection(promise: Promise<unknown>): Promise<ApiRequestError> {
+  try {
+    await promise;
+  } catch (error) {
+    expect(error).toBeInstanceOf(ApiRequestError);
+    return error as ApiRequestError;
+  }
+
+  throw new Error('Expected the request to be rejected, but it resolved.');
 }
 
 /**
@@ -605,8 +627,14 @@ describe('ApiService.startBattle (API_CONTRACTS.md §3)', () => {
 
     // §3: a Card or Relic selection failing count, ownership, category,
     // copy-limit, or distinctness is rejected with this one documented code. A
-    // rejected request equips nothing and writes no battle state.
-    await expect(ApiService.getInstance().startBattle(START_REQUEST)).rejects.toThrow('400');
+    // rejected request equips nothing and writes no battle state. §6: the
+    // server's human-readable detail is what the caller surfaces, and the code
+    // is what it reports instead of guessing a reason.
+    const error = await captureRejection(ApiService.getInstance().startBattle(START_REQUEST));
+
+    expect(error.message).toBe('The Card or Relic selection is not valid.');
+    expect(error.code).toBe('INVALID_LOADOUT');
+    expect(error.status).toBe(400);
   });
 
   it('should propagate 400 PET_NOT_OWNED', async () => {
@@ -618,7 +646,11 @@ describe('ApiService.startBattle (API_CONTRACTS.md §3)', () => {
 
     // §3: `petId` must be a Pet owned by the requesting Player (PET_RULES.md
     // §2); the foreign and unknown cases share this one code.
-    await expect(ApiService.getInstance().startBattle(START_REQUEST)).rejects.toThrow('400');
+    const error = await captureRejection(ApiService.getInstance().startBattle(START_REQUEST));
+
+    expect(error.message).toBe('The requested Pet is not owned by the requesting Player.');
+    expect(error.code).toBe('PET_NOT_OWNED');
+    expect(error.status).toBe(400);
   });
 
   it('should propagate 400 BOSS_NOT_FOUND', async () => {
@@ -630,7 +662,11 @@ describe('ApiService.startBattle (API_CONTRACTS.md §3)', () => {
 
     // §3: `bossId` must be a valid MVP Boss's canonical technical Identity
     // (BOSS_RULES.md §6/§6.4), never a display name.
-    await expect(ApiService.getInstance().startBattle(START_REQUEST)).rejects.toThrow('400');
+    const error = await captureRejection(ApiService.getInstance().startBattle(START_REQUEST));
+
+    expect(error.message).toBe('The requested Boss is not a valid MVP Boss.');
+    expect(error.code).toBe('BOSS_NOT_FOUND');
+    expect(error.status).toBe(400);
   });
 
   it('should propagate 401 UNAUTHENTICATED', async () => {
@@ -641,7 +677,11 @@ describe('ApiService.startBattle (API_CONTRACTS.md §3)', () => {
 
     // §2.8 "Failure behavior": a missing, invalid/tampered, or expired session
     // is one public response — 401 with the §6 envelope.
-    await expect(ApiService.getInstance().startBattle(START_REQUEST)).rejects.toThrow('401');
+    const error = await captureRejection(ApiService.getInstance().startBattle(START_REQUEST));
+
+    expect(error.message).toBe('An authenticated session is required to start a battle.');
+    expect(error.code).toBe('UNAUTHENTICATED');
+    expect(error.status).toBe(401);
   });
 
   it('should send no Authorization header when no session is established', async () => {
@@ -920,9 +960,13 @@ describe('ApiService.getBattleResult (API_CONTRACTS.md §4)', () => {
 
     // §4: an authenticated caller asking for a result that does not exist or is
     // not theirs receives this one answer for both cases, so the endpoint never
-    // discloses another Player's battle. The client surfaces the documented
-    // failure as the transport reports it and invents no distinct code.
-    await expect(ApiService.getInstance().getBattleResult('battle-404')).rejects.toThrow('404');
+    // discloses another Player's battle. §6: the caller surfaces exactly the
+    // envelope it received and invents no distinct code.
+    const error = await captureRejection(ApiService.getInstance().getBattleResult('battle-404'));
+
+    expect(error.message).toBe('The requested battle was not found.');
+    expect(error.code).toBe('BATTLE_NOT_FOUND');
+    expect(error.status).toBe(404);
   });
 
   it('should propagate 401 UNAUTHENTICATED', async () => {
@@ -934,7 +978,11 @@ describe('ApiService.getBattleResult (API_CONTRACTS.md §4)', () => {
     // §4 note 6: an unauthenticated caller receives 401 UNAUTHENTICATED — not
     // 404 BATTLE_NOT_FOUND, which would make an authorization failure
     // indistinguishable from a missing row.
-    await expect(ApiService.getInstance().getBattleResult('battle-001')).rejects.toThrow('401');
+    const error = await captureRejection(ApiService.getInstance().getBattleResult('battle-001'));
+
+    expect(error.message).toBe('An authenticated session is required to read a battle result.');
+    expect(error.code).toBe('UNAUTHENTICATED');
+    expect(error.status).toBe(401);
   });
 
   it('should send no Authorization header when no session is established', async () => {
@@ -1106,8 +1154,12 @@ describe('ApiService.getBattleHistory (API_CONTRACTS.md §4.5)', () => {
     });
 
     // §4.5 note 7: an unauthenticated caller receives 401 UNAUTHENTICATED —
-    // never a 404 — and the shared transport surfaces that failure.
-    await expect(ApiService.getInstance().getBattleHistory()).rejects.toThrow('401');
+    // never a 404 — and the shared transport surfaces that envelope.
+    const error = await captureRejection(ApiService.getInstance().getBattleHistory());
+
+    expect(error.message).toBe('An authenticated session is required to read battle history.');
+    expect(error.code).toBe('UNAUTHENTICATED');
+    expect(error.status).toBe(401);
   });
 
   it('should propagate an unexpected API error', async () => {
@@ -1117,7 +1169,28 @@ describe('ApiService.getBattleHistory (API_CONTRACTS.md §4.5)', () => {
       message: 'An unexpected error occurred.',
     });
 
-    await expect(ApiService.getInstance().getBattleHistory()).rejects.toThrow('500');
+    const error = await captureRejection(ApiService.getInstance().getBattleHistory());
+
+    expect(error.message).toBe('An unexpected error occurred.');
+    expect(error.code).toBe('INTERNAL_ERROR');
+    expect(error.status).toBe(500);
+  });
+
+  it('should never surface its own transport detail when the response carries no envelope', async () => {
+    establishSession();
+    // An infrastructure failure: a status with a body this contract does not
+    // describe. The player-facing statement must not become the request path or
+    // the status code — those stay on the error for diagnostics (API_CONTRACTS.md
+    // §6, TASK-211 §4).
+    fetchMock.mockResolvedValue({ ok: false, status: 502, json: async () => null });
+
+    const error = await captureRejection(ApiService.getInstance().getBattleHistory());
+
+    expect(error.message).toBe('The request could not be completed. Please try again.');
+    expect(error.message).not.toContain('502');
+    expect(error.message).not.toContain('/api/');
+    expect(error.code).toBeNull();
+    expect(error.status).toBe(502);
   });
 
   it('should propagate a network failure', async () => {

@@ -47,30 +47,106 @@ function pet(
   identity: string,
   overrides: Partial<PetResponse> = {}
 ): PetResponse {
-  return { petId, identity, element: 'Fire', tier: 'Common', star: 1, level: 1, ...overrides };
+  return {
+    petId,
+    identity,
+    element: 'Fire',
+    tier: 'Common',
+    star: 1,
+    level: 1,
+    // §5.1: the Pet's derived Signature Skill reference is always present. It is
+    // a projection of the Pet's own definition, not an owned Card, so it says
+    // nothing about this fixture's Card collection (§5.3).
+    signatureSkill: { cardId: 'card-inferno', name: 'Inferno', category: 'PetSkill' },
+    ...overrides,
+  };
 }
 
 /** A `GET /api/cards` element (API_CONTRACTS.md §5.3). */
-function card(cardId: string, name: string, category: 'Basic' | 'PetSkill'): CardResponse {
-  return { cardId, name, category };
+function card(
+  cardId: string,
+  name: string,
+  category: 'Basic' | 'PetSkill',
+  effectDefinition: CardResponse['effectDefinition'] = []
+): CardResponse {
+  return { cardId, name, category, effectDefinition };
 }
 
 /** A `GET /api/relics` element (API_CONTRACTS.md §5.4) — the owned instance. */
-function relic(relicId: string, name: string): RelicResponse {
-  return { relicId, name };
+function relic(
+  relicId: string,
+  name: string,
+  content: Partial<Pick<RelicResponse, 'trigger' | 'condition' | 'effectDefinition'>> = {}
+): RelicResponse {
+  return {
+    relicId,
+    name,
+    trigger: content.trigger ?? 'OnMatchCount',
+    condition: content.condition ?? null,
+    effectDefinition: content.effectDefinition ?? [],
+  };
 }
+
+/**
+ * The starter Card effects the server ships for the three Basic Cards
+ * (`CARD_RULES.md` §2, provisioned by migration) — transcribed so the panel's
+ * rendering can be asserted value by value. Nothing here is a client-side
+ * content source: the scene reads only the response it is given, and these are
+ * the response's own members.
+ */
+const STARTER_CARD_EFFECTS: Readonly<Record<string, CardResponse['effectDefinition']>> = {
+  'card-heal': [{ effectType: 'Heal', valueType: 'PercentMaxHp', value: 20 }],
+  'card-shield': [{ effectType: 'Shield', valueType: 'PercentMaxHp', value: 20 }],
+  'card-power-charge': [{ effectType: 'Power', valueType: 'Flat', value: 25 }],
+};
+
+/**
+ * The starter Relic content the server ships (`RELIC_RULES.md` §6/§8.5) —
+ * transcribed from the response, exactly as the Card table above is.
+ */
+const STARTER_RELIC_CONTENT: Readonly<
+  Record<string, Pick<RelicResponse, 'trigger' | 'condition' | 'effectDefinition'>>
+> = {
+  'relic-instance-1': {
+    trigger: 'OnMatchCount',
+    condition: { conditionType: 'MatchCountAtLeast', threshold: 3 },
+    effectDefinition: [
+      { effectType: 'ATK', valueType: 'Percentage', value: 5, target: 'Pet', lifetime: 'Battle' },
+    ],
+  },
+  'relic-instance-2': {
+    trigger: 'OnMatchCount',
+    condition: { conditionType: 'MatchCountAtLeast', threshold: 4 },
+    effectDefinition: [
+      { effectType: 'Power', valueType: 'Flat', value: 10, target: 'Pet', lifetime: 'Immediate' },
+    ],
+  },
+  'relic-instance-3': {
+    trigger: 'OnCombo',
+    condition: { conditionType: 'ComboAtLeast', threshold: 3 },
+    effectDefinition: [
+      {
+        effectType: 'Crit',
+        valueType: 'PercentagePoints',
+        value: 10,
+        target: 'Pet',
+        lifetime: 'NextAttack',
+      },
+    ],
+  },
+};
 
 /** The starter ownership profile DATABASE.md §2 records the server grants. */
 const STARTER_PETS = [pet('pet-instance-1', 'Xích Lang')];
 const STARTER_CARDS = [
-  card('card-heal', 'Heal', 'Basic'),
-  card('card-shield', 'Shield', 'Basic'),
-  card('card-power-charge', 'Power Charge', 'Basic'),
+  card('card-heal', 'Heal', 'Basic', STARTER_CARD_EFFECTS['card-heal']),
+  card('card-shield', 'Shield', 'Basic', STARTER_CARD_EFFECTS['card-shield']),
+  card('card-power-charge', 'Power Charge', 'Basic', STARTER_CARD_EFFECTS['card-power-charge']),
 ];
 const STARTER_RELICS = [
-  relic('relic-instance-1', 'Berserker Core'),
-  relic('relic-instance-2', 'Mana Crystal'),
-  relic('relic-instance-3', 'Assassin Eye'),
+  relic('relic-instance-1', 'Berserker Core', STARTER_RELIC_CONTENT['relic-instance-1']),
+  relic('relic-instance-2', 'Mana Crystal', STARTER_RELIC_CONTENT['relic-instance-2']),
+  relic('relic-instance-3', 'Assassin Eye', STARTER_RELIC_CONTENT['relic-instance-3']),
 ];
 
 interface Clickable {
@@ -660,6 +736,58 @@ describe('CollectionViewerScene — item detail panel', () => {
     expect(rendered).toContain('Card: Shield');
     expect(rendered).toContain('Category: Basic');
     expect(rendered).toContain('Card ID: card-shield');
+
+    // API_CONTRACTS.md §5.3: the Card's own structured effectDefinition is
+    // presented too, through the shared formatter — so the Collection viewer and
+    // the Lobby cannot describe one Card two different ways.
+    expect(rendered).toContain('Effect: Shield 20% Max HP');
+  });
+
+  it('renders every effect of a multi-effect Card without merging them', async () => {
+    const { harness } = await createViewer({
+      cards: [
+        card('card-inferno', 'Inferno', 'PetSkill', [
+          { effectType: 'Damage', valueType: 'Flat', value: 100 },
+          { effectType: 'Burn', valueType: 'Flat', value: 50, duration: 2 },
+        ]),
+      ],
+    });
+
+    harness.clickLabel('CARDS (1)');
+    harness.objectContaining('Inferno').click();
+
+    expect(harness.rendered()).toContain('Effect: Damage 100, Burn 50 (2 turns)');
+  });
+
+  it('renders an unknown effect token verbatim rather than guessing one', async () => {
+    const { harness } = await createViewer({
+      cards: [
+        card('card-future', 'Future Card', 'Basic', [
+          { effectType: 'FutureEffect', valueType: 'FutureUnit', value: 7 },
+        ]),
+      ],
+    });
+
+    harness.clickLabel('CARDS (1)');
+    harness.objectContaining('Future Card').click();
+
+    // The raw tokens travel with the number: nothing is translated, defaulted,
+    // or dropped (AGENTS.md §7, API_CONTRACTS.md §5.3's fail-closed rule).
+    expect(harness.rendered()).toContain('Effect: FutureEffect 7 (FutureUnit)');
+  });
+
+  it('omits the effect line rather than showing an empty or invented one', async () => {
+    const { harness } = await createViewer({
+      cards: [card('card-empty', 'Empty Card', 'Basic')],
+    });
+
+    harness.clickLabel('CARDS (1)');
+    harness.objectContaining('Empty Card').click();
+
+    const rendered = harness.rendered();
+    expect(rendered).toContain('Card: Empty Card');
+    expect(rendered).not.toContain('Effect:');
+    expect(rendered).toContain('Card ID: card-empty');
   });
 
   it('shows a PetSkill Card’s category as the wire value it received', async () => {
@@ -682,6 +810,41 @@ describe('CollectionViewerScene — item detail panel', () => {
     const rendered = harness.rendered();
     expect(rendered).toContain('Relic: Mana Crystal');
     expect(rendered).toContain('Relic ID: relic-instance-2');
+
+    // API_CONTRACTS.md §5.4: the trigger, the condition, and the effect are
+    // presented too — the instance identity is unchanged.
+    expect(rendered).toContain(
+      'Changes: OnMatchCount MatchCountAtLeast 4 | Power 10 (Pet, Immediate)'
+    );
+  });
+
+  it('shows a Relic with no condition without inventing one', async () => {
+    const { harness } = await createViewer({
+      relics: [
+        relic('relic-instance-9', 'Burning Curse', {
+          trigger: 'OnBattleStart',
+          condition: null,
+          effectDefinition: [
+            {
+              effectType: 'BurnDamage',
+              valueType: 'Percentage',
+              value: 30,
+              target: 'Pet',
+              lifetime: 'Battle',
+            },
+          ],
+        }),
+      ],
+    });
+
+    harness.clickLabel('RELICS (1)');
+    harness.objectContaining('Burning Curse').click();
+
+    // RELIC_RULES.md §8.1 item 4's nullable condition renders as no condition
+    // segment at all — never a guessed form and never a fabricated threshold.
+    expect(harness.rendered()).toContain(
+      'Changes: OnBattleStart | BurnDamage 30% (Pet, Battle)'
+    );
   });
 
   it('replaces the current selection when another item is clicked', async () => {
@@ -1133,6 +1296,33 @@ describe('CollectionViewerScene — architectural boundaries (AGENTS.md §10, §
       expect(code).toContain(capability);
     }
     expect(code).not.toContain('getPet(');
+  });
+
+  it('holds no client-side Card or Relic content catalog', () => {
+    const code = source();
+
+    // The §5.3/§5.4 content members are rendered by the shared presentation
+    // formatter, exactly as the Lobby renders them, so the two surfaces cannot
+    // describe one Card or Relic two different ways. A per-content identity
+    // table here would be a second source of truth (RELIC_RULES.md §8.2 item 1,
+    // GAME_STATE.md §0 item 5, AGENTS.md §7/§9).
+    for (const forbidden of [
+      'card-heal',
+      'card-shield',
+      'card-power-charge',
+      'relic-berserker-core',
+      'relic-mana-crystal',
+      'relic-assassin-eye',
+      'powerCost',
+      'effectiveCost',
+      'affordable',
+    ]) {
+      expect(code, `CollectionViewerScene must not reference "${forbidden}"`).not.toContain(
+        forbidden
+      );
+    }
+
+    expect(code).toContain('presentation/ContentEffectFormat');
   });
 
   it('never mutates or equips the collection it presents', () => {

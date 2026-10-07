@@ -1002,8 +1002,9 @@ export class GameRuntime implements GameRuntimePort {
    * delivered members are stored verbatim — the runtime never charges a
    * Passive, evaluates a Threshold, or resets progress (§4.3 item 9), and never
    * applies, refreshes, decrements, expires, or removes a Status Effect
-   * (§4.3 item 14) — and `bossState`'s two values are rendered, never damaged,
-   * clamped, or re-derived (§4.4 item 7).
+   * (§4.3 item 14) and stores the active Pet's three live combat values verbatim
+   * (§4.3 item 15) — and `bossState`'s identity and two HP values are rendered,
+   * never damaged, clamped, inferred, or re-derived (§4.4 items 5, 7 and 10).
    *
    * A malformed payload is reported as a technical runtime error and ignored —
    * the runtime never fabricates battle state to fill a gap.
@@ -1154,14 +1155,24 @@ export class GameRuntime implements GameRuntimePort {
    * when they do not apply rather than materializing them as `null`
    * (`GAME_STATE.md` §2.3.1 item 7).
    *
+   * `hp`, `maxHp` and `power` are the last three required members (§4.3 item 15,
+   * the `TASK-208` <b>D-208-01</b> and <b>D-208-02</b> decisions): all three are
+   * defined from battle
+   * creation, all three are non-nullable, and an initial `power = 0` or a terminal
+   * `hp = 0` is delivered as `0` — so a payload missing one is malformed rather
+   * than implicitly zero, and the runtime must not read an absent member as `0`.
+   * They are stored as sent, one-to-one: the runtime does not damage or heal the
+   * Pet, clamp `hp` to `maxHp`, derive one of the three from another, reconstruct
+   * HP from the damage events, or reconstruct Power from `PowerChanged`.
+   *
    * Every value is read as sent. The runtime does not charge a Passive, evaluate
    * a Threshold, reset progress, or apply an overflow (§4.3 item 9); it does not
    * apply, refresh, decrement, expire, or remove a Status Effect and does not
    * re-derive the collection from the board, the counters, or an event
    * (§4.3 item 14); and it does not widen the object to the rest of §2.3 —
-   * identity, progression, combat stats, the sibling modifier collections, and
-   * the Relic loadout snapshot are not delivered (§4.3 item 2), while
-   * `equippedCards` is delivered per §4.3 item 13.
+   * identity, progression, the remaining combat stats, the sibling modifier
+   * collections, and the Relic loadout snapshot are not delivered (§4.3 item 2),
+   * while `equippedCards` is delivered per §4.3 item 13.
    */
   private readPetState(value: unknown): RuntimePetState | null {
     if (typeof value !== 'object' || value === null) {
@@ -1204,6 +1215,17 @@ export class GameRuntime implements GameRuntimePort {
       statusEffects.push(effect);
     }
 
+    // §4.3 item 15: the three live combat values are always present and
+    // non-nullable, so a missing or mistyped member is a malformed payload rather
+    // than an implicit zero.
+    if (
+      typeof candidate.hp !== 'number' ||
+      typeof candidate.maxHp !== 'number' ||
+      typeof candidate.power !== 'number'
+    ) {
+      return null;
+    }
+
     // The conditional member: absent means the default reset, and only the two
     // documented contract names are a non-default statement (§4.3 items 6–7).
     if (
@@ -1219,12 +1241,18 @@ export class GameRuntime implements GameRuntimePort {
           passiveProgress,
           equippedCards: [...candidate.equippedCards],
           statusEffects,
+          hp: candidate.hp,
+          maxHp: candidate.maxHp,
+          power: candidate.power,
         }
       : {
           passiveId: candidate.passiveId,
           passiveProgress,
           equippedCards: [...candidate.equippedCards],
           statusEffects,
+          hp: candidate.hp,
+          maxHp: candidate.maxHp,
+          power: candidate.power,
           passiveResetOverride: candidate.passiveResetOverride,
         };
   }
@@ -1312,20 +1340,24 @@ export class GameRuntime implements GameRuntimePort {
   }
 
   /**
-   * Reads the Boss HP projection (`GAME_STATE.md` §2.4,
+   * Reads the Boss projection (`GAME_STATE.md` §2.4,
    * `SIGNALR_PROTOCOL.md` §4.4).
    *
-   * Both values are required and neither is nullable: the Boss exists from battle
-   * creation at full health, so there is no absent or "Boss not yet available"
-   * case for either member and a payload missing one is malformed rather than
-   * implicitly zero (§4.4 item 4). In particular the runtime must not read an
-   * absent `hp` as `0`.
+   * All three members are required and none is nullable: the Boss exists from
+   * battle creation at full health with its identity fixed, so there is no absent
+   * or "Boss not yet available" case for any member and a payload missing one is
+   * malformed rather than implicitly zero (§4.4 item 4). In particular the runtime
+   * must not read an absent `hp` as `0` and must not supply an identity it was not
+   * sent (§4.4 item 10).
    *
-   * The two are read independently: neither is derived from the other, `hp` is
-   * never clamped to `maxHp`, and no unit, scale, or rounding is applied
-   * (§4.4 item 5). The object is a projection, not `BossState` — the runtime
-   * models no other Boss member, and it does not re-derive these values from the
-   * events or from `finalBossHp` (§4.4 items 3 and 7, `GAME_RULES.md` §18).
+   * The three are read independently: neither HP value is derived from the other,
+   * `hp` is never clamped to `maxHp`, no unit, scale, or rounding is applied
+   * (§4.4 item 5), and the identity is carried across verbatim — the runtime does
+   * not resolve a display name, does not consult a catalog, and does not
+   * reconstruct it from an event's `sourceId` or from the battle the client asked
+   * for. The object is a projection, not `BossState` — the runtime models no other
+   * Boss member, and it does not re-derive these values from the events or from
+   * `finalBossHp` (§4.4 items 3, 7 and 10, `GAME_RULES.md` §18).
    */
   private readBossState(value: unknown): RuntimeBossState | null {
     if (typeof value !== 'object' || value === null) {
@@ -1334,11 +1366,15 @@ export class GameRuntime implements GameRuntimePort {
 
     const candidate = value as Partial<RuntimeBossState>;
 
+    if (typeof candidate.bossId !== 'string' || candidate.bossId.length === 0) {
+      return null;
+    }
+
     if (typeof candidate.hp !== 'number' || typeof candidate.maxHp !== 'number') {
       return null;
     }
 
-    return { hp: candidate.hp, maxHp: candidate.maxHp };
+    return { bossId: candidate.bossId, hp: candidate.hp, maxHp: candidate.maxHp };
   }
 
   /**

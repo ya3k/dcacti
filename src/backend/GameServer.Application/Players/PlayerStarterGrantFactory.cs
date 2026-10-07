@@ -8,52 +8,85 @@ using GameServer.Domain.Relics;
 namespace GameServer.Application.Players;
 
 /// <summary>
-/// Builds the deterministic starter ownership set for a newly created Player
-/// (<c>DATABASE.md</c> §2 items 1–4; TASK-084).
+/// Builds the deterministic MVP content ownership set for a newly created Player
+/// (<c>DATABASE.md</c> §2 items 1–4; <c>MVP_SCOPE.md</c> §1 "Content ownership &
+/// reachability"; TASK-213 decision; TASK-221 implementation).
 ///
 /// <code>
-/// provisioned definition rows   (TASK-085 — DATABASE.md §1)
-///         ↓  resolve by the canonical starter identities
+/// provisioned definition rows   (TASK-085 / TASK-172 / TASK-173 — DATABASE.md §1)
+///         ↓  resolve by the canonical MVP content identities
 /// PlayerStarterGrant
-///   1 Pet    pet-xich-lang
+///   5 Pets   one owned instance per MVP Pet definition
 ///   3 Cards  card-heal, card-shield, card-power-charge
-///   3 Relics relic-berserker-core, relic-mana-crystal, relic-assassin-eye
+///   10 Relics one owned instance per MVP Relic definition
 /// </code>
 ///
-/// <b>The composition is an Application concern.</b> Which content defines a
-/// starter set is orchestration, not a game rule (<c>ARCHITECTURE.md</c> §2.1:
+/// <b>The grant IS the MVP content grant.</b> MVP has no post-creation
+/// acquisition system (<c>MVP_SCOPE.md</c> §1, §3): an account's owned content set
+/// is fixed at creation, so this composition delivers the whole provisioned MVP
+/// content set rather than a minimum bootstrap. That is what makes the documented
+/// pre-battle flow real — choosing one of five Pets
+/// (<c>GDD.md</c> §2, <c>PET_RULES.md</c> §2.1) and selecting 3–5 of ten owned
+/// Relics (<c>RELIC_RULES.md</c> §2.1 item 1) — using only content that is
+/// already provisioned.
+///
+/// <b>No content is authored here and nothing is acquired after creation.</b>
+/// Every identity below is read against the provisioned <c>PetDefinition</c> /
+/// <c>CardDefinition</c> / <c>RelicDefinition</c> rows (<c>DATABASE.md</c> §5
+/// item 4), and a missing row is reported rather than substituted
+/// (<c>AGENTS.md</c> §7, TASK-083 §"Stop Conditions"). No name, cost, effect,
+/// trigger, condition, or magnitude is copied onto an ownership row: those live
+/// on the definition and are read through the foreign key
+/// (<c>GAME_STATE.md</c> §0 item 5 — no parallel representation).
+///
+/// <b>The composition is an Application concern.</b> Which content defines the
+/// grant is orchestration, not a game rule (<c>ARCHITECTURE.md</c> §2.1:
 /// "Application orchestrates Domain calls … It does not contain game rule logic
 /// itself — only sequencing and coordination"). The rows it builds are Domain
 /// types, and their values come from the provisioned definitions, never from
 /// this class.
-///
-/// <b>It references provisioned definitions; it never authors content.</b> Every
-/// starter identity below is read against the provisioned <c>PetDefinition</c> /
-/// <c>CardDefinition</c> / <c>RelicDefinition</c> rows (<c>DATABASE.md</c> §5
-/// item 4), and a missing row is reported rather than substituted
-/// (<c>AGENTS.md</c> §7, TASK-083 §"Stop Conditions"). No name, cost, effect,
-/// trigger, or condition is copied onto an ownership row: those live on the
-/// definition and are read through the foreign key
-/// (<c>GAME_STATE.md</c> §0 item 5 — no parallel representation).
 ///
 /// <b>It is deterministic and server-only.</b> The set is a fixed server-side
 /// set: no RNG, no ordering by time, no per-Player variation, and no request
 /// value selects, adds to, or replaces any of it (<c>GAME_RULES.md</c> §18,
 /// ADR-001). Two newly created Players receive the same definition references;
 /// only the minted instance identities and the acquisition timestamps differ,
-/// and <c>RELIC_RULES.md</c> §2.3 item 2 forbids ordering a loadout by that
+/// and <c>RELIC_RULES.md</c> §2.3 item 2 forbids ordering a Relic loadout by that
 /// timestamp.
+///
+/// <b>Card ownership does not create a Card build decision.</b> All three
+/// content-defined Basic Cards are granted, because the loadout is exactly three
+/// Basic Cards and exactly three exist (<c>CARD_RULES.md</c> §1, §2): the Card
+/// slot is fixed by content, not by ownership. A <c>Category = PetSkill</c> Card
+/// is excluded by contract (<c>CARD_RULES.md</c> §1 item 4): the Pet Skill is
+/// derived from the active Pet's <c>SignatureSkillCardId</c> at battle start and
+/// is never an unlock row.
 /// </summary>
 public sealed class PlayerStarterGrantFactory
 {
     /// <summary>
-    /// The starter Pet — <b>Xích Lang</b> (<c>DATABASE.md</c> §2 item 1).
+    /// The five MVP Pet definitions, one owned instance each
+    /// (<c>MVP_SCOPE.md</c> §1 "5 Pets"; <c>PET_RULES.md</c> §8).
     ///
-    /// It is one of the three Pets <c>PET_RULES.md</c> §8 records as
-    /// provisioned (Xích Lang / Bạch Hổ / Huyền Quy) and is the one the
-    /// TASK-084 contract selects. The deferred rows are never used.
+    /// They are <b>all five</b> provisioned Pets — not a selection. Which one is
+    /// the active Pet for a battle stays the player's choice
+    /// (<c>PET_RULES.md</c> §2.1 item 1: a Player may own an arbitrary number of
+    /// Pets; the active one is a loadout decision), and granting all five is what
+    /// makes that decision reachable.
+    ///
+    /// The order is <c>PET_RULES.md</c> §8's own document order. It is
+    /// <b>presentation-neutral</b>: no rule reads a Pet array position, and the
+    /// ownership read (<c>IPetRepository.ListByPlayerIdAsync</c>) is not an
+    /// ordered contract.
     /// </summary>
-    public const string StarterPetDefinitionId = "pet-xich-lang";
+    public static readonly string[] StarterPetDefinitionIds =
+    [
+        "pet-xich-lang",
+        "pet-bach-ho",
+        "pet-huyen-quy",
+        "pet-thanh-xa",
+        "pet-son-hung",
+    ];
 
     /// <summary>
     /// The three starter Basic Cards (<c>DATABASE.md</c> §2 item 1;
@@ -61,10 +94,7 @@ public sealed class PlayerStarterGrantFactory
     ///
     /// They are <b>all three</b> content-defined Basic Cards — not a selection:
     /// <c>CARD_RULES.md</c> §1 fixes the submitted Basic loadout at exactly 3
-    /// Basic Cards and §2 defines exactly three. A <c>Category = PetSkill</c>
-    /// Card is excluded by contract (<c>CARD_RULES.md</c> §1 item 4): the Pet
-    /// Skill is derived from the active Pet's <c>SignatureSkillCardId</c> at
-    /// battle start and is never an unlock row.
+    /// Basic Cards and §2 defines exactly three.
     /// </summary>
     public static readonly string[] StarterCardDefinitionIds =
     [
@@ -74,24 +104,37 @@ public sealed class PlayerStarterGrantFactory
     ];
 
     /// <summary>
-    /// The three starter Relic definitions (<c>DATABASE.md</c> §2 item 1;
-    /// <c>RELIC_RULES.md</c> §6 note 3): Berserker Core, Mana Crystal, and
-    /// Assassin Eye.
+    /// The ten MVP Relic definitions, one owned instance each
+    /// (<c>MVP_SCOPE.md</c> §1 "10 Relics"; <c>RELIC_RULES.md</c> §6).
     ///
-    /// This is an <b>explicit named Product Owner selection</b>, not an
-    /// ordering rule: it is deliberately not "the first three in document
-    /// order". <c>Emergency Core</c> is provisioned but not selected, and
-    /// <c>Burning Curse</c> is deferred.
+    /// They are <b>all ten</b> provisioned Relics — not a selection. Ownership is
+    /// what makes the Relic slot a real build decision: the battle loadout is
+    /// 3–5 pairwise-distinct owned instances (<c>RELIC_RULES.md</c> §2.1 item 1),
+    /// so owning all ten makes every legal combination reachable without any
+    /// acquisition, currency, or RNG.
     ///
-    /// Three instances satisfy <c>RELIC_RULES.md</c> §2.1's lower bound of
-    /// three, and exactly one owned instance is granted per definition — so no
-    /// duplicate-selection question is opened (<c>RELIC_RULES.md</c> §2.4).
+    /// Exactly one owned instance is granted per definition
+    /// (<c>RELIC_RULES.md</c> §2.4): the data model permits two instances of one
+    /// definition, but MVP grants no duplicates, so no duplicate-selection
+    /// question is opened.
+    ///
+    /// The order is <c>RELIC_RULES.md</c> §6's own table order. It is
+    /// <b>presentation-neutral</b> for the same reason as the Pet list: equip
+    /// slot order is the submitted request order (<c>RELIC_RULES.md</c> §2.3), and
+    /// the ownership read is not an ordered contract.
     /// </summary>
     public static readonly string[] StarterRelicDefinitionIds =
     [
         "relic-berserker-core",
         "relic-mana-crystal",
         "relic-assassin-eye",
+        "relic-emergency-core",
+        "relic-burning-curse",
+        "relic-combo-fang",
+        "relic-arcane-battery",
+        "relic-execution-mark",
+        "relic-cascade-core",
+        "relic-battle-instinct",
     ];
 
     private readonly IPetRepository _pets;
@@ -109,14 +152,14 @@ public sealed class PlayerStarterGrantFactory
     }
 
     /// <summary>
-    /// Resolves the starter set and returns it staged as one
+    /// Resolves the grant's content and returns it staged as one
     /// <see cref="PlayerStarterGrant"/>.
     ///
-    /// <b>Every definition is verified before anything is staged.</b> All seven
-    /// definition references are resolved first, and a missing row aborts the
-    /// whole grant — so a partially-resolvable starter set is never handed to
-    /// the persistence boundary, and no value is fabricated to fill a gap
-    /// (<c>AGENTS.md</c> §7; TASK-083 §"Stop Conditions": "a required
+    /// <b>Every definition is verified before anything is staged.</b> All
+    /// eighteen definition references are resolved first, and a missing row
+    /// aborts the whole grant — so a partially-resolvable content set is never
+    /// handed to the persistence boundary, and no value is fabricated to fill a
+    /// gap (<c>AGENTS.md</c> §7; TASK-083 §"Stop Conditions": "a required
     /// provisioned definition row is absent → the starter set must not be
     /// partially created").
     ///
@@ -135,19 +178,20 @@ public sealed class PlayerStarterGrantFactory
     /// </param>
     /// <param name="cancellationToken">Cancels the definition reads.</param>
     /// <exception cref="InvalidOperationException">
-    /// A required provisioned definition row does not exist. The starter set is
-    /// not partially created and no substitute is used.
+    /// A required provisioned definition row does not exist. The grant is not
+    /// partially created and no substitute is used.
     /// </exception>
     public async Task<PlayerStarterGrant> CreateAsync(
         DateTimeOffset acquiredAt,
         CancellationToken cancellationToken = default)
     {
-        // Verify the Pet definition first, then both content sets, before any
-        // row is constructed. A missing definition fails the whole grant.
-        var petDefinition = await _pets
-            .GetDefinitionAsync(StarterPetDefinitionId, cancellationToken)
-            .ConfigureAwait(false)
-            ?? throw MissingDefinition("PetDefinition", StarterPetDefinitionId);
+        // Verify every definition first, then every content set, before any row
+        // is constructed. A missing definition fails the whole grant.
+        var petDefinitions = await ResolveAsync(
+            StarterPetDefinitionIds,
+            "PetDefinition",
+            _pets.GetDefinitionAsync,
+            cancellationToken).ConfigureAwait(false);
 
         // The Card definitions are resolved through the unrestricted content
         // lookup, not through ListUnlockedDefinitionsAsync: that read is
@@ -155,60 +199,55 @@ public sealed class PlayerStarterGrantFactory
         // absent for a Player who does not own them yet — which is exactly the
         // Player being created here (ICardRepository.GetDefinitionAsync is
         // explicitly documented as "not an ownership check").
-        var resolvedCards = new CardDefinition[StarterCardDefinitionIds.Length];
+        var cardDefinitions = await ResolveAsync(
+            StarterCardDefinitionIds,
+            "CardDefinition",
+            _cards.GetDefinitionAsync,
+            cancellationToken).ConfigureAwait(false);
 
-        for (var index = 0; index < StarterCardDefinitionIds.Length; index++)
-        {
-            var cardDefinitionId = StarterCardDefinitionIds[index];
+        var relicDefinitions = await ResolveAsync(
+            StarterRelicDefinitionIds,
+            "RelicDefinition",
+            _relics.GetDefinitionAsync,
+            cancellationToken).ConfigureAwait(false);
 
-            resolvedCards[index] = await _cards
-                .GetDefinitionAsync(cardDefinitionId, cancellationToken)
-                .ConfigureAwait(false)
-                ?? throw MissingDefinition("CardDefinition", cardDefinitionId);
-        }
-
-        var relicDefinitions = new RelicDefinition[StarterRelicDefinitionIds.Length];
-
-        for (var index = 0; index < StarterRelicDefinitionIds.Length; index++)
-        {
-            var relicDefinitionId = StarterRelicDefinitionIds[index];
-
-            relicDefinitions[index] = await _relics
-                .GetDefinitionAsync(relicDefinitionId, cancellationToken)
-                .ConfigureAwait(false)
-                ?? throw MissingDefinition("RelicDefinition", relicDefinitionId);
-        }
-
-        // DATABASE.md §2 item 1: the starter Pet is the one instance carrying
-        // the documented creation values — Tier Common (the MVP data default),
+        // DATABASE.md §2 item 1: every granted Pet instance carries the
+        // documented creation values — Tier Common (the MVP data default),
         // Star = Pet.MinStar (the documented 1-5 floor), XP = Pet.InitialXp (0),
         // Level = Pet.InitialLevel (1), AcquiredAt server-set (DATABASE.md §3;
-        // PET_RULES.md §3, §4, §5.2).
-        var starterPet = new Pet
+        // PET_RULES.md §3, §4, §5.2). No Pet is privileged: the grant creates
+        // one instance per definition, and the active Pet is a battle-loadout
+        // choice, never an ownership property.
+        var starterPets = new Pet[petDefinitions.Length];
+
+        for (var index = 0; index < petDefinitions.Length; index++)
         {
-            // The instance identity is minted server-side and is never the
-            // definition id (DATABASE.md §1: PetInstanceId is a PK distinct
-            // from PetDefinitionId). It is the value GAME_STATE.md §2.3 carries
-            // as PetState.PetId and what POST /api/battle/start submits as
-            // `petId`.
-            PetInstanceId = $"petinst_{Guid.NewGuid():N}",
+            starterPets[index] = new Pet
+            {
+                // The instance identity is minted server-side and is never the
+                // definition id (DATABASE.md §1: PetInstanceId is a PK distinct
+                // from PetDefinitionId). It is the value GAME_STATE.md §2.3 carries
+                // as PetState.PetId and what POST /api/battle/start submits as
+                // `petId`.
+                PetInstanceId = $"petinst_{Guid.NewGuid():N}",
 
-            // The owner is not known here: the creation boundary mints the
-            // PlayerId and binds it when it stages the rows. It is never
-            // empty in a persisted row.
-            PlayerId = string.Empty,
+                // The owner is not known here: the creation boundary mints the
+                // PlayerId and binds it when it stages the rows. It is never
+                // empty in a persisted row.
+                PlayerId = string.Empty,
 
-            PetDefinitionId = petDefinition.PetDefinitionId,
-            Tier = PetTier.Common,
-            Star = Pet.MinStar,
-            XP = Pet.InitialXp,
-            Level = Pet.InitialLevel,
-            AcquiredAt = acquiredAt,
-        };
+                PetDefinitionId = petDefinitions[index].PetDefinitionId,
+                Tier = PetTier.Common,
+                Star = Pet.MinStar,
+                XP = Pet.InitialXp,
+                Level = Pet.InitialLevel,
+                AcquiredAt = acquiredAt,
+            };
+        }
 
-        var starterCards = new PlayerUnlockedCard[StarterCardDefinitionIds.Length];
+        var starterCards = new PlayerUnlockedCard[cardDefinitions.Length];
 
-        for (var index = 0; index < StarterCardDefinitionIds.Length; index++)
+        for (var index = 0; index < cardDefinitions.Length; index++)
         {
             // DATABASE.md §1: the unlock row has exactly two members and no
             // third column exists. No acquisition timestamp is recorded: the
@@ -217,13 +256,13 @@ public sealed class PlayerStarterGrantFactory
             starterCards[index] = new PlayerUnlockedCard
             {
                 PlayerId = string.Empty,
-                CardDefinitionId = resolvedCards[index].CardDefinitionId,
+                CardDefinitionId = cardDefinitions[index].CardDefinitionId,
             };
         }
 
-        var starterRelics = new Relic[StarterRelicDefinitionIds.Length];
+        var starterRelics = new Relic[relicDefinitions.Length];
 
-        for (var index = 0; index < StarterRelicDefinitionIds.Length; index++)
+        for (var index = 0; index < relicDefinitions.Length; index++)
         {
             // RELIC_RULES.md §2.2: the owned instance's identity is distinct
             // from its definition's and the two are never collapsed. No
@@ -238,7 +277,38 @@ public sealed class PlayerStarterGrantFactory
             };
         }
 
-        return new PlayerStarterGrant(starterPet, starterCards, starterRelics);
+        return new PlayerStarterGrant(starterPets, starterCards, starterRelics);
+    }
+
+    /// <summary>
+    /// Resolves one content set's definitions, in the declared identity order,
+    /// before any ownership row is built.
+    ///
+    /// It is the whole-grant verification step:
+    /// <c>AGENTS.md</c> §7 and TASK-083 §"Stop Conditions" require a missing
+    /// provisioned definition to abort the entire grant rather than produce a
+    /// partial set, so the read is deliberately a separate pass over the whole
+    /// identity list.
+    /// </summary>
+    private static async Task<TDefinition[]> ResolveAsync<TDefinition>(
+        string[] definitionIds,
+        string definitionTable,
+        Func<string, CancellationToken, Task<TDefinition?>> read,
+        CancellationToken cancellationToken)
+        where TDefinition : class
+    {
+        var resolved = new TDefinition[definitionIds.Length];
+
+        for (var index = 0; index < definitionIds.Length; index++)
+        {
+            var definitionId = definitionIds[index];
+
+            resolved[index] = await read(definitionId, cancellationToken)
+                .ConfigureAwait(false)
+                ?? throw MissingDefinition(definitionTable, definitionId);
+        }
+
+        return resolved;
     }
 
     private static InvalidOperationException MissingDefinition(

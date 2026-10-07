@@ -9,18 +9,20 @@ namespace GameServer.Infrastructure.Tests;
 /// <summary>
 /// Starter-grant fixtures for the Player-creation tests.
 ///
-/// <b>Why a helper exists.</b> <c>IPlayerRepository.GetOrCreateByDiscordUserIdAsync</c>
+/// <b>Why a helper exists.</b> <c>IPlayerRepository.GetOrCreateForAccountAsync</c>
 /// takes the starter ownership set a newly created Player receives
 /// (<c>DATABASE.md</c> §2 item 1), so every test that exercises the
 /// match-or-create path must state what starter set it is creating the Player
-/// with. The two builders below keep that statement explicit and one line long.
+/// with. The builders below keep that statement explicit and one line long.
 ///
 /// <b>These fixtures assert no documented content value.</b> They build the
 /// ownership rows directly, so they must never be read as a second definition of
-/// the starter set — the composition (<c>pet-xich-lang</c>, the three Basic
-/// Cards, the three selected Relics) is owned by
-/// <see cref="PlayerStarterGrantFactory"/> and <c>DATABASE.md</c> §2 item 1, and
-/// the tests that assert it use the real factory.
+/// the grant — the composition (<c>MVP_SCOPE.md</c> §1: 5 Pets, the three Basic
+/// Cards, 10 Relics) is owned by <see cref="PlayerStarterGrantFactory"/> and
+/// <c>DATABASE.md</c> §2 item 1, and the tests that assert it use the real
+/// factory. Only the <b>cardinality</b> mirrors the documented composition, so a
+/// boundary test can prove the whole granted set is staged, committed, or
+/// discarded as one batch.
 /// </summary>
 internal static class TestStarterGrants
 {
@@ -37,24 +39,32 @@ internal static class TestStarterGrants
     /// real starter set's definition references are constrained.
     /// </summary>
     public static PlayerStarterGrant Staged(
-        string petDefinitionId = "pet-fixture",
+        string petDefinitionPrefix = "pet-fixture",
         string cardDefinitionPrefix = "card-fixture",
         string relicDefinitionPrefix = "relic-fixture")
     {
-        var pet = new Pet
-        {
-            PetInstanceId = $"petinst_{Guid.NewGuid():N}",
-            PlayerId = string.Empty,
-            PetDefinitionId = petDefinitionId,
-            Tier = PetTier.Common,
-            Star = Pet.MinStar,
-            XP = Pet.InitialXp,
-            Level = Pet.InitialLevel,
-            AcquiredAt = DateTimeOffset.UtcNow,
-        };
-
+        var pets = new List<Pet>();
         var cards = new List<PlayerUnlockedCard>();
         var relics = new List<Relic>();
+
+        // The documented cardinalities (MVP_SCOPE.md §1 / DATABASE.md §2 item 1):
+        // 5 Pets, 3 Basic Cards, 10 Relics. The counts are the composition's, so
+        // a fixture that drifted from them would fail the boundary assertions
+        // rather than silently agreeing with itself.
+        for (var index = 0; index < 5; index++)
+        {
+            pets.Add(new Pet
+            {
+                PetInstanceId = $"petinst_{Guid.NewGuid():N}",
+                PlayerId = string.Empty,
+                PetDefinitionId = $"{petDefinitionPrefix}-{index}",
+                Tier = PetTier.Common,
+                Star = Pet.MinStar,
+                XP = Pet.InitialXp,
+                Level = Pet.InitialLevel,
+                AcquiredAt = DateTimeOffset.UtcNow,
+            });
+        }
 
         for (var index = 0; index < 3; index++)
         {
@@ -63,7 +73,10 @@ internal static class TestStarterGrants
                 PlayerId = string.Empty,
                 CardDefinitionId = $"{cardDefinitionPrefix}-{index}",
             });
+        }
 
+        for (var index = 0; index < 10; index++)
+        {
             relics.Add(new Relic
             {
                 RelicInstanceId = $"relicinst_{Guid.NewGuid():N}",
@@ -73,7 +86,7 @@ internal static class TestStarterGrants
             });
         }
 
-        return new PlayerStarterGrant(pet, cards, relics);
+        return new PlayerStarterGrant(pets, cards, relics);
     }
 
     /// <summary>

@@ -78,21 +78,25 @@ export type PetSkillCastResult = PetSkillCastAcknowledgement;
  * fields, not because the client computes them: the client renders them and
  * never authors, adjusts, or recomputes either (§4.9, `GAME_RULES.md` §18).
  *
- * `petState` carries the active Pet's Passive and its active Status Effects
- * (`GAME_STATE.md` §2.3, §4.3). The Passive is delivered because it is a
- * `BattleState` field and because `PASSIVE_RULES.md` §6 item 1 requires its
- * progress to be exposed as a UI-facing value; the active Status Effect
- * instances are delivered by the `TASK-160` **D-1A** Product Owner decision
- * (§4.3 item 14). The client renders the `current / threshold` pair, the Passive
- * identity, and the instance list it was sent; it does not charge a Passive,
- * evaluate a Threshold, reset progress (§4.3 item 9), or apply, refresh,
- * decrement, expire, or remove a Status Effect (§4.3 item 14).
+ * `petState` carries the active Pet's Passive, its active Status Effects, and its
+ * live combat values (`GAME_STATE.md` §2.3, §4.3). The Passive is delivered
+ * because it is a `BattleState` field and because `PASSIVE_RULES.md` §6 item 1
+ * requires its progress to be exposed as a UI-facing value; the active Status
+ * Effect instances are delivered by the `TASK-160` **D-1A** Product Owner
+ * decision (§4.3 item 14); and `hp`/`maxHp`/`power` are delivered by `TASK-208`'s
+ * **D-208-01** and **D-208-02** decisions (§4.3 item 15). The client renders the
+ * `current / threshold` pair, the Passive identity, the instance list, and the
+ * three combat values it was sent; it does not charge a Passive, evaluate a
+ * Threshold, reset progress (§4.3 item 9), apply, refresh, decrement, expire, or
+ * remove a Status Effect (§4.3 item 14), or damage, heal, clamp, or reconstruct a
+ * combat value (§4.3 item 15).
  *
- * `bossState` carries the Boss's live `hp` and `maxHp` (`GAME_STATE.md` §2.4,
- * §4.4) — a two-member projection, not `BossState`. The client renders the two
- * numbers it was sent: it does not damage the Boss, clamp `hp` to `maxHp`, infer
- * one from the other, or re-derive either from the events or `finalBossHp`
- * (§4.4 item 7, `GAME_RULES.md` §18).
+ * `bossState` carries the Boss's canonical technical Identity and its live `hp`
+ * and `maxHp` (`GAME_STATE.md` §2.4, §4.4) — a three-member projection, not
+ * `BossState`. The client renders the values it was sent: it does not damage the
+ * Boss, clamp `hp` to `maxHp`, infer one from the other, re-derive either from the
+ * events or `finalBossHp`, or treat the identity as a display string
+ * (§4.4 items 7 and 10, `GAME_RULES.md` §18).
  *
  * This is a transport-level shape only. The service does not interpret it,
  * derive from it, or recompute it; it hands it to the runtime unchanged.
@@ -187,9 +191,10 @@ export interface BattleStateSnapshotResponse {
  * The wire projection of `PetState`'s delivered members (`GAME_STATE.md` §2.3,
  * `SIGNALR_PROTOCOL.md` §4.3).
  *
- * `SIGNALR_PROTOCOL.md` §4.3 item 2 fixes this object to exactly five members —
+ * `SIGNALR_PROTOCOL.md` §4.3 item 2 fixes this object to exactly eight members —
  * `passiveId`, `passiveProgress`, the conditional `passiveResetOverride`,
- * `equippedCards`, and `statusEffects[]`:
+ * `equippedCards`, `statusEffects[]`, and the active Pet's three live combat
+ * values (`hp`, `maxHp`, `power`):
  *
  * ```text
  * petState
@@ -198,13 +203,16 @@ export interface BattleStateSnapshotResponse {
  * ├── passiveResetOverride       "Partial" | "NoReset"              present only when
  * │                                                                 non-default
  * ├── equippedCards              string[] (4 CardDefinitionId)      always present
- * └── statusEffects              Status Effect instances of the     always present
- *                               ACTIVE Pet — `[]` when none         (§4.3 item 14)
+ * ├── statusEffects              Status Effect instances of the     always present
+ * │                               ACTIVE Pet — `[]` when none       (§4.3 item 14)
+ * ├── hp                         the ACTIVE Pet's current HP         always present
+ * ├── maxHp                      the ACTIVE Pet's Max HP             always present
+ * └── power                      the ACTIVE Pet's Power             always present
  * ```
  *
  * The rest of `GAME_STATE.md` §2.3 — `PetId`/Identity, `Element`,
- * `Tier`/`Star`/`Level`, the combat stats (`HP`/`MaxHP`/`ATK`/`DEF`/`Crit`/
- * `Power`), the sibling `NextAttackCritModifiers[]`/`CardCostModifiers[]`/
+ * `Tier`/`Star`/`Level`, the remaining combat stats (`ATK`/`DEF`/`Crit`),
+ * the sibling `NextAttackCritModifiers[]`/`CardCostModifiers[]`/
  * `ATKModifiers[]` collections, and the `EquippedRelics[]` loadout snapshot —
  * belongs to other stages and is **not** delivered (§4.3 item 2: referring to
  * `petState` as a whole does not widen §4 item 4's rule). Modelling those
@@ -261,6 +269,40 @@ export interface PetStatePayload {
    * be inferred: the array arrives in the order the state holds it.
    */
   readonly statusEffects: readonly StatusEffectPayload[];
+  /**
+   * The active Pet's current HP (`GAME_STATE.md` §2.3,
+   * `SIGNALR_PROTOCOL.md` §4.3 item 15) — read from `PetState.HP` and delivered
+   * unchanged. It is an integer, always present, and never nullable: `0` is a real
+   * published value (the terminal HP of a lost battle), so a consumer must not read
+   * an absent `hp` as zero.
+   *
+   * It is read as sent: the client does not damage or heal the Pet, clamp `hp` to
+   * `maxHp`, infer one from the other, or reconstruct either from the damage events
+   * (which carry only `amount`) — and no heal event exists to reconstruct it from
+   * (`GAME_RULES.md` §18, ADR-001).
+   */
+  readonly hp: number;
+  /**
+   * The active Pet's maximum HP (`GAME_STATE.md` §2.3, §4.3 item 15) — read from
+   * `PetState.MaxHP` and delivered independently of `hp`. It is **never** derived
+   * from `hp`, and `hp` is never clamped to it.
+   */
+  readonly maxHp: number;
+  /**
+   * The active Pet's Power (`GAME_STATE.md` §2.3, §4.3 item 15) — read from
+   * `PetState.Power` and delivered unchanged. It is an integer, always present, and
+   * `power = 0` is what a battle begins with, sent as `0`.
+   *
+   * Its `0–100` range is the documented invariant of `GAME_RULES.md` §12 /
+   * `COMBAT_RULES.md` §1.1 — **not** a member: there is no `maxPower` on the wire,
+   * and a display scale for that documented range is presentation, not state.
+   *
+   * The client renders it and computes none of it: it does not reconstruct Power
+   * from `PowerChanged` (transient, per-mutation, and lost on resync — §7 item 2)
+   * and derives no Card cost, affordability, or cast legality from it
+   * (`CARD_RULES.md` §3.6, §4.3 item 15).
+   */
+  readonly power: number;
 }
 
 /**
@@ -315,31 +357,47 @@ export interface StatusEffectPayload {
 }
 
 /**
- * The wire projection of the Boss's live health (`GAME_STATE.md` §2.4,
+ * The wire projection of the Boss (`GAME_STATE.md` §2.4,
  * `SIGNALR_PROTOCOL.md` §4.4).
  *
  * ```text
  * bossState
+ * ├── bossId                      the Boss's canonical technical Identity  always present
+ * │                               (BOSS_RULES.md §6.4; §4.4 item 10) — never a display name
  * ├── hp                          the Boss's current HP      always present
  * └── maxHp                       the Boss's MaxHP            always present
  * ```
  *
- * It is a **two-member projection of `BossState`, not `BossState`** (§4.4
- * item 2). Every other §2.4 member stays server-side — `BossId`/Identity,
- * `Element`, `ATK`, `DEF`, `State`, `PassiveId`, `PassiveProgress`,
- * `SkillCharge`, `SkillCooldown`, and the Boss's own `StatusEffects[]`
- * (§4.4 item 3) — and a consumer must not read this object as the Boss's state.
+ * It is a **three-member projection of `BossState`, not `BossState`** (§4.4
+ * item 2). Every other §2.4 member stays server-side — `Element`, `ATK`, `DEF`,
+ * `State`, `PassiveId`, `PassiveProgress`, `SkillCharge`, `SkillCooldown`, and
+ * the Boss's own `StatusEffects[]` (§4.4 item 3) — and a consumer must not read
+ * this object as the Boss's state.
  *
- * Both members are **always present and neither is optional**: the Boss exists
+ * All three members are **always present and none is optional**: the Boss exists
  * from battle creation at full health, so there is no absent case, and `hp = 0`
  * is a real published value sent as `0` (§4.4 item 4). A consumer must not read
  * an absent `hp` as zero.
  *
- * Both are read as sent. The client does not damage the Boss, clamp `hp` to
- * `maxHp`, infer either from the other, or re-derive them from the events or
- * `finalBossHp` (§4.4 item 7, `GAME_RULES.md` §18).
+ * All three are read as sent. The client does not damage the Boss, clamp `hp` to
+ * `maxHp`, infer either from the other, re-derive them from the events or
+ * `finalBossHp`, or reconstruct the identity from an event's `sourceId`
+ * (§4.4 items 7 and 10, `GAME_RULES.md` §18).
  */
 export interface BossStatePayload {
+  /**
+   * The Boss's canonical technical Identity (`GAME_STATE.md` §2.4,
+   * `BOSS_RULES.md` §6.4) — read from `BossState.BossId` and delivered unchanged,
+   * e.g. `"boss-hoa-long"`. It is an identity, never presentation content: no
+   * display name, localization text, Element, portrait, asset key, or
+   * `BossDefinitionId` accompanies it (§4.4 item 10), and the client resolves its
+   * display label from the single Boss catalog it already holds.
+   *
+   * It is always present and non-nullable — a battle always has its one Boss — and
+   * it is read as sent: the client does not author it or reconstruct it from an
+   * event's `sourceId` or from its own record of the battle it asked for.
+   */
+  readonly bossId: string;
   /** The Boss's current HP (`GAME_STATE.md` §2.4). `0` is a real value. */
   readonly hp: number;
   /** The Boss's maximum HP (`GAME_STATE.md` §2.4), reported independently. */

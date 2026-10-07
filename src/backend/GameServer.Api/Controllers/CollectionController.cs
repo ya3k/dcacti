@@ -10,11 +10,14 @@ namespace GameServer.Api.Controllers;
 /// <c>API_CONTRACTS.md</c> §5.
 ///
 /// <code>
-/// GET /api/pets               → [{ petId, identity, element, tier, star, level }]
-/// GET /api/pets/{petId}       →  { petId, identity, element, tier, star, level }
+/// GET /api/pets               → [{ petId, identity, element, tier, star, level,
+///                                  signatureSkill }]
+/// GET /api/pets/{petId}       →  { petId, identity, element, tier, star, level,
+///                                  signatureSkill }
 ///                                 | 404 { "error": "PET_NOT_FOUND" }
-/// GET /api/cards              → [{ cardId, name, category }]
-/// GET /api/relics             → [{ relicId, name }]
+/// GET /api/cards              → [{ cardId, name, category, effectDefinition }]
+/// GET /api/relics             → [{ relicId, name, trigger, condition,
+///                                  effectDefinition }]
 /// </code>
 ///
 /// <b>It is a thin boundary</b> (<c>ARCHITECTURE.md</c> §2.1 item 4): it resolves
@@ -66,7 +69,10 @@ public class CollectionController : ControllerBase
     ///
     /// <b>200.</b> A raw JSON array with no envelope; each element carries
     /// exactly <c>petId</c>, <c>identity</c>, <c>element</c>, <c>tier</c>,
-    /// <c>star</c>, and <c>level</c>.
+    /// <c>star</c>, <c>level</c>, and <c>signatureSkill</c> — the Pet's derived
+    /// Signature Skill reference (<c>§5.1</c>), which is what identifies the Card
+    /// the Pet's Signature Skill is without reading the unlocked Card collection
+    /// (<c>SIGNALR_PROTOCOL.md</c> §4.3 item 13).
     ///
     /// <b>Empty collection.</b> §5.5: a Player owning nothing gets <c>200</c> with
     /// <c>[]</c> — the same status and the same bare array, not a different one.
@@ -173,10 +179,14 @@ public class CollectionController : ControllerBase
     /// (<c>API_CONTRACTS.md</c> §5.3).
     ///
     /// <b>200.</b> A raw JSON array; each element carries exactly <c>cardId</c>,
-    /// <c>name</c>, and <c>category</c>. There is no <c>unlocked</c> member —
-    /// membership of the array <b>is</b> the unlocked state — and
-    /// <c>playerId</c>, <c>powerCost</c>, <c>loadoutCopyLimit</c>, and
-    /// <c>effectDefinition</c> are not exposed.
+    /// <c>name</c>, <c>category</c>, and <c>effectDefinition</c> — the Card's own
+    /// structured effect rule, transcribed from the stored definition. There is
+    /// no <c>unlocked</c> member — membership of the array <b>is</b> the unlocked
+    /// state — and <c>playerId</c>, <c>powerCost</c>, and
+    /// <c>loadoutCopyLimit</c> are not exposed. Nothing here reports a cost, an
+    /// affordability state, or a legality judgment: that is the realtime
+    /// projection's question, not this read's
+    /// (<c>SIGNALR_PROTOCOL.md</c> §4 item 15).
     ///
     /// <b>Empty collection.</b> A Player with no unlocks gets <c>200</c> with
     /// <c>[]</c> (§5.5).
@@ -205,8 +215,12 @@ public class CollectionController : ControllerBase
     ///
     /// <b>200.</b> A raw JSON array; each element carries exactly <c>relicId</c>
     /// and <c>name</c>, where <c>relicId</c> is the owned <b>instance</b>
-    /// identity. <c>playerId</c>, <c>acquiredAt</c>, <c>definitionId</c>, and the
-    /// definition's Trigger/Condition/Effect are not exposed.
+    /// identity, plus the definition's own <c>trigger</c>, nullable
+    /// <c>condition</c>, and structured <c>effectDefinition</c>.
+    /// <c>playerId</c>, <c>acquiredAt</c>, and <c>definitionId</c> are not
+    /// exposed: the content is delivered per owned instance exactly as
+    /// <c>name</c> already is, so no definition-identity member invites a
+    /// client-side content catalog.
     ///
     /// <b>Empty collection.</b> A Player owning no Relic gets <c>200</c> with
     /// <c>[]</c> (§5.5).

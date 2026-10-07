@@ -2,6 +2,7 @@ import * as Phaser from 'phaser';
 import { SAFE_AREA, GAME_WIDTH } from '../GameViewport';
 import { readRuntime } from '../runtime/RuntimeRegistry';
 import { preserveLoadout, readPreservedLoadout } from '../state/PreservedLoadout';
+import { formatCardSummary, formatRelicSummary } from '../presentation/ContentEffectFormat';
 import type { GameRuntimePort } from '../runtime/GameRuntimeEvents';
 import type { BattleStartRequest } from '../../services/api/BattleModels';
 import type { CardResponse, PetResponse, RelicResponse } from '../../services/api/CollectionModels';
@@ -103,7 +104,117 @@ const COLUMN_PITCH = 372;
 const COLUMN_ORIGIN_X = SAFE_AREA.x + 26;
 const LIST_TOP = SAFE_AREA.y + 84;
 const ROW_HEIGHT = 30;
+
+/**
+ * How many collection rows one column can show before the Boss band begins.
+ *
+ * It is the column grid's own capacity, not a content limit: the three columns
+ * are laid out between the header band and the Boss band below them
+ * ({@link BOSS_HEADER_TOP}), which the bottom text band then follows. Five Pets
+ * and three Basic Cards fit inside it — MVP's ten Relics do not
+ * (`MVP_SCOPE.md` §1), so the Relic column reaches the rest of its owned
+ * instances through its own pager ({@link LOBBY_RELIC_PREV_BUTTON}); the other
+ * two lists need none and have none.
+ */
 const MAX_LIST_ROWS = 8;
+
+/** The x the Relic column starts at, and the safe area's own right edge. */
+const RELIC_COLUMN_X = COLUMN_ORIGIN_X + COLUMN_PITCH * 2;
+const SAFE_AREA_RIGHT = SAFE_AREA.x + SAFE_AREA.width;
+
+/**
+ * The Relic column's pager geometry, in logical game pixels.
+ *
+ * <b>Why a pager exists.</b> MVP grants ten Relics (`MVP_SCOPE.md` §1) against a
+ * column grid with {@link MAX_LIST_ROWS} rows before the Boss band, so without
+ * one the bottom two owned instances would be unreachable — a live product
+ * defect (TASK-213 §3.2 C-2). Rewriting the grid to fit ten rows is not
+ * available: the columns, the Boss band, and the bottom text band already
+ * occupy the 672 px safe area exactly, and ten rows at the 30 px pitch would run
+ * into the Boss band. Paging is therefore the smallest bounded mechanism the
+ * existing scene architecture supports.
+ *
+ * <b>Where it sits.</b> The controls live in the Relic column's own **header
+ * line**: the header literal is left-aligned at that column's origin and the
+ * collection rows start 26 px lower, so the pager cannot overlap a row, the
+ * Boss band, the bottom text band, the START BATTLE trigger, or the `< BACK` /
+ * `RETRY` corner — whatever the selection contains. It is drawn only when the
+ * column actually has more owned instances than one page holds, so a collection
+ * that fits renders exactly as it did before.
+ *
+ * They are exported so the layout can be asserted against the same numbers the
+ * scene draws with, rather than against literals in a test.
+ */
+const RELIC_PAGE_CONTROL_Y = SAFE_AREA.y + 58 + 11;
+const RELIC_PAGE_CONTROL_WIDTH = 74;
+const RELIC_PAGE_CONTROL_HEIGHT = 22;
+const RELIC_PAGE_CONTROL_GAP = 10;
+
+export const LOBBY_RELIC_NEXT_BUTTON = {
+  x: SAFE_AREA_RIGHT - 26 - RELIC_PAGE_CONTROL_WIDTH / 2,
+  y: RELIC_PAGE_CONTROL_Y,
+  width: RELIC_PAGE_CONTROL_WIDTH,
+  height: RELIC_PAGE_CONTROL_HEIGHT,
+} as const;
+
+export const LOBBY_RELIC_PREV_BUTTON = {
+  x:
+    LOBBY_RELIC_NEXT_BUTTON.x -
+    RELIC_PAGE_CONTROL_WIDTH / 2 -
+    RELIC_PAGE_CONTROL_GAP -
+    RELIC_PAGE_CONTROL_WIDTH / 2,
+  y: RELIC_PAGE_CONTROL_Y,
+  width: RELIC_PAGE_CONTROL_WIDTH,
+  height: RELIC_PAGE_CONTROL_HEIGHT,
+} as const;
+
+/**
+ * The pager's page indicator, in logical game pixels.
+ *
+ * It is right-aligned to end just left of `PREV`, inside the Relic column and
+ * clear of the column's own header literal. It states which owned instances the
+ * page is showing (`first-last of total`) so the player can tell that more
+ * instances exist — a control with no such statement would leave "is that all of
+ * them?" unanswerable.
+ */
+const RELIC_PAGE_INDICATOR_RIGHT =
+  LOBBY_RELIC_PREV_BUTTON.x - RELIC_PAGE_CONTROL_WIDTH / 2 - RELIC_PAGE_CONTROL_GAP;
+
+/**
+ * The content line under a collection row's identity line, in game pixels.
+ *
+ * A Card and a Relic each state **what they change**, and neither statement fits
+ * beside the row's name within one column: the widest provisioned Card rule and
+ * the widest provisioned Relic rule both exceed the column pitch. The content
+ * therefore takes the row's own second line rather than a tooltip, a hover
+ * surface, or a second panel — `LobbyScene` has no tooltip framework to reuse,
+ * and adding one would be a new interaction system rather than a presentation
+ * change (`ARCHITECTURE.md` §5, `AGENTS.md` §9).
+ *
+ * The geometry is deliberately inside the existing row pitch: the identity line
+ * keeps its 14 px monospace at the row's own `y`, and the content line is a
+ * 12 px monospace at `y + 15`, so the pair occupies 15 + 13 = 28 px of the 30 px
+ * pitch and cannot touch the row below it or the Boss band beneath the lists.
+ * The content text is the `API_CONTRACTS.md` §5.3/§5.4 values rendered by
+ * `ContentEffectFormat`, and no rule, magnitude, or threshold is computed here.
+ */
+const ROW_CONTENT_OFFSET = 15;
+const ROW_CONTENT_FONT_SIZE = '12px';
+/** The dimmer tone a row's content line uses when the row is not selected. */
+const ROW_CONTENT_COLOR = '#94a3b8';
+
+/**
+ * How wide a row's content line may be before it wraps, per column (game
+ * pixels).
+ *
+ * It is the horizontal room the column actually has: the Cards column stops
+ * where the Relics column begins, and the Relics column stops at the safe
+ * area's right edge. Wrapping is the fail-safe for a rule longer than the
+ * provisioned content, so an over-long statement can never run under the
+ * neighbouring column (`TASK-186`'s non-overlap contract).
+ */
+const CARD_CONTENT_WIDTH = COLUMN_PITCH - 12;
+const RELIC_CONTENT_WIDTH = SAFE_AREA_RIGHT - RELIC_COLUMN_X;
 
 /**
  * The Boss-selection band, in game pixels.
@@ -141,6 +252,37 @@ export const MESSAGE_TEXT_BOTTOM_OFFSET = 46;
 export const ERROR_TEXT_BOTTOM_OFFSET = 26;
 
 /**
+ * The Lobby's two outbound controls, in logical game pixels.
+ *
+ * `< BACK` is drawn on every render pass; `RETRY` is drawn only while the
+ * current error belongs to an operation that can be repeated. They share one
+ * row in the top-right corner, which is the one band of this layout that is
+ * structurally free: the header is a fixed, left-aligned literal, and the
+ * collection columns' title band starts 27 px lower. So neither control can
+ * overlap the three collection lists, the Boss band, the bottom text band, the
+ * START BATTLE trigger, or each other, whatever the selection contains.
+ *
+ * They are exported so the layout can be asserted against the same numbers the
+ * scene draws with, rather than against literals in a test.
+ */
+export const LOBBY_BACK_BUTTON = {
+  x: SAFE_AREA.x + SAFE_AREA.width - 20 - 140 / 2,
+  y: SAFE_AREA.y + 31,
+  width: 140,
+  height: 36,
+} as const;
+
+export const LOBBY_RETRY_BUTTON = {
+  x: LOBBY_BACK_BUTTON.x - 140 / 2 - 12 - 120 / 2,
+  y: SAFE_AREA.y + 31,
+  width: 120,
+  height: 32,
+} as const;
+
+/** The two operation names `RETRY` can repeat. */
+type LobbyOperation = 'collection' | 'start';
+
+/**
  * The pre-battle presentation colours. Display only: a Card's `category` is a
  * documented wire member (`API_CONTRACTS.md` §5.3) and is coloured per value so
  * the two categories are distinguishable; an unrecognised value falls back to a
@@ -168,6 +310,29 @@ const CATEGORY_COLORS: Readonly<Record<string, string>> = {
  *         ↓
  * runtime.startBattle(request)              (rule 5 — the runtime owns REST → connect → join)
  * ```
+ *
+ * **Each Card and Relic row states what that option changes.** The Lobby is the
+ * loadout decision point, so a row carrying only a name would leave "what does
+ * this do?" unanswerable before `START BATTLE` (`GDD.md` §17, §8/§10). The Card
+ * and Relic rows therefore draw a second line read from the response's own
+ * `API_CONTRACTS.md` §5.3 `effectDefinition` / §5.4
+ * `trigger`/`condition`/`effectDefinition`, rendered by
+ * `presentation/ContentEffectFormat` and by nothing else. The scene computes no
+ * magnitude, threshold, cost, or legality; keeps no content catalog; and has no
+ * per-Card or per-Relic lookup table — a row's text is a function of the
+ * response alone, and a member the response omits renders nothing rather than a
+ * guessed value.
+ *
+ * **The Relic column pages, so every owned instance is reachable.** MVP grants
+ * ten Relics (`MVP_SCOPE.md` §1) against a column grid with eight rows before the
+ * Boss band, so the column shows one page of {@link MAX_LIST_ROWS} owned
+ * instances at a time and offers `PREV` / `NEXT` beside its own header when there
+ * is more than one page. It is a bounded presentation mechanism, not a new
+ * subsystem: the page is one scene field, the selection is untouched by it, and a
+ * collection that fits on one page renders exactly as it did before. Nothing here
+ * decides ownership, count, category, copy limit, or distinctness — the server
+ * validates the submitted request (`API_CONTRACTS.md` §3,
+ * `ARCHITECTURE.md` §2.2.3 rule 5).
  *
  * **It reads the collection through the runtime port and nothing else.** It
  * imports neither `@microsoft/signalr`, nor `fetch`, nor `ApiService`, nor the
@@ -204,6 +369,16 @@ const CATEGORY_COLORS: Readonly<Record<string, string>> = {
  * it does not compute whether the selection is valid. Count, ownership,
  * category, copy limit, and distinctness are the server's answer
  * (`API_CONTRACTS.md` §3), and that answer is what this scene reports.
+ *
+ * **The scene is not a dead end and not a trap.** `< BACK` returns to
+ * `MainMenuScene` from every state, and a failed operation — the collection
+ * read, or the battle start — reports itself with a working `RETRY` beside it.
+ * `RETRY` repeats only the operation that actually failed and never creates a
+ * second concurrent one. Leaving the Lobby **invalidates the run in flight**
+ * (`asyncRun`), so a battle start that settles after the player pressed
+ * `< BACK` can neither preserve a loadout nor open a battle. Collection and
+ * Battle History are deliberately *not* reached from here: they are main-menu
+ * destinations, and `< BACK` is the one documented exit (`D-202-01 = C`).
  *
  * It obtains the port with `readRuntime(this)`. When no runtime was supplied the
  * scene still runs and reports that the flow is unavailable, so scene lifecycle
@@ -246,6 +421,21 @@ export class LobbyScene extends Phaser.Scene {
   private selectedRelicIds: string[] = [];
 
   /**
+   * Which page of the Relic column is shown, 0-based.
+   *
+   * The column shows {@link MAX_LIST_ROWS} owned instances at a time, and MVP
+   * grants ten (`MVP_SCOPE.md` §1), so this is how the player reaches the
+   * instances that do not fit. It is plain scene state like the selection
+   * itself: no scroll container, no viewport object, and no store is introduced
+   * (`AGENTS.md` §9). It is deliberately **not** part of the selection — paging
+   * shows a different slice of the same owned set and can never add, remove, or
+   * reorder a selected instance, and it is carried through the request only
+   * through {@link selectedRelicIds} (`RELIC_RULES.md` §2.3: the selection's own
+   * order is the equip order).
+   */
+  private relicPage = 0;
+
+  /**
    * The selected Boss's canonical technical Identity (`BOSS_RULES.md` §6.4) —
    * one of {@link MVP_BOSSES}'s `bossId` values, and the single source of the
    * request's `bossId`.
@@ -274,13 +464,51 @@ export class LobbyScene extends Phaser.Scene {
    *
    * The scene-local in-flight guard: while it is set the start trigger is
    * ignored, so repeated activation issues exactly one request. No request is
-   * queued.
+   * queued. It is released by the attempt's own failure, which is what lets
+   * `RETRY` submit again (`ARCHITECTURE.md` §2.2.3 rule 5).
    */
   private startPending = false;
   /** A selection-driven message (e.g. "select a Pet first") shown to the player. */
   private selectionMessage = '';
-  /** The error feedback from the last rejected start, or `null`. */
+  /** The player-facing feedback from the last failed operation, or `null`. */
   private startError: string | null = null;
+  /**
+   * Which operation {@link startError} belongs to, so `RETRY` repeats that one
+   * and nothing else. `null` when there is no error, or when the failure has no
+   * repeatable operation behind it (no runtime was published).
+   */
+  private failedOperation: LobbyOperation | null = null;
+
+  /**
+   * Identifies this scene instance's current asynchronous run.
+   *
+   * `create()` takes the next value and hands it to every operation it starts,
+   * and both `create()` and the scene's teardown advance it. An operation
+   * therefore writes — or navigates — only while the run that started it is
+   * still the current one: a collection read that settles after the scene was
+   * shut down (its objects destroyed by Phaser's `DisplayList#shutdown`), and a
+   * `startBattle` that settles after the player pressed `< BACK`, are both
+   * discarded instead of mutating a presentation that is no longer theirs.
+   *
+   * `< BACK` advances it explicitly as well: leaving the Lobby must invalidate
+   * the attempt in flight, not merely happen to be followed by a teardown.
+   *
+   * It is plain scene-local state, like the other per-run guards here: no
+   * cancellation registry, controller, or global state is introduced
+   * (`AGENTS.md` §9). It is the same pattern `ResultScene`'s `rewardLoadRun`
+   * uses for the reward read.
+   */
+  private asyncRun = 0;
+
+  /**
+   * Guards the one scene transition this run may make — to `MainMenuScene`
+   * (`< BACK`) or to `BattleScene` (a successful start).
+   *
+   * Both share it: a second activation of either cannot start a second scene,
+   * and a repeated `START`/`RETRY` cannot produce a duplicate transition
+   * (`MainMenuScene.transitionTo`'s documented precedent).
+   */
+  private hasTransitioned = false;
 
   /** Rebuilt on every render pass; each entry is one interactive hit area. */
   private interactiveObjects: Phaser.GameObjects.GameObject[] = [];
@@ -341,6 +569,20 @@ export class LobbyScene extends Phaser.Scene {
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.shutdown, this);
     this.events.once(Phaser.Scenes.Events.DESTROY, this.shutdown, this);
 
+    // A scene instance is reusable, so this run's own state is established here
+    // rather than inherited from the previous one: the asynchronous run
+    // identity advances, and the previous run's transport guards and feedback
+    // are cleared. The run identity is what makes a continuation belonging to
+    // the ended run harmless (see the field's own note).
+    const run = ++this.asyncRun;
+    this.loading = false;
+    this.startPending = false;
+    this.selectionMessage = '';
+    this.startError = null;
+    this.failedOperation = null;
+    this.hasTransitioned = false;
+    this.relicPage = 0;
+
     // Restore before the first render, so the preserved selection is what the
     // player sees immediately — including while the collection read is still in
     // flight. Only the approved PLAY AGAIN entry reads the carrier.
@@ -351,13 +593,14 @@ export class LobbyScene extends Phaser.Scene {
 
     if (this.runtime === null) {
       // No runtime: the flow cannot read a collection or start a battle. The
-      // scene stays alive and says so rather than throwing (task §4).
+      // scene stays alive and says so rather than throwing (task §4). There is
+      // no operation to repeat, so no RETRY is offered.
       this.startError = 'No runtime is available: cannot load the collection or start a battle.';
       this.render();
       return;
     }
 
-    void this.loadCollection();
+    void this.loadCollection(run);
   }
 
   /**
@@ -387,6 +630,12 @@ export class LobbyScene extends Phaser.Scene {
    * twice simply repeats the reset.
    */
   shutdown(): void {
+    // Everything this run's asynchronous work asked for is stale from here on:
+    // the run identity advances before any reference is dropped, so a promise
+    // that settles later — a collection read, a `startBattle` — writes nothing
+    // and navigates nowhere.
+    this.asyncRun += 1;
+
     for (const object of this.interactiveObjects) {
       object.off(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN);
     }
@@ -398,6 +647,7 @@ export class LobbyScene extends Phaser.Scene {
     this.selectedRelicIds = [];
     this.selectedBossId = null;
     this.restorePreservedLoadout = false;
+    this.relicPage = 0;
 
     this.ownedPets = [];
     this.ownedCards = [];
@@ -407,6 +657,8 @@ export class LobbyScene extends Phaser.Scene {
     this.startPending = false;
     this.selectionMessage = '';
     this.startError = null;
+    this.failedOperation = null;
+    this.hasTransitioned = false;
 
     this.headerText = null;
     this.petsHeaderText = null;
@@ -430,14 +682,25 @@ export class LobbyScene extends Phaser.Scene {
    * responses are shown as received: nothing is filtered, sorted, defaulted, or
    * repaired, and when a read fails or returns an empty set the UI shows exactly
    * that — no fallback loadout is invented (`AGENTS.md` §7).
+   *
+   * `run` is the async run `create()` (or `RETRY`) started this read for. The
+   * read is asynchronous and the scene can be shut down or reused while it is in
+   * flight, so the delivery is written only while that run is still the current
+   * one ({@link asyncRun}); a stale read renders nothing and leaves the state
+   * the run that replaced it owns untouched.
+   *
+   * A failure is recoverable: it names the operation in
+   * {@link failedOperation}, which is what puts a working `RETRY` on screen.
    */
-  private async loadCollection(): Promise<void> {
+  private async loadCollection(run: number): Promise<void> {
     const runtime = this.runtime;
     if (runtime === null) {
       return;
     }
 
     this.loading = true;
+    this.startError = null;
+    this.failedOperation = null;
     this.render();
 
     try {
@@ -447,17 +710,77 @@ export class LobbyScene extends Phaser.Scene {
         runtime.getRelics(),
       ]);
 
+      if (run !== this.asyncRun) {
+        return;
+      }
+
       this.ownedPets = pets;
       this.ownedCards = cards;
       this.ownedRelics = relics;
     } catch (error) {
+      if (run !== this.asyncRun) {
+        return;
+      }
+
       // A failed read is presentation feedback, not game state: the selection
       // stays empty and nothing is substituted for the missing data.
       this.startError = `Collection load failed: ${describeError(error)}`;
+      this.failedOperation = 'collection';
     } finally {
-      this.loading = false;
-      this.render();
+      if (run === this.asyncRun) {
+        this.loading = false;
+        this.render();
+      }
     }
+  }
+
+  /**
+   * The `RETRY` action behind a failed operation.
+   *
+   * It repeats the operation that actually failed — the collection read, or the
+   * battle start — and nothing else. An activation while something is already
+   * in flight is ignored, so a repeated `RETRY` cannot issue two requests or
+   * two start attempts (`ARCHITECTURE.md` §2.2.3 rule 5).
+   */
+  private retryFailedOperation(): void {
+    if (this.loading || this.startPending) {
+      return;
+    }
+
+    if (this.failedOperation === 'collection') {
+      void this.loadCollection(this.asyncRun);
+      return;
+    }
+
+    if (this.failedOperation === 'start') {
+      this.requestStart();
+    }
+  }
+
+  /**
+   * `< BACK` — the Lobby's exit to `MainMenuScene` (`GDD.md` §2.1,
+   * `TDD.md` §2.1).
+   *
+   * It is available in every Lobby state, including while a read or a start is
+   * in flight, so the screen is never a dead end. Leaving **invalidates the
+   * current run's asynchronous work before the transition is requested**: a
+   * battle start that settles afterwards compares the run it captured against
+   * {@link asyncRun} and is discarded, so it can neither preserve a loadout nor
+   * open a battle from a scene the player has left.
+   *
+   * It deliberately reaches `MainMenuScene` and nothing else: Collection and
+   * Battle History stay reachable from the main menu, exactly as before this
+   * scene existed (`D-202-01 = C`).
+   */
+  private goBack(): void {
+    if (this.hasTransitioned) {
+      return;
+    }
+
+    this.hasTransitioned = true;
+    this.asyncRun += 1;
+
+    this.scene.start('MainMenuScene');
   }
 
   // ---------------------------------------------------------------------------
@@ -571,6 +894,45 @@ export class LobbyScene extends Phaser.Scene {
   }
 
   /**
+   * How many pages the owned Relic column occupies.
+   *
+   * It is a function of the read alone — `Math.ceil(owned / page size)`, floored
+   * at one so an empty or partial column still has a page — and it is never a
+   * content decision: the scene holds no expectation of how many Relics a Player
+   * owns (`AGENTS.md` §7, §10).
+   */
+  private relicPageCount(): number {
+    return Math.max(1, Math.ceil(this.ownedRelics.length / MAX_LIST_ROWS));
+  }
+
+  /**
+   * Moves the Relic column by one page and re-renders.
+   *
+   * The target is clamped, so activating `PREV` on the first page or `NEXT` on
+   * the last is a no-op rather than a wrap-around — a wrap would present an
+   * instance the player is already looking past as if it were on the far side.
+   *
+   * Paging changes **what is shown**, never **what is selected**: the selection
+   * lives in {@link selectedRelicIds} and is untouched here, so a selected Relic
+   * stays selected when its page scrolls out of view and keeps its equip slot
+   * (`RELIC_RULES.md` §2.3 — slot order is selection order, not display order).
+   */
+  private changeRelicPage(delta: number): void {
+    const target = Math.min(
+      Math.max(this.relicPage + delta, 0),
+      this.relicPageCount() - 1
+    );
+
+    if (target === this.relicPage) {
+      return;
+    }
+
+    this.relicPage = target;
+    this.selectionMessage = '';
+    this.render();
+  }
+
+  /**
    * Chooses the Boss the battle is fought against (`BOSS_RULES.md` §1 — a battle
    * has exactly one Boss) from the five canonical MVP Bosses.
    *
@@ -604,11 +966,18 @@ export class LobbyScene extends Phaser.Scene {
    * That check is about *completeness*, not legality:
    * the scene never decides whether the chosen items are owned, distinct, or
    * within a copy limit — the server does (§3, `ARCHITECTURE.md` §2.2.3 rule 5).
+   *
+   * It is inert while a collection read is in flight or a start attempt is
+   * outstanding, and after this run has already claimed its transition. The
+   * first condition is what keeps the presented "disabled" state real: on the
+   * `PLAY AGAIN` entry the preserved loadout is applied before the read
+   * finishes, so a click during the read could otherwise submit a request built
+   * from a view that is still being populated.
    */
   private requestStart(): void {
-    // The in-flight guard: repeated activation while a request is outstanding
-    // results in exactly one `startBattle` call. Nothing is queued.
-    if (this.startPending) {
+    // The in-flight guards: repeated activation while a read or a request is
+    // outstanding results in exactly one `startBattle` call. Nothing is queued.
+    if (this.startPending || this.loading || this.hasTransitioned) {
       return;
     }
 
@@ -626,7 +995,7 @@ export class LobbyScene extends Phaser.Scene {
     }
 
     this.selectionMessage = '';
-    void this.startBattle();
+    void this.startBattle(this.asyncRun);
   }
 
   /**
@@ -634,18 +1003,23 @@ export class LobbyScene extends Phaser.Scene {
    *
    * On success the scene transitions to `BattleScene`. On rejection it stays
    * active, shows the error, and keeps the selection intact so the player can
-   * correct and retry (`ARCHITECTURE.md` §2.2.3 rule 5).
+   * correct and retry — the in-flight guard is released, which is what makes
+   * `RETRY` submit again (`ARCHITECTURE.md` §2.2.3 rule 5).
    *
    * A successful start also **preserves the submitted loadout** (`D-202-03 = D`,
    * ADR-022): the request the server accepted is the loadout the battle is
    * fought with, so it is what `ResultScene` → `PLAY AGAIN` must restore. A
    * rejected start creates no battle and therefore preserves nothing.
    *
+   * `run` is the async run that issued this attempt. A settlement belonging to a
+   * run the scene has already left — `< BACK` was pressed, or the instance was
+   * reused — is discarded before it can preserve anything or navigate.
+   *
    * The scene does not duplicate the runtime's REST → connect → join
    * orchestration, and it computes no gameplay value: it hands over a request
    * and reports the outcome (`TASK-077`).
    */
-  private async startBattle(): Promise<void> {
+  private async startBattle(run: number): Promise<void> {
     const runtime = this.runtime;
     if (runtime === null) {
       return;
@@ -653,6 +1027,7 @@ export class LobbyScene extends Phaser.Scene {
 
     this.startPending = true;
     this.startError = null;
+    this.failedOperation = null;
     this.render();
 
     // Exactly the request that is submitted, kept so the preserved loadout is
@@ -663,17 +1038,47 @@ export class LobbyScene extends Phaser.Scene {
     try {
       await runtime.startBattle(request);
     } catch (error) {
+      if (run !== this.asyncRun) {
+        return;
+      }
+
       // The documented rejections (401 UNAUTHENTICATED, 400 INVALID_LOADOUT /
       // PET_NOT_OWNED / BOSS_NOT_FOUND) and transport failures all arrive here.
-      // No battle exists after any of them, so the scene stays put and nothing
-      // is preserved.
+      // No battle exists after any of them, so the scene stays put, nothing is
+      // preserved, and the operation is named so RETRY can repeat it. The
+      // message is the transport's own player-facing one (`API_CONTRACTS.md`
+      // §6's `message` when the server sent an envelope) — never a status code.
       this.startError = `Battle start failed: ${describeError(error)}`;
+      this.failedOperation = 'start';
       this.startPending = false;
       this.render();
       return;
     }
 
+    if (run !== this.asyncRun) {
+      // The Lobby was left (or reused) while the start was in flight: the battle
+      // the server created is not this presentation's to enter, so no loadout is
+      // preserved and no scene is started.
+      return;
+    }
+
     this.startPending = false;
+    this.enterBattle(request);
+  }
+
+  /**
+   * Claims this run's transition and enters the battle the request started.
+   *
+   * The claim is taken *before* the loadout is preserved and the scene is
+   * started, so a repeated success path cannot preserve twice or start a second
+   * `BattleScene` (`MainMenuScene.transitionTo`'s documented shape).
+   */
+  private enterBattle(request: BattleStartRequest): void {
+    if (this.hasTransitioned) {
+      return;
+    }
+
+    this.hasTransitioned = true;
     preserveLoadout(this, request);
     this.scene.start('BattleScene');
   }
@@ -844,6 +1249,7 @@ export class LobbyScene extends Phaser.Scene {
     this.renderPets();
     this.renderCards();
     this.renderRelics();
+    this.drawRelicPager();
     this.renderBosses();
 
     this.selectionText?.setText(
@@ -871,30 +1277,97 @@ export class LobbyScene extends Phaser.Scene {
     this.messageText?.setText(this.describeStartTriggerMessage());
     this.errorText?.setText(this.startError ?? '');
 
+    // The exit is drawn on every pass, so it is usable in every state — while
+    // the collection is loading, after a failure, and when the loadout is ready.
+    this.drawBackControl();
     this.drawStartTrigger();
+
+    // `RETRY` is offered only for a failure that has an operation behind it to
+    // repeat: a rejected start or a failed read. A failure with nothing to
+    // repeat (no runtime was published) reports itself and offers no control.
+    if (this.startError !== null && this.failedOperation !== null) {
+      this.drawRetryControl();
+    }
   }
 
   /**
    * The Start Battle trigger's own status line — the step-4 affordance and its
    * progress. It reports transport/presentation state only: no match, damage,
    * boss, or any other gameplay value exists here (`GAME_RULES.md` §18).
+   *
+   * On the error path it keeps saying what the next attempt needs instead of
+   * going blank: the error line above it carries *what happened*, and this line
+   * carries *what to do*, so neither has to do both jobs.
    */
   private describeStartTriggerMessage(): string {
     if (this.loading) {
       return 'Loading the collection…';
     }
-    if (this.startError !== null) {
-      return this.selectionMessage;
+    if (this.startPending) {
+      return 'START BATTLE — request in flight…';
     }
     if (this.selectionMessage !== '') {
       return this.selectionMessage;
     }
-    if (this.startPending) {
-      return 'START BATTLE — request in flight…';
+    if (this.describeIncompleteSelection() !== null) {
+      return 'START BATTLE — fill the selection first.';
     }
-    return this.describeIncompleteSelection() === null
-      ? 'START BATTLE — ready to submit.'
-      : 'START BATTLE — fill the selection first.';
+    if (this.startError !== null) {
+      return 'START BATTLE — ready to retry.';
+    }
+    return 'START BATTLE — ready to submit.';
+  }
+
+  /**
+   * Draws the `< BACK` control that returns to `MainMenuScene`.
+   *
+   * It is a real control in every Lobby state, matching the convention the
+   * read-only viewer and history scenes already use (a filled rectangle with
+   * its caption centred on it). It is re-created by each render pass, so a
+   * re-render destroys the previous pass's object and its pointer handler with
+   * it — repeated renders and a reused scene instance cannot accumulate
+   * listeners.
+   */
+  private drawBackControl(): void {
+    this.drawControl(LOBBY_BACK_BUTTON, '< BACK', () => this.goBack());
+  }
+
+  /** Draws the `RETRY` control behind a failed, repeatable operation. */
+  private drawRetryControl(): void {
+    this.drawControl(LOBBY_RETRY_BUTTON, 'RETRY', () => this.retryFailedOperation());
+  }
+
+  /**
+   * Draws one outbound control and registers its hit area.
+   *
+   * It follows this scene's existing visual and interaction convention (fill,
+   * stroke, centred bold label, `setInteractive` + `GAMEOBJECT_POINTER_DOWN`)
+   * rather than introducing a button abstraction (`ARCHITECTURE.md` §5,
+   * `AGENTS.md` §9).
+   */
+  private drawControl(
+    layout: { readonly x: number; readonly y: number; readonly width: number; readonly height: number },
+    label: string,
+    onActivate: () => void
+  ): void {
+    const button = this.add
+      .rectangle(layout.x, layout.y, layout.width, layout.height, 0x1d4ed8)
+      .setStrokeStyle(1, 0x60a5fa);
+
+    const caption = this.add
+      .text(layout.x, layout.y, label, {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '16px',
+        color: '#e2e8f0',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5);
+
+    button.setInteractive({ useHandCursor: true });
+    button.on(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN, () => onActivate());
+
+    this.renderedTexts.push(caption);
+    this.interactiveObjects.push(button);
   }
 
   /** Draws the interactive Start Battle trigger and registers its hit area. */
@@ -974,36 +1447,102 @@ export class LobbyScene extends Phaser.Scene {
           (slot >= 0 ? `  slot ${slot + 1}` : ''),
         slot >= 0,
         () => this.toggleCard(card.cardId),
-        CATEGORY_COLORS[card.category]
+        CATEGORY_COLORS[card.category],
+        // What the Card changes (API_CONTRACTS.md §5.3's effectDefinition),
+        // rendered from the response the read returned. Nothing is priced,
+        // computed, or looked up per Card id.
+        formatCardSummary(card),
+        CARD_CONTENT_WIDTH
       );
     });
   }
 
-  /** One Relic row per owned Relic instance returned by the read. */
+  /** One Relic row per owned Relic instance the current page shows. */
   private renderRelics(): void {
     if (this.loading) {
-      this.renderNote(COLUMN_ORIGIN_X + COLUMN_PITCH * 2, LIST_TOP, 'Loading relics…');
+      this.renderNote(RELIC_COLUMN_X, LIST_TOP, 'Loading relics…');
       return;
     }
     if (this.ownedRelics.length === 0) {
-      this.renderNote(COLUMN_ORIGIN_X + COLUMN_PITCH * 2, LIST_TOP, 'No owned Relics returned.');
+      this.renderNote(RELIC_COLUMN_X, LIST_TOP, 'No owned Relics returned.');
       return;
     }
 
-    this.ownedRelics.slice(0, MAX_LIST_ROWS).forEach((relic, index) => {
-      const slot = this.selectedRelicIds.indexOf(relic.relicId);
+    // The column shows one page of owned instances at a time. The page is
+    // clamped against the read, so a shorter collection — a re-read, or a read
+    // that returned fewer instances — can never leave the player looking at an
+    // empty page. Rows keep the column's own pitch, so a page of rows occupies
+    // exactly the list block the other two columns use.
+    const page = Math.min(this.relicPage, this.relicPageCount() - 1);
 
-      this.renderOption(
-        COLUMN_ORIGIN_X + COLUMN_PITCH * 2,
-        LIST_TOP + index * ROW_HEIGHT,
-        `${slot >= 0 ? '●' : '○'} ${relic.name}` +
-          // Slot numbering is display of the documented selection order:
-          // position i is equip slot i + 1 (RELIC_RULES.md §2.3).
-          (slot >= 0 ? `  slot ${slot + 1}` : ''),
-        slot >= 0,
-        () => this.toggleRelic(relic.relicId)
-      );
-    });
+    this.ownedRelics
+      .slice(page * MAX_LIST_ROWS, page * MAX_LIST_ROWS + MAX_LIST_ROWS)
+      .forEach((relic, index) => {
+        const slot = this.selectedRelicIds.indexOf(relic.relicId);
+
+        this.renderOption(
+          RELIC_COLUMN_X,
+          LIST_TOP + index * ROW_HEIGHT,
+          `${slot >= 0 ? '●' : '○'} ${relic.name}` +
+            // Slot numbering is display of the documented selection order:
+            // position i is equip slot i + 1 (RELIC_RULES.md §2.3).
+            (slot >= 0 ? `  slot ${slot + 1}` : ''),
+          slot >= 0,
+          () => this.toggleRelic(relic.relicId),
+          '#cbd5e1',
+          // When the Relic reacts, what it waits for, and what it changes
+          // (API_CONTRACTS.md §5.4's trigger/condition/effectDefinition),
+          // rendered from the response the read returned.
+          formatRelicSummary(relic),
+          RELIC_CONTENT_WIDTH
+        );
+      });
+  }
+
+  /**
+   * Draws the Relic column's pager, when — and only when — the column holds more
+   * owned instances than one page shows.
+   *
+   * It is the "reach every owned instance" affordance TASK-213 §3.2 C-2 requires
+   * once all ten MVP Relics are owned: without it the tenth and ninth Relic rows
+   * would be unreachable, and the player could not inspect or select them. The
+   * controls follow the scene's existing control convention (a filled,
+   * interactive rectangle with its caption centred on it, re-created by each
+   * render pass) rather than introducing a scrolling container, a wheel handler,
+   * or a second interaction system (`ARCHITECTURE.md` §5, `AGENTS.md` §9).
+   *
+   * The controls decide no legality and page no selection: they only change which
+   * slice of the owned column is presented (`describeIncompleteSelection` still
+   * answers what the request needs).
+   */
+  private drawRelicPager(): void {
+    const pageCount = this.relicPageCount();
+
+    if (pageCount <= 1) {
+      return;
+    }
+
+    const page = Math.min(this.relicPage, pageCount - 1);
+    const first = page * MAX_LIST_ROWS + 1;
+    const last = Math.min(this.ownedRelics.length, page * MAX_LIST_ROWS + MAX_LIST_ROWS);
+
+    this.drawControl(LOBBY_RELIC_PREV_BUTTON, 'PREV', () => this.changeRelicPage(-1));
+    this.drawControl(LOBBY_RELIC_NEXT_BUTTON, 'NEXT', () => this.changeRelicPage(1));
+
+    const indicator = this.add
+      .text(
+        RELIC_PAGE_INDICATOR_RIGHT,
+        RELIC_PAGE_CONTROL_Y,
+        `${first}-${last} of ${this.ownedRelics.length}`,
+        {
+          fontFamily: 'ui-monospace, monospace',
+          fontSize: '13px',
+          color: '#94a3b8',
+        }
+      )
+      .setOrigin(1, 0.5);
+
+    this.renderedTexts.push(indicator);
   }
 
   /**
@@ -1030,14 +1569,29 @@ export class LobbyScene extends Phaser.Scene {
     });
   }
 
-  /** Draws one clickable option row and registers its hit area. */
+  /**
+   * Draws one clickable option row and registers its hit areas.
+   *
+   * A row has one line — its identity and selection state — and, when the
+   * caller supplies one, a second line carrying that option's own shipped
+   * content (`detail`). Both lines are the same hit area: activating either
+   * runs `onSelect`, so the content line is part of the option rather than a
+   * separate control, and a Row's selection behaviour is unchanged by the
+   * second line.
+   *
+   * `detail` is empty for the Pet and Boss rows, whose contracts carry no such
+   * member, and for a Card or Relic whose structured content produced no text —
+   * in which case no second line is drawn at all rather than an empty one.
+   */
   private renderOption(
     x: number,
     y: number,
     text: string,
     selected: boolean,
     onSelect: () => void,
-    color: string = '#cbd5e1'
+    color: string = '#cbd5e1',
+    detail: string = '',
+    detailWidth: number = 0
   ): void {
     const label = this.add
       .text(x, y, text, {
@@ -1052,6 +1606,28 @@ export class LobbyScene extends Phaser.Scene {
 
     this.renderedTexts.push(label);
     this.interactiveObjects.push(label);
+
+    if (detail === '') {
+      return;
+    }
+
+    const content = this.add
+      .text(x, y + ROW_CONTENT_OFFSET, detail, {
+        fontFamily: 'ui-monospace, monospace',
+        fontSize: ROW_CONTENT_FONT_SIZE,
+        color: selected ? '#fbbf24' : ROW_CONTENT_COLOR,
+      })
+      .setOrigin(0, 0);
+
+    if (detailWidth > 0) {
+      content.setWordWrapWidth(detailWidth);
+    }
+
+    content.setInteractive({ useHandCursor: true });
+    content.on(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN, onSelect);
+
+    this.renderedTexts.push(content);
+    this.interactiveObjects.push(content);
   }
 
   /** Draws a non-interactive informational row. */
@@ -1082,7 +1658,17 @@ export class LobbyScene extends Phaser.Scene {
   }
 }
 
-/** Presentation-safe rendering of a rejection's own message. */
+/**
+ * Presentation-safe rendering of a failed operation's own message.
+ *
+ * The shared transport (`ApiService`) has already reduced a rejected response to
+ * the server's `API_CONTRACTS.md` §6 `message` — its human-readable detail —
+ * and the runtime's own failures carry their own descriptions, so an `Error`'s
+ * message is what there is to say. What is deliberately never rendered is
+ * anything that is not a message: a rejecting non-`Error` is reported by its
+ * effect, so no raw payload, stack, status line, or host object's string form
+ * can reach the screen through this line.
+ */
 function describeError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return error instanceof Error && error.message !== '' ? error.message : 'Unknown error.';
 }

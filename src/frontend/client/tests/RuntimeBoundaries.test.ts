@@ -185,16 +185,36 @@ describe('Frontend architectural boundaries', () => {
       expect(cleanup).not.toMatch(/signalR|disconnect|connect\(/i);
     });
 
-    it('is read by exactly one scene entry, the approved PLAY AGAIN return', () => {
-      // The carrier is consulted only where the approved continuation asks for
-      // it. Every scene that names the accessor must be a scene the approved
-      // flow reaches, and the flag must be the documented start data.
+    it('is read by exactly the two approved scenes and nothing else', () => {
+      // The carrier is consulted only where the approved flow asks for it, and each
+      // reader has an approved purpose:
+      //
+      //   LobbyScene    restores the preserved selection on the approved
+      //                 ResultScene → PLAY AGAIN return (D-202-03 = D, ADR-022);
+      //   BattleScene   resolves the active Pet's DISPLAY NAME only, because
+      //                 `PetState` carries no client-visible identity (ADR-014) and
+      //                 the HUD must show the Pet's name (TASK-209 §4). HP, Max HP
+      //                 and Power come from the authoritative `petState` regardless
+      //                 of it, so the carrier can never supply a combat value.
+      //
+      // No other scene may read it, and the flag that makes the Lobby read it is
+      // still the documented start data passed by the approved continuation only.
       const sceneDir = join(SRC, 'game', 'scenes');
       const readers = walk(sceneDir).filter((file) =>
         /readPreservedLoadout/.test(stripComments(readFileSync(file, 'utf8')))
       );
 
-      expect(readers.map((file) => file.split(/[\\/]/).pop())).toEqual(['LobbyScene.ts']);
+      expect(readers.map((file) => file.split(/[\\/]/).pop()).sort()).toEqual([
+        'BattleScene.ts',
+        'LobbyScene.ts',
+      ]);
+
+      const battle = stripComments(readSource(join('game', 'scenes', 'BattleScene.ts')));
+      // The BattleScene reads the carrier for one display lookup and nothing else:
+      // it resolves a Pet name with it and takes no combat value from it.
+      expect(battle).toContain('readPreservedLoadout');
+      expect(battle).toMatch(/\.petId/);
+      expect(battle).not.toMatch(/readPreservedLoadout\(this\)\?\.\s*(cardLoadout|relicLoadout)/);
 
       const lobby = stripComments(readSource(join('game', 'scenes', 'LobbyScene.ts')));
       expect(lobby).toContain('restorePreservedLoadout');
@@ -248,8 +268,16 @@ describe('Frontend architectural boundaries', () => {
       // `boss` is likewise NOT in it any more, for the same reason as
       // `statuseffects`: §4.4's `bossState` is a delivered projection, so the
       // runtime legitimately names it. What stays forbidden is Boss *gameplay* —
-      // selection, and any Boss value beyond the two delivered numbers — which the
+      // selection, and any Boss value beyond the delivered members — which the
       // assertion at "carries no Boss source of its own" pins.
+      //
+      // TASK-209 stage advance. `power` was in this list while the active Pet's
+      // Power was undelivered; TASK-208's D-208-02 decision (§4.3 item 15) makes it
+      // a delivered `petState` member, so the runtime legitimately names it and the
+      // generic term scan can no longer forbid the string. What stays forbidden is
+      // the *computation*, which the dedicated assertion "%s damages, heals, and
+      // derives no Pet HP or Power" pins: no HP damaged, healed, clamped, or
+      // reconstructed, and no Power reconstructed, spent, or turned into a cost.
       //
       // TASK-078 stage advance. `boss` and `relic` were in this list because the
       // runtime carried no Boss or Relic concept at all; ARCHITECTURE.md §2.2.3
@@ -271,7 +299,6 @@ describe('Frontend architectural boundaries', () => {
         'crit',
         'gravity',
         'detonate',
-        'power',
       ];
 
       for (const term of forbidden) {
@@ -410,6 +437,72 @@ describe('Frontend architectural boundaries', () => {
       );
       expect(code, `${file} must not compute with the delivered Boss maxHp`).not.toMatch(
         /\.maxHp\s*(\+\+|--|\+=|-=|\*=|\/=)/
+      );
+    });
+
+    it.each(runtimeFiles)('%s damages, heals, and derives no Pet HP or Power', (file) => {
+      const code = stripComments(readSource(file));
+
+      // SIGNALR_PROTOCOL.md §4.3 item 15 / GAME_STATE.md §2.3 / GAME_RULES.md §18:
+      // the active Pet's `hp`, `maxHp` and `power` are authoritative server state
+      // made renderable, not client-side combat logic (the TASK-208 D-208-01 and
+      // D-208-02 decisions). The runtime models and renders the three delivered
+      // values.
+      //
+      // `hp`, `maxHp` and `power` are therefore NOT in the forbidden-term list:
+      // §4.3 item 15 makes them delivered contract members, so naming them is
+      // required. What stays forbidden is the computation — damaging or healing the
+      // Pet, clamping `hp` to `maxHp`, inferring either from the other,
+      // reconstructing HP from a damage event (which carries only `amount`), and
+      // reconstructing Power from `PowerChanged` (§7 item 2 discards events on
+      // resync) or turning it into a Card cost, an affordability state, or a
+      // cast-legality judgment (§4 item 15, §4.3 item 15, CARD_RULES.md §3.6).
+      for (const term of [
+        'ApplyDamageToPet',
+        'DamagePet',
+        'damagePet',
+        'HealPet',
+        'healPet',
+        'ApplyHeal',
+        'applyHeal',
+        'ClampHp',
+        'clampHp',
+        'ComputedPetHp',
+        'derivedPetHp',
+        'PetHpPercentage',
+        'MaxPower',
+        'EffectiveCardCost',
+        'CardCostModifier',
+        'IsAffordable',
+        'isAffordable',
+        'CanAfford',
+        'canAfford',
+        // TASK-212A-1 keeps the content/cost boundary: the collection read now
+        // delivers a Card's structured effect rule, and the runtime transports
+        // that response without ever reading a cost member from it. `PowerCost`
+        // is deliberately NOT exposed on `API_CONTRACTS.md` §5.3, so the runtime
+        // cannot name it at all (SIGNALR_PROTOCOL.md §4 item 15,
+        // CARD_RULES.md §3.6).
+        'PowerCost',
+        'powerCost',
+        'CostFrom',
+        'costFrom',
+      ]) {
+        expect(code, `${file} must not reference "${term}"`).not.toContain(term);
+      }
+
+      // The delivered Pet values are copied through, never computed with: no
+      // arithmetic may touch `hp`, `maxHp`, or `power`, so no HP can be damaged,
+      // healed, clamped, or re-derived and no Power can be reconstructed or spent
+      // (§4.3 item 15).
+      expect(code, `${file} must not compute with the delivered Pet hp`).not.toMatch(
+        /\.hp\s*(\+\+|--|\+=|-=|\*=|\/=)/
+      );
+      expect(code, `${file} must not compute with the delivered Pet maxHp`).not.toMatch(
+        /\.maxHp\s*(\+\+|--|\+=|-=|\*=|\/=)/
+      );
+      expect(code, `${file} must not compute with the delivered Pet power`).not.toMatch(
+        /\.power\s*(\+\+|--|\+=|-=|\*=|\/=)/
       );
     });
 

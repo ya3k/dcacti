@@ -1,6 +1,17 @@
 # Boss Rules
 
-**Version:** 2.11 (§6/§6.2/§6.2.3 **Mộc Yêu** passive trigger threshold updated
+**Version:** 2.12 (§6.2.6's client-visibility constraint reworded, applying the
+TASK-208 Product Owner decision **D-208-03**: the Boss's canonical technical
+Identity (`BossState.BossId`, §6.4) is client-visible alongside the
+already-delivered live `HP`/`MaxHP`, and the rest of `BossState` remains
+server-side. **Wording only** — no stat, magnitude, duration, trigger, target,
+threshold, operator, effect, skill, passive, or content value changes; no new
+gameplay rule, mechanic, or Boss telegraph is introduced; no Element,
+presentation, portrait, or asset metadata is added to the wire contract; and no
+`BossState` member, SignalR member, `BattleState` member, event, Redis key, or
+database column is added. The wire contract is owned by `SIGNALR_PROTOCOL.md`
+§4.4 and the state boundary by `GAME_STATE.md` §2.4; both are referenced, not
+restated. Prior 2.11: §6/§6.2/§6.2.3 **Mộc Yêu** passive trigger threshold updated
 from every 5 player matches to every 8 player matches per Product Owner MVP balance
 decision TASK-200 / Q-8 in TASK-191. Regeneration magnitude remains strictly 5%
 MaxHP (250 HP); event ordering, turn semantics, deterministic behavior, and server
@@ -551,16 +562,22 @@ All five effects are **server-authoritative** (§8, `GAME_RULES.md` §18,
 `ADR-001`). The client does not calculate, predict, or authoritatively apply
 any of them.
 
-**The Boss's live HP is client-visible; the rest of `BossState` is not.** The
-SignalR projection delivers the Boss's current `HP` and `MaxHP` — and only
-those two members — as the `bossState` member of the existing state push. That
-authorization is the Product Owner decision recorded by TASK-160 (**D-2A**), and
-the projection's member names, types, presence, and client-boundary rules are
-owned by `SIGNALR_PROTOCOL.md` §4.4; this document states the visibility
+**The Boss's live `HP`/`MaxHP` and its canonical technical Identity are
+client-visible; the rest of `BossState` is not.** The SignalR projection
+delivers the Boss's current `HP` and `MaxHP` and `BossState.BossId` (§6.4) —
+and only those three members — as the `bossState` member of the existing state
+push. The live-health authorization is the Product Owner decision recorded by
+TASK-160 (**D-2A**); the Identity authorization is the Product Owner decision
+recorded by TASK-208 (**D-208-03**), which is the documentation amendment this
+revision applies. The projection's member names, types, presence, and
+client-boundary rules are owned by `SIGNALR_PROTOCOL.md` §4.4; this document
+states the visibility
 constraint and does not restate the wire contract. `BossState` itself is **not**
-exposed: `BossId`/Identity, `Element`, `ATK`, `DEF`, `State`, `PassiveId`,
-`PassiveProgress`, `SkillCharge`, `SkillCooldown`, and the Boss's
-`StatusEffects[]` stay server-side (`GAME_STATE.md` §2.4), so the effects above
+exposed: the Identity travels as an identity only, with no display name,
+Element label, portrait, or asset key attached, and `Element`, `ATK`, `DEF`,
+`State`, `PassiveId`, `PassiveProgress`, `SkillCharge`, `SkillCooldown`, and
+the Boss's `StatusEffects[]` stay server-side (`GAME_STATE.md` §2.4), so the
+effects above
 remain **not** directly client-visible as state — the player sees their
 consequences through the Boss's changing HP and through the emitted events
 (§7), not by reading a status list.

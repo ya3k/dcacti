@@ -539,3 +539,172 @@ export function formatInBattleEvent(event: InBattleServerEvent): string {
       return `PowerChanged: ${event.delta >= 0 ? '+' : ''}${event.delta} -> ${event.power} (${event.source})`;
   }
 }
+
+/**
+ * One player-facing statement of what just happened, ready to be drawn.
+ *
+ * It is a *presentation* of an already-delivered event: the message names no
+ * value the event did not carry, and the colour is a display choice.
+ */
+export interface EventCallout {
+  /** The line a player reads, e.g. `COMBO ×4`, `BOSS SKILL`, `CARD: Heal`. */
+  readonly message: string;
+  /** The display colour for the callout. */
+  readonly color: string;
+  /**
+   * How newsworthy the callout is: **lower is more important**. A batch presents
+   * its lowest-numbered callout, so the most significant thing that happened is
+   * what the player is told (TASK-210 §7).
+   */
+  readonly priority: number;
+}
+
+/** The callout palette. Display only; no colour carries gameplay meaning. */
+const CALLOUT_MATCH_COLOR = '#e2e8f0';
+const CALLOUT_COMBO_COLOR = '#fbbf24';
+const CALLOUT_CAST_COLOR = '#a5b4fc';
+const CALLOUT_BOSS_COLOR = '#f87171';
+const CALLOUT_PASSIVE_COLOR = '#c4b5fd';
+
+/**
+ * The priority ladder. A resolution can produce a dozen events; the player is
+ * told the most important *one* of them, so the ladder is ordered by what the
+ * player is actually waiting to learn:
+ *
+ * ```text
+ * 1  a meaningful Combo   the cascade the player's own Swap produced
+ * 2  a Card / Pet Skill   the player's own cast
+ * 3  a Boss Skill         the Boss acting
+ * 4  a Passive triggering the effect the player was building toward
+ * 5  a Passive charging   progress toward that effect
+ * 6  a Match              an ordinary single-Match Swap's result
+ * ```
+ */
+const CALLOUT_PRIORITY_COMBO = 1;
+const CALLOUT_PRIORITY_CAST = 2;
+const CALLOUT_PRIORITY_BOSS = 3;
+const CALLOUT_PRIORITY_PASSIVE_TRIGGERED = 4;
+const CALLOUT_PRIORITY_PASSIVE_CHARGED = 5;
+const CALLOUT_PRIORITY_MATCH = 6;
+
+/**
+ * The player-facing callout for one delivered in-battle event, or `null` when
+ * that event has none.
+ *
+ * Everything shown here is a delivered member, read as sent:
+ *
+ * ```text
+ * ComboChanged      `combo`            — only from 2 upward: a published combo of
+ *                                        1 is an ordinary single-Match Swap
+ *                                        (MATCH3_RULES.md §6.2 item 1)
+ * CardCast          `cardId`           — resolved to a display name through the
+ *                                        caller's lookup; the identity itself is
+ *                                        shown when no definition is loaded
+ * PetSkillCast      `cardId`           — as above
+ * BossSkillCast     (no member)        — the event's own existence is the fact;
+ *                                        `skillId` is a technical identity with no
+ *                                        client-visible definition, so it is not
+ *                                        shown
+ * PassiveTriggered  `source`           — `"boss"` / `"pet"` selects the wording
+ * PassiveCharged    `source`, `progress`, `threshold`
+ * MatchCreated      (no member)        — the event's own existence is the fact
+ * ```
+ *
+ * Events with **no** callout, and why:
+ *
+ * ```text
+ * GemMatched / CascadeCreated   already shown as the per-cell board highlights
+ *                               and, for a Cascade, as the Combo the pass produced
+ * DamageCalculated              the six pipeline factors are developer detail;
+ *                               the resulting number reaches the player as the
+ *                               damage floater and as the HP readout
+ * DamageDealt / DamageTaken     drawn as one floating number over the panel of the
+ *                               party that took the damage (BattleScene)
+ * PowerChanged                  drawn as a signed floater over the Power gauge
+ * RelicTriggered                the contract delivers only the Relic's owned
+ *                               instance identity and this scene has no Relic
+ *                               definition source, so there is no player-facing
+ *                               name to show — reported as a contract gap rather
+ *                               than rendered as a raw id (TASK-210 §7)
+ * ```
+ */
+export function describeEventCallout(
+  event: InBattleServerEvent,
+  resolveCardName: (cardId: string) => string
+): EventCallout | null {
+  switch (event.type) {
+    case 'ComboChanged':
+      return event.combo >= 2
+        ? {
+            message: `COMBO ×${event.combo}`,
+            color: CALLOUT_COMBO_COLOR,
+            priority: CALLOUT_PRIORITY_COMBO,
+          }
+        : null;
+    case 'CardCast':
+      return {
+        message: `CARD: ${resolveCardName(event.cardId)}`,
+        color: CALLOUT_CAST_COLOR,
+        priority: CALLOUT_PRIORITY_CAST,
+      };
+    case 'PetSkillCast':
+      return {
+        message: `PET SKILL: ${resolveCardName(event.cardId)}`,
+        color: CALLOUT_CAST_COLOR,
+        priority: CALLOUT_PRIORITY_CAST,
+      };
+    case 'BossSkillCast':
+      return {
+        message: 'BOSS SKILL',
+        color: CALLOUT_BOSS_COLOR,
+        priority: CALLOUT_PRIORITY_BOSS,
+      };
+    case 'PassiveTriggered':
+      return {
+        message: event.source === 'boss' ? 'BOSS PASSIVE TRIGGERED' : 'PASSIVE TRIGGERED',
+        color: CALLOUT_PASSIVE_COLOR,
+        priority: CALLOUT_PRIORITY_PASSIVE_TRIGGERED,
+      };
+    case 'PassiveCharged':
+      return {
+        message: `${event.source === 'boss' ? 'BOSS PASSIVE' : 'PASSIVE'} ${event.progress}/${event.threshold}`,
+        color: CALLOUT_PASSIVE_COLOR,
+        priority: CALLOUT_PRIORITY_PASSIVE_CHARGED,
+      };
+    case 'MatchCreated':
+      return {
+        message: 'MATCH',
+        color: CALLOUT_MATCH_COLOR,
+        priority: CALLOUT_PRIORITY_MATCH,
+      };
+    default:
+      return null;
+  }
+}
+
+/**
+ * The single callout a delivered event batch should present, or `null` when the
+ * batch carries nothing a player needs told.
+ *
+ * The batch is one resolution, delivered in the server's own order
+ * (`GAME_EVENTS.md` §1), so presenting the whole batch would be a second event
+ * feed rather than feedback. The most important event wins; among equally
+ * important events the **last** one wins, because that is the one the resolution
+ * finished on.
+ */
+export function selectBatchCallout(
+  events: readonly InBattleServerEvent[],
+  resolveCardName: (cardId: string) => string
+): EventCallout | null {
+  let selected: EventCallout | null = null;
+
+  for (const event of events) {
+    const candidate = describeEventCallout(event, resolveCardName);
+
+    if (candidate !== null && (selected === null || candidate.priority <= selected.priority)) {
+      selected = candidate;
+    }
+  }
+
+  return selected;
+}

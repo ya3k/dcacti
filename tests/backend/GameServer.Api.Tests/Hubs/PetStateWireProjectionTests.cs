@@ -7,7 +7,7 @@ namespace GameServer.Api.Tests.Hubs;
 
 /// <summary>
 /// Unit tests for <see cref="PetStatePayload"/> wire projection
-/// (<c>SIGNALR_PROTOCOL.md</c> §4.3 items 2, 13 and 14).
+/// (<c>SIGNALR_PROTOCOL.md</c> §4.3 items 2, 13, 14 and 15).
 /// </summary>
 public sealed class PetStateWireProjectionTests
 {
@@ -24,12 +24,17 @@ public sealed class PetStateWireProjectionTests
             PassiveProgress: new PassiveProgressPayload(Threshold: 5, Current: 2),
             EquippedCards: ["card-heal", "card-shield", "card-power-charge", "card-inferno"],
             StatusEffects: [],
+            Hp: 1000,
+            MaxHp: 1000,
+            Power: 0,
             PassiveResetOverride: null);
 
         var element = JsonSerializer.SerializeToElement(payload, SerializerOptions);
 
         var properties = element.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray();
-        Assert.Equal(["equippedCards", "passiveId", "passiveProgress", "statusEffects"], properties);
+        Assert.Equal(
+            ["equippedCards", "hp", "maxHp", "passiveId", "passiveProgress", "power", "statusEffects"],
+            properties);
 
         Assert.Equal("xich-lang", element.GetProperty("passiveId").GetString());
 
@@ -44,6 +49,49 @@ public sealed class PetStateWireProjectionTests
         Assert.False(element.TryGetProperty("passiveResetOverride", out _));
     }
 
+    /// <summary>
+    /// §4.3 item 15 / <c>GAME_STATE.md</c> §2.3 (<c>TASK-208</c> <b>D-208-01</b>/
+    /// <b>D-208-02</b>): the active Pet's three live combat values are delivered under
+    /// the existing <c>petState</c> — always present, non-nullable, integers, and
+    /// reported exactly as the authoritative state holds them. <c>hp</c> and
+    /// <c>maxHp</c> are independent (neither is derived from the other, and
+    /// <c>hp</c> is never clamped to <c>maxHp</c>), and <c>power = 0</c> is a real
+    /// published value — the value a battle begins with — sent as <c>0</c> rather
+    /// than omitted or written as <c>null</c>.
+    /// </summary>
+    [Fact]
+    public void PetStatePayload_SerializesTheThreeLiveCombatValues_WithZeroPowerSentAsZero()
+    {
+        var payload = new PetStatePayload(
+            PassiveId: "xich-lang",
+            PassiveProgress: new PassiveProgressPayload(Threshold: 5, Current: 0),
+            EquippedCards: ["card-heal", "card-shield", "card-power-charge", "card-inferno"],
+            StatusEffects: [],
+            Hp: 640,
+            MaxHp: 1000,
+            Power: 0);
+
+        var element = JsonSerializer.SerializeToElement(payload, SerializerOptions);
+
+        // Always present, never null, and always integers.
+        foreach (var member in new[] { "hp", "maxHp", "power" })
+        {
+            Assert.True(element.TryGetProperty(member, out var value), $"{member} must always be present");
+            Assert.Equal(JsonValueKind.Number, value.ValueKind);
+        }
+
+        // Read as sent: `maxHp` is not derived from `hp` and `hp` is not clamped to it.
+        Assert.Equal(640, element.GetProperty("hp").GetInt32());
+        Assert.Equal(1000, element.GetProperty("maxHp").GetInt32());
+
+        // Zero is a value, not an absence (§4.3 item 15).
+        Assert.Equal(0, element.GetProperty("power").GetInt32());
+
+        // No `maxPower` member: the 0–100 range is a documented invariant, not state.
+        Assert.False(element.TryGetProperty("maxPower", out _));
+        Assert.False(element.TryGetProperty("maxpower", out _));
+    }
+
     [Fact]
     public void PetStatePayload_SerializesDocumentedWireMembers_WithNonDefaultResetIncluded()
     {
@@ -52,12 +100,18 @@ public sealed class PetStateWireProjectionTests
             PassiveProgress: new PassiveProgressPayload(Threshold: 5, Current: 0),
             EquippedCards: ["card-inferno", "card-heal", "card-shield", "card-power-charge"],
             StatusEffects: [],
+            Hp: 1000,
+            MaxHp: 1000,
+            Power: 25,
             PassiveResetOverride: "NoReset");
 
         var element = JsonSerializer.SerializeToElement(payload, SerializerOptions);
 
-        var properties = element.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray();
-        Assert.Equal(["current", "equippedCards", "passiveId", "passiveProgress", "passiveResetOverride", "statusEffects", "threshold"],
+        Assert.Equal(
+            [
+                "current", "equippedCards", "hp", "maxHp", "passiveId", "passiveProgress",
+                "passiveResetOverride", "power", "statusEffects", "threshold",
+            ],
             EnumeratePaths(element).OrderBy(n => n, StringComparer.Ordinal).ToArray());
 
         Assert.Equal("NoReset", element.GetProperty("passiveResetOverride").GetString());
@@ -81,7 +135,10 @@ public sealed class PetStateWireProjectionTests
             PassiveId: "xich-lang",
             PassiveProgress: new PassiveProgressPayload(Threshold: 5, Current: 0),
             EquippedCards: ["card-heal", "card-shield", "card-power-charge", "card-inferno"],
-            StatusEffects: []);
+            StatusEffects: [],
+            Hp: 1000,
+            MaxHp: 1000,
+            Power: 0);
 
         var element = JsonSerializer.SerializeToElement(payload, SerializerOptions);
 
@@ -106,6 +163,9 @@ public sealed class PetStateWireProjectionTests
             PassiveId: "xich-lang",
             PassiveProgress: new PassiveProgressPayload(Threshold: 5, Current: 0),
             EquippedCards: ["card-heal", "card-shield", "card-power-charge", "card-inferno"],
+            Hp: 1000,
+            MaxHp: 1000,
+            Power: 0,
             StatusEffects:
             [
                 // A Turn-based instance with no TargetStat: `targetStat` is absent

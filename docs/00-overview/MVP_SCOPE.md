@@ -1,6 +1,10 @@
 # MVP Scope
 
-**Version:** 1.5 (§1 Player account updated per ADR-020 — standalone web account with username/password registration/login, PostgreSQL Accounts, and JWT/ApplicationSession; prior 1.4: §1 Pets block finalized per TASK-062 — the Pet XP
+**Version:** 1.6 (§1/§3 updated per TASK-213 — the MVP content set is owned by a
+newly created Player's deterministic starter grant, MVP has no post-creation
+acquisition system, and per-Pet Passive effect application, Pet Star progression
+and post-creation content acquisition are explicitly FUTURE; no other IN/OUT
+classification changed. Prior 1.5: §1 Player account updated per ADR-020 — standalone web account with username/password registration/login, PostgreSQL Accounts, and JWT/ApplicationSession; prior 1.4: §1 Pets block finalized per TASK-062 — the Pet XP
 balance/reward decisions are now decided (`PET_RULES.md` §5.1–§5.5):
 Pet Level range 1–50, Pet XP hard-capped at 4900. Prior 1.3: §1 Player and
 Pets blocks updated per TASK-059 — Player
@@ -49,11 +53,19 @@ Player XP / Level — persistent account progression (COMBAT_RULES.md §7).
 ## Pets
 ```text
 5 Pets (Thanh Xà, Xích Lang, Sơn Hùng, Bạch Hổ, Huyền Quy)
-Pet Element, Passive, Signature Skill
-Tier, Star, Level progression
+Pet Element, Signature Skill
+Pet Passive — the charge / threshold / reset mechanism and its in-battle
+  presentation (passive identity, progress counter, PassiveCharged /
+  PassiveTriggered)
+Pet Level progression
   (Pet XP / Pet Level — the Pet instance's own progression, independent of
    Player Level; PET_RULES.md §5. Battle-won rewards go to the active
    combat Pet; Pet Level range 1–50, Pet XP hard-capped at 4900)
+Tier is a fixed per-Pet value (PET_RULES.md §3.4 — MVP ships one Tier
+  instance per Pet; no Tier-up rule exists and none is introduced)
+Deferred to FUTURE by the TASK-213 decision: per-Pet Passive effect
+  application, and Pet Star progression (§3; see "Content ownership &
+  reachability" below)
 ```
 
 ## Cards
@@ -86,6 +98,31 @@ Server-authoritative battle resolution
 Realtime communication (SignalR)
 Active battle state store (Redis)
 Persistent storage (PostgreSQL)
+```
+
+## Content ownership & reachability (TASK-213 decision)
+```text
+The whole MVP content set is owned by a newly created Player. The
+deterministic Player-creation starter grant (DATABASE.md §2) IS the MVP
+content grant — it is not a minimum bootstrap:
+  5 Pets        one owned Pet instance per MVP Pet definition
+  3 Basic Cards all three, as PlayerUnlockedCard unlock rows
+  10 Relics     one owned Relic instance per MVP Relic definition
+  5 Bosses      no ownership relationship — all five are always selectable
+A Pet Skill Card is derived from the active Pet's SignatureSkillCardId at
+battle start and is never an owned/unlock row (CARD_RULES.md §1 item 4).
+
+MVP has NO acquisition system. No unlock, drop, purchase, claim,
+reward-grant, gacha, shop, quest, or progression path adds content to an
+account after creation: an account's owned content set is fixed at
+creation. Post-creation content acquisition, and any content beyond the set
+above, are FUTURE (§3) and require a Rule Change (GAME_RULES.md §20) before
+implementation.
+
+Card build diversity is a CONTENT limit, not a reachability limit. MVP
+defines exactly 3 Basic Cards and the battle loadout is exactly 3 Basic
+Cards + 1 derived Pet Skill Card (CARD_RULES.md §1), so the Card slot is
+fixed by content, not by ownership. More Cards is FUTURE (§3).
 ```
 
 ---
@@ -132,6 +169,11 @@ Environment
 Dynamic Board
 Advanced Element System (e.g. Tương Sinh)
 PvP / Multiplayer
+Post-creation content acquisition / unlocking (TASK-213)
+Per-Pet Passive effect application (TASK-213; magnitudes are unauthored —
+  PASSIVE_RULES.md §8)
+Pet Star progression (TASK-213; no star-up cost or curve is authored —
+  PET_RULES.md §4 item 3)
 ```
 
 Nothing in this list may be implemented, partially implemented, or

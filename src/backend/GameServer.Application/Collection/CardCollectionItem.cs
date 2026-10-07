@@ -1,3 +1,5 @@
+using GameServer.Domain.Cards;
+
 namespace GameServer.Application.Collection;
 
 /// <summary>
@@ -5,16 +7,26 @@ namespace GameServer.Application.Collection;
 /// (<c>API_CONTRACTS.md</c> §5.3).
 ///
 /// <code>
-/// cardId    string  CardDefinition.CardDefinitionId
-/// name      string  CardDefinition.Name
-/// category  string  CardDefinition.Category — "Basic" | "PetSkill"
+/// cardId            string  CardDefinition.CardDefinitionId
+/// name              string  CardDefinition.Name
+/// category          string  CardDefinition.Category — "Basic" | "PetSkill"
+/// effectDefinition  array   CardDefinition.EffectDefinition — the Card's own
+///                           structured effect rule, 1..n elements
 /// </code>
 ///
-/// <b>Exactly the three documented members.</b> §5.3 defines these three and
+/// <b>Exactly the four documented members.</b> §5.3 defines these four and
 /// states the persisted-or-definition values <c>playerId</c>, <c>powerCost</c>,
-/// <c>loadoutCopyLimit</c>, and <c>effectDefinition</c> are <b>not</b> exposed
-/// (they are validated server-side by §3's loadout path). The record is what
-/// keeps that structural.
+/// and <c>loadoutCopyLimit</c> are <b>not</b> exposed (they are validated
+/// server-side by §3's loadout path). The record is what keeps that structural.
+///
+/// <b><see cref="EffectDefinition"/> is carried, never interpreted.</b> It is
+/// the definition row's own value, read through the repository the read already
+/// performs (<c>CardRepository.ListUnlockedAsync</c> joins
+/// <c>PlayerUnlockedCard → CardDefinition</c>). Its element member names and
+/// present-iff rules are <c>DATABASE.md</c> §1/§3's, and its values are owned by
+/// <c>CARD_RULES.md</c> §2/§4.1; this projection neither recomposes, renames,
+/// defaults, nor fills in a member the stored payload omits
+/// (<c>AGENTS.md</c> §7).
 ///
 /// <b>Unlock state is the array membership, not a member.</b> §5.3: "presence in
 /// this array <b>is</b> the unlocked state — there is no <c>unlocked</c>
@@ -34,7 +46,14 @@ namespace GameServer.Application.Collection;
 /// <c>"Basic"</c> and <c>"PetSkill"</c> (<c>CARD_RULES.md</c> §1,
 /// <c>DATABASE.md</c> §3).
 /// </param>
+/// <param name="EffectDefinition">
+/// <c>CardDefinition.EffectDefinition</c> as stored
+/// (<c>DATABASE.md</c> §1; TASK-111 D-1b's array shape) — always present and
+/// never empty, because the column is NOT NULL and every provisioned Card
+/// states at least one effect.
+/// </param>
 public sealed record CardCollectionItem(
     string CardId,
     string Name,
-    string Category);
+    string Category,
+    CardEffectDefinitions EffectDefinition);

@@ -117,11 +117,12 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
         {
             await using var read = CreateContext();
 
-            // 1 Player + 1 Pet + 3 Cards + 3 Relics = 8 rows.
+            // 1 Player + 5 Pets + 3 Cards + 10 Relics = 19 rows
+            // (MVP_SCOPE.md §1 / DATABASE.md §2 item 1).
             Assert.Equal(1, await read.Players.CountAsync(p => p.PlayerId == player.PlayerId));
-            Assert.Equal(1, await read.Pets.CountAsync(pet => pet.PlayerId == player.PlayerId));
+            Assert.Equal(5, await read.Pets.CountAsync(pet => pet.PlayerId == player.PlayerId));
             Assert.Equal(3, await read.PlayerUnlockedCards.CountAsync(c => c.PlayerId == player.PlayerId));
-            Assert.Equal(3, await read.Relics.CountAsync(relic => relic.PlayerId == player.PlayerId));
+            Assert.Equal(10, await read.Relics.CountAsync(relic => relic.PlayerId == player.PlayerId));
         }
         finally
         {
@@ -135,9 +136,11 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
     {
         if (Skip) return;
 
-        // DATABASE.md §2 item 1: pet-xich-lang; card-heal, card-shield,
-        // card-power-charge; relic-berserker-core, relic-mana-crystal,
-        // relic-assassin-eye — and nothing else.
+        // DATABASE.md §2 item 1 / MVP_SCOPE.md §1: all five provisioned Pets,
+        // all three Basic Cards, and all ten provisioned Relics — and nothing
+        // else. The sets are compared as sets because ownership order is not a
+        // contract (RELIC_RULES.md §2.3 owns equip order; the reads are
+        // unordered).
         await using var context = CreateContext();
         var player = await new PlayerRepository(context).GetOrCreateByDiscordUserIdAsync(
             NewDiscordUserId(),
@@ -147,10 +150,14 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
         {
             await using var read = CreateContext();
 
-            var pet = await read.Pets.AsNoTracking()
-                .SingleAsync(p => p.PlayerId == player.PlayerId);
+            var petDefinitionIds = await read.Pets.AsNoTracking()
+                .Where(p => p.PlayerId == player.PlayerId)
+                .Select(p => p.PetDefinitionId)
+                .ToListAsync();
 
-            Assert.Equal("pet-xich-lang", pet.PetDefinitionId);
+            Assert.Equal(
+                ["pet-bach-ho", "pet-huyen-quy", "pet-son-hung", "pet-thanh-xa", "pet-xich-lang"],
+                petDefinitionIds.OrderBy(id => id, StringComparer.Ordinal).ToArray());
 
             var cardIds = await read.PlayerUnlockedCards.AsNoTracking()
                 .Where(c => c.PlayerId == player.PlayerId)
@@ -167,7 +174,18 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
                 .ToListAsync();
 
             Assert.Equal(
-                ["relic-assassin-eye", "relic-berserker-core", "relic-mana-crystal"],
+                [
+                    "relic-arcane-battery",
+                    "relic-assassin-eye",
+                    "relic-battle-instinct",
+                    "relic-berserker-core",
+                    "relic-burning-curse",
+                    "relic-cascade-core",
+                    "relic-combo-fang",
+                    "relic-emergency-core",
+                    "relic-execution-mark",
+                    "relic-mana-crystal",
+                ],
                 relicDefinitionIds.OrderBy(id => id, StringComparer.Ordinal).ToArray());
         }
         finally
@@ -178,14 +196,15 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Postgres_StarterPet_ShouldCarryItsDocumentedCreationValues()
+    public async Task Postgres_StarterPets_ShouldEachCarryTheirDocumentedCreationValues()
     {
         if (Skip) return;
 
         // DATABASE.md §2 item 1 / §3: Tier Common, Star 1, XP 0, Level 1, and a
-        // server-set AcquiredAt. The database also enforces the documented
-        // ranges (CK_Pet_Star_Range, CK_Pet_Level_Range, CK_Pet_XP_Range), so a
-        // value outside them could not have been stored at all.
+        // server-set AcquiredAt — on every granted instance, not on one
+        // privileged Pet. The database also enforces the documented ranges
+        // (CK_Pet_Star_Range, CK_Pet_Level_Range, CK_Pet_XP_Range), so a value
+        // outside them could not have been stored at all.
         await using var context = CreateContext();
         var player = await new PlayerRepository(context).GetOrCreateByDiscordUserIdAsync(
             NewDiscordUserId(),
@@ -195,14 +214,23 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
         {
             await using var read = CreateContext();
 
-            var pet = await read.Pets.AsNoTracking()
-                .SingleAsync(p => p.PlayerId == player.PlayerId);
+            var pets = await read.Pets.AsNoTracking()
+                .Where(pet => pet.PlayerId == player.PlayerId)
+                .ToListAsync();
 
-            Assert.Equal(PetTier.Common, pet.Tier);
-            Assert.Equal(1, pet.Star);
-            Assert.Equal(0, pet.XP);
-            Assert.Equal(1, pet.Level);
-            Assert.NotEqual(default, pet.AcquiredAt);
+            Assert.Equal(5, pets.Count);
+
+            Assert.All(pets, pet =>
+            {
+                Assert.Equal(PetTier.Common, pet.Tier);
+                Assert.Equal(1, pet.Star);
+                Assert.Equal(0, pet.XP);
+                Assert.Equal(1, pet.Level);
+                Assert.NotEqual(default, pet.AcquiredAt);
+            });
+
+            // One owned instance per MVP Pet definition: no duplicate row.
+            Assert.Equal(5, pets.Select(pet => pet.PetDefinitionId).Distinct(StringComparer.Ordinal).Count());
         }
         finally
         {
@@ -229,17 +257,21 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
                 .Where(r => r.PlayerId == player.PlayerId)
                 .ToListAsync();
 
-            Assert.Equal(3, relics.Count);
+            Assert.Equal(10, relics.Count);
 
-            // TASK-083 §15: A != B, B != C, A != C.
+            // Every granted instance carries its own identity.
             var instanceIds = relics.Select(r => r.RelicInstanceId).ToArray();
-            Assert.Equal(3, instanceIds.Distinct(StringComparer.Ordinal).Count());
+            Assert.Equal(10, instanceIds.Distinct(StringComparer.Ordinal).Count());
 
             // RELIC_RULES.md §2.2: never collapsed with the definition id.
             Assert.All(relics, r => Assert.NotEqual(r.RelicDefinitionId, r.RelicInstanceId));
 
             // DATABASE.md §1: AcquiredAt, set once by the server.
             Assert.All(relics, r => Assert.NotEqual(default, r.AcquiredAt));
+
+            // One owned instance per MVP Relic definition: no duplicate row, so
+            // no duplicate-selection question is opened (RELIC_RULES.md §2.4).
+            Assert.Equal(10, relics.Select(r => r.RelicDefinitionId).Distinct(StringComparer.Ordinal).Count());
         }
         finally
         {
@@ -270,13 +302,19 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
         {
             await using var read = CreateContext();
 
-            var pet = await read.Pets.AsNoTracking()
-                .SingleAsync(p => p.PlayerId == player.PlayerId);
+            var pets = await read.Pets.AsNoTracking()
+                .Where(pet => pet.PlayerId == player.PlayerId)
+                .ToListAsync();
 
-            var petDefinition = await read.PetDefinitions.AsNoTracking()
-                .SingleOrDefaultAsync(d => d.PetDefinitionId == pet.PetDefinitionId);
+            Assert.Equal(5, pets.Count);
 
-            Assert.NotNull(petDefinition);
+            foreach (var pet in pets)
+            {
+                var petDefinition = await read.PetDefinitions.AsNoTracking()
+                    .SingleOrDefaultAsync(d => d.PetDefinitionId == pet.PetDefinitionId);
+
+                Assert.NotNull(petDefinition);
+            }
 
             var cardDefinitionIds = await read.PlayerUnlockedCards.AsNoTracking()
                 .Where(c => c.PlayerId == player.PlayerId)
@@ -366,8 +404,9 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
         // so a failure anywhere in the batch rolls the whole batch back.
         //
         // The failure is forced by violating a documented ownership constraint on
-        // one of the starter rows — the Pet's Star range (DATABASE.md §3,
-        // CK_Pet_Star_Range). The Player and the other six rows must not persist.
+        // one of the granted rows — the Pet's Star range (DATABASE.md §3,
+        // CK_Pet_Star_Range) — on an otherwise valid variant of the §2 grant, so
+        // the row's range violation is the only thing wrong with the batch.
         var discordUserId = NewDiscordUserId();
 
         await using (var context = CreateContext())
@@ -383,21 +422,25 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
                             context,
                             DateTimeOffset.UtcNow);
 
-                        // Out-of-range Star: a state the applied schema refuses.
-                        var invalidPet = new Pet
-                        {
-                            PetInstanceId = valid.StarterPet.PetInstanceId,
-                            PlayerId = valid.StarterPet.PlayerId,
-                            PetDefinitionId = valid.StarterPet.PetDefinitionId,
-                            Tier = valid.StarterPet.Tier,
-                            Star = Pet.MaxStar + 1,
-                            XP = valid.StarterPet.XP,
-                            Level = valid.StarterPet.Level,
-                            AcquiredAt = valid.StarterPet.AcquiredAt,
-                        };
+                        // Out-of-range Star on one Pet: a state the applied schema
+                        // refuses. Every other granted row is the real one, so a
+                        // partial commit would be observable.
+                        var invalidPets = valid.StarterPets
+                            .Select((pet, index) => new Pet
+                            {
+                                PetInstanceId = pet.PetInstanceId,
+                                PlayerId = pet.PlayerId,
+                                PetDefinitionId = pet.PetDefinitionId,
+                                Tier = pet.Tier,
+                                Star = index == 0 ? Pet.MaxStar + 1 : pet.Star,
+                                XP = pet.XP,
+                                Level = pet.Level,
+                                AcquiredAt = pet.AcquiredAt,
+                            })
+                            .ToArray();
 
                         return new PlayerStarterGrant(
-                            invalidPet,
+                            invalidPets,
                             valid.StarterCards,
                             valid.StarterRelics);
                     }));
@@ -427,11 +470,11 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
         if (Skip) return;
 
         // TASK-083 §11 / API_CONTRACTS.md §2.6 rule 5: two concurrent first-login
-        // requests for one Discord identity must produce exactly 1 Player, 1
-        // starter Pet, 3 starter Cards, and 3 starter Relics — never a doubled
-        // set. The DiscordUserId UNIQUE constraint is the documented mechanism
-        // (DATABASE.md §1, §3); the loser re-reads the winner's row and its whole
-        // staged batch is discarded.
+        // requests for one account must produce exactly 1 Player, 5 starter Pets,
+        // 3 starter Cards, and 10 starter Relics — never a doubled set. The
+        // AccountId UNIQUE constraint is the documented mechanism (DATABASE.md §1,
+        // §3); the loser re-reads the winner's row and its whole staged batch is
+        // discarded.
         //
         // Each request gets its own GameDbContext and its own connection, so the
         // race is real rather than a shared-tracker artifact.
@@ -456,12 +499,12 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
             var cardCount = await verify.PlayerUnlockedCards.CountAsync(c => c.PlayerId == playerId);
             var relicCount = await verify.Relics.CountAsync(r => r.PlayerId == playerId);
 
-            Assert.Equal(1, petCount);
+            Assert.Equal(5, petCount);
             Assert.Equal(3, cardCount);
-            Assert.Equal(3, relicCount);
+            Assert.Equal(10, relicCount);
 
-            // Exactly 7 ownership rows in total.
-            Assert.Equal(7, petCount + cardCount + relicCount);
+            // Exactly 18 ownership rows in total.
+            Assert.Equal(18, petCount + cardCount + relicCount);
         }
         finally
         {
@@ -512,9 +555,9 @@ public class PlayerStarterOwnershipPostgresTests : IAsyncLifetime
             await using var verify = CreateContext();
 
             Assert.Equal(1, await verify.Players.CountAsync(p => p.AccountId == ToAccountId(discordUserId)));
-            Assert.Equal(1, await verify.Pets.CountAsync(pet => pet.PlayerId == first.PlayerId));
+            Assert.Equal(5, await verify.Pets.CountAsync(pet => pet.PlayerId == first.PlayerId));
             Assert.Equal(3, await verify.PlayerUnlockedCards.CountAsync(c => c.PlayerId == first.PlayerId));
-            Assert.Equal(3, await verify.Relics.CountAsync(r => r.PlayerId == first.PlayerId));
+            Assert.Equal(10, await verify.Relics.CountAsync(r => r.PlayerId == first.PlayerId));
         }
         finally
         {

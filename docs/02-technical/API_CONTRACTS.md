@@ -1,6 +1,45 @@
 # API Contracts
 
-**Version:** 1.17 (§4.5 `GET /api/battle/history` response contract defined per
+**Version:** 1.19 (§5.1's binding member list widened by one member per TASK-213
+§5's Signature Skill decision, implemented by TASK-219A — `GET /api/pets` (and
+therefore `GET /api/pets/{petId}`, which §5.2 makes the same object) gains
+`signatureSkill`: the Pet's **derived Signature Skill reference**, carrying
+`cardId` = the Pet's existing `PetDefinition.SignatureSkillCardId` FK,
+`name` and `category` = that referenced `CardDefinition`'s own stored values.
+The member is always present, never `null`, and never omitted, because
+`SignatureSkillCardId` is a required FK and each Pet has exactly one Signature
+Skill (`PET_RULES.md` §8, `CARD_RULES.md` §4 item 1). **The Signature Skill is
+IDENTIFIED from the Pet that derives it and is not an owned Card**: §5.3's
+membership is **unchanged and must not be widened** — a `PetSkill`
+`CardDefinition` is still never a `PlayerUnlockedCard` row
+(`CARD_RULES.md` §1 item 4, ADR-012 item 9), so no `PetSkill` definition reaches
+`/api/cards` and this member is not delivered there; presence in that array
+remains the unlocked state. §5.3 gains one sentence stating that boundary and
+§5.6 gains one clause stating that `signatureSkill` is not an equip member.
+**No new endpoint, request member, query parameter, header, pagination member,
+cost/affordability/legality member, `effectDefinition` copy, ownership row,
+schema, index, migration, Domain type, SignalR member, event, or Redis contract
+is introduced** — the reference is a projection of an existing required FK and
+of the definition row it already points at, and the endpoint list in §1 is
+unchanged. Prior 1.18: (§5.3 / §5.4 widened additively per TASK-212A's `AMEND BOTH`
+contract decision, implemented by TASK-212A-1 — the loadout decision point can
+now communicate **what each Card and Relic changes**. `GET /api/cards` gains
+one member, `effectDefinition`: the Card's own already-authored structured
+effect array (`CardDefinition.EffectDefinition`), element for element and at
+`DATABASE.md` §1's stored member names, with §1/§3's present-iff rules
+preserved. `GET /api/relics` gains three: `trigger`,
+`condition` (nullable, and emitted as an explicit `null` when the Relic
+declares none), and `effectDefinition` — the definition's own structured
+content (`RelicDefinition.Trigger`/`Condition`/`EffectDefinition`), carried
+inline per owned instance exactly as `name` already is. **No new vocabulary, no
+authored prose, no cost/affordability/legality member, no realtime member, no
+SignalR/state/event/Redis change, no schema, index, query, migration, or Domain
+change**: the values were already authored, already stored, and already loaded
+by the existing repository reads, so both amendments are projection-only. §5.3's
+and §5.4's membership semantics are unchanged (no `unlocked` member; a
+`PetSkill` `CardDefinition` is still not an unlock row; the response stays
+definition-identity-free). Prior 1.17: (§4.5 `GET /api/battle/history` response
+contract defined per
 TASK-163's 24 recorded Product Owner decisions, applied by TASK-164 — the last
 endpoint in §1's summary that had no defining section now has one: a bare JSON
 array (no wrapper), each element carrying the full §4 result members
@@ -693,7 +732,12 @@ Response 200:
     "element": "Fire",
     "tier": "Common",
     "star": 1,
-    "level": 12
+    "level": 12,
+    "signatureSkill": {
+      "cardId": "card-inferno",
+      "name": "Inferno",
+      "category": "PetSkill"
+    }
   }
 ]
 ```
@@ -701,16 +745,80 @@ Response 200:
 The member list above is binding and exhaustive:
 
 ```text
-member    type    source / semantics
-petId     string  Pet.PetInstanceId — the owned instance; the same id
-                  submitted as `petId` to POST /api/battle/start (§3)
-identity  string  PetDefinition.Identity
-element   string  PetDefinition.Element — "Fire" | "Water" | "Earth" |
-                  "Wood" | "Metal" (ELEMENT_RULES.md §1)
-tier      string  Pet.Tier
-star      int     Pet.Star
-level     int     Pet.Level
+member            type    source / semantics
+petId             string  Pet.PetInstanceId — the owned instance; the same id
+                          submitted as `petId` to POST /api/battle/start (§3)
+identity          string  PetDefinition.Identity
+element           string  PetDefinition.Element — "Fire" | "Water" | "Earth" |
+                          "Wood" | "Metal" (ELEMENT_RULES.md §1)
+tier              string  Pet.Tier
+star              int     Pet.Star
+level             int     Pet.Level
+signatureSkill    object  the Pet's DERIVED Signature Skill reference —
+                          PetDefinition.SignatureSkillCardId resolved through
+                          the CardDefinition it references (below)
 ```
+
+`signatureSkill` is the response's one non-scalar member, and its own member set
+is binding and exhaustive too:
+
+```text
+member                    type    source / semantics
+signatureSkill.cardId     string  PetDefinition.SignatureSkillCardId — the
+                                  CardDefinitionId the Pet's Signature Skill is
+                                  expressed as, and the definition the battle
+                                  loadout derives its 4th equipped entry from
+                                  (CARD_RULES.md §4 item 1, §3)
+signatureSkill.name       string  that CardDefinition's Name
+signatureSkill.category   string  that CardDefinition's Category, as the §5.3
+                                  closed set spells it — "PetSkill" for a Pet's
+                                  Signature Skill (CARD_RULES.md §4 item 1)
+```
+
+**`signatureSkill` is the Pet's derived Signature Skill, and it states no
+ownership.** These are the rules the member fixes, and they are the whole of what
+it means:
+
+1. **It is derived from the Pet, and it is not an owned Card.** The member
+   reports `PetDefinition.SignatureSkillCardId` — the existing required FK
+   (`DATABASE.md` §1, `PET_RULES.md` §8) — and the definition row it references.
+   A Signature Skill is never owned and never acquired: it is derived from the
+   active Pet at battle start and appended to `PetState.EquippedCards[]` as the
+   4th entry, after the 3 submitted Basic Cards (§3, `GAME_STATE.md` §2.3). This
+   response reports the reference; it grants nothing and equips nothing.
+2. **`§5.3`'s membership is unchanged, and it must not be widened.** A
+   `PetSkill` `CardDefinition` is still never a `PlayerUnlockedCard` row
+   (`CARD_RULES.md` §1 item 4, ADR-012 item 9), so no `PetSkill` definition
+   reaches `/api/cards` and this member is **not** delivered there. Presence in
+   that array remains the unlocked state; the reference is delivered by this
+   section instead.
+3. **It is always present, never `null`, and never omitted.** `SignatureSkillCardId`
+   is a required FK and every Pet has exactly one Signature Skill
+   (`CARD_RULES.md` §4 item 1), so the member has no absent or "unknown" form and
+   no optional-member rule applies. A Pet whose referenced definition does not
+   resolve is a broken `DATABASE.md` §1 state rather than a contract case, and is
+   refused rather than answered with a fabricated or placeholder reference
+   (`AGENTS.md` §7) — the same posture §5.4 takes for an unresolvable
+   `RelicDefinition`.
+4. **It carries no cost, no affordability state, no cast-legality judgment, and
+   no `effectDefinition`.** The composed cast value is `EffectiveCardCost`
+   (`CARD_RULES.md` §3.6) and belongs to the realtime projection
+   (`SIGNALR_PROTOCOL.md` §4 item 15); what the Skill changes is §5.3's content
+   question and is not restated or copied here. This member answers exactly one
+   question: **which `CardDefinition` is this Pet's Signature Skill.**
+5. **It is the client's identification source for the Signature Skill, and the
+   only one.** `SIGNALR_PROTOCOL.md` §4.3 item 13 makes the client identify the
+   derived `equippedCards` entry by matching it against this delivered reference,
+   rather than by reading a `Category` out of a Card collection that can never
+   contain a `PetSkill` row. `CardCast(<signature cardId>)` remains
+   protocol-conformant and remains implemented (`SIGNALR_PROTOCOL.md` §2,
+   §3.2.20); `PetSkillCast` is the canonical client request for this entry.
+6. **§5.2 is the same object**, so the detail read carries the same member — no
+   second shape and no wrapper.
+7. **No new endpoint, request member, parameter, or definition-identity member.**
+   The reference rides this response. `SignatureSkillCardId` is exposed only as
+   `signatureSkill.cardId`, and no other definition identity is added — the same
+   definition-identity omission §5.4 records for Relics.
 
 The Vietnamese Element names (`Mộc`, `Hỏa`, `Thổ`, `Kim`, `Thủy` —
 `ELEMENT_RULES.md` §1) are display values only — presentation text,
@@ -732,7 +840,9 @@ document states whether its encoding is bound or free, and this section does
 not decide it.
 
 Persisted but **not** exposed: `xp`, `acquiredAt`, `playerId`,
-`petDefinitionId` (`DATABASE.md` §1).
+`petDefinitionId` (`DATABASE.md` §1). `PetDefinition.SignatureSkillCardId` is
+persisted and **is** exposed — as `signatureSkill.cardId` and as no other
+member.
 
 ## 5.2 GET /api/pets/{petId}
 
@@ -744,11 +854,18 @@ Response 200:
   "element": "Fire",
   "tier": "Common",
   "star": 1,
-  "level": 12
+  "level": 12,
+  "signatureSkill": {
+    "cardId": "card-inferno",
+    "name": "Inferno",
+    "category": "PetSkill"
+  }
 }
 ```
 
 200 is the same object as one `/api/pets` array element (§5.1) — no wrapper.
+It therefore carries §5.1's `signatureSkill` member too, with the same
+members and the same rules; this section defines no shape of its own.
 A `petId` that does not exist and a `petId` owned by another Player return
 the identical response, so the endpoint never discloses whether a Pet
 exists (same rationale as §4 note 7):
@@ -764,26 +881,92 @@ Response 404:
 Response 200:
 [
   {
-    "cardId": "string",
-    "name": "string",
-    "category": "Basic"
+    "cardId": "card-heal",
+    "name": "Heal",
+    "category": "Basic",
+    "effectDefinition": [
+      { "effectType": "Heal", "valueType": "PercentMaxHp", "value": 20 }
+    ]
   }
 ]
 ```
 
 ```text
-member    type    source / semantics
-cardId    string  CardDefinition.CardDefinitionId — the id submitted in
-                  `cardLoadout` (§3)
-name      string  CardDefinition.Name
-category  string  CardDefinition.Category — "Basic" | "PetSkill"
-                  (CARD_RULES.md §1, DATABASE.md §3)
+member            type    source / semantics
+cardId            string  CardDefinition.CardDefinitionId — the id submitted in
+                          `cardLoadout` (§3)
+name              string  CardDefinition.Name
+category          string  CardDefinition.Category — "Basic" | "PetSkill"
+                          (CARD_RULES.md §1, DATABASE.md §3)
+effectDefinition  array   CardDefinition.EffectDefinition — the Card's own
+                          structured effect rule, as stored; one object per
+                          effect
 ```
 
-MVP Cards have no progression (`DATABASE.md` §2, ADR-012): presence in this
-array **is** the unlocked state — there is no `unlocked` member. Persisted
-or definition data but **not** exposed: `playerId`, `powerCost`,
-`loadoutCopyLimit`, `effectDefinition` — §3 validates these server-side.
+**`effectDefinition` is the definition's own authored content, exposed as
+stored.** It is an array of objects whose **member names are `DATABASE.md` §1
+item 2's stored names** — the same convention `category` already follows by
+referencing `CARD_RULES.md` §1. This section adds no vocabulary of its own and
+restates neither the closed sets nor the present-iff rules:
+
+```text
+member      type    nullability / presence semantics
+effectType  string  always present. The closed identity set is DATABASE.md §1
+                    item 1's; the identities themselves are CARD_RULES.md
+                    §2/§4.1's.
+valueType   string  always present. The closed interpretation set and its
+                    meaning are DATABASE.md §1 item 1 / §3's.
+value       int     present iff `valueType` interprets one (DATABASE.md §3);
+                    absent — not 0 and not null — for "Undetermined"
+                    (CARD_RULES.md §2/§4.1 own the magnitudes)
+duration    int     present iff `effectType = "Burn"`, in Turns; absent
+                    otherwise (CARD_RULES.md §4.1, DATABASE.md §3)
+scope       string  present iff `effectType = "Crit"`; absent otherwise
+                    (CARD_RULES.md §4.1, DATABASE.md §3)
+```
+
+**Presence.** `effectDefinition` is **always present, never null, and never
+empty** — `DATABASE.md` §1 stores the column NOT NULL, and a Card states at
+least one effect (`CARD_RULES.md` §2/§4.1). A one-effect Card is a
+one-element array (TASK-111 D-1b): there is no single-object form and no
+arity-dependent shape.
+
+**Source of truth.** `CardDefinition.EffectDefinition`, read by the repository
+join this endpoint already performs (`CardRepository.ListUnlockedAsync`
+joins `PlayerUnlockedCard → CardDefinition`). The response is a projection of
+that row value: nothing is recomposed into prose, transformed, rounded,
+defaulted, reordered, or recomputed, and no optional member is interpolated
+where the payload omits it.
+
+**Player-facing purpose.** It states **what the Card changes** — the effect
+identity, its magnitude, how that magnitude is interpreted, and the
+effect-specific parameter the effect defines — so the loadout decision point can
+communicate a Card's meaning rather than only its name (`GDD.md` §17, §8). The
+client is free to translate the tokens and parameters into display text
+(§5.1's Element precedent: a closed wire token is not a display string), but it
+may not state a rule the payload does not carry.
+
+**Boundary limitations.** It carries **content only**. It is not a cost, an
+affordability state, a cast-legality judgment, a `CardCostModifiers[]`
+reconstruction, or a Signature Skill: the composed cast value is
+`EffectiveCardCost` (`CARD_RULES.md` §3.6) and belongs to the realtime
+projection, which `SIGNALR_PROTOCOL.md` §4 item 15 owns and which forbids the
+client to reconstruct a cost modifier from a Card's definition. A `Damage`
+element is a Card/Skill base value entering the Damage Pipeline
+(`COMBAT_RULES.md` §3 step 1), not a dealt amount; a `PercentMaxHp` is a
+proportion, not a resolved HP change; a `Burn` element's `value` is damage per
+tick and its `duration` is a Turn count. None of these is a computed result, and
+the presentation must not imply one (`GAME_RULES.md` §18, `AGENTS.md` §10).
+
+**Membership is unchanged.** Presence in this array is still the unlocked state:
+there is still no `unlocked` member, a `PetSkill` `CardDefinition` is still
+never an unlock row (`CARD_RULES.md` §1 item 4, ADR-012 item 9), and the member
+is definition-generic — no `PetSkill` row reaches it because none is ever an
+unlock row. **The Pet's Signature Skill reference is delivered by §5.1's
+`signatureSkill`, never here**, so this response gains no member for it and this
+array's membership stays exactly the Player's unlock rows. Persisted or
+definition data but **not** exposed: `playerId`,
+`powerCost`, `loadoutCopyLimit` — §3 validates these server-side.
 
 ## 5.4 GET /api/relics
 
@@ -791,24 +974,103 @@ or definition data but **not** exposed: `playerId`, `powerCost`,
 Response 200:
 [
   {
-    "relicId": "string",
-    "name": "string"
+    "relicId": "relic-instance-1",
+    "name": "Berserker Core",
+    "trigger": "OnMatchCount",
+    "condition": { "conditionType": "MatchCountAtLeast", "threshold": 3 },
+    "effectDefinition": [
+      { "effectType": "ATK", "valueType": "Percentage", "value": 5,
+        "target": "Pet", "lifetime": "Battle" }
+    ]
   }
 ]
 ```
 
 ```text
-member   type    source / semantics
-relicId  string  Relic.RelicInstanceId — the owned instance identity; the
-                 value submitted in `relicLoadout` (§3) and snapshotted
-                 into PetState.EquippedRelics[] at battle start
-                 (RELIC_RULES.md §2.2, GAME_STATE.md §2.3)
-name     string  RelicDefinition.Name
+member            type     source / semantics
+relicId           string   Relic.RelicInstanceId — the owned instance identity;
+                           the value submitted in `relicLoadout` (§3) and
+                           snapshotted into PetState.EquippedRelics[] at battle
+                           start (RELIC_RULES.md §2.2, GAME_STATE.md §2.3)
+name              string   RelicDefinition.Name
+trigger           string   RelicDefinition.Trigger — the one primary Trigger
+                           identity; the closed value set is RELIC_RULES.md §3's
+condition         object?  RelicDefinition.Condition — the structured form plus
+                           its threshold (RELIC_RULES.md §8.1); `null` when the
+                           Relic declares no extra condition
+effectDefinition  array    RelicDefinition.EffectDefinition — the Relic's own
+                           structured effect rule, as stored; one object per
+                           effect (RELIC_RULES.md §8.2)
 ```
 
-**Not** exposed: `playerId`, `acquiredAt`, `definitionId`, and
-`Trigger`/`Condition`/`EffectDefinition` (rule texts owned by
-`RELIC_RULES.md`).
+**The content is the definition's own authored content, exposed as stored**, and
+the content member names are the definition's own storage names
+(`DATABASE.md` §1) and contract names (`RELIC_RULES.md` §8.3). This section adds
+no vocabulary of its own:
+
+```text
+member                       type    nullability / presence semantics
+condition.conditionType      string  always present when `condition` is not null;
+                                     the closed three-form set is
+                                     RELIC_RULES.md §8.1's
+condition.threshold          int     always present when `condition` is not null;
+                                     the form's N (RELIC_RULES.md §8.1 item 1)
+effectDefinition[].effectType  string  always present; the closed identity set is
+                                       RELIC_RULES.md §8.2 item 1's
+effectDefinition[].valueType   string  always present; the interpretation is
+                                       fixed per `effectType` by RELIC_RULES.md
+                                       §8.2 item 2 / §8.3's table
+effectDefinition[].value       int     present iff `valueType` interprets one
+                                       (RELIC_RULES.md §8.2 item 3); absent —
+                                       not 0 and not null — for "Undetermined"
+effectDefinition[].target      string  always present; `RELIC_RULES.md` §8.3
+                                       item 1 defines "Pet" as the only target
+effectDefinition[].lifetime    string  always present; the closed set and the
+                                       allowed per-`effectType` combination are
+                                       RELIC_RULES.md §8.3 item 2 / §8.4's
+```
+
+**Presence.** `trigger` is **always present and never null** (`DATABASE.md` §1
+stores it NOT NULL). `condition` is **nullable — the one genuinely optional
+member** — and is emitted as an explicit `null`, not omitted, when the Relic
+declares no extra condition (`RELIC_RULES.md` §8.1 item 4): `null` is already
+the storage's own spelling of "no condition" (`DATABASE.md` §1), and omission
+would be ambiguous between "none" and "unsupported". `effectDefinition` is
+**always present, never null, and never empty** (`DATABASE.md` §1 stores the
+column NOT NULL; every Relic states at least one effect).
+
+**Source of truth.** `RelicDefinition.Trigger` / `Condition` /
+`EffectDefinition`, read by the bulk definition read this endpoint already
+performs to resolve `name` (`RelicRepository.ListDefinitionsAsync`). Nothing is
+derived from the Relic's `Name`, from `RelicDefinitionId`, from an instance id,
+from a category, or from any client-side heuristic — `RELIC_RULES.md` §8.2 item
+1 forbids exactly that — and no optional member is defaulted or filled in.
+
+**Delivered per owned instance.** The content is resolved through the instance's
+definition reference, exactly as `name` already is, so two owned instances of
+one definition repeat the content and remain two elements with distinct
+`relicId`s. The response carries **no definition-identity member** on purpose:
+`relicId` stays the instance identity §3 submits, and exposing the definition id
+would invite a client-side definition→content catalog, which would be a second
+source of truth (`AGENTS.md` §7, `GAME_STATE.md` §0 item 5).
+
+**Player-facing purpose.** It states **what the Relic changes and when** — the
+Trigger that makes it react, the threshold the reaction waits for, the effect
+identity, its magnitude and interpretation, and the target and lifetime the
+effect contract requires — so the loadout decision point can communicate a
+Relic's meaning rather than only its name (`GDD.md` §17, §10). As in §5.3, the
+client may translate the tokens into display text but may not state a rule the
+payload does not carry.
+
+**Boundary limitations.** It carries **content only**: no acquisition,
+ownership, or unlock semantics (array membership already expresses ownership,
+and `PlayerId`/`AcquiredAt` are not exposed), no equip/loadout member (§5.6), no
+Relic gameplay, and no per-Relic `Reset`/`Cooldown` value — `DATABASE.md` §1
+stores none and `RELIC_RULES.md` §8.4 item 4 adds no per-Relic cooldown, charge,
+or reset state. It delivers nothing on the SignalR wire: `RelicTriggered` keeps
+its `{ type, relicId }` shape (`SIGNALR_PROTOCOL.md` §3.2.23).
+
+**Not** exposed: `playerId`, `acquiredAt`, `definitionId`.
 
 ## 5.5 List semantics (§5.1, §5.3, §5.4)
 
@@ -826,7 +1088,9 @@ or `active` members: equip state is battle-scoped and unpersisted
 (`DATABASE.md` §2, ADR-011); it exists only in the battle-start snapshot
 `PetState.EquippedCards[]` / `EquippedRelics[]` (`GAME_STATE.md` §2.3,
 `RELIC_RULES.md` §2.1). Clients must not read equip state from these
-endpoints.
+endpoints. **`signatureSkill` (§5.1) is not an equip member**: it reports the
+Pet's own derived Signature Skill reference, which follows the Pet rather than
+any selection, and it names no slot, no position, and no equipped set.
 
 ---
 

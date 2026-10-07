@@ -20,6 +20,8 @@ namespace GameServer.Infrastructure.Tests;
 ///
 /// <code>
 /// GET /api/pets     → IPetRepository.ListByPlayerIdAsync    + ListDefinitionsAsync
+///                     + ICardRepository.ListDefinitionsAsync  (derived
+///                       Signature Skill, API_CONTRACTS.md §5.1)
 /// GET /api/cards    → ICardRepository.ListUnlockedAsync       (pre-existing)
 /// GET /api/relics   → IRelicRepository.ListByPlayerIdAsync  + ListDefinitionsAsync
 /// </code>
@@ -415,6 +417,50 @@ public class CollectionRepositoryTests
         var unlocked = await new CardRepository(context).ListUnlockedAsync(Owner);
 
         Assert.Equal("card_heal", Assert.Single(unlocked).CardDefinitionId);
+    }
+
+    // -----------------------------------------------------------------------
+    // ICardRepository.ListDefinitionsAsync — the derived Signature Skill read
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public async Task Cards_ListDefinitions_ShouldResolveTheRequestedDefinitionsWithoutAnOwnershipFilter()
+    {
+        // API_CONTRACTS.md §5.1: the collection projection resolves each owned
+        // Pet's derived Signature Skill through the definition its required
+        // SignatureSkillCardId FK names. A Signature Skill is derived, never
+        // unlocked (CARD_RULES.md §1 item 4, ADR-012 item 9), so this read must
+        // return the row with NO PlayerUnlockedCard row present — an ownership
+        // filter would report the Skill as absent for the very Player reading
+        // their own collection.
+        var storeName = nameof(Cards_ListDefinitions_ShouldResolveTheRequestedDefinitionsWithoutAnOwnershipFilter);
+
+        await using (var seed = CreateContext(storeName))
+        {
+            seed.CardDefinitions.Add(NewCardDefinition("card-inferno"));
+            seed.CardDefinitions.Add(NewCardDefinition("card-iron-fang"));
+            seed.CardDefinitions.Add(NewCardDefinition("card-unrequested"));
+            await seed.SaveChangesAsync();
+        }
+
+        await using var context = CreateContext(storeName);
+
+        var definitions = await new CardRepository(context)
+            .ListDefinitionsAsync(new[] { "card-inferno", "card-iron-fang", "card-missing" });
+
+        // A definition that does not exist is simply absent; no placeholder row is
+        // fabricated (AGENTS.md §7), and a definition nobody asked for is not
+        // materialized.
+        Assert.Equal(
+            new[] { "card-inferno", "card-iron-fang" },
+            definitions
+                .Select(definition => definition.CardDefinitionId)
+                .OrderBy(id => id, StringComparer.Ordinal));
+
+        // Two definitions resolved in one query against the existing table, and
+        // the read adds no index to it (DATABASE.md §4).
+        Assert.Empty(context.GetService<IDesignTimeModel>().Model
+            .FindEntityType(typeof(CardDefinition))!.GetIndexes());
     }
 
     // -----------------------------------------------------------------------

@@ -37,17 +37,19 @@ namespace GameServer.Api.Tests;
 ///
 /// <b>What these tests establish.</b> The documented wire contracts byte for
 /// byte in membership: the six-member Pet shape with the TASK-072 element wire
-/// values, the three-member Card shape with unlock membership as the state, the
-/// two-member Relic shape carrying the instance identity, the empty-collection
-/// answer on all three list routes, and the §5.2 non-disclosure rule — a foreign
-/// <c>petId</c> and a nonexistent one are one response, never a <c>403</c>.
+/// values, the four-member Card shape (including the Card's own structured
+/// <c>effectDefinition</c>) with unlock membership as the state, the five-member
+/// Relic shape carrying the instance identity plus the definition's
+/// <c>trigger</c>/nullable <c>condition</c>/<c>effectDefinition</c>, the
+/// empty-collection answer on all three list routes, and the §5.2
+/// non-disclosure rule — a foreign <c>petId</c> and a nonexistent one are one
+/// response, never a <c>403</c>.
 ///
 /// <b>Every assertion is a negative contract as well as a positive one.</b> The
-/// forbidden members (<c>xp</c>, <c>acquiredAt</c>, <c>playerId</c>,
+/// still-withheld members (<c>xp</c>, <c>acquiredAt</c>, <c>playerId</c>,
 /// <c>petDefinitionId</c>, <c>powerCost</c>, <c>loadoutCopyLimit</c>,
-/// <c>effectDefinition</c>, <c>definitionId</c>, <c>trigger</c>,
-/// <c>condition</c>, and every §5.6 equip member) are asserted absent by name, so
-/// a leak fails here rather than in review.
+/// <c>definitionId</c>, <c>relicDefinitionId</c>, and every §5.6 equip member)
+/// are asserted absent by name, so a leak fails here rather than in review.
 ///
 /// <b>The identity is never supplied by the request.</b> These tests present
 /// real issued sessions through the production authentication pipeline, so the
@@ -129,10 +131,10 @@ public class CollectionEndpointTests
     // -----------------------------------------------------------------------
 
     [Fact]
-    public async Task Pets_ForTheOwner_ShouldReturnExactlyTheSixDocumentedMembers()
+    public async Task Pets_ForTheOwner_ShouldReturnExactlyTheSevenDocumentedMembers()
     {
         // §5.1: the member list is "binding and exhaustive" — petId, identity,
-        // element, tier, star, level.
+        // element, tier, star, level, signatureSkill.
         using var factory = new CollectionFactory();
         var owner = await factory.NewPlayerAsync();
 
@@ -143,7 +145,9 @@ public class CollectionEndpointTests
             PetTier.Common,
             star: 1,
             level: 12,
-            identity: "Xích Lang");
+            identity: "Xích Lang",
+            signatureSkillCardId: "card-inferno",
+            signatureSkillName: "Inferno");
 
         var response = await factory.GetAsync(
             factory.CreateClient(),
@@ -161,7 +165,7 @@ public class CollectionEndpointTests
         var item = Assert.Single(body.EnumerateArray().ToArray());
 
         Assert.Equal(
-            new[] { "element", "identity", "level", "petId", "star", "tier" },
+            new[] { "element", "identity", "level", "petId", "signatureSkill", "star", "tier" },
             item.EnumerateObject().Select(member => member.Name).OrderBy(n => n, StringComparer.Ordinal));
 
         // petId = Pet.PetInstanceId (§5.1).
@@ -181,6 +185,78 @@ public class CollectionEndpointTests
         Assert.Equal(JsonValueKind.Number, item.GetProperty("star").ValueKind);
         Assert.Equal(1, item.GetProperty("star").GetInt32());
         Assert.Equal(12, item.GetProperty("level").GetInt32());
+
+        // signatureSkill = the Pet's DERIVED Signature Skill reference (§5.1):
+        // PetDefinition.SignatureSkillCardId plus that CardDefinition's own stored
+        // Name and Category. Exactly three members — no cost, no legality, no
+        // effectDefinition copy.
+        var signatureSkill = item.GetProperty("signatureSkill");
+
+        Assert.Equal(JsonValueKind.Object, signatureSkill.ValueKind);
+
+        Assert.Equal(
+            new[] { "cardId", "category", "name" },
+            signatureSkill.EnumerateObject().Select(member => member.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        Assert.Equal("card-inferno", signatureSkill.GetProperty("cardId").GetString());
+        Assert.Equal("Inferno", signatureSkill.GetProperty("name").GetString());
+
+        // The category is the referenced definition's own, as its documented wire
+        // name — the same §5.3 spelling (CARD_RULES.md §4 item 1).
+        Assert.Equal(JsonValueKind.String, signatureSkill.GetProperty("category").ValueKind);
+        Assert.Equal("PetSkill", signatureSkill.GetProperty("category").GetString());
+    }
+
+    [Fact]
+    public async Task Pets_SignatureSkillReference_ShouldBeDeliveredWithoutAnyUnlockRow()
+    {
+        // API_CONTRACTS.md §5.1 item 2 / §5.3: a Pet Skill Card is DERIVED, never
+        // an unlock row (CARD_RULES.md §1 item 4, ADR-012 item 9). The Pet read
+        // therefore delivers the reference while the Card read's membership stays
+        // exactly what the Player unlocked — which is why this reference, and not
+        // `GET /api/cards`, is the client's identification source
+        // (SIGNALR_PROTOCOL.md §4.3 item 13).
+        using var factory = new CollectionFactory();
+        var owner = await factory.NewPlayerAsync();
+
+        await factory.AddPetAsync(
+            owner,
+            "pet_xich_lang",
+            Element.Hoa,
+            PetTier.Common,
+            star: 1,
+            level: 1,
+            identity: "Xích Lang",
+            signatureSkillCardId: "card-inferno",
+            signatureSkillName: "Inferno");
+
+        // Exactly one Basic unlock row — and no Pet Skill row anywhere.
+        await factory.AddUnlockedCardAsync(owner, "card-heal", "Heal", CardCategory.Basic);
+
+        var client = factory.CreateClient();
+        var session = TestApplicationSession.Mint(owner);
+
+        var pets = await factory.GetJsonAsync(client, PetsRoute, session);
+        var pet = Assert.Single(pets.EnumerateArray().ToArray());
+
+        Assert.Equal(
+            "card-inferno",
+            pet.GetProperty("signatureSkill").GetProperty("cardId").GetString());
+
+        // §5.3's membership is unchanged: the Card collection carries the unlocked
+        // Basic Card and does NOT carry the Signature Skill.
+        var cards = await factory.GetJsonAsync(client, CardsRoute, session);
+        var cardIds = cards.EnumerateArray().Select(card => card.GetProperty("cardId").GetString()).ToArray();
+
+        Assert.Equal(new[] { "card-heal" }, cardIds);
+        Assert.DoesNotContain("card-inferno", cardIds);
+
+        // The definition really exists and the Player really has no unlock row for
+        // it, so this proves the read the Pet projection performed is a content
+        // read rather than a widened ownership set (CARD_RULES.md §1 item 4,
+        // ADR-012 item 9).
+        Assert.True(await factory.CardDefinitionExistsAsync("card-inferno"));
+        Assert.False(await factory.UnlockExistsAsync(owner, "card-inferno"));
     }
 
     [Theory]
@@ -549,13 +625,22 @@ public class CollectionEndpointTests
     // -----------------------------------------------------------------------
 
     [Fact]
-    public async Task Cards_ForTheOwner_ShouldReturnExactlyTheThreeDocumentedMembers()
+    public async Task Cards_ForTheOwner_ShouldReturnExactlyTheFourDocumentedMembers()
     {
-        // §5.3: cardId, name, category.
+        // §5.3: cardId, name, category, effectDefinition.
         using var factory = new CollectionFactory();
         var owner = await factory.NewPlayerAsync();
 
-        await factory.AddUnlockedCardAsync(owner, "card_heal", "Heal", CardCategory.Basic);
+        await factory.AddUnlockedCardAsync(
+            owner,
+            "card_heal",
+            "Heal",
+            CardCategory.Basic,
+            effectDefinition: CardEffectDefinitions.Create(
+                CardEffectDefinition.Create(
+                    CardEffectType.Heal,
+                    CardEffectValueType.PercentMaxHp,
+                    20)));
 
         var body = await factory.GetJsonAsync(
             factory.CreateClient(),
@@ -565,7 +650,7 @@ public class CollectionEndpointTests
         var item = Assert.Single(body.EnumerateArray().ToArray());
 
         Assert.Equal(
-            new[] { "cardId", "category", "name" },
+            new[] { "cardId", "category", "effectDefinition", "name" },
             item.EnumerateObject().Select(member => member.Name).OrderBy(n => n, StringComparer.Ordinal));
 
         // cardId = CardDefinition.CardDefinitionId (§5.3).
@@ -576,6 +661,141 @@ public class CollectionEndpointTests
 
         // category = CardDefinition.Category — "Basic" | "PetSkill" (§5.3).
         Assert.Equal("Basic", item.GetProperty("category").GetString());
+
+        // effectDefinition = CardDefinition.EffectDefinition (§5.3) — the stored
+        // element's own members, at the stored member names.
+        var effect = Assert.Single(item.GetProperty("effectDefinition").EnumerateArray().ToArray());
+
+        Assert.Equal(
+            new[] { "effectType", "value", "valueType" },
+            effect.EnumerateObject().Select(member => member.Name).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal("Heal", effect.GetProperty("effectType").GetString());
+        Assert.Equal("PercentMaxHp", effect.GetProperty("valueType").GetString());
+        Assert.Equal(20, effect.GetProperty("value").GetInt32());
+    }
+
+    [Fact]
+    public async Task Cards_ShouldProjectEveryEffectOfAMultiEffectDefinition()
+    {
+        // §5.3 / DATABASE.md §1 item 1 / TASK-111 D-1b: a Card with several
+        // effects stores one element per effect, and every element reaches the
+        // response in stored order with its own members intact.
+        using var factory = new CollectionFactory();
+        var owner = await factory.NewPlayerAsync();
+
+        await factory.AddUnlockedCardAsync(
+            owner,
+            "card_inferno",
+            "Inferno",
+            CardCategory.Basic,
+            effectDefinition: CardEffectDefinitions.Create(
+                CardEffectDefinition.Create(CardEffectType.Damage, CardEffectValueType.Flat, 100),
+                CardEffectDefinition.Burn(CardEffectValueType.Flat, 50, duration: 2)));
+
+        var body = await factory.GetJsonAsync(
+            factory.CreateClient(),
+            CardsRoute,
+            TestApplicationSession.Mint(owner));
+
+        var effects = Assert.Single(body.EnumerateArray().ToArray())
+            .GetProperty("effectDefinition")
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(2, effects.Length);
+
+        // The plain element: effectType / valueType / value, and neither of the
+        // effect-specific extra members (DATABASE.md §3's present-iff rules).
+        Assert.Equal(
+            new[] { "effectType", "value", "valueType" },
+            effects[0].EnumerateObject().Select(member => member.Name).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal("Damage", effects[0].GetProperty("effectType").GetString());
+        Assert.Equal("Flat", effects[0].GetProperty("valueType").GetString());
+        Assert.Equal(100, effects[0].GetProperty("value").GetInt32());
+
+        // The Burn element: value is damage per tick and `duration` is present.
+        // `scope` belongs to Crit (DATABASE.md §3) and is therefore absent.
+        Assert.Equal(
+            new[] { "duration", "effectType", "value", "valueType" },
+            effects[1].EnumerateObject().Select(member => member.Name).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal("Burn", effects[1].GetProperty("effectType").GetString());
+        Assert.Equal("Flat", effects[1].GetProperty("valueType").GetString());
+        Assert.Equal(50, effects[1].GetProperty("value").GetInt32());
+        Assert.Equal(2, effects[1].GetProperty("duration").GetInt32());
+        Assert.False(effects[1].TryGetProperty("scope", out _));
+    }
+
+    [Fact]
+    public async Task Cards_ShouldCarryScopeOnACritElementAndNoDuration()
+    {
+        // DATABASE.md §3: `scope` is present iff effectType = Crit, and
+        // `duration` iff effectType = Burn. CARD_RULES.md §4.1 authors the Crit
+        // increase in percentage points for the next attack.
+        using var factory = new CollectionFactory();
+        var owner = await factory.NewPlayerAsync();
+
+        await factory.AddUnlockedCardAsync(
+            owner,
+            "card_iron_fang",
+            "Iron Fang",
+            CardCategory.Basic,
+            effectDefinition: CardEffectDefinitions.Create(
+                CardEffectDefinition.Create(CardEffectType.Damage, CardEffectValueType.Flat, 120),
+                CardEffectDefinition.Crit(10, CardEffectDefinition.NextAttackScope)));
+
+        var body = await factory.GetJsonAsync(
+            factory.CreateClient(),
+            CardsRoute,
+            TestApplicationSession.Mint(owner));
+
+        var effects = Assert.Single(body.EnumerateArray().ToArray())
+            .GetProperty("effectDefinition")
+            .EnumerateArray()
+            .ToArray();
+
+        Assert.Equal(
+            new[] { "effectType", "scope", "value", "valueType" },
+            effects[1].EnumerateObject().Select(member => member.Name).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal("Crit", effects[1].GetProperty("effectType").GetString());
+        Assert.Equal("PercentagePoints", effects[1].GetProperty("valueType").GetString());
+        Assert.Equal(10, effects[1].GetProperty("value").GetInt32());
+        Assert.Equal("NextAttack", effects[1].GetProperty("scope").GetString());
+        Assert.False(effects[1].TryGetProperty("duration", out _));
+    }
+
+    [Fact]
+    public async Task Cards_ShouldEmitAnUndeterminedElementWithoutAValueMember()
+    {
+        // DATABASE.md §3: `value` is present iff the valueType interprets one, so
+        // an Undetermined element carries no `value` member at all — never 0 and
+        // never an explicit null (a second representation of the same absence).
+        using var factory = new CollectionFactory();
+        var owner = await factory.NewPlayerAsync();
+
+        await factory.AddUnlockedCardAsync(
+            owner,
+            "card_undetermined",
+            "Undetermined",
+            CardCategory.Basic,
+            effectDefinition: CardEffectDefinitions.Create(
+                CardEffectDefinition.Undetermined(CardEffectType.Heal)));
+
+        var body = await factory.GetJsonAsync(
+            factory.CreateClient(),
+            CardsRoute,
+            TestApplicationSession.Mint(owner));
+
+        var effect = Assert.Single(
+            Assert.Single(body.EnumerateArray().ToArray())
+                .GetProperty("effectDefinition")
+                .EnumerateArray()
+                .ToArray());
+
+        Assert.Equal(
+            new[] { "effectType", "valueType" },
+            effect.EnumerateObject().Select(member => member.Name).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal("Heal", effect.GetProperty("effectType").GetString());
+        Assert.Equal("Undetermined", effect.GetProperty("valueType").GetString());
     }
 
     [Theory]
@@ -661,9 +881,10 @@ public class CollectionEndpointTests
     [Fact]
     public async Task Cards_ShouldExposeNoExcludedColumn()
     {
-        // §5.3: "playerId, powerCost, loadoutCopyLimit, effectDefinition" are
-        // persisted or definition data but NOT exposed; §5.6 adds the equip
-        // members.
+        // §5.3: "playerId, powerCost, loadoutCopyLimit" are persisted or
+        // definition data but NOT exposed; §5.6 adds the equip members.
+        // effectDefinition IS exposed (this task's amendment), so it is asserted
+        // positively here and absent from the forbidden list.
         using var factory = new CollectionFactory();
         var owner = await factory.NewPlayerAsync();
 
@@ -686,12 +907,20 @@ public class CollectionEndpointTests
 
         foreach (var forbidden in new[]
                  {
-                     "playerId", "powerCost", "loadoutCopyLimit", "effectDefinition",
+                     "playerId", "powerCost", "loadoutCopyLimit",
                      "unlocked", "isEquipped", "equipped", "slot", "loadoutPosition", "active",
                  })
         {
             Assert.DoesNotContain(forbidden, members, StringComparer.OrdinalIgnoreCase);
         }
+
+        // The exposed member is the stored definition, not a default or a
+        // recomposition of it.
+        Assert.Equal(
+            "Heal",
+            Assert.Single(item.GetProperty("effectDefinition").EnumerateArray().ToArray())
+                .GetProperty("effectType")
+                .GetString());
 
         // The stored definition really does carry the excluded values.
         var stored = await factory.FindCardDefinitionAsync("card_heal");
@@ -700,6 +929,42 @@ public class CollectionEndpointTests
         Assert.Equal(25, stored!.PowerCost);
         Assert.Equal(3, stored.LoadoutCopyLimit);
         Assert.Equal(TestCardEffects.PercentMaxHp, stored.EffectDefinition);
+    }
+
+    [Fact]
+    public async Task Cards_ShouldCarryNoCostOrAffordabilityMember()
+    {
+        // The content/cost boundary: this read answers "what does this Card do?",
+        // never "can I afford it right now". The composed value is
+        // EffectiveCardCost (CARD_RULES.md §3.6) and the realtime member is
+        // SIGNALR_PROTOCOL.md §4 item 15's — neither belongs on §5.3.
+        using var factory = new CollectionFactory();
+        var owner = await factory.NewPlayerAsync();
+
+        await factory.AddUnlockedCardAsync(
+            owner,
+            "card_heal",
+            "Heal",
+            CardCategory.Basic,
+            powerCost: 25,
+            loadoutCopyLimit: 3,
+            effectDefinition: TestCardEffects.PercentMaxHp);
+
+        var response = await factory.GetAsync(
+            factory.CreateClient(),
+            CardsRoute,
+            TestApplicationSession.Mint(owner));
+
+        var serialized = await response.Content.ReadAsStringAsync();
+
+        foreach (var forbidden in new[]
+                 {
+                     "effectiveCost", "cardCostModifier", "affordable", "canCast",
+                     "legality", "costReduction",
+                 })
+        {
+            Assert.DoesNotContain(forbidden, serialized, StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     [Fact]
@@ -727,13 +992,25 @@ public class CollectionEndpointTests
     // -----------------------------------------------------------------------
 
     [Fact]
-    public async Task Relics_ForTheOwner_ShouldReturnExactlyTheTwoDocumentedMembers()
+    public async Task Relics_ForTheOwner_ShouldReturnExactlyTheFiveDocumentedMembers()
     {
-        // §5.4: relicId, name.
+        // §5.4: relicId, name, trigger, condition, effectDefinition.
         using var factory = new CollectionFactory();
         var owner = await factory.NewPlayerAsync();
 
-        await factory.AddRelicAsync(owner, "relic_instance_berserker", "Berserker Core");
+        await factory.AddRelicAsync(
+            owner,
+            "relic_instance_berserker",
+            "Berserker Core",
+            trigger: "OnMatchCount",
+            condition: RelicCondition.Create(RelicConditionType.MatchCountAtLeast, 3),
+            effectDefinition: RelicEffectDefinitions.Create(
+                RelicEffectDefinition.Create(
+                    RelicEffectType.ATK,
+                    RelicEffectValueType.Percentage,
+                    5,
+                    RelicEffectTarget.Pet,
+                    RelicEffectLifetime.Battle)));
 
         var body = await factory.GetJsonAsync(
             factory.CreateClient(),
@@ -743,7 +1020,7 @@ public class CollectionEndpointTests
         var item = Assert.Single(body.EnumerateArray().ToArray());
 
         Assert.Equal(
-            new[] { "name", "relicId" },
+            new[] { "condition", "effectDefinition", "name", "relicId", "trigger" },
             item.EnumerateObject().Select(member => member.Name).OrderBy(n => n, StringComparer.Ordinal));
 
         // relicId = Relic.RelicInstanceId (§5.4) — the owned INSTANCE, never its
@@ -752,6 +1029,95 @@ public class CollectionEndpointTests
 
         // name = RelicDefinition.Name (§5.4).
         Assert.Equal("Berserker Core", item.GetProperty("name").GetString());
+
+        // trigger = RelicDefinition.Trigger (§5.4) — the §3 identity, always
+        // present.
+        Assert.Equal("OnMatchCount", item.GetProperty("trigger").GetString());
+
+        // condition = RelicDefinition.Condition (§5.4) — the §8.1 form plus its
+        // threshold, at the stored member names.
+        var condition = item.GetProperty("condition");
+
+        Assert.Equal(JsonValueKind.Object, condition.ValueKind);
+        Assert.Equal(
+            new[] { "conditionType", "threshold" },
+            condition.EnumerateObject().Select(member => member.Name).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal("MatchCountAtLeast", condition.GetProperty("conditionType").GetString());
+        Assert.Equal(3, condition.GetProperty("threshold").GetInt32());
+
+        // effectDefinition = RelicDefinition.EffectDefinition (§5.4) — the
+        // §8.2/§8.3 members, at the stored member names.
+        var effect = Assert.Single(item.GetProperty("effectDefinition").EnumerateArray().ToArray());
+
+        Assert.Equal(
+            new[] { "effectType", "lifetime", "target", "value", "valueType" },
+            effect.EnumerateObject().Select(member => member.Name).OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal("ATK", effect.GetProperty("effectType").GetString());
+        Assert.Equal("Percentage", effect.GetProperty("valueType").GetString());
+        Assert.Equal(5, effect.GetProperty("value").GetInt32());
+        Assert.Equal("Pet", effect.GetProperty("target").GetString());
+        Assert.Equal("Battle", effect.GetProperty("lifetime").GetString());
+    }
+
+    [Fact]
+    public async Task Relics_WithNoCondition_ShouldEmitAnExplicitNull()
+    {
+        // RELIC_RULES.md §8.1 item 4: a Relic whose Trigger alone is its complete
+        // condition carries none. §5.4 emits the member as an explicit `null` so
+        // the member set is fixed and exactly assertable — absence would be
+        // ambiguous between "none" and "unsupported".
+        using var factory = new CollectionFactory();
+        var owner = await factory.NewPlayerAsync();
+
+        await factory.AddRelicAsync(
+            owner,
+            "relic_1",
+            "Burning Curse",
+            trigger: "OnBattleStart",
+            condition: null);
+
+        var body = await factory.GetJsonAsync(
+            factory.CreateClient(),
+            RelicsRoute,
+            TestApplicationSession.Mint(owner));
+
+        var item = Assert.Single(body.EnumerateArray().ToArray());
+
+        Assert.True(item.TryGetProperty("condition", out var condition));
+        Assert.Equal(JsonValueKind.Null, condition.ValueKind);
+        Assert.Equal("OnBattleStart", item.GetProperty("trigger").GetString());
+    }
+
+    [Theory]
+    [InlineData(RelicConditionType.MatchCountAtLeast, "MatchCountAtLeast", 4)]
+    [InlineData(RelicConditionType.ComboAtLeast, "ComboAtLeast", 3)]
+    [InlineData(RelicConditionType.HpPercentageBelow, "HpPercentageBelow", 30)]
+    public async Task Relics_ShouldEmitEveryDocumentedConditionForm(
+        RelicConditionType conditionType,
+        string expected,
+        int threshold)
+    {
+        // §5.4 / RELIC_RULES.md §8.1: the closed three-form grammar plus the
+        // form's own integer threshold.
+        using var factory = new CollectionFactory();
+        var owner = await factory.NewPlayerAsync();
+
+        await factory.AddRelicAsync(
+            owner,
+            "relic_1",
+            "Relic",
+            trigger: "OnMatchCount",
+            condition: RelicCondition.Create(conditionType, threshold));
+
+        var body = await factory.GetJsonAsync(
+            factory.CreateClient(),
+            RelicsRoute,
+            TestApplicationSession.Mint(owner));
+
+        var condition = Assert.Single(body.EnumerateArray().ToArray()).GetProperty("condition");
+
+        Assert.Equal(expected, condition.GetProperty("conditionType").GetString());
+        Assert.Equal(threshold, condition.GetProperty("threshold").GetInt32());
     }
 
     [Fact]
@@ -810,8 +1176,10 @@ public class CollectionEndpointTests
     [Fact]
     public async Task Relics_ShouldExposeNoExcludedMember()
     {
-        // §5.4: "Not exposed: playerId, acquiredAt, definitionId, and
-        // Trigger/Condition/EffectDefinition"; §5.6 adds the equip members.
+        // §5.4: "Not exposed: playerId, acquiredAt, definitionId"; §5.6 adds the
+        // equip members. trigger / condition / effectDefinition ARE exposed (this
+        // task's amendment), so they are asserted positively here and absent from
+        // the forbidden list.
         using var factory = new CollectionFactory();
         var owner = await factory.NewPlayerAsync();
 
@@ -835,18 +1203,30 @@ public class CollectionEndpointTests
         foreach (var forbidden in new[]
                  {
                      "playerId", "acquiredAt", "definitionId", "relicDefinitionId",
-                     "trigger", "condition", "effect", "effectDefinition",
                      "isEquipped", "equipped", "slot", "loadoutPosition", "active",
                  })
         {
             Assert.DoesNotContain(forbidden, members, StringComparer.OrdinalIgnoreCase);
         }
 
+        // The exposed content is the stored definition's own value.
+        Assert.Equal("OnCombo3Plus", item.GetProperty("trigger").GetString());
+        Assert.Equal(
+            "ComboAtLeast",
+            item.GetProperty("condition").GetProperty("conditionType").GetString());
+        Assert.Equal(
+            "ATK",
+            Assert.Single(item.GetProperty("effectDefinition").EnumerateArray().ToArray())
+                .GetProperty("effectType")
+                .GetString());
+
+        // The definition identity and the owner's identity must not leak at any
+        // depth: the response is instance-addressed and carries content inline,
+        // so a definition→content catalog can never be assembled from it
+        // (AGENTS.md §7, GAME_STATE.md §0 item 5).
         var serialized = body.GetRawText();
 
-        // The rule texts themselves must not leak either, at any depth.
-        Assert.DoesNotContain("OnCombo3Plus", serialized, StringComparison.Ordinal);
-        Assert.DoesNotContain("berserker_effect", serialized, StringComparison.Ordinal);
+        Assert.DoesNotContain("relic_def_", serialized, StringComparison.Ordinal);
         Assert.DoesNotContain(owner, serialized, StringComparison.Ordinal);
     }
 
@@ -1053,12 +1433,36 @@ public class CollectionEndpointTests
             int level,
             string? identity = null,
             int xp = 0,
-            DateTimeOffset? acquiredAt = null)
+            DateTimeOffset? acquiredAt = null,
+            string? signatureSkillCardId = null,
+            string? signatureSkillName = null)
         {
             var petDefinitionId = $"pet_def_{petInstanceId}";
+            var skillCardId = signatureSkillCardId ?? $"card_skill_{petInstanceId}";
 
             return MutateAsync(context =>
             {
+                // DATABASE.md §2: PetDefinition.SignatureSkillCardId is a REQUIRED
+                // FK to CardDefinition, so an instance whose referenced definition
+                // does not exist is a state the documented schema cannot hold.
+                // API_CONTRACTS.md §5.1 projects the Pet's derived Signature Skill
+                // through that reference, so the row is seeded here.
+                //
+                // It is deliberately NOT a PlayerUnlockedCard row: a Pet Skill Card
+                // is derived, never unlocked (CARD_RULES.md §1 item 4, ADR-012
+                // item 9), which is what keeps §5.3's membership the unlocked set
+                // and this reference the client's identification source
+                // (SIGNALR_PROTOCOL.md §4.3 item 13).
+                context.CardDefinitions.Add(new CardDefinition
+                {
+                    CardDefinitionId = skillCardId,
+                    Name = signatureSkillName ?? $"Skill {petInstanceId}",
+                    Category = CardCategory.PetSkill,
+                    PowerCost = 0,
+                    EffectDefinition = TestCardEffects.FlatPower,
+                    LoadoutCopyLimit = 1,
+                });
+
                 context.PetDefinitions.Add(new PetDefinition
                 {
                     PetDefinitionId = petDefinitionId,
@@ -1066,7 +1470,7 @@ public class CollectionEndpointTests
                     Element = element,
                     PassiveId = new PassiveId("test-passive"),
                     PassiveThreshold = 5,
-                    SignatureSkillCardId = $"card_skill_{petInstanceId}",
+                    SignatureSkillCardId = skillCardId,
                 });
 
                 context.Pets.Add(new Pet
@@ -1178,6 +1582,15 @@ public class CollectionEndpointTests
         public Task<bool> CardDefinitionExistsAsync(string cardDefinitionId) =>
             ReadAsync(context => context.CardDefinitions.AnyAsync(
                 definition => definition.CardDefinitionId == cardDefinitionId));
+
+        /// <summary>
+        /// Whether a <c>PlayerUnlockedCard</c> row exists for one Player and
+        /// definition — the §5.3 ownership question, read from storage.
+        /// </summary>
+        public Task<bool> UnlockExistsAsync(string playerId, string cardDefinitionId) =>
+            ReadAsync(context => context.PlayerUnlockedCards.AnyAsync(
+                unlock => unlock.PlayerId == playerId
+                    && unlock.CardDefinitionId == cardDefinitionId));
 
         public Task<HttpResponseMessage> GetAsync(HttpClient client, string route, string? session)
         {

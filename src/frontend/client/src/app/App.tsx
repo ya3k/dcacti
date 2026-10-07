@@ -126,7 +126,17 @@ export const App: React.FC = () => {
 
   return (
     <GameShell runtime={runtime} onGameInitialized={handlePhaserInit}>
-      <StatusOverlay />
+      {/*
+        Both overlay children are DEVELOPMENT-ONLY diagnostics, gated by the same
+        existing project convention (`import.meta.env.DEV`): the runtime status
+        panel reports transport/infrastructure state and the viewport overlay
+        reports presentation geometry. Neither is a gameplay HUD — and the status
+        panel is an opaque card anchored over the game surface's bottom-right
+        corner — so neither is mounted in a normal player presentation
+        (TASK-209 §6; ui/components/StatusOverlay.tsx "It is NOT the game HUD").
+        The player-facing battle information is rendered by BattleScene itself.
+      */}
+      {import.meta.env.DEV ? <StatusOverlay /> : null}
       {import.meta.env.DEV ? <ViewportDebugOverlay /> : null}
     </GameShell>
   );

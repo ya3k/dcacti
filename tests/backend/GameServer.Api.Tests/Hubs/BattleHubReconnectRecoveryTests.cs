@@ -333,12 +333,18 @@ public sealed class BattleHubReconnectRecoveryTests : IClassFixture<ApiIntegrati
                 .Select(p => p.Name)
                 .OrderBy(n => n, StringComparer.Ordinal));
 
-        // §4.3 items 2, 13 and 14: `petState` carries `passiveId`, `passiveProgress`,
+        // §4.3 items 2, 13, 14 and 15: `petState` carries `passiveId`, `passiveProgress`,
         // the conditional `passiveResetOverride`, `equippedCards` — the loadout
         // snapshot that CardCast/PetSkillCast action paths read, always present,
-        // non-empty, and non-nullable — and the active Pet's active Status Effects,
-        // which are always an array.
+        // non-empty, and non-nullable — the active Pet's active Status Effects, which
+        // are always an array, and the active Pet's three live combat values
+        // (`hp`/`maxHp`/`power`).
         var petState = state.GetProperty("petState");
+        Assert.Equal(
+            new[] { "equippedCards", "hp", "maxHp", "passiveId", "passiveProgress", "power", "statusEffects" },
+            petState.EnumerateObject()
+                .Select(p => p.Name)
+                .OrderBy(n => n, StringComparer.Ordinal));
         Assert.Equal("xich-lang", petState.GetProperty("passiveId").GetString());
         Assert.Equal(
             new[] { "current", "threshold" },
@@ -346,6 +352,15 @@ public sealed class BattleHubReconnectRecoveryTests : IClassFixture<ApiIntegrati
                 .EnumerateObject()
                 .Select(p => p.Name)
                 .OrderBy(n => n, StringComparer.Ordinal));
+
+        // §4.3 item 15: the three live combat values are the authoritative PetState's,
+        // read as sent — `maxHp` never derived from `hp`, and an initial `power = 0`
+        // published as 0.
+        Assert.True(petState.GetProperty("hp").GetInt32() > 0);
+        Assert.Equal(
+            petState.GetProperty("hp").GetInt32(),
+            petState.GetProperty("maxHp").GetInt32());
+        Assert.Equal(0, petState.GetProperty("power").GetInt32());
 
         var equippedCards = petState.GetProperty("equippedCards")
             .EnumerateArray()
@@ -362,15 +377,17 @@ public sealed class BattleHubReconnectRecoveryTests : IClassFixture<ApiIntegrati
         Assert.Equal(JsonValueKind.Array, statusEffects.ValueKind);
         Assert.Empty(statusEffects.EnumerateArray());
 
-        // §4.4: the snapshot carries the same two-member Boss HP projection the push
-        // does, so a recovered client re-renders the Boss's live health from either
-        // path with one model (§7.1, ADR-008).
+        // §4.4: the snapshot carries the same three-member Boss projection the push
+        // does — the canonical technical Identity plus the live HP pair — so a
+        // recovered client re-renders the Boss from either path with one model
+        // (§7.1, ADR-008, §4.4 item 10).
+        var bossState = state.GetProperty("bossState");
         Assert.Equal(
-            new[] { "hp", "maxHp" },
-            state.GetProperty("bossState")
-                .EnumerateObject()
+            new[] { "bossId", "hp", "maxHp" },
+            bossState.EnumerateObject()
                 .Select(p => p.Name)
                 .OrderBy(n => n, StringComparer.Ordinal));
+        Assert.Equal("boss-hoa-long", bossState.GetProperty("bossId").GetString());
 
         // §4.1: `board` is exactly the 64-cell authoritative board.
         Assert.Equal(64, state.GetProperty("board").GetProperty("cells").GetArrayLength());

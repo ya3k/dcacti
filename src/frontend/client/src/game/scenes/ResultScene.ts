@@ -5,7 +5,7 @@ import { readRuntime } from '../runtime/RuntimeRegistry';
 // (`DATABASE.md` §1), shared with `BattleHistoryScene` so the eight delivered
 // members are never represented twice (docs/AGENTS.md §2).
 import { formatRewards } from '../presentation/RewardSummaryFormat';
-import type { RewardSummaryResponse } from '../../services/api/BattleModels';
+import type { BattleResultResponse } from '../../services/api/BattleModels';
 import type { LobbySceneData } from './LobbyScene';
 
 /**
@@ -17,11 +17,50 @@ import type { LobbySceneData } from './LobbyScene';
 const PLAY_AGAIN_LABEL = 'PLAY AGAIN';
 const MAIN_MENU_LABEL = 'MAIN MENU';
 
+/**
+ * The reward block's third control (`TASK-211 §6`).
+ *
+ * It is the same word the read-only viewer and history scenes already use for
+ * their failed loads, so `RETRY` means one thing in this application: repeat
+ * the read that failed.
+ */
+const RETRY_LABEL = 'RETRY';
+
 /** The navigation controls' geometry, in logical game pixels. */
 const BUTTON_WIDTH = 280;
 const BUTTON_HEIGHT = 50;
 const BUTTON_ROW_Y = SAFE_AREA.y + 520;
 const BUTTON_OFFSET_X = 160;
+
+/**
+ * The reward block's own states (`TASK-211 §5`).
+ *
+ * `loading` and `failure` are visibly different from each other and from a
+ * delivered zero reward, which renders as `REWARDS` + `+0 XP`: the whole defect
+ * being fixed was that a failed read and a read still in flight both looked
+ * like an ordinary empty box.
+ */
+type RewardLoadState = 'loading' | 'success' | 'failure';
+
+/** Shown while the result read is in flight. */
+const REWARD_LOADING_TEXT = 'Loading rewards…';
+/**
+ * Shown when an addressable reward read failed, or delivered something that is
+ * not the documented shape. It states the outcome and offers `RETRY`; it
+ * deliberately does not say "no rewards", which is a different, delivered fact.
+ */
+const REWARD_FAILURE_TEXT = 'Rewards could not be loaded.\nPlease try again.';
+/**
+ * Shown when there was no reward read to make at all — the handoff carried no
+ * battle to address, or no runtime was published. There is nothing to repeat,
+ * so no `RETRY` is offered and the wording does not promise one.
+ */
+const REWARD_UNAVAILABLE_TEXT = 'Rewards are unavailable for this battle.';
+
+/** The `RETRY` control's geometry — between the reward block and the nav row. */
+const RETRY_BUTTON_WIDTH = 160;
+const RETRY_BUTTON_HEIGHT = 34;
+const RETRY_BUTTON_ROW_Y = SAFE_AREA.y + 470;
 
 /**
  * The terminal battle outcome data handed off from BattleScene.
@@ -72,10 +111,25 @@ export interface ResultSceneData {
  * derived from XP, no `leveledUp` flag is recomputed, and a `null` member is
  * never promoted to `0` (DATABASE.md §1 items 4–5, ADR-001).
  *
+ * **The read has a state, and the player can see it.** The block is either
+ * loading, showing the delivered members, or reporting that they could not be
+ * loaded — and a failure offers `RETRY`, which repeats **only** the read under a
+ * fresh run identity. A failed read is never rendered as a zero reward
+ * (`REWARDS` + `+0 XP` is a delivered fact, not an empty box), nothing is
+ * fabricated to fill the gap, and the battle is never restarted from here. The
+ * same read delivers the battle's `durationTurns` (§4 note 5), which this scene
+ * prints as delivered: no turn is counted, no timestamp is read, and no length
+ * is derived from combat events.
+ *
  * **Transport stays behind the runtime port.** The scene reads the result
  * through the `GameRuntime` port and imports no transport implementation — the
  * only `services/api/` import here is the type-only model file, exactly as
  * ARCHITECTURE.md §2.2.1 rule 1 requires.
+ *
+ * **The terminal Pet HP line says Pet.** `finalPlayerHp` is a fixed protocol
+ * label for the active **Pet's** HP at battle end (SIGNALR_PROTOCOL.md §3.2.19,
+ * GAME_STATE.md §2.3, ADR-011): there is no Player HP pool, so the label a
+ * player reads names the Pet and the wire member is untouched.
  *
  * **Navigation is the two approved explicit controls** (`D-202-01 = C`,
  * `D-202-02 = A`; GDD.md §2.1, TDD.md §2.1):
@@ -101,8 +155,38 @@ export class ResultScene extends Phaser.Scene {
   private resultData: ResultSceneData | null = null;
   private outcomeText: Phaser.GameObjects.Text | null = null;
   private bossHpText: Phaser.GameObjects.Text | null = null;
+  /**
+   * The delivered terminal Pet HP line.
+   *
+   * The field keeps its historical name — several browser harnesses read it —
+   * but the value it prints is the one the contract delivers: the battle's
+   * `finalPlayerHp`, which `SIGNALR_PROTOCOL.md` §3.2.19 defines as the active
+   * **Pet's** HP at battle end (`GAME_STATE.md` §2.3 `PetState.HP`). The wire
+   * name is a fixed protocol label; there is no Player HP pool (ADR-011).
+   */
   private playerHpText: Phaser.GameObjects.Text | null = null;
+  /** The delivered `durationTurns`, once the result read has delivered it. */
+  private durationText: Phaser.GameObjects.Text | null = null;
   private rewardText: Phaser.GameObjects.Text | null = null;
+
+  /** The reward block's current state ({@link RewardLoadState}). */
+  private rewardState: RewardLoadState = 'loading';
+  /**
+   * Whether the current failure has a reward read behind it to repeat.
+   *
+   * A read that was issued and failed — including one that answered with a
+   * payload that is not the documented shape — is repeatable, so `RETRY` is
+   * offered. A failure with no addressable read at all is not, and no control
+   * is drawn for it.
+   */
+  private rewardRetryable = false;
+  /** The rendered `RewardSummary` block of the current successful read. */
+  private rewardSummary = '';
+  /** The delivered `durationTurns` of the current successful read. */
+  private rewardDurationTurns: number | null = null;
+  /** The `RETRY` control's objects, destroyed and re-created by each render pass. */
+  private rewardRetryButton: Phaser.GameObjects.Rectangle | null = null;
+  private rewardRetryLabel: Phaser.GameObjects.Text | null = null;
 
   /**
    * Guards the post-result navigation so exactly one transition leaves this
@@ -181,13 +265,24 @@ export class ResultScene extends Phaser.Scene {
     // note).
     const rewardRun = ++this.rewardLoadRun;
 
+    // A scene instance is reusable, so the reward block starts this run in its
+    // own state rather than in the ended run's.
+    this.rewardState = 'loading';
+    this.rewardRetryable = false;
+    this.rewardSummary = '';
+    this.rewardDurationTurns = null;
+    this.rewardRetryButton = null;
+    this.rewardRetryLabel = null;
+
     this.drawShell();
     this.renderResult();
+    this.renderRewards();
     this.drawNavigation();
 
     // The reward summary is read but never awaited into the scene lifecycle: the
     // outcome and terminal HP values above are rendered immediately and do not
-    // depend on it. A failed or unavailable read leaves that presentation intact.
+    // depend on it. A failed or unavailable read leaves that presentation intact
+    // and reports itself in the reward block.
     void this.loadRewards(rewardRun);
   }
 
@@ -223,7 +318,17 @@ export class ResultScene extends Phaser.Scene {
     this.outcomeText = null;
     this.bossHpText = null;
     this.playerHpText = null;
+    this.durationText = null;
     this.rewardText = null;
+    this.rewardState = 'loading';
+    this.rewardRetryable = false;
+    this.rewardSummary = '';
+    this.rewardDurationTurns = null;
+    // Phaser's `DisplayList#shutdown` has already destroyed these objects by the
+    // time this handler runs; the references are dropped so no continuation can
+    // reach them.
+    this.rewardRetryButton = null;
+    this.rewardRetryLabel = null;
     this.hasTransitioned = false;
   }
 
@@ -272,10 +377,23 @@ export class ResultScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    // The reward summary area. Left empty until the delivered members arrive, so
-    // an unavailable read shows nothing rather than an invented value.
+    // The battle's delivered length (`BattleResult.DurationTurns`,
+    // `API_CONTRACTS.md` §4 note 5). It is written only from the result read's
+    // own `durationTurns`: nothing here counts turns, reads a timestamp, or
+    // derives a length from combat events.
+    this.durationText = this.add
+      .text(GAME_WIDTH / 2, SAFE_AREA.y + 356, '', {
+        fontFamily: 'ui-monospace, monospace',
+        fontSize: '18px',
+        color: '#94a3b8',
+      })
+      .setOrigin(0.5);
+
+    // The reward summary area. Its state is set by `renderRewards`: it reports
+    // the read as loading, as failed (with `RETRY`), as unavailable, or as the
+    // delivered members. It never shows an invented value.
     this.rewardText = this.add
-      .text(GAME_WIDTH / 2, SAFE_AREA.y + 352, '', {
+      .text(GAME_WIDTH / 2, SAFE_AREA.y + 396, '', {
         fontFamily: 'ui-monospace, monospace',
         fontSize: '16px',
         color: '#cbd5e1',
@@ -403,7 +521,7 @@ export class ResultScene extends Phaser.Scene {
       this.outcomeText?.setText('NO RESULT');
       this.outcomeText?.setColor('#94a3b8');
       this.bossHpText?.setText('Final Boss HP: —');
-      this.playerHpText?.setText('Final Player HP: —');
+      this.playerHpText?.setText('Final Pet HP: —');
       return;
     }
 
@@ -424,21 +542,137 @@ export class ResultScene extends Phaser.Scene {
 
     // Terminal HP values are presented exactly as delivered.
     // The scene does not clamp, recompute, normalize, or infer HP.
+    //
+    // The second line names the **Pet's** HP because that is what the delivered
+    // member is: `finalPlayerHp` is a fixed protocol label for
+    // `PetState.HP` at battle end (`SIGNALR_PROTOCOL.md` §3.2.19 note,
+    // `GAME_STATE.md` §2.3, ADR-011 — there is no Player HP pool). The member
+    // name is unchanged; only the label a player reads was wrong.
     this.bossHpText?.setText(`Final Boss HP: ${finalBossHp}`);
-    this.playerHpText?.setText(`Final Player HP: ${finalPlayerHp}`);
+    this.playerHpText?.setText(`Final Pet HP: ${finalPlayerHp}`);
+  }
+
+  /**
+   * Renders the reward block in its current state.
+   *
+   * It writes to the one `rewardText` this scene created and re-creates the
+   * `RETRY` control from scratch on every pass, so no state — loaded, loading or
+   * failed — can leave a second block or a second handler behind however often
+   * `RETRY` is pressed.
+   */
+  private renderRewards(): void {
+    this.clearRewardRetryControl();
+
+    if (this.rewardState === 'success') {
+      this.rewardText?.setText(this.rewardSummary);
+      this.durationText?.setText(
+        this.rewardDurationTurns === null ? '' : `Duration: ${this.rewardDurationTurns} turns`
+      );
+      return;
+    }
+
+    // Neither a failed nor an in-flight read delivered a length, and neither is
+    // rendered as a zero.
+    this.durationText?.setText('');
+
+    this.rewardText?.setText(
+      this.rewardState === 'loading'
+        ? REWARD_LOADING_TEXT
+        : this.rewardRetryable
+          ? REWARD_FAILURE_TEXT
+          : REWARD_UNAVAILABLE_TEXT
+    );
+
+    if (this.rewardState === 'failure' && this.rewardRetryable) {
+      this.drawRewardRetryControl();
+    }
+  }
+
+  /**
+   * Draws the `RETRY` control the failure state offers (`TASK-211 §6`).
+   *
+   * Its handler is the only thing it does: it repeats the reward read and
+   * nothing else. It never re-enters the battle, never re-reads the outcome, and
+   * never navigates.
+   */
+  private drawRewardRetryControl(): void {
+    const x = GAME_WIDTH / 2;
+    const y = RETRY_BUTTON_ROW_Y;
+
+    const button = this.add
+      .rectangle(x, y, RETRY_BUTTON_WIDTH, RETRY_BUTTON_HEIGHT, 0x1d4ed8)
+      .setStrokeStyle(1, 0x60a5fa);
+
+    const label = this.add
+      .text(x, y, RETRY_LABEL, {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '16px',
+        color: '#e2e8f0',
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5);
+
+    button.setInteractive({ useHandCursor: true });
+    button.on(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN, () => this.retryRewards());
+
+    this.rewardRetryButton = button;
+    this.rewardRetryLabel = label;
+  }
+
+  /**
+   * Releases the `RETRY` control's objects and their pointer handlers.
+   *
+   * It is called by every reward render pass, so a retry cannot accumulate a
+   * second control or a second listener.
+   */
+  private clearRewardRetryControl(): void {
+    this.rewardRetryButton?.off(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN);
+    this.rewardRetryButton?.destroy();
+    this.rewardRetryLabel?.destroy();
+    this.rewardRetryButton = null;
+    this.rewardRetryLabel = null;
+  }
+
+  /**
+   * `RETRY` — repeats the reward read, and only that (`TASK-211 §6`).
+   *
+   * The run identity advances first, so the read that failed (or any read still
+   * in flight) can no longer write: only this repeat owns the presentation. An
+   * activation while a read is already in flight is ignored, so repeated
+   * pressing can never issue two concurrent reads.
+   */
+  private retryRewards(): void {
+    if (this.rewardState === 'loading') {
+      return;
+    }
+
+    const run = ++this.rewardLoadRun;
+    this.rewardState = 'loading';
+    this.rewardRetryable = false;
+    this.renderRewards();
+
+    void this.loadRewards(run);
   }
 
   /**
    * Reads the battle's persisted result through the runtime port and renders its
-   * `rewards` (`API_CONTRACTS.md` §4 note 1).
+   * `rewards` and its `durationTurns` (`API_CONTRACTS.md` §4).
    *
-   * The read happens only when the handoff supplied a `battleId`; with none
-   * there is nothing to address and no request is issued. A failed read —
+   * The read is issued only when the handoff supplied a `battleId` **and** a
+   * runtime is published; with either missing there is nothing to address, and
+   * the block reports the summary as unavailable rather than as a failure to
+   * retry. A read that is issued and rejects —
    * `404 BATTLE_NOT_FOUND` or `401 UNAUTHENTICATED` (§4 notes 6–7) — leaves the
-   * reward area empty and the outcome presentation untouched: the reward
-   * summary is unavailable, which is not the same statement as a zero reward.
+   * outcome presentation untouched and puts the block in its failure state with
+   * a working `RETRY`.
    *
-   * `run` is the presentation run `create()` started this read for. The read is
+   * **It fails closed on a payload that is not the documented shape.** An absent
+   * or malformed `rewards` (or a non-numeric `durationTurns`) is treated as the
+   * failure state, never as data: a `{}`-shaped response must not render literal
+   * `undefined` under a `REWARDS` heading, and a zero reward must stay
+   * distinguishable from a payload that never arrived.
+   *
+   * `run` is the presentation run that started this read. The read is
    * asynchronous and the scene can be shut down or reused while it is in flight,
    * so the delivery is written only when that run is still the current one
    * ({@link rewardLoadRun}).
@@ -446,27 +680,34 @@ export class ResultScene extends Phaser.Scene {
   private async loadRewards(run: number): Promise<void> {
     const battleId = this.resultData?.battleId;
 
-    if (battleId === undefined || battleId === '') {
-      return;
-    }
-
     // The documented scene → runtime accessor (ARCHITECTURE.md §2.2.1 rule 2).
     // Returns null in an isolated scene test, so the outcome presentation never
     // depends on runtime availability.
     const runtime = readRuntime(this);
 
-    if (!runtime) {
+    if (battleId === undefined || battleId === '' || !runtime) {
+      if (run === this.rewardLoadRun) {
+        this.rewardState = 'failure';
+        this.rewardRetryable = false;
+        this.renderRewards();
+      }
       return;
     }
 
-    let rewards: RewardSummaryResponse;
+    let result: BattleResultResponse;
 
     try {
-      const result = await runtime.getBattleResult(battleId);
-      rewards = result.rewards;
+      result = await runtime.getBattleResult(battleId);
     } catch {
       // The result is authoritative and simply unavailable: nothing is
       // fabricated to fill the gap, and the outcome presentation stands.
+      if (run !== this.rewardLoadRun) {
+        return;
+      }
+
+      this.rewardState = 'failure';
+      this.rewardRetryable = true;
+      this.renderRewards();
       return;
     }
 
@@ -478,6 +719,62 @@ export class ResultScene extends Phaser.Scene {
       return;
     }
 
-    this.rewardText?.setText(formatRewards(rewards));
+    if (!isDeliveredResult(result)) {
+      this.rewardState = 'failure';
+      this.rewardRetryable = true;
+      this.renderRewards();
+      return;
+    }
+
+    this.rewardSummary = formatRewards(result.rewards);
+    this.rewardDurationTurns = result.durationTurns;
+    this.rewardState = 'success';
+    this.renderRewards();
   }
+}
+
+/**
+ * Whether a delivered result carries the members this scene renders, in the
+ * documented shape (`API_CONTRACTS.md` §4, `DATABASE.md` §1).
+ *
+ * It checks only what the reward block actually reads: the eight `rewards`
+ * members and `durationTurns`. The four "resulting value" members of the Player
+ * and Pet tracks are nullable **by contract** (`DATABASE.md` §1 item 4), so
+ * `null` is a valid delivered value here and is never treated as malformed — the
+ * presentation renders it as unavailable (`formatRewards`). Anything else is the
+ * failure state rather than data.
+ */
+function isDeliveredResult(result: BattleResultResponse): boolean {
+  if (result === null || typeof result !== 'object') {
+    return false;
+  }
+
+  if (typeof result.durationTurns !== 'number' || !Number.isFinite(result.durationTurns)) {
+    return false;
+  }
+
+  const rewards: unknown = result.rewards;
+
+  if (rewards === null || typeof rewards !== 'object') {
+    return false;
+  }
+
+  const summary = rewards as unknown as Record<string, unknown>;
+
+  const isCount = (value: unknown): boolean =>
+    typeof value === 'number' && Number.isFinite(value);
+  const isNullableCount = (value: unknown): boolean => value === null || isCount(value);
+  const isNullableFlag = (value: unknown): boolean =>
+    value === null || typeof value === 'boolean';
+
+  return (
+    isCount(summary.playerXpGained) &&
+    isNullableCount(summary.newPlayerXp) &&
+    isNullableFlag(summary.playerLeveledUp) &&
+    isNullableCount(summary.newPlayerLevel) &&
+    isCount(summary.petXpGained) &&
+    isNullableCount(summary.newPetXp) &&
+    isNullableFlag(summary.petLeveledUp) &&
+    isNullableCount(summary.newPetLevel)
+  );
 }

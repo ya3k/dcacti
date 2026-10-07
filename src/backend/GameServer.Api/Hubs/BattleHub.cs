@@ -81,14 +81,16 @@ public record PingResponse(bool Accepted, string? ClientSequence, DateTimeOffset
 /// <param name="PetState">
 /// The authoritative <c>PetState</c> projection (<c>GAME_STATE.md</c> §2.3) — the
 /// active Pet's Passive identity, its progress pair, its non-default Reset
-/// Behavior when it declares one, its battle-scoped Card loadout, and its active
-/// Status Effect instances, projected one-to-one from the authoritative state
+/// Behavior when it declares one, its battle-scoped Card loadout, its active
+/// Status Effect instances, and its live combat values (<c>HP</c>, <c>MaxHP</c>,
+/// <c>Power</c>), projected one-to-one from the authoritative state
 /// (<c>SIGNALR_PROTOCOL.md</c> §4.3).
 /// </param>
 /// <param name="BossState">
-/// The authoritative Boss HP projection (<c>GAME_STATE.md</c> §2.4) — the Boss's
-/// current <c>HP</c> and <c>MaxHP</c> and nothing else, projected one-to-one from
-/// the authoritative state (<c>SIGNALR_PROTOCOL.md</c> §4.4).
+/// The authoritative Boss projection (<c>GAME_STATE.md</c> §2.4) — the Boss's
+/// canonical technical Identity, its current <c>HP</c>, and its <c>MaxHP</c>, and
+/// nothing else, projected one-to-one from the authoritative state
+/// (<c>SIGNALR_PROTOCOL.md</c> §4.4).
 /// </param>
 public record BattleStateUpdated(
     string BattleId,
@@ -112,17 +114,24 @@ public record BattleStateUpdated(
 /// ├── passiveResetOverride       "Partial" | "NoReset"               present only when
 /// │                                                                  non-default
 /// ├── equippedCards              string[] (4 CardDefinitionId)       always present
-/// └── statusEffects             Status Effect instances of the       always present
-///                               ACTIVE Pet — an array, `[]` when     (§4.3 item 14)
-///                               none is active
+/// ├── statusEffects             Status Effect instances of the       always present
+/// │                               ACTIVE Pet — an array, `[]` when     (§4.3 item 14)
+/// │                               none is active
+/// ├── hp                         the ACTIVE Pet's current HP          always present
+/// │                                                                  (§4.3 item 15)
+/// ├── maxHp                      the ACTIVE Pet's Max HP              always present
+/// │                                                                  (§4.3 item 15)
+/// └── power                      the ACTIVE Pet's Power              always present
+///                                                                   (§4.3 item 15)
 /// </code>
 ///
-/// The members are exactly the five <c>PetState</c> fields this stage implements
+/// The members are exactly the eight <c>PetState</c> fields this stage delivers
 /// and nothing else (§4.3 item 2): the Passive's <c>Threshold</c>, <c>Trigger
 /// Type</c>, <c>Effect</c>, and <c>Reset Behavior</c> are its <b>definition</b>
 /// and are not members here (<c>PASSIVE_RULES.md</c> §1, §4.3 item 3), and the
 /// rest of §2.3 — <c>PetId</c>/Identity, <c>Element</c>,
-/// <c>Tier</c>/<c>Star</c>/<c>Level</c>, the combat stats, the sibling
+/// <c>Tier</c>/<c>Star</c>/<c>Level</c>, the remaining combat stats
+/// (<c>ATK</c>, <c>DEF</c>, <c>Crit</c>), the sibling
 /// <c>NextAttackCritModifiers[]</c>/<c>CardCostModifiers[]</c>/<c>ATKModifiers[]</c>
 /// collections, and <c>EquippedRelics[]</c> — belongs to other subsystems or
 /// server-only calculation and is not delivered.
@@ -133,7 +142,10 @@ public record BattleStateUpdated(
 /// <c>combo</c>, or <c>matchCount</c> (<c>GAME_RULES.md</c> §18, §4.3 item 9).
 /// It likewise applies, refreshes, decrements, expires, and removes no Status
 /// Effect — that lifecycle is the server's (§4.3 item 14, <c>GAME_STATE.md</c>
-/// §5.1.1, <c>COMBAT_RULES.md</c> §5).
+/// §5.1.1, <c>COMBAT_RULES.md</c> §5) — and it damages, heals, clamps, and
+/// re-derives no combat value: the three live values are read as sent, and
+/// <c>power</c> authorizes no client-side cost, affordability, or cast-legality
+/// computation (§4.3 item 15).
 /// </summary>
 /// <param name="PassiveId">
 /// The active Pet's Passive identity (<c>GAME_STATE.md</c> §2.3) — the same value
@@ -192,12 +204,43 @@ public record BattleStateUpdated(
 /// projection imposes none: the array is delivered in the order the state holds
 /// it, which the round trip preserves (§2.3.2 item 6).
 /// </param>
+/// <param name="Hp">
+/// The active Pet's current HP (<c>GAME_STATE.md</c> §2.3), read from
+/// <c>PetState.HP</c> and reported unchanged. The projection applies no unit,
+/// scale, clamp, or rounding, and <c>0</c> is a real value — the terminal HP of a
+/// lost battle (<c>GAME_RULES.md</c> §1.4, <c>SIGNALR_PROTOCOL.md</c> §4.3
+/// item 15).
+/// </param>
+/// <param name="MaxHp">
+/// The active Pet's maximum HP (<c>GAME_STATE.md</c> §2.3), read from
+/// <c>PetState.MaxHP</c> and reported unchanged. It is never re-derived from
+/// <paramref name="Hp"/> and <paramref name="Hp"/> is never clamped to it: the
+/// two are reported independently, exactly as the Boss's pair is (§4.3 item 15,
+/// §4.4 item 5). The <c>maxHp</c> spelling matches the sibling <c>bossState</c>
+/// member and the REST battle-start summary (<c>API_CONTRACTS.md</c> §3).
+/// </param>
+/// <param name="Power">
+/// The active Pet's Power (<c>GAME_STATE.md</c> §2.3), read from
+/// <c>PetState.Power</c> and reported unchanged — the Card / Pet Skill resource
+/// whose <c>0–100</c> range is the documented invariant of <c>GAME_RULES.md</c>
+/// §12 and <c>COMBAT_RULES.md</c> §1.1. No <c>maxPower</c> member is projected,
+/// because no such state member exists, and <c>power = 0</c> is a real published
+/// value — it is what a battle begins with — sent as <c>0</c> (§4.3 item 15).
+///
+/// The client renders this value and computes none of it: it does not reconstruct
+/// it from <c>PowerChanged</c> (which is transient, per-mutation, and lost on
+/// resync — §7 item 2), and it derives no cost, affordability, or cast legality
+/// from it (<c>CARD_RULES.md</c> §3.6, §4 item 15, §4.3 item 15).
+/// </param>
 public record PetStatePayload(
     [property: JsonPropertyName("passiveId")] string PassiveId,
     [property: JsonPropertyName("passiveProgress")] PassiveProgressPayload PassiveProgress,
     [property: JsonPropertyName("equippedCards")] IReadOnlyList<string> EquippedCards,
     [property: JsonPropertyName("statusEffects")]
     IReadOnlyList<StatusEffectPayload> StatusEffects,
+    [property: JsonPropertyName("hp")] int Hp,
+    [property: JsonPropertyName("maxHp")] int MaxHp,
+    [property: JsonPropertyName("power")] int Power,
     [property: JsonPropertyName("passiveResetOverride")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? PassiveResetOverride = null);
 
@@ -306,37 +349,56 @@ public record StatusEffectPayload(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? ExpiryCondition = null);
 
 /// <summary>
-/// The wire projection of the Boss's live health (<c>GAME_STATE.md</c> §2.4,
+/// The wire projection of the Boss (<c>GAME_STATE.md</c> §2.4,
 /// <c>SIGNALR_PROTOCOL.md</c> §4.4).
 ///
 /// <code>
 /// bossState
+/// ├── bossId                      the Boss's canonical technical      always present
+/// │                              Identity (BOSS_RULES.md §6.4)        (§4.4 item 10)
+/// │                              — never a display name
 /// ├── hp                          the Boss's current HP      always present
 /// └── maxHp                       the Boss's MaxHP            always present
 /// </code>
 ///
-/// <b>It is a two-member projection of <c>BossState</c>, not <c>BossState</c>.</b>
-/// The enumerated member set is <c>hp</c> and <c>maxHp</c> and nothing else
-/// (§4.4 item 2), and referring to the state field as a whole does not widen it.
-/// Every other §2.4 member stays server-side: <c>BossId</c>/Identity,
-/// <c>Element</c>, <c>ATK</c>, <c>DEF</c>, <c>State</c>, <c>PassiveId</c>,
+/// <b>It is a three-member projection of <c>BossState</c>, not <c>BossState</c>.</b>
+/// The enumerated member set is <c>bossId</c>, <c>hp</c> and <c>maxHp</c> and
+/// nothing else (§4.4 item 2), and referring to the state field as a whole does
+/// not widen it. Every other §2.4 member stays server-side: <c>Element</c>,
+/// <c>ATK</c>, <c>DEF</c>, <c>State</c>, <c>PassiveId</c>,
 /// <c>PassiveProgress</c>, <c>SkillCharge</c>, <c>SkillCooldown</c>, and
 /// <c>StatusEffects[]</c> (§4.4 item 3). A client must not read this object as
 /// the Boss's state.
 ///
-/// <b>Both members are always present and neither is optional.</b> The Boss
+/// <b><c>bossId</c> is the Boss's canonical technical Identity — an identity,
+/// never presentation content.</b> It is the value <c>BossState.BossId</c> holds
+/// (<c>BOSS_RULES.md</c> §6.4: <c>"boss-hoa-long"</c>, <c>"boss-thuy-ma"</c>,
+/// <c>"boss-moc-yeu"</c>, <c>"boss-son-thach-ve"</c>, <c>"boss-kim-loi-vuong"</c>).
+/// No display name, localization text, Element, portrait, asset key, boss type,
+/// Passive or Skill metadata, or <c>BossDefinitionId</c> travels with it: the
+/// client resolves presentation content from the single Boss catalog it already
+/// holds, and uses the resolved label for display only (§4.4 item 10).
+///
+/// <b>All three members are always present and none is optional.</b> The Boss
 /// exists from battle creation at full health (<c>GAME_STATE.md</c> §2.4,
-/// §2.4.1), so there is no absent or "Boss not yet available" case: neither is
-/// nullable, neither is omitted, and <c>hp = 0</c> is a real published value —
+/// §2.4.1), so there is no absent or "Boss not yet available" case: none is
+/// nullable, none is omitted, and <c>hp = 0</c> is a real published value —
 /// the terminal value of a won battle — sent as <c>0</c> (§4.4 item 4). A client
 /// must not read an absent <c>hp</c> as zero.
 ///
-/// <b>The client neither computes nor derives either value.</b> It renders the
-/// two numbers it was sent and does not damage the Boss, clamp <c>hp</c> to
-/// <c>maxHp</c>, infer <c>MaxHP</c> from a damage report, or re-derive either
-/// from the events or from <c>finalBossHp</c> (<c>GAME_RULES.md</c> §18,
-/// <c>ADR-001</c>, §4.4 item 7).
+/// <b>The client neither computes nor derives any value.</b> It renders the
+/// numbers and the identity it was sent and does not damage the Boss, clamp
+/// <c>hp</c> to <c>maxHp</c>, infer <c>MaxHP</c> from a damage report, re-derive
+/// either from the events or from <c>finalBossHp</c>, or reconstruct the identity
+/// from an event's <c>sourceId</c> (<c>GAME_RULES.md</c> §18, <c>ADR-001</c>,
+/// §4.4 items 7 and 10).
 /// </summary>
+/// <param name="BossId">
+/// The Boss's canonical technical Identity (<c>GAME_STATE.md</c> §2.4,
+/// <c>BOSS_RULES.md</c> §6.4), read from <c>BossState.BossId</c> and reported
+/// unchanged as a string. It is set at battle creation and never changes, so it is
+/// always present with no null or "no Boss yet" form (§4.4 item 4).
+/// </param>
 /// <param name="Hp">
 /// The Boss's current HP (<c>GAME_STATE.md</c> §2.4), read from
 /// <c>BossState.HP</c> and reported unchanged. The projection applies no unit,
@@ -351,6 +413,7 @@ public record StatusEffectPayload(
 /// member (<c>API_CONTRACTS.md</c> §3).
 /// </param>
 public record BossStatePayload(
+    [property: JsonPropertyName("bossId")] string BossId,
     [property: JsonPropertyName("hp")] int Hp,
     [property: JsonPropertyName("maxHp")] int MaxHp);
 
@@ -1205,28 +1268,35 @@ public class BattleHub : Hub
             // collection (§4.3 item 14: only the ACTIVE Pet's instances travel, and
             // the array is always present, empty when none is active).
             ToPetStatePayload(state.PetState),
-            // GAME_STATE.md §2.4 / SIGNALR_PROTOCOL.md §4.4: the two-member Boss HP
-            // projection, read from BossState — the Boss's live health and nothing
-            // else. The rest of §2.4 (identity, Element, ATK/DEF, State, Passive,
-            // Skill charge/cooldown, and the Boss's own StatusEffects[]) stays
-            // server-side (§4.4 item 3), so no member beyond hp/maxHp is read here.
-            // Both values are always present and neither is clamped or derived from
-            // the other: a terminal `hp = 0` is published as 0 (§4.4 items 4–5).
-            new BossStatePayload(state.BossState.HP, state.BossState.MaxHP));
+            // GAME_STATE.md §2.4 / SIGNALR_PROTOCOL.md §4.4: the three-member Boss
+            // projection, read from BossState — the Boss's canonical technical
+            // Identity and its live health, and nothing else. The rest of §2.4
+            // (Element, ATK/DEF, State, Passive, Skill charge/cooldown, and the
+            // Boss's own StatusEffects[]) stays server-side (§4.4 item 3), so no
+            // member beyond bossId/hp/maxHp is read here. All three are always
+            // present and none is clamped or derived from another: a terminal
+            // `hp = 0` is published as 0, and the identity is read as sent
+            // (§4.4 items 4–5, 10).
+            new BossStatePayload(
+                state.BossState.BossId.Value,
+                state.BossState.HP,
+                state.BossState.MaxHP));
 
     /// <summary>
     /// Projects the authoritative <c>PetState</c> onto the §4.3 <c>petState</c>
     /// object — a pure field mapping.
     ///
     /// The Passive identity, the progress pair, the non-default Reset Behavior,
-    /// the battle-scoped Card loadout, and the active Pet's active Status Effect
-    /// instances are carried across one-to-one; the rest of <c>GAME_STATE.md</c>
+    /// the battle-scoped Card loadout, the active Pet's active Status Effect
+    /// instances, and the active Pet's live combat values (<c>HP</c>, <c>MaxHP</c>,
+    /// <c>Power</c>) are carried across one-to-one; the rest of <c>GAME_STATE.md</c>
     /// §2.3 (<c>PetId</c>, <c>Element</c>, <c>Tier</c>/<c>Star</c>/<c>Level</c>,
-    /// the combat stats, the sibling modifier collections, and
+    /// the remaining combat stats, the sibling modifier collections, and
     /// <c>EquippedRelics[]</c>) is not part of this stage and is not projected
     /// (<c>SIGNALR_PROTOCOL.md</c> §4.3 item 2). Nothing is derived: the client
     /// renders the values it was sent and never charges a Passive, evaluates a
-    /// Threshold, or applies a reset (<c>GAME_RULES.md</c> §18, §4.3 item 9).
+    /// Threshold, applies a reset, damages, heals, clamps, or reconstructs a
+    /// combat value (<c>GAME_RULES.md</c> §18, §4.3 items 9 and 15).
     /// </summary>
     private static PetStatePayload ToPetStatePayload(PetState petState) =>
         new(
@@ -1262,6 +1332,16 @@ public class BattleHub : Hub
             (petState.ActiveStatusEffects ?? [])
                 .Select(ToStatusEffectPayload)
                 .ToArray(),
+
+            // §4.3 item 15 / GAME_STATE.md §2.3: the active Pet's three live combat
+            // values, each read from its own authoritative state member and reported
+            // unchanged. Nothing is calculated, clamped, scaled, or rounded, `maxHp`
+            // is never derived from `hp` (and `hp` is never clamped to `maxHp`), and
+            // an initial `power = 0` or a terminal `hp = 0` is published as 0 rather
+            // than by absence — all three are always present and non-nullable.
+            petState.HP,
+            petState.MaxHP,
+            petState.Power,
 
             // §4.3 items 6–7: the Reset Behavior's contract name when — and only
             // when — it is non-default. "Partial"/"NoReset" are the two non-default

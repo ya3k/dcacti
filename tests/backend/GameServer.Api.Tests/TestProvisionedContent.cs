@@ -33,29 +33,35 @@ namespace GameServer.Api.Tests;
 internal static class TestProvisionedContent
 {
     /// <summary>
-    /// The three Pet definitions TASK-085 provisioned (<c>PET_RULES.md</c> §8).
+    /// The five Pet definitions the provisioning migrations created
+    /// (<c>PET_RULES.md</c> §8: TASK-085's three plus TASK-173's two).
     /// </summary>
     internal static readonly string[] ProvisionedPetDefinitionIds =
-        ["pet-xich-lang", "pet-bach-ho", "pet-huyen-quy"];
+        ["pet-xich-lang", "pet-bach-ho", "pet-huyen-quy", "pet-thanh-xa", "pet-son-hung"];
 
     /// <summary>
-    /// The six Card definitions TASK-085 provisioned — the three Basic Cards
-    /// (<c>CARD_RULES.md</c> §2) and the three Pet Skill Cards (§4.1).
+    /// The eight Card definitions the provisioning migrations created — the
+    /// three Basic Cards (<c>CARD_RULES.md</c> §2) and the five Pet Skill Cards
+    /// (§4.1, one per Pet).
     /// </summary>
     internal static readonly string[] ProvisionedCardDefinitionIds =
     [
         "card-heal", "card-shield", "card-power-charge",
         "card-inferno", "card-tidal-barrier", "card-iron-fang",
+        "card-venomous-bloom", "card-earthshaker",
     ];
 
     /// <summary>
-    /// The four Relic definitions TASK-085 provisioned
-    /// (<c>RELIC_RULES.md</c> §6 note 3).
+    /// The ten Relic definitions the provisioning migrations created
+    /// (<c>RELIC_RULES.md</c> §6).
     /// </summary>
     internal static readonly string[] ProvisionedRelicDefinitionIds =
     [
         "relic-berserker-core", "relic-mana-crystal",
         "relic-assassin-eye", "relic-emergency-core",
+        "relic-burning-curse", "relic-combo-fang",
+        "relic-arcane-battery", "relic-execution-mark",
+        "relic-cascade-core", "relic-battle-instinct",
     ];
 
     /// <summary>
@@ -84,6 +90,8 @@ internal static class TestProvisionedContent
             ("pet-xich-lang", "Xích Lang", Element.Hoa, "card-inferno"),
             ("pet-bach-ho", "Bạch Hổ", Element.Kim, "card-iron-fang"),
             ("pet-huyen-quy", "Huyền Quy", Element.Thuy, "card-tidal-barrier"),
+            ("pet-thanh-xa", "Thanh Xà", Element.Moc, "card-venomous-bloom"),
+            ("pet-son-hung", "Sơn Hùng", Element.Tho, "card-earthshaker"),
         };
 
         foreach (var (id, identity, element, skillCardId) in pets)
@@ -154,6 +162,20 @@ internal static class TestProvisionedContent
                 CardEffectDefinitions.Create(
                     CardEffectDefinition.Create(CardEffectType.Damage, CardEffectValueType.Flat, 150),
                     CardEffectDefinition.Crit(30, "NextAttack"))),
+            (
+                "card-venomous-bloom",
+                "Venomous Bloom",
+                CardCategory.PetSkill,
+                40,
+                CardEffectDefinitions.Create(
+                    CardEffectDefinition.Create(CardEffectType.Damage, CardEffectValueType.Flat, 120))),
+            (
+                "card-earthshaker",
+                "Earthshaker",
+                CardCategory.PetSkill,
+                40,
+                CardEffectDefinitions.Create(
+                    CardEffectDefinition.Create(CardEffectType.Damage, CardEffectValueType.Flat, 140))),
         };
 
         foreach (var (id, name, category, powerCost, effects) in cards)
@@ -183,6 +205,12 @@ internal static class TestProvisionedContent
             ("relic-mana-crystal", "Mana Crystal"),
             ("relic-assassin-eye", "Assassin Eye"),
             ("relic-emergency-core", "Emergency Core"),
+            ("relic-burning-curse", "Burning Curse"),
+            ("relic-combo-fang", "Combo Fang"),
+            ("relic-arcane-battery", "Arcane Battery"),
+            ("relic-execution-mark", "Execution Mark"),
+            ("relic-cascade-core", "Cascade Core"),
+            ("relic-battle-instinct", "Battle Instinct"),
         };
 
         foreach (var (id, name) in relics)

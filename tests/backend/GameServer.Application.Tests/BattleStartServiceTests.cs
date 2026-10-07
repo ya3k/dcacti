@@ -1052,6 +1052,20 @@ public class BattleStartServiceTests
                     .Select(DefinitionOf)
                     .ToList());
 
+        public Task<IReadOnlyList<CardDefinition>> ListDefinitionsAsync(
+            IReadOnlyCollection<string> cardDefinitionIds,
+            CancellationToken cancellationToken = default) =>
+            // The unrestricted content read the collection projection uses for
+            // each Pet's derived Signature Skill (API_CONTRACTS.md §5.1). The
+            // loadout validator does not call it; it is implemented so this double
+            // stays a faithful ICardRepository.
+            Task.FromResult<IReadOnlyList<CardDefinition>>(
+                cardDefinitionIds
+                    .Select(DefinitionOfOrNull)
+                    .Where(definition => definition is not null)
+                    .Select(definition => definition!)
+                    .ToList());
+
         public Task<CardDefinition?> GetDefinitionAsync(
             string cardDefinitionId,
             CancellationToken cancellationToken = default) =>

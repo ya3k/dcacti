@@ -1,6 +1,15 @@
 # Database
 
-**Version:** 1.35 (§1's Relic contract "encoded in these shapes" note, §2's
+**Version:** 1.36 (§2's MVP starter ownership contract **synchronized** with the
+TASK-213 decision and the TASK-221 implementation: the Player-creation grant IS
+the MVP content grant — **5 Pets, 3 Basic Cards, 10 Relics** as **18 ownership
+rows**, up from 1 / 3 / 3 (7 rows) — because MVP has no post-creation
+acquisition system (`MVP_SCOPE.md` §1, §3). The composition's §2 item 1 content
+lists, its item 3 row counts, and its item 4 row count are updated; the
+mechanism, the semantic classification, the idempotency rule, the atomicity
+requirement, the no-new-abstraction rule, and the schema are unchanged, and
+**no table, column, constraint, index, migration, token, enum mapping, or
+gameplay value changes**. Prior 1.35: (§1's Relic contract "encoded in these shapes" note, §2's
 starter-relic exclusion note, and §5 item 4's provisioning record
 **synchronized** with TASK-184: the six remaining canonical `RelicDefinition`
 rows (`relic-burning-curse`, `relic-combo-fang`, `relic-arcane-battery`,
@@ -1283,53 +1292,68 @@ There is likewise **no persistent Relic-equip table**: Player owns Relic
 instances; which 3–5 are equipped for a given battle is request-time
 loadout only (`RELIC_RULES.md` §2, `API_CONTRACTS.md` §3).
 
-**MVP starter ownership contract (TASK-084 / TASK-082 decision E / R1-4).**
-For MVP, every newly created Player receives a deterministic starter ownership
-grant so the battle-start flow (`POST /api/battle/start`, `API_CONTRACTS.md` §3)
-can be exercised without a separate acquisition system.
+**MVP starter ownership contract (TASK-084 / TASK-082 decision E / R1-4;
+composition amended by the TASK-213 decision, implemented by TASK-221).**
+For MVP, every newly created Player receives a deterministic ownership grant that
+**is the MVP content set** (`MVP_SCOPE.md` §1 "Content ownership & reachability"):
+MVP has no acquisition system, so the battle-start flow
+(`POST /api/battle/start`, `API_CONTRACTS.md` §3) is exercised with the whole
+provisioned content set, and no path adds content to an account afterwards.
 
 **1. Exact starter composition and canonical identities:**
-- **Starter Pet (1 owned `Pet` row):** Exactly one Pet instance referencing the
-  canonical provisioned definition `pet-xich-lang` (**Xích Lang**, Element Hỏa,
-  `PET_RULES.md` §8). Carries documented creation values (`DATABASE.md` §3):
-  `Tier = Common` (the MVP data default), `Star = 1` (`Pet.MinStar`),
-  `XP = 0` (`Pet.InitialXp`), `Level = 1` (`Pet.InitialLevel`, `PET_RULES.md` §5.2),
-  `AcquiredAt` server timestamp.
-- **Starter Basic Cards (3 `PlayerUnlockedCard` rows):** All three content-defined
+- **Starter Pets (5 owned `Pet` rows):** exactly one Pet instance per MVP Pet
+  definition — `pet-xich-lang` (**Xích Lang**, Element Hỏa), `pet-bach-ho`
+  (**Bạch Hổ**, Kim), `pet-huyen-quy` (**Huyền Quy**, Thủy), `pet-thanh-xa`
+  (**Thanh Xà**, Mộc), and `pet-son-hung` (**Sơn Hùng**, Thổ)
+  (`PET_RULES.md` §8). Each instance carries the documented creation values
+  (`DATABASE.md` §3): `Tier = Common` (the MVP data default), `Star = 1`
+  (`Pet.MinStar`), `XP = 0` (`Pet.InitialXp`), `Level = 1` (`Pet.InitialLevel`,
+  `PET_RULES.md` §5.2), `AcquiredAt` server timestamp. *No Pet is privileged:*
+  which one is the active Pet is a battle-loadout choice
+  (`PET_RULES.md` §2.1 item 1), not an ownership property.
+- **Starter Basic Cards (3 `PlayerUnlockedCard` rows):** all three content-defined
   Basic Cards (`CARD_RULES.md` §2) referencing canonical definition IDs:
   `card-heal` (**Heal**), `card-shield` (**Shield**), and `card-power-charge`
   (**Power Charge**), each with `Category = Basic` and `LoadoutCopyLimit = 1`.
-  *Excluded:* Pet Skill Cards (`Category = PetSkill`: `card-inferno`,
-  `card-tidal-barrier`, `card-iron-fang`) are derived from the active Pet's
-  `SignatureSkillCardId` at battle start and are never granted as unlocked Basic
-  Cards (`CARD_RULES.md` §1 item 4).
-- **Starter Relics (3 owned `Relic` rows):** Three distinct owned instances
-  referencing the three explicitly selected provisioned definitions
-  (`RELIC_RULES.md` §6): `relic-berserker-core` (**Berserker Core**),
-  `relic-mana-crystal` (**Mana Crystal**), and `relic-assassin-eye` (**Assassin
-  Eye**). Exactly one owned instance is granted per selected definition; each row
-  carries a distinct, server-minted `RelicInstanceId` (never collapsed with
-  `RelicDefinitionId`, `RELIC_RULES.md` §2.2) and `AcquiredAt` server timestamp.
-  *Excluded:* `Burning Curse` is provisioned but deliberately not selected for
-  the 3-Relic starter set (`RELIC_RULES.md` §6); `Emergency
-  Core` is provisioned but deliberately not selected for the 3-Relic starter set.
-  *Selection basis:* The starter definitions are an explicit named Product Owner
-  selection, NOT derived from document ordering, alphabetical ordering, migration
-  ordering, or database ordering.
+  *Excluded:* Pet Skill Cards (`Category = PetSkill` — `card-inferno`,
+  `card-tidal-barrier`, `card-iron-fang`, `card-venomous-bloom`,
+  `card-earthshaker`) are derived from the active Pet's `SignatureSkillCardId` at
+  battle start and are never granted as unlocked Basic Cards
+  (`CARD_RULES.md` §1 item 4). The Card slot is fixed by **content**, not by
+  ownership: the loadout is exactly 3 Basic Cards and exactly 3 exist.
+- **Starter Relics (10 owned `Relic` rows):** one owned instance per MVP Relic
+  definition (`RELIC_RULES.md` §6) — `relic-berserker-core` (**Berserker Core**),
+  `relic-mana-crystal` (**Mana Crystal**), `relic-assassin-eye` (**Assassin
+  Eye**), `relic-emergency-core` (**Emergency Core**), `relic-burning-curse`
+  (**Burning Curse**), `relic-combo-fang` (**Combo Fang**), `relic-arcane-battery`
+  (**Arcane Battery**), `relic-execution-mark` (**Execution Mark**),
+  `relic-cascade-core` (**Cascade Core**), and `relic-battle-instinct`
+  (**Battle Instinct**). Exactly one owned instance is granted per definition;
+  each row carries a distinct, server-minted `RelicInstanceId` (never collapsed
+  with `RelicDefinitionId`, `RELIC_RULES.md` §2.2) and an `AcquiredAt` server
+  timestamp. Owning all ten is what makes the 3–5 Relic loadout a real build
+  decision (`RELIC_RULES.md` §2.1 item 1); nothing is equipped by the grant.
+  *Selection basis:* The grant references the provisioned content set — it is
+  NOT derived from document ordering, alphabetical ordering, migration ordering,
+  or database ordering, and `RELIC_RULES.md` §2.3 item 2 forbids ordering a
+  loadout by `AcquiredAt`.
 
 **2. Semantic classification — MVP bootstrap, not acquisition gameplay:**
 These rows represent **MVP bootstrap / test content** for newly created Players.
-They exist solely so a newly created Player has sufficient owned content to
-satisfy the `POST /api/battle/start` loadout validation rules (`API_CONTRACTS.md`
+They exist solely so a newly created Player has the owned content the
+`POST /api/battle/start` loadout validation rules require (`API_CONTRACTS.md`
 §3: 1 Pet, 3 Basic Cards, 3–5 Relics). They do **not** define or constrain future
 gameplay acquisition systems (starter choice UX, tutorial rewards, quests, gacha,
 shops, drops, events, or progression). Future tasks may alter the starter flow
-without altering the underlying collection ownership model (`DATABASE.md` §1–§2).
+without altering the underlying collection ownership model (`DATABASE.md` §1–§2)
+— and, per `MVP_SCOPE.md` §3, adding content to an account after creation
+requires a Rule Change (`GAME_RULES.md` §20) before implementation.
 
 **3. Player creation semantics and idempotency:**
-- **New Player creation:** Starter ownership rows (1 `Pet`, 3 `PlayerUnlockedCard`,
-  3 `Relic`) are created and committed atomically with the `Player` row on the
-  Player-creation branch (`POST /api/auth/discord`, `ARCHITECTURE.md` §2.3 item 3).
+- **New Player creation:** Starter ownership rows (5 `Pet`, 3 `PlayerUnlockedCard`,
+  10 `Relic`) are created and committed atomically with the `Player` row on the
+  Player-creation branch (`POST /api/auth/register` / `/api/auth/login`,
+  `ARCHITECTURE.md` §2.3 item 3).
 - **Existing Player:** Authenticating an existing Player performs no starter grant;
   the starter initialization path is reachable only when a new `Player` row is
   inserted.
@@ -1341,8 +1365,8 @@ without altering the underlying collection ownership model (`DATABASE.md` §1–
 - **Atomicity:** Achievable on the existing persistence boundary. All four entity
   types (`Player`, `Pet`, `PlayerUnlockedCard`, `Relic`) share the single scoped
   `GameDbContext` (`src/backend/GameServer.Infrastructure/Postgres/GameDbContext.cs`).
-  A single `SaveChangesAsync` commits the Player and all 7 starter ownership rows in
-  one atomic database transaction. No new persistence abstraction (`IUnitOfWork`,
+  A single `SaveChangesAsync` commits the Player and all 18 starter ownership rows
+  in one atomic database transaction. No new persistence abstraction (`IUnitOfWork`,
   `StarterOwnershipManager`, outbox, domain events) is required.
 - **Commit-scope surface:** Because existing repository methods (`PlayerRepository`,
   `PetRepository`, etc.) each commit independently, TASK-083 must expose exactly
@@ -1350,7 +1374,7 @@ without altering the underlying collection ownership model (`DATABASE.md` §1–
 - **Concurrency race-safety:** On concurrent registration for the same username,
   the `Username` UNIQUE constraint on `Accounts` rolls back the losing batch.
   The error-handling catch (`PlayerRepository.cs:69-85`) must discard/detach the
-  **entire staged batch** (Player + 7 ownership entities), not only the `Player`
+  **entire staged batch** (Player + 18 ownership entities), not only the `Player`
   entity, ensuring no orphaned ownership entities remain tracked. TASK-083 must
   verify this concurrent first-login behavior in integration tests.
 

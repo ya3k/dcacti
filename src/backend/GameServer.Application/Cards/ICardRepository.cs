@@ -92,6 +92,43 @@ public interface ICardRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Returns the definition rows matching
+    /// <paramref name="cardDefinitionIds"/> — the bulk content read the
+    /// collection projection uses to resolve each Pet's derived Signature Skill
+    /// reference (<c>API_CONTRACTS.md</c> §5.1: <c>signatureSkill.name</c> is
+    /// <c>CardDefinition.Name</c> and <c>signatureSkill.category</c> is
+    /// <c>CardDefinition.Category</c>).
+    ///
+    /// <b>It exists so a collection read is not an N+1 read.</b> A list
+    /// response needs one definition per owned Pet, so resolving them one
+    /// <see cref="GetDefinitionAsync"/> call at a time would issue one query per
+    /// Pet. This read resolves the whole set in one query against the existing
+    /// <c>CardDefinition</c> table (<c>DATABASE.md</c> §1); it introduces no new
+    /// index, no cache, and no read model.
+    ///
+    /// <b>It is a content read, not an ownership filter.</b> A Signature Skill
+    /// Card is derived from the Pet's definition and is deliberately not subject
+    /// to the Player's unlock set (<c>CARD_RULES.md</c> §1 item 4), so — like
+    /// <see cref="GetDefinitionAsync"/>, which the battle-start path uses for
+    /// the same reference — this read takes no <c>playerId</c> and applies no
+    /// <c>PlayerUnlockedCard</c> filter. The ownership scoping of
+    /// <c>GET /api/pets</c> happens on the owned-instance read
+    /// (<c>API_CONTRACTS.md</c> §5), not here.
+    ///
+    /// <b>A definition that does not exist is simply absent from the result.</b>
+    /// No placeholder row is fabricated (<c>AGENTS.md</c> §7). Definitions with
+    /// no owned Pet are equally absent: this is a lookup of the rows asked for,
+    /// not a listing of all content.
+    ///
+    /// <b>The result is not an ordered contract.</b>
+    /// </summary>
+    /// <param name="cardDefinitionIds">The requested definition identities.</param>
+    /// <param name="cancellationToken">Cancels the query.</param>
+    Task<IReadOnlyList<CardDefinition>> ListDefinitionsAsync(
+        IReadOnlyCollection<string> cardDefinitionIds,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Returns the definition row for
     /// <paramref name="cardDefinitionId"/>, or <c>null</c> when no such
     /// definition exists.

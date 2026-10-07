@@ -75,10 +75,10 @@ public class CollectionQueryServiceTests
     }
 
     [Fact]
-    public async Task ListPets_ShouldProjectExactlyTheSixDocumentedMembers()
+    public async Task ListPets_ShouldProjectExactlyTheSevenDocumentedMembers()
     {
         // §5.1: the member list is "binding and exhaustive" —
-        // petId, identity, element, tier, star, level.
+        // petId, identity, element, tier, star, level, signatureSkill.
         var fixture = new CollectionFixture()
             .WithPet(
                 "pet_xich_lang",
@@ -88,11 +88,13 @@ public class CollectionQueryServiceTests
                 PetTier.Common,
                 star: 1,
                 level: 12,
-                identity: "Xích Lang");
+                identity: "Xích Lang",
+                signatureSkillCardId: "card-inferno",
+                signatureSkillName: "Inferno");
 
         var pet = Assert.Single(await CreateService(fixture).ListPetsAsync(Owner));
 
-        // The projected record declares exactly these six members, so a seventh
+        // The projected record declares exactly these seven members, so an eighth
         // cannot be added without failing here.
         var members = typeof(PetCollectionItem)
             .GetProperties()
@@ -101,7 +103,7 @@ public class CollectionQueryServiceTests
             .ToArray();
 
         Assert.Equal(
-            new[] { "Element", "Identity", "Level", "PetId", "Star", "Tier" },
+            new[] { "Element", "Identity", "Level", "PetId", "SignatureSkill", "Star", "Tier" },
             members);
 
         // petId = Pet.PetInstanceId (§5.1).
@@ -120,6 +122,171 @@ public class CollectionQueryServiceTests
         // star = Pet.Star and level = Pet.Level, both integers (§5.1).
         Assert.Equal(1, pet.Star);
         Assert.Equal(12, pet.Level);
+    }
+
+    [Fact]
+    public async Task ListPets_ShouldProjectThePetsOwnDerivedSignatureSkillReference()
+    {
+        // §5.1: `signatureSkill` is the Pet's DERIVED Signature Skill reference —
+        // PetDefinition.SignatureSkillCardId, resolved through the CardDefinition
+        // it names (CARD_RULES.md §4 item 1). The cardId is the FK verbatim and
+        // the name and category are that definition's own stored values.
+        var fixture = new CollectionFixture()
+            .WithPet(
+                "pet_xich_lang",
+                Owner,
+                "def_xich_lang",
+                Element.Hoa,
+                PetTier.Common,
+                star: 1,
+                level: 12,
+                signatureSkillCardId: "card-inferno",
+                signatureSkillName: "Inferno");
+
+        var pet = Assert.Single(await CreateService(fixture).ListPetsAsync(Owner));
+
+        Assert.NotNull(pet.SignatureSkill);
+
+        // §5.1: exactly these three members, so a fourth cannot slip in.
+        var members = typeof(PetSignatureSkillItem)
+            .GetProperties()
+            .Select(property => property.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(new[] { "CardId", "Category", "Name" }, members);
+
+        Assert.Equal("card-inferno", pet.SignatureSkill.CardId);
+        Assert.Equal("Inferno", pet.SignatureSkill.Name);
+        Assert.Equal("PetSkill", pet.SignatureSkill.Category);
+
+        // The value is the definition's, not this fixture's guess: the stored
+        // row carries exactly those members.
+        Assert.Equal(
+            pet.SignatureSkill.Name,
+            fixture.Definitions["card-inferno"].Name);
+        Assert.Equal(
+            pet.SignatureSkill.CardId,
+            fixture.Definitions["card-inferno"].CardDefinitionId);
+    }
+
+    [Fact]
+    public async Task ListPets_ShouldResolveEveryProvisionedPetsSignatureSkill()
+    {
+        // §5.1 + PET_RULES.md §8: all five provisioned MVP Pets derive a
+        // Signature Skill, and each row's reference is its own PetDefinition's
+        // SignatureSkillCardId (CARD_RULES.md §4.1). The mapping is data, so the
+        // read must resolve all five — not one privileged Pet.
+        var provisioned = new[]
+        {
+            (PetDefinitionId: "pet-xich-lang", CardId: "card-inferno", Name: "Inferno"),
+            (PetDefinitionId: "pet-bach-ho", CardId: "card-iron-fang", Name: "Iron Fang"),
+            (PetDefinitionId: "pet-huyen-quy", CardId: "card-tidal-barrier", Name: "Tidal Barrier"),
+            (PetDefinitionId: "pet-thanh-xa", CardId: "card-venomous-bloom", Name: "Venomous Bloom"),
+            (PetDefinitionId: "pet-son-hung", CardId: "card-earthshaker", Name: "Earthshaker"),
+        };
+
+        var fixture = new CollectionFixture();
+
+        for (var index = 0; index < provisioned.Length; index++)
+        {
+            fixture.WithPet(
+                $"pet_instance_{index}",
+                Owner,
+                provisioned[index].PetDefinitionId,
+                Element.Hoa,
+                PetTier.Common,
+                star: 1,
+                level: 1,
+                identity: provisioned[index].PetDefinitionId,
+                signatureSkillCardId: provisioned[index].CardId,
+                signatureSkillName: provisioned[index].Name);
+        }
+
+        var pets = await CreateService(fixture).ListPetsAsync(Owner);
+
+        Assert.Equal(5, pets.Count);
+
+        foreach (var expected in provisioned)
+        {
+            var pet = Assert.Single(
+                pets,
+                candidate => candidate.Identity == expected.PetDefinitionId);
+
+            Assert.Equal(expected.CardId, pet.SignatureSkill.CardId);
+            Assert.Equal(expected.Name, pet.SignatureSkill.Name);
+            Assert.Equal("PetSkill", pet.SignatureSkill.Category);
+        }
+
+        // All five distinct references were resolved in ONE read (no N+1), and
+        // the read asked for exactly the five derived references.
+        Assert.Equal(
+            provisioned.Select(entry => entry.CardId).OrderBy(id => id, StringComparer.Ordinal),
+            fixture.LastRequestedSignatureSkillIds.OrderBy(id => id, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public async Task ListPets_ShouldNeverReachTheSignatureSkillThroughTheUnlockedCardCollection()
+    {
+        // §5.1 + CARD_RULES.md §1 item 4 / ADR-012 item 9: a Signature Skill is
+        // DERIVED, so it has no PlayerUnlockedCard row and its Pet must still
+        // project a complete reference. This is the property the contract exists
+        // for — the unlocked collection is not the identification source.
+        var fixture = new CollectionFixture()
+            .WithPet(
+                "pet_xich_lang",
+                Owner,
+                "def_xich_lang",
+                Element.Hoa,
+                PetTier.Common,
+                star: 1,
+                level: 1,
+                signatureSkillCardId: "card-inferno",
+                signatureSkillName: "Inferno");
+
+        var service = CreateService(fixture);
+
+        // The unlocked Card collection holds nothing at all.
+        Assert.Empty(await service.ListCardsAsync(Owner));
+
+        // The Signature Skill Card is content, never an unlock row.
+        Assert.DoesNotContain(
+            fixture.Unlocks,
+            unlock => unlock.CardDefinitionId == "card-inferno");
+
+        // And the Pet still reports its derived reference.
+        var pet = Assert.Single(await service.ListPetsAsync(Owner));
+
+        Assert.Equal("card-inferno", pet.SignatureSkill.CardId);
+        Assert.Equal("Inferno", pet.SignatureSkill.Name);
+    }
+
+    [Fact]
+    public async Task ListPets_ShouldRefuseAPetWhoseSignatureSkillCardDoesNotResolve()
+    {
+        // §5.1: SignatureSkillCardId is a required FK and a Pet has exactly one
+        // Signature Skill (CARD_RULES.md §4 item 1), so an unresolvable reference
+        // is a broken DATABASE.md §1 state rather than a contract case. No
+        // placeholder is fabricated (AGENTS.md §7) — the same posture §5.4 takes
+        // for an unresolvable RelicDefinition.
+        var fixture = new CollectionFixture()
+            .WithPet(
+                "pet_1",
+                Owner,
+                "def_1",
+                Element.Hoa,
+                PetTier.Common,
+                star: 1,
+                level: 1,
+                signatureSkillCardId: "card_skill_test",
+                signatureSkillName: "Skill Test");
+
+        fixture.Definitions.Remove("card_skill_test");
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => CreateService(fixture).ListPetsAsync(Owner));
+
+        Assert.Contains("card_skill_test", error.Message, StringComparison.Ordinal);
     }
 
     [Theory]
@@ -376,16 +543,16 @@ public class CollectionQueryServiceTests
     }
 
     [Fact]
-    public async Task ListCards_ShouldProjectExactlyTheThreeDocumentedMembers()
+    public async Task ListCards_ShouldProjectExactlyTheFourDocumentedMembers()
     {
-        // §5.3: cardId, name, category — no more, no fewer.
+        // §5.3: cardId, name, category, effectDefinition — no more, no fewer.
         var members = typeof(CardCollectionItem)
             .GetProperties()
             .Select(property => property.Name)
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToArray();
 
-        Assert.Equal(new[] { "CardId", "Category", "Name" }, members);
+        Assert.Equal(new[] { "CardId", "Category", "EffectDefinition", "Name" }, members);
 
         // And no `unlocked` member exists: §5.3 makes array membership the state
         // ("there is no unlocked member").
@@ -405,6 +572,88 @@ public class CollectionQueryServiceTests
 
         // category = CardDefinition.Category, "Basic" | "PetSkill" (§5.3).
         Assert.Contains(card.Category, new[] { "Basic", "PetSkill" });
+
+        // effectDefinition = the stored CardDefinition.EffectDefinition,
+        // element for element and member for member (DATABASE.md §1).
+        Assert.Equal(TestCardEffects.FlatPower, card.EffectDefinition);
+    }
+
+    [Fact]
+    public async Task ListCards_ShouldCarryAMultiEffectDefinitionUnchanged()
+    {
+        // §5.3 / DATABASE.md §1 item 1 / TASK-111 D-1b: one element per effect,
+        // in stored order, with the effect-specific extra members the contract's
+        // present-iff rules define. The projection is a field copy — nothing is
+        // reordered, merged, or recomputed.
+        var stored = CardEffectDefinitions.Create(
+            CardEffectDefinition.Create(CardEffectType.Damage, CardEffectValueType.Flat, 100),
+            CardEffectDefinition.Burn(CardEffectValueType.Flat, 50, duration: 2));
+
+        var fixture = new CollectionFixture()
+            .WithCard(
+                "card_inferno",
+                "Inferno",
+                CardCategory.PetSkill,
+                unlockedBy: Owner,
+                effectDefinition: stored);
+
+        var card = Assert.Single(await CreateService(fixture).ListCardsAsync(Owner));
+
+        Assert.Equal(stored, card.EffectDefinition);
+        Assert.Equal(2, card.EffectDefinition.Count);
+
+        // The element identity, interpretation, magnitude, and Burn-only
+        // duration survive exactly; the Crit-only scope is still absent.
+        Assert.Equal(CardEffectType.Damage, card.EffectDefinition[0].EffectType);
+        Assert.Equal(CardEffectValueType.Flat, card.EffectDefinition[0].ValueType);
+        Assert.Equal(100, card.EffectDefinition[0].Value);
+        Assert.Null(card.EffectDefinition[0].Duration);
+        Assert.Null(card.EffectDefinition[0].Scope);
+
+        Assert.Equal(CardEffectType.Burn, card.EffectDefinition[1].EffectType);
+        Assert.Equal(50, card.EffectDefinition[1].Value);
+        Assert.Equal(2, card.EffectDefinition[1].Duration);
+        Assert.Null(card.EffectDefinition[1].Scope);
+    }
+
+    [Fact]
+    public async Task ListCards_ShouldNotExposeCostLegalityOrAffordability()
+    {
+        // The content/cost boundary: §5.3 answers "what does this Card do?" and
+        // never "can I afford to cast it right now" (CARD_RULES.md §3.6,
+        // SIGNALR_PROTOCOL.md §4 item 15). The stored definition carries the cost
+        // and the copy limit; the projection carries neither.
+        var fixture = new CollectionFixture()
+            .WithCard(
+                "card_heal",
+                "Heal",
+                CardCategory.Basic,
+                unlockedBy: Owner,
+                powerCost: 25,
+                loadoutCopyLimit: 3,
+                effectDefinition: TestCardEffects.PercentMaxHp);
+
+        var members = typeof(CardCollectionItem)
+            .GetProperties()
+            .Select(property => property.Name)
+            .ToArray();
+
+        foreach (var forbidden in new[]
+                 {
+                     "PlayerId", "PowerCost", "LoadoutCopyLimit",
+                     "EffectiveCost", "CardCostModifier", "Affordable", "CanCast",
+                     "Legality", "Unlocked", "IsUnlocked",
+                     "IsEquipped", "Equipped", "Slot", "LoadoutPosition", "Active",
+                 })
+        {
+            Assert.DoesNotContain(forbidden, members);
+        }
+
+        var card = Assert.Single(await CreateService(fixture).ListCardsAsync(Owner));
+
+        Assert.Equal(TestCardEffects.PercentMaxHp, card.EffectDefinition);
+        Assert.Equal(25, fixture.Definitions["card_heal"].PowerCost);
+        Assert.Equal(3, fixture.Definitions["card_heal"].LoadoutCopyLimit);
     }
 
     [Theory]
@@ -426,9 +675,10 @@ public class CollectionQueryServiceTests
     [Fact]
     public async Task ListCards_ShouldExposeNoExcludedColumn()
     {
-        // §5.3: "playerId, powerCost, loadoutCopyLimit, effectDefinition" are
-        // persisted or definition data but NOT exposed; §5.6 excludes the equip
-        // members. The stored definition carries them, so their absence at the
+        // §5.3: "playerId, powerCost, loadoutCopyLimit" are persisted or
+        // definition data but NOT exposed; §5.6 excludes the equip members.
+        // effectDefinition IS exposed (this task's amendment). The stored
+        // definition carries the withheld values, so their absence at the
         // projection is a real omission.
         var fixture = new CollectionFixture()
             .WithCard(
@@ -447,7 +697,7 @@ public class CollectionQueryServiceTests
 
         foreach (var forbidden in new[]
                  {
-                     "PlayerId", "PowerCost", "LoadoutCopyLimit", "EffectDefinition",
+                     "PlayerId", "PowerCost", "LoadoutCopyLimit",
                      "Unlocked", "IsUnlocked",
                      "IsEquipped", "Equipped", "Slot", "LoadoutPosition", "Active",
                  })
@@ -508,16 +758,19 @@ public class CollectionQueryServiceTests
     }
 
     [Fact]
-    public async Task ListRelics_ShouldProjectExactlyTheTwoDocumentedMembers()
+    public async Task ListRelics_ShouldProjectExactlyTheFiveDocumentedMembers()
     {
-        // §5.4: relicId, name — no more, no fewer.
+        // §5.4: relicId, name, trigger, condition, effectDefinition — no more,
+        // no fewer.
         var members = typeof(RelicCollectionItem)
             .GetProperties()
             .Select(property => property.Name)
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToArray();
 
-        Assert.Equal(new[] { "Name", "RelicId" }, members);
+        Assert.Equal(
+            new[] { "Condition", "EffectDefinition", "Name", "RelicId", "Trigger" },
+            members);
 
         var fixture = new CollectionFixture()
             .WithRelic("relic_instance_berserker", Owner, "relic_def_berserker")
@@ -532,6 +785,66 @@ public class CollectionQueryServiceTests
 
         // name = RelicDefinition.Name (§5.4) — read through the instance's
         // definition reference.
+        Assert.Equal("Berserker Core", relic.Name);
+
+        // trigger / condition / effectDefinition = the same definition row's own
+        // content (§5.4, RELIC_RULES.md §3/§8.1-§8.3).
+        Assert.Equal("OnTurnEnd", relic.Trigger);
+        Assert.Null(relic.Condition);
+        Assert.Equal(TestRelicEffects.Effect, relic.EffectDefinition);
+    }
+
+    [Fact]
+    public async Task ListRelics_ShouldCarryTheStructuredConditionWhenTheDefinitionHasOne()
+    {
+        // §5.4: the condition is the §8.1 form plus its threshold, carried
+        // unchanged, and it stays nullable for a definition that declares none.
+        var condition = RelicCondition.Create(RelicConditionType.HpPercentageBelow, 30);
+
+        var fixture = new CollectionFixture()
+            .WithRelic("relic_1", Owner, "relic_def_1")
+            .WithRelicDefinition(
+                "relic_def_1",
+                "Emergency Core",
+                trigger: "OnHpBelow",
+                condition: condition,
+                effectDefinition: RelicEffectDefinitions.Create(
+                    RelicEffectDefinition.Create(
+                        RelicEffectType.CardCost,
+                        RelicEffectValueType.Percentage,
+                        50,
+                        RelicEffectTarget.Pet,
+                        RelicEffectLifetime.Battle)));
+
+        var relic = Assert.Single(await CreateService(fixture).ListRelicsAsync(Owner));
+
+        Assert.Equal("OnHpBelow", relic.Trigger);
+        Assert.Equal(condition, relic.Condition);
+        Assert.Equal(RelicConditionType.HpPercentageBelow, relic.Condition!.Value.ConditionType);
+        Assert.Equal(30, relic.Condition!.Value.Threshold);
+
+        // The effect element's own members survive the projection exactly.
+        Assert.Equal(1, relic.EffectDefinition.Count);
+        Assert.Equal(RelicEffectType.CardCost, relic.EffectDefinition[0].EffectType);
+        Assert.Equal(RelicEffectValueType.Percentage, relic.EffectDefinition[0].ValueType);
+        Assert.Equal(50, relic.EffectDefinition[0].Value);
+        Assert.Equal(RelicEffectTarget.Pet, relic.EffectDefinition[0].Target);
+        Assert.Equal(RelicEffectLifetime.Battle, relic.EffectDefinition[0].Lifetime);
+    }
+
+    [Fact]
+    public async Task ListRelics_ShouldCarryTheInstanceIdentityAndTheDefinitionName()
+    {
+        // §5.4: relicId is the owned INSTANCE and name resolves through the
+        // instance's definition reference — the mapping the content members ride
+        // on, unchanged by this amendment.
+        var fixture = new CollectionFixture()
+            .WithRelic("relic_instance_berserker", Owner, "relic_def_berserker")
+            .WithRelicDefinition("relic_def_berserker", "Berserker Core");
+
+        var relic = Assert.Single(await CreateService(fixture).ListRelicsAsync(Owner));
+
+        Assert.Equal("relic_instance_berserker", relic.RelicId);
         Assert.Equal("Berserker Core", relic.Name);
     }
 
@@ -558,13 +871,13 @@ public class CollectionQueryServiceTests
     [Fact]
     public async Task ListRelics_ShouldExposeNoExcludedMember()
     {
-        // §5.4: "Not exposed: playerId, acquiredAt, definitionId, and
-        // Trigger/Condition/EffectDefinition". §5.6 adds the equip members. The
-        // stored rows carry all of them, so the omission is real.
+        // §5.4: "Not exposed: playerId, acquiredAt, definitionId". §5.6 adds the
+        // equip members. trigger / condition / effectDefinition ARE exposed (this
+        // task's amendment). The stored rows carry all of them, so the omission of
+        // the still-withheld ones is real.
         //
         // RELIC_RULES.md §8.1/§8.2 (TASK-132) make Condition and EffectDefinition
-        // STRUCTURED values on the definition; the projection's omission is
-        // unchanged by that, which is what this asserts.
+        // STRUCTURED values on the definition; §5.4 now carries them inline.
         var condition = RelicCondition.Create(RelicConditionType.ComboAtLeast, 3);
         var effects = TestRelicEffects.Effect;
 
@@ -585,7 +898,6 @@ public class CollectionQueryServiceTests
         foreach (var forbidden in new[]
                  {
                      "PlayerId", "AcquiredAt", "DefinitionId", "RelicDefinitionId",
-                     "Trigger", "Condition", "Effect", "EffectDefinition",
                      "IsEquipped", "Equipped", "Slot", "LoadoutPosition", "Active",
                  })
         {
@@ -599,7 +911,12 @@ public class CollectionQueryServiceTests
         Assert.Equal(condition, definition.Condition);
         Assert.Equal(effects, definition.EffectDefinition);
 
-        Assert.Single(await CreateService(fixture).ListRelicsAsync(Owner));
+        // The projection carries the same three values, unchanged.
+        var relic = Assert.Single(await CreateService(fixture).ListRelicsAsync(Owner));
+
+        Assert.Equal("OnCombo3Plus", relic.Trigger);
+        Assert.Equal(condition, relic.Condition);
+        Assert.Equal(effects, relic.EffectDefinition);
     }
 
     [Fact]
@@ -671,6 +988,7 @@ public class CollectionQueryServiceTests
         var projections = new[]
         {
             typeof(PetCollectionItem),
+            typeof(PetSignatureSkillItem),
             typeof(CardCollectionItem),
             typeof(RelicCollectionItem),
         };
@@ -732,8 +1050,15 @@ public class CollectionQueryServiceTests
 
         public Dictionary<string, Relic> Relics { get; } = new(StringComparer.Ordinal);
 
-        /// <summary>The definition set the last bulk content read was asked for.</summary>
+        /// <summary>The definition set the last bulk Pet-definition read was asked for.</summary>
         public IReadOnlyCollection<string> LastRequestedDefinitionIds { get; set; } = [];
+
+        /// <summary>
+        /// The definition set the last bulk Card-definition read was asked for —
+        /// the derived Signature Skill references of the projected Pets
+        /// (<c>API_CONTRACTS.md</c> §5.1).
+        /// </summary>
+        public IReadOnlyCollection<string> LastRequestedSignatureSkillIds { get; set; } = [];
 
         private readonly Dictionary<string, PetDefinition> _petDefinitions =
             new(StringComparer.Ordinal);
@@ -750,8 +1075,12 @@ public class CollectionQueryServiceTests
             int star,
             int level,
             string identity = "Pet",
-            DateTimeOffset? acquiredAt = null)
+            DateTimeOffset? acquiredAt = null,
+            string signatureSkillCardId = "card_skill_test",
+            string signatureSkillName = "Skill Test")
         {
+            SeedSignatureSkill(signatureSkillCardId, signatureSkillName);
+
             _petDefinitions[petDefinitionId] = new PetDefinition
             {
                 PetDefinitionId = petDefinitionId,
@@ -759,7 +1088,7 @@ public class CollectionQueryServiceTests
                 Element = element,
                 PassiveId = new PassiveId("test-passive"),
                 PassiveThreshold = 5,
-                SignatureSkillCardId = "card_skill_test",
+                SignatureSkillCardId = signatureSkillCardId,
             };
 
             Pets[petInstanceId] = new Pet
@@ -778,11 +1107,41 @@ public class CollectionQueryServiceTests
         }
 
         /// <summary>
+        /// Seeds the <c>CardDefinition</c> row a Pet's required
+        /// <c>SignatureSkillCardId</c> FK points at
+        /// (<c>DATABASE.md</c> §2: PetDefinition N ── 1 CardDefinition).
+        ///
+        /// It is <b>not</b> an unlock: the row is content the Pet's definition
+        /// references and never a <c>PlayerUnlockedCard</c> row
+        /// (<c>CARD_RULES.md</c> §1 item 4, ADR-012 item 9), which is exactly why
+        /// it must not reach <c>GET /api/cards</c> (<c>API_CONTRACTS.md</c> §5.3).
+        /// A definition already seeded by a test is left untouched.
+        /// </summary>
+        public CollectionFixture SeedSignatureSkill(string cardDefinitionId, string name)
+        {
+            Definitions.TryAdd(
+                cardDefinitionId,
+                new CardDefinition
+                {
+                    CardDefinitionId = cardDefinitionId,
+                    Name = name,
+                    Category = CardCategory.PetSkill,
+                    PowerCost = 100,
+                    EffectDefinition = TestCardEffects.FlatPower,
+                    LoadoutCopyLimit = 1,
+                });
+
+            return this;
+        }
+
+        /// <summary>
         /// Adds a Pet definition that no owned instance references — content the
         /// collection read must not materialize.
         /// </summary>
         public CollectionFixture WithPetDefinition(string petDefinitionId, string identity)
         {
+            SeedSignatureSkill("card_skill_test", "Skill Test");
+
             _petDefinitions[petDefinitionId] = new PetDefinition
             {
                 PetDefinitionId = petDefinitionId,
@@ -990,6 +1349,23 @@ public class CollectionQueryServiceTests
             IReadOnlyCollection<string> cardDefinitionIds,
             CancellationToken cancellationToken = default) =>
             Task.FromResult<IReadOnlyList<CardDefinition>>([]);
+
+        public Task<IReadOnlyList<CardDefinition>> ListDefinitionsAsync(
+            IReadOnlyCollection<string> cardDefinitionIds,
+            CancellationToken cancellationToken = default)
+        {
+            // API_CONTRACTS.md §5.1's derived Signature Skill lookup: an
+            // unrestricted content read on the definition table, deliberately not
+            // filtered by the unlock rows.
+            _fixture.LastRequestedSignatureSkillIds = cardDefinitionIds;
+
+            return Task.FromResult<IReadOnlyList<CardDefinition>>(
+                cardDefinitionIds
+                    .Select(_fixture.Definitions.GetValueOrDefault)
+                    .Where(definition => definition is not null)
+                    .Select(definition => definition!)
+                    .ToList());
+        }
 
         public Task<CardDefinition?> GetDefinitionAsync(
             string cardDefinitionId,

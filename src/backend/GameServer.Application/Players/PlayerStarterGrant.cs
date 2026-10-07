@@ -5,19 +5,20 @@ using GameServer.Domain.Relics;
 namespace GameServer.Application.Players;
 
 /// <summary>
-/// The starter ownership set a newly created Player receives, staged for a
-/// single atomic commit (<c>DATABASE.md</c> §2 items 1–4; TASK-084 / TASK-082
-/// decision E / R1-4).
+/// The ownership set a newly created Player receives, staged for a single atomic
+/// commit (<c>DATABASE.md</c> §2 items 1–4; <c>MVP_SCOPE.md</c> §1 "Content
+/// ownership &amp; reachability"; TASK-084 / TASK-082 decision E / R1-4; TASK-213
+/// decision; TASK-221 implementation).
 ///
 /// <code>
-/// 1 Pet  ownership instance   (PetInstanceId minted here)
-/// 3 Card unlock rows          (PlayerId + CardDefinitionId)
-/// 3 Relic ownership instances (RelicInstanceId minted here)
+/// 5 Pet ownership instances    (PetInstanceId minted here)
+/// 3 Card unlock rows           (PlayerId + CardDefinitionId)
+/// 10 Relic ownership instances (RelicInstanceId minted here)
 /// </code>
 ///
-/// <b>It is the composition, not the decision.</b> Which Pet, which Cards, and
-/// which Relics are the starter set is fixed by <c>DATABASE.md</c> §2 item 1 and
-/// resolved from the provisioned definition rows by
+/// <b>It is the composition, not the decision.</b> Which Pets, which Cards, and
+/// which Relics the grant carries is fixed by <c>DATABASE.md</c> §2 item 1 and
+/// <c>MVP_SCOPE.md</c> §1, and resolved from the provisioned definition rows by
 /// <see cref="PlayerStarterGrantFactory"/> — this type only carries the
 /// already-resolved rows so the persistence boundary can stage them beside the
 /// <c>Player</c> row.
@@ -29,8 +30,15 @@ namespace GameServer.Application.Players;
 /// owned instances, never equipped ones (<c>RELIC_RULES.md</c> §2 item 1,
 /// ADR-012 item 7).
 ///
+/// <b>Ownership is not a loadout.</b> Every owned Pet instance and every owned
+/// Relic instance is an entry in the Player's collection, and the battle loadout
+/// — exactly one active Pet and 3–5 Relics — is chosen at battle start and
+/// snapshotted into <c>PetState</c> (<c>RELIC_RULES.md</c> §2.5,
+/// <c>API_CONTRACTS.md</c> §3). Nothing here selects, equips, orders, or
+/// privileges one owned instance over another.
+///
 /// <b>It is not persisted on its own.</b> The rows travel to the persistence
-/// boundary as one value so the Player row and all seven ownership rows commit
+/// boundary as one value so the Player row and all eighteen ownership rows commit
 /// through one <c>SaveChangesAsync</c> — or none of them does
 /// (<c>DATABASE.md</c> §2 item 4).
 /// </summary>
@@ -39,33 +47,36 @@ public sealed class PlayerStarterGrant
     /// <summary>
     /// Creates the grant from its already-resolved ownership rows.
     /// </summary>
-    /// <param name="starterPet">
-    /// The one owned starter Pet instance (<c>DATABASE.md</c> §2 item 1 —
-    /// <c>pet-xich-lang</c>). Its <see cref="Pet.PlayerId"/> is already the
-    /// Player the grant belongs to.
+    /// <param name="starterPets">
+    /// The owned Pet instances — one per MVP Pet definition
+    /// (<c>DATABASE.md</c> §2 item 1; <c>MVP_SCOPE.md</c> §1: 5 Pets). Each
+    /// <see cref="Pet.PlayerId"/> is empty until the creation boundary binds the
+    /// Player it minted.
     /// </param>
     /// <param name="starterCards">
     /// The three <c>PlayerUnlockedCard</c> rows — all three content-defined
     /// Basic Cards (<c>CARD_RULES.md</c> §2).
     /// </param>
     /// <param name="starterRelics">
-    /// The three owned starter Relic instances (<c>RELIC_RULES.md</c> §6), each
-    /// with its own server-minted <see cref="Relic.RelicInstanceId"/>.
+    /// The owned Relic instances — one per MVP Relic definition
+    /// (<c>RELIC_RULES.md</c> §6; <c>MVP_SCOPE.md</c> §1: 10 Relics), each with
+    /// its own server-minted <see cref="Relic.RelicInstanceId"/>.
     /// </param>
     public PlayerStarterGrant(
-        Pet starterPet,
+        IReadOnlyList<Pet> starterPets,
         IReadOnlyList<PlayerUnlockedCard> starterCards,
         IReadOnlyList<Relic> starterRelics)
     {
-        StarterPet = starterPet ?? throw new ArgumentNullException(nameof(starterPet));
+        StarterPets = starterPets ?? throw new ArgumentNullException(nameof(starterPets));
         StarterCards = starterCards ?? throw new ArgumentNullException(nameof(starterCards));
         StarterRelics = starterRelics ?? throw new ArgumentNullException(nameof(starterRelics));
     }
 
     /// <summary>
-    /// The one owned starter Pet instance (<c>DATABASE.md</c> §2 item 1).
+    /// The owned Pet instances (<c>DATABASE.md</c> §2 item 1;
+    /// <c>MVP_SCOPE.md</c> §1: one instance per MVP Pet definition).
     /// </summary>
-    public Pet StarterPet { get; }
+    public IReadOnlyList<Pet> StarterPets { get; }
 
     /// <summary>
     /// The three Card unlock rows (<c>DATABASE.md</c> §2 item 1: "3
@@ -74,8 +85,8 @@ public sealed class PlayerStarterGrant
     public IReadOnlyList<PlayerUnlockedCard> StarterCards { get; }
 
     /// <summary>
-    /// The three owned Relic instances (<c>DATABASE.md</c> §2 item 1: "3 owned
-    /// <c>Relic</c> rows").
+    /// The owned Relic instances (<c>DATABASE.md</c> §2 item 1;
+    /// <c>MVP_SCOPE.md</c> §1: one instance per MVP Relic definition).
     /// </summary>
     public IReadOnlyList<Relic> StarterRelics { get; }
 }

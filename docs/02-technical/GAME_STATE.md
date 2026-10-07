@@ -1,6 +1,19 @@
 # Game State
 
-**Version:** 2.24 (§2's tree and a new **§2.2.2** record the root
+**Version:** 2.25 (§2.3's delivery split and §2.4's client-visible boundary
+recorded for the amended projection — applying the TASK-208 Product Owner
+decisions D-208-01, D-208-02 and D-208-03. The active Pet's `HP`, `MaxHP` and
+`Power` are delivered as `petState.hp`/`maxHp`/`power`, and the Boss's canonical
+technical Identity is delivered as `bossState.bossId`; `SIGNALR_PROTOCOL.md` §4
+items 18, §4.3 item 15, and §4.4 item 10 own the wire contract and are
+referenced, not restated. §2.3 now names the delivered subset instead of stating
+that no combat stat is delivered, and §2.4 records three client-visible
+`BossState` members instead of two. **No state-shape change:** no member is added
+to, removed from, or retyped on `PetState` or `BossState`, no `MaxPower` member
+is invented (the `0–100` range remains a documented invariant), no value,
+lifecycle, key, or gameplay rule moves, and no Redis or database contract
+changes. `BOSS_RULES.md` §6.2.6 records the same visibility constraint from the
+gameplay side. Prior 2.24: §2's tree and a new **§2.2.2** record the root
 `BattleState.CardCastsUsedThisTurn` member per the approved **TASK-191 Q-4
 (OPTION B)** Card-cast rule — "a player may successfully cast at most one Card
 during each committed Match-3 Turn" (`CARD_RULES.md` §3 item 6, `ADR-021`).
@@ -1242,10 +1255,13 @@ see §2.2 Implementation note and ADR-011.)
 Not all members here are part of any wire payload — see
 `SIGNALR_PROTOCOL.md` §4.2 (only `combo`/`matchCount` under the
 `playerState` label), §4.3 (the Passive trio, `equippedCards`, and — since
-TASK-160 D-1A — the active Pet's `statusEffects[]` under `petState`), and §4.4
-(the Boss's `hp`/`maxHp` under `bossState`). The two facts are stated separately
+TASK-160 D-1A — the active Pet's `statusEffects[]`, plus — since TASK-208
+D-208-01/D-208-02 — the combat-stat subset `hp`/`maxHp`/`power`, under
+`petState`), and §4.4
+(the Boss's `hp`/`maxHp` and, since TASK-208 D-208-03, its canonical technical
+Identity as `bossId`, under `bossState`). The two facts are stated separately
 and neither implies the other; §2.3.1 records the split for `StatusEffects[]`
-and §2.4 for the Boss's delivered pair.
+and §2.4 for the Boss's delivered members.
 
 The combat-stats stage owns `HP`, `MaxHP`, `ATK`, `DEF`, `Power`, and
 `Crit` as `int` members, each initialized at battle creation to its
@@ -1324,21 +1340,40 @@ order carries no gameplay significance — no rule reads card array
 positions, unlike `EquippedRelics[]` above, whose order is the equip
 slot order.
 
-**The combat stats are state, and they are not delivered on the wire.**
-`SIGNALR_PROTOCOL.md` §4.2 fixes the `playerState` payload member to exactly
-`combo` and `matchCount`, and §4.3 fixes `petState` to the Passive trio,
-`equippedCards`, and the active Pet's `statusEffects[]` — so no combat member of
-this section reaches the client today,
+**The combat stats are state, and only an enumerated subset of them is
+delivered on the wire.** `SIGNALR_PROTOCOL.md` §4.2 fixes the `playerState`
+payload member to exactly `combo` and `matchCount`, and §4.3 fixes `petState` to
+the Passive trio,
+`equippedCards`, the active Pet's `statusEffects[]`, and the combat-stat triple
+`HP`, `MaxHP`, and `Power` — so `hp`, `maxHp`, and `power` are delivered while
+`ATK`, `DEF`, and `Crit` are not,
 per §4 item 4's rule that a payload carries only the implemented stage's own
-fields. The combat stats do not change that by themselves: as with
+fields. The undelivered combat stats do not change that by themselves: as with
 `LastCommittedSwapPair` (§2.1.10 item 9, `SIGNALR_PROTOCOL.md` §4 item 12),
 adding state is not adding a wire member. Delivering them is a protocol
 change owned by its own task.
 
+That task is the `TASK-208` Product Owner decision **D-208-01**/**D-208-02**:
+the delivered triple, its member names, types, presence, and client-boundary
+rules are owned by `SIGNALR_PROTOCOL.md` §4.3 item 15 and §4 item 18 and are
+referenced, not restated, here. The split this paragraph records is
+**authoritative state projection versus transient event**. `HP`, `MaxHP`, and
+`Power` travel as the **settled** values under the payload's `sequence`, on the
+join push, on every committed Swap's resolved-state push, and on the reconnect
+snapshot alike, whereas the events report the *changes* a resolution made —
+`PowerChanged` (`SIGNALR_PROTOCOL.md` §3.2.24) is the per-mutation report for
+`Power`, and healing emits no event at all. Because a resynchronizing client
+discards events and never replays them (`SIGNALR_PROTOCOL.md` §7 item 2), the
+state projection is the **reconstruction-safe carrier**: `Power` in particular
+is available to the client through it, and a client must not re-derive any of
+the three values from the event stream (`GAME_RULES.md` §18, `ADR-001`).
+
 Absence conventions do not apply to the combat stats: they are defined
 from battle creation, and `Power = 0` is a real publishable value —
 the value read before any Match generates Power (`COMBAT_RULES.md` §2).
-None is nullable, none is omitted, and zero is never spelled by omission.
+None is nullable, none is omitted, and zero is never spelled by omission — which
+is why the delivered triple is always present and is never sent as `null`
+(`SIGNALR_PROTOCOL.md` §4.3 item 15).
 
 `PetState` and `BossState` (§2.4) both now exist, and `POST /api/battle/start`
 (TASK-030) creates an authoritative battle from the resolved Pet, Boss, and
@@ -1520,7 +1555,9 @@ in-progress application (§2.3.3; an application during a resolution is
 Transient Resolution State — §3 — until the §5.1 item 2 write-back).
 
 The Boss's collection is **not** delivered: TASK-160's **D-2A** ruling
-authorized the Boss's live `HP`/`MaxHP` only, and §2.4 records that boundary.
+authorized the Boss's live `HP`/`MaxHP`, `TASK-208`'s **D-208-03** decision
+authorized the Boss's canonical technical Identity, and §2.4 records that
+boundary.
 The sibling collections `NextAttackCritModifiers[]` (§2.3.4),
 `CardCostModifiers[]` (§2.3.5) and `ATKModifiers[]` (§2.3.7) remain **not
 delivered** and are unaffected by D-1A.
@@ -1677,10 +1714,11 @@ NextAttackCritModifier
    wire member, or SignalR method is introduced.
 8. **Not a wire member, and not a Redis-only concern.** The collection is
    **not** part of any current wire payload: `SIGNALR_PROTOCOL.md` §4.2 fixes
-   `playerState` to exactly `combo`/`matchCount` and §4.3 fixes `petState` to
-   the Passive trio. Adding state is not adding a wire member (§2.1.10
-   item 9); delivering this collection is a protocol change owned by its own
-   task. Like `StatusEffects[]`, it is part of `BattleState` and therefore
+   `playerState` to exactly `combo`/`matchCount` and §4.3 item 2 fixes
+   `petState` to its enumerated member set. Adding state is not adding a wire
+   member (§2.1.10 item 9); delivering this collection is a protocol change
+   owned by its own task. Like `StatusEffects[]`, it is part of `BattleState`
+   and therefore
    serializes with it under the existing round-trip obligation
    (`REDIS_STATE.md` §7 item 9, §2 item 1): no new Redis key, no Redis-only
    field, and no second storage representation. It is written in the same
@@ -1799,8 +1837,8 @@ CardCostModifier
    payload member, wire member, or SignalR method is introduced.
 10. **Not a wire member, and not a Redis-only concern.** The collection is
     **not** part of any current wire payload: `SIGNALR_PROTOCOL.md` §4.2 fixes
-    `playerState` to exactly `combo`/`matchCount` and §4.3 fixes `petState` to
-    the Passive trio plus `equippedCards`. Adding state is not adding a wire
+    `playerState` to exactly `combo`/`matchCount` and §4.3 item 2 fixes
+    `petState` to its enumerated member set. Adding state is not adding a wire
     member (§2.1.10 item 9, `SIGNALR_PROTOCOL.md` §4 item 4); delivering this
     collection is a protocol change owned by its own task. Like
     `StatusEffects[]`, it is part of `BattleState` and therefore serializes with
@@ -2250,12 +2288,11 @@ BurnDamageModifier
     no recipient, and creates no new Burn status (§0 item 5).
 15. **Not a wire member, and not a Redis-only concern.** The collection is
     **not** part of any current wire payload: `SIGNALR_PROTOCOL.md` §4.2 fixes
-    `playerState` to exactly `combo`/`matchCount` and §4.3 fixes `petState` to
-    the Passive trio, `equippedCards`, and the active Pet's `statusEffects[]`.
-    Adding state is not adding a wire member (§2.1.10 item 9,
-    `SIGNALR_PROTOCOL.md` §4 item 4); delivering this collection is a protocol
-    change owned by its own task. Like `StatusEffects[]`, it is part of
-    `BattleState` and therefore serializes with it under the existing round-trip
+    `playerState` to exactly `combo`/`matchCount` and §4.3 item 2 fixes
+    `petState` to its enumerated member set. Adding state is not adding a wire
+    member (§2.1.10 item 9, `SIGNALR_PROTOCOL.md` §4 item 4); delivering this
+    collection is a protocol change owned by its own task. Like
+    `StatusEffects[]`, it is part of `BattleState` and therefore serializes with it under the existing round-trip
     obligation (`REDIS_STATE.md` §2 item 1, §7 item 17): no new Redis key, no
     Redis-only field, and no second storage representation. It is written in the
     same single post-resolution write-back as the rest of the state (§5.1),
@@ -2399,21 +2436,27 @@ two existing collections in one authoritative `BattleState` — this section add
 **no** member, value, type, or collection, and no second representation of the
 instance (§0 item 5, §2.3.3).
 
-**Two `BossState` members are client-visible, and no others are.** TASK-160's
+**Three `BossState` members are client-visible, and no others are.** TASK-160's
 Product Owner decision **D-2A** authorized the Boss's live health for MVP;
 `SIGNALR_PROTOCOL.md` §4.4 delivers it as the push's `bossState` member,
-carrying **exactly** `HP` and `MaxHP`. `bossState` is a **narrowed projection**
-of this section's state, not the tree itself: `BossId`/Identity, `Element`,
+carrying **exactly** `HP` and `MaxHP`. TASK-208's Product Owner decision
+**D-208-03** separately authorized the Boss's canonical technical Identity
+(`BOSS_RULES.md` §6.4), delivered as that member's `bossId` — an identity only,
+never a display name and never `BossDefinitionId`, so no presentation content
+(the display name, an Element label, a portrait, or an asset key) is carried by
+it. `bossState` is a **narrowed projection**
+of this section's state, not the tree itself: `Element`,
 `ATK`, `DEF`, `State`, `PassiveId`, `PassiveProgress`, `SkillCharge`,
 `SkillCooldown`, and `StatusEffects[]` remain server-side and are **not**
 delivered, exactly as §2.3.1's membership/delivery split states for the Pet's
 collection. Referring to `BossState` as a whole does not widen that member set.
 The member names, types, presence, and client-boundary rules are owned by
-`SIGNALR_PROTOCOL.md` §4.4 and referenced, not restated, here; `BOSS_RULES.md`
+`SIGNALR_PROTOCOL.md` §4.4 (items 2–5 and item 10) and referenced, not
+restated, here; `BOSS_RULES.md`
 §6.2.6 records the gameplay-visibility constraint this boundary satisfies.
 Delivering anything further from this tree is a protocol change owned by its own
 task, and this contract adds no Redis key, no Redis-only field, and no second
-storage representation for the two delivered members.
+storage representation for the three delivered members.
 
 ### 2.4.2 Boss Passive
 

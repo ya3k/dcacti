@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ApplicationSession } from '../src/services/api/ApplicationSession';
-import { ApiService } from '../src/services/api/ApiService';
+import { ApiRequestError, ApiService } from '../src/services/api/ApiService';
 import type { CardResponse, PetResponse, RelicResponse } from '../src/services/api/CollectionModels';
 import type { Element } from '../src/services/api/CollectionModels';
 
@@ -19,7 +19,7 @@ import type { Element } from '../src/services/api/CollectionModels';
  * tables: the fixtures carry exactly the documented members and nothing else.
  */
 
-/** A §5.1/§5.2 Pet, with exactly the six documented members. */
+/** A §5.1/§5.2 Pet, with exactly the seven documented members. */
 const PET: PetResponse = {
   petId: 'pet-001',
   identity: 'pet-fire-001',
@@ -27,19 +27,26 @@ const PET: PetResponse = {
   tier: 'Common',
   star: 1,
   level: 1,
+  signatureSkill: { cardId: 'card-inferno', name: 'Inferno', category: 'PetSkill' },
 };
 
-/** A §5.3 Card, with exactly the three documented members. */
+/** A §5.3 Card, with exactly the four documented members. */
 const CARD: CardResponse = {
-  cardId: 'card-001',
-  name: 'Example Card',
+  cardId: 'card-heal',
+  name: 'Heal',
   category: 'Basic',
+  effectDefinition: [{ effectType: 'Heal', valueType: 'PercentMaxHp', value: 20 }],
 };
 
-/** A §5.4 Relic, with exactly the two documented members. */
+/** A §5.4 Relic, with exactly the five documented members. */
 const RELIC: RelicResponse = {
-  relicId: 'relic-001',
-  name: 'Example Relic',
+  relicId: 'relic-instance-1',
+  name: 'Berserker Core',
+  trigger: 'OnMatchCount',
+  condition: { conditionType: 'MatchCountAtLeast', threshold: 3 },
+  effectDefinition: [
+    { effectType: 'ATK', valueType: 'Percentage', value: 5, target: 'Pet', lifetime: 'Battle' },
+  ],
 };
 
 /**
@@ -75,6 +82,26 @@ function respondWith(body: unknown): void {
 /** Queues the documented §6 error envelope at `status`. */
 function respondWithError(status: number, envelope: ErrorEnvelope): void {
   fetchMock.mockResolvedValue({ ok: false, status, json: async () => envelope });
+}
+
+/**
+ * Awaits a rejected request and returns the rejection.
+ *
+ * `API_CONTRACTS.md` §6 defines the error response as a machine-readable `error`
+ * plus a human-readable `message`, and the shared transport reads both: the
+ * message is what a caller may show a player, and the code and the HTTP status
+ * stay on the error for diagnostics. Asserting all three is what makes these
+ * cases pin the envelope rather than merely "something failed".
+ */
+async function captureRejection(promise: Promise<unknown>): Promise<ApiRequestError> {
+  try {
+    await promise;
+  } catch (error) {
+    expect(error).toBeInstanceOf(ApiRequestError);
+    return error as ApiRequestError;
+  }
+
+  throw new Error('Expected the request to be rejected, but it resolved.');
 }
 
 /**
@@ -125,17 +152,25 @@ describe('ApiService.getPets (API_CONTRACTS.md §5.1, §5.5)', () => {
 
     expect(pets).toEqual([PET]);
 
-    // §5.1's member list is binding and exhaustive: the six members, and no
-    // seventh. `name` is absent because §5.1 spells the member `identity`, and
+    // §5.1's member list is binding and exhaustive: the seven members, and no
+    // eighth. `name` is absent because §5.1 spells the member `identity`, and
     // the persisted-but-not-exposed `xp`, `acquiredAt`, `playerId`, and
-    // `petDefinitionId` must not appear.
+    // `petDefinitionId` must not appear. `signatureSkill` is §5.1's derived
+    // Signature Skill reference — the member that identifies the Pet's Skill
+    // without the owned Card collection (§5.3).
     expect(Object.keys(pets[0]).sort()).toEqual([
       'element',
       'identity',
       'level',
       'petId',
+      'signatureSkill',
       'star',
       'tier',
+    ]);
+    expect(Object.keys(pets[0].signatureSkill).sort()).toEqual([
+      'cardId',
+      'category',
+      'name',
     ]);
     expect(pets[0]).not.toHaveProperty('name');
     expect(pets[0]).not.toHaveProperty('xp');
@@ -181,7 +216,13 @@ describe('ApiService.getPets (API_CONTRACTS.md §5.1, §5.5)', () => {
     // is one public response — 401 with the §6 envelope.
     respondWithError(401, { error: 'UNAUTHENTICATED', message: 'An authenticated session is required.' });
 
-    await expect(ApiService.getInstance().getPets()).rejects.toThrow('401');
+    const error = await captureRejection(ApiService.getInstance().getPets());
+
+    // §6: the server's human-readable detail is the statement; the code and the
+    // status remain available for diagnostics.
+    expect(error.message).toBe('An authenticated session is required.');
+    expect(error.code).toBe('UNAUTHENTICATED');
+    expect(error.status).toBe(401);
   });
 
   it('should send no Authorization header when no session is established', async () => {
@@ -249,6 +290,7 @@ describe('ApiService.getPet (API_CONTRACTS.md §5.2)', () => {
       'identity',
       'level',
       'petId',
+      'signatureSkill',
       'star',
       'tier',
     ]);
@@ -259,15 +301,23 @@ describe('ApiService.getPet (API_CONTRACTS.md §5.2)', () => {
     respondWithError(404, { error: 'PET_NOT_FOUND', message: 'The requested Pet was not found.' });
 
     // §5.2: a petId that does not exist and one owned by another Player are the
-    // identical response. The client surfaces the documented failure as the
-    // transport reports it and invents no distinct code for either case.
-    await expect(ApiService.getInstance().getPet('pet-404')).rejects.toThrow('404');
+    // identical response. The client surfaces the documented §6 envelope as the
+    // server sent it and invents no distinct code for either case.
+    const error = await captureRejection(ApiService.getInstance().getPet('pet-404'));
+
+    expect(error.message).toBe('The requested Pet was not found.');
+    expect(error.code).toBe('PET_NOT_FOUND');
+    expect(error.status).toBe(404);
   });
 
   it('should propagate 401 UNAUTHENTICATED', async () => {
     respondWithError(401, { error: 'UNAUTHENTICATED', message: 'An authenticated session is required.' });
 
-    await expect(ApiService.getInstance().getPet('pet-001')).rejects.toThrow('401');
+    const error = await captureRejection(ApiService.getInstance().getPet('pet-001'));
+
+    expect(error.message).toBe('An authenticated session is required.');
+    expect(error.code).toBe('UNAUTHENTICATED');
+    expect(error.status).toBe(401);
   });
 });
 
@@ -295,24 +345,107 @@ describe('ApiService.getCards (API_CONTRACTS.md §5.3, §5.5)', () => {
 
   it('should return the typed response array', async () => {
     establishSession();
-    respondWith([CARD, { cardId: 'card-002', name: 'Pet Skill Card', category: 'PetSkill' }]);
+    respondWith([CARD, { cardId: 'card-002', name: 'Pet Skill Card', category: 'PetSkill', effectDefinition: [] }]);
 
     const cards = await ApiService.getInstance().getCards();
 
-    // §5.3: exactly `cardId`, `name`, `category`. There is deliberately no
-    // `unlocked` member — membership of the array *is* the unlocked state — and
-    // `playerId`, `powerCost`, `loadoutCopyLimit`, and `effectDefinition` are
-    // not exposed.
+    // §5.3: exactly `cardId`, `name`, `category`, `effectDefinition`. There is
+    // deliberately no `unlocked` member — membership of the array *is* the
+    // unlocked state — and `playerId`, `powerCost`, and `loadoutCopyLimit` are
+    // not exposed. `effectDefinition` IS exposed: it is the Card's own
+    // structured effect rule, carried element for element.
     expect(cards).toEqual([
-      { cardId: 'card-001', name: 'Example Card', category: 'Basic' },
-      { cardId: 'card-002', name: 'Pet Skill Card', category: 'PetSkill' },
+      {
+        cardId: 'card-heal',
+        name: 'Heal',
+        category: 'Basic',
+        effectDefinition: [{ effectType: 'Heal', valueType: 'PercentMaxHp', value: 20 }],
+      },
+      { cardId: 'card-002', name: 'Pet Skill Card', category: 'PetSkill', effectDefinition: [] },
     ]);
-    expect(Object.keys(cards[0]).sort()).toEqual(['cardId', 'category', 'name']);
+    expect(Object.keys(cards[0]).sort()).toEqual([
+      'cardId',
+      'category',
+      'effectDefinition',
+      'name',
+    ]);
     expect(cards[0]).not.toHaveProperty('unlocked');
     expect(cards[0]).not.toHaveProperty('playerId');
     expect(cards[0]).not.toHaveProperty('powerCost');
     expect(cards[0]).not.toHaveProperty('loadoutCopyLimit');
-    expect(cards[0]).not.toHaveProperty('effectDefinition');
+
+    // The element keeps the definition's own member names and present-iff
+    // shape (DATABASE.md §1/§3): a plain effect carries exactly the triple.
+    expect(Object.keys(cards[0].effectDefinition[0]).sort()).toEqual([
+      'effectType',
+      'value',
+      'valueType',
+    ]);
+  });
+
+  it('should accept the effect-specific extra members and their absence', async () => {
+    establishSession();
+
+    // DATABASE.md §3: `duration` is present iff effectType = Burn and `scope`
+    // iff effectType = Crit. An element that defines neither omits both, so the
+    // model must represent "absent" rather than "null".
+    respondWith([
+      {
+        cardId: 'card-inferno',
+        name: 'Inferno',
+        category: 'PetSkill',
+        effectDefinition: [
+          { effectType: 'Damage', valueType: 'Flat', value: 100 },
+          { effectType: 'Burn', valueType: 'Flat', value: 50, duration: 2 },
+        ],
+      },
+      {
+        cardId: 'card-iron-fang',
+        name: 'Iron Fang',
+        category: 'PetSkill',
+        effectDefinition: [
+          { effectType: 'Crit', valueType: 'PercentagePoints', value: 10, scope: 'NextAttack' },
+        ],
+      },
+    ]);
+
+    const cards = await ApiService.getInstance().getCards();
+
+    const burn = cards[0].effectDefinition[1];
+    expect(burn).toEqual({ effectType: 'Burn', valueType: 'Flat', value: 50, duration: 2 });
+    expect(burn).not.toHaveProperty('scope');
+    expect(cards[0].effectDefinition[0]).not.toHaveProperty('duration');
+
+    const crit = cards[1].effectDefinition[0];
+    expect(crit).toEqual({
+      effectType: 'Crit',
+      valueType: 'PercentagePoints',
+      value: 10,
+      scope: 'NextAttack',
+    });
+    expect(crit).not.toHaveProperty('duration');
+  });
+
+  it('should carry no cost, affordability, or legality member', async () => {
+    establishSession();
+    respondWith([CARD]);
+
+    const cards = await ApiService.getInstance().getCards();
+    const serialized = JSON.stringify(cards);
+
+    // The content/cost boundary: §5.3 answers "what does this Card do?" and
+    // never "can I afford to cast it right now" (CARD_RULES.md §3.6,
+    // SIGNALR_PROTOCOL.md §4 item 15).
+    for (const forbidden of [
+      'powerCost',
+      'effectiveCost',
+      'cardCostModifier',
+      'affordable',
+      'canCast',
+      'legality',
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
   });
 
   it('should deserialize an empty collection as []', async () => {
@@ -331,7 +464,11 @@ describe('ApiService.getCards (API_CONTRACTS.md §5.3, §5.5)', () => {
   it('should propagate 401 UNAUTHENTICATED', async () => {
     respondWithError(401, { error: 'UNAUTHENTICATED', message: 'An authenticated session is required.' });
 
-    await expect(ApiService.getInstance().getCards()).rejects.toThrow('401');
+    const error = await captureRejection(ApiService.getInstance().getCards());
+
+    expect(error.message).toBe('An authenticated session is required.');
+    expect(error.code).toBe('UNAUTHENTICATED');
+    expect(error.status).toBe(401);
   });
 });
 
@@ -363,14 +500,92 @@ describe('ApiService.getRelics (API_CONTRACTS.md §5.4, §5.5, §5.6)', () => {
 
     const relics = await ApiService.getInstance().getRelics();
 
-    // §5.4: exactly `relicId` and `name`. `playerId`, `acquiredAt`,
-    // `definitionId`, and the definition's Trigger/Condition/Effect are not
-    // exposed.
+    // §5.4: exactly `relicId`, `name`, `trigger`, `condition`, and
+    // `effectDefinition`. `playerId`, `acquiredAt`, and `definitionId` are not
+    // exposed — the content is delivered inline per owned instance.
     expect(relics).toEqual([RELIC]);
-    expect(Object.keys(relics[0]).sort()).toEqual(['name', 'relicId']);
+    expect(Object.keys(relics[0]).sort()).toEqual([
+      'condition',
+      'effectDefinition',
+      'name',
+      'relicId',
+      'trigger',
+    ]);
     expect(relics[0]).not.toHaveProperty('playerId');
     expect(relics[0]).not.toHaveProperty('acquiredAt');
     expect(relics[0]).not.toHaveProperty('definitionId');
+    expect(relics[0]).not.toHaveProperty('relicDefinitionId');
+
+    // The condition object carries its own two members, and the effect element
+    // the definition's own five (RELIC_RULES.md §8.2–§8.3).
+    expect(Object.keys(relics[0].condition!).sort()).toEqual(['conditionType', 'threshold']);
+    expect(Object.keys(relics[0].effectDefinition[0]).sort()).toEqual([
+      'effectType',
+      'lifetime',
+      'target',
+      'value',
+      'valueType',
+    ]);
+  });
+
+  it('should accept a null condition as the contract spelling of "no condition"', async () => {
+    establishSession();
+
+    // RELIC_RULES.md §8.1 item 4: a Relic whose Trigger alone is its complete
+    // condition carries none. §5.4 emits the member as an explicit `null` so the
+    // member set is fixed and exactly assertable — it is not an unsupported
+    // value and not an absent member.
+    respondWith([
+      {
+        relicId: 'relic-instance-4',
+        name: 'Burning Curse',
+        trigger: 'OnBattleStart',
+        condition: null,
+        effectDefinition: [
+          {
+            effectType: 'BurnDamage',
+            valueType: 'Percentage',
+            value: 30,
+            target: 'Pet',
+            lifetime: 'Battle',
+          },
+        ],
+      },
+    ]);
+
+    const relics = await ApiService.getInstance().getRelics();
+
+    expect(relics[0].condition).toBeNull();
+    expect(relics[0]).toHaveProperty('condition');
+    expect(relics[0].trigger).toBe('OnBattleStart');
+  });
+
+  it('should accept an Undetermined effect with no value member', async () => {
+    establishSession();
+
+    // RELIC_RULES.md §8.2 item 3: an Undetermined element carries no `value`
+    // member at all — never 0 and never an explicit null.
+    respondWith([
+      {
+        relicId: 'relic-instance-5',
+        name: 'Unquantified',
+        trigger: 'OnCascade',
+        condition: null,
+        effectDefinition: [
+          { effectType: 'Power', valueType: 'Undetermined', target: 'Pet', lifetime: 'Immediate' },
+        ],
+      },
+    ]);
+
+    const relics = await ApiService.getInstance().getRelics();
+
+    expect(relics[0].effectDefinition[0]).toEqual({
+      effectType: 'Power',
+      valueType: 'Undetermined',
+      target: 'Pet',
+      lifetime: 'Immediate',
+    });
+    expect(relics[0].effectDefinition[0]).not.toHaveProperty('value');
   });
 
   it('should read no equip state from the response', async () => {
@@ -408,7 +623,11 @@ describe('ApiService.getRelics (API_CONTRACTS.md §5.4, §5.5, §5.6)', () => {
   it('should propagate 401 UNAUTHENTICATED', async () => {
     respondWithError(401, { error: 'UNAUTHENTICATED', message: 'An authenticated session is required.' });
 
-    await expect(ApiService.getInstance().getRelics()).rejects.toThrow('401');
+    const error = await captureRejection(ApiService.getInstance().getRelics());
+
+    expect(error.message).toBe('An authenticated session is required.');
+    expect(error.code).toBe('UNAUTHENTICATED');
+    expect(error.status).toBe(401);
   });
 });
 

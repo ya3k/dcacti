@@ -274,6 +274,9 @@ function payload(overrides: Record<string, unknown> = {}): Record<string, unknow
     // item 7); and `statusEffects` is always present — an active Pet with no
     // active effect is an empty array, never an omission (§4.3 item 14).
     petState: {
+      hp: 1000,
+      maxHp: 1000,
+      power: 0,
       passiveId: 'xich-lang',
       passiveProgress: { threshold: 5, current: 0 },
       equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
@@ -281,7 +284,7 @@ function payload(overrides: Record<string, unknown> = {}): Record<string, unknow
     },
     // SIGNALR_PROTOCOL.md §4.4: the two-member Boss HP projection. Both members
     // are always present and neither is nullable (§4.4 item 4).
-    bossState: { hp: 5000, maxHp: 5000 },
+    bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
     ...overrides,
   };
 }
@@ -873,6 +876,9 @@ describe('GameRuntime', () => {
 
       const sent = payload({
         petState: {
+          hp: 1000,
+          maxHp: 1000,
+          power: 0,
           passiveId: 'thanh-xa-poison',
           passiveProgress: { threshold: 7, current: 3 },
           equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
@@ -887,6 +893,9 @@ describe('GameRuntime', () => {
         passiveProgress: { threshold: 7, current: 3 },
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
         statusEffects: [],
+        hp: 1000,
+        maxHp: 1000,
+        power: 0,
       });
 
       // Exactly what was sent — not derived from `board`, `turn`, `sequence`,
@@ -906,6 +915,9 @@ describe('GameRuntime', () => {
           'BattleStateUpdated',
           payload({
             petState: {
+              hp: 1000,
+              maxHp: 1000,
+              power: 0,
               passiveId: 'xich-lang',
               passiveProgress: { threshold: 5, current: 4 },
               passiveResetOverride: contractName,
@@ -935,7 +947,7 @@ describe('GameRuntime', () => {
       expect('passiveResetOverride' in petState).toBe(false);
       expect(petState.passiveResetOverride).toBeUndefined();
       expect(Object.keys(petState).sort()).toEqual(
-        ['equippedCards', 'passiveId', 'passiveProgress', 'statusEffects'].sort()
+        ['equippedCards', 'hp', 'maxHp', 'passiveId', 'passiveProgress', 'power', 'statusEffects'].sort()
       );
     });
 
@@ -952,6 +964,9 @@ describe('GameRuntime', () => {
         // No `passiveId`.
         {
           petState: {
+            hp: 1000,
+            maxHp: 1000,
+            power: 0,
             passiveProgress: { threshold: 5, current: 0 },
             equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
           },
@@ -959,6 +974,9 @@ describe('GameRuntime', () => {
         // No `passiveProgress`.
         {
           petState: {
+            hp: 1000,
+            maxHp: 1000,
+            power: 0,
             passiveId: 'xich-lang',
             equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
           },
@@ -966,6 +984,9 @@ describe('GameRuntime', () => {
         // Half of the progress pair.
         {
           petState: {
+            hp: 1000,
+            maxHp: 1000,
+            power: 0,
             passiveId: 'xich-lang',
             passiveProgress: { threshold: 5 },
             equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
@@ -974,6 +995,9 @@ describe('GameRuntime', () => {
         // Ill-typed members.
         {
           petState: {
+            hp: 1000,
+            maxHp: 1000,
+            power: 0,
             passiveId: 'xich-lang',
             passiveProgress: { threshold: '5', current: 0 },
             equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
@@ -981,6 +1005,9 @@ describe('GameRuntime', () => {
         },
         {
           petState: {
+            hp: 1000,
+            maxHp: 1000,
+            power: 0,
             passiveId: 7,
             passiveProgress: { threshold: 5, current: 0 },
             equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
@@ -991,6 +1018,9 @@ describe('GameRuntime', () => {
         // equippedCards not an array.
         {
           petState: {
+            hp: 1000,
+            maxHp: 1000,
+            power: 0,
             passiveId: 'xich-lang',
             passiveProgress: { threshold: 5, current: 0 },
             equippedCards: 'invalid',
@@ -999,6 +1029,9 @@ describe('GameRuntime', () => {
         // equippedCards wrong length.
         {
           petState: {
+            hp: 1000,
+            maxHp: 1000,
+            power: 0,
             passiveId: 'xich-lang',
             passiveProgress: { threshold: 5, current: 0 },
             equippedCards: ['card-heal', 'card-shield', 'card-power-charge'],
@@ -1007,6 +1040,9 @@ describe('GameRuntime', () => {
         // equippedCards empty string.
         {
           petState: {
+            hp: 1000,
+            maxHp: 1000,
+            power: 0,
             passiveId: 'xich-lang',
             passiveProgress: { threshold: 5, current: 0 },
             equippedCards: ['card-heal', '', 'card-power-charge', 'card-inferno'],
@@ -1031,10 +1067,11 @@ describe('GameRuntime', () => {
     it('models no undocumented PetState member', async () => {
       // §4.3 item 2: `petState` carries the enumerated members — the Passive
       // identity, its progress pair, the conditional reset override,
-      // `equippedCards`, and the active Pet's `statusEffects`. The rest of
-      // GAME_STATE.md §2.3 — identity, progression, combat stats, the sibling
-      // modifier collections, and the Relic loadout — belongs to other stages
-      // and is not delivered.
+      // `equippedCards`, the active Pet's `statusEffects`, and (TASK-208
+      // D-208-01/D-208-02, §4.3 item 15) the live combat values hp/maxHp/power.
+      // The rest of GAME_STATE.md §2.3 — identity, progression, the remaining
+      // combat stats, the sibling modifier collections, and the Relic loadout —
+      // belongs to other stages and is not delivered.
       const { runtime, transport } = createRuntime();
       await runtime.initialize();
 
@@ -1046,17 +1083,17 @@ describe('GameRuntime', () => {
             passiveProgress: { threshold: 5, current: 0 },
             equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
             statusEffects: [],
+            hp: 1000,
+            maxHp: 1000,
+            power: 0,
             petId: 'pet-1',
             element: 'Hoa',
             tier: 1,
             star: 3,
             level: 12,
-            hp: 1000,
-            maxHp: 1000,
             atk: 50,
             def: 25,
             crit: 5,
-            power: 0,
             equippedRelics: ['relic-a'],
             nextAttackCritModifiers: [],
             cardCostModifiers: [],
@@ -1083,9 +1120,11 @@ describe('GameRuntime', () => {
       const petState = state.petState;
 
       // Only the documented members are modelled; the rest are dropped rather
-      // than carried as an invented shape.
+      // than carried as an invented shape. TASK-208's D-208-01/D-208-02 decisions
+      // (§4.3 item 15) added `hp`, `maxHp` and `power` to that documented set, so
+      // they are modelled now and the remaining Domain-only members are not.
       expect(Object.keys(petState).sort()).toEqual(
-        ['equippedCards', 'passiveId', 'passiveProgress', 'statusEffects'].sort()
+        ['equippedCards', 'hp', 'maxHp', 'passiveId', 'passiveProgress', 'power', 'statusEffects'].sort()
       );
 
       for (const undocumented of [
@@ -1094,12 +1133,9 @@ describe('GameRuntime', () => {
         'tier',
         'star',
         'level',
-        'hp',
-        'maxHp',
         'atk',
         'def',
         'crit',
-        'power',
         'equippedRelics',
         'nextAttackCritModifiers',
         'cardCostModifiers',
@@ -1108,13 +1144,12 @@ describe('GameRuntime', () => {
         expect(petState).not.toHaveProperty(undocumented);
       }
 
-      // §4.4 items 2–3: `bossState` is a two-member projection, not `BossState`.
-      // Every other §2.4 member — including the Boss's own `StatusEffects[]` —
-      // is dropped rather than modelled.
-      expect(Object.keys(state.bossState).sort()).toEqual(['hp', 'maxHp'].sort());
+      // §4.4 items 2–3 and item 10: `bossState` is a three-member projection, not
+      // `BossState`. Every other §2.4 member — including the Boss's own
+      // `StatusEffects[]` — is dropped rather than modelled.
+      expect(Object.keys(state.bossState).sort()).toEqual(['bossId', 'hp', 'maxHp'].sort());
 
       for (const hiddenBossMember of [
-        'bossId',
         'element',
         'atk',
         'def',
@@ -1138,6 +1173,9 @@ describe('GameRuntime', () => {
         'BattleStateUpdated',
         payload({
           petState: {
+            hp: 1000,
+            maxHp: 1000,
+            power: 0,
             passiveId: 'xich-lang',
             passiveProgress: { threshold: 5, current: 0 },
             equippedCards: loadout,
@@ -1173,6 +1211,9 @@ describe('GameRuntime', () => {
         'BattleStateUpdated',
         payload({
           petState: {
+            hp: 1000,
+            maxHp: 1000,
+            power: 0,
             passiveId: 'xich-lang',
             passiveProgress: { threshold: 5, current: 0 },
             equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
@@ -1226,6 +1267,9 @@ describe('GameRuntime', () => {
         'BattleStateUpdated',
         payload({
           petState: {
+            hp: 1000,
+            maxHp: 1000,
+            power: 0,
             passiveId: 'xich-lang',
             passiveProgress: { threshold: 5, current: 0 },
             equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
@@ -1269,6 +1313,9 @@ describe('GameRuntime', () => {
           'BattleStateUpdated',
           payload({
             petState: {
+              hp: 1000,
+              maxHp: 1000,
+              power: 0,
               passiveId: 'xich-lang',
               passiveProgress: { threshold: 5, current: 0 },
               equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
@@ -1282,17 +1329,26 @@ describe('GameRuntime', () => {
       }
     });
 
-    it('carries the delivered Boss hp and maxHp unchanged', async () => {
-      // SIGNALR_PROTOCOL.md §4.4 / GAME_STATE.md §2.4: the Boss's live health is
-      // delivered as the two-member `bossState` projection and is read as sent.
-      // The client does not damage the Boss, clamp `hp` to `maxHp`, infer one
-      // from the other, or re-derive either from `finalBossHp` (§4.4 items 5, 7).
+    it('carries the delivered Boss identity and hp and maxHp unchanged', async () => {
+      // SIGNALR_PROTOCOL.md §4.4 / GAME_STATE.md §2.4: the Boss arrives as the
+      // three-member `bossState` projection — the canonical technical Identity plus
+      // the live health — and every member is read as sent. The client does not
+      // damage the Boss, clamp `hp` to `maxHp`, infer one from the other, re-derive
+      // either from `finalBossHp`, or turn the identity into anything but the
+      // identity (§4.4 items 5, 7 and 10).
       const { runtime, transport } = createRuntime();
       await runtime.initialize();
 
-      transport.emit('BattleStateUpdated', payload({ bossState: { hp: 4200, maxHp: 5000 } }));
+      transport.emit(
+        'BattleStateUpdated',
+        payload({ bossState: { bossId: 'boss-kim-loi-vuong', hp: 4200, maxHp: 5000 } })
+      );
 
-      expect(runtime.getBattleState()!.bossState).toEqual({ hp: 4200, maxHp: 5000 });
+      expect(runtime.getBattleState()!.bossState).toEqual({
+        bossId: 'boss-kim-loi-vuong',
+        hp: 4200,
+        maxHp: 5000,
+      });
     });
 
     it('carries an hp of 0 as a real published value', async () => {
@@ -1301,27 +1357,40 @@ describe('GameRuntime', () => {
       const { runtime, transport } = createRuntime();
       await runtime.initialize();
 
-      transport.emit('BattleStateUpdated', payload({ bossState: { hp: 0, maxHp: 5000 } }));
+      transport.emit(
+        'BattleStateUpdated',
+        payload({ bossState: { bossId: 'boss-hoa-long', hp: 0, maxHp: 5000 } })
+      );
 
-      expect(runtime.getBattleState()!.bossState.hp).toBe(0);
+      const state = runtime.getBattleState()!;
+      expect(state.bossState.hp).toBe(0);
+      // The other two members are unaffected by a zero HP: nothing is dropped and
+      // nothing is inferred from it (§4.4 items 4–5, 10).
+      expect(state.bossState.maxHp).toBe(5000);
+      expect(state.bossState.bossId).toBe('boss-hoa-long');
     });
 
     it('rejects a payload missing a bossState member rather than defaulting it', async () => {
-      // §4.4 item 4: both members are always present and neither is optional —
-      // the Boss exists from battle creation at full health, so there is no
-      // absent case and a client must not read an absent `hp` as zero.
+      // §4.4 item 4: all three members are always present and none is optional —
+      // the Boss exists from battle creation at full health with its identity
+      // fixed, so there is no absent case, a client must not read an absent `hp` as
+      // zero, and it must not supply an identity it was not sent (§4.4 item 10).
       const malformed = [
         // No `bossState` at all.
         { bossState: undefined },
         // No `hp`.
-        { bossState: { maxHp: 5000 } },
+        { bossState: { bossId: 'boss-hoa-long', maxHp: 5000 } },
         // No `maxHp`.
-        { bossState: { hp: 4200 } },
+        { bossState: { bossId: 'boss-hoa-long', hp: 4200 } },
+        // No `bossId` — the identity is never reconstructed client-side.
+        { bossState: { hp: 4200, maxHp: 5000 } },
+        // An empty identity is not an identity.
+        { bossState: { bossId: '', hp: 4200, maxHp: 5000 } },
         // Ill-typed members.
-        { bossState: { hp: '4200', maxHp: 5000 } },
-        { bossState: { hp: 4200, maxHp: null } },
+        { bossState: { bossId: 'boss-hoa-long', hp: '4200', maxHp: 5000 } },
+        { bossState: { bossId: 'boss-hoa-long', hp: 4200, maxHp: null } },
         // The empty array is not the absent case, but a non-number is still not a
-        // Boss HP value.
+        // Boss HP value, and no identity can be read from it.
         { bossState: [] },
       ];
 
@@ -1355,6 +1424,9 @@ describe('GameRuntime', () => {
         'BattleStateUpdated',
         payload({
           petState: {
+            hp: 1000,
+            maxHp: 1000,
+            power: 0,
             passiveId: 'xich-lang',
             passiveProgress: { threshold: 5, current: 0 },
             passiveResetOverride: null,
@@ -1380,6 +1452,9 @@ describe('GameRuntime', () => {
         sequence: 21,
         playerState: { combo: 4, matchCount: 137 },
         petState: {
+          hp: 1000,
+          maxHp: 1000,
+          power: 0,
           passiveId: 'xich-lang',
           passiveProgress: { threshold: 5, current: 3 },
           equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
@@ -1585,8 +1660,11 @@ describe('GameRuntime', () => {
       const recovered = payload({
         turn: 7,
         sequence: 8,
-        bossState: { hp: 3100, maxHp: 5000 },
+        bossState: { bossId: 'boss-hoa-long', hp: 3100, maxHp: 5000 },
         petState: {
+          hp: 1000,
+          maxHp: 1000,
+          power: 0,
           passiveId: 'xich-lang',
           passiveProgress: { threshold: 5, current: 2 },
           equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
@@ -1611,12 +1689,20 @@ describe('GameRuntime', () => {
         { id: 'Burn', type: 'DoT', source: 'boss', magnitude: 25, remainingTurns: 2 },
       ]);
 
-      // The recovered Boss HP is the delivered pair — not re-derived from the
-      // stale copy the runtime held before the reconnect.
-      expect(state.bossState).toEqual({ hp: 3100, maxHp: 5000 });
+      // The recovered Boss projection is the delivered one — the canonical
+      // Identity plus the HP pair — not re-derived from the stale copy the runtime
+      // held before the reconnect, and not read off any event (§4.4 item 10).
+      expect(state.bossState).toEqual({ bossId: 'boss-hoa-long', hp: 3100, maxHp: 5000 });
+
+      // The three live Pet combat values are the delivered ones, so a resynchronizing
+      // client re-renders the current HP and Power with no event replay
+      // (§4.3 item 15, §7 item 2).
+      expect(state.petState.hp).toBe(1000);
+      expect(state.petState.maxHp).toBe(1000);
+      expect(state.petState.power).toBe(0);
 
       // And the recovered state carries exactly the §4 member set: recovery adds
-      // no member of its own, and the two new projections are present on it.
+      // no member of its own, and the widened projections are present on it.
       expect(Object.keys(state)).toEqual([
         'battleId',
         'turn',
@@ -1628,6 +1714,9 @@ describe('GameRuntime', () => {
         'petState',
         'bossState',
       ]);
+      expect(Object.keys(state.petState).sort()).toEqual(
+        ['equippedCards', 'hp', 'maxHp', 'passiveId', 'passiveProgress', 'power', 'statusEffects'].sort()
+      );
     });
 
     it('replaces the stale runtime copy instead of merging into it', async () => {

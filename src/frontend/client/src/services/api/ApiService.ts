@@ -16,6 +16,109 @@ export interface HealthStatus {
   status: string;
 }
 
+/** The two documented members of a `API_CONTRACTS.md` §6 error response. */
+interface ApiErrorEnvelope {
+  /** The §6 `error` — the endpoint's machine-readable code, when one was sent. */
+  readonly code: string | null;
+  /** The §6 `message` — the endpoint's own human-readable detail, when sent. */
+  readonly message: string | null;
+}
+
+/**
+ * A non-2xx application response, carrying the documented
+ * `API_CONTRACTS.md` §6 error envelope.
+ *
+ * ```text
+ * { "error": "MACHINE_READABLE_CODE", "message": "human-readable detail" }
+ * ```
+ *
+ * **`message` is the statement a player may be shown**, so it is the §6
+ * `message` when the server sent one and a generic statement when it sent none
+ * (`describeApiFailure`). What it is deliberately *not* is transport
+ * detail: the request path, the HTTP status, the raw response body and this
+ * class's own name are never part of it. Before this envelope was read, every
+ * rejection surfaced as `Request to <path> failed with status <status>`, which
+ * told a player nothing and collapsed three distinct documented rejections into
+ * one string.
+ *
+ * **The technical facts stay reachable.** {@link ApiRequestError.code} and
+ * {@link ApiRequestError.status} carry the machine-readable code and the HTTP
+ * status for diagnostics and tests, so nothing is lost by keeping them out of
+ * the player-facing text.
+ */
+export class ApiRequestError extends Error {
+  /** The HTTP status the server answered with. Diagnostics and tests only. */
+  readonly status: number;
+  /**
+   * The §6 machine-readable code (`UNAUTHENTICATED`, `INVALID_LOADOUT`,
+   * `PET_NOT_OWNED`, `BOSS_NOT_FOUND`, `BATTLE_NOT_FOUND`, …), or `null` when
+   * the response carried no envelope. Diagnostics and tests only.
+   */
+  readonly code: string | null;
+
+  constructor(status: number, code: string | null, message: string) {
+    super(message);
+    this.name = 'ApiRequestError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
+/**
+ * Reads the §6 error envelope from a rejected response.
+ *
+ * A response that carries no JSON body, no object, no `error`, or no `message`
+ * is not an error itself: the absence is reported as `null` members and
+ * {@link describeApiFailure} supplies the statement instead. Nothing is read
+ * from the body beyond these two documented members.
+ */
+async function readApiErrorEnvelope(response: Response): Promise<ApiErrorEnvelope> {
+  try {
+    const body: unknown = await response.json();
+
+    if (body === null || typeof body !== 'object') {
+      return { code: null, message: null };
+    }
+
+    const envelope = body as Record<string, unknown>;
+
+    return {
+      code: typeof envelope.error === 'string' && envelope.error !== '' ? envelope.error : null,
+      message:
+        typeof envelope.message === 'string' && envelope.message !== '' ? envelope.message : null,
+    };
+  } catch {
+    return { code: null, message: null };
+  }
+}
+
+/**
+ * The player-facing statement for a failed application request.
+ *
+ * The §6 `message` is the endpoint's own human-readable detail, so it is used
+ * verbatim when present — that is what makes a rejection say *why* it was
+ * rejected. When the server sent no envelope at all (an infrastructure
+ * failure, a proxy error, an unhandled status), the transport detail is
+ * deliberately not used in its place: the status and the machine code stay on
+ * the error for diagnostics, and the player is told that the request failed
+ * without being shown this client's HTTP internals.
+ */
+function describeApiFailure(status: number, envelope: ApiErrorEnvelope): string {
+  if (envelope.message !== null) {
+    return envelope.message;
+  }
+
+  if (status === 401) {
+    return 'Your session is no longer valid. Please sign in again.';
+  }
+
+  if (status === 404) {
+    return 'That information is no longer available.';
+  }
+
+  return 'The request could not be completed. Please try again.';
+}
+
 export type { CardResponse, PetResponse, RelicResponse };
 
 /**
@@ -121,6 +224,10 @@ export class ApiService {
    * Every REST endpoint except `/api/auth/*` requires that session,
    * and an unauthenticated response is `401 { "error": "UNAUTHENTICATED" }`
    * (§2.8 "Failure behavior").
+   *
+   * A non-2xx response is rejected with the §6 envelope read into an
+   * {@link ApiRequestError}: its `message` is what the server said, and its
+   * `code`/`status` keep the machine-readable facts for diagnostics (§6).
    */
   public async get<T>(path: string): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
@@ -131,7 +238,12 @@ export class ApiService {
     });
 
     if (!response.ok) {
-      throw new Error(`Request to ${path} failed with status ${response.status}`);
+      const envelope = await readApiErrorEnvelope(response);
+      throw new ApiRequestError(
+        response.status,
+        envelope.code,
+        describeApiFailure(response.status, envelope)
+      );
     }
 
     return (await response.json()) as T;
@@ -302,6 +414,12 @@ export class ApiService {
 
   /**
    * A `POST` to an application endpoint, carrying the same session header.
+   *
+   * Its failure handling is the shared transport's: a non-2xx response is
+   * rejected with the §6 envelope read into an {@link ApiRequestError}, so a
+   * documented rejection (`400 INVALID_LOADOUT` / `PET_NOT_OWNED` /
+   * `BOSS_NOT_FOUND`, `401 UNAUTHENTICATED` — §3, §2.8) tells the caller what
+   * the server actually said instead of only which status it used.
    */
   public async post<T>(path: string, body: unknown): Promise<T> {
     const response = await fetch(`${this.baseUrl}${path}`, {
@@ -314,7 +432,12 @@ export class ApiService {
     });
 
     if (!response.ok) {
-      throw new Error(`Request to ${path} failed with status ${response.status}`);
+      const envelope = await readApiErrorEnvelope(response);
+      throw new ApiRequestError(
+        response.status,
+        envelope.code,
+        describeApiFailure(response.status, envelope)
+      );
     }
 
     return (await response.json()) as T;

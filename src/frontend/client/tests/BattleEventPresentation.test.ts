@@ -10,6 +10,8 @@ import { SceneEventEmitter } from './support/SceneEventEmitter';
 import {
   parseInBattleEvent,
   formatInBattleEvent,
+  describeEventCallout,
+  selectBatchCallout,
 } from '../src/game/scenes/BattleEventPresenter';
 import type {
   PresentedMatchCreated,
@@ -112,6 +114,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     const makeText = (value: string) => {
       const entry = { text: value, color: undefined as string | undefined };
       texts.push(entry);
+      let alpha = 1;
 
       const obj = {
         kind: 'label' as const,
@@ -124,6 +127,15 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         setColor: (next: string) => {
           entry.color = next;
           return obj;
+        },
+        // Phaser's `GameObject#setAlpha` — the combat callout resets it when a new
+        // message replaces the one on screen (TASK-210 §7).
+        setAlpha: (next: number) => {
+          alpha = next;
+          return obj;
+        },
+        get alpha() {
+          return alpha;
         },
         destroy: () => {},
       };
@@ -186,6 +198,21 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
           const rect = {
             kind: 'tile',
             fill,
+            width: _w,
+            height: _h,
+            /**
+             * Phaser's `Rectangle#setSize` / `GameObject#setPosition` /
+             * `GameObject#setVisible` — the three calls the HUD gauges make to
+             * resize the existing fill rather than allocating one per state push
+             * (TASK-210 §15).
+             */
+            setSize: (nextWidth: number, nextHeight: number) => {
+              rect.width = nextWidth;
+              rect.height = nextHeight;
+              return rect;
+            },
+            setPosition: () => rect,
+            setVisible: () => rect,
             setStrokeStyle: () => rect,
             destroy: () => {},
           };
@@ -566,6 +593,179 @@ describe('TASK-088 — BattleEventPresenter parser & formatter', () => {
   });
 });
 
+describe('TASK-210 — the player-facing combat callout (SIGNALR_PROTOCOL.md §3.2.16–§3.2.24)', () => {
+  /** The callout resolver a scene supplies: loaded Card definitions, else the id. */
+  const cardNames = new Map([['card-heal', 'Heal']]);
+  const resolveCardName = (cardId: string) => cardNames.get(cardId) ?? cardId;
+
+  it('has nothing to say about the events that are already shown another way', () => {
+    // The per-cell board highlights carry `MatchCreated`/`GemMatched`/`CascadeCreated`
+    // position; the damage and Power floaters carry the numbers; `DamageCalculated`
+    // is the six-factor pipeline detail; and a `RelicTriggered` carries only an owned
+    // instance identity with no client-visible definition to name it with. Each
+    // therefore produces no callout.
+    for (const event of [
+      { type: 'GemMatched', cellIndex: 8, gemType: 'ATK' },
+      { type: 'CascadeCreated', cascadeDepth: 2 },
+      { type: 'DamageCalculated', base: 137, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 137 },
+      { type: 'DamageDealt', source: 'player', target: 'boss', amount: 120 },
+      { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
+      { type: 'PowerChanged', delta: 25, power: 25, source: 'match' },
+      { type: 'RelicTriggered', relicId: 'relic-instance-berserker-core' },
+    ]) {
+      const parsed = parseInBattleEvent(event);
+      expect(parsed, `${event.type} must parse`).not.toBeNull();
+      expect(
+        describeEventCallout(parsed!, resolveCardName),
+        `${event.type} must produce no callout`
+      ).toBeNull();
+    }
+  });
+
+  it('calls out a meaningful Combo and stays silent about an ordinary single-Match Swap', () => {
+    // MATCH3_RULES.md §6.2 item 1: the first Match of a committed Swap makes Combo
+    // 1, which is the ordinary case, not a combo.
+    const single = parseInBattleEvent({ type: 'ComboChanged', combo: 1 })!;
+    expect(describeEventCallout(single, resolveCardName)).toBeNull();
+
+    const cascade = parseInBattleEvent({ type: 'ComboChanged', combo: 4 })!;
+    expect(describeEventCallout(cascade, resolveCardName)).toEqual({
+      message: 'COMBO ×4',
+      color: '#fbbf24',
+      priority: 1,
+    });
+  });
+
+  it('names a cast from the loaded definition and never leaks a Boss skill identity', () => {
+    expect(
+      describeEventCallout(parseInBattleEvent({ type: 'CardCast', cardId: 'card-heal' })!, resolveCardName)
+    ).toEqual({ message: 'CARD: Heal', color: '#a5b4fc', priority: 2 });
+
+    // An identity with no loaded definition is shown as the identity itself.
+    expect(
+      describeEventCallout(parseInBattleEvent({ type: 'CardCast', cardId: 'card-unknown' })!, resolveCardName)
+        ?.message
+    ).toBe('CARD: card-unknown');
+
+    expect(
+      describeEventCallout(
+        parseInBattleEvent({ type: 'PetSkillCast', cardId: 'card-inferno' })!,
+        resolveCardName
+      )?.message
+    ).toBe('PET SKILL: card-inferno');
+
+    // `skillId` is a technical identity with no client-visible definition: the
+    // event's own existence is what the player is told.
+    const bossSkill = describeEventCallout(
+      parseInBattleEvent({ type: 'BossSkillCast', skillId: 'flame-burst-mega', sourceId: 'boss-hoa-long' })!,
+      resolveCardName
+    );
+    expect(bossSkill).toEqual({ message: 'BOSS SKILL', color: '#f87171', priority: 3 });
+    expect(bossSkill?.message).not.toContain('flame-burst-mega');
+  });
+
+  it('attributes a Passive callout to the entity the delivered source names', () => {
+    const petCharged = describeEventCallout(
+      parseInBattleEvent({
+        type: 'PassiveCharged',
+        passiveId: 'thanh-xa-poison',
+        source: 'pet',
+        sourceId: 'pet-instance-1',
+        progress: 3,
+        threshold: 7,
+      })!,
+      resolveCardName
+    );
+    expect(petCharged).toEqual({ message: 'PASSIVE 3/7', color: '#c4b5fd', priority: 5 });
+
+    const bossCharged = describeEventCallout(
+      parseInBattleEvent({
+        type: 'PassiveCharged',
+        passiveId: 'boss-hoa-long-rage',
+        source: 'boss',
+        sourceId: 'boss-hoa-long',
+        progress: 5,
+        threshold: 5,
+      })!,
+      resolveCardName
+    );
+    expect(bossCharged?.message).toBe('BOSS PASSIVE 5/5');
+
+    expect(
+      describeEventCallout(
+        parseInBattleEvent({
+          type: 'PassiveTriggered',
+          passiveId: 'pet-phoenix-rebirth',
+          source: 'pet',
+          sourceId: 'pet-instance-1',
+          progress: 5,
+          threshold: 5,
+        })!,
+        resolveCardName
+      )?.message
+    ).toBe('PASSIVE TRIGGERED');
+
+    // Neither the Passive identity nor either pair of numbers is guessed at, and
+    // the identity itself is not shown: it is technical, and the Pet panel already
+    // carries the delivered `passiveId`.
+    expect(bossCharged?.message).not.toContain('boss-hoa-long-rage');
+  });
+
+  it('calls out an ordinary Match', () => {
+    const match = parseInBattleEvent({
+      type: 'MatchCreated',
+      shape: 'Straight',
+      cells: [8, 9, 10],
+      gemType: 'ATK',
+      cascadeDepth: 0,
+    })!;
+
+    expect(describeEventCallout(match, resolveCardName)).toEqual({
+      message: 'MATCH',
+      color: '#e2e8f0',
+      priority: 6,
+    });
+  });
+
+  it('selects exactly one callout per batch, by importance then by delivery order', () => {
+    const events = [
+      parseInBattleEvent({
+        type: 'MatchCreated',
+        shape: 'Straight',
+        cells: [8, 9, 10],
+        gemType: 'ATK',
+        cascadeDepth: 0,
+      })!,
+      parseInBattleEvent({ type: 'ComboChanged', combo: 4 })!,
+      parseInBattleEvent({ type: 'PowerChanged', delta: 10, power: 10, source: 'match' })!,
+      parseInBattleEvent({ type: 'DamageDealt', source: 'player', target: 'boss', amount: 120 })!,
+    ];
+
+    expect(selectBatchCallout(events, resolveCardName)?.message).toBe('COMBO ×4');
+
+    // Among equally important events the last one wins: it is the one the
+    // resolution finished on.
+    const twoCasts = [
+      parseInBattleEvent({ type: 'CardCast', cardId: 'card-heal' })!,
+      parseInBattleEvent({ type: 'PetSkillCast', cardId: 'card-inferno' })!,
+    ];
+    expect(selectBatchCallout(twoCasts, resolveCardName)?.message).toBe('PET SKILL: card-inferno');
+
+    // A batch that produces no events a player needs told produces no callout.
+    expect(
+      selectBatchCallout(
+        [
+          parseInBattleEvent({ type: 'GemMatched', cellIndex: 8, gemType: 'ATK' })!,
+          parseInBattleEvent({ type: 'CascadeCreated', cascadeDepth: 3 })!,
+        ],
+        resolveCardName
+      )
+    ).toBeNull();
+
+    expect(selectBatchCallout([], resolveCardName)).toBeNull();
+  });
+});
+
 describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCOL.md §3.2.6–§3.2.18)', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -727,6 +927,11 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
       expectedTokens: ['PowerChanged', '+25', '45', 'card'],
     },
   ])('presents $name verbatim when delivered in ReceiveEvents', ({ event, expectedTokens }) => {
+    // TASK-209 §5: the raw event feed is no longer *rendered* — `Match: … depth: 0`,
+    // `DamageCalculated: base …` and the rest are developer console material, not the
+    // player's battle HUD. The scene still parses every batch and records each
+    // formatted line in delivery order for development and tests, which is where the
+    // delivered members are still asserted verbatim.
     const { harness, scene, ctx } = createBattle();
     runScene(scene, ctx, 'create');
 
@@ -736,10 +941,17 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
       events: [event],
     });
 
-    const rendered = harness.texts.map((t) => t.text).join('\n');
+    const presented = (scene as unknown as { getPresentedEvents(): readonly string[] })
+      .getPresentedEvents();
+
+    expect(presented).toHaveLength(1);
     for (const token of expectedTokens) {
-      expect(rendered, `Expected rendered output to contain "${token}"`).toContain(token);
+      expect(presented[0], `Expected presented output to contain "${token}"`).toContain(token);
     }
+
+    // And none of that raw line reaches the player-facing HUD.
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).not.toContain(presented[0]);
   });
 
   it('presents RelicTriggered and PowerChanged in delivered order alongside existing types (GAME_EVENTS.md §1)', () => {
@@ -841,14 +1053,15 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
       events,
     });
 
-    const rendered = harness.texts.map((t) => t.text).join('\n');
+    const presented = (scene as unknown as { getPresentedEvents(): readonly string[] })
+      .getPresentedEvents();
 
-    // Index of each event presentation in the text
-    const idxMatch = rendered.indexOf('Match: Straight ATK [8, 9, 10]');
-    const idxGem = rendered.indexOf('GemMatched: cell 8 (ATK)');
-    const idxCascade = rendered.indexOf('Cascade: depth 2');
-    const idxCombo = rendered.indexOf('Combo: 3');
-    const idxDamage = rendered.indexOf('DamageCalculated: base 100');
+    // The delivered order, as recorded (TASK-209 §5: recorded rather than rendered).
+    const idxMatch = presented.findIndex((line) => line.startsWith('Match: Straight ATK [8, 9, 10]'));
+    const idxGem = presented.findIndex((line) => line.startsWith('GemMatched: cell 8 (ATK)'));
+    const idxCascade = presented.findIndex((line) => line.startsWith('Cascade: depth 2'));
+    const idxCombo = presented.findIndex((line) => line.startsWith('Combo: 3'));
+    const idxDamage = presented.findIndex((line) => line.startsWith('DamageCalculated: base 100'));
 
     expect(idxMatch).toBeGreaterThanOrEqual(0);
     expect(idxGem).toBeGreaterThan(idxMatch);

@@ -121,23 +121,33 @@ public sealed class PlayerRepository : IPlayerRepository
     /// <summary>
     /// Stages the starter ownership set for <paramref name="playerId"/> in the
     /// change tracker without committing it.
+    ///
+    /// It stages exactly what the composition carried — one row per granted Pet
+    /// instance, per unlocked Card, and per owned Relic instance
+    /// (<c>DATABASE.md</c> §2 item 1) — and invents none of its own: the counts
+    /// are the composition's, never a literal here.
     /// </summary>
     private List<object> StageStarterOwnership(string playerId, PlayerStarterGrant starterGrant)
     {
-        var pet = new Pet
-        {
-            PetInstanceId = starterGrant.StarterPet.PetInstanceId,
-            PlayerId = playerId,
-            PetDefinitionId = starterGrant.StarterPet.PetDefinitionId,
-            Tier = starterGrant.StarterPet.Tier,
-            Star = starterGrant.StarterPet.Star,
-            XP = starterGrant.StarterPet.XP,
-            Level = starterGrant.StarterPet.Level,
-            AcquiredAt = starterGrant.StarterPet.AcquiredAt,
-        };
+        var staged = new List<object>();
 
-        _dbContext.Pets.Add(pet);
-        var staged = new List<object> { pet };
+        foreach (var ownedPet in starterGrant.StarterPets)
+        {
+            var pet = new Pet
+            {
+                PetInstanceId = ownedPet.PetInstanceId,
+                PlayerId = playerId,
+                PetDefinitionId = ownedPet.PetDefinitionId,
+                Tier = ownedPet.Tier,
+                Star = ownedPet.Star,
+                XP = ownedPet.XP,
+                Level = ownedPet.Level,
+                AcquiredAt = ownedPet.AcquiredAt,
+            };
+
+            _dbContext.Pets.Add(pet);
+            staged.Add(pet);
+        }
 
         foreach (var unlockedCard in starterGrant.StarterCards)
         {

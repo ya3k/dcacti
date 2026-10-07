@@ -11,17 +11,17 @@ namespace GameServer.Infrastructure.Tests;
 
 /// <summary>
 /// The starter ownership bootstrap on the Player-creation path —
-/// <c>DATABASE.md</c> §2 items 1–4.
+/// <c>DATABASE.md</c> §2 items 1–4; <c>MVP_SCOPE.md</c> §1 (TASK-213 / TASK-221).
 ///
 /// <code>
-/// new DiscordUserId
+/// new account
 ///         ↓
 /// 1 Player row
-/// + 1 Pet  ownership row   (pet-xich-lang)
+/// + 5 Pet  ownership rows   (one per MVP Pet definition)
 /// + 3 PlayerUnlockedCard rows
-/// + 3 Relic ownership rows
+/// + 10 Relic ownership rows (one per MVP Relic definition)
 ///         ↓
-/// ONE SaveChangesAsync — all 8 rows, or none
+/// ONE SaveChangesAsync — all 19 rows, or none
 /// </code>
 ///
 /// <b>What these tests can and cannot prove.</b> The InMemory provider used here
@@ -33,9 +33,9 @@ namespace GameServer.Infrastructure.Tests;
 /// The tests that create Players through the repository use
 /// <see cref="TestStarterGrants.StagedCallback"/>, whose definition ids resolve to
 /// no row: they assert the Player-scoped semantics (creation, matching, batch
-/// discard) rather than the composition. The composition itself is asserted
-/// through the real factory in the PostgreSQL suite and in
-/// <c>PlayerStarterGrantFactoryTests</c>.
+/// discard) and the documented cardinality rather than the exact content
+/// identities. The composition itself is asserted through the real factory in the
+/// PostgreSQL suite and in <c>PlayerStarterGrantFactoryTests</c>.
 /// </summary>
 public class PlayerStarterOwnershipTests
 {
@@ -52,12 +52,12 @@ public class PlayerStarterOwnershipTests
     // -----------------------------------------------------------------------
 
     [Fact]
-    public async Task NewPlayer_ShouldReceiveOnePetThreeCardsAndThreeRelics()
+    public async Task NewPlayer_ShouldReceiveTheDocumentedStarterOwnership()
     {
-        // DATABASE.md §2 item 1 / TASK-083 §25: a newly created Player receives
-        // exactly 1 Pet row, 3 PlayerUnlockedCard rows, and 3 Relic rows —
-        // 7 ownership rows beside the Player row (8 database rows in total).
-        await using var context = CreateContext(nameof(NewPlayer_ShouldReceiveOnePetThreeCardsAndThreeRelics));
+        // DATABASE.md §2 item 1 / MVP_SCOPE.md §1: a newly created Player
+        // receives 5 Pet rows, 3 PlayerUnlockedCard rows, and 10 Relic rows —
+        // 18 ownership rows beside the Player row (19 database rows in total).
+        await using var context = CreateContext(nameof(NewPlayer_ShouldReceiveTheDocumentedStarterOwnership));
         var repository = CreateRepository(context);
 
         var player = await repository.GetOrCreateByDiscordUserIdAsync(
@@ -65,9 +65,46 @@ public class PlayerStarterOwnershipTests
             TestStarterGrants.StagedCallback);
 
         Assert.Equal(1, await context.Players.CountAsync(p => p.PlayerId == player.PlayerId));
-        Assert.Equal(1, await context.Pets.CountAsync(pet => pet.PlayerId == player.PlayerId));
+        Assert.Equal(5, await context.Pets.CountAsync(pet => pet.PlayerId == player.PlayerId));
         Assert.Equal(3, await context.PlayerUnlockedCards.CountAsync(c => c.PlayerId == player.PlayerId));
-        Assert.Equal(3, await context.Relics.CountAsync(relic => relic.PlayerId == player.PlayerId));
+        Assert.Equal(10, await context.Relics.CountAsync(relic => relic.PlayerId == player.PlayerId));
+    }
+
+    [Fact]
+    public async Task NewPlayer_ShouldOwnTheWholeGrantedSetAndNoDuplicatePetOrRelicDefinition()
+    {
+        // The grant is one owned instance per MVP Pet definition and one per MVP
+        // Relic definition (MVP_SCOPE.md §1). The fixture's own labels make the
+        // one-per-definition property observable: a duplicated or dropped row
+        // would change the distinct-definition count rather than being masked by
+        // the total.
+        await using var context = CreateContext(nameof(NewPlayer_ShouldOwnTheWholeGrantedSetAndNoDuplicatePetOrRelicDefinition));
+        var repository = CreateRepository(context);
+
+        var player = await repository.GetOrCreateByDiscordUserIdAsync(
+            "80351110224678912",
+            TestStarterGrants.StagedCallback);
+
+        var petDefinitionIds = await context.Pets
+            .Where(pet => pet.PlayerId == player.PlayerId)
+            .Select(pet => pet.PetDefinitionId)
+            .ToListAsync();
+
+        Assert.Equal(5, petDefinitionIds.Distinct(StringComparer.Ordinal).Count());
+
+        var relicDefinitionIds = await context.Relics
+            .Where(relic => relic.PlayerId == player.PlayerId)
+            .Select(relic => relic.RelicDefinitionId)
+            .ToListAsync();
+
+        Assert.Equal(10, relicDefinitionIds.Distinct(StringComparer.Ordinal).Count());
+
+        var cardDefinitionIds = await context.PlayerUnlockedCards
+            .Where(card => card.PlayerId == player.PlayerId)
+            .Select(card => card.CardDefinitionId)
+            .ToListAsync();
+
+        Assert.Equal(3, cardDefinitionIds.Distinct(StringComparer.Ordinal).Count());
     }
 
     [Fact]
@@ -106,21 +143,13 @@ public class PlayerStarterOwnershipTests
     {
         // The starter set is the only source of a new Player's ownership
         // (DATABASE.md §2 item 1). Staging none therefore creates none — which is
-        // what makes the seven rows attributable to the bootstrap rather than to
-        // some other creation-side effect.
+        // what makes the eighteen rows attributable to the bootstrap rather than
+        // to some other creation-side effect.
         await using var context = CreateContext(nameof(CreationWithoutAStarterSet_ShouldCreateThePlayerWithNoOwnership));
         var repository = CreateRepository(context);
 
         var emptyGrant = new PlayerStarterGrant(
-            new Pet
-            {
-                PetInstanceId = "petinst_probe",
-                PlayerId = string.Empty,
-                PetDefinitionId = "pet-fixture",
-                Tier = PetTier.Common,
-                Star = Pet.MinStar,
-                AcquiredAt = DateTimeOffset.UtcNow,
-            },
+            [],
             [],
             []);
 
@@ -130,11 +159,30 @@ public class PlayerStarterOwnershipTests
 
         Assert.Equal(1, await context.Players.CountAsync(p => p.PlayerId == player.PlayerId));
 
-        // The empty Card/Relic sets contribute nothing; the one Pet in the grant
-        // does. This isolates the count to what the grant carried.
-        Assert.Equal(1, await context.Pets.CountAsync(pet => pet.PlayerId == player.PlayerId));
+        // The empty grant contributes nothing of any kind: no Pet, no Card
+        // unlock, no Relic. This isolates the counts to what the grant carried.
+        Assert.Equal(0, await context.Pets.CountAsync(pet => pet.PlayerId == player.PlayerId));
         Assert.Equal(0, await context.PlayerUnlockedCards.CountAsync(c => c.PlayerId == player.PlayerId));
         Assert.Equal(0, await context.Relics.CountAsync(relic => relic.PlayerId == player.PlayerId));
+    }
+
+    [Fact]
+    public async Task CreationWithoutAStarterSet_ShouldNotTreatAnEmptyGrantAsAMissingDefinition()
+    {
+        // The composition resolves every definition before the boundary is
+        // reached; the boundary itself stages what it is handed. An empty grant
+        // is therefore a legal — if degenerate — input here, and it must not be
+        // substituted with a default set: no fallback ownership is invented
+        // (AGENTS.md §7).
+        await using var context = CreateContext(nameof(CreationWithoutAStarterSet_ShouldNotTreatAnEmptyGrantAsAMissingDefinition));
+        var repository = CreateRepository(context);
+
+        var player = await repository.GetOrCreateByDiscordUserIdAsync(
+            "80351110224678912",
+            _ => Task.FromResult(new PlayerStarterGrant([], [], [])));
+
+        Assert.Equal(1, await context.Players.CountAsync(p => p.PlayerId == player.PlayerId));
+        Assert.Equal(0, await context.Pets.CountAsync(pet => pet.PlayerId == player.PlayerId));
     }
 
     [Fact]
@@ -186,9 +234,9 @@ public class PlayerStarterOwnershipTests
         Assert.Equal(first.PlayerId, second.PlayerId);
 
         Assert.Equal(1, await context.Players.CountAsync());
-        Assert.Equal(1, await context.Pets.CountAsync(pet => pet.PlayerId == first.PlayerId));
+        Assert.Equal(5, await context.Pets.CountAsync(pet => pet.PlayerId == first.PlayerId));
         Assert.Equal(3, await context.PlayerUnlockedCards.CountAsync(c => c.PlayerId == first.PlayerId));
-        Assert.Equal(3, await context.Relics.CountAsync(relic => relic.PlayerId == first.PlayerId));
+        Assert.Equal(10, await context.Relics.CountAsync(relic => relic.PlayerId == first.PlayerId));
     }
 
     [Fact]
@@ -267,7 +315,10 @@ public class PlayerStarterOwnershipTests
             discordUserId,
             TestStarterGrants.StagedCallback);
 
-        var pet = await context.Pets.SingleAsync(p => p.PlayerId == created.PlayerId);
+        // One of the five owned Pet instances: the grant no longer privileges a
+        // single Pet, so the test names the instance it progresses rather than
+        // assuming the Player owns exactly one.
+        var pet = await context.Pets.FirstAsync(p => p.PlayerId == created.PlayerId);
         pet.GrantBattleXp(Pet.BattleWonXpReward);
         await context.SaveChangesAsync();
 
@@ -275,7 +326,7 @@ public class PlayerStarterOwnershipTests
             discordUserId,
             TestStarterGrants.StagedCallback);
 
-        var stored = await context.Pets.SingleAsync(p => p.PlayerId == created.PlayerId);
+        var stored = await context.Pets.SingleAsync(p => p.PetInstanceId == pet.PetInstanceId);
 
         Assert.Equal(Pet.BattleWonXpReward, stored.XP);
         Assert.Equal(Pet.LevelForXp(Pet.BattleWonXpReward), stored.Level);
@@ -289,7 +340,7 @@ public class PlayerStarterOwnershipTests
     public async Task StarterRelics_ShouldCarryDistinctInstanceIdsAndKeepTheirDefinitions()
     {
         // RELIC_RULES.md §2.2: the owned instance's identity is distinct from its
-        // definition's. TASK-083 §15 requires the three instance ids to differ.
+        // definition's. All ten granted instances must carry their own identity.
         await using var context = CreateContext(nameof(StarterRelics_ShouldCarryDistinctInstanceIdsAndKeepTheirDefinitions));
         var repository = CreateRepository(context);
 
@@ -301,9 +352,9 @@ public class PlayerStarterOwnershipTests
             .Where(relic => relic.PlayerId == player.PlayerId)
             .ToListAsync();
 
-        Assert.Equal(3, relics.Count);
+        Assert.Equal(10, relics.Count);
 
-        Assert.Equal(3, relics.Select(relic => relic.RelicInstanceId).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(10, relics.Select(relic => relic.RelicInstanceId).Distinct(StringComparer.Ordinal).Count());
 
         Assert.All(relics, relic =>
             Assert.NotEqual(relic.RelicDefinitionId, relic.RelicInstanceId));
@@ -438,9 +489,9 @@ public class PlayerStarterOwnershipTests
             "80351110224678912",
             TestStarterGrants.StagedCallback);
 
-        // The only reads the creation path issues are the DiscordUserId lookup
+        // The only reads the creation path issues are the account-identity lookup
         // and (on the losing branch) the winner re-read. Ownership is established
-        // solely by what was staged.
-        Assert.Equal(1, await context.Pets.CountAsync(pet => pet.PlayerId == player.PlayerId));
+        // solely by what was staged — all five granted Pet rows, not one.
+        Assert.Equal(5, await context.Pets.CountAsync(pet => pet.PlayerId == player.PlayerId));
     }
 }

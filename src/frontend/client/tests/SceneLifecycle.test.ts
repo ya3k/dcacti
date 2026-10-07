@@ -20,6 +20,7 @@ import type {
   RuntimeBattleState,
   RuntimeEventListener,
 } from '../src/game/runtime/GameRuntimeEvents';
+import type { CardResponse, PetResponse } from '../src/services/api/CollectionModels';
 import { SceneEventEmitter } from './support/SceneEventEmitter';
 
 vi.mock('phaser', () => ({
@@ -98,7 +99,7 @@ interface SceneHarnessOptions {
   withRuntime?: boolean;
   battleState?: RuntimeBattleState | null;
   /** The owned collection the pre-battle flow reads (`GET /api/pets`). */
-  pets?: Array<{ petId: string; identity: string; element: string; tier: string; star: number; level: number }>;
+  pets?: PetResponse[];
   /** The owned Relic instances the pre-battle flow reads (`GET /api/relics`). */
   relics?: Array<{ relicId: string; name: string }>;
   /**
@@ -126,7 +127,21 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
   const listeners = new Set<RuntimeEventListener>();
   const battleStateListeners = new Set<(state: RuntimeBattleState) => void>();
   const battleEventListeners = new Set<(envelope: BattleEventsEnvelope) => void>();
-  const texts: Array<{ text: string; color?: string }> = [];
+  /**
+   * Every `Text` object the scene created, in creation order.
+   *
+   * The position and the style are recorded too, because TASK-210's HUD is a
+   * layout: a test has to be able to see that a line was placed where the layout
+   * says and that a line which can grow was given a word-wrap width and a
+   * `maxLines` cap (`BattleScene`'s origin-`(0, 0)` banded lines).
+   */
+  const texts: Array<{
+    text: string;
+    color?: string;
+    x: number;
+    y: number;
+    style?: Record<string, unknown>;
+  }> = [];
   /**
    * Every write a scene attempted against a `Text` object the engine has already
    * destroyed (`DisplayList#shutdown`), in order — including the ones that also
@@ -291,12 +306,36 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         lastError: null,
       });
     },
-    getCards: vi.fn(async () => [
-      { cardId: 'card-heal', name: 'Heal', category: 'Basic' as const },
-      { cardId: 'card-shield', name: 'Shield', category: 'Basic' as const },
-      { cardId: 'card-power-charge', name: 'Power Charge', category: 'Basic' as const },
-      { cardId: 'card-inferno', name: 'Inferno', category: 'PetSkill' as const },
-    ]),
+    getCards: vi.fn(
+      async (): Promise<CardResponse[]> => [
+        // API_CONTRACTS.md §5.3: membership of this array IS the unlocked state.
+        // The starter grant creates exactly these three Basic unlock rows and no
+        // Pet Skill row (`PlayerStarterGrantFactory.cs`; `CARD_RULES.md` §1 item 4,
+        // ADR-012 item 9), so a fixture that put a `PetSkill` definition here would
+        // certify behaviour production cannot reach. The derived Signature Skill is
+        // delivered by `GET /api/pets` instead (§5.1) — which is exactly what the
+        // Signature Skill identification tests below rely on. Each `effectDefinition`
+        // is the Card's own stored content (`CARD_RULES.md` §2).
+        {
+          cardId: 'card-heal',
+          name: 'Heal',
+          category: 'Basic',
+          effectDefinition: [{ effectType: 'Heal', valueType: 'PercentMaxHp', value: 20 }],
+        },
+        {
+          cardId: 'card-shield',
+          name: 'Shield',
+          category: 'Basic',
+          effectDefinition: [{ effectType: 'Shield', valueType: 'PercentMaxHp', value: 20 }],
+        },
+        {
+          cardId: 'card-power-charge',
+          name: 'Power Charge',
+          category: 'Basic',
+          effectDefinition: [{ effectType: 'Power', valueType: 'Flat', value: 25 }],
+        },
+      ]
+    ),
     getPets: vi.fn(async () => pets),
     getPet: vi.fn(async () => pets[0] ?? ({} as never)),
     getRelics: vi.fn(async () => relics),
@@ -354,9 +393,16 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     const events = new SceneEventEmitter();
 
     /** A text object. When `into` is given, the object is a board child. */
-    const makeText = (x: number, y: number, value: string, into?: { kind: string; label: string }[]) => {
-      const entry = { text: value, color: undefined as string | undefined };
+    const makeText = (
+      x: number,
+      y: number,
+      value: string,
+      into?: { kind: string; label: string }[],
+      style?: Record<string, unknown>
+    ) => {
+      const entry = { text: value, color: undefined as string | undefined, x, y, style };
       texts.push(entry);
+      let alpha = 1;
 
       const handlers: Array<() => void> = [];
       let interactive = false;
@@ -399,6 +445,14 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         get text() {
           return entry.text;
         },
+        /** The colour the scene last set, as `setColor` received it. */
+        get color() {
+          return entry.color;
+        },
+        /** The style config the scene passed to `add.text`, as Phaser stores it. */
+        get style() {
+          return style;
+        },
         get interactive() {
           return interactive;
         },
@@ -416,6 +470,17 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
           }
           entry.color = next;
           return obj;
+        },
+        /**
+         * Phaser's `GameObject#setAlpha`. The combat callout sets its alpha back to
+         * 1 when a new message replaces an older one, so the mock records it.
+         */
+        setAlpha: (next: number) => {
+          alpha = next;
+          return obj;
+        },
+        get alpha() {
+          return alpha;
         },
         setWordWrapWidth: () => obj,
         setInteractive: () => {
@@ -593,6 +658,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         rectangle: (x = 0, y = 0, width = 0, height = 0) => {
           const handlers: Array<() => void> = [];
           let interactive = false;
+          let visible = true;
           const rect = {
             kind: 'tile',
             text: '',
@@ -602,6 +668,32 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
             height,
             get interactive() {
               return interactive;
+            },
+            /**
+             * Phaser's `Rectangle#setSize`: it resizes the underlying geometry and
+             * re-derives the display origin, so the shape stays centred on its
+             * position. The HUD gauges resize their existing fill with it rather
+             * than creating a rectangle per state push (TASK-210 §15), so the mock
+             * has to model it for a fill width to be observable at all.
+             */
+            setSize: (nextWidth: number, nextHeight: number) => {
+              rect.width = nextWidth;
+              rect.height = nextHeight;
+              return rect;
+            },
+            /** Phaser's `GameObject#setPosition`. */
+            setPosition: (nextX: number, nextY: number) => {
+              rect.x = nextX;
+              rect.y = nextY;
+              return rect;
+            },
+            /** Phaser's `GameObject#setVisible` — a zero-width fill is hidden. */
+            setVisible: (next: boolean) => {
+              visible = next;
+              return rect;
+            },
+            get visible() {
+              return visible;
             },
             setStrokeStyle: () => rect,
             setInteractive: () => {
@@ -631,7 +723,8 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
           });
           return rect;
         },
-        text: (x: number, y: number, value: string) => makeText(x, y, value),
+        text: (x: number, y: number, value: string, style?: Record<string, unknown>) =>
+          makeText(x, y, value, undefined, style),
         container: () => makeContainer(),
       },
       load: {
@@ -796,6 +889,54 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
 function runScene(scene: object, ctx: object, method: string, ...args: unknown[]): void {
   const fn = Object.getPrototypeOf(scene)[method] as ((this: object, ...args: unknown[]) => void) | undefined;
   fn?.call(ctx, ...args);
+}
+
+/**
+ * The five **provisioned** MVP Pets as `GET /api/pets` elements
+ * (`API_CONTRACTS.md` §5.1, `PET_RULES.md` §8, `CARD_RULES.md` §4.1).
+ *
+ * ```text
+ * Pet        element   SignatureSkillCardId      Skill
+ * Xích Lang  Fire      card-inferno              Inferno
+ * Bạch Hổ    Metal     card-iron-fang            Iron Fang
+ * Huyền Quy  Water     card-tidal-barrier        Tidal Barrier
+ * Thanh Xà   Wood      card-venomous-bloom       Venomous Bloom
+ * Sơn Hùng   Earth     card-earthshaker          Earthshaker
+ * ```
+ *
+ * These are the responses' own members — the Pet's own
+ * `PetDefinition.SignatureSkillCardId` reference resolved through its
+ * `CardDefinition` — transcribed so an identification can be asserted value by
+ * value across **all five** Pets. They are not a client-side content source: the
+ * scene reads only the response it is handed, and every one of these references
+ * is deliberately absent from the Card collection (`§5.3`), which is what makes
+ * a Category-based identification impossible.
+ */
+const PROVISIONED_PET_SIGNATURE_SKILLS: ReadonlyArray<{
+  readonly petId: string;
+  readonly identity: string;
+  readonly element: PetResponse['element'];
+  readonly cardId: string;
+  readonly name: string;
+}> = [
+  { petId: 'pet-instance-1', identity: 'Xích Lang', element: 'Fire', cardId: 'card-inferno', name: 'Inferno' },
+  { petId: 'pet-instance-2', identity: 'Bạch Hổ', element: 'Metal', cardId: 'card-iron-fang', name: 'Iron Fang' },
+  { petId: 'pet-instance-3', identity: 'Huyền Quy', element: 'Water', cardId: 'card-tidal-barrier', name: 'Tidal Barrier' },
+  { petId: 'pet-instance-4', identity: 'Thanh Xà', element: 'Wood', cardId: 'card-venomous-bloom', name: 'Venomous Bloom' },
+  { petId: 'pet-instance-5', identity: 'Sơn Hùng', element: 'Earth', cardId: 'card-earthshaker', name: 'Earthshaker' },
+];
+
+/** All five provisioned Pets, each carrying its own derived Signature Skill. */
+function provisionedPets(): PetResponse[] {
+  return PROVISIONED_PET_SIGNATURE_SKILLS.map((pet) => ({
+    petId: pet.petId,
+    identity: pet.identity,
+    element: pet.element,
+    tier: 'Common',
+    star: 1,
+    level: 1,
+    signatureSkill: { cardId: pet.cardId, name: pet.name, category: 'PetSkill' },
+  }));
 }
 
 /**
@@ -1112,7 +1253,11 @@ describe('BattleScene', () => {
     expect(harness.texts.length).toBeGreaterThan(0);
   });
 
-  it('renders a connected runtime as ready', () => {
+  it('says nothing about the connection while the battle is connected', () => {
+    // TASK-209 §5: the connection line is the HUD's only infrastructure statement
+    // and it is player-facing. A connected battle needs no statement at all, and
+    // the developer diagnostics it used to show — a "Runtime …" label, `SignalR:`,
+    // `Sync:`, `Conn:` — are not the player's battle HUD.
     const { harness, scene, ctx } = createBattle({
       ...INITIAL_RUNTIME_STATE,
       connection: 'connected',
@@ -1124,15 +1269,20 @@ describe('BattleScene', () => {
 
     runScene(scene, ctx, 'create');
 
-    expect(harness.texts.map((t) => t.text)).toContain('Runtime Connected');
+    const rendered = harness.texts.map((t) => t.text);
+    expect(rendered).not.toContain('Connecting…');
+    expect(rendered).not.toContain('Reconnecting…');
+    for (const diagnostic of ['Runtime Connected', 'SignalR:', 'Sync:', 'Conn:']) {
+      expect(rendered.join('\n')).not.toContain(diagnostic);
+    }
   });
 
-  it('renders an unconnected runtime as waiting, not as ready', () => {
+  it('renders an unconnected runtime as connecting, not as ready', () => {
     const { harness, scene, ctx } = createBattle();
 
     runScene(scene, ctx, 'create');
 
-    expect(harness.texts.map((t) => t.text)).toContain('Runtime Waiting for Connection');
+    expect(harness.texts.map((t) => t.text)).toContain('Connecting…');
     expect(harness.texts.map((t) => t.text)).not.toContain('Runtime Connected');
   });
 
@@ -1145,7 +1295,7 @@ describe('BattleScene', () => {
 
     runScene(scene, ctx, 'create');
 
-    expect(harness.texts.map((t) => t.text)).toContain('Runtime Unavailable');
+    expect(harness.texts.map((t) => t.text)).toContain('Battle unavailable');
   });
 
   it('renders the reconnecting state distinctly', () => {
@@ -1157,21 +1307,21 @@ describe('BattleScene', () => {
 
     runScene(scene, ctx, 'create');
 
-    expect(harness.texts.map((t) => t.text)).toContain('Runtime Reconnecting…');
+    expect(harness.texts.map((t) => t.text)).toContain('Reconnecting…');
   });
 
   it('survives a scene with no runtime supplied', () => {
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, false);
 
     expect(() => runScene(scene, ctx, 'create')).not.toThrow();
-    expect(harness.texts.map((t) => t.text)).toContain('Runtime Unavailable');
+    expect(harness.texts.map((t) => t.text)).toContain('Battle unavailable');
   });
 
   it('updates its readout when the runtime state changes', () => {
     const { harness, scene, ctx } = createBattle();
 
     runScene(scene, ctx, 'create');
-    expect(harness.texts.map((t) => t.text)).toContain('Runtime Waiting for Connection');
+    expect(harness.texts.map((t) => t.text)).toContain('Connecting…');
 
     const connected: GameRuntimeState = {
       ...INITIAL_RUNTIME_STATE,
@@ -1184,7 +1334,9 @@ describe('BattleScene', () => {
       listener({ type: 'runtime_state_changed', state: connected });
     }
 
-    expect(harness.texts.map((t) => t.text)).toContain('Runtime Connected');
+    // A connected battle has nothing to announce, so the line it rendered while
+    // connecting is cleared (TASK-209 §5).
+    expect(harness.texts.map((t) => t.text)).not.toContain('Connecting…');
   });
 
   it('subscribes to the runtime exactly once', () => {
@@ -1285,15 +1437,17 @@ describe('BattleScene', () => {
     // interaction (MATCH3_RULES.md §2 item 1) is now implemented, so `Swap` as a
     // *request* is no longer a violation.
     //
-    // What is still forbidden, and all this assertion now forbids, is
-    // **resolution presentation**: a match, cascade, or combo readout, a damage
-    // number, or a boss readout. None of those exists on the client, because the
-    // client computes none of them (GAME_RULES.md §18, ADR-001). The scene's swap
-    // line reports only which cells were selected and whether the server accepted
-    // the request — transport feedback (SIGNALR_PROTOCOL.md §2.1, §5), not a
-    // resolution result.
+    // TASK-209 stage advance. The scene now presents the player-facing battle HUD,
+    // so "a boss readout" and "a combo readout" are no longer violations by name:
+    // §4.4's Boss identity and live health and §4.2/§6's delivered Combo and Match
+    // count are authoritative values the player is meant to see. What remains
+    // forbidden is **client-computed resolution presentation**: a match, cascade,
+    // or damage *result* the client would have had to calculate
+    // (GAME_RULES.md §18, ADR-001). This harness supplies no battle state at all,
+    // so nothing resolution-shaped can be rendered here — and the forbidden terms
+    // pin the raw event feed and any computed result.
     const rendered = harness.texts.map((t) => t.text).join(' ');
-    for (const forbidden of ['Boss', 'Combo', 'Damage', 'Cascade', 'Match ']) {
+    for (const forbidden of ['Damage', 'Cascade', 'Match:', 'depth:', 'calculated']) {
       expect(rendered).not.toMatch(new RegExp(forbidden, 'i'));
     }
   });
@@ -1336,6 +1490,9 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
       // always present — an active Pet with no active effect is an empty array,
       // never an omission (§4.3 item 14).
       petState: {
+        hp: 1000,
+        maxHp: 1000,
+        power: 0,
         passiveId: 'xich-lang',
         passiveProgress: { threshold: 5, current: 0 },
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
@@ -1343,7 +1500,7 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
       },
       // SIGNALR_PROTOCOL.md §4.4: the two-member Boss HP projection. Both members
       // are always present and neither is nullable (§4.4 item 4).
-      bossState: { hp: 5000, maxHp: 5000 },
+      bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
       ...overrides,
     };
   }
@@ -1359,27 +1516,129 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     return { harness, scene, ctx };
   }
 
-  it('renders the board foundation state the server delivered', () => {
+  it('renders the battle HUD the server delivered', () => {
+    // TASK-209 §4 / TASK-210 §1: the player-facing HUD presents the Boss's identity
+    // and live health, the active Pet's name, HP, Max HP and Power, and the
+    // delivered Match counter — every value read straight from the authoritative
+    // push. TASK-210 widened HP and Power into gauges drawn *beside* those same
+    // numbers, so the numbers themselves are still what this asserts. The
+    // developer readout the HUD replaced (battle id, turn, sequence, RNG, transport
+    // state) is deliberately gone (§5).
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
 
     runScene(scene, ctx, 'create');
 
     const rendered = harness.texts.map((t) => t.text).join('\n');
-    expect(rendered).toContain('BattleId: battle-1');
-    expect(rendered).toMatch(/Turn: 0\b/);
-    expect(rendered).toMatch(/Sequence: 0\b/);
+    expect(rendered).toContain('Hỏa Long');
+    expect(rendered).toContain('5000 / 5000');
+    expect(rendered).toContain('1000 / 1000');
+    expect(rendered).toContain('0 / 100');
+    expect(rendered).toContain('MATCHES 0');
+
+    for (const diagnostic of ['BattleId:', 'Turn:', 'Sequence:', 'RngSeed:', 'SignalR:', 'Sync:']) {
+      expect(rendered).not.toContain(diagnostic);
+    }
   });
 
-  it('renders the documented initial values verbatim', () => {
-    // GAME_STATE.md §2.0.5.2 item 1: board generation is not an action
-    // resolution, so Turn and Sequence stay 0.
+  it('renders the delivered initial values verbatim', () => {
+    // §4.3 item 15 / §4.4 item 4: a battle begins with both sides at full health
+    // and no Power generated yet. Those are the delivered values and they are
+    // printed as sent — zero is a value here, not an absence — while the derived
+    // readouts (turn, sequence, RNG) are no longer rendered at all.
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
 
     runScene(scene, ctx, 'create');
 
     const rendered = harness.texts.map((t) => t.text).join('\n');
-    expect(rendered).toMatch(/Turn: 0\b/);
-    expect(rendered).toMatch(/Sequence: 0\b/);
+    expect(rendered).toContain('1000 / 1000');
+    expect(rendered).toContain('0 / 100');
+    expect(rendered).not.toMatch(/Turn: 0\b/);
+    expect(rendered).not.toMatch(/Sequence: 0\b/);
+  });
+
+  it('renders the delivered Pet live combat values verbatim', () => {
+    // §4.3 item 15 / GAME_STATE.md §2.3: the active Pet's current HP, Max HP and
+    // Power reach the client as three authoritative `petState` members and are
+    // printed as received. `hp`, `maxHp` and `power` are independent — the scene
+    // damages, heals, clamps, and reconstructs none of them.
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
+      petState: {
+        hp: 640,
+        maxHp: 1000,
+        power: 45,
+        passiveId: 'xich-lang',
+        passiveProgress: { threshold: 5, current: 0 },
+        equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+        statusEffects: [],
+      },
+    }));
+
+    runScene(scene, ctx, 'create');
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+
+    expect(rendered).toContain('640 / 1000');
+    expect(rendered).toContain('45 / 100');
+    // The scene exposes no derived value: no remaining-HP percentage, no clamped
+    // HP, and no Power reconstructed from an event.
+    expect(rendered).not.toContain('%');
+  });
+
+  it('renders the active Pet name from the client loadout and catalog', async () => {
+    // §4.3 item 2 / ADR-014: `PetState` carries no client-visible identity, so the
+    // HUD resolves the Pet's display name from the client's own preserved
+    // pre-battle loadout (ADR-022) plus the owned-Pet collection read — never from
+    // the wire, and never as a guessed name.
+    const harness = createSceneHarness({
+      state: INITIAL_RUNTIME_STATE,
+      battleState: serverState(),
+      pets: [
+        {
+          petId: 'pet-instance-1',
+          identity: 'Thanh Xà',
+          element: 'Fire',
+          tier: 'Common',
+          star: 1,
+          level: 1,
+          signatureSkill: {
+            cardId: 'card-venomous-bloom',
+            name: 'Venomous Bloom',
+            category: 'PetSkill',
+          },
+        },
+      ],
+    });
+    const scene = new BattleScene();
+    const ctx = harness.context(scene, 'BattleScene');
+    preserveLoadout(ctx as never, {
+      petId: 'pet-instance-1',
+      bossId: 'boss-hoa-long',
+      cardLoadout: ['card-heal', 'card-shield', 'card-power-charge'],
+      relicLoadout: ['relic-1', 'relic-2', 'relic-3'],
+    });
+
+    runScene(scene, ctx, 'create');
+
+    await flush();
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('Thanh Xà');
+  });
+
+  it('falls back to the identity, never a guessed name, when the Pet is unknown', () => {
+    // A loadout identity the collection does not contain (or no loadout at all)
+    // renders what the client actually has: the identity it was given, or a
+    // neutral placeholder. Fabricating a name would be client-authored content
+    // standing in for state (AGENTS.md §7).
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
+
+    runScene(scene, ctx, 'create');
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('Pet');
+    // The Pet's HP and Power are still the authoritative delivered values.
+    expect(rendered).toContain('1000 / 1000');
+    expect(rendered).toContain('0 / 100');
   });
 
   it('renders the delivered Passive progress pair verbatim', () => {
@@ -1389,6 +1648,9 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     // Threshold, and resets nothing (§4.3 item 9).
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
       petState: {
+        hp: 1000,
+        maxHp: 1000,
+        power: 0,
         passiveId: 'thanh-xa-poison',
         passiveProgress: { threshold: 7, current: 3 },
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
@@ -1412,6 +1674,9 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     // member carries its contract name — `"Partial"` or `"NoReset"`.
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
       petState: {
+        hp: 1000,
+        maxHp: 1000,
+        power: 0,
         passiveId: 'xich-lang',
         passiveProgress: { threshold: 5, current: 4 },
         passiveResetOverride: 'Partial',
@@ -1428,29 +1693,57 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     expect(rendered).toContain('reset: Partial');
   });
 
-  it('renders the delivered Boss hp and maxHp verbatim', () => {
-    // SIGNALR_PROTOCOL.md §4.4: the Boss's live health reaches the client as the
-    // two-member `bossState` projection. The scene prints both numbers as
-    // received — it damages nothing, clamps nothing, and infers neither value
-    // from the other (§4.4 item 7).
+  it('renders the delivered Boss identity, hp and maxHp verbatim', () => {
+    // SIGNALR_PROTOCOL.md §4.4: the Boss reaches the client as the three-member
+    // `bossState` projection — the canonical technical Identity plus its live
+    // health. The scene prints the numbers as received (it damages nothing, clamps
+    // nothing, and infers neither value from the other, §4.4 item 7) and resolves
+    // the display name from the client's own single Boss catalog by that identity
+    // (§4.4 item 10) — no display string travels on the wire.
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
-      bossState: { hp: 4200, maxHp: 5000 },
+      bossState: { bossId: 'boss-kim-loi-vuong', hp: 4200, maxHp: 5000 },
     }));
 
     runScene(scene, ctx, 'create');
 
     const rendered = harness.texts.map((t) => t.text).join('\n');
 
-    expect(rendered).toContain('Boss HP: 4200 / 5000');
+    expect(rendered).toContain('Kim Lôi Vương');
+    expect(rendered).toContain('4200 / 5000');
   });
 
-  it('renders the delivered Status Effects verbatim, and none as an empty collection', () => {
+  it('renders an unrecognized Boss identity as the identity, never a guessed name', () => {
+    // §4.4 item 10: an identity the client catalog does not recognize is rendered
+    // as the identity itself. Fabricating a display name would be client-authored
+    // content standing in for authoritative state.
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
+      bossState: { bossId: 'boss-not-in-catalog', hp: 100, maxHp: 200 },
+    }));
+
+    runScene(scene, ctx, 'create');
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+
+    expect(rendered).toContain('boss-not-in-catalog');
+    expect(rendered).toContain('100 / 200');
+  });
+
+  it('renders the delivered Status Effects compactly, and none as an empty collection', () => {
     // SIGNALR_PROTOCOL.md §4.3 item 14 / GAME_STATE.md §2.3.1: the active Pet's
     // active instances are presented as delivered. The scene applies, refreshes,
     // decrements, expires, and removes nothing, and evaluates no duration or
     // expiry condition (§4.3 item 14, GAME_STATE.md §5.1.1).
+    //
+    // TASK-210 §6 narrows this line to the facts that identify an effect to a
+    // player — its delivered `Id`, its applied `Magnitude` and the one duration
+    // model its element carries — so the line is asserted exactly, verbatim
+    // values and all. The instance's `Type` (`"DoT"`) and `Source` (`"boss"`) are
+    // its internal classification and are deliberately no longer printed.
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
       petState: {
+        hp: 1000,
+        maxHp: 1000,
+        power: 0,
         passiveId: 'xich-lang',
         passiveProgress: { threshold: 5, current: 0 },
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
@@ -1470,13 +1763,46 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
 
     const rendered = harness.texts.map((t) => t.text).join('\n');
 
-    expect(rendered).toContain('Burn');
-    expect(rendered).toContain('DoT');
+    expect(rendered).toContain('Effects: Burn (25, 2 turns); Shield (100, ShieldDepleted)');
+    // Neither an effect's identity, its magnitude, nor either duration model is
+    // rewritten: the two mutually exclusive models are printed as carried.
+    expect(rendered).toContain('25');
     expect(rendered).toContain('2 turns');
-    expect(rendered).toContain('Shield');
     expect(rendered).toContain('ShieldDepleted');
+    expect(rendered).toContain('100');
     // The empty collection is not this payload's case, so "none" is not shown.
-    expect(rendered).not.toContain('Status Effects: none');
+    expect(rendered).not.toContain('Effects: none');
+    // The internal classification is not a player-facing fact and is not shown.
+    expect(rendered).not.toContain('DoT');
+  });
+
+  it('renders an unknown Status Effect identity as the identity it was sent', () => {
+    // TASK-210 §6: an effect identity this client has no definition for is printed
+    // as the delivered identity. The client holds no Status Effect catalog, so
+    // inventing a name, an icon, or a duration would be inventing content
+    // (AGENTS.md §7, GAME_STATE.md §2.3.1 item 1: `Id` is an identity, not a
+    // definition).
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
+      petState: {
+        hp: 1000,
+        maxHp: 1000,
+        power: 0,
+        passiveId: 'xich-lang',
+        passiveProgress: { threshold: 5, current: 0 },
+        equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+        // A defensive element carrying neither duration member: the contract does
+        // not produce one (§2.3.1 item 3), and it is rendered neutrally rather
+        // than with an invented duration.
+        statusEffects: [{ id: 'internal-effect-7', type: 'BuffDebuff', source: 'boss', magnitude: 3 }],
+      },
+    }));
+
+    runScene(scene, ctx, 'create');
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+
+    expect(rendered).toContain('Effects: internal-effect-7 (3, no duration)');
+    expect(rendered).not.toContain('BuffDebuff');
   });
 
   it('renders the empty Status Effect collection as the documented no-effect case', () => {
@@ -1489,7 +1815,7 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
 
     const rendered = harness.texts.map((t) => t.text).join('\n');
 
-    expect(rendered).toContain('Status Effects: none');
+    expect(rendered).toContain('Effects: none');
   });
 
   it('renders the 8x8 board as exactly 64 cells', () => {
@@ -1544,7 +1870,7 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     expect(tiles).toHaveLength(64);
   });
 
-  it('renders nothing until the server pushes state', () => {
+  it('renders no battle values until the server pushes state', () => {
     const { harness, scene, ctx } = createBattle();
 
     runScene(scene, ctx, 'create');
@@ -1553,38 +1879,74 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     expect(rendered).not.toContain('BattleId:');
     expect(rendered).not.toMatch(/Turn:/);
     expect(rendered).not.toMatch(/Sequence:/);
+    // No HP, Power, or identity is invented to fill the gap either: the panels stay
+    // empty and the board area states that it is still waiting.
+    expect(rendered).not.toMatch(/HP\s+\d/);
+    expect(rendered).not.toMatch(/POWER\s+\d/);
+    expect(rendered).toContain('Preparing the board…');
 
     // And no board is drawn: the client never generates one to fill the gap
     // (SIGNALR_PROTOCOL.md §4 item 10).
     expect(harness.boardCells).toHaveLength(0);
   });
 
-  it('updates the readout and board when the runtime receives new state', () => {
+  it('updates the HUD and board when the runtime receives new state', () => {
     const { harness, scene, ctx } = createBattle();
 
     runScene(scene, ctx, 'create');
-    harness.setBattleState(serverState({ battleId: 'battle-9' }));
+    harness.setBattleState(serverState({
+      bossState: { bossId: 'boss-thuy-ma', hp: 3100, maxHp: 5000 },
+      petState: {
+        hp: 750,
+        maxHp: 1000,
+        power: 40,
+        passiveId: 'xich-lang',
+        passiveProgress: { threshold: 5, current: 0 },
+        equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+        statusEffects: [],
+      },
+    }));
 
     // The scene displays what the runtime received — it decides nothing.
     const rendered = harness.texts.map((t) => t.text).join('\n');
-    expect(rendered).toContain('BattleId: battle-9');
+    expect(rendered).toContain('Thủy Ma');
+    expect(rendered).toContain('3100 / 5000');
+    expect(rendered).toContain('750 / 1000');
+    expect(rendered).toContain('40 / 100');
     expect(harness.boardCells.filter((c) => c.kind === 'label')).toHaveLength(64);
   });
 
   it('does not own the state: it renders unchanged server values', () => {
     // The scene never computes, adjusts, or recomputes these values
-    // (SIGNALR_PROTOCOL.md §4.9, ADR-001).
+    // (SIGNALR_PROTOCOL.md §4.9, ADR-001). The delivered combat values are the ones
+    // on screen, untouched — no clamp, no heal, no reconstruction.
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
       battleId: 'battle-owned-by-server',
       turn: 7,
       sequence: 12,
+      petState: {
+        hp: 999,
+        maxHp: 1000,
+        power: 100,
+        passiveId: 'xich-lang',
+        passiveProgress: { threshold: 5, current: 0 },
+        equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+        statusEffects: [],
+      },
+      bossState: { bossId: 'boss-moc-yeu', hp: 1, maxHp: 5000 },
     }));
 
     runScene(scene, ctx, 'create');
 
     const rendered = harness.texts.map((t) => t.text).join('\n');
-    expect(rendered).toContain('Turn: 7');
-    expect(rendered).toContain('Sequence: 12');
+    expect(rendered).toContain('999 / 1000');
+    expect(rendered).toContain('100 / 100');
+    expect(rendered).toContain('1 / 5000');
+    expect(rendered).toContain('Mộc Yêu');
+    // Turn and sequence are not rendered any more (TASK-209 §5) — the delivered
+    // values are still the ones the board and HUD were drawn from.
+    expect(rendered).not.toContain('Turn: 7');
+    expect(rendered).not.toContain('Sequence: 12');
   });
 
   it('does not mutate the board it was given', () => {
@@ -1658,7 +2020,7 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
 
     // The rendered line is the documented Status Effect collection, not a
     // battle-lifecycle value.
-    expect(rendered).toContain('Status Effects:');
+    expect(rendered).toContain('Effects:');
     expect(rendered).not.toMatch(/\bStatus:\s/);
   });
 
@@ -1668,19 +2030,22 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     runScene(scene, ctx, 'create');
 
     // The board and its four Gem types are part of this stage, as are the
-    // delivered `petState` members (the Passive, §4.3) and the two-member Boss HP
-    // projection (§4.4). Card casts are implemented in TASK-120. The gameplay
-    // systems this stage does not implement remain unmodelled and unrendered:
-    // resolution, Combo accounting, Damage, and Relics (GAME_STATE.md §2.0.5.3).
+    // delivered `petState` members (the Passive and the live combat values, §4.3)
+    // and the three-member Boss projection (§4.4). Card casts are implemented in
+    // TASK-120. The gameplay systems this stage does not implement remain
+    // unmodelled and unrendered: resolution, Damage, and Relics
+    // (GAME_STATE.md §2.0.5.3). `Combo` is no longer in that list: MATCH3_RULES.md
+    // §6 makes the delivered `playerState.combo` a player-facing value, and
+    // TASK-209 §4 requires it to be presented when it is meaningful.
     const rendered = harness.texts.map((t) => t.text).join(' ');
-    for (const forbidden of ['Combo', 'Damage', 'Relic', 'PendingSpecial']) {
+    for (const forbidden of ['Damage', 'Relic', 'PendingSpecial']) {
       expect(rendered).not.toMatch(new RegExp(forbidden, 'i'));
     }
 
-    // The Boss line is the delivered `hp`/`maxHp` pair and nothing else: no
-    // Boss ATK/DEF, no Element, no State, no Passive progress, no Skill
-    // charge/cooldown, and no Boss Status Effects (§4.4 item 3).
-    expect(rendered).toContain('Boss HP:');
+    // The Boss line is the delivered identity and `hp`/`maxHp` pair and nothing
+    // else: no Boss ATK/DEF, no Element, no State, no Passive progress, no Skill
+    // charge/cooldown, and no Boss Status Effects (§4.4 items 3 and 10).
+    expect(rendered).toContain('5000 / 5000');
     for (const hiddenBossMember of [
       'Boss ATK',
       'Boss DEF',
@@ -1692,6 +2057,614 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     ]) {
       expect(rendered).not.toContain(hiddenBossMember);
     }
+  });
+
+  it('presents the delivered Combo when it is meaningful, and the Match count always', () => {
+    // TASK-209 §4: MATCH3_RULES.md §6 makes `playerState.combo` a delivered,
+    // player-facing value. A published `combo` of 1 is an ordinary single-Match
+    // Swap (§6.2 item 1), so the line appears from 2 upward, and the cumulative
+    // Match count is always shown. Neither value is counted, advanced, or reset by
+    // the scene (§6.6 item 3).
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
+      playerState: { combo: 0, matchCount: 0 },
+    }));
+
+    runScene(scene, ctx, 'create');
+    expect(harness.texts.map((t) => t.text).join('\n')).not.toContain('COMBO');
+    expect(harness.texts.map((t) => t.text).join('\n')).toContain('MATCHES 0');
+
+    // A single-Match Swap is still not a combo.
+    harness.setBattleState(serverState({ playerState: { combo: 1, matchCount: 3 } }));
+    let rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).not.toContain('COMBO');
+    expect(rendered).toContain('MATCHES 3');
+
+    // Two or more Matches in one committed Swap is the value the player cares
+    // about, printed exactly as delivered.
+    harness.setBattleState(serverState({ playerState: { combo: 4, matchCount: 9 } }));
+    rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('COMBO ×4');
+    expect(rendered).toContain('MATCHES 9');
+  });
+
+  // ---------------------------------------------------------------------------
+  // TASK-210 — Battle feedback & presentation
+  // ---------------------------------------------------------------------------
+
+  /**
+   * One HUD gauge as the scene's own `HudGauge` value exposes it: the fill's
+   * current geometry and visibility, plus the track's declared geometry.
+   */
+  interface GaugeView {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+    readonly fill: {
+      readonly x: number;
+      readonly y: number;
+      readonly width: number;
+      readonly height: number;
+      readonly visible: boolean;
+    };
+  }
+
+  /** A scene-owned presentation field, read the way the scene wrote it. */
+  function field<T>(ctx: object, name: string): T {
+    return (ctx as Record<string, T>)[name];
+  }
+
+  /** The delivered `petState` the HUD tests vary, with the rest at its defaults. */
+  function petPresentation(overrides: {
+    hp?: number;
+    maxHp?: number;
+    power?: number;
+    passiveProgress?: { threshold: number; current: number };
+    passiveId?: string;
+    passiveResetOverride?: string;
+  }): RuntimeBattleState {
+    return serverState({
+      petState: {
+        hp: overrides.hp ?? 1000,
+        maxHp: overrides.maxHp ?? 1000,
+        power: overrides.power ?? 0,
+        passiveId: overrides.passiveId ?? 'xich-lang',
+        passiveProgress: overrides.passiveProgress ?? { threshold: 5, current: 0 },
+        ...(overrides.passiveResetOverride !== undefined
+          ? { passiveResetOverride: overrides.passiveResetOverride }
+          : {}),
+        equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+        statusEffects: [],
+      },
+    });
+  }
+
+  it('draws the Boss and Pet HP gauges full when both sides are at full health', () => {
+    // TASK-210 §1: the HP presentation is a gauge of the authoritative
+    // `hp / maxHp` pair, and the numbers stay on screen beside it. A full bar is
+    // the whole track, exactly as delivered — nothing is inferred.
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
+
+    runScene(scene, ctx, 'create');
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('5000 / 5000');
+    expect(rendered).toContain('1000 / 1000');
+
+    const boss = field<GaugeView>(ctx, 'bossHpGauge');
+    const pet = field<GaugeView>(ctx, 'petHpGauge');
+    expect(boss.fill.width).toBe(boss.width);
+    expect(pet.fill.width).toBe(pet.width);
+    expect(boss.fill.visible).toBe(true);
+    expect(pet.fill.visible).toBe(true);
+  });
+
+  it('sizes each HP gauge to the delivered current / max pair', () => {
+    // The bar is only a proportion (`ARCHITECTURE.md` §2.2.2's `barWidth =
+    // current / max`): the authoritative numbers are rendered as sent beside it,
+    // and the fill is never read back into them.
+    const { harness, scene, ctx } = createBattle(
+      INITIAL_RUNTIME_STATE,
+      true,
+      petPresentation({ hp: 640, maxHp: 1000 })
+    );
+
+    runScene(scene, ctx, 'create');
+    harness.setBattleState(
+      serverState({
+        bossState: { bossId: 'boss-hoa-long', hp: 1250, maxHp: 5000 },
+        petState: {
+          hp: 640,
+          maxHp: 1000,
+          power: 0,
+          passiveId: 'xich-lang',
+          passiveProgress: { threshold: 5, current: 0 },
+          equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+          statusEffects: [],
+        },
+      })
+    );
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('1250 / 5000');
+    expect(rendered).toContain('640 / 1000');
+
+    // 1250 / 5000 of a 250 px track = 62.5 → 63; 640 / 1000 of a 200 px track = 128.
+    const boss = field<GaugeView>(ctx, 'bossHpGauge');
+    const pet = field<GaugeView>(ctx, 'petHpGauge');
+    expect(boss.fill.width).toBe(63);
+    expect(pet.fill.width).toBe(128);
+    // The fill is anchored at the track's own left edge, so it grows rightwards.
+    expect(boss.fill.x).toBe(boss.x + boss.fill.width / 2);
+    expect(pet.fill.x).toBe(pet.x + pet.fill.width / 2);
+  });
+
+  it('renders a zero-HP gauge as an empty track, with the delivered zero still on screen', () => {
+    // TASK-210 §1's zero-HP case: the gauge draws nothing, and the authoritative
+    // `0` is still rendered as the number the server sent. A lost battle's
+    // terminal HP is a value, not an absence (`SIGNALR_PROTOCOL.md` §4.4 item 4).
+    const { harness, scene, ctx } = createBattle(
+      INITIAL_RUNTIME_STATE,
+      true,
+      serverState({
+        bossState: { bossId: 'boss-hoa-long', hp: 0, maxHp: 5000 },
+        petState: {
+          hp: 0,
+          maxHp: 1000,
+          power: 0,
+          passiveId: 'xich-lang',
+          passiveProgress: { threshold: 5, current: 0 },
+          equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+          statusEffects: [],
+        },
+      })
+    );
+
+    runScene(scene, ctx, 'create');
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('0 / 5000');
+    expect(rendered).toContain('0 / 1000');
+
+    const boss = field<GaugeView>(ctx, 'bossHpGauge');
+    const pet = field<GaugeView>(ctx, 'petHpGauge');
+    expect(boss.fill.width).toBe(0);
+    expect(pet.fill.width).toBe(0);
+    expect(boss.fill.visible).toBe(false);
+    expect(pet.fill.visible).toBe(false);
+  });
+
+  it('draws no proportion and mutates no value for a non-positive or unexpected delivered max', () => {
+    // Defensive case (`TASK-210` §1 "handle unexpected values defensively without
+    // mutating authoritative state"): `max = 0` has no proportion to draw, so the
+    // track is left empty instead of producing `Infinity`/`NaN` geometry, and the
+    // numbers are still printed verbatim. A `hp` above `maxHp` fills the track
+    // without the payload or the readout being clamped.
+    const { harness, scene, ctx } = createBattle(
+      INITIAL_RUNTIME_STATE,
+      true,
+      serverState({ bossState: { bossId: 'boss-hoa-long', hp: 25, maxHp: 0 } })
+    );
+
+    runScene(scene, ctx, 'create');
+
+    expect(harness.texts.map((t) => t.text).join('\n')).toContain('25 / 0');
+    expect(field<GaugeView>(ctx, 'bossHpGauge').fill.width).toBe(0);
+    expect(field<GaugeView>(ctx, 'bossHpGauge').fill.visible).toBe(false);
+
+    harness.setBattleState(
+      serverState({ bossState: { bossId: 'boss-hoa-long', hp: 6000, maxHp: 5000 } })
+    );
+
+    // The readout keeps both delivered numbers exactly as sent; only the track's
+    // visual proportion is capped at full.
+    expect(harness.texts.map((t) => t.text).join('\n')).toContain('6000 / 5000');
+    const boss = field<GaugeView>(ctx, 'bossHpGauge');
+    expect(boss.fill.width).toBe(boss.width);
+  });
+
+  it('holds no second HP value: the gauge is the only thing derived from the pair', () => {
+    // TASK-210 §12: presentation calculations are allowed only when they are purely
+    // visual. The scene keeps no `bossHp` / `petHp` field of its own, so no second
+    // authoritative HP value exists to drift from the delivered one.
+    const { scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
+
+    runScene(scene, ctx, 'create');
+
+    for (const invented of ['bossHp', 'petHp', 'currentHp', 'playerHp', 'remainingHp']) {
+      expect(Object.keys(ctx), `the scene must not hold a "${invented}" field`).not.toContain(
+        invented
+      );
+    }
+  });
+
+  it('draws the Power gauge at 0, mid-range and full against the documented range', () => {
+    // TASK-210 §2: Power is presented from the authoritative `petState.power`
+    // against the documented `0–100` invariant of `GAME_RULES.md` §12. No
+    // `maxPower` member is read or invented, and no cost or affordability is
+    // derived from the value.
+    const cases = [
+      { power: 0, expected: 0, visible: false },
+      { power: 45, expected: 63, visible: true },
+      { power: 100, expected: 140, visible: true },
+    ];
+
+    for (const scenario of cases) {
+      const { harness, scene, ctx } = createBattle(
+        INITIAL_RUNTIME_STATE,
+        true,
+        petPresentation({ power: scenario.power })
+      );
+
+      runScene(scene, ctx, 'create');
+
+      expect(harness.texts.map((t) => t.text).join('\n')).toContain(
+        `${scenario.power} / 100`
+      );
+
+      const gauge = field<GaugeView>(ctx, 'powerGauge');
+      expect(gauge.fill.width, `power ${scenario.power}`).toBe(scenario.expected);
+      expect(gauge.fill.visible, `power ${scenario.power}`).toBe(scenario.visible);
+    }
+  });
+
+  it('invents no maxPower: the Power scale is the documented invariant, not a member', () => {
+    // TASK-210 §2's explicit boundary: `0–100` is the documented range of
+    // `GAME_RULES.md` §12 / `COMBAT_RULES.md` §1.1, not state. No `maxPower` member
+    // exists on the wire and none is introduced here (`SIGNALR_PROTOCOL.md` §4.3
+    // item 15). Comments are stripped, so the prose that *names* the absent member
+    // while forbidding it is not the violation — only real code is.
+    const source = readFileSync(
+      resolve(__dirname, '../src/game/scenes/BattleScene.ts'),
+      'utf8'
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+    expect(source).not.toContain('maxPower');
+    expect(source).not.toContain('MaxPower');
+  });
+
+  it('clears and updates the delivered Combo on the push that replaces it', () => {
+    // TASK-210 §4: the Combo line follows the delivered value, so a later push that
+    // publishes an ordinary single-Match Swap clears the previous Swap's `COMBO ×N`
+    // rather than leaving a stale one on screen. Nothing is aged out on a timer:
+    // `MATCH3_RULES.md` §6.5 items 1–2 make a rejected Swap leave the previous
+    // value standing, so a client-side expiry would disagree with the state.
+    const { harness, scene, ctx } = createBattle(
+      INITIAL_RUNTIME_STATE,
+      true,
+      serverState({ playerState: { combo: 3, matchCount: 4 } })
+    );
+
+    runScene(scene, ctx, 'create');
+    expect(harness.texts.map((t) => t.text).join('\n')).toContain('COMBO ×3');
+
+    harness.setBattleState(serverState({ playerState: { combo: 1, matchCount: 7 } }));
+    let rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).not.toContain('COMBO');
+    expect(rendered).toContain('MATCHES 7');
+
+    harness.setBattleState(serverState({ playerState: { combo: 7, matchCount: 11 } }));
+    rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('COMBO ×7');
+    expect(rendered).not.toContain('COMBO ×3');
+  });
+
+  it('shows whether the delivered Passive has progress, without evaluating it', () => {
+    // TASK-210 §5: the player can see which Passive is active and whether any
+    // progress exists. The gauge is the delivered pair drawn as a proportion; the
+    // charge, threshold, trigger, overflow and reset rules stay the server's, and
+    // the client holds no Passive definition to name it with, so the delivered
+    // identity is printed as itself.
+    const idle = createBattle(
+      INITIAL_RUNTIME_STATE,
+      true,
+      petPresentation({ passiveProgress: { threshold: 5, current: 0 } })
+    );
+    runScene(idle.scene, idle.ctx, 'create');
+
+    expect(idle.harness.texts.map((t) => t.text).join('\n')).toContain('Passive: xich-lang');
+    expect(idle.harness.texts.map((t) => t.text).join('\n')).toContain(
+      '0 / 5 Matches (reset: Default)'
+    );
+    expect(field<GaugeView>(idle.ctx, 'passiveGauge').fill.width).toBe(0);
+    expect(field<GaugeView>(idle.ctx, 'passiveGauge').fill.visible).toBe(false);
+
+    const inProgress = createBattle(
+      INITIAL_RUNTIME_STATE,
+      true,
+      petPresentation({
+        passiveId: 'thanh-xa-poison',
+        passiveProgress: { threshold: 7, current: 3 },
+        passiveResetOverride: 'Partial',
+      })
+    );
+    runScene(inProgress.scene, inProgress.ctx, 'create');
+
+    const rendered = inProgress.harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('Passive: thanh-xa-poison');
+    expect(rendered).toContain('3 / 7 Matches (reset: Partial)');
+    // 3 / 7 of a 120 px track = 51.43 → 51.
+    expect(field<GaugeView>(inProgress.ctx, 'passiveGauge').fill.width).toBe(51);
+    expect(field<GaugeView>(inProgress.ctx, 'passiveGauge').fill.visible).toBe(true);
+  });
+
+  it('draws one damage floater per damage instance, over the party that took it', () => {
+    // TASK-210 §3. `DamageDealt` and `DamageTaken` carry identical payloads for one
+    // instance (`SIGNALR_PROTOCOL.md` §3.2.15 item 1), so the pair must produce ONE
+    // floater, and the side is the delivered `target` — never the event's own
+    // discriminator, which would draw every hit on the same side.
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
+    runScene(scene, ctx, 'create');
+
+    const beforePlayerHit = harness.texts.length;
+    harness.emitBattleEvents({
+      battleId: 'b-210',
+      serverSequence: 2,
+      events: [
+        { type: 'DamageCalculated', base: 137, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 120 },
+        { type: 'DamageDealt', source: 'player', target: 'boss', amount: 120 },
+        { type: 'DamageTaken', source: 'player', target: 'boss', amount: 120 },
+      ],
+    });
+
+    const bossHit = harness.texts.slice(beforePlayerHit);
+    expect(bossHit.map((t) => t.text)).toEqual(['-120']);
+    // The Boss anchor: the centre of the Boss HP gauge, on the row below it —
+    // above the board's own top edge (BOARD_ORIGIN_Y = 120).
+    expect(bossHit[0].x).toBe(161);
+    expect(bossHit[0].y).toBe(108);
+
+    const beforePetHit = harness.texts.length;
+    harness.emitBattleEvents({
+      battleId: 'b-210',
+      serverSequence: 3,
+      events: [
+        { type: 'DamageCalculated', base: 80, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 80 },
+        { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
+        { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
+      ],
+    });
+
+    const petHit = harness.texts.slice(beforePetHit);
+    expect(petHit.map((t) => t.text)).toEqual(['-80']);
+    // The Pet anchor: the centre of the Pet HP gauge, beside the board.
+    expect(petHit[0].x).toBe(136);
+    expect(petHit[0].y).toBe(208);
+  });
+
+  it('draws a DamageTaken with no matching DamageDealt of its own', () => {
+    // The pair-collapse must not swallow a report that arrives on its own: a
+    // `DamageTaken` with no preceding identical `DamageDealt` is its own instance
+    // and is drawn.
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
+    runScene(scene, ctx, 'create');
+
+    const before = harness.texts.length;
+    harness.emitBattleEvents({
+      battleId: 'b-210',
+      serverSequence: 4,
+      events: [{ type: 'DamageTaken', source: 'player', target: 'boss', amount: 42 }],
+    });
+
+    expect(harness.texts.slice(before).map((t) => t.text)).toEqual(['-42']);
+  });
+
+  it('draws no floater for a damage party the contract does not define', () => {
+    // The two MVP party identifiers are `"player"` and `"boss"`
+    // (`SIGNALR_PROTOCOL.md` §3.2.14 item 3). An unrecognized one gets no anchor:
+    // the scene does not guess which panel someone was hurt on.
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
+    runScene(scene, ctx, 'create');
+
+    const before = harness.texts.length;
+    harness.emitBattleEvents({
+      battleId: 'b-210',
+      serverSequence: 5,
+      events: [{ type: 'DamageDealt', source: 'player', target: 'third-party', amount: 10 }],
+    });
+
+    expect(harness.texts.slice(before)).toHaveLength(0);
+  });
+
+  it('draws the delivered Power movement as a signed floater over the Power gauge', () => {
+    // TASK-210 §3's resource change: `PowerChanged.delta` is signed and is shown as
+    // delivered; the resulting `power` is never recomputed from it.
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
+    runScene(scene, ctx, 'create');
+
+    const beforeGain = harness.texts.length;
+    harness.emitBattleEvents({
+      battleId: 'b-210',
+      serverSequence: 6,
+      events: [{ type: 'PowerChanged', delta: 25, power: 25, source: 'match' }],
+    });
+
+    const gain = harness.texts.slice(beforeGain);
+    expect(gain.map((t) => t.text)).toEqual(['+25']);
+    expect(gain[0].x).toBe(166);
+    expect(gain[0].y).toBe(213);
+
+    const beforeLoss = harness.texts.length;
+    harness.emitBattleEvents({
+      battleId: 'b-210',
+      serverSequence: 7,
+      events: [{ type: 'PowerChanged', delta: -30, power: 12, source: 'boss' }],
+    });
+
+    const loss = harness.texts.slice(beforeLoss);
+    expect(loss.map((t) => t.text)).toEqual(['-30']);
+    expect(loss[0].x).toBe(166);
+  });
+
+  it('presents one selective callout per delivered batch, not one per event', () => {
+    // TASK-210 §7: the player is told the most important thing the resolution
+    // produced. A Combo outranks the Match that carried it, a Boss Skill outranks
+    // the Power the same boss drained, and an event with nothing to say to a player
+    // (`GemMatched`, `CascadeCreated`, `DamageCalculated`) produces no line at all.
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
+    runScene(scene, ctx, 'create');
+
+    const callout = () => field<{ text: string; color?: string }>(ctx, 'calloutText');
+
+    expect(callout().text, 'no events yet').toBe('');
+
+    harness.emitBattleEvents({
+      battleId: 'b-210',
+      serverSequence: 8,
+      events: [
+        { type: 'GemMatched', cellIndex: 8, gemType: 'ATK' },
+        { type: 'CascadeCreated', cascadeDepth: 1 },
+      ],
+    });
+    expect(callout().text, 'nothing a player needs told').toBe('');
+
+    harness.emitBattleEvents({
+      battleId: 'b-210',
+      serverSequence: 9,
+      events: [
+        { type: 'MatchCreated', shape: 'Straight', cells: [8, 9, 10], gemType: 'ATK', cascadeDepth: 0 },
+        { type: 'ComboChanged', combo: 1 },
+      ],
+    });
+    expect(callout().text, 'an ordinary single-Match Swap').toBe('MATCH');
+
+    harness.emitBattleEvents({
+      battleId: 'b-210',
+      serverSequence: 10,
+      events: [
+        { type: 'MatchCreated', shape: 'Straight', cells: [8, 9, 10], gemType: 'ATK', cascadeDepth: 0 },
+        { type: 'ComboChanged', combo: 4 },
+        { type: 'PowerChanged', delta: 10, power: 10, source: 'match' },
+      ],
+    });
+    expect(callout().text, 'the Combo outranks the Match and the Power').toBe('COMBO ×4');
+    expect(callout().color).toBe('#fbbf24');
+
+    harness.emitBattleEvents({
+      battleId: 'b-210',
+      serverSequence: 11,
+      events: [
+        { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+        { type: 'PowerChanged', delta: -20, power: 5, source: 'boss' },
+      ],
+    });
+    expect(callout().text, 'the Boss acting outranks the Power it drained').toBe('BOSS SKILL');
+    expect(callout().color).toBe('#f87171');
+  });
+
+  it('names a cast callout from the delivered reads, or the delivered identity', async () => {
+    // TASK-210 §7's `CARD CAST` / `PET SKILL`: the callout uses the same
+    // presentation lookup the cast controls use. A Basic Card is named from the
+    // delivered unlocked Card collection (`API_CONTRACTS.md` §5.3); the derived
+    // Signature Skill is named from the delivered Pet read (§5.1), because it is
+    // not an unlock row and can never be in that collection
+    // (`SIGNALR_PROTOCOL.md` §4.3 item 13). With no delivered name the identity
+    // itself is shown — never a guessed name (`CARD_RULES.md` §3).
+    const harness = createSceneHarness({
+      battleState: serverState(),
+      pets: provisionedPets(),
+    });
+    const scene = new BattleScene();
+    const ctx = harness.context(scene, 'BattleScene');
+
+    runScene(scene, ctx, 'create');
+    // The collection reads are real async port calls; one flush settles them, the
+    // same way the cast-control tests wait for them.
+    await flush();
+
+    const callout = () => field<{ text: string }>(ctx, 'calloutText');
+
+    harness.emitBattleEvents({
+      battleId: 'b-210',
+      serverSequence: 12,
+      events: [{ type: 'CardCast', cardId: 'card-heal' }],
+    });
+    expect(callout().text).toBe('CARD: Heal');
+
+    harness.emitBattleEvents({
+      battleId: 'b-210',
+      serverSequence: 13,
+      events: [{ type: 'PetSkillCast', cardId: 'card-inferno' }],
+    });
+    expect(callout().text).toBe('PET SKILL: Inferno');
+
+    // An identity with no delivered name is shown as the identity itself.
+    harness.emitBattleEvents({
+      battleId: 'b-210',
+      serverSequence: 14,
+      events: [{ type: 'CardCast', cardId: 'card-not-in-collection' }],
+    });
+    expect(callout().text).toBe('CARD: card-not-in-collection');
+  });
+
+  it('draws no heal feedback, because the contract delivers no heal amount', () => {
+    // TASK-210 §3 / §14 item 8: healing emits NO event at all
+    // (`ResourceGenerator.ApplyHeal`: "No event. Healing is a state-only change"),
+    // and no event carries a resulting HP, so there is nothing to show and nothing
+    // to derive. This pins that the scene does not turn a Passive trigger — the
+    // shape a real heal would arrive in — into an invented `+N`.
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
+    runScene(scene, ctx, 'create');
+
+    const before = harness.texts.length;
+    harness.emitBattleEvents({
+      battleId: 'b-210',
+      serverSequence: 14,
+      events: [
+        {
+          type: 'PassiveTriggered',
+          passiveId: 'pet-phoenix-rebirth',
+          source: 'pet',
+          sourceId: 'pet-instance-1',
+          progress: 5,
+          threshold: 5,
+        },
+      ],
+    });
+
+    // Only the callout statement is added; no floating number claims a healing
+    // amount the server never sent.
+    expect(harness.texts.slice(before)).toHaveLength(0);
+    expect(field<{ text: string }>(ctx, 'calloutText').text).toBe('PASSIVE TRIGGERED');
+  });
+
+  it('keeps every growing HUD line inside its own column and band', () => {
+    // TASK-210 §10: the layout is deterministic. Every HUD line that can grow is
+    // created with a word-wrap width and a `maxLines` cap, and its declared left
+    // edge plus that width stays clear of the board's own left edge (395). The
+    // callout sits on the row above the board and the cast line on the row below
+    // it, so neither can cover a cell. (The browser E2E measures the same property
+    // on the rendered bounds.)
+    const { scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
+
+    runScene(scene, ctx, 'create');
+
+    const BOARD_LEFT = 395;
+    const BOARD_TOP = 120;
+    const BOARD_BOTTOM = 610;
+
+    interface StyledLine {
+      readonly x: number;
+      readonly y: number;
+      readonly style?: { wordWrap?: { width: number }; maxLines?: number };
+    }
+
+    for (const name of ['bossNameText', 'petNameText', 'petStatusText', 'swapText']) {
+      const line = field<StyledLine>(ctx, name);
+      const wrap = line.style?.wordWrap?.width ?? 0;
+
+      expect(wrap, `${name} must declare a word-wrap width`).toBeGreaterThan(0);
+      expect(line.x + wrap, `${name} must stay inside the HUD column`).toBeLessThanOrEqual(
+        BOARD_LEFT
+      );
+      expect(line.style?.maxLines ?? 0, `${name} must be line-capped`).toBeGreaterThan(0);
+    }
+
+    expect(field<StyledLine>(ctx, 'calloutText').y).toBeLessThan(BOARD_TOP);
+    expect(field<StyledLine>(ctx, 'boardMessageText').y).toBeLessThan(BOARD_TOP);
+    expect(field<StyledLine>(ctx, 'castText').y).toBeGreaterThan(BOARD_BOTTOM);
   });
 
   it('contains no client-side randomness', () => {
@@ -1727,12 +2700,15 @@ describe('BattleScene — Swap input (MATCH3_RULES.md §2, SIGNALR_PROTOCOL.md �
       },
       playerState: { combo: 0, matchCount: 0 },
       petState: {
+        hp: 1000,
+        maxHp: 1000,
+        power: 0,
         passiveId: 'xich-lang',
         passiveProgress: { threshold: 5, current: 0 },
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
         statusEffects: [],
       },
-      bossState: { hp: 5000, maxHp: 5000 },
+      bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
       ...overrides,
     };
   }
@@ -2143,6 +3119,16 @@ describe('BattleScene — Swap input (MATCH3_RULES.md §2, SIGNALR_PROTOCOL.md �
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/(^|[^:])\/\/.*$/gm, '$1');
 
+    // TASK-210 stage advance. `'damage'` was in this list while the client had no
+    // damage presentation at all. TASK-210 §3 requires the delivered
+    // `DamageDealt`/`DamageTaken` events to be *presented* — a floating number over
+    // the panel of the party that took the hit — so the lowercase word is now part
+    // of legitimate presentation code (`spawnDamageFloater`, `damageAnchor`,
+    // `previousDamage`, the floater colours). What stays forbidden is what always
+    // was: resolving damage. The dedicated assertion below pins that property
+    // directly — no arithmetic may touch a delivered HP value or the delivered
+    // `amount`, so no HP can be damaged, healed, or reconstructed here
+    // (`SIGNALR_PROTOCOL.md` §4.3 item 15, §4.4 item 7, `GAME_RULES.md` §18).
     for (const forbidden of [
       'SignalRService',
       'HubConnection',
@@ -2151,11 +3137,27 @@ describe('BattleScene — Swap input (MATCH3_RULES.md §2, SIGNALR_PROTOCOL.md �
       'hasMatch',
       'cascade =',
       'applyGravity',
-      'damage',
+      'DamagePipeline',
+      'ApplyDamage',
+      'applyDamage',
+      'CalculateDamage',
+      'calculateDamage',
+      'damageResult',
+      'DamageResult',
       'combo++',
     ]) {
       expect(source, `BattleScene must not reference "${forbidden}"`).not.toContain(forbidden);
     }
+
+    // The scene never computes with a delivered combat value: `hp`, `maxHp` and
+    // `power` reach the HUD as text, and a damage `amount` is formatted into a
+    // floater. None of them is an operand of anything.
+    expect(source, 'BattleScene must not compute with the delivered HP').not.toMatch(
+      /\.(hp|maxHp|power)\s*(\+\+|--|\+=|-=|\*=|\/=)/
+    );
+    expect(source, 'BattleScene must not compute with the delivered damage amount').not.toMatch(
+      /\.amount\s*(\+\+|--|\+=|-=|\*=|\/=)/
+    );
 
     // It submits through the runtime port and never invents an action name.
     expect(source).toContain('requestAction');
@@ -2185,21 +3187,44 @@ describe('BattleScene — CardCast and PetSkillCast input (SIGNALR_PROTOCOL.md �
       },
       playerState: { combo: 0, matchCount: 0 },
       petState: {
+        hp: 1000,
+        maxHp: 1000,
+        power: 0,
         passiveId: 'xich-lang',
         passiveProgress: { threshold: 5, current: 0 },
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
         statusEffects: [],
       },
-      bossState: { hp: 5000, maxHp: 5000 },
+      bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
       ...overrides,
     };
   }
 
-  function createBattle(battleState: RuntimeBattleState | null = serverState()) {
-    const harness = createSceneHarness({ battleState });
+  function createBattle(
+    battleState: RuntimeBattleState | null = serverState(),
+    pets: PetResponse[] = provisionedPets()
+  ) {
+    const harness = createSceneHarness({ battleState, pets });
     const scene = new BattleScene();
     const ctx = harness.context(scene, 'BattleScene');
     return { harness, scene, ctx };
+  }
+
+  /**
+   * The four live cast-control captions, in render order.
+   *
+   * `renderCastControls` empties its layer and redraws on every pass (the Card
+   * and Pet reads each trigger one), so the harness's `texts` log accumulates
+   * every pass. The newest four are the live controls; earlier ones are already
+   * detached. The uppercase callout (`CARD: …`) never collides with these
+   * captions, which use the `Card: ` / `Skill: ` presentation spelling.
+   */
+  function castControlCaptions(harness: ReturnType<typeof createSceneHarness>): string[] {
+    const captions = harness.texts
+      .map((text) => text.text)
+      .filter((text) => text.startsWith('Card: ') || text.startsWith('Skill: '));
+
+    return captions.slice(-4);
   }
 
   it('renders cast controls for all synchronized equipped cards', async () => {
@@ -2214,18 +3239,212 @@ describe('BattleScene — CardCast and PetSkillCast input (SIGNALR_PROTOCOL.md �
     expect(rendered).toContain('Skill: Inferno');
   });
 
-  it('derives the signature skill dynamically from category === PetSkill metadata', async () => {
+  it('identifies the Signature Skill from the delivered Pet read, not from a Card category', async () => {
+    // SIGNALR_PROTOCOL.md §4.3 item 13 / API_CONTRACTS.md §5.1: the derived entry
+    // is identified from the Pet that derives it. The delivered Card collection
+    // holds only the three unlocked Basic Cards, so a `Category === 'PetSkill'`
+    // test over it can never succeed — and the Signature Skill is still
+    // identified, with its delivered name.
     const { harness, scene, ctx } = createBattle();
     runScene(scene, ctx, 'create');
     await flush();
 
-    // The button for Inferno is categorized as PetSkill, so it presents as Skill
+    // The Skill is presented as the Skill, with the delivered name.
     const skillOption = harness.clickables.find((c) => c.text.includes('Skill: Inferno'));
     expect(skillOption).toBeDefined();
 
-    // The basic cards are presented as Card
+    // The Basic cards are presented as Cards.
     const cardOption = harness.clickables.find((c) => c.text.includes('Card: Heal'));
     expect(cardOption).toBeDefined();
+
+    // Exactly one entry is the Skill, and the raw developer id is never shown.
+    const captions = castControlCaptions(harness);
+    expect(captions.filter((caption) => caption.startsWith('Skill: '))).toEqual(['Skill: Inferno']);
+    expect(captions).toHaveLength(4);
+
+    // The Card collection this battle read contains no PetSkill row at all — the
+    // identification cannot have come from it.
+    const cards: readonly CardResponse[] = await harness.runtime.getCards();
+    expect(cards.map((card) => card.cardId)).toEqual([
+      'card-heal',
+      'card-shield',
+      'card-power-charge',
+    ]);
+    expect(cards.some((card) => card.category === 'PetSkill')).toBe(false);
+
+    // And the Signature Skill's own identity is not in it: `§5.3`'s membership is
+    // the unlocked set, which a derived Skill never joins (`CARD_RULES.md` §1
+    // item 4, ADR-012 item 9).
+    expect(cards.some((card) => card.cardId === 'card-inferno')).toBe(false);
+  });
+
+  it('resolves every one of the five provisioned Pets to its own Signature Skill', async () => {
+    // API_CONTRACTS.md §5.1 + PET_RULES.md §8: all five provisioned MVP Pets
+    // derive a Signature Skill, and each must identify from its own delivered
+    // reference. There is no privileged Pet and no single-Pet assumption: the
+    // same loop covers all five, and each case moves the Player to that Pet's
+    // loadout by changing only the delivered reference.
+    for (const pet of PROVISIONED_PET_SIGNATURE_SKILLS) {
+      const harness = createSceneHarness({
+        battleState: serverState({
+          petState: {
+            hp: 1000,
+            maxHp: 1000,
+            power: 0,
+            passiveId: 'passive-under-test',
+            passiveProgress: { threshold: 5, current: 0 },
+            equippedCards: [
+              'card-heal',
+              'card-shield',
+              'card-power-charge',
+              pet.cardId,
+            ],
+            statusEffects: [],
+          },
+        }),
+        // Only this Pet is owned, so its reference is the only one delivered —
+        // the identification has to use the datum, not a fixed card id.
+        pets: [
+          {
+            petId: pet.petId,
+            identity: pet.identity,
+            element: pet.element,
+            tier: 'Common',
+            star: 1,
+            level: 1,
+            signatureSkill: { cardId: pet.cardId, name: pet.name, category: 'PetSkill' },
+          },
+        ],
+      });
+      const scene = new BattleScene();
+      const ctx = harness.context(scene, 'BattleScene');
+      runScene(scene, ctx, 'create');
+      await flush();
+
+      expect(castControlCaptions(harness), `Pet ${pet.identity}`).toEqual([
+        'Card: Heal',
+        'Card: Shield',
+        'Card: Power Charge',
+        `Skill: ${pet.name}`,
+      ]);
+
+      harness.clickOption(`Skill: ${pet.name}`);
+      await flush();
+
+      expect(harness.requestedActions, `Pet ${pet.identity}`).toEqual([{ kind: 'PetSkillCast' }]);
+    }
+  });
+
+  it('identifies the Signature Skill with no Card collection read at all', async () => {
+    // API_CONTRACTS.md §5.1 / CARD_RULES.md §1 item 4: the Signature Skill is
+    // DERIVED, so it is not a member of the unlocked Card collection and the
+    // client must not need that collection to identify it. Here the Card read
+    // fails outright and the Skill is still identified and still dispatches
+    // `PetSkillCast` — the identification is the Pet read's alone.
+    const { harness, scene, ctx } = createBattle();
+    harness.runtime.getCards = vi.fn(
+      async () => Promise.reject(new Error('GET /api/cards unavailable'))
+    ) as never;
+
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    expect(castControlCaptions(harness)).toEqual([
+      // A Basic Card with no delivered name falls back to its identity — never a
+      // guessed name (`CARD_RULES.md` §3).
+      'Card: card-heal',
+      'Card: card-shield',
+      'Card: card-power-charge',
+      'Skill: Inferno',
+    ]);
+
+    harness.clickOption('Skill: Inferno');
+    await flush();
+
+    expect(harness.requestedActions).toEqual([{ kind: 'PetSkillCast' }]);
+  });
+
+  it('keeps the Signature Skill identified across a reconnect/resync state push', async () => {
+    // SIGNALR_PROTOCOL.md §4 / §7: the reconnect snapshot is the same projection
+    // as the push and arrives through the same `onBattleState` path, so a resync
+    // re-renders the cast controls from the state it was sent. The Pet-derived
+    // identification is collection-sourced rather than event- or state-replayed,
+    // so it survives a resync untouched by the discarded event history (§7 item
+    // 2).
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    expect(castControlCaptions(harness)).toContain('Skill: Inferno');
+
+    // The authoritative snapshot after a reconnect: a later sequence, a new board
+    // and different live values, with the same loadout.
+    harness.setBattleState(
+      serverState({
+        sequence: 41,
+        turn: 9,
+        petState: {
+          hp: 640,
+          maxHp: 1000,
+          power: 100,
+          passiveId: 'xich-lang',
+          passiveProgress: { threshold: 5, current: 4 },
+          equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+          statusEffects: [],
+        },
+      })
+    );
+    await flush();
+
+    expect(castControlCaptions(harness)).toEqual([
+      'Card: Heal',
+      'Card: Shield',
+      'Card: Power Charge',
+      'Skill: Inferno',
+    ]);
+
+    harness.clickOption('Skill: Inferno');
+    await flush();
+
+    expect(harness.requestedActions).toEqual([{ kind: 'PetSkillCast' }]);
+  });
+
+  it('hard-codes no individual Pet or Signature Skill card mapping', () => {
+    // API_CONTRACTS.md §5.1 / SIGNALR_PROTOCOL.md §4.3 item 13: the identification
+    // is a comparison against delivered data, so no per-Pet or per-card identity
+    // may appear in the scene, and no `Category` test over the Card collection may
+    // remain. Comments are stripped first, so prose that names these systems while
+    // explaining the rule is not a violation — only real code is.
+    const source = readFileSync(
+      resolve(__dirname, '../src/game/scenes/BattleScene.ts'),
+      'utf8'
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+    for (const hardCoded of [
+      'card-inferno',
+      'card-iron-fang',
+      'card-tidal-barrier',
+      'card-venomous-bloom',
+      'card-earthshaker',
+      'pet-xich-lang',
+      'pet-bach-ho',
+      'pet-huyen-quy',
+      'pet-thanh-xa',
+      'pet-son-hung',
+    ]) {
+      expect(source, `BattleScene must not hard-code "${hardCoded}"`).not.toContain(hardCoded);
+    }
+
+    // The Signature Skill is not identified from the Card collection's category:
+    // `category` is a `CardDefinition` member the scene never reads at all, so no
+    // `PetSkill`-category test over the owned Card collection can exist here. The
+    // identification compares delivered identities instead.
+    expect(source).not.toContain('.category');
+    expect(source).not.toContain('category ===');
+    expect(source).toContain('signatureSkills');
+    expect(source).toMatch(/signatureSkills\.get\(/);
   });
 
   it('submits CardCast through runtime.requestAction on basic card click', async () => {
@@ -2493,7 +3712,11 @@ describe('ResultScene', () => {
     const rendered = harness.texts.map((t) => t.text).join('\n');
     expect(rendered).toMatch(/VICTORY/i);
     expect(rendered).toContain('Boss HP: 37');
-    expect(rendered).toContain('Player HP: 812');
+    // The delivered `finalPlayerHp` is `PetState.HP` at battle end
+    // (SIGNALR_PROTOCOL.md §3.2.19, GAME_STATE.md §2.3, ADR-011): the label
+    // names the Pet, and no Player HP value exists to print (TASK-211 §8).
+    expect(rendered).toContain('Pet HP: 812');
+    expect(rendered).not.toMatch(/Player HP/);
   });
 
   it('renders defeat outcome and verbatim HP values', () => {
@@ -2510,7 +3733,8 @@ describe('ResultScene', () => {
     const rendered = harness.texts.map((t) => t.text).join('\n');
     expect(rendered).toMatch(/DEFEAT/i);
     expect(rendered).toContain('Boss HP: 412');
-    expect(rendered).toContain('Player HP: 0');
+    expect(rendered).toContain('Pet HP: 0');
+    expect(rendered).not.toMatch(/Player HP/);
   });
 });
 
@@ -2710,6 +3934,11 @@ describe('CollectionViewerScene', () => {
           tier: 'Common',
           star: 1,
           level: 1,
+          signatureSkill: {
+            cardId: 'card-inferno',
+            name: 'Inferno',
+            category: 'PetSkill',
+          },
         },
       ],
     });
@@ -2921,13 +4150,18 @@ describe('Post-result lifecycle — Result → Lobby / MainMenu (TASK-203, ADR-0
   });
 
   /** The owned Pet the pre-battle flow reads (`API_CONTRACTS.md` §5.1). */
-  const OWNED_PET = {
+  const OWNED_PET: PetResponse = {
     petId: 'pet-instance-1',
     identity: 'Xích Lang',
     element: 'Fire',
     tier: 'Common',
     star: 1,
     level: 1,
+    signatureSkill: {
+      cardId: 'card-inferno',
+      name: 'Inferno',
+      category: 'PetSkill',
+    },
   };
 
   /** The owned Relic instances the pre-battle flow reads (`API_CONTRACTS.md` §5.4). */
@@ -2960,6 +4194,9 @@ describe('Post-result lifecycle — Result → Lobby / MainMenu (TASK-203, ADR-0
       },
       playerState: { combo: 0, matchCount: 3 },
       petState: {
+        hp: 1000,
+        maxHp: 1000,
+        power: 0,
         passiveId: 'xich-lang',
         passiveProgress: { threshold: 5, current: 2 },
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
@@ -2967,7 +4204,7 @@ describe('Post-result lifecycle — Result → Lobby / MainMenu (TASK-203, ADR-0
       },
       // The battle is over: the Boss is at 0 HP and the outcome has been
       // delivered (SIGNALR_PROTOCOL.md §3.2.19, §4.4).
-      bossState: { hp: 0, maxHp: 5000 },
+      bossState: { bossId: 'boss-hoa-long', hp: 0, maxHp: 5000 },
     };
   }
 
@@ -3147,12 +4384,15 @@ describe('Phaser scene teardown — the TASK-203 regression (TASK-204)', () => {
       },
       playerState: { combo: 2, matchCount: 5 },
       petState: {
+        hp: 1000,
+        maxHp: 1000,
+        power: 0,
         passiveId: 'xich-lang',
         passiveProgress: { threshold: 5, current: 2 },
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
         statusEffects: [],
       },
-      bossState: { hp: bossHp, maxHp: 5000 },
+      bossState: { bossId: 'boss-hoa-long', hp: bossHp, maxHp: 5000 },
     };
   }
 
@@ -3298,18 +4538,20 @@ describe('Phaser scene teardown — the TASK-203 regression (TASK-204)', () => {
     runScene(battle, battleCtx, 'create');
 
     // Exactly one subscription per stream — never the previous battle's plus a
-    // new one — and the readout holds no battle state until the new push.
+    // new one — and the HUD holds no battle state until the new push.
     expect(harness.listeners.size).toBe(1);
     expect(harness.battleStateListeners.size).toBe(1);
     expect(harness.battleEventListeners.size).toBe(1);
-    expect((battleCtx as { battleText: { text: string } | null }).battleText?.text).toBe('');
+    expect(
+      (battleCtx as { bossHpText: { text: string } | null }).bossHpText?.text
+    ).toBe('');
     expect((battleCtx as { outcomeHandled: boolean }).outcomeHandled).toBe(false);
 
-    // Battle 2's own authoritative push arrives.
+    // Battle 2's own authoritative push arrives and repaints the HUD from it.
     harness.setBattleState(synchronizedBattle('battle-2', 5000));
-    expect((battleCtx as { battleText: { text: string } | null }).battleText?.text).toContain(
-      'BattleId: battle-2'
-    );
+    expect(
+      (battleCtx as { bossHpText: { text: string } | null }).bossHpText?.text
+    ).toContain('5000 / 5000');
 
     // Battle 2 reaches its own outcome and hands off to ResultScene again.
     harness.emitBattleEvents(outcomeBatch('battle-2', 512));
@@ -3418,9 +4660,13 @@ describe('Phaser scene lifecycle consistency — every scene with a teardown (TA
       build: () => new LobbyScene(),
       dirty: (_scene: object, ctx: object) => {
         (ctx as { selectedPetId: string | null }).selectedPetId = 'pet-instance-1';
+        // TASK-211's per-run transition guard: it is per-run state like the
+        // selection, so a stopped Lobby must not keep a claim on a transition.
+        (ctx as { hasTransitioned: boolean }).hasTransitioned = true;
       },
       assertReleased: (ctx: object) => {
         expect((ctx as { selectedPetId: string | null }).selectedPetId).toBeNull();
+        expect((ctx as { hasTransitioned: boolean }).hasTransitioned).toBe(false);
       },
     },
     {
@@ -3452,10 +4698,19 @@ describe('Phaser scene lifecycle consistency — every scene with a teardown (TA
       build: () => new ResultScene(),
       dirty: (_scene: object, ctx: object) => {
         (ctx as { hasTransitioned: boolean }).hasTransitioned = true;
+        // TASK-211's reward-block state, which only this scene's teardown
+        // releases: a stopped result keeps neither a retryable failure nor a
+        // rendered summary.
+        (ctx as { rewardState: string }).rewardState = 'failure';
+        (ctx as { rewardRetryable: boolean }).rewardRetryable = true;
+        (ctx as { rewardSummary: string }).rewardSummary = 'REWARDS';
       },
       assertReleased: (ctx: object) => {
         expect((ctx as { resultData: unknown }).resultData).toBeNull();
         expect((ctx as { hasTransitioned: boolean }).hasTransitioned).toBe(false);
+        expect((ctx as { rewardState: string }).rewardState).toBe('loading');
+        expect((ctx as { rewardRetryable: boolean }).rewardRetryable).toBe(false);
+        expect((ctx as { rewardSummary: string }).rewardSummary).toBe('');
       },
     },
   ];
@@ -3705,5 +4960,203 @@ describe('ResultScene — asynchronous reward loading (TASK-205)', () => {
 
     expect(harness.sceneListenerCount(resultCtx, 'shutdown')).toBe(1);
     expect(harness.sceneListenerCount(resultCtx, 'destroy')).toBe(1);
+  });
+});
+
+describe('LobbyScene — asynchronous start attempt (TASK-211 §2)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** A deferred `startBattle` the test resolves by hand. */
+  function deferredStart(): {
+    readonly promise: Promise<void>;
+    readonly release: () => void;
+  } {
+    let release: () => void = () => {};
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
+  }
+
+  /** The starter ownership the pre-battle flow reads (DATABASE.md §2). */
+  function lobbyHarness() {
+    return createSceneHarness({
+      textsThrowWhenDestroyed: false,
+      pets: [
+        {
+          petId: 'pet-instance-1',
+          identity: 'Xích Lang',
+          element: 'Fire',
+          tier: 'Common',
+          star: 1,
+          level: 1,
+          signatureSkill: {
+            cardId: 'card-inferno',
+            name: 'Inferno',
+            category: 'PetSkill',
+          },
+        },
+      ],
+      relics: [
+        { relicId: 'relic-instance-1', name: 'Berserker Core' },
+        { relicId: 'relic-instance-2', name: 'Mana Crystal' },
+        { relicId: 'relic-instance-3', name: 'Assassin Eye' },
+      ],
+    });
+  }
+
+  /**
+   * Selects the complete documented loadout (1 Pet / 3 Basic Cards / 3 Relics /
+   * 1 Boss) through the scene's own controls, so the start is reachable without
+   * touching the scene's state directly.
+   */
+  function selectLoadout(harness: ReturnType<typeof createSceneHarness>): void {
+    harness.clickOption('Xích Lang');
+    harness.clickOption('Heal');
+    harness.clickOption('Shield');
+    harness.clickOption('Power Charge');
+    harness.clickOption('Berserker Core');
+    harness.clickOption('Mana Crystal');
+    harness.clickOption('Assassin Eye');
+    harness.clickOption('Hỏa Long');
+  }
+
+  it('navigates nowhere and preserves nothing when the attempt settles after SHUTDOWN', async () => {
+    // The concrete risk `< BACK` makes reachable: the player leaves the Lobby
+    // while `startBattle` is in flight, Phaser destroys the scene's game
+    // objects, and the promise then resolves.
+    const harness = lobbyHarness();
+    const lobby = new LobbyScene();
+    const ctx = harness.context(lobby, 'LobbyScene');
+
+    const deferred = deferredStart();
+    harness.runtime.startBattle = vi.fn(() => deferred.promise) as never;
+
+    runScene(lobby, ctx, 'create');
+    await flush();
+    selectLoadout(harness);
+
+    harness.clickControl('START BATTLE');
+    expect(harness.runtime.startBattle).toHaveBeenCalledTimes(1);
+
+    harness.shutdownScene(ctx);
+
+    deferred.release();
+    await flush();
+
+    // No battle was entered from a scene that is over...
+    expect(harness.sceneStarted).toEqual([]);
+    // ...no loadout was preserved for a battle this presentation never claimed...
+    expect(readPreservedLoadout(ctx as never)).toBeNull();
+    // ...and no write was even attempted against the destroyed presentation.
+    expect(harness.destroyedWriteAttempts).toEqual([]);
+  });
+
+  it('does not let the ended run’s attempt navigate a reused scene', async () => {
+    // Scene reuse is the other half: the instance is started again, and the
+    // previous run's attempt settles afterwards. The scene is live, so only the
+    // run identity can stop the abandoned attempt from taking it to a battle.
+    const harness = lobbyHarness();
+    const lobby = new LobbyScene();
+    const ctx = harness.context(lobby, 'LobbyScene');
+
+    const deferred = deferredStart();
+    harness.runtime.startBattle = vi.fn(() => deferred.promise) as never;
+
+    runScene(lobby, ctx, 'create');
+    await flush();
+    selectLoadout(harness);
+    harness.clickControl('START BATTLE');
+
+    harness.shutdownScene(ctx);
+    runScene(lobby, ctx, 'create');
+    await flush();
+
+    deferred.release();
+    await flush();
+
+    expect(harness.sceneStarted).toEqual([]);
+    expect(readPreservedLoadout(ctx as never)).toBeNull();
+    expect(harness.destroyedWriteAttempts).toEqual([]);
+  });
+
+  it('still enters the battle when the attempt settles inside the same run', async () => {
+    // The guard must not break the documented behaviour it protects.
+    const harness = lobbyHarness();
+    const lobby = new LobbyScene();
+    const ctx = harness.context(lobby, 'LobbyScene');
+
+    const deferred = deferredStart();
+    harness.runtime.startBattle = vi.fn(() => deferred.promise) as never;
+
+    runScene(lobby, ctx, 'create');
+    await flush();
+    selectLoadout(harness);
+    harness.clickControl('START BATTLE');
+
+    deferred.release();
+    await flush();
+
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['BattleScene']);
+    // `D-202-03 = D`: the loadout the accepted start submitted is preserved for
+    // `ResultScene → PLAY AGAIN` (ADR-022).
+    expect(readPreservedLoadout(ctx as never)).toEqual({
+      petId: 'pet-instance-1',
+      bossId: 'boss-hoa-long',
+      cardLoadout: ['card-heal', 'card-shield', 'card-power-charge'],
+      relicLoadout: ['relic-instance-1', 'relic-instance-2', 'relic-instance-3'],
+    });
+  });
+
+  it('BACK invalidates the attempt and returns to the main menu', async () => {
+    const harness = lobbyHarness();
+    const lobby = new LobbyScene();
+    const ctx = harness.context(lobby, 'LobbyScene');
+
+    const deferred = deferredStart();
+    harness.runtime.startBattle = vi.fn(() => deferred.promise) as never;
+
+    runScene(lobby, ctx, 'create');
+    await flush();
+    selectLoadout(harness);
+    harness.clickControl('START BATTLE');
+
+    // Leaving is reachable while the request is outstanding, and it invalidates
+    // that request before asking for the transition.
+    harness.clickControl('< BACK');
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['MainMenuScene']);
+
+    deferred.release();
+    await flush();
+
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['MainMenuScene']);
+    expect(readPreservedLoadout(ctx as never)).toBeNull();
+  });
+
+  it('issues exactly one start request however often the control is activated', async () => {
+    const harness = lobbyHarness();
+    const lobby = new LobbyScene();
+    const ctx = harness.context(lobby, 'LobbyScene');
+
+    const deferred = deferredStart();
+    harness.runtime.startBattle = vi.fn(() => deferred.promise) as never;
+
+    runScene(lobby, ctx, 'create');
+    await flush();
+    selectLoadout(harness);
+
+    harness.clickControl('START BATTLE');
+    harness.clickControl('START BATTLE');
+    harness.clickControl('START BATTLE');
+    await flush();
+
+    expect(harness.runtime.startBattle).toHaveBeenCalledTimes(1);
+
+    deferred.release();
+    await flush();
+
+    expect(harness.sceneStarted.map((s) => s.key)).toEqual(['BattleScene']);
   });
 });
