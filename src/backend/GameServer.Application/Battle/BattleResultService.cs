@@ -21,13 +21,32 @@ namespace GameServer.Application.Battle;
 ///         ↓                             PET_RULES.md §5.3, §5.4 — resolved here,
 ///         ↓                             so the reward members can be recorded)
 ///         ↓
-/// BattleResult                         (DATABASE.md §1 — the documented fields)
+/// ONE database transaction             (IBattleEndTransaction — this boundary owns
+///  ├── BattleResult row                 its lifetime, so the commit below happens
+///  ├── Player progression               before the active-state delete)
+///  └── Pet progression
 ///         ↓
-/// PostgreSQL write                     (this boundary — the first write is the
-///         ↓                             exactly-once point)
+/// single COMMIT                        (DATABASE.md §1 — the durable battle end)
 ///         ↓
-/// battle:{battleId}:state delete       (REDIS_STATE.md §3 — only after the write)
+/// battle:{battleId}:state delete       (REDIS_STATE.md §3 — only after the commit)
 /// </code>
+///
+/// <b>The three writes are one unit of work, and that is a correctness
+/// invariant.</b> <c>DATABASE.md</c> §1 records one battle end as one durable
+/// result plus the documented reward on each track, so the result row, the Player
+/// progression, and the Pet progression must become durable together or not at
+/// all. Each write is performed by its own persistence boundary, and each of those
+/// boundaries commits its own <c>SaveChangesAsync</c>; the transaction
+/// <see cref="IBattleEndTransaction.BeginAsync"/> opens on the shared scoped
+/// <c>GameDbContext</c> is what makes them one commit rather than three. Without
+/// it a failure after the result row became durable would leave the battle
+/// recorded while the reward its own <c>RewardSummary</c> states was never
+/// applied — and because <c>BattleResultId</c> is the battle's own
+/// <c>BattleId</c> (<c>DATABASE.md</c> §1 sourcing item 1), the already-durable
+/// row would then refuse the retry that could still have applied it, losing that
+/// progression permanently. The invariant is therefore what makes the existing
+/// idempotency guard safe: a durable <c>BattleResult</c> now implies both
+/// progression writes committed with it.
 ///
 /// <b>Why this step lives beside the resolution and not in it.</b>
 /// <c>ARCHITECTURE.md</c> §4 item 4 gives the battle-end sequence to the same
@@ -58,8 +77,18 @@ namespace GameServer.Application.Battle;
 ///
 /// <b>It must never:</b>
 /// <list type="bullet">
-/// <item>delete the active state before the PostgreSQL write succeeded
-/// (<c>ARCHITECTURE.md</c> §4 item 4, <c>REDIS_STATE.md</c> §3),</item>
+/// <item>delete the active state before the transaction committed
+/// (<c>ARCHITECTURE.md</c> §4 item 4, <c>REDIS_STATE.md</c> §3) — the delete
+/// follows the commit, never the other way round and never the write alone,</item>
+/// <item>let any of the three battle-end writes commit outside the transaction,
+/// rely on the order of three independent commits, or reach a second
+/// <c>GameDbContext</c>: the shared scoped context is what makes the unit of work
+/// atomic (<c>DATABASE.md</c> §1, §2 item 4),</item>
+/// <item>treat a progression write that did not happen as a completed battle end:
+/// the result store's and both progression boundaries' own reports of "nothing
+/// persisted" fail the operation and undo the whole unit of work, because the
+/// battle stays recoverable until it is durably and completely recorded
+/// (<c>DATABASE.md</c> §1 sourcing item 3),</item>
 /// <item>write a result when the Boss definition did not resolve — the path
 /// fails closed and the battle stays recoverable
 /// (<c>DATABASE.md</c> §1 sourcing item 3),</item>
@@ -114,12 +143,14 @@ public sealed class BattleResultService
     private readonly IBattleStateRepository _battles;
     private readonly IPlayerRepository _players;
     private readonly IPetRepository _pets;
+    private readonly IBattleEndTransaction _transaction;
     private readonly TimeProvider _clock;
 
     /// <summary>
     /// Creates the battle-end persistence boundary over the durable result store,
     /// the documented lookup boundary, the active-state store, the two
-    /// progression boundaries, and the server clock.
+    /// progression boundaries, the transaction the three writes commit in, and the
+    /// server clock.
     ///
     /// <b>Every dependency is required and none has a default.</b> The result
     /// store is where the durable record goes; without it there is no result to
@@ -130,7 +161,10 @@ public sealed class BattleResultService
     /// Player reward grant updates (<c>COMBAT_RULES.md</c> §7.2) and the Pet
     /// boundary is what the documented Pet reward grant updates
     /// (<c>PET_RULES.md</c> §5.3) — a defaulted one would let a reward silently
-    /// not happen. The clock is the only permitted source of <c>CompletedAt</c>
+    /// not happen. The transaction boundary is what makes those writes one atomic
+    /// unit of work (<c>DATABASE.md</c> §1); without it the three writes would
+    /// commit independently and a failure after the first could not be undone.
+    /// The clock is the only permitted source of <c>CompletedAt</c>
     /// (<c>DATABASE.md</c> §1 sourcing item 2) — a defaulted clock would let a
     /// caller silently persist a non-server instant.
     /// </summary>
@@ -160,6 +194,13 @@ public sealed class BattleResultService
     /// Pet inferred from the Player, from collection order, or from client
     /// input.
     /// </param>
+    /// <param name="transaction">
+    /// The one transaction the battle-end writes commit in
+    /// (<c>DATABASE.md</c> §1). Its implementation is the Infrastructure layer's
+    /// and is bound to the same scoped <c>GameDbContext</c> the three persistence
+    /// boundaries above are constructed from, which is what makes their writes
+    /// participate in it.
+    /// </param>
     /// <param name="clock">
     /// The server clock (<c>DATABASE.md</c> §1 "Duration and completion
     /// sourcing" item 2 — "the server clock reading captured on the battle-end
@@ -171,6 +212,7 @@ public sealed class BattleResultService
         IBattleStateRepository battles,
         IPlayerRepository players,
         IPetRepository pets,
+        IBattleEndTransaction transaction,
         TimeProvider clock)
     {
         _results = results ?? throw new ArgumentNullException(nameof(results));
@@ -178,22 +220,34 @@ public sealed class BattleResultService
         _battles = battles ?? throw new ArgumentNullException(nameof(battles));
         _players = players ?? throw new ArgumentNullException(nameof(players));
         _pets = pets ?? throw new ArgumentNullException(nameof(pets));
+        _transaction = transaction ?? throw new ArgumentNullException(nameof(transaction));
         _clock = clock ?? throw new ArgumentNullException(nameof(clock));
     }
 
     /// <summary>
     /// Persists the durable result for a battle that has just reached
-    /// <paramref name="outcome"/>, then clears the battle's active state —
-    /// in that order (<c>ARCHITECTURE.md</c> §4 item 4, <c>REDIS_STATE.md</c>
-    /// §3).
+    /// <paramref name="outcome"/> — the result row together with both tracks'
+    /// progression, as one atomic unit of work — and then clears the battle's
+    /// active state, in that order (<c>ARCHITECTURE.md</c> §4 item 4,
+    /// <c>DATABASE.md</c> §1, <c>REDIS_STATE.md</c> §3).
     ///
-    /// <b>The ordering is the contract.</b> The PostgreSQL write happens first
-    /// and the delete only after it has completed. If the write does not happen,
-    /// this method returns without deleting: the battle-end path has failed
-    /// closed (<c>DATABASE.md</c> §1 sourcing item 3), the authoritative
-    /// <c>BattleState</c> is still in Redis under its normal sliding TTL
-    /// (<c>REDIS_STATE.md</c> §3), and the battle can be retried once the
-    /// configuration issue is resolved.
+    /// <b>The ordering is the contract.</b> The three durable writes commit first
+    /// and the delete only after that commit has completed. If the writes do not
+    /// become durable, this method raises (or fails closed, for the one condition
+    /// below) without deleting: the authoritative <c>BattleState</c> is still in
+    /// Redis under its normal sliding TTL (<c>REDIS_STATE.md</c> §3), and the whole
+    /// battle end can be retried once the cause is resolved.
+    ///
+    /// <b>The three writes are one unit of work</b> — the <c>BattleResult</c> row,
+    /// the Player progression, and the Pet progression are made inside one
+    /// transaction on the shared context and committed together. A failure in any
+    /// of them, including the commit itself, rolls the whole unit back, so this
+    /// method can never leave a durable result whose reward was not applied with
+    /// it. That is what lets the exactly-once guard be trusted: <c>BattleResultId</c>
+    /// is the battle's own <c>BattleId</c> (<c>DATABASE.md</c> §1 sourcing item 1),
+    /// and because a stored row now implies both grants committed with it, the
+    /// guard refuses a repeat without ever suppressing a reward that is still
+    /// owed.
     ///
     /// <b>An unresolved <c>BossDefinition</c> fails the write closed.</b> The
     /// lookup runs before anything is constructed; when it yields nothing, no
@@ -204,24 +258,32 @@ public sealed class BattleResultService
     /// no Player combat-readiness condition and that no Player-side eligibility
     /// predicate is part of the contract, so nothing else gates the write.
     ///
-    /// <b>A failed delete does not fail the battle.</b> When the result write
-    /// succeeded and the delete did not, the durable result stands and the
-    /// method still reports <c>true</c>: <c>REDIS_STATE.md</c> §3 performs no
-    /// automatic retry and no worker exists for it, the TTL remains the cleanup
-    /// path, and the primary-key contract makes a second row impossible.
+    /// <b>A progression write that did not happen fails the battle end.</b> When a
+    /// participating progression boundary reports that the tracked row was not
+    /// there to update, the reward the persisted summary states cannot be recorded,
+    /// so the unit of work is rolled back and the failure is raised. The battle is
+    /// left recoverable, which is the only way it can still be recorded in full
+    /// (<c>DATABASE.md</c> §1 sourcing item 3, <c>PET_RULES.md</c> §5.3 item 1).
+    ///
+    /// <b>A failed delete does not fail the battle.</b> When the commit succeeded
+    /// and the delete did not, the durable result stands and the method still
+    /// reports <c>true</c>: <c>REDIS_STATE.md</c> §3 performs no automatic retry and
+    /// no worker exists for it, the TTL remains the cleanup path, and the
+    /// primary-key contract makes a second row impossible.
     ///
     /// <b>A repeated terminal persistence reports <c>true</c> without writing.</b>
     /// When the battle's result is already durable, the terminal transition is
     /// already recorded and the battle end is complete, so this method reports
     /// <c>true</c> — the same way a failed active-state delete still reports a
-    /// completed persistence. It re-awards nothing, rewrites nothing, and deletes
-    /// nothing: the first durable write is the record of what happened, and the
-    /// reward for it was granted then (<c>DATABASE.md</c> §1 sourcing item 1,
-    /// <c>REDIS_STATE.md</c> §3).
+    /// completed persistence. It re-awards nothing, rewrites nothing, opens no
+    /// transaction, and deletes nothing: the first durable write is the record of
+    /// what happened, and the reward for it committed with it
+    /// (<c>DATABASE.md</c> §1 sourcing item 1, <c>REDIS_STATE.md</c> §3).
     ///
-    /// <b>Failure is raised, not absorbed.</b> A PostgreSQL failure propagates
-    /// to the caller — this boundary never reports a write that did not happen,
-    /// and never deletes the active state on that path.
+    /// <b>Failure is raised, not absorbed.</b> A PostgreSQL failure, a failure to
+    /// begin or commit the transaction, or a progression write that did not happen
+    /// propagates to the caller — this boundary never reports a write that did not
+    /// become durable, and never deletes the active state on that path.
     /// </summary>
     /// <param name="state">
     /// The authoritative post-resolution <c>BattleState</c> the terminal action
@@ -231,10 +293,10 @@ public sealed class BattleResultService
     /// <param name="outcome">
     /// The terminal outcome the resolution reported (<c>GAME_EVENTS.md</c> §2).
     /// </param>
-    /// <param name="cancellationToken">Cancels the lookups, the write, and the delete.</param>
+    /// <param name="cancellationToken">Cancels the lookups, the writes, the commit, and the delete.</param>
     /// <returns>
-    /// <c>true</c> when the durable result stands for this battle at return —
-    /// whether this call wrote it, it was already durably recorded by an earlier
+    /// <c>true</c> when the durable battle end stands for this battle at return —
+    /// whether this call recorded it, it was already durably recorded by an earlier
     /// terminal persistence, or the subsequent active-state delete failed (which
     /// leaves the result valid); <c>false</c> only when the battle-end write
     /// failed closed because the Boss definition did not resolve.
@@ -244,6 +306,11 @@ public sealed class BattleResultService
     /// Boss identity. These are present from battle creation
     /// (<c>GAME_STATE.md</c> §2.8, §2.3, §2.4) and none may be invented for a
     /// missing one.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">
+    /// A participating progression write reported that the tracked row did not
+    /// exist, so the battle end could not be recorded completely. The unit of work
+    /// is rolled back and the battle remains recoverable.
     /// </exception>
     public async Task<bool> PersistTerminalResultAsync(
         BattleState state,
@@ -477,61 +544,151 @@ public sealed class BattleResultService
                 petLeveledUp));
 
         // ===============================================================
-        // The durable write, first (ARCHITECTURE.md §4 item 4).
+        // The one transaction the battle-end writes commit in
+        // (DATABASE.md §1; ARCHITECTURE.md §4 item 4).
         // ===============================================================
-        // A failure here propagates: REDIS_STATE.md §3 conditions the delete on
-        // this write having happened, so an exception must leave the record in
-        // place rather than let the caller proceed to the delete.
+        // The three writes below — the result row, the Player progression, and the
+        // Pet progression — are one unit of work, so they are made inside one
+        // transaction on the shared scoped GameDbContext and become durable
+        // together at the single commit at the end of this block, or not at all.
+        // Opening it here, after every read and both fail-closed returns, keeps the
+        // transaction to the writes it exists for.
         //
-        // The return value is the existing primary-key guard's own report of
-        // whether this call was the FIRST durable write of this battle's result
-        // (DATABASE.md §1 sourcing item 1): an identical row already stored means
-        // the terminal transition was already recorded and this call wrote
-        // nothing.
-        var firstDurableWrite = await _results
-            .AddAsync(result, cancellationToken)
+        // Nothing outside this block observes success before the commit: the
+        // active-state delete below is deliberately outside and after it
+        // (REDIS_STATE.md §3).
+        await using var transaction = await _transaction
+            .BeginAsync(cancellationToken)
             .ConfigureAwait(false);
 
-        // ===============================================================
-        // The two documented progression writes, bound to the first durable
-        // write — the exactly-once point.
-        // ===============================================================
-        // `firstDurableWrite` is the store's own authoritative report that this
-        // call performed the first durable write (DATABASE.md §1 sourcing item
-        // 1); the pre-check above already returned for the already-durable case,
-        // and this remains the decision that gates both writes. No XP transaction
-        // table, distributed lock, or second idempotency mechanism is added
-        // (ARCHITECTURE.md §5).
-        //
-        // The two writes are side by side and sequential, exactly as the two
-        // tracks are independent (PET_RULES.md §5.1 item 5, ADR-016 item 12):
-        // neither reads the other's values and neither is derived from the
-        // other. A missing Player or Pet row means there is nothing to persist
-        // on that track (DATABASE.md §1) — the reward does not create either.
-        if (firstDurableWrite)
+        try
         {
-            // The grant is applied here — AFTER the durable write — so a failed
-            // write leaves every progression value untouched and the battle
-            // recoverable. The values applied are exactly the ones the persisted
-            // summary above already recorded, so the stored row and the stored
-            // progression cannot disagree.
-            if (player is not null)
-            {
-                player.GrantBattleXp(playerXpGained);
+            // ===============================================================
+            // The durable write, first (ARCHITECTURE.md §4 item 4).
+            // ===============================================================
+            // A failure here propagates: REDIS_STATE.md §3 conditions the delete on
+            // this write having happened, so an exception must leave the record in
+            // place rather than let the caller proceed to the delete.
+            //
+            // The return value is the existing primary-key guard's own report of
+            // whether this call was the FIRST durable write of this battle's result
+            // (DATABASE.md §1 sourcing item 1): an identical row already stored means
+            // the terminal transition was already recorded and this call wrote
+            // nothing.
+            var firstDurableWrite = await _results
+                .AddAsync(result, cancellationToken)
+                .ConfigureAwait(false);
 
-                await _players.SaveProgressionAsync(player, cancellationToken).ConfigureAwait(false);
+            // ===============================================================
+            // The two documented progression writes, bound to the first durable
+            // write — the exactly-once point.
+            // ===============================================================
+            // `firstDurableWrite` is the store's own authoritative report that this
+            // call performed the first durable write (DATABASE.md §1 sourcing item
+            // 1); the pre-check above already returned for the already-durable case,
+            // and this remains the decision that gates both writes. No XP transaction
+            // table, distributed lock, or second idempotency mechanism is added
+            // (ARCHITECTURE.md §5).
+            //
+            // The two writes are side by side and sequential, exactly as the two
+            // tracks are independent (PET_RULES.md §5.1 item 5, ADR-016 item 12):
+            // neither reads the other's values and neither is derived from the
+            // other. A missing Player or Pet row means there is nothing to persist
+            // on that track (DATABASE.md §1) — the reward does not create either.
+            if (firstDurableWrite)
+            {
+                // The grant is applied here — AFTER the durable write — so a failed
+                // write leaves every progression value untouched and the battle
+                // recoverable. The values applied are exactly the ones the persisted
+                // summary above already recorded, so the stored row and the stored
+                // progression cannot disagree.
+                if (player is not null)
+                {
+                    player.GrantBattleXp(playerXpGained);
+
+                    // A progression write reported as not having happened is a
+                    // failure of the battle end, not a completed one: the result
+                    // row already states this grant, so persisting the row without
+                    // it would record a reward that never existed in the
+                    // progression it names (DATABASE.md §1 sourcing item 1 and
+                    // "Reward semantics"). It is raised rather than ignored, which
+                    // undoes the whole unit of work below and leaves the battle
+                    // recoverable for a retry.
+                    if (!await _players.SaveProgressionAsync(player, cancellationToken).ConfigureAwait(false))
+                    {
+                        throw new InvalidOperationException(
+                            "DATABASE.md §1: the battle's Player progression row did not exist when its "
+                            + "reward was saved, so this battle end is not durably complete. The whole "
+                            + "battle-end unit of work is rolled back and the active state is kept, so the "
+                            + "battle remains recoverable and a later attempt can record it in full.");
+                    }
+                }
+
+                if (pet is not null)
+                {
+                    pet.GrantBattleXp(petXpGained);
+
+                    // PET_RULES.md §5.3 item 1 makes this one Pet the sole recipient
+                    // of the battle's Pet XP, so a write that did not happen cannot
+                    // be treated as success: the durable BattleResult would report
+                    // `petXpGained`/`newPetXp` for a Pet whose stored progression
+                    // never changed, and the primary-key guard would then refuse the
+                    // retry that could still have applied it (DATABASE.md §1
+                    // sourcing item 1). It is raised for the same reason as the
+                    // Player write above.
+                    if (!await _pets.SaveProgressionAsync(pet, cancellationToken).ConfigureAwait(false))
+                    {
+                        throw new InvalidOperationException(
+                            "DATABASE.md §1 / PET_RULES.md §5.3: the battle's active combat Pet row did not "
+                            + "exist when its reward was saved, so this battle end is not durably complete. "
+                            + "The whole battle-end unit of work is rolled back and the active state is kept, "
+                            + "so the battle remains recoverable and a later attempt can record it in full.");
+                    }
+                }
             }
 
-            if (pet is not null)
+            // ===============================================================
+            // The single commit — the battle end becomes durable here.
+            // ===============================================================
+            // Everything above this line is provisional until it succeeds: the
+            // result row, the Player's XP/Level, and the Pet's XP/Level become
+            // durable together, which is what makes the durable result a complete
+            // record of the battle and therefore what makes the primary-key guard
+            // safe to rely on (DATABASE.md §1 sourcing item 1).
+            //
+            // A failing commit raises, so the delete below is not reached: the
+            // battle's progression is not durable and its authoritative state must
+            // survive.
+            await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Every write this attempt made is undone, leaving the battle's result
+            // and both progression tracks exactly as they were: no BattleResult row
+            // is durable, so the primary-key guard does not block a later attempt,
+            // and the whole battle end can be re-run (DATABASE.md §1 sourcing item
+            // 3).
+            //
+            // The caller's token is deliberately not passed: an undo must be
+            // attempted even when the request was cancelled, or the transaction
+            // would be left to the connection's own cleanup instead. A rollback that
+            // itself fails is not the failure to report — the original failure is,
+            // and the disposal of the scope above remains the framework's own undo
+            // path — so it is not allowed to replace it.
+            try
             {
-                pet.GrantBattleXp(petXpGained);
-
-                await _pets.SaveProgressionAsync(pet, cancellationToken).ConfigureAwait(false);
+                await transaction.RollbackAsync(CancellationToken.None).ConfigureAwait(false);
             }
+            catch (Exception)
+            {
+                // Deliberately absorbed: see above.
+            }
+
+            throw;
         }
 
         // ===============================================================
-        // The active-state delete, only after the write (REDIS_STATE.md §3).
+        // The active-state delete, only after the commit (REDIS_STATE.md §3).
         // ===============================================================
         // §3: "Deleted: explicitly, when BattleWon/BattleLost is resolved and the
         // result has been written to PostgreSQL", and, when the delete fails,

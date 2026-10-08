@@ -54,9 +54,12 @@ public static class DependencyInjection
 
         // The durable battle result boundary (ARCHITECTURE.md §4 item 4,
         // DATABASE.md §1): on the terminal path it writes the battle's
-        // BattleResult row and then clears the active state, in that order.
-        // Scoped because it resolves the scoped PostgreSQL result repository and
-        // the two battle-end lookups; it holds no state of its own.
+        // BattleResult row together with both tracks' progression inside one
+        // transaction, commits that unit of work, and only then clears the active
+        // state — in that order. Scoped because it resolves the scoped PostgreSQL
+        // result repository, the two battle-end lookups, and the battle-end
+        // transaction boundary (whose implementation is bound to the same scoped
+        // GameDbContext); it holds no state of its own.
         //
         // Its clock is the server's (TimeProvider.System): DATABASE.md §1
         // "Duration and completion sourcing" item 2 makes CompletedAt the server

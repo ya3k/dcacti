@@ -156,6 +156,35 @@ internal sealed class InMemoryBattleResultRepository : IBattleResultRepository
 
         _rows[result.BattleResultId] = result;
     }
+
+    /// <summary>
+    /// The rows this double currently holds, so the test transaction double can put
+    /// them back when the battle-end unit of work rolls back
+    /// (<see cref="InMemoryBattleEndTransaction"/>).
+    ///
+    /// <b>It captures durability, which for this store is which rows exist.</b> A
+    /// <see cref="BattleResult"/> is immutable and this store never rewrites one, so
+    /// restoring the stored set is exactly the undo a database transaction performs
+    /// on an insert.
+    /// </summary>
+    public IReadOnlyDictionary<string, BattleResult> Snapshot() =>
+        new Dictionary<string, BattleResult>(_rows, StringComparer.Ordinal);
+
+    /// <summary>
+    /// Restores the stored set captured by <see cref="Snapshot"/> — the rollback the
+    /// real store performs in PostgreSQL, where an uncommitted insert leaves no row.
+    /// </summary>
+    public void Restore(IReadOnlyDictionary<string, BattleResult> snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        _rows.Clear();
+
+        foreach (var (battleResultId, row) in snapshot)
+        {
+            _rows[battleResultId] = row;
+        }
+    }
 }
 
 /// <summary>
@@ -250,6 +279,66 @@ internal sealed class InMemoryPlayerRepository : IPlayerRepository
     public int ProgressionSaveCount { get; private set; }
 
     /// <summary>
+    /// When set, <see cref="SaveProgressionAsync"/> raises instead of writing —
+    /// the documented PostgreSQL failure on the battle-end path
+    /// (<c>DATABASE.md</c> §1 sourcing item 3), which must undo the whole battle-end
+    /// unit of work rather than leave the battle half-recorded.
+    ///
+    /// <b>Why the failure belongs to the double and not to production code.</b> No
+    /// production flag, switch, or test hook exists for failing a persistence write
+    /// (<c>AGENTS.md</c> §9); a failure that the battle-end transaction must survive
+    /// is injected here, where it can do nothing but fail a test.
+    /// </summary>
+    public bool ProgressionSaveFails { get; set; }
+
+    /// <summary>
+    /// When set, <see cref="SaveProgressionAsync"/> reports the row as absent —
+    /// <c>false</c> — without raising, which is the other way a participating write
+    /// can fail to happen (<c>DATABASE.md</c> §1: an absent row is reported as
+    /// absence). It models the row disappearing between the read the battle-end path
+    /// performs and the progression write it then asks for, and it must fail the
+    /// battle end exactly as the raising case does, because the reward the durable
+    /// result states would otherwise never be recorded.
+    /// </summary>
+    public bool ProgressionRowAbsentOnSave { get; set; }
+
+    /// <summary>
+    /// The progression values this double currently holds, so the test transaction
+    /// double can put them back when the unit of work rolls back
+    /// (<see cref="InMemoryBattleEndTransaction"/>).
+    ///
+    /// <b>It captures values, not rows.</b> A stored <see cref="Player"/> is the
+    /// very object the battle-end path reads and grants to, so the rollback this
+    /// models is the write being undone: the row's <c>XP</c> and <c>Level</c> return
+    /// to what they were. The reward path creates no Player
+    /// (<c>DATABASE.md</c> §1), so membership is not part of the undo.
+    /// </summary>
+    public IReadOnlyDictionary<string, (int Xp, int Level)> SnapshotProgression() =>
+        _players.ToDictionary(
+            entry => entry.Key,
+            entry => (entry.Value.XP, entry.Value.Level),
+            StringComparer.Ordinal);
+
+    /// <summary>
+    /// Restores the progression values captured by
+    /// <see cref="SnapshotProgression"/> — the rollback the real store performs in
+    /// PostgreSQL, where an uncommitted update leaves the previous values.
+    /// </summary>
+    public void RestoreProgression(IReadOnlyDictionary<string, (int Xp, int Level)> snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        foreach (var (playerId, progression) in snapshot)
+        {
+            if (_players.TryGetValue(playerId, out var stored))
+            {
+                stored.XP = progression.Xp;
+                stored.Level = progression.Level;
+            }
+        }
+    }
+
+    /// <summary>
     /// Seeds a Player row — the account the battle's <c>PlayerId</c> refers to
     /// (<c>GAME_STATE.md</c> §2.8 / <c>DATABASE.md</c> §1).
     ///
@@ -335,6 +424,17 @@ internal sealed class InMemoryPlayerRepository : IPlayerRepository
 
         ProgressionSaveCount++;
 
+        if (ProgressionSaveFails)
+        {
+            throw new InvalidOperationException(
+                "DATABASE.md §1: this double is configured to fail the Player progression write.");
+        }
+
+        if (ProgressionRowAbsentOnSave)
+        {
+            return Task.FromResult(false);
+        }
+
         // DATABASE.md §1: an absent row is reported as absence and nothing is
         // created — a reward must not bring a Player into existence.
         if (!_players.TryGetValue(player.PlayerId, out var stored))
@@ -390,6 +490,65 @@ internal sealed class InMemoryPetRepository : IPetRepository
     /// that a battle with no such Pet performed no write.
     /// </summary>
     public int ProgressionSaveCount { get; private set; }
+
+    /// <summary>
+    /// When set, <see cref="SaveProgressionAsync"/> raises instead of writing —
+    /// the documented PostgreSQL failure on the battle-end path
+    /// (<c>DATABASE.md</c> §1 sourcing item 3), which must undo the whole battle-end
+    /// unit of work rather than leave a durable result whose Pet XP was never
+    /// applied (<c>PET_RULES.md</c> §5.3 item 1).
+    ///
+    /// <b>Why the failure belongs to the double and not to production code.</b> No
+    /// production flag, switch, or test hook exists for failing a persistence write
+    /// (<c>AGENTS.md</c> §9); a failure the battle-end transaction must survive is
+    /// injected here, where it can do nothing but fail a test.
+    /// </summary>
+    public bool ProgressionSaveFails { get; set; }
+
+    /// <summary>
+    /// When set, <see cref="SaveProgressionAsync"/> reports the row as absent —
+    /// <c>false</c> — without raising, which is the other way a participating write
+    /// can fail to happen (<c>DATABASE.md</c> §1: an absent row is reported as
+    /// absence), and the exact case the battle-end path used to ignore. It must fail
+    /// the battle end exactly as the raising case does.
+    /// </summary>
+    public bool ProgressionRowAbsentOnSave { get; set; }
+
+    /// <summary>
+    /// The progression values this double currently holds, so the test transaction
+    /// double can put them back when the unit of work rolls back
+    /// (<see cref="InMemoryBattleEndTransaction"/>).
+    ///
+    /// <b>It captures values, not rows.</b> A stored <see cref="Pet"/> is the very
+    /// object the battle-end path reads and grants to, so the rollback this models
+    /// is the write being undone: the instance's <c>XP</c> and <c>Level</c> return to
+    /// what they were. Every other owned Pet is untouched by that path anyway
+    /// (<c>PET_RULES.md</c> §5.3 items 1–3), and no Pet is created by it.
+    /// </summary>
+    public IReadOnlyDictionary<string, (int Xp, int Level)> SnapshotProgression() =>
+        _pets.ToDictionary(
+            entry => entry.Key,
+            entry => (entry.Value.XP, entry.Value.Level),
+            StringComparer.Ordinal);
+
+    /// <summary>
+    /// Restores the progression values captured by
+    /// <see cref="SnapshotProgression"/> — the rollback the real store performs in
+    /// PostgreSQL, where an uncommitted update leaves the previous values.
+    /// </summary>
+    public void RestoreProgression(IReadOnlyDictionary<string, (int Xp, int Level)> snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        foreach (var (petInstanceId, progression) in snapshot)
+        {
+            if (_pets.TryGetValue(petInstanceId, out var stored))
+            {
+                stored.XP = progression.Xp;
+                stored.Level = progression.Level;
+            }
+        }
+    }
 
     /// <summary>
     /// Seeds a Pet instance — the combat Pet a battle's
@@ -489,6 +648,17 @@ internal sealed class InMemoryPetRepository : IPetRepository
 
         ProgressionSaveCount++;
 
+        if (ProgressionSaveFails)
+        {
+            throw new InvalidOperationException(
+                "DATABASE.md §1: this double is configured to fail the Pet progression write.");
+        }
+
+        if (ProgressionRowAbsentOnSave)
+        {
+            return Task.FromResult(false);
+        }
+
         // DATABASE.md §1: an absent row is reported as absence and nothing is
         // created — a reward must not bring a Pet instance into existence.
         if (!_pets.TryGetValue(pet.PetInstanceId, out var stored))
@@ -502,5 +672,165 @@ internal sealed class InMemoryPetRepository : IPetRepository
         stored.Level = pet.Level;
 
         return Task.FromResult(true);
+    }
+}
+
+/// <summary>
+/// An in-memory <see cref="IBattleEndTransaction"/> for the Application-layer unit
+/// tests.
+///
+/// <b>It is a TEST DOUBLE, not a production fallback.</b> The real transaction is
+/// <c>GameServer.Infrastructure.Postgres.BattleEndTransaction</c> over the scoped
+/// <c>GameDbContext</c>, and the atomicity the battle end requires is a property of
+/// that database transaction — which is why it is proven against real PostgreSQL in
+/// the Infrastructure integration suite, not here. This type exists so the real
+/// <see cref="BattleResultService"/> can run over the in-memory stores above while
+/// still being held to the unit-of-work semantics it depends on.
+///
+/// <b>It models the three semantics the battle-end path depends on</b>, so a test
+/// cannot pass against a double more permissive than a database transaction:
+/// <list type="bullet">
+/// <item><b>A rollback undoes every write made inside the unit of work.</b> The
+/// participating stores are captured when the transaction begins and restored when
+/// it is rolled back — which is what lets a test assert that a failed battle end
+/// left no durable result and no progression write, and what makes a retry after a
+/// rollback behave exactly as it does against PostgreSQL.</item>
+/// <item><b>Only a commit makes the writes stand.</b> A scope that is disposed
+/// without having been committed restores the stores as well, which is the
+/// framework transaction's own documented behaviour.</item>
+/// <item><b>Commit and rollback are terminal.</b> A second call is an error rather
+/// than a silent no-op, so an implementation that believed it had undone a committed
+/// unit of work cannot pass.</item>
+/// </list>
+///
+/// <b>It records what it was asked to do.</b> The counts below exist because the
+/// ordering rule is part of the contract: the active state may only be cleared after
+/// a successful commit (<c>REDIS_STATE.md</c> §3), and
+/// <see cref="OnCommit"/> lets a test observe what had happened by the moment of the
+/// commit.
+/// </summary>
+internal sealed class InMemoryBattleEndTransaction : IBattleEndTransaction
+{
+    private readonly InMemoryBattleResultRepository _results;
+    private readonly InMemoryPlayerRepository _players;
+    private readonly InMemoryPetRepository _pets;
+
+    public InMemoryBattleEndTransaction(
+        InMemoryBattleResultRepository results,
+        InMemoryPlayerRepository players,
+        InMemoryPetRepository pets)
+    {
+        _results = results ?? throw new ArgumentNullException(nameof(results));
+        _players = players ?? throw new ArgumentNullException(nameof(players));
+        _pets = pets ?? throw new ArgumentNullException(nameof(pets));
+    }
+
+    /// <summary>How many transactions this double has begun.</summary>
+    public int BeginCount { get; private set; }
+
+    /// <summary>
+    /// How many of them were committed — the battle ends that became durable.
+    /// </summary>
+    public int CommitCount { get; private set; }
+
+    /// <summary>
+    /// How many were rolled back, whether explicitly or by disposing an
+    /// uncommitted scope.
+    /// </summary>
+    public int RollbackCount { get; private set; }
+
+    /// <summary>
+    /// Invoked from <see cref="IBattleEndTransactionScope.CommitAsync"/>, so a test
+    /// can record what was true at the moment of the commit — the ordering proof
+    /// for <c>REDIS_STATE.md</c> §3's "the delete happens only after the durable
+    /// write".
+    /// </summary>
+    public Action? OnCommit { get; set; }
+
+    /// <inheritdoc />
+    public Task<IBattleEndTransactionScope> BeginAsync(CancellationToken cancellationToken = default)
+    {
+        BeginCount++;
+
+        // The state of every participating store at the moment the unit of work
+        // starts: what a rollback must put back.
+        return Task.FromResult<IBattleEndTransactionScope>(new Scope(this));
+    }
+
+    private sealed class Scope : IBattleEndTransactionScope
+    {
+        private readonly InMemoryBattleEndTransaction _transaction;
+        private readonly IReadOnlyDictionary<string, BattleResult> _results;
+        private readonly IReadOnlyDictionary<string, (int Xp, int Level)> _players;
+        private readonly IReadOnlyDictionary<string, (int Xp, int Level)> _pets;
+        private bool _ended;
+
+        public Scope(InMemoryBattleEndTransaction transaction)
+        {
+            _transaction = transaction;
+
+            _results = transaction._results.Snapshot();
+            _players = transaction._players.SnapshotProgression();
+            _pets = transaction._pets.SnapshotProgression();
+        }
+
+        /// <inheritdoc />
+        public Task CommitAsync(CancellationToken cancellationToken = default)
+        {
+            if (_ended)
+            {
+                throw new InvalidOperationException(
+                    "IBattleEndTransactionScope: this double's transaction was already completed, so it "
+                    + "cannot be committed again — the same error a completed database transaction reports.");
+            }
+
+            _ended = true;
+            _transaction.CommitCount++;
+            _transaction.OnCommit?.Invoke();
+
+            return Task.CompletedTask;
+        }
+
+        /// <inheritdoc />
+        public Task RollbackAsync(CancellationToken cancellationToken = default)
+        {
+            if (_ended)
+            {
+                throw new InvalidOperationException(
+                    "IBattleEndTransactionScope: this double's transaction was already completed, so it "
+                    + "cannot be rolled back — the same error a completed database transaction reports.");
+            }
+
+            Undo();
+
+            return Task.CompletedTask;
+        }
+
+        /// <inheritdoc />
+        public ValueTask DisposeAsync()
+        {
+            // The framework transaction is disposed after having been committed or
+            // rolled back in the battle-end path, in which case there is nothing
+            // left to undo. A scope disposed while still open is the case the
+            // database also treats as an undo, so the stores are restored.
+            Undo();
+
+            return ValueTask.CompletedTask;
+        }
+
+        private void Undo()
+        {
+            if (_ended)
+            {
+                return;
+            }
+
+            _ended = true;
+            _transaction.RollbackCount++;
+
+            _transaction._results.Restore(_results);
+            _transaction._players.RestoreProgression(_players);
+            _transaction._pets.RestoreProgression(_pets);
+        }
     }
 }

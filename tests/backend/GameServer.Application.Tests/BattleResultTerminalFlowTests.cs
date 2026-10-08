@@ -95,7 +95,17 @@ public class BattleResultTerminalFlowTests
             pets.Seed(Pet.PetId.Value, playerId: Owner.Value);
 
             var persistence = new DirectBattleResultPersistence(
-                new BattleResultService(results, bossLookup, store, players, pets, TimeProvider.System));
+                new BattleResultService(
+                    results,
+                    bossLookup,
+                    store,
+                    players,
+                    pets,
+                    // DATABASE.md §1: the result row and both progression writes are
+                    // one unit of work, so the pipeline is driven through the
+                    // transaction the production composition resolves.
+                    new InMemoryBattleEndTransaction(results, players, pets),
+                    TimeProvider.System));
 
             return new Harness(
                 new BattleStateService(store, new FixedRngSeedSource(), persistence),

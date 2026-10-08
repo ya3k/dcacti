@@ -76,7 +76,8 @@ public class PetXpBattleRewardTests
         InMemoryBattleResultRepository Results,
         InMemoryBattleStateRepository Battles,
         InMemoryPlayerRepository Players,
-        InMemoryPetRepository Pets)
+        InMemoryPetRepository Pets,
+        InMemoryBattleEndTransaction Transactions)
     {
         public static Harness Create(int activePetXp = Pet.InitialXp, int ownerXp = Player.InitialXp)
         {
@@ -91,15 +92,21 @@ public class PetXpBattleRewardTests
             // names (GAME_STATE.md §2.3).
             pets.Seed(ActivePet.Value, activePetXp, playerId: Owner.Value);
 
+            // DATABASE.md §1: the result row and both progression writes are one
+            // unit of work, so the boundary is driven through the transaction the
+            // production composition resolves.
+            var transactions = new InMemoryBattleEndTransaction(results, players, pets);
+
             var service = new BattleResultService(
                 results,
                 ScriptedBossDefinitionLookup.Resolving(BossDefinitions.HoaLong),
                 battles,
                 players,
                 pets,
+                transactions,
                 TimeProvider.System);
 
-            return new Harness(service, results, battles, players, pets);
+            return new Harness(service, results, battles, players, pets, transactions);
         }
 
         public Pet ActiveCombatPet => Pets.Find(ActivePet.Value)!;
@@ -516,6 +523,7 @@ public class PetXpBattleRewardTests
             battles,
             players,
             pets,
+            new InMemoryBattleEndTransaction(results, players, pets),
             TimeProvider.System);
 
         var written = await service
@@ -545,6 +553,7 @@ public class PetXpBattleRewardTests
             battles,
             players,
             pets,
+            new InMemoryBattleEndTransaction(results, players, pets),
             TimeProvider.System);
 
         var written = await service

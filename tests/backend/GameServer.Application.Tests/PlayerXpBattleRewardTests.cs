@@ -61,7 +61,8 @@ public class PlayerXpBattleRewardTests
         InMemoryBattleResultRepository Results,
         InMemoryBattleStateRepository Battles,
         InMemoryPlayerRepository Players,
-        InMemoryPetRepository Pets)
+        InMemoryPetRepository Pets,
+        InMemoryBattleEndTransaction Transactions)
     {
         public static Harness Create(int ownerXp = Player.InitialXp)
         {
@@ -77,15 +78,21 @@ public class PlayerXpBattleRewardTests
             // track, and both rows exist in production for any real battle.
             pets.Seed(OwnedPet.Value, playerId: Owner.Value);
 
+            // DATABASE.md §1: the result row and both progression writes are one
+            // unit of work, so the boundary is driven through the transaction the
+            // production composition resolves.
+            var transactions = new InMemoryBattleEndTransaction(results, players, pets);
+
             var service = new BattleResultService(
                 results,
                 ScriptedBossDefinitionLookup.Resolving(BossDefinitions.HoaLong),
                 battles,
                 players,
                 pets,
+                transactions,
                 TimeProvider.System);
 
-            return new Harness(service, results, battles, players, pets);
+            return new Harness(service, results, battles, players, pets, transactions);
         }
 
         public Player OwnerPlayer => Players.Find(Owner.Value)!;
@@ -322,6 +329,7 @@ public class PlayerXpBattleRewardTests
         var results = new InMemoryBattleResultRepository();
         var battles = new InMemoryBattleStateRepository();
         var players = new InMemoryPlayerRepository();
+        var pets = new InMemoryPetRepository();
 
         players.Seed(Owner.Value);
 
@@ -330,7 +338,8 @@ public class PlayerXpBattleRewardTests
             new ScriptedBossDefinitionLookup(),
             battles,
             players,
-            new InMemoryPetRepository(),
+            pets,
+            new InMemoryBattleEndTransaction(results, players, pets),
             TimeProvider.System);
 
         var written = await service
@@ -350,12 +359,14 @@ public class PlayerXpBattleRewardTests
         var results = new InMemoryBattleResultRepository();
         var battles = new InMemoryBattleStateRepository();
         var players = new InMemoryPlayerRepository();
+        var pets = new InMemoryPetRepository();
         var service = new BattleResultService(
             results,
             ScriptedBossDefinitionLookup.Resolving(BossDefinitions.HoaLong),
             battles,
             players,
-            new InMemoryPetRepository(),
+            pets,
+            new InMemoryBattleEndTransaction(results, players, pets),
             TimeProvider.System);
 
         var written = await service
@@ -377,6 +388,7 @@ public class PlayerXpBattleRewardTests
         var results = new InMemoryBattleResultRepository();
         var battles = new InMemoryBattleStateRepository();
         var players = new InMemoryPlayerRepository();
+        var pets = new InMemoryPetRepository();
 
         players.Seed(Owner.Value);
 
@@ -385,7 +397,8 @@ public class PlayerXpBattleRewardTests
             ScriptedBossDefinitionLookup.Resolving(BossDefinitions.HoaLong),
             battles,
             players,
-            new InMemoryPetRepository(),
+            pets,
+            new InMemoryBattleEndTransaction(results, players, pets),
             TimeProvider.System);
 
         // Nothing is persisted here because nothing terminal happened: the

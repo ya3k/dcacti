@@ -61,7 +61,8 @@ public class BattleResultServiceTests
         ScriptedBossDefinitionLookup BossLookup,
         InMemoryBattleStateRepository Battles,
         InMemoryPlayerRepository Players,
-        InMemoryPetRepository Pets)
+        InMemoryPetRepository Pets,
+        InMemoryBattleEndTransaction Transactions)
     {
         public static Harness Create(BossDefinition? resolvableBoss = null)
         {
@@ -73,15 +74,23 @@ public class BattleResultServiceTests
             var players = new InMemoryPlayerRepository();
             var pets = new InMemoryPetRepository();
 
+            // DATABASE.md §1: the result row and both progression writes are one
+            // unit of work, so the boundary is driven through the transaction the
+            // production composition resolves. The double models the rollback the
+            // real one performs, so a failure path here is the failure path against
+            // PostgreSQL rather than a path where the writes simply stay.
+            var transactions = new InMemoryBattleEndTransaction(results, players, pets);
+
             var service = new BattleResultService(
                 results,
                 bossLookup,
                 battles,
                 players,
                 pets,
+                transactions,
                 TimeProvider.System);
 
-            return new Harness(service, results, bossLookup, battles, players, pets);
+            return new Harness(service, results, bossLookup, battles, players, pets, transactions);
         }
 
         /// <summary>

@@ -81,6 +81,19 @@ public static class DependencyInjection
         // GameDbContext.
         services.AddScoped<IBattleResultRepository, BattleResultRepository>();
 
+        // The one transaction the battle-end writes commit in (DATABASE.md §1;
+        // ARCHITECTURE.md §4 item 4).
+        //
+        // Scoped, because it is bound to the scoped GameDbContext the three
+        // battle-end persistence boundaries above are constructed from: one scope
+        // resolves one context, so the result-row insert and both progression
+        // updates issued through those repositories execute on the connection this
+        // transaction is open on and therefore commit together — or not at all.
+        // That is what the durable battle end requires, and why this boundary never
+        // opens a context of its own. Registered unconditionally for the same
+        // reason as IPlayerRepository: it takes the scoped GameDbContext.
+        services.AddScoped<IBattleEndTransaction, BattleEndTransaction>();
+
         // DATABASE.md §1 note item 2: the Identity → BossDefinitionId lookup is
         // owned by the Infrastructure layer through this existing persistence
         // boundary — no resolver service, registry, or read model is introduced.

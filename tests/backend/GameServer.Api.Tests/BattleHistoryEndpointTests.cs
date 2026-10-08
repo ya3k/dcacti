@@ -13,6 +13,7 @@ using GameServer.Domain.Players;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Xunit;
@@ -1083,7 +1084,24 @@ public class BattleHistoryEndpointTests
                     services.RemoveAll<DbContextOptions<GameServer.Infrastructure.Postgres.GameDbContext>>();
                     services.RemoveAll<GameServer.Infrastructure.Postgres.GameDbContext>();
                     services.AddDbContext<GameServer.Infrastructure.Postgres.GameDbContext>(options =>
-                        options.UseInMemoryDatabase(_storeName));
+                        options
+                            .UseInMemoryDatabase(_storeName)
+                            // The battle-end step writes the result row and both
+                            // progression tracks inside one database transaction
+                            // (DATABASE.md §1's battle-end atomicity contract), and
+                            // the in-memory provider this host substitutes for
+                            // PostgreSQL supports no transactions at all — it reports
+                            // TransactionIgnoredWarning, which is an error by default.
+                            // The substitution therefore declares that fact here rather
+                            // than failing on it. Nothing about atomicity is verified
+                            // by this host either way: that is the PostgreSQL
+                            // integration suite's
+                            // (BattleEndAtomicityPostgresTests), because only a real
+                            // database can roll a transaction back. What this host
+                            // verifies is the history read over the rows the battle-end
+                            // step wrote.
+                            .ConfigureWarnings(warnings =>
+                                warnings.Ignore(InMemoryEventId.TransactionIgnoredWarning)));
 
                     services.AddSingleton<IBattleStateRepository, ApiTestBattleStateRepository>();
                 });

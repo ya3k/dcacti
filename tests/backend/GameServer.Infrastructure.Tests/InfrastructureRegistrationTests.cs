@@ -70,6 +70,35 @@ public class InfrastructureRegistrationTests
     }
 
     [Fact]
+    public void AddInfrastructureServices_ShouldRegisterTheBattleEndTransaction()
+    {
+        // DATABASE.md §1's battle-end atomicity contract: the result row and both
+        // progression tracks commit in one transaction, so the boundary that opens
+        // it is registered beside the persistence boundaries whose writes it
+        // encloses (IBattleResultRepository, IPlayerRepository, IPetRepository).
+        //
+        // Registered scoped and not singleton — it is bound to the scoped
+        // GameDbContext, and one scope's context is what makes the three writes one
+        // transaction. A singleton over a different context would be a transaction
+        // that encloses none of them.
+        //
+        // Asserted against the service descriptors for the same reason as
+        // IPetRepository: GameDbContext only exists when a connection string is
+        // configured, and the registration itself is what this test verifies.
+        var configuration = new ConfigurationBuilder().Build();
+        var services = new ServiceCollection();
+
+        services.AddInfrastructureServices(configuration);
+
+        var descriptor = Assert.Single(
+            services,
+            d => d.ServiceType == typeof(IBattleEndTransaction));
+
+        Assert.Equal(typeof(Postgres.BattleEndTransaction), descriptor.ImplementationType);
+        Assert.Equal(ServiceLifetime.Scoped, descriptor.Lifetime);
+    }
+
+    [Fact]
     public void AddInfrastructureServices_ShouldRegisterTheRedisBattleStateRepository()
     {
         // REDIS_STATE.md §1–§4 / ARCHITECTURE.md §1, §3: the active battle state

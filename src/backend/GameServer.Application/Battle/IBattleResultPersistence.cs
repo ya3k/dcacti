@@ -78,6 +78,15 @@ public interface IBattleResultPersistence
 /// needs; the alternative — capturing the request scope — would both break the
 /// singleton boundary and pin a context for the process's lifetime.
 ///
+/// <b>One scope means one <c>GameDbContext</c>, which is what makes the battle-end
+/// transaction cover every participating write.</b> The scoped boundary resolved
+/// below, the result repository and both progression boundaries it writes
+/// through, and the <see cref="IBattleEndTransaction"/> it commits through all
+/// come from this same scope, so they share one context and one connection. A
+/// transaction begun on it therefore encloses all three writes
+/// (<c>DATABASE.md</c> §1) — a second context would make the transaction a name
+/// rather than a guarantee (<c>AGENTS.md</c> §9).
+///
 /// <b>The scope is disposed with the call.</b> A failure inside leaves nothing
 /// half-open: the failure propagates to the caller, which is the documented
 /// fail-closed behaviour of <c>DATABASE.md</c> §1 sourcing item 3.
