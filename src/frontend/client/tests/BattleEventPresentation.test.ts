@@ -69,10 +69,20 @@ interface SceneHarnessOptions {
   state?: GameRuntimeState;
   withRuntime?: boolean;
   battleState?: RuntimeBattleState | null;
+  /** The owned Relic instances the scene reads (`GET /api/relics`, §5.4). */
+  relics?: Array<{ relicId: string; name: string }>;
+  /** When set, the Relic collection read rejects with it. */
+  relicsFailure?: Error;
 }
 
 function createSceneHarness(options: SceneHarnessOptions = {}) {
-  const { state = INITIAL_RUNTIME_STATE, withRuntime = true, battleState = null } = options;
+  const {
+    state = INITIAL_RUNTIME_STATE,
+    withRuntime = true,
+    battleState = null,
+    relics = [],
+    relicsFailure,
+  } = options;
   const runtimeListeners = new Set<(event: { state: GameRuntimeState }) => void>();
   const battleStateListeners = new Set<(state: RuntimeBattleState) => void>();
   const battleEventListeners = new Set<(envelope: BattleEventsEnvelope) => void>();
@@ -107,6 +117,16 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       requestedActions.push(action);
       return Promise.resolve({ accepted: true });
     },
+    /**
+     * The owned Relic collection read (`GET /api/relics`, API_CONTRACTS.md §5.4),
+     * which is where the battle scene's Relic display names come from.
+     */
+    getRelics: vi.fn(async () => {
+      if (relicsFailure) {
+        throw relicsFailure;
+      }
+      return relics;
+    }),
     setEngineStatus: vi.fn(),
   };
 
@@ -598,12 +618,27 @@ describe('TASK-210 — the player-facing combat callout (SIGNALR_PROTOCOL.md §3
   const cardNames = new Map([['card-heal', 'Heal']]);
   const resolveCardName = (cardId: string) => cardNames.get(cardId) ?? cardId;
 
+  /**
+   * The Relic resolver a scene supplies: the owned-instance read
+   * (`GET /api/relics`, `API_CONTRACTS.md` §5.4) keyed by the identity
+   * `RelicTriggered.relicId` carries, or `null` when no definition was loaded.
+   *
+   * It is deliberately not the Card resolver's shape: an unresolved Relic
+   * instance identity is not shown (it is an internal handle), so this seam
+   * fails closed.
+   */
+  const relicNames = new Map([
+    ['relicinst_a1', 'Berserker Core'],
+    ['relicinst_b2', 'Mana Crystal'],
+    ['relicinst_c3', 'Emergency Core'],
+  ]);
+  const resolveRelicName = (relicId: string) => relicNames.get(relicId) ?? null;
+
   it('has nothing to say about the events that are already shown another way', () => {
     // The per-cell board highlights carry `MatchCreated`/`GemMatched`/`CascadeCreated`
-    // position; the damage and Power floaters carry the numbers; `DamageCalculated`
-    // is the six-factor pipeline detail; and a `RelicTriggered` carries only an owned
-    // instance identity with no client-visible definition to name it with. Each
-    // therefore produces no callout.
+    // position; the damage and Power floaters carry the numbers; and
+    // `DamageCalculated` is the six-factor pipeline detail. Each therefore
+    // produces no callout.
     for (const event of [
       { type: 'GemMatched', cellIndex: 8, gemType: 'ATK' },
       { type: 'CascadeCreated', cascadeDepth: 2 },
@@ -611,25 +646,106 @@ describe('TASK-210 — the player-facing combat callout (SIGNALR_PROTOCOL.md §3
       { type: 'DamageDealt', source: 'player', target: 'boss', amount: 120 },
       { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
       { type: 'PowerChanged', delta: 25, power: 25, source: 'match' },
-      { type: 'RelicTriggered', relicId: 'relic-instance-berserker-core' },
     ]) {
       const parsed = parseInBattleEvent(event);
       expect(parsed, `${event.type} must parse`).not.toBeNull();
       expect(
-        describeEventCallout(parsed!, resolveCardName),
+        describeEventCallout(parsed!, resolveCardName, resolveRelicName),
         `${event.type} must produce no callout`
       ).toBeNull();
     }
+  });
+
+  it('names the triggered Relic from the delivered definition and never shows its instance id', () => {
+    // SIGNALR_PROTOCOL.md §3.2.23: the event carries only the owned instance
+    // identity. The player-facing name comes from the caller's definition lookup
+    // (API_CONTRACTS.md §5.4's `name`), which is the same delivered-read pattern
+    // the Card callout already uses.
+    const triggered = describeEventCallout(
+      parseInBattleEvent({ type: 'RelicTriggered', relicId: 'relicinst_a1' })!,
+      resolveCardName,
+      resolveRelicName
+    );
+
+    expect(triggered).toEqual({ message: 'RELIC: Berserker Core', color: '#7dd3fc', priority: 2 });
+
+    // The raw instance identity is technical (RELIC_RULES.md §2.2 item 3) and is
+    // never part of what the player reads.
+    expect(triggered?.message).not.toContain('relicinst_a1');
+    expect(triggered?.message).not.toContain('relic-');
+
+    // A second Relic resolves to its own name — the lookup is keyed by the
+    // delivered identity, not by a position or a fixed label.
+    expect(
+      describeEventCallout(
+        parseInBattleEvent({ type: 'RelicTriggered', relicId: 'relicinst_b2' })!,
+        resolveCardName,
+        resolveRelicName
+      )?.message
+    ).toBe('RELIC: Mana Crystal');
+  });
+
+  it('produces no callout for a RelicTriggered whose definition is not loaded', () => {
+    // A missing definition is not a licence to print an internal handle, and not
+    // an error: the event simply has nothing player-facing to say, and the rest of
+    // the batch's presentation is unaffected.
+    const unknown = describeEventCallout(
+      parseInBattleEvent({ type: 'RelicTriggered', relicId: 'relicinst_unknown' })!,
+      resolveCardName,
+      resolveRelicName
+    );
+
+    expect(unknown).toBeNull();
+
+    // Even a resolver that has loaded nothing at all yields no callout — never a
+    // fallback to the identity.
+    const empty = describeEventCallout(
+      parseInBattleEvent({ type: 'RelicTriggered', relicId: 'relicinst_a1' })!,
+      resolveCardName,
+      () => null
+    );
+    expect(empty).toBeNull();
+
+    // ...and no name is derived from the Relic's own content members: none of them
+    // is even part of the parsed event.
+    const parsed = parseInBattleEvent({
+      type: 'RelicTriggered',
+      relicId: 'relicinst_unknown',
+      trigger: 'OnMatchCount',
+      condition: { conditionType: 'MatchCountAtLeast', threshold: 3 },
+      effectDefinition: [{ effectType: 'ATK', valueType: 'Percentage', value: 5 }],
+    })!;
+    expect(parsed).toEqual({ type: 'RelicTriggered', relicId: 'relicinst_unknown' });
+  });
+
+  it('shows at most one callout when several Relics trigger in one batch, naming the last', () => {
+    // A 3–5 Relic loadout resolves every eligible Relic for one event in equip-slot
+    // order (RELIC_RULES.md §4.2), so a single batch can carry more than one
+    // `RelicTriggered` — including Emergency Core's per-Swap re-emission while
+    // armed. The single-callout mechanism names the one the batch finished on and
+    // is deliberately not widened into a queue.
+    const selected = selectBatchCallout(
+      [
+        parseInBattleEvent({ type: 'RelicTriggered', relicId: 'relicinst_a1' })!,
+        parseInBattleEvent({ type: 'RelicTriggered', relicId: 'relicinst_b2' })!,
+        parseInBattleEvent({ type: 'RelicTriggered', relicId: 'relicinst_c3' })!,
+      ],
+      resolveCardName,
+      resolveRelicName
+    );
+
+    expect(selected?.message).toBe('RELIC: Emergency Core');
+    expect(selected?.message).not.toContain('relicinst');
   });
 
   it('calls out a meaningful Combo and stays silent about an ordinary single-Match Swap', () => {
     // MATCH3_RULES.md §6.2 item 1: the first Match of a committed Swap makes Combo
     // 1, which is the ordinary case, not a combo.
     const single = parseInBattleEvent({ type: 'ComboChanged', combo: 1 })!;
-    expect(describeEventCallout(single, resolveCardName)).toBeNull();
+    expect(describeEventCallout(single, resolveCardName, resolveRelicName)).toBeNull();
 
     const cascade = parseInBattleEvent({ type: 'ComboChanged', combo: 4 })!;
-    expect(describeEventCallout(cascade, resolveCardName)).toEqual({
+    expect(describeEventCallout(cascade, resolveCardName, resolveRelicName)).toEqual({
       message: 'COMBO ×4',
       color: '#fbbf24',
       priority: 1,
@@ -638,19 +754,27 @@ describe('TASK-210 — the player-facing combat callout (SIGNALR_PROTOCOL.md §3
 
   it('names a cast from the loaded definition and never leaks a Boss skill identity', () => {
     expect(
-      describeEventCallout(parseInBattleEvent({ type: 'CardCast', cardId: 'card-heal' })!, resolveCardName)
+      describeEventCallout(
+        parseInBattleEvent({ type: 'CardCast', cardId: 'card-heal' })!,
+        resolveCardName,
+        resolveRelicName
+      )
     ).toEqual({ message: 'CARD: Heal', color: '#a5b4fc', priority: 2 });
 
     // An identity with no loaded definition is shown as the identity itself.
     expect(
-      describeEventCallout(parseInBattleEvent({ type: 'CardCast', cardId: 'card-unknown' })!, resolveCardName)
-        ?.message
+      describeEventCallout(
+        parseInBattleEvent({ type: 'CardCast', cardId: 'card-unknown' })!,
+        resolveCardName,
+        resolveRelicName
+      )?.message
     ).toBe('CARD: card-unknown');
 
     expect(
       describeEventCallout(
         parseInBattleEvent({ type: 'PetSkillCast', cardId: 'card-inferno' })!,
-        resolveCardName
+        resolveCardName,
+        resolveRelicName
       )?.message
     ).toBe('PET SKILL: card-inferno');
 
@@ -658,7 +782,8 @@ describe('TASK-210 — the player-facing combat callout (SIGNALR_PROTOCOL.md §3
     // event's own existence is what the player is told.
     const bossSkill = describeEventCallout(
       parseInBattleEvent({ type: 'BossSkillCast', skillId: 'flame-burst-mega', sourceId: 'boss-hoa-long' })!,
-      resolveCardName
+      resolveCardName,
+      resolveRelicName
     );
     expect(bossSkill).toEqual({ message: 'BOSS SKILL', color: '#f87171', priority: 3 });
     expect(bossSkill?.message).not.toContain('flame-burst-mega');
@@ -674,7 +799,8 @@ describe('TASK-210 — the player-facing combat callout (SIGNALR_PROTOCOL.md §3
         progress: 3,
         threshold: 7,
       })!,
-      resolveCardName
+      resolveCardName,
+      resolveRelicName
     );
     expect(petCharged).toEqual({ message: 'PASSIVE 3/7', color: '#c4b5fd', priority: 5 });
 
@@ -687,7 +813,8 @@ describe('TASK-210 — the player-facing combat callout (SIGNALR_PROTOCOL.md §3
         progress: 5,
         threshold: 5,
       })!,
-      resolveCardName
+      resolveCardName,
+      resolveRelicName
     );
     expect(bossCharged?.message).toBe('BOSS PASSIVE 5/5');
 
@@ -701,7 +828,8 @@ describe('TASK-210 — the player-facing combat callout (SIGNALR_PROTOCOL.md §3
           progress: 5,
           threshold: 5,
         })!,
-        resolveCardName
+        resolveCardName,
+        resolveRelicName
       )?.message
     ).toBe('PASSIVE TRIGGERED');
 
@@ -720,7 +848,7 @@ describe('TASK-210 — the player-facing combat callout (SIGNALR_PROTOCOL.md §3
       cascadeDepth: 0,
     })!;
 
-    expect(describeEventCallout(match, resolveCardName)).toEqual({
+    expect(describeEventCallout(match, resolveCardName, resolveRelicName)).toEqual({
       message: 'MATCH',
       color: '#e2e8f0',
       priority: 6,
@@ -741,7 +869,7 @@ describe('TASK-210 — the player-facing combat callout (SIGNALR_PROTOCOL.md §3
       parseInBattleEvent({ type: 'DamageDealt', source: 'player', target: 'boss', amount: 120 })!,
     ];
 
-    expect(selectBatchCallout(events, resolveCardName)?.message).toBe('COMBO ×4');
+    expect(selectBatchCallout(events, resolveCardName, resolveRelicName)?.message).toBe('COMBO ×4');
 
     // Among equally important events the last one wins: it is the one the
     // resolution finished on.
@@ -749,7 +877,9 @@ describe('TASK-210 — the player-facing combat callout (SIGNALR_PROTOCOL.md §3
       parseInBattleEvent({ type: 'CardCast', cardId: 'card-heal' })!,
       parseInBattleEvent({ type: 'PetSkillCast', cardId: 'card-inferno' })!,
     ];
-    expect(selectBatchCallout(twoCasts, resolveCardName)?.message).toBe('PET SKILL: card-inferno');
+    expect(selectBatchCallout(twoCasts, resolveCardName, resolveRelicName)?.message).toBe(
+      'PET SKILL: card-inferno'
+    );
 
     // A batch that produces no events a player needs told produces no callout.
     expect(
@@ -758,11 +888,48 @@ describe('TASK-210 — the player-facing combat callout (SIGNALR_PROTOCOL.md §3
           parseInBattleEvent({ type: 'GemMatched', cellIndex: 8, gemType: 'ATK' })!,
           parseInBattleEvent({ type: 'CascadeCreated', cascadeDepth: 3 })!,
         ],
-        resolveCardName
+        resolveCardName,
+        resolveRelicName
       )
     ).toBeNull();
 
-    expect(selectBatchCallout([], resolveCardName)).toBeNull();
+    expect(selectBatchCallout([], resolveCardName, resolveRelicName)).toBeNull();
+  });
+
+  it('still presents exactly one callout when a Relic trigger shares a batch with Combo, cast and Match', () => {
+    // The ladder is unchanged for every existing event: a Combo outranks a Relic
+    // trigger, a Relic trigger outranks a Boss action, a Passive and a Match, and
+    // it shares the cast's slot (the later-delivered one wins that tie).
+    const comboBatch = [
+      parseInBattleEvent({ type: 'RelicTriggered', relicId: 'relicinst_a1' })!,
+      parseInBattleEvent({ type: 'ComboChanged', combo: 3 })!,
+    ];
+    expect(selectBatchCallout(comboBatch, resolveCardName, resolveRelicName)?.message).toBe('COMBO ×3');
+
+    const bossBatch = [
+      parseInBattleEvent({ type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' })!,
+      parseInBattleEvent({ type: 'RelicTriggered', relicId: 'relicinst_a1' })!,
+      parseInBattleEvent({ type: 'MatchCreated', shape: 'Straight', cells: [0, 1, 2], gemType: 'ATK', cascadeDepth: 0 })!,
+    ];
+    expect(selectBatchCallout(bossBatch, resolveCardName, resolveRelicName)?.message).toBe(
+      'RELIC: Berserker Core'
+    );
+
+    // Sharing a priority number with the cast slot changes no existing event's
+    // standing, and the tie is the pre-existing "last delivered wins" rule.
+    const castBatch = [
+      parseInBattleEvent({ type: 'RelicTriggered', relicId: 'relicinst_b2' })!,
+      parseInBattleEvent({ type: 'CardCast', cardId: 'card-heal' })!,
+    ];
+    expect(selectBatchCallout(castBatch, resolveCardName, resolveRelicName)?.message).toBe('CARD: Heal');
+
+    // An unresolvable Relic is simply absent from the batch's selection, and the
+    // sibling events still get their callout.
+    const unresolvedBatch = [
+      parseInBattleEvent({ type: 'RelicTriggered', relicId: 'relicinst_unknown' })!,
+      parseInBattleEvent({ type: 'ComboChanged', combo: 2 })!,
+    ];
+    expect(selectBatchCallout(unresolvedBatch, resolveCardName, resolveRelicName)?.message).toBe('COMBO ×2');
   });
 });
 
@@ -1296,5 +1463,170 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
     ]) {
       expect(source, `BattleScene must not contain "${forbidden}"`).not.toContain(forbidden);
     }
+  });
+});
+
+describe('TASK-218B — the Relic trigger callout reaches the player (SIGNALR_PROTOCOL.md §3.2.23)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** The owned Relics the scene reads (`GET /api/relics`, API_CONTRACTS.md §5.4). */
+  const OWNED_RELICS = [
+    { relicId: 'relicinst_berserker', name: 'Berserker Core' },
+    { relicId: 'relicinst_mana', name: 'Mana Crystal' },
+    { relicId: 'relicinst_emergency', name: 'Emergency Core' },
+  ];
+
+  function createBattle(relics = OWNED_RELICS, relicsFailure?: Error) {
+    const harness = createSceneHarness({ relics, ...(relicsFailure ? { relicsFailure } : {}) });
+    const scene = new BattleScene();
+    const ctx = harness.context(scene, 'BattleScene');
+    return { harness, scene, ctx };
+  }
+
+  /** The callout line the player actually reads, as rendered. */
+  function renderedCallout(harness: ReturnType<typeof createSceneHarness>): string {
+    const text = (harness as unknown as { texts: Array<{ text: string }> }).texts;
+    // The callout is the centered line on the row above the board; the scene's
+    // harness records every Text with its value, so the last non-empty centered
+    // one carrying a callout vocabulary word is the callout.
+    const callouts = text
+      .map((entry) => entry.text)
+      .filter((value) => /^(MATCH|COMBO ×\d+|CARD: |PET SKILL: |BOSS SKILL|RELIC: |PASSIVE)/.test(value));
+    return callouts[callouts.length - 1] ?? '';
+  }
+
+  it('names the triggered Relic in the player-facing callout, never its instance id', async () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    harness.emitBattleEvents({
+      battleId: 'b-relic',
+      serverSequence: 4,
+      events: [{ type: 'RelicTriggered', relicId: 'relicinst_berserker' }],
+    });
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('RELIC: Berserker Core');
+    expect(rendered).not.toContain('relicinst_berserker');
+    expect(rendered).not.toContain('RelicTriggered');
+  });
+
+  it('names two different Relics from the delivered read, one callout at a time', async () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    harness.emitBattleEvents({
+      battleId: 'b-relic',
+      serverSequence: 4,
+      events: [{ type: 'RelicTriggered', relicId: 'relicinst_mana' }],
+    });
+    expect(harness.texts.map((t) => t.text).join('\n')).toContain('RELIC: Mana Crystal');
+
+    harness.emitBattleEvents({
+      battleId: 'b-relic',
+      serverSequence: 5,
+      events: [{ type: 'RelicTriggered', relicId: 'relicinst_emergency' }],
+    });
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('RELIC: Emergency Core');
+    expect(rendered).not.toContain('relicinst_');
+  });
+
+  it('shows no callout at all for a Relic the loaded definitions do not contain', async () => {
+    const { harness, scene, ctx } = createBattle([
+      { relicId: 'relicinst_berserker', name: 'Berserker Core' },
+    ]);
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    // The whole event is delivered; nothing about it is player-facing.
+    harness.emitBattleEvents({
+      battleId: 'b-relic',
+      serverSequence: 4,
+      events: [
+        { type: 'RelicTriggered', relicId: 'relicinst_unowned' },
+        { type: 'PowerChanged', delta: 5, power: 5, source: 'relic' },
+      ],
+    });
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).not.toContain('relicinst_unowned');
+    expect(rendered).not.toContain('RelicTriggered');
+    expect(rendered).not.toContain('RELIC:');
+    // The sibling event's own feedback is unaffected: the Power movement is still
+    // drawn, so an unresolvable Relic does not stop the rest of the presentation.
+    expect(harness.texts.map((t) => t.text)).toContain('+5');
+  });
+
+  it('shows no callout when the Relic collection read fails — never the raw id', async () => {
+    const { harness, scene, ctx } = createBattle([], new Error('GET /api/relics unavailable'));
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    harness.emitBattleEvents({
+      battleId: 'b-relic',
+      serverSequence: 4,
+      events: [{ type: 'RelicTriggered', relicId: 'relicinst_berserker' }],
+    });
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).not.toContain('RELIC:');
+    expect(rendered).not.toContain('relicinst_berserker');
+  });
+
+  it('keeps every existing callout unchanged and still presents exactly one per batch', async () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    // A Combo still outranks a Relic trigger in the same batch.
+    harness.emitBattleEvents({
+      battleId: 'b-relic',
+      serverSequence: 4,
+      events: [
+        { type: 'MatchCreated', shape: 'Straight', cells: [0, 1, 2], gemType: 'ATK', cascadeDepth: 0 },
+        { type: 'ComboChanged', combo: 3 },
+        { type: 'RelicTriggered', relicId: 'relicinst_berserker' },
+      ],
+    });
+    expect(renderedCallout(harness)).toBe('COMBO ×3');
+
+    // An ordinary single-Match Swap is still just `MATCH`.
+    harness.emitBattleEvents({
+      battleId: 'b-relic',
+      serverSequence: 5,
+      events: [
+        { type: 'MatchCreated', shape: 'Straight', cells: [3, 4, 5], gemType: 'ATK', cascadeDepth: 0 },
+      ],
+    });
+    expect(renderedCallout(harness)).toBe('MATCH');
+
+    // Several Relic triggers in one batch still produce one callout, naming the
+    // last one the resolution finished on (RELIC_RULES.md §4.2's equip-slot order).
+    harness.emitBattleEvents({
+      battleId: 'b-relic',
+      serverSequence: 6,
+      events: [
+        { type: 'RelicTriggered', relicId: 'relicinst_berserker' },
+        { type: 'RelicTriggered', relicId: 'relicinst_mana' },
+        { type: 'RelicTriggered', relicId: 'relicinst_emergency' },
+      ],
+    });
+
+    // Three triggers in one batch still produce exactly ONE callout line: the
+    // scene owns a single callout Text, and the batch's selected callout replaces
+    // whatever was on it. Nothing is queued and no second line is created.
+    const lastBatchRelicCallouts = harness.texts
+      .map((t) => t.text)
+      .filter((value) => value.startsWith('RELIC: '));
+    expect(lastBatchRelicCallouts).toEqual(['RELIC: Emergency Core']);
+    expect(renderedCallout(harness)).toBe('RELIC: Emergency Core');
+    // The batch named one Relic, and it named the right one — the last the
+    // resolution finished on (RELIC_RULES.md §4.2's equip-slot order).
+    expect(lastBatchRelicCallouts[0]).not.toContain('relicinst_');
   });
 });

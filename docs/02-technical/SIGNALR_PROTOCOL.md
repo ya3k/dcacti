@@ -1,6 +1,19 @@
 # SignalR Protocol
 
-**Version:** 2.18 (§4.3 item 13's **Signature Skill identification rule
+**Version:** 2.19 (§7 **item 4 added** — the reconnect group re-join rule: on a
+successful reconnect the client re-adds its new connection to the battle's group
+by invoking `JoinBattle(battleId)`. Group membership is connection-scoped and is
+never restored by the server, and the re-join completes before §7 item 1's
+`GetBattleState` snapshot request is issued, so the new connection is a member of
+the battle's group before normal post-reconnect battle event delivery is
+expected. The existing `JoinBattle` push (§4.1) and the existing
+`GetBattleState` snapshot remain the authoritative existing delivery paths.
+**No wire member, member set, hub method, event shape, delivery path,
+subscription, or gameplay rule is added or removed by this revision**: §2's
+method list is unchanged, `JoinBattle` is still the one group join (§2.2) and
+`BattleStateUpdated` is still the only state-push method (§4 item 11), no
+server-side automatic group restoration exists, and §7 item 1's snapshot
+contract is unchanged. Prior 2.18: (§4.3 item 13's **Signature Skill identification rule
 corrected** per TASK-213 §5's decision, implemented by TASK-219A. The client now
 identifies the active Pet's derived Signature Skill from the **delivered Pet
 read** — `API_CONTRACTS.md` §5.1's `signatureSkill` member, which carries that
@@ -2267,6 +2280,16 @@ without waiting for/parsing the event broadcast.
 3. If `GetBattleState` returns `BATTLE_NOT_FOUND` (state expired/cleared,
    see `REDIS_STATE.md` §3 TTL), the client treats the battle as ended and
    falls back to `GET /api/battle/{battleId}/result` (`API_CONTRACTS.md` §4).
+4. On a successful reconnect, the client re-adds its new connection to the
+   battle's group by invoking `JoinBattle(battleId)`. Group membership is
+   connection-scoped and is never restored by the server. The existing
+   `JoinBattle` push and existing `GetBattleState` snapshot remain the
+   authoritative existing delivery paths; no new method, event, wire member,
+   or state model is introduced. The re-join **completes before** item 1's
+   snapshot request is issued, so the new connection is a member of the
+   battle's group before normal post-reconnect battle event delivery is
+   expected — a reconnect whose runtime holds no current battle knows no
+   group to re-join and issues no `JoinBattle`.
 
 The snapshot is **the same projection** the §4 push carries, member for member:
 the record's own members (§4 item 4), `playerState` (§4.2 item 2), `petState`

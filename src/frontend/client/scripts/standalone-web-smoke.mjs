@@ -249,6 +249,88 @@ async function waitForCondition(predicateFn, description, timeoutMs = 15000, int
 }
 
 /**
+ * True only for the **settled** cast acknowledgement the battle scene renders
+ * once the server has answered a cast request (`BattleScene.renderCastStatus`,
+ * `SIGNALR_PROTOCOL.md` §2, §5):
+ *
+ * ```text
+ * CardCast <cardId>: accepted. Awaiting the server's state push.
+ * PetSkillCast: rejected (<reason>).
+ * ```
+ *
+ * The same line also carries the scene's transient transport captions: the
+ * `… in flight…` it renders *before* the acknowledgement arrives, and `… not
+ * sent: …` when the request never left the client. Neither is the server's
+ * answer, so a caption that merely *changed* is not an acknowledgement — only
+ * `accepted` / `rejected` is (TASK-227).
+ */
+function isSettledCastAcknowledgement(text) {
+  return typeof text === 'string' && /: (?:accepted|rejected)\b/.test(text);
+}
+
+/**
+ * The closed set of **player-facing** callout forms the battle scene may show
+ * (TASK-210 §7's ladder, extended by TASK-218B).
+ *
+ * It is deliberately an allow-list rather than "any text": each form is the
+ * documented presentation of a delivered event, and the callout row must never
+ * become an event feed. A callout that is not one of these is a failure even
+ * though it is on the callout line.
+ *
+ * ```text
+ * MATCH                        MatchCreated
+ * COMBO ×N   (N >= 2)          ComboChanged        (MATCH3_RULES.md §6.2 item 1)
+ * CARD: <name>                 CardCast
+ * PET SKILL: <name>            PetSkillCast
+ * RELIC: <name>                RelicTriggered      (TASK-218B, §3.2.23)
+ * BOSS SKILL                   BossSkillCast
+ * PASSIVE … / BOSS PASSIVE …   PassiveCharged / PassiveTriggered
+ * ```
+ *
+ * `MATCH` / `COMBO ×N` is exactly the vocabulary `MATCH3_RULES.md` §6 gives the
+ * value, and `COMBO ×1` is deliberately never shown (§6.2 item 1).
+ */
+function isPlayerFacingCallout(callout) {
+  return (
+    callout === 'MATCH' ||
+    /^COMBO ×[2-9]\d*$/.test(callout) ||
+    /^CARD: \S/.test(callout) ||
+    /^PET SKILL: \S/.test(callout) ||
+    // TASK-218B: the Relic's own delivered name, and nothing else on that line.
+    /^RELIC: \S/.test(callout) ||
+    callout === 'BOSS SKILL' ||
+    /^(?:BOSS )?PASSIVE(?: TRIGGERED)? \d+\/\d+$/.test(callout) ||
+    /^(?:BOSS )?PASSIVE TRIGGERED$/.test(callout)
+  );
+}
+
+/**
+ * Whether a rendered callout carries a **technical identity** that must never
+ * reach the player.
+ *
+ * This is the rejection half of the callout contract, and it is independent of the
+ * allow-list: an identity could appear inside an otherwise valid-looking line, so
+ * both are asserted. It covers the raw Relic instance identity
+ * (`RELIC_RULES.md` §2.2 item 3), the Relic *definition* id spelling
+ * `SIGNALR_PROTOCOL.md` §3.2.23's example misleadingly shows, an internal wire
+ * event type name, a technical Trigger name (`RELIC_RULES.md` §3's closed set), and
+ * a Card definition id.
+ */
+function carriesTechnicalIdentity(callout) {
+  return (
+    /relicinst/i.test(callout) ||
+    /relic-[a-z0-9-]+/i.test(callout) ||
+    /RelicTriggered|PowerChanged|DamageDealt|DamageTaken|MatchCreated|ComboChanged|CardCast|PetSkillCast|BossSkillCast|PassiveCharged|PassiveTriggered/.test(
+      callout
+    ) ||
+    /On(?:Match|MatchCount|Combo|Cascade|HpBelow|PowerGain|DamageTaken|DamageDealt|CardCast|BattleStart|TurnStart|TurnEnd)\b/.test(
+      callout
+    ) ||
+    /card-[a-z0-9-]+/i.test(callout)
+  );
+}
+
+/**
  * The BattleScene's transient combat feedback, as it is at the moment of the probe.
  *
  * TASK-210 §7–§8: the callout is the one player-facing statement a resolution
@@ -334,6 +416,45 @@ async function waitForFeedbackToFade(cdp, timeoutMs, requireSighting) {
 }
 
 /**
+ * Removes any transient feedback still on the scene and waits for the layer to be
+ * genuinely empty.
+ *
+ * `waitForFeedbackToFade` waits for the *tweens* to finish, which a stalled frame
+ * loop can postpone indefinitely; this destroys what is left instead, so a
+ * measurement pass starts from a known-empty layer regardless of the clock. It is a
+ * harness measure and not an assertion: the assertions about one batch's feedback
+ * remain exactly as strict, they are just no longer racing a previous pass's fade.
+ */
+async function drainFeedback(cdp, timeoutMs) {
+  try {
+    await evaluate(
+      cdp,
+      `(() => {
+        const s = window.__game.scene.getScene('BattleScene');
+        if (!s || !s.feedbackLayer) return false;
+        for (const child of [...(s.feedbackLayer.list || [])]) child.destroy();
+        return true;
+      })()`
+    );
+  } catch {
+    /* the scene may be mid-transition; the poll below reports what is left */
+  }
+
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const sample = await evaluate(cdp, FEEDBACK_PROBE);
+      if ((sample?.floaters ?? []).filter((f) => f.text).length === 0) return true;
+    } catch {
+      /* keep polling */
+    }
+    await delay(60);
+  }
+
+  return false;
+}
+
+/**
  * Samples the battle scene's transient feedback until `timeoutMs` elapses.
  *
  * It returns every distinct callout it saw, the bounds of the last one, and the
@@ -395,6 +516,15 @@ async function pollFeedback(cdp, timeoutMs) {
  * `DamageTaken`, `SIGNALR_PROTOCOL.md` §3.2.15 item 1). Nothing here is a gameplay
  * fact the client computes: every member is one the server sends.
  *
+ * TASK-218B adds the two Relic triggers below. `RelicTriggered` carries only the
+ * owned **instance** identity (`SIGNALR_PROTOCOL.md` §3.2.23), which is what the
+ * battle scene must resolve to the Relic's delivered `name` through the same
+ * `getRelics()` read the Lobby makes (`API_CONTRACTS.md` §5.4). Two different
+ * owned instances are named, so the assertion is about the lookup rather than
+ * about one fixed label. They sit **after** the Combo, so the batch's own priority
+ * ladder still selects `COMBO ×4` — the Relic events are present in the batch
+ * without changing which single callout wins.
+ *
  * It is presentation-only (`BattleScene` mutates no state from it), so the check
  * below can run it twice — once so the feedback is on screen for a screenshot,
  * once for the timed sampling.
@@ -415,9 +545,31 @@ const FEEDBACK_INJECTION = `
       { type: 'DamageCalculated', base: 50, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 40 },
       { type: 'DamageDealt', source: 'boss', target: 'player', amount: 40 },
       { type: 'DamageTaken', source: 'boss', target: 'player', amount: 40 },
+      ...window.__relicTriggerProbe
     ],
   });
   return true;
+})()
+`;
+
+/**
+ * The owned Relic instances this run may name, read from the **battle scene's own
+ * loaded definitions** rather than from this script's expectations.
+ *
+ * `BattleScene.relicDefinitions` is the `GET /api/relics` read the scene performed
+ * (`loadRelicDefinitions`), so a value taken from it is one the running stack
+ * actually delivered. It also stashes the two `RelicTriggered` events
+ * `FEEDBACK_INJECTION` appends, so that batch and this probe can never disagree
+ * about which Relics it names. An empty result means the read did not reach the
+ * scene, and the Relic half of phase 5c is then recorded as a failure rather than
+ * skipped.
+ */
+const RELIC_PROBE_SETUP = `
+(async () => {
+  const s = window.__game.scene.getScene('BattleScene');
+  const owned = s.relicDefinitions instanceof Map ? [...s.relicDefinitions.values()] : [];
+  window.__relicTriggerProbe = owned.slice(0, 2).map((r) => ({ type: 'RelicTriggered', relicId: r.relicId }));
+  return owned.map((r) => ({ relicId: r.relicId, name: r.name }));
 })()
 `;
 
@@ -2367,7 +2519,7 @@ export async function runSmokeTest(runNumber = 1) {
     record(
       'phase5c.aRealResolutionReachesThePlayer',
       afterSwap.presentedEvents.length === presentedBeforeSwap ||
-        realFeedback.callouts.some((c) => /^(MATCH|COMBO ×\d+)$/.test(c)),
+        realFeedback.callouts.some((c) => isPlayerFacingCallout(c)),
       {
         callouts: realFeedback.callouts,
         eventsPresented: afterSwap.presentedEvents.length - presentedBeforeSwap,
@@ -2375,17 +2527,49 @@ export async function runSmokeTest(runNumber = 1) {
       }
     );
 
-    // `MATCH` / `COMBO ×N` is exactly the vocabulary MATCH3_RULES.md §6 gives the
-    // value, and `COMBO ×1` is deliberately never shown (§6.2 item 1).
+    // Every callout a real resolution produced is one of the documented
+    // player-facing forms, and nothing else — no raw event line, no technical
+    // identity. `MATCH` / `COMBO ×N` is exactly the vocabulary MATCH3_RULES.md §6
+    // gives the value (`COMBO ×1` is deliberately never shown, §6.2 item 1); a
+    // `RELIC: <name>` line is TASK-218B's presentation of a delivered
+    // `RelicTriggered` (SIGNALR_PROTOCOL.md §3.2.23), named from the Relic's own
+    // delivered `name` (`API_CONTRACTS.md` §5.4) and never from its instance id.
     record(
       'phase5c.comboCalloutUsesTheDeliveredValue',
-      realFeedback.callouts.every((c) => c === 'MATCH' || /^COMBO ×[2-9]\d*$/.test(c)),
+      realFeedback.callouts.every((c) => isPlayerFacingCallout(c)),
       realFeedback.callouts
+    );
+
+    // No callout may carry a technical identity, whatever form it takes: a raw
+    // Relic instance id (`relicinst_…`), a Relic definition id, a Card id, an
+    // internal event type name, or a technical Trigger name. This is asserted over
+    // the real resolution's own callouts as well as the injected batch's below.
+    record(
+      'phase5c.noCalloutLeaksATechnicalIdentity',
+      realFeedback.callouts.every((c) => !carriesTechnicalIdentity(c)),
+      realFeedback.callouts.filter(carriesTechnicalIdentity)
     );
 
     // Now the deterministic half: one batch, through the documented entry point the
     // authoritative events arrive on.
     const beforeInjection = await evaluate(cdp, BATTLE_SNAPSHOT);
+
+    // TASK-218B: the batch's Relic events are built from the battle scene's **own**
+    // loaded definitions (its `getRelics()` read), so they name Relics this running
+    // stack actually delivered. The setup must precede the first injection, and an
+    // empty result is recorded as its own failure below rather than silently
+    // dropping the Relic half of this phase.
+    const sceneRelics = await evaluate(cdp, RELIC_PROBE_SETUP);
+
+    record(
+      'phase5cRelic.sceneLoadedTheDeliveredRelicRead',
+      Array.isArray(sceneRelics) &&
+        sceneRelics.length > 0 &&
+        sceneRelics.every(
+          (r) => typeof r.relicId === 'string' && typeof r.name === 'string' && r.name.length > 0
+        ),
+      sceneRelics
+    );
 
     // Drain whatever the real resolution left on screen first, so the probe below
     // can only ever be measuring the injected batch: a real resolution's Power
@@ -2403,8 +2587,16 @@ export async function runSmokeTest(runNumber = 1) {
     // Wait for that pass's own floaters to fade before measuring. This is a wait
     // on the scene rather than on the clock, because a stall in the frame loop
     // would otherwise leave the screenshot pass's floaters alive when the
-    // measurement pass injects its own.
+    // measurement pass injects its own. `requireSighting` makes the wait prove the
+    // screenshot pass was presented at all before it waits for it to go away, so a
+    // frame-loop stall cannot turn this into "returned immediately, still alive".
     await waitForFeedbackToFade(cdp, 5000, true);
+
+    // Belt and braces for that same stall: the measurement pass must observe only
+    // its own batch, so the layer is asserted empty before it is injected. A
+    // leftover floater here is drained rather than measured, because the assertion
+    // below is about one batch's feedback, not about the fade's timing.
+    await drainFeedback(cdp, 5000);
 
     // Second pass, for the measurements.
     await evaluate(cdp, FEEDBACK_INJECTION);
@@ -2412,9 +2604,21 @@ export async function runSmokeTest(runNumber = 1) {
     const afterInjection = await evaluate(cdp, BATTLE_SNAPSHOT);
 
     // One callout for the whole batch, and it is the most important thing in it.
+    // TASK-218B puts two `RelicTriggered` events in this batch: they are present,
+    // and they still do not add a second callout, because the Combo outranks them.
     record(
       'phase5c.oneSelectiveCalloutPerBatch',
       injectedFeedback.callouts.includes('COMBO ×4') && injectedFeedback.callouts.length === 1,
+      injectedFeedback.callouts
+    );
+
+    // Whatever won the batch, the line is a documented player-facing form and
+    // carries no technical identity.
+    record(
+      'phase5c.theSelectedCalloutIsPlayerFacing',
+      injectedFeedback.callouts.length === 1 &&
+        injectedFeedback.callouts.every((c) => isPlayerFacingCallout(c)) &&
+        injectedFeedback.callouts.every((c) => !carriesTechnicalIdentity(c)),
       injectedFeedback.callouts
     );
 
@@ -2503,7 +2707,150 @@ export async function runSmokeTest(runNumber = 1) {
       }
     );
 
-    // Let the injected batch's own short input guard settle before the cast phase.
+    // Let the injected batch's own short input guard settle before the next pass.
+    await delay(400);
+
+    // -------------------------------------------------------------
+    // PHASE 5c-RELIC: RELIC TRIGGER PRESENTATION (TASK-218B)
+    // -------------------------------------------------------------
+    // `RelicTriggered` is delivered with the owned instance identity and nothing
+    // else (`SIGNALR_PROTOCOL.md` §3.2.23 item 5 fixes that shape as final), so the
+    // player-facing name has to come from the `GET /api/relics` read the scene
+    // performs (`API_CONTRACTS.md` §5.4). This pass asserts the whole path end to
+    // end: a delivered `RelicTriggered` renders the delivered **name**, one callout
+    // at a time, and no raw identity appears anywhere.
+    //
+    // The identities are taken from the scene's own loaded definitions (resolved
+    // above, before the batch was injected), so this is evidence about the running
+    // stack rather than about this script's fixture.
+    console.log('\n--- Phase 5c-relic: Relic trigger callout (TASK-218B) ---');
+
+    // Two different owned Relics, exercised one batch at a time, so the assertion
+    // is about the lookup rather than one fixed label. `\`\${id}\`` is the identity
+    // as the wire carries it; the rendered line must contain the delivered name.
+    const relicCalls = [];
+    for (const relic of (Array.isArray(sceneRelics) ? sceneRelics : []).slice(0, 2)) {
+      await drainFeedback(cdp, 5000);
+      await evaluate(
+        cdp,
+        `(() => {
+          const s = window.__game.scene.getScene('BattleScene');
+          s.handleBattleEvents({
+            battleId: 'task-218b-relic-probe',
+            serverSequence: 999998,
+            events: [{ type: 'RelicTriggered', relicId: ${JSON.stringify(relic.relicId)} }],
+          });
+          return true;
+        })()`
+      );
+      const sampled = await pollFeedback(cdp, 900);
+      relicCalls.push({ relic, callouts: sampled.callouts, calloutBounds: sampled.calloutBounds });
+
+      // Player-facing evidence of the callout naming this Relic, taken while it is
+      // on screen (the callout holds about a second). One frame per Relic, so the
+      // artifact shows two different names rather than one.
+      if (relicCalls.length === 1) {
+        await captureScreenshot(cdp, `run${runNumber}-07c-relic-callout`);
+      }
+    }
+
+    record(
+      'phase5cRelic.everyRelicCalloutNamesTheDeliveredRelic',
+      relicCalls.length === Math.min(2, Array.isArray(sceneRelics) ? sceneRelics.length : 0) &&
+        relicCalls.length > 0 &&
+        relicCalls.every(
+          ({ relic, callouts }) =>
+            callouts.length === 1 &&
+            callouts[0] === `RELIC: ${relic.name}` &&
+            !callouts[0].includes(relic.relicId)
+        ),
+      relicCalls.map(({ relic, callouts }) => ({ relicId: relic.relicId, name: relic.name, callouts }))
+    );
+
+    // The rejection half, asserted independently of the exact wording: no observed
+    // Relic callout carries an instance id, a definition id, an event type name, or
+    // a technical Trigger name.
+    record(
+      'phase5cRelic.noRawRelicIdentityOrEventTypeIsShown',
+      relicCalls.every(({ callouts }) => callouts.every((c) => !carriesTechnicalIdentity(c))),
+      relicCalls.flatMap(({ callouts }) => callouts.filter(carriesTechnicalIdentity))
+    );
+
+    // A Relic the loaded definitions do not contain produces **no** callout — not
+    // the raw id, and no crash that would stop the rest of the presentation.
+    //
+    // The callout row is a transient line that is *replaced*, never blanked
+    // (`showCallout` only runs when a batch selects one), so "no callout" is
+    // asserted the way a player experiences it: the batch does not put a new line
+    // there, and no line anywhere ever shows the identity. The before/after text is
+    // therefore read directly rather than sampled.
+    await drainFeedback(cdp, 5000);
+    const unownedProbe = await evaluate(
+      cdp,
+      `(() => {
+        const s = window.__game.scene.getScene('BattleScene');
+        const owned = s.relicDefinitions instanceof Map ? [...s.relicDefinitions.keys()] : [];
+        const unowned = 'relicinst_not-owned-by-this-account';
+        if (owned.includes(unowned)) return { skipped: true, reason: 'fixture collides with an owned id' };
+        // Start from a known non-Relic line, so "unchanged" is a real observation
+        // rather than a coincidence of the previous probe also being a Relic one
+        // (which would make a RELIC-prefix check vacuous).
+        if (s.calloutText) s.calloutText.setText('MATCH');
+        const before = s.calloutText ? s.calloutText.text : null;
+        s.handleBattleEvents({
+          battleId: 'task-218b-relic-probe',
+          serverSequence: 999997,
+          events: [
+            { type: 'RelicTriggered', relicId: unowned },
+            { type: 'PowerChanged', delta: 3, power: 3, source: 'relic' },
+          ],
+        });
+        const after = s.calloutText ? s.calloutText.text : null;
+        // Every text object the scene owns, so "the identity is nowhere on screen"
+        // is asserted over the whole rendered surface rather than one line.
+        const rendered = [];
+        for (const o of (s.children && s.children.list) || []) {
+          if (o.type === 'Text' && typeof o.text === 'string' && o.text) rendered.push(o.text);
+        }
+        return { skipped: false, before, after, rendered };
+      })()`
+    );
+    const unownedFeedback = await pollFeedback(cdp, 900);
+    record(
+      'phase5cRelic.anUnresolvableRelicShowsNothing',
+      unownedProbe.skipped === true ||
+        (// The batch left the row exactly as it was rather than naming the Relic:
+          // the previous callout — whatever it was — is still the callout, because
+          // a batch with no player-facing callout replaces nothing. This is the
+          // assertion that would fail if the identity had been named...
+          unownedProbe.after === unownedProbe.before &&
+          // ...and the row was not turned into a Relic callout, which is what naming
+          // the unresolvable instance would have required.
+          unownedProbe.before === 'MATCH' &&
+          !String(unownedProbe.after || '').startsWith('RELIC:') &&
+          // ...and no line anywhere on the scene shows the raw identity, so it did
+          // not reach the UI by any other route either.
+          (unownedProbe.rendered || []).every(
+            (text) => !text.includes('relicinst_not-owned-by-this-account')
+          ) &&
+          !String(unownedProbe.after || '').includes('relicinst_not-owned-by-this-account') &&
+          // The sibling event still reached the player, so the rest of the
+          // presentation continued normally rather than being aborted.
+          unownedFeedback.floaters.some((f) => f.text === '+3')),
+      { probe: unownedProbe, callouts: unownedFeedback.callouts, floaters: unownedFeedback.floaters }
+    );
+
+    // The Relic callout is still the one transient row: it must not overlap a board
+    // cell and must stay inside the safe area, exactly like every other callout.
+    const relicCalloutBounds = relicCalls.map((c) => c.calloutBounds).filter(Boolean);
+    record(
+      'phase5cRelic.theRelicCalloutStaysInTheCalloutRow',
+      relicCalloutBounds.length > 0 &&
+        relicCalloutBounds.every((b) => !overlapsBoard(b) && !outsideSafeArea(b)),
+      relicCalloutBounds
+    );
+
+    // Let this pass's own short input guard settle before the cast phase.
     await delay(400);
 
     // -------------------------------------------------------------
@@ -2524,8 +2871,12 @@ export async function runSmokeTest(runNumber = 1) {
     const castFeedback = await waitForCondition(
       async () => {
         const snap = await evaluate(cdp, BATTLE_SNAPSHOT);
-        if (snap.castText && snap.castText.length > 0) return snap.castText;
-        return false;
+        // Only the **settled** acknowledgement resolves this wait. This is the
+        // first cast of the phase, so there is no earlier caption to go stale —
+        // the transient `… in flight…` / `… not sent: …` lines are simply not
+        // the server's answer (TASK-228, V-2).
+        const text = snap.castText || '';
+        return isSettledCastAcknowledgement(text) ? text : false;
       },
       'Authoritative cast acknowledgement feedback',
       8000
@@ -2586,7 +2937,10 @@ export async function runSmokeTest(runNumber = 1) {
           async () => {
             const snap = await evaluate(cdp, BATTLE_SNAPSHOT);
             const text = snap.castText || '';
-            return text && text !== castFeedback ? text : false;
+            // TASK-227: the scene paints `CardCast <id> in flight…` on its way to
+            // the settled caption, so a caption that merely changed is not yet this
+            // phase's acknowledgement — only the server's own answer is.
+            return text !== castFeedback && isSettledCastAcknowledgement(text) ? text : false;
           },
           'second cast acknowledgement',
           4000
@@ -2706,7 +3060,10 @@ export async function runSmokeTest(runNumber = 1) {
             async () => {
               const snap = await evaluate(cdp, BATTLE_SNAPSHOT);
               const text = snap.castText || '';
-              return text.length > 0 && text !== secondCastText ? text : false;
+              // TASK-227: `PetSkillCast in flight…` is transient transport
+              // feedback; only the settled caption is this phase's acknowledgement.
+              const changedCaption = text.length > 0 && text !== secondCastText;
+              return changedCaption && isSettledCastAcknowledgement(text) ? text : false;
             },
             'Signature Skill control acknowledgement',
             4000
@@ -3804,6 +4161,299 @@ export async function runSmokeTest(runNumber = 1) {
       'Real battle synchronized with its own authoritative state',
       15000
     );
+
+    // -------------------------------------------------------------
+    // PHASE 10b: POST-RECONNECT GROUP DELIVERY (P-1, SIGNALR_PROTOCOL.md §7 item 4)
+    // -------------------------------------------------------------
+    // The acceptance leg for the reconnect group re-join. The scenario is the
+    // documented one, in order:
+    //
+    //   connected + joined  →  committed battle action  →  real transport
+    //   reconnect  →  the client re-joins the battle's group  →  another
+    //   committed battle action  →  the resulting group broadcast reaches the
+    //   NEW connection
+    //
+    // SignalR group membership is **connection-scoped** (§7 item 4), so a
+    // reconnecting client cannot rely on the membership of the connection the
+    // reconnect replaced: this leg fails unless the reconnected connection is
+    // added to the group again *and* a server-generated broadcast then arrives on
+    // it. §7.1's `GetBattleState` alone cannot satisfy it — that is a caller-only
+    // request/response that carries no events (§5 item 4, §3.1 item 4) — and
+    // neither can the re-join alone, because a join that never delivers a
+    // subsequent broadcast is exactly the defect this leg exists to catch.
+    //
+    // It runs on the phase-10 battle, which is played to its own terminal
+    // resolution immediately afterwards, so the extra resolution committed here
+    // cannot disturb a later phase. Its pre-reconnect action is committed on a
+    // freshly started battle, where neither side is near a terminal HP value.
+    console.log('\n--- Phase 10b: Post-reconnect group delivery ---');
+
+    /**
+     * Page-side observation of the live connection (observation only — it
+     * changes no product code path).
+     *
+     * Two things are recorded: every server → client push the connection
+     * receives, with the connection id it arrived on and the sequence it carries
+     * (§3 `ReceiveEvents`, §4 `BattleStateUpdated`), and every `joinBattle` the
+     * client performs, with the connection id it was invoked on. The join is
+     * recorded through the existing `SignalRService.joinBattle` operation — the
+     * documented §1.2 group join — never by reaching into the transport.
+     */
+    const RECONNECT_PROBE = `
+    (() => {
+      const s = window.__game && window.__game.scene.getScene('BattleScene');
+      const runtime = s && s.runtime ? s.runtime : null;
+      const state = runtime && runtime.getBattleState ? runtime.getBattleState() : null;
+      const probe = window.__reconnectProbe || null;
+      return {
+        active: !!(s && s.scene && s.scene.isActive()),
+        connectionId: runtime && runtime.signalR ? runtime.signalR.getConnectionId() : null,
+        sync: runtime && runtime.getState ? runtime.getState().sync : null,
+        sequence: state ? state.sequence : null,
+        boardLabels: s && s.boardLayer && s.boardLayer.list
+          ? s.boardLayer.list.filter((o) => o.type === 'Text').map((o) => o.text)
+          : [],
+        joins: probe ? probe.joins.slice() : [],
+        deliveries: probe ? probe.deliveries.slice() : [],
+      };
+    })()
+    `;
+
+    const probeInstalled = await evaluate(cdp, `(() => {
+      const s = window.__game.scene.getScene('BattleScene');
+      const runtime = s.runtime;
+      const service = runtime.signalR;
+      const state = runtime.getBattleState();
+
+      window.__reconnectProbe = { joins: [], deliveries: [] };
+
+      const observe = (name) => (payload) => {
+        window.__reconnectProbe.deliveries.push({
+          name,
+          connectionId: service.getConnectionId(),
+          // §3's batch carries \`serverSequence\`; §4's push carries the state's
+          // own \`sequence\`. They are recorded separately and never conflated.
+          serverSequence: payload && typeof payload.serverSequence === 'number' ? payload.serverSequence : null,
+          sequence: payload && typeof payload.sequence === 'number' ? payload.sequence : null,
+          eventCount: payload && Array.isArray(payload.events) ? payload.events.length : null,
+        });
+      };
+      service.on('ReceiveEvents', observe('ReceiveEvents'));
+      service.on('BattleStateUpdated', observe('BattleStateUpdated'));
+
+      const joinBattle = service.joinBattle.bind(service);
+      service.joinBattle = async (battleId) => {
+        window.__reconnectProbe.joins.push({
+          battleId,
+          connectionId: service.getConnectionId(),
+        });
+        return await joinBattle(battleId);
+      };
+
+      return {
+        battleId: state ? state.battleId : null,
+        sequence: state ? state.sequence : null,
+        connectionId: service.getConnectionId(),
+      };
+    })()`);
+
+    /**
+     * Commits one real board action with real pointer input and reports whether
+     * the board changed — which is what a committed resolution proves.
+     *
+     * A rejected Swap commits nothing (`MATCH3_RULES.md` §2.1.5 item 6) and
+     * delivers no broadcast (§3.1 item 4), so a rejection is retried against the
+     * next candidate instead of being counted as a delivery.
+     */
+    const commitOneSwap = async () => {
+      const attempted = [];
+
+      for (let attempt = 0; attempt < 8; attempt++) {
+        if ((await evaluate(cdp, ACTIVE_SCENE)) !== 'BattleScene') {
+          return { committed: false, reason: 'the battle is no longer the active scene', attempted };
+        }
+
+        const before = await evaluate(cdp, BATTLE_SNAPSHOT);
+        if (!before.active || before.boardLabels.length !== BOARD_SIZE * BOARD_SIZE) {
+          await delay(300);
+          continue;
+        }
+
+        const candidates = findMatchingSwaps(before.boardLabels);
+        const [from, to] = candidates.length > 0 ? candidates[0] : [0, 1];
+        await realClick(cdp, cellCentreOf(before, from));
+        await realClick(cdp, cellCentreOf(before, to));
+
+        try {
+          await waitForCondition(
+            async () => {
+              const current = await evaluate(cdp, BATTLE_SNAPSHOT);
+              if (!current.active) return true;
+              return JSON.stringify(current.boardLabels) !== JSON.stringify(before.boardLabels);
+            },
+            'committed board after the swap',
+            6000,
+            120
+          );
+        } catch {
+          /* rejected or unresolved: try the next candidate */
+        }
+
+        const after = await evaluate(cdp, BATTLE_SNAPSHOT);
+        const changed =
+          !after.active || JSON.stringify(after.boardLabels) !== JSON.stringify(before.boardLabels);
+
+        attempted.push({ from, to, changed });
+
+        if (changed) {
+          return { committed: true, from, to, attempted };
+        }
+      }
+
+      return { committed: false, reason: 'no candidate Swap was committed', attempted };
+    };
+
+    // ---- 1. One committed action on the joined connection ------------------
+    const beforeReconnectAction = await evaluate(cdp, RECONNECT_PROBE);
+    const preReconnect = await commitOneSwap();
+    const afterPreReconnect = await evaluate(cdp, RECONNECT_PROBE);
+
+    record(
+      'phase10b.preReconnectActionCommitted',
+      preReconnect.committed === true &&
+        beforeReconnectAction.sequence !== null &&
+        afterPreReconnect.sequence !== null &&
+        afterPreReconnect.sequence > beforeReconnectAction.sequence,
+      {
+        action: preReconnect,
+        sequence: [beforeReconnectAction.sequence, afterPreReconnect.sequence],
+      }
+    );
+
+    // The action's own resolution reached this connection as a group broadcast —
+    // the baseline that makes the post-reconnect delivery below a comparison
+    // rather than an isolated observation.
+    const preReconnectDeliveries = afterPreReconnect.deliveries.filter(
+      (d) => d.name === 'ReceiveEvents' && d.serverSequence === afterPreReconnect.sequence
+    );
+    record(
+      'phase10b.preReconnectActionDeliveredOnTheJoinedConnection',
+      preReconnectDeliveries.length === 1 &&
+        preReconnectDeliveries[0].connectionId === probeInstalled.connectionId,
+      preReconnectDeliveries
+    );
+
+    // ---- 2. A real transport reconnect ------------------------------------
+    const reconnected = await evaluate(cdp, `(async () => {
+      const s = window.__game.scene.getScene('BattleScene');
+      const runtime = s.runtime;
+      const service = runtime.signalR;
+      const connection = service.connection;
+      const beforeConnectionId = service.getConnectionId();
+
+      // A real transport stop and restart — a genuine close and reopen of the
+      // connection — on the SAME connection object, which is why the runtime
+      // keeps one connection and one subscription throughout
+      // (ARCHITECTURE.md §2.2.1 rule 6). The server withdraws the old
+      // connection from every group when it closes, and assigns the new one a
+      // new connection id.
+      await connection.stop();
+      await connection.start();
+
+      const connectionId = service.getConnectionId();
+      const sameConnection = service.connection === connection;
+
+      // SignalR raises its reconnect notification once the connection is back.
+      // A manual stop/start does not raise it (a real outage does), so the
+      // runtime's registered handler — the same code a real reconnect runs — is
+      // invoked here, exactly as phase 6c does. Everything it does afterwards is
+      // real: the group re-join and the snapshot request are real server round
+      // trips on the new connection.
+      if (service.handlers && typeof service.handlers.onReconnected === 'function') {
+        service.handlers.onReconnected(connectionId);
+      }
+
+      return {
+        beforeConnectionId,
+        connectionId,
+        sameConnection,
+        syncAfterHandler: runtime.getState().sync,
+      };
+    })()`);
+
+    // ---- 3. The re-join, on the new connection ----------------------------
+    // The wait is on the resync the reconnect flow performs, not on the re-join:
+    // the re-join and the delivery it enables are asserted by their own checks
+    // below, so a missing re-join is reported as a missing re-join instead of
+    // hiding the delivery observation behind it.
+    const resyncedAfterReconnect = await waitForCondition(
+      async () => {
+        const probe = await evaluate(cdp, RECONNECT_PROBE);
+        return probe.sync === 'synchronized' && probe.sequence !== null ? probe : false;
+      },
+      'the reconnected client re-synchronized from the snapshot',
+      20000
+    );
+
+    const sequenceBeforePostReconnectAction = resyncedAfterReconnect.sequence;
+    const rejoins = resyncedAfterReconnect.joins.filter(
+      (j) => j.connectionId === reconnected.connectionId
+    );
+
+    record(
+      'phase10b.reconnectProducedANewConnection',
+      reconnected.sameConnection === true &&
+        typeof reconnected.connectionId === 'string' &&
+        reconnected.connectionId.length > 0 &&
+        reconnected.connectionId !== reconnected.beforeConnectionId,
+      reconnected
+    );
+
+    record(
+      'phase10b.clientRejoinedTheBattleGroupOnTheNewConnection',
+      rejoins.length === 1 &&
+        rejoins[0].battleId === probeInstalled.battleId &&
+        resyncedAfterReconnect.sequence >= probeInstalled.sequence,
+      {
+        rejoins,
+        battleId: probeInstalled.battleId,
+        connectionIds: [reconnected.beforeConnectionId, reconnected.connectionId],
+      }
+    );
+
+    // ---- 4. Another committed action, after the re-join -------------------
+    const postReconnect = await commitOneSwap();
+    const afterPostReconnect = await evaluate(cdp, RECONNECT_PROBE);
+
+    // The group broadcast of that action, and the state push that follows it,
+    // both on the reconnected connection, both past the sequence the client held
+    // before the action — and the client's own synchronized sequence equals the
+    // broadcast's `serverSequence`, which is the client having ingested it
+    // through the ordinary §3/§4 path rather than through any snapshot.
+    const postReconnectDeliveries = afterPostReconnect.deliveries.filter(
+      (d) => d.name === 'ReceiveEvents' && d.serverSequence > sequenceBeforePostReconnectAction
+    );
+    const postReconnectStatePushes = afterPostReconnect.deliveries.filter(
+      (d) => d.name === 'BattleStateUpdated' && d.sequence > sequenceBeforePostReconnectAction
+    );
+
+    record(
+      'phase10b.committedActionAfterReconnectDeliveredOnTheNewConnection',
+      postReconnect.committed === true &&
+        postReconnectDeliveries.length === 1 &&
+        postReconnectDeliveries[0].connectionId === reconnected.connectionId &&
+        postReconnectDeliveries[0].serverSequence === afterPostReconnect.sequence &&
+        postReconnectStatePushes.length >= 1 &&
+        postReconnectStatePushes.every((d) => d.connectionId === reconnected.connectionId),
+      {
+        action: postReconnect,
+        sequence: [sequenceBeforePostReconnectAction, afterPostReconnect.sequence],
+        deliveries: postReconnectDeliveries,
+        statePushes: postReconnectStatePushes,
+      }
+    );
+
+    await captureScreenshot(cdp, `run${runNumber}-11b-post-reconnect-group-delivery`);
 
     const realRun = await driveBattleToTerminal();
     record(

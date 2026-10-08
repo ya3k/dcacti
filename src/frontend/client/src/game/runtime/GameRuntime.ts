@@ -91,9 +91,10 @@ const BATTLE_NOT_FOUND_REASON = 'BATTLE_NOT_FOUND';
  *     (`requestAction`, SIGNALR_PROTOCOL.md §2.1) — coordination only,
  *   - battle-start orchestration (`startBattle`, SIGNALR_PROTOCOL.md §1
  *     items 1–2, §2 `JoinBattle`) — coordination only,
- *   - reconnect/resync recovery (`recoverBattleState`, SIGNALR_PROTOCOL.md §7,
- *     ADR-008) — the documented `GetBattleState` snapshot request, ingested by
- *     the same `receiveBattleState` path the §4 push uses,
+ *   - reconnect/resync recovery (`SIGNALR_PROTOCOL.md` §7, ADR-008) — the
+ *     documented group re-join of §7 item 4 (`JoinBattle`, §1.2, §2) followed
+ *     by the `GetBattleState` snapshot request (`recoverBattleState`, §7.1),
+ *     ingested by the same `receiveBattleState` path the §4 push uses,
  *   - the client-local post-result cleanup (`clearActiveBattleState`) — dropping
  *     the synchronized copy when the player leaves a completed battle
  *     (`D-202-04 = A`, ARCHITECTURE.md §2.2.3, ADR-022): state only, no
@@ -192,11 +193,11 @@ export class GameRuntime implements GameRuntimePort {
         });
       },
       onReconnected: (connectionId) => {
-        // A runtime that holds a battle is not "awaiting" one: the §7 snapshot
-        // request below is what restores synchronization, and until it lands
-        // the client is synchronized with nothing (`unsynchronized`). A runtime
-        // that never had a battle is simply awaiting one, and no recovery is
-        // requested for it (see `recoverBattleState`).
+        // A runtime that holds a battle is not "awaiting" one: the §7 flow below
+        // is what restores synchronization, and until it lands the client is
+        // synchronized with nothing (`unsynchronized`). A runtime that never had
+        // a battle is simply awaiting one, and no reconnect work is requested
+        // for it (see `rejoinAndRecoverAfterReconnect`).
         const hasBattle = this.battleState !== null;
 
         this.updateState({
@@ -208,12 +209,12 @@ export class GameRuntime implements GameRuntimePort {
         });
         this.emit({ type: 'reconnected', state: this.state });
 
-        // SIGNALR_PROTOCOL.md §7.1: on reconnect the client requests the
-        // authoritative snapshot. Requested only when a current battle is
-        // known; the request is asynchronous, so the transition above is
-        // reported first and the recovered state follows through the existing
-        // §4 ingestion path.
-        void this.recoverBattleState();
+        // SIGNALR_PROTOCOL.md §7 items 4 and 1: the new connection first
+        // re-joins the battle's group, and only then is the authoritative
+        // snapshot requested. Both steps are asynchronous, so the transition
+        // above is reported first; the recovered state follows through the
+        // existing §4 ingestion path.
+        void this.rejoinAndRecoverAfterReconnect();
       },
       onClosed: (error) => {
         this.updateState({
@@ -615,6 +616,63 @@ export class GameRuntime implements GameRuntimePort {
   // ---------------------------------------------------------------------------
   // Reconnect / resync recovery (SIGNALR_PROTOCOL.md §7, ADR-008)
   // ---------------------------------------------------------------------------
+
+  /**
+   * The reconnect flow's transport step and its state step, in the documented
+   * order (`SIGNALR_PROTOCOL.md` §7 items 4 and 1, ADR-008):
+   *
+   * ```text
+   * SignalR reconnect
+   *         ↓
+   * SignalRService.joinBattle(battleId)    §7 item 4, §1.2, §2 `JoinBattle` —
+   *         │                              the new connection re-joins the group
+   *         ↓
+   * recoverBattleState()                   §7.1–§7.3 — the snapshot request
+   *         ↓
+   * receiveBattleState()                   the existing §4 ingestion path
+   * ```
+   *
+   * **Group membership is connection-scoped** (§7 item 4): the connection a
+   * reconnect produces is a member of no group, so the §4 push and the §3
+   * batches that follow a resolution would not reach it. The re-join is the
+   * documented way back in, and it is the same authoritative `JoinBattle`
+   * operation `startBattle` already performs — no new hub method, event, wire
+   * member, or state model is introduced, and the server restores nothing on its
+   * own (`BattleHub` re-adds no group on connect).
+   *
+   * **The re-join is awaited before recovery proceeds.** `joinBattle` resolves
+   * only once its hub invocation has completed, so §7 item 1's snapshot request
+   * is never issued on a connection that has not yet been added to the group.
+   * Normal post-reconnect event delivery is only expected after the two steps
+   * below have run, in this order.
+   *
+   * **`battleId` is the battle the runtime already holds.** It is the
+   * server-pushed identity (`§4.9`) — the same source `requestAction` and
+   * `recoverBattleState` resolve their battle from, and never a caller-supplied,
+   * URL-, storage-, or scene-sourced one. With no current battle there is no
+   * group to re-join, so no `JoinBattle` is issued and no battle is invented.
+   *
+   * **A failed re-join is a technical failure, not state.** It is reported on
+   * the existing `runtime_error` channel and recovery still runs: §7's snapshot
+   * is a direct request/response and does not depend on group membership, so a
+   * failed re-join must not additionally suppress the authoritative resync, and
+   * no battle state is fabricated to cover either failure.
+   */
+  private async rejoinAndRecoverAfterReconnect(): Promise<void> {
+    const battleId = this.battleState?.battleId;
+
+    if (battleId !== undefined) {
+      try {
+        await this.signalR.joinBattle(battleId);
+      } catch (error) {
+        const detail = this.describeError(error);
+        this.updateState({ lastError: detail });
+        this.emit({ type: 'runtime_error', state: this.state, detail });
+      }
+    }
+
+    await this.recoverBattleState();
+  }
 
   /**
    * Requests the authoritative snapshot after a reconnect and synchronizes the

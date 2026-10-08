@@ -102,6 +102,8 @@ interface SceneHarnessOptions {
   pets?: PetResponse[];
   /** The owned Relic instances the pre-battle flow reads (`GET /api/relics`). */
   relics?: Array<{ relicId: string; name: string }>;
+  /** When set, the Relic collection read rejects with it. */
+  relicsFailure?: Error;
   /**
    * Whether writing to a destroyed `Text` throws (the browser evidence of the
    * stale-write defect) or is merely recorded as a refused write.
@@ -122,6 +124,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     battleState = null,
     pets = [],
     relics = [],
+    relicsFailure,
     textsThrowWhenDestroyed = true,
   } = options;
   const listeners = new Set<RuntimeEventListener>();
@@ -338,7 +341,12 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     ),
     getPets: vi.fn(async () => pets),
     getPet: vi.fn(async () => pets[0] ?? ({} as never)),
-    getRelics: vi.fn(async () => relics),
+    getRelics: vi.fn(async () => {
+      if (relicsFailure) {
+        throw relicsFailure;
+      }
+      return relics;
+    }),
     /** The completed battle's persisted result the result route returns. */
     getBattleResult: vi.fn(async (battleId: string) => ({
       battleId,
@@ -3572,6 +3580,209 @@ describe('BattleScene — CardCast and PetSkillCast input (SIGNALR_PROTOCOL.md �
     expect(source).not.toMatch(/from\s+['"][^'"]*SignalRService/);
     expect(source).not.toContain('hubConnection');
     expect(source).not.toMatch(/\.invoke\s*</);
+  });
+});
+
+/**
+ * The ten canonical MVP Relic definitions as `GET /api/relics` elements
+ * (`API_CONTRACTS.md` §5.4).
+ *
+ * ```text
+ * relicId                     name
+ * relicinst_berserker_core    Berserker Core
+ * relicinst_mana_crystal      Mana Crystal
+ * relicinst_assassin_eye      Assassin Eye
+ * relicinst_emergency_core    Emergency Core
+ * relicinst_burning_curse     Burning Curse
+ * relicinst_combo_fang        Combo Fang
+ * relicinst_arcane_battery    Arcane Battery
+ * relicinst_execution_mark    Execution Mark
+ * relicinst_cascade_core      Cascade Core
+ * relicinst_battle_instinct   Battle Instinct
+ * ```
+ *
+ * The names are `RELIC_RULES.md` §6's ten provisioned Relics, and `relicId` is the
+ * owned **instance** identity (§2.2 item 3) — the value `RelicTriggered.relicId`
+ * and `PetState.EquippedRelics[]` carry, which is what the scene's lookup is keyed
+ * by. These are the response's own members, transcribed so the resolution can be
+ * asserted value by value across **all ten**; they are not a client-side content
+ * source, and the scene reads only the response it is handed.
+ */
+const PROVISIONED_RELICS: ReadonlyArray<{ readonly relicId: string; readonly name: string }> = [
+  { relicId: 'relicinst_berserker_core', name: 'Berserker Core' },
+  { relicId: 'relicinst_mana_crystal', name: 'Mana Crystal' },
+  { relicId: 'relicinst_assassin_eye', name: 'Assassin Eye' },
+  { relicId: 'relicinst_emergency_core', name: 'Emergency Core' },
+  { relicId: 'relicinst_burning_curse', name: 'Burning Curse' },
+  { relicId: 'relicinst_combo_fang', name: 'Combo Fang' },
+  { relicId: 'relicinst_arcane_battery', name: 'Arcane Battery' },
+  { relicId: 'relicinst_execution_mark', name: 'Execution Mark' },
+  { relicId: 'relicinst_cascade_core', name: 'Cascade Core' },
+  { relicId: 'relicinst_battle_instinct', name: 'Battle Instinct' },
+];
+
+describe('BattleScene — Relic definition lookup (TASK-218B, API_CONTRACTS.md §5.4)', () => {
+  function createBattle(
+    relics: Array<{ relicId: string; name: string }> = [...PROVISIONED_RELICS],
+    relicsFailure?: Error
+  ) {
+    const harness = createSceneHarness({ relics, ...(relicsFailure ? { relicsFailure } : {}) });
+    const scene = new BattleScene();
+    const ctx = harness.context(scene, 'BattleScene');
+    return { harness, scene, ctx };
+  }
+
+  /** The scene's own resolved name for one delivered Relic identity. */
+  function resolveInScene(ctx: object, relicId: string): string | null {
+    return (ctx as unknown as { relicDisplayName(id: string): string | null }).relicDisplayName(
+      relicId
+    );
+  }
+
+  it('resolves all ten provisioned Relics to their own delivered names', async () => {
+    const { harness, scene, ctx } = createBattle();
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    // The collection read goes through the runtime port (`getRelics()`), which is
+    // the only Relic source this scene has — no second API service, no direct HTTP.
+    expect(harness.runtime.getRelics).toHaveBeenCalledTimes(1);
+
+    for (const relic of PROVISIONED_RELICS) {
+      expect(resolveInScene(ctx, relic.relicId), relic.name).toBe(relic.name);
+    }
+
+    // The lookup is keyed by the owned instance identity and resolves nothing it
+    // was not delivered: an unknown identity has no name at all (the caller shows
+    // nothing rather than the raw id), and the *definition*-looking spelling is not
+    // a key, which is the drift SIGNALR_PROTOCOL.md §3.2.23 item 1 guards against.
+    expect(resolveInScene(ctx, 'relicinst_not_owned')).toBeNull();
+    expect(resolveInScene(ctx, 'relic-berserker-core')).toBeNull();
+  });
+
+  it('loads and clears the Relic lookup across the Phaser lifecycle', async () => {
+    const { harness, scene, ctx } = createBattle([
+      { relicId: 'relicinst_berserker_core', name: 'Berserker Core' },
+    ]);
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    expect(resolveInScene(ctx, 'relicinst_berserker_core')).toBe('Berserker Core');
+
+    // The engine's own teardown path (TASK-205): a later `create()` on the same
+    // instance must start from a clean slate, so the map is emptied with the other
+    // per-battle caches.
+    harness.shutdownScene(ctx);
+    expect(resolveInScene(ctx, 'relicinst_berserker_core')).toBeNull();
+
+    // A reused scene re-reads the collection on its next run.
+    runScene(scene, ctx, 'create');
+    await flush();
+    expect(resolveInScene(ctx, 'relicinst_berserker_core')).toBe('Berserker Core');
+
+    // DESTROY is the other teardown signal and clears it just the same.
+    harness.destroyScene(ctx);
+    expect(resolveInScene(ctx, 'relicinst_berserker_core')).toBeNull();
+  });
+
+  it('clears the Relic lookup rather than keeping the ended battle\'s definitions', async () => {
+    // Reloading a battle whose delivered collection no longer contains a Relic must
+    // not leave the previous run's name resolvable: the map is rebuilt, not merged.
+    const { harness, scene, ctx } = createBattle([
+      { relicId: 'relicinst_berserker_core', name: 'Berserker Core' },
+    ]);
+    runScene(scene, ctx, 'create');
+    await flush();
+    expect(resolveInScene(ctx, 'relicinst_berserker_core')).toBe('Berserker Core');
+
+    harness.shutdownScene(ctx);
+    harness.runtime.getRelics = vi.fn(async () => [
+      { relicId: 'relicinst_mana_crystal', name: 'Mana Crystal' },
+    ]) as never;
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    expect(resolveInScene(ctx, 'relicinst_mana_crystal')).toBe('Mana Crystal');
+    expect(resolveInScene(ctx, 'relicinst_berserker_core')).toBeNull();
+  });
+
+  it('holds no Relic definition when the collection read fails, and never throws', async () => {
+    const failure = new Error('GET /api/relics failed 500');
+    const { harness, scene, ctx } = createBattle(
+      [{ relicId: 'relicinst_berserker_core', name: 'Berserker Core' }],
+      failure
+    );
+
+    expect(() => runScene(scene, ctx, 'create')).not.toThrow();
+    await flush();
+
+    expect(harness.runtime.getRelics).toHaveBeenCalledTimes(1);
+    await expect(harness.runtime.getRelics.mock.results[0]?.value).rejects.toThrow(failure);
+    expect(resolveInScene(ctx, 'relicinst_berserker_core')).toBeNull();
+
+    // The battle presentation still runs: a delivered event the scene cannot name
+    // is simply not called out, and no error reaches the player.
+    expect(() =>
+      harness.emitBattleEvents({
+        battleId: 'b-relic',
+        serverSequence: 3,
+        events: [{ type: 'RelicTriggered', relicId: 'relicinst_berserker_core' }],
+      })
+    ).not.toThrow();
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).not.toContain('RELIC:');
+    expect(rendered).not.toContain('relicinst_berserker_core');
+
+    // A scene that previously held Relic definitions must clear them across shutdown
+    // and not retain stale definitions if the subsequent battle's read rejects.
+    harness.shutdownScene(ctx);
+    harness.runtime.getRelics = vi.fn(async () => [
+      { relicId: 'relicinst_berserker_core', name: 'Berserker Core' },
+    ]) as never;
+    runScene(scene, ctx, 'create');
+    await flush();
+    expect(resolveInScene(ctx, 'relicinst_berserker_core')).toBe('Berserker Core');
+
+    harness.shutdownScene(ctx);
+    harness.runtime.getRelics = vi.fn(async () => {
+      throw failure;
+    }) as never;
+    expect(() => runScene(scene, ctx, 'create')).not.toThrow();
+    await flush();
+    expect(resolveInScene(ctx, 'relicinst_berserker_core')).toBeNull();
+  });
+
+  it('hard-codes no individual Relic identity or name', () => {
+    // API_CONTRACTS.md §5.4 / RELIC_RULES.md §8.2 item 1: the name is the delivered
+    // response's own member, so no per-Relic identity, no Relic name, and no
+    // derivation from `trigger` / `condition` / `effectDefinition` may appear in the
+    // scene. Comments are stripped first, so prose that names these systems while
+    // explaining the rule is not a violation — only real code is.
+    const source = readFileSync(
+      resolve(__dirname, '../src/game/scenes/BattleScene.ts'),
+      'utf8'
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+    for (const hardCoded of [
+      ...PROVISIONED_RELICS.map((relic) => relic.relicId),
+      ...PROVISIONED_RELICS.map((relic) => relic.name),
+      'relic-berserker-core',
+      'relicinst_',
+      // The content members must never be read to name or explain a trigger.
+      '.trigger',
+      '.effectDefinition',
+      'conditionType',
+    ]) {
+      expect(source, `BattleScene must not hard-code "${hardCoded}"`).not.toContain(hardCoded);
+    }
+
+    // It does read the delivered name through the delivered port, and it reads
+    // nothing else from the response it stored.
+    expect(source).toMatch(/relicDefinitions\.get\(/);
+    expect(source).toMatch(/runtime\.getRelics\(/);
   });
 });
 

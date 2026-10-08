@@ -1602,6 +1602,131 @@ describe('GameRuntime', () => {
       });
     });
 
+    it('re-joins the battle group before requesting the snapshot', async () => {
+      // SIGNALR_PROTOCOL.md §7 item 4 / §1.2 / §2: the connection a reconnect
+      // produces is a member of no group, so the reconnected client must
+      // re-invoke `JoinBattle(battleId)` before any post-reconnect delivery is
+      // expected. `invokedMethods` records the hub calls in the order the runtime
+      // made them, so the order of the two steps is asserted and not merely that
+      // both happened.
+      const { transport } = await joinedRuntime({ battleId: 'battle-7' });
+
+      reconnect(transport);
+
+      await vi.waitFor(() => {
+        expect(transport.invokedMethods).toEqual(['JoinBattle', 'GetBattleState']);
+      });
+
+      // Both steps address the battle the runtime already holds from the
+      // server's own push — never a caller-supplied or locally invented id.
+      expect(transport.joinCalls).toEqual(['battle-7']);
+      expect(transport.getBattleStateCalls).toEqual(['battle-7']);
+    });
+
+    it('awaits the re-join before recovery proceeds', async () => {
+      // §7 item 4's ordering is an await, not a fire-and-forget: recovery must
+      // not issue its snapshot request while the re-join is still in flight, or
+      // the client would consider itself recovered on a connection that is not
+      // yet in the group.
+      const { transport } = await joinedRuntime({ battleId: 'battle-7' });
+
+      const gate: { release: () => void } = { release: () => {} };
+      const joinBattle = transport.joinBattle.bind(transport);
+      const joinSpy = vi.spyOn(transport, 'joinBattle').mockImplementation(
+        (battleId: string) =>
+          new Promise<void>((resolve, reject) => {
+            gate.release = () => {
+              joinBattle(battleId).then(resolve, reject);
+            };
+          })
+      );
+
+      reconnect(transport);
+
+      await vi.waitFor(() => {
+        expect(joinSpy).toHaveBeenCalledWith('battle-7');
+      });
+
+      // The re-join is still unresolved, so recovery has not started.
+      expect(transport.getBattleStateCalls).toEqual([]);
+
+      gate.release();
+
+      await vi.waitFor(() => {
+        expect(transport.getBattleStateCalls).toEqual(['battle-7']);
+      });
+    });
+
+    it('continues through the existing recovery path after the re-join', async () => {
+      // The re-join is a step of the reconnect flow, not its end: §7.1's snapshot
+      // request still follows it, and the recovered snapshot is ingested by the
+      // same §4 path the push uses.
+      const { runtime, transport } = await joinedRuntime({ battleId: 'battle-7' });
+      const recovered = payload({ battleId: 'battle-7', turn: 3, sequence: 4 });
+      transport.getBattleStateResult = { accepted: true, serverSequence: 4, state: recovered };
+
+      reconnect(transport);
+
+      await vi.waitFor(() => {
+        expect(runtime.getBattleState()).toEqual(recovered);
+      });
+
+      expect(transport.invokedMethods).toEqual(['JoinBattle', 'GetBattleState']);
+      expect(runtime.getState().sync).toBe('synchronized');
+    });
+
+    it('re-joins no group when no battle is known', async () => {
+      const { runtime, transport } = createRecoveryRuntime();
+      await runtime.initialize();
+
+      reconnect(transport);
+
+      await vi.waitFor(() => {
+        expect(transport.invokedMethods).toEqual([]);
+      });
+
+      // There is no current battle, so there is no group to re-join: no
+      // `JoinBattle` is issued, no snapshot is requested, and no battle is
+      // fabricated to give either step a target.
+      expect(transport.joinCalls).toEqual([]);
+      expect(transport.getBattleStateCalls).toEqual([]);
+      expect(runtime.getBattleState()).toBeNull();
+    });
+
+    it('reports a failed re-join and still recovers the snapshot', async () => {
+      // A failed `JoinBattle` is a technical failure, not battle state: it is
+      // reported through the existing error channel, and §7.1's snapshot is still
+      // requested — it is a direct request/response and does not depend on group
+      // membership, so a failed re-join must not additionally suppress the
+      // authoritative resync.
+      const { runtime, transport } = await joinedRuntime({ battleId: 'battle-7' });
+      transport.joinBehaviour = async () => {
+        throw new Error('join failed');
+      };
+      const recovered = payload({ battleId: 'battle-7', turn: 3, sequence: 4 });
+      transport.getBattleStateResult = { accepted: true, serverSequence: 4, state: recovered };
+
+      const reportedErrors: Array<string | null> = [];
+      runtime.onRuntimeEvent((event) => {
+        if (event.type === 'runtime_error') {
+          reportedErrors.push(event.detail ?? null);
+        }
+      });
+
+      reconnect(transport);
+
+      await vi.waitFor(() => {
+        expect(runtime.getBattleState()).toEqual(recovered);
+      });
+
+      // The failure is reported with its own technical detail — and the resync
+      // that follows it clears the diagnostic state, because the client is
+      // synchronized again and the reported failure was not battle state.
+      expect(reportedErrors).toContain('join failed');
+      expect(runtime.getState().lastError).toBeNull();
+      expect(transport.getBattleStateCalls).toEqual(['battle-7']);
+    });
+
     it('requests no snapshot when no battle is known', async () => {
       const { runtime, transport } = createRecoveryRuntime();
       await runtime.initialize();

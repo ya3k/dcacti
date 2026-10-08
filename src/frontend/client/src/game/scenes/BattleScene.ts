@@ -15,6 +15,7 @@ import type {
   CardResponse,
   PetResponse,
   PetSignatureSkillResponse,
+  RelicResponse,
 } from '../../services/api/CollectionModels';
 import type { InBattleServerEvent } from './BattleEventPresenter';
 import { parseInBattleEvent, formatInBattleEvent, selectBatchCallout } from './BattleEventPresenter';
@@ -393,6 +394,21 @@ export class BattleScene extends Phaser.Scene {
    * identification source for it.
    */
   private cardDefinitions = new Map<string, CardResponse>();
+  /**
+   * Relic definition lookup populated via GameRuntimePort.getRelics().
+   *
+   * It is the delivered `GET /api/relics` read — the Player's **owned** Relic
+   * instances (`API_CONTRACTS.md` §5.4) — used for one presentation lookup: the
+   * player-facing `name` of the Relic a delivered `RelicTriggered` event names.
+   *
+   * It is keyed by the **owned instance identity** (`relicId`), which is exactly
+   * the value `RelicTriggered.relicId` and `PetState.EquippedRelics[]` carry
+   * (`RELIC_RULES.md` §2.2 item 3, `SIGNALR_PROTOCOL.md` §3.2.23 item 1) — not by
+   * a definition id. The map resolves a name and nothing else: it is not a Relic
+   * content catalog, no trigger, condition, or effect definition is read from it,
+   * and no gameplay value is derived from it (`GAME_RULES.md` §18, ADR-001).
+   */
+  private relicDefinitions = new Map<string, RelicResponse>();
   /** The owned Pet collection, keyed by the owned instance identity. */
   private petCatalog = new Map<string, PetResponse>();
   /**
@@ -423,6 +439,7 @@ export class BattleScene extends Phaser.Scene {
 
     void this.loadCardDefinitions();
     void this.loadPetCatalog();
+    void this.loadRelicDefinitions();
 
     // Reflect current runtime state immediately, then follow transitions.
     this.renderRuntimeState(this.runtime?.getState() ?? null);
@@ -510,10 +527,10 @@ export class BattleScene extends Phaser.Scene {
    *                        battle that just ended, so the NEXT battle must start
    *                        from its initial value (`outcomeHandled` in
    *                        particular: left true, it discards the next outcome)
-   * per-battle caches      presentedEventsLog, cardDefinitions, petCatalog and
-   *                        signatureSkills — presentation data of the ended
-   *                        battle; no authoritative value is in them, so nothing
-   *                        is lost by clearing them
+   * per-battle caches      presentedEventsLog, cardDefinitions, relicDefinitions,
+   *                        petCatalog and signatureSkills — presentation data of
+   *                        the ended battle; no authoritative value is in them, so
+   *                        nothing is lost by clearing them
    * synchronized copy      currentBattleState — a snapshot of what the server last
    *                        pushed; `create()` re-reads it from the runtime
    * ```
@@ -564,6 +581,7 @@ export class BattleScene extends Phaser.Scene {
     this.outcomeHandled = false;
     this.presentedEventsLog = [];
     this.cardDefinitions.clear();
+    this.relicDefinitions.clear();
     this.petCatalog.clear();
     this.signatureSkills.clear();
     this.currentBattleState = null;
@@ -1264,6 +1282,42 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
+   * Loads the owned Relic instances via the runtime port
+   * (`GameRuntimePort.getRelics()`, `API_CONTRACTS.md` §5.4), keyed by the owned
+   * instance identity.
+   *
+   * The Relic read serves **one display lookup**: turning a delivered
+   * `RelicTriggered.relicId` into the Relic's own `name` for the combat callout.
+   * It is the same collection read the Lobby and the Collection viewer already
+   * make, through the same port — no second API service, no direct HTTP access
+   * (`ARCHITECTURE.md` §2.2 rule 3), and no client-side Relic catalog.
+   *
+   * Only `name` takes part. `trigger`, `condition`, and `effectDefinition` are the
+   * delivered content the Lobby renders, and reading a *result* out of them would
+   * be client-side derivation (`RELIC_RULES.md` §8.2 item 1, `GAME_RULES.md` §18):
+   * whether a Relic triggered is decided by the server and arrives as
+   * `RelicTriggered`, and what it changed arrives through the `BattleState`
+   * projection or `PowerChanged`. A failed read leaves the lookup empty, and the
+   * callout then declines to name the Relic rather than showing its raw identity.
+   */
+  private async loadRelicDefinitions(): Promise<void> {
+    if (!this.runtime || typeof this.runtime.getRelics !== 'function') {
+      return;
+    }
+
+    try {
+      const relics = await this.runtime.getRelics();
+      this.relicDefinitions.clear();
+      for (const relic of relics) {
+        this.relicDefinitions.set(relic.relicId, relic);
+      }
+    } catch {
+      // Failed collection read is presentation feedback; a Relic whose name is
+      // unknown simply produces no callout.
+    }
+  }
+
+  /**
    * Renders interactive cast triggers for the 3 submitted Basic Cards and the
    * active Pet's derived Signature Skill from authoritative
    * `RuntimeBattleState.petState.equippedCards`.
@@ -1825,7 +1879,11 @@ export class BattleScene extends Phaser.Scene {
 
     this.presentCombatFeedback(presented);
 
-    const callout = selectBatchCallout(presented, (cardId) => this.cardDisplayName(cardId));
+    const callout = selectBatchCallout(
+      presented,
+      (cardId) => this.cardDisplayName(cardId),
+      (relicId) => this.relicDisplayName(relicId)
+    );
     if (callout) {
       this.showCallout(callout.message, callout.color);
     }
@@ -2084,6 +2142,22 @@ export class BattleScene extends Phaser.Scene {
     }
 
     return null;
+  }
+
+  /**
+   * The player-facing name of the Relic one delivered `RelicTriggered` names, or
+   * `null` when this scene holds no definition for it.
+   *
+   * `relicId` is the Relic's owned **instance** identity — an internal handle, not
+   * a label (`RELIC_RULES.md` §2.2 item 3, `SIGNALR_PROTOCOL.md` §3.2.23 item 1) —
+   * so an unresolvable instance yields `null` and the caller shows nothing, rather
+   * than falling back to the identity as the Card path does. `BossSkillCast`'s
+   * precedent already declines a technical identity rather than rendering it
+   * (TASK-210 §7), and no name is ever derived from the Relic's `trigger`,
+   * `condition`, or `effectDefinition` (`RELIC_RULES.md` §8.2 item 1).
+   */
+  private relicDisplayName(relicId: string): string | null {
+    return this.relicDefinitions.get(relicId)?.name ?? null;
   }
 
   /**

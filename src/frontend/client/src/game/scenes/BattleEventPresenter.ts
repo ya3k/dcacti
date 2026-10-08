@@ -563,6 +563,8 @@ export interface EventCallout {
 const CALLOUT_MATCH_COLOR = '#e2e8f0';
 const CALLOUT_COMBO_COLOR = '#fbbf24';
 const CALLOUT_CAST_COLOR = '#a5b4fc';
+/** The Relic callout's colour: the build's own colour, beside the cast's. */
+const CALLOUT_RELIC_COLOR = '#7dd3fc';
 const CALLOUT_BOSS_COLOR = '#f87171';
 const CALLOUT_PASSIVE_COLOR = '#c4b5fd';
 
@@ -574,14 +576,23 @@ const CALLOUT_PASSIVE_COLOR = '#c4b5fd';
  * ```text
  * 1  a meaningful Combo   the cascade the player's own Swap produced
  * 2  a Card / Pet Skill   the player's own cast
+ * 2  a Relic trigger      the player's own build paying off
  * 3  a Boss Skill         the Boss acting
  * 4  a Passive triggering the effect the player was building toward
  * 5  a Passive charging   progress toward that effect
  * 6  a Match              an ordinary single-Match Swap's result
  * ```
+ *
+ * A Relic trigger shares the cast's slot because it is the same kind of news: an
+ * outcome of the player's own build taking effect rather than the board's own
+ * arithmetic. Sharing a number rather than taking a new one changes no existing
+ * event's standing — the ladder is still read by the same rule — and the
+ * among-equals tie is broken by delivery order, which is already how two casts in
+ * one batch are resolved.
  */
 const CALLOUT_PRIORITY_COMBO = 1;
 const CALLOUT_PRIORITY_CAST = 2;
+const CALLOUT_PRIORITY_RELIC = 2;
 const CALLOUT_PRIORITY_BOSS = 3;
 const CALLOUT_PRIORITY_PASSIVE_TRIGGERED = 4;
 const CALLOUT_PRIORITY_PASSIVE_CHARGED = 5;
@@ -601,6 +612,8 @@ const CALLOUT_PRIORITY_MATCH = 6;
  *                                        caller's lookup; the identity itself is
  *                                        shown when no definition is loaded
  * PetSkillCast      `cardId`           — as above
+ * RelicTriggered    `relicId`          — resolved to the Relic's own display name
+ *                                        through the caller's lookup (below)
  * BossSkillCast     (no member)        — the event's own existence is the fact;
  *                                        `skillId` is a technical identity with no
  *                                        client-visible definition, so it is not
@@ -609,6 +622,20 @@ const CALLOUT_PRIORITY_MATCH = 6;
  * PassiveCharged    `source`, `progress`, `threshold`
  * MatchCreated      (no member)        — the event's own existence is the fact
  * ```
+ *
+ * **`RelicTriggered` and the identity it must not show.** `relicId` is the Relic's
+ * owned *instance* identity (`RELIC_RULES.md` §2.2 item 3) — technical, and never a
+ * player-facing label. The name is not on the event (§3.2.23 item 5 fixes
+ * `{ type, relicId }` as final), so it is resolved through the caller's
+ * `resolveRelicName`, which reads the already-documented `GET /api/relics` name
+ * (`API_CONTRACTS.md` §5.4). When the definition cannot be resolved the caller
+ * returns `null` and this event produces **no callout at all**: the raw instance
+ * identity is not shown, and no name is derived from `trigger`, `condition`, or
+ * `effectDefinition` (`RELIC_RULES.md` §8.2 item 1 forbids exactly that, and
+ * `API_CONTRACTS.md` §5.4 `:1061-1063` bounds it to display text of the payload's
+ * own tokens). This is the one event whose resolver is allowed to fail closed —
+ * for a Card the identity is at least meaningful, while a Relic instance id is
+ * an opaque internal handle.
  *
  * Events with **no** callout, and why:
  *
@@ -621,16 +648,12 @@ const CALLOUT_PRIORITY_MATCH = 6;
  * DamageDealt / DamageTaken     drawn as one floating number over the panel of the
  *                               party that took the damage (BattleScene)
  * PowerChanged                  drawn as a signed floater over the Power gauge
- * RelicTriggered                the contract delivers only the Relic's owned
- *                               instance identity and this scene has no Relic
- *                               definition source, so there is no player-facing
- *                               name to show — reported as a contract gap rather
- *                               than rendered as a raw id (TASK-210 §7)
  * ```
  */
 export function describeEventCallout(
   event: InBattleServerEvent,
-  resolveCardName: (cardId: string) => string
+  resolveCardName: (cardId: string) => string,
+  resolveRelicName: (relicId: string) => string | null
 ): EventCallout | null {
   switch (event.type) {
     case 'ComboChanged':
@@ -653,6 +676,18 @@ export function describeEventCallout(
         color: CALLOUT_CAST_COLOR,
         priority: CALLOUT_PRIORITY_CAST,
       };
+    case 'RelicTriggered': {
+      // The player's own Relic, named from the delivered definition read. An
+      // unresolvable Relic produces nothing rather than a raw instance identity.
+      const name = resolveRelicName(event.relicId);
+      return name === null
+        ? null
+        : {
+            message: `RELIC: ${name}`,
+            color: CALLOUT_RELIC_COLOR,
+            priority: CALLOUT_PRIORITY_RELIC,
+          };
+    }
     case 'BossSkillCast':
       return {
         message: 'BOSS SKILL',
@@ -691,15 +726,24 @@ export function describeEventCallout(
  * feed rather than feedback. The most important event wins; among equally
  * important events the **last** one wins, because that is the one the resolution
  * finished on.
+ *
+ * **Several Relic triggers in one batch still produce one callout.** The Relic
+ * stage resolves every eligible Relic for one event in equip-slot order
+ * (`RELIC_RULES.md` §4.2), so a 3–5 Relic loadout can emit more than one
+ * `RelicTriggered` in a single Swap (`Emergency Core` re-emits on every Swap while
+ * armed). This mechanism names the one the batch finished on, exactly as it does
+ * for two casts — the single-callout rule is the existing design and is not
+ * widened into a queue here.
  */
 export function selectBatchCallout(
   events: readonly InBattleServerEvent[],
-  resolveCardName: (cardId: string) => string
+  resolveCardName: (cardId: string) => string,
+  resolveRelicName: (relicId: string) => string | null
 ): EventCallout | null {
   let selected: EventCallout | null = null;
 
   for (const event of events) {
-    const candidate = describeEventCallout(event, resolveCardName);
+    const candidate = describeEventCallout(event, resolveCardName, resolveRelicName);
 
     if (candidate !== null && (selected === null || candidate.priority <= selected.priority)) {
       selected = candidate;
