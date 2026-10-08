@@ -1,6 +1,7 @@
 # core/completion.md — Completion
 
-**Version:** 1.0
+**Version:** 1.1 (§1 gains the commit-step condition and §2 the `## Commit`
+report field; the rule itself is owned by `tasks/TASK_LIFECYCLE.md` §6)
 
 > Purpose: define when a task is actually done, and the report shape every
 > workflow produces at the end.
@@ -22,6 +23,11 @@ AND documentation impact was checked (core/planning.md §3, and
    updating)
 AND architecture impact was checked (architecture/architecture-change.md
    or architecture/adr-change.md applied if the change was architectural)
+AND the task's slice was committed per tasks/TASK_LIFECYCLE.md §6
+    (the staged set equals the record's declared file set; a file shared
+    with another task is committed as an explicitly named group; a path
+    with no recorded owner is disclosed, never committed under an
+    invented task id)
 ```
 
 This mirrors `AGENTS.md` §22 exactly — completion does not define a
@@ -34,6 +40,7 @@ separate, looser bar.
 ```text
 ## Summary
 ## Changes
+## Commit
 ## Tests
 ## Documentation Consulted
 ## Documentation Changed
@@ -46,6 +53,13 @@ Sections may be omitted only when genuinely irrelevant to the task (e.g. a
 pure documentation task may have no "Tests" section) — not omitted for
 brevity. This is the same shape as `.ai/README.md` §21's AI Output
 Contract; completion does not invent a second report format.
+
+The `## Commit` section reports the commit that carried the task's slice: its
+hash, its subject, the task ids it owns, the exact file subset, and every path
+disclosed as `unowned/pre-existing`. When no commit exists — because the commit
+step has not been applied yet, or the task changed no file — it states that and
+why. The rule itself is owned by `tasks/TASK_LIFECYCLE.md` §6; this file does
+not restate it.
 
 ---
 

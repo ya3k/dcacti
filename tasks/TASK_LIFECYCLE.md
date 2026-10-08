@@ -1,6 +1,7 @@
 # tasks/TASK_LIFECYCLE.md — Task Lifecycle
 
-**Version:** 1.0
+**Version:** 1.1 (§6 added: the commit step and commit ownership policy,
+adopted by Product Owner Decision 1 = A under TASK-224)
 
 > This document answers: **"What states can a task be in, how does it
 > move between them, and who is responsible for each transition?"**
@@ -71,6 +72,7 @@ READY       → SUPERSEDED      Lifecycle audit confirms scope is 100% satisfied
 IN PROGRESS → IN REVIEW       Implementation + tests complete
 IN PROGRESS → BLOCKED         Stop condition fires during execution
 IN REVIEW   → DONE            Review passes all quality/review.md §1 items
+                               and the task's slice is committed (§6)
 IN REVIEW   → IN PROGRESS     Review identifies a defect requiring rework
 BLOCKED     → IN PROGRESS     Blocking condition resolved by human decision
 BLOCKED     → SUPERSEDED      Blocker and scope resolved/satisfied out-of-band
@@ -208,6 +210,9 @@ All core/completion.md §1 criteria are satisfied by direct execution.
 [ ] No unintended scope expansion
 [ ] Documentation impact checked and addressed if required
 [ ] Architecture impact checked and addressed if required
+[ ] The task's slice committed per §6 (staged set equals the record's
+    declared file set; group commit when a file is shared; a path with
+    no recorded owner disclosed, never committed under an invented id)
 ```
 
 **Who sets it:** Agent (after quality/review.md passes).
@@ -264,6 +269,13 @@ BLOCKED → SUPERSEDED       blocked/     completed/
 IN REVIEW → DONE           active/      completed/
 ```
 
+The commit step (§6) runs inside the IN REVIEW → DONE transition:
+
+```text
+IN REVIEW → DONE    the task's declared files are staged and committed
+                    (§6), then the task record is filed as completed
+```
+
 ---
 
 # 5. Relationship to Workflows
@@ -279,10 +291,109 @@ IN PROGRESS workflow     core/planning.md → core/implementation.md
 IN PROGRESS → BLOCKED   Any stop condition (AGENTS.md §20)
 IN PROGRESS → IN REVIEW quality/testing.md complete
 IN REVIEW workflow       quality/review.md
-IN REVIEW → DONE        core/completion.md §1 satisfied
+IN REVIEW → DONE        core/completion.md §1 satisfied + the commit step (§6)
 IN REVIEW → IN PROGRESS quality/review.md found defect requiring rework
 BLOCKED → SUPERSEDED    Lifecycle reconciliation audit confirming blocker & scope resolved downstream
 ```
 
 The workflow is the authoritative process — the lifecycle state in the
 task file is a reflection of workflow progress, not a substitute for it.
+
+---
+
+# 6. Commit Step and Commit Ownership
+
+**Adopted:** Product Owner Decision 1 = A, recorded under TASK-224, adopting
+TASK-223 §6.2's P-1…P-6 as repository policy. This section is the single owner
+of the commit rule; `core/completion.md` §1/§2 reference it and do not restate
+it.
+
+---
+
+## 6.1 The commit step
+
+A task's changes enter history through exactly one commit step, performed
+inside the IN REVIEW → DONE transition (§4, §5) — after `quality/review.md` §1
+passes, and before the task is filed as completed.
+
+```text
+1. Stage EXACTLY the file set the task's record declares. Stage nothing else.
+2. Compare `git diff --cached --name-status` to that declared set. A mismatch
+   BLOCKS the commit (P-5). Report the divergence; never edit a record's
+   declared file list to make a commit legal.
+3. Commit with the task ids in the BODY, never the subject (P-4).
+4. File the record as completed and report the hash in the final report's
+   `## Commit` section (`core/completion.md` §2).
+```
+
+---
+
+## 6.2 Policy (P-1…P-6)
+
+```text
+P-1  Branch model:       single `master`, as today. No per-task branch, no
+                         worktree per task, no tag per task. A task's changes
+                         are never pushed to a new branch to "isolate" them.
+P-2  Commit granularity: ONE COMMIT PER TASK SLICE, created only when the set
+                         of files the task's record declares is EXACTLY the set
+                         of files the task changed. If a file is shared with
+                         another task, the slice is NOT committed separately;
+                         the sharing tasks are committed together, as an
+                         explicitly named group (e.g. "TASK-209 + TASK-210"),
+                         and the commit body names each member task and its
+                         part.
+P-3  Ownership           no file may be committed under a task that has no
+     precondition:       record in tasks/completed/. A file with no recorded
+                         owner is committed only under a commit whose body
+                         explicitly says so ("unowned/pre-existing: <paths>")
+                         and never under an invented task id.
+P-4  Mapping:            task ids go in the COMMIT BODY, never in the subject
+                         (preserving the existing conventional-commit subject
+                         style, which carries no task ids). The body names each
+                         task, its file subset, and the shared/uncertain files.
+P-5  Truth rule:         a commit must not contradict any record's declared
+                         file list. If it must (because of sharing), the commit
+                         body states the divergence and the record is the
+                         authority.
+P-6  Prohibitions:       no amend, no rebase, no force push, no history
+                         rewrite, no `git commit -a`, no staging of a file the
+                         commit does not own, no commit while a file's owner is
+                         unresolved without the P-3 disclosure.
+```
+
+---
+
+## 6.3 Commit body shape
+
+```text
+<type>: <conventional subject — carries no task ids>
+
+<task id> — <what that task contributed>
+<task id> — <...>
+
+owns: <task id(s)>
+files: <exact paths, or "see the record's declared file set">
+shared with: <other task ids, and which paths>
+unowned/pre-existing: <paths, or "none">
+```
+
+---
+
+## 6.4 Pre-adoption history (historical exception — not a precedent)
+
+This rule entered the repository **after** commit `9b5c5fe` ("feat: add backend
+card and relic content projection with client presentation tests") had already
+been created out of band. That commit complied with none of P-2…P-4:
+
+```text
+9b5c5fe   73 files staged in one batch
+          body carries no task id and no unowned/pre-existing disclosure
+          it commits all 16 of the 16 paths TASK-223 §2 attributes to TASK-209,
+          a task with no record in tasks/completed/
+```
+
+It is recorded here as a **pre-adoption batch commit** — a historical
+exception. It is not a precedent, the practice must not be repeated, and it is
+not to be remedied by rewriting history (P-6). What it already placed in
+history can be recorded prospectively by a task record or a disclosure; it
+cannot be retroactively attributed inside the commit itself.
