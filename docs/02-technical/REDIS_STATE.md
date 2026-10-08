@@ -1,6 +1,18 @@
 # Redis State
 
-**Version:** 1.12 (§7 item 17 added — `PetState.BurnDamageModifiers[]`
+**Version:** 1.13 (§3's lifecycle entry is **synchronized** with the verified
+battle-end persistence contract: `battle:{battleId}:state` is deleted only after
+the battle-end **database unit of work has committed** — the `BattleResult` row
+together with both progression tracks, `DATABASE.md` §1, "Battle-end atomicity
+for `BattleResult` and the two progression tracks" — and the delete remains
+outside that transaction. §3 states the ordering rule and the not-committed
+consequence in its current form, and §7 item 11's TASK-040 note gains a concise
+**superseding reference** (its historical record of the TASK-041 sequencing
+boundary is preserved rather than rewritten). **This changes no key, no
+structure, no lifecycle, no TTL, and no concurrency rule**: the delete happens
+at the same point in the same order, and only its stated precondition is now
+exact. §1–§6 and §7 items 1–15 are unchanged. Decision source: TASK-217C.
+Prior 1.12 (§7 item 17 added — `PetState.BurnDamageModifiers[]`
 (`GAME_STATE.md` §2.3.9/§2.3.10/§5.1.5) adds no Redis key, no Redis-only field,
 and no persistence work: it is a `PetState` member of the `BattleState` shape §2
 item 1 already covers, it round-trips under the existing obligation with an empty
@@ -173,23 +185,40 @@ is unbound — a statement about encoding, not about shape.
 Created:   on POST /api/battle/start (API_CONTRACTS.md §2)
 Refreshed: TTL reset on every successful resolution (sliding expiry),
            default 30 minutes of inactivity — Configurable
-Deleted:   explicitly, when BattleWon/BattleLost is resolved and the result
-           has been written to PostgreSQL (DATABASE.md)
+Deleted:   explicitly, when BattleWon/BattleLost is resolved and the battle-end
+           database unit of work has been **committed** to PostgreSQL — the
+           `BattleResult` row and both progression tracks together
+           (DATABASE.md §1)
 ```
+
+The delete happens **only after that commit completed**, and it stays outside the
+database transaction (`DATABASE.md` §1, "Battle-end atomicity for `BattleResult`
+and the two progression tracks" item 3; `ARCHITECTURE.md` §4 item 4). A cleared
+key for a battle end that never became durable would destroy the battle's only
+authoritative copy (§2 item 2 — the serialized value is the single source of
+truth for a battle's live state and the server holds no long-lived in-memory
+copy), so the ordering is part of the contract rather than an implementation
+detail.
 
 If a battle's key expires from inactivity before completion, the battle is
 considered abandoned; the client's `GetBattleState` call
 (`SIGNALR_PROTOCOL.md` §7) will receive `BATTLE_NOT_FOUND`, and no partial
 result is written to PostgreSQL.
 
-If the explicit **battle-end delete fails after the result write**, no
+If the explicit **battle-end delete fails after the committed result write**, no
 automatic retry is performed and no worker or queue exists for it: the
 sliding TTL above remains the cleanup path, so the TTL is the documented
 maximum lifetime of the active-state record in every case. The battle-end
-order itself is unchanged — the result is written first, then the key is
-deleted (`ARCHITECTURE.md` §4 item 4) — and a failed delete cannot produce
-a second result: `BattleResultId` is the battle's own `BattleId`, so **at
-most one `BattleResult` row can ever exist per battle** (`DATABASE.md` §1).
+order itself is unchanged — the unit of work commits first, then the key is
+deleted (`ARCHITECTURE.md` §4 item 4, `DATABASE.md` §1 item 3) — and a failed
+delete cannot produce a second result: `BattleResultId` is the battle's own
+`BattleId`, so **at most one `BattleResult` row can ever exist per battle**
+(`DATABASE.md` §1).
+
+The converse failure is the one the ordering exists to prevent: if the unit of
+work does **not** commit, the delete does not happen either, the record above
+remains the battle's recoverable authoritative state, and the battle can be
+retried in full (`DATABASE.md` §1 items 4–5; §7 item 5 below).
 
 ---
 
@@ -522,6 +551,16 @@ Full active battle state          Full BattleState (GAME_STATE.md §2)
     > `BattleId` makes a second result impossible. The TTL therefore remains the
     > documented maximum lifetime of the active-state record in every case, and
     > the deferral recorded at the top of this section is fully discharged.
+    >
+    > **Superseding note (TASK-217A, current contract).** The two bullets above
+    > record the TASK-041 sequencing boundary in the terms that were then in
+    > force. The durable write is now **one database unit of work** — the
+    > `BattleResult` row together with both progression tracks
+    > (`DATABASE.md` §1, "Battle-end atomicity for `BattleResult` and the two
+    > progression tracks") — so the delete follows the **commit** of that unit of
+    > work, not merely the result insert. The ordering rule itself is unchanged
+    > and §3 above states it in its current form; nothing else in this note,
+    > including the TTL cleanup path and the at-most-one-row guarantee, changes.
 13. **`PetState.NextAttackCritModifiers[]` adds no key, no Redis-only field,
     and no persistence work.** `GAME_STATE.md` §2.3.4 defines one new
     `PetState` collection (`ADR-017`) — temporary source-specific Crit

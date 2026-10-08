@@ -1,6 +1,29 @@
 # Architecture
 
-**Version:** 1.7 (§2.2.3's post-result loadout carrier requirement is now
+**Version:** 1.9 (§3, §4, §4.1 and §5 item 2 **reconciled with the
+implementation as-built** per TASK-217A: the component table no longer lists
+types that do not exist in `src/`, and the battle flow, the one-action
+resolution shape, and the anti-overengineering note now name the components
+that actually perform those responsibilities. The phantom names `Match3Engine`,
+`BossController`, `ElementResolver`, `BattleEventBus`,
+`BattleResolutionService`, and `RelicTriggerEngine` are replaced by the
+existing Domain and Application types, each verified against the source tree
+and described by its actual responsibility; §4's logical flow, its ordering
+rule, and §4 item 4's commit-before-delete rule are unchanged. **No module
+boundary, layer direction, port capability, endpoint, wire member, state model,
+Redis key, database column, gameplay rule, or contract changes.**
+Documentation-only. Decision source: TASK-217A. Prior 1.8: (§3 and §4 item 4 **synchronized** with the verified battle-end
+persistence contract of `DATABASE.md` §1, "Battle-end atomicity for
+`BattleResult` and the two progression tracks" (TASK-216 / TASK-217A /
+TASK-217B): the durable battle end is one database unit of work, its commit
+completes before `battle:{battleId}:state` is deleted, and the delete stays
+outside that transaction. §4 item 4 no longer names the `PersistenceRepository`
+component, which does not exist in the implementation; it states the ordering
+rule and cites the owning contract instead, and §3's component table now names
+the boundaries that actually perform the battle-end writes. **No module
+boundary, layer direction, port capability, endpoint, wire member, state model,
+Redis key, database column, gameplay rule, or contract changes.** Decision
+source: TASK-217C. Prior 1.7: (§2.2.3's post-result loadout carrier requirement is now
 **decided and implemented** per TASK-203 / ADR-022 — the carrier is a second
 documented key in Phaser's game-wide registry, behind the
 `game/state/PreservedLoadout.ts` accessor; it is owned by the client
@@ -638,18 +661,40 @@ REST API / SignalR Hub (BattleHub)
 ```text
 Component                    Owning Layer      Responsibility
 ---------------------------  ----------------  -----------------------------
-Match3Engine                  Domain            MATCH3_RULES.md
-ElementResolver                Domain            ELEMENT_RULES.md
+BoardResolver                  Domain            MATCH3_RULES.md — one detection
+                                                   pass: match, create,
+                                                   activate, gravity, spawn
+CascadeResolver                Domain            MATCH3_RULES.md §4 — the
+                                                   cascade loop until stable
+MatchDetector                  Domain            MATCH3_RULES.md §3 — detect
+                                                   the Matches of one board
+                                                   state, in §3.2 order
+ElementMatchups                Domain            ELEMENT_RULES.md
 DamagePipeline                 Domain            COMBAT_RULES.md
-PassiveTracker                 Domain            PASSIVE_RULES.md
-RelicTriggerEngine              Domain            RELIC_RULES.md
-BossController                  Domain            BOSS_RULES.md
-BattleEventBus                  Domain            GAME_EVENTS.md (definitions)
-BattleResolutionService          Application       GAME_RULES.md §17 sequencing
+PassiveTracker                 Domain            PASSIVE_RULES.md — charge,
+                                                   threshold, trigger, reset
+RelicResolver                  Domain            RELIC_RULES.md — GAME_RULES.md
+                                                   §17 step 11 (Trigger Relics)
+CardCastExecutor               Domain            CARD_RULES.md §2–§4 — executes
+                                                   a Card or Pet Skill cast
+BossState                      Domain            GAME_STATE.md §2.4 — the Boss's
+                                                   battle state
+BossDefinitions                Domain            BOSS_RULES.md §6 — the static
+                                                   MVP Boss content
+BattleStateService             Application       GAME_RULES.md §17 sequencing:
+                                                   battle creation and one Swap
+                                                   resolution (§4.1)
 RuntimeService                    Application       Hub connection lifecycle only —
                                                     no gameplay (§2.2.1)
 BattleStateRepository (Redis)     Infrastructure    REDIS_STATE.md
-PersistenceRepository (Postgres)  Infrastructure    DATABASE.md
+BattleResultService               Application       DATABASE.md (the battle-end
+                                                    unit of work: §4 item 4)
+Persistence boundaries (Postgres) Infrastructure    DATABASE.md
+  PlayerRepository / PetRepository /
+  BattleResultRepository / BossDefinitionLookup
+BattleEndTransaction (Postgres)   Infrastructure    DATABASE.md §1 — the one
+                                                    transaction the battle-end
+                                                    writes commit in
 BattleHub                         Api               SIGNALR_PROTOCOL.md (thin —
                                                     no gameplay rules, §2.1)
 Collection/Result Controllers      Api               API_CONTRACTS.md
@@ -669,18 +714,25 @@ GameShell / React Overlays    Client (UI)       Owns the viewport; HTML overlays
 # 4. Communication Between Components
 
 1. `BattleHub` receives a client action (e.g. Swap) → calls
-   `BattleResolutionService`.
-2. `BattleResolutionService` loads current `BattleState` from
+   `BattleStateService`.
+2. `BattleStateService` loads current `BattleState` from
    `BattleStateRepository`, runs the Domain engines in the fixed order from
    `GAME_RULES.md` §17, collects the resulting Battle Events, and writes the
    updated `BattleState` back to `BattleStateRepository`.
-3. `BattleResolutionService` returns the ordered event list to `BattleHub`,
+3. `BattleStateService` returns the ordered event list to `BattleHub`,
    which pushes them to the client(s) per `SIGNALR_PROTOCOL.md`.
-4. On battle end, `BattleResolutionService` calls `PersistenceRepository` to
-   write the durable result (`DATABASE.md`) and instructs
-   `BattleStateRepository` to clear the active state (`REDIS_STATE.md`).
+4. On battle end, `BattleStateService` completes the durable battle end and
+   then instructs `BattleStateRepository` to clear the active state
+   (`REDIS_STATE.md` §3). The durable battle end is **one database unit of work**
+   — the `BattleResult` row and both progression tracks commit together, or none
+   of them does (`DATABASE.md` §1, "Battle-end atomicity for `BattleResult` and
+   the two progression tracks"). The commit must therefore complete **before**
+   the active state is cleared: a cleared `battle:{battleId}:state` for a write
+   that never became durable would destroy the battle's only authoritative copy
+   (`REDIS_STATE.md` §2 item 2). The delete is a Redis
+   operation and stays **outside** the database transaction.
 
-No component other than `BattleResolutionService` writes to either
+No component other than `BattleStateService` writes to either
 repository during an active battle — this keeps the resolution order
 enforceable in one place.
 
@@ -691,7 +743,7 @@ The shape of step 2 above, for a Swap:
 ```text
 BattleHub.Swap(...)                    thin transport (no game logic)
     ↓
-BattleResolutionService                Application — sequencing only
+BattleStateService                     Application — sequencing only
     ├── Domain: validate the Swap                  MATCH3_RULES.md §2.1
     ├── Domain: commit, detect, create Special Gems, activate, gravity,
     │           spawn, repeat until stable         MATCH3_RULES.md §3–§5
@@ -705,7 +757,8 @@ BattleHub → ReceiveEvents / state push             SIGNALR_PROTOCOL.md §3–�
 
 1. **The loop belongs to Domain, not to Application.** The cascade loop
    (`MATCH3_RULES.md` §4) is board behaviour, so it lives in the Match-3 domain
-   module (`Match3Engine` §3); `BattleResolutionService` sequences the pipeline
+   module (`CascadeResolver`, which drives `BoardResolver` per pass; §3);
+   `BattleStateService` sequences the pipeline
    steps of `GAME_RULES.md` §17 and does not implement or re-implement the
    loop. This is the layer boundary of §2.1: Application orchestrates, Domain
    decides.
@@ -714,10 +767,10 @@ BattleHub → ReceiveEvents / state push             SIGNALR_PROTOCOL.md §3–�
    and the `ResolutionContext` (`GAME_STATE.md` §3); they never reach the
    repository, the Hub, or the wire.
 3. **A rejected action never reaches step 2's mutation stage.** Validation
-   returns, `BattleResolutionService` reports the rejection to the Hub, and no
+   returns, `BattleStateService` reports the rejection to the Hub, and no
    repository write, no state change, and no event occurs
    (`MATCH3_RULES.md` §2.1.5, `SIGNALR_PROTOCOL.md` §5).
-4. **`Match3Engine` owns no combat, Power, Passive, or Relic decision.** The
+4. **The Match-3 module owns no combat, Power, Passive, or Relic decision.** The
    board stages produce the matches, cleared Gems, Combo, and Match count that
    the later pipeline steps consume; those consumers are owned by their own
    domains (`ARCHITECTURE.md` §3, `GAME_RULES.md` §17).
@@ -731,7 +784,7 @@ BattleHub → ReceiveEvents / state push             SIGNALR_PROTOCOL.md §3–�
    only), per `AGENTS.md` §2.4. A plugin/scripting layer is not required by
    MVP scope.
 2. No message queue / event sourcing infrastructure — Battle Events are an
-   in-process list returned by `BattleResolutionService` for one resolved
+   in-process list returned by `BattleStateService` for one resolved
    action; they are not persisted as an event log in MVP.
 3. No CQRS split, no separate read-model store — PostgreSQL serves both
    reads and writes for persistent data; Redis serves both reads and writes

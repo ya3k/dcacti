@@ -713,19 +713,25 @@ Kim Lôi Vương "boss-kim-loi-vuong"        "Kim Lôi Vương" "kim-loi-vuong-c
   `PassiveTriggered` payloads (`source = "boss"`). Values follow the
   kebab-case pattern of Pet PassiveIds (e.g. `PassiveId("xich-lang")`).
   This section states no more specific value form for a Boss's `PassiveId` or
-  `SkillId` than it states for the five entries above; the two newest entries
-  are the values the Product Owner fixed, recorded verbatim and not normalized
-  to the earlier rows' observed spellings.
+  `SkillId` than it states for the five entries above. The two rows added by
+  TASK-172 are the values the Product Owner fixed: Thủy Ma's `PassiveId` doubles
+  as its §6.2.2 effect-instance `Id` (`Id = "boss-thuy-ma-heal"`), and Sơn Thạch
+  Vệ's `PassiveId` carries no `boss-` prefix (`PassiveId = "son-thach-ve-enrage"`).
+  Both remain recorded exactly as the table above holds them and as source and
+  tests carry them; neither is normalized to the earlier rows' observed
+  spellings.
 - **SkillId** identifies the Boss Skill in `BossSkillCast.skillId`
   (`SIGNALR_PROTOCOL.md` §3.2.18).
 - Examples in `SIGNALR_PROTOCOL.md` §3.2.16–§3.2.18 use these exact values.
-- Source and tests carry these exact values — the three Domain Boss
-  definitions authored before this contract's completion use these canonical
-  Identities and emit them as `sourceId`, so source code, tests, and this
-  contract are aligned (TASK-047). The two newest rows are **content-defined
-  here only**: their Domain `BossDefinitions` entries and `BossDefinition` rows
-  are not yet authored or provisioned, so no source or test value exists for
-  them yet (`DATABASE.md` §1 note item 5).
+- Source and tests carry these exact values. The three Domain Boss definitions
+  authored before this contract's completion use these canonical Identities and
+  emit them as `sourceId`, so source code, tests, and this contract are aligned
+  (TASK-047; TASK-217A corrected the corresponding code comments). The two rows
+  added by TASK-172 are likewise authored and provisioned: their Domain
+  `BossDefinitions` entries are the fourth and fifth definitions the Domain
+  holds, and their `BossDefinition` rows are the fourth and fifth provisioned
+  rows (`DATABASE.md` §1 note item 5; `ROADMAP.md` §1 Phase 2). All five rows
+  above are therefore values source and tests carry today.
 
 ---
 

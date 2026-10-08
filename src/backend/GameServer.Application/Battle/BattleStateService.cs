@@ -62,7 +62,7 @@ namespace GameServer.Application.Battle;
 /// <b>The authoritative record is Redis's.</b> <c>REDIS_STATE.md</c> §2 item 2
 /// makes the stored record the single source of truth for a battle's live state
 /// and states that "the server process holds no long-lived in-memory copy across
-/// requests (<c>ARCHITECTURE.md</c> §4 — <c>BattleResolutionService</c> loads,
+/// requests (<c>ARCHITECTURE.md</c> §4 — this service loads,
 /// uses, and saves it within one resolution)". This service holds none: it
 /// creates the record (<c>§3</c> "Created"), loads it at the start of a
 /// resolution (<c>§4</c> item 1), and saves it once at the end under the
@@ -110,9 +110,11 @@ public sealed class BattleStateService
     /// (<c>GAME_STATE.md</c> §2.3, <c>ELEMENT_RULES.md</c> §6) and the Passive it
     /// carries (§2.3, <c>PASSIVE_RULES.md</c> §1).
     ///
-    /// Pet selection and progression are not implemented (<c>GAME_STATE.md</c>
-    /// §2.3, <c>SIGNALR_PROTOCOL.md</c> §4.3 item 2), so the battle's Pet is
-    /// supplied by the caller rather than resolved from a Pet definition. It is
+    /// Pet selection is implemented end-to-end on the battle-start path
+    /// (<c>BattleStartService</c> resolves the submitted <c>petId</c> against the
+    /// Player's owned collection and supplies this configuration), so the battle's
+    /// Pet is resolved from the Pet instance and its definition rather than chosen
+    /// here. It is
     /// exactly the values <see cref="PetState"/> holds — the owned Pet instance
     /// identity, the Element, the Passive
     /// identity, the Threshold, and the optional non-default Reset Behavior — and
@@ -158,13 +160,13 @@ public sealed class BattleStateService
     /// (<c>GameServer.Application.Relics.RelicLoadoutService</c>) and is carried
     /// into <c>PetState</c> unchanged, in the order given.
     ///
-    /// It is <c>null</c> until the Relic loadout stage supplies it: Relic
-    /// selection is not implemented end-to-end and no value may be invented for
-    /// it, so the caller supplies it rather than this boundary defaulting one.
-    /// A <c>null</c> snapshot is the documented staging position (§0 item 4:
-    /// not yet implemented, not not-required) — it is not an empty loadout,
-    /// because the rules define no zero-Relic battle
-    /// (<c>RELIC_RULES.md</c> §2.1 item 1).
+    /// Relic selection is implemented end-to-end on the battle-start path
+    /// (<c>BattleStartService</c> resolves the submitted <c>relicLoadout</c>
+    /// through <c>RelicLoadoutService</c> and supplies this snapshot), so this
+    /// boundary carries the value it is given rather than defaulting one of its
+    /// own. A <c>null</c> snapshot remains representable for a caller that
+    /// composes no loadout; it is not an empty loadout, because the rules define
+    /// no zero-Relic battle (<c>RELIC_RULES.md</c> §2.1 item 1).
     /// </param>
     /// <param name="EquippedCards">
     /// The battle-scoped Card loadout snapshot — exactly 4
@@ -176,10 +178,12 @@ public sealed class BattleStateService
     /// derives the Signature Skill, and is carried into <c>PetState</c>
     /// unchanged and in the order given.
     ///
-    /// It is <c>null</c> until the Card loadout stage supplies it, on the same
-    /// documented staging basis as <paramref name="EquippedRelics"/>: a
-    /// <c>null</c> snapshot is "not yet implemented", never an invented empty
-    /// loadout — <c>CARD_RULES.md</c> §1 defines no zero-Card battle.
+    /// The battle-start path always supplies it
+    /// (<c>BattleStartService</c> supplies the Card loadout validator's product),
+    /// so this boundary carries the value it is given rather than defaulting one.
+    /// A <c>null</c> snapshot remains representable for a caller that composes no
+    /// loadout; it is never an invented empty loadout, because
+    /// <c>CARD_RULES.md</c> §1 defines no zero-Card battle.
     /// </param>
     public readonly record struct PetConfiguration(
         PetId PetId,
@@ -451,16 +455,16 @@ public sealed class BattleStateService
     /// its Threshold, and its declared Reset
     /// Behavior. <c>PetState</c> is present from battle creation
     /// (<c>GAME_STATE.md</c> §2.3 item 3) and no value may be invented for it, so
-    /// this is required: Pet selection is not implemented and the battle's Pet
-    /// configuration is therefore supplied by the caller.
+    /// this is required: the battle-start path performs the Pet selection and
+    /// supplies the resulting configuration here.
     /// </param>
     /// <param name="bossDefinition">
     /// The definition of the Boss this battle is fought against
     /// (<c>GAME_STATE.md</c> §2.4, <c>BOSS_RULES.md</c> §6.1). <c>BossState</c> is
     /// present from battle creation (§2.4) and no value may be invented for its
-    /// identity, Element, or stats, so this is required: Boss selection is not
-    /// implemented and the battle's Boss definition is therefore supplied by the
-    /// caller — <see cref="BossDefinitions"/> holds the MVP set.
+    /// identity, Element, or stats, so this is required: the battle-start path
+    /// performs the Boss selection and supplies the resolved definition here —
+    /// <see cref="BossDefinitions"/> holds the MVP set.
     /// </param>
     /// <param name="seed">
     /// The battle's server-chosen PRNG seed (<c>GAME_STATE.md</c> §2.6.1). It is
@@ -1573,15 +1577,17 @@ public sealed class BattleStateService
         // of BOSS_RULES.md §6.4 (e.g. "boss-hoa-long"), never a display name
         // (SIGNALR_PROTOCOL.md §3.2.16 item 2).
         //
-        // Thủy Ma is the documented exception: §6.2 gives it the trigger "Passive
-        // (always active)" — an alternate trigger (PASSIVE_RULES.md §3), not a Match
-        // count — and states it "is never charged via PassiveTracker.Charge on
-        // Player Matches, and emits no PassiveCharged/PassiveTriggered from match
-        // progress". Its PassiveThreshold is therefore the Always-Active marker 0
-        // rather than a threshold, and the charge is skipped entirely. Passive
-        // EFFECT application is out of this task's scope for every Boss
-        // (BOSS_RULES.md §3 item 3, §6.2): a trigger emits its event and applies
-        // nothing.
+        // Thủy Ma is the documented exception: §6.2 gives it the trigger
+        // "Battle Start" (the wording was corrected from the retired "always
+        // active" form by TASK-124) — an alternate trigger (PASSIVE_RULES.md §3),
+        // not a Match count — and states it "is never charged via
+        // PassiveTracker.Charge on Player Matches, and emits no
+        // PassiveCharged/PassiveTriggered from match progress". Its
+        // PassiveThreshold is therefore the non-charged marker (null, read back
+        // as 0) rather than a threshold, and the charge is skipped entirely.
+        // The match-charged Boss Passives' EFFECTS are applied below, at
+        // GAME_RULES.md §17 step 18a (BOSS_RULES.md §6.2.1, §6.2.3): a trigger
+        // emits its event and applies that Boss's declared effect.
         if (bossDefinition.PassiveThreshold > 0)
         {
             var bossPassive = PassiveTracker.Charge(
@@ -1645,8 +1651,8 @@ public sealed class BattleStateService
         // PassiveThreshold > 0. A Boss whose PassiveId records a `null` threshold
         // is by definition NOT match-charged (DATABASE.md §1 note item 3), so it
         // never reaches it — `null` means "no match-charging threshold", NOT
-        // "always active", and it must never fall through to an unconditional
-        // application.
+        // "always active" (the retired §6.2 wording TASK-124 corrected), and it
+        // must never fall through to an unconditional application.
         //
         // BOSS_RULES.md §6.2.4/§6.2.5 give those two Passives an explicit
         // THRESHOLD trigger instead, evaluated at the same documented point —

@@ -1,6 +1,27 @@
 # Database
 
-**Version:** 1.36 (§2's MVP starter ownership contract **synchronized** with the
+**Version:** 1.38 (§1's battle-end atomicity block gains item 7, which states the
+contract's **scope explicitly**: atomicity is a property of how the three
+already-documented writes commit and redefines no value, so the XP formula,
+Level formula, XP cap, reward amounts, Pet Tier/Star, Passive effects, the Redis
+data model, the API/SignalR contracts, and the schema are all unchanged. §1's
+`BossDefinition` resolution mechanism note is also **synchronized** with the
+implementation: the lookup is the existing `BossDefinitionLookup` boundary rather
+than the `PersistenceRepository (Postgres)` component `ARCHITECTURE.md` §3 no
+longer names (reconciled in the same change under TASK-217C). **No table,
+column, constraint, index, migration, stored value, schema shape, token, enum
+mapping, or gameplay value changes.** Decision source: TASK-217C. Prior 1.37: (§1 gains the **battle-end atomicity** contract: the
+`BattleResult` row and the two progression tracks (`COMBAT_RULES.md` §7.2,
+`PET_RULES.md` §5.3) are written inside **one database transaction** and commit
+together or not at all. That invariant is what makes sourcing item 1's
+primary-key idempotency guard safe rather than a way to lose a reward: a durable
+result now implies both grants committed with it, so a progression failure rolls
+the whole unit of work back and the still-recoverable battle can be retried in
+full. **No table, column, constraint, index, migration, stored value, schema
+shape, token, enum mapping, or gameplay value changes**, and the documented
+ordering (the durable write, then the active-state delete), the exactly-once
+rule, the reward amounts, and the "no new persistence abstraction" standard of §2
+item 4 are unchanged. Decision source: TASK-217A. Prior 1.36: (§2's MVP starter ownership contract **synchronized** with the
 TASK-213 decision and the TASK-221 implementation: the Player-creation grant IS
 the MVP content grant — **5 Pets, 3 Basic Cards, 10 Relics** as **18 ownership
 rows**, up from 1 / 3 / 3 (7 rows) — because MVP has no post-creation
@@ -892,10 +913,11 @@ D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
      performed on the battle-end path against the persisted `BossDefinition`
      row whose `Identity` equals `BattleState.BossState.BossId`
      (`§3` — `Identity NOT NULL, UNIQUE` is the unique target of that lookup).
-     The **`Infrastructure` layer owns the lookup**, expressed through the
-     `PersistenceRepository (Postgres)` component that `ARCHITECTURE.md` §3
-     already designates for `DATABASE.md` data; the Application layer
-     orchestrates the battle-end step and the Domain layer supplies the
+     The **`Infrastructure` layer owns the lookup**, expressed as a query on the
+     existing persistence boundary that `ARCHITECTURE.md` §3 designates for
+     `DATABASE.md` data (`BossDefinitionLookup`, implementation
+     `GameServer.Infrastructure.Postgres.BossDefinitionLookup`); the Application
+     layer orchestrates the battle-end step and the Domain layer supplies the
      Identity value but neither performs nor owns the query
      (`ARCHITECTURE.md` §2.1 — layer direction, `TDD.md` §4 item 3 — Postgres
      is touched only on the terminal path, never on the hot resolution path).
@@ -1095,8 +1117,8 @@ D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
      ordering is result-write **then** active-state delete
      (`ARCHITECTURE.md` §4 item 4, `REDIS_STATE.md` §3); because the result
      write did not happen, the delete must not happen either. Deleting the
-     active state would destroy the only authoritative copy of the battle
-     (`REDIS_STATE.md` §2 item 2, §7 item 5) for a battle that was never
+     active state would destroy the battle's only authoritative copy of its live
+     state (`REDIS_STATE.md` §2 item 2) for a battle that was never
      durably recorded.
    - **The battle remains recoverable and the failure is repairable.** The
      authoritative `BattleState` is still in Redis under its normal sliding
@@ -1236,6 +1258,81 @@ projects both the **Player track** and the **Pet track**:
    `newPetLevel` equal to their unchanged pre-battle values, matching the
    `+0` Player XP grant (`COMBAT_RULES.md` §7.2) and `+0` Pet XP grant to the
    active combat Pet (`PET_RULES.md` §5.3 item 2).
+
+**Battle-end atomicity for `BattleResult` and the two progression tracks.**
+(TASK-217A)
+
+A battle end is recorded as **one unit of work**: the `BattleResult` row (§1), the
+Player progression (`COMBAT_RULES.md` §7.2), and the Pet progression
+(`PET_RULES.md` §5.3) become durable **together, or none of them does**. The
+invariant is stated here because it is a property of this persistence boundary,
+not of any one caller:
+
+```text
+BattleResult write
++ Player progression
++ Pet progression
+        ↓
+one COMMIT
+        ↓
+battle:{battleId}:state delete      (REDIS_STATE.md §3)
+```
+
+1. **One transaction, one commit, on the shared scoped context.** The three writes
+   are performed by their existing persistence boundaries
+   (`BattleResultRepository`, `PlayerRepository`, `PetRepository`), each of which
+   commits its own `SaveChangesAsync`. They are enclosed by **one EF Core
+   transaction** — begun and committed on the **single scoped `GameDbContext`**
+   those boundaries are constructed from, which is the same shared-context fact §2
+   item 4 records for the Player-creation batch. Every participating
+   `SaveChangesAsync` therefore executes inside that transaction. Beginning a
+   transaction on one context while writing through another, wrapping independent
+   contexts in a transaction, using a `TransactionScope` to hide several contexts,
+   or leaving a participating `SaveChangesAsync` outside the transaction would each
+   make the unit of work non-atomic and is **not permitted**.
+2. **A progression write that did not happen fails the battle end.** A
+   participating progression boundary's own report that there was no row to update
+   (the absence §1 defines) is a **failure**, not a completion: the persisted
+   `RewardSummary` would otherwise state a `playerXpGained`/`petXpGained` and a
+   resulting XP that never existed in the progression it names. The failure rolls
+   the whole unit of work back and is raised to the caller; it is never treated as
+   a successful battle end, and the path does not continue to the delete.
+3. **The ordering rule is unchanged, and the commit precedes the delete.** The
+   durable battle end commits first; `battle:{battleId}:state` is deleted **only
+   after that commit completed** (`ARCHITECTURE.md` §4 item 4,
+   `REDIS_STATE.md` §3). The delete is a Redis operation and remains **outside** the
+   database transaction — no Redis behaviour moves into it.
+4. **A rollback leaves the battle recoverable and retryable.** When any
+   participating write fails, **no `BattleResult` row is durable**, so the
+   primary-key guard of sourcing item 1 does not refuse a later attempt: the
+   authoritative `BattleState` is still in the store under its normal sliding TTL,
+   and a retry re-runs the **whole** unit of work — result row, both grants, and the
+   delete — recording each track **exactly once**. The two fail-closed returns
+   (an unresolved `BossDefinition`, sourcing item 3; and this battle's result
+   already durable, sourcing item 1) precede the transaction and therefore open
+   none and write nothing.
+5. **The idempotency rule is unchanged — and is now safe to rely on.** Sourcing
+   item 1 keeps `BattleResultId` = the battle's own `BattleId` as the exactly-once
+   guard. No ledger, lock, XP-transaction table, outbox, retry worker, or second
+   idempotency mechanism is introduced (`ARCHITECTURE.md` §5). Atomicity is what
+   makes that guard's premise true: a durable result implies that both grants
+   committed with it, so a repeat that finds the row can neither re-award nor
+   suppress a reward that is still owed.
+6. **No new persistence abstraction beyond the transaction boundary.** Atomicity is
+   achieved with one EF Core transaction over the existing scoped context, reached
+   through the `IBattleEndTransaction` Application contract
+   (`src/backend/GameServer.Application/Battle/IBattleEndTransaction.cs`) and
+   implemented in Infrastructure (`BattleEndTransaction`). §2 item 4's standard
+   stands: no unit of work, no distributed transaction, no compensation logic, and
+   no schema change.
+7. **This contract changes no gameplay or stored value.** Atomicity is a property
+   of how the three documented writes already defined in this document commit; it
+   introduces no new value and redefines none. The XP formula, the Level formula,
+   the XP cap, and the reward amounts (`COMBAT_RULES.md` §7, `PET_RULES.md` §5),
+   Pet Tier/Star and Passive effects, the Redis data model and its delete
+   semantics (`REDIS_STATE.md` §1–§4), the API and SignalR contracts
+   (`API_CONTRACTS.md`, `SIGNALR_PROTOCOL.md`), and the schema (§1–§5 here) are
+   all **unchanged**.
 
 **Duration and completion sourcing for `BattleResult`.** (TASK-050)
 

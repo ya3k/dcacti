@@ -1,6 +1,13 @@
 # Technical Design Document (TDD)
 
-**Version:** 1.5 (§2.1's post-result continuations are now **implemented** per
+**Version:** 1.6 (§4 item 2 is **synchronized** with the verified battle-end
+persistence contract: the durable battle end is one database unit of work whose
+commit precedes the Redis clear, per `DATABASE.md` §1, "Battle-end atomicity for
+`BattleResult` and the two progression tracks". The sentence previously stated
+the result write and the Redis clear without the atomicity or ordering rule.
+**No gameplay rule, API contract, wire member, Redis contract, database
+contract, or stated technology choice changed** — the stack table and §4 items
+1/3 are unchanged. Decision source: TASK-217C. Version 1.5 (§2.1's post-result continuations are now **implemented** per
 TASK-203: `ResultScene` exposes the two approved explicit buttons and clears the
 completed battle's active battle state on both exits without disconnecting the
 transport; `LobbyScene` restores the preserved loadout on the `PLAY AGAIN` entry
@@ -349,8 +356,15 @@ Redis        Active, transient battle state only — exists for the lifetime
    single server instance, so a reconnect or instance restart can recover
    state (see `REDIS_STATE.md` for recovery detail).
 2. On battle end (`BattleWon` / `BattleLost`), the result and any reward
-   changes are written to PostgreSQL and the Redis battle state is cleared
-   (TTL or explicit delete — see `REDIS_STATE.md`).
+   changes are written to PostgreSQL **as one database unit of work** — the
+   `BattleResult` row and both progression tracks commit together, or none of
+   them does (`DATABASE.md` §1, "Battle-end atomicity for `BattleResult` and the
+   two progression tracks") — and only after that commit does the Redis battle
+   state get cleared (explicit delete, with the TTL as the cleanup path — see
+   `REDIS_STATE.md` §3). The commit must precede the clear, because a cleared
+   active-state record for a battle end that never became durable would destroy
+   the battle's only authoritative copy of its live state
+   (`REDIS_STATE.md` §2 item 2).
 3. PostgreSQL is never queried on the hot path of resolving a single Swap —
    only Redis is read/written during active battle resolution.
 

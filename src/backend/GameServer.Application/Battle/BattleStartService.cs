@@ -28,7 +28,7 @@ namespace GameServer.Application.Battle;
 ///         ↓
 /// PetConfiguration                BattleStateService
 ///         ↓
-/// CreateBattle                    GAME_STATE.md §2.0.5, §2.3, §2.4
+/// CreateBattleAsync               GAME_STATE.md §2.0.5, §2.3, §2.4
 ///         ↓
 /// BattleStartResult               API_CONTRACTS.md §3 response
 /// </code>
@@ -57,7 +57,7 @@ namespace GameServer.Application.Battle;
 /// finer-grained internal reasons are never widened into the wire
 /// contract,</item>
 /// <item>create a partial battle — every validation completes before
-/// <see cref="BattleStateService.CreateBattle"/> is called, and a rejection
+/// <see cref="BattleStateService.CreateBattleAsync"/> is called, and a rejection
 /// therefore creates nothing at all,</item>
 /// <item>read Cards or Relics from the database after the snapshot exists, or
 /// persist a loadout/equip row (<c>RELIC_RULES.md</c> §2.5,
@@ -68,8 +68,10 @@ namespace GameServer.Application.Battle;
 /// composition and the write — this boundary calls it and stores nothing
 /// directly,</item>
 /// <item>implement any gameplay: no Match-3, no Card cast, no Card or Relic
-/// effect, no Boss AI, no victory/defeat (<c>GAME_RULES.md</c> §17 steps 18–19
-/// remain unimplemented),</item>
+/// effect, no Boss AI, no victory/defeat. This boundary only composes a battle;
+/// every one of those stages is implemented elsewhere — in the Domain modules
+/// and in the <see cref="BattleStateService"/> resolution flow
+/// (<c>GAME_RULES.md</c> §17),</item>
 /// <item>hold the authoritative state — the active-state store does, reached
 /// through <see cref="BattleStateService"/> (<c>REDIS_STATE.md</c> §2 item 2,
 /// <c>GAME_STATE.md</c> §5.1). This boundary returns identity and outcome
@@ -154,7 +156,7 @@ public sealed class BattleStartService
     /// <b>before</b> any battle state is created.
     ///
     /// <b>A rejected request creates nothing.</b> Every branch below returns
-    /// before <see cref="BattleStateService.CreateBattle"/> is reached, so no
+    /// before <see cref="BattleStateService.CreateBattleAsync"/> is reached, so no
     /// battle is registered and no partially populated <c>BattleState</c> can
     /// exist (<c>API_CONTRACTS.md</c> §3: "A rejected request equips nothing and
     /// writes no battle state").
@@ -246,11 +248,12 @@ public sealed class BattleStartService
         // Step 2: resolve the selected Boss
         // ===============================================================
         // API_CONTRACTS.md §3 ("bossId must be a valid MVP Boss —
-        // BOSS_RULES.md §6"). BOSS_RULES.md §6 defines exactly three
-        // content-defined MVP Bosses and BossDefinitions holds exactly those
-        // (BOSS_RULES.md §6.1 records the remaining two as "not yet
-        // content-defined"), so resolution is a lookup against the transcribed
-        // content — not a new registry, and not an invented Boss.
+        // BOSS_RULES.md §6"). BOSS_RULES.md §6 defines five content-defined MVP
+        // Bosses and BossDefinitions holds exactly those five (BOSS_RULES.md §6.1
+        // / §6.2.4–§6.2.5; the earlier "two further MVP Bosses are not yet
+        // content-defined" note was retired by TASK-172), so resolution is a
+        // lookup against the transcribed content — not a new registry, and not an
+        // invented Boss.
         //
         // Boss COMBAT BEHAVIOR is not implemented here or anywhere in this
         // task (BOSS_RULES.md §3–§5): this step only establishes which Boss the
@@ -495,8 +498,8 @@ public sealed class BattleStartService
     /// The Boss's display name is presentation-only content and is never
     /// accepted here.
     ///
-    /// It is a lookup over the three transcribed definitions, not a registry:
-    /// <c>BOSS_RULES.md</c> §6 defines exactly those three, and a Boss that is
+    /// It is a lookup over the five transcribed definitions, not a registry:
+    /// <c>BOSS_RULES.md</c> §6 defines exactly those five, and a Boss that is
     /// not among them is rejected rather than fabricated
     /// (<c>AGENTS.md</c> §7).
     /// </summary>
