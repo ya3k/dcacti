@@ -40,8 +40,10 @@ Goal: One playable battle, start to finish, against Bosses.
 Goal: Full MVP scope, see MVP_SCOPE.md §1.
 ```
 - All 5 Pets (all 5 Signature Skills are now content-defined — `CARD_RULES.md`
-  §4.1; the Thanh Xà and Sơn Hùng rows remain to be provisioned, see
-  PET_RULES.md §8 note)
+  §4.1; all five `PetDefinition` rows are provisioned, including Thanh Xà and
+  Sơn Hùng, via migration
+  `20261004055006_ProvisionThanhXaAndSonHungSignatureSkills`, see
+  PET_RULES.md §8)
 - All 5 Bosses (all five are content-defined — `BOSS_RULES.md` §6:
   Hỏa Long, Thủy Ma, Mộc Yêu, Sơn Thạch Vệ, Kim Lôi Vương; all five
   `BossDefinition` rows are provisioned via migrations
