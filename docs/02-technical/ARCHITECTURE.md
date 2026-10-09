@@ -1,6 +1,19 @@
 # Architecture
 
-**Version:** 1.10 (§2.3 and §3 **synchronized with ADR-023** per TASK-236:
+**Version:** 1.11 (§2.2, §2.2.2, and §2.3 **reconciled with the standalone web
+client** per TASK-238: the §2.2 frontend diagram now names the standalone web
+browser as the hosting surface and lists only the `services/realtime/` and
+`services/api/` directories that exist, so the retired Discord Activity iframe,
+its Embedded App SDK lifecycle, and the nonexistent `services/discord/`
+directory are no longer described as current; §2.2.2's viewport diagram is
+relabelled for the standalone web browser; and §2.3 item 1 now states that the
+dormant backend Discord identity seam retired by ADR-023 was **physically
+deleted** by TASK-237 (Phase A commit
+`1cdcd398ad4dc9d4ebc2854d9aecf0b1d5b48c4a`), superseding the "deferred to
+downstream implementation work" status recorded in 1.10 below. No module
+boundary, layer direction, port capability, endpoint, wire member, state model,
+Redis key, database column, gameplay rule, or contract changes.
+Documentation-only. Decision source: TASK-238 / ADR-020 / ADR-023. Prior 1.10: (§2.3 and §3 **synchronized with ADR-023** per TASK-236:
 the backend Discord identity dependency injection seam is formally retired per
 the Product Owner's accepted `REMOVE` decision, with physical code and test
 cleanup deferred to downstream implementation work; §2.3's title and
@@ -197,7 +210,7 @@ Infrastructure or Api types.
 ## 2.2 Frontend Layers (Phaser-First with React Shell)
 
 ```text
-Discord Activity
+Standalone Web Browser
         │
         ▼
 React + Vite (UI Shell & Platform Boundary)
@@ -206,14 +219,16 @@ React + Vite (UI Shell & Platform Boundary)
 Phaser 4 (Game Runtime & Scene Lifecycle)
         │
         ▼
-Services (discord/ · realtime/ · api/)
+Services (realtime/ · api/)
         │
         ▼
 Backend (SignalR Hub / REST API)
 ```
 
-1. **React UI Shell:** Wraps the application, mounts the Phaser canvas, and
-   manages HTML overlays, menus, settings, and Discord Activity SDK lifecycle.
+1. **React UI Shell:** Runs inside the standalone web browser and wraps the
+   application: it mounts the Phaser canvas and manages HTML overlays, menus,
+   settings, and the authentication boundary's presentation — `AuthScreen`
+   before an authenticated session and `GameShell` after it (ADR-020 D5; §2.3).
 2. **Phaser 4 Game Runtime:** Drives the game canvas, scene transitions
    (`BootScene` → `PreloaderScene` → `MainMenuScene` → `LobbyScene` →
    `BattleScene` → `ResultScene`, and on from `ResultScene` to the approved
@@ -221,12 +236,11 @@ Backend (SignalR Hub / REST API)
    restated here), sprites, tweens, animations, and user pointer
    input on the board.
 3. **Services Isolation:**
-   - `services/discord/` isolates Discord Embedded App SDK interactions.
    - `services/realtime/` isolates SignalR connection handling and Battle Event
      subscription (`SIGNALR_PROTOCOL.md`).
    - `services/api/` isolates HTTP REST communication (`API_CONTRACTS.md`).
-   - *Rule:* Discord SDK and SignalR transport details must never leak into
-     individual Phaser game objects or scenes.
+   - *Rule:* SignalR and REST transport details must never leak into individual
+     Phaser game objects or scenes.
 4. **Server-Authoritative Principle:** Client layers (React + Phaser) are
    strictly presentation and runtime components; authoritative state, math,
    and rules remain exclusively on the server (`GAME_RULES.md` §18, ADR-001).
@@ -611,7 +625,7 @@ The client behaves as a game, not as a scrollable web page. The document never
 scrolls; the available viewport *is* the game surface.
 
 ```text
-Discord Activity / Browser viewport
+Standalone web browser viewport
         │
         ▼
 Application Root (html / body / #root: 100% × 100%, overflow: hidden)
@@ -680,7 +694,7 @@ ASP.NET Core Backend
 REST API / SignalR Hub (BattleHub)
 ```
 
-1. **Authentication (ADR-020, ADR-023):** Standalone Web authentication via standard username/password replaces the former Discord Activity OAuth boundary. Discord SDK and Discord Activity dependencies are retired, and the dormant backend Discord identity dependency injection seam is formally retired per ADR-023 (physical deletion of C# source files, DI registrations, and test stubs deferred to downstream implementation work).
+1. **Authentication (ADR-020, ADR-023):** Standalone Web authentication via standard username/password replaces the former Discord Activity OAuth boundary. Discord SDK and Discord Activity dependencies are retired; the dormant backend Discord identity dependency injection seam is retired per ADR-023, and its physical deletion — the C# source files, the DI registrations, and the test compatibility paths — was executed by TASK-237 (Phase A commit `1cdcd398ad4dc9d4ebc2854d9aecf0b1d5b48c4a`).
 2. **Account & Password Security:**
    - Password hashes are stored securely in PostgreSQL using PBKDF2 with unique cryptographic salt.
    - Passwords are never logged, echoed, or stored in plaintext.

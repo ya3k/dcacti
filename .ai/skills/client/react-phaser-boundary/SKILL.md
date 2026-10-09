@@ -9,14 +9,14 @@ description: "Use this skill when implementing or modifying the boundary between
 **Status:** Binding  
 **Scope:** Frontend boundary coordination between React application UI and Phaser 4 canvas presentation.
 
-> Provides the procedure and architectural rules for coordinating React DOM UI (shell, lobby, menus, overlays, Discord Activity SDK) and the Phaser 4 Game Runtime without tight coupling or direct internal cross-mutation.
+> Provides the procedure and architectural rules for coordinating the React DOM UI (application shell, authentication presentation, lobby, menus, overlays) and the Phaser 4 Game Runtime without tight coupling or direct internal cross-mutation.
 
 ---
 
 ## Purpose
 
 Define the communication and lifecycle contracts across the React ↔ Phaser boundary in DCacti, ensuring:
-1. React owns the DOM UI, Discord Activity SDK, and application routing.
+1. React owns the DOM UI, the application shell and its authenticated/unauthenticated switch (`App.tsx`: `AuthScreen` → `GameShell`, `ADR-020` D5).
 2. Phaser owns the 2D canvas, scene lifecycle, and gameplay visual presentation.
 3. React and Phaser never reach directly into each other's internal state.
 
@@ -44,6 +44,7 @@ Define the communication and lifecycle contracts across the React ↔ Phaser bou
 - `docs/02-technical/ARCHITECTURE.md` §1, §2.2, §2.2.1 — Frontend architecture and Game Runtime coordination
 - `docs/02-technical/TDD.md` §2.1 — Client responsibility boundaries
 - `docs/03-decisions/ADR/ADR-003*` — Phaser 4 as presentation engine
+- `docs/03-decisions/ADR/ADR-020*` — Standalone web platform target and the `AuthScreen` / `GameShell` shell split (amends ADR-003)
 
 ---
 
@@ -69,7 +70,7 @@ Define the communication and lifecycle contracts across the React ↔ Phaser bou
 ```
 
 1. **Strict Separation of Concerns:**
-   - **React owns:** Discord Activity lifecycle, Lobby UI, Loadout selection, Modal dialogs, Settings, HTML HUD overlays, Viewport wrapper (`GameShell.tsx`).
+   - **React owns:** Application shell lifecycle (`App.tsx` — `AuthScreen`/`GameShell` switch), Lobby UI, Loadout selection, Modal dialogs, Settings, HTML HUD overlays, Viewport wrapper (`GameShell.tsx`).
    - **Phaser owns:** BattleScene, 8x8 Board canvas, Gem rendering, Battle animations, Particle VFX, Gameplay pointer input.
 2. **No Direct DOM ↔ Scene Coupling:**
    - React components must **never** call Phaser scene methods directly (`scene.add...`, `scene.boardView...`).
@@ -120,6 +121,6 @@ Define the communication and lifecycle contracts across the React ↔ Phaser bou
 
 ## Traceability
 
-- **Reads:** `docs/02-technical/ARCHITECTURE.md`, `docs/02-technical/TDD.md`, `docs/03-decisions/ADR/ADR-003*`
+- **Reads:** `docs/02-technical/ARCHITECTURE.md`, `docs/02-technical/TDD.md`, `docs/03-decisions/ADR/ADR-003*`, `docs/03-decisions/ADR/ADR-020*`
 - **Used by:** `client` agent, `orchestrator` agent
 - **Related Skills:** `client/phaser-architecture`, `client/client-event-projection`, `phaser/scenes`
