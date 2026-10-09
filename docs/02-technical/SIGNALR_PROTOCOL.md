@@ -1129,8 +1129,11 @@ active Pet — `GAME_EVENTS.md` §1, ADR-011).
    Cost is a definition value owned by `CARD_RULES.md` §2 — not a wire member —
    and the authoritative record of what a cast did to `PetState.Power` is the
    state value itself, delivered by the §4 push (`GAME_STATE.md` §2.3). A client
-   that must show the spent Cost reads the Card's definition; a client must not
-   recompute it from the event (`GAME_RULES.md` §18, ADR-001).
+   must not derive or reconstruct effective or spent cost from a Card
+   definition, from a `PowerChanged` delta, or from events (`§4 item 15`,
+   `§4.3 item 15`, `GAME_RULES.md` §18, `ADR-001`). If spent cost is displayed,
+   its value must come from an explicitly server-delivered field rather than
+   client derivation; the current `CardCast` event carries no cost member.
 3. **`effect summary` is omitted, under the §3.2.25 ruling.** It is not
    tabulated here and no deferral note is written for it — see §3.2.25.
 4. **Emitted for every successful cast, after the Cost is deducted and the
