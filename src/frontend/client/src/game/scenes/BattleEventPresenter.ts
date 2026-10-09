@@ -565,8 +565,109 @@ const CALLOUT_COMBO_COLOR = '#fbbf24';
 const CALLOUT_CAST_COLOR = '#a5b4fc';
 /** The Relic callout's colour: the build's own colour, beside the cast's. */
 const CALLOUT_RELIC_COLOR = '#7dd3fc';
-const CALLOUT_BOSS_COLOR = '#f87171';
+export const CALLOUT_BOSS_COLOR = '#f87171';
 const CALLOUT_PASSIVE_COLOR = '#c4b5fd';
+
+/**
+ * Canonical MVP Boss Skill display names mapped from BOSS_RULES.md §6.3 / §6.4.
+ *
+ * Each of the five MVP Bosses carries one content-defined Skill with its canonical
+ * display name:
+ *   - flame-burst    -> Flame Burst (Hỏa Long)
+ *   - drain-power    -> Drain Power (Thủy Ma)
+ *   - root           -> Root (Mộc Yêu)
+ *   - earthquake     -> Earthquake (Sơn Thạch Vệ)
+ *   - thunder-strike -> Thunder Strike (Kim Lôi Vương)
+ */
+export const BOSS_SKILL_NAMES: Readonly<Record<string, string>> = Object.freeze({
+  'flame-burst': 'Flame Burst',
+  'drain-power': 'Drain Power',
+  root: 'Root',
+  earthquake: 'Earthquake',
+  'thunder-strike': 'Thunder Strike',
+});
+
+/**
+ * Resolves a Boss Skill's canonical display name from BOSS_RULES.md §6.3 / §6.4,
+ * or returns null when the technical skillId is unrecognized.
+ */
+export function resolveBossSkillDisplayName(skillId: string): string | null {
+  return BOSS_SKILL_NAMES[skillId] ?? null;
+}
+
+/**
+ * Canonical Boss Enrage thresholds from BOSS_RULES.md §6.1.
+ *
+ * Enrage is a permanent state transition triggered when BossHP < EnrageThreshold
+ * (BOSS_RULES.md §5 item 4). Strict inequality applies.
+ */
+export const BOSS_ENRAGE_THRESHOLDS: Readonly<Record<string, number>> = Object.freeze({
+  'boss-hoa-long': 1500,
+  'boss-thuy-ma': 1500,
+  'boss-moc-yeu': 1500,
+  'boss-son-thach-ve': 1500,
+  'boss-kim-loi-vuong': 2100,
+});
+
+/**
+ * Evaluates whether a Boss is in Enraged state according to BOSS_RULES.md §5 item 4 & §6.1.
+ * A defeated Boss (hp <= 0) is not considered Enraged.
+ * For unknown boss IDs, safely falls back to 30% of maxHp (BaseEnrageThreshold).
+ */
+export function isBossEnraged(bossId: string, hp: number, maxHp: number): boolean {
+  if (hp <= 0) {
+    return false;
+  }
+  const threshold = BOSS_ENRAGE_THRESHOLDS[bossId] ?? Math.floor(maxHp * 0.3);
+  return hp < threshold;
+}
+
+/**
+ * Canonical Swap rejection codes mapped to player-friendly messages
+ * (MATCH3_RULES.md §2.1.2, §2.1.4; SIGNALR_PROTOCOL.md §5 item 3).
+ */
+export const SWAP_REJECTION_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
+  NO_MATCH_FROM_SWAP: 'Swap does not create a match.',
+  INVALID_SWAP: 'Invalid swap. Gems must be adjacent.',
+  INVALID_CELL_INDEX: 'Invalid board position.',
+  STALE_ACTION: 'Board has changed. Please try again.',
+  BATTLE_NOT_FOUND: 'Battle session not found.',
+});
+
+/**
+ * Formats a Swap rejection reason into a player-friendly presentation message,
+ * providing a safe fallback for unknown codes.
+ */
+export function formatSwapRejection(reason?: string | null): string {
+  if (!reason) {
+    return 'Swap rejected.';
+  }
+  return SWAP_REJECTION_MESSAGES[reason] ?? `Swap rejected (${reason}).`;
+}
+
+/**
+ * Canonical CardCast and PetSkillCast rejection codes mapped to player-friendly messages
+ * (CARD_RULES.md §3; SIGNALR_PROTOCOL.md §5 item 3).
+ */
+export const CARD_CAST_REJECTION_MESSAGES: Readonly<Record<string, string>> = Object.freeze({
+  INSUFFICIENT_POWER: 'Not enough Power.',
+  CARD_CAST_ALREADY_USED_THIS_TURN: 'Only one card can be cast per turn.',
+  CARD_NOT_IN_LOADOUT: 'Card is not in your current loadout.',
+  INVALID_CARD: 'Invalid card.',
+  PET_SKILL_NOT_OWNED: 'Pet skill is not available.',
+  BATTLE_NOT_FOUND: 'Battle session not found.',
+});
+
+/**
+ * Formats a CardCast or PetSkillCast rejection reason into a player-friendly presentation message,
+ * providing a safe fallback for unknown codes.
+ */
+export function formatCardCastRejection(reason?: string | null): string {
+  if (!reason) {
+    return 'Cast rejected.';
+  }
+  return CARD_CAST_REJECTION_MESSAGES[reason] ?? `Cast rejected (${reason}).`;
+}
 
 /**
  * The priority ladder. A resolution can produce a dozen events; the player is
@@ -614,10 +715,9 @@ const CALLOUT_PRIORITY_MATCH = 6;
  * PetSkillCast      `cardId`           — as above
  * RelicTriggered    `relicId`          — resolved to the Relic's own display name
  *                                        through the caller's lookup (below)
- * BossSkillCast     (no member)        — the event's own existence is the fact;
- *                                        `skillId` is a technical identity with no
- *                                        client-visible definition, so it is not
- *                                        shown
+ * BossSkillCast     `skillId`          — resolved to canonical display name from
+ *                                        BOSS_RULES.md §6.3/§6.4; falls back to
+ *                                        'BOSS SKILL' when unrecognized
  * PassiveTriggered  `source`           — `"boss"` / `"pet"` selects the wording
  * PassiveCharged    `source`, `progress`, `threshold`
  * MatchCreated      (no member)        — the event's own existence is the fact
@@ -653,7 +753,8 @@ const CALLOUT_PRIORITY_MATCH = 6;
 export function describeEventCallout(
   event: InBattleServerEvent,
   resolveCardName: (cardId: string) => string,
-  resolveRelicName: (relicId: string) => string | null
+  resolveRelicName: (relicId: string) => string | null,
+  resolveBossSkillName: (skillId: string) => string | null = resolveBossSkillDisplayName
 ): EventCallout | null {
   switch (event.type) {
     case 'ComboChanged':
@@ -688,12 +789,14 @@ export function describeEventCallout(
             priority: CALLOUT_PRIORITY_RELIC,
           };
     }
-    case 'BossSkillCast':
+    case 'BossSkillCast': {
+      const skillName = resolveBossSkillName(event.skillId);
       return {
-        message: 'BOSS SKILL',
+        message: skillName !== null ? `BOSS SKILL: ${skillName}` : 'BOSS SKILL',
         color: CALLOUT_BOSS_COLOR,
         priority: CALLOUT_PRIORITY_BOSS,
       };
+    }
     case 'PassiveTriggered':
       return {
         message: event.source === 'boss' ? 'BOSS PASSIVE TRIGGERED' : 'PASSIVE TRIGGERED',
@@ -738,12 +841,18 @@ export function describeEventCallout(
 export function selectBatchCallout(
   events: readonly InBattleServerEvent[],
   resolveCardName: (cardId: string) => string,
-  resolveRelicName: (relicId: string) => string | null
+  resolveRelicName: (relicId: string) => string | null,
+  resolveBossSkillName: (skillId: string) => string | null = resolveBossSkillDisplayName
 ): EventCallout | null {
   let selected: EventCallout | null = null;
 
   for (const event of events) {
-    const candidate = describeEventCallout(event, resolveCardName, resolveRelicName);
+    const candidate = describeEventCallout(
+      event,
+      resolveCardName,
+      resolveRelicName,
+      resolveBossSkillName
+    );
 
     if (candidate !== null && (selected === null || candidate.priority <= selected.priority)) {
       selected = candidate;

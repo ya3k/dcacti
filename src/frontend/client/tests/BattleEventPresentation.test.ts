@@ -12,6 +12,14 @@ import {
   formatInBattleEvent,
   describeEventCallout,
   selectBatchCallout,
+  BOSS_SKILL_NAMES,
+  resolveBossSkillDisplayName,
+  BOSS_ENRAGE_THRESHOLDS,
+  isBossEnraged,
+  SWAP_REJECTION_MESSAGES,
+  formatSwapRejection,
+  CARD_CAST_REJECTION_MESSAGES,
+  formatCardCastRejection,
 } from '../src/game/scenes/BattleEventPresenter';
 import type {
   PresentedMatchCreated,
@@ -1628,5 +1636,119 @@ describe('TASK-218B — the Relic trigger callout reaches the player (SIGNALR_PR
     // The batch named one Relic, and it named the right one — the last the
     // resolution finished on (RELIC_RULES.md §4.2's equip-slot order).
     expect(lastBatchRelicCallouts[0]).not.toContain('relicinst_');
+  });
+
+  describe('TASK-231 Boss Skills and Combat Readability', () => {
+    const resolveCardName = (id: string) => id;
+    const resolveRelicName = (id: string) => id;
+
+    it('maps all five canonical BossSkillCast.skillId values to display names from BOSS_RULES.md §6.3/§6.4', () => {
+      const skills = [
+        { skillId: 'flame-burst', expectedName: 'Flame Burst' },
+        { skillId: 'drain-power', expectedName: 'Drain Power' },
+        { skillId: 'root', expectedName: 'Root' },
+        { skillId: 'earthquake', expectedName: 'Earthquake' },
+        { skillId: 'thunder-strike', expectedName: 'Thunder Strike' },
+      ];
+
+      for (const { skillId, expectedName } of skills) {
+        expect(BOSS_SKILL_NAMES[skillId]).toBe(expectedName);
+        expect(resolveBossSkillDisplayName(skillId)).toBe(expectedName);
+
+        const callout = describeEventCallout(
+          parseInBattleEvent({ type: 'BossSkillCast', skillId, sourceId: 'boss-test' })!,
+          resolveCardName,
+          resolveRelicName
+        );
+
+        expect(callout).toEqual({
+          message: `BOSS SKILL: ${expectedName}`,
+          color: '#f87171',
+          priority: 3,
+        });
+      }
+    });
+
+    it('falls back safely to BOSS SKILL when skillId is unknown', () => {
+      expect(resolveBossSkillDisplayName('unknown-skill')).toBeNull();
+
+      const callout = describeEventCallout(
+        parseInBattleEvent({ type: 'BossSkillCast', skillId: 'unknown-skill', sourceId: 'boss-test' })!,
+        resolveCardName,
+        resolveRelicName
+      );
+
+      expect(callout).toEqual({
+        message: 'BOSS SKILL',
+        color: '#f87171',
+        priority: 3,
+      });
+    });
+
+    it('evaluates isBossEnraged according to BOSS_RULES.md §5 item 4 & §6.1 strict boundary', () => {
+      // Hỏa Long, Thủy Ma, Mộc Yêu: threshold 1500 (30% of 5000)
+      expect(BOSS_ENRAGE_THRESHOLDS['boss-hoa-long']).toBe(1500);
+      expect(isBossEnraged('boss-hoa-long', 5000, 5000)).toBe(false);
+      expect(isBossEnraged('boss-hoa-long', 1501, 5000)).toBe(false);
+      expect(isBossEnraged('boss-hoa-long', 1500, 5000)).toBe(false); // strict <
+      expect(isBossEnraged('boss-hoa-long', 1499, 5000)).toBe(true);
+      expect(isBossEnraged('boss-hoa-long', 1, 5000)).toBe(true);
+      expect(isBossEnraged('boss-hoa-long', 0, 5000)).toBe(false); // defeated
+
+      expect(isBossEnraged('boss-thuy-ma', 1500, 5000)).toBe(false);
+      expect(isBossEnraged('boss-thuy-ma', 1499, 5000)).toBe(true);
+
+      expect(isBossEnraged('boss-moc-yeu', 1500, 5000)).toBe(false);
+      expect(isBossEnraged('boss-moc-yeu', 1499, 5000)).toBe(true);
+
+      // Sơn Thạch Vệ: threshold 1500 (50% of 3000)
+      expect(BOSS_ENRAGE_THRESHOLDS['boss-son-thach-ve']).toBe(1500);
+      expect(isBossEnraged('boss-son-thach-ve', 1500, 3000)).toBe(false);
+      expect(isBossEnraged('boss-son-thach-ve', 1499, 3000)).toBe(true);
+
+      // Kim Lôi Vương: threshold 2100 (75% of 2800)
+      expect(BOSS_ENRAGE_THRESHOLDS['boss-kim-loi-vuong']).toBe(2100);
+      expect(isBossEnraged('boss-kim-loi-vuong', 2100, 2800)).toBe(false);
+      expect(isBossEnraged('boss-kim-loi-vuong', 2099, 2800)).toBe(true);
+
+      // Unknown boss: falls back to 30% of maxHp
+      expect(isBossEnraged('unknown-boss', 300, 1000)).toBe(false);
+      expect(isBossEnraged('unknown-boss', 299, 1000)).toBe(true);
+    });
+
+    it('maps all canonical Swap rejection codes and provides safe fallback', () => {
+      expect(SWAP_REJECTION_MESSAGES['NO_MATCH_FROM_SWAP']).toBe('Swap does not create a match.');
+      expect(formatSwapRejection('NO_MATCH_FROM_SWAP')).toBe('Swap does not create a match.');
+      expect(formatSwapRejection('INVALID_SWAP')).toBe('Invalid swap. Gems must be adjacent.');
+      expect(formatSwapRejection('INVALID_CELL_INDEX')).toBe('Invalid board position.');
+      expect(formatSwapRejection('STALE_ACTION')).toBe('Board has changed. Please try again.');
+      expect(formatSwapRejection('BATTLE_NOT_FOUND')).toBe('Battle session not found.');
+
+      // Fallbacks
+      expect(formatSwapRejection('CUSTOM_UNKNOWN')).toBe('Swap rejected (CUSTOM_UNKNOWN).');
+      expect(formatSwapRejection(null)).toBe('Swap rejected.');
+      expect(formatSwapRejection(undefined)).toBe('Swap rejected.');
+      expect(formatSwapRejection('')).toBe('Swap rejected.');
+    });
+
+    it('maps all canonical CardCast rejection codes and provides safe fallback', () => {
+      expect(CARD_CAST_REJECTION_MESSAGES['INSUFFICIENT_POWER']).toBe('Not enough Power.');
+      expect(formatCardCastRejection('INSUFFICIENT_POWER')).toBe('Not enough Power.');
+      expect(formatCardCastRejection('CARD_CAST_ALREADY_USED_THIS_TURN')).toBe(
+        'Only one card can be cast per turn.'
+      );
+      expect(formatCardCastRejection('CARD_NOT_IN_LOADOUT')).toBe(
+        'Card is not in your current loadout.'
+      );
+      expect(formatCardCastRejection('INVALID_CARD')).toBe('Invalid card.');
+      expect(formatCardCastRejection('PET_SKILL_NOT_OWNED')).toBe('Pet skill is not available.');
+      expect(formatCardCastRejection('BATTLE_NOT_FOUND')).toBe('Battle session not found.');
+
+      // Fallbacks
+      expect(formatCardCastRejection('CUSTOM_UNKNOWN')).toBe('Cast rejected (CUSTOM_UNKNOWN).');
+      expect(formatCardCastRejection(null)).toBe('Cast rejected.');
+      expect(formatCardCastRejection(undefined)).toBe('Cast rejected.');
+      expect(formatCardCastRejection('')).toBe('Cast rejected.');
+    });
   });
 });

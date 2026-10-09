@@ -2558,7 +2558,7 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
         { type: 'PowerChanged', delta: -20, power: 5, source: 'boss' },
       ],
     });
-    expect(callout().text, 'the Boss acting outranks the Power it drained').toBe('BOSS SKILL');
+    expect(callout().text, 'the Boss acting outranks the Power it drained').toBe('BOSS SKILL: Flame Burst');
     expect(callout().color).toBe('#f87171');
   });
 
@@ -2673,6 +2673,137 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     expect(field<StyledLine>(ctx, 'calloutText').y).toBeLessThan(BOARD_TOP);
     expect(field<StyledLine>(ctx, 'boardMessageText').y).toBeLessThan(BOARD_TOP);
     expect(field<StyledLine>(ctx, 'castText').y).toBeGreaterThan(BOARD_BOTTOM);
+  });
+
+  it('presents canonical display names for all five MVP Boss Skills in callout feed (TASK-231)', () => {
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
+    runScene(scene, ctx, 'create');
+
+    const callout = () => field<{ text: string; color?: string }>(ctx, 'calloutText');
+
+    const canonicalSkills = [
+      { skillId: 'flame-burst', bossId: 'boss-hoa-long', expected: 'BOSS SKILL: Flame Burst' },
+      { skillId: 'drain-power', bossId: 'boss-thuy-ma', expected: 'BOSS SKILL: Drain Power' },
+      { skillId: 'root', bossId: 'boss-moc-yeu', expected: 'BOSS SKILL: Root' },
+      { skillId: 'earthquake', bossId: 'boss-son-thach-ve', expected: 'BOSS SKILL: Earthquake' },
+      { skillId: 'thunder-strike', bossId: 'boss-kim-loi-vuong', expected: 'BOSS SKILL: Thunder Strike' },
+    ];
+
+    for (let i = 0; i < canonicalSkills.length; i++) {
+      const { skillId, bossId, expected } = canonicalSkills[i];
+      harness.emitBattleEvents({
+        battleId: 'b-231',
+        serverSequence: 20 + i,
+        events: [{ type: 'BossSkillCast', skillId, sourceId: bossId }],
+      });
+      expect(callout().text).toBe(expected);
+      expect(callout().color).toBe('#f87171');
+    }
+
+    // Unrecognized skill falls back safely to 'BOSS SKILL'
+    harness.emitBattleEvents({
+      battleId: 'b-231',
+      serverSequence: 30,
+      events: [{ type: 'BossSkillCast', skillId: 'unknown-cataclysm', sourceId: 'boss-hoa-long' }],
+    });
+    expect(callout().text).toBe('BOSS SKILL');
+    expect(callout().color).toBe('#f87171');
+  });
+
+  it('presents Boss Enrage transition in HUD and callout feed without duplicate callouts on subsequent updates (TASK-231)', () => {
+    // Initial state: Hỏa Long at full HP 5000/5000 (Enrage threshold: 1500)
+    const { harness, scene, ctx } = createBattle(
+      INITIAL_RUNTIME_STATE,
+      true,
+      serverState({ bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 } })
+    );
+    runScene(scene, ctx, 'create');
+
+    const bossName = () => field<{ text: string }>(ctx, 'bossNameText');
+    const callout = () => field<{ text: string; color?: string }>(ctx, 'calloutText');
+
+    expect(bossName().text).toBe('Hỏa Long');
+    expect(callout().text).toBe('');
+
+    // State update 1: HP drops to 1500 (boundary test: strict <, not enraged yet)
+    harness.setBattleState(
+      serverState({ bossState: { bossId: 'boss-hoa-long', hp: 1500, maxHp: 5000 } })
+    );
+    expect(bossName().text).toBe('Hỏa Long');
+    expect(callout().text).toBe('');
+
+    // State update 2: HP drops to 1499 (< 1500, Enrage transition triggers!)
+    harness.setBattleState(
+      serverState({ bossState: { bossId: 'boss-hoa-long', hp: 1499, maxHp: 5000 } })
+    );
+    expect(bossName().text).toBe('Hỏa Long [ENRAGED]');
+    expect(callout().text).toBe('BOSS ENRAGED');
+    expect(callout().color).toBe('#f87171');
+
+    // Emit a different event to change callout text
+    harness.emitBattleEvents({
+      battleId: 'b-231',
+      serverSequence: 40,
+      events: [
+        { type: 'MatchCreated', shape: 'Straight', cells: [0, 1, 2], gemType: 'ATK', cascadeDepth: 0 },
+      ],
+    });
+    expect(callout().text).toBe('MATCH');
+
+    // State update 3: HP drops further to 1200 while already enraged
+    harness.setBattleState(
+      serverState({ bossState: { bossId: 'boss-hoa-long', hp: 1200, maxHp: 5000 } })
+    );
+    expect(bossName().text).toBe('Hỏa Long [ENRAGED]');
+    // Callout remains 'MATCH', NOT overwritten with redundant 'BOSS ENRAGED'
+    expect(callout().text).toBe('MATCH');
+  });
+
+  it('presents player-friendly callout messages for Swap and CardCast rejections (TASK-231)', async () => {
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
+    runScene(scene, ctx, 'create');
+    await flush();
+
+    const callout = () => field<{ text: string; color?: string }>(ctx, 'calloutText');
+    const swapText = () => field<{ text: string }>(ctx, 'swapText');
+    const castText = () => field<{ text: string }>(ctx, 'castText');
+
+    // 1. Swap rejection: NO_MATCH_FROM_SWAP
+    harness.setActionResult({ accepted: false, reason: 'NO_MATCH_FROM_SWAP' });
+    tapCell(harness, 0);
+    tapCell(harness, 1);
+    await flush();
+
+    expect(callout().text).toBe('Swap does not create a match.');
+    expect(callout().color).toBe('#fbbf24');
+    expect(swapText().text).toContain('rejected (NO_MATCH_FROM_SWAP).');
+
+    // 2. CardCast rejection: INSUFFICIENT_POWER
+    harness.setActionResult({ accepted: false, reason: 'INSUFFICIENT_POWER' });
+    harness.clickOption('Card: Shield');
+    await flush();
+
+    expect(callout().text).toBe('Not enough Power.');
+    expect(callout().color).toBe('#fbbf24');
+    expect(castText().text).toContain('rejected (INSUFFICIENT_POWER).');
+
+    // 3. CardCast rejection: CARD_CAST_ALREADY_USED_THIS_TURN
+    harness.setActionResult({ accepted: false, reason: 'CARD_CAST_ALREADY_USED_THIS_TURN' });
+    harness.clickOption('Card: Shield');
+    await flush();
+
+    expect(callout().text).toBe('Only one card can be cast per turn.');
+    expect(callout().color).toBe('#fbbf24');
+    expect(castText().text).toContain('rejected (CARD_CAST_ALREADY_USED_THIS_TURN).');
+
+    // 4. Unknown rejection code fallback
+    harness.setActionResult({ accepted: false, reason: 'MYSTERIOUS_ERROR' });
+    tapCell(harness, 2);
+    tapCell(harness, 3);
+    await flush();
+
+    expect(callout().text).toBe('Swap rejected (MYSTERIOUS_ERROR).');
+    expect(callout().color).toBe('#fbbf24');
   });
 
   it('contains no client-side randomness', () => {

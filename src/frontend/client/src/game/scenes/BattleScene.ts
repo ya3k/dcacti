@@ -18,7 +18,15 @@ import type {
   RelicResponse,
 } from '../../services/api/CollectionModels';
 import type { InBattleServerEvent } from './BattleEventPresenter';
-import { parseInBattleEvent, formatInBattleEvent, selectBatchCallout } from './BattleEventPresenter';
+import {
+  CALLOUT_BOSS_COLOR,
+  formatCardCastRejection,
+  formatInBattleEvent,
+  formatSwapRejection,
+  isBossEnraged,
+  parseInBattleEvent,
+  selectBatchCallout,
+} from './BattleEventPresenter';
 
 /**
  * Board presentation geometry, in logical game pixels.
@@ -291,6 +299,8 @@ export class BattleScene extends Phaser.Scene {
   private connectionText: Phaser.GameObjects.Text | null = null;
   /** The Boss's display name, resolved from the client catalog by `bossState.bossId`. */
   private bossNameText: Phaser.GameObjects.Text | null = null;
+  /** Whether the Boss is currently in Enraged state according to authoritative HP and threshold. */
+  private bossEnraged: boolean = false;
   /** The Boss's authoritative `hp / maxHp` (SIGNALR_PROTOCOL.md §4.4). */
   private bossHpText: Phaser.GameObjects.Text | null = null;
   /**
@@ -433,6 +443,7 @@ export class BattleScene extends Phaser.Scene {
   }
 
   create(): void {
+    this.bossEnraged = false;
     this.runtime = readRuntime(this);
     this.drawRuntimeShell();
     this.registerBoardInput();
@@ -549,6 +560,7 @@ export class BattleScene extends Phaser.Scene {
     this.battleEventsUnsubscribe = null;
     this.connectionText = null;
     this.bossNameText = null;
+    this.bossEnraged = false;
     this.bossHpText = null;
     this.bossHpGauge = null;
     this.petNameText = null;
@@ -1043,6 +1055,7 @@ export class BattleScene extends Phaser.Scene {
     }
 
     if (state === null) {
+      this.bossEnraged = false;
       this.bossNameText.setText('');
       this.bossHpText.setText('');
       this.updateGauge(this.bossHpGauge, 0, 0);
@@ -1050,10 +1063,19 @@ export class BattleScene extends Phaser.Scene {
     }
 
     const bossId = state.bossState.bossId;
+    const isEnraged = isBossEnraged(bossId, state.bossState.hp, state.bossState.maxHp);
+    const displayName = resolveBossDisplayName(bossId);
 
-    this.bossNameText.setText(resolveBossDisplayName(bossId));
+    this.bossNameText.setText(isEnraged ? `${displayName} [ENRAGED]` : displayName);
     this.bossHpText.setText(`${state.bossState.hp} / ${state.bossState.maxHp}`);
     this.updateGauge(this.bossHpGauge, state.bossState.hp, state.bossState.maxHp);
+
+    if (isEnraged && !this.bossEnraged) {
+      this.bossEnraged = true;
+      this.showCallout('BOSS ENRAGED', CALLOUT_BOSS_COLOR);
+    } else if (!isEnraged) {
+      this.bossEnraged = false;
+    }
   }
 
   /**
@@ -1681,10 +1703,12 @@ export class BattleScene extends Phaser.Scene {
       } else {
         // Rejected: nothing happened, and the reason is the server's own
         // machine-readable code, shown as received (§5 items 2–3).
+        const friendlyReason = formatSwapRejection(acknowledgement.reason);
         this.swapText.setText(
           `Swap ${fromCell} -> ${toCell}: rejected (${acknowledgement.reason ?? 'unknown'}).`
         );
         this.swapText.setColor('#fbbf24');
+        this.showCallout(friendlyReason, '#fbbf24');
       }
       return;
     }
@@ -1792,10 +1816,12 @@ export class BattleScene extends Phaser.Scene {
         this.castText.setText(`${actionName}: accepted. Awaiting the server's state push.`);
         this.castText.setColor('#34d399');
       } else {
+        const friendlyReason = formatCardCastRejection(acknowledgement.reason);
         this.castText.setText(
           `${actionName}: rejected (${acknowledgement.reason ?? 'unknown'}).`
         );
         this.castText.setColor('#fbbf24');
+        this.showCallout(friendlyReason, '#fbbf24');
       }
       return;
     }

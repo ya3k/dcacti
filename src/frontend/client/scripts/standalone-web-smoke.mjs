@@ -283,7 +283,8 @@ function isSettledCastAcknowledgement(text) {
  * CARD: <name>                 CardCast
  * PET SKILL: <name>            PetSkillCast
  * RELIC: <name>                RelicTriggered      (TASK-218B, §3.2.23)
- * BOSS SKILL                   BossSkillCast
+ * BOSS SKILL[: <name>]         BossSkillCast (TASK-231)
+ * BOSS ENRAGED                 Boss Enrage transition (TASK-231)
  * PASSIVE … / BOSS PASSIVE …   PassiveCharged / PassiveTriggered
  * ```
  *
@@ -299,6 +300,10 @@ function isPlayerFacingCallout(callout) {
     // TASK-218B: the Relic's own delivered name, and nothing else on that line.
     /^RELIC: \S/.test(callout) ||
     callout === 'BOSS SKILL' ||
+    /^BOSS SKILL: \S/.test(callout) ||
+    callout === 'BOSS ENRAGED' ||
+    /^(?:Swap|Cast) rejected/.test(callout) ||
+    /^(?:Swap does not create a match|Invalid swap|Invalid board position|Board has changed|Not enough Power|Only one card can be cast per turn|Card is not in your current loadout|Invalid card|Pet skill is not available|Battle session not found)/.test(callout) ||
     /^(?:BOSS )?PASSIVE(?: TRIGGERED)? \d+\/\d+$/.test(callout) ||
     /^(?:BOSS )?PASSIVE TRIGGERED$/.test(callout)
   );
