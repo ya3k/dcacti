@@ -71,7 +71,7 @@ The documents the change was built against (per Documentation Context)
    | Tests | Judge against the validation depth; use `test-scenario-generation` to find missing scenarios; apply step 4 |
    | Documentation | `documentation-consistency` (Mode B/C) — does documentation still match the change, or was it changed correctly? |
    | Determinism (gameplay/battle only) | `authority-determinism-audit` |
-   | Security / Performance | Evaluate directly against the specific concerns named in `quality/review.md` and the documents it cites (e.g. the persistence hot-path rule in `TDD.md` §4; authentication remains an open item per ADR-007) |
+   | Security / Performance | Evaluate directly against the specific concerns named in `quality/review.md` and the documents it cites (e.g. the persistence hot-path rule in `TDD.md` §4; the session contract is decided by `ADR-020` / `ADR-015`) |
 
 4. **Test-validity review.** For each new/changed test: does its expected
    result trace to a document (not to the implementation)? Was any test

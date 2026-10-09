@@ -811,7 +811,7 @@ public class BattleHub : Hub
             // Fails the connection, so no hub method becomes reachable. No
             // validation detail is disclosed — the client is told only that a
             // session is required, matching the single public outcome
-            // REST uses (API_CONTRACTS.md §2.8 "Failure behavior").
+            // REST uses (API_CONTRACTS.md §2.3 "Failure behavior").
             throw new HubException(
                 "An authenticated application session is required.");
         }
@@ -887,7 +887,7 @@ public class BattleHub : Hub
     ///         ↓
     /// caller PlayerId                   (this hub — one identity read)
     ///         ↓
-    /// Application ownership + read      (BattleStateService, §2.8, §4 note 7)
+    /// Application ownership + read      (BattleStateService, §2.3, §4 note 7)
     ///         ↓
     /// active-state record               (REDIS_STATE.md §2 item 2)
     ///         ↓

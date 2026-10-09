@@ -1262,7 +1262,7 @@ describe('LobbyScene — start routing and rejection (ARCHITECTURE.md §2.2.3 ru
    * The documented rejections of `POST /api/battle/start`, each as the shared
    * transport now reports it: the §6 envelope's `message` is the statement a
    * player may be shown, and the machine code and status stay on the error
-   * (`API_CONTRACTS.md` §3, §6, §2.8).
+   * (`API_CONTRACTS.md` §3, §6, §2.3).
    */
   const documentedRejections: Array<[string, unknown]> = [
     [

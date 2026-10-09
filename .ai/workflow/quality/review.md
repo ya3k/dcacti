@@ -34,8 +34,8 @@ are they consistent with the code as implemented?
 
 ## Security
 Are there any security concerns raised by this specific change (e.g. does
-it touch authentication, per ADR-007's open item, or expose data it
-shouldn't)?
+it touch authentication — the standalone web account session contract of
+`ADR-020` / `ADR-015` — or expose data it shouldn't)?
 
 ## Performance
 Is there an obvious regression (e.g. a new query on the hot resolution

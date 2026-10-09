@@ -29,7 +29,7 @@ namespace GameServer.Api.Tests;
 ///         ↓
 /// GET /api/battle/{battleId}/result
 ///         ↓
-/// authenticated PlayerId          (the player_id claim — API_CONTRACTS.md §2.8)
+/// authenticated PlayerId          (the player_id claim — API_CONTRACTS.md §2.3)
 ///         ↓
 /// BattleResult row                (DATABASE.md §1)
 ///         ↓
@@ -45,7 +45,7 @@ namespace GameServer.Api.Tests;
 public class BattleResultEndpointTests
 {
     // -----------------------------------------------------------------------
-    // 401 — API_CONTRACTS.md §1, §2.8, §4 note 6
+    // 401 — API_CONTRACTS.md §1, §2.3, §4 note 6
     // -----------------------------------------------------------------------
 
     [Fact]
@@ -71,7 +71,7 @@ public class BattleResultEndpointTests
     [InlineData("header.payload.signature")]
     public async Task Result_WithAnInvalidSession_ShouldReturnUnauthenticated(string token)
     {
-        // §2.8 / §4 note 6: a missing, invalid/tampered, or expired session all
+        // §2.3 / §4 note 6: a missing, invalid/tampered, or expired session all
         // resolve to the same single 401 UNAUTHENTICATED response, with no distinct
         // code and no token-validation detail disclosed.
         using var factory = new ResultFactory();

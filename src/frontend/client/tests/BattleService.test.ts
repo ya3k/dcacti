@@ -287,7 +287,7 @@ describe('ApiService.startBattle (API_CONTRACTS.md §3)', () => {
 
     await ApiService.getInstance().startBattle(START_REQUEST);
 
-    // §2.8 "Identity" / ADR-015 D3: the requesting Player is resolved
+    // §2.3 "Identity" / ADR-015 D3: the requesting Player is resolved
     // server-side from the session's `player_id` claim, so there is no
     // playerId to send. §4 note 7 forbids any request member, query parameter,
     // or header from selecting or standing in for the caller's identity, and
@@ -349,7 +349,7 @@ describe('ApiService.startBattle (API_CONTRACTS.md §3)', () => {
 
     await ApiService.getInstance().startBattle(START_REQUEST);
 
-    // §2.8 "Transport" / ADR-015 D4: REST carries the application session as
+    // §2.3 "Transport" / ADR-015 D4: REST carries the application session as
     // `Authorization: Bearer <sessionToken>` — the same mechanism the
     // collection reads use, not a second one.
     expect(requestedInit().headers).toEqual({
@@ -675,7 +675,7 @@ describe('ApiService.startBattle (API_CONTRACTS.md §3)', () => {
       message: 'An authenticated session is required to start a battle.',
     });
 
-    // §2.8 "Failure behavior": a missing, invalid/tampered, or expired session
+    // §2.3 "Failure behavior": a missing, invalid/tampered, or expired session
     // is one public response — 401 with the §6 envelope.
     const error = await captureRejection(ApiService.getInstance().startBattle(START_REQUEST));
 
@@ -687,7 +687,7 @@ describe('ApiService.startBattle (API_CONTRACTS.md §3)', () => {
   it('should send no Authorization header when no session is established', async () => {
     respondWith(startResponseFixture());
 
-    // §2.8 "Transport": with no session there is no bearer credential to
+    // §2.3 "Transport": with no session there is no bearer credential to
     // present — the request is sent unauthenticated and the server answers 401,
     // rather than the client inventing a placeholder token.
     await ApiService.getInstance().startBattle(START_REQUEST);

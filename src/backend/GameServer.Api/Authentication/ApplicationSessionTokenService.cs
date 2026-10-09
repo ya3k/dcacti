@@ -6,10 +6,10 @@ namespace GameServer.Api.Authentication;
 
 /// <summary>
 /// Issues the application session — the self-contained signed JWT of
-/// <c>API_CONTRACTS.md</c> §2.8 / <c>ADR-015</c>.
+/// <c>API_CONTRACTS.md</c> §2.3 / <c>ADR-015</c>.
 ///
 /// <code>
-/// verified DiscordUserId
+/// verified Account (username/password)
 ///         ↓
 /// Player match/create                (owned elsewhere — TASK-023)
 ///         ↓
@@ -20,9 +20,11 @@ namespace GameServer.Api.Authentication;
 /// signed JWT (player_id, 24h absolute, kid, aud = dcacti-backend)
 /// </code>
 ///
-/// It is called by exactly one place — <c>POST /api/auth/discord</c>, after
-/// <c>API_CONTRACTS.md</c> §2's identity exchange has succeeded — which is what
-/// makes D1's "issued by this endpoint only" true by construction.
+/// It is called from exactly one place — <c>AuthController</c>, after
+/// <c>POST /api/auth/register</c> (<c>API_CONTRACTS.md</c> §2.1) or
+/// <c>POST /api/auth/login</c> (§2.2) has verified the account credentials
+/// (<c>ADR-020</c> D3/D4) — which is what makes D1's single-issuer property true
+/// by construction.
 ///
 /// <b>Stateless.</b> Nothing is written when a session is issued: no session
 /// row, no Redis key, no in-memory record (D2). The token is self-validating,
@@ -42,7 +44,7 @@ public sealed class ApplicationSessionTokenService
     /// </summary>
     /// <param name="playerId">
     /// The matched-or-created Player's own <c>PlayerId</c> (<c>DATABASE.md</c> §1)
-    /// — the value §2.5 returns as <c>playerId</c> and the value the
+    /// — the value §2.1/§2.2 return as <c>playerId</c> and the value the
     /// <c>player_id</c> claim carries (D3). It is server-derived: the client never
     /// supplies or overrides it.
     /// </param>
@@ -50,7 +52,7 @@ public sealed class ApplicationSessionTokenService
     /// The issuing instant, which the 24-hour absolute expiry is measured from
     /// (D5).
     /// </param>
-    /// <returns>The signed session token, as the §2.5 <c>sessionToken</c> string.</returns>
+    /// <returns>The signed session token, as the §2.1/§2.2 <c>sessionToken</c> string.</returns>
     public string Issue(string playerId, DateTimeOffset issuedAt)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(playerId);
@@ -66,8 +68,8 @@ public sealed class ApplicationSessionTokenService
 
             claims:
             [
-                // D3: the identity claim. `player_id` = PlayerId — never
-                // DiscordUserId, and never a client-supplied value.
+                // D3: the identity claim. `player_id` = PlayerId — the
+                // account-derived identity, and never a client-supplied value.
                 new Claim(ApplicationSessionClaims.PlayerId, playerId),
             ],
 

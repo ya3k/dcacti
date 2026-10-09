@@ -218,12 +218,12 @@ export class ApiService {
 
   /**
    * A `GET` to an application endpoint, carrying the application session as
-   * `Authorization: Bearer <sessionToken>` (API_CONTRACTS.md §2.8 "Transport";
+   * `Authorization: Bearer <sessionToken>` (API_CONTRACTS.md §2.3 "Transport";
    * ADR-015 D4).
    *
    * Every REST endpoint except `/api/auth/*` requires that session,
    * and an unauthenticated response is `401 { "error": "UNAUTHENTICATED" }`
-   * (§2.8 "Failure behavior").
+   * (§2.3 "Failure behavior").
    *
    * A non-2xx response is rejected with the §6 envelope read into an
    * {@link ApiRequestError}: its `message` is what the server said, and its
@@ -319,7 +319,7 @@ export class ApiService {
    * `bossId`, `cardLoadout`, `relicLoadout`) and is serialized as JSON, which
    * is the representation this endpoint's contract shows. The client submits a
    * **selection**: it sends no `playerId` (the requesting Player is resolved
-   * server-side from the session's `player_id` claim — §2.8 "Identity,"
+   * server-side from the session's `player_id` claim — §2.3 "Identity,"
    * ADR-015 D3), and no `battleId`, `turn`, `sequence`, or other server-owned
    * battle state, because the server authors the whole resulting
    * `BattleState` (`GAME_RULES.md` §18, ADR-001).
@@ -332,7 +332,7 @@ export class ApiService {
    * slot order (`RELIC_RULES.md` §2.3).
    *
    * A rejection is the documented `400` (`INVALID_LOADOUT`, `PET_NOT_OWNED`,
-   * or `BOSS_NOT_FOUND`) or the §2.8 `401 UNAUTHENTICATED`, propagated by the
+   * or `BOSS_NOT_FOUND`) or the §2.3 `401 UNAUTHENTICATED`, propagated by the
    * shared transport. No battle exists after any of them, so nothing is
    * recorded, and this method returns the typed response without holding,
    * caching, or deriving any battle state (`AGENTS.md` §10).
@@ -355,7 +355,7 @@ export class ApiService {
    * header: a battle that does not exist and one owned by another Player are
    * the identical `404 BATTLE_NOT_FOUND`, deliberately, and the client neither
    * distinguishes them nor treats the foreign case as an authorization failure
-   * of its own. An unauthenticated caller receives the §2.8 `401
+   * of its own. An unauthenticated caller receives the §2.3 `401
    * UNAUTHENTICATED` — not `404` — through the shared transport.
    *
    * The returned `rewards` is the server's `RewardSummary` as stored. This
@@ -418,7 +418,7 @@ export class ApiService {
    * Its failure handling is the shared transport's: a non-2xx response is
    * rejected with the §6 envelope read into an {@link ApiRequestError}, so a
    * documented rejection (`400 INVALID_LOADOUT` / `PET_NOT_OWNED` /
-   * `BOSS_NOT_FOUND`, `401 UNAUTHENTICATED` — §3, §2.8) tells the caller what
+   * `BOSS_NOT_FOUND`, `401 UNAUTHENTICATED` — §3, §2.3) tells the caller what
    * the server actually said instead of only which status it used.
    */
   public async post<T>(path: string, body: unknown): Promise<T> {

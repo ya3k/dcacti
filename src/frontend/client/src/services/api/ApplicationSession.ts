@@ -138,7 +138,7 @@ export class ApplicationSession {
   }
 
   /**
-   * The `Authorization` header value for REST requests (§2.8 "Transport"), or
+   * The `Authorization` header value for REST requests (§2.3 "Transport"), or
    * empty object when no session has been established.
    */
   public getAuthorizationHeader(): Record<string, string> {

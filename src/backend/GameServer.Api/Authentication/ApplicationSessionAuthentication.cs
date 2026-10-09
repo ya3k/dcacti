@@ -63,14 +63,15 @@ public static class ApplicationSessionAuthentication
         // §1 / D6: every endpoint requires an authenticated session unless it
         // opts out, so the default policy is this session policy. A new controller
         // is therefore protected on arrival rather than by remembering an
-        // attribute, and the one exception — POST /api/auth/discord, the endpoint
-        // that establishes the session — opts out explicitly.
+        // attribute, and the two exceptions — POST /api/auth/register and
+        // POST /api/auth/login, the endpoints that establish the session — opt
+        // out explicitly.
         //
         // The policy requires the identity claim itself, not merely a validated
         // signature. A token that is correctly signed, correctly addressed, and
         // unexpired but carries no player_id identifies nobody, and an endpoint
         // acting for "nobody" would have to invent a Player
-        // (API_CONTRACTS.md §2.8 "Identity"; GAME_RULES.md §18, ADR-001).
+        // (API_CONTRACTS.md §2.3 "Identity"; GAME_RULES.md §18, ADR-001).
         var policy = CreateSessionPolicy();
 
         services.AddAuthorizationBuilder()
@@ -78,7 +79,7 @@ public static class ApplicationSessionAuthentication
             .SetDefaultPolicy(policy);
 
         // The single documented unauthenticated response covers a failed
-        // requirement as well as a missing session (§2.8 "Failure behavior").
+        // requirement as well as a missing session (§2.3 "Failure behavior").
         services.AddApplicationSessionForbiddenResponse();
 
         return services;
@@ -107,7 +108,7 @@ public static class ApplicationSessionAuthentication
     /// documented response. A failed <c>RequireClaim</c> is a <i>forbidden</i>
     /// outcome, because the framework treats an authenticated principal that lacks
     /// a claim as authenticated-but-unauthorized — which would answer
-    /// <c>403</c>. <c>API_CONTRACTS.md</c> §2.8 fixes one response for every
+    /// <c>403</c>. <c>API_CONTRACTS.md</c> §2.3 fixes one response for every
     /// session failure — <c>401 { "error": "UNAUTHENTICATED" }</c> — so "no
     /// session" and "no identity" must both produce it.
     /// </remarks>
@@ -183,7 +184,7 @@ public static class ApplicationSessionAuthentication
             AuthenticationType = ApplicationSessionOptions.AuthenticationType,
         };
 
-        // §2.8 "Failure behavior" / §4 note 6: a missing, invalid/tampered, or
+        // §2.3 "Failure behavior" / §4 note 6: a missing, invalid/tampered, or
         // expired session all produce the same `401 { "error":
         // "UNAUTHENTICATED" }`. The default challenge writes no body, so the
         // documented envelope is written here instead. No validation detail is
@@ -208,7 +209,7 @@ public static class ApplicationSessionAuthentication
     /// when the principal is anonymous. A session that is validly signed but
     /// carries no <c>player_id</c> is authenticated, so its failure to identify a
     /// Player would otherwise surface as <c>403</c> — a response
-    /// <c>API_CONTRACTS.md</c> §2.8 does not define, and one that would tell a
+    /// <c>API_CONTRACTS.md</c> §2.3 does not define, and one that would tell a
     /// caller their token was structurally accepted.
     ///
     /// Every failure to establish an application session produces the one

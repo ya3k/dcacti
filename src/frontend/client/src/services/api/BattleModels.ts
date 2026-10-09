@@ -62,7 +62,7 @@ export type { Element };
  * ```
  *
  * No member here identifies the caller: the requesting Player is resolved
- * server-side from the session's `player_id` claim (§2.8 "Identity", ADR-015
+ * server-side from the session's `player_id` claim (§2.3 "Identity", ADR-015
  * D3), so there is deliberately no `playerId`, no `discordUserId`, and no
  * `sessionToken` — §4 note 7 forbids any request member from selecting,
  * overriding, or standing in for the caller's identity.

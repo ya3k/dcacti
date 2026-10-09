@@ -144,7 +144,7 @@ public interface IBattleResultRepository
     /// </summary>
     /// <param name="playerId">
     /// The authenticated Player whose own results are read
-    /// (<c>API_CONTRACTS.md</c> §2.8, §4.5 note 8) — resolved server-side from the
+    /// (<c>API_CONTRACTS.md</c> §2.3, §4.5 note 8) — resolved server-side from the
     /// session's <c>player_id</c> claim, never from request input.
     /// </param>
     /// <param name="cancellationToken">Cancels the read.</param>

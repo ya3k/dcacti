@@ -31,7 +31,7 @@ namespace GameServer.Api.Tests;
 ///         ↓
 /// BattleHub.GetBattleState(battleId)          §7.1 — the recovery request
 ///         ↓
-/// BattleStateService                          §2.8 — ownership, server-side
+/// BattleStateService                          §2.3 — ownership, server-side
 ///         ↓
 /// BattleStateRepository (Redis)               the production store
 ///         ↓
@@ -207,7 +207,7 @@ public class RedisBattleRecoverySmokeTest
         // ===================================================================
         // 2. A different authenticated Player is refused
         // ===================================================================
-        // §2.8 / API_CONTRACTS.md §4 note 7: ownership is enforced server-side, and
+        // §2.3 / API_CONTRACTS.md §4 note 7: ownership is enforced server-side, and
         // a battle the caller does not own is the same answer as one that does not
         // exist.
         var foreignConnection = factory.BuildHubConnection(foreignToken);

@@ -1156,7 +1156,7 @@ D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
      session validity, battle ownership, owning a Pet, owning Cards or Relics,
      a valid loadout, or any Player Level threshold are governed by their own
      contracts — authentication and result-read authorization by §1's global
-     session rule and `API_CONTRACTS.md` §2.8/§4 note 7, loadout validity by
+     session rule and `API_CONTRACTS.md` §2.3/§4 note 7, loadout validity by
      `API_CONTRACTS.md` §3 at **battle start** — and none of them is a
      battle-end persistence condition. Conflating any of them with
      `BattleResult` persistence would add a prerequisite this contract does not

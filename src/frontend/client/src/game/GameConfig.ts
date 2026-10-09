@@ -12,7 +12,8 @@ import type { GameRuntime } from './runtime/GameRuntime';
 import { RUNTIME_REGISTRY_KEY } from './runtime/RuntimeRegistry';
 
 /**
- * Creates the Phaser 4 game configuration for the Discord Activity viewport.
+ * Creates the Phaser 4 game configuration for the standalone web game
+ * viewport (`ADR-020`).
  *
  * Scaling is delegated entirely to Phaser's Scale Manager (verified against the
  * installed phaser 4.2.1 typings):

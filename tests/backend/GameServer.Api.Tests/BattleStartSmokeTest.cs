@@ -92,7 +92,7 @@ public class BattleStartSmokeTest
             Content = JsonContent.Create(request),
         };
 
-        // API_CONTRACTS.md §2.8 "Transport": the session travels as a Bearer token.
+        // API_CONTRACTS.md §2.3 "Transport": the session travels as a Bearer token.
         // The token is a real JWT for the seeded Player, so the whole documented
         // chain — session → authenticated PlayerId → battle ownership — is walked
         // rather than simulated.

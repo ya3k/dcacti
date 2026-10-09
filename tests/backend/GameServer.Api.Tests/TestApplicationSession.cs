@@ -8,7 +8,7 @@ namespace GameServer.Api.Tests;
 
 /// <summary>
 /// The test fixture for the application session contract
-/// (<c>API_CONTRACTS.md</c> §2.8; <c>ADR-015</c> D1–D11).
+/// (<c>API_CONTRACTS.md</c> §2.3; <c>ADR-015</c> D1–D11).
 ///
 /// It supplies the two things every authenticated host needs — a configuration
 /// provider carrying a test signing key (<c>D10</c>: the secret comes from
@@ -168,7 +168,7 @@ internal static class TestApplicationSession
 
 /// <summary>
 /// A minimal shape check for the issued session artifact
-/// (<c>API_CONTRACTS.md</c> §2.8).
+/// (<c>API_CONTRACTS.md</c> §2.3).
 /// </summary>
 internal static class JwtTokenShape
 {

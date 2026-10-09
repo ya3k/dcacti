@@ -23,18 +23,19 @@ namespace GameServer.Api.Tests;
 
 /// <summary>
 /// The application session over REST — <c>API_CONTRACTS.md</c> §1, §2, §3, §4, §6,
-/// §2.8; <c>ADR-015</c> D1–D6.
+/// §2.3; <c>ADR-015</c> D1–D6.
 ///
 /// <code>
-/// Discord Identity Exchange        (this suite stubs the §2 exchange seam)
+/// Account credentials (username, password)   (this suite seeds an Account)
 ///         ↓
 /// PlayerId
 ///         ↓
-/// Application Session JWT          (issued by POST /api/auth/discord)
+/// Application Session JWT          (issued by POST /api/auth/login or /register)
 ///         ↓
 /// ASP.NET Core Authentication      (signature, HS256, aud, expiry)
 ///         ↓
-/// Authorization                    (every endpoint except the exchange)
+/// Authorization                    (every endpoint except §2.1's register and
+///                                   §2.2's login)
 ///         ↓
 /// authenticated PlayerId
 /// </code>
@@ -103,7 +104,7 @@ public class ApplicationSessionRESTTests
     }
 
     // -----------------------------------------------------------------------
-    // §2.8 "Failure behavior" / §4 note 6 — one public code for every
+    // §2.3 "Failure behavior" / §4 note 6 — one public code for every
     // unauthenticated condition
     // -----------------------------------------------------------------------
 
@@ -297,17 +298,16 @@ public class ApplicationSessionRESTTests
     }
 
     // -----------------------------------------------------------------------
-    // §2.7 item 4 — the Discord access token is never a session
+    // §2.3 — an external access token is never an application session (D4)
     // -----------------------------------------------------------------------
 
     [Fact]
     public async Task ProtectedEndpoint_WithADiscordAccessToken_ShouldReturn401Unauthenticated()
     {
-        // API_CONTRACTS.md §2.7 item 4 / ADR-015 D4: the Discord access token "is
-        // used solely for the §2.3 identity request within this request and is not
-        // issued to the client" — so it is never an application session. It is
-        // presented here in the same Bearer slot a session would occupy, and must
-        // not authenticate.
+        // API_CONTRACTS.md §2.3 / ADR-015 D4: only the issued JWT application
+        // session is a session, and a raw external access token is never issued to
+        // the client as one. It is presented here in the same Bearer slot a session
+        // would occupy, and must not authenticate.
         using var factory = new SessionFactory();
         var client = factory.CreateClient();
 
@@ -397,7 +397,7 @@ public class ApplicationSessionRESTTests
     [Fact]
     public async Task TheAuthEndpoints_ShouldRemainUnauthenticatedEndpoints()
     {
-        // §1 / §2.1 / §2.8 "Coverage": auth endpoints require no prior authenticated session.
+        // §1 / §2.1 / §2.3 "Coverage": auth endpoints require no prior authenticated session.
         // Reaching them without a session evaluates their own logic rather than being
         // challenged by the JWT authorization filter with UNAUTHENTICATED.
         using var factory = new SessionFactory();
@@ -531,7 +531,7 @@ public class ApplicationSessionRESTTests
 
     /// <summary>
     /// Asserts the one documented unauthenticated response
-    /// (<c>API_CONTRACTS.md</c> §2.8 "Failure behavior", §6): <c>401</c> with the
+    /// (<c>API_CONTRACTS.md</c> §2.3 "Failure behavior", §6): <c>401</c> with the
     /// <c>UNAUTHENTICATED</c> code, and nothing that distinguishes one validation
     /// failure from another.
     /// </summary>
@@ -563,13 +563,14 @@ public class ApplicationSessionRESTTests
     /// </summary>
     private sealed class SessionFactory : WebApplicationFactory<Program>
     {
-        /// <summary>The verified Discord identity the stubbed §2 exchange yields.</summary>
+        /// <summary>The verified external identity the stubbed resolver yields.</summary>
         internal const string DiscordUserId = "80351110224678999";
 
         /// <summary>
-        /// A Discord access token, as §2.2 obtains one. It is a credential for the
-        /// §2.3 identity request only and is never issued to the client
-        /// (§2.7 item 4) — so presenting it as a session must not authenticate.
+        /// A raw external access token, presented where a session would go. It was
+        /// never issued to the client as an application session (ADR-015 D4;
+        /// <c>API_CONTRACTS.md</c> §2.3) — so presenting it as a session must not
+        /// authenticate.
         /// </summary>
         internal const string DiscordAccessToken = "discord-access-token-not-a-session";
 

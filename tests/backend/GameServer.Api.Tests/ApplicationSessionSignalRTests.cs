@@ -25,7 +25,7 @@ namespace GameServer.Api.Tests;
 
 /// <summary>
 /// The application session over SignalR — <c>SIGNALR_PROTOCOL.md</c> §1 items 3–5,
-/// <c>API_CONTRACTS.md</c> §2.8 "Transport", <c>ADR-015</c> D4/D6.
+/// <c>API_CONTRACTS.md</c> §2.3 "Transport", <c>ADR-015</c> D4/D6.
 ///
 /// <code>
 /// SignalR
@@ -144,9 +144,9 @@ public class ApplicationSessionSignalRTests
     [Fact]
     public async Task HubConnection_WithADiscordAccessToken_ShouldBeRejected()
     {
-        // SIGNALR_PROTOCOL.md §1 item 4 / API_CONTRACTS.md §2.7 item 4: "The
-        // Discord access token is never accepted as a BattleHub authentication
-        // credential."
+        // SIGNALR_PROTOCOL.md §1 item 4 / API_CONTRACTS.md §2.3 (ADR-015 D4): only
+        // the issued JWT application session is accepted as a BattleHub
+        // authentication credential — a raw external identity token never is.
         using var factory = new HubSessionFactory();
         var connection = factory.BuildConnection(HubSessionFactory.DiscordAccessToken);
 

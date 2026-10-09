@@ -137,7 +137,7 @@ public class ApplicationSessionConfigurationTests
     [Fact]
     public void DocumentedLifetime_ShouldBeTwentyFourHours()
     {
-        // ADR-015 D5 / API_CONTRACTS.md §2.8 "Lifecycle (MVP)".
+        // ADR-015 D5 / API_CONTRACTS.md §2.3 "Lifecycle (MVP)".
         Assert.Equal(TimeSpan.FromHours(24), ApplicationSessionOptions.Lifetime);
     }
 
@@ -270,7 +270,7 @@ public class ApplicationSessionConfigurationTests
     [Fact]
     public void TheIdentityClaim_ShouldBePlayerId()
     {
-        // ADR-015 D3 / API_CONTRACTS.md §2.8 "Identity":
+        // ADR-015 D3 / API_CONTRACTS.md §2.3 "Identity":
         // claim = player_id, value = PlayerId.
         Assert.Equal("player_id", ApplicationSessionClaims.PlayerId);
 
@@ -284,7 +284,7 @@ public class ApplicationSessionConfigurationTests
     [Fact]
     public void TheRequestContextKey_ShouldBeTheDocumentedServerInternalKey()
     {
-        // ADR-015 D3 / API_CONTRACTS.md §2.8: GameServer.PlayerId "may be used as
+        // ADR-015 D3 / API_CONTRACTS.md §2.3: GameServer.PlayerId "may be used as
         // the server-internal request-context representation of that identity".
         Assert.Equal("GameServer.PlayerId", AuthenticatedPlayer.RequestContextKey);
     }

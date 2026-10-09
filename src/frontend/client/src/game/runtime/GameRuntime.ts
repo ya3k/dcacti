@@ -415,9 +415,11 @@ export class GameRuntime implements GameRuntimePort {
   }
 
   /**
-   * Records that the authenticated application session was established
-   * (API_CONTRACTS.md §2, ADR-007). Not wired to real auth in this task: the
-   * Discord → backend session exchange is outside the runtime foundation.
+   * Records the authenticated application session's status
+   * (`API_CONTRACTS.md` §2.3, `ADR-020`; the session contract itself is
+   * `ADR-015`). It is the status `App` renders `AuthScreen` or `GameShell`
+   * from, and the value `invalidateSession()` resets to `'unauthenticated'`
+   * when the session ends.
    */
   public setSessionStatus(session: GameRuntimeState['session']): void {
     this.updateState({ session });
@@ -690,7 +692,7 @@ export class GameRuntime implements GameRuntimePort {
    * subscription step.
    *
    * **Failure rejects and nothing is fabricated.** A REST failure (`401
-   * UNAUTHENTICATED`, `400` loadout error — API_CONTRACTS.md §2.8, §3), a connect
+   * UNAUTHENTICATED`, `400` loadout error — API_CONTRACTS.md §2.3, §3), a connect
    * failure, or a join failure propagates to the caller with `sync`,
    * `battleState`, and `connection` unchanged. No battle state is invented, no
    * `battleId` is manufactured, and no partial battle is initialized

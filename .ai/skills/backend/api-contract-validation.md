@@ -53,7 +53,8 @@ Domain rules referenced by the endpoint's validation (PET_RULES.md,
 GAME_RULES.md §18                  client may not send authoritative values
 ARCHITECTURE.md §1–§2              Controllers are thin
 TDD.md §5                          REST vs SignalR split
-ADR-007                            session authentication decision (and its open item)
+ADR-020 / ADR-015                  standalone web account authentication;
+                                     the application session contract
 ```
 
 ## Procedure
@@ -116,9 +117,9 @@ API Contract Validation Report
   do not invent a contract (`AGENTS.md` §20 data-contract rule).
 - API, state, event, Redis, or database documents disagree about the same
   contract → data-contract conflict.
-- Behavior depends on how a client token becomes a server session: this is an
-  explicit open item (`ADR-007` "Open Item", `docs/03-decisions/README.md` §8);
-  do not design it — report.
+- Behavior depends on how a client token becomes a server session: this is
+  decided (`ADR-015` D1–D11, `API_CONTRACTS.md` §2.3) — do not redesign it;
+  report a proposal that would change it instead (`AGENTS.md` §4).
 - The proposed endpoint would carry authoritative gameplay values or belongs
   to an out-of-scope system (`MVP_SCOPE.md` §2).
 
@@ -133,7 +134,7 @@ Baseline stop conditions in `.ai/skills/README.md` §6 also apply.
   instead of reading the owning rule document.
 - Letting the client echo back authoritative state.
 - Enforcing exact JSON casing the documents deliberately leave open.
-- Assuming an authentication mechanism the ADR marks as undecided.
+- Assuming an authentication mechanism other than the one `ADR-015` decides.
 
 ## Traceability
 
@@ -141,7 +142,8 @@ Baseline stop conditions in `.ai/skills/README.md` §6 also apply.
 Used by:    development/feature.md (backend), refactor.md (§2 contracts),
             bug-fix.md; quality/testing.md (API tests); quality/review.md
 Reads:      API_CONTRACTS.md; GAME_STATE.md; SIGNALR_PROTOCOL.md; REDIS_STATE.md;
-            DATABASE.md; domain rule docs; TDD.md §5; ARCHITECTURE.md; ADR-007
+            DATABASE.md; domain rule docs; TDD.md §5; ARCHITECTURE.md;
+            ADR-020 / ADR-015
 Produces:   API Contract Validation Report
 Depends on: documentation-discovery (only if context not already supplied)
 ```

@@ -298,6 +298,36 @@ message (§8.3). It never touches the preserved pre-battle selection: active
 battle state and the preserved loadout are different concepts with independent
 lifetimes (§2.2.3, ADR-022).
 
+The runtime owns one further client-local cleanup: ending the authenticated
+session. When the player signs out, or when the client receives the documented
+`401 UNAUTHENTICATED` for a request on the authenticated transport
+(`API_CONTRACTS.md` §2.3 "Failure behavior"), the runtime ends the session
+through
+
+```text
+invalidateSession(): Promise<void>
+```
+
+— a coordination-only capability of the same kind as `clearActiveBattleState()`,
+with no transport participation of its own. It clears the stored credentials
+through the one session store (`services/api/ApplicationSession.ts`), drops the
+synchronized battle copy, detaches its transport subscriptions and disconnects
+the authenticated connection, and publishes the existing
+`session: 'unauthenticated'` value of `state/GameRuntimeState.ts` (rule 5),
+which is the state `App` already renders `AuthScreen` for. It issues no HTTP
+request of its own, introduces no wire message (§8.3), and is idempotent: a
+second call — including a second overlapping `401`, which `API_CONTRACTS.md`
+§2.3 makes indistinguishable — clears once and disconnects once.
+
+**This is client-local teardown, not server-side revocation.** The authority for
+the capability is `ADR-020` D4 item 2 — the session token is persisted so a
+refresh preserves the session, and "a sign-out/logout option clears the token".
+It changes no server-side semantics: authentication stays stateless (`ADR-015`
+D2/D5), MVP has no logout endpoint and no revocation state, and the signed-out
+token keeps its documented 24-hour absolute validity
+(`API_CONTRACTS.md` §2.3 "Lifecycle (MVP)"). §2.3 does not mandate this
+capability; it neither requires nor observes client-side teardown.
+
 `GameRuntime` coordinates the initial state subscription
 (`SIGNALR_PROTOCOL.md` §4): it receives the server-pushed
 `BattleStateUpdated` payload and exposes it to the scenes through its port,

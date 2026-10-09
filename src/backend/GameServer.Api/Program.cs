@@ -75,7 +75,7 @@ app.UseCors("FrontendPolicy");
 // then authorization (which enforces it). BattleHub needs no separate
 // registration: the hub is an endpoint like any other, and it authenticates its
 // connection with the same scheme through SignalR's standard access-token
-// mechanism (API_CONTRACTS.md §2.8 "Transport", SIGNALR_PROTOCOL.md §1 item 3).
+// mechanism (API_CONTRACTS.md §2.3 "Transport", SIGNALR_PROTOCOL.md §1 item 3).
 //
 // Routing is requested explicitly because the negotiate exemption below inspects
 // the selected endpoint, which only exists once routing has run.
@@ -84,7 +84,7 @@ app.UseRouting();
 app.UseAuthentication();
 
 // Publishes the validated session's player_id as the request context's
-// GameServer.PlayerId (ADR-015 D3; API_CONTRACTS.md §2.8 "Identity"). It runs
+// GameServer.PlayerId (ADR-015 D3; API_CONTRACTS.md §2.3 "Identity"). It runs
 // after authentication so it republishes an identity that was already validated
 // and never invents one: a request with no valid session leaves the key unset.
 app.UseMiddleware<AuthenticatedPlayerMiddleware>();

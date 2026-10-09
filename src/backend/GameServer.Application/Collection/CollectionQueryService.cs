@@ -16,7 +16,7 @@ namespace GameServer.Application.Collection;
 /// GET /api/cards              → ListCardsAsync
 /// GET /api/relics             → ListRelicsAsync
 ///
-/// authenticated PlayerId      (API_CONTRACTS.md §2.8 — the session claim)
+/// authenticated PlayerId      (API_CONTRACTS.md §2.3 — the session claim)
 ///         ↓
 /// repository interfaces       (this layer's persistence boundary)
 ///         ↓
@@ -90,7 +90,7 @@ public sealed class CollectionQueryService
     /// <c>[]</c>" — not a null, not an error, and not a 404.
     /// </summary>
     /// <param name="callerPlayerId">
-    /// The authenticated caller's Player identity (<c>API_CONTRACTS.md</c> §2.8)
+    /// The authenticated caller's Player identity (<c>API_CONTRACTS.md</c> §2.3)
     /// — resolved server-side from the session's <c>player_id</c> claim, never
     /// from request input.
     /// </param>
@@ -156,7 +156,7 @@ public sealed class CollectionQueryService
     /// <c>PetInstanceId</c>).
     /// </param>
     /// <param name="callerPlayerId">
-    /// The authenticated caller's Player identity (<c>API_CONTRACTS.md</c> §2.8),
+    /// The authenticated caller's Player identity (<c>API_CONTRACTS.md</c> §2.3),
     /// never from request input.
     /// </param>
     /// <param name="cancellationToken">Cancels the read.</param>
@@ -206,7 +206,7 @@ public sealed class CollectionQueryService
     /// An empty collection is an empty list (§5.5).
     /// </summary>
     /// <param name="callerPlayerId">
-    /// The authenticated caller's Player identity (<c>API_CONTRACTS.md</c> §2.8),
+    /// The authenticated caller's Player identity (<c>API_CONTRACTS.md</c> §2.3),
     /// never from request input.
     /// </param>
     /// <param name="cancellationToken">Cancels the read.</param>
@@ -272,7 +272,7 @@ public sealed class CollectionQueryService
     /// An empty collection is an empty list (§5.5).
     /// </summary>
     /// <param name="callerPlayerId">
-    /// The authenticated caller's Player identity (<c>API_CONTRACTS.md</c> §2.8),
+    /// The authenticated caller's Player identity (<c>API_CONTRACTS.md</c> §2.3),
     /// never from request input.
     /// </param>
     /// <param name="cancellationToken">Cancels the read.</param>

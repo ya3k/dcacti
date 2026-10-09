@@ -2,8 +2,8 @@
  * Logical game resolution and viewport layout constants.
  *
  * The game is authored against a fixed logical space (1280 x 720, 16:9) and
- * Phaser's Scale Manager maps that logical space onto the real Discord
- * Activity / browser viewport. All game coordinates are expressed in logical
+ * Phaser's Scale Manager maps that logical space onto the real browser
+ * viewport. All game coordinates are expressed in logical
  * units, never in `window.innerWidth` / `window.innerHeight`.
  *
  * This keeps presentation independent from viewport size: the viewport scales

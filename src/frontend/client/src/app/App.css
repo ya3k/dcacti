@@ -1,8 +1,8 @@
 /*
  * Global game viewport foundation.
  *
- * This application is a game running inside a Discord Activity iframe, not a
- * scrollable web page. The document never scrolls: the viewport is the game
+ * This application is a standalone web game (`ADR-020`), not a scrollable web
+ * page. The document never scrolls: the viewport is the game
  * surface. Do not add website-style containers (max-width / margin auto /
  * large page padding) here.
  */

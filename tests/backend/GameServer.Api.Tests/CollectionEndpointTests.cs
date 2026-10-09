@@ -21,14 +21,14 @@ namespace GameServer.Api.Tests;
 
 /// <summary>
 /// The four collection read endpoints — <c>API_CONTRACTS.md</c> §5.1–§5.6,
-/// §2.8, §6 (TASK-071).
+/// §2.3, §6 (TASK-071).
 ///
 /// <code>
 /// Authorization: Bearer &lt;sessionToken&gt;
 ///         ↓
 /// GET /api/pets | /api/pets/{petId} | /api/cards | /api/relics
 ///         ↓
-/// authenticated PlayerId          (the player_id claim — API_CONTRACTS.md §2.8)
+/// authenticated PlayerId          (the player_id claim — API_CONTRACTS.md §2.3)
 ///         ↓
 /// owned rows + their definitions  (DATABASE.md §1–§2, §4)
 ///         ↓
@@ -64,7 +64,7 @@ public class CollectionEndpointTests
     private const string RelicsRoute = "/api/relics";
 
     // -----------------------------------------------------------------------
-    // 401 — API_CONTRACTS.md §1, §2.8 "Failure behavior"
+    // 401 — API_CONTRACTS.md §1, §2.3 "Failure behavior"
     // -----------------------------------------------------------------------
 
     [Theory]
@@ -74,9 +74,10 @@ public class CollectionEndpointTests
     [InlineData(RelicsRoute)]
     public async Task EveryCollectionEndpoint_WithoutASession_ShouldReturnUnauthenticated(string route)
     {
-        // §1: "All endpoints (except /api/auth/discord) require an authenticated
-        // session"; §2.8 gives missing, invalid, tampered, and expired sessions
-        // ONE response — 401 with the §6 envelope and the UNAUTHENTICATED code.
+        // §1: "All endpoints (except /api/auth/register and /api/auth/login)
+        // require an authenticated session"; §2.3 gives missing, invalid, tampered,
+        // and expired sessions ONE response — 401 with the §6 envelope and the
+        // UNAUTHENTICATED code.
         using var factory = new CollectionFactory();
 
         var response = await factory.GetAsync(factory.CreateClient(), route, session: null);
@@ -1330,7 +1331,7 @@ public class CollectionEndpointTests
 
     /// <summary>
     /// Asserts the one documented unauthenticated response
-    /// (<c>API_CONTRACTS.md</c> §2.8 "Failure behavior", §6): <c>401</c> with the
+    /// (<c>API_CONTRACTS.md</c> §2.3 "Failure behavior", §6): <c>401</c> with the
     /// <c>UNAUTHENTICATED</c> code, and nothing that distinguishes one validation
     /// failure from another.
     /// </summary>

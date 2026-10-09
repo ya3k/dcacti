@@ -279,21 +279,22 @@ Successful response (200 OK):
 
 ## 2.3 Application Session Mechanism (`ADR-015`)
 
-The application session issued by §2.5 is a **self-contained signed JWT**
-(`ADR-015`). This subsection is the authoritative wire/behavior contract for
-that session — why it was chosen is `ADR-015`, how it is implemented is
+The application session issued by §2.1 or §2.2 is a **self-contained signed
+JWT** (`ADR-015`). This subsection is the authoritative wire/behavior contract
+for that session — why it was chosen is `ADR-015`, how it is implemented is
 TASK-034. Nothing here may be re-derived from client input.
 
 **Session artifact**
 
 ```text
 application session  =  self-contained signed JWT, issued by the backend
-                        after §2's identity exchange succeeds
+                        after §2.1's register or §2.2's login succeeds
 session storage      =  none (stateless) — not in Redis (ADR-005), not in
                         PostgreSQL (ADR-006), not in in-memory state
 ```
 
-The Discord access token is not the session (§2.7 item 4).
+It is the only session credential §2.1 and §2.2 return to the client
+(`ADR-020` D3/D4), and no other token is accepted in its place (`ADR-015` D4).
 
 **Identity**
 
@@ -302,14 +303,13 @@ claim:  player_id
 value:  PlayerId
 ```
 
-Resolution: `verified DiscordUserId → Player match/create → PlayerId → JWT
-player_id → authenticated request → PlayerId`. The server treats this
-identity as authoritative; the client never supplies or overrides `PlayerId`
-or `DiscordUserId` for authentication or ownership (§4 note 7).
+Resolution: `verified Account (username/password) → Player match/create →
+PlayerId → JWT player_id → authenticated request → PlayerId` (`ADR-020` D2/D3).
+The server treats this identity as authoritative; the client never supplies or
+overrides `PlayerId` for authentication or ownership (§4 note 7).
 `GameServer.PlayerId` may be used as the server-internal request-context
-representation of that identity; it is never a client input. `DiscordUserId`
-is not carried as an authoritative ownership claim (§2.4) — `PlayerId` is
-sufficient.
+representation of that identity; it is never a client input. `PlayerId` is the
+only identity the session carries, and it is sufficient (§1, §4 note 7).
 
 **Transport**
 
@@ -319,8 +319,8 @@ SignalR    the same JWT via SignalR's standard access-token mechanism
            (SIGNALR_PROTOCOL.md §1)
 ```
 
-No application-session cookie. A Discord access token is never accepted as a
-`BattleHub` authentication credential.
+No application-session cookie is used, and no credential other than this
+issued JWT is accepted as a session (`ADR-015` D4).
 
 **Coverage**
 
@@ -551,7 +551,7 @@ state is only available via the SignalR connection, not this endpoint.
    not theirs (note 7); using it for an unauthenticated caller would make an
    authorization failure indistinguishable from a missing row and would
    confirm nothing about the battle's existence. The **mechanism** that
-   establishes and validates the session is defined in §2.8 (`ADR-015`):
+   establishes and validates the session is defined in §2.3 (`ADR-015`):
    a missing, invalid/tampered, or expired session all resolve to this same
    `401 UNAUTHENTICATED` response, with no distinct code and no
    token-validation detail disclosed. This note fixes the *outcome* for an
@@ -567,8 +567,8 @@ state is only available via the SignalR connection, not this endpoint.
    client-supplied input:** no `playerId` request member, query parameter,
    header, or body field may select, override, or stand in for the caller's
    identity (`GAME_RULES.md` §18, ADR-001, ADR-014). The authenticated
-   identity is derived server-side from the session (§1, ADR-007 item 4) and
-   is never re-derived from client input at read time (§2.8).
+   identity is derived server-side from the session (§1, `ADR-015` D3) and
+   is never re-derived from client input at read time (§2.3).
 
 ## 4.5 GET /api/battle/history
 
@@ -661,7 +661,7 @@ Response 401: { "error": "UNAUTHENTICATED" }
    except `/api/auth/register` and `/api/auth/login` require an authenticated session (`ADR-020`,
    `ADR-015`). A caller presenting no authenticated session receives
    `401` with the §6 envelope and the error code `UNAUTHENTICATED` — exactly as
-   §4 note 6 establishes, and never a `404`. The §2.8 failure contract applies
+   §4 note 6 establishes, and never a `404`. The §2.3 failure contract applies
    unchanged: a missing, invalid/tampered, or expired session all resolve to
    this same response, with no distinct code and no token-validation detail
    disclosed.
@@ -715,7 +715,7 @@ Response 401: { "error": "UNAUTHENTICATED" }
 # 5. GET /api/pets, /api/pets/{petId}, /api/cards, /api/relics
 
 The four collection read endpoints. Ownership comes solely from the
-authenticated session (§1, §2.8): a caller reads only their own collection,
+authenticated session (§1, §2.3): a caller reads only their own collection,
 and no request member, query parameter, or header selects a `playerId`.
 `401 UNAUTHENTICATED` applies as in §1 and is not repeated below. Response
 shapes are fixed per endpoint — which persisted members are exposed is
@@ -1109,6 +1109,7 @@ enumerate an exhaustive global error list to avoid speculative scope.
 
 1. Any endpoint that would let a client submit a gameplay result directly —
    forbidden by `GAME_RULES.md` §18.
-2. Custom username/password registration flows — delegated entirely to
-   Discord Activity OAuth token exchange (§2, ADR-007).
+2. Any external-platform identity exchange — retired by `ADR-020`; §2's
+   `POST /api/auth/register` and `POST /api/auth/login` are the whole
+   authentication surface.
 3. Admin/ops endpoints — not required by MVP scope.

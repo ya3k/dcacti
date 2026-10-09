@@ -26,7 +26,7 @@ namespace GameServer.Api.Tests;
 ///         ↓
 /// BattleHub                            §7 — identity read, then delegate
 ///         ↓
-/// BattleStateService                   §2.8 — ownership, server-side
+/// BattleStateService                   §2.3 — ownership, server-side
 ///         ↓
 /// IBattleStateRepository → Redis       REDIS_STATE.md §1 — battle:{battleId}:state
 ///         ↓
@@ -584,7 +584,7 @@ public sealed class BattleHubReconnectRecoveryTests : IClassFixture<ApiIntegrati
     /// <summary>
     /// A session whose <c>player_id</c> identifies nobody does not establish an
     /// identity the hub may act for, and it is refused at the connection
-    /// (<c>API_CONTRACTS.md</c> §2.8; the hub's own <c>OnConnectedAsync</c>).
+    /// (<c>API_CONTRACTS.md</c> §2.3; the hub's own <c>OnConnectedAsync</c>).
     /// </summary>
     [Fact]
     public async Task GetBattleState_IsUnreachableForASessionWithNoPlayerId()

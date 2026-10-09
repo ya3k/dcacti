@@ -28,7 +28,7 @@ namespace GameServer.Api.Tests;
 ///         ↓
 /// GET /api/battle/history
 ///         ↓
-/// authenticated PlayerId          (the player_id claim — API_CONTRACTS.md §2.8)
+/// authenticated PlayerId          (the player_id claim — API_CONTRACTS.md §2.3)
 ///         ↓
 /// player-scoped ordered read      (§4.5 notes 4, 5, 8)
 ///         ↓
@@ -51,7 +51,7 @@ namespace GameServer.Api.Tests;
 public class BattleHistoryEndpointTests
 {
     // -----------------------------------------------------------------------
-    // 401 — API_CONTRACTS.md §1, §2.8, §4.5 note 7
+    // 401 — API_CONTRACTS.md §1, §2.3, §4.5 note 7
     // -----------------------------------------------------------------------
 
     [Fact]
@@ -76,7 +76,7 @@ public class BattleHistoryEndpointTests
     [InlineData("header.payload.signature")]
     public async Task History_WithAnInvalidSession_ShouldReturnUnauthenticated(string token)
     {
-        // §2.8 "Failure behavior" / §4.5 note 7: a missing, invalid/tampered, or
+        // §2.3 "Failure behavior" / §4.5 note 7: a missing, invalid/tampered, or
         // expired session all resolve to this same response, with no distinct code
         // and no token-validation detail disclosed.
         using var factory = new HistoryFactory();

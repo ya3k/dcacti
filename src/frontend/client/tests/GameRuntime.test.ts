@@ -2528,7 +2528,7 @@ describe('GameRuntime', () => {
 
     describe('failure semantics', () => {
       /**
-       * The documented REST rejections (API_CONTRACTS.md §2.8, §3) plus transport
+       * The documented REST rejections (API_CONTRACTS.md §2.3, §3) plus transport
        * errors. Each must propagate with no connect, no join, and untouched state.
        */
       const restFailures: Array<[string, string]> = [
@@ -2702,7 +2702,7 @@ describe('GameRuntime', () => {
     });
 
     it('propagates a collection-read rejection unchanged', async () => {
-      // A `401 UNAUTHENTICATED` (API_CONTRACTS.md §2.8) reaches the caller as the
+      // A `401 UNAUTHENTICATED` (API_CONTRACTS.md §2.3) reaches the caller as the
       // transport raised it; the runtime records nothing and fabricates nothing.
       const { runtime, api } = createCollectionRuntime();
       api.getPets.mockRejectedValue(

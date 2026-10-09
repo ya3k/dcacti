@@ -34,8 +34,9 @@ export type ConnectionStatus =
 
 /**
  * Session establishment status. Sessions are established by the documented
- * Discord → backend authentication boundary (`POST /api/auth/discord`,
- * API_CONTRACTS.md §2, ADR-007), which is not implemented by this task.
+ * standalone web account boundary (`POST /api/auth/register` or
+ * `POST /api/auth/login`, API_CONTRACTS.md §2, ADR-020) and end through the
+ * client-local `invalidateSession()` cleanup (`ARCHITECTURE.md` §2.2.1).
  */
 export type SessionStatus =
   | 'unauthenticated'

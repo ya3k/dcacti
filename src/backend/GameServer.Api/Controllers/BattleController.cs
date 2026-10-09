@@ -47,7 +47,7 @@ namespace GameServer.Api.Controllers;
 /// authors the resulting <c>BattleState</c>.
 ///
 /// <b>The requesting Player is the authenticated session's</b>
-/// (<c>API_CONTRACTS.md</c> §1, §2.8; <c>ADR-015</c> D3): the
+/// (<c>API_CONTRACTS.md</c> §1, §2.3; <c>ADR-015</c> D3): the
 /// <c>player_id</c> claim, published as the request context's
 /// <c>GameServer.PlayerId</c>. No request member, query parameter, or header
 /// selects, overrides, or stands in for it — on either endpoint.
@@ -105,7 +105,7 @@ public class BattleController : ControllerBase
     /// "the requesting Player"). The identity is the application session's
     /// <c>player_id</c> claim, republished as the request context's
     /// <c>GameServer.PlayerId</c> by the authentication boundary
-    /// (<c>API_CONTRACTS.md</c> §2.8 "Identity", <c>ADR-015</c> D3) — never a
+    /// (<c>API_CONTRACTS.md</c> §2.3 "Identity", <c>ADR-015</c> D3) — never a
     /// client-supplied value. The class-level <c>[Authorize]</c> is what makes
     /// an unauthenticated caller receive the documented
     /// <c>401 UNAUTHENTICATED</c> before this method runs; the check below is the
@@ -135,7 +135,7 @@ public class BattleController : ControllerBase
             // API_CONTRACTS.md §1 / §3 require an authenticated session. A request
             // that reached here therefore presented a validated token whose
             // player_id claim is missing or empty — an identity that identifies
-            // nobody. It is rejected with the §2.8 unauthenticated response rather
+            // nobody. It is rejected with the §2.3 unauthenticated response rather
             // than attributed to a default Player: attributing one would let such
             // a caller act as another Player (GAME_RULES.md §18, ADR-001).
             return Unauthorized(new
@@ -188,7 +188,7 @@ public class BattleController : ControllerBase
     /// produced by the class-level <c>[Authorize]</c> and the session pipeline
     /// before this method runs — one outcome for a missing, invalid, tampered, or
     /// expired session, with no validation detail disclosed
-    /// (<c>API_CONTRACTS.md</c> §2.8, §4 note 6; <c>ADR-015</c> D5). The guard
+    /// (<c>API_CONTRACTS.md</c> §2.3, §4 note 6; <c>ADR-015</c> D5). The guard
     /// below covers the remaining case the pipeline allows through: a principal
     /// that carries no <c>player_id</c>, which identifies nobody and must
     /// therefore not be answered with a result.
@@ -219,7 +219,7 @@ public class BattleController : ControllerBase
 
         if (string.IsNullOrWhiteSpace(playerId))
         {
-            // API_CONTRACTS.md §1 / §2.8 / §4 note 6: an identity that identifies
+            // API_CONTRACTS.md §1 / §2.3 / §4 note 6: an identity that identifies
             // nobody is not an authenticated session, and §4 note 7 permits no
             // request-supplied substitute for it. The response is the documented
             // unauthenticated one — not BATTLE_NOT_FOUND, which note 6 reserves
@@ -270,7 +270,7 @@ public class BattleController : ControllerBase
     /// <b>Unauthenticated (401).</b> The §6 envelope with <c>UNAUTHENTICATED</c>,
     /// produced by the class-level <c>[Authorize]</c> and the session pipeline
     /// before this method runs — one outcome for a missing, invalid, tampered, or
-    /// expired session (<c>API_CONTRACTS.md</c> §2.8, §4.5 note 7; <c>ADR-015</c>
+    /// expired session (<c>API_CONTRACTS.md</c> §2.3, §4.5 note 7; <c>ADR-015</c>
     /// D5), and never a <c>404</c>. The guard below covers the remaining case the
     /// pipeline allows through: a principal that carries no <c>player_id</c>,
     /// which identifies nobody and must therefore not be answered with a history.
@@ -296,7 +296,7 @@ public class BattleController : ControllerBase
 
         if (string.IsNullOrWhiteSpace(playerId))
         {
-            // API_CONTRACTS.md §1 / §2.8 / §4.5 note 7: an identity that
+            // API_CONTRACTS.md §1 / §2.3 / §4.5 note 7: an identity that
             // identifies nobody is not an authenticated session, and §4.5 note 8
             // permits no request-supplied substitute for it. The response is the
             // documented unauthenticated one — there is no BATTLE_NOT_FOUND-style
@@ -345,7 +345,7 @@ public class BattleController : ControllerBase
     ///
     /// It reads the request-context item the authentication boundary publishes
     /// from the validated session's <c>player_id</c> claim
-    /// (<see cref="AuthenticatedPlayer"/>, <c>API_CONTRACTS.md</c> §2.8,
+    /// (<see cref="AuthenticatedPlayer"/>, <c>API_CONTRACTS.md</c> §2.3,
     /// <c>ADR-015</c> D3). The key is this endpoint's own contract and is
     /// unchanged; what changed is that it now has a production writer.
     /// </summary>
@@ -355,7 +355,7 @@ public class BattleController : ControllerBase
     /// <summary>
     /// The request-context key under which the authenticated session's
     /// <c>Player.PlayerId</c> is carried to this endpoint
-    /// (<c>API_CONTRACTS.md</c> §2.8: "<c>GameServer.PlayerId</c> may be used as
+    /// (<c>API_CONTRACTS.md</c> §2.3: "<c>GameServer.PlayerId</c> may be used as
     /// the server-internal request-context representation of that identity; it is
     /// never a client input").
     ///

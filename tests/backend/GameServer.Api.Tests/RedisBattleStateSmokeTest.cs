@@ -113,7 +113,7 @@ public class RedisBattleStateSmokeTest
             Content = JsonContent.Create(request),
         };
 
-        // API_CONTRACTS.md §2.8 "Transport": Authorization: Bearer <sessionToken>.
+        // API_CONTRACTS.md §2.3 "Transport": Authorization: Bearer <sessionToken>.
         message.Headers.Authorization = new AuthenticationHeaderValue("Bearer", factory.SessionToken);
 
         var response = await client.SendAsync(message);

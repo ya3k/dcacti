@@ -86,7 +86,7 @@ public class CollectionController : ControllerBase
     /// <b>Unauthenticated (401).</b> The §6 envelope with <c>UNAUTHENTICATED</c>,
     /// produced by the class-level <c>[Authorize]</c> and the session pipeline
     /// before this method runs — one outcome for a missing, invalid, tampered, or
-    /// expired session (<c>§2.8</c> "Failure behavior", <c>ADR-015</c> D5). The
+    /// expired session (<c>§2.3</c> "Failure behavior", <c>ADR-015</c> D5). The
     /// guard below covers the remaining case the pipeline allows through: a
     /// principal that carries no <c>player_id</c>, which identifies nobody and
     /// must therefore not be answered with a collection.
@@ -100,7 +100,7 @@ public class CollectionController : ControllerBase
         if (playerId is null)
         {
             // API_CONTRACTS.md §5: ownership comes solely from the authenticated
-            // session, and §2.8 gives an identity that identifies nobody the
+            // session, and §2.3 gives an identity that identifies nobody the
             // documented unauthenticated response rather than a default Player
             // (GAME_RULES.md §18, ADR-001).
             return Unauthenticated("An authenticated session is required to read a collection.");
@@ -125,7 +125,7 @@ public class CollectionController : ControllerBase
     /// exactly the disclosure §5.2 forbids.
     ///
     /// <b>Unauthenticated (401).</b> As for the list above
-    /// (<c>§2.8</c>, <c>ADR-015</c> D5).
+    /// (<c>§2.3</c>, <c>ADR-015</c> D5).
     ///
     /// <b>The caller's identity comes from the session, never the request.</b>
     /// §5 permits no request member, query parameter, header, or body field to
@@ -264,10 +264,10 @@ public class CollectionController : ControllerBase
         });
 
     /// <summary>
-    /// The documented unauthenticated response (<c>API_CONTRACTS.md</c> §2.8
+    /// The documented unauthenticated response (<c>API_CONTRACTS.md</c> §2.3
     /// "Failure behavior", §6) for a principal that carries no <c>player_id</c>.
     ///
-    /// It is the §2.8 single code — never a collection-specific one, never a
+    /// It is the §2.3 single code — never a collection-specific one, never a
     /// distinct "identity missing" outcome, and never <c>PET_NOT_FOUND</c>, which
     /// §5.2 reserves for an authenticated caller.
     /// </summary>
@@ -284,7 +284,7 @@ public class CollectionController : ControllerBase
     ///
     /// It reads the request-context item the authentication boundary publishes
     /// from the validated session's <c>player_id</c> claim
-    /// (<see cref="AuthenticatedPlayer"/>, <c>API_CONTRACTS.md</c> §2.8,
+    /// (<see cref="AuthenticatedPlayer"/>, <c>API_CONTRACTS.md</c> §2.3,
     /// <c>ADR-015</c> D3) — the same server-derived identity
     /// <c>BattleController</c> reads, with no second mechanism and no fallback.
     /// </summary>

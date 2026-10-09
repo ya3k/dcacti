@@ -1102,7 +1102,7 @@ export class LobbyScene extends Phaser.Scene {
    * selected is exactly what the server resolves.
    *
    * No `playerId` (the caller is resolved server-side from the session,
-   * §2.8), no Signature/PetSkill card (derived by the server, §3), and no
+   * §2.3), no Signature/PetSkill card (derived by the server, §3), and no
    * `battleId`, `turn`, `sequence`, HP, Power, or any other server-owned value
    * (`GAME_RULES.md` §18, ADR-001).
    *

@@ -79,10 +79,10 @@ Active State   Redis                            (per MVP_SCOPE.md §1)
 Persistence    PostgreSQL                       (per MVP_SCOPE.md §1)
 ```
 
-Frontend architecture is a static SPA / Discord Activity client built with
-Vite. There is no requirement for Server-Side Rendering (SSR), Static Site
-Generation (SSG), SEO, Next.js App Router, Next.js Server Components, or
-Next.js API Routes.
+Frontend architecture is a static SPA — a standalone Web client served to a
+modern desktop or mobile browser (`ADR-020`) — built with Vite. There is no
+requirement for Server-Side Rendering (SSR), Static Site Generation (SSG),
+SEO, Next.js App Router, Next.js Server Components, or Next.js API Routes.
 
 No microservices, Kubernetes, or Kafka — explicitly excluded
 (`MVP_SCOPE.md` §2).
@@ -97,14 +97,14 @@ The frontend uses a **Phaser-first** architecture with a **React + Vite**
 application shell:
 
 ```text
-Discord Activity
+Web Browser (standalone — no embedded platform host, `ADR-020`)
         │
         ▼
 React + Vite (Application & UI Shell)
         ├── HTML UI & Overlays
         ├── Menus & Settings
         ├── Connection status & Loading UI
-        └── Platform / Discord SDK integration boundary
+        └── Authentication boundary (ADR-020)
         │
         ▼
 Phaser 4 (Game Runtime & Presentation)
@@ -245,7 +245,7 @@ components**, not authoritative game logic:
 
 ### React Responsibilities & Boundaries
 
-- **React owns:** Application shell, Discord Activity integration boundary,
+- **React owns:** Application shell, the authentication boundary (`ADR-020`),
   HTML overlays, menus, settings, connection status UI, loading fallback, and
   non-canvas UI.
 - **React does NOT own:** Phaser game loop, 8x8 Match-3 board state,
@@ -256,7 +256,7 @@ components**, not authoritative game logic:
 
 The client targets a fixed **logical game resolution of 1280 × 720 (16:9)**;
 Phaser's Scale Manager (`FIT` + `CENTER_BOTH`) maps that logical space onto the
-actual Discord Activity / browser viewport. The Activity behaves as a game
+actual browser viewport. The application behaves as a game
 surface, not a scrollable web page: the document never scrolls, aspect ratio is
 preserved (letterboxed, never stretched), and the React overlay never affects
 document size. Game coordinates are logical and must not be derived from

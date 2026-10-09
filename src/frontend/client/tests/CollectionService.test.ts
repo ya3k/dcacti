@@ -137,7 +137,7 @@ describe('ApiService.getPets (API_CONTRACTS.md §5.1, §5.5)', () => {
 
     await ApiService.getInstance().getPets();
 
-    // §2.8 "Transport" / ADR-015 D4: REST carries the application session as
+    // §2.3 "Transport" / ADR-015 D4: REST carries the application session as
     // `Authorization: Bearer <sessionToken>`.
     expect(requestedInit().headers).toEqual({
       Authorization: 'Bearer header.payload.signature',
@@ -212,7 +212,7 @@ describe('ApiService.getPets (API_CONTRACTS.md §5.1, §5.5)', () => {
   });
 
   it('should propagate 401 UNAUTHENTICATED', async () => {
-    // §2.8 "Failure behavior": a missing, invalid/tampered, or expired session
+    // §2.3 "Failure behavior": a missing, invalid/tampered, or expired session
     // is one public response — 401 with the §6 envelope.
     respondWithError(401, { error: 'UNAUTHENTICATED', message: 'An authenticated session is required.' });
 
@@ -226,7 +226,7 @@ describe('ApiService.getPets (API_CONTRACTS.md §5.1, §5.5)', () => {
   });
 
   it('should send no Authorization header when no session is established', async () => {
-    // §2.8 "Transport": with no session there is no bearer credential to
+    // §2.3 "Transport": with no session there is no bearer credential to
     // present — the request is sent unauthenticated and the server answers 401,
     // rather than the client inventing a placeholder token.
     respondWith([]);

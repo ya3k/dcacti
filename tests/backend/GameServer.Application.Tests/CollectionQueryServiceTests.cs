@@ -15,7 +15,7 @@ namespace GameServer.Application.Tests;
 /// Application boundary of TASK-071.
 ///
 /// <code>
-/// authenticated PlayerId   (§2.8 — the session claim)
+/// authenticated PlayerId   (§2.3 — the session claim)
 ///         ↓
 /// CollectionQueryService
 ///         ↓
