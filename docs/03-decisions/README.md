@@ -1,6 +1,15 @@
 # Architecture Decision Records (ADR)
 
-**Version:** 1.14 (§7 — ADR-022 added per `TASK-203`: the post-result
+**Version:** 1.15 (§7 — ADR-023 added per `TASK-236`: the backend Discord
+identity seam resolution decision. Following `ADR-020`'s adoption of standalone
+web account authentication and retirement of Discord dependencies, the Product
+Owner explicitly authorized `REMOVE` (Option 1) to formally retire the dormant
+backend Discord identity dependency injection seam (`IDiscordIdentityResolver`,
+`UnconfiguredDiscordIdentityResolver`, `DevelopmentDiscordIdentityResolver`,
+`DiscordCredentialOptions`, `DevelopmentAuthenticationOptions`, and contract
+definitions). ADR-023 records the accepted architectural decision and clarifies
+that physical deletion of runtime C# files, DI registrations, and test stubs is
+deferred to downstream implementation work. Prior 1.14: §7 — ADR-022 added per `TASK-203`: the post-result
 preserved-loadout carrier. `D-202-03 = D` requires the loadout used in the battle
 that just ended to survive the `LobbyScene` → `BattleScene` → `ResultScene` →
 `LobbyScene` round trip and stay editable, which the ephemeral scene-local
@@ -221,6 +230,7 @@ technical document.
 | ADR-020 | Standalone Web account authentication (Username/Password), new `Accounts` table, dropping `DiscordUserId` from `Players`, public `POST /api/auth/register` and `POST /api/auth/login`, retiring Discord Embedded App SDK and OAuth dependency completely | Accepted |
 | ADR-021 | One Card cast per committed Match-3 Turn — a player may successfully cast at most one Card during each committed Match-3 Turn; the restriction is a cast-count constraint, **not** Turn consumption, so a Card cast still consumes no Turn, does not resolve the Match-3 board, and does not independently trigger the Boss response; the Match-3 Turn remains the authoritative unit of combat progression and the Boss response is reached only through a committed Swap. Option A (cast consumes a Turn and triggers the Boss response) and Option C (keep unlimited free casts, change only Power Charge's cost) are rejected. Records `TASK-191` §6 Q-4 = OPTION B and unblocks B-02 for implementation | Accepted |
 | ADR-022 | Post-result preserved-loadout carrier — the loadout used in the battle that just ended is held as a second documented key in Phaser's game-wide registry behind the `game/state/PreservedLoadout.ts` accessor; owned by the client game-presentation layer (not `GameRuntime`), alive for the running game instance, written only on a successful battle start, and read only on the approved `ResultScene` → `PLAY AGAIN` entry, with `LobbyScene` remaining the editing surface. Records that the preserved loadout, active battle state, and battle result data are three distinct concepts, that the `D-202-04 = A` cleanup never clears the preserved loadout, and that the post-result exit clears active battle state through the dedicated client-local `clearActiveBattleState()` port capability (no disconnect, no wire message) rather than `SIGNALR_PROTOCOL.md` §7.3's `BATTLE_NOT_FOUND` path. Discharges the carrier requirement `ARCHITECTURE.md` §2.2.3 recorded without a mechanism per `TASK-202` `D-202-03 = D` | Accepted |
+| ADR-023 | Backend Discord identity seam resolution — formally retire the dormant backend Discord identity dependency injection seam (`IDiscordIdentityResolver`), resolver implementations, configuration options, and contract definitions, aligning backend architecture 100% with ADR-020 D1; records that physical deletion of runtime C# files and test stubs is deferred to downstream implementation work | Accepted |
 
 **Partial supersession (ADR-016).** ADR-011 and ADR-012 remain in force
 except for the specific items named below, which ADR-016 supersedes. Their

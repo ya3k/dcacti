@@ -1,6 +1,14 @@
 # Architecture
 
-**Version:** 1.9 (§3, §4, §4.1 and §5 item 2 **reconciled with the
+**Version:** 1.10 (§2.3 and §3 **synchronized with ADR-023** per TASK-236:
+the backend Discord identity dependency injection seam is formally retired per
+the Product Owner's accepted `REMOVE` decision, with physical code and test
+cleanup deferred to downstream implementation work; §2.3's title and
+authentication summary reflect ADR-020/ADR-023; and §3's component table removes
+the retired `DiscordService` row, resolving the contradiction with §2.3 and
+ADR-020. No module boundary, layer direction, port capability, endpoint, wire
+member, state model, Redis key, database column, gameplay rule, or contract
+changes. Documentation-only. Decision source: TASK-236 / ADR-023. Prior 1.9: (§3, §4, §4.1 and §5 item 2 **reconciled with the
 implementation as-built** per TASK-217A: the component table no longer lists
 types that do not exist in `src/`, and the battle flow, the one-action
 resolution shape, and the anti-overengineering note now name the components
@@ -653,7 +661,7 @@ Actual viewport (1920×1080, 1366×768, 1024×768, 800×600, …)
 reporting and the development-only viewport overlay. It is not part of the
 runtime resize path, which remains the Scale Manager.
 
-## 2.3 Discord SDK & Authentication Boundaries
+## 2.3 Authentication Boundaries (Standalone Web Accounts)
 
 ```text
 React + Vite (Frontend)
@@ -672,7 +680,7 @@ ASP.NET Core Backend
 REST API / SignalR Hub (BattleHub)
 ```
 
-1. **Authentication (ADR-020):** Standalone Web authentication via standard username/password replaces the former Discord Activity OAuth boundary. Discord SDK and Discord Activity dependencies are retired.
+1. **Authentication (ADR-020, ADR-023):** Standalone Web authentication via standard username/password replaces the former Discord Activity OAuth boundary. Discord SDK and Discord Activity dependencies are retired, and the dormant backend Discord identity dependency injection seam is formally retired per ADR-023 (physical deletion of C# source files, DI registrations, and test stubs deferred to downstream implementation work).
 2. **Account & Password Security:**
    - Password hashes are stored securely in PostgreSQL using PBKDF2 with unique cryptographic salt.
    - Passwords are never logged, echoed, or stored in plaintext.
@@ -733,7 +741,6 @@ GameConfig / GameViewport     Client (Game)     Scale Manager config; logical re
                                                 (1280×720), safe area (§2.2.2)
 GameRuntime                   Client (Game)     Coordinates Phaser, transport & runtime
                                                 state; no gameplay (§2.2.1)
-DiscordService                Client (Services) Discord SDK lifecycle & auth boundary
 RealtimeService               Client (Services) SignalR connection & event dispatch
 ApiService                    Client (Services) REST API communication
 GameShell / React Overlays    Client (UI)       Owns the viewport; HTML overlays & menus
