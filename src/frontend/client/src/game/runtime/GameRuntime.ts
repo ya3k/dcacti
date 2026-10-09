@@ -1,10 +1,11 @@
-import { ApiService } from '../../services/api/ApiService';
+import { ApiRequestError, ApiService } from '../../services/api/ApiService';
 import type {
   BattleHistoryItemResponse,
   BattleResultResponse,
   BattleStartRequest,
 } from '../../services/api/ApiService';
 import type { CardResponse, PetResponse, RelicResponse } from '../../services/api/CollectionModels';
+import { ApplicationSession } from '../../services/api/ApplicationSession';
 import { SignalRService } from '../../services/realtime/SignalRService';
 import type { BattleStateSnapshotResponse } from '../../services/realtime/SignalRService';
 import {
@@ -99,7 +100,14 @@ const BATTLE_NOT_FOUND_REASON = 'BATTLE_NOT_FOUND';
  *     the synchronized copy when the player leaves a completed battle
  *     (`D-202-04 = A`, ARCHITECTURE.md §2.2.3, ADR-022): state only, no
  *     transport operation, no result read, and no effect on the preserved
- *     pre-battle loadout, which this runtime does not hold.
+ *     pre-battle loadout, which this runtime does not hold,
+ *   - the authenticated-session cleanup (`invalidateSession`) — the one routine
+ *     both approved session-ending paths run (ADR-020 D4 item 2, the explicit
+ *     sign-out; API_CONTRACTS.md §2.3, the authenticated transport's `401
+ *     UNAUTHENTICATED`): the canonical credential clear, the runtime's own
+ *     `session` publication, the synchronized battle copy and the authenticated
+ *     transport connection. It issues no HTTP request and introduces no
+ *     endpoint, wire message, or server-side revocation.
  *
  * It deliberately does NOT (task §9, AGENTS.md §10, ADR-001):
  *   - calculate damage, match, combo, cascade, passive, or power,
@@ -299,6 +307,102 @@ export class GameRuntime implements GameRuntimePort {
   /** True once `initialize()` has been called on a live runtime. */
   public isInitialized(): boolean {
     return this.initialized && !this.disposed;
+  }
+
+  /**
+   * Ends the current authenticated session — the single cleanup both approved
+   * session-ending paths run.
+   *
+   * ```text
+   * explicit sign-out control (ADR-020 D4 item 2)   ─┐
+   *                                                    ├─→ invalidateSession()
+   * a `401` on the authenticated transport (§2.3)   ─┘
+   *      ├── ApplicationSession.clear()          the canonical credential clear
+   *      ├── battleState = null                  no copy outlives the session
+   *      ├── transport unsubscribed + disconnected  no authenticated connection
+   *      ├── initialized = false                 the runtime is re-armable
+   *      └── session = 'unauthenticated'         the state `App` already renders
+   *                                              `AuthScreen` for (ADR-020 D5)
+   * ```
+   *
+   * **One cleanup, two triggers, no second session state.** The session is
+   * cleared through the one credential store `ADR-015`/`ADR-020` define
+   * (`ApplicationSession`), and the session status is published through the
+   * runtime state this class already owns (`setSessionStatus`,
+   * `state/GameRuntimeState.ts`). No event bus, store, status value, or
+   * `localStorage` key is added (`AGENTS.md` §9, `ARCHITECTURE.md` §2.2.1
+   * rules 3 and 5), and `App`'s existing `session !== 'authenticated'` render
+   * condition is the only route back to `AuthScreen` (`ADR-020` D5).
+   *
+   * **Idempotent, and safe when nothing is held.** The canonical store is the
+   * only "is a session held" fact, so running this twice — including two
+   * overlapping `401`s from in-flight reads, which `API_CONTRACTS.md` §2.3 makes
+   * indistinguishable — clears once and disconnects once: the credential clear
+   * is synchronous, so the second caller finds no session and returns before
+   * touching the transport. A client that holds no session (never
+   * authenticated, or already invalidated) is a silent no-op.
+   *
+   * **The signed-out token keeps its documented server-side validity.** No
+   * request is issued and no revocation is attempted: `API_CONTRACTS.md` §2.3
+   * "Lifecycle (MVP)" and `ADR-015` D5 fix revocation as absent, so this is a
+   * client-side release only — the token stays valid until its 24-hour absolute
+   * expiry.
+   *
+   * **The runtime is not left disposed.** `dispose()` is terminal and
+   * `initialize()` returns early once initialized, so the cleanup releases the
+   * transport and re-arms initialization instead: the next authenticated
+   * session reconnects and re-registers its `ReceiveEvents` /
+   * `BattleStateUpdated` subscriptions through the existing paths
+   * (`SIGNALR_PROTOCOL.md` §1, §3–§4), and `SignalRService.connect()` builds a
+   * connection from the current session token
+   * (`SignalRService.ts`'s `accessTokenFactory`) rather than reusing the one
+   * that belonged to the ended session.
+   *
+   * Safe to call repeatedly, safe before any connection exists, and it never
+   * throws.
+   */
+  public async invalidateSession(): Promise<void> {
+    const session = ApplicationSession.getInstance();
+
+    // The one credential store is the only session-held fact (ADR-015 D2,
+    // ADR-020 D4). A runtime-owned duplicate of it would be exactly the second
+    // session-state value ARCHITECTURE.md §2.2.1 rules 3/5 forbid.
+    if (!session.isAuthenticated()) {
+      return;
+    }
+
+    session.clear();
+
+    // The synchronized copy belongs to the session that received it: the next
+    // battle arrives as a fresh server push (SIGNALR_PROTOCOL.md §4), never as
+    // a revision of this one.
+    this.battleState = null;
+
+    // Detach before stopping: a stop must not report itself through this runtime
+    // and overwrite the unauthenticated publication below.
+    for (const unsubscribe of this.transportUnsubscribers) {
+      unsubscribe();
+    }
+    this.transportUnsubscribers = [];
+
+    this.disposeTransportHandlers?.();
+    this.disposeTransportHandlers = null;
+
+    await this.signalR.disconnect();
+
+    // Re-arm the runtime: `initialize()` is idempotent against a live session
+    // and `dispose()` is terminal, so without this a second authentication in
+    // the same document could neither reconnect nor re-subscribe.
+    this.initialized = false;
+
+    this.updateState({
+      session: 'unauthenticated',
+      connection: 'disconnected',
+      connectionId: null,
+      sync: 'unsynchronized',
+      runtime: 'initializing',
+      lastError: null,
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -601,7 +705,9 @@ export class GameRuntime implements GameRuntimePort {
       throw new Error('GameRuntime has been disposed and cannot start a battle.');
     }
 
-    const response = await this.api.startBattle(request);
+    const response = await this.throughAuthenticatedTransport(() =>
+      this.api.startBattle(request)
+    );
 
     await this.signalR.connect(response.signalrHub);
 
@@ -804,7 +910,7 @@ export class GameRuntime implements GameRuntimePort {
     this.updateState({ sync: 'awaiting_battle', lastError: null });
 
     try {
-      await this.api.getBattleResult(battleId);
+      await this.throughAuthenticatedTransport(() => this.api.getBattleResult(battleId));
     } catch (error) {
       // The fallback is best-effort by contract: an expired battle legitimately
       // has no result row. A failure is reported through the existing technical
@@ -832,7 +938,7 @@ export class GameRuntime implements GameRuntimePort {
    * defines no ordering, so none is imposed here.
    */
   public async getPets(): Promise<PetResponse[]> {
-    return await this.api.getPets();
+    return await this.throughAuthenticatedTransport(() => this.api.getPets());
   }
 
   /**
@@ -843,7 +949,7 @@ export class GameRuntime implements GameRuntimePort {
    * runtime adds no lookup, index, or cached collection of its own.
    */
   public async getPet(petId: string): Promise<PetResponse> {
-    return await this.api.getPet(petId);
+    return await this.throughAuthenticatedTransport(() => this.api.getPet(petId));
   }
 
   /**
@@ -856,7 +962,7 @@ export class GameRuntime implements GameRuntimePort {
    * (`ARCHITECTURE.md` §2.2.3 rule 5).
    */
   public async getCards(): Promise<CardResponse[]> {
-    return await this.api.getCards();
+    return await this.throughAuthenticatedTransport(() => this.api.getCards());
   }
 
   /**
@@ -868,7 +974,7 @@ export class GameRuntime implements GameRuntimePort {
    * (`RELIC_RULES.md` §2.3, `ARCHITECTURE.md` §2.2.3 rule 4).
    */
   public async getRelics(): Promise<RelicResponse[]> {
-    return await this.api.getRelics();
+    return await this.throughAuthenticatedTransport(() => this.api.getRelics());
   }
 
   /**
@@ -897,7 +1003,7 @@ export class GameRuntime implements GameRuntimePort {
    * mechanism.
    */
   public async getBattleResult(battleId: string): Promise<BattleResultResponse> {
-    return await this.api.getBattleResult(battleId);
+    return await this.throughAuthenticatedTransport(() => this.api.getBattleResult(battleId));
   }
 
   /**
@@ -931,12 +1037,50 @@ export class GameRuntime implements GameRuntimePort {
    * unchanged, with no fabricated or partial history.
    */
   public async getBattleHistory(): Promise<BattleHistoryItemResponse[]> {
-    return await this.api.getBattleHistory();
+    return await this.throughAuthenticatedTransport(() => this.api.getBattleHistory());
   }
 
   // ---------------------------------------------------------------------------
   // Internals
   // ---------------------------------------------------------------------------
+
+  /**
+   * Runs one REST capability of this runtime through the single authenticated
+   * transport boundary, applying `API_CONTRACTS.md` §2.3's session-invalidation
+   * outcome to a `401` before the rejection reaches the caller.
+   *
+   * **The classification is the transport's, not a per-call-site decision.**
+   * `ApiService.get` / `ApiService.post` serve only the endpoints §2.3
+   * "Coverage" places behind the application session, so a `401` on this
+   * transport *is* §2.3's `UNAUTHENTICATED` answer — the one public response
+   * missing, invalid/tampered, and expired sessions share. Every covered
+   * capability therefore reaches the boundary through here rather than
+   * classifying `401` for itself, which is what keeps the cleanup single
+   * (`ARCHITECTURE.md` §2.2.1 rules 1, 3 and 5).
+   *
+   * **`INVALID_CREDENTIALS` can never end a session.** §2.2 rule 2's `401`
+   * belongs to `POST /api/auth/login`, a separate `ApiService` method pair
+   * (`login` / `register`) that this runtime never calls: they are not covered
+   * endpoints, and no credential rejection is routed through this boundary.
+   *
+   * **No other status is a session signal.** Every other rejection — `400
+   * INVALID_LOADOUT` / `PET_NOT_OWNED` / `BOSS_NOT_FOUND`, `404`, a transport
+   * failure — propagates to the caller exactly as the transport raised it, with
+   * the session and the runtime state untouched.
+   */
+  private async throughAuthenticatedTransport<T>(request: () => Promise<T>): Promise<T> {
+    try {
+      return await request();
+    } catch (error) {
+      if (error instanceof ApiRequestError && error.status === 401) {
+        // Awaited, so the caller's rejection is observed after the session has
+        // actually ended: no caller can react to a `401` while the stale
+        // credentials or the authenticated connection are still live.
+        await this.invalidateSession();
+      }
+      throw error;
+    }
+  }
 
   /**
    * Registers the documented server → client subscriptions exactly once.

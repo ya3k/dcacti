@@ -1,8 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { GameRuntime } from '../src/game/runtime/GameRuntime';
 import { RuntimeActionNotImplementedError } from '../src/game/runtime/GameRuntimeEvents';
+import { ApiRequestError } from '../src/services/api/ApiService';
+import { ApplicationSession } from '../src/services/api/ApplicationSession';
 import type { SignalRConnectionHandlers } from '../src/services/realtime/SignalRService';
 
 /**
@@ -3008,6 +3010,385 @@ describe('GameRuntime', () => {
       for (const key of ['outcome', 'rewards', 'result', 'battleId']) {
         expect(Object.keys(runtime.getState())).not.toContain(key);
       }
+    });
+  });
+
+  describe('authenticated session invalidation (API_CONTRACTS.md §2.3, ADR-020 D4 item 2)', () => {
+    /**
+     * TASK-234. Two approved paths end an authenticated session, and both run
+     * exactly one cleanup:
+     *
+     * ```text
+     * explicit sign-out control (ADR-020 D4 item 2)   ─┐
+     *                                                    ├→ invalidateSession()
+     * a `401` on the authenticated transport (§2.3)   ─┘
+     * ```
+     *
+     * The cleanup is the canonical credential clear (`ApplicationSession`), the
+     * runtime's existing session publication, the synchronized battle copy and
+     * the authenticated connection. It issues no HTTP request of its own and
+     * introduces no endpoint, wire message, or server-side revocation: §2.3
+     * "Lifecycle (MVP)" and ADR-015 D5 fix revocation as absent in MVP, so the
+     * signed-out token keeps its documented 24-hour server-side validity.
+     */
+
+    const SESSION_KEYS = ['dcacti_session_token', 'dcacti_player_id', 'dcacti_username'];
+
+    /** The session a successful §2 exchange establishes (ADR-020 D4 item 1). */
+    function authenticateSession(): ApplicationSession {
+      const session = ApplicationSession.getInstance();
+      session.establish({
+        sessionToken: 'jwt.header.payload',
+        playerId: 'player_1',
+        username: 'hero',
+      });
+      return session;
+    }
+
+    /** §2.3 "Failure behavior": the one public `401` body a covered endpoint sends. */
+    function unauthenticated(): ApiRequestError {
+      return new ApiRequestError(
+        401,
+        'UNAUTHENTICATED',
+        'Your session is no longer valid. Please sign in again.'
+      );
+    }
+
+    /**
+     * A runtime over the fake transport and a REST double whose covered reads all
+     * reject with `error`. The `api` methods double as the record that the
+     * cleanup issues no request of its own.
+     */
+    function sessionRuntime(error: unknown) {
+      const transport = new FakeSignalR();
+      const reject = async (): Promise<never> => {
+        throw error;
+      };
+      const api = {
+        getPets: vi.fn(reject),
+        getPet: vi.fn(reject),
+        getCards: vi.fn(reject),
+        getRelics: vi.fn(reject),
+        getBattleHistory: vi.fn(reject),
+        getBattleResult: vi.fn(reject),
+        startBattle: vi.fn(reject),
+      };
+      const runtime = new GameRuntime(transport as never, api as never);
+      return { runtime, transport, api };
+    }
+
+    /** An authenticated, connected runtime — the state a `401` arrives in. */
+    async function authenticatedRuntime(error: unknown = unauthenticated()) {
+      const session = authenticateSession();
+      const context = sessionRuntime(error);
+      context.runtime.setSessionStatus('authenticated');
+      await context.runtime.initialize();
+      return { ...context, session };
+    }
+
+    /** Settles a promise into its value or rejection reason, for identity checks. */
+    async function settle(promise: Promise<unknown>): Promise<unknown> {
+      return await promise.then(
+        (value) => value,
+        (error: unknown) => error
+      );
+    }
+
+    beforeEach(() => {
+      ApplicationSession.getInstance().clear();
+      window.localStorage.clear();
+    });
+
+    afterEach(() => {
+      ApplicationSession.getInstance().clear();
+      window.localStorage.clear();
+    });
+
+    it('a `401` clears the session, publishes unauthenticated and releases the transport', async () => {
+      // Given an authenticated session and a runtime holding synchronized battle
+      // state, When an authenticated read rejects with `401 UNAUTHENTICATED`,
+      // Then the stored session is cleared, `session` is `unauthenticated`,
+      // `getBattleState()` is null, and the transport is disconnected — once.
+      const failure = unauthenticated();
+      const { runtime, transport } = await authenticatedRuntime(failure);
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-live' }));
+      expect(runtime.getBattleState()!.battleId).toBe('battle-live');
+      expect(runtime.getState().sync).toBe('synchronized');
+
+      const caught = await settle(runtime.getPets());
+
+      // The documented rejection still reaches the caller unchanged.
+      expect(caught).toBe(failure);
+
+      // 1. `ApplicationSession.clear()` — the only credential store (ADR-015 D2,
+      //    ADR-020 D4): no runtime-owned copy of the session exists.
+      const session = ApplicationSession.getInstance();
+      expect(session.isAuthenticated()).toBe(false);
+      expect(session.getSessionToken()).toBeNull();
+      expect(session.getPlayerId()).toBeNull();
+      expect(session.getUsername()).toBeNull();
+      expect(session.getAuthorizationHeader()).toEqual({});
+      for (const key of SESSION_KEYS) {
+        expect(window.localStorage.getItem(key)).toBeNull();
+      }
+
+      // 2. The existing `SessionStatus` value — no new status is introduced —
+      //    which is what makes `App` render `AuthScreen` in the same document.
+      expect(runtime.getState().session).toBe('unauthenticated');
+
+      // 3. No synchronized copy and no authenticated connection outlive it.
+      expect(runtime.getBattleState()).toBeNull();
+      expect(runtime.getState().connection).toBe('disconnected');
+      expect(runtime.getState().connectionId).toBeNull();
+      expect(runtime.getState().sync).toBe('unsynchronized');
+      expect(transport.disconnectCalls).toBe(1);
+      expect(transport.isConnected()).toBe(false);
+
+      // The transport subscriptions are detached too, so a stale push from the
+      // ended session cannot repopulate the cleared copy.
+      expect(transport.subscriptions.size).toBe(0);
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-stale' }));
+      expect(runtime.getBattleState()).toBeNull();
+    });
+
+    it('is idempotent: a second `401` clears nothing and disconnects nothing again', async () => {
+      // Given a session already invalidated, When a second `401` arrives (the
+      // one public §2.3 answer again), Then no second clear and no second
+      // disconnect occur, and the state stays `unauthenticated`.
+      const failure = unauthenticated();
+      const { runtime, transport, session } = await authenticatedRuntime(failure);
+      const clearSpy = vi.spyOn(session, 'clear');
+
+      expect(await settle(runtime.getPets())).toBe(failure);
+      expect(clearSpy).toHaveBeenCalledTimes(1);
+      expect(transport.disconnectCalls).toBe(1);
+
+      // A read issued under the same (now ended) session answers 401 as well.
+      expect(await settle(runtime.getBattleHistory())).toBe(failure);
+
+      expect(clearSpy).toHaveBeenCalledTimes(1);
+      expect(transport.disconnectCalls).toBe(1);
+      expect(runtime.getState().session).toBe('unauthenticated');
+      expect(runtime.getState().connection).toBe('disconnected');
+    });
+
+    it('collapses two overlapping `401`s into a single cleanup', async () => {
+      // §2.3: missing, invalid/tampered and expired sessions share one public
+      // response, so two in-flight covered reads that both answer 401 are
+      // indistinguishable and must not clean up twice.
+      const session = authenticateSession();
+      const transport = new FakeSignalR();
+      const pending: Array<(error: unknown) => void> = [];
+      const inFlight = (): Promise<never> =>
+        new Promise<never>((_, reject) => {
+          pending.push(reject);
+        });
+      const api = { getPets: vi.fn(inFlight), getCards: vi.fn(inFlight) };
+      const runtime = new GameRuntime(transport as never, api as never);
+      runtime.setSessionStatus('authenticated');
+      await runtime.initialize();
+
+      const failure = unauthenticated();
+      const readPets = settle(runtime.getPets());
+      const readCards = settle(runtime.getCards());
+      expect(pending).toHaveLength(2);
+
+      pending[0](failure);
+      pending[1](failure);
+
+      expect(await readPets).toBe(failure);
+      expect(await readCards).toBe(failure);
+      expect(transport.disconnectCalls).toBe(1);
+      expect(session.isAuthenticated()).toBe(false);
+      expect(runtime.getState().session).toBe('unauthenticated');
+    });
+
+    it('leaves the session and runtime state untouched for any non-`401` failure', async () => {
+      // Given an authenticated session, When a read rejects with
+      // `400 INVALID_LOADOUT` / `404` / a transport error, Then the rejection
+      // propagates unchanged and no session state is touched (§3, §6).
+      const failures = [
+        new ApiRequestError(400, 'INVALID_LOADOUT', 'The requested loadout is not valid.'),
+        new ApiRequestError(404, 'BATTLE_NOT_FOUND', 'That information is no longer available.'),
+        new Error('Request to /api/pets failed with status 503'),
+      ];
+
+      for (const failure of failures) {
+        ApplicationSession.getInstance().clear();
+        window.localStorage.clear();
+        const { runtime, transport, session } = await authenticatedRuntime(failure);
+        const clearSpy = vi.spyOn(session, 'clear');
+
+        expect(await settle(runtime.getPets())).toBe(failure);
+
+        expect(clearSpy).not.toHaveBeenCalled();
+        expect(session.isAuthenticated()).toBe(true);
+        expect(transport.disconnectCalls).toBe(0);
+        expect(transport.isConnected()).toBe(true);
+        expect(runtime.getState().session).toBe('authenticated');
+        expect(runtime.getState().connection).toBe('connected');
+      }
+    });
+
+    it('classifies the rejection at the transport, not per endpoint', async () => {
+      // Every covered capability reaches the same boundary, so the outcome does
+      // not depend on which one was called: the battle-start POST and the §7.3
+      // result fallback read end the session exactly as a collection read does.
+      const startFailure = unauthenticated();
+      const start = await authenticatedRuntime(startFailure);
+      expect(await settle(start.runtime.startBattle({} as never))).toBe(startFailure);
+      expect(start.session.isAuthenticated()).toBe(false);
+      expect(start.runtime.getState().session).toBe('unauthenticated');
+      expect(start.transport.disconnectCalls).toBe(1);
+
+      ApplicationSession.getInstance().clear();
+      window.localStorage.clear();
+
+      const fallbackFailure = unauthenticated();
+      const session = authenticateSession();
+      const transport = new FakeSignalR();
+      const api = {
+        getBattleResult: vi.fn(async (): Promise<never> => {
+          throw fallbackFailure;
+        }),
+      };
+      const runtime = new GameRuntime(transport as never, api as never);
+      runtime.setSessionStatus('authenticated');
+      await runtime.initialize();
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-gone' }));
+      transport.getBattleStateResult = { accepted: false, reason: 'BATTLE_NOT_FOUND' };
+
+      // The documented §7 reconnect cycle: the snapshot cannot be recovered, so
+      // §7.3 takes the result fallback read — which answers 401 here.
+      transport.handlers.onReconnecting?.(new Error('lost'));
+      transport.handlers.onReconnected?.('conn-2');
+
+      await vi.waitFor(() => {
+        expect(api.getBattleResult).toHaveBeenCalledWith('battle-gone');
+      });
+      await vi.waitFor(() => {
+        expect(runtime.getState().session).toBe('unauthenticated');
+      });
+
+      expect(session.isAuthenticated()).toBe(false);
+      expect(transport.disconnectCalls).toBe(1);
+    });
+
+    it('re-initializes after invalidation: reconnects and re-registers the subscriptions', async () => {
+      // Given a session invalidated by `401`, When the player authenticates
+      // again, Then `initialize()` reconnects the transport and re-registers
+      // `ReceiveEvents` and `BattleStateUpdated` (SIGNALR_PROTOCOL.md §3–§4).
+      const failure = unauthenticated();
+      const { runtime, transport } = await authenticatedRuntime(failure);
+      expect(transport.subscriptions.size).toBe(2);
+
+      expect(await settle(runtime.getPets())).toBe(failure);
+      expect(runtime.isInitialized()).toBe(false);
+      expect(transport.subscriptions.size).toBe(0);
+
+      // A second successful authentication in the same document (ADR-020): a new
+      // §2 exchange stores a new session, and the app initializes again.
+      authenticateSession();
+      runtime.setSessionStatus('authenticated');
+      await runtime.initialize();
+
+      expect(runtime.isInitialized()).toBe(true);
+      expect(transport.connectCalls).toEqual(['/hubs/battle', '/hubs/battle']);
+      // A new physical connection — the hub authenticates with the token that
+      // built it (SignalRService.ts `accessTokenFactory`), so the second account
+      // never inherits the first session's authenticated connection.
+      expect(transport.physicalConnections).toBe(2);
+      expect(runtime.getState().connection).toBe('connected');
+      expect(runtime.getState().session).toBe('authenticated');
+
+      // The documented subscriptions are live again on the new connection, not
+      // merely once registered.
+      expect(transport.subscriptions.has('ReceiveEvents')).toBe(true);
+      expect(transport.subscriptions.has('BattleStateUpdated')).toBe(true);
+      expect(transport.subscriptionRegistrations('ReceiveEvents')).toBe(2);
+      expect(transport.subscriptionRegistrations('BattleStateUpdated')).toBe(2);
+
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-second' }));
+      expect(runtime.getState().sync).toBe('synchronized');
+      expect(runtime.getBattleState()!.battleId).toBe('battle-second');
+    });
+
+    it('runs the identical cleanup for the explicit sign-out path, with no request of its own', async () => {
+      // The control in App.tsx calls this exact method, so both triggers share
+      // one routine (ADR-020 D4 item 2).
+      const { runtime, transport, api, session } = await authenticatedRuntime();
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-live' }));
+
+      await runtime.invalidateSession();
+
+      expect(session.isAuthenticated()).toBe(false);
+      for (const key of SESSION_KEYS) {
+        expect(window.localStorage.getItem(key)).toBeNull();
+      }
+      expect(runtime.getState().session).toBe('unauthenticated');
+      expect(runtime.getState().connection).toBe('disconnected');
+      expect(runtime.getBattleState()).toBeNull();
+      expect(transport.disconnectCalls).toBe(1);
+
+      // No HTTP request, no hub invocation, no logout endpoint, no revocation:
+      // the signed-out token keeps its documented server-side validity
+      // (API_CONTRACTS.md §2.3 "Lifecycle (MVP)", ADR-015 D5).
+      for (const method of Object.values(api)) {
+        expect(method).not.toHaveBeenCalled();
+      }
+      expect(transport.invokedMethods).toEqual([]);
+    });
+
+    it('is safe and silent when no session is held', async () => {
+      // A never-authenticated or already-invalidated client holds nothing to
+      // release, so the cleanup is a silent no-op rather than an error.
+      const session = ApplicationSession.getInstance();
+      session.clear();
+      const clearSpy = vi.spyOn(session, 'clear');
+      const { runtime, transport, api } = sessionRuntime(unauthenticated());
+
+      await expect(runtime.invalidateSession()).resolves.toBeUndefined();
+      await expect(runtime.invalidateSession()).resolves.toBeUndefined();
+
+      expect(clearSpy).not.toHaveBeenCalled();
+      expect(transport.disconnectCalls).toBe(0);
+      expect(runtime.getState().session).toBe('unauthenticated');
+      for (const method of Object.values(api)) {
+        expect(method).not.toHaveBeenCalled();
+      }
+    });
+
+    it('clears the three session keys only', async () => {
+      // An unrelated application preference is not part of the session, so the
+      // cleanup must not touch it.
+      const { runtime } = await authenticatedRuntime(unauthenticated());
+      window.localStorage.setItem('dcacti_unrelated_preference', 'keep-me');
+
+      expect(await settle(runtime.getPets())).toBeInstanceOf(ApiRequestError);
+
+      for (const key of SESSION_KEYS) {
+        expect(window.localStorage.getItem(key)).toBeNull();
+      }
+      expect(window.localStorage.getItem('dcacti_unrelated_preference')).toBe('keep-me');
+    });
+
+    it('adds no session-invalidation state to the technical runtime contract', async () => {
+      // ARCHITECTURE.md §2.2.1 rule 5: the state contract carries connection,
+      // session, runtime, synchronization, engine and diagnostics only. The
+      // cleanup republishes the existing `session` member rather than adding one.
+      const { runtime } = await authenticatedRuntime(unauthenticated());
+
+      await runtime.invalidateSession();
+
+      expect(Object.keys(runtime.getState()).sort()).toEqual([
+        'connection',
+        'connectionId',
+        'engine',
+        'lastError',
+        'runtime',
+        'session',
+        'sync',
+      ]);
     });
   });
 });
