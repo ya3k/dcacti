@@ -4,7 +4,6 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using GameServer.Api.Controllers;
 using GameServer.Application.Battle;
-using GameServer.Application.Identity;
 using GameServer.Domain.Battle;
 using GameServer.Domain.Bosses;
 using GameServer.Domain.Elements;
@@ -42,10 +41,9 @@ namespace GameServer.Api.Tests;
 ///
 /// <b>These exercise the real pipeline.</b> The production controllers, the
 /// production authentication registration, and the production authorization
-/// policy run; only the external boundaries a test cannot own — PostgreSQL,
-/// Redis, and the Discord exchange client — are substituted. Every authenticated
-/// request presents a real JWT through <c>Authorization: Bearer</c>; none injects
-/// an identity directly.
+/// policy run; only the external boundaries a test cannot own — PostgreSQL and
+/// Redis — are substituted. Every authenticated request presents a real JWT
+/// through <c>Authorization: Bearer</c>; none injects an identity directly.
 /// </summary>
 public class ApplicationSessionRESTTests
 {
@@ -558,14 +556,10 @@ public class ApplicationSessionRESTTests
 
     /// <summary>
     /// A host running the production authentication/authorization pipeline over an
-    /// isolated in-memory store, with the §2 exchange seam and the external
-    /// services substituted.
+    /// isolated in-memory store, with the external services substituted.
     /// </summary>
     private sealed class SessionFactory : WebApplicationFactory<Program>
     {
-        /// <summary>The verified external identity the stubbed resolver yields.</summary>
-        internal const string DiscordUserId = "80351110224678999";
-
         /// <summary>
         /// A raw external access token, presented where a session would go. It was
         /// never issued to the client as an application session (ADR-015 D4;
@@ -601,13 +595,6 @@ public class ApplicationSessionRESTTests
                     options.UseInMemoryDatabase(_storeName));
 
                 services.AddSingleton<IBattleStateRepository, ApiTestBattleStateRepository>();
-
-                // The TASK-035 exchange boundary: substituted so the session
-                // contract can be exercised without a Discord round trip. The
-                // exchange's own protocol behaviour is that contract's, not this
-                // one's.
-                services.RemoveAll<IDiscordIdentityResolver>();
-                services.AddSingleton<IDiscordIdentityResolver, StubIdentityResolver>();
             });
         }
 
@@ -697,24 +684,6 @@ public class ApplicationSessionRESTTests
             }
 
             context.SaveChanges();
-        }
-
-        /// <summary>
-        /// A test-only <see cref="IDiscordIdentityResolver"/>. It performs no
-        /// exchange — it supplies the contract's output so the session layer can be
-        /// exercised on its own.
-        /// </summary>
-        private sealed class StubIdentityResolver : IDiscordIdentityResolver
-        {
-            public Task<DiscordIdentityResolution> ResolveAsync(
-                string code,
-                CancellationToken cancellationToken = default) =>
-                Task.FromResult(code == "rejected-code"
-                    ? DiscordIdentityResolution.Failure(
-                        401,
-                        "DISCORD_AUTH_FAILED",
-                        "Discord authentication failed.")
-                    : DiscordIdentityResolution.Success(new DiscordIdentity(DiscordUserId)));
         }
     }
 }
