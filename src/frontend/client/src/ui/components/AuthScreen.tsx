@@ -40,7 +40,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onAuthenticated }) => {
       onAuthenticated();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes('USERNAME_ALREADY_TAKEN')) {
+      if (msg.includes('USERNAME_ALREADY_EXISTS')) {
         setErrorMessage('Tên đăng nhập đã tồn tại. Vui lòng chọn tên khác.');
       } else if (msg.includes('INVALID_CREDENTIALS')) {
         setErrorMessage('Tên đăng nhập hoặc mật khẩu không chính xác.');
