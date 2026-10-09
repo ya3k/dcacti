@@ -1,7 +1,6 @@
 # tasks/TASK_LIFECYCLE.md — Task Lifecycle
 
-**Version:** 1.1 (§6 added: the commit step and commit ownership policy,
-adopted by Product Owner Decision 1 = A under TASK-224)
+**Version:** 1.2 (Formalized two-stage commit protocol — Phase A implementation slice commit and Phase B individual completion record filing — adopted under TASK-230)
 
 > This document answers: **"What states can a task be in, how does it
 > move between them, and who is responsible for each transition?"**
@@ -71,8 +70,10 @@ READY       → SUPERSEDED      Lifecycle audit confirms scope is 100% satisfied
                                or obsolete by downstream tasks before execution
 IN PROGRESS → IN REVIEW       Implementation + tests complete
 IN PROGRESS → BLOCKED         Stop condition fires during execution
-IN REVIEW   → DONE            Review passes all quality/review.md §1 items
-                               and the task's slice is committed (§6)
+IN REVIEW   → DONE            Review passes all quality/review.md §1 items,
+                              the task's Phase A implementation slice is
+                              committed, and its Phase B completion record
+                              is filed (§6)
 IN REVIEW   → IN PROGRESS     Review identifies a defect requiring rework
 BLOCKED     → IN PROGRESS     Blocking condition resolved by human decision
 BLOCKED     → SUPERSEDED      Blocker and scope resolved/satisfied out-of-band
@@ -210,12 +211,16 @@ All core/completion.md §1 criteria are satisfied by direct execution.
 [ ] No unintended scope expansion
 [ ] Documentation impact checked and addressed if required
 [ ] Architecture impact checked and addressed if required
-[ ] The task's slice committed per §6 (staged set equals the record's
-    declared file set; group commit when a file is shared; a path with
-    no recorded owner disclosed, never committed under an invented id)
+[ ] Phase A implementation slice committed per §6 (staged set equals
+    the record's declared file set; group commit when a file is shared;
+    unowned/pre-existing paths disclosed per P-3)
+[ ] Phase B completion record filed in tasks/completed/ documenting
+    the Phase A commit SHA
 ```
 
-**Who sets it:** Agent (after quality/review.md passes).
+*(Note: This checklist must remain strictly consistent with `.ai/workflow/core/completion.md` §1.)*
+
+**Who sets it:** Agent (after quality/review.md passes and two-stage commit protocol completes).
 
 **File location:** `tasks/completed/`
 **File move:** `active/` → `completed/`
@@ -269,11 +274,12 @@ BLOCKED → SUPERSEDED       blocked/     completed/
 IN REVIEW → DONE           active/      completed/
 ```
 
-The commit step (§6) runs inside the IN REVIEW → DONE transition:
+The two-stage commit protocol (§6) runs inside the IN REVIEW → DONE transition:
 
 ```text
-IN REVIEW → DONE    the task's declared files are staged and committed
-                    (§6), then the task record is filed as completed
+IN REVIEW → DONE    the task's declared implementation files are staged and
+                    committed in Phase A, followed by moving/filing the task
+                    record to tasks/completed/ via Phase B (§6)
 ```
 
 ---
@@ -291,7 +297,7 @@ IN PROGRESS workflow     core/planning.md → core/implementation.md
 IN PROGRESS → BLOCKED   Any stop condition (AGENTS.md §20)
 IN PROGRESS → IN REVIEW quality/testing.md complete
 IN REVIEW workflow       quality/review.md
-IN REVIEW → DONE        core/completion.md §1 satisfied + the commit step (§6)
+IN REVIEW → DONE        core/completion.md §1 satisfied + Phase A implementation commit + Phase B completion record filing (§6)
 IN REVIEW → IN PROGRESS quality/review.md found defect requiring rework
 BLOCKED → SUPERSEDED    Lifecycle reconciliation audit confirming blocker & scope resolved downstream
 ```
@@ -301,70 +307,129 @@ task file is a reflection of workflow progress, not a substitute for it.
 
 ---
 
-# 6. Commit Step and Commit Ownership
+# 6. Two-Stage Commit Protocol and Commit Ownership
 
 **Adopted:** Product Owner Decision 1 = A, recorded under TASK-224, adopting
-TASK-223 §6.2's P-1…P-6 as repository policy. This section is the single owner
-of the commit rule; `core/completion.md` §1/§2 reference it and do not restate
-it.
+TASK-223 §6.2's P-1…P-6 as repository policy, and formalized under TASK-230
+as the Two-Stage Commit Protocol (Design A) with dedicated completion record
+filing (Option 1A). This section is the single owner of the commit rule;
+`core/completion.md` §1/§2 reference it and do not restate it.
 
 ---
 
-## 6.1 The commit step
+## 6.1 The Two-Stage Commit Protocol
 
-A task's changes enter history through exactly one commit step, performed
-inside the IN REVIEW → DONE transition (§4, §5) — after `quality/review.md` §1
-passes, and before the task is filed as completed.
+A task's changes enter history through a discrete two-stage commit sequence
+executed inside the IN REVIEW → DONE transition (§4, §5) — after
+`quality/review.md` §1 passes, before the task is marked DONE.
 
-```text
-1. Stage EXACTLY the file set the task's record declares. Stage nothing else.
-2. Compare `git diff --cached --name-status` to that declared set. A mismatch
+### Phase A: Implementation Slice Commit
+1. **Stage Declared Implementation Files:** Stage strictly the file set
+   declared in the task's canonical `Declared Files` manifest field
+   (`tasks/TASK_TEMPLATE.md`). The task record itself is NOT staged in
+   Phase A.
+2. **Exact-Set Staging Verification (P-5):** Compare
+   `git diff --cached --name-status` against the record's canonical
+   `Declared Files`. The staged set must match the declared file set exactly
+   with zero extraneous files and excluding the task record. A mismatch
    BLOCKS the commit (P-5). Report the divergence; never edit a record's
-   declared file list to make a commit legal.
-3. Commit with the task ids in the BODY, never the subject (P-4).
-4. File the record as completed and report the hash in the final report's
-   `## Commit` section (`core/completion.md` §2).
-```
+   declared file list post-hoc to make an invalid commit legal.
+3. **Commit Implementation Slice:** Commit with conventional commit subject
+   style carrying NO task IDs in the subject line (P-4). The commit body
+   records `owns: <TASK-ID>`, exact changed files, shared files, and
+   unowned/pre-existing disclosures.
+4. **Capture Commit SHA:** Capture the generated Phase A commit SHA for
+   inclusion in the task record.
+5. **Shared Implementation Files (Group Commit):** If an implementation file
+   is shared with other tasks, the slice is NOT committed separately. The
+   sharing tasks are committed together in a single joint group commit
+   where each participating task has an authorized active manifest in
+   `tasks/active/` and has passed applicable review gates.
+
+### Phase B: Completion Record Filing Commit
+1. **Update Completion Record:** Update the task record in `tasks/active/` to
+   `Status: DONE` and populate its `## Completion Evidence` / `### Commit`
+   section with the Phase A commit SHA, changed files, and validation
+   evidence.
+2. **Move Task Record:** Move the completed record from `tasks/active/` to
+   `tasks/completed/`.
+3. **Staging Verification (P-5):** Stage strictly the single completion
+   record being filed. Verify `git diff --cached --name-status` matches
+   strictly the completion record (accounting for Git's file representation:
+   rename `R<score>`, deletion `D` + addition `A`, or direct addition `A`).
+   No implementation changes and no other files may be staged.
+4. **Commit Completion Record (Option 1A):** Commit the completion record
+   under its own dedicated bookkeeping commit. The commit subject carries
+   NO task IDs (P-4); the body carries `owns: <TASK-ID>`, the filed record path,
+   and discloses `none` for unowned/pre-existing paths.
+5. **Prohibition of Batching:** Each completion record receives its own
+   dedicated Phase B commit (Option 1A). Batching multiple completion
+   records into a single commit is prohibited.
 
 ---
 
 ## 6.2 Policy (P-1…P-6)
 
 ```text
-P-1  Branch model:       single `master`, as today. No per-task branch, no
+P-1  Branch model:       Single `master`, as today. No per-task branch, no
                          worktree per task, no tag per task. A task's changes
                          are never pushed to a new branch to "isolate" them.
-P-2  Commit granularity: ONE COMMIT PER TASK SLICE, created only when the set
-                         of files the task's record declares is EXACTLY the set
-                         of files the task changed. If a file is shared with
-                         another task, the slice is NOT committed separately;
-                         the sharing tasks are committed together, as an
-                         explicitly named group (e.g. "TASK-209 + TASK-210"),
-                         and the commit body names each member task and its
-                         part.
-P-3  Ownership           no file may be committed under a task that has no
-     precondition:       record in tasks/completed/. A file with no recorded
-                         owner is committed only under a commit whose body
-                         explicitly says so ("unowned/pre-existing: <paths>")
-                         and never under an invented task id.
-P-4  Mapping:            task ids go in the COMMIT BODY, never in the subject
+P-2  Commit granularity: Applied separately across both phases:
+                         - Phase A (Implementation Slice): ONE COMMIT PER TASK
+                           SLICE, created only when the staged set matches
+                           EXACTLY the task's canonical declared implementation
+                           file set. If a file is shared with another task,
+                           a single joint group commit is used, naming each
+                           participating task (all of which must have authorized
+                           active manifests and passed review).
+                         - Phase B (Completion Record Filing): ONE COMMIT PER
+                           COMPLETION RECORD (Option 1A). Batching multiple
+                           completion records into a single commit is prohibited.
+P-3  Ownership           - Phase A Ownership Precondition: Requires an
+     precondition:         authorized active task manifest in `tasks/active/`
+                           that has passed applicable review gates
+                           (`quality/review.md`). No implementation file may
+                           be committed under a task without an authorized
+                           active manifest.
+                         - Phase B Ownership Precondition: Files strictly the
+                           relevant completion record into `tasks/completed/`
+                           (Option 1A), requiring an existing valid Phase A
+                           commit SHA documented within that record.
+                         - Unowned / Pre-Existing Files: A path with no
+                           recorded owner is committed only under a commit whose
+                           body explicitly discloses it ("unowned/pre-existing:
+                           <paths>") and never under an invented task ID. No
+                           exceptions may be created that conflict with
+                           higher-priority instructions.
+P-4  Mapping:            Task IDs go in the COMMIT BODY, never in the subject
                          (preserving the existing conventional-commit subject
-                         style, which carries no task ids). The body names each
-                         task, its file subset, and the shared/uncertain files.
-P-5  Truth rule:         a commit must not contradict any record's declared
-                         file list. If it must (because of sharing), the commit
-                         body states the divergence and the record is the
-                         authority.
-P-6  Prohibitions:       no amend, no rebase, no force push, no history
+                         style, which carries no task IDs, for both Phase A
+                         and Phase B commits). The body names each task under
+                         `owns: <TASK-ID>`, its file subset, shared files, and
+                         disclosures.
+P-5  Truth rule &        A commit must not contradict any record's declared
+     staging             file list. Verification is performed separately:
+     verification:       - Phase A: Staged set (`git diff --cached --name-status`)
+                           must match the record's canonical `Declared Files`
+                           exactly with zero extraneous files, excluding the
+                           task record itself. Mismatch blocks the commit.
+                         - Phase B: Staged set must match strictly the single
+                           completion record being filed in `tasks/completed/`
+                           (as rename `R`, delete `D` + add `A`, or direct
+                           addition `A`).
+P-6  Prohibitions:       No amend, no rebase, no force push, no history
                          rewrite, no `git commit -a`, no staging of a file the
                          commit does not own, no commit while a file's owner is
-                         unresolved without the P-3 disclosure.
+                         unresolved without the P-3 disclosure, no batching of
+                         completion records into a single commit (Option 1B
+                         prohibited), and no duplicate implementation commits.
 ```
 
 ---
 
-## 6.3 Commit body shape
+## 6.3 Commit Body Shapes
 
+### Phase A: Implementation Slice Commit Body Shape
 ```text
 <type>: <conventional subject — carries no task ids>
 
@@ -373,13 +438,59 @@ P-6  Prohibitions:       no amend, no rebase, no force push, no history
 
 owns: <task id(s)>
 files: <exact paths, or "see the record's declared file set">
-shared with: <other task ids, and which paths>
+shared with: <other task ids, and which paths, or "none">
 unowned/pre-existing: <paths, or "none">
+```
+
+### Phase B: Completion Record Filing Commit Body Shape
+```text
+docs: <conventional subject — carries no task ids, e.g. "file the foo completion record">
+
+<task id> — its own record only; it declares no other path.
+
+owns: <task id>
+files: tasks/completed/<task-file>.md
+shared with: none
+unowned/pre-existing: none
 ```
 
 ---
 
-## 6.4 Pre-adoption history (historical exception — not a precedent)
+## 6.4 Interruption Recovery Protocol
+
+When an agent or process is interrupted between Phase A and Phase B (or when
+recovering unfiled tasks), follow this deterministic protocol:
+
+1. **Inspect Git History:** Search `git log` for matching `owns: <TASK-ID>` or
+   explicitly authorized group ownership in the commit body (not merely a loose
+   task-ID string anywhere in a commit message).
+2. **Verify Changed Paths:** Inspect the candidate commit
+   (`git show --name-status <SHA>`) and verify that its actual changed paths
+   match the task's applicable declared file set.
+3. **Inspect Subsequent History and Working Tree:** Inspect subsequent commits
+   (`git log <SHA>..HEAD`) and the current working tree (`git status`).
+   - Do not assume the candidate commit must be `HEAD`.
+   - Do not automatically reject every intervening commit; evaluate whether
+     subsequent commits affect the declared files, whether they are already
+     integrated, and whether the current repository state can be safely
+     established.
+4. **Verify Review and Validation Evidence:** Verify that the implementation
+   passed applicable review gates (`quality/review.md`) and validation before
+   accepting an existing Phase A commit.
+5. **Mandatory STOP on Ambiguity:** If ownership, provenance, file scope,
+   validation evidence, or integration status remains ambiguous: STOP per
+   `AGENTS.md` §20 and escalate to the human / Product Owner.
+6. **No History Rewriting or Duplicate Commits:** Never create duplicate
+   implementation commits or rewrite Git history (`git reset`,
+   `git commit --amend`, `git rebase`, `git push --force`) to repair an
+   ambiguous state.
+7. **Resume Phase B:** If and only if the Phase A commit is verified, valid,
+   and attributable, update the task record with the Phase A commit SHA and
+   file it under Phase B.
+
+---
+
+## 6.5 Pre-Adoption History (Historical Exception — Not a Precedent)
 
 This rule entered the repository **after** commit `9b5c5fe` ("feat: add backend
 card and relic content projection with client presentation tests") had already

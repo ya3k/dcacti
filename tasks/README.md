@@ -1,6 +1,6 @@
 # tasks/README.md — Task System
 
-**Version:** 1.0
+**Version:** 1.1 (Updated §5, §6, and §7 to align with the two-stage commit protocol and task template conventions)
 **Status:** Binding
 **Scope:** Every task file under `tasks/`.
 
@@ -146,7 +146,7 @@ unnecessary churn. Files are only moved when crossing a major boundary:
 backlog/   → active/     when an agent picks up the task
 active/    → blocked/    when a stop condition fires
 blocked/   → active/     when the block is resolved
-active/    → completed/  when core/completion.md §1 is satisfied
+active/    → completed/  when core/completion.md §1 is satisfied and the two-stage commit protocol (TASK_LIFECYCLE.md §6) completes
 ```
 
 See `TASK_LIFECYCLE.md` for the full transition rules.
@@ -160,8 +160,7 @@ See `TASK_LIFECYCLE.md` for the full transition rules.
 2. Verify the relevant documentation exists in docs/
 3. Assign the next available TASK-NNN ID
 4. Copy TASK_TEMPLATE.md
-5. Fill in all required sections (mark optional sections N/A, never
-   omit required sections)
+5. Fill in all required sections (including Declared Files metadata and ## Declared File Set; mark optional sections N/A, never omit required sections)
 6. Set Status: BACKLOG
 7. Save to tasks/backlog/<TASK-NNN-short-title>.md
 ```
@@ -176,9 +175,13 @@ See `TASK_LIFECYCLE.md` for the full transition rules.
 3. Change Status to IN PROGRESS
 4. Move file from backlog/ to active/
 5. Execute the assigned Workflow, using the assigned Skills
-6. Fill in Completion Evidence when done
-7. Change Status to IN REVIEW
-8. If all review checks pass → IN REVIEW → DONE → move to completed/
+6. Perform testing and validation (quality/testing.md)
+7. Change Status to IN REVIEW and execute quality review (quality/review.md)
+8. When review passes, execute the two-stage commit protocol (TASK_LIFECYCLE.md §6):
+   a. Phase A: Stage and commit declared implementation files per TASK_LIFECYCLE.md §6; capture commit SHA
+   b. Update task record: record Phase A SHA and evidence in Completion Evidence, change Status to DONE
+   c. Move file from active/ to completed/
+   d. Phase B: Stage and commit the completion record file per TASK_LIFECYCLE.md §6
 ```
 
 ---

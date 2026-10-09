@@ -9,7 +9,8 @@
   2. Replace <Title> with a short imperative title (e.g. "Implement BoardView Gem Swap Presentation").
   3. Reference docs/ by path and section. Do NOT copy game rules, formulas, or schemas.
   4. Select skills within budget (Simple: 2-4, Normal: 3-5, Complex: 5-7). Decompose if > 7.
-  5. Save to tasks/backlog/<TASK-NNN-short-title>.md with Status: BACKLOG.
+  5. List all exact implementation files in Declared Files metadata and ## Declared File Set.
+  6. Save to tasks/backlog/<TASK-NNN-short-title>.md with Status: BACKLOG.
 -->
 
 ---
@@ -27,6 +28,7 @@ Supporting Agents: <list or N/A>
 Workflow:          development/feature.md | development/bug-fix.md | development/gameplay-change.md | development/refactor.md | architecture/architecture-change.md | documentation/documentation-change.md
 Skills:            <list of 2-7 skills from .ai/skills/SKILL_REGISTRY.md within skill count budget>
 Dependencies:      <TASK-NNN or None>
+Declared Files:    <comma-separated list of relative repository paths, or None>
 ```
 
 ---
@@ -66,6 +68,18 @@ Dependencies:      <TASK-NNN or None>
 ## Current State
 
 <Brief 1-2 sentence description of existing implementation, file locations, or starting conditions.>
+
+---
+
+## Declared File Set (P-2 / P-5)
+
+Exact declared implementation files for TASK-XXX:
+```text
+<path/to/file1>
+<path/to/file2>
+```
+
+*(Note: The task manifest file itself is excluded from the implementation declared file set. The list above must strictly match the `Declared Files:` field in `## Metadata`.)*
 
 ---
 
@@ -139,6 +153,14 @@ Dependencies:      <TASK-NNN or None>
   Keep concise and factual.
 -->
 
+### Commit
+- Implementation slice (Phase A): `<commit SHA>`
+- Subject: `<conventional subject>`
+- Owns: `TASK-XXX`
+- Files: `<exact paths>`
+- Shared with: `none` | `<other task ids>`
+- Unowned / pre-existing: `none` | `<paths>`
+
 ### Changed Files
 - `<file path>` — <summary of change>
 
@@ -148,3 +170,4 @@ Dependencies:      <TASK-NNN or None>
 ### Server Authority & Scope Verification
 - [x] Confirmed zero client-authoritative gameplay logic
 - [x] Confirmed adherence to MVP Scope (`MVP_SCOPE.md` §1)
+- [x] Confirmed P-1…P-6 commit policy compliance
