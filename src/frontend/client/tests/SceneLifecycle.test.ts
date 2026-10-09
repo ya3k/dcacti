@@ -22,6 +22,7 @@ import type {
 } from '../src/game/runtime/GameRuntimeEvents';
 import type { CardResponse, PetResponse } from '../src/services/api/CollectionModels';
 import { SceneEventEmitter } from './support/SceneEventEmitter';
+import { parseGemBaseLabel, parseSpecialGemBadge } from '../src/game/scenes/BattleEventPresenter';
 
 vi.mock('phaser', () => ({
   AUTO: 'AUTO',
@@ -128,7 +129,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     textsThrowWhenDestroyed = true,
   } = options;
   const listeners = new Set<RuntimeEventListener>();
-  const battleStateListeners = new Set<(state: RuntimeBattleState) => void>();
+  const battleStateListeners = new Set<(state: RuntimeBattleState | null) => void>();
   const battleEventListeners = new Set<(envelope: BattleEventsEnvelope) => void>();
   /**
    * Every `Text` object the scene created, in creation order.
@@ -155,7 +156,12 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
    * The board container's current children, in draw order. It models the real
    * container: `removeAll` clears it, so a redraw reflects the latest push.
    */
-  const boardCells: Array<{ kind: string; label?: string }> = [];
+  const boardCells: Array<{
+    kind: string;
+    label?: string;
+    strokeWidth?: number;
+    strokeColor?: number;
+  }> = [];
   const sceneStarted: Array<{ key: string; data?: unknown }> = [];
   const loadHandlers = new Map<string, () => void>();
   const setEngineStatus = vi.fn();
@@ -254,7 +260,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       };
     },
     getBattleState: () => currentBattleState,
-    onBattleState: (listener: (state: RuntimeBattleState) => void) => {
+    onBattleState: (listener: (state: RuntimeBattleState | null) => void) => {
       battleStateListeners.add(listener);
       return () => {
         battleStateListeners.delete(listener);
@@ -550,7 +556,14 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       const obj = {
         add: (added: unknown) => {
           const list = Array.isArray(added) ? added : [added];
-          children = children.concat(list as Array<{ kind: string; label?: string }>);
+          children = children.concat(
+            list as Array<{
+              kind: string;
+              label?: string;
+              strokeWidth?: number;
+              strokeColor?: number;
+            }>
+          );
           if (isBoard) syncBoard();
           return obj;
         },
@@ -667,6 +680,8 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
           const handlers: Array<() => void> = [];
           let interactive = false;
           let visible = true;
+          let strokeWidth = 0;
+          let strokeColor = 0;
           const rect = {
             kind: 'tile',
             text: '',
@@ -674,6 +689,12 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
             y,
             width,
             height,
+            get strokeWidth() {
+              return strokeWidth;
+            },
+            get strokeColor() {
+              return strokeColor;
+            },
             get interactive() {
               return interactive;
             },
@@ -703,7 +724,11 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
             get visible() {
               return visible;
             },
-            setStrokeStyle: () => rect,
+            setStrokeStyle: (w = 1, c = 0x0b0f19) => {
+              strokeWidth = w;
+              strokeColor = c;
+              return rect;
+            },
             setInteractive: () => {
               interactive = true;
               return rect;
@@ -826,7 +851,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     },
     sceneStarted,
     loadHandlers,
-    setBattleState: (next: RuntimeBattleState) => {
+    setBattleState: (next: RuntimeBattleState | null) => {
       currentBattleState = next;
       for (const listener of battleStateListeners) {
         listener(next);
@@ -1474,7 +1499,7 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
    * protocol delivers, and modelling it as one is what previously let a
    * mismatched client reader pass this suite.
    */
-  function serverBoard(): Array<{ gemType: string; specialGem?: { type: string } }> {
+  function serverBoard(): Array<{ gemType: string; specialGem?: { type: string; orientation?: string } }> {
     return Array.from({ length: 64 }, (_, index) => ({
       gemType: GEM_NAMES[index % GEM_NAMES.length],
     }));
@@ -2804,6 +2829,142 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
 
     expect(callout().text).toBe('Swap rejected (MYSTERIOUS_ERROR).');
     expect(callout().color).toBe('#fbbf24');
+  });
+
+  it('renders authoritative specialGem variants with distinct visual styling while preserving child count and normal gems (TASK-232)', () => {
+    const cells = serverBoard();
+    // Normal gem
+    cells[0] = { gemType: 'ATK' };
+    // LineClear Horizontal
+    cells[1] = { gemType: 'DEF', specialGem: { type: 'LineClear', orientation: 'Horizontal' } };
+    // LineClear Vertical
+    cells[2] = { gemType: 'HP', specialGem: { type: 'LineClear', orientation: 'Vertical' } };
+    // Burst
+    cells[3] = { gemType: 'POWER', specialGem: { type: 'Burst' } };
+    // Area
+    cells[4] = { gemType: 'ATK', specialGem: { type: 'Area' } };
+
+    const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
+      board: { cells },
+    }));
+
+    runScene(scene, ctx, 'create');
+
+    // Child-count invariant: exactly 128 children (64 tiles + 64 labels)
+    expect(harness.boardCells).toHaveLength(128);
+
+    const tiles = harness.boardCells.filter((c) => c.kind === 'tile');
+    const labels = harness.boardCells.filter((c) => c.kind === 'label');
+    expect(tiles).toHaveLength(64);
+    expect(labels).toHaveLength(64);
+
+    // Normal gem (cell 0)
+    expect(tiles[0].strokeWidth).toBe(1);
+    expect(tiles[0].strokeColor).toBe(0x0b0f19);
+    expect(labels[0].label).toBe('ATK');
+    expect(parseGemBaseLabel(labels[0].label)).toBe('ATK');
+    expect(parseSpecialGemBadge(labels[0].label)).toBeNull();
+
+    // LineClear Horizontal (cell 1)
+    expect(tiles[1].strokeWidth).toBe(3);
+    expect(tiles[1].strokeColor).toBe(0x38bdf8);
+    expect(labels[1].label).toBe('DEF [H]');
+    expect(parseGemBaseLabel(labels[1].label)).toBe('DEF');
+    expect(parseSpecialGemBadge(labels[1].label)).toBe('[H]');
+
+    // LineClear Vertical (cell 2)
+    expect(tiles[2].strokeWidth).toBe(3);
+    expect(tiles[2].strokeColor).toBe(0x38bdf8);
+    expect(labels[2].label).toBe('HP [V]');
+    expect(parseGemBaseLabel(labels[2].label)).toBe('HP');
+    expect(parseSpecialGemBadge(labels[2].label)).toBe('[V]');
+
+    // Burst (cell 3)
+    expect(tiles[3].strokeWidth).toBe(3);
+    expect(tiles[3].strokeColor).toBe(0xfacc15);
+    expect(labels[3].label).toBe('PWR [BURST]');
+    expect(parseGemBaseLabel(labels[3].label)).toBe('PWR');
+    expect(parseSpecialGemBadge(labels[3].label)).toBe('[BURST]');
+
+    // Area (cell 4)
+    expect(tiles[4].strokeWidth).toBe(3);
+    expect(tiles[4].strokeColor).toBe(0xf472b6);
+    expect(labels[4].label).toBe('ATK [AREA]');
+    expect(parseGemBaseLabel(labels[4].label)).toBe('ATK');
+    expect(parseSpecialGemBadge(labels[4].label)).toBe('[AREA]');
+
+    // Underlying labels invariant across the whole board
+    const parsedBaseLabels = labels.map((l) => parseGemBaseLabel(l.label));
+    expect(new Set(parsedBaseLabels)).toEqual(new Set(['ATK', 'DEF', 'HP', 'PWR']));
+  });
+
+  it('latches boss Enrage state across healing and defeat, resetting only on new battle or state clear (TASK-232)', async () => {
+    const { harness, scene, ctx } = createBattle(
+      INITIAL_RUNTIME_STATE,
+      true,
+      serverState({ battleId: 'battle-alpha', bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 } })
+    );
+
+    runScene(scene, ctx, 'create');
+
+    const bossName = () => field<{ text: string }>(ctx, 'bossNameText');
+    const callout = () => field<{ text: string; color?: string }>(ctx, 'calloutText');
+
+    expect(bossName().text).toBe('Hỏa Long');
+    expect(callout().text).toBe('');
+
+    // Boss HP drops below threshold: 1400 < 1500 -> Enrage latches and callout fires
+    harness.setBattleState(
+      serverState({
+        battleId: 'battle-alpha',
+        bossState: { bossId: 'boss-hoa-long', hp: 1400, maxHp: 5000 },
+      })
+    );
+    expect(bossName().text).toBe('Hỏa Long [ENRAGED]');
+    expect(callout().text).toBe('BOSS ENRAGED');
+
+    // Emit another event so callout changes away from 'BOSS ENRAGED'
+    harness.emitBattleEvents({
+      battleId: 'battle-alpha',
+      serverSequence: 50,
+      events: [
+        { type: 'MatchCreated', shape: 'Straight', cells: [0, 1, 2], gemType: 'DEF', cascadeDepth: 0 },
+      ],
+    });
+    expect(callout().text).toBe('MATCH');
+
+    // Boss heals: HP rises above threshold (2500 > 1500) -> stays latched!
+    harness.setBattleState(
+      serverState({
+        battleId: 'battle-alpha',
+        bossState: { bossId: 'boss-hoa-long', hp: 2500, maxHp: 5000 },
+      })
+    );
+    expect(bossName().text).toBe('Hỏa Long [ENRAGED]');
+    // Callout does NOT re-emit 'BOSS ENRAGED'
+    expect(callout().text).toBe('MATCH');
+
+    // Boss is defeated: HP drops to 0 -> stays latched!
+    harness.setBattleState(
+      serverState({
+        battleId: 'battle-alpha',
+        bossState: { bossId: 'boss-hoa-long', hp: 0, maxHp: 5000 },
+      })
+    );
+    expect(bossName().text).toBe('Hỏa Long [ENRAGED]');
+
+    // Clear battle state -> unlatches
+    harness.setBattleState(null);
+    expect(bossName().text).toBe('');
+
+    // Transition to a genuinely new battle (different battleId) -> unlatched
+    harness.setBattleState(
+      serverState({
+        battleId: 'battle-beta',
+        bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
+      })
+    );
+    expect(bossName().text).toBe('Hỏa Long');
   });
 
   it('contains no client-side randomness', () => {

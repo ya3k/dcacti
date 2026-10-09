@@ -20,6 +20,11 @@ import {
   formatSwapRejection,
   CARD_CAST_REJECTION_MESSAGES,
   formatCardCastRejection,
+  SPECIAL_GEM_PRESENTATIONS,
+  resolveSpecialGemPresentation,
+  formatGemCellLabel,
+  parseGemBaseLabel,
+  parseSpecialGemBadge,
 } from '../src/game/scenes/BattleEventPresenter';
 import type {
   PresentedMatchCreated,
@@ -1749,6 +1754,92 @@ describe('TASK-218B — the Relic trigger callout reaches the player (SIGNALR_PR
       expect(formatCardCastRejection(null)).toBe('Cast rejected.');
       expect(formatCardCastRejection(undefined)).toBe('Cast rejected.');
       expect(formatCardCastRejection('')).toBe('Cast rejected.');
+    });
+
+    it('evaluates isBossEnraged latching behavior across healing and defeat', () => {
+      // Unlatched behavior (currentlyEnraged = false)
+      expect(isBossEnraged('boss-hoa-long', 5000, 5000, false)).toBe(false);
+      expect(isBossEnraged('boss-hoa-long', 1499, 5000, false)).toBe(true);
+      expect(isBossEnraged('boss-hoa-long', 0, 5000, false)).toBe(false);
+
+      // Latched behavior (currentlyEnraged = true) stays enraged on healing and defeat
+      expect(isBossEnraged('boss-hoa-long', 1499, 5000, true)).toBe(true);
+      expect(isBossEnraged('boss-hoa-long', 3000, 5000, true)).toBe(true); // healed
+      expect(isBossEnraged('boss-hoa-long', 5000, 5000, true)).toBe(true); // full heal
+      expect(isBossEnraged('boss-hoa-long', 0, 5000, true)).toBe(true); // defeated
+      expect(isBossEnraged('boss-thuy-ma', 0, 5000, true)).toBe(true);
+      expect(isBossEnraged('boss-kim-loi-vuong', 2800, 2800, true)).toBe(true);
+    });
+
+    it('resolves visual presentations for all four authoritative specialGem variants', () => {
+      // LineClear Horizontal
+      const lcH = resolveSpecialGemPresentation({ type: 'LineClear', orientation: 'Horizontal' });
+      expect(lcH).toEqual(SPECIAL_GEM_PRESENTATIONS.LineClearHorizontal);
+      expect(lcH?.badge).toBe('[H]');
+      expect(lcH?.strokeWidth).toBe(3);
+      expect(lcH?.strokeColor).toBe(0x38bdf8);
+
+      // LineClear Vertical
+      const lcV = resolveSpecialGemPresentation({ type: 'LineClear', orientation: 'Vertical' });
+      expect(lcV).toEqual(SPECIAL_GEM_PRESENTATIONS.LineClearVertical);
+      expect(lcV?.badge).toBe('[V]');
+      expect(lcV?.strokeWidth).toBe(3);
+      expect(lcV?.strokeColor).toBe(0x38bdf8);
+
+      // LineClear default (orientation missing/omitted) falls back safely to Horizontal
+      const lcDef = resolveSpecialGemPresentation({ type: 'LineClear' });
+      expect(lcDef).toEqual(SPECIAL_GEM_PRESENTATIONS.LineClearHorizontal);
+
+      // Burst (3x3 area)
+      const burst = resolveSpecialGemPresentation({ type: 'Burst' });
+      expect(burst).toEqual(SPECIAL_GEM_PRESENTATIONS.Burst);
+      expect(burst?.badge).toBe('[BURST]');
+      expect(burst?.strokeWidth).toBe(3);
+      expect(burst?.strokeColor).toBe(0xfacc15);
+
+      // Area (cross/plus)
+      const area = resolveSpecialGemPresentation({ type: 'Area' });
+      expect(area).toEqual(SPECIAL_GEM_PRESENTATIONS.Area);
+      expect(area?.badge).toBe('[AREA]');
+      expect(area?.strokeWidth).toBe(3);
+      expect(area?.strokeColor).toBe(0xf472b6);
+
+      // Ordinary gems & unrecognized
+      expect(resolveSpecialGemPresentation(null)).toBeNull();
+      expect(resolveSpecialGemPresentation(undefined)).toBeNull();
+      expect(resolveSpecialGemPresentation({ type: 'Unknown' })).toBeNull();
+    });
+
+    it('formats cell labels preserving base types and parsing badges', () => {
+      // Normal gems: unchanged
+      expect(formatGemCellLabel('ATK', null)).toBe('ATK');
+      expect(formatGemCellLabel('DEF', undefined)).toBe('DEF');
+      expect(formatGemCellLabel('HP')).toBe('HP');
+      expect(formatGemCellLabel('PWR', null)).toBe('PWR');
+
+      // Special gem variants
+      expect(formatGemCellLabel('ATK', { type: 'LineClear', orientation: 'Horizontal' })).toBe('ATK [H]');
+      expect(formatGemCellLabel('DEF', { type: 'LineClear', orientation: 'Vertical' })).toBe('DEF [V]');
+      expect(formatGemCellLabel('HP', { type: 'Burst' })).toBe('HP [BURST]');
+      expect(formatGemCellLabel('PWR', { type: 'Area' })).toBe('PWR [AREA]');
+
+      // Base label parsing
+      expect(parseGemBaseLabel('ATK')).toBe('ATK');
+      expect(parseGemBaseLabel('ATK [H]')).toBe('ATK');
+      expect(parseGemBaseLabel('DEF [V]')).toBe('DEF');
+      expect(parseGemBaseLabel('HP [BURST]')).toBe('HP');
+      expect(parseGemBaseLabel('PWR [AREA]')).toBe('PWR');
+      expect(parseGemBaseLabel('')).toBe('');
+      expect(parseGemBaseLabel(null)).toBe('');
+
+      // Badge parsing
+      expect(parseSpecialGemBadge('ATK')).toBeNull();
+      expect(parseSpecialGemBadge('ATK [H]')).toBe('[H]');
+      expect(parseSpecialGemBadge('DEF [V]')).toBe('[V]');
+      expect(parseSpecialGemBadge('HP [BURST]')).toBe('[BURST]');
+      expect(parseSpecialGemBadge('PWR [AREA]')).toBe('[AREA]');
+      expect(parseSpecialGemBadge('')).toBeNull();
+      expect(parseSpecialGemBadge(null)).toBeNull();
     });
   });
 });

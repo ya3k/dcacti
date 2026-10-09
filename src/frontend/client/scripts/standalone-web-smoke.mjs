@@ -1087,7 +1087,9 @@ const PRESERVED_LOADOUT = `s.registry.get('preservedLoadout') || null`;
 /** Finds adjacent cell pair that forms a Match-3 */
 function findMatchingSwaps(labels, size = BOARD_SIZE) {
   if (!Array.isArray(labels) || labels.length !== size * size) return [];
-  const grid = labels.slice();
+  // Normalize labels to base gem types (e.g. 'ATK [H]' -> 'ATK') to preserve matching-swap detection
+  // across cells holding authoritative Special Gems (MATCH3_RULES.md §5, TASK-232).
+  const grid = labels.map((l) => (typeof l === 'string' ? l.split(' ')[0] : l));
   const hasMatch = () => {
     for (let r = 0; r < size; r++) {
       for (let c = 0; c < size - 2; c++) {

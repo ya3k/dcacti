@@ -5,7 +5,12 @@ import { readPreservedLoadout } from '../state/PreservedLoadout';
 import { MVP_BOSSES } from './LobbyScene';
 import type { GameRuntime } from '../runtime/GameRuntime';
 import type { GameRuntimeState } from '../../state/GameRuntimeState';
-import type { BattleEventsEnvelope, RuntimeBattleState, RuntimeBoard } from '../runtime/GameRuntimeEvents';
+import type {
+  BattleEventsEnvelope,
+  RuntimeBattleState,
+  RuntimeBoard,
+  RuntimeSpecialGem,
+} from '../runtime/GameRuntimeEvents';
 import {
   RUNTIME_ACTION_SWAP,
   RUNTIME_ACTION_CARD_CAST,
@@ -21,10 +26,12 @@ import type { InBattleServerEvent } from './BattleEventPresenter';
 import {
   CALLOUT_BOSS_COLOR,
   formatCardCastRejection,
+  formatGemCellLabel,
   formatInBattleEvent,
   formatSwapRejection,
   isBossEnraged,
   parseInBattleEvent,
+  resolveSpecialGemPresentation,
   selectBatchCallout,
 } from './BattleEventPresenter';
 
@@ -301,6 +308,8 @@ export class BattleScene extends Phaser.Scene {
   private bossNameText: Phaser.GameObjects.Text | null = null;
   /** Whether the Boss is currently in Enraged state according to authoritative HP and threshold. */
   private bossEnraged: boolean = false;
+  /** Authoritative battle ID of the current battle for Enrage latch lifecycle tracking. */
+  private currentBattleId: string | null = null;
   /** The Boss's authoritative `hp / maxHp` (SIGNALR_PROTOCOL.md §4.4). */
   private bossHpText: Phaser.GameObjects.Text | null = null;
   /**
@@ -444,6 +453,7 @@ export class BattleScene extends Phaser.Scene {
 
   create(): void {
     this.bossEnraged = false;
+    this.currentBattleId = null;
     this.runtime = readRuntime(this);
     this.drawRuntimeShell();
     this.registerBoardInput();
@@ -561,6 +571,7 @@ export class BattleScene extends Phaser.Scene {
     this.connectionText = null;
     this.bossNameText = null;
     this.bossEnraged = false;
+    this.currentBattleId = null;
     this.bossHpText = null;
     this.bossHpGauge = null;
     this.petNameText = null;
@@ -1056,26 +1067,32 @@ export class BattleScene extends Phaser.Scene {
 
     if (state === null) {
       this.bossEnraged = false;
+      this.currentBattleId = null;
       this.bossNameText.setText('');
       this.bossHpText.setText('');
       this.updateGauge(this.bossHpGauge, 0, 0);
       return;
     }
 
-    const bossId = state.bossState.bossId;
-    const isEnraged = isBossEnraged(bossId, state.bossState.hp, state.bossState.maxHp);
-    const displayName = resolveBossDisplayName(bossId);
-
-    this.bossNameText.setText(isEnraged ? `${displayName} [ENRAGED]` : displayName);
-    this.bossHpText.setText(`${state.bossState.hp} / ${state.bossState.maxHp}`);
-    this.updateGauge(this.bossHpGauge, state.bossState.hp, state.bossState.maxHp);
-
-    if (isEnraged && !this.bossEnraged) {
-      this.bossEnraged = true;
-      this.showCallout('BOSS ENRAGED', CALLOUT_BOSS_COLOR);
-    } else if (!isEnraged) {
+    if (this.currentBattleId !== null && this.currentBattleId !== state.battleId) {
       this.bossEnraged = false;
     }
+    this.currentBattleId = state.battleId;
+
+    const bossId = state.bossState.bossId;
+    const initialTransition =
+      !this.bossEnraged && isBossEnraged(bossId, state.bossState.hp, state.bossState.maxHp, false);
+
+    if (initialTransition) {
+      this.bossEnraged = true;
+      this.showCallout('BOSS ENRAGED', CALLOUT_BOSS_COLOR);
+    }
+
+    const displayName = resolveBossDisplayName(bossId);
+
+    this.bossNameText.setText(this.bossEnraged ? `${displayName} [ENRAGED]` : displayName);
+    this.bossHpText.setText(`${state.bossState.hp} / ${state.bossState.maxHp}`);
+    this.updateGauge(this.bossHpGauge, state.bossState.hp, state.bossState.maxHp);
   }
 
   /**
@@ -1464,15 +1481,21 @@ export class BattleScene extends Phaser.Scene {
       }
 
       // Each delivered cell carries its Gem type and, optionally, the Special Gem
-      // at that cell (SIGNALR_PROTOCOL.md §4.1 item 5). Only the Gem type is
-      // presented: the scene paints no Special Gem state it was not asked to show
-      // and infers nothing from the cell (GAME_RULES.md §18).
-      this.drawCell(row, column, cells[index].gemType);
+      // at that cell (SIGNALR_PROTOCOL.md §4.1 item 5, GAME_STATE.md §2.1.4).
+      // The scene renders the authoritative specialGem metadata (LineClear Horizontal,
+      // LineClear Vertical, Burst, Area) using distinct visual indicators while
+      // preserving the underlying gem label, color, and child count.
+      this.drawCell(row, column, cells[index].gemType, cells[index].specialGem);
     }
   }
 
   /** Draws one board cell at its documented (row, column) position. */
-  private drawCell(row: number, column: number, gemName: string): void {
+  private drawCell(
+    row: number,
+    column: number,
+    gemName: string,
+    specialGem?: RuntimeSpecialGem | null
+  ): void {
     if (!this.boardLayer) {
       return;
     }
@@ -1484,15 +1507,21 @@ export class BattleScene extends Phaser.Scene {
     // substitutes a valid-looking Gem: doing so would fabricate authoritative
     // board content (SIGNALR_PROTOCOL.md §4 item 10).
     const presentation = GEM_PRESENTATION[gemName] ?? { color: 0x475569, label: '?' };
+    const specialPresentation = resolveSpecialGemPresentation(specialGem);
+
+    const strokeWidth = specialPresentation ? specialPresentation.strokeWidth : 1;
+    const strokeColor = specialPresentation ? specialPresentation.strokeColor : 0x0b0f19;
 
     const tile = this.add
       .rectangle(x, y, CELL_SIZE, CELL_SIZE, presentation.color)
-      .setStrokeStyle(1, 0x0b0f19);
+      .setStrokeStyle(strokeWidth, strokeColor);
+
+    const cellLabel = formatGemCellLabel(presentation.label, specialGem);
 
     const label = this.add
-      .text(x, y, presentation.label, {
+      .text(x, y, cellLabel, {
         fontFamily: 'system-ui, sans-serif',
-        fontSize: '14px',
+        fontSize: specialPresentation ? '11px' : '14px',
         color: '#0b0f19',
         fontStyle: 'bold',
       })

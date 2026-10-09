@@ -611,10 +611,20 @@ export const BOSS_ENRAGE_THRESHOLDS: Readonly<Record<string, number>> = Object.f
 
 /**
  * Evaluates whether a Boss is in Enraged state according to BOSS_RULES.md §5 item 4 & §6.1.
- * A defeated Boss (hp <= 0) is not considered Enraged.
+ * When `currentlyEnraged` is true, the state remains latched for the rest of that battle,
+ * persisting through healing and defeat (hp <= 0).
+ * Otherwise, the initial transition occurs when hp > 0 and hp < threshold.
  * For unknown boss IDs, safely falls back to 30% of maxHp (BaseEnrageThreshold).
  */
-export function isBossEnraged(bossId: string, hp: number, maxHp: number): boolean {
+export function isBossEnraged(
+  bossId: string,
+  hp: number,
+  maxHp: number,
+  currentlyEnraged: boolean = false
+): boolean {
+  if (currentlyEnraged) {
+    return true;
+  }
   if (hp <= 0) {
     return false;
   }
@@ -861,3 +871,130 @@ export function selectBatchCallout(
 
   return selected;
 }
+
+// ---------------------------------------------------------------------------
+// Authoritative Special Gem presentation (MATCH3_RULES.md §5, GAME_STATE.md §2.1.4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Visual differentiation configuration for authoritative Special Gems
+ * (MATCH3_RULES.md §5, GAME_STATE.md §2.1.4, SIGNALR_PROTOCOL.md §3.2.10).
+ */
+export type SpecialGemVisualVariant = 'LineClearHorizontal' | 'LineClearVertical' | 'Burst' | 'Area';
+
+export interface SpecialGemPresentationConfig {
+  readonly variant: SpecialGemVisualVariant;
+  readonly type: string;
+  readonly orientation?: string;
+  readonly badge: string;
+  readonly strokeColor: number;
+  readonly strokeWidth: number;
+  readonly description: string;
+}
+
+export const SPECIAL_GEM_PRESENTATIONS: Readonly<Record<SpecialGemVisualVariant, SpecialGemPresentationConfig>> = Object.freeze({
+  LineClearHorizontal: Object.freeze({
+    variant: 'LineClearHorizontal',
+    type: 'LineClear',
+    orientation: 'Horizontal',
+    badge: '[H]',
+    strokeColor: 0x38bdf8, // Sky blue
+    strokeWidth: 3,
+    description: 'Horizontal Line Clear',
+  }),
+  LineClearVertical: Object.freeze({
+    variant: 'LineClearVertical',
+    type: 'LineClear',
+    orientation: 'Vertical',
+    badge: '[V]',
+    strokeColor: 0x38bdf8, // Sky blue
+    strokeWidth: 3,
+    description: 'Vertical Line Clear',
+  }),
+  Burst: Object.freeze({
+    variant: 'Burst',
+    type: 'Burst',
+    badge: '[BURST]',
+    strokeColor: 0xfacc15, // Golden yellow
+    strokeWidth: 3,
+    description: 'Burst (3x3 Square)',
+  }),
+  Area: Object.freeze({
+    variant: 'Area',
+    type: 'Area',
+    badge: '[AREA]',
+    strokeColor: 0xf472b6, // Vibrant pink
+    strokeWidth: 3,
+    description: 'Area (Cross/Plus)',
+  }),
+});
+
+/**
+ * Resolves the visual presentation config for an authoritative SpecialGem metadata object
+ * (SIGNALR_PROTOCOL.md §3.2.10, GAME_STATE.md §2.1.4).
+ * Returns null for ordinary gems or unrecognized special gem metadata.
+ */
+export function resolveSpecialGemPresentation(
+  specialGem?: { readonly type?: string | null; readonly orientation?: string | null } | null
+): SpecialGemPresentationConfig | null {
+  if (!specialGem || typeof specialGem !== 'object' || !specialGem.type) {
+    return null;
+  }
+
+  const type = specialGem.type;
+  if (type === 'LineClear') {
+    if (specialGem.orientation === 'Vertical') {
+      return SPECIAL_GEM_PRESENTATIONS.LineClearVertical;
+    }
+    return SPECIAL_GEM_PRESENTATIONS.LineClearHorizontal;
+  }
+
+  if (type === 'Burst') {
+    return SPECIAL_GEM_PRESENTATIONS.Burst;
+  }
+
+  if (type === 'Area') {
+    return SPECIAL_GEM_PRESENTATIONS.Area;
+  }
+
+  return null;
+}
+
+/**
+ * Formats a gem cell label, appending the special gem badge if a special gem is present.
+ * For normal gems, returns baseLabel unmodified.
+ */
+export function formatGemCellLabel(
+  baseLabel: string,
+  specialGem?: { readonly type?: string | null; readonly orientation?: string | null } | null
+): string {
+  const spec = resolveSpecialGemPresentation(specialGem);
+  if (!spec) {
+    return baseLabel;
+  }
+  return `${baseLabel} ${spec.badge}`;
+}
+
+/**
+ * Extracts the underlying base gem label (e.g. 'ATK', 'DEF', 'HP', 'PWR')
+ * from a potentially decorated cell label ('ATK [H]' -> 'ATK').
+ */
+export function parseGemBaseLabel(renderedLabel?: string | null): string {
+  if (!renderedLabel) {
+    return '';
+  }
+  return renderedLabel.split(' ')[0] ?? renderedLabel;
+}
+
+/**
+ * Extracts the special gem badge (e.g. '[H]', '[V]', '[BURST]', '[AREA]')
+ * from a cell label, or null if it is an ordinary gem.
+ */
+export function parseSpecialGemBadge(renderedLabel?: string | null): string | null {
+  if (!renderedLabel) {
+    return null;
+  }
+  const parts = renderedLabel.split(' ');
+  return parts.length > 1 ? (parts.slice(1).join(' ') || null) : null;
+}
+
