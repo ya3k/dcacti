@@ -319,15 +319,20 @@ decisions; Pet Passive scope; any Git push or remote publication.
 ### Commit
 
 - Implementation slice (Phase A): `N/A — documentation-only task with no implementation slice`
-- Subject: `N/A`
+- Phase B completion-record commit: `dc6f481005296982c826a22ce5a25446ea197fa3`
+- Subject: `docs: record the e-f1 mvp content baseline product owner decision`
 - Owns: `TASK-242`
 - Files: `tasks/completed/TASK-242-record-e-f1-content-baseline-decision.md`
 - Shared with: `none`
 - Unowned / pre-existing: `none`
 
 *(This task's sole deliverable is the decision record itself. It declares no
-implementation file, so no Phase A slice exists. The record is filed under the
-Phase B completion-record commit per `TASK_LIFECYCLE.md` §6, Option 1A.)*
+implementation file, so no Phase A slice exists — the record is the deliverable
+and is filed under the Phase B completion-record commit per `TASK_LIFECYCLE.md`
+§6, Option 1A. The commit was created path-scoped via `git commit --only`, so
+the pre-existing staged `tasks/artifacts/MVP-ACCEPTANCE-RELEASE-CLOSURE-AUDIT.md`
+entry was neither included nor altered: it remains staged with the identical blob
+`38e4b26` before and after.)*
 
 ### Changed Files
 
@@ -362,6 +367,11 @@ CI/CD and production infrastructure:  NOT STARTED. No Dockerfile, pipeline,
 Backfill / top-up:                    NOT AUTHORIZED and NOT REQUIRED under
                                       Option A. No such task exists.
 
-Six existing local commits:           REMAIN UNPUBLISHED. No push, merge, or
-                                      publication was performed.
+Local commits:                        REMAIN UNPUBLISHED. No push, merge, or
+                                      publication was performed. The six commits
+                                      the task identified as pre-existing
+                                      (8f12b10, daf4f6a, e26ca11, 5a56ef1,
+                                      ce15e07, 385acfb) are all still present and
+                                      still unpublished; this record adds exactly
+                                      one further commit (dc6f481) on top.
 ```
