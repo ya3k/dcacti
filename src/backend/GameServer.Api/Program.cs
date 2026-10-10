@@ -28,7 +28,7 @@ builder.Services.AddSignalR();
 builder.Services.AddHealthChecks()
     .AddInfrastructureHealthChecks(builder.Configuration);
 
-// Configure CORS for local development, Cloudflare tunnels, and Discord iframe hosting
+// Configure CORS for local development and Cloudflare tunnels
 var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
                      ?? ["http://localhost:5173", "https://localhost:5173", "http://127.0.0.1:5173"];
 
@@ -52,10 +52,6 @@ builder.Services.AddCors(options =>
 
             // Allow Cloudflare quick tunnels (*.trycloudflare.com)
             if (uri.Host.EndsWith(".trycloudflare.com", StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            // Allow Discord Activity origins (*.discordsays.com)
-            if (uri.Host.EndsWith(".discordsays.com", StringComparison.OrdinalIgnoreCase))
                 return true;
 
             return false;
