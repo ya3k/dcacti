@@ -62,6 +62,7 @@ describe('App runtime lifecycle and Web Account authentication orchestration', (
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     ApplicationSession.getInstance().clear();
     window.localStorage.clear();
     resetSharedRuntime();
@@ -427,6 +428,102 @@ describe('App runtime lifecycle and Web Account authentication orchestration', (
       expect(runtime.getState().session).toBe('authenticated');
       expect(disconnectSpy).not.toHaveBeenCalled();
       expect(ApplicationSession.getInstance().isAuthenticated()).toBe(true);
+    });
+  });
+
+  /**
+   * The battle hub connection URL — `VITE_SIGNALR_URL`
+   * (`src/frontend/client/.env.example`).
+   *
+   * The template instructs a developer testing against a remote backend tunnel
+   * to paste that tunnel's URL into `VITE_API_URL` and `VITE_SIGNALR_URL`, so the
+   * setting is a documented client contract, not an inert one. Both paths that
+   * start a connection — the startup session restore (`bootstrapApplication`)
+   * and the interactive authentication (`handleAuthenticated`) — must address
+   * the hub through it when it is set, and must keep the documented relative
+   * `/hubs/battle` path when it is not. Each case asserts the URL the connection
+   * is actually opened with (`SignalRService.connect`), so the expectation is
+   * the resolved runtime behaviour rather than a local helper's return value.
+   */
+  describe('battle hub URL (VITE_SIGNALR_URL)', () => {
+    /** A configured remote base, as the template's tunnel step supplies one. */
+    const CONFIGURED_SIGNALR_URL = 'https://be.example.com';
+    /** The documented default hub path (SIGNALR_PROTOCOL.md §1). */
+    const BATTLE_HUB_URL = '/hubs/battle';
+
+    /** Renders the shell from a persisted session — `bootstrapApplication`'s path. */
+    async function renderWithRestoredSession() {
+      ApplicationSession.getInstance().establish({
+        sessionToken: 'persisted.jwt.token',
+        playerId: 'player_persisted',
+        username: 'saved_hero',
+      });
+
+      render(<App />);
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+    }
+
+    it('should connect to the configured base plus the battle hub path', async () => {
+      vi.stubEnv('VITE_SIGNALR_URL', CONFIGURED_SIGNALR_URL);
+
+      await renderWithRestoredSession();
+
+      expect(connectSpy).toHaveBeenCalledWith(`${CONFIGURED_SIGNALR_URL}${BATTLE_HUB_URL}`);
+    });
+
+    it('should normalize a trailing slash in the configured base', async () => {
+      vi.stubEnv('VITE_SIGNALR_URL', `${CONFIGURED_SIGNALR_URL}/`);
+
+      await renderWithRestoredSession();
+
+      // `…/` + `/hubs/battle` would otherwise be `…//hubs/battle`.
+      expect(connectSpy).toHaveBeenCalledWith(`${CONFIGURED_SIGNALR_URL}${BATTLE_HUB_URL}`);
+    });
+
+    it('should keep the relative hub path when VITE_SIGNALR_URL is unset', async () => {
+      // Genuinely unset (the variable is removed from the environment), not
+      // merely empty: the hub must stay relative either way.
+      vi.stubEnv('VITE_SIGNALR_URL', undefined);
+
+      await renderWithRestoredSession();
+
+      expect(connectSpy).toHaveBeenCalledWith(BATTLE_HUB_URL);
+    });
+
+    it('should keep the relative hub path when VITE_SIGNALR_URL is empty', async () => {
+      // The template's own default is an empty setting, which is what a
+      // developer runs locally: it must not be read as a remote URL.
+      vi.stubEnv('VITE_SIGNALR_URL', '');
+
+      await renderWithRestoredSession();
+
+      expect(connectSpy).toHaveBeenCalledWith(BATTLE_HUB_URL);
+    });
+
+    it('should connect through the configured base on the interactive login path', async () => {
+      vi.stubEnv('VITE_SIGNALR_URL', CONFIGURED_SIGNALR_URL);
+
+      render(<App />);
+
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      fireEvent.change(screen.getByTestId('input-username'), { target: { value: 'hero123' } });
+      fireEvent.change(screen.getByTestId('input-password'), { target: { value: 'secretpass' } });
+
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('button-submit'));
+      });
+
+      // `handleAuthenticated` starts the connection, and it resolves the same
+      // URL as the startup path.
+      expect(connectSpy).toHaveBeenCalledTimes(1);
+      expect(connectSpy).toHaveBeenCalledWith(`${CONFIGURED_SIGNALR_URL}${BATTLE_HUB_URL}`);
+      expect(screen.getByTestId('game-shell')).not.toBeNull();
     });
   });
 });

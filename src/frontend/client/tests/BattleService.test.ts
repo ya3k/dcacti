@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ApplicationSession } from '../src/services/api/ApplicationSession';
 import { ApiRequestError, ApiService } from '../src/services/api/ApiService';
 import type {
@@ -1300,5 +1300,103 @@ describe('Battle API scope (AGENTS.md §10, ADR-001, §3, §4)', () => {
     const result = await ApiService.getInstance().getBattleResult('battle-777');
 
     expect(result).toEqual(sent);
+  });
+});
+
+/**
+ * The client's REST base URL — `VITE_API_URL`
+ * (`src/frontend/client/.env.example`).
+ *
+ * The template instructs a developer testing against a remote backend tunnel to
+ * paste that tunnel's URL into `VITE_API_URL` and `VITE_SIGNALR_URL`, so the
+ * setting is a documented client contract, not an inert one: every request this
+ * service issues must be addressed to it when it is set, and every request must
+ * keep its existing relative path when it is not.
+ */
+describe('ApiService base URL (VITE_API_URL)', () => {
+  /** A configured remote base, as the template's tunnel step supplies one. */
+  const CONFIGURED_API_URL = 'https://be.example.com';
+
+  /**
+   * The base URL is read once, when the singleton is built
+   * (`resolveApiBaseUrl`), so each case below starts from a fresh instance and
+   * the environment it stubs is the environment that instance reads.
+   */
+  beforeEach(() => {
+    ApiService.resetInstance();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    ApiService.resetInstance();
+  });
+
+  it('should address the configured base when VITE_API_URL is set', async () => {
+    vi.stubEnv('VITE_API_URL', CONFIGURED_API_URL);
+    establishSession();
+    respondWith([]);
+
+    await ApiService.getInstance().getBattleHistory();
+
+    // The documented path is unchanged; only its origin moved (§4.5).
+    expect(requestedUrl()).toBe(`${CONFIGURED_API_URL}/api/battle/history`);
+  });
+
+  it('should normalize a trailing slash in the configured base', async () => {
+    vi.stubEnv('VITE_API_URL', `${CONFIGURED_API_URL}/`);
+    establishSession();
+    respondWith([]);
+
+    await ApiService.getInstance().getBattleHistory();
+
+    // `…/` + `/api/battle/history` would otherwise be `…//api/battle/history`.
+    expect(requestedUrl()).toBe(`${CONFIGURED_API_URL}/api/battle/history`);
+  });
+
+  it('should normalize several trailing slashes in the configured base', async () => {
+    vi.stubEnv('VITE_API_URL', `${CONFIGURED_API_URL}///`);
+    fetchMock.mockResolvedValue({ ok: true, status: 200, text: async () => 'Healthy' });
+
+    await ApiService.getInstance().checkHealth();
+
+    expect(requestedUrl()).toBe(`${CONFIGURED_API_URL}/health`);
+  });
+
+  it('should keep the documented path and method on a configured POST', async () => {
+    vi.stubEnv('VITE_API_URL', CONFIGURED_API_URL);
+    establishSession();
+    respondWith(startResponseFixture());
+
+    await ApiService.getInstance().startBattle(START_REQUEST);
+
+    // §3: the endpoint, its method, and its body are the same whether the base
+    // is configured or not — the setting moves the origin only.
+    expect(requestedUrl()).toBe(`${CONFIGURED_API_URL}/api/battle/start`);
+    expect(requestedInit().method).toBe('POST');
+    expect(requestedBody()).toEqual(START_REQUEST);
+  });
+
+  it('should keep relative paths when VITE_API_URL is unset', async () => {
+    // Genuinely unset (the variable is removed from the environment), not merely
+    // empty: an unset setting must not be read as a remote URL either.
+    vi.stubEnv('VITE_API_URL', undefined);
+    establishSession();
+    respondWith([]);
+
+    await ApiService.getInstance().getBattleHistory();
+
+    expect(requestedUrl()).toBe('/api/battle/history');
+  });
+
+  it('should keep relative paths when VITE_API_URL is empty', async () => {
+    // The template's own default is an empty setting, which is what a developer
+    // runs locally: it must not be read as a remote URL.
+    vi.stubEnv('VITE_API_URL', '');
+    establishSession();
+    respondWith([]);
+
+    await ApiService.getInstance().getBattleHistory();
+
+    expect(requestedUrl()).toBe('/api/battle/history');
   });
 });

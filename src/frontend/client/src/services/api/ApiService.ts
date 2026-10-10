@@ -144,11 +144,38 @@ export type {
 
 export type { AuthResponse, LoginRequest, RegisterRequest };
 
+/**
+ * The REST base URL this client issues its documented paths against, read from
+ * the frontend configuration template `src/frontend/client/.env.example`'s
+ * `VITE_API_URL`.
+ *
+ * The variable exists so this client can be pointed at a remote backend tunnel
+ * instead of the origin it was served from; it is the same setting the template
+ * tells a developer to paste the tunnel URL into. When it is unset — or set but
+ * empty, which the template's empty default makes the ordinary local case — the
+ * result is the empty string, so every documented path below (`/api/...`,
+ * `/health`) stays relative and resolves against the document origin, which is
+ * this client's default same-origin behaviour: the Vite development server
+ * proxies those paths to the backend (`vite.config.ts`).
+ *
+ * Trailing slashes are removed so that a configured base with or without one
+ * cannot produce a doubled separator (`https://host//api/pets`).
+ */
+function resolveApiBaseUrl(): string {
+  const configured = import.meta.env.VITE_API_URL;
+
+  if (typeof configured !== 'string') {
+    return '';
+  }
+
+  return configured.replace(/\/+$/, '');
+}
+
 export class ApiService {
   private static instance: ApiService | null = null;
   private baseUrl: string;
 
-  private constructor(baseUrl: string = '') {
+  private constructor(baseUrl: string = resolveApiBaseUrl()) {
     this.baseUrl = baseUrl;
   }
 
@@ -157,6 +184,14 @@ export class ApiService {
       ApiService.instance = new ApiService();
     }
     return ApiService.instance;
+  }
+
+  /**
+   * Test-only: releases the singleton so a test can build one under a stubbed
+   * environment (`resolveApiBaseUrl` is read once, at construction).
+   */
+  public static resetInstance(): void {
+    ApiService.instance = null;
   }
 
   public async checkHealth(): Promise<boolean> {

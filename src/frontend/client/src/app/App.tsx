@@ -12,6 +12,34 @@ import type { SessionStatus } from '../state/GameRuntimeState';
 export const BATTLE_HUB_URL = '/hubs/battle';
 
 /**
+ * The URL the battle hub is connected to: `BATTLE_HUB_URL` prefixed with the
+ * configured SignalR base (`src/frontend/client/.env.example`'s
+ * `VITE_SIGNALR_URL`) when one is set.
+ *
+ * The variable exists so this client can reach a remote backend tunnel instead
+ * of the origin it was served from; it is the same setting the template tells a
+ * developer to paste the tunnel URL into. When it is unset — or set but empty,
+ * which the template's empty default makes the ordinary local case — the
+ * documented relative path `BATTLE_HUB_URL` is returned unchanged, so the hub
+ * is reached through the document origin and the Vite development server's
+ * `/hubs` proxy (`vite.config.ts`).
+ *
+ * Trailing slashes are removed so a configured base with or without one cannot
+ * produce a doubled separator (`https://host//hubs/battle`).
+ */
+function resolveBattleHubUrl(): string {
+  const configured = import.meta.env.VITE_SIGNALR_URL;
+
+  if (typeof configured !== 'string') {
+    return BATTLE_HUB_URL;
+  }
+
+  const baseUrl = configured.replace(/\/+$/, '');
+
+  return baseUrl === '' ? BATTLE_HUB_URL : `${baseUrl}${BATTLE_HUB_URL}`;
+}
+
+/**
  * The process-wide runtime.
  *
  * `SignalRService` is itself a singleton, so there is exactly one connection per
@@ -41,7 +69,7 @@ export async function bootstrapApplication(runtime: GameRuntime): Promise<void> 
   if (restored) {
     runtime.setSessionStatus('authenticated');
     try {
-      await runtime.initialize(BATTLE_HUB_URL);
+      await runtime.initialize(resolveBattleHubUrl());
     } catch {
       // Hub connect error or expired token: clear session and ask to re-login
       session.clear();
@@ -107,7 +135,7 @@ export const App: React.FC = () => {
     const activeRuntime = getSharedRuntime();
     activeRuntime.setSessionStatus('authenticated');
     try {
-      await activeRuntime.initialize(BATTLE_HUB_URL);
+      await activeRuntime.initialize(resolveBattleHubUrl());
     } catch {
       activeRuntime.setSessionStatus('error');
     }
