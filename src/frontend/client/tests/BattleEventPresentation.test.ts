@@ -16,6 +16,7 @@ import {
   resolveBossSkillDisplayName,
   BOSS_ENRAGE_THRESHOLDS,
   isBossEnraged,
+  resolveDamagePresentationPhase,
   SWAP_REJECTION_MESSAGES,
   formatSwapRejection,
   CARD_CAST_REJECTION_MESSAGES,
@@ -623,6 +624,122 @@ describe('TASK-088 — BattleEventPresenter parser & formatter', () => {
     expect(parseInBattleEvent({ type: 'PetSkillCast' })).toBeNull();
     expect(parseInBattleEvent({ type: 'PetSkillCast', cardId: '' })).toBeNull();
     expect(parseInBattleEvent({ type: 'PetSkillCast', cardId: 123 })).toBeNull();
+  });
+
+  // ---------------------------------------------------------------------------
+  // TASK-245 — the combat phase classifier (GAME_RULES.md §17 steps 15–18c)
+  // ---------------------------------------------------------------------------
+
+  it('classifies one delivered damage instance into its ordered presentation phase', () => {
+    // The two MVP damage directions are distinguished from the delivered party
+    // strings alone (`SIGNALR_PROTOCOL.md` §3.2.14 item 3): the player's hit on
+    // the Boss and the Boss's response are two ordered phases.
+    expect(resolveDamagePresentationPhase('player', 'boss')).toBe('damage');
+    expect(resolveDamagePresentationPhase('boss', 'player')).toBe('retaliation');
+
+    // A direction the contract does not define is assigned to no phase: the
+    // classifier never guesses which side was hurt.
+    expect(resolveDamagePresentationPhase('player', 'player')).toBeNull();
+    expect(resolveDamagePresentationPhase('boss', 'boss')).toBeNull();
+    expect(resolveDamagePresentationPhase('third-party', 'boss')).toBeNull();
+    expect(resolveDamagePresentationPhase('boss', 'third-party')).toBeNull();
+    expect(resolveDamagePresentationPhase('', '')).toBeNull();
+  });
+
+  it('needs no member beyond the delivered source and target to classify a hit', () => {
+    // It is a presentation classification over exactly the two documented
+    // members, and it applies no damage: the same source/target pair always
+    // yields the same phase whatever the amount is.
+    const dealt = parseInBattleEvent({
+      type: 'DamageDealt',
+      source: 'player',
+      target: 'boss',
+      amount: 150,
+    });
+    expect(dealt).not.toBeNull();
+    expect(
+      resolveDamagePresentationPhase(
+        (dealt as PresentedDamageDealt).source,
+        (dealt as PresentedDamageDealt).target
+      )
+    ).toBe('damage');
+  });
+});
+
+describe('TASK-245 — the SignalR wire contract is unchanged (PD-3, PD-4)', () => {
+  /** The `src/`-relative socket types the frontend projection is built from. */
+  const runtimeEventsSource = readFileSync(
+    resolve(__dirname, '../src/game/runtime/GameRuntimeEvents.ts'),
+    'utf8'
+  );
+
+  it('keeps the ReceiveEvents envelope at exactly its three documented members', () => {
+    // SIGNALR_PROTOCOL.md §3: `ReceiveEvents(battleId, serverSequence, events[])`.
+    // The presentation timeline reads those three and nothing else, and it adds
+    // no member to the envelope.
+    const body =
+      /export interface BattleEventsEnvelope \{([\s\S]*?)\n\}/.exec(runtimeEventsSource)?.[1] ?? '';
+    // Member declarations are the interface's own two-space-indented lines; the
+    // `readonly unknown[]` in the `events` member's type is not one of them.
+    const members = [...body.matchAll(/^ {2}readonly (\w+)/gm)].map((match) => match[1]);
+
+    expect(members).toEqual(['battleId', 'serverSequence', 'events']);
+  });
+
+  it('keeps CascadeCreated at exactly { type, cascadeDepth }', () => {
+    // SIGNALR_PROTOCOL.md §3.2.7 item 4: the event carries no other member. The
+    // timeline keys its cascade phases on this value alone (PD-4).
+    const parsed = parseInBattleEvent({ type: 'CascadeCreated', cascadeDepth: 3 });
+    expect(parsed).toEqual({ type: 'CascadeCreated', cascadeDepth: 3 });
+    expect(Object.keys(parsed as object).sort()).toEqual(['cascadeDepth', 'type']);
+  });
+
+  it('introduces no per-pass board snapshot on any delivered event', () => {
+    // PD-4 / SIGNALR_PROTOCOL.md §3.1 item 2: intermediate board states are never
+    // sent, and no member may carry one. Extra members on the wire are not read.
+    expect(
+      parseInBattleEvent({
+        type: 'CascadeCreated',
+        cascadeDepth: 1,
+        board: [{ gemType: 'ATK' }],
+        cells: [1, 2, 3],
+      })
+    ).toEqual({ type: 'CascadeCreated', cascadeDepth: 1 });
+
+    expect(
+      parseInBattleEvent({
+        type: 'MatchCreated',
+        shape: 'Straight',
+        cells: [8, 9, 10],
+        gemType: 'ATK',
+        cascadeDepth: 1,
+        board: [{ gemType: 'ATK' }],
+      })
+    ).toEqual({
+      type: 'MatchCreated',
+      shape: 'Straight',
+      cells: [8, 9, 10],
+      gemType: 'ATK',
+      cascadeDepth: 1,
+    });
+  });
+
+  it('accepts no board-resolution message the discriminator does not define', () => {
+    // SIGNALR_PROTOCOL.md §3.2.2 item 2 / §8 item 7: no `BoardResolved`,
+    // `BoardUpdated`, `CascadeUpdated`, or per-pass message exists, so none is
+    // parsed — the set stays closed against events GAME_EVENTS.md §2 does not
+    // define.
+    for (const type of [
+      'BoardResolved',
+      'BoardUpdated',
+      'BoardCreated',
+      'CascadeUpdated',
+      'SpecialGemActivated',
+      'StatusEffectUpdated',
+      'BossHpChanged',
+    ]) {
+      expect(parseInBattleEvent({ type, board: [] }), `${type} must stay ignored`).toBeNull();
+    }
   });
 });
 

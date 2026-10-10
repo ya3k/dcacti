@@ -18,6 +18,7 @@ import type { GameRuntimeState } from '../src/state/GameRuntimeState';
 import type {
   BattleEventsEnvelope,
   RuntimeBattleState,
+  RuntimeBoard,
   RuntimeEventListener,
 } from '../src/game/runtime/GameRuntimeEvents';
 import type { CardResponse, PetResponse } from '../src/services/api/CollectionModels';
@@ -116,6 +117,17 @@ interface SceneHarnessOptions {
    * {@link createSceneHarness}'s `destroyedWriteAttempts` instead.
    */
   textsThrowWhenDestroyed?: boolean;
+  /**
+   * Whether the scene is given a tween manager.
+   *
+   * It defaults to `false`, which is the harness every existing suite was written
+   * against: with no `this.tweens` the scene writes every presentation value
+   * immediately and in delivered order, so a synchronous assertion sees the
+   * finished pass. A test that has to observe a *deferred*, sequential
+   * presentation — a held phase, a travelling gauge, a settling gem view —
+   * sets this to `true` and drives the queue with `flushTweens()`.
+   */
+  withTweens?: boolean;
 }
 
 function createSceneHarness(options: SceneHarnessOptions = {}) {
@@ -127,6 +139,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     relics = [],
     relicsFailure,
     textsThrowWhenDestroyed = true,
+    withTweens = false,
   } = options;
   const listeners = new Set<RuntimeEventListener>();
   const battleStateListeners = new Set<(state: RuntimeBattleState | null) => void>();
@@ -237,6 +250,67 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
   >();
   /** The state this harness's runtime currently reports. */
   let currentState = state;
+
+  /**
+   * Every tween the scene has created and not yet had completed.
+   *
+   * Phaser's own `TweenManager` cannot run headlessly here, so the scene gets a
+   * recorder instead: `add` queues a tween and `flushTweens` completes the queue
+   * in order. That is what makes a *deferred* presentation observable — a phase
+   * held until its pacing tween completes, a gauge travelling to its delivered
+   * value, a gem view settling into its cell — without a running clock. The
+   * recorder is only attached when `withTweens` is set, so every suite that
+   * predates the timeline keeps the immediate, tween-less behaviour it asserts.
+   */
+  interface RecordedTween {
+    readonly targets: ReadonlyArray<object>;
+    readonly props: Record<string, unknown>;
+    readonly duration: number;
+    readonly onUpdate?: () => void;
+    readonly onComplete?: () => void;
+  }
+
+  let pendingTweens: RecordedTween[] = [];
+  /** Every target a `killTweensOf` has been asked for, in order. */
+  const killedTweenTargets: object[] = [];
+
+  const asTargets = (targets: unknown): object[] => {
+    if (Array.isArray(targets)) {
+      return targets.filter((target): target is object => typeof target === 'object' && target !== null);
+    }
+
+    return typeof targets === 'object' && targets !== null ? [targets] : [];
+  };
+
+  const tweens = {
+    add: (config: Record<string, unknown>) => {
+      const { targets, duration, onUpdate, onComplete, ease, ...props } = config;
+      void ease;
+
+      pendingTweens.push({
+        targets: asTargets(targets),
+        props,
+        duration: typeof duration === 'number' ? duration : 0,
+        ...(typeof onUpdate === 'function' ? { onUpdate: onUpdate as () => void } : {}),
+        ...(typeof onComplete === 'function' ? { onComplete: onComplete as () => void } : {}),
+      });
+
+      return {};
+    },
+    killTweensOf: (target: unknown) => {
+      const list = asTargets(target);
+      for (const entry of list) {
+        killedTweenTargets.push(entry);
+      }
+
+      pendingTweens = pendingTweens.filter(
+        (tween) => !tween.targets.some((candidate) => list.includes(candidate))
+      );
+    },
+    killAll: () => {
+      pendingTweens = [];
+    },
+  };
 
   /**
    * Reports a technical runtime state transition to the subscribers the way
@@ -417,6 +491,18 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       const entry = { text: value, color: undefined as string | undefined, x, y, style };
       texts.push(entry);
       let alpha = 1;
+      let fontSize: number | undefined;
+      /**
+       * The object's live position.
+       *
+       * A persistent gem view is *moved* rather than recreated (TASK-245), so the
+       * position has to be readable after the fact — the board container holds the
+       * object itself, and `entry` above keeps the creation-time snapshot the
+       * existing layout tests assert on.
+       */
+      let liveX = x;
+      let liveY = y;
+      let scale = 1;
 
       const handlers: Array<() => void> = [];
       let interactive = false;
@@ -453,9 +539,28 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
 
       const obj = {
         kind: 'label' as const,
-        label: value,
-        x,
-        y,
+        /**
+         * The label currently drawn.
+         *
+         * It is a *live* read of the object's text, not the creation-time value: a
+         * persistent gem view is relabelled in place when the authoritative board
+         * changes (TASK-245), and the board container holds the object itself.
+         */
+        get label() {
+          return entry.text;
+        },
+        get x() {
+          return liveX;
+        },
+        set x(next: number) {
+          liveX = next;
+        },
+        get y() {
+          return liveY;
+        },
+        set y(next: number) {
+          liveY = next;
+        },
         get text() {
           return entry.text;
         },
@@ -467,10 +572,25 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         get style() {
           return style;
         },
+        /** The font size the scene last set, in pixels. */
+        get fontSize() {
+          return fontSize;
+        },
         get interactive() {
           return interactive;
         },
         setOrigin: () => obj,
+        /** Phaser's `GameObject#setPosition` — a persistent view is moved, not recreated. */
+        setPosition: (nextX: number, nextY: number) => {
+          liveX = nextX;
+          liveY = nextY;
+          return obj;
+        },
+        /** Phaser's `Text#setFontSize` — a Special Gem's label is drawn smaller. */
+        setFontSize: (next: number | string) => {
+          fontSize = typeof next === 'number' ? next : Number.parseInt(next, 10);
+          return obj;
+        },
         setText: (next: string) => {
           if (!writable(next)) {
             return obj;
@@ -495,6 +615,19 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         },
         get alpha() {
           return alpha;
+        },
+        set alpha(next: number) {
+          alpha = next;
+        },
+        setScale: (next: number) => {
+          scale = next;
+          return obj;
+        },
+        get scale() {
+          return scale;
+        },
+        set scale(next: number) {
+          scale = next;
         },
         setWordWrapWidth: () => obj,
         setInteractive: () => {
@@ -672,16 +805,22 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     const ctx = Object.assign(Object.create(scene), {
       // Phaser's injected scene event emitter (`this.events` / `sys.events`).
       events,
+      // Phaser's `scene.tweens` (`Systems#tweens` → `TweenManager`), attached
+      // only when the test asked for the recorded, test-driven queue.
+      ...(withTweens ? { tweens } : {}),
       scene: {
         start: (key: string, data?: unknown) => sceneStarted.push({ key, data }),
       },
       add: {
-        rectangle: (x = 0, y = 0, width = 0, height = 0) => {
+        rectangle: (x = 0, y = 0, width = 0, height = 0, fill = 0) => {
           const handlers: Array<() => void> = [];
           let interactive = false;
           let visible = true;
           let strokeWidth = 0;
           let strokeColor = 0;
+          let fillColor = fill;
+          let alpha = 1;
+          let scale = 1;
           const rect = {
             kind: 'tile',
             text: '',
@@ -694,6 +833,16 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
             },
             get strokeColor() {
               return strokeColor;
+            },
+            /**
+             * The colour currently drawn.
+             *
+             * A persistent gem view is *relabelled* in place when the
+             * authoritative board changes (TASK-245) rather than being destroyed
+             * and recreated, so the fill has to be readable after the fact.
+             */
+            get fill() {
+              return fillColor;
             },
             get interactive() {
               return interactive;
@@ -710,6 +859,11 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
               rect.height = nextHeight;
               return rect;
             },
+            /** Phaser's `Rectangle#setFillStyle` — the gem view's delivered Gem colour. */
+            setFillStyle: (next: number) => {
+              fillColor = next;
+              return rect;
+            },
             /** Phaser's `GameObject#setPosition`. */
             setPosition: (nextX: number, nextY: number) => {
               rect.x = nextX;
@@ -723,6 +877,26 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
             },
             get visible() {
               return visible;
+            },
+            setAlpha: (next: number) => {
+              alpha = next;
+              return rect;
+            },
+            get alpha() {
+              return alpha;
+            },
+            set alpha(next: number) {
+              alpha = next;
+            },
+            setScale: (next: number) => {
+              scale = next;
+              return rect;
+            },
+            get scale() {
+              return scale;
+            },
+            set scale(next: number) {
+              scale = next;
             },
             setStrokeStyle: (w = 1, c = 0x0b0f19) => {
               strokeWidth = w;
@@ -799,6 +973,46 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     emitBattleEvents: (envelope: BattleEventsEnvelope) => {
       for (const listener of battleEventListeners) {
         listener(envelope);
+      }
+    },
+    /**
+     * How many tweens the scene has created and not yet completed.
+     *
+     * It is the observable behind "no leaked tween": a presentation that
+     * finished, aborted, was superseded, or was torn down must leave none of its
+     * own pacing behind.
+     */
+    pendingTweenCount: () => pendingTweens.length,
+    /** The targets `killTweensOf` has been asked for, in order. */
+    killedTweenTargets,
+    /**
+     * Completes pending tweens in creation order, applying each tween's final
+     * property values and firing its `onUpdate` / `onComplete`.
+     *
+     * A completion may enqueue the next phase's tween, so the queue legitimately
+     * grows while it drains. `limit` caps how many tweens this call completes: a
+     * limit of `1` advances exactly one step of a presentation, which is how a
+     * test observes a *sequential* timeline phase by phase.
+     */
+    flushTweens: (limit = Number.POSITIVE_INFINITY) => {
+      let completed = 0;
+
+      while (pendingTweens.length > 0 && completed < limit) {
+        const tween = pendingTweens.shift() as RecordedTween;
+        completed++;
+
+        for (const target of tween.targets) {
+          for (const [key, value] of Object.entries(tween.props)) {
+            if (typeof value === 'number') {
+              (target as Record<string, unknown>)[key] = value;
+            } else if (typeof value === 'object' && value !== null && 'to' in value) {
+              (target as Record<string, unknown>)[key] = (value as { to: unknown }).to;
+            }
+          }
+        }
+
+        tween.onUpdate?.();
+        tween.onComplete?.();
       }
     },
     boardCells,
@@ -3465,6 +3679,744 @@ describe('BattleScene — Swap input (MATCH3_RULES.md §2, SIGNALR_PROTOCOL.md �
     expect(source).toContain('RUNTIME_ACTION_CARD_CAST');
     expect(source).toContain('RUNTIME_ACTION_PET_SKILL_CAST');
     expect(source).not.toContain("'GetBattleState'");
+  });
+});
+
+describe('BattleScene — cascade presentation timeline (TASK-245, GAME_EVENTS.md §1)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const GEM_NAMES = ['ATK', 'DEF', 'HP', 'POWER'];
+  const GEM_LABELS: Readonly<Record<string, string>> = {
+    ATK: 'ATK',
+    DEF: 'DEF',
+    HP: 'HP',
+    POWER: 'PWR',
+  };
+
+  /** One HUD gauge, read the way the scene's own `HudGauge` exposes it. */
+  interface GaugeView {
+    readonly width: number;
+    readonly height: number;
+    readonly fill: {
+      readonly x: number;
+      readonly y: number;
+      readonly width: number;
+      readonly height: number;
+      readonly visible: boolean;
+    };
+  }
+
+  /** A scene-owned presentation field, read the way the scene wrote it. */
+  function field<T>(ctx: object, name: string): T {
+    return (ctx as Record<string, T>)[name];
+  }
+
+  /**
+   * The scene's own input guard, evaluated against the context that owns its
+   * state.
+   *
+   * The harness runs a scene through a `this` context (the way Phaser's own
+   * Scene Systems do), so a scene method has to be invoked the same way to see
+   * what the scene actually wrote.
+   */
+  function inputLocked(scene: BattleScene, ctx: object): boolean {
+    return (
+      Object.getPrototypeOf(scene) as { isInputLocked(this: object): boolean }
+    ).isInputLocked.call(ctx);
+  }
+
+  /** The presentation phases the scene has played, in order. */
+  function playedPhases(ctx: object): string[] {
+    return [...field<string[]>(ctx, 'presentedPhases')];
+  }
+
+  /**
+   * A delivered 8 x 8 board, rotated by `shift` cells so a resolution's board is
+   * provably different from the one already on screen.
+   */
+  function deliveredBoard(shift = 0): RuntimeBoard {
+    return {
+      cells: Array.from({ length: 64 }, (_, index) => ({
+        gemType: GEM_NAMES[(index + shift) % GEM_NAMES.length],
+      })),
+    };
+  }
+
+  /** The labels the delivered board must be rendered as, in §1.0 index order. */
+  function expectedLabels(shift = 0): string[] {
+    return Array.from({ length: 64 }, (_, index) =>
+      GEM_LABELS[GEM_NAMES[(index + shift) % GEM_NAMES.length]]
+    );
+  }
+
+  /** The §1.0 cell index a board-local point sits on, or `null` outside the board. */
+  function cellIndexOf(x: number, y: number): number | null {
+    const column = Math.round((x - BOARD_ORIGIN_X - CELL_SIZE / 2) / BOARD_PITCH);
+    const row = Math.round((y - BOARD_ORIGIN_Y - CELL_SIZE / 2) / BOARD_PITCH);
+
+    if (row < 0 || row >= BOARD_COLUMNS || column < 0 || column >= BOARD_COLUMNS) {
+      return null;
+    }
+
+    return row * BOARD_COLUMNS + column;
+  }
+
+  /**
+   * The label rendered at each §1.0 cell, read from the view's own position.
+   *
+   * The board container's child order is the order the views were created in and
+   * never changes, while a committed Swap deliberately exchanges two views'
+   * cells — so the cell a label *shows* is the cell it sits on, not its slot in
+   * the container.
+   */
+  function labelsByCell(harness: ReturnType<typeof createSceneHarness>): string[] {
+    const labels: string[] = new Array(BOARD_COLUMNS * 8).fill('');
+
+    for (const cell of harness.boardCells) {
+      if (cell.kind !== 'label') {
+        continue;
+      }
+
+      const view = cell as unknown as { x: number; y: number; label?: string };
+      const index = cellIndexOf(view.x, view.y);
+
+      if (index !== null) {
+        labels[index] = view.label ?? '';
+      }
+    }
+
+    return labels;
+  }
+
+  function battleState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+    return {
+      battleId: 'battle-245',
+      turn: 1,
+      sequence: 0,
+      rngSeed: 42,
+      rngState: { state: 123456789, increment: 1 },
+      board: deliveredBoard(),
+      playerState: { combo: 0, matchCount: 0 },
+      petState: {
+        hp: 1000,
+        maxHp: 1000,
+        power: 0,
+        passiveId: 'xich-lang',
+        passiveProgress: { threshold: 5, current: 0 },
+        equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+        statusEffects: [],
+      },
+      bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
+      ...overrides,
+    };
+  }
+
+  /**
+   * A battle scene with a recorded, test-driven tween queue.
+   *
+   * The queue is what makes the timeline observable as a *sequence*: a phase's
+   * pacing tween is the only thing that advances it, so `flushTweens(1)` plays
+   * exactly one step.
+   */
+  function createTimelineBattle(state: RuntimeBattleState | null = battleState()) {
+    const harness = createSceneHarness({ battleState: state, withTweens: true });
+    const scene = new BattleScene();
+    const ctx = harness.context(scene, 'BattleScene');
+    runScene(scene, ctx, 'create');
+    return { harness, scene, ctx };
+  }
+
+  /**
+   * Submits one Swap whose acknowledgement is held open, which is the state a
+   * real request is in while its resolution's state push and event batch arrive
+   * (`SIGNALR_PROTOCOL.md` §3.1). The returned function settles it.
+   */
+  function submitHeldSwap(
+    harness: ReturnType<typeof createSceneHarness>,
+    from = 20,
+    to = 21
+  ): () => void {
+    let settle: (() => void) | null = null;
+
+    harness.setActionBehaviour(
+      () =>
+        new Promise<never>((resolve) => {
+          settle = () => resolve({ accepted: true, reason: null } as never);
+        })
+    );
+
+    tapCell(harness, from);
+    tapCell(harness, to);
+
+    return () => {
+      // The request's own acknowledgement, and then an ordinary runtime again —
+      // so a later gesture is recorded the way a real one is.
+      harness.setActionBehaviour(null);
+      settle?.();
+    };
+  }
+
+  /**
+   * Delivers one resolution exactly as the server does: the state push first,
+   * then the atomic event batch keyed by the post-resolution `serverSequence`
+   * (`SIGNALR_PROTOCOL.md` §3.1, `BattleHub.Swap`).
+   */
+  function deliverResolution(
+    harness: ReturnType<typeof createSceneHarness>,
+    next: RuntimeBattleState,
+    events: unknown[]
+  ): void {
+    harness.setBattleState(next);
+    harness.emitBattleEvents({
+      battleId: next.battleId,
+      serverSequence: next.sequence,
+      events,
+    });
+  }
+
+  /** A Swap that resolves through one Match and two Cascade passes. */
+  const CASCADE_BATCH: unknown[] = [
+    { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+    { type: 'GemMatched', cellIndex: 24, gemType: 'ATK' },
+    { type: 'GemMatched', cellIndex: 25, gemType: 'ATK' },
+    { type: 'CascadeCreated', cascadeDepth: 1 },
+    { type: 'MatchCreated', shape: 'Straight', cells: [32, 33, 34], gemType: 'DEF', cascadeDepth: 2 },
+    { type: 'GemMatched', cellIndex: 32, gemType: 'DEF' },
+    { type: 'CascadeCreated', cascadeDepth: 2 },
+    { type: 'MatchCreated', shape: 'Lt', cells: [40, 41, 42, 48], gemType: 'HP', cascadeDepth: 3 },
+    { type: 'GemMatched', cellIndex: 48, gemType: 'HP' },
+    { type: 'ComboChanged', combo: 3 },
+    { type: 'PowerChanged', delta: 10, power: 10, source: 'match' },
+    { type: 'DamageCalculated', base: 100, comboModifier: 1.5, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 150 },
+    { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+    { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
+    { type: 'PassiveCharged', passiveId: 'boss-hoa-long-rage', source: 'boss', sourceId: 'boss-hoa-long', progress: 1, threshold: 5 },
+    { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+    { type: 'DamageCalculated', base: 80, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 80 },
+    { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
+    { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
+  ];
+
+  const CASCADE_PHASES = [
+    'swap 20->21',
+    'match depth=1',
+    'cascade depth=1',
+    'cascade depth=2',
+    'settle',
+    'damage player->boss',
+    'retaliation boss->player',
+  ];
+
+  it('plays one ordered phase per delivered pass, in GAME_EVENTS.md §1 order', () => {
+    const { harness, ctx } = createTimelineBattle();
+
+    const settle = submitHeldSwap(harness);
+    deliverResolution(harness, battleState({ sequence: 1 }), CASCADE_BATCH);
+
+    // Played one phase at a time: every intermediate state is a prefix of the
+    // delivered order, so no phase is ever played early, late, or twice.
+    const snapshots: string[][] = [];
+    for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+      harness.flushTweens(1);
+      snapshots.push([...playedPhases(ctx)]);
+    }
+    settle();
+
+    for (const snapshot of snapshots) {
+      expect(snapshot).toEqual(CASCADE_PHASES.slice(0, snapshot.length));
+    }
+
+    const phases = [...playedPhases(ctx)];
+    expect(phases).toEqual(CASCADE_PHASES);
+    expect(snapshots.length).toBeGreaterThan(0);
+
+    // One phase per delivered `CascadeCreated`, carrying that event's own depth
+    // (`MATCH3_RULES.md` §4.2 item 2), in delivered order.
+    const deliveredDepths = CASCADE_BATCH.filter(
+      (event) => (event as { type: string }).type === 'CascadeCreated'
+    ).map((event) => (event as { cascadeDepth: number }).cascadeDepth);
+    expect(phases.filter((phase) => phase.startsWith('cascade '))).toEqual(
+      deliveredDepths.map((depth) => `cascade depth=${depth}`)
+    );
+
+    // `MatchCreated.cascadeDepth` and `CascadeCreated.cascadeDepth` are two
+    // different documented values for one pass and are never equated
+    // (`SIGNALR_PROTOCOL.md` §3.2.7 item 2): pass 2 delivers `MatchCreated`
+    // depth 2 next to `CascadeCreated` depth 1, and each phase reports its own
+    // event's value under its own name.
+    expect(phases.filter((phase) => phase === 'match depth=1')).toHaveLength(1);
+    expect(phases.filter((phase) => phase === 'cascade depth=1')).toHaveLength(1);
+    expect(phases.filter((phase) => phase === 'cascade depth=2')).toHaveLength(1);
+  });
+
+  it('renders the board from persistent gem views that a resolution never destroys', () => {
+    const { harness } = createTimelineBattle();
+    const tilesBefore = harness.boardCells.filter((cell) => cell.kind === 'tile');
+    const labelsBefore = harness.boardCells.filter((cell) => cell.kind === 'label');
+    expect(tilesBefore).toHaveLength(64);
+    expect(labelsBefore).toHaveLength(64);
+
+    const settle = submitHeldSwap(harness);
+    deliverResolution(
+      harness,
+      battleState({ sequence: 1, board: deliveredBoard(1) }),
+      CASCADE_BATCH.slice(11)
+    );
+    settle();
+    harness.flushTweens();
+
+    // The same 128 display objects, index for index: the resolution moved and
+    // relabelled the board's views instead of recreating all 64 cells.
+    const tilesAfter = harness.boardCells.filter((cell) => cell.kind === 'tile');
+    const labelsAfter = harness.boardCells.filter((cell) => cell.kind === 'label');
+    expect(harness.boardCells).toHaveLength(128);
+    tilesAfter.forEach((tile, index) => expect(tile).toBe(tilesBefore[index]));
+    labelsAfter.forEach((label, index) => expect(label).toBe(labelsBefore[index]));
+
+    // And every destination cell converged on the authoritative board.
+    expect(labelsByCell(harness)).toEqual(expectedLabels(1));
+  });
+
+  it('holds the awaited resolution’s board until its timeline presents it', () => {
+    const { harness, ctx } = createTimelineBattle();
+
+    const settle = submitHeldSwap(harness);
+    harness.setBattleState(battleState({ sequence: 1, board: deliveredBoard(1) }));
+
+    // The push arrived before its batch, so the board the timeline is about to
+    // present is not on screen yet.
+    expect(labelsByCell(harness)).toEqual(expectedLabels(0));
+
+    deliverResolution(harness, battleState({ sequence: 1, board: deliveredBoard(1) }), [
+      { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+    ]);
+    settle();
+    harness.flushTweens();
+
+    expect(playedPhases(ctx)).toEqual(['swap 20->21', 'match depth=1', 'settle']);
+    expect(labelsByCell(harness)).toEqual(expectedLabels(1));
+  });
+
+  it('converges a hold whose batch never matches it, rather than leaving it on screen', () => {
+    const { harness, ctx } = createTimelineBattle();
+
+    const settle = submitHeldSwap(harness);
+    harness.setBattleState(battleState({ sequence: 1, board: deliveredBoard(1) }));
+    expect(labelsByCell(harness)).toEqual(expectedLabels(0));
+
+    // A batch for a different resolution is not the hold's to release: the held
+    // board converges immediately, and no settle phase is built for it.
+    harness.emitBattleEvents({
+      battleId: 'battle-245',
+      serverSequence: 2,
+      events: [{ type: 'PowerChanged', delta: 5, power: 5, source: 'match' }],
+    });
+    settle();
+    harness.flushTweens();
+
+    expect(labelsByCell(harness)).toEqual(expectedLabels(1));
+    expect(playedPhases(ctx)).toEqual(['swap 20->21', 'feedback', 'settle']);
+  });
+
+  it('presents player damage and boss retaliation as two distinct ordered phases', async () => {
+    const { harness, ctx } = createTimelineBattle();
+
+    // The collection reads settle first, so the only text this resolution adds is
+    // its own combat feedback.
+    await flush();
+    const before = harness.texts.length;
+
+    const settle = submitHeldSwap(harness);
+    deliverResolution(
+      harness,
+      battleState({ sequence: 1 }),
+      CASCADE_BATCH.slice(11).filter((event) => {
+        const type = (event as { type: string }).type;
+        return type.startsWith('Damage') || type === 'BossSkillCast';
+      })
+    );
+    settle();
+    harness.flushTweens();
+
+    const phases = [...playedPhases(ctx)];
+    expect(phases.indexOf('damage player->boss')).toBeGreaterThan(-1);
+    expect(phases.indexOf('retaliation boss->player')).toBeGreaterThan(
+      phases.indexOf('damage player->boss')
+    );
+
+    // One floater per damage instance, over the panel of the party the delivered
+    // events name as the receiver (`SIGNALR_PROTOCOL.md` §3.2.14 item 3). The cast
+    // controls are re-rendered when the collection reads settle, so their
+    // captions are excluded.
+    const added = harness.texts
+      .slice(before)
+      .map((text) => text.text)
+      .filter((text) => !text.startsWith('Card: ') && !text.startsWith('Skill: '));
+    expect(added).toEqual(['-150', '-80']);
+  });
+
+  it('presents a Boss-only resolution as retaliation alone', () => {
+    const { harness, ctx } = createTimelineBattle();
+
+    const settle = submitHeldSwap(harness);
+    deliverResolution(harness, battleState({ sequence: 1 }), [
+      { type: 'DamageCalculated', base: 80, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 80 },
+      { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
+      { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
+    ]);
+    settle();
+    harness.flushTweens();
+
+    const combat = playedPhases(ctx).filter(
+      (phase) => phase.startsWith('damage ') || phase.startsWith('retaliation ')
+    );
+    expect(combat).toEqual(['retaliation boss->player']);
+  });
+
+  it('locks player input for the whole timeline and releases it on completion', async () => {
+    const { harness, scene, ctx } = createTimelineBattle();
+
+    const settle = submitHeldSwap(harness);
+    expect(harness.requestedActions).toHaveLength(0);
+
+    deliverResolution(harness, battleState({ sequence: 1 }), CASCADE_BATCH);
+    settle();
+    await flush();
+
+    // Locked while the timeline is still playing: a gesture changes nothing and
+    // submits nothing, and the acknowledgement has already settled.
+    expect(inputLocked(scene, ctx)).toBe(true);
+    tapCell(harness, 30);
+    tapCell(harness, 31);
+    await flush();
+    expect(harness.requestedActions).toHaveLength(0);
+
+    harness.flushTweens();
+
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(harness.pendingTweenCount()).toBe(0);
+    tapCell(harness, 30);
+    tapCell(harness, 31);
+    await flush();
+    expect(harness.requestedActions).toEqual([{ kind: 'Swap', fromCell: 30, toCell: 31 }]);
+  });
+
+  it('releases the guard and converges the board when a newer state supersedes playback', async () => {
+    const { harness, scene, ctx } = createTimelineBattle();
+
+    const settle = submitHeldSwap(harness);
+    deliverResolution(harness, battleState({ sequence: 1 }), CASCADE_BATCH);
+    settle();
+    await flush();
+
+    // Play only the first phase, then let a newer authoritative state arrive.
+    harness.flushTweens(1);
+    const played = [...playedPhases(ctx)];
+    expect(played.length).toBeLessThan(CASCADE_PHASES.length);
+    expect(inputLocked(scene, ctx)).toBe(true);
+
+    harness.setBattleState(battleState({ sequence: 2, board: deliveredBoard(2) }));
+
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(labelsByCell(harness)).toEqual(expectedLabels(2));
+    expect(harness.boardCells).toHaveLength(128);
+
+    // The abandoned timeline's pacing was cancelled with it — not left running
+    // towards a phase the newer state has already replaced.
+    expect(harness.killedTweenTargets).toContain(field<object>(ctx, 'phaseClock'));
+
+    // Playback is abandoned: flushing the queue cannot advance a timeline that
+    // no longer exists.
+    harness.flushTweens();
+    expect([...playedPhases(ctx)]).toEqual(played);
+    expect(harness.pendingTweenCount()).toBe(0);
+  });
+
+  it('supersedes an in-flight timeline with a newer batch, and ignores a duplicate one', async () => {
+    const { harness, ctx } = createTimelineBattle();
+
+    const settle = submitHeldSwap(harness);
+    deliverResolution(harness, battleState({ sequence: 1 }), CASCADE_BATCH);
+    settle();
+    await flush();
+
+    expect(playedPhases(ctx)).toEqual(['swap 20->21']);
+    harness.flushTweens(1);
+
+    // A newer batch supersedes the one playing: the abandoned timeline's
+    // remaining cascade phases are never played.
+    const newer = [
+      { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
+    ];
+    harness.emitBattleEvents({
+      battleId: 'battle-245',
+      serverSequence: 2,
+      events: newer,
+    });
+
+    // A duplicate of the batch now playing is recorded and presented no second
+    // time — one resolution is presented once.
+    const loggedBefore = field<string[]>(ctx, 'presentedEventsLog').length;
+    harness.emitBattleEvents({
+      battleId: 'battle-245',
+      serverSequence: 2,
+      events: newer,
+    });
+    expect(field<string[]>(ctx, 'presentedEventsLog').length).toBeGreaterThan(loggedBefore);
+
+    harness.flushTweens();
+
+    const phases = playedPhases(ctx);
+    expect(phases).not.toContain('cascade depth=1');
+    expect(phases).not.toContain('cascade depth=2');
+    expect(phases.filter((phase) => phase === 'retaliation boss->player')).toHaveLength(1);
+  });
+
+  it('releases the guard on a presentation error without throwing', async () => {    const { harness, scene, ctx } = createTimelineBattle();
+
+    const settle = submitHeldSwap(harness);
+    harness.setBattleState(battleState({ sequence: 1 }));
+    expect(() =>
+      harness.emitBattleEvents({
+        battleId: 'battle-245',
+        serverSequence: 1,
+        events: [
+          {
+            type: 'MatchCreated',
+            get shape() {
+              throw new Error('Exploding getter in presentation');
+            },
+          },
+        ],
+      } as unknown as BattleEventsEnvelope)
+    ).not.toThrow();
+
+    settle();
+    await flush();
+    harness.flushTweens();
+
+    expect(inputLocked(scene, ctx)).toBe(false);
+    // A malformed batch presents nothing, and the awaited resolution's board is
+    // still converged on the authoritative state.
+    expect(labelsByCell(harness)).toEqual(expectedLabels(0));
+  });
+
+  it('releases the guard and every tween on scene teardown mid-timeline', () => {
+    const { harness, scene, ctx } = createTimelineBattle();
+
+    const settle = submitHeldSwap(harness);
+    deliverResolution(harness, battleState({ sequence: 1 }), CASCADE_BATCH);
+    settle();
+
+    expect(inputLocked(scene, ctx)).toBe(true);
+
+    harness.shutdownScene(ctx);
+
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(harness.pendingTweenCount()).toBe(0);
+    expect(harness.boardCells).toHaveLength(0);
+  });
+
+  it('releases the guard and every tween on DESTROY too (TASK-204 lifecycle)', () => {
+    // Phaser takes a scene down through either event — `Systems#shutdown` emits
+    // SHUTDOWN and `#destroy` emits DESTROY — so a timeline in flight must be
+    // released by both, not just by the one a test happens to raise.
+    const { harness, scene, ctx } = createTimelineBattle();
+
+    const settle = submitHeldSwap(harness);
+    deliverResolution(harness, battleState({ sequence: 1 }), CASCADE_BATCH);
+    settle();
+
+    expect(inputLocked(scene, ctx)).toBe(true);
+
+    harness.destroyScene(ctx);
+
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(harness.pendingTweenCount()).toBe(0);
+    expect(harness.boardCells).toHaveLength(0);
+  });
+
+  it('animates the HP gauges to their delivered values instead of jumping', () => {
+    const { harness, ctx } = createTimelineBattle();
+
+    const boss = () => field<GaugeView>(ctx, 'bossHpGauge');
+    const pet = () => field<GaugeView>(ctx, 'petHpGauge');
+    expect(boss().fill.width).toBe(boss().width);
+    expect(pet().fill.width).toBe(pet().width);
+
+    const next = battleState({
+      sequence: 1,
+      bossState: { bossId: 'boss-hoa-long', hp: 1250, maxHp: 5000 },
+      petState: { ...battleState().petState, hp: 640 },
+    });
+
+    const settle = submitHeldSwap(harness);
+    deliverResolution(harness, next, CASCADE_BATCH.slice(11));
+    settle();
+
+    // The awaited resolution's HP pair is held with its board: the panels still
+    // show the previous delivered values while the timeline has not reached them.
+    const rendered = () => harness.texts.map((text) => text.text).join('\n');
+    expect(rendered()).toContain('5000 / 5000');
+    expect(rendered()).not.toContain('1250 / 5000');
+
+    // Drive the timeline to the damage phase: the delivered pair is now on the
+    // readout and the gauge is travelling, not jumped.
+    let guard = 0;
+    while (!rendered().includes('1250 / 5000') && guard < 500) {
+      harness.flushTweens(1);
+      guard++;
+    }
+
+    expect(rendered()).toContain('1250 / 5000');
+    expect(boss().fill.width).toBe(boss().width);
+
+    harness.flushTweens();
+
+    // It lands exactly on the delivered proportion — the same width a direct
+    // write would have produced.
+    expect(boss().fill.width).toBe(Math.round(boss().width * (1250 / 5000)));
+    expect(pet().fill.width).toBe(Math.round(pet().width * (640 / 1000)));
+    expect(rendered()).toContain('640 / 1000');
+  });
+
+  it('hands the outcome off after the preceding damage phases, and never loses it', () => {
+    const { harness } = createTimelineBattle();
+
+    const settle = submitHeldSwap(harness);
+    deliverResolution(harness, battleState({ sequence: 1 }), [
+      { type: 'DamageCalculated', base: 100, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 150 },
+      { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+      { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
+      { type: 'BattleWon', outcome: 'victory', finalBossHp: 0, finalPlayerHp: 850 },
+    ]);
+    settle();
+
+    // The damage phases come first: nothing has been handed off yet.
+    expect(harness.sceneStarted).toHaveLength(0);
+
+    harness.flushTweens();
+
+    expect(harness.sceneStarted).toEqual([
+      {
+        key: 'ResultScene',
+        data: {
+          outcome: 'victory',
+          finalBossHp: 0,
+          finalPlayerHp: 850,
+          battleId: 'battle-245',
+        },
+      },
+    ]);
+  });
+
+  it('still hands the outcome off when the timeline is superseded before it', () => {
+    const { harness } = createTimelineBattle();
+
+    const settle = submitHeldSwap(harness);
+    deliverResolution(harness, battleState({ sequence: 1 }), [
+      { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+      { type: 'BattleWon', outcome: 'victory', finalBossHp: 0, finalPlayerHp: 850 },
+    ]);
+    settle();
+
+    harness.flushTweens(1);
+    expect(harness.sceneStarted).toHaveLength(0);
+
+    // A newer authoritative state supersedes the playback, and the terminal
+    // outcome is still handed off — it can never be blocked by the timeline.
+    harness.setBattleState(battleState({ sequence: 2 }));
+
+    expect(harness.sceneStarted.map((started) => started.key)).toEqual(['ResultScene']);
+  });
+
+  it('plays no timeline and locks nothing for a rejected Swap', async () => {
+    const harness = createSceneHarness({ battleState: battleState(), withTweens: true });
+    const scene = new BattleScene();
+    const ctx = harness.context(scene, 'BattleScene');
+    runScene(scene, ctx, 'create');
+
+    harness.setActionResult({ accepted: false, reason: 'NO_MATCH_FROM_SWAP' });
+    tapCell(harness, 20);
+    tapCell(harness, 21);
+    await flush();
+
+    // A rejected Swap emits no events (`GAME_EVENTS.md` §1.2), so no batch — and
+    // therefore no timeline, no swap movement, and no lock.
+    expect(playedPhases(ctx)).toEqual([]);
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(labelsByCell(harness)).toEqual(expectedLabels(0));
+  });
+
+  it('ignores unknown events inside a batch without fabricating a phase', () => {
+    const { harness, scene, ctx } = createTimelineBattle();
+
+    harness.emitBattleEvents({
+      battleId: 'battle-245',
+      serverSequence: 1,
+      events: [
+        { type: 'TurnStarted', turn: 2 },
+        { type: 'UnknownFabricatedEvent', randomData: 1 },
+        { notAnEvent: true },
+      ],
+    });
+
+    expect(playedPhases(ctx)).toEqual([]);
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(harness.pendingTweenCount()).toBe(0);
+  });
+
+  it('converges every destination cell on the authoritative board, and computes nothing', () => {
+    // PD-1 / PD-8 / AGENTS.md §10: the interpolation is presentation only. Every
+    // destination cell shows the cell's own delivered content, and the pairing's
+    // result is never read back — the board the server delivered is the board on
+    // screen, cell for cell, with the four documented Gem types and nothing else.
+    const { harness } = createTimelineBattle();
+
+    const settle = submitHeldSwap(harness);
+    deliverResolution(
+      harness,
+      battleState({ sequence: 1, board: deliveredBoard(3) }),
+      CASCADE_BATCH
+    );
+    settle();
+    harness.flushTweens();
+
+    const labels = labelsByCell(harness);
+    expect(labels).toEqual(expectedLabels(3));
+    expect(new Set(labels)).toEqual(new Set(['ATK', 'DEF', 'HP', 'PWR']));
+
+    // The view count is invariant across a resolution: nothing was cleared,
+    // moved, or spawned by a client-side rule.
+    expect(harness.boardCells).toHaveLength(128);
+
+    // And the source holds no gravity, spawn, or match-resolution step.
+    const source = readFileSync(
+      resolve(__dirname, '../src/game/scenes/BattleScene.ts'),
+      'utf8'
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+    for (const forbidden of [
+      'Math.random',
+      'compaction',
+      'survivors',
+      'lowestCells',
+      'spawnGem',
+      'gravityDestination',
+      'collapseColumn',
+      'Math.abs(row',
+    ]) {
+      expect(source, `BattleScene must not reference "${forbidden}"`).not.toContain(forbidden);
+    }
+
+    // The pairing is within-column relative order and nothing else: the board is
+    // written column by column, top to bottom, with no cross-column pairing.
+    expect(source).toContain('for (let column = 0; column < BOARD_COLUMNS; column++)');
+    expect(source).toContain('for (let row = 0; row < BOARD_ROWS; row++)');
   });
 });
 

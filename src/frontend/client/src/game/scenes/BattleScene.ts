@@ -9,7 +9,7 @@ import type {
   BattleEventsEnvelope,
   RuntimeBattleState,
   RuntimeBoard,
-  RuntimeSpecialGem,
+  RuntimeCell,
 } from '../runtime/GameRuntimeEvents';
 import {
   RUNTIME_ACTION_SWAP,
@@ -25,12 +25,15 @@ import type {
 import type { InBattleServerEvent } from './BattleEventPresenter';
 import {
   CALLOUT_BOSS_COLOR,
+  DAMAGE_PARTY_BOSS,
+  DAMAGE_PARTY_PLAYER,
   formatCardCastRejection,
   formatGemCellLabel,
   formatInBattleEvent,
   formatSwapRejection,
   isBossEnraged,
   parseInBattleEvent,
+  resolveDamagePresentationPhase,
   resolveSpecialGemPresentation,
   selectBatchCallout,
 } from './BattleEventPresenter';
@@ -220,10 +223,41 @@ const POWER_LOSS_COLOR = '#fb7185';
  * They are read as delivered to decide *which panel* a damage floater is drawn
  * over. The mapping is presentation only: the scene applies no damage, derives
  * no HP from `amount`, and treats an unrecognized party as "no anchor here"
- * rather than guessing a side.
+ * rather than guessing a side. The pair itself is owned by
+ * `BattleEventPresenter`, so the party vocabulary has one spelling.
  */
-const PLAYER_PARTY = 'player';
-const BOSS_PARTY = 'boss';
+const PLAYER_PARTY = DAMAGE_PARTY_PLAYER;
+const BOSS_PARTY = DAMAGE_PARTY_BOSS;
+
+/**
+ * Presentation timeline pacing, in milliseconds — how long each phase of one
+ * resolution is held before the next begins.
+ *
+ * These are display timings and nothing else: no gameplay value, order, or
+ * outcome depends on them, and a scene without a tween manager (a unit harness)
+ * plays every phase immediately in the delivered order. They exist so a
+ * resolution reads as a sequence rather than one frame.
+ */
+const SWAP_PHASE_MS = 220;
+const MATCH_PHASE_MS = 320;
+const CASCADE_PHASE_MS = 320;
+const SETTLE_PHASE_MS = 340;
+const DAMAGE_PHASE_MS = 420;
+const FEEDBACK_PHASE_MS = 200;
+
+/**
+ * The refill interpolation (PD-1 / PD-8): how far above its destination cell a
+ * gem view enters from, and how long it takes to settle into it.
+ *
+ * The destination is always the cell the view is already paired with — its own
+ * authoritative cell. Nothing here decides *which* cell a gem belongs in; the
+ * offset is a cosmetic entrance for a content change, never a gravity result.
+ */
+const GEM_REFILL_ENTER = 12;
+const GEM_REFILL_MS = 220;
+
+/** How long an HP gauge takes to travel to its delivered value. */
+const GAUGE_TWEEN_MS = 250;
 
 /**
  * One HUD gauge: a bordered track plus the fill whose width is the *visual*
@@ -238,6 +272,75 @@ interface HudGauge {
   readonly y: number;
   readonly width: number;
   readonly height: number;
+  /**
+   * The fill width currently on screen, as the gauge tween drives it.
+   *
+   * It is the animated *proportion* `value / max` — the same presentation
+   * ratio the fill is resized from — and never a delivered number: it holds no
+   * HP, no Power, and no value any rule is evaluated against. It exists so a
+   * gauge change is a visible travel to the delivered value rather than an
+   * instant jump, and so a newer delivered value can retarget the same travel.
+   */
+  readonly fillState: { width: number };
+}
+
+/**
+ * One rendered board cell: the persistent tile + label pair a Gem is drawn
+ * with, plus the delivered content it currently shows.
+ *
+ * A view belongs to the cell it occupies — the PD-8 pairing's destination for
+ * it — and it survives every authoritative push, so a resolution moves and
+ * relabels the existing views instead of destroying and recreating 64 cells.
+ * `content` is a presentation key of the delivered `gemType` + `specialGem`
+ * currently rendered; it is compared only to decide whether a cell's content
+ * changed, and is never read as a gameplay value.
+ */
+interface GemView {
+  readonly tile: Phaser.GameObjects.Rectangle;
+  readonly label: Phaser.GameObjects.Text;
+  content: string;
+}
+
+/**
+ * One ordered phase of a resolution's presentation timeline.
+ *
+ * The phase list is built from one delivered `ReceiveEvents` batch
+ * (`SIGNALR_PROTOCOL.md` §3) and played in the batch's own order — the client
+ * never reorders, filters, or re-derives it. Each phase carries the delivered
+ * events it presents, so a phase is a *grouping* of what the server sent and
+ * never a second event stream.
+ */
+type PresentationPhaseKind =
+  | 'swap'
+  | 'match'
+  | 'cascade'
+  | 'settle'
+  | 'damage'
+  | 'retaliation'
+  | 'feedback'
+  | 'outcome';
+
+interface PresentationPhase {
+  readonly kind: PresentationPhaseKind;
+  /** The developer-diagnostic line this phase records when it plays. */
+  readonly detail: string;
+  /** How long the phase is held before the next one begins. */
+  readonly holdMs: number;
+  /** The delivered events this phase presents, in delivery order. */
+  readonly events: readonly InBattleServerEvent[];
+}
+
+/**
+ * The presentation key of one delivered cell: its Gem type and, when present,
+ * its Special Gem (`SIGNALR_PROTOCOL.md` §4.1 item 5, `GAME_STATE.md` §2.1.4).
+ *
+ * It answers "is what this cell renders the same as what the server now
+ * delivers" and nothing else — no rule, matchup, or gameplay meaning is read
+ * from either part.
+ */
+function gemContentKey(cell: RuntimeCell): string {
+  const special = cell.specialGem;
+  return `${cell.gemType}|${special?.type ?? ''}|${special?.orientation ?? ''}`;
 }
 
 /**
@@ -272,6 +375,16 @@ const GEM_PRESENTATION: Readonly<Record<string, { readonly color: number; readon
  * generate, fill, repair, validate, or re-derive the board, and it contains no
  * client-side randomness (SIGNALR_PROTOCOL.md §4 item 10, `GAME_RULES.md` §18,
  * ADR-001). Its only transformation is the documented index → screen mapping.
+ *
+ * **Presentation timeline.** One delivered `ReceiveEvents` batch is one resolved
+ * action (`SIGNALR_PROTOCOL.md` §3.1), and the scene presents it as one ordered
+ * timeline built from that batch in the batch's own order: the Swap, the
+ * Match/Gem feedback, one phase per delivered `CascadeCreated.cascadeDepth`, the
+ * gravity/refill interpolation onto the authoritative board, the player's damage
+ * phase, the Boss's retaliation, and the terminal outcome handoff. The player's
+ * input is locked for the whole of it (PD-2). Nothing in the timeline computes a
+ * gameplay value, and every value it presents — the board's content, the HP
+ * pairs, the damage numbers — is read from what the server delivered.
  *
  * **Swap input.** The scene implements the documented Match-3 interaction
  * (`MATCH3_RULES.md` §2 item 1): a tap on a cell selects it, and a tap on a
@@ -374,7 +487,13 @@ export class BattleScene extends Phaser.Scene {
   private castText: Phaser.GameObjects.Text | null = null;
   /** Visual layer for transient event highlights and floating combat text. */
   private feedbackLayer: Phaser.GameObjects.Container | null = null;
-  /** The drawn board cells, cleared and redrawn on each state push. */
+  /**
+   * The persistent board layer — the container the 64 gem views live in.
+   *
+   * It is created once per scene run and is the board's input target; the views
+   * inside it are persistent too, so an authoritative push moves and relabels
+   * them rather than emptying and refilling the container.
+   */
   private boardLayer: Phaser.GameObjects.Container | null = null;
   /** Interactive cast controls container for equipped cards and signature skill. */
   private castControlsLayer: Phaser.GameObjects.Container | null = null;
@@ -389,10 +508,96 @@ export class BattleScene extends Phaser.Scene {
   private swapPending = false;
   /** True while any action request (swap or cast) is in flight. */
   private actionInFlight = false;
-  /** True while an in-battle event presentation sequence is playing, locking player input. */
-  private presentationLocked = false;
+  /**
+   * The in-flight presentation timeline, or `null` when nothing is playing.
+   *
+   * This **is** the scene's input guard: it is set when a resolution's timeline
+   * starts and cleared when the timeline completes, is aborted (supersession or
+   * a presentation error), or the scene is taken down. A guard that reported
+   * "locked" for anything shorter than the whole timeline would let the player
+   * act against a board that is still being shown mid-resolution.
+   */
+  private presentationTimeline: PresentationPhase[] | null = null;
+  /** The next phase to play in the in-flight timeline. */
+  private presentationStep = 0;
+  /**
+   * The tween target the timeline's phase pacing runs on.
+   *
+   * It holds a presentation-only progress value — nothing reads it back, no
+   * gameplay value is in it — and killing its tween is how an aborted timeline
+   * stops advancing without disturbing any other animation.
+   */
+  private readonly phaseClock = { progress: 0 };
+  /** The `serverSequence` of the batch the in-flight timeline is presenting. */
+  private presentationSequence: number | null = null;
+  /** The battle the in-flight timeline belongs to. */
+  private presentationBattleId: string | null = null;
   /** Guard ensuring only the first terminal outcome event transitions to ResultScene. */
   private outcomeHandled = false;
+  /**
+   * The terminal outcome this resolution is handing off, or `null`.
+   *
+   * It is recorded as soon as the batch names one, so the handoff cannot be lost
+   * by a phase boundary: the timeline's last phase performs it, and a timeline
+   * that completes, errors, or is superseded performs it too. It is deliberately
+   * cleared by scene teardown — a scene that is going away navigates nowhere.
+   */
+  private pendingOutcomeHandoff: {
+    readonly outcome: string;
+    readonly finalBossHp: number;
+    readonly finalPlayerHp: number;
+    readonly battleId: string;
+  } | null = null;
+  /**
+   * The persistent gem views, indexed by the §1.0 cell each currently occupies.
+   *
+   * A resolution moves and relabels these; it never destroys and recreates them
+   * (the previous redraw did, which is exactly what left nothing to animate).
+   */
+  private gemViews: Array<GemView | null> = [];
+  /**
+   * The authoritative sequence the rendered board was last converged from, or
+   * `null` when no board has been rendered yet.
+   *
+   * It is the reference point for supersession and for deciding whether an
+   * arriving push belongs to a resolution whose batch is still to come.
+   */
+  private settledBoardSequence: number | null = null;
+  /** The battle the rendered board belongs to, so a new battle never pairs with it. */
+  private settledBattleId: string | null = null;
+  /**
+   * The authoritative sequence whose delivered values are being held back for
+   * its presentation timeline, or `null` when nothing is held.
+   *
+   * A resolution's state push is delivered *before* its event batch
+   * (`SIGNALR_PROTOCOL.md` §3.1: the write-back happens first, then the batch is
+   * sent), and the batch is what sequences the resolution. So while the client
+   * is awaiting the resolution of its own action, the board's content and the two
+   * HP panels' delivered values are held at their previous presentation and
+   * released by the timeline — by the settle phase for the board, by the damage
+   * and retaliation phases for the panels, and by the timeline's own end, an
+   * abort, or a newer push for anything left over. Nothing is ever computed: the
+   * held values are the delivered ones, released later rather than derived.
+   */
+  private heldSequence: number | null = null;
+  /**
+   * The two §1.0 cells of the most recent Swap request, while it is outstanding.
+   *
+   * It is the interaction record of the player's own gesture — the same two
+   * cells the request carried (`MATCH3_RULES.md` §2.1.1) — and it drives exactly
+   * one presentation: the swap movement at the head of the resolution's
+   * timeline. It is dropped when the request settles, so a rejected Swap (which
+   * emits no events at all, `GAME_EVENTS.md` §1.2) can never present a swap.
+   */
+  private pendingSwapCells: { readonly from: number; readonly to: number } | null = null;
+  /**
+   * Developer/testing log of the presentation phases played, in order.
+   *
+   * Like `getPresentedEvents()`, it is **not rendered**: it is the readable
+   * record that lets development and the test suite inspect the timeline's
+   * order. It holds no gameplay value and nothing reads it back.
+   */
+  private presentedPhases: string[] = [];
   /**
    * Developer/testing log of the events presented so far, in delivered order.
    *
@@ -454,6 +659,18 @@ export class BattleScene extends Phaser.Scene {
   create(): void {
     this.bossEnraged = false;
     this.currentBattleId = null;
+    // A reused scene instance must start its next battle from the initial
+    // presentation state: no timeline, no held values, no views carried over
+    // (`shutdown` already dropped them; this is the same reset made explicit for
+    // a scene that was never shut down).
+    this.releaseTimeline();
+    this.pendingOutcomeHandoff = null;
+    this.gemViews = [];
+    this.settledBoardSequence = null;
+    this.settledBattleId = null;
+    this.heldSequence = null;
+    this.pendingSwapCells = null;
+    this.presentedPhases = [];
     this.runtime = readRuntime(this);
     this.drawRuntimeShell();
     this.registerBoardInput();
@@ -540,18 +757,28 @@ export class BattleScene extends Phaser.Scene {
    *                        what stops a stale write, and the gauges are dropped
    *                        with them because a gauge is a pair of rectangles and
    *                        holds no value of its own
-   * tween-driven feedback  the combat callout's hold/fade and every floating
-   *                        number — `tweens.killAll()` releases them with the
-   *                        scene, so no presentation animation outlives it
-   * per-battle guards      selectedCell, swapPending, actionInFlight,
-   *                        presentationLocked, outcomeHandled — each describes the
-   *                        battle that just ended, so the NEXT battle must start
-   *                        from its initial value (`outcomeHandled` in
-   *                        particular: left true, it discards the next outcome)
-   * per-battle caches      presentedEventsLog, cardDefinitions, relicDefinitions,
-   *                        petCatalog and signatureSkills — presentation data of
-   *                        the ended battle; no authoritative value is in them, so
-   *                        nothing is lost by clearing them
+   * tween-driven feedback  the combat callout's hold/fade, every floating number,
+   *                        the phase pacing of an in-flight timeline and any
+   *                        refill travel — `tweens.killAll()` releases them with
+   *                        the scene, so no presentation animation outlives it
+   * per-battle guards      selectedCell, swapPending, actionInFlight, the
+   *                        in-flight presentation timeline, outcomeHandled — each
+   *                        describes the battle that just ended, so the NEXT
+   *                        battle must start from its initial value
+   *                        (`outcomeHandled` in particular: left true, it discards
+   *                        the next outcome; a timeline left in place would lock
+   *                        the next battle's input)
+   * held presentation      heldSequence and pendingSwapCells — the delivered
+   *                        values a timeline had not released yet and the swap
+   *                        pair it was going to present. Both are dropped without
+   *                        being applied: Phaser's DisplayList has already
+   *                        destroyed the objects they would be written to, and a
+   *                        scene that is going away presents nothing
+   * per-battle caches      presentedEventsLog, presentedPhases, gemViews,
+   *                        cardDefinitions, relicDefinitions, petCatalog and
+   *                        signatureSkills — presentation data of the ended
+   *                        battle; no authoritative value is in them, so nothing
+   *                        is lost by clearing them
    * synchronized copy      currentBattleState — a snapshot of what the server last
    *                        pushed; `create()` re-reads it from the runtime
    * ```
@@ -600,9 +827,20 @@ export class BattleScene extends Phaser.Scene {
     this.selectedCell = null;
     this.swapPending = false;
     this.actionInFlight = false;
-    this.presentationLocked = false;
+    // The in-flight timeline and everything it was holding are dropped, not
+    // applied: the engine has already destroyed the game objects they would be
+    // written to. Releasing the guard here is what keeps a scene that is stopped
+    // mid-resolution from coming back locked.
+    this.releaseTimeline();
+    this.pendingOutcomeHandoff = null;
+    this.gemViews = [];
+    this.settledBoardSequence = null;
+    this.settledBattleId = null;
+    this.heldSequence = null;
+    this.pendingSwapCells = null;
     this.outcomeHandled = false;
     this.presentedEventsLog = [];
+    this.presentedPhases = [];
     this.cardDefinitions.clear();
     this.relicDefinitions.clear();
     this.petCatalog.clear();
@@ -949,7 +1187,7 @@ export class BattleScene extends Phaser.Scene {
 
     const fill = this.add.rectangle(x + width / 2, y + height / 2, width, height, fillColor);
 
-    return { fill, x, y, width, height };
+    return { fill, x, y, width, height, fillState: { width } };
   }
 
   /**
@@ -966,8 +1204,17 @@ export class BattleScene extends Phaser.Scene {
    *   cannot produce `NaN` geometry or a phantom full bar;
    * - renders `value` above `max` as a full track, which is a display choice about
    *   the ratio only — no value is clamped in the payload or the HUD text.
+   *
+   * With `animate` and a tween manager present, the fill **travels** to the new
+   * proportion (`GAUGE_TWEEN_MS`, `Sine.easeOut`) instead of jumping, so a
+   * delivered HP change is a visible decrease rather than a discontinuity. The
+   * travel is retargeted — not stacked — when a newer value arrives mid-flight,
+   * and it lands exactly on `Math.round(width * proportion)`, the same width the
+   * direct write would have produced. A direct write also cancels any travel
+   * still in flight, so an interpolation can never overwrite the delivered
+   * proportion after the fact.
    */
-  private updateGauge(gauge: HudGauge | null, value: number, max: number): void {
+  private updateGauge(gauge: HudGauge | null, value: number, max: number, animate = false): void {
     if (!gauge) {
       return;
     }
@@ -976,6 +1223,41 @@ export class BattleScene extends Phaser.Scene {
     const proportion = Number.isFinite(ratio) ? Math.min(1, Math.max(0, ratio)) : 0;
     const fillWidth = Math.round(gauge.width * proportion);
 
+    if (!animate || !this.tweens) {
+      this.tweens?.killTweensOf(gauge.fillState);
+      gauge.fillState.width = fillWidth;
+      BattleScene.applyGaugeFill(gauge, fillWidth);
+      return;
+    }
+
+    if (fillWidth === gauge.fillState.width) {
+      return;
+    }
+
+    this.tweens.killTweensOf(gauge.fillState);
+    this.tweens.add({
+      targets: gauge.fillState,
+      width: fillWidth,
+      duration: GAUGE_TWEEN_MS,
+      ease: 'Sine.easeOut',
+      onUpdate: () => {
+        BattleScene.applyGaugeFill(gauge, Math.round(gauge.fillState.width));
+      },
+      onComplete: () => {
+        gauge.fillState.width = fillWidth;
+        BattleScene.applyGaugeFill(gauge, fillWidth);
+      },
+    });
+  }
+
+  /**
+   * Resizes one gauge's existing fill to a pixel width — the whole visual write.
+   *
+   * Nothing is stored, read back, or derived here: the width is the presentation
+   * proportion the caller already computed, and the delivered numbers are drawn
+   * as text beside the track regardless of what the fill shows mid-travel.
+   */
+  private static applyGaugeFill(gauge: HudGauge, fillWidth: number): void {
     gauge.fill.setVisible(fillWidth > 0);
     gauge.fill.setSize(fillWidth, gauge.height);
     gauge.fill.setPosition(gauge.x + fillWidth / 2, gauge.y + gauge.height / 2);
@@ -1015,13 +1297,38 @@ export class BattleScene extends Phaser.Scene {
    * nothing, and owns nothing: these are server-authoritative fields
    * (GAME_STATE.md §2.0.5.4, ADR-001). No HP is derived from a damage event and
    * no Power is reconstructed from `PowerChanged` (§4.3 item 15, §4.4 item 7).
+   *
+   * **What is presented now, and what is held for the timeline.** The server
+   * writes the resolution's state back and pushes it *before* it sends that
+   * resolution's event batch (`SIGNALR_PROTOCOL.md` §3.1). So while the client is
+   * awaiting the resolution of its own action, the two things the batch itself
+   * sequences — the board's content and the two HP panels' delivered values — are
+   * held at their previous presentation and released by the timeline
+   * (`heldSequence`): the settle phase converges the board, the damage and
+   * retaliation phases move the panels, and anything left over is converged by
+   * the timeline's end, an abort, or the next push. Every other delivered value
+   * (identity, HP readouts, Power, Passive, Status Effects, cast controls) is
+   * presented immediately, and a push that is not an awaited resolution's — a
+   * join snapshot, a resync, a repeated push — is presented immediately too.
+   *
+   * Holding is *timing*, never computation: the values released are exactly the
+   * delivered ones.
    */
   private renderBattleState(state: RuntimeBattleState | null): void {
     this.currentBattleState = state;
 
+    // A newer authoritative state supersedes playback: the timeline is dropped,
+    // its held values are converged, and the newer state is then presented
+    // immediately rather than being held for an older resolution's batch.
+    const superseded = this.isSupersededBy(state);
+    if (superseded) {
+      this.abortPresentation();
+    }
+
     if (state === null) {
-      this.renderBossHud(null);
-      this.renderPetHud(null, null);
+      this.heldSequence = null;
+      this.renderBossHud(null, false);
+      this.renderPetHud(null, null, false);
       this.renderPlayerHud(null);
       this.boardMessage = 'Preparing the board…';
       this.boardMessageText?.setText(this.boardMessage);
@@ -1030,15 +1337,98 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
-    this.renderBossHud(state);
-    this.renderPetHud(state, this.activePetId());
+    const hold = !superseded && this.shouldHoldResolution(state);
+    this.heldSequence = hold ? state.sequence : null;
+
+    this.renderBossHud(state, hold);
+    this.renderPetHud(state, this.activePetId(), hold);
     this.renderPlayerHud(state);
 
     this.boardMessage = '';
     this.boardMessageText?.setText(this.boardMessage);
 
-    this.renderBoard(state.board);
+    if (!hold) {
+      this.renderBoard(state.board);
+    }
+
     this.renderCastControls(state);
+  }
+
+  /**
+   * Whether an arriving authoritative state is newer than the timeline playing.
+   *
+   * Supersession is keyed on the delivered values alone: a state for a different
+   * battle, or one whose `sequence` has moved past the batch being presented
+   * (`GAME_STATE.md` §5 — the sequence is the post-resolution counter), is newer
+   * than what is on screen, so playback is abandoned in favour of it rather than
+   * continuing to present a resolution the server has already left behind.
+   */
+  private isSupersededBy(state: RuntimeBattleState | null): boolean {
+    if (this.presentationTimeline === null || state === null) {
+      return false;
+    }
+
+    if (state.battleId !== this.presentationBattleId) {
+      return true;
+    }
+
+    return this.presentationSequence !== null && state.sequence > this.presentationSequence;
+  }
+
+  /**
+   * Whether this push belongs to a resolution whose event batch is still to
+   * arrive, so its board and HP panels should wait for the timeline.
+   *
+   * Three delivered/client-local facts must line up, and each rules out a case
+   * that must be presented immediately:
+   *
+   * ```text
+   * an action is in flight   the client is awaiting the resolution of an action
+   *                          it submitted — the only situation in which a batch
+   *                          for this state is known to be coming
+   *                          (SIGNALR_PROTOCOL.md §2, §3.1); a join push, a
+   *                          resync snapshot (`§7`) and any unsolicited push are
+   *                          therefore never held
+   * same battle              a new battle's first state is a fresh board, not a
+   *                          transition of the one on screen
+   * exactly the next         `sequence` is the post-resolution counter and steps
+   *   sequence               by one per resolved action (`GAME_STATE.md` §5), so
+   *                          `settled + 1` is this resolution and anything else
+   *                          is a jump (recovery, a missed batch) that must
+   *                          resynchronize by converging, never by replaying
+   *                          (ADR-008)
+   * ```
+   */
+  private shouldHoldResolution(state: RuntimeBattleState): boolean {
+    if (!this.swapPending && !this.actionInFlight) {
+      return false;
+    }
+
+    if (this.settledBoardSequence === null || this.settledBattleId !== state.battleId) {
+      return false;
+    }
+
+    return state.sequence === this.settledBoardSequence + 1;
+  }
+
+  /**
+   * Presents the Boss's delivered `hp / maxHp` — the readout and its gauge
+   * together.
+   *
+   * Both are the same two delivered numbers (`SIGNALR_PROTOCOL.md` §4.4), so they
+   * move as one: the text is written verbatim and the gauge travels to the
+   * delivered proportion. Nothing is derived — the pair is not clamped, and
+   * neither number is computed from a damage event.
+   */
+  private presentBossHp(state: RuntimeBattleState, animate = true): void {
+    this.bossHpText?.setText(`${state.bossState.hp} / ${state.bossState.maxHp}`);
+    this.updateGauge(this.bossHpGauge, state.bossState.hp, state.bossState.maxHp, animate);
+  }
+
+  /** Presents the active Pet's delivered `hp / maxHp` — the readout and its gauge. */
+  private presentPetHp(state: RuntimeBattleState, animate = true): void {
+    this.petHpText?.setText(`${state.petState.hp} / ${state.petState.maxHp}`);
+    this.updateGauge(this.petHpGauge, state.petState.hp, state.petState.maxHp, animate);
   }
 
   /**
@@ -1059,8 +1449,12 @@ export class BattleScene extends Phaser.Scene {
    * only thing the pair is turned into, and it is a ratio of presentation — the
    * full-HP, zero-HP and out-of-range cases all keep the delivered numbers on
    * screen unchanged (`updateGauge`).
+   *
+   * `hold` only decides *when* the pair is presented (see `renderBattleState`):
+   * the identity and the Enrage state are never held, because they are the
+   * battle's own state rather than the damage this resolution deals.
    */
-  private renderBossHud(state: RuntimeBattleState | null): void {
+  private renderBossHud(state: RuntimeBattleState | null, hold: boolean): void {
     if (!this.bossNameText || !this.bossHpText) {
       return;
     }
@@ -1091,8 +1485,10 @@ export class BattleScene extends Phaser.Scene {
     const displayName = resolveBossDisplayName(bossId);
 
     this.bossNameText.setText(this.bossEnraged ? `${displayName} [ENRAGED]` : displayName);
-    this.bossHpText.setText(`${state.bossState.hp} / ${state.bossState.maxHp}`);
-    this.updateGauge(this.bossHpGauge, state.bossState.hp, state.bossState.maxHp);
+
+    if (!hold) {
+      this.presentBossHp(state);
+    }
   }
 
   /**
@@ -1132,8 +1528,17 @@ export class BattleScene extends Phaser.Scene {
    * expand no contract. Nothing is derived: no Passive is charged, no Threshold is
    * evaluated, no progress is reset (§4.3 item 9), and no Status Effect is applied,
    * refreshed, decremented, expired, or removed (§4.3 item 14).
+   *
+   * `hold` only decides *when* the delivered `hp / maxHp` pair is presented (see
+   * `renderBattleState`); the Pet's identity, Power, Passive progress and Status
+   * Effects are never held, because they are not the damage this resolution deals
+   * and the timeline presents no phase for them.
    */
-  private renderPetHud(state: RuntimeBattleState | null, petId: string | null): void {
+  private renderPetHud(
+    state: RuntimeBattleState | null,
+    petId: string | null,
+    hold: boolean
+  ): void {
     if (!this.petNameText || !this.petHpText || !this.petPowerText) {
       return;
     }
@@ -1152,8 +1557,10 @@ export class BattleScene extends Phaser.Scene {
     }
 
     this.petNameText.setText(resolvePetDisplayName(petId, this.petCatalog));
-    this.petHpText.setText(`${state.petState.hp} / ${state.petState.maxHp}`);
-    this.updateGauge(this.petHpGauge, state.petState.hp, state.petState.maxHp);
+
+    if (!hold) {
+      this.presentPetHp(state);
+    }
 
     // The `0–100` range is the documented invariant of GAME_RULES.md §12, shown as
     // a static scale around the delivered value. No `maxPower` exists on the wire
@@ -1311,7 +1718,7 @@ export class BattleScene extends Phaser.Scene {
         this.signatureSkills.set(pet.signatureSkill.cardId, pet.signatureSkill);
       }
       if (this.currentBattleState) {
-        this.renderPetHud(this.currentBattleState, this.activePetId());
+        this.renderPetHud(this.currentBattleState, this.activePetId(), this.heldSequence !== null);
         this.renderCastControls(this.currentBattleState);
       }
     } catch {
@@ -1442,92 +1849,200 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
-   * Draws the authoritative board as 8 rows x 8 columns of 64 cells.
+   * Applies the authoritative board to the persistent gem views — the **PD-8
+   * interpolation** from the previously rendered board to the authoritative
+   * board.
    *
-   * The cells are rendered in the server's row-major order
-   * (`MATCH3_RULES.md` §1.0): cell at index `i` is drawn at
-   * `row = floor(i / 8)`, `column = i % 8`. The scene performs no other
-   * transformation and produces no cell value of its own — every rendered Gem
-   * comes from the payload (SIGNALR_PROTOCOL.md §4 item 10).
+   * The views are paired with the destination cells by **within-column relative
+   * order**: for each column, top to bottom, the view occupying the i-th
+   * destination cell pairs with the i-th destination cell of that column, and
+   * each is placed there showing that cell's delivered content. The cells are
+   * addressed in the board's only coordinate convention (`MATCH3_RULES.md` §1.0):
+   * cell at index `i` is `row = floor(i / 8)`, `column = i % 8`.
+   *
+   * **What the pairing is, and what it is not.** It is a *visual heuristic* for
+   * deciding which already-rendered sprite travels to which cell, and explicitly
+   * **not** a server-guaranteed Gem identity mapping — the wire carries no Gem
+   * instance identity, so none exists to honour. What it does guarantee is what
+   * the client can honestly guarantee: every destination cell ends up showing
+   * its own delivered content (`GAME_STATE.md` §2.1, `SIGNALR_PROTOCOL.md` §4.1
+   * item 5), so the board converges on the authoritative board exactly.
+   *
+   * **What this never does** (`PD-1`, `PD-8`, `AGENTS.md` §10):
+   *
+   * ```text
+   * no gravity destination   `MATCH3_RULES.md` §4.4's compaction rule is not
+   *                          applied to compute which cell a Gem falls to — in
+   *                          particular survivors are never anchored to the
+   *                          lowest cells of a column, which would be exactly
+   *                          that rule
+   * no spawned identity      no Gem identity is inferred or generated; every
+   *                          written value is `board.cells[index]` as delivered
+   * no match / cascade       nothing is detected, cleared, or evaluated
+   * no intermediate board    no per-pass frame is constructed; the only board
+   *                          this can converge on is the delivered one
+   * ```
+   *
+   * `animate` plays the transition — a Gem whose delivered content differs from
+   * what its cell rendered enters from just above that same cell, whose
+   * destination is therefore still read from the board rather than computed —
+   * while `false` writes in place, which is what a fresh board, a recovery
+   * snapshot, and a convergence after an abort use.
    */
-  private renderBoard(board: RuntimeBoard | null): void {
+  private renderBoard(board: RuntimeBoard | null, animate = false): void {
     if (!this.boardLayer) {
       return;
     }
 
-    // Redraw from scratch: the layer only ever shows the latest server state.
-    this.boardLayer.removeAll(true);
-
     if (board === null) {
+      // No authoritative board at all: there is nothing to converge on, so the
+      // views are released rather than left showing a battle that is over. The
+      // layer holds nothing but the views.
+      this.gemViews = [];
+      this.boardLayer.removeAll(true);
+      this.settledBoardSequence = null;
+      this.settledBattleId = null;
       this.boardMessageText?.setText(this.boardMessage);
       return;
     }
 
     const cells = board.cells;
 
-    this.boardMessageText?.setText(this.boardMessage);
+    // No view may be left animating towards a position this write overrides.
+    this.killGemViewTweens();
 
-    for (let index = 0; index < cells.length; index++) {
-      // The board's only coordinate convention (MATCH3_RULES.md §1.0). This is
-      // the presentation mapping from that convention to screen space.
-      const row = Math.floor(index / BOARD_COLUMNS);
-      const column = index % BOARD_COLUMNS;
+    // The views are created in §1.0 index order, so the layer's child order stays
+    // "cell 0's pair, cell 1's pair, …" — the order a renderer draws in, and the
+    // order the board's own presentation is read in.
+    for (let index = 0; index < BOARD_ROWS * BOARD_COLUMNS; index++) {
+      const cell = cells[index];
 
-      if (row >= BOARD_ROWS || column >= BOARD_COLUMNS) {
-        // Defensive: a payload with more than 64 cells would otherwise draw
-        // outside the board. Such a payload is rejected by the runtime before it
-        // reaches the scene, so this is unreachable in practice.
-        break;
+      if (cell === undefined || this.gemViews[index]) {
+        // A payload carrying fewer cells than the documented 8 x 8 board cannot
+        // place the cells it does not carry; such a payload is rejected by the
+        // runtime before it reaches the scene.
+        continue;
       }
 
-      // Each delivered cell carries its Gem type and, optionally, the Special Gem
-      // at that cell (SIGNALR_PROTOCOL.md §4.1 item 5, GAME_STATE.md §2.1.4).
-      // The scene renders the authoritative specialGem metadata (LineClear Horizontal,
-      // LineClear Vertical, Burst, Area) using distinct visual indicators while
-      // preserving the underlying gem label, color, and child count.
-      this.drawCell(row, column, cells[index].gemType, cells[index].specialGem);
+      this.gemViews[index] = this.createGemView(cell);
     }
+
+    // The PD-8 pairing: within each column, top to bottom, each view is paired
+    // with the destination cell it occupies.
+    for (let column = 0; column < BOARD_COLUMNS; column++) {
+      for (let row = 0; row < BOARD_ROWS; row++) {
+        const index = row * BOARD_COLUMNS + column;
+        const cell = cells[index];
+        const view = this.gemViews[index];
+
+        if (cell === undefined || !view) {
+          continue;
+        }
+
+        const changed = view.content !== gemContentKey(cell);
+        if (changed) {
+          this.drawGemContent(view, cell);
+        }
+
+        this.placeGemView(view, index, animate && changed);
+      }
+    }
+
+    this.settledBoardSequence = this.currentBattleState?.sequence ?? null;
+    this.settledBattleId = this.currentBattleState?.battleId ?? null;
+    this.boardMessageText?.setText(this.boardMessage);
   }
 
-  /** Draws one board cell at its documented (row, column) position. */
-  private drawCell(
-    row: number,
-    column: number,
-    gemName: string,
-    specialGem?: RuntimeSpecialGem | null
-  ): void {
-    if (!this.boardLayer) {
-      return;
-    }
-
-    const x = BOARD_ORIGIN_X + column * (CELL_SIZE + CELL_GAP) + CELL_SIZE / 2;
-    const y = BOARD_ORIGIN_Y + row * (CELL_SIZE + CELL_GAP) + CELL_SIZE / 2;
-
-    // An unrecognised Gem name is drawn as an inert placeholder. The scene never
-    // substitutes a valid-looking Gem: doing so would fabricate authoritative
-    // board content (SIGNALR_PROTOCOL.md §4 item 10).
-    const presentation = GEM_PRESENTATION[gemName] ?? { color: 0x475569, label: '?' };
-    const specialPresentation = resolveSpecialGemPresentation(specialGem);
-
-    const strokeWidth = specialPresentation ? specialPresentation.strokeWidth : 1;
-    const strokeColor = specialPresentation ? specialPresentation.strokeColor : 0x0b0f19;
-
-    const tile = this.add
-      .rectangle(x, y, CELL_SIZE, CELL_SIZE, presentation.color)
-      .setStrokeStyle(strokeWidth, strokeColor);
-
-    const cellLabel = formatGemCellLabel(presentation.label, specialGem);
-
+  /**
+   * Creates one cell's persistent view: the tile and its label, drawn at the
+   * cell's own position and added to the board layer in §1.0 index order, so the
+   * layer's child order stays "cell 0's pair, cell 1's pair, …".
+   */
+  private createGemView(cell: RuntimeCell): GemView {
+    const tile = this.add.rectangle(0, 0, CELL_SIZE, CELL_SIZE, GEM_PRESENTATION[cell.gemType]?.color ?? 0x475569);
     const label = this.add
-      .text(x, y, cellLabel, {
+      .text(0, 0, '', {
         fontFamily: 'system-ui, sans-serif',
-        fontSize: specialPresentation ? '11px' : '14px',
+        fontSize: '14px',
         color: '#0b0f19',
         fontStyle: 'bold',
       })
       .setOrigin(0.5);
 
-    this.boardLayer.add([tile, label]);
+    this.boardLayer?.add([tile, label]);
+
+    const view: GemView = { tile, label, content: '' };
+    this.drawGemContent(view, cell);
+
+    return view;
+  }
+
+  /**
+   * Writes one delivered cell's content onto a view: its Gem colour, its
+   * Special Gem styling, and its label.
+   *
+   * Every value comes from the delivered cell. An unrecognised Gem name is drawn
+   * as an inert placeholder — the scene never substitutes a valid-looking Gem,
+   * because that would fabricate authoritative board content
+   * (`SIGNALR_PROTOCOL.md` §4 item 10).
+   */
+  private drawGemContent(view: GemView, cell: RuntimeCell): void {
+    const presentation = GEM_PRESENTATION[cell.gemType] ?? { color: 0x475569, label: '?' };
+    const specialPresentation = resolveSpecialGemPresentation(cell.specialGem);
+
+    view.tile.setFillStyle(presentation.color);
+    view.tile.setStrokeStyle(
+      specialPresentation ? specialPresentation.strokeWidth : 1,
+      specialPresentation ? specialPresentation.strokeColor : 0x0b0f19
+    );
+    view.label.setFontSize(specialPresentation ? 11 : 14);
+    view.label.setText(formatGemCellLabel(presentation.label, cell.specialGem));
+
+    view.content = gemContentKey(cell);
+  }
+
+  /**
+   * Places one view on its paired destination cell — the cell it occupies in the
+   * rendered board, which is the cell whose delivered content it now shows.
+   *
+   * With `animate`, the view enters from `GEM_REFILL_ENTER` pixels above *that
+   * same cell*: the destination is read from the board, never computed, so this
+   * is a settle into a cell rather than a gravity fall between cells.
+   */
+  private placeGemView(view: GemView, index: number, animate: boolean): void {
+    const { x, y } = BattleScene.cellCoordinates(index);
+
+    if (!animate || !this.tweens) {
+      view.tile.setPosition(x, y);
+      view.label.setPosition(x, y);
+      return;
+    }
+
+    view.tile.setPosition(x, y - GEM_REFILL_ENTER);
+    view.label.setPosition(x, y - GEM_REFILL_ENTER);
+
+    this.tweens.add({
+      targets: [view.tile, view.label],
+      y,
+      duration: GEM_REFILL_MS,
+      ease: 'Sine.easeOut',
+    });
+  }
+
+  /** Releases every view tween, so a position write is never fought by one. */
+  private killGemViewTweens(): void {
+    if (!this.tweens) {
+      return;
+    }
+
+    for (const view of this.gemViews) {
+      if (!view) {
+        continue;
+      }
+
+      this.tweens.killTweensOf(view.tile);
+      this.tweens.killTweensOf(view.label);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1543,14 +2058,15 @@ export class BattleScene extends Phaser.Scene {
    * (`MATCH3_RULES.md` §1.0). A tap that falls in a gap between cells, or
    * outside the board, resolves to no cell and is ignored.
    *
-   * The handler is registered **at most once**. The board is redrawn on every
-   * authoritative push (`renderBoard` → `removeAll(true)`), and the scene can be
-   * re-entered, so a registration that assumed "one call per draw" would
-   * accumulate listeners and submit one gesture's Swap several times. Detaching
-   * the event's listeners before attaching makes the call idempotent without
-   * changing the lifecycle pattern — no new abstraction is introduced, and the
-   * board layer is the only object that listens here, so removing this event's
-   * listeners cannot detach anyone else's handler.
+   * The handler is registered **at most once**. The board layer's own views are
+   * updated on every authoritative push (`renderBoard`) but the layer is created
+   * once and never emptied while a board exists, and the scene can be re-entered,
+   * so a registration that assumed "one call per draw" would accumulate listeners
+   * and submit one gesture's Swap several times. Detaching the event's listeners
+   * before attaching makes the call idempotent without changing the lifecycle
+   * pattern — no new abstraction is introduced, and the board layer is the only
+   * object that listens here, so removing this event's listeners cannot detach
+   * anyone else's handler.
    */
   private registerBoardInput(): void {
     if (!this.boardLayer) {
@@ -1574,8 +2090,8 @@ export class BattleScene extends Phaser.Scene {
    * point is not inside a cell.
    *
    * The board layer is a container positioned at the scene origin, so a pointer
-   * event's local coordinates are already the same space `drawCell` draws in —
-   * the mapping below is the exact inverse of `drawCell`'s
+   * event's local coordinates are already the same space the gem views are drawn
+   * in — the mapping below is the exact inverse of `cellCoordinates`'
    * `x = BOARD_ORIGIN_X + column * pitch + CELL_SIZE / 2`
    * (`MATCH3_RULES.md` §1.0 provides the index; this is only its presentation
    * inverse).
@@ -1658,6 +2174,12 @@ export class BattleScene extends Phaser.Scene {
    * (`SIGNALR_PROTOCOL.md` §3.1, §4). On `accepted: false` nothing is mutated
    * locally and nothing is retried automatically — the machine-readable `reason`
    * is shown as feedback only (`MATCH3_RULES.md` §2.1.5, §5 item 2).
+   *
+   * The two requested cells are kept while the request is outstanding
+   * (`pendingSwapCells`). They are the player's own gesture, recorded so the
+   * resolution's timeline can present the Swap itself as its first phase, and they
+   * are dropped as soon as the request settles — so a rejection, which emits no
+   * events at all (`GAME_EVENTS.md` §1.2), can present no swap movement.
    */
   private async submitSwap(fromCell: number, toCell: number): Promise<void> {
     if (this.isInputLocked()) {
@@ -1671,6 +2193,7 @@ export class BattleScene extends Phaser.Scene {
 
     this.swapPending = true;
     this.actionInFlight = true;
+    this.pendingSwapCells = { from: fromCell, to: toCell };
     this.renderSwapStatus();
 
     try {
@@ -1694,6 +2217,7 @@ export class BattleScene extends Phaser.Scene {
     } finally {
       this.swapPending = false;
       this.actionInFlight = false;
+      this.pendingSwapCells = null;
     }
   }
 
@@ -1861,10 +2385,22 @@ export class BattleScene extends Phaser.Scene {
   /**
    * Handles server-authoritative battle events delivered via the runtime port.
    *
-   * 1. Outcome branch first (TASK-087): when the envelope contains BattleWon or BattleLost,
-   *    transitions immediately to ResultScene without delay.
-   * 2. In-battle presentation: presents the non-outcome event types in exact array order
-   *    while holding the scene-local input guard.
+   * One delivered batch is one resolved action, and it is presented as one
+   * ordered timeline (`playEventBatch`). The steps here are all synchronous, so
+   * what this scene has *received* never lags behind the batch:
+   *
+   * ```text
+   * parse + log     every event is parsed and its developer-diagnostic line
+   *                 appended to `presentedEventsLog` in delivered order, before
+   *                 anything is animated (TASK-209 §5)
+   * outcome         a terminal BattleWon / BattleLost is recorded as the
+   *                 timeline's handoff — it is the timeline's last phase and it
+   *                 is also performed by any path that ends the timeline, so
+   *                 the handoff can never be lost behind a phase boundary
+   * hold released   values a previous push held for *this* batch, if it is not
+   *                 this batch's resolution, are converged first
+   * timeline        the phases are built from the batch as delivered and played
+   * ```
    *
    * It performs no result calculation: the server is authoritative for the
    * outcome and terminal HP values (GAME_RULES.md §18, ADR-001, AGENTS.md §10).
@@ -1882,47 +2418,47 @@ export class BattleScene extends Phaser.Scene {
 
     const outcome = BattleScene.findOutcomeEvent(envelope.events);
     if (outcome) {
-      this.outcomeHandled = true;
-      this.scene.start('ResultScene', { ...outcome, battleId: envelope.battleId });
-      return;
+      this.pendingOutcomeHandoff = { ...outcome, battleId: envelope.battleId };
     }
 
-    this.presentationLocked = true;
     try {
-      this.presentEventBatch(envelope.events);
-    } catch (error) {
-      this.tweens?.killAll();
-      this.presentationLocked = false;
-      return;
+      this.playEventBatch(envelope);
+    } catch {
+      // A malformed batch is presentation feedback, not a battle fact: the
+      // timeline is abandoned, the guard is released, and the values it was
+      // holding are converged on the authoritative state
+      // (`SIGNALR_PROTOCOL.md` §8.3, `AGENTS.md` §10).
+      this.abortPresentation();
     }
   }
 
   /**
-   * Presents a batch of in-battle server events in the exact array order received.
+   * Builds and plays one batch's presentation timeline.
    *
-   * Three things happen, and all three are **presentation only** (`GAME_RULES.md`
-   * §18, ADR-001):
+   * Everything that must be true *immediately* happens here, synchronously, so
+   * that "what the scene received" is never waiting on an animation:
    *
    * ```text
    * 1. every event is parsed and its developer-diagnostic line recorded in
    *    `presentedEventsLog` — for development and tests, never rendered
    *    (TASK-209 §5);
-   * 2. the batch's damage and Power movement is drawn as transient floating
-   *    numbers, anchored on the side the delivered event names (`damageAnchor`);
-   * 3. at most ONE player-facing callout is shown for the whole batch — the most
-   *    important one selectBatchCallout picks from the delivered events — so
-   *    feedback stays selective rather than becoming a second event feed
-   *    (TASK-210 §7).
+   * 2. the batch's single player-facing callout is shown — the most important
+   *    event selectBatchCallout picks from the delivered events, so feedback
+   *    stays selective rather than becoming a second event feed (TASK-210 §7);
+   * 3. the ordered phase list is built from the events exactly as delivered and
+   *    the timeline starts, holding the scene's input guard until its last phase
+   *    has played (PD-2).
    * ```
    *
-   * Nothing here mutates state, holds a queue, or blocks the player: the callout
-   * and the floaters fade on their own, and the input guard is released as soon
-   * as this synchronous pass finishes (TASK-210 §8).
+   * A batch that produces no phases — an unknown or malformed event set, or a
+   * rejection (which emits no events at all, `GAME_EVENTS.md` §1.2) — produces
+   * no timeline and locks nothing. A batch superseded by a newer one presents
+   * nothing and is recorded only.
    */
-  private presentEventBatch(events: readonly unknown[]): void {
+  private playEventBatch(envelope: BattleEventsEnvelope): void {
     const presented: InBattleServerEvent[] = [];
 
-    for (const raw of events) {
+    for (const raw of envelope.events) {
       const parsed = parseInBattleEvent(raw);
       if (!parsed) {
         continue;
@@ -1932,7 +2468,38 @@ export class BattleScene extends Phaser.Scene {
       this.presentedEventsLog.push(formatInBattleEvent(parsed));
     }
 
-    this.presentCombatFeedback(presented);
+    // A batch that arrives while an earlier one is still playing. The server's
+    // own sequencing (`serverSequence` is the post-resolution counter,
+    // `GAME_STATE.md` §5) makes the newer resolution the one that matters and a
+    // repeated one a duplicate:
+    if (this.presentationTimeline !== null) {
+      if (
+        this.presentationSequence !== null &&
+        envelope.serverSequence <= this.presentationSequence
+      ) {
+        // Already presented, or older than what is on screen: recorded above, and
+        // presented no second time.
+        return;
+      }
+
+      // Newer: the playing timeline is superseded, exactly as a newer
+      // authoritative state supersedes it. Its pacing is cancelled and its guard
+      // released before this batch's timeline takes over.
+      this.abortPresentation();
+
+      if (this.outcomeHandled) {
+        // The superseded batch carried the terminal outcome, which the abort has
+        // already handed off. The battle is over; nothing further is presented.
+        return;
+      }
+    }
+
+    // A hold that belongs to a different resolution is not this batch's to
+    // release: it is converged now rather than left waiting for a batch that has
+    // already been superseded (`renderBattleState`).
+    if (this.heldSequence !== null && this.heldSequence !== envelope.serverSequence) {
+      this.settleHeldPresentation();
+    }
 
     const callout = selectBatchCallout(
       presented,
@@ -1943,18 +2510,488 @@ export class BattleScene extends Phaser.Scene {
       this.showCallout(callout.message, callout.color);
     }
 
-    if (this.tweens && presented.length > 0) {
-      this.tweens.add({
-        targets: this.feedbackLayer ?? {},
-        alpha: { from: 0.6, to: 1 },
-        duration: 150,
-        onComplete: () => {
-          this.presentationLocked = false;
-        },
-      });
-    } else {
-      this.presentationLocked = false;
+    const phases = this.buildPresentationPhases(presented, envelope);
+    if (phases.length === 0) {
+      return;
     }
+
+    this.presentationTimeline = phases;
+    this.presentationStep = 0;
+    this.presentationSequence = envelope.serverSequence;
+    this.presentationBattleId = envelope.battleId;
+    this.advancePresentation();
+  }
+
+  /**
+   * Builds the ordered phases of one delivered batch, in the batch's own order.
+   *
+   * The grouping is a single forward pass: every event is placed on the phase it
+   * belongs to, either extending the phase already open or opening the next one,
+   * so the delivered order is preserved exactly and nothing is re-sorted,
+   * filtered, or re-derived (`ARCHITECTURE.md` §2.2.1 rule 4,
+   * `SIGNALR_PROTOCOL.md` §3.1 item 5). The phases are:
+   *
+   * ```text
+   * swap          the player's own committed Swap, when this batch is the
+   *               resolution of a request still in flight (`pendingSwapCells`)
+   * match         a Match's or a Gem's feedback, keyed on the delivered
+   *               MatchCreated.cells / GemMatched.cellIndex
+   * cascade       one per delivered CascadeCreated.cascadeDepth (MATCH3_RULES.md
+   *               §4.2 item 2) — the pass the event introduces, with that pass's
+   *               own feedback
+   * settle        the gravity/refill interpolation onto the authoritative board
+   *               (PD-1/PD-8), played where the board cycle ends
+   * damage        the player's hit, classified from the delivered
+   *               `source`/`target` (`SIGNALR_PROTOCOL.md` §3.2.14)
+   * retaliation  the Boss's response, classified the same way
+   * feedback      the delivered events that present through a floater only
+   *               (Power, or a damage direction the contract does not define),
+   *               which join the phase already open
+   * outcome       the terminal BattleWon / BattleLost handoff, last
+   * ```
+   *
+   * An event that presents nothing of its own (Combo, Passive, Relic, a cast,
+   * `DamageCalculated`) opens and extends no phase: it stays in the batch's
+   * developer log and in the batch's single callout, and adds no step to the
+   * timeline.
+   *
+   * `MatchCreated.cascadeDepth` and `CascadeCreated.cascadeDepth` are **not the
+   * same value** for one pass and are never equated (`SIGNALR_PROTOCOL.md`
+   * §3.2.7 item 2): each is recorded under its own event's name and neither is
+   * compared with the other.
+   */
+  private buildPresentationPhases(
+    presented: readonly InBattleServerEvent[],
+    envelope: BattleEventsEnvelope
+  ): PresentationPhase[] {
+    const phases: PresentationPhase[] = [];
+
+    // The Swap itself, when the client is still awaiting the resolution of the
+    // pair it sent. A rejected Swap emits no events and reaches no timeline.
+    const swapCells = this.pendingSwapCells;
+    if (this.swapPending && swapCells) {
+      phases.push({
+        kind: 'swap',
+        detail: `swap ${swapCells.from}->${swapCells.to}`,
+        holdMs: SWAP_PHASE_MS,
+        events: [],
+      });
+    }
+
+    let open: { kind: PresentationPhaseKind; detail: string; events: InBattleServerEvent[] } | null =
+      null;
+
+    const flush = () => {
+      if (open === null) {
+        return;
+      }
+
+      phases.push({
+        kind: open.kind,
+        detail: open.detail,
+        holdMs: BattleScene.phaseHoldMs(open.kind),
+        events: open.events,
+      });
+      open = null;
+    };
+
+    for (const event of presented) {
+      const opening = BattleScene.openingPhaseKind(event);
+
+      if (opening === null) {
+        // The event presents nothing of its own: it is already recorded in
+        // `presentedEventsLog`, and whatever a player needs told about it is the
+        // batch's single callout. It therefore opens and extends no phase.
+        continue;
+      }
+
+      // A CascadeCreated always opens its own phase: it *is* the pass boundary,
+      // and one phase per delivered `cascadeDepth` is the contract
+      // (`MATCH3_RULES.md` §4.2 item 2). Match and Gem feedback extends whichever
+      // phase is showing this pass. A floater-only event (Power, or a damage
+      // direction the contract does not define) joins the open phase rather than
+      // splitting it. A damage instance extends the phase already showing the
+      // same delivered direction.
+      const extendsOpen =
+        open !== null &&
+        opening !== 'cascade' &&
+        (opening === 'feedback' ||
+          open.kind === opening ||
+          (opening === 'match' && open.kind === 'cascade'));
+
+      if (!extendsOpen) {
+        flush();
+      }
+
+      if (open === null) {
+        open = { kind: opening, detail: BattleScene.phaseDetail(opening, event), events: [] };
+      }
+
+      open.events.push(event);
+    }
+
+    flush();
+
+    // Where the board cycle ends: the one transition the wire can honestly
+    // support, because no per-pass board is ever delivered
+    // (`SIGNALR_PROTOCOL.md` §3.1 item 2). It is placed at the first damage
+    // phase, i.e. at the boundary between the board's own events and the
+    // resolution's combat stages (`GAME_EVENTS.md` §1), or at the end when this
+    // resolution dealt no damage.
+    //
+    // It is part of the timeline whenever a hold is waiting for this batch or the
+    // batch moved the board at all — a Swap moved Gems, or a Match/Cascade was
+    // reported. That is what makes the resolution's **final** displayed board the
+    // authoritative one: whatever the timeline moved on the way, the destination
+    // cells are written from the delivered state before the combat phases play.
+    const boardPresented = phases.some(
+      (phase) => phase.kind === 'swap' || phase.kind === 'match' || phase.kind === 'cascade'
+    );
+
+    if (this.heldSequence === envelope.serverSequence || boardPresented) {
+      const at = phases.findIndex(
+        (phase) => phase.kind === 'damage' || phase.kind === 'retaliation'
+      );
+
+      phases.splice(at === -1 ? phases.length : at, 0, {
+        kind: 'settle',
+        detail: 'settle',
+        holdMs: SETTLE_PHASE_MS,
+        events: [],
+      });
+    }
+
+    if (this.pendingOutcomeHandoff) {
+      phases.push({
+        kind: 'outcome',
+        detail: `outcome ${this.pendingOutcomeHandoff.outcome}`,
+        holdMs: 0,
+        events: [],
+      });
+    }
+
+    return phases;
+  }
+
+  /**
+   * The phase one event opens, or `null` when the event presents nothing of its
+   * own.
+   *
+   * `null` means the event has no board, combat, or floater presentation: it is
+   * carried by the batch's developer log and its callout only, so it opens and
+   * extends no phase. A `feedback` result is a floater-only event — the delivered
+   * Power movement, or a damage direction this contract does not define — which
+   * joins the phase already open rather than splitting it.
+   */
+  private static openingPhaseKind(event: InBattleServerEvent): PresentationPhaseKind | null {
+    switch (event.type) {
+      case 'MatchCreated':
+      case 'GemMatched':
+        return 'match';
+      case 'CascadeCreated':
+        return 'cascade';
+      case 'DamageDealt':
+      case 'DamageTaken':
+        // The delivered parties decide which of the two ordered combat phases the
+        // hit belongs to. A direction the contract does not define is still drawn
+        // over the panel its delivered `target` names, so it joins the open phase
+        // as feedback rather than opening a combat phase of its own
+        // (SIGNALR_PROTOCOL.md §3.2.14 item 3).
+        return resolveDamagePresentationPhase(event.source, event.target) ?? 'feedback';
+      case 'PowerChanged':
+        return 'feedback';
+      default:
+        return null;
+    }
+  }
+
+  /** The diagnostic detail one opening event records. */
+  private static phaseDetail(kind: PresentationPhaseKind, event: InBattleServerEvent): string {
+    if (kind === 'cascade' && event.type === 'CascadeCreated') {
+      return `cascade depth=${event.cascadeDepth}`;
+    }
+
+    if (kind === 'match' && event.type === 'MatchCreated') {
+      return `match depth=${event.cascadeDepth}`;
+    }
+
+    if ((kind === 'damage' || kind === 'retaliation') && 'source' in event && 'target' in event) {
+      return `${kind} ${event.source}->${event.target}`;
+    }
+
+    return kind;
+  }
+
+  /** How long one phase kind is held before the next begins. */
+  private static phaseHoldMs(kind: PresentationPhaseKind): number {
+    switch (kind) {
+      case 'swap':
+        return SWAP_PHASE_MS;
+      case 'match':
+        return MATCH_PHASE_MS;
+      case 'cascade':
+        return CASCADE_PHASE_MS;
+      case 'settle':
+        return SETTLE_PHASE_MS;
+      case 'damage':
+      case 'retaliation':
+        return DAMAGE_PHASE_MS;
+      case 'outcome':
+        return 0;
+      case 'feedback':
+      default:
+        return FEEDBACK_PHASE_MS;
+    }
+  }
+
+  /**
+   * Plays the timeline's phases in order, then ends it.
+   *
+   * A phase plays synchronously: it presents what the server delivered for that
+   * step (and, for the settle phase, converges the board). The next phase is
+   * then scheduled after the phase's own hold, so the resolution reads as a
+   * sequence. **Without a tween manager — a unit harness — every phase plays
+   * immediately and in order**, which is what makes the ordering observable
+   * without a running clock.
+   */
+  private advancePresentation(): void {
+    const phases = this.presentationTimeline;
+    if (phases === null) {
+      return;
+    }
+
+    while (this.presentationStep < phases.length) {
+      const phase = phases[this.presentationStep];
+      this.presentationStep++;
+
+      this.playPresentationPhase(phase);
+      this.presentedPhases.push(phase.detail);
+
+      if (phase.holdMs > 0 && this.tweens) {
+        // The pacing runs on the phase clock, so an aborted timeline can cancel
+        // exactly its own pacing without disturbing any feedback animation.
+        this.phaseClock.progress = 0;
+        this.tweens.add({
+          targets: this.phaseClock,
+          progress: 1,
+          duration: phase.holdMs,
+          onComplete: () => {
+            this.advancePresentation();
+          },
+        });
+        return;
+      }
+    }
+
+    this.finishPresentation();
+  }
+
+  /**
+   * Presents one phase's step.
+   *
+   * Every value presented is a delivered one: the phase's own events go through
+   * the same batch feedback path the scene already had (`presentCombatFeedback`),
+   * the settle phase applies the authoritative board, the two combat phases move
+   * the side the delivered events name, and the outcome phase hands off. No step
+   * computes a gameplay value, and none is conditioned on one.
+   */
+  private playPresentationPhase(phase: PresentationPhase): void {
+    switch (phase.kind) {
+      case 'swap':
+        this.playSwapPhase();
+        break;
+      case 'settle':
+        if (this.currentBattleState) {
+          this.renderBoard(this.currentBattleState.board, true);
+        }
+        break;
+      case 'damage':
+        if (this.currentBattleState) {
+          this.presentBossHp(this.currentBattleState);
+        }
+        break;
+      case 'retaliation':
+        if (this.currentBattleState) {
+          this.presentPetHp(this.currentBattleState);
+        }
+        break;
+      case 'outcome':
+        this.handOffOutcome();
+        break;
+      default:
+        break;
+    }
+
+    if (phase.events.length > 0) {
+      this.presentCombatFeedback(phase.events);
+    }
+  }
+
+  /**
+   * Plays the committed Swap's first step: the two Gems the player exchanged
+   * change places (`MATCH3_RULES.md` §2.1.6).
+   *
+   * The two cells are the ones the player's own request carried, and the views
+   * are the ones already rendered there. Nothing is validated, no adjacency is
+   * checked, and no match is looked for — a Swap the server rejected emits no
+   * events at all (`GAME_EVENTS.md` §1.2), so no timeline, and therefore no swap
+   * movement, is ever played for one.
+   */
+  private playSwapPhase(): void {
+    const pair = this.pendingSwapCells;
+    if (!pair) {
+      return;
+    }
+
+    const fromView = this.gemViews[pair.from];
+    const toView = this.gemViews[pair.to];
+
+    if (!fromView || !toView) {
+      return;
+    }
+
+    if (!this.tweens) {
+      // Without a tween manager the exchange is applied directly, so the
+      // presented order is still observable without a running clock.
+      this.exchangeGemViews(pair.from, pair.to);
+      return;
+    }
+
+    const from = BattleScene.cellCoordinates(pair.from);
+    const to = BattleScene.cellCoordinates(pair.to);
+
+    this.tweens.add({
+      targets: [fromView.tile, fromView.label],
+      x: to.x,
+      y: to.y,
+      duration: SWAP_PHASE_MS,
+      ease: 'Sine.easeInOut',
+    });
+    this.tweens.add({
+      targets: [toView.tile, toView.label],
+      x: from.x,
+      y: from.y,
+      duration: SWAP_PHASE_MS,
+      ease: 'Sine.easeInOut',
+    });
+
+    // The Gems changed places; the cells did not. The occupant map follows the
+    // movement immediately, so every later phase — and any abort — reads the
+    // board as the Swap left it.
+    this.gemViews[pair.from] = toView;
+    this.gemViews[pair.to] = fromView;
+  }
+
+  /** Exchanges two cells' occupants, placing each view on the other's cell. */
+  private exchangeGemViews(from: number, to: number): void {
+    const fromView = this.gemViews[from] ?? null;
+    const toView = this.gemViews[to] ?? null;
+
+    this.gemViews[from] = toView;
+    this.gemViews[to] = fromView;
+
+    if (fromView) {
+      this.placeGemView(fromView, to, false);
+    }
+
+    if (toView) {
+      this.placeGemView(toView, from, false);
+    }
+  }
+
+  /**
+   * Ends the timeline normally: the guard is released, anything the timeline was
+   * still holding is converged on the authoritative state, and a terminal
+   * outcome the batch named is handed off.
+   */
+  private finishPresentation(): void {
+    this.releaseTimeline();
+    this.settleHeldPresentation();
+    this.handOffOutcome();
+  }
+
+  /**
+   * Abandons the in-flight timeline: its pacing is cancelled, the guard is
+   * released, and everything it was holding is converged on the authoritative
+   * state — so an aborted resolution leaves the board and the HUD on the
+   * server's values rather than mid-animation.
+   *
+   * It is used by supersession (`renderBattleState`) and by a presentation error
+   * (`handleBattleEvents`). It deliberately leaves the short-lived feedback
+   * animations (highlights, floaters, the callout fade) to complete on their own:
+   * they own no board state and destroy themselves, and killing them would strand
+   * the objects they were about to remove.
+   */
+  private abortPresentation(): void {
+    this.tweens?.killTweensOf(this.phaseClock);
+    this.releaseTimeline();
+    // A swap or refill travel still in flight belongs to the abandoned
+    // presentation: cancelling it is what leaves the board converged rather than
+    // drifting to a position the newer state has already replaced.
+    this.killGemViewTweens();
+    this.settleHeldPresentation();
+    this.handOffOutcome();
+  }
+
+  /**
+   * Releases the timeline-aware input guard and drops the in-flight timeline.
+   *
+   * It touches no game object: it is the bookkeeping half of ending a
+   * presentation, and every caller that must also *apply* something does so
+   * explicitly (`settleHeldPresentation`).
+   */
+  private releaseTimeline(): void {
+    this.presentationTimeline = null;
+    this.presentationStep = 0;
+    this.presentationSequence = null;
+    this.presentationBattleId = null;
+  }
+
+  /**
+   * Applies everything the timeline was still holding — the board's content and
+   * the two HP panels' delivered values — immediately and without animation.
+   *
+   * It is the guarantee behind "the displayed state is the authoritative state":
+   * whatever a timeline did not reach, an abort, the timeline's own end, and the
+   * next push all converge here, so a held value can never outlive the
+   * presentation that held it. Nothing is derived: the values written are the
+   * delivered ones already in `currentBattleState`.
+   */
+  private settleHeldPresentation(): void {
+    if (this.heldSequence === null) {
+      return;
+    }
+
+    this.heldSequence = null;
+
+    const state = this.currentBattleState;
+    if (!state) {
+      return;
+    }
+
+    this.renderBoard(state.board, false);
+    this.presentBossHp(state, false);
+    this.presentPetHp(state, false);
+  }
+
+  /**
+   * Hands the resolution's terminal outcome to `ResultScene`, once.
+   *
+   * The handoff is the timeline's last phase and is also performed by every path
+   * that ends the timeline, so it is never lost behind a phase boundary and never
+   * delayed by a phase that has yet to run. It is deliberately *not* performed by
+   * scene teardown (`shutdown` drops the pending handoff instead): a scene that is
+   * going away navigates nowhere.
+   */
+  private handOffOutcome(): void {
+    const outcome = this.pendingOutcomeHandoff;
+    if (!outcome || this.outcomeHandled) {
+      return;
+    }
+
+    this.outcomeHandled = true;
+    this.pendingOutcomeHandoff = null;
+    this.scene.start('ResultScene', outcome);
   }
 
   /**
@@ -2258,9 +3295,30 @@ export class BattleScene extends Phaser.Scene {
     return this.presentedEventsLog;
   }
 
-  /** Returns whether player input is currently locked. */
+  /**
+   * Read-only snapshot of the presentation phases played, in order.
+   *
+   * **Diagnostics only**, exactly like `getPresentedEvents()`: it is the
+   * developer/testing record of the timeline the scene played for each delivered
+   * resolution (`swap 8->9`, `match depth=1`, `cascade depth=1`, `settle`,
+   * `damage player->boss`, …), it is never rendered, and nothing in the scene
+   * reads it back.
+   */
+  getPresentedPhases(): readonly string[] {
+    return this.presentedPhases;
+  }
+
+  /**
+   * Returns whether player input is currently locked.
+   *
+   * The guard covers the **whole** presentation of a resolution: a submitted
+   * action in flight, and the timeline that then presents what the server
+   * resolved. A player can therefore never act against a board that is still
+   * being shown mid-resolution, and the guard is released on the timeline's
+   * completion, on an error, on supersession, and on scene teardown.
+   */
   isInputLocked(): boolean {
-    return this.presentationLocked || this.swapPending || this.actionInFlight;
+    return this.presentationTimeline !== null || this.swapPending || this.actionInFlight;
   }
 
   /**

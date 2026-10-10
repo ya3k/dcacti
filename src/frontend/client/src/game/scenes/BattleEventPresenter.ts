@@ -645,6 +645,53 @@ export const SWAP_REJECTION_MESSAGES: Readonly<Record<string, string>> = Object.
 });
 
 /**
+ * The two MVP damage party identifiers (`SIGNALR_PROTOCOL.md` §3.2.14 item 3).
+ *
+ * They are the delivered `source` / `target` values, read as sent. This module
+ * owns the pair so the scene has one spelling of them: a party is never
+ * invented, and an unrecognized one is treated as "not this phase" rather than
+ * guessed at.
+ */
+export const DAMAGE_PARTY_PLAYER = 'player';
+export const DAMAGE_PARTY_BOSS = 'boss';
+
+/**
+ * The ordered presentation phase one delivered damage instance belongs to.
+ *
+ * ```text
+ * damage        source="player", target="boss"   the player's hit on the Boss
+ *               (GAME_RULES.md §17 steps 15–17, SIGNALR_PROTOCOL.md §3.2.14)
+ * retaliation   source="boss",   target="player" the Boss's response
+ *               (GAME_RULES.md §17 step 18c, SIGNALR_PROTOCOL.md §3.2.14 item 3)
+ * ```
+ *
+ * It is a **presentation classification and nothing else**: it reads the two
+ * delivered party strings to decide *which phase of the timeline* a hit is
+ * sequenced into. It applies no damage, derives no HP from `amount`, evaluates
+ * no combat step, and decides nothing about whether a hit lands.
+ *
+ * `null` means the delivered parties are not one of the two MVP directions — an
+ * unrecognized direction is never assigned to a phase, exactly as
+ * `BattleScene.damageAnchor` declines to guess which panel was hurt.
+ */
+export type DamagePresentationPhase = 'damage' | 'retaliation';
+
+export function resolveDamagePresentationPhase(
+  source: string,
+  target: string
+): DamagePresentationPhase | null {
+  if (source === DAMAGE_PARTY_PLAYER && target === DAMAGE_PARTY_BOSS) {
+    return 'damage';
+  }
+
+  if (source === DAMAGE_PARTY_BOSS && target === DAMAGE_PARTY_PLAYER) {
+    return 'retaliation';
+  }
+
+  return null;
+}
+
+/**
  * Formats a Swap rejection reason into a player-friendly presentation message,
  * providing a safe fallback for unknown codes.
  */
