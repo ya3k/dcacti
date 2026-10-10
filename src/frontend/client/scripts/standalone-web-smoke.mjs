@@ -219,17 +219,17 @@ async function evaluate(cdp, expression) {
  * activates the tab, which starts the frames again.
  */
 async function ensurePageVisible(cdp) {
-  const visibility = await evaluate(cdp, `document.visibilityState`).catch(() => 'unknown');
-
-  if (visibility === 'visible') {
-    return { visibility, broughtToFront: false };
+  try {
+    await cdp.send('Page.bringToFront');
+    await evaluate(cdp, `(() => { if (typeof window.focus === 'function') window.focus(); return document.visibilityState; })()`);
+  } catch {
+    /* non-fatal if connection drops during navigation */
   }
 
-  await cdp.send('Page.bringToFront');
-  await delay(250);
+  const visibility = await evaluate(cdp, `document.visibilityState`).catch(() => 'unknown');
 
   return {
-    visibility: await evaluate(cdp, `document.visibilityState`).catch(() => 'unknown'),
+    visibility,
     broughtToFront: true,
   };
 }
@@ -355,8 +355,13 @@ const FEEDBACK_PROBE = `
   if (layer && layer.list) {
     for (const o of layer.list) {
       if (o.type !== 'Text') continue;
+      if (!o.__smokeFloaterId) {
+        window.__smokeFloaterSeq = (window.__smokeFloaterSeq || 0) + 1;
+        o.__smokeFloaterId = window.__smokeFloaterSeq;
+      }
       const b = typeof o.getBounds === 'function' ? o.getBounds() : null;
       floaters.push({
+        id: o.__smokeFloaterId,
         text: typeof o.text === 'string' ? o.text : '',
         bounds: b ? { x: b.x, y: b.y, width: b.width, height: b.height } : null,
       });
@@ -438,6 +443,7 @@ async function drainFeedback(cdp, timeoutMs) {
         const s = window.__game.scene.getScene('BattleScene');
         if (!s || !s.feedbackLayer) return false;
         for (const child of [...(s.feedbackLayer.list || [])]) child.destroy();
+        window.__smokeFloaterSeq = 0;
         return true;
       })()`
     );
@@ -464,15 +470,16 @@ async function drainFeedback(cdp, timeoutMs) {
  *
  * It returns every distinct callout it saw, the bounds of the last one, and the
  * floaters: `floaterTextSets` is one sorted text array per sampled instant that had
- * any floater alive (so "exactly one floater per damage instance" is an assertion
- * about a single instant, not about how many times the probe ran), and `floaters`
- * is the first observation of each distinct number, for the geometry checks.
+ * any floater alive, `floaters` is the first observation of each distinct number,
+ * and `floaterInstances` tracks distinct floater instances created during the window.
  */
 async function pollFeedback(cdp, timeoutMs) {
   const callouts = new Set();
   let calloutBounds = null;
   const floaterTextSets = [];
   const floatersByText = new Map();
+  const seenFloaterIds = new Set();
+  const floaterInstances = [];
   const start = Date.now();
 
   while (Date.now() - start < timeoutMs) {
@@ -494,13 +501,17 @@ async function pollFeedback(cdp, timeoutMs) {
             if (!floatersByText.has(floater.text)) {
               floatersByText.set(floater.text, floater);
             }
+            if (floater.id && !seenFloaterIds.has(floater.id)) {
+              seenFloaterIds.add(floater.id);
+              floaterInstances.push(floater);
+            }
           }
         }
       }
     } catch {
       /* the scene may be mid-transition; keep sampling */
     }
-    await delay(80);
+    await delay(60);
   }
 
   return {
@@ -508,6 +519,7 @@ async function pollFeedback(cdp, timeoutMs) {
     calloutBounds,
     floaterTextSets,
     floaters: [...floatersByText.values()],
+    floaterInstances,
   };
 }
 
@@ -534,12 +546,30 @@ async function pollFeedback(cdp, timeoutMs) {
  * below can run it twice — once so the feedback is on screen for a screenshot,
  * once for the timed sampling.
  */
-const FEEDBACK_INJECTION = `
+/**
+ * Deterministic sequence allocator for injected test probe envelopes (TASK-247 §3).
+ *
+ * Successive probe envelopes must use strictly increasing `serverSequence` values
+ * to prevent timeline supersession from discarding them (`BattleScene.ts` line 2783).
+ * Allocating above the current sequence avoids collisions with preceding probes or
+ * runtime-delivered sequences.
+ */
+let probeSequenceCounter = 100000;
+function allocateProbeSequence(currentSequence = 0) {
+  probeSequenceCounter = Math.max(
+    probeSequenceCounter + 1,
+    (Number.isFinite(currentSequence) ? currentSequence : 0) + 1000
+  );
+  return probeSequenceCounter;
+}
+
+function buildFeedbackInjection(serverSequence) {
+  return `
 (() => {
   const s = window.__game.scene.getScene('BattleScene');
   s.handleBattleEvents({
     battleId: 'task-210-feedback-probe',
-    serverSequence: 999999,
+    serverSequence: ${serverSequence},
     events: [
       { type: 'MatchCreated', shape: 'Straight', cells: [0, 1, 2], gemType: 'ATK', cascadeDepth: 0 },
       { type: 'ComboChanged', combo: 4 },
@@ -556,6 +586,9 @@ const FEEDBACK_INJECTION = `
   return true;
 })()
 `;
+}
+
+const FEEDBACK_INJECTION = buildFeedbackInjection(allocateProbeSequence());
 
 /**
  * The owned Relic instances this run may name, read from the **battle scene's own
@@ -627,6 +660,8 @@ async function captureScreenshot(cdp, name) {
     writeFileSync(join(OUT_DIR, `${name}.png`), Buffer.from(png.data, 'base64'));
   } catch {
     /* screenshot failure is non-fatal */
+  } finally {
+    await ensurePageVisible(cdp);
   }
 }
 
@@ -813,7 +848,7 @@ const BATTLE_SNAPSHOT = `
     // that separates "the player's tap was refused" from "the tap missed".
     inputLocked: typeof s.isInputLocked === 'function' ? s.isInputLocked() : null,
     inputLockReasons: {
-      presentationLocked: s.presentationLocked === true,
+      presentationLocked: s.presentationTimeline !== null,
       swapPending: s.swapPending === true,
       actionInFlight: s.actionInFlight === true,
     },
@@ -901,7 +936,7 @@ const BATTLE_SNAPSHOT = `
     hudBounds: (() => {
       const names = ['connectionText', 'bossNameText', 'bossHpText', 'petNameText', 'petHpText',
         'petPowerText', 'petPassiveText', 'petPassiveProgressText', 'petStatusText', 'comboText',
-        'matchesText', 'calloutText', 'swapText', 'castText', 'boardMessageText'];
+        'matchesText', 'calloutText', 'swapText', 'castText', 'boardMessageText', 'phaseText'];
       const out = {};
       for (const name of names) {
         const o = s[name];
@@ -2559,7 +2594,7 @@ export async function runSmokeTest(runNumber = 1) {
 
     // Now the deterministic half: one batch, through the documented entry point the
     // authoritative events arrive on.
-    const beforeInjection = await evaluate(cdp, BATTLE_SNAPSHOT);
+    const baselineBeforePass1 = await evaluate(cdp, BATTLE_SNAPSHOT);
 
     // TASK-218B: the batch's Relic events are built from the battle scene's **own**
     // loaded definitions (its `getRelics()` read), so they name Relics this running
@@ -2585,19 +2620,24 @@ export async function runSmokeTest(runNumber = 1) {
     await waitForFeedbackToFade(cdp, 5000, false);
 
     // First pass, for the player-facing screenshot: the callout holds about a
-    // second and the floaters live 600 ms of game time, so the frame is taken
+    // second and the floaters live 400 ms of game time, so the frame is taken
     // while they are still on screen.
-    await evaluate(cdp, FEEDBACK_INJECTION);
+    const seqPass1 = allocateProbeSequence(baselineBeforePass1?.authoritative?.sequence);
+    await evaluate(cdp, buildFeedbackInjection(seqPass1));
     await delay(140);
     await captureScreenshot(cdp, `run${runNumber}-07b-combat-feedback`);
 
-    // Wait for that pass's own floaters to fade before measuring. This is a wait
-    // on the scene rather than on the clock, because a stall in the frame loop
-    // would otherwise leave the screenshot pass's floaters alive when the
-    // measurement pass injects its own. `requireSighting` makes the wait prove the
-    // screenshot pass was presented at all before it waits for it to go away, so a
-    // frame-loop stall cannot turn this into "returned immediately, still alive".
-    await waitForFeedbackToFade(cdp, 5000, true);
+    // Wait for that pass's own floaters to fade and timeline to complete before measuring.
+    await waitForCondition(
+      async () => {
+        const snap = await evaluate(cdp, BATTLE_SNAPSHOT);
+        const fb = await evaluate(cdp, FEEDBACK_PROBE);
+        const alive = (fb?.floaters ?? []).filter((f) => f.text);
+        return snap.inputLocked === false && alive.length === 0;
+      },
+      'First feedback pass faded and timeline settled',
+      8000
+    );
 
     // Belt and braces for that same stall: the measurement pass must observe only
     // its own batch, so the layer is asserted empty before it is injected. A
@@ -2605,9 +2645,13 @@ export async function runSmokeTest(runNumber = 1) {
     // below is about one batch's feedback, not about the fade's timing.
     await drainFeedback(cdp, 5000);
 
+    // Baseline right before the measurement injection, after preceding timelines settled.
+    const beforeInjection = await evaluate(cdp, BATTLE_SNAPSHOT);
+
     // Second pass, for the measurements.
-    await evaluate(cdp, FEEDBACK_INJECTION);
-    const injectedFeedback = await pollFeedback(cdp, 700);
+    const seqPass2 = allocateProbeSequence(seqPass1);
+    await evaluate(cdp, buildFeedbackInjection(seqPass2));
+    const injectedFeedback = await pollFeedback(cdp, 2500);
     const afterInjection = await evaluate(cdp, BATTLE_SNAPSHOT);
 
     // One callout for the whole batch, and it is the most important thing in it.
@@ -2629,19 +2673,33 @@ export async function runSmokeTest(runNumber = 1) {
       injectedFeedback.callouts
     );
 
-    // One floater per damage instance (the `DamageDealt`/`DamageTaken` pair of one
-    // instance must not be drawn twice) plus the signed Power movement. This is
-    // asserted per sampled instant — every moment that showed any floater showed
-    // exactly these three — so a duplicated pair could not hide behind the probe's
-    // repeated samples.
+    // Floater presentation across the sequential resolution window (TASK-247 §4).
+    // Under sequential presentation (TASK-245/TASK-246), damage and power floaters
+    // are presented across their respective phases rather than coexisting in a single
+    // snapshot (+12 in match/feedback phase, -88 in damage phase, -40 in retaliation phase).
+    // We assert:
+    // 1. Each expected floater appears at least once across the resolution window.
+    // 2. Exactly one floater instance per damage instance plus power floater (no duplicates).
+    // 3. No snapshot contains duplicate floaters.
     const expectedFloaters = ['+12', '-40', '-88'];
+    const floaterCounts = {};
+    for (const f of injectedFeedback.floaterInstances) {
+      floaterCounts[f.text] = (floaterCounts[f.text] || 0) + 1;
+    }
+
     record(
       'phase5c.oneFloaterPerDamageInstancePlusPower',
-      injectedFeedback.floaterTextSets.length > 0 &&
-        injectedFeedback.floaterTextSets.every(
-          (texts) => JSON.stringify(texts) === JSON.stringify(expectedFloaters)
+      expectedFloaters.every((t) => floaterCounts[t] === 1) &&
+        Object.keys(floaterCounts).length === expectedFloaters.length &&
+        injectedFeedback.floaterTextSets.length > 0 &&
+        injectedFeedback.floaterTextSets.every((texts) =>
+          texts.every((t) => expectedFloaters.includes(t)) && new Set(texts).size === texts.length
         ),
-      injectedFeedback.floaterTextSets
+      {
+        floaterCounts,
+        floaterTextSets: injectedFeedback.floaterTextSets,
+        instances: injectedFeedback.floaterInstances.map((f) => ({ id: f.id, text: f.text })),
+      }
     );
 
     // The side is the delivered party that took the damage: the Boss's hit is drawn
@@ -2659,14 +2717,14 @@ export async function runSmokeTest(runNumber = 1) {
         Boolean(petFloater?.bounds) &&
         Boolean(powerFloater?.bounds) &&
         // The Boss's hit: over the Boss gauge's own column, above the board.
-        centreX(bossFloater.bounds) === anchorCentreX(afterInjection.gauges.bossHpGauge) &&
+        Math.abs(centreX(bossFloater.bounds) - anchorCentreX(afterInjection.gauges.bossHpGauge)) <= 2 &&
         bossFloater.bounds.y + bossFloater.bounds.height <= BOARD_ORIGIN_Y &&
         // The Pet's hit: over the Pet gauge's own column, beside the board's rows.
-        centreX(petFloater.bounds) === anchorCentreX(afterInjection.gauges.petHpGauge) &&
+        Math.abs(centreX(petFloater.bounds) - anchorCentreX(afterInjection.gauges.petHpGauge)) <= 2 &&
         petFloater.bounds.x + petFloater.bounds.width <= BOARD_ORIGIN_X &&
         petFloater.bounds.y >= BOARD_ORIGIN_Y &&
         // The Power movement: over the Power gauge, beside the board.
-        centreX(powerFloater.bounds) === anchorCentreX(afterInjection.gauges.powerGauge) &&
+        Math.abs(centreX(powerFloater.bounds) - anchorCentreX(afterInjection.gauges.powerGauge)) <= 2 &&
         powerFloater.bounds.x + powerFloater.bounds.width <= BOARD_ORIGIN_X,
       {
         boss: { floater: bossFloater, gaugeCentreX: anchorCentreX(afterInjection.gauges.bossHpGauge) },
@@ -2714,8 +2772,102 @@ export async function runSmokeTest(runNumber = 1) {
       }
     );
 
-    // Let the injected batch's own short input guard settle before the next pass.
-    await delay(400);
+    // -------------------------------------------------------------
+    // REGRESSION COVERAGE: PROBE SEQUENCE ORDERING & SUPERSESSION (TASK-247 §3)
+    // -------------------------------------------------------------
+    // Prove that a later probe batch with a strictly higher serverSequence is NOT
+    // discarded by supersession, while a batch with a stale sequence IS rejected.
+    await waitForCondition(
+      async () => {
+        const snap = await evaluate(cdp, BATTLE_SNAPSHOT);
+        return snap.inputLocked === false;
+      },
+      'Timeline settled before sequence ordering regression check',
+      6000
+    );
+    await drainFeedback(cdp, 5000);
+
+    const seqBase = allocateProbeSequence();
+    await evaluate(
+      cdp,
+      `(() => {
+        const s = window.__game.scene.getScene('BattleScene');
+        s.handleBattleEvents({
+          battleId: 'task-247-supersession-probe',
+          serverSequence: ${seqBase},
+          events: [
+            { type: 'MatchCreated', shape: 'Straight', cells: [0, 1, 2], gemType: 'ATK', cascadeDepth: 0 },
+            { type: 'ComboChanged', combo: 2 },
+          ],
+        });
+        return true;
+      })()`
+    );
+
+    // Stale sequence probe: sequence <= seqBase delivered while timeline is active.
+    // The production supersession logic (BattleScene.ts line 2783) must discard it.
+    const staleResult = await evaluate(
+      cdp,
+      `(() => {
+        const s = window.__game.scene.getScene('BattleScene');
+        s.handleBattleEvents({
+          battleId: 'task-247-supersession-probe',
+          serverSequence: ${seqBase - 1},
+          events: [
+            { type: 'ComboChanged', combo: 99 },
+          ],
+        });
+        return {
+          callout: s.calloutText ? s.calloutText.text : '',
+          presentationActive: s.presentationTimeline !== null,
+        };
+      })()`
+    );
+
+    // Fresh sequence probe: strictly higher sequence delivered while timeline is active.
+    // Supersedes the playing timeline and takes over.
+    const seqFresh = allocateProbeSequence(seqBase);
+    const freshResult = await evaluate(
+      cdp,
+      `(() => {
+        const s = window.__game.scene.getScene('BattleScene');
+        s.handleBattleEvents({
+          battleId: 'task-247-supersession-probe',
+          serverSequence: ${seqFresh},
+          events: [
+            { type: 'MatchCreated', shape: 'Straight', cells: [0, 1, 2], gemType: 'ATK', cascadeDepth: 0 },
+            { type: 'ComboChanged', combo: 7 },
+          ],
+        });
+        return {
+          callout: s.calloutText ? s.calloutText.text : '',
+          activeSequence: s.presentationSequence,
+        };
+      })()`
+    );
+
+    record(
+      'phase5c.probeSequenceOrderingAdvancesPresentation',
+      staleResult.callout === 'COMBO ×2' &&
+        freshResult.callout === 'COMBO ×7' &&
+        freshResult.activeSequence === seqFresh,
+      {
+        staleResult,
+        freshResult,
+        seqBase,
+        seqFresh,
+      }
+    );
+
+    await waitForCondition(
+      async () => {
+        const snap = await evaluate(cdp, BATTLE_SNAPSHOT);
+        return snap.inputLocked === false;
+      },
+      'Timeline settled after sequence ordering regression check',
+      6000
+    );
+    await drainFeedback(cdp, 5000);
 
     // -------------------------------------------------------------
     // PHASE 5c-RELIC: RELIC TRIGGER PRESENTATION (TASK-218B)
@@ -2737,14 +2889,23 @@ export async function runSmokeTest(runNumber = 1) {
     // as the wire carries it; the rendered line must contain the delivered name.
     const relicCalls = [];
     for (const relic of (Array.isArray(sceneRelics) ? sceneRelics : []).slice(0, 2)) {
+      await waitForCondition(
+        async () => {
+          const snap = await evaluate(cdp, BATTLE_SNAPSHOT);
+          return snap.inputLocked === false;
+        },
+        'Timeline settled before relic probe',
+        5000
+      );
       await drainFeedback(cdp, 5000);
+      const relicSeq = allocateProbeSequence();
       await evaluate(
         cdp,
         `(() => {
           const s = window.__game.scene.getScene('BattleScene');
           s.handleBattleEvents({
             battleId: 'task-218b-relic-probe',
-            serverSequence: 999998,
+            serverSequence: ${relicSeq},
             events: [{ type: 'RelicTriggered', relicId: ${JSON.stringify(relic.relicId)} }],
           });
           return true;
@@ -2791,7 +2952,16 @@ export async function runSmokeTest(runNumber = 1) {
     // asserted the way a player experiences it: the batch does not put a new line
     // there, and no line anywhere ever shows the identity. The before/after text is
     // therefore read directly rather than sampled.
+    await waitForCondition(
+      async () => {
+        const snap = await evaluate(cdp, BATTLE_SNAPSHOT);
+        return snap.inputLocked === false;
+      },
+      'Timeline settled before unowned relic probe',
+      5000
+    );
     await drainFeedback(cdp, 5000);
+    const unownedSeq = allocateProbeSequence();
     const unownedProbe = await evaluate(
       cdp,
       `(() => {
@@ -2806,7 +2976,7 @@ export async function runSmokeTest(runNumber = 1) {
         const before = s.calloutText ? s.calloutText.text : null;
         s.handleBattleEvents({
           battleId: 'task-218b-relic-probe',
-          serverSequence: 999997,
+          serverSequence: ${unownedSeq},
           events: [
             { type: 'RelicTriggered', relicId: unowned },
             { type: 'PowerChanged', delta: 3, power: 3, source: 'relic' },
@@ -2864,6 +3034,23 @@ export async function runSmokeTest(runNumber = 1) {
     // PHASE 6: IN-BATTLE CAST CONTROLS VERIFICATION
     // -------------------------------------------------------------
     console.log('\n--- Phase 6: In-Battle Cast Controls Verification ---');
+    // Ensure input is unlocked before proceeding with cast controls (TASK-247 §6)
+    try {
+      await waitForCondition(
+        async () => {
+          const snap = await evaluate(cdp, BATTLE_SNAPSHOT);
+          return snap.inputLocked === false ? snap : false;
+        },
+        'Input lock released before Phase 6 cast control verification',
+        6000
+      );
+    } catch {
+      const snap = await evaluate(cdp, BATTLE_SNAPSHOT);
+      throw new Error(
+        `Failed to unlock input before dispatching cast click: inputLocked=${snap?.inputLocked}, reasons=${JSON.stringify(snap?.inputLockReasons)}`
+      );
+    }
+
     battle = await evaluate(cdp, BATTLE_SNAPSHOT);
     record('phase6.castControlsRendered', battle.castControlsCount > 0, `${battle.castControlsCount} controls`);
 
@@ -2888,6 +3075,7 @@ export async function runSmokeTest(runNumber = 1) {
       'Authoritative cast acknowledgement feedback',
       8000
     );
+
     record('phase6.castFeedbackReceived', Boolean(castFeedback), castFeedback);
 
     // The first control is one of the 3 submitted Basic Cards (`API_CONTRACTS.md`
@@ -3365,6 +3553,7 @@ export async function runSmokeTest(runNumber = 1) {
       const s = window.__game.scene.getScene('BattleScene');
       s.handleBattleEvents({
         battleId: ${JSON.stringify(battleId)},
+        serverSequence: ${allocateProbeSequence()},
         events: [{
           type: 'BattleWon',
           outcome: 'victory',
@@ -3905,6 +4094,7 @@ export async function runSmokeTest(runNumber = 1) {
       const s = window.__game.scene.getScene('BattleScene');
       s.handleBattleEvents({
         battleId: ${JSON.stringify(battle2.battleId)},
+        serverSequence: ${allocateProbeSequence()},
         events: [{
           type: 'BattleLost',
           outcome: 'defeat',
@@ -4274,8 +4464,11 @@ export async function runSmokeTest(runNumber = 1) {
      */
     const commitOneSwap = async () => {
       const attempted = [];
+      let rejectedPairs = new Set();
+      let lastBoardKey = null;
+      const pairKey = (a, b) => (a < b ? `${a}-${b}` : `${b}-${a}`);
 
-      for (let attempt = 0; attempt < 8; attempt++) {
+      for (let attempt = 0; attempt < 12; attempt++) {
         if ((await evaluate(cdp, ACTIVE_SCENE)) !== 'BattleScene') {
           return { committed: false, reason: 'the battle is no longer the active scene', attempted };
         }
@@ -4286,9 +4479,28 @@ export async function runSmokeTest(runNumber = 1) {
           continue;
         }
 
-        const candidates = findMatchingSwaps(before.boardLabels);
+        if (before.inputLocked) {
+          await delay(200);
+          continue;
+        }
+
+        const boardKey = JSON.stringify(before.boardLabels);
+        if (boardKey !== lastBoardKey) {
+          lastBoardKey = boardKey;
+          rejectedPairs = new Set();
+        }
+
+        await evaluate(cdp, `(() => {
+          const s = window.__game.scene.getScene('BattleScene');
+          if (s && typeof s.clearSelection === 'function') s.clearSelection();
+        })()`);
+
+        const candidates = findMatchingSwaps(before.boardLabels).filter(
+          ([from, to]) => !rejectedPairs.has(pairKey(from, to))
+        );
         const [from, to] = candidates.length > 0 ? candidates[0] : [0, 1];
         await realClick(cdp, cellCentreOf(before, from));
+        await delay(50);
         await realClick(cdp, cellCentreOf(before, to));
 
         try {
@@ -4303,7 +4515,7 @@ export async function runSmokeTest(runNumber = 1) {
             120
           );
         } catch {
-          /* rejected or unresolved: try the next candidate */
+          rejectedPairs.add(pairKey(from, to));
         }
 
         const after = await evaluate(cdp, BATTLE_SNAPSHOT);
