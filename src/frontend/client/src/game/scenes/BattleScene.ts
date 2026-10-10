@@ -22,11 +22,14 @@ import type {
   PetSignatureSkillResponse,
   RelicResponse,
 } from '../../services/api/CollectionModels';
-import type { InBattleServerEvent } from './BattleEventPresenter';
+import type { InBattleServerEvent, InteractionStatement } from './BattleEventPresenter';
 import {
   CALLOUT_BOSS_COLOR,
   DAMAGE_PARTY_BOSS,
   DAMAGE_PARTY_PLAYER,
+  INTERACTION_BOSS_ATTACK,
+  INTERACTION_RESOLVING,
+  INTERACTION_YOUR_TURN,
   formatCardCastRejection,
   formatGemCellLabel,
   formatInBattleEvent,
@@ -34,6 +37,7 @@ import {
   isBossEnraged,
   parseInBattleEvent,
   resolveDamagePresentationPhase,
+  resolveOutcomeStatement,
   resolveSpecialGemPresentation,
   selectBatchCallout,
 } from './BattleEventPresenter';
@@ -70,7 +74,7 @@ const BOARD_ORIGIN_Y = SAFE_AREA.y + 96;
  *
  * ```text
  *   24 ┌───────────────────────────────────────────────────────────┐
- *      │ BOSS  Kim Lôi Vương              <connection>             │ ← boss band
+ *      │ BOSS  Kim Lôi Vương     <connection>          YOUR TURN    │ ← boss band
  *      │ [██████████░░░░░░░░]  2680 / 2800                         │
  *  104 │                    MATCH / COMBO ×4                       │ ← callout
  *  120 │ PET  Xich Lang   ┌───────────────┐                        │
@@ -95,8 +99,10 @@ const BOARD_ORIGIN_Y = SAFE_AREA.y + 96;
  * **Origin.** Every banded HUD line is drawn with origin `(0, 0)`, so its
  * constant is the line's *top* and a longer value (a second wrapped line, a
  * third Status Effect) grows **downwards** into free space instead of out of the
- * safe area. Only the centered lines — the connection status, the board message
- * and the combat callout — use a centered origin.
+ * safe area. The centered lines — the connection status, the board message and
+ * the combat callout — use a centered origin, and the interaction indicator is
+ * right-aligned on the safe area's own inset so its own growth moves leftwards,
+ * across the empty half of the boss band and never over the Boss panel.
  */
 const HUD_INSET = 12;
 const HUD_LEFT = SAFE_AREA.x + HUD_INSET;
@@ -128,6 +134,30 @@ const BOSS_HP_TEXT_Y = BOSS_BAR_Y;
 const CONNECTION_Y = HUD_TOP + 12;
 
 /**
+ * The persistent interaction indicator, at the right-hand end of the boss band.
+ *
+ * It is the one line that answers "is it the player's move, or is the client
+ * busy showing a resolution?" — and it is the **client's own** statement about
+ * its own input state, never a battle value. Nothing on the wire says whose turn
+ * it is (`GAME_STATE.md` §2.0.3: §2.0 contains no `Status` field, and the closed
+ * `type` discriminator set of `SIGNALR_PROTOCOL.md` §3.2.2 admits no turn or
+ * phase event — see `TASK-246` C-1), so this line is derived from
+ * `isInputLocked()`, the phase of the local presentation timeline that is
+ * playing, and the delivered `BattleWon` / `BattleLost` outcome — and from
+ * nothing else (`AGENTS.md` §10).
+ *
+ * **Why this position.** The boss band's right half is the one HUD area no other
+ * line uses: the Boss panel and its HP readout occupy the left, the connection
+ * status is centered, and the board starts at `BOARD_ORIGIN_Y`. The line is
+ * right-aligned on the safe area's own inset, so it can never grow across the
+ * centered connection line, reach a board cell, leave the 24 px safe area, or
+ * overlap the callout row above the board.
+ */
+const PHASE_TEXT_X = SAFE_AREA.x + SAFE_AREA.width - HUD_INSET;
+const PHASE_TEXT_Y = BOSS_NAME_Y;
+const PHASE_TEXT_WIDTH = 300;
+
+/**
  * The transient combat callout — the row directly above the board.
  *
  * It is the one line that reports *what just happened*: a Match, a Combo, a
@@ -135,11 +165,15 @@ const CONNECTION_Y = HUD_TOP + 12;
  * fades; it holds no state, blocks no input, and nothing about the battle
  * depends on it. `boardMessageText` shares this slot, because "no state has
  * arrived yet" and "combat is resolving" are mutually exclusive.
+ *
+ * Its lifetime is the `CALLOUT_HOLD_MS` + `CALLOUT_FADE_MS` pair of the pacing
+ * block below. One delivered batch is one resolution, so the callout belongs to
+ * the whole timeline rather than to a phase — but it is bounded to well inside
+ * the resolution that raised it, so it can neither outlive its own resolution
+ * nor still be on screen when the next one's callout arrives (TASK-246 §5).
  */
 const CALLOUT_Y = BOARD_ORIGIN_Y - 16;
 const CALLOUT_WIDTH = 460;
-const CALLOUT_HOLD_MS = 700;
-const CALLOUT_FADE_MS = 350;
 
 // --- Pet panel: the column beside the board -------------------------------
 
@@ -207,9 +241,12 @@ const PET_HP_GAUGE_COLOR = 0x22c55e;
 const POWER_GAUGE_COLOR = 0xa855f7;
 const PASSIVE_GAUGE_COLOR = 0x38bdf8;
 
-/** Floating combat numbers: how far one rises, and for how long it lives. */
+/**
+ * Floating combat numbers: how far one rises. Its lifetime is `FLOATER_LIFE_MS`
+ * in the pacing block below, which is also what keeps it inside the phase that
+ * spawned it.
+ */
 const FLOATER_RISE = 30;
-const FLOATER_LIFE_MS = 600;
 
 /** Colours for the transient combat feedback (floaters and the callout). */
 const DAMAGE_TO_BOSS_COLOR = '#f87171';
@@ -230,34 +267,93 @@ const PLAYER_PARTY = DAMAGE_PARTY_PLAYER;
 const BOSS_PARTY = DAMAGE_PARTY_BOSS;
 
 /**
- * Presentation timeline pacing, in milliseconds — how long each phase of one
- * resolution is held before the next begins.
+ * Presentation timeline pacing, in milliseconds.
+ *
+ * **One rule governs this whole block: a phase's hold covers the animations that
+ * phase itself triggers** (TASK-246 §5). The *effect* lifetimes come first —
+ * each is how long one transient animation lives — and every *phase hold* is
+ * derived from them as the longest effect that phase can start, plus one
+ * `PHASE_SETTLE_MS` beat. A hold can therefore never be shorter than the
+ * feedback it starts, and no effect can outlive the phase that started it.
+ *
+ * What this replaced did not hold that relationship, which is exactly why a
+ * resolution read as a jumble rather than as a sequence:
+ *
+ * ```text
+ * before                                        after
+ * swap hold      220 = its own tween       →    280   (SWAP_TWEEN_MS + settle:
+ *                                                     the exchange settles first)
+ * match hold     320 < 400 highlight       →    360   (MATCH_HIGHLIGHT_MS + settle)
+ * cascade hold   320 < 400 highlight       →    360   (its own highlight + settle)
+ * settle hold    340                       →    280   (GEM_REFILL_MS + settle)
+ * damage hold    420 < 600 floater         →    460   (FLOATER_LIFE_MS + settle)
+ * feedback hold  200 < 600 floater         →    460   (FLOATER_LIFE_MS + settle)
+ * FLOATER_LIFE   600                       →    400   (inside its own phase)
+ * callout        700 + 350 = 1050          →    420 + 240 = 660  (inside the
+ *                                                     resolution that raised it)
+ * ```
+ *
+ * The effects were shortened where they were gratuitously long — a match flash
+ * does not need 400 ms — and the holds extended only as far as the relationship
+ * requires, so a typical resolution grows by well under a fifth rather than by a
+ * blanket multiplier (TASK-246 §5's "correct the relationships, do not slow
+ * everything down").
  *
  * These are display timings and nothing else: no gameplay value, order, or
  * outcome depends on them, and a scene without a tween manager (a unit harness)
  * plays every phase immediately in the delivered order. They exist so a
  * resolution reads as a sequence rather than one frame.
  */
-const SWAP_PHASE_MS = 220;
-const MATCH_PHASE_MS = 320;
-const CASCADE_PHASE_MS = 320;
-const SETTLE_PHASE_MS = 340;
-const DAMAGE_PHASE_MS = 420;
-const FEEDBACK_PHASE_MS = 200;
+const SWAP_TWEEN_MS = 220;
+const MATCH_HIGHLIGHT_MS = 300;
+const GEM_HIGHLIGHT_MS = 260;
+const GEM_REFILL_MS = 220;
+const GAUGE_TWEEN_MS = 250;
+const FLOATER_LIFE_MS = 400;
+const CALLOUT_HOLD_MS = 420;
+const CALLOUT_FADE_MS = 240;
+
+/**
+ * The beat each phase is held *after* the animation it triggered has finished.
+ *
+ * Without it a phase boundary would land exactly on the last frame of its own
+ * animation, so the feedback would be replaced by the next phase rather than
+ * being settled and read (TASK-246 §5).
+ */
+const PHASE_SETTLE_MS = 60;
 
 /**
  * The refill interpolation (PD-1 / PD-8): how far above its destination cell a
- * gem view enters from, and how long it takes to settle into it.
+ * gem view enters from.
  *
  * The destination is always the cell the view is already paired with — its own
  * authoritative cell. Nothing here decides *which* cell a gem belongs in; the
  * offset is a cosmetic entrance for a content change, never a gravity result.
+ * Its duration is `GEM_REFILL_MS` above.
  */
 const GEM_REFILL_ENTER = 12;
-const GEM_REFILL_MS = 220;
 
-/** How long an HP gauge takes to travel to its delivered value. */
-const GAUGE_TWEEN_MS = 250;
+/**
+ * The selected-cell treatment: one persistent ring, drawn around the selected
+ * cell for as long as it stays selected.
+ *
+ * It is **one** display object reused by every selection — created once per
+ * scene run, moved to the selected cell, and hidden when nothing is selected —
+ * so selecting a cell never allocates an object, never destroys one, and never
+ * redraws the board (`renderSelection`, `TASK-246` §3).
+ *
+ * Its form is deliberately unlike every other board effect. It is an opaque,
+ * hollow, 4 px white ring, and it is **never faded, never tweened, and never
+ * destroyed** while the scene lives — the opposite of `spawnCellHighlight`'s
+ * match/cascade overlays, which are translucent filled squares that fade to
+ * alpha 0 and destroy themselves. A Special Gem's identity is its *tile's*
+ * stroke and its label badge, which this ring sits outside of and never touches,
+ * so a selected Special Gem still reads as a Special Gem; damage feedback is a
+ * red or orange number over a HUD panel, off the board entirely.
+ */
+const SELECTION_RING_COLOR = 0xffffff;
+const SELECTION_RING_STROKE = 4;
+const SELECTION_RING_SIZE = CELL_SIZE + 4;
 
 /**
  * One HUD gauge: a bordered track plus the fill whose width is the *visual*
@@ -504,6 +600,17 @@ export class BattleScene extends Phaser.Scene {
    * sent as anything but the two cells of a Swap request.
    */
   private selectedCell: number | null = null;
+  /**
+   * The persistent selected-cell ring (`SELECTION_RING_*`), or `null` before the
+   * shell has been drawn and after teardown.
+   *
+   * It is the board's own visible statement that a cell is selected, and
+   * `renderSelection` drives it from `selectedCell` alone. There is no object
+   * per cell: one ring is moved onto the selected cell, and hidden whenever
+   * nothing is selected — a board the delivered state no longer carries, a cell
+   * a resolution cleared, or a scene that has ended.
+   */
+  private selectionRing: Phaser.GameObjects.Rectangle | null = null;
   /** True while a Swap request is outstanding, so further taps are ignored. */
   private swapPending = false;
   /** True while any action request (swap or cast) is in flight. */
@@ -528,6 +635,38 @@ export class BattleScene extends Phaser.Scene {
    * stops advancing without disturbing any other animation.
    */
   private readonly phaseClock = { progress: 0 };
+  /**
+   * The persistent interaction indicator (`PHASE_TEXT_*`), or `null` before the
+   * shell has been drawn and after teardown.
+   *
+   * One line, one value: `renderPhaseIndicator` writes the single statement
+   * `phaseIndicator()` resolves, so two contradictory interaction states can
+   * never be on screen at the same time.
+   */
+  private phaseText: Phaser.GameObjects.Text | null = null;
+  /**
+   * The kind of the timeline phase currently playing, or `null` when no phase is
+   * playing.
+   *
+   * It is the local presentation timeline's own position — not a server phase.
+   * `buildPresentationPhases` derives a `retaliation` phase from delivered
+   * `DamageDealt` / `DamageTaken` parties alone (`resolveDamagePresentationPhase`),
+   * so the indicator's `BOSS ATTACK` statement is backed by a delivered
+   * `source="boss"` / `target="player"` event and by nothing else (TASK-246 §4).
+   */
+  private presentationPhaseKind: PresentationPhaseKind | null = null;
+  /**
+   * The terminal statement this resolution handed to `ResultScene`, or `null`.
+   *
+   * It is set immediately before the handoff — by `handOffOutcome`, so every
+   * path that hands off (the timeline's last phase, its completion, an abort, a
+   * supersession) sets it — which is what lets `VICTORY` / `DEFEAT` be presented
+   * *before* the battle scene is replaced. The delivered
+   * `BattleWon` / `BattleLost` outcome is the only thing it is derived from; it
+   * is cleared by `create()` and by teardown, so a reused scene never shows the
+   * previous battle's result.
+   */
+  private terminalStatement: InteractionStatement | null = null;
   /** The `serverSequence` of the batch the in-flight timeline is presenting. */
   private presentationSequence: number | null = null;
   /** The battle the in-flight timeline belongs to. */
@@ -659,6 +798,13 @@ export class BattleScene extends Phaser.Scene {
   create(): void {
     this.bossEnraged = false;
     this.currentBattleId = null;
+    // The interaction objects of a previous run were destroyed with that run's
+    // display list by Phaser, so their references are dropped *before* the reset
+    // below can write to them: `releaseTimeline` re-derives the indicator and the
+    // selection treatment, and neither may target an object the engine has
+    // already taken down. The shell this run draws replaces them.
+    this.selectionRing = null;
+    this.phaseText = null;
     // A reused scene instance must start its next battle from the initial
     // presentation state: no timeline, no held values, no views carried over
     // (`shutdown` already dropped them; this is the same reset made explicit for
@@ -670,6 +816,10 @@ export class BattleScene extends Phaser.Scene {
     this.settledBattleId = null;
     this.heldSequence = null;
     this.pendingSwapCells = null;
+    // No selection and no terminal statement survive into the next battle: both
+    // belong to the battle that ended (`shutdown` drops them for the same reason).
+    this.clearSelection();
+    this.terminalStatement = null;
     this.presentedPhases = [];
     this.runtime = readRuntime(this);
     this.drawRuntimeShell();
@@ -768,6 +918,13 @@ export class BattleScene extends Phaser.Scene {
    *                        (`outcomeHandled` in particular: left true, it discards
    *                        the next outcome; a timeline left in place would lock
    *                        the next battle's input)
+   * interaction feedback   the selected-cell ring's and the interaction
+   *                        indicator's references — the engine has already
+   *                        destroyed both objects with the display list, so
+   *                        dropping the references is what stops a stale write;
+   *                        each describes only this battle's own input state and
+   *                        the resolution that just played, so the next battle
+   *                        starts with no selection and no indicator statement
    * held presentation      heldSequence and pendingSwapCells — the delivered
    *                        values a timeline had not released yet and the swap
    *                        pair it was going to present. Both are dropped without
@@ -817,6 +974,8 @@ export class BattleScene extends Phaser.Scene {
     this.boardMessage = '';
     this.swapText = null;
     this.castText = null;
+    this.selectionRing = null;
+    this.phaseText = null;
     this.boardLayer?.destroy(true);
     this.boardLayer = null;
     this.castControlsLayer?.destroy(true);
@@ -833,6 +992,7 @@ export class BattleScene extends Phaser.Scene {
     // mid-resolution from coming back locked.
     this.releaseTimeline();
     this.pendingOutcomeHandoff = null;
+    this.terminalStatement = null;
     this.gemViews = [];
     this.settledBoardSequence = null;
     this.settledBattleId = null;
@@ -938,6 +1098,23 @@ export class BattleScene extends Phaser.Scene {
         color: '#94a3b8',
       })
       .setOrigin(0.5);
+
+    // The interaction indicator: the client's own statement of what it permits
+    // right now (`PHASE_TEXT_*`). It is the one line that answers "is it my
+    // move?", and it answers that from `isInputLocked()`, the phase of the local
+    // presentation timeline, and the delivered outcome — never from a turn,
+    // phase, or status member, because the wire carries none
+    // (`GAME_STATE.md` §2.0.3, `SIGNALR_PROTOCOL.md` §3.2.2; TASK-246's F-3).
+    this.phaseText = this.add
+      .text(PHASE_TEXT_X, PHASE_TEXT_Y, '', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '15px',
+        color: '#94a3b8',
+        fontStyle: 'bold',
+        wordWrap: { width: PHASE_TEXT_WIDTH, useAdvancedWrap: true },
+        maxLines: 1,
+      })
+      .setOrigin(1, 0);
 
     // --- Pet panel (the column beside the board) -----------------------------
     this.add
@@ -1164,6 +1341,20 @@ export class BattleScene extends Phaser.Scene {
       .setInteractive(boardHitArea, Phaser.Geom.Rectangle.Contains);
     this.castControlsLayer = this.add.container(0, 0);
     this.feedbackLayer = this.add.container(0, 0);
+
+    // The selected-cell ring: one persistent, hollow, opaque ring that is moved
+    // onto the selected cell and hidden when nothing is selected
+    // (`renderSelection`).
+    //
+    // It is created outside every container — like the HUD gauges — so it is
+    // drawn above the board layer and above the transient feedback layer while
+    // leaving the board layer's own child count at exactly "64 tiles + 64
+    // labels" (TASK-245's persistent-view invariant). Nothing here is per cell:
+    // selecting allocates nothing, destroys nothing, and redraws nothing.
+    this.selectionRing = this.add
+      .rectangle(0, 0, SELECTION_RING_SIZE, SELECTION_RING_SIZE, 0x000000, 0)
+      .setStrokeStyle(SELECTION_RING_STROKE, SELECTION_RING_COLOR)
+      .setVisible(false);
   }
 
   /**
@@ -1327,6 +1518,9 @@ export class BattleScene extends Phaser.Scene {
 
     if (state === null) {
       this.heldSequence = null;
+      // Nothing is delivered at all: there is no board for a selection to belong
+      // to, and no interaction the indicator could honestly permit.
+      this.clearSelection();
       this.renderBossHud(null, false);
       this.renderPetHud(null, null, false);
       this.renderPlayerHud(null);
@@ -1334,11 +1528,23 @@ export class BattleScene extends Phaser.Scene {
       this.boardMessageText?.setText(this.boardMessage);
       this.renderBoard(null);
       this.renderCastControls(null);
+      this.renderPhaseIndicator();
       return;
     }
 
     const hold = !superseded && this.shouldHoldResolution(state);
     this.heldSequence = hold ? state.sequence : null;
+
+    // A push that presents a board replaces the board the player's gesture was
+    // made on — a first push, a new battle, a resync, or a committed action's
+    // result — so the selection ends with it. That is what stops a cell chosen
+    // against one board from pairing with a later tap against another: the
+    // interaction state is dropped, not re-pointed (`TASK-246` §3). A push
+    // *held* for an awaited resolution presents no board at all, and its action
+    // already cleared the selection when it was submitted.
+    if (!hold) {
+      this.clearSelection();
+    }
 
     this.renderBossHud(state, hold);
     this.renderPetHud(state, this.activePetId(), hold);
@@ -1352,6 +1558,7 @@ export class BattleScene extends Phaser.Scene {
     }
 
     this.renderCastControls(state);
+    this.renderPhaseIndicator();
   }
 
   /**
@@ -1903,6 +2110,9 @@ export class BattleScene extends Phaser.Scene {
       this.settledBoardSequence = null;
       this.settledBattleId = null;
       this.boardMessageText?.setText(this.boardMessage);
+      // With no board there is no cell to mark, so the ring cannot be left
+      // showing a selection on a board that is gone.
+      this.renderSelection();
       return;
     }
 
@@ -1951,6 +2161,12 @@ export class BattleScene extends Phaser.Scene {
     this.settledBoardSequence = this.currentBattleState?.sequence ?? null;
     this.settledBattleId = this.currentBattleState?.battleId ?? null;
     this.boardMessageText?.setText(this.boardMessage);
+
+    // The board on screen has just changed, so the selection treatment is
+    // re-derived from `selectedCell` against the views that now exist: it marks
+    // the selected cell's own cell, and marks nothing at all when the delivered
+    // board no longer carries it (`TASK-246` §3).
+    this.renderSelection();
   }
 
   /**
@@ -2131,9 +2347,15 @@ export class BattleScene extends Phaser.Scene {
    * Local interaction behavior only (`SIGNALR_PROTOCOL.md` §2.1 item 1):
    *
    * - no cell (tap outside the board) — ignored;
-   * - first cell — selected, shown as selection feedback;
+   * - first cell — selected, and rendered as selected on the board itself
+   *   (`renderSelection`);
    * - second tap on the selected cell — selection cleared, nothing sent;
    * - second cell — the pair is submitted through the runtime port.
+   *
+   * A tap that arrives while the guard is engaged does nothing at all — it
+   * neither selects the tapped cell nor keeps a selection alive, because a lock
+   * only ever engages after `clearSelection()` has already dropped one (see the
+   * selection lifecycle in `clearSelection`'s callers).
    *
    * The scene performs no gameplay validation: it never checks adjacency, never
    * looks for a match, and never decides whether the swap is legal. Adjacency is
@@ -2147,20 +2369,79 @@ export class BattleScene extends Phaser.Scene {
 
     if (this.selectedCell === null) {
       this.selectedCell = cellIndex;
+      this.renderSelection();
       this.renderSwapStatus();
       return;
     }
 
     if (this.selectedCell === cellIndex) {
-      this.selectedCell = null;
+      this.clearSelection();
       this.renderSwapStatus();
       return;
     }
 
     const fromCell = this.selectedCell;
-    this.selectedCell = null;
+    this.clearSelection();
 
     void this.submitSwap(fromCell, cellIndex);
+  }
+
+  /**
+   * Draws the persistent selected-cell treatment from `selectedCell` alone.
+   *
+   * It is the board's own statement that a cell is selected, and it reads
+   * nothing else: no Gem, no match, no delivered value, no gameplay meaning
+   * (`TASK-246` §3 — selection presentation is UI-only). Three cases:
+   *
+   * ```text
+   * nothing selected            the ring is hidden
+   * a selected cell the         the ring is hidden — the treatment follows the
+   *   rendered board no           authoritative board, so it never marks a cell
+   *   longer carries              the delivered board does not contain
+   * a selected cell of the      the ring is moved onto that cell and shown
+   *   rendered board
+   * ```
+   *
+   * It writes visibility and position on **one** persistent object; it creates,
+   * destroys, and redraws nothing, so a selection can never disturb the board,
+   * a match/cascade overlay, or a Special Gem's own styling
+   * (`SELECTION_RING_*`).
+   */
+  private renderSelection(): void {
+    const ring = this.selectionRing;
+    if (!ring) {
+      return;
+    }
+
+    const index = this.selectedCell;
+    if (index === null || !this.gemViews[index]) {
+      ring.setVisible(false);
+      return;
+    }
+
+    const { x, y } = BattleScene.cellCoordinates(index);
+    ring.setPosition(x, y);
+    ring.setVisible(true);
+  }
+
+  /**
+   * Ends the current selection and its treatment.
+   *
+   * It is the **single** way a selection ends, and every path that ends one
+   * calls it: a same-cell re-tap, a pair submission, a swap rejection or
+   * transport failure, the input guard engaging (a submitted action, or a
+   * resolution's timeline starting), timeline supersession or completion, a
+   * delivered board for a different battle or a null state, and scene teardown
+   * (`shutdown` drops the ring with it).
+   *
+   * That is what makes a stale selection impossible: `selectedCell` is never
+   * left holding a cell across a gesture, a lock, or a board change, so no
+   * later tap can pair with one and submit a Swap the player did not intend
+   * (`TASK-246` §3).
+   */
+  private clearSelection(): void {
+    this.selectedCell = null;
+    this.renderSelection();
   }
 
   /**
@@ -2194,7 +2475,12 @@ export class BattleScene extends Phaser.Scene {
     this.swapPending = true;
     this.actionInFlight = true;
     this.pendingSwapCells = { from: fromCell, to: toCell };
+    // The gesture is over the instant its pair is submitted, and the guard is
+    // engaged for as long as the request and its resolution take — so the
+    // selection must not survive either (TASK-246 §3).
+    this.clearSelection();
     this.renderSwapStatus();
+    this.renderPhaseIndicator();
 
     try {
       // The pair is sent as selected, and both cells are §1.0 indices
@@ -2207,10 +2493,18 @@ export class BattleScene extends Phaser.Scene {
       });
 
       this.renderSwapStatus(undefined, fromCell, toCell, acknowledgement);
+
+      if (!acknowledgement.accepted) {
+        // A rejected Swap is a gameplay no-op that emits no events
+        // (`MATCH3_RULES.md` §2.1.5 item 6, `GAME_EVENTS.md` §1.2): nothing may
+        // be left selected for the player's next tap to pair with.
+        this.clearSelection();
+      }
     } catch (error) {
       // A failed request is a transport/runtime failure — presentation state,
       // not game state (`SIGNALR_PROTOCOL.md` §8.3). No board value changes and
       // nothing is retried.
+      this.clearSelection();
       this.renderSwapStatus(
         `Swap not sent: ${error instanceof Error ? error.message : String(error)}`
       );
@@ -2218,6 +2512,7 @@ export class BattleScene extends Phaser.Scene {
       this.swapPending = false;
       this.actionInFlight = false;
       this.pendingSwapCells = null;
+      this.renderPhaseIndicator();
     }
   }
 
@@ -2294,7 +2589,12 @@ export class BattleScene extends Phaser.Scene {
     }
 
     this.actionInFlight = true;
+    // A cast engages the same guard a Swap does, so a board selection cannot be
+    // left holding a cell across it — a later tap must start a new gesture
+    // rather than complete the one the guard interrupted (TASK-246 §3).
+    this.clearSelection();
     this.renderCastStatus(`CardCast ${cardId} in flight…`);
+    this.renderPhaseIndicator();
 
     try {
       const acknowledgement = await this.runtime.requestAction({
@@ -2309,6 +2609,7 @@ export class BattleScene extends Phaser.Scene {
       );
     } finally {
       this.actionInFlight = false;
+      this.renderPhaseIndicator();
     }
   }
 
@@ -2326,7 +2627,10 @@ export class BattleScene extends Phaser.Scene {
     }
 
     this.actionInFlight = true;
+    // Same guard, same consequence as a CardCast: no selection survives it.
+    this.clearSelection();
     this.renderCastStatus('PetSkillCast in flight…');
+    this.renderPhaseIndicator();
 
     try {
       const acknowledgement = await this.runtime.requestAction({
@@ -2340,6 +2644,7 @@ export class BattleScene extends Phaser.Scene {
       );
     } finally {
       this.actionInFlight = false;
+      this.renderPhaseIndicator();
     }
   }
 
@@ -2519,6 +2824,10 @@ export class BattleScene extends Phaser.Scene {
     this.presentationStep = 0;
     this.presentationSequence = envelope.serverSequence;
     this.presentationBattleId = envelope.battleId;
+    // A timeline is the guard engaged for a whole resolution: a cell selected
+    // before it started must not survive it, or the player's next tap would
+    // complete a gesture from before the resolution (TASK-246 §3).
+    this.clearSelection();
     this.advancePresentation();
   }
 
@@ -2573,7 +2882,7 @@ export class BattleScene extends Phaser.Scene {
       phases.push({
         kind: 'swap',
         detail: `swap ${swapCells.from}->${swapCells.to}`,
-        holdMs: SWAP_PHASE_MS,
+        holdMs: BattleScene.phaseHoldMs('swap', []),
         events: [],
       });
     }
@@ -2589,7 +2898,7 @@ export class BattleScene extends Phaser.Scene {
       phases.push({
         kind: open.kind,
         detail: open.detail,
-        holdMs: BattleScene.phaseHoldMs(open.kind),
+        holdMs: BattleScene.phaseHoldMs(open.kind, open.events),
         events: open.events,
       });
       open = null;
@@ -2656,7 +2965,7 @@ export class BattleScene extends Phaser.Scene {
       phases.splice(at === -1 ? phases.length : at, 0, {
         kind: 'settle',
         detail: 'settle',
-        holdMs: SETTLE_PHASE_MS,
+        holdMs: BattleScene.phaseHoldMs('settle', []),
         events: [],
       });
     }
@@ -2665,7 +2974,7 @@ export class BattleScene extends Phaser.Scene {
       phases.push({
         kind: 'outcome',
         detail: `outcome ${this.pendingOutcomeHandoff.outcome}`,
-        holdMs: 0,
+        holdMs: BattleScene.phaseHoldMs('outcome', []),
         events: [],
       });
     }
@@ -2722,26 +3031,90 @@ export class BattleScene extends Phaser.Scene {
     return kind;
   }
 
-  /** How long one phase kind is held before the next begins. */
-  private static phaseHoldMs(kind: PresentationPhaseKind): number {
+  /**
+   * How long one phase is held before the next begins.
+   *
+   * It is **derived from the phase's own delivered events**, so the hold covers
+   * exactly the animations this phase starts and nothing more: a Match's hold is
+   * its highlight's lifetime, a phase that also carries a floating number is held
+   * for that number, and a phase that starts no animation at all (the terminal
+   * outcome handoff) is held for no time at all. That is what keeps the
+   * relationship true for every batch shape rather than only for the common one —
+   * a `feedback` event joins the phase already open, so the phase that receives it
+   * must grow to cover it (TASK-246 §5).
+   */
+  private static phaseHoldMs(
+    kind: PresentationPhaseKind,
+    events: readonly InBattleServerEvent[]
+  ): number {
+    if (kind === 'outcome') {
+      return 0;
+    }
+
+    return BattleScene.phaseEffectMs(kind, events) + PHASE_SETTLE_MS;
+  }
+
+  /**
+   * The longest animation one phase's own events trigger, in milliseconds.
+   *
+   * It reads the *delivered* events, and only to decide how long to look at what
+   * they present — never what they mean: `MatchCreated`/`GemMatched` flash the
+   * cells they name, a damage instance draws a floater and moves an HP panel,
+   * `PowerChanged` draws a signed floater, the swap tweens two views, and the
+   * settle phase plays the refill. No value is computed from any of them.
+   */
+  private static phaseEffectMs(
+    kind: PresentationPhaseKind,
+    events: readonly InBattleServerEvent[]
+  ): number {
     switch (kind) {
       case 'swap':
-        return SWAP_PHASE_MS;
-      case 'match':
-        return MATCH_PHASE_MS;
-      case 'cascade':
-        return CASCADE_PHASE_MS;
+        return SWAP_TWEEN_MS;
       case 'settle':
-        return SETTLE_PHASE_MS;
-      case 'damage':
-      case 'retaliation':
-        return DAMAGE_PHASE_MS;
+        return GEM_REFILL_MS;
       case 'outcome':
         return 0;
-      case 'feedback':
+      case 'damage':
+      case 'retaliation':
+        // Either combat phase moves the panel of the side the delivered events
+        // name, so its gauge travel counts even before its events are read.
+        return BattleScene.phasePresentationEffectMs(events, GAUGE_TWEEN_MS);
       default:
-        return FEEDBACK_PHASE_MS;
+        return BattleScene.phasePresentationEffectMs(events, 0);
     }
+  }
+
+  /** The longest board/combat/floater animation the given delivered events start. */
+  private static phasePresentationEffectMs(
+    events: readonly InBattleServerEvent[],
+    floor: number
+  ): number {
+    let longest = floor;
+
+    for (const event of events) {
+      switch (event.type) {
+        case 'MatchCreated':
+          longest = Math.max(longest, MATCH_HIGHLIGHT_MS);
+          break;
+        case 'GemMatched':
+          longest = Math.max(longest, GEM_HIGHLIGHT_MS);
+          break;
+        case 'DamageDealt':
+        case 'DamageTaken':
+          // One floater per damage instance, plus the panel travel it names.
+          longest = Math.max(longest, FLOATER_LIFE_MS, GAUGE_TWEEN_MS);
+          break;
+        case 'PowerChanged':
+          // The signed Power floater of §3.2.24, and nothing else.
+          longest = Math.max(longest, FLOATER_LIFE_MS);
+          break;
+        default:
+          // Every other event presents through the callout alone, or not at all.
+          break;
+      }
+    }
+
+    return longest;
   }
 
   /**
@@ -2753,6 +3126,12 @@ export class BattleScene extends Phaser.Scene {
    * sequence. **Without a tween manager — a unit harness — every phase plays
    * immediately and in order**, which is what makes the ordering observable
    * without a running clock.
+   *
+   * The phase that is playing is what the interaction indicator reports, so a
+   * `retaliation` phase — and only a `retaliation` phase, which
+   * `buildPresentationPhases` derives from a delivered
+   * `source="boss"`/`target="player"` damage instance — is when `BOSS ATTACK` is
+   * shown (`TASK-246` §4).
    */
   private advancePresentation(): void {
     const phases = this.presentationTimeline;
@@ -2764,8 +3143,10 @@ export class BattleScene extends Phaser.Scene {
       const phase = phases[this.presentationStep];
       this.presentationStep++;
 
+      this.presentationPhaseKind = phase.kind;
       this.playPresentationPhase(phase);
       this.presentedPhases.push(phase.detail);
+      this.renderPhaseIndicator();
 
       if (phase.holdMs > 0 && this.tweens) {
         // The pacing runs on the phase clock, so an aborted timeline can cancel
@@ -2864,14 +3245,14 @@ export class BattleScene extends Phaser.Scene {
       targets: [fromView.tile, fromView.label],
       x: to.x,
       y: to.y,
-      duration: SWAP_PHASE_MS,
+      duration: SWAP_TWEEN_MS,
       ease: 'Sine.easeInOut',
     });
     this.tweens.add({
       targets: [toView.tile, toView.label],
       x: from.x,
       y: from.y,
-      duration: SWAP_PHASE_MS,
+      duration: SWAP_TWEEN_MS,
       ease: 'Sine.easeInOut',
     });
 
@@ -2936,15 +3317,24 @@ export class BattleScene extends Phaser.Scene {
   /**
    * Releases the timeline-aware input guard and drops the in-flight timeline.
    *
-   * It touches no game object: it is the bookkeeping half of ending a
-   * presentation, and every caller that must also *apply* something does so
-   * explicitly (`settleHeldPresentation`).
+   * It touches no game object beyond the interaction indicator it re-derives: it
+   * is the bookkeeping half of ending a presentation, and every caller that must
+   * also *apply* something does so explicitly (`settleHeldPresentation`).
+   *
+   * Ending a timeline therefore also ends the selection and the phase statement
+   * it was showing: completion, supersession, a presentation error, and scene
+   * teardown all arrive here, so no phase can leak into the next interaction and
+   * no stale selection can outlive the resolution it was made in
+   * (`TASK-246` §3–§4).
    */
   private releaseTimeline(): void {
     this.presentationTimeline = null;
     this.presentationStep = 0;
     this.presentationSequence = null;
     this.presentationBattleId = null;
+    this.presentationPhaseKind = null;
+    this.clearSelection();
+    this.renderPhaseIndicator();
   }
 
   /**
@@ -2982,6 +3372,13 @@ export class BattleScene extends Phaser.Scene {
    * delayed by a phase that has yet to run. It is deliberately *not* performed by
    * scene teardown (`shutdown` drops the pending handoff instead): a scene that is
    * going away navigates nowhere.
+   *
+   * The delivered outcome is stated on the interaction indicator **before** the
+   * scene is replaced, so the player reads `VICTORY` / `DEFEAT` rather than being
+   * left on a `RESOLVING` line while the battle scene goes away. The statement is
+   * taken from the delivered `outcome` member of `BattleWon` / `BattleLost`
+   * (`SIGNALR_PROTOCOL.md` §3.2.19 item 1) — the battle's end is the server's own
+   * fact, and this only names it (`TASK-246` §4).
    */
   private handOffOutcome(): void {
     const outcome = this.pendingOutcomeHandoff;
@@ -2991,6 +3388,8 @@ export class BattleScene extends Phaser.Scene {
 
     this.outcomeHandled = true;
     this.pendingOutcomeHandoff = null;
+    this.terminalStatement = resolveOutcomeStatement(outcome.outcome);
+    this.renderPhaseIndicator();
     this.scene.start('ResultScene', outcome);
   }
 
@@ -3020,13 +3419,13 @@ export class BattleScene extends Phaser.Scene {
       switch (event.type) {
         case 'MatchCreated': {
           for (const cellIndex of event.cells) {
-            this.spawnCellHighlight(cellIndex, 0xffffff, 0.4, 0xfacc15, 400);
+            this.spawnCellHighlight(cellIndex, 0xffffff, 0.4, 0xfacc15, MATCH_HIGHLIGHT_MS);
           }
           previousDamage = null;
           break;
         }
         case 'GemMatched': {
-          this.spawnCellHighlight(event.cellIndex, 0x60a5fa, 0.5, 0x38bdf8, 350);
+          this.spawnCellHighlight(event.cellIndex, 0x60a5fa, 0.5, 0x38bdf8, GEM_HIGHLIGHT_MS);
           previousDamage = null;
           break;
         }
@@ -3319,6 +3718,85 @@ export class BattleScene extends Phaser.Scene {
    */
   isInputLocked(): boolean {
     return this.presentationTimeline !== null || this.swapPending || this.actionInFlight;
+  }
+
+  /**
+   * The one statement the interaction indicator is currently making, or `null`
+   * when it has nothing honest to say.
+   *
+   * **This is the client's own interaction state, not a server fact.** The
+   * contract delivers no turn ownership, no phase, and no status
+   * (`GAME_STATE.md` §2.0.3; the `type` discriminator set of
+   * `SIGNALR_PROTOCOL.md` §3.2.2 is closed and contains no turn or phase event —
+   * the `GAME_EVENTS.md` §1/§2 turn events that would be needed for one are not
+   * on the wire, TASK-246's C-1), so the scene states only what it can actually
+   * know:
+   *
+   * ```text
+   * terminal statement    the delivered BattleWon / BattleLost outcome, set by
+   *                       handOffOutcome immediately before the ResultScene
+   *                       handoff — `VICTORY` / `DEFEAT`
+   * retaliation phase     the local timeline is playing the phase the delivered
+   *                       `source="boss"`/`target="player"` damage instance
+   *                       opened — `BOSS ATTACK`
+   * input locked          the same `isInputLocked()` condition the guard itself
+   *                       uses, so the line and the guard can never disagree —
+   *                       `RESOLVING`
+   * no battle delivered   nothing: with no authoritative board there is no
+   *                       interaction to permit, so the line stays empty rather
+   *                       than claiming a move
+   * otherwise             the client permits player input — `YOUR TURN`
+   * ```
+   *
+   * Each is a presentation status. `RESOLVING` in particular is *not* a
+   * server-defined phase: the server resolves a Swap completely, writes the state
+   * back, and only then sends the batch (`SIGNALR_PROTOCOL.md` §3.1 items 1–2),
+   * so there is no remote phase to observe — the honest meaning is exactly this
+   * local timeline playing. Nothing here is inferred from animation timing, and
+   * no missing server phase is fabricated.
+   */
+  private phaseIndicator(): InteractionStatement | null {
+    if (this.terminalStatement) {
+      return this.terminalStatement;
+    }
+
+    if (this.presentationPhaseKind === 'retaliation') {
+      return INTERACTION_BOSS_ATTACK;
+    }
+
+    if (this.isInputLocked()) {
+      return INTERACTION_RESOLVING;
+    }
+
+    if (this.currentBattleState === null) {
+      return null;
+    }
+
+    return INTERACTION_YOUR_TURN;
+  }
+
+  /**
+   * Writes the interaction indicator's single statement.
+   *
+   * One line, one value: the label is replaced rather than layered, so two
+   * contradictory interaction states can never be readable at once. An empty
+   * statement clears the line — on a scene with nothing delivered, and after
+   * teardown, which clears it before the engine destroys it.
+   */
+  private renderPhaseIndicator(): void {
+    const text = this.phaseText;
+    if (!text) {
+      return;
+    }
+
+    const statement = this.phaseIndicator();
+    if (statement === null) {
+      text.setText('');
+      return;
+    }
+
+    text.setText(statement.label);
+    text.setColor(statement.color);
   }
 
   /**

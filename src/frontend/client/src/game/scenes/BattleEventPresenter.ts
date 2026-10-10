@@ -691,6 +691,91 @@ export function resolveDamagePresentationPhase(
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// The client's own interaction indicator (TASK-246 §4)
+// ---------------------------------------------------------------------------
+
+/**
+ * One statement of the client's **own** interaction state, ready to be drawn.
+ *
+ * It is deliberately not an event, a phase, or a battle value. The wire carries
+ * no turn ownership, no phase, and no status field — `GAME_STATE.md` §2.0.3
+ * ("§2.0 contains no `Status` field, and this document introduces none") and
+ * `SIGNALR_PROTOCOL.md` §3.2.2's closed `type` discriminator set, which admits
+ * no turn or phase event — so the strongest honest statement a client can make
+ * is about what the client itself is doing. `label` is the line a player reads;
+ * `color` is a display choice and carries no meaning.
+ */
+export interface InteractionStatement {
+  readonly label: string;
+  readonly color: string;
+}
+
+/**
+ * The client currently permits player input: no action is in flight, and no
+ * presentation timeline is playing.
+ *
+ * **It is not a server-asserted turn.** It states what this client's own input
+ * guard permits (`BattleScene.isInputLocked`), and nothing on the wire says
+ * whose turn it is (`TASK-246` F-3). Describing it as the server's own turn
+ * claim would assert a value the server never sent (`AGENTS.md` §10).
+ */
+export const INTERACTION_YOUR_TURN: InteractionStatement = Object.freeze({
+  label: 'YOUR TURN',
+  color: '#4ade80',
+});
+
+/**
+ * The local presentation timeline is playing, so input is held until it ends.
+ *
+ * A presentation status, **not** a server-defined phase. A resolution is
+ * resolved and its state written back *before* its batch is sent, and no
+ * per-step delivery exists (`SIGNALR_PROTOCOL.md` §3.1 items 1–2), so there is
+ * no remote phase to observe at all — the honest meaning is exactly this local
+ * timeline playing.
+ */
+export const INTERACTION_RESOLVING: InteractionStatement = Object.freeze({
+  label: 'RESOLVING',
+  color: '#94a3b8',
+});
+
+/**
+ * The Boss's response is being presented.
+ *
+ * It is shown only while the local timeline plays a phase that a **delivered**
+ * damage instance opened with `source="boss"` and `target="player"`
+ * (`SIGNALR_PROTOCOL.md` §3.2.14 item 3; `GAME_RULES.md` §17 step 18c) — the
+ * same classification `resolveDamagePresentationPhase` performs, so the party
+ * vocabulary keeps one spelling. No Boss *intent* and no Boss-turn boundary is
+ * inferred: neither exists on the wire, so neither can be shown before the
+ * delivered batch arrives.
+ */
+export const INTERACTION_BOSS_ATTACK: InteractionStatement = Object.freeze({
+  label: 'BOSS ATTACK',
+  color: CALLOUT_BOSS_COLOR,
+});
+
+/**
+ * The terminal statement for one delivered battle outcome.
+ *
+ * `outcome` is the delivered `BattleWon` / `BattleLost` member, fixed by
+ * `SIGNALR_PROTOCOL.md` §3.2.19 item 1 as `"victory"` or `"defeat"`: the
+ * battle's end is the server's own fact and this only names it for the player.
+ * A value outside that pair is presented **as itself** rather than mapped onto
+ * one of the two, because replacing a delivered value with a guessed one is what
+ * `AGENTS.md` §7 forbids.
+ */
+export function resolveOutcomeStatement(outcome: string): InteractionStatement {
+  switch (outcome.toLowerCase()) {
+    case 'victory':
+      return { label: 'VICTORY', color: '#34d399' };
+    case 'defeat':
+      return { label: 'DEFEAT', color: '#f87171' };
+    default:
+      return { label: outcome.toUpperCase(), color: '#f8fafc' };
+  }
+}
+
 /**
  * Formats a Swap rejection reason into a player-friendly presentation message,
  * providing a safe fallback for unknown codes.

@@ -26,6 +26,11 @@ import {
   formatGemCellLabel,
   parseGemBaseLabel,
   parseSpecialGemBadge,
+  CALLOUT_BOSS_COLOR,
+  INTERACTION_BOSS_ATTACK,
+  INTERACTION_RESOLVING,
+  INTERACTION_YOUR_TURN,
+  resolveOutcomeStatement,
 } from '../src/game/scenes/BattleEventPresenter';
 import type {
   PresentedMatchCreated,
@@ -1958,5 +1963,120 @@ describe('TASK-218B — the Relic trigger callout reaches the player (SIGNALR_PR
       expect(parseSpecialGemBadge('')).toBeNull();
       expect(parseSpecialGemBadge(null)).toBeNull();
     });
+  });
+});
+
+describe('TASK-246 — the interaction indicator is client state, never wire state', () => {
+  /** The `src/`-relative socket types the frontend projection is built from. */
+  const runtimeEventsSource = readFileSync(
+    resolve(__dirname, '../src/game/runtime/GameRuntimeEvents.ts'),
+    'utf8'
+  );
+
+  /** The presenter's own source, with its prose removed. */
+  const presenterSource = readFileSync(
+    resolve(__dirname, '../src/game/scenes/BattleEventPresenter.ts'),
+    'utf8'
+  )
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+  it('names exactly the three client-side interaction states, each with a display colour', () => {
+    // The vocabulary is the client's own. `YOUR TURN` states that this client
+    // permits input (nothing on the wire says whose turn it is), `RESOLVING` that
+    // its local timeline is playing, and `BOSS ATTACK` that the delivered batch
+    // named the Boss as the damage source (TASK-246 §4).
+    expect(INTERACTION_YOUR_TURN).toEqual({ label: 'YOUR TURN', color: '#4ade80' });
+    expect(INTERACTION_RESOLVING).toEqual({ label: 'RESOLVING', color: '#94a3b8' });
+    expect(INTERACTION_BOSS_ATTACK).toEqual({ label: 'BOSS ATTACK', color: CALLOUT_BOSS_COLOR });
+
+    // Frozen presentation constants: they cannot be mutated into state carriers.
+    expect(Object.isFrozen(INTERACTION_YOUR_TURN)).toBe(true);
+    expect(Object.isFrozen(INTERACTION_RESOLVING)).toBe(true);
+    expect(Object.isFrozen(INTERACTION_BOSS_ATTACK)).toBe(true);
+  });
+
+  it('states the delivered outcome and never substitutes one for an unrecognised value', () => {
+    // SIGNALR_PROTOCOL.md §3.2.19 item 1 fixes the delivered value set as
+    // "victory" | "defeat"; the battle's end is the server's own fact and this
+    // only names it.
+    expect(resolveOutcomeStatement('victory')).toEqual({ label: 'VICTORY', color: '#34d399' });
+    expect(resolveOutcomeStatement('defeat')).toEqual({ label: 'DEFEAT', color: '#f87171' });
+
+    // A value outside that pair is presented as itself rather than being mapped
+    // onto one of the two (AGENTS.md §7 — no invented value).
+    expect(resolveOutcomeStatement('abandoned').label).toBe('ABANDONED');
+  });
+
+  it('reads no turn, phase, or status member anywhere in the presenter', () => {
+    // F-3 / C-1: the contract delivers no turn ownership and no battle phase, so
+    // there is no member for the indicator to read. The presenter therefore
+    // contains no such reference, and the vocabulary above is presentation only.
+    for (const forbidden of [
+      'activeTurn',
+      'whoseTurn',
+      'turnOwner',
+      'isMyTurn',
+      'currentPhase',
+      'battleStatus',
+      'phaseIndex',
+    ]) {
+      expect(
+        presenterSource,
+        `BattleEventPresenter must not read "${forbidden}"`
+      ).not.toContain(forbidden);
+    }
+
+    // The phase classifier the indicator reuses reads exactly the two delivered
+    // party strings and nothing else.
+    expect(resolveDamagePresentationPhase('boss', 'player')).toBe('retaliation');
+    expect(resolveDamagePresentationPhase('player', 'boss')).toBe('damage');
+  });
+
+  it('keeps the state push at exactly its nine documented members, with no phase or status field', () => {
+    // SIGNALR_PROTOCOL.md §4: `BattleStateUpdated` carries the battle projection.
+    // GAME_STATE.md §2.0.3 states §2.0 contains no `Status` field, and a lifecycle
+    // field "must be introduced by its own design/ADR task, not added here" — so
+    // neither the indicator nor anything else this task added may widen it.
+    const body =
+      /export interface RuntimeBattleState \{([\s\S]*?)\n\}/.exec(runtimeEventsSource)?.[1] ?? '';
+    const members = [...body.matchAll(/^ {2}readonly (\w+)/gm)].map((match) => match[1]);
+
+    expect(members).toEqual([
+      'battleId',
+      'turn',
+      'sequence',
+      'rngSeed',
+      'rngState',
+      'board',
+      'playerState',
+      'petState',
+      'bossState',
+    ]);
+
+    for (const forbidden of ['phase', 'status', 'activeTurn', 'whoseTurn', 'turnOwner']) {
+      expect(members, `BattleState must carry no "${forbidden}" member`).not.toContain(forbidden);
+    }
+  });
+
+  it('accepts no turn or phase event the discriminator set does not define', () => {
+    // GAME_EVENTS.md §1/§2 define `BattleStarted`, `TurnStarted`, `SwapStarted`,
+    // `SwapResolved`, `MatchResolved` and `TurnEnded`, but SIGNALR_PROTOCOL.md
+    // §3.2.2's closed set does not admit them and the implementation emits none
+    // (TASK-246's C-1 — reported, not resolved here). The indicator therefore
+    // cannot be sourced from a turn or phase event, and none is accepted.
+    for (const type of [
+      'BattleStarted',
+      'TurnStarted',
+      'TurnEnded',
+      'SwapStarted',
+      'SwapResolved',
+      'MatchResolved',
+      'PhaseChanged',
+      'BossPhaseChanged',
+      'BossTurnStarted',
+    ]) {
+      expect(parseInBattleEvent({ type, phase: 'boss' }), `${type} must stay ignored`).toBeNull();
+    }
   });
 });

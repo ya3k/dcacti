@@ -983,6 +983,21 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
      * own pacing behind.
      */
     pendingTweenCount: () => pendingTweens.length,
+    /**
+     * The pending tweens' own durations and targets, in creation order.
+     *
+     * It is what makes "a phase's hold covers the animations that phase starts"
+     * (TASK-246 §5) an assertion about the scene's real tween configuration
+     * rather than about a constant copied into this suite: a test can find the
+     * pacing tween by its target (the scene's own `phaseClock`) and compare its
+     * duration with every animation tween that same phase queued.
+     */
+    pendingTweenRecords: () =>
+      pendingTweens.map((tween) => ({
+        duration: tween.duration,
+        targets: tween.targets,
+        props: tween.props,
+      })),
     /** The targets `killTweensOf` has been asked for, in order. */
     killedTweenTargets,
     /**
@@ -4420,8 +4435,762 @@ describe('BattleScene — cascade presentation timeline (TASK-245, GAME_EVENTS.m
   });
 });
 
+describe('BattleScene — selected-cell treatment, interaction indicator & pacing (TASK-246)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /** The four documented Gem contract names (MATCH3_RULES.md §1.1). */
+  const GEM_NAMES = ['ATK', 'DEF', 'HP', 'POWER'];
+
+  /** A scene-owned presentation field, read the way the scene wrote it. */
+  function field<T>(ctx: object, name: string): T {
+    return (ctx as Record<string, T>)[name];
+  }
+
+  /**
+   * The scene's own input guard, evaluated against the context that owns its
+   * state (the harness runs a scene through a `this` context, the way Phaser's
+   * own Scene Systems do).
+   */
+  function inputLocked(scene: BattleScene, ctx: object): boolean {
+    return (
+      Object.getPrototypeOf(scene) as { isInputLocked(this: object): boolean }
+    ).isInputLocked.call(ctx);
+  }
+
+  /** One rendered rectangle: a board tile, an overlay, a gauge fill, or the ring. */
+  interface RenderedRectangle {
+    readonly x: number;
+    readonly y: number;
+    readonly width: number;
+    readonly height: number;
+    readonly strokeWidth?: number;
+    readonly strokeColor?: number;
+    readonly visible?: boolean;
+    readonly alpha?: number;
+  }
+
+  /** The persistent selection treatment, as the scene owns it. */
+  const ring = (ctx: object) => field<RenderedRectangle | null>(ctx, 'selectionRing');
+
+  /** The persistent interaction indicator, as the scene owns it. */
+  const indicator = (ctx: object) =>
+    field<{ readonly text: string; readonly color?: string } | null>(ctx, 'phaseText');
+  const indicatorLabel = (ctx: object): string | null => indicator(ctx)?.text ?? null;
+
+  /** The phases the timeline has played, in order. */
+  const playedPhases = (ctx: object): string[] => [...field<string[]>(ctx, 'presentedPhases')];
+
+  /**
+   * A delivered 8 x 8 board, rotated by `shift` cells so a resolution's board is
+   * provably different from the one already on screen.
+   */
+  function deliveredBoard(shift = 0): RuntimeBoard {
+    return {
+      cells: Array.from({ length: 64 }, (_, index) => ({
+        gemType: GEM_NAMES[(index + shift) % GEM_NAMES.length],
+      })),
+    };
+  }
+
+  function battleState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+    return {
+      battleId: 'battle-246',
+      turn: 1,
+      sequence: 0,
+      rngSeed: 42,
+      rngState: { state: 123456789, increment: 1 },
+      board: deliveredBoard(),
+      playerState: { combo: 0, matchCount: 0 },
+      petState: {
+        hp: 1000,
+        maxHp: 1000,
+        power: 0,
+        passiveId: 'xich-lang',
+        passiveProgress: { threshold: 5, current: 0 },
+        equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+        statusEffects: [],
+      },
+      bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
+      ...overrides,
+    };
+  }
+
+  /** A battle scene with a recorded, test-driven tween queue. */
+  function createBattle(state: RuntimeBattleState | null = battleState()) {
+    const harness = createSceneHarness({ battleState: state, withTweens: true });
+    const scene = new BattleScene();
+    const ctx = harness.context(scene, 'BattleScene');
+    runScene(scene, ctx, 'create');
+    return { harness, scene, ctx };
+  }
+
+  /**
+   * Submits one Swap whose acknowledgement is held open — the state a real
+   * request is in while its resolution's state push and event batch arrive
+   * (`SIGNALR_PROTOCOL.md` §3.1). The returned function settles it.
+   */
+  function submitHeldSwap(
+    harness: ReturnType<typeof createSceneHarness>,
+    from = 20,
+    to = 21
+  ): () => void {
+    let settle: (() => void) | null = null;
+
+    harness.setActionBehaviour(
+      () =>
+        new Promise<never>((resolve) => {
+          settle = () => resolve({ accepted: true, reason: null } as never);
+        })
+    );
+
+    tapCell(harness, from);
+    tapCell(harness, to);
+
+    return () => {
+      harness.setActionBehaviour(null);
+      settle?.();
+    };
+  }
+
+  /** Delivers one resolution the way the server does: state push, then batch. */
+  function deliverResolution(
+    harness: ReturnType<typeof createSceneHarness>,
+    next: RuntimeBattleState,
+    events: unknown[]
+  ): void {
+    harness.setBattleState(next);
+    harness.emitBattleEvents({
+      battleId: next.battleId,
+      serverSequence: next.sequence,
+      events,
+    });
+  }
+
+  /**
+   * One resolved Swap covering every phase kind the timeline can play: a Match,
+   * two delivered Cascade passes, a delivered Power movement, the player's hit on
+   * the Boss, and the Boss's retaliation.
+   */
+  const RESOLUTION_BATCH: unknown[] = [
+    { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+    { type: 'GemMatched', cellIndex: 24, gemType: 'ATK' },
+    { type: 'CascadeCreated', cascadeDepth: 1 },
+    { type: 'MatchCreated', shape: 'Straight', cells: [32, 33, 34], gemType: 'DEF', cascadeDepth: 2 },
+    { type: 'GemMatched', cellIndex: 32, gemType: 'DEF' },
+    { type: 'CascadeCreated', cascadeDepth: 2 },
+    { type: 'MatchCreated', shape: 'Lt', cells: [40, 41, 42, 48], gemType: 'HP', cascadeDepth: 3 },
+    { type: 'ComboChanged', combo: 3 },
+    { type: 'PowerChanged', delta: 10, power: 10, source: 'match' },
+    { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+    { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
+    { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
+    { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
+  ];
+
+  /** The delivered state that resolution commits: a moved board and two moved HP pairs. */
+  function resolvedState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+    return battleState({
+      sequence: 1,
+      board: deliveredBoard(1),
+      bossState: { bossId: 'boss-hoa-long', hp: 1250, maxHp: 5000 },
+      petState: { ...battleState().petState, hp: 640 },
+      ...overrides,
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Selection feedback (TASK-246 §3)
+  // ---------------------------------------------------------------------------
+
+  it('renders the selected cell with a persistent board treatment of its own', () => {
+    const { harness, ctx } = createBattle();
+
+    // Nothing is selected yet: the treatment exists but marks no cell.
+    expect(ring(ctx)).not.toBeNull();
+    expect(ring(ctx)?.visible).toBe(false);
+
+    tapCell(harness, 12);
+
+    const marking = ring(ctx);
+    const centre = cellCentre(12);
+
+    // The cell itself is marked, at the cell's own position...
+    expect(marking?.visible).toBe(true);
+    expect(marking?.x).toBe(centre.x);
+    expect(marking?.y).toBe(centre.y);
+
+    // ...with a treatment that is only the selection's: an opaque 4 px white
+    // ring, never faded (alpha stays 1), sized to the cell, and distinct from the
+    // match/cascade overlays (`spawnCellHighlight`'s translucent fills) and from
+    // a Special Gem's own tile stroke.
+    expect(marking?.strokeWidth).toBe(4);
+    expect(marking?.strokeColor).toBe(0xffffff);
+    expect(marking?.width).toBe(CELL_SIZE + 4);
+    expect(marking?.alpha).toBe(1);
+
+    // The text line still reports the selection: the treatment is board
+    // feedback in addition to it, not a replacement for it.
+    expect(field<{ text: string }>(ctx, 'swapText').text).toContain('Cell 12 selected');
+
+    // And nothing animates it: no tween targets the ring, so it cannot fade or
+    // destroy itself the way a transient highlight does while the cell stays
+    // selected.
+    expect(harness.pendingTweenCount()).toBe(0);
+    expect(harness.pendingTweenRecords().some((t) => t.targets.includes(marking as object))).toBe(
+      false
+    );
+  });
+
+  it('deselects on a second tap on the same cell and hides the treatment', () => {
+    const { harness, ctx } = createBattle();
+
+    tapCell(harness, 12);
+    expect(ring(ctx)?.visible).toBe(true);
+
+    tapCell(harness, 12);
+
+    expect(ring(ctx)?.visible).toBe(false);
+    expect(harness.requestedActions).toHaveLength(0);
+    expect(field<{ text: string }>(ctx, 'swapText').text).toBe('Select a cell to swap.');
+  });
+
+  it('clears the treatment when the pair is submitted', async () => {
+    const { harness, ctx } = createBattle();
+
+    tapCell(harness, 12);
+    expect(ring(ctx)?.visible).toBe(true);
+
+    tapCell(harness, 13);
+    await flush();
+
+    expect(ring(ctx)?.visible).toBe(false);
+    expect(harness.requestedActions).toEqual([{ kind: 'Swap', fromCell: 12, toCell: 13 }]);
+  });
+
+  it('composes the selection with a Special Gem instead of clobbering it', () => {
+    // R-1: a selected Special Gem must still read as a Special Gem. The Special
+    // Gem's styling lives on the cell's own tile (its stroke and its label
+    // badge); the selection is a separate persistent ring, so the two compose.
+    const cells: Array<{ gemType: string; specialGem?: { type: string; orientation?: string } }> =
+      Array.from({ length: 64 }, (_, index) => ({
+        gemType: GEM_NAMES[index % GEM_NAMES.length],
+      }));
+    cells[12] = { gemType: 'HP', specialGem: { type: 'LineClear', orientation: 'Vertical' } };
+
+    const { harness, ctx } = createBattle(battleState({ board: { cells } }));
+
+    const tiles = harness.boardCells.filter((cell) => cell.kind === 'tile');
+    const labels = harness.boardCells.filter((cell) => cell.kind === 'label');
+
+    expect(tiles[12].strokeColor).toBe(0x38bdf8);
+    expect(tiles[12].strokeWidth).toBe(3);
+    expect(labels[12].label).toBe('HP [V]');
+
+    tapCell(harness, 12);
+
+    // Both are still visible: the delivered Special Gem styling is untouched and
+    // the selection ring marks the same cell.
+    expect(tiles[12].strokeColor).toBe(0x38bdf8);
+    expect(tiles[12].strokeWidth).toBe(3);
+    expect(labels[12].label).toBe('HP [V]');
+    expect(ring(ctx)?.visible).toBe(true);
+    expect(ring(ctx)?.x).toBe(cellCentre(12).x);
+    expect(ring(ctx)?.y).toBe(cellCentre(12).y);
+  });
+
+  it('never lets a stale selection pair with a later tap to submit an unintended Swap', async () => {
+    const { harness, scene, ctx } = createBattle();
+
+    // The player selects a cell and submits the pair: the selection ends with
+    // the gesture, before the resolution even starts.
+    const settle = submitHeldSwap(harness, 20, 21);
+    expect(ring(ctx)?.visible).toBe(false);
+    expect(field<number | null>(ctx, 'selectedCell')).toBeNull();
+
+    deliverResolution(harness, resolvedState(), RESOLUTION_BATCH);
+
+    // A tap during the resolution's own timeline changes nothing and is not
+    // remembered: it neither selects its cell nor completes a pair.
+    expect(inputLocked(scene, ctx)).toBe(true);
+    tapCell(harness, 30);
+    await flush();
+
+    expect(field<number | null>(ctx, 'selectedCell')).toBeNull();
+    expect(ring(ctx)?.visible).toBe(false);
+    // The only request the scene ever made is the pair the player submitted; the
+    // tap that landed while the guard was engaged was refused, not queued.
+    expect(harness.actionInvocations).toEqual([{ kind: 'Swap', fromCell: 20, toCell: 21 }]);
+
+    harness.flushTweens();
+    settle();
+    await flush();
+    expect(inputLocked(scene, ctx)).toBe(false);
+
+    // The next tap therefore *starts* a gesture rather than finishing the
+    // interrupted one, and only the player's own second tap submits.
+    tapCell(harness, 30);
+    expect(ring(ctx)?.visible).toBe(true);
+    await flush();
+    expect(harness.actionInvocations).toEqual([{ kind: 'Swap', fromCell: 20, toCell: 21 }]);
+
+    tapCell(harness, 31);
+    await flush();
+
+    expect(harness.actionInvocations).toEqual([
+      { kind: 'Swap', fromCell: 20, toCell: 21 },
+      { kind: 'Swap', fromCell: 30, toCell: 31 },
+    ]);
+    expect(ring(ctx)?.visible).toBe(false);
+  });
+
+  it('clears the selection when a cast engages the same guard', async () => {
+    // A CardCast is not a Swap gesture, but it engages the same input guard — so
+    // a board selection must not survive it and pair with a later tap.
+    const { harness, ctx } = createBattle();
+    await flush();
+
+    tapCell(harness, 12);
+    expect(ring(ctx)?.visible).toBe(true);
+
+    harness.clickOption('Card: Heal');
+    await flush();
+
+    expect(harness.actionInvocations.map((action) => action.kind)).toEqual(['CardCast']);
+    expect(ring(ctx)?.visible).toBe(false);
+    expect(field<number | null>(ctx, 'selectedCell')).toBeNull();
+  });
+
+  it('ends the selection when an authoritative push presents another board', () => {
+    const { harness, ctx } = createBattle();
+
+    tapCell(harness, 12);
+    expect(ring(ctx)?.visible).toBe(true);
+
+    // A push for a different battle (or a resync) replaces the board the gesture
+    // was made on, so the gesture ends with it.
+    harness.setBattleState(
+      battleState({ battleId: 'battle-246-next', sequence: 1, board: deliveredBoard(2) })
+    );
+
+    expect(ring(ctx)?.visible).toBe(false);
+    expect(field<number | null>(ctx, 'selectedCell')).toBeNull();
+
+    // And a cleared state (battle over, session change) drops it too, because the
+    // board it marked is gone.
+    tapCell(harness, 12);
+    expect(ring(ctx)?.visible).toBe(true);
+
+    harness.setBattleState(null);
+
+    expect(ring(ctx)?.visible).toBe(false);
+    expect(harness.boardCells).toHaveLength(0);
+  });
+
+  it('drops a live selection on SHUTDOWN and on DESTROY', () => {
+    const shutDown = createBattle();
+    tapCell(shutDown.harness, 12);
+    expect(ring(shutDown.ctx)?.visible).toBe(true);
+
+    shutDown.harness.shutdownScene(shutDown.ctx);
+
+    expect(field(shutDown.ctx, 'selectionRing')).toBeNull();
+    expect(field<number | null>(shutDown.ctx, 'selectedCell')).toBeNull();
+    expect(shutDown.harness.boardCells).toHaveLength(0);
+
+    const destroyed = createBattle();
+    tapCell(destroyed.harness, 12);
+    expect(ring(destroyed.ctx)?.visible).toBe(true);
+
+    destroyed.harness.destroyScene(destroyed.ctx);
+
+    expect(field(destroyed.ctx, 'selectionRing')).toBeNull();
+    expect(field<number | null>(destroyed.ctx, 'selectedCell')).toBeNull();
+    expect(destroyed.harness.boardCells).toHaveLength(0);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Interaction / phase messaging (TASK-246 §4)
+  // ---------------------------------------------------------------------------
+
+  it('states the client’s own interaction state, and claims no server turn', () => {
+    const { ctx } = createBattle();
+
+    // The client permits input, so it says so — as its own interaction state
+    // (`isInputLocked()` is false), never as a server-asserted turn.
+    expect(indicatorLabel(ctx)).toBe('YOUR TURN');
+    expect(indicator(ctx)?.color).toBe('#4ade80');
+
+    // Nothing about a turn's ownership or number is presented: the wire carries
+    // no such member, and the raw `turn` counter stays unrendered (TASK-210 §9).
+    expect(indicatorLabel(ctx)).not.toMatch(/TURN\s*\d/);
+    expect(indicatorLabel(ctx)).not.toMatch(/BOSS TURN/);
+  });
+
+  it('claims nothing before an authoritative board has arrived', () => {
+    const { ctx } = createBattle(null);
+
+    // With no delivered battle there is no interaction to permit, so the
+    // indicator makes no statement at all rather than claiming a move.
+    expect(indicatorLabel(ctx)).toBe('');
+    expect(field<{ text: string }>(ctx, 'boardMessageText').text).toBe('Preparing the board…');
+  });
+
+  it('reads RESOLVING through the timeline and BOSS ATTACK only in the delivered retaliation phase', async () => {
+    const { harness, scene, ctx } = createBattle();
+
+    const settle = submitHeldSwap(harness, 20, 21);
+    deliverResolution(harness, resolvedState(), RESOLUTION_BATCH);
+
+    const samples: Array<{ phase: string; label: string | null }> = [];
+    const sample = () => {
+      const phases = playedPhases(ctx);
+      samples.push({ phase: phases[phases.length - 1] ?? '', label: indicatorLabel(ctx) });
+    };
+
+    sample();
+    for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+      harness.flushTweens(1);
+      sample();
+    }
+    settle();
+    await flush();
+    harness.flushTweens();
+    sample();
+
+    const labelsFor = (phase: string) =>
+      samples.filter((entry) => entry.phase === phase).map((entry) => entry.label);
+
+    // While the timeline plays, the indicator says the client is busy — for the
+    // swap, the match, the cascades, the settle, and the player's own damage.
+    expect(labelsFor('swap 20->21').every((label) => label === 'RESOLVING')).toBe(true);
+    expect(labelsFor('damage player->boss').length).toBeGreaterThan(0);
+    expect(labelsFor('damage player->boss').every((label) => label === 'RESOLVING')).toBe(true);
+
+    // The Boss's response is the one phase that reads BOSS ATTACK, and it is the
+    // phase a delivered `source="boss"`/`target="player"` instance opened. (The
+    // label is sampled while each of that phase's own animations drains, so the
+    // phase names are compared as a set.)
+    const bossAttack = samples.filter((entry) => entry.label === 'BOSS ATTACK');
+    expect(bossAttack.length).toBeGreaterThan(0);
+    expect(new Set(bossAttack.map((entry) => entry.phase))).toEqual(
+      new Set(['retaliation boss->player'])
+    );
+
+    // The timeline's end releases the guard and returns to the statement that the
+    // client permits input.
+    expect(samples[samples.length - 1].label).toBe('YOUR TURN');
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(harness.pendingTweenCount()).toBe(0);
+  });
+
+  it('never fabricates BOSS ATTACK without a delivered boss-to-player damage instance', async () => {
+    const { harness, ctx } = createBattle();
+
+    const settle = submitHeldSwap(harness, 20, 21);
+    deliverResolution(harness, resolvedState(), [
+      { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      { type: 'GemMatched', cellIndex: 24, gemType: 'ATK' },
+      { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+    ]);
+
+    const labels: Array<string | null> = [indicatorLabel(ctx)];
+    for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+      harness.flushTweens(1);
+      labels.push(indicatorLabel(ctx));
+    }
+    settle();
+    await flush();
+    harness.flushTweens();
+    labels.push(indicatorLabel(ctx));
+
+    expect(labels).not.toContain('BOSS ATTACK');
+    expect(playedPhases(ctx)).not.toContain('retaliation boss->player');
+    // Nothing about a Boss turn is inferred from the board events either: the
+    // batch named no boss damage, so no boss phase exists to present.
+    expect(labels.every((label) => label === 'RESOLVING' || label === 'YOUR TURN')).toBe(true);
+  });
+
+  it('presents the delivered terminal outcome before handing the battle off', async () => {
+    const { harness, ctx } = createBattle();
+
+    const settle = submitHeldSwap(harness, 20, 21);
+    deliverResolution(harness, resolvedState(), [
+      { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+      { type: 'BattleWon', outcome: 'victory', finalBossHp: 0, finalPlayerHp: 850 },
+    ]);
+
+    // The damage phase is still a local presentation status, and nothing has been
+    // handed off yet.
+    expect(indicatorLabel(ctx)).toBe('RESOLVING');
+    expect(harness.sceneStarted).toHaveLength(0);
+
+    let guard = 0;
+    while (harness.pendingTweenCount() > 0 && guard < 500) {
+      harness.flushTweens(1);
+      guard++;
+    }
+    settle();
+    await flush();
+    harness.flushTweens();
+
+    // The delivered outcome is named on the indicator as the battle is handed
+    // off — the player reads the result, not a stuck RESOLVING line.
+    expect(harness.sceneStarted.map((started) => started.key)).toEqual(['ResultScene']);
+    expect(indicatorLabel(ctx)).toBe('VICTORY');
+    expect(indicator(ctx)?.color).toBe('#34d399');
+  });
+
+  it('presents a delivered defeat as its own terminal statement', () => {
+    const { harness, ctx } = createBattle();
+
+    harness.emitBattleEvents({
+      battleId: 'battle-246',
+      serverSequence: 7,
+      events: [
+        { type: 'DamageDealt', source: 'boss', target: 'player', amount: 90 },
+        { type: 'BattleLost', outcome: 'defeat', finalBossHp: 320, finalPlayerHp: 0 },
+      ],
+    });
+
+    // The Boss's delivered hit is presented as the Boss acting...
+    expect(indicatorLabel(ctx)).toBe('BOSS ATTACK');
+    expect(harness.sceneStarted).toHaveLength(0);
+
+    harness.flushTweens();
+
+    // ...and the delivered defeat is stated before the handoff.
+    expect(indicatorLabel(ctx)).toBe('DEFEAT');
+    expect(indicator(ctx)?.color).toBe('#f87171');
+    expect(harness.sceneStarted.map((started) => started.key)).toEqual(['ResultScene']);
+  });
+
+  it('drops the indicator with the scene, mid-timeline', async () => {
+    const { harness, scene, ctx } = createBattle();
+
+    const settle = submitHeldSwap(harness, 20, 21);
+    deliverResolution(harness, resolvedState(), RESOLUTION_BATCH);
+
+    expect(indicatorLabel(ctx)).toBe('RESOLVING');
+    expect(inputLocked(scene, ctx)).toBe(true);
+
+    harness.shutdownScene(ctx);
+    settle();
+    await flush();
+
+    expect(field(ctx, 'phaseText')).toBeNull();
+    expect(field(ctx, 'selectionRing')).toBeNull();
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(harness.pendingTweenCount()).toBe(0);
+    expect(harness.boardCells).toHaveLength(0);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Presentation pacing (TASK-246 §5)
+  // ---------------------------------------------------------------------------
+
+  it('holds each phase for longer than the animations that phase starts', async () => {
+    const { harness, ctx } = createBattle();
+    const phaseClock = field<object>(ctx, 'phaseClock');
+    const callout = field<object>(ctx, 'calloutText');
+
+    /** The phase's own pacing tween — the hold the timeline runs on. */
+    const pendingHold = () =>
+      harness.pendingTweenRecords().find((tween) => tween.targets.includes(phaseClock));
+    /**
+     * This phase's own animation tweens: everything its hold must cover.
+     *
+     * The callout's hold/fade is excluded deliberately: one delivered batch is one
+     * resolution, so the callout belongs to the whole timeline rather than to the
+     * phase that happens to be playing when it was set — its bounded lifetime is
+     * asserted separately below.
+     */
+    const pendingEffects = () =>
+      harness.pendingTweenRecords().filter(
+        (tween) => !tween.targets.includes(phaseClock) && !tween.targets.includes(callout)
+      );
+
+    const settle = submitHeldSwap(harness, 20, 21);
+    deliverResolution(harness, resolvedState(), RESOLUTION_BATCH);
+
+    const observed: Array<{ phase: string; hold: number; longestEffect: number }> = [];
+    /** The callout's own hold+fade tween, captured while it is still pending. */
+    let calloutTween: { readonly duration: number; readonly props: Record<string, unknown> } | undefined;
+    const observe = () => {
+      const phases = playedPhases(ctx);
+      const hold = pendingHold();
+      if (!hold) {
+        return;
+      }
+
+      calloutTween =
+        calloutTween ?? harness.pendingTweenRecords().find((tween) => tween.targets.includes(callout));
+
+      observed.push({
+        phase: phases[phases.length - 1] ?? '',
+        hold: hold.duration,
+        longestEffect: pendingEffects().reduce((longest, tween) => Math.max(longest, tween.duration), 0),
+      });
+    };
+
+    observe();
+    for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+      harness.flushTweens(1);
+      observe();
+    }
+    settle();
+    await flush();
+    harness.flushTweens();
+
+    expect(observed.length).toBeGreaterThan(0);
+
+    // The first sample taken while each phase was playing is the one whose queue
+    // holds that phase's whole effect set (the recorder completes tweens in
+    // creation order, so later samples of the same phase have already drained
+    // some of it).
+    const firstPerPhase = new Map<
+      string,
+      { phase: string; hold: number; longestEffect: number }
+    >();
+    for (const entry of observed) {
+      if (!firstPerPhase.has(entry.phase)) {
+        firstPerPhase.set(entry.phase, entry);
+      }
+    }
+
+    // Every phase outlasts the longest animation it starts, so its feedback is
+    // settled before the next phase begins rather than being cut off by it.
+    for (const entry of firstPerPhase.values()) {
+      expect(
+        entry.hold,
+        `${entry.phase}'s hold must exceed its own ${entry.longestEffect} ms animation`
+      ).toBeGreaterThan(entry.longestEffect);
+    }
+
+    // The Swap in particular is held longer than its own exchange tween, so the
+    // exchange is seen to settle (the defect this task fixes was a hold equal to
+    // its tween).
+    const swap = firstPerPhase.get('swap 20->21');
+    expect(swap?.longestEffect).toBe(220);
+    expect(swap?.hold).toBeGreaterThan(220);
+
+    // A phase that floats a number — and moves the HP panel of the side that took
+    // it — is held longer than the floater lives, so a damage number cannot still
+    // be on screen when the retaliation's own feedback appears.
+    const damage = firstPerPhase.get('damage player->boss');
+    const retaliation = firstPerPhase.get('retaliation boss->player');
+    expect(damage?.longestEffect).toBe(400);
+    expect(damage?.hold).toBeGreaterThan(400);
+    expect(retaliation?.longestEffect).toBe(400);
+    expect(retaliation?.hold).toBeGreaterThan(400);
+
+    // The longest effects still fit inside the phase that starts them on the
+    // refill/settle path too.
+    const settlePhase = firstPerPhase.get('settle');
+    expect(settlePhase?.hold).toBeGreaterThan(settlePhase?.longestEffect ?? 0);
+
+    // The callout is the one effect that belongs to the whole batch rather than to
+    // a phase, so it is bounded by its own resolution instead: its hold plus fade
+    // is shorter than the timeline that raised it, so it can never still be on
+    // screen when the next resolution's callout arrives.
+    const timelineHold = [...firstPerPhase.values()].reduce((sum, entry) => sum + entry.hold, 0);
+
+    expect(calloutTween).toBeDefined();
+    expect(Number(calloutTween?.props.delay ?? 0) + (calloutTween?.duration ?? 0)).toBeLessThan(
+      timelineHold
+    );
+  });
+
+  it('keeps an ordinary resolution bounded rather than applying a blanket slowdown', async () => {
+    // TASK-246 §5 / R-4: the relationship is corrected, not everything slowed
+    // down. The holds this task changed were 220/320/340/420 (a typical Swap with
+    // one Match, the settle, and the player's damage = 1300 ms of holds); the
+    // derived holds must stay under a fifth above that. The delivered batch below
+    // is exactly that path.
+    const { harness, ctx } = createBattle();
+    const phaseClock = field<object>(ctx, 'phaseClock');
+
+    const settle = submitHeldSwap(harness, 20, 21);
+    deliverResolution(harness, resolvedState(), [
+      { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      { type: 'GemMatched', cellIndex: 24, gemType: 'ATK' },
+      { type: 'ComboChanged', combo: 2 },
+      { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+      { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
+    ]);
+
+    const holds: Array<{ phase: string; hold: number }> = [];
+    const record = () => {
+      const phases = playedPhases(ctx);
+      const phase = phases[phases.length - 1] ?? '';
+      const hold = harness
+        .pendingTweenRecords()
+        .find((tween) => tween.targets.includes(phaseClock));
+
+      if (hold && !holds.some((entry) => entry.phase === phase)) {
+        holds.push({ phase, hold: hold.duration });
+      }
+    };
+
+    record();
+    for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+      harness.flushTweens(1);
+      record();
+    }
+    settle();
+    await flush();
+    harness.flushTweens();
+
+    // One hold per phase, and the whole ordinary path stays well inside 1.5x the
+    // holds it replaced (1300 ms -> ~1380 ms here: swap 280, match 360, settle
+    // 280, damage 460).
+    expect(holds.map((entry) => entry.phase)).toEqual([
+      'swap 20->21',
+      'match depth=1',
+      'settle',
+      'damage player->boss',
+    ]);
+
+    const total = holds.reduce((sum, entry) => sum + entry.hold, 0);
+    expect(total).toBeGreaterThan(1300);
+    expect(total).toBeLessThan(1300 * 1.5);
+  });
+
+  it('derives a zero-duration hold for the terminal outcome phase (finding L-1)', () => {
+    // Finding L-1 / TASK-246: the outcome phase hands off immediately to
+    // ResultScene with no animation and no hold (0 ms). It must not be padded
+    // with PHASE_SETTLE_MS (60 ms).
+    const directHold = (
+      BattleScene as unknown as {
+        phaseHoldMs(kind: string, events: readonly unknown[]): number;
+      }
+    ).phaseHoldMs('outcome', []);
+    expect(directHold).toBe(0);
+
+    const { harness, ctx } = createBattle();
+    const phaseClock = field<object>(ctx, 'phaseClock');
+
+    harness.emitBattleEvents({
+      battleId: 'battle-246',
+      serverSequence: 99,
+      events: [
+        { type: 'BattleWon', outcome: 'victory', finalBossHp: 0, finalPlayerHp: 850 },
+      ],
+    });
+
+    // The outcome phase schedules no pacing tween on the phase clock.
+    const holdTweens = harness
+      .pendingTweenRecords()
+      .filter((tween) => tween.targets.includes(phaseClock));
+    expect(holdTweens).toHaveLength(0);
+    expect(harness.sceneStarted.map((started) => started.key)).toEqual(['ResultScene']);
+  });
+});
+
 describe('BattleScene — CardCast and PetSkillCast input (SIGNALR_PROTOCOL.md §2, TASK-120)', () => {
   const GEM_NAMES = ['ATK', 'DEF', 'HP', 'POWER'];
+
 
   function serverState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
     return {
