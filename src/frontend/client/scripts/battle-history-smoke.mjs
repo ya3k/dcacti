@@ -361,6 +361,15 @@ const LOBBY_SNAPSHOT = `
   const rect = canvas.getBoundingClientRect();
   const gameWidth = window.__game.scale.gameSize.width;
   const gameHeight = window.__game.scale.gameSize.height;
+  const list = s.children.list || [];
+  const live = (o) => list.indexOf(o) !== -1;
+  const labels = list.filter((o) => o.type === 'Text' && live(o));
+  const controls = list
+    .filter((o) => o.type === 'Rectangle' && live(o) && o.input && o.input.enabled)
+    .map((b) => {
+      const label = labels.find((t) => t.x === b.x && t.y === b.y);
+      return { label: label ? label.text : null, x: b.x, y: b.y, width: b.width, height: b.height };
+    });
   return {
     active: true,
     selectedBossId: s.selectedBossId === undefined ? null : s.selectedBossId,
@@ -373,6 +382,7 @@ const LOBBY_SNAPSHOT = `
     reviewText: s.reviewText && typeof s.reviewText.text === 'string' ? s.reviewText.text : null,
     messageText: s.messageText && typeof s.messageText.text === 'string' ? s.messageText.text : null,
     errorText: s.errorText && typeof s.errorText.text === 'string' ? s.errorText.text : null,
+    controls,
     viewport: { left: rect.left, top: rect.top, scaleX: rect.width / gameWidth, scaleY: rect.height / gameHeight },
     interactive: (s.interactiveObjects || []).map((o) => ({
       type: o.type,
@@ -1075,6 +1085,15 @@ export async function runBattleHistorySmokeTest(runNumber = 1) {
     const centreOf = (snapshot, o) =>
       toVp(snapshot.viewport, o.x + o.width / 2, o.y + o.height / 2);
 
+    const lobbyControlsOf = (snap) => snap.controls || [];
+    const lobbyControlOf = (snap, label) => {
+      const control = lobbyControlsOf(snap).find((c) => c.label === label);
+      if (!control) {
+        throw new Error(`LobbyScene rendered no "${label}" control.`);
+      }
+      return control;
+    };
+
     const bossOptionsOf = (snapshot) =>
       snapshot.interactive.filter(
         (o) => o.text !== null && o.text.includes(BATTLE_BOSS.displayName)
@@ -1128,14 +1147,18 @@ export async function runBattleHistorySmokeTest(runNumber = 1) {
     }
     record('phase4.bossSelected', lobby.selectedBossId === BATTLE_BOSS.bossId, lobby.selectedBossId);
 
-    const startButton = lobby.interactive.find((o) => o.type === 'Rectangle' && o.enabled);
-    if (!startButton) {
-      throw new Error('The Lobby rendered no interactive START BATTLE control.');
-    }
-    await realClick(cdp, centreOf(lobby, startButton));
+    const startButton = lobbyControlOf(lobby, 'START BATTLE');
+    const startButtonPoint = toVp(lobby.viewport, startButton.x, startButton.y);
+    await realClick(cdp, startButtonPoint);
 
     await waitForCondition(
-      async () => (await evaluate(cdp, ACTIVE_SCENE)) === 'BattleScene',
+      async () => {
+        const scene = await evaluate(cdp, ACTIVE_SCENE);
+        if (scene === 'MainMenuScene') {
+          throw new Error('Lobby activated < BACK and returned to MainMenuScene instead of starting battle.');
+        }
+        return scene === 'BattleScene';
+      },
       'BattleScene active after START BATTLE',
       15000
     );
@@ -1361,11 +1384,18 @@ export async function runBattleHistorySmokeTest(runNumber = 1) {
     }
     record('phase7.secondBossSelected', lobby.selectedBossId === BATTLE_BOSS.bossId, lobby.selectedBossId);
 
-    const startButton2 = lobby.interactive.find((o) => o.type === 'Rectangle' && o.enabled);
-    await realClick(cdp, centreOf(lobby, startButton2));
+    const startButton2 = lobbyControlOf(lobby, 'START BATTLE');
+    const startButtonPoint2 = toVp(lobby.viewport, startButton2.x, startButton2.y);
+    await realClick(cdp, startButtonPoint2);
 
     await waitForCondition(
-      async () => (await evaluate(cdp, ACTIVE_SCENE)) === 'BattleScene',
+      async () => {
+        const scene = await evaluate(cdp, ACTIVE_SCENE);
+        if (scene === 'MainMenuScene') {
+          throw new Error('Lobby activated < BACK and returned to MainMenuScene instead of starting battle.');
+        }
+        return scene === 'BattleScene';
+      },
       'BattleScene active for battle 2',
       15000
     );
