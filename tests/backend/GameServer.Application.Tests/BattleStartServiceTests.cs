@@ -335,6 +335,235 @@ public class BattleStartServiceTests
         Assert.True(result.Succeeded);
     }
 
+    // -----------------------------------------------------------------------
+    // Boss balance authority — DATABASE.md §1, ADR-024 §2.1–§2.4
+    //
+    // PostgreSQL is authoritative for the four runtime balance values at battle
+    // creation, and the static Domain baseline is never a fallback for them. The
+    // lookup's own overlay behavior is verified directly in
+    // GameServer.Infrastructure.Tests (BossDefinitionBalanceLookupTests); these
+    // tests verify the orchestration USES the resolved definition and does not
+    // paper over a failure.
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public async Task Start_ShouldCreateTheBattleFromTheOverlaidBalanceValues()
+    {
+        // ADR-024 §2.2–§2.3: the values the battle is created with are the
+        // resolved definition's, not the static baseline's. The overlaid values
+        // are deliberately different from BossDefinitions.HoaLong's canonical
+        // 5000 / 100 / 50 / 0.30, so an orchestration that ignored the lookup and
+        // read the static set would fail every assertion below.
+        var overlaid = BossDefinitions.HoaLong with
+        {
+            MaxHP = 1234,
+            ATK = 77,
+            DEF = 12,
+            EnrageThreshold = 0.42,
+        };
+
+        var harness = new Harness
+        {
+            BossLookup = ScriptedBossDefinitionLookup.Resolving(overlaid),
+        };
+
+        var result = await harness.StartAsync(
+            cardLoadout: [BasicA, BasicB, BasicC],
+            relicLoadout: ["relic_1", "relic_2", "relic_3"]);
+
+        Assert.True(result.Succeeded);
+
+        var bossState = (await harness.Battles.GetBattleAsync(result.BattleId!))!.BossState;
+
+        // GAME_STATE.md §2.4 / BOSS_RULES.md §6.1: the Initial State carries the
+        // definition's own stats, and a battle starts at full health.
+        Assert.Equal(overlaid.BossId, bossState.BossId);
+        Assert.Equal(1234, bossState.MaxHP);
+        Assert.Equal(1234, bossState.HP);
+        Assert.Equal(77, bossState.ATK);
+        Assert.Equal(12, bossState.DEF);
+
+        // The identity is the canonical one even though the balance came from the
+        // row: the overlay replaces the four values and nothing else.
+        Assert.Equal("boss-hoa-long", bossState.BossId.Value);
+
+        // The canonical baseline was NOT used for any of the three stats that
+        // reach BossState.
+        Assert.NotEqual(BossDefinitions.HoaLong.MaxHP, bossState.MaxHP);
+        Assert.NotEqual(BossDefinitions.HoaLong.ATK, bossState.ATK);
+        Assert.NotEqual(BossDefinitions.HoaLong.DEF, bossState.DEF);
+    }
+
+    [Fact]
+    public async Task Start_ShouldResolveTheBossDefinitionOncePerBattle()
+    {
+        // ADR-024 §2.3 / TDD.md §4 item 3: the definition is resolved at battle
+        // creation and snapshotted, so the read is per battle — never repeated
+        // per resolution.
+        var lookup = ScriptedBossDefinitionLookup.ResolvingAll();
+        var harness = new Harness { BossLookup = lookup };
+
+        await harness.StartAsync(
+            cardLoadout: [BasicA, BasicB, BasicC],
+            relicLoadout: ["relic_1", "relic_2", "relic_3"]);
+
+        Assert.Equal(1, lookup.DefinitionLookupCount);
+
+        await harness.StartAsync(
+            cardLoadout: [BasicA, BasicB, BasicC],
+            relicLoadout: ["relic_1", "relic_2", "relic_3"]);
+
+        Assert.Equal(2, lookup.DefinitionLookupCount);
+    }
+
+    [Fact]
+    public void TurnResolutionPath_ShouldNotDependOnTheBossDefinitionLookup()
+    {
+        // ADR-024 §2.3: "Do not query PostgreSQL on the hot swap/turn-resolution
+        // path." The service that owns ExecuteSwapAsync/CastCardAsync consumes the
+        // battle-scoped configuration attached at creation, so it must hold no
+        // dependency on the Boss definition read at all — a constructor parameter
+        // or field of that type is exactly the shape this guards against.
+        var constructorParameterTypes = typeof(BattleStateService)
+            .GetConstructors()
+            .SelectMany(constructor => constructor.GetParameters())
+            .Select(parameter => parameter.ParameterType)
+            .ToArray();
+
+        var fieldTypes = typeof(BattleStateService)
+            .GetFields(
+                System.Reflection.BindingFlags.Instance
+                | System.Reflection.BindingFlags.NonPublic
+                | System.Reflection.BindingFlags.Public)
+            .Select(field => field.FieldType)
+            .ToArray();
+
+        Assert.DoesNotContain(typeof(IBossDefinitionLookup), constructorParameterTypes);
+        Assert.DoesNotContain(typeof(IBossDefinitionLookup), fieldTypes);
+    }
+
+    [Fact]
+    public async Task Start_WhenTheProvisionedBalanceRowIsMissing_ShouldFailClosed()
+    {
+        // ADR-024 §2.1 item 3: a valid canonical MVP Boss whose provisioned row is
+        // absent is a server-side provisioning failure. It must not be answered
+        // from the static baseline and must not be reported as the client's
+        // BOSS_NOT_FOUND.
+        var harness = new Harness
+        {
+            // A lookup that knows the Identity is canonical but has no row for it.
+            BossLookup = new ScriptedBossDefinitionLookup(),
+        };
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            harness.StartAsync(
+                bossId: ValidBossId,
+                cardLoadout: [BasicA, BasicB, BasicC],
+                relicLoadout: ["relic_1", "relic_2", "relic_3"]));
+
+        Assert.Contains(ValidBossId, thrown.Message, StringComparison.Ordinal);
+
+        // §3: "A rejected request equips nothing and writes no battle state" — the
+        // failure raised before creation, so no battle exists.
+        Assert.Equal(0, harness.ActiveStateStore.RecordCount);
+    }
+
+    [Theory]
+    // ADR-024 §2.4: each documented invariant, violated on its own.
+    [InlineData("MaxHP = 0")]
+    [InlineData("ATK = -1")]
+    [InlineData("DEF = -1")]
+    [InlineData("EnrageThreshold = 0")]
+    [InlineData("EnrageThreshold = 1")]
+    public async Task Start_WhenTheBalanceRowIsOutOfRange_ShouldFailClosed(string violation)
+    {
+        // ADR-024 §2.4: a row violating a documented range invariant fails closed
+        // with an InvalidOperationException that is neither caught nor masked. The
+        // Infrastructure lookup owns the validation and is verified directly in
+        // GameServer.Infrastructure.Tests (BossDefinitionBalanceLookupTests); what
+        // this asserts is that the orchestrator propagates that failure rather
+        // than repairing, clamping, or defaulting the value — and that it never
+        // turns it into the client's BOSS_NOT_FOUND.
+        var harness = new Harness
+        {
+            BossLookup = new ThrowingBossDefinitionLookup(
+                new InvalidOperationException(
+                    $"The provisioned BossDefinition row carries an invalid balance value: {violation}.")),
+        };
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            harness.StartAsync(
+                cardLoadout: [BasicA, BasicB, BasicC],
+                relicLoadout: ["relic_1", "relic_2", "relic_3"]));
+
+        Assert.Contains("invalid balance value", thrown.Message, StringComparison.Ordinal);
+
+        // No partial battle: the failure raised before creation reached the store.
+        Assert.Equal(0, harness.ActiveStateStore.RecordCount);
+    }
+
+    /// <summary>
+    /// A stand-in for a PostgreSQL infrastructure failure — the
+    /// <c>DbException</c> family (<c>NpgsqlException</c>) <c>ADR-024</c> §2.1
+    /// item 2 names. It exists so the Application layer can prove the orchestrator
+    /// neither catches nor translates such a failure.
+    /// </summary>
+    private sealed class SimulatedDatabaseFailure : System.Data.Common.DbException
+    {
+        public SimulatedDatabaseFailure(string message)
+            : base(message)
+        {
+        }
+    }
+
+    [Fact]
+    public async Task Start_WhenPostgresIsUnreachable_ShouldPropagateTheFailure()
+    {
+        // ADR-024 §2.1 item 2: a PostgreSQL connectivity failure is never caught,
+        // masked, or translated into a client 400. It bubbles up so ASP.NET Core's
+        // pipeline answers 500.
+        var harness = new Harness
+        {
+            BossLookup = new ThrowingBossDefinitionLookup(
+                new SimulatedDatabaseFailure("connection to server at \"localhost\" failed")),
+        };
+
+        var thrown = await Assert.ThrowsAsync<SimulatedDatabaseFailure>(() =>
+            harness.StartAsync(
+                cardLoadout: [BasicA, BasicB, BasicC],
+                relicLoadout: ["relic_1", "relic_2", "relic_3"]));
+
+        Assert.IsAssignableFrom<System.Data.Common.DbException>(thrown);
+
+        // No battle was created for a request that failed server-side.
+        Assert.Equal(0, harness.ActiveStateStore.RecordCount);
+    }
+
+    /// <summary>
+    /// A lookup whose battle-start read always raises the supplied exception, so a
+    /// test can assert an infrastructure failure is propagated with its own type
+    /// intact (<c>ADR-024</c> §2.1 item 2 / item 3).
+    /// </summary>
+    private sealed class ThrowingBossDefinitionLookup : IBossDefinitionLookup
+    {
+        private readonly Exception _failure;
+
+        internal ThrowingBossDefinitionLookup(Exception failure)
+        {
+            _failure = failure;
+        }
+
+        public Task<string?> FindBossDefinitionIdByIdentityAsync(
+            string bossIdentity,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<string?>(null);
+
+        public Task<BossDefinition?> GetDefinitionByIdentityAsync(
+            string bossIdentity,
+            CancellationToken cancellationToken = default) =>
+            Task.FromException<BossDefinition?>(_failure);
+    }
+
     [Theory]
     // The Boss's display name is presentation-only content (§6.4) and is never a
     // technical identifier in state, events, persistence, or the API — so it must
@@ -822,6 +1051,13 @@ public class BattleStartServiceTests
             Cards = new FakeCardRepository(this);
             Relics = new FakeRelicRepository(this);
             RelicDefinitions = new FakeRelicDefinitionLookup(this);
+
+            // Every canonical MVP Boss at its Domain baseline by default — what a
+            // migrated database holds — so the orchestration tests resolve the
+            // Boss they submit without a database. A test that exercises the
+            // fail-closed or database-authoritative paths replaces this
+            // (ADR-024 §2.1/§2.2).
+            BossLookup = ScriptedBossDefinitionLookup.ResolvingAll();
         }
 
         public BattleStateService Battles { get; }
@@ -847,6 +1083,15 @@ public class BattleStartServiceTests
         /// (<c>TDD.md</c> §4 item 3).
         /// </summary>
         internal FakeRelicDefinitionLookup RelicDefinitions { get; }
+
+        /// <summary>
+        /// The Boss definition read (<c>DATABASE.md</c> §1, <c>ADR-024</c> §2.2) —
+        /// the stand-in for the Domain Overlay lookup. A test replaces it (or
+        /// empties its definition map) to drive the client <c>BOSS_NOT_FOUND</c>
+        /// miss, the missing-row fail-closed path, and the
+        /// database-authoritative balance values.
+        /// </summary>
+        internal IBossDefinitionLookup BossLookup { get; set; }
 
         /// <summary>Whether the Relic definition rows resolve.</summary>
         public bool RelicDefinitionsExist { get; set; } = true;
@@ -915,7 +1160,8 @@ public class BattleStartServiceTests
                 new RelicLoadoutService(Relics),
                 Battles,
                 Relics,
-                RelicDefinitions)
+                RelicDefinitions,
+                BossLookup)
                 .StartAsync(playerId, request);
 
         /// <summary>The Pet definition the fake repository serves.</summary>

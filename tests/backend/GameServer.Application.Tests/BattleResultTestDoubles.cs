@@ -191,13 +191,21 @@ internal sealed class InMemoryBattleResultRepository : IBattleResultRepository
 /// A scripted <see cref="IBossDefinitionLookup"/> for the Application-layer unit
 /// tests.
 ///
-/// <b>It is a TEST DOUBLE for the battle-end lookup</b> that
-/// <c>DATABASE.md</c> §1 note item 2 assigns to Infrastructure. It resolves the
-/// Identity through the same content-derived mapping the provisioned rows carry
-/// (<c>DATABASE.md</c> §1 note item 5 "Row set": <c>boss-hoa-long</c> ↔
-/// <c>boss-def-hoa-long</c>), so a resolved value is a real canonical pair
-/// rather than an invented string — and it can be pointed at an empty mapping to
-/// drive the documented unresolved-definition path.
+/// <b>It is a TEST DOUBLE for both lookups</b> that <c>DATABASE.md</c> §1 note
+/// item 2 assigns to Infrastructure. It resolves the Identity through the same
+/// content-derived mapping the provisioned rows carry (<c>DATABASE.md</c> §1 note
+/// item 5 "Row set": <c>boss-hoa-long</c> ↔ <c>boss-def-hoa-long</c>), so a
+/// resolved value is a real canonical pair rather than an invented string — and
+/// it can be pointed at an empty mapping to drive the documented
+/// unresolved-definition path.
+///
+/// <b>Its battle-start behavior mirrors the Domain Overlay's failure split</b>
+/// (<c>ADR-024</c> §2.1): a scripted definition is returned for a scripted
+/// Identity, an Identity outside the content-defined MVP set returns
+/// <c>null</c>, and a content-defined Identity with no scripted row throws
+/// <see cref="InvalidOperationException"/> rather than being answered from the
+/// static baseline. That is what lets an Application test assert the fail-closed
+/// path without a database.
 /// </summary>
 internal sealed class ScriptedBossDefinitionLookup : IBossDefinitionLookup
 {
@@ -208,8 +216,23 @@ internal sealed class ScriptedBossDefinitionLookup : IBossDefinitionLookup
     /// </summary>
     public Dictionary<string, string> Resolvable { get; } = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// The Identity → overlaid definition pairs this double resolves for battle
+    /// creation (<c>ADR-024</c> §2.2). Empty by default, which is the "no
+    /// provisioned row" case the battle-start path must fail closed on.
+    /// </summary>
+    public Dictionary<string, BossDefinition> ResolvableDefinitions { get; } =
+        new(StringComparer.Ordinal);
+
     /// <summary>How many lookups were attempted, so a test can assert ordering.</summary>
     public int LookupCount { get; private set; }
+
+    /// <summary>
+    /// How many battle-start definition lookups were attempted, so a test can
+    /// assert the resolution happens once at creation and never per turn
+    /// (<c>TDD.md</c> §4 item 3).
+    /// </summary>
+    public int DefinitionLookupCount { get; private set; }
 
     /// <summary>
     /// Seeds the map with a BattleSeed pairing so a test's battle resolves.
@@ -219,6 +242,25 @@ internal sealed class ScriptedBossDefinitionLookup : IBossDefinitionLookup
         var lookup = new ScriptedBossDefinitionLookup();
 
         lookup.Resolvable[definition.BossId.Value] = definition.BossDefinitionId;
+        lookup.ResolvableDefinitions[definition.BossId.Value] = definition;
+
+        return lookup;
+    }
+
+    /// <summary>
+    /// Seeds both maps with every canonical MVP Boss at its Domain baseline —
+    /// what a database with all five provisioning migrations applied holds
+    /// (<c>DATABASE.md</c> §1 note item 5).
+    /// </summary>
+    public static ScriptedBossDefinitionLookup ResolvingAll()
+    {
+        var lookup = new ScriptedBossDefinitionLookup();
+
+        foreach (var definition in BossDefinitions.All)
+        {
+            lookup.Resolvable[definition.BossId.Value] = definition.BossDefinitionId;
+            lookup.ResolvableDefinitions[definition.BossId.Value] = definition;
+        }
 
         return lookup;
     }
@@ -234,6 +276,37 @@ internal sealed class ScriptedBossDefinitionLookup : IBossDefinitionLookup
 
         return Task.FromResult(
             Resolvable.TryGetValue(bossIdentity, out var key) ? key : null);
+    }
+
+    /// <inheritdoc />
+    public Task<BossDefinition?> GetDefinitionByIdentityAsync(
+        string bossIdentity,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(bossIdentity);
+
+        DefinitionLookupCount++;
+
+        if (ResolvableDefinitions.TryGetValue(bossIdentity, out var definition))
+        {
+            return Task.FromResult<BossDefinition?>(definition);
+        }
+
+        // ADR-024 §2.1 item 1: not a content-defined MVP Boss — the
+        // client-visible miss.
+        if (!BossDefinitions.All.Any(
+                candidate => string.Equals(
+                    candidate.BossId.Value, bossIdentity, StringComparison.Ordinal)))
+        {
+            return Task.FromResult<BossDefinition?>(null);
+        }
+
+        // ADR-024 §2.1 item 3: a content-defined MVP Boss whose provisioned row
+        // is absent fails closed; the static baseline is never substituted.
+        throw new InvalidOperationException(
+            $"The provisioned BossDefinition row for Identity '{bossIdentity}' is missing. "
+            + "Boss balance is authoritative in PostgreSQL (ADR-024); it is never answered "
+            + "from the static Domain baseline.");
     }
 }
 

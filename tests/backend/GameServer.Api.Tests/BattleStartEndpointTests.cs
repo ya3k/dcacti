@@ -509,6 +509,259 @@ public class BattleStartEndpointTests
     }
 
     // -----------------------------------------------------------------------
+    // Boss balance authority and failure semantics — DATABASE.md §1, ADR-024 §2.1
+    //
+    // The client's error and the server's failure are different contracts and must
+    // never be conflated: an identity that is not a content-defined MVP Boss is
+    // HTTP 400 BOSS_NOT_FOUND, while an absent, out-of-range, or unreadable
+    // provisioned row is a server-side failure that must NOT be reported as 400.
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public async Task Start_ShouldCreateTheBattleFromTheStoredBossBalance()
+    {
+        // ADR-024 §2.1 item 1 / §2.3: "PostgreSQL is authoritative at runtime for
+        // active battle creation." The stored row carries values that are NOT the
+        // Domain baseline's (5000 / 100 / 50), so a battle created from the static
+        // baseline fails every assertion below.
+        using var factory = new BattleStartFactory();
+        var client = factory.CreateClient();
+        var playerId = await factory.SeedPlayerAsync(client);
+
+        await factory.SetBossBalanceAsync(
+            "boss-def-hoa-long",
+            maxHp: 4321,
+            atk: 222,
+            def: 33,
+            enrageThreshold: 0.42);
+
+        var response = await factory.PostStartAsync(
+            client,
+            new
+            {
+                petId = PetInstanceId,
+                bossId = "boss-hoa-long",
+                cardLoadout = new[] { BasicA, BasicB, BasicC },
+                relicLoadout = new[] { "relic_1", "relic_2", "relic_3" },
+            },
+            playerId);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var battleId = body.GetProperty("battleId").GetString()!;
+        var bossState = body.GetProperty("initialState").GetProperty("bossState");
+
+        // API_CONTRACTS.md §3's initialState carries the created values. The Boss
+        // members' wire spelling is the serialized Domain member name
+        // ("MaxHP" → "maxHP"), not a lowercased acronym.
+        Assert.Equal("boss-hoa-long", bossState.GetProperty("bossId").GetString());
+        Assert.Equal(4321, bossState.GetProperty("maxHP").GetInt32());
+        Assert.Equal(4321, bossState.GetProperty("hp").GetInt32());
+        Assert.Equal(222, bossState.GetProperty("atk").GetInt32());
+        Assert.Equal(33, bossState.GetProperty("def").GetInt32());
+
+        // …and the authoritative record agrees (REDIS_STATE.md §2 item 2).
+        var authoritative = await factory.Services
+            .GetRequiredService<BattleStateService>()
+            .GetBattleAsync(battleId);
+
+        Assert.NotNull(authoritative);
+        Assert.Equal(4321, authoritative!.BossState.MaxHP);
+        Assert.Equal(4321, authoritative.BossState.HP);
+        Assert.Equal(222, authoritative.BossState.ATK);
+        Assert.Equal(33, authoritative.BossState.DEF);
+
+        // The static baseline was not used for any of these.
+        Assert.NotEqual(BossDefinitions.HoaLong.MaxHP, authoritative.BossState.MaxHP);
+        Assert.NotEqual(BossDefinitions.HoaLong.ATK, authoritative.BossState.ATK);
+        Assert.NotEqual(BossDefinitions.HoaLong.DEF, authoritative.BossState.DEF);
+    }
+
+    [Fact]
+    public async Task Start_WithAProvisionedRowMissing_ShouldNotReportBossNotFound()
+    {
+        // ADR-024 §2.1 item 3: the valid canonical Boss "boss-hoa-long" whose row is
+        // gone is a server-side provisioning failure. It must not be reported as
+        // the client's BOSS_NOT_FOUND / HTTP 400 — that conflation is exactly what
+        // §2.1 forbids.
+        using var factory = new BattleStartFactory();
+        var client = factory.CreateClient();
+        var playerId = await factory.SeedPlayerAsync(client);
+
+        await factory.RemoveBossDefinitionRowAsync("boss-def-hoa-long");
+
+        var outcome = await PostStartCapturingServerFailureAsync(
+            factory, client, playerId, "boss-hoa-long");
+
+        AssertServerSideFailure(outcome);
+    }
+
+    [Fact]
+    public async Task Start_WithAnOutOfRangeStoredBalance_ShouldNotReportBossNotFound()
+    {
+        // ADR-024 §2.1 item 3 / §2.4: a provisioned row that violates a documented
+        // range invariant is a configuration-integrity failure, not a client error.
+        using var factory = new BattleStartFactory();
+        var client = factory.CreateClient();
+        var playerId = await factory.SeedPlayerAsync(client);
+
+        // MaxHP = 0 satisfies the InMemory provider (which enforces no check
+        // constraint) and is rejected by the runtime overlay, which is the layer
+        // under test here. The database's own rejection of such a row is verified
+        // against real PostgreSQL in GameServer.Infrastructure.Tests.
+        await factory.SetBossBalanceAsync(
+            "boss-def-hoa-long",
+            maxHp: 0,
+            atk: 100,
+            def: 50,
+            enrageThreshold: 0.30);
+
+        var outcome = await PostStartCapturingServerFailureAsync(
+            factory, client, playerId, "boss-hoa-long");
+
+        AssertServerSideFailure(outcome);
+    }
+
+    [Fact]
+    public async Task Start_WhenPostgresIsUnreachable_ShouldNotReportBossNotFound()
+    {
+        // ADR-024 §2.1 item 2: a PostgreSQL connectivity failure is never caught,
+        // masked, or translated into a client 400. The failure below is a
+        // DbException, the family NpgsqlException belongs to.
+        using var factory = new BattleStartFactory
+        {
+            BossLookupFailure = new SimulatedDatabaseFailure(
+                "connection to server at \"localhost\", port 5433 failed"),
+        };
+
+        var client = factory.CreateClient();
+        var playerId = await factory.SeedPlayerAsync(client);
+
+        var outcome = await PostStartCapturingServerFailureAsync(
+            factory, client, playerId, "boss-hoa-long");
+
+        AssertServerSideFailure(outcome);
+    }
+
+    [Fact]
+    public async Task Start_WithAnUnknownBoss_ShouldRemainAClientBadRequest()
+    {
+        // The other side of the same contract (ADR-024 §2.1 item 1): an identity
+        // that is not a content-defined MVP Boss keeps the existing
+        // BOSS_NOT_FOUND / HTTP 400 mapping. It is asserted here beside the
+        // server-failure cases so the two can never drift into each other.
+        using var factory = new BattleStartFactory();
+        var client = factory.CreateClient();
+        var playerId = await factory.SeedPlayerAsync(client);
+
+        var outcome = await PostStartCapturingServerFailureAsync(
+            factory, client, playerId, "Not A Real Boss");
+
+        Assert.Equal(HttpStatusCode.BadRequest, outcome.Status);
+        Assert.Equal("BOSS_NOT_FOUND", outcome.ErrorCode);
+    }
+
+    /// <summary>
+    /// Posts a battle-start request, returning the response's status and error code
+    /// — or the exception the test host surfaced in-process when it produced no
+    /// response.
+    /// </summary>
+    /// <remarks>
+    /// Both shapes are the documented non-400 outcome: ASP.NET Core's pipeline
+    /// answers HTTP 500 for an unhandled exception, while the in-memory test
+    /// transport can fail to render that response at all (the developer exception
+    /// page logs to this machine's Event Log, which the test process may not be
+    /// allowed to write). The failure type is reported either way, so a test can
+    /// still distinguish a server-side failure from a client rejection.
+    /// </remarks>
+    private static async Task<(HttpStatusCode? Status, string? ErrorCode, Exception? Thrown)>
+        PostStartCapturingServerFailureAsync(
+            BattleStartFactory factory,
+            HttpClient client,
+            string playerId,
+            string bossId)
+    {
+        try
+        {
+            var response = await factory.PostStartAsync(
+                client,
+                new
+                {
+                    petId = PetInstanceId,
+                    bossId,
+                    cardLoadout = new[] { BasicA, BasicB, BasicC },
+                    relicLoadout = new[] { "relic_1", "relic_2", "relic_3" },
+                },
+                playerId);
+
+            if (response.Content.Headers.ContentLength is null or 0)
+            {
+                return (response.StatusCode, null, null);
+            }
+
+            try
+            {
+                var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+
+                return body.TryGetProperty("error", out var error)
+                    ? (response.StatusCode, error.GetString(), null)
+                    : (response.StatusCode, null, null);
+            }
+            catch (JsonException)
+            {
+                // A non-JSON body (an empty or HTML error response) carries no code.
+                return (response.StatusCode, null, null);
+            }
+        }
+        catch (Exception thrown)
+        {
+            return (null, null, thrown);
+        }
+    }
+
+    /// <summary>
+    /// Asserts that a Boss-resolution failure was reported as a server-side failure
+    /// and <b>not</b> as the client's <c>BOSS_NOT_FOUND</c> / HTTP 400
+    /// (<c>ADR-024</c> §2.1 items 2–3).
+    /// </summary>
+    private static void AssertServerSideFailure(
+        (HttpStatusCode? Status, string? ErrorCode, Exception? Thrown) outcome)
+    {
+        Assert.NotEqual(HttpStatusCode.BadRequest, outcome.Status);
+        Assert.Null(outcome.ErrorCode);
+
+        if (outcome.Status is { } status)
+        {
+            Assert.Equal(HttpStatusCode.InternalServerError, status);
+            return;
+        }
+
+        // No response was rendered, so the failure surfaced in-process. It must be
+        // a server-side failure type — a configuration-integrity exception, a
+        // database exception, or the host's own rendering failure wrapping one —
+        // never a client-rejection path.
+        Assert.NotNull(outcome.Thrown);
+        Assert.True(
+            outcome.Thrown is InvalidOperationException
+                or AggregateException
+                or System.Data.Common.DbException,
+            $"Unexpected failure type {outcome.Thrown!.GetType().Name}: {outcome.Thrown.Message}");
+    }
+
+    /// <summary>
+    /// A stand-in for a PostgreSQL connectivity failure — the <c>DbException</c>
+    /// family <c>ADR-024</c> §2.1 item 2 names.
+    /// </summary>
+    private sealed class SimulatedDatabaseFailure : System.Data.Common.DbException
+    {
+        public SimulatedDatabaseFailure(string message)
+            : base(message)
+        {
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // Failure atomicity — API_CONTRACTS.md §3
     // -----------------------------------------------------------------------
 
@@ -744,6 +997,13 @@ public class BattleStartEndpointTests
         /// </summary>
         public Element PetElement { get; init; } = Element.Moc;
 
+        /// <summary>
+        /// When set, the Boss definition read is replaced by one that always raises
+        /// this exception, so the endpoint's failure mapping can be asserted
+        /// without a database (<c>ADR-024</c> §2.1 items 2–3).
+        /// </summary>
+        public Exception? BossLookupFailure { get; init; }
+
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             // Blank the connection strings so AddInfrastructureServices does not
@@ -775,6 +1035,17 @@ public class BattleStartEndpointTests
                 // in-memory substitution the host makes for GameDbContext is made
                 // for it here — the real BattleStateService pipeline runs over it.
                 services.AddSingleton<IBattleStateRepository, ApiTestBattleStateRepository>();
+
+                // ADR-024 §2.1 item 2: an unreadable Boss definition is simulated by
+                // replacing the boundary, not by breaking the database. The rest of
+                // the production composition — including BattleStartService's use of
+                // the contract — is unchanged.
+                if (BossLookupFailure is { } failure)
+                {
+                    services.RemoveAll<IBossDefinitionLookup>();
+                    services.AddScoped<IBossDefinitionLookup>(
+                        _ => new FailingBossDefinitionLookup(failure));
+                }
             });
         }
 
@@ -817,6 +1088,12 @@ public class BattleStartEndpointTests
         {
             using var scope = Services.CreateScope();
             var context = scope.ServiceProvider.GetRequiredService<GameDbContext>();
+
+            // The five canonical BossDefinition rows (ADR-024): battle start now
+            // resolves the submitted bossId through the provisioned row, so the
+            // isolated store supplies what a migrated database would hold. The
+            // balance tests below deliberately remove or corrupt one row.
+            TestProvisionedContent.SeedBosses(context);
 
             var playerId = $"player_{Guid.NewGuid():N}";
 
@@ -890,5 +1167,86 @@ public class BattleStartEndpointTests
 
             return playerId;
         }
+
+        /// <summary>
+        /// Removes a provisioned <c>BossDefinition</c> row, so a request for the
+        /// valid canonical MVP Boss it carries drives
+        /// <c>ADR-024</c> §2.1 item 3's missing-row path. The row is real
+        /// provisioned content (<c>DATABASE.md</c> §1 note item 5); deleting it
+        /// here is how a server-side provisioning failure is simulated without a
+        /// database.
+        /// </summary>
+        public async Task RemoveBossDefinitionRowAsync(string bossDefinitionId)
+        {
+            using var scope = Services.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<GameDbContext>();
+
+            var row = await context.BossDefinitions
+                .SingleAsync(definition => definition.BossDefinitionId == bossDefinitionId);
+
+            context.BossDefinitions.Remove(row);
+            await context.SaveChangesAsync();
+        }
+
+        /// <summary>
+        /// Replaces a provisioned <c>BossDefinition</c> row with one carrying
+        /// different runtime balance values, so a request for that Boss proves the
+        /// created battle took its balance from persistence rather than from the
+        /// static Domain baseline (<c>ADR-024</c> §2.1 item 1).
+        ///
+        /// The row is replaced rather than edited because the balance members are
+        /// <c>init</c>-only on the Domain record — the same reason a balance
+        /// migration changes them with SQL.
+        /// </summary>
+        public async Task SetBossBalanceAsync(
+            string bossDefinitionId,
+            int maxHp,
+            int atk,
+            int def,
+            double enrageThreshold)
+        {
+            using var scope = Services.CreateScope();
+            var context = scope.ServiceProvider.GetRequiredService<GameDbContext>();
+
+            var row = await context.BossDefinitions
+                .SingleAsync(definition => definition.BossDefinitionId == bossDefinitionId);
+
+            context.BossDefinitions.Remove(row);
+            context.BossDefinitions.Add(row with
+            {
+                MaxHP = maxHp,
+                ATK = atk,
+                DEF = def,
+                EnrageThreshold = enrageThreshold,
+            });
+
+            await context.SaveChangesAsync();
+        }
+    }
+
+    /// <summary>
+    /// A Boss definition read that always raises the supplied exception, registered
+    /// in place of the real lookup so the endpoint's failure mapping can be
+    /// asserted (<c>ADR-024</c> §2.1 items 2–3: an infrastructure or
+    /// configuration-integrity failure is a server error, never a client 400).
+    /// </summary>
+    private sealed class FailingBossDefinitionLookup : IBossDefinitionLookup
+    {
+        private readonly Exception _failure;
+
+        public FailingBossDefinitionLookup(Exception failure)
+        {
+            _failure = failure;
+        }
+
+        public Task<string?> FindBossDefinitionIdByIdentityAsync(
+            string bossIdentity,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult<string?>(null);
+
+        public Task<BossDefinition?> GetDefinitionByIdentityAsync(
+            string bossIdentity,
+            CancellationToken cancellationToken = default) =>
+            Task.FromException<BossDefinition?>(_failure);
     }
 }

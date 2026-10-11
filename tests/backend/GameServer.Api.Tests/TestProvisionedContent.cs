@@ -1,5 +1,6 @@
 using GameServer.Application.Cards;
 using GameServer.Application.Players;
+using GameServer.Domain.Bosses;
 using GameServer.Domain.Cards;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Passives;
@@ -77,8 +78,46 @@ internal static class TestProvisionedContent
         SeedPets(context);
         SeedCards(context);
         SeedRelics(context);
+        SeedBosses(context);
 
         context.SaveChanges();
+    }
+
+    /// <summary>
+    /// Inserts the five canonical <c>BossDefinition</c> rows if they are not
+    /// present (<c>DATABASE.md</c> §1 note item 5: TASK-053's three plus
+    /// TASK-172's two).
+    ///
+    /// <b>Why an in-memory host needs them now.</b> <c>ADR-024</c> makes
+    /// PostgreSQL authoritative for a Boss's four runtime balance values at
+    /// battle creation, so <c>POST /api/battle/start</c> resolves the submitted
+    /// <c>bossId</c> through the <c>BossDefinition</c> row. Production has those
+    /// rows because the provisioning migrations created them; a store that
+    /// applies no migration must supply them or battle start fails closed — which
+    /// is the behavior the balance tests assert deliberately, not something every
+    /// unrelated battle-start test should trip over.
+    ///
+    /// <b>These are the canonical baselines, not invented values.</b> Each row is
+    /// the Domain definition itself, so the seeded balance values are
+    /// <c>BOSS_RULES.md</c> §6.1's (<c>BossDefinitions</c> is that baseline) and
+    /// the overlay reads exactly the documented numbers. The copies are
+    /// per-context, so no store shares a tracked instance with another.
+    /// </summary>
+    internal static void SeedBosses(GameDbContext context)
+    {
+        foreach (var definition in BossDefinitions.All)
+        {
+            if (context.BossDefinitions.Any(
+                    row => row.BossDefinitionId == definition.BossDefinitionId))
+            {
+                continue;
+            }
+
+            // `with { }` yields a per-store copy of the canonical baseline: the
+            // Domain members are immutable values, so the copy is faithful and no
+            // change tracker observes an instance another context owns.
+            context.BossDefinitions.Add(definition with { });
+        }
     }
 
     private static void SeedPets(GameDbContext context)

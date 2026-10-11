@@ -17,17 +17,26 @@ namespace GameServer.Infrastructure.Postgres.Configurations;
 /// ├── BossDefinitionId   (PK)
 /// ├── Identity           (unique)
 /// ├── Element
+/// ├── MaxHP              (int, NOT NULL, > 0)
+/// ├── ATK                (int, NOT NULL, >= 0)
+/// ├── DEF                (int, NOT NULL, >= 0)
+/// ├── EnrageThreshold    (double precision, NOT NULL, (0, 1))
 /// ├── PassiveDefinition  (jsonb, NOT NULL)
 /// └── SkillDefinition    (jsonb, NOT NULL)
 /// </code>
 ///
-/// <b>The field set is <c>DATABASE.md</c> §1's</b> — static content only. The
-/// combat-definition values <c>MaxHP</c>, <c>ATK</c>, <c>DEF</c>, and
-/// <c>EnrageThreshold</c> are <b>not</b> columns: §1's persistence contract
-/// states they "remain sourced from the authoritative Domain
-/// <c>BossDefinition</c> content at battle creation". They stay on the Domain
-/// record and are deliberately unmapped here. No display-name column exists on
-/// this table either (§1 note item 1).
+/// <b>The field set is <c>DATABASE.md</c> §1's</b> (<c>ADR-024</c> §2.2). The
+/// row stores the static content — the persistence key, the canonical Identity,
+/// the Element, and the two JSON configuration objects — alongside the four
+/// runtime combat-balance columns <c>MaxHP</c>, <c>ATK</c>, <c>DEF</c>, and
+/// <c>EnrageThreshold</c>, which are authoritative at battle creation and
+/// overlaid onto the structural Domain baseline. No display-name column exists
+/// on this table (§1 note item 1).
+///
+/// <b>The Skill's secondary effect stays on the Domain type.</b> §1 note item 4
+/// fixes the stored <c>SkillDefinition</c> document to its four members, so
+/// <c>BossSkillDefinition.SecondaryEffect</c> is not persisted; the overlay
+/// preserves it from the Domain baseline (<c>ADR-024</c> §2.2 item 4).
 ///
 /// <b>The primary key is content-supplied, never generated.</b> §1 note item 2
 /// (TASK-049) fixes <c>BossDefinitionId</c> as an independent stable
@@ -104,17 +113,52 @@ public sealed class BossDefinitionConfiguration : IEntityTypeConfiguration<BossD
             .HasConversion<int>()
             .IsRequired();
 
-        // DATABASE.md §1 note item 1: the combat-definition values MaxHP, ATK,
-        // DEF, and EnrageThreshold are NOT columns of this table — they "remain
-        // sourced from the authoritative Domain BossDefinition content at battle
-        // creation". They are declared on the Domain record outside its
-        // constructor (the persisted surface), and are excluded here explicitly
-        // so the model holds exactly the five documented columns: by convention
-        // EF would otherwise map any settable property.
-        builder.Ignore(definition => definition.MaxHP);
-        builder.Ignore(definition => definition.ATK);
-        builder.Ignore(definition => definition.DEF);
-        builder.Ignore(definition => definition.EnrageThreshold);
+        // DATABASE.md §1/§3 and ADR-024 §2.2/§2.5: the four runtime combat-balance
+        // columns. PostgreSQL is authoritative for these values at battle
+        // creation; the Domain baseline supplies the structural mechanics and the
+        // canonical seed values (BossRules), never a runtime fallback.
+        //
+        // No HasDefaultValue is configured (ADR-024 §2.5): the schema columns'
+        // transitional defaults exist only inside the migration that adds them, so
+        // an insert that omits a balance value fails the NOT NULL / CHECK
+        // constraints instead of silently taking a default.
+        builder.Property(definition => definition.MaxHP)
+            .IsRequired();
+
+        builder.Property(definition => definition.ATK)
+            .IsRequired();
+
+        builder.Property(definition => definition.DEF)
+            .IsRequired();
+
+        // Stored as double precision: the value is the documented fraction of
+        // MaxHP (BOSS_RULES.md §5 item 4, §6.1), not an absolute HP figure.
+        builder.Property(definition => definition.EnrageThreshold)
+            .IsRequired();
+
+        // DATABASE.md §3 and ADR-024 §2.4/§2.5: the four documented range
+        // invariants, enforced by the database so a corrupt balance row cannot be
+        // written at all. The runtime overlay validates the same ranges before it
+        // uses a value (BossDefinitionLookup), so a row that predates the
+        // constraint still fails closed rather than being applied.
+        builder.ToTable(table =>
+        {
+            table.HasCheckConstraint(
+                "CK_BossDefinition_MaxHP_Positive",
+                "\"MaxHP\" > 0");
+
+            table.HasCheckConstraint(
+                "CK_BossDefinition_ATK_NonNegative",
+                "\"ATK\" >= 0");
+
+            table.HasCheckConstraint(
+                "CK_BossDefinition_DEF_NonNegative",
+                "\"DEF\" >= 0");
+
+            table.HasCheckConstraint(
+                "CK_BossDefinition_EnrageThreshold_Range",
+                "\"EnrageThreshold\" > 0.0 AND \"EnrageThreshold\" < 1.0");
+        });
 
         // DATABASE.md §1 note item 3 / §3: PassiveDefinition — jsonb, NOT NULL.
         // Mapped as a scalar with a value converter: EF Core binds immutable
@@ -178,10 +222,11 @@ public sealed class BossDefinitionConfiguration : IEntityTypeConfiguration<BossD
     /// ("fixed by TASK-045 … unchanged"), so
     /// <c>BossSkillDefinition.SecondaryEffect</c> — the Domain configuration
     /// carrying <c>BOSS_RULES.md</c> §6.3.1's Skill effects — has no column and
-    /// is excluded by this converter, which is the persistence boundary. This is
-    /// the same treatment the combat stats receive (excluded from the model):
-    /// the value lives on the Domain type and is never persisted, so no
-    /// migration and no schema change follows.
+    /// is excluded by this converter, which is the persistence boundary. The
+    /// Domain Overlay (<c>ADR-024</c> §2.2 item 4) is what keeps it intact at
+    /// runtime: the overlay takes the structural definition, including this
+    /// member, from <c>BossDefinitions.All</c> and only the four balance values
+    /// from the row.
     /// </summary>
     private sealed class SkillDefinitionConverter
         : ValueConverter<BossSkillDefinition, string>

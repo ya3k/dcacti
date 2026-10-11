@@ -20,7 +20,8 @@ namespace GameServer.Application.Battle;
 ///         ↓
 /// validate Pet ownership          API_CONTRACTS.md §3
 ///         ↓
-/// resolve selected Boss           BOSS_RULES.md §6
+/// resolve selected Boss           BOSS_RULES.md §6, DATABASE.md §1
+///                                   (Domain Overlay — ADR-024 §2.2)
 ///         ↓
 /// CardLoadoutService              CARD_RULES.md §1  → EquippedCards[4]
 ///         ↓
@@ -36,12 +37,15 @@ namespace GameServer.Application.Battle;
 /// <b>It coordinates; it implements no rule.</b> The Card rules (count,
 /// ownership, category, copy limit, Signature Skill derivation) are
 /// <see cref="CardLoadoutService"/>'s, the Relic rules (count, distinctness,
-/// ownership, slot order) are <see cref="RelicLoadoutService"/>'s, and the
+/// ownership, slot order) are <see cref="RelicLoadoutService"/>'s, the Boss
+/// definition overlay is <see cref="IBossDefinitionLookup"/>'s, and the
 /// battle composition is <see cref="BattleStateService"/>'s
 /// (<c>ARCHITECTURE.md</c> §2.1). This type sequences them, supplies each the
 /// values the others produced, and maps outcomes to the documented codes. It
 /// contains no copy-limit arithmetic, no duplicate detection, no Signature
-/// Skill selection, no combat-stat initialization, and no Boss logic.
+/// Skill selection, no combat-stat initialization, no Boss logic, and no
+/// balance-value validation — a balance value that violates the documented range
+/// invariants raises from the lookup and is never repaired or defaulted here.
 ///
 /// <b>It must never:</b>
 /// <list type="bullet">
@@ -101,6 +105,16 @@ public sealed class BattleStartService
     private readonly IRelicDefinitionLookup _relicDefinitions;
 
     /// <summary>
+    /// The Boss definition read (<c>DATABASE.md</c> §1, <c>ADR-024</c> §2.2),
+    /// reached through the Application-layer boundary
+    /// <see cref="IBossDefinitionLookup"/> and never through a persistence type.
+    /// It resolves the submitted <c>bossId</c> to the battle-creation definition:
+    /// the structural Domain baseline with PostgreSQL's four authoritative
+    /// balance values overlaid.
+    /// </summary>
+    private readonly IBossDefinitionLookup _bossDefinitions;
+
+    /// <summary>
     /// Creates the battle-start orchestrator over the persistence, loadout, and
     /// battle-composition boundaries it coordinates.
     /// </summary>
@@ -127,13 +141,20 @@ public sealed class BattleStartService
     /// battle's own configuration rather than querying PostgreSQL during a Swap
     /// (<c>TDD.md</c> §4 item 3).
     /// </param>
+    /// <param name="bossDefinitions">
+    /// The Boss definition read (<c>DATABASE.md</c> §1, <c>ADR-024</c> §2.2). It
+    /// is resolved here, once per battle, which is what keeps
+    /// <c>TDD.md</c> §4 item 3 true: the balance values are snapshotted into the
+    /// battle at creation, so no turn resolution queries PostgreSQL for them.
+    /// </param>
     public BattleStartService(
         IPetRepository pets,
         CardLoadoutService cardLoadout,
         RelicLoadoutService relicLoadout,
         BattleStateService battles,
         IRelicRepository relics,
-        IRelicDefinitionLookup relicDefinitions)
+        IRelicDefinitionLookup relicDefinitions,
+        IBossDefinitionLookup bossDefinitions)
     {
         _pets = pets;
         _cardLoadout = cardLoadout;
@@ -141,6 +162,7 @@ public sealed class BattleStartService
         _battles = battles;
         _relics = relics;
         _relicDefinitions = relicDefinitions;
+        _bossDefinitions = bossDefinitions;
     }
 
     /// <summary>
@@ -251,14 +273,40 @@ public sealed class BattleStartService
         // BOSS_RULES.md §6"). BOSS_RULES.md §6 defines five content-defined MVP
         // Bosses and BossDefinitions holds exactly those five (BOSS_RULES.md §6.1
         // / §6.2.4–§6.2.5; the earlier "two further MVP Bosses are not yet
-        // content-defined" note was retired by TASK-172), so resolution is a
-        // lookup against the transcribed content — not a new registry, and not an
-        // invented Boss.
+        // content-defined" note was retired by TASK-172).
+        //
+        // The definition itself now comes from the Domain Overlay lookup
+        // (ADR-024 §2.2–§2.3): the structural baseline — Identity, Element,
+        // Passive, Skill, and the Skill's SecondaryEffect — is the Domain's, and
+        // the four combat balance values are PostgreSQL's, which is authoritative
+        // for them at battle creation. The static set is therefore no longer the
+        // runtime source of those values and is never a fallback for them: an
+        // absent or out-of-range provisioned row raises from the lookup and
+        // propagates, it is not answered here.
+        //
+        // A missing or whitespace identity can never name a content-defined MVP
+        // Boss (§6.4), so it is decided as the documented client rejection here
+        // rather than being sent to persistence as an unnamed query.
         //
         // Boss COMBAT BEHAVIOR is not implemented here or anywhere in this
         // task (BOSS_RULES.md §3–§5): this step only establishes which Boss the
-        // battle is fought against.
-        if (ResolveBoss(request.BossId) is not { } bossDefinition)
+        // battle is fought against and with which balance.
+        if (string.IsNullOrWhiteSpace(request.BossId))
+        {
+            return BattleStartResult.Rejected(
+                BattleStartOutcome.BossNotFound,
+                "The selected Boss is not a valid MVP Boss.");
+        }
+
+        var bossDefinition = await _bossDefinitions
+            .GetDefinitionByIdentityAsync(request.BossId, cancellationToken)
+            .ConfigureAwait(false);
+
+        // ADR-024 §2.1 item 1: an identity that is not a content-defined MVP Boss
+        // is the client's error and keeps the existing BOSS_NOT_FOUND contract
+        // (API_CONTRACTS.md) — the same HTTP 400 Bad Request outcome as before,
+        // with no invented error code.
+        if (bossDefinition is null)
         {
             return BattleStartResult.Rejected(
                 BattleStartOutcome.BossNotFound,
@@ -484,42 +532,5 @@ public sealed class BattleStartService
         }
 
         return definitions;
-    }
-
-    /// <summary>
-    /// Resolves a submitted <c>bossId</c> against the content-defined MVP Boss
-    /// set (<c>API_CONTRACTS.md</c> §3, <c>BOSS_RULES.md</c> §6).
-    ///
-    /// The comparison is against <see cref="BossId.Value"/> — the canonical
-    /// technical Identity <c>BOSS_RULES.md</c> §6.4 fixes (the convention
-    /// <c>boss-&lt;ascii-kebab-case-name&gt;</c>, e.g. <c>"boss-hoa-long"</c>;
-    /// "fixed here so no task invents its own") — and is ordinal, because the
-    /// identity is an opaque stable ASCII id and not a culture-sensitive string.
-    /// The Boss's display name is presentation-only content and is never
-    /// accepted here.
-    ///
-    /// It is a lookup over the five transcribed definitions, not a registry:
-    /// <c>BOSS_RULES.md</c> §6 defines exactly those five, and a Boss that is
-    /// not among them is rejected rather than fabricated
-    /// (<c>AGENTS.md</c> §7).
-    /// </summary>
-    /// <param name="bossId">The submitted Boss identity.</param>
-    /// <returns>The matching definition, or <c>null</c> when none matches.</returns>
-    private static BossDefinition? ResolveBoss(string? bossId)
-    {
-        if (string.IsNullOrWhiteSpace(bossId))
-        {
-            return null;
-        }
-
-        foreach (var definition in BossDefinitions.All)
-        {
-            if (string.Equals(definition.BossId.Value, bossId, StringComparison.Ordinal))
-            {
-                return definition;
-            }
-        }
-
-        return null;
     }
 }

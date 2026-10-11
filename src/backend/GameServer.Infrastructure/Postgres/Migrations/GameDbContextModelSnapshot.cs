@@ -99,13 +99,25 @@ namespace GameServer.Infrastructure.Postgres.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
+                    b.Property<int>("ATK")
+                        .HasColumnType("integer");
+
                     b.Property<string>("BossId")
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)")
                         .HasColumnName("Identity");
 
+                    b.Property<int>("DEF")
+                        .HasColumnType("integer");
+
                     b.Property<int>("Element")
+                        .HasColumnType("integer");
+
+                    b.Property<double>("EnrageThreshold")
+                        .HasColumnType("double precision");
+
+                    b.Property<int>("MaxHP")
                         .HasColumnType("integer");
 
                     b.Property<string>("PassiveDefinition")
@@ -122,7 +134,16 @@ namespace GameServer.Infrastructure.Postgres.Migrations
                         .IsUnique()
                         .HasDatabaseName("IX_BossDefinition_Identity");
 
-                    b.ToTable("BossDefinition", (string)null);
+                    b.ToTable("BossDefinition", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_BossDefinition_ATK_NonNegative", "\"ATK\" >= 0");
+
+                            t.HasCheckConstraint("CK_BossDefinition_DEF_NonNegative", "\"DEF\" >= 0");
+
+                            t.HasCheckConstraint("CK_BossDefinition_EnrageThreshold_Range", "\"EnrageThreshold\" > 0.0 AND \"EnrageThreshold\" < 1.0");
+
+                            t.HasCheckConstraint("CK_BossDefinition_MaxHP_Positive", "\"MaxHP\" > 0");
+                        });
                 });
 
             modelBuilder.Entity("GameServer.Domain.Cards.CardDefinition", b =>

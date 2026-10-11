@@ -64,11 +64,11 @@ public class GameDbContext : DbContext
     public DbSet<PlayerUnlockedCard> PlayerUnlockedCards => Set<PlayerUnlockedCard>();
 
     /// <summary>
-    /// The persistent Boss definition table (<c>DATABASE.md</c> §1) — static
-    /// content only: the row's persistence key, its canonical technical
-    /// Identity, its Element, and its two JSON configuration objects. The
-    /// combat-definition values (MaxHP/ATK/DEF/EnrageThreshold) are not stored
-    /// here (<c>DATABASE.md</c> §1 note item 1, TASK-044). No row is
+    /// The persistent Boss definition table (<c>DATABASE.md</c> §1): the row's
+    /// persistence key, its canonical technical Identity, its Element, the four
+    /// runtime combat-balance columns <c>MaxHP</c>/<c>ATK</c>/<c>DEF</c>/
+    /// <c>EnrageThreshold</c> that are authoritative at battle creation
+    /// (<c>ADR-024</c> §2.2), and its two JSON configuration objects. No row is
     /// provisioned by this context: no seed mechanism is documented
     /// (<c>DATABASE.md</c> §1 note item 5, §5 item 4).
     /// </summary>

@@ -609,6 +609,11 @@ public class ApplicationSessionRESTTests
             using var scope = Services.CreateScope();
             var context = scope.ServiceProvider.GetRequiredService<GameDbContext>();
 
+            // The five canonical BossDefinition rows (ADR-024): the success-path
+            // test starts a battle against "boss-hoa-long", which is now resolved
+            // through the provisioned row rather than the static Domain set.
+            TestProvisionedContent.SeedBosses(context);
+
             var accountId = Guid.NewGuid();
             context.Accounts.Add(new Domain.Accounts.Account
             {

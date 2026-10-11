@@ -47,16 +47,21 @@ namespace GameServer.Domain.Bosses;
 /// documented contract requires one, and <c>AGENTS.md</c> §9 forbids the
 /// abstraction.
 ///
-/// <b>The persisted row does not carry the combat stats.</b>
-/// <c>DATABASE.md</c> §1's <c>BossDefinition</c> table stores the row's
-/// persistence key, its canonical technical Identity, its Element, and its
-/// Passive/Skill configuration. The combat-definition values
+/// <b>The persisted row carries the combat balance, and the Domain baseline
+/// carries the mechanics.</b> <c>DATABASE.md</c> §1's <c>BossDefinition</c> table
+/// stores the row's persistence key, its canonical technical Identity, its
+/// Element, the four runtime combat-balance columns
 /// <see cref="MaxHP"/>, <see cref="ATK"/>, <see cref="DEF"/>, and
-/// <see cref="EnrageThreshold"/> are deliberately <b>not</b> columns: §1's
-/// persistence contract states they "remain sourced from the authoritative
-/// Domain <c>BossDefinition</c> content at battle creation". Both live on this
-/// one type; only the documented subset is persisted, and no field is removed
-/// from the Domain because the table does not store it.
+/// <see cref="EnrageThreshold"/>, and its Passive/Skill configuration
+/// (<c>ADR-024</c>, Domain Overlay). <c>BossDefinitions.All</c> stays the
+/// structural baseline: the identity set, the Element affinity, and the
+/// Passive/Skill mechanics — including
+/// <see cref="BossSkillDefinition.SecondaryEffect"/>, which is deliberately not
+/// a stored column — are read from it, while the four balance values are read
+/// from PostgreSQL and overlaid at battle creation
+/// (<c>ADR-024</c> §2.2). Both live on this one type: the Domain record is the
+/// type the overlay produces, and no field is removed from it because the table
+/// stores only a subset.
 /// <b>It is a reference type because it is persisted.</b> EF Core maps entity
 /// types as reference types, and this definition is the entity
 /// <c>DATABASE.md</c> §1's <c>BossDefinition</c> table stores — the same shape
@@ -180,28 +185,30 @@ public sealed record class BossDefinition(
     /// The Boss's maximum health (<c>BOSS_RULES.md</c> §6.1). It is also the
     /// <c>HP</c> a battle begins with (<see cref="BossState.Initial"/>).
     ///
-    /// <b>It is Domain configuration, not a persisted column.</b>
-    /// <c>DATABASE.md</c> §1 note item 1 states the combat-definition values
-    /// <c>MaxHP</c>, <c>ATK</c>, <c>DEF</c>, and <c>EnrageThreshold</c> are
-    /// <b>not</b> stored in the <c>BossDefinition</c> table — they "remain
-    /// sourced from the authoritative Domain <c>BossDefinition</c> content at
-    /// battle creation". It is therefore declared outside the constructor (the
-    /// persisted surface) and excluded from the persistence model.
+    /// <b>It is a persisted runtime balance column</b> (<c>DATABASE.md</c> §1,
+    /// <c>ADR-024</c> §2.2). The value a battle uses is the one PostgreSQL
+    /// holds, overlaid onto the structural Domain baseline at battle creation
+    /// (<c>BossDefinitions.All</c> remains the canonical baseline default for
+    /// migration seeding and offline tests, and is never a runtime fallback).
+    /// The initializer below is that baseline, not a fallback path.
     /// </summary>
     public int MaxHP { get; init; } = BossRules.BaseMaxHP;
 
     /// <summary>
     /// The Boss's attack power (<c>BOSS_RULES.md</c> §6.1) — the persistent half
-    /// of a Boss attack's Base Damage (<c>COMBAT_RULES.md</c> §3.4). Domain
-    /// configuration, not a persisted column (<c>DATABASE.md</c> §1 note item 1).
+    /// of a Boss attack's Base Damage (<c>COMBAT_RULES.md</c> §3.4). A persisted
+    /// runtime balance column (<c>DATABASE.md</c> §1, <c>ADR-024</c> §2.2),
+    /// overlaid from PostgreSQL at battle creation; the initializer is the
+    /// canonical baseline.
     /// </summary>
     public int ATK { get; init; } = BossRules.BaseATK;
 
     /// <summary>
     /// The Boss's defense (<c>BOSS_RULES.md</c> §6.1) — the value
     /// <c>COMBAT_RULES.md</c> §3.2's mitigation formula consumes when the Boss is
-    /// the defending target. Domain configuration, not a persisted column
-    /// (<c>DATABASE.md</c> §1 note item 1).
+    /// the defending target. A persisted runtime balance column
+    /// (<c>DATABASE.md</c> §1, <c>ADR-024</c> §2.2), overlaid from PostgreSQL at
+    /// battle creation; the initializer is the canonical baseline.
     /// </summary>
     public int DEF { get; init; } = BossRules.BaseDEF;
 
@@ -209,8 +216,9 @@ public sealed record class BossDefinition(
     /// The fraction of <see cref="MaxHP"/> below which the Boss becomes Enraged
     /// (<c>BOSS_RULES.md</c> §5 item 4, §6.1: "1500 (30%)"). The comparison is
     /// strict — <c>BossHP &lt; MaxHP × EnrageThreshold</c> — and the transition
-    /// is permanent. Domain configuration, not a persisted column
-    /// (<c>DATABASE.md</c> §1 note item 1).
+    /// is permanent. A persisted runtime balance column (<c>DATABASE.md</c> §1,
+    /// <c>ADR-024</c> §2.2), overlaid from PostgreSQL at battle creation; the
+    /// initializer is the canonical baseline.
     /// </summary>
     public double EnrageThreshold { get; init; } = BossRules.BaseEnrageThreshold;
 
@@ -527,10 +535,11 @@ public enum BossSkillSecondaryEffectKind
 /// (§6.1: "MVP base configuration — not universal balance invariants … used at
 /// battle creation").
 ///
-/// They exist because the combat stats are <b>not</b> persisted
-/// (<c>DATABASE.md</c> §1 note item 1): they live on the Domain definition, and
-/// a definition read back from persistence takes these documented values rather
-/// than a column's.
+/// They exist because the four combat stats are runtime balance columns whose
+/// canonical baseline is the Domain's (<c>DATABASE.md</c> §1, <c>ADR-024</c>
+/// §2.2/§2.5): a definition read back from persistence carries the overlaid
+/// column values, while this static configuration is the baseline those columns
+/// are seeded with and the fixture offline tests use.
 ///
 /// <b>They are not a per-Boss rule.</b> §6.1 gives Hỏa Long, Thủy Ma, and
 /// Mộc Yêu this one row (5000 / 100 / 50 / 30%), while Sơn Thạch Vệ

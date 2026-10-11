@@ -15,15 +15,16 @@ namespace GameServer.Infrastructure.Tests;
 /// plus the migration-source contract of both provisioning migrations
 /// (TASK-053 and TASK-172).
 ///
-/// What is verified is the documented contract: the five persisted columns and
+/// What is verified is the documented contract: the nine persisted columns and
 /// their exact PK/constraint semantics, the caller-supplied (never generated)
 /// persistence key distinct from the canonical Identity, the two NOT NULL JSON
 /// documents and their fixed member lists — including <c>threshold: null</c> for
-/// a non-match-charged Passive rather than the <c>0</c> sentinel — the
-/// <b>absence</b> of the combat-definition columns, and the provisioning
-/// contract's separation of concerns: the model still seeds nothing (no
-/// <c>HasData</c>/<c>GetSeedData()</c>) while the migrations own the canonical
-/// rows as migration-level <c>InsertData</c> (<c>DATABASE.md</c> §1 note item 5).
+/// a non-match-charged Passive rather than the <c>0</c> sentinel — the four
+/// runtime balance columns with their range check constraints
+/// (<c>ADR-024</c>), and the provisioning contract's separation of concerns: the
+/// model still seeds nothing (no <c>HasData</c>/<c>GetSeedData()</c>) while the
+/// migrations own the canonical rows as migration-level <c>InsertData</c>
+/// (<c>DATABASE.md</c> §1 note item 5).
 ///
 /// The two provisioning migrations are asserted independently, because each owns
 /// its own row set: <c>ProvisionBossDefinitions</c> (TASK-053) owns the three
@@ -147,12 +148,14 @@ public class BossPersistenceTests
     }
 
     [Fact]
-    public void Model_ShouldStoreExactlyTheFiveDocumentedColumns()
+    public void Model_ShouldStoreExactlyTheNineDocumentedColumns()
     {
-        // DATABASE.md §1's BossDefinition block lists five entries. The model
-        // must hold those and nothing else — in particular no MaxHP/ATK/DEF/
-        // EnrageThreshold column (§1 note item 1) and no display-name column.
-        var model = CreateDesignTimeModel(nameof(Model_ShouldStoreExactlyTheFiveDocumentedColumns));
+        // DATABASE.md §1's BossDefinition block lists nine entries: the five
+        // structural/configuration columns plus the four runtime balance columns
+        // ADR-024 added. The model must hold those and nothing else — in
+        // particular no display-name column, and no second representation of the
+        // balance values.
+        var model = CreateDesignTimeModel(nameof(Model_ShouldStoreExactlyTheNineDocumentedColumns));
 
         var entity = model.FindEntityType(typeof(BossDefinition))!;
 
@@ -164,9 +167,13 @@ public class BossPersistenceTests
         Assert.Equal(
             new[]
             {
+                "ATK",
                 "BossDefinitionId",
+                "DEF",
                 "Element",
+                "EnrageThreshold",
                 "Identity",
+                "MaxHP",
                 "PassiveDefinition",
                 "SkillDefinition",
             },
@@ -174,21 +181,92 @@ public class BossPersistenceTests
     }
 
     [Fact]
-    public void Model_ShouldNotPersistTheCombatDefinitionValues()
+    public void Model_ShouldPersistTheFourRuntimeBalanceColumnsAsRequired()
     {
-        // DATABASE.md §1 note item 1: MaxHP, ATK, DEF, and EnrageThreshold
-        // "remain sourced from the authoritative Domain BossDefinition content
-        // at battle creation" — they are not columns. A silent promotion of a
-        // static combat value into the database is exactly what this guards.
-        var model = CreateDesignTimeModel(nameof(Model_ShouldNotPersistTheCombatDefinitionValues));
+        // DATABASE.md §1/§3 and ADR-024 §2.2: MaxHP (int), ATK (int), DEF (int),
+        // and EnrageThreshold (double) are required columns. The types matter —
+        // EnrageThreshold is the documented fraction of MaxHP (BOSS_RULES.md §5
+        // item 4), not an absolute HP figure.
+        var model = CreateDesignTimeModel(
+            nameof(Model_ShouldPersistTheFourRuntimeBalanceColumnsAsRequired));
 
         var entity = model.FindEntityType(typeof(BossDefinition))!;
-        var columns = entity.GetProperties().Select(p => p.GetColumnName()).ToArray();
 
-        foreach (var forbidden in new[] { "MaxHP", "ATK", "DEF", "EnrageThreshold" })
+        foreach (var (name, clrType) in new (string, Type)[]
+                 {
+                     ("MaxHP", typeof(int)),
+                     ("ATK", typeof(int)),
+                     ("DEF", typeof(int)),
+                     ("EnrageThreshold", typeof(double)),
+                 })
         {
-            Assert.DoesNotContain(forbidden, columns);
+            var property = entity.GetProperties().Single(p => p.GetColumnName() == name);
+
+            Assert.Equal(clrType, property.ClrType);
+            Assert.False(property.IsNullable);
+
+            // ADR-024 §2.5: the EF Core mapping defines NO default value. The
+            // schema columns' transitional defaults exist only inside the
+            // migration that adds them, so an unpopulated insert cannot silently
+            // take a balance value from the mapping.
+            //
+            // The check reads the configured default annotation rather than
+            // GetDefaultValue(), which reports the CLR default for a non-nullable
+            // value type whether or not a default was configured, and would
+            // therefore pass vacuously.
+            Assert.Empty(
+                property.GetAnnotations()
+                    .Where(annotation => annotation.Name.EndsWith(
+                        "DefaultValue", StringComparison.Ordinal))
+                    .Select(annotation => annotation.Name)
+                    .ToArray());
+
+            Assert.Null(property.GetDefaultValueSql());
         }
+
+        // Positive control: the same check DOES find a configured default on a
+        // property that declares one (Player.Level, DATABASE.md §3 /
+        // COMBAT_RULES.md §7.5 item 3), so the assertion above cannot pass because
+        // the detection is broken.
+        var player = model.FindEntityType(typeof(GameServer.Domain.Players.Player))!;
+
+        Assert.Contains(
+            player.FindProperty(nameof(GameServer.Domain.Players.Player.Level))!
+                .GetAnnotations(),
+            annotation => annotation.Name.EndsWith("DefaultValue", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Model_ShouldEnforceTheFourDocumentedBalanceRangeConstraints()
+    {
+        // DATABASE.md §3 and ADR-024 §2.4/§2.5: the four range invariants are
+        // database check constraints. The names and expressions are the ADR's,
+        // and each is asserted against the model rather than only against the
+        // migration, so the model and the applied schema cannot drift.
+        var model = CreateDesignTimeModel(
+            nameof(Model_ShouldEnforceTheFourDocumentedBalanceRangeConstraints));
+
+        var entity = model.FindEntityType(typeof(BossDefinition))!;
+
+        var constraints = entity.GetCheckConstraints()
+            .ToDictionary(c => c.Name!, c => c.Sql!, StringComparer.Ordinal);
+
+        Assert.Equal(
+            new[]
+            {
+                "CK_BossDefinition_ATK_NonNegative",
+                "CK_BossDefinition_DEF_NonNegative",
+                "CK_BossDefinition_EnrageThreshold_Range",
+                "CK_BossDefinition_MaxHP_Positive",
+            },
+            constraints.Keys.OrderBy(n => n, StringComparer.Ordinal).ToArray());
+
+        Assert.Equal("\"MaxHP\" > 0", constraints["CK_BossDefinition_MaxHP_Positive"]);
+        Assert.Equal("\"ATK\" >= 0", constraints["CK_BossDefinition_ATK_NonNegative"]);
+        Assert.Equal("\"DEF\" >= 0", constraints["CK_BossDefinition_DEF_NonNegative"]);
+        Assert.Equal(
+            "\"EnrageThreshold\" > 0.0 AND \"EnrageThreshold\" < 1.0",
+            constraints["CK_BossDefinition_EnrageThreshold_Range"]);
     }
 
     [Fact]
@@ -1203,6 +1281,324 @@ public class BossPersistenceTests
                 $"\"{definition.BossDefinitionId}\", \"{definition.BossId.Value}\", {expectedValue},",
                 migration);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Balance migration source — DATABASE.md §1/§3, ADR-024 §2.2/§2.4/§2.5
+    //
+    // The migration is asserted against its own source, the same convention the
+    // AddBossPersistence schema pin and the two provisioning migrations use. The
+    // applied end state — the columns, their constraint expressions, and the
+    // canonical values PostgreSQL actually holds — is verified against a live
+    // database by BossDefinitionPostgresProvisioningTests, which skips when none
+    // is reachable.
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// The migration ADR-024 §2.5 specifies: add the four balance columns with
+    /// transitional defaults, populate the five canonical rows, then activate the
+    /// range constraints.
+    /// </summary>
+    private const string BalanceMigration = "AddBossBalanceConfiguration";
+
+    private const string AddColumnPattern =
+        @"migrationBuilder\.AddColumn<(?<clrType>[^>]+)>\(\s*name: ""(?<name>[^""]+)"",\s*table: ""BossDefinition"",\s*type: ""(?<sqlType>[^""]+)"",\s*nullable: (?<nullable>true|false),\s*defaultValue: (?<default>[^)]*)\)";
+
+    private const string UpdateDataPattern =
+        @"migrationBuilder\.UpdateData\(\s*table: ""BossDefinition"",\s*keyColumn: ""BossDefinitionId"",\s*keyValue: ""(?<key>[^""]+)"",\s*column: ""(?<column>[^""]+)"",\s*value: (?<value>[^)]*)\)";
+
+    private const string AddCheckConstraintPattern =
+        @"migrationBuilder\.AddCheckConstraint\(\s*name: ""(?<name>[^""]+)"",\s*table: ""BossDefinition"",\s*sql: ""(?<sql>(?:[^""\\]|\\.)*)""\)";
+
+    private const string DropCheckConstraintPattern =
+        @"migrationBuilder\.DropCheckConstraint\(\s*name: ""(?<name>[^""]+)"",\s*table: ""BossDefinition""\)";
+
+    private const string DropColumnPattern =
+        @"migrationBuilder\.DropColumn\(\s*name: ""(?<name>[^""]+)"",\s*table: ""BossDefinition""\)";
+
+    /// <summary>
+    /// The four balance columns and the CLR type each is mapped as
+    /// (<c>DATABASE.md</c> §3, <c>ADR-024</c> §2.2).
+    /// </summary>
+    private static readonly (string Column, string ClrType, string SqlType)[] BalanceColumns =
+    [
+        ("MaxHP", "int", "integer"),
+        ("ATK", "int", "integer"),
+        ("DEF", "int", "integer"),
+        ("EnrageThreshold", "double", "double precision"),
+    ];
+
+    /// <summary>
+    /// The four range constraints and their exact expressions
+    /// (<c>ADR-024</c> §2.4/§2.5).
+    /// </summary>
+    private static readonly (string Name, string Sql)[] BalanceConstraints =
+    [
+        ("CK_BossDefinition_MaxHP_Positive", "\"MaxHP\" > 0"),
+        ("CK_BossDefinition_ATK_NonNegative", "\"ATK\" >= 0"),
+        ("CK_BossDefinition_DEF_NonNegative", "\"DEF\" >= 0"),
+        (
+            "CK_BossDefinition_EnrageThreshold_Range",
+            "\"EnrageThreshold\" > 0.0 AND \"EnrageThreshold\" < 1.0"),
+    ];
+
+    [Fact]
+    public void BalanceMigration_ShouldAddTheFourColumnsWithTheDocumentedTransitionalDefaults()
+    {
+        // ADR-024 §2.5: the four columns are added non-nullable with STRICTLY
+        // transitional defaults (MaxHP 1, ATK 0, DEF 0, EnrageThreshold 0.5) so
+        // the column can be added to a populated table at all. MaxHP = 1 and
+        // EnrageThreshold = 0.5 are chosen so the constraints added later cannot
+        // fail on any row the defaults reached.
+        var migration = ReadMigrationOperations(BalanceMigration);
+
+        var added = System.Text.RegularExpressions.Regex
+            .Matches(migration, AddColumnPattern)
+            .ToDictionary(
+                match => match.Groups["name"].Value,
+                match => match,
+                StringComparer.Ordinal);
+
+        Assert.Equal(
+            BalanceColumns.Select(c => c.Column).OrderBy(n => n, StringComparer.Ordinal).ToArray(),
+            added.Keys.OrderBy(n => n, StringComparer.Ordinal).ToArray());
+
+        var expectedDefaults = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["MaxHP"] = "1",
+            ["ATK"] = "0",
+            ["DEF"] = "0",
+            ["EnrageThreshold"] = "0.5",
+        };
+
+        foreach (var (column, clrType, sqlType) in BalanceColumns)
+        {
+            Assert.Equal(clrType, added[column].Groups["clrType"].Value);
+            Assert.Equal(sqlType, added[column].Groups["sqlType"].Value);
+            Assert.Equal("false", added[column].Groups["nullable"].Value);
+            Assert.Equal(expectedDefaults[column], added[column].Groups["default"].Value.Trim());
+        }
+    }
+
+    [Fact]
+    public void BalanceMigration_ShouldPopulateEveryCanonicalRowWithItsBossRulesValue()
+    {
+        // ADR-024 §2.5 / DATABASE.md §1 note item 5 "Row content": each of the
+        // five canonical rows is updated in the same migration to its exact
+        // BOSS_RULES.md §6.1 value. The values are compared against the Domain
+        // baseline (BossDefinitions), which IS that canonical table, so the
+        // migration and the single authoritative source cannot drift. Nothing is
+        // inserted: the rows already exist from the provisioning migrations.
+        var migration = ReadMigrationOperations(BalanceMigration);
+
+        var updates = System.Text.RegularExpressions.Regex.Matches(migration, UpdateDataPattern);
+
+        // Five rows × four columns.
+        Assert.Equal(20, updates.Count);
+
+        var byKeyAndColumn = updates.ToDictionary(
+            match => (match.Groups["key"].Value, match.Groups["column"].Value),
+            match => match.Groups["value"].Value.Trim(),
+            new KeyAndColumnComparer());
+
+        foreach (var definition in BossDefinitions.All)
+        {
+            foreach (var (column, _, _) in BalanceColumns)
+            {
+                Assert.True(
+                    byKeyAndColumn.TryGetValue(
+                        (definition.BossDefinitionId, column), out var literal),
+                    $"The balance migration must set {column} for {definition.BossDefinitionId}.");
+
+                var expected = column switch
+                {
+                    "MaxHP" => (double)definition.MaxHP,
+                    "ATK" => definition.ATK,
+                    "DEF" => definition.DEF,
+                    _ => definition.EnrageThreshold,
+                };
+
+                // Parsed as a number rather than compared as text, so the
+                // assertion pins the VALUE (0.30 ≡ 0.3) and not the literal's
+                // formatting.
+                Assert.Equal(
+                    expected,
+                    double.Parse(literal, System.Globalization.CultureInfo.InvariantCulture));
+            }
+        }
+
+        // No row is inserted, deleted, re-keyed, or model-seeded by this
+        // migration (DATABASE.md §1 note item 5, §5 item 4).
+        foreach (var forbidden in new[]
+                 {
+                     "migrationBuilder.InsertData(", "migrationBuilder.DeleteData(",
+                     "migrationBuilder.CreateTable(", "migrationBuilder.DropTable(",
+                     "HasData",
+                 })
+        {
+            Assert.DoesNotContain(forbidden, migration);
+        }
+
+        // Every boss-def-* literal is one of the five canonical rows — no sixth
+        // key, and no row outside the set this migration owns.
+        foreach (var literal in BossDefinitionIdLiterals(migration))
+        {
+            Assert.Contains(literal, CanonicalBossDefinitionIds);
+        }
+    }
+
+    [Fact]
+    public void BalanceMigration_ShouldActivateTheConstraintsOnlyAfterPopulatingTheRows()
+    {
+        // ADR-024 §2.5: the order is the contract. A constraint activated before
+        // the rows carry satisfying values would make the migration fail on a
+        // populated table, and a row updated after the constraints would be
+        // unvalidated. Both boundaries are asserted.
+        var migration = ReadMigrationOperations(BalanceMigration);
+
+        var lastColumnAdd = migration.LastIndexOf(
+            "migrationBuilder.AddColumn", StringComparison.Ordinal);
+        var firstRowUpdate = migration.IndexOf(
+            "migrationBuilder.UpdateData(", StringComparison.Ordinal);
+        var lastRowUpdate = migration.LastIndexOf(
+            "migrationBuilder.UpdateData(", StringComparison.Ordinal);
+        var firstConstraint = migration.IndexOf(
+            "migrationBuilder.AddCheckConstraint(", StringComparison.Ordinal);
+
+        Assert.True(lastColumnAdd >= 0 && firstRowUpdate > lastColumnAdd);
+        Assert.True(lastRowUpdate >= 0 && firstConstraint > lastRowUpdate);
+
+        var lastConstraint = migration.LastIndexOf(
+            "migrationBuilder.AddCheckConstraint(", StringComparison.Ordinal);
+        var firstAlterColumn = migration.IndexOf(
+            "migrationBuilder.AlterColumn<", StringComparison.Ordinal);
+
+        Assert.True(lastConstraint >= 0 && firstAlterColumn > lastConstraint);
+
+        var constraints = System.Text.RegularExpressions.Regex
+            .Matches(migration, AddCheckConstraintPattern)
+            .ToDictionary(
+                match => match.Groups["name"].Value,
+                match => match.Groups["sql"].Value.Replace("\\\"", "\"", StringComparison.Ordinal),
+                StringComparer.Ordinal);
+
+        Assert.Equal(
+            BalanceConstraints.Select(c => c.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray(),
+            constraints.Keys.OrderBy(n => n, StringComparer.Ordinal).ToArray());
+
+        foreach (var (name, sql) in BalanceConstraints)
+        {
+            Assert.Equal(sql, constraints[name]);
+        }
+    }
+
+    [Fact]
+    public void BalanceMigration_ShouldDropTheFourTransitionalDefaultsAfterActivatingConstraints()
+    {
+        // ADR-024 §2.5 / Fail-Closed Design: The four transitional defaults
+        // (1, 0, 0, 0.5) must be dropped via AlterColumn after canonical rows
+        // are populated and constraints activated. This ensures direct SQL
+        // inserts that omit balance columns fail closed with a NOT NULL
+        // constraint violation rather than silently inheriting transitional
+        // defaults.
+        var migration = ReadMigrationOperations(BalanceMigration);
+
+        var altered = System.Text.RegularExpressions.Regex
+            .Matches(
+                migration,
+                @"migrationBuilder\.AlterColumn<(?<clrType>[^>]+)>\(\s*name: ""(?<name>[^""]+)"",\s*table: ""BossDefinition"",\s*type: ""(?<sqlType>[^""]+)"",\s*nullable: (?<nullable>true|false),\s*oldClrType: typeof\([^)]+\),\s*oldType: ""(?<oldType>[^""]+)"",\s*oldDefaultValue: (?<oldDefault>[^)]*)\)")
+            .ToDictionary(
+                match => match.Groups["name"].Value,
+                match => match,
+                StringComparer.Ordinal);
+
+        Assert.Equal(
+            BalanceColumns.Select(c => c.Column).OrderBy(n => n, StringComparer.Ordinal).ToArray(),
+            altered.Keys.OrderBy(n => n, StringComparer.Ordinal).ToArray());
+
+        var expectedOldDefaults = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["MaxHP"] = "1",
+            ["ATK"] = "0",
+            ["DEF"] = "0",
+            ["EnrageThreshold"] = "0.5",
+        };
+
+        foreach (var (column, clrType, sqlType) in BalanceColumns)
+        {
+            Assert.Equal(clrType, altered[column].Groups["clrType"].Value);
+            Assert.Equal(sqlType, altered[column].Groups["sqlType"].Value);
+            Assert.Equal("false", altered[column].Groups["nullable"].Value);
+            Assert.Equal(expectedOldDefaults[column], altered[column].Groups["oldDefault"].Value.Trim());
+        }
+    }
+
+    [Fact]
+    public void BalanceMigration_ShouldRollBackWithoutDeletingRowsOrTouchingAnythingElse()
+    {
+        // ADR-024 §2.5 "Safe Rollback Behavior": Down drops the four range
+        // constraints and then the four balance columns, restoring the
+        // pre-migration five-column structure. It must NOT delete rows — the
+        // BattleResult foreign key references this table — and it must not alter
+        // any structural column, index, or key.
+        var migration = ReadMigrationOperations(BalanceMigration);
+
+        var droppedConstraints = System.Text.RegularExpressions.Regex
+            .Matches(migration, DropCheckConstraintPattern)
+            .Select(match => match.Groups["name"].Value)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(
+            BalanceConstraints.Select(c => c.Name).OrderBy(n => n, StringComparer.Ordinal).ToArray(),
+            droppedConstraints);
+
+        var droppedColumns = System.Text.RegularExpressions.Regex
+            .Matches(migration, DropColumnPattern)
+            .Select(match => match.Groups["name"].Value)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(
+            BalanceColumns.Select(c => c.Column).OrderBy(n => n, StringComparer.Ordinal).ToArray(),
+            droppedColumns);
+
+        // No structural column, table, index, key, or row is touched.
+        foreach (var forbidden in new[]
+                 {
+                     "migrationBuilder.DeleteData(", "migrationBuilder.InsertData(",
+                     "migrationBuilder.DropTable(", "migrationBuilder.CreateTable(",
+                     "migrationBuilder.DropIndex(", "migrationBuilder.CreateIndex(",
+                     "migrationBuilder.DropForeignKey(", "migrationBuilder.AddForeignKey(",
+                     "migrationBuilder.RenameColumn(",
+                     "\"Identity\"", "\"Element\"", "\"PassiveDefinition\"", "\"SkillDefinition\"",
+                 })
+        {
+            Assert.DoesNotContain(forbidden, migration);
+        }
+
+        // The operation set is closed: four adds, twenty row updates, four
+        // constraint adds, four default drops (AlterColumn), four constraint
+        // drops, four column drops — and nothing else.
+        Assert.Equal(40, CountOccurrences(migration, "migrationBuilder."));
+        Assert.Equal(40, CountOccurrences(migration, "table: \"BossDefinition\""));
+    }
+
+    /// <summary>
+    /// Orders the <c>(BossDefinitionId, column)</c> keys of the balance
+    /// migration's row updates. A tuple's default comparer is structural, but
+    /// naming the comparer keeps the dictionary's intent explicit.
+    /// </summary>
+    private sealed class KeyAndColumnComparer : IEqualityComparer<(string Key, string Column)>
+    {
+        public bool Equals((string Key, string Column) x, (string Key, string Column) y) =>
+            string.Equals(x.Key, y.Key, StringComparison.Ordinal)
+            && string.Equals(x.Column, y.Column, StringComparison.Ordinal);
+
+        public int GetHashCode((string Key, string Column) obj) =>
+            HashCode.Combine(
+                StringComparer.Ordinal.GetHashCode(obj.Key),
+                StringComparer.Ordinal.GetHashCode(obj.Column));
     }
 
     /// <summary>

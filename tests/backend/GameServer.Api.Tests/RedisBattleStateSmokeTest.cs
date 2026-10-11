@@ -515,6 +515,10 @@ public class RedisBattleStateSmokeTest
             using var scope = Services.CreateScope();
             var context = scope.ServiceProvider.GetRequiredService<GameDbContext>();
 
+            // The five canonical BossDefinition rows (ADR-024): the submitted
+            // bossId is resolved through the provisioned row at battle creation.
+            TestProvisionedContent.SeedBosses(context);
+
             var playerId = $"player_smoke_{Guid.NewGuid():N}";
 
             context.Players.Add(new Player
