@@ -13,6 +13,7 @@ import {
   adaptPresentedEvent,
   describeEventCallout,
   selectBatchCallout,
+  selectBatchCalloutEvent,
   BOSS_SKILL_NAMES,
   resolveBossSkillDisplayName,
   BOSS_ENRAGE_THRESHOLDS,
@@ -1363,6 +1364,59 @@ describe('TASK-210 — the player-facing combat callout (SIGNALR_PROTOCOL.md §3
     ).toBeNull();
 
     expect(selectBatchCallout([], resolveCardName, resolveRelicName)).toBeNull();
+  });
+
+  it('names the delivered event the batch callout was selected from (TASK-254)', () => {
+    // The callout is presented with the phase that owns the event it reports, so
+    // the selection has to carry that event. The rule itself is unchanged — the
+    // same importance ladder and the same delivery-order tie-break as
+    // `selectBatchCallout`, which is its callout-only projection.
+    const events = [
+      parseInBattleEvent({
+        type: 'MatchCreated',
+        shape: 'Straight',
+        cells: [8, 9, 10],
+        gemType: 'ATK',
+        cascadeDepth: 0,
+      })!,
+      parseInBattleEvent({ type: 'ComboChanged', combo: 4 })!,
+      parseInBattleEvent({ type: 'PowerChanged', delta: 10, power: 10, source: 'match' })!,
+      parseInBattleEvent({ type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' })!,
+      parseInBattleEvent({ type: 'DamageDealt', source: 'player', target: 'boss', amount: 120 })!,
+    ];
+
+    const selection = selectBatchCalloutEvent(events, resolveCardName, resolveRelicName);
+    expect(selection?.callout.message).toBe('COMBO ×4');
+    // The event it names is the delivered event that produced that line, and the
+    // callout-only projection selects exactly the same line.
+    expect(selection?.event).toBe(events[1]);
+    expect(selectBatchCallout(events, resolveCardName, resolveRelicName)).toEqual(
+      selection?.callout
+    );
+
+    // Among equally important events the last delivered one wins, and it is that
+    // event that owns the line.
+    const twoCasts = [
+      parseInBattleEvent({ type: 'CardCast', cardId: 'card-heal' })!,
+      parseInBattleEvent({ type: 'PetSkillCast', cardId: 'card-inferno' })!,
+    ];
+    const last = selectBatchCalloutEvent(twoCasts, resolveCardName, resolveRelicName);
+    expect(last?.callout.message).toBe('PET SKILL: card-inferno');
+    expect(last?.event).toBe(twoCasts[1]);
+
+    // Nothing a player needs told: no callout and therefore no owning event — and
+    // no event is invented for the line that is not presented.
+    expect(
+      selectBatchCalloutEvent(
+        [
+          parseInBattleEvent({ type: 'GemMatched', cellIndex: 8, gemType: 'ATK' })!,
+          parseInBattleEvent({ type: 'CascadeCreated', cascadeDepth: 3 })!,
+        ],
+        resolveCardName,
+        resolveRelicName
+      )
+    ).toBeNull();
+    expect(selectBatchCalloutEvent([], resolveCardName, resolveRelicName)).toBeNull();
   });
 
   it('still presents exactly one callout when a Relic trigger shares a batch with Combo, cast and Match', () => {

@@ -23,6 +23,7 @@ import type {
   RelicResponse,
 } from '../../services/api/CollectionModels';
 import type {
+  EventCallout,
   InBattleServerEvent,
   InteractionStatement,
   MoveLogAbortReason,
@@ -41,6 +42,7 @@ import {
   INTERACTION_YOUR_TURN,
   MOVE_LOG_TITLE,
   adaptPresentedEvent,
+  describeEventCallout,
   formatCardCastRejection,
   formatGemCellLabel,
   formatInBattleEvent,
@@ -51,7 +53,7 @@ import {
   parseInBattleEvent,
   resolveOutcomeStatement,
   resolveSpecialGemPresentation,
-  selectBatchCallout,
+  selectBatchCalloutEvent,
 } from './BattleEventPresenter';
 
 /**
@@ -515,6 +517,18 @@ interface PresentationPhase {
   readonly holdMs: number;
   /** The delivered events this phase presents, in delivery order. */
   readonly events: readonly InBattleServerEvent[];
+  /**
+   * The batch's single player-facing callout, when the event that callout was
+   * selected from is one of this phase's own delivered events.
+   *
+   * The callout is a presentation of a *delivered* event, so it is raised by the
+   * phase that presents that event rather than at batch arrival: a callout can
+   * therefore never be on screen before the step it names has been presented
+   * (TASK-254 AF-2). It is the same one line the batch always had — one callout
+   * per resolution, selected by the same importance ladder — only with a causal
+   * place in the timeline (`selectBatchCalloutEvent`).
+   */
+  readonly callout?: EventCallout;
 }
 
 /**
@@ -526,17 +540,27 @@ interface PresentationPhase {
  * (`isInputLocked`).
  *
  * ```text
- * idle                    no action is in flight and no timeline is playing: the
+ * idle                    no action is outstanding and no timeline is playing: the
  *                         scene accepts player input
- * submitted               an action request is in flight and no timeline is playing
- * presenting              a resolution's timeline is playing and no action is in flight
- * presenting-submitted    both: the timeline plays while its request is still in flight
+ * submitted               an action this scene submitted has not finished being
+ *                         presented, and no timeline is playing — either its
+ *                         acknowledgement is still unanswered, or the
+ *                         acknowledgement has settled and its resolution's batch
+ *                         is still to arrive (`SIGNALR_PROTOCOL.md` §3.1: the two
+ *                         travel on separate paths, so either order is legal)
+ * presenting              a resolution's timeline is playing and no request is unanswered
+ * presenting-submitted    both: the timeline plays while its request is still unanswered
  *                         (`SIGNALR_PROTOCOL.md` §3.1 — the state is written back and
  *                         the batch is sent before the invocation result returns, so
  *                         the batch normally arrives first)
  * terminated              the battle's terminal outcome has been handed to
  *                         `ResultScene`; the scene presents no further resolution
  * ```
+ *
+ * `submitted` deliberately spans both the unanswered request and the
+ * acknowledgement-settled-but-resolution-pending interval (TASK-254 AF-5): that
+ * is what keeps the guard engaged from submission through presentation and
+ * reconciliation, in either delivery order.
  */
 export type BattleOrchestrationState =
   | 'idle'
@@ -552,13 +576,13 @@ export type BattleOrchestrationState =
  * idle                 → submitted             the player submitted an action
  * idle                 → presenting            a delivered batch started a timeline
  * idle                 → terminated            a delivered batch handed the outcome off
- * submitted            → idle                  the request settled with no timeline
+ * submitted            → idle                  the request settled (or was rejected) with no timeline
  * submitted            → presenting            the request settled, then its batch started a timeline
- * submitted            → presenting-submitted  its batch started a timeline while the request was in flight
+ * submitted            → presenting-submitted  its batch started a timeline while the request was unanswered
  * submitted            → terminated            its batch carried the terminal outcome
  * presenting           → idle                  the timeline completed, aborted, or was superseded
  * presenting           → terminated            the terminal outcome was handed off
- * presenting-submitted → submitted             the timeline ended; the request is still in flight
+ * presenting-submitted → submitted             the timeline ended; the request is still unanswered
  * presenting-submitted → presenting            the request settled; the timeline plays on
  * presenting-submitted → terminated            the terminal outcome was handed off
  * ```
@@ -603,20 +627,20 @@ const PRESENTATION_LOG_CAP = 256;
  * The phase kinds that start no animation at all, and are therefore held for no
  * time at all.
  *
- * The terminal outcome is the original case (TASK-246 finding L-1): it hands the
- * battle off and is padded with nothing. The delivered-action steps
- * (`cast` / `relic` / `boss-skill`) join it: they present the action's own step in
- * the timeline and carry the readouts and floaters their events own, but start no
- * animation of their own, so holding them would lengthen every resolution for no
- * feedback. A hold is never shorter than the longest animation its phase starts —
- * for these kinds that longest animation is none.
+ * The terminal outcome is the only one (§3.2.19 item 1; TASK-246 finding L-1): it
+ * hands the battle off and is padded with nothing.
+ *
+ * The delivered-action kinds (`cast` / `relic` / `boss-skill`) are deliberately
+ * **not** here (TASK-254 AF-1/AF-4). A phase's hold is derived from the events
+ * that phase actually carries (`phaseHoldMs` → `phaseEffectMs`), and a
+ * delivered-action step can carry — and start — the readouts and floaters of
+ * events delivered alongside it, and the `boss-skill` step presents its own
+ * delivered `BossSkillCast`. Holding such a phase for zero time would let its
+ * own effect still be animating when the next, conflicting phase begins, which is
+ * exactly the overlap this rule forbids: a hold is never shorter than the longest
+ * animation its phase starts.
  */
-const ZERO_HOLD_PHASE_KINDS: readonly PresentationPhaseKind[] = Object.freeze([
-  'outcome',
-  'cast',
-  'relic',
-  'boss-skill',
-]);
+const ZERO_HOLD_PHASE_KINDS: readonly PresentationPhaseKind[] = Object.freeze(['outcome']);
 
 /**
  * The presentation key of one delivered cell: its Gem type and, when present,
@@ -664,15 +688,38 @@ const GEM_PRESENTATION: Readonly<Record<string, { readonly color: number; readon
  * client-side randomness (SIGNALR_PROTOCOL.md §4 item 10, `GAME_RULES.md` §18,
  * ADR-001). Its only transformation is the documented index → screen mapping.
  *
- * **Presentation timeline.** One delivered `ReceiveEvents` batch is one resolved
- * action (`SIGNALR_PROTOCOL.md` §3.1), and the scene presents it as one ordered
- * timeline built from that batch in the batch's own order: the Swap, the
- * Match/Gem feedback, one phase per delivered `CascadeCreated.cascadeDepth`, the
- * gravity/refill interpolation onto the authoritative board, the player's damage
- * phase, the Boss's retaliation, and the terminal outcome handoff. The player's
- * input is locked for the whole of it (PD-2). Nothing in the timeline computes a
- * gameplay value, and every value it presents — the board's content, the HP
- * pairs, the damage numbers — is read from what the server delivered.
+ * **One presentation lifecycle for every action (TASK-254).** One delivered
+ * `ReceiveEvents` batch is one resolved action (`SIGNALR_PROTOCOL.md` §3.1), and
+ * the scene presents it as one ordered timeline, in the batch's own order,
+ * through one lifecycle whatever the actor is:
+ *
+ * ```text
+ * Action            the delivered action's own step: the committed Swap's
+ *                   exchange, a Card / Pet-Skill cast, a Relic trigger, a Boss
+ *                   Skill cast
+ * Execution         the board cycle the delivered Match / Gem events report
+ * Board Resolution  the gravity/refill interpolation onto the authoritative board
+ *                   (PD-1/PD-8) — one step, where the board cycle ends, and only
+ *                   when this resolution delivered a board cycle at all
+ * Cascades          one step per delivered `CascadeCreated.cascadeDepth`, with
+ *                   that pass's own delivered Match / Gem feedback
+ * Combat Effects    the delivered damage instances, the Boss's own steps, and the
+ *                   readouts / floaters their delivered events own
+ * Recovery          the board and every timeline-owned readout converged on the
+ *                   delivered state, once the last phase has played (an abort or
+ *                   a supersession converges the same way)
+ * Next Actor        the guard released, and the scene accepting player input again
+ * ```
+ *
+ * Every one of those steps is a *grouping* of delivered events (`buildPresentationPhases`),
+ * every actor/action on them comes from the one delivered-event interpreter
+ * (`adaptPresentedEvent`), a stage with no delivered event is skipped rather than
+ * fabricated, and each phase is held for at least the longest animation its own
+ * events start (`phaseHoldMs`). The player's input is locked for the whole of a
+ * resolution — from submission through presentation and Recovery (PD-2). Nothing
+ * in the timeline computes a gameplay value, and every value it presents — the
+ * board's content, the HP pairs, the damage numbers — is read from what the
+ * server delivered.
  *
  * **Swap input.** The scene implements the documented Match-3 interaction
  * (`MATCH3_RULES.md` §2 item 1): a tap on a cell selects it, and a tap on a
@@ -919,6 +966,40 @@ export class BattleScene extends Phaser.Scene {
    */
   private heldSequence: number | null = null;
   /**
+   * Whether an action request this client submitted has not yet been answered.
+   *
+   * The acknowledgement travels back on its own path, independently of the
+   * resolution's state push and event batch (`SIGNALR_PROTOCOL.md` §3.1), so it
+   * can arrive before them, after them, or between them. It is therefore its own
+   * fact and **never** the guard's: a settled request says nothing about whether
+   * its resolution has been presented yet (TASK-254 AF-5).
+   */
+  private submissionOutstanding = false;
+  /**
+   * Whether a resolution this client is presenting — or is still awaiting the
+   * batch of — has yet to be presented **and** reconciled.
+   *
+   * It is the one fact the guard's *release* and the board hold both key on, in
+   * place of "a request is still in flight" (TASK-254 AF-5/AF-6):
+   *
+   * ```text
+   * set      when an accepted action is submitted, and when a delivered batch
+   *          starts a timeline (a resolution this client presents)
+   * held     while the timeline plays, and while an accepted action's batch is
+   *          still to arrive — the acknowledgement-settled-first ordering
+   * cleared  when the timeline completes, aborts or is superseded (all of which
+   *          converge first), when the action is rejected or fails (which emits
+   *          nothing at all: GAME_EVENTS.md §1.2), when a delivered state cannot
+   *          be this resolution's (a recovery snapshot or a newer resolution,
+   *          ADR-008), and on teardown
+   * ```
+   *
+   * Only delivery facts set and clear it: no timer, no animation and no clock
+   * takes part, so an authoritative gameplay outcome can never depend on it
+   * (`AGENTS.md` §10).
+   */
+  private resolutionPending = false;
+  /**
    * The two §1.0 cells of the committed Swap this client has still to present,
    * or `null` when no committed Swap is outstanding.
    *
@@ -1083,6 +1164,10 @@ export class BattleScene extends Phaser.Scene {
     this.settledBoardSequence = null;
     this.settledBattleId = null;
     this.heldSequence = null;
+    // No submission and no resolution of a previous run can be outstanding for
+    // this one (`shutdown` drops the same pair).
+    this.submissionOutstanding = false;
+    this.resolutionPending = false;
     this.committedSwapCells = null;
     // No selection and no terminal statement survive into the next battle: both
     // belong to the battle that ended (`shutdown` drops them for the same reason).
@@ -1280,6 +1365,11 @@ export class BattleScene extends Phaser.Scene {
     this.settledBoardSequence = null;
     this.settledBattleId = null;
     this.heldSequence = null;
+    // A submission or a resolution of the battle that just ended is not the next
+    // battle's: the machine is reset to `idle` above, so neither fact may keep
+    // the next run locked.
+    this.submissionOutstanding = false;
+    this.resolutionPending = false;
     this.committedSwapCells = null;
     this.presentedEventsLog.length = 0;
     this.presentedPhases.length = 0;
@@ -1845,6 +1935,20 @@ export class BattleScene extends Phaser.Scene {
       this.abortPresentation('superseded-state');
     }
 
+    // A resolution this client is still awaiting whose delivered state this is
+    // not: a recovery snapshot, a resync, a jump in the post-resolution counter,
+    // or another battle's state (`GAME_STATE.md` §5, `ADR-008`). The server has
+    // already moved past it, so nothing will ever present it — the guard is
+    // released and the delivered state is presented immediately, rather than
+    // leaving the client locked behind a resolution that can no longer arrive.
+    if (
+      this.resolutionPending &&
+      !this.isPresenting() &&
+      (state === null || !this.isExpectedResolutionState(state))
+    ) {
+      this.releasePendingResolution();
+    }
+
     if (state === null) {
       this.heldSequence = null;
       // Nothing is delivered at all: there is no board for a selection to belong
@@ -1945,40 +2049,70 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
-   * Whether this push belongs to a resolution whose event batch is still to
-   * arrive, so its board and HP panels should wait for the timeline.
+   * Whether this push belongs to a resolution whose presentation has not finished
+   * yet, so its board and HP panels should wait for the timeline.
    *
-   * Three delivered/client-local facts must line up, and each rules out a case
-   * that must be presented immediately:
+   * Two delivered/client-local facts must line up, and each rules out a case that
+   * must be presented immediately:
    *
    * ```text
-   * an action is in flight   the client is awaiting the resolution of an action
-   *                          it submitted — the only situation in which a batch
-   *                          for this state is known to be coming
-   *                          (SIGNALR_PROTOCOL.md §2, §3.1); a join push, a
-   *                          resync snapshot (`§7`) and any unsolicited push are
-   *                          therefore never held. It is the orchestration
-   *                          machine's own fact (`isActionInFlight`)
-   * same battle              a new battle's first state is a fresh board, not a
-   *                          transition of the one on screen
-   * exactly the next         `sequence` is the post-resolution counter and steps
-   *   sequence               by one per resolved action (`GAME_STATE.md` §5), so
-   *                          `settled + 1` is this resolution and anything else
-   *                          is a jump (recovery, a missed batch) that must
+   * a resolution is pending  this client is presenting a resolution, or awaiting
+   *                          the batch of an accepted action it submitted — the
+   *                          only situation in which a batch for this state is
+   *                          known to be coming (SIGNALR_PROTOCOL.md §2, §3.1).
+   *                          It is `resolutionPending`, **not** "a request is
+   *                          still in flight": an acknowledgement that settles
+   *                          before its resolution's batch does not release the
+   *                          hold, which is what stops the resolution's own final
+   *                          board from being revealed before the timeline reaches
+   *                          the settle phase that presents it (TASK-254 AF-6). A
+   *                          join push, a resync snapshot (§7) and any unsolicited
+   *                          push are therefore never held
+   * same battle + the next   a new battle's first state is a fresh board, and
+   *   sequence               `sequence` is the post-resolution counter, stepping
+   *                          by one per resolved action (GAME_STATE.md §5) — so
+   *                          `settled + 1` is this resolution and anything else is
+   *                          a jump (recovery, a missed batch) that must
    *                          resynchronize by converging, never by replaying
    *                          (ADR-008)
    * ```
    */
   private shouldHoldResolution(state: RuntimeBattleState): boolean {
-    if (!this.isActionInFlight()) {
-      return false;
-    }
+    return this.resolutionPending && this.isExpectedResolutionState(state);
+  }
 
+  /**
+   * Whether the delivered state is the one this client's pending resolution
+   * resolves to: the same battle, exactly one post-resolution sequence step past
+   * the board on screen.
+   *
+   * It reads delivered counters only; it decides nothing about the battle and
+   * evaluates no rule.
+   */
+  private isExpectedResolutionState(state: RuntimeBattleState): boolean {
     if (this.settledBoardSequence === null || this.settledBattleId !== state.battleId) {
       return false;
     }
 
     return state.sequence === this.settledBoardSequence + 1;
+  }
+
+  /**
+   * Drops a resolution that can no longer be presented and releases the guard it
+   * was holding.
+   *
+   * It is used when a delivered state proves the server has moved past the
+   * resolution this client was awaiting — a recovery snapshot, a resync, or a
+   * newer resolution resolved before the older batch arrived (`ADR-008`). The
+   * submission, if any, is untouched: a request still unanswered keeps the guard
+   * until its own acknowledgement settles (`onActionSettled`).
+   */
+  private releasePendingResolution(): void {
+    this.resolutionPending = false;
+
+    if (this.orchestration === 'submitted' && !this.submissionOutstanding) {
+      this.transitionOrchestration('idle');
+    }
   }
 
   /**
@@ -2959,6 +3093,12 @@ export class BattleScene extends Phaser.Scene {
     }
 
     this.transitionOrchestration('submitted');
+    // Two facts, not one (TASK-254 AF-5): the request is unanswered, and the
+    // resolution it was accepted for has yet to be presented and reconciled. The
+    // first is cleared by the acknowledgement; the second only by the timeline
+    // (or by a rejection, which emits no events at all).
+    this.submissionOutstanding = true;
+    this.resolutionPending = true;
     this.committedSwapCells = { from: fromCell, to: toCell };
     // The gesture is over the instant its pair is submitted, and the guard is
     // engaged for as long as the request and its resolution take — so the
@@ -2982,10 +3122,11 @@ export class BattleScene extends Phaser.Scene {
       if (!acknowledgement.accepted) {
         // A rejected Swap is a gameplay no-op that emits no events
         // (`MATCH3_RULES.md` §2.1.5 item 6, `GAME_EVENTS.md` §1.2): nothing may
-        // be left selected for the player's next tap to pair with, and no
-        // timeline will ever come to present the pair.
+        // be left selected for the player's next tap to pair with, no timeline
+        // will ever come to present the pair, and no resolution is pending.
         this.clearSelection();
         this.committedSwapCells = null;
+        this.resolutionPending = false;
       }
     } catch (error) {
       // A failed request is a transport/runtime failure — presentation state,
@@ -2993,6 +3134,7 @@ export class BattleScene extends Phaser.Scene {
       // nothing is retried, and the request's own batch never arrives.
       this.clearSelection();
       this.committedSwapCells = null;
+      this.resolutionPending = false;
       this.renderSwapStatus(
         `Swap not sent: ${error instanceof Error ? error.message : String(error)}`
       );
@@ -3047,7 +3189,7 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
-    if (this.isActionInFlight()) {
+    if (this.submissionOutstanding) {
       this.swapText.setText('Swap request in flight…');
       this.swapText.setColor('#94a3b8');
       return;
@@ -3075,6 +3217,8 @@ export class BattleScene extends Phaser.Scene {
     }
 
     this.transitionOrchestration('submitted');
+    this.submissionOutstanding = true;
+    this.resolutionPending = true;
     // A cast engages the same guard a Swap does, so a board selection cannot be
     // left holding a cell across it — a later tap must start a new gesture
     // rather than complete the one the guard interrupted (TASK-246 §3).
@@ -3088,8 +3232,16 @@ export class BattleScene extends Phaser.Scene {
         cardId,
       });
 
+      if (!acknowledgement.accepted) {
+        // A rejected cast is a gameplay no-op that emits no events
+        // (`GAME_EVENTS.md` §1.2, `SIGNALR_PROTOCOL.md` §2): no resolution is
+        // coming, so the guard is not held waiting for one (TASK-254 AF-5).
+        this.resolutionPending = false;
+      }
+
       this.renderCastStatus(undefined, cardId, false, acknowledgement);
     } catch (error) {
+      this.resolutionPending = false;
       this.renderCastStatus(
         `CardCast ${cardId} not sent: ${error instanceof Error ? error.message : String(error)}`
       );
@@ -3113,6 +3265,8 @@ export class BattleScene extends Phaser.Scene {
     }
 
     this.transitionOrchestration('submitted');
+    this.submissionOutstanding = true;
+    this.resolutionPending = true;
     // Same guard, same consequence as a CardCast: no selection survives it.
     this.clearSelection();
     this.renderCastStatus('PetSkillCast in flight…');
@@ -3123,8 +3277,14 @@ export class BattleScene extends Phaser.Scene {
         kind: RUNTIME_ACTION_PET_SKILL_CAST,
       });
 
+      if (!acknowledgement.accepted) {
+        // As for a CardCast: a rejection resolves nothing and emits nothing.
+        this.resolutionPending = false;
+      }
+
       this.renderCastStatus(undefined, undefined, true, acknowledgement);
     } catch (error) {
+      this.resolutionPending = false;
       this.renderCastStatus(
         `PetSkillCast not sent: ${error instanceof Error ? error.message : String(error)}`
       );
@@ -3233,18 +3393,20 @@ export class BattleScene extends Phaser.Scene {
    * 1. every event is parsed and its developer-diagnostic line recorded in
    *    `presentedEventsLog` — for development and tests, never rendered
    *    (TASK-209 §5);
-   * 2. the batch's single player-facing callout is shown — the most important
-   *    event selectBatchCallout picks from the delivered events, so feedback
-   *    stays selective rather than becoming a second event feed (TASK-210 §7);
-   * 3. the ordered phase list is built from the events exactly as delivered and
-   *    the timeline starts, holding the scene's input guard until its last phase
-   *    has played (PD-2).
+   * 2. the ordered phase list is built from the events exactly as delivered, and
+   *    the batch's single player-facing callout is bound to the phase that owns
+   *    the event it was selected from — the most important event
+   *    `selectBatchCalloutEvent` picks from the delivered events, so feedback stays
+   *    selective rather than becoming a second event feed (TASK-210 §7), and it is
+   *    raised with that phase rather than at batch arrival (TASK-254 AF-2);
+   * 3. the timeline starts and plays it, holding the scene's input guard until its
+   *    last phase has played (PD-2).
    * ```
    *
    * A batch that produces no phases — an unknown or malformed event set, or a
    * rejection (which emits no events at all, `GAME_EVENTS.md` §1.2) — produces
-   * no timeline and locks nothing. A batch superseded by a newer one presents
-   * nothing and is recorded only.
+   * no timeline, raises no callout, and locks nothing. A batch superseded by a
+   * newer one presents nothing and is recorded only.
    */
   private playEventBatch(envelope: BattleEventsEnvelope): void {
     const presented: InBattleServerEvent[] = [];
@@ -3306,19 +3468,7 @@ export class BattleScene extends Phaser.Scene {
       this.settleHeldPresentation();
     }
 
-    const callout = selectBatchCallout(
-      presented,
-      (cardId) => this.cardDisplayName(cardId),
-      (relicId) => this.relicDisplayName(relicId)
-    );
-    if (callout) {
-      this.showCallout(callout.message, callout.color);
-      // The batch's own callout belongs to the resolution it reports, so the
-      // timeline that is about to start owns its lifetime (D-2/RC-3).
-      this.timelineCalloutShown = true;
-    }
-
-    const phases = this.buildPresentationPhases(presented, envelope);
+    const phases = this.buildPresentationPhases(presented);
     if (phases.length === 0) {
       return;
     }
@@ -3369,9 +3519,11 @@ export class BattleScene extends Phaser.Scene {
    *               `hp / maxHp` pair
    * cast / relic / boss-skill
    *               the delivered action's own step, attributed to the actor the
-   *               adapter derived, held for no time
+   *               adapter derived; a `boss-skill` step presents its own delivered
+   *               `BossSkillCast`, so it is held for that presentation
    * settle        the gravity/refill interpolation onto the authoritative board
-   *               (PD-1/PD-8), played where the board cycle ends
+   *               (PD-1/PD-8), played where the board cycle ends — and only when
+   *               this resolution delivered a board cycle at all
    * feedback      a readout / floater step — the delivered Combo, Power and
    *               Passive changes, and a damage direction the contract does not
    *               define — which joins the phase already open (or opens one when
@@ -3389,10 +3541,19 @@ export class BattleScene extends Phaser.Scene {
    * compared with the other.
    */
   private buildPresentationPhases(
-    presented: readonly InBattleServerEvent[],
-    envelope: BattleEventsEnvelope
+    presented: readonly InBattleServerEvent[]
   ): PresentationPhase[] {
     const phases: PresentationPhase[] = [];
+
+    // The batch's single callout, and the delivered event it was selected from.
+    // The line is raised by the *phase* that presents that event, so the binding
+    // is resolved here, in the same forward pass that places the events: a
+    // callout can then never be presented before the step it names (AF-2).
+    const selection = selectBatchCalloutEvent(
+      presented,
+      (cardId) => this.cardDisplayName(cardId),
+      (relicId) => this.relicDisplayName(relicId)
+    );
 
     // The Swap itself, when a committed Swap this client has not yet presented
     // belongs to this resolution. The dependency is the committed pair alone —
@@ -3417,6 +3578,7 @@ export class BattleScene extends Phaser.Scene {
       action: PresentationAction;
       detail: string;
       events: InBattleServerEvent[];
+      callout?: EventCallout;
     } | null = null;
 
     const flush = () => {
@@ -3431,6 +3593,7 @@ export class BattleScene extends Phaser.Scene {
         detail: open.detail,
         holdMs: BattleScene.phaseHoldMs(open.kind, open.events),
         events: open.events,
+        ...(open.callout ? { callout: open.callout } : {}),
       });
       open = null;
     };
@@ -3473,6 +3636,13 @@ export class BattleScene extends Phaser.Scene {
       }
 
       open.events.push(event);
+
+      // The batch's callout belongs to the phase holding the event it was
+      // selected from — the one place in the timeline where that event is
+      // presented.
+      if (selection !== null && event === selection.event) {
+        open.callout = selection.callout;
+      }
     }
 
     flush();
@@ -3484,27 +3654,29 @@ export class BattleScene extends Phaser.Scene {
     // resolution's combat stages (`GAME_EVENTS.md` §1), or at the end when this
     // resolution dealt no damage.
     //
-    // It is part of the timeline whenever a hold is waiting for this batch or the
-    // batch moved the board at all — a Swap moved Gems, or a Match/Cascade was
-    // reported. That is what makes the resolution's **final** displayed board the
-    // authoritative one: whatever the timeline moved on the way, the destination
-    // cells are written from the delivered state before the combat phases play.
+    // It is part of the timeline exactly when this resolution delivered a board
+    // cycle — a Swap moved Gems, or a Match/Cascade was reported. That is what
+    // makes the resolution's **final** displayed board the authoritative one:
+    // whatever the timeline moved on the way, the destination cells are written
+    // from the delivered state before the combat phases play. A resolution that
+    // moved no board (a Card cast, a Boss-only response) has no board-resolution
+    // stage to present, and its held board is converged by Recovery instead
+    // (TASK-254: a stage with no delivered event is skipped, never fabricated).
     const boardPresented = phases.some(
       (phase) => phase.kind === 'swap' || phase.kind === 'match' || phase.kind === 'cascade'
     );
 
-    if (this.heldSequence === envelope.serverSequence || boardPresented) {
+    if (boardPresented) {
       const at = phases.findIndex(
         (phase) => phase.kind === 'damage' || phase.kind === 'retaliation'
       );
 
       phases.splice(at === -1 ? phases.length : at, 0, {
         kind: 'settle',
-        // The settle step converges the resolution's board. The committed Swap is
-        // the actor when this resolution presented a board cycle at all; a batch
-        // that moved no board (a Card cast) names no board actor, so none is
-        // claimed.
-        actor: boardPresented ? 'swap' : null,
+        // The settle step converges the resolution's board, and the committed
+        // Swap is its actor: this step exists only when a board cycle was
+        // delivered, which is the board actor's own work.
+        actor: 'swap',
         action: 'settle',
         detail: 'settle',
         holdMs: BattleScene.phaseHoldMs('settle', []),
@@ -3536,7 +3708,9 @@ export class BattleScene extends Phaser.Scene {
    * (the terminal outcome handoff) is held for no time at all. That is what keeps
    * the relationship true for every batch shape rather than only for the common
    * one — a `feedback` event joins the phase already open, so the phase that
-   * receives it must grow to cover it (TASK-246 §5).
+   * receives it must grow to cover it (TASK-246 §5), and a `boss-skill` step is
+   * held for the skill presentation it raises rather than for nothing at all
+   * (TASK-254 AF-1/AF-4).
    */
   private static phaseHoldMs(
     kind: PresentationPhaseKind,
@@ -3557,7 +3731,8 @@ export class BattleScene extends Phaser.Scene {
    * cells they name, a damage instance draws a floater and moves an HP panel,
    * `PowerChanged` draws a signed floater over a travelling Power gauge, the
    * active Pet's own Passive change travels the Passive gauge, the swap tweens two
-   * views, and the settle phase plays the refill. No value is computed from any of
+   * views, the settle phase plays the refill, and a `BossSkillCast` raises the
+   * skill callout the step is presented with. No value is computed from any of
    * them.
    */
   private static phaseEffectMs(
@@ -3611,6 +3786,13 @@ export class BattleScene extends Phaser.Scene {
           if (isPetPassiveEvent(event)) {
             longest = Math.max(longest, GAUGE_TWEEN_MS);
           }
+          break;
+        case 'BossSkillCast':
+          // The Boss Skill step presents its own delivered cast on the Boss band's
+          // callout row, whose lifetime is the callout's hold plus its fade: the
+          // hold must cover it, or the next phase would replace the printout
+          // before it has been read (TASK-254 AF-1).
+          longest = Math.max(longest, CALLOUT_HOLD_MS + CALLOUT_FADE_MS);
           break;
         default:
           // Every other event presents through the callout alone, or not at all.
@@ -3690,10 +3872,27 @@ export class BattleScene extends Phaser.Scene {
    * the readouts the phase's events own are presented by it
    * (`presentPhaseReadouts`), the settle phase applies the authoritative board,
    * the two combat phases move the side the delivered events name — and the Boss's
-   * Enrage label with the Boss's HP — and the outcome phase hands off. No step
-   * computes a gameplay value, and none is conditioned on one.
+   * Enrage label with the Boss's HP — a `boss-skill` step presents its own
+   * delivered cast, and the outcome phase hands off. No step computes a gameplay
+   * value, and none is conditioned on one.
+   *
+   * **Order inside the phase.** The batch's single callout is raised first, then
+   * the step's own presentation. That keeps one statement on the callout line —
+   * the step's own presentation replaces the batch headline when the two differ,
+   * exactly as a `BOSS ENRAGED` transition has always replaced the batch's
+   * headline — and it is why the callout is raised *here*, with the phase that
+   * owns its event, rather than when the batch arrived (TASK-254 AF-2).
    */
   private playPresentationPhase(phase: PresentationPhase): void {
+    // The batch's callout belongs to the phase holding the event it reports, so
+    // it is raised with that phase and never before it.
+    if (phase.callout) {
+      this.showCallout(phase.callout.message, phase.callout.color);
+      // A callout a timeline raised belongs to the resolution it reports, so the
+      // timeline owns its lifetime (D-2/RC-3).
+      this.timelineCalloutShown = true;
+    }
+
     switch (phase.kind) {
       case 'swap':
         this.playSwapPhase();
@@ -3716,12 +3915,18 @@ export class BattleScene extends Phaser.Scene {
           this.presentPetHp(this.currentBattleState);
         }
         break;
+      case 'boss-skill':
+        // The step presents its own delivered cast: without this arm a step that
+        // carries only its `BossSkillCast` would render nothing at all, whatever
+        // its hold (TASK-254 AF-1).
+        this.presentBossSkillStep(phase);
+        break;
       case 'outcome':
         this.handOffOutcome();
         break;
       default:
-        // `match`, `cascade`, `feedback`, `cast`, `relic` and `boss-skill` present
-        // through the readouts and floaters their own events carry, below.
+        // `match`, `cascade`, `feedback`, `cast` and `relic` present through the
+        // readouts and floaters their own events carry, below.
         break;
     }
 
@@ -3730,6 +3935,42 @@ export class BattleScene extends Phaser.Scene {
     if (phase.events.length > 0) {
       this.presentCombatFeedback(phase.events);
     }
+  }
+
+  /**
+   * Presents a delivered `BossSkillCast` step on the Boss band's own callout row.
+   *
+   * It is the Boss acting, so it is presented where every Boss-originated message
+   * already is: the callout row directly beneath the Boss band, in the Boss band's
+   * own colour (`CALLOUT_BOSS_COLOR` — the same line and colour `BOSS ENRAGED`
+   * uses) (`BOSS_RULES.md` §6.3/§6.4; `SIGNALR_PROTOCOL.md` §3.2.18).
+   *
+   * **Everything shown is delivered or already transcribed.** The line comes from
+   * the one existing formatter (`describeEventCallout`), which resolves the
+   * delivered `skillId` through `resolveBossSkillDisplayName`'s transcription of
+   * `BOSS_RULES.md` §6.3/§6.4. No catalog, asset, per-Boss animation or guessed
+   * name is introduced, and an unrecognised `skillId` keeps that formatter's
+   * existing fallback line rather than an invented one (TASK-254 DR-2). `sourceId`
+   * is what the formatter reports the caster from; nothing is inferred from it.
+   */
+  private presentBossSkillStep(phase: PresentationPhase): void {
+    const cast = phase.events.find((event) => event.type === 'BossSkillCast');
+    if (!cast) {
+      return;
+    }
+
+    const callout = describeEventCallout(
+      cast,
+      (cardId) => this.cardDisplayName(cardId),
+      (relicId) => this.relicDisplayName(relicId)
+    );
+
+    if (!callout) {
+      return;
+    }
+
+    this.showCallout(callout.message, callout.color);
+    this.timelineCalloutShown = true;
   }
 
   /**
@@ -3854,9 +4095,17 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
-   * Ends the timeline normally: the guard is released, anything the timeline was
-   * still holding is converged on the authoritative state, and a terminal
-   * outcome the batch named is handed off.
+   * Ends the timeline normally: the resolution is converged on the authoritative
+   * state, the guard is released, and a terminal outcome the batch named is handed
+   * off.
+   *
+   * **Recovery converges before the guard is released** (TASK-254): the machine
+   * reaches the next actor only once the board and every timeline-owned readout
+   * match the delivered state, so input can never be accepted against a board the
+   * resolution has not finished presenting. The timeline's own callout is cancelled
+   * first, so a callout Recovery raises (the delivered `BOSS ENRAGED`) is the one
+   * left on screen, and a callout Recovery raised is not cancelled with the
+   * timeline that has just ended.
    */
   private finishPresentation(): void {
     // The timeline's own end: the last phase is completed by the same step advance
@@ -3866,23 +4115,28 @@ export class BattleScene extends Phaser.Scene {
       this.presentationSequence,
       this.presentationTimeline?.length ?? 0
     );
-    this.releaseTimeline();
+    this.cancelTimelineCallout();
     this.settleHeldPresentation();
+    // A callout Recovery raised reports the delivered state, not the timeline that
+    // has just ended: it is left to fade on its own (RC-3 scopes the *timeline's*
+    // callout, and this line is no longer the timeline's).
+    this.timelineCalloutShown = false;
+    this.releaseTimeline();
     this.handOffOutcome();
   }
 
   /**
-   * Abandons the in-flight timeline: its pacing is cancelled, the guard is
-   * released, and everything it was holding is converged on the authoritative
-   * state — so an aborted resolution leaves the board and the HUD on the
-   * server's values rather than mid-animation.
+   * Abandons the in-flight timeline: its pacing and every effect it started are
+   * cancelled, the values it was holding are converged on the authoritative state,
+   * and only then is the guard released — so an aborted resolution leaves the board
+   * and the HUD on the server's values rather than mid-animation, and the next actor
+   * is never reached mid-abort.
    *
    * It is used by supersession (`renderBattleState`) and by a presentation error
    * (`handleBattleEvents`). It cancels everything the abandoned timeline started —
    * its pacing, the gem-view travels, and every transient effect a phase spawned
    * (`timelineEffects`) — so no abandoned resolution animates over the next one
-   * (TASK-252 audit RC-2). The values it was holding are converged on the
-   * authoritative state immediately afterwards.
+   * (TASK-252 audit RC-2).
    */
   private abortPresentation(reason: MoveLogAbortReason = 'superseded-state'): void {
     // The aborted timeline's own facts, read before `releaseTimeline` drops them:
@@ -3892,7 +4146,6 @@ export class BattleScene extends Phaser.Scene {
     const aborted = this.presentationTimeline !== null;
 
     this.tweens?.killTweensOf(this.phaseClock);
-    this.releaseTimeline();
     // A swap or refill travel still in flight belongs to the abandoned
     // presentation: cancelling it is what leaves the board converged rather than
     // drifting to a position the newer state has already replaced.
@@ -3909,7 +4162,12 @@ export class BattleScene extends Phaser.Scene {
     if (aborted) {
       this.developerMoveLog?.recordAbandoned(abortedBattleId, abortedSequence, reason);
     }
+    // The abandoned timeline's own callout does not survive it; anything Recovery
+    // raises for the delivered state afterwards does.
+    this.cancelTimelineCallout();
     this.settleHeldPresentation();
+    this.timelineCalloutShown = false;
+    this.releaseTimeline();
     this.handOffOutcome();
   }
 
@@ -4417,11 +4675,14 @@ export class BattleScene extends Phaser.Scene {
   /**
    * Returns whether player input is currently locked.
    *
-   * The guard covers the **whole** presentation of a resolution: a submitted
-   * action in flight, and the timeline that then presents what the server
-   * resolved. A player can therefore never act against a board that is still
-   * being shown mid-resolution, and the guard is released on the timeline's
-   * completion, on an error, on supersession, and on scene teardown.
+   * The guard covers the **whole** presentation of a resolution: from the moment
+   * an action is submitted, through the timeline that presents what the server
+   * resolved, and until Recovery has converged the board and the readouts on the
+   * delivered state. A player can therefore never act against a board that is
+   * still being shown mid-resolution, and a settled acknowledgement does not
+   * release it while the resolution it was accepted for is still pending
+   * (TASK-254 AF-5). It is released on the timeline's completion, on an error, on
+   * supersession, on a rejected or failed action, and on scene teardown.
    *
    * It is one derived fact over the orchestration machine
    * (`BATTLE_ORCHESTRATION_LEGAL_TRANSITIONS`'s state set): every state except
@@ -4429,17 +4690,6 @@ export class BattleScene extends Phaser.Scene {
    */
   isInputLocked(): boolean {
     return ORCHESTRATION_LOCKED_STATES.includes(this.orchestration);
-  }
-
-  /**
-   * Whether an action request this scene submitted is still in flight.
-   *
-   * It is the machine's own fact — `submitted` alone, or `presenting-submitted`
-   * when the resolution's timeline is playing at the same time — and replaces the
-   * former `swapPending` / `actionInFlight` conjunction.
-   */
-  private isActionInFlight(): boolean {
-    return this.orchestration === 'submitted' || this.orchestration === 'presenting-submitted';
   }
 
   /** Whether a resolution's presentation timeline is playing. */
@@ -4491,12 +4741,19 @@ export class BattleScene extends Phaser.Scene {
    *
    * A batch can arrive before its own request's acknowledgement or after it
    * (`SIGNALR_PROTOCOL.md` §3.1), and both are legal: the machine keeps the
-   * in-flight fact when it is present, so the guard is never released while a
-   * request is still unanswered.
+   * unanswered-request fact when it is present, so the guard is never released
+   * while a request is still unanswered — and it takes the *request's* fact, not
+   * the machine's state, because the machine is also `submitted` while an
+   * acknowledgement has settled and its resolution's batch is still to arrive.
+   *
+   * A timeline is also a resolution this client is presenting, so `resolutionPending`
+   * is asserted here: the board hold and the guard's release both key on it
+   * (TASK-254 AF-5/AF-6).
    */
   private onTimelineStarted(): void {
+    this.resolutionPending = true;
     this.transitionOrchestration(
-      this.isActionInFlight() ? 'presenting-submitted' : 'presenting'
+      this.submissionOutstanding ? 'presenting-submitted' : 'presenting'
     );
     // The presentation machine's own state after the transition: the Move Log's
     // timeline row records the machine's fact, not an animation's start.
@@ -4507,16 +4764,25 @@ export class BattleScene extends Phaser.Scene {
    * Records that a resolution's timeline has ended — completed, aborted, or been
    * superseded.
    *
-   * The in-flight fact, if there is one, is kept: a scene whose timeline ended
-   * before its request was answered stays locked until that answer arrives.
+   * The unanswered-request fact, if there is one, is kept: a scene whose timeline
+   * ended before its request was answered stays locked until that answer arrives.
+   * `resolutionPending` is cleared here, because a timeline ends only through
+   * completion, abort or supersession — and every one of those converges the board
+   * and the readouts on the delivered state *before* it reaches this point
+   * (`finishPresentation` / `abortPresentation`); what is left is the guard.
    */
   private onTimelineEnded(): void {
+    this.resolutionPending = false;
+
     if (this.orchestration === 'presenting') {
       this.transitionOrchestration('idle');
       return;
     }
 
     if (this.orchestration === 'presenting-submitted') {
+      // The request is necessarily still unanswered here: an acknowledgement that
+      // settles while its timeline plays moves the machine to `presenting`, which
+      // `onActionSettled` below is the only writer of.
       this.transitionOrchestration('submitted');
     }
   }
@@ -4524,13 +4790,29 @@ export class BattleScene extends Phaser.Scene {
   /**
    * Records that an action request's acknowledgement has settled.
    *
+   * **A settled request does not release the guard on its own** (TASK-254 AF-5).
+   * The acknowledgement and the resolution's state push / event batch travel on
+   * separate paths (`SIGNALR_PROTOCOL.md` §3.1), so an answer can arrive first;
+   * releasing input there would let a second gesture be submitted against a board
+   * the resolution has not presented yet — and would reveal the resolution's final
+   * board before its own timeline did (AF-6). The machine therefore stays
+   * `submitted` while `resolutionPending` holds, and the timeline's end (or a
+   * rejection, which clears the pending fact) releases it.
+   *
    * The cast controls need no re-presentation of their own: the machine's
    * transition presents the guard's new state, and no control set is rebuilt.
    */
   private onActionSettled(): void {
+    this.submissionOutstanding = false;
+
     if (this.orchestration === 'submitted') {
-      this.transitionOrchestration('idle');
-    } else if (this.orchestration === 'presenting-submitted') {
+      if (!this.resolutionPending) {
+        this.transitionOrchestration('idle');
+      }
+      return;
+    }
+
+    if (this.orchestration === 'presenting-submitted') {
       this.transitionOrchestration('presenting');
     }
   }

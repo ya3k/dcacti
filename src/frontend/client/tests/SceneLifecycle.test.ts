@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { BattleScene, BATTLE_ORCHESTRATION_LEGAL_TRANSITIONS } from '../src/game/scenes/BattleScene';
 import {
   adaptPresentedEvent,
+  resolveBossSkillDisplayName,
   type InBattleServerEvent,
 } from '../src/game/scenes/BattleEventPresenter';
 import { BootScene } from '../src/game/scenes/BootScene';
@@ -4542,6 +4543,209 @@ describe('BattleScene — cascade presentation timeline (TASK-245, GAME_EVENTS.m
     expect(source).toContain('for (let column = 0; column < BOARD_COLUMNS; column++)');
     expect(source).toContain('for (let row = 0; row < BOARD_ROWS; row++)');
   });
+
+  // ---------------------------------------------------------------------------
+  // TASK-254 — Recovery, the board hold, and the stages a resolution skips
+  // ---------------------------------------------------------------------------
+
+  describe('TASK-254 — Recovery, the board hold, and the stages a resolution skips', () => {
+    /** The phase kinds of the in-flight timeline, in order. */
+    function timelineKinds(ctx: object): string[] {
+      return (field<Array<{ kind: string }> | null>(ctx, 'presentationTimeline') ?? []).map(
+        (phase) => phase.kind
+      );
+    }
+
+    /** Plays the in-flight timeline to its end, one step at a time. */
+    function playToEnd(harness: ReturnType<typeof createSceneHarness>): void {
+      for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+        harness.flushTweens(1);
+      }
+    }
+
+    it('does not reveal the resolution’s final board when the acknowledgement settles first', async () => {
+      const { harness, scene, ctx } = createTimelineBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+
+      // The acknowledgement settles first — one of the two legal delivery orders
+      // (SIGNALR_PROTOCOL.md §3.1) — with no timeline playing yet. The guard covers
+      // the interval regardless: the resolution it was accepted for has not been
+      // presented, let alone reconciled (TASK-254 AF-5).
+      settle();
+      await flush();
+      expect((ctx as { orchestration: string }).orchestration).toBe('submitted');
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      // The resolution's own authoritative state arrives before its batch. It is
+      // exactly the next delivered sequence, so it is held: the board it carries is
+      // *not* the displayed board (AF-6).
+      harness.setBattleState(battleState({ sequence: 1, board: deliveredBoard(1) }));
+      expect(labelsByCell(harness)).toEqual(expectedLabels(0));
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      // Its batch presents it: the committed Swap plays first and the board changes
+      // at the settle phase — the resolution's own supported transition, and not
+      // before it.
+      harness.emitBattleEvents({
+        battleId: 'battle-245',
+        serverSequence: 1,
+        events: CASCADE_BATCH,
+      });
+      expect(playedPhases(ctx)).toEqual(['swap 20->21']);
+      expect(labelsByCell(harness)).toEqual(expectedLabels(0));
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      playToEnd(harness);
+
+      expect(playedPhases(ctx)).toEqual(CASCADE_PHASES);
+      expect(labelsByCell(harness)).toEqual(expectedLabels(1));
+      expect((ctx as { orchestration: string }).orchestration).toBe('idle');
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(harness.pendingTweenCount()).toBe(0);
+    });
+
+    it('does not reveal the resolution’s final board when the batch arrives first', async () => {
+      const { harness, scene, ctx } = createTimelineBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+
+      // The batch arrives first, with the state push still to come: the timeline
+      // plays its delivered steps and the board on screen stays the one the gesture
+      // was made on.
+      harness.emitBattleEvents({
+        battleId: 'battle-245',
+        serverSequence: 1,
+        events: CASCADE_BATCH,
+      });
+      settle();
+      await flush();
+
+      expect(playedPhases(ctx).length).toBeGreaterThan(0);
+      expect(labelsByCell(harness)).toEqual(expectedLabels(0));
+
+      // The state push arrives mid-timeline: it is held for the timeline that is
+      // already presenting this resolution.
+      harness.setBattleState(battleState({ sequence: 1, board: deliveredBoard(1) }));
+      expect(labelsByCell(harness)).toEqual(expectedLabels(0));
+
+      playToEnd(harness);
+
+      expect(labelsByCell(harness)).toEqual(expectedLabels(1));
+      expect(inputLocked(scene, ctx)).toBe(false);
+    });
+
+    it('presents no board state the server did not deliver', () => {
+      const { harness, ctx } = createTimelineBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(
+        harness,
+        battleState({ sequence: 1, board: deliveredBoard(1) }),
+        CASCADE_BATCH
+      );
+      settle();
+
+      // Every board the presentation shows is one of exactly three delivered-shaped
+      // states: the board the gesture was made on, that same board with the
+      // player's *own* two committed cells exchanged (the Swap step's presentation
+      // of the request the server accepted), and the resolution's single delivered
+      // final board. No per-cascade board is invented, because the wire delivers
+      // none (SIGNALR_PROTOCOL.md §3.1 item 2, GAME_STATE.md §5.3 item 4).
+      const before = expectedLabels(0);
+      const exchanged = [...before];
+      [exchanged[20], exchanged[21]] = [exchanged[21], exchanged[20]];
+      const final = expectedLabels(1);
+      const allowed = [before, exchanged, final].map((labels) => labels.join('|'));
+
+      const samples: string[] = [labelsByCell(harness).join('|')];
+      let phasesSeen = playedPhases(ctx).length;
+      for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+        harness.flushTweens(1);
+        // The board is sampled at each **phase boundary** — the moment a delivered
+        // step has finished presenting — rather than mid-animation.
+        const played = playedPhases(ctx).length;
+        if (played !== phasesSeen) {
+          phasesSeen = played;
+          samples.push(labelsByCell(harness).join('|'));
+        }
+      }
+
+      expect(samples.length).toBeGreaterThan(2);
+      for (const sample of samples) {
+        expect(allowed, `a presented board must be a delivered state: ${sample}`).toContain(sample);
+      }
+      // The player's own two committed cells were seen to change places, and the
+      // resolution's one delivered final board was reached — so the samples above
+      // really did cover the whole presentation rather than a single frame.
+      expect(samples).toContain(exchanged.join('|'));
+      expect(samples).toContain(final.join('|'));
+
+      // One board transition and no more: exactly one settle phase, placed after
+      // the last cascade pass and before the resolution's combat stages.
+      const phases = playedPhases(ctx);
+      expect(phases.filter((phase) => phase === 'settle')).toHaveLength(1);
+      expect(phases.lastIndexOf('cascade depth=2')).toBeLessThan(phases.indexOf('settle'));
+      expect(phases.indexOf('settle')).toBeLessThan(phases.indexOf('damage player->boss'));
+    });
+
+    it('skips the Board Resolution stage for a cast that moves no board', async () => {
+      const { harness, scene, ctx } = createTimelineBattle();
+
+      // A Card cast is an auxiliary action that does not resolve the board
+      // (GAME_RULES.md §17): the client submits it exactly as it submits a Swap.
+      harness.clickOption(/^Card: card-heal$/);
+      await flush();
+
+      // Its state push is held exactly as a Swap's is: it is this resolution's own
+      // next delivered sequence.
+      harness.setBattleState(battleState({ sequence: 1 }));
+      expect((ctx as { orchestration: string }).orchestration).toBe('submitted');
+
+      harness.emitBattleEvents({
+        battleId: 'battle-245',
+        serverSequence: 1,
+        events: [{ type: 'CardCast', cardId: 'card-heal' }],
+      });
+
+      // The cast's own step is the whole timeline: no Match, no Cascade, and no
+      // Board Resolution stage exists, because this resolution delivered no board
+      // cycle at all — a stage with no delivered event is skipped, never fabricated.
+      expect(timelineKinds(ctx)).toEqual(['cast']);
+      expect(playedPhases(ctx)).toEqual(['cast card-heal']);
+      expect(field<{ text: string }>(ctx, 'calloutText').text).toMatch(/^CARD: /);
+
+      playToEnd(harness);
+
+      // The board never moved, and the guard is released once Recovery has
+      // converged the delivered state.
+      expect(labelsByCell(harness)).toEqual(expectedLabels(0));
+      expect(inputLocked(scene, ctx)).toBe(false);
+    });
+
+    it('skips the Board Resolution stage for a Boss-only resolution that moved no board', () => {
+      const { harness, ctx } = createTimelineBattle();
+
+      harness.emitBattleEvents({
+        battleId: 'battle-245',
+        serverSequence: 1,
+        events: [
+          { type: 'DamageCalculated', base: 80, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 80 },
+          { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
+          { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
+        ],
+      });
+
+      // The Boss's response is one combat step: nothing about the board was
+      // delivered, so nothing about the board is presented.
+      expect(timelineKinds(ctx)).toEqual(['retaliation']);
+      expect(playedPhases(ctx)).toEqual(['retaliation boss->player']);
+      expect(labelsByCell(harness)).toEqual(expectedLabels(0));
+
+      playToEnd(harness);
+      expect(labelsByCell(harness)).toEqual(expectedLabels(0));
+    });
+  });
 });
 
 describe('BattleScene — selected-cell treatment, interaction indicator & pacing (TASK-246)', () => {
@@ -6198,7 +6402,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
     expect(field<object[]>(ctx, 'timelineEffects')).toEqual([]);
   });
 
-  it('bounds the batch callout to its own timeline', async () => {
+  it('raises the batch callout with its own phase, and bounds it to its own timeline', async () => {
     const { harness, ctx } = createBattle();
 
     // A resolution whose callout lives longer than its own first phase holds.
@@ -6209,6 +6413,19 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
     settle();
 
     const callout = field<object>(ctx, 'calloutText');
+
+    // The committed Swap's step plays first, and the batch's callout is not on
+    // screen yet: it belongs to the phase that presents the delivered event it was
+    // selected from, which is the Match phase (TASK-254 AF-2).
+    expect(playedPhases(ctx)).toEqual(['swap 20->21']);
+    expect(field<{ text: string }>(ctx, 'calloutText').text).toBe('');
+
+    // Play until that phase begins — the `swap` step's own animations and pacing
+    // drain first.
+    for (let step = 0; step < 20 && playedPhases(ctx).length < 2; step++) {
+      harness.flushTweens(1);
+    }
+    expect(playedPhases(ctx)).toEqual(['swap 20->21', 'match depth=1']);
     expect(field<{ text: string }>(ctx, 'calloutText').text).toBe('MATCH');
 
     const calloutTween = harness
@@ -6356,7 +6573,21 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       { kind: 'feedback', events: [{ type: 'DamageDealt', source: 'player', target: 'third-party', amount: 1 }], longestEffect: 400 },
       { kind: 'cast', events: [{ type: 'CardCast', cardId: 'card-heal' }], longestEffect: 0 },
       { kind: 'relic', events: [{ type: 'RelicTriggered', relicId: 'r' }], longestEffect: 0 },
-      { kind: 'boss-skill', events: [{ type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'b' }], longestEffect: 0 },
+      // The Boss Skill step presents its own delivered cast, so its hold covers
+      // that callout's lifetime (`CALLOUT_HOLD_MS` + `CALLOUT_FADE_MS`) rather than
+      // being held for nothing (TASK-254 AF-1).
+      { kind: 'boss-skill', events: [{ type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' }], longestEffect: 660 },
+      // ...including when it carries effect-starting events of its own: the hold is
+      // the longest of them, never the shortest.
+      {
+        kind: 'boss-skill',
+        events: [
+          { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+          { type: 'PowerChanged', delta: -20, power: 5, source: 'boss' },
+        ],
+        longestEffect: 660,
+      },
+      { kind: 'outcome', events: [], longestEffect: 0 },
     ];
 
     for (const entry of cases) {
@@ -6375,21 +6606,48 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       }
     }
 
-    // The steps that start no animation at all are held for no time at all: the
-    // terminal hand-off (finding L-1) and the delivered-action steps, so a cast, a
-    // Relic trigger or a Boss Skill never lengthens a resolution.
-    for (const kind of ['outcome', 'cast', 'relic', 'boss-skill']) {
-      expect(statics.phaseHoldMs(kind, []), `${kind} must be a zero-hold step`).toBe(0);
+    // Every delivered-action kind is now held for a non-zero time, so no effect it
+    // starts can still be animating when the next, conflicting phase begins: the
+    // Boss Skill step presents its own cast and is held for it, and a cast / Relic
+    // step is held for its own settle beat (TASK-254 AF-1/AF-4).
+    for (const kind of ['cast', 'relic', 'boss-skill']) {
+      expect(statics.phaseHoldMs(kind, []), `${kind} must not be a zero-hold step`).toBeGreaterThan(
+        0
+      );
     }
+
+    // A Boss Skill step that carries its own delivered cast is held past that
+    // callout's whole lifetime, and non-zero whether or not it carries one.
+    expect(
+      statics.phaseHoldMs('boss-skill', [
+        { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+      ])
+    ).toBeGreaterThan(660);
+
+    // The one step that starts nothing at all is held for no time at all: the
+    // terminal hand-off hands the battle off and is padded with nothing
+    // (finding L-1).
+    expect(statics.phaseHoldMs('outcome', [])).toBe(0);
   });
 
-  it('adds no timeline length for the delivered readout, cast and Relic steps', () => {
+  it('holds the delivered cast and Relic steps for their own effects, and no longer', () => {
     // The one-delivery-shape regression the browser smoke harness's own timing
     // budgets assume: a delivered Combo, Power and Passive change is presented by
-    // the phase it was delivered in, and a cast / Relic / Boss Skill step holds for
-    // no time at all — so the timeline's total hold is exactly what the pre-TASK-252
-    // phase model produced for the same batch (match 460 + settle 280 + damage 460 +
-    // retaliation 460 = 1660 ms), and no resolution is lengthened by this task.
+    // the phase it was delivered in, and a cast / Relic step opens its own step
+    // without lengthening the resolution beyond that step's own hold.
+    //
+    // TASK-254 updated this expectation deliberately. The delivered-action steps
+    // were previously pinned at a zero-length hold, which is exactly the overrun
+    // AF-4 describes: a `cast` / `relic` / `boss-skill` phase that receives a
+    // delivered `PowerChanged` or damage instance starts a floater and a gauge
+    // travel and was still held for 0 ms. The hold is now derived from the phase's
+    // own events for **every** kind, so a step that starts no animation is held for
+    // its settle beat alone (`PHASE_SETTLE_MS` = 60 ms) and one that does start an
+    // animation is held past it. The four board/combat holds below are unchanged
+    // (match 460 + settle 280 + damage 460 + retaliation 460 = 1660 ms); only the
+    // Relic step's own 60 ms beat is added, so the total is 1720 ms — under a
+    // sixth above the pre-TASK-252 1300 ms, and inside the ~1.5x bound the
+    // bounded-resolution assertion above holds the ordinary path to.
     const probeBatch: unknown[] = [
       { type: 'MatchCreated', shape: 'Straight', cells: [0, 1, 2], gemType: 'ATK', cascadeDepth: 0 },
       { type: 'ComboChanged', combo: 4 },
@@ -6411,9 +6669,9 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       ['settle', 280],
       ['damage player->boss', 460],
       ['retaliation boss->player', 460],
-      ['relic relicinst_berserker_core', 0],
+      ['relic relicinst_berserker_core', 60],
     ]);
-    expect(phases.reduce((total, phase) => total + phase.holdMs, 0)).toBe(1660);
+    expect(phases.reduce((total, phase) => total + phase.holdMs, 0)).toBe(1720);
 
     harness.flushTweens();
   });
@@ -6505,6 +6763,511 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
     expect(harness.pendingTweenCount()).toBe(0);
     expect(field<object[]>(ctx, 'timelineEffects')).toEqual([]);
     expect(harness.boardCells).toHaveLength(0);
+  });
+
+  // ---------------------------------------------------------------------------
+  // TASK-254 — one action lifecycle for both actors
+  // ---------------------------------------------------------------------------
+
+  describe('TASK-254 — one action lifecycle for both actors', () => {
+    /** The phase kinds of the in-flight timeline, in order. */
+    const timelineKinds = (ctx: object): string[] =>
+      timelinePhases(ctx).map((phase) => phase.kind);
+
+    /** Plays the in-flight timeline until `count` phases have started. */
+    function playUntil(
+      harness: ReturnType<typeof createSceneHarness>,
+      ctx: object,
+      count: number
+    ): void {
+      for (let step = 0; step < 500; step++) {
+        if (playedPhases(ctx).length >= count || harness.pendingTweenCount() === 0) {
+          return;
+        }
+        harness.flushTweens(1);
+      }
+    }
+
+    it('presents Player and Boss actions through one lifecycle, in the delivered order', async () => {
+      const { harness, scene, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), TASK_252_BATCH);
+      settle();
+      await flush();
+
+      const phases = timelinePhases(ctx);
+      const kinds = phases.map((phase) => phase.kind);
+
+      // The one lifecycle, stage by stage: the committed Swap (Action), the board
+      // cycle (Execution), one step per delivered cascade pass (Cascades), the one
+      // supported board transition (Board Resolution) — after the last cascade and
+      // before the combat stages — then the player's hit and the Boss's own steps
+      // (Combat Effects), with Recovery and Next Actor at the timeline's end.
+      expect(kinds).toEqual([
+        'swap',
+        'match',
+        'cascade',
+        'cascade',
+        'settle',
+        'damage',
+        'boss-skill',
+        'retaliation',
+      ]);
+      expect(kinds.lastIndexOf('cascade')).toBeLessThan(kinds.indexOf('settle'));
+      expect(kinds.indexOf('settle')).toBeLessThan(kinds.indexOf('damage'));
+
+      // Every phase carried its actor and action from the **same** adapter call:
+      // the Swap's steps, the player's, and the Boss's reach their phases through
+      // the one delivered-event interpreter, so no phase names a party that was not
+      // derived from delivered members.
+      for (const phase of phases) {
+        if (phase.events.length === 0) {
+          continue;
+        }
+        const step = adaptPresentedEvent(phase.events[0]);
+        expect(step?.actor, `${phase.detail} actor`).toBe(phase.actor);
+        expect(step?.action, `${phase.detail} action`).toBe(phase.action);
+      }
+
+      // The Boss's response is its own delivered steps, in the delivered order
+      // (GAME_RULES.md §17 steps 18a–18c): its Passive's step, its Skill, then the
+      // retaliation the two lead to.
+      expect(
+        phases.filter((phase) => phase.actor === 'boss').map((phase) => phase.kind)
+      ).toEqual(['boss-skill', 'retaliation']);
+
+      playToEnd(harness);
+
+      // Recovery: every readout converges on the delivered state, and only then is
+      // the next actor reached.
+      const end = readouts(harness, ctx);
+      expect(end.bossHp).toBe('1250 / 5000');
+      expect(end.bossName).toBe('Hỏa Long [ENRAGED]');
+      expect(end.petHp).toBe('640 / 1000');
+      expect(end.combo).toBe('COMBO ×3');
+      expect(end.power).toBe('40 / 100');
+      expect((ctx as { orchestration: string }).orchestration).toBe('idle');
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(harness.pendingTweenCount()).toBe(0);
+    });
+
+    it('reaches every actor through one adapter call and no per-actor branch', () => {
+      const source = readFileSync(
+        resolve(__dirname, '../src/game/scenes/BattleScene.ts'),
+        'utf8'
+      )
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+      // Every call site that interprets a delivered event into an actor/action
+      // uses that one adapter — the phase builder, and the DEV-only Move Log's row
+      // factory (TASK-253) — so there is no second pipeline, registry or by-actor
+      // branch anywhere (AGENTS.md §9).
+      expect(source.match(/adaptPresentedEvent\(/g) ?? []).toHaveLength(2);
+
+      for (const forbidden of ['byActor', 'perActor', 'actorQueue', 'actionQueue']) {
+        expect(source, `BattleScene must not branch by actor via "${forbidden}"`).not.toContain(
+          forbidden
+        );
+      }
+    });
+
+    it('raises a batch callout with the phase that owns its event, never at arrival', async () => {
+      const { harness, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      settle();
+      await flush();
+
+      harness.setBattleState(resolvedState());
+      harness.emitBattleEvents({
+        battleId: 'battle-252',
+        serverSequence: 1,
+        events: [
+          { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+          { type: 'ComboChanged', combo: 3 },
+          { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+          { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
+        ],
+      });
+
+      // The batch has arrived and the committed Swap's own step is playing: the
+      // batch's single callout is not on screen, because the event it was selected
+      // from is presented by a phase that has not started yet (TASK-254 AF-2).
+      expect(playedPhases(ctx)).toEqual(['swap 20->21']);
+      expect(field<{ text: string }>(ctx, 'calloutText').text).toBe('');
+
+      // It is raised with that phase — the Match/Cascade step that carries the
+      // delivered Combo — and before the damage phase it precedes.
+      playUntil(harness, ctx, 2);
+      expect(playedPhases(ctx)).toEqual(['swap 20->21', 'match depth=1']);
+      expect(field<{ text: string }>(ctx, 'calloutText').text).toBe('COMBO ×3');
+      expect(field<{ text: string; color?: string }>(ctx, 'calloutText').color).toBe('#fbbf24');
+
+      playToEnd(harness);
+      expect(playedPhases(ctx)).toContain('damage player->boss');
+    });
+
+    it('presents a Boss Skill step from its own delivered cast, before the retaliation', async () => {
+      const { harness, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      settle();
+      await flush();
+
+      harness.setBattleState(resolvedState());
+      harness.emitBattleEvents({
+        battleId: 'battle-252',
+        serverSequence: 1,
+        events: [
+          { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+          { type: 'DamageCalculated', base: 80, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 80 },
+          { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
+          { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
+        ],
+      });
+
+      // The callout-bearing event is the Boss Skill step, and it is delivered
+      // before the damage phase: the line is not raised at batch arrival.
+      expect(playedPhases(ctx)).toEqual(['swap 20->21']);
+      expect(field<{ text: string }>(ctx, 'calloutText').text).toBe('');
+
+      const phases = timelinePhases(ctx);
+      const skillIndex = phases.findIndex((phase) => phase.kind === 'boss-skill');
+      const retaliationIndex = phases.findIndex((phase) => phase.kind === 'retaliation');
+      expect(skillIndex).toBeGreaterThan(-1);
+      expect(skillIndex).toBeLessThan(retaliationIndex);
+
+      // The step's hold is non-zero and covers the presentation it raises: the
+      // callout's own hold plus its fade, and the phase's settle beat.
+      expect(phases[skillIndex].holdMs).toBe(720);
+      expect(phases[skillIndex].holdMs).toBeGreaterThan(0);
+
+      // It presents its own delivered `skillId`, resolved through the one existing
+      // transcription of BOSS_RULES.md §6.3/§6.4, on the Boss band's own colour.
+      playUntil(harness, ctx, 2);
+      expect(playedPhases(ctx)).toEqual(['swap 20->21', 'boss-skill flame-burst']);
+      const callout = field<{ text: string; color?: string }>(ctx, 'calloutText');
+      expect(callout.text).toBe(`BOSS SKILL: ${resolveBossSkillDisplayName('flame-burst')}`);
+      expect(callout.color).toBe('#f87171');
+      expect(callout.text).not.toContain('flame-burst');
+
+      playToEnd(harness);
+      expect(playedPhases(ctx)).toContain('retaliation boss->player');
+    });
+
+    it('presents a Boss phase batch in delivered order, all attributed to the Boss', () => {
+      const { harness, ctx } = createBattle();
+
+      harness.emitBattleEvents({
+        battleId: 'battle-252',
+        serverSequence: 1,
+        events: [
+          { type: 'PassiveCharged', passiveId: 'boss-hoa-long-rage', source: 'boss', sourceId: 'boss-hoa-long', progress: 1, threshold: 5 },
+          { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+          { type: 'DamageCalculated', base: 80, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 80 },
+          { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
+          { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
+        ],
+      });
+
+      const phases = timelinePhases(ctx);
+
+      // GAME_RULES.md §17 steps 18a–18c, as delivered: the Boss Passive's step, the
+      // Boss Skill step, then the Boss's damage — all three the boss actor, through
+      // the same adapter a Swap and a cast use.
+      expect(phases.map((phase) => phase.detail)).toEqual([
+        'passive boss-hoa-long-rage',
+        'boss-skill flame-burst',
+        'retaliation boss->player',
+      ]);
+      expect(timelineKinds(ctx)).toEqual(['feedback', 'boss-skill', 'retaliation']);
+      expect(phases.map((phase) => phase.actor)).toEqual(['boss', 'boss', 'boss']);
+
+      // The Boss Skill step's own presentation is non-zero, and the Boss-owned
+      // Passive change starts no animation on this panel (its pair is the Pet's).
+      expect(phases[1].holdMs).toBeGreaterThan(0);
+      expect(phases[0].holdMs).toBe(60);
+
+      playToEnd(harness);
+
+      expect(playedPhases(ctx)).toEqual([
+        'passive boss-hoa-long-rage',
+        'boss-skill flame-burst',
+        'retaliation boss->player',
+      ]);
+      // The step's own presentation is what remains on the callout line when the
+      // timeline ends (the line is hidden with the timeline, and its text is the
+      // record of what was said).
+      expect(field<{ text: string }>(ctx, 'calloutText').text).toBe('BOSS SKILL: Flame Burst');
+      expect(harness.pendingTweenCount()).toBe(0);
+    });
+
+    it('completes a delivered-action step’s own effects inside its hold', () => {
+      const { harness, scene, ctx } = createBattle();
+
+      harness.emitBattleEvents({
+        battleId: 'battle-252',
+        serverSequence: 1,
+        events: [
+          { type: 'CardCast', cardId: 'card-heal' },
+          { type: 'PowerChanged', delta: 25, power: 25, source: 'card' },
+        ],
+      });
+
+      // The cast's own step carries the delivered Power change, so it starts the
+      // Power floater and the Power gauge travel — and is held past both rather
+      // than for 0 ms (AF-4).
+      const cast = timelinePhases(ctx).find((phase) => phase.kind === 'cast');
+      expect(cast?.holdMs).toBe(460);
+
+      const effects = [...field<object[]>(ctx, 'timelineEffects')];
+      expect(effects.length).toBeGreaterThan(0);
+      expect(pendingTweensFor(harness, effects).length).toBeGreaterThan(0);
+
+      // Drain everything the phase started except its own pacing tween: every one
+      // of its effects has completed while the phase is still being held, so none
+      // of them can still be animating when the next, conflicting phase begins.
+      for (let step = 0; step < 20 && harness.pendingTweenCount() > 1; step++) {
+        harness.flushTweens(1);
+      }
+      expect(pendingTweensFor(harness, effects)).toEqual([]);
+      expect(pendingTweensFor(harness, [field<object>(ctx, 'phaseClock')])).toHaveLength(1);
+      expect(playedPhases(ctx)).toEqual(['cast card-heal']);
+
+      // The timeline advances only once that hold has elapsed.
+      harness.flushTweens(1);
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(harness.pendingTweenCount()).toBe(0);
+    });
+
+    it('keeps input locked from submission through presentation and reconciliation', async () => {
+      const { harness, scene, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      expect(inputLocked(scene, ctx)).toBe(true);
+      expect(harness.actionInvocations).toHaveLength(1);
+
+      // The acknowledgement settles first and the guard does **not** release: the
+      // resolution it was accepted for has not arrived, let alone been presented
+      // (TASK-254 AF-5).
+      settle();
+      await flush();
+      expect((ctx as { orchestration: string }).orchestration).toBe('submitted');
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      // A second gesture in that window submits nothing at all — so no duplicate
+      // request, and therefore no STALE_ACTION "Board has changed" rejection.
+      tapCell(harness, 30);
+      tapCell(harness, 31);
+      await flush();
+      expect(harness.actionInvocations).toHaveLength(1);
+      expect(field<{ text: string }>(ctx, 'swapText').text).not.toContain('Board has changed');
+      expect((ctx as { selectedCell: number | null }).selectedCell).toBeNull();
+
+      // The resolution's own state push is held for its timeline, and the lock is
+      // continuous across it.
+      harness.setBattleState(resolvedState());
+      expect(inputLocked(scene, ctx)).toBe(true);
+      harness.emitBattleEvents({
+        battleId: 'battle-252',
+        serverSequence: 1,
+        events: TASK_252_BATCH,
+      });
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      playToEnd(harness);
+
+      // Only Recovery's convergence releases it — board and readouts on the
+      // delivered state.
+      expect((ctx as { orchestration: string }).orchestration).toBe('idle');
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(readouts(harness, ctx).bossHp).toBe('1250 / 5000');
+
+      // And the guard really is released: the next gesture is submitted.
+      tapCell(harness, 30);
+      tapCell(harness, 31);
+      await flush();
+      expect(harness.actionInvocations).toHaveLength(2);
+    });
+
+    it('prevents a duplicate submission when the batch arrives before the acknowledgement', async () => {
+      const { harness, scene, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), TASK_252_BATCH);
+      settle();
+      await flush();
+
+      expect((ctx as { orchestration: string }).orchestration).toBe('presenting');
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      tapCell(harness, 30);
+      tapCell(harness, 31);
+      await flush();
+      expect(harness.actionInvocations).toHaveLength(1);
+
+      playToEnd(harness);
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect((ctx as { orchestration: string }).orchestration).toBe('idle');
+    });
+
+    it('releases a pending resolution from delivered facts, never from elapsed time', async () => {
+      const { harness, scene, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      settle();
+      await flush();
+
+      // The request is answered and nothing is playing, yet the guard holds: no
+      // timer, tween or clock takes part in that fact.
+      expect((ctx as { orchestration: string }).orchestration).toBe('submitted');
+      expect(inputLocked(scene, ctx)).toBe(true);
+      expect(harness.pendingTweenCount()).toBe(0);
+
+      // A repeat of the state this resolution is expected to resolve to keeps it
+      // held...
+      harness.setBattleState(resolvedState());
+      expect(inputLocked(scene, ctx)).toBe(true);
+      expect(readouts(harness, ctx).bossHp).toBe('5000 / 5000');
+
+      // ...and a delivered state this resolution cannot be — a recovery snapshot, a
+      // resync, a sequence jump (ADR-008) — releases it, because that is a delivery
+      // fact and not a duration.
+      harness.setBattleState(resolvedState({ sequence: 4 }));
+      expect((ctx as { orchestration: string }).orchestration).toBe('idle');
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(readouts(harness, ctx).bossHp).toBe('1250 / 5000');
+    });
+
+    it('converges the delivered state before the guard advances to the next actor', async () => {
+      const { harness, scene, ctx } = createBattle();
+
+      // The order of the two facts is what "Recovery" means: the board is converged
+      // while the guard is still engaged, and the machine moves to the next actor
+      // only afterwards. Both are observed through the scene's own calls.
+      const prototype = Object.getPrototypeOf(scene) as Record<string, unknown>;
+      const realRenderBoard = prototype.renderBoard as (
+        this: object,
+        board: unknown,
+        animate?: boolean
+      ) => void;
+      const observed: Array<{ animate: boolean; orchestration: string }> = [];
+
+      prototype.renderBoard = function (this: object, board: unknown, animate = false) {
+        observed.push({
+          animate,
+          orchestration: (this as { orchestration: string }).orchestration,
+        });
+        return realRenderBoard.call(this, board, animate);
+      };
+
+      try {
+        const settle = submitHeldSwap(harness, 20, 21);
+        deliverResolution(harness, resolvedState(), TASK_252_BATCH);
+        settle();
+        await flush();
+        playToEnd(harness);
+      } finally {
+        prototype.renderBoard = realRenderBoard;
+      }
+
+      // The resolution's board was presented by its own settle phase, and the
+      // timeline was playing at that moment...
+      expect(observed.some((entry) => entry.animate && entry.orchestration === 'presenting')).toBe(
+        true
+      );
+
+      // ...and Recovery converged it while the guard was still engaged: no
+      // convergence ran with the machine already back to the accepting state.
+      const convergences = observed.filter((entry) => !entry.animate);
+      expect(convergences.length).toBeGreaterThan(0);
+      expect(convergences.every((entry) => entry.orchestration !== 'idle')).toBe(true);
+
+      expect((ctx as { orchestration: string }).orchestration).toBe('idle');
+      expect(inputLocked(scene, ctx)).toBe(false);
+    });
+
+    it('cancels a Boss Skill step’s own presentation with the timeline it belongs to', async () => {
+      const { harness, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      settle();
+      await flush();
+
+      harness.setBattleState(resolvedState());
+      harness.emitBattleEvents({
+        battleId: 'battle-252',
+        serverSequence: 1,
+        events: [
+          { type: 'BossSkillCast', skillId: 'earthquake', sourceId: 'boss-son-thach-ve' },
+          { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
+          { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
+        ],
+      });
+
+      // Play to the Boss Skill step: its own presentation is on the callout line.
+      playUntil(harness, ctx, 2);
+      expect(playedPhases(ctx)).toEqual(['swap 20->21', 'boss-skill earthquake']);
+      const callout = field<object>(ctx, 'calloutText');
+      expect(field<{ text: string }>(ctx, 'calloutText').text).toBe('BOSS SKILL: Earthquake');
+      expect(pendingTweensFor(harness, [callout])).toHaveLength(1);
+
+      // A newer delivered state supersedes the timeline: the step's own
+      // presentation is cancelled with it, exactly as the batch callout always was
+      // (TASK-252 RC-3), and nothing of the abandoned timeline is left behind.
+      harness.setBattleState(
+        resolvedState({ sequence: 2, bossState: { bossId: 'boss-hoa-long', hp: 4800, maxHp: 5000 } })
+      );
+
+      expect(pendingTweensFor(harness, [callout])).toEqual([]);
+      expect(harness.killedTweenTargets).toContain(callout);
+      expect(field<{ alpha: number }>(ctx, 'calloutText').alpha).toBe(0);
+      expect(field<object[]>(ctx, 'timelineEffects')).toEqual([]);
+      expect(harness.pendingTweenCount()).toBe(0);
+      await flush();
+    });
+
+    it('fabricates no callout, phase or selection for a rejected action', async () => {
+      const { harness, scene, ctx } = createBattle();
+      await flush();
+
+      harness.setActionResult({ accepted: false, reason: 'NO_MATCH_FROM_SWAP' });
+      tapCell(harness, 20);
+      tapCell(harness, 21);
+      await flush();
+
+      // A rejected action emits nothing at all (GAME_EVENTS.md §1.2): no timeline,
+      // no phase, and no delivery-shaped callout. The only line is the transport
+      // rejection's own feedback, which is raised outside a timeline and keeps its
+      // existing behaviour.
+      expect(playedPhases(ctx)).toEqual([]);
+      expect(timelinePhases(ctx)).toEqual([]);
+      expect(field<{ text: string }>(ctx, 'calloutText').text).toBe(
+        'Swap does not create a match.'
+      );
+      expect((scene as BattleScene).getPresentedEvents()).toEqual([]);
+      expect((ctx as { selectedCell: number | null }).selectedCell).toBeNull();
+      expect(inputLocked(scene, ctx)).toBe(false);
+    });
+
+    it('renders no turn, sequence, transport or RNG diagnostic for a full resolution', async () => {
+      const { harness, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), TASK_252_BATCH);
+      settle();
+      await flush();
+      playToEnd(harness);
+
+      // Every player-facing line is a delivered battle value or the delivered
+      // action's own presentation (TASK-209 §5 / TASK-210 §9 hold; the DEV-only
+      // Move Log is the one authorized surface and is not part of these lines).
+      const rendered = playerFacingText(harness, ctx);
+      expect(rendered).not.toMatch(/seq=|turn=|serverSequence|SignalR|RNG/i);
+      expect(rendered).toContain('BOSS SKILL');
+    });
   });
 });
 

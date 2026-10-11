@@ -1359,6 +1359,25 @@ export function describeEventCallout(
 }
 
 /**
+ * The single callout a delivered event batch should present, **together with the
+ * delivered event it was selected from**.
+ *
+ * The event member is what binds the callout to its own step of the local
+ * presentation timeline: the wire carries no per-step delivery
+ * (`SIGNALR_PROTOCOL.md` §3.1 items 1–2), so the phase that presents the event
+ * the callout reports is the phase the callout belongs to. `BattleScene` raises
+ * it there — with that phase — rather than at batch arrival, so a callout is
+ * never on screen before the delivered step it names has been presented
+ * (TASK-254 AF-2).
+ */
+export interface BatchCalloutSelection {
+  /** The callout the batch presents. */
+  readonly callout: EventCallout;
+  /** The delivered event that callout was selected from. */
+  readonly event: InBattleServerEvent;
+}
+
+/**
  * The single callout a delivered event batch should present, or `null` when the
  * batch carries nothing a player needs told.
  *
@@ -1375,6 +1394,10 @@ export function describeEventCallout(
  * armed). This mechanism names the one the batch finished on, exactly as it does
  * for two casts — the single-callout rule is the existing design and is not
  * widened into a queue here.
+ *
+ * It is the callout-only projection of the one selection rule: the priority
+ * ladder and the delivery-order tie-break live in `selectBatchCalloutEvent`
+ * alone, so there is no second spelling of either.
  */
 export function selectBatchCallout(
   events: readonly InBattleServerEvent[],
@@ -1382,7 +1405,28 @@ export function selectBatchCallout(
   resolveRelicName: (relicId: string) => string | null,
   resolveBossSkillName: (skillId: string) => string | null = resolveBossSkillDisplayName
 ): EventCallout | null {
-  let selected: EventCallout | null = null;
+  return (
+    selectBatchCalloutEvent(events, resolveCardName, resolveRelicName, resolveBossSkillName)
+      ?.callout ?? null
+  );
+}
+
+/**
+ * The batch's single callout and the delivered event that produced it.
+ *
+ * The selection is verbatim `selectBatchCallout`'s: the lowest-priority-number
+ * event wins, and among equals the last delivered one. Naming the winning event
+ * is what lets the caller present the line with the timeline phase that owns it
+ * (TASK-254 AF-2) instead of at batch arrival, without adding a second
+ * importance ladder or a queue.
+ */
+export function selectBatchCalloutEvent(
+  events: readonly InBattleServerEvent[],
+  resolveCardName: (cardId: string) => string,
+  resolveRelicName: (relicId: string) => string | null,
+  resolveBossSkillName: (skillId: string) => string | null = resolveBossSkillDisplayName
+): BatchCalloutSelection | null {
+  let selected: BatchCalloutSelection | null = null;
 
   for (const event of events) {
     const candidate = describeEventCallout(
@@ -1392,8 +1436,11 @@ export function selectBatchCallout(
       resolveBossSkillName
     );
 
-    if (candidate !== null && (selected === null || candidate.priority <= selected.priority)) {
-      selected = candidate;
+    if (
+      candidate !== null &&
+      (selected === null || candidate.priority <= selected.callout.priority)
+    ) {
+      selected = { callout: candidate, event };
     }
   }
 
