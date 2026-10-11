@@ -931,6 +931,32 @@ const BATTLE_SNAPSHOT = `
     // The scene's own development-only event log. It is deliberately NOT
     // rendered any more; this is what lets the check prove that.
     presentedEvents: typeof s.getPresentedEvents === 'function' ? s.getPresentedEvents() : [],
+    // The developer Move Log panel (TASK-253, operator decision D-1): the single
+    // declared container the scene owns, and the text objects inside it. Its
+    // "texts" are exactly the panel's own declared objects — identified by
+    // container membership, which is what D-1 authorizes — so the two HUD
+    // diagnostic checks below subtract them by identity rather than by a pattern
+    // that could also hide a regression. "present" is false when the surface does
+    // not exist at all — what a non-DEV build must show.
+    moveLog: (() => {
+      const log = s.developerMoveLog;
+      const layer = log && log.layer;
+      if (!layer || !layer.list) return { present: false, texts: [] };
+      return {
+        present: true,
+        texts: layer.list
+          .filter((o) => o.type === 'Text')
+          .map((o) => (typeof o.text === 'string' ? o.text : ''))
+          .filter((t) => t.length > 0),
+      };
+    })(),
+    // The build's own import.meta.env.DEV value, reported by the application
+    // itself: the two DEVELOPMENT-ONLY React diagnostics are mounted by exactly
+    // that flag (App.tsx:203-204), and it is the same flag the Move Log is gated
+    // by. Reading it here — rather than copying a constant into this script — is
+    // what makes the DEV-off assertion below a statement about the build that is
+    // actually running.
+    devBuild: document.querySelector('[data-testid="runtime-status-overlay"]') !== null,
     // Each HUD line's world bounds, so "does not overlap the board and stays
     // inside the safe area" is an assertion about the rendered geometry.
     hudBounds: (() => {
@@ -2385,18 +2411,74 @@ export async function runSmokeTest(runNumber = 1) {
       petName
     );
 
-    // No developer diagnostic and no raw event-log line is rendered anywhere.
+    // No developer diagnostic and no raw event-log line is rendered anywhere
+    // EXCEPT the developer Move Log's own declared text objects (TASK-253,
+    // operator decision D-1). The panel is the one surface the operator authorized
+    // to render the delivered turn/sequence and the raw event feed, and it renders
+    // only in a DEV build; the boundary that governs every other line is unchanged.
+    //
+    // The narrowing is by object identity: the panel's own declared text objects
+    // are read from the single container the scene owns and are the ONLY entries
+    // subtracted from the scanned set — never a pattern, which could also excuse a
+    // real regression elsewhere. The two checks keep their names and their
+    // provenance (TASK-210 §9), and the two replacements that follow are strictly
+    // stronger than what they replace.
     const hudText = Object.values(battle.hud).filter((t) => typeof t === 'string').join(' ');
-    const allRenderedText = battle.renderedTexts.join(' ');
+    const moveLogTexts = battle.moveLog.texts;
+    // Every rendered text, the developer panel included, so subtracting the
+    // panel's own objects is an explicit, auditable narrowing rather than an
+    // accident of the panel being a container.
+    const renderedIncludingMoveLog = [...battle.renderedTexts, ...moveLogTexts];
+    const nonLogText = renderedIncludingMoveLog
+      .filter((entry) => !moveLogTexts.includes(entry))
+      .join(' ');
     record(
       'phase5b.noDeveloperDiagnosticsInTheHud',
-      !/SignalR:|Sync:|BattleId:|RngSeed:|Turn:|Sequence:/.test(`${hudText} ${allRenderedText}`),
-      { hud: hudText }
+      !/SignalR:|Sync:|BattleId:|RngSeed:|Turn:|Sequence:/.test(`${hudText} ${nonLogText}`),
+      {
+        hud: hudText,
+        moveLogPresent: battle.moveLog.present,
+        excludedMoveLogTexts: moveLogTexts.length,
+      }
     );
     record(
       'phase5b.rawEventLogIsNotRendered',
-      battle.presentedEvents.every((entry) => !allRenderedText.includes(entry)),
-      { presentedEventCount: battle.presentedEvents.length }
+      battle.presentedEvents.every((entry) => !nonLogText.includes(entry)),
+      {
+        presentedEventCount: battle.presentedEvents.length,
+        excludedMoveLogTexts: moveLogTexts.length,
+      }
+    );
+
+    // Replacement assertion 1 (STRONGER): the Move Log exists exactly when the
+    // build that is running is a DEV build. With `import.meta.env.DEV` false the
+    // surface and its text objects do not exist at all, so this check fails if the
+    // panel is ever rendered where the flag is false — which is the property the
+    // DEV gate exists to guarantee.
+    record(
+      'phase5b.moveLogDoesNotExistWithoutDev',
+      battle.devBuild ? battle.moveLog.present === true : battle.moveLog.present === false,
+      {
+        devBuild: battle.devBuild,
+        moveLogPresent: battle.moveLog.present,
+        moveLogTextCount: moveLogTexts.length,
+      }
+    );
+
+    // Replacement assertion 2 (STRONGER): every NON-log line — the named HUD lines
+    // and every other rendered text — is free of a transport, battle-identity, RNG
+    // or turn/sequence diagnostic. The pattern is the narrowed check's own token
+    // list made stricter: case-insensitive, and it matches the token with or
+    // without the `:` the original required, so a diagnostic written in another
+    // spelling still fails it. `YOUR TURN` (the client's own interaction
+    // statement, TASK-246 §4) is not a diagnostic and is not matched: the pattern
+    // requires a `:` or `=` after the token.
+    const forbiddenDiagnostic =
+      /\b(?:signalr|battle\s*id|sync|rng\s*(?:seed|state)|turn|sequence|seq)\s*[:=]/i;
+    record(
+      'phase5b.nonLogHudTextCarriesNoForbiddenDiagnostic',
+      !forbiddenDiagnostic.test(hudText) && !forbiddenDiagnostic.test(nonLogText),
+      { pattern: forbiddenDiagnostic.source, hud: hudText }
     );
 
     // The HUD occupies the bands the fixed board leaves free: nothing it draws may

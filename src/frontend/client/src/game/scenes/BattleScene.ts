@@ -25,6 +25,9 @@ import type {
 import type {
   InBattleServerEvent,
   InteractionStatement,
+  MoveLogAbortReason,
+  MoveLogLifecycleState,
+  MoveLogLifecycleScope,
   PresentationActor,
   PresentationAction,
   PresentationPhaseKind,
@@ -36,10 +39,12 @@ import {
   INTERACTION_BOSS_ATTACK,
   INTERACTION_RESOLVING,
   INTERACTION_YOUR_TURN,
+  MOVE_LOG_TITLE,
   adaptPresentedEvent,
   formatCardCastRejection,
   formatGemCellLabel,
   formatInBattleEvent,
+  formatMoveLogRow,
   formatSwapRejection,
   isBossEnraged,
   isPetPassiveEvent,
@@ -228,6 +233,61 @@ const SWAP_TEXT_Y = BOARD_ORIGIN_Y + 300;
 
 /** The cast interaction's own acknowledgement line, below the board. */
 const CAST_TEXT_Y = BOARD_ORIGIN_Y + BOARD_WIDTH + 18;
+
+// --- Developer Move Log: the free band to the right of the board ------------
+//
+// `TASK-253` / operator decision D-1 authorizes exactly one developer surface
+// inside the battle view: this panel, drawn only when `import.meta.env.DEV` is
+// true. It is the one place in this scene where a delivered `turn`, a delivered
+// `serverSequence` and the raw event log are *rendered*, which is the bounded
+// supersede of `TASK-210` §9 that D-1 records. Nothing else about the diagnostic
+// boundary changes: transport state, the SignalR status, the battle id and the
+// RNG seed/state are still rendered nowhere, by this panel or by any other line.
+//
+// **Why this band.** The board's fixed logical extent is x 395–885, y 120–610
+// (`BOARD_ORIGIN_X` / `BOARD_ORIGIN_Y` / `BOARD_WIDTH`). Everything else in the
+// HUD lives in the boss band above the board, in the column to its left, or in
+// the interaction strip below it, so the band to the *right* of the board is the
+// only free rectangle large enough for a readable panel. The panel is inset by
+// `HUD_INSET` from the safe area's right edge, exactly as the left column is,
+// and it stops at the board's own top and bottom edges — so it can never reach a
+// board cell, a cast control, another HUD line, or the 24 px safe-area margin.
+
+/** The panel's left edge: `HUD_INSET` clear of the board's right edge (885). */
+const MOVE_LOG_LEFT = BOARD_ORIGIN_X + BOARD_WIDTH + HUD_INSET;
+/** The panel's right edge, inset from the safe area exactly as the HUD column is. */
+const MOVE_LOG_RIGHT = SAFE_AREA.x + SAFE_AREA.width - HUD_INSET;
+const MOVE_LOG_WIDTH = MOVE_LOG_RIGHT - MOVE_LOG_LEFT;
+/** The panel spans exactly the board's own rows, so it reaches neither band. */
+const MOVE_LOG_TOP = BOARD_ORIGIN_Y;
+const MOVE_LOG_HEIGHT = BOARD_WIDTH;
+/** The caption row, and the first row line beneath it. */
+const MOVE_LOG_BODY_TOP = MOVE_LOG_TOP + 20;
+/** The widest a wrapped row may draw, inside the panel's own border. */
+const MOVE_LOG_WRAP_WIDTH = MOVE_LOG_WIDTH - 8;
+const MOVE_LOG_FONT_SIZE = '10px';
+/**
+ * The vertical pitch of one row, and the wrapped lines it may occupy.
+ *
+ * A row is `formatMoveLogRow`'s output: a `Match` or a `PowerChanged` line can
+ * exceed the panel's width, so each row is given a fixed two-line box. A fixed
+ * pitch is what keeps every row's position a property of the layout rather than
+ * of the rendered text metrics, so the panel's geometry is observable without a
+ * font measurement and no row can ever draw over the next one.
+ */
+const MOVE_LOG_ROW_LINES = 2;
+const MOVE_LOG_ROW_HEIGHT = 26;
+
+/**
+ * How many rows the panel shows, and how many it retains.
+ *
+ * The visible window is always the **newest** rows (`scrollMoveLogToNewest`),
+ * which is the panel's auto-scroll; the retained buffer is larger, so a resolved
+ * resolution can still be read after the next one pushed its rows, and the
+ * oldest rows are evicted once the cap is reached.
+ */
+const MOVE_LOG_VISIBLE_ROWS = 18;
+const MOVE_LOG_CAP = 200;
 
 /**
  * The documented Power range's upper bound (`GAME_RULES.md` §12,
@@ -968,6 +1028,33 @@ export class BattleScene extends Phaser.Scene {
   private signatureSkills = new Map<string, PetSignatureSkillResponse>();
   /** Current battle state for redrawing cast controls when card definitions load. */
   private currentBattleState: RuntimeBattleState | null = null;
+  /**
+   * The developer Move Log, or `null` when the surface does not exist.
+   *
+   * It is built by `createDeveloperMoveLog` and only when the compile-time
+   * `import.meta.env.DEV` flag is true — the flag's **one** read in this scene, at
+   * shell construction (`App.tsx:203–204`'s convention, cited to `TASK-209` §6 by
+   * operator decision D-1). It is never read per row: the panel's existence is this
+   * one reference, so a production build has neither the surface nor the code that
+   * would build it, and every call site below is a `null`-safe no-op there.
+   *
+   * Its `layer` is the **single declared container** every text object the panel
+   * renders is a child of, which is what lets the smoke harness (and this suite)
+   * narrow a scene-wide diagnostic assertion to "everything except the Move Log's
+   * own declared text objects" by container membership rather than by a pattern
+   * that could also hide a regression (TASK-253 D-1).
+   */
+  private developerMoveLog: DeveloperMoveLog | null = null;
+  /**
+   * The developer Move Log's retained rows, oldest first — a bounded ring.
+   *
+   * It is the record `getMoveLogRows()` reads, and the panel writes it **in
+   * place**, so a reader holding the array keeps seeing the live buffer exactly as
+   * `getPresentedEvents()` does. Every entry is one delivered event or one lifecycle
+   * step of the client's own presentation: it holds no gameplay value, nothing in
+   * the scene reads it back, and it is empty whenever the surface does not exist.
+   */
+  private readonly moveLogRows: string[] = [];
 
   constructor() {
     super('BattleScene');
@@ -1006,6 +1093,10 @@ export class BattleScene extends Phaser.Scene {
     this.presentedPhases.length = 0;
     this.presentedEventsLog.length = 0;
     this.presentationLogBattleId = null;
+    // The developer Move Log belongs to the battle that just ended: its rows, its
+    // row counter and its recorded sequence start empty for this run. The panel's
+    // own objects are drawn by `drawRuntimeShell` below.
+    this.developerMoveLog = null;
     this.timelineEffects = [];
     this.timelineCalloutShown = false;
     this.runtime = readRuntime(this);
@@ -1170,6 +1261,10 @@ export class BattleScene extends Phaser.Scene {
     this.castControlsLayer = null;
     this.feedbackLayer?.destroy(true);
     this.feedbackLayer = null;
+    // The developer Move Log panel is released with the shell it was drawn into,
+    // so no text object of a shut-down scene survives into the next run.
+    this.developerMoveLog?.release();
+    this.developerMoveLog = null;
     this.tweens?.killAll();
     this.selectedCell = null;
     // The orchestration machine returns to its initial value for the next
@@ -1189,6 +1284,12 @@ export class BattleScene extends Phaser.Scene {
     this.presentedEventsLog.length = 0;
     this.presentedPhases.length = 0;
     this.presentationLogBattleId = null;
+    // The developer Move Log: the engine has already destroyed the panel's
+    // container and every text object in it with the display list, so the
+    // references are dropped and the buffer is cleared — a scene that is shut down
+    // mid-resolution presents nothing, and a reader sees an empty record rather
+    // than a resolution that was abandoned.
+    this.developerMoveLog = null;
     this.timelineEffects = [];
     this.timelineCalloutShown = false;
     this.castControls = [];
@@ -1546,6 +1647,20 @@ export class BattleScene extends Phaser.Scene {
       .rectangle(0, 0, SELECTION_RING_SIZE, SELECTION_RING_SIZE, 0x000000, 0)
       .setStrokeStyle(SELECTION_RING_STROKE, SELECTION_RING_COLOR)
       .setVisible(false);
+
+    // The developer Move Log (TASK-253 D-1). It is drawn last so it is the top of
+    // the shell, and — exactly like the two DEVELOPMENT-ONLY React diagnostics
+    // (`App.tsx:203–204`) — only when the compile-time DEV flag is true. This is
+    // the flag's **one** read: with it false the panel's construction, its rows and
+    // every literal of its vocabulary are unreachable, so a production build drops
+    // them whole and the surface does not exist at all.
+    if (import.meta.env.DEV) {
+      this.developerMoveLog = createDeveloperMoveLog(
+        this,
+        () => this.currentBattleState?.turn ?? null,
+        this.moveLogRows
+      );
+    }
   }
 
   /**
@@ -1718,13 +1833,16 @@ export class BattleScene extends Phaser.Scene {
       this.resetPresentationLogs();
     }
     this.presentationLogBattleId = state?.battleId ?? null;
+    // The developer Move Log follows the same boundary: the delivered battle
+    // identity is what its rows belong to, and a different one clears it.
+    this.developerMoveLog?.syncBattle(state?.battleId ?? null);
 
     // A newer authoritative state supersedes playback: the timeline is dropped,
     // its held values are converged, and the newer state is then presented
     // immediately rather than being held for an older resolution's batch.
     const superseded = this.isSupersededBy(state);
     if (superseded) {
-      this.abortPresentation();
+      this.abortPresentation('superseded-state');
     }
 
     if (state === null) {
@@ -3101,7 +3219,7 @@ export class BattleScene extends Phaser.Scene {
       // timeline is abandoned, the guard is released, and the values it was
       // holding are converged on the authoritative state
       // (`SIGNALR_PROTOCOL.md` §8.3, `AGENTS.md` §10).
-      this.abortPresentation();
+      this.abortPresentation('malformed-batch');
     }
   }
 
@@ -3130,6 +3248,12 @@ export class BattleScene extends Phaser.Scene {
    */
   private playEventBatch(envelope: BattleEventsEnvelope): void {
     const presented: InBattleServerEvent[] = [];
+    // Whether this batch's resolution is one the developer Move Log has not
+    // recorded yet. A repeated or older `serverSequence` is still parsed and still
+    // recorded in the scene's own diagnostic log below — the Move Log simply does
+    // not present it a second time (TASK-253).
+    const moveLog = this.developerMoveLog;
+    const recordForMoveLog = moveLog !== null && moveLog.beginBatch(envelope);
 
     for (const raw of envelope.events) {
       const parsed = parseInBattleEvent(raw);
@@ -3139,6 +3263,14 @@ export class BattleScene extends Phaser.Scene {
 
       presented.push(parsed);
       BattleScene.appendBounded(this.presentedEventsLog, formatInBattleEvent(parsed));
+
+      if (recordForMoveLog) {
+        moveLog?.recordEvent(parsed, envelope.serverSequence);
+      }
+    }
+
+    if (recordForMoveLog) {
+      moveLog?.commitSequence(envelope.serverSequence);
     }
 
     // A batch that arrives while an earlier one is still playing. The server's
@@ -3158,7 +3290,7 @@ export class BattleScene extends Phaser.Scene {
       // Newer: the playing timeline is superseded, exactly as a newer
       // authoritative state supersedes it. Its pacing is cancelled and its guard
       // released before this batch's timeline takes over.
-      this.abortPresentation();
+      this.abortPresentation('superseded-batch');
 
       if (this.outcomeHandled) {
         // The superseded batch carried the terminal outcome, which the abort has
@@ -3195,6 +3327,13 @@ export class BattleScene extends Phaser.Scene {
     this.presentationStep = 0;
     this.presentationSequence = envelope.serverSequence;
     this.presentationBattleId = envelope.battleId;
+    // The client's own lifecycle: a timeline was built from this batch, before any
+    // of it plays. It is recorded from the phase list the batch produced — one
+    // delivered resolution, one row — and never from a duration.
+    moveLog?.recordQueued(
+      envelope.serverSequence,
+      phases.map((phase) => phase.kind)
+    );
     // A timeline is the guard engaged for a whole resolution: a cell selected
     // before it started must not survive it, or the player's next tap would
     // complete a gesture from before the resolution (TASK-246 §3).
@@ -3506,7 +3645,18 @@ export class BattleScene extends Phaser.Scene {
 
     while (this.presentationStep < phases.length) {
       const phase = phases[this.presentationStep];
+      const position = this.presentationStep + 1;
       this.presentationStep++;
+
+      // The phase the machine was showing has finished: it is completed by the
+      // machine moving on, not by a measured duration.
+      this.developerMoveLog?.recordPhaseStarted(
+        position,
+        phases.length,
+        phase.kind,
+        phase.detail,
+        this.presentationSequence
+      );
 
       this.presentationPhaseKind = phase.kind;
       this.playPresentationPhase(phase);
@@ -3709,6 +3859,13 @@ export class BattleScene extends Phaser.Scene {
    * outcome the batch named is handed off.
    */
   private finishPresentation(): void {
+    // The timeline's own end: the last phase is completed by the same step advance
+    // a phase boundary uses, and the resolution's timeline row is closed before the
+    // guard is released, so the panel's order is the order the machine played.
+    this.developerMoveLog?.recordCompleted(
+      this.presentationSequence,
+      this.presentationTimeline?.length ?? 0
+    );
     this.releaseTimeline();
     this.settleHeldPresentation();
     this.handOffOutcome();
@@ -3727,7 +3884,13 @@ export class BattleScene extends Phaser.Scene {
    * (TASK-252 audit RC-2). The values it was holding are converged on the
    * authoritative state immediately afterwards.
    */
-  private abortPresentation(): void {
+  private abortPresentation(reason: MoveLogAbortReason = 'superseded-state'): void {
+    // The aborted timeline's own facts, read before `releaseTimeline` drops them:
+    // the resolution it was presenting and the battle it belonged to.
+    const abortedSequence = this.presentationSequence;
+    const abortedBattleId = this.presentationBattleId;
+    const aborted = this.presentationTimeline !== null;
+
     this.tweens?.killTweensOf(this.phaseClock);
     this.releaseTimeline();
     // A swap or refill travel still in flight belongs to the abandoned
@@ -3738,6 +3901,14 @@ export class BattleScene extends Phaser.Scene {
     // The pair the abandoned timeline was going to present is dropped with it: a
     // newer state has already replaced the board it would have moved.
     this.committedSwapCells = null;
+    // The developer Move Log records the abandonment against the resolution it
+    // actually belonged to: a timeline that was playing when a newer delivered
+    // value arrived is `aborted`, one whose batch could not be presented at all is
+    // `failed`, and a timeline that belonged to a battle the log has already
+    // re-keyed away from is not recorded against the new battle.
+    if (aborted) {
+      this.developerMoveLog?.recordAbandoned(abortedBattleId, abortedSequence, reason);
+    }
     this.settleHeldPresentation();
     this.handOffOutcome();
   }
@@ -3885,6 +4056,11 @@ export class BattleScene extends Phaser.Scene {
     if (!outcome || this.outcomeHandled) {
       return;
     }
+
+    // The terminal result is recorded **before** the handoff, so the panel's last
+    // row is the outcome the battle actually ended with and it is readable on the
+    // scene that is about to be replaced (`ResultScene` takes the display over).
+    this.developerMoveLog?.recordOutcome(outcome);
 
     this.transitionOrchestration('terminated');
     this.pendingOutcomeHandoff = null;
@@ -4223,6 +4399,22 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
+   * Read-only snapshot of the developer Move Log's retained rows, oldest first.
+   *
+   * It is the panel's own buffer — the rows the panel is showing, plus the older
+   * ones still inside `MOVE_LOG_CAP` — and every entry is `formatMoveLogRow`'s
+   * output: a delivered wire value, or the client's own presentation lifecycle.
+   *
+   * **Developer diagnostics only**, and only in a development build: with
+   * `import.meta.env.DEV` false the surface does not exist and this is always
+   * empty. Nothing in the scene reads it back, it holds no gameplay value, and it
+   * is the accessible form of the panel for development and the test suite.
+   */
+  getMoveLogRows(): readonly string[] {
+    return this.moveLogRows;
+  }
+
+  /**
    * Returns whether player input is currently locked.
    *
    * The guard covers the **whole** presentation of a resolution: a submitted
@@ -4306,6 +4498,9 @@ export class BattleScene extends Phaser.Scene {
     this.transitionOrchestration(
       this.isActionInFlight() ? 'presenting-submitted' : 'presenting'
     );
+    // The presentation machine's own state after the transition: the Move Log's
+    // timeline row records the machine's fact, not an animation's start.
+    this.developerMoveLog?.recordTimelineAnimating(this.presentationSequence, this.orchestration);
   }
 
   /**
@@ -4456,6 +4651,329 @@ export class BattleScene extends Phaser.Scene {
     }
     return null;
   }
+}
+
+/**
+ * The developer Move Log, as the battle scene holds it (TASK-253, operator
+ * decision D-1). Built by `createDeveloperMoveLog`, and only in a DEV build.
+ */
+type DeveloperMoveLog = ReturnType<typeof createDeveloperMoveLog>;
+
+/**
+ * The phase the panel is currently presenting, for its per-phase lifecycle rows.
+ *
+ * It is the machine's own step position (`presentationStep`), not a measurement of
+ * animation: a phase's row is recorded when the step is entered and closed when the
+ * machine moves on, so the panel reports the presentation's real transitions
+ * rather than a duration.
+ */
+interface PresentedPhaseStep {
+  readonly index: number;
+  readonly total: number;
+  readonly detail: string;
+}
+
+/**
+ * Builds the developer Move Log panel and returns the record it keeps.
+ *
+ * It is a **module-level factory rather than scene methods** so that a production
+ * build drops the whole surface — the panel's layout, its text objects and every
+ * literal of its row vocabulary. Its only call site is guarded by the compile-time
+ * `import.meta.env.DEV` constant (`drawRuntimeShell`), so with the flag false the
+ * call and the factory are both unreachable and the production bundle carries
+ * neither (the same convention `App.tsx:203–204` uses for the two React
+ * diagnostics).
+ *
+ * The panel is a development surface and nothing else. It is the one line of the
+ * battle view that reports the delivered `turn`/`serverSequence` and the raw event
+ * feed, which `TASK-210` §9 forbids everywhere else — the bounded supersede
+ * recorded by operator decision D-1. Every row is built by `formatMoveLogRow` from
+ * a delivered wire value or from the client's own presentation lifecycle; it
+ * computes no gameplay value, evaluates no rule, and infers no missing state
+ * (`AGENTS.md` §10, ADR-001).
+ *
+ * ```text
+ * geometry      one container at the scene's origin, holding a background
+ *               rectangle, the caption, and MOVE_LOG_VISIBLE_ROWS row text
+ *               objects — all in the free band to the right of the board
+ *               (MOVE_LOG_LEFT), inside the 24 px safe area and between the
+ *               board's own top and bottom edges
+ * rows          the row objects are created once and written in place
+ *               (`scrollToNewest`), so recording a row allocates nothing and the
+ *               panel's object count is fixed for the life of the scene run
+ * retention     MOVE_LOG_CAP rows, oldest evicted first; the visible window is
+ *               always the newest MOVE_LOG_VISIBLE_ROWS rows, which is the
+ *               panel's auto-scroll
+ * lifecycle     cleared on `create()` (a new panel), on `release()` (teardown) and
+ *               whenever the delivered battle identity changes (`syncBattle`)
+ * ```
+ *
+ * @param scene the scene whose display list the panel is drawn into.
+ * @param readTurn the delivered `BattleStateUpdated.turn` at the moment a row is
+ *   recorded, or `null` when no state push has been delivered — a read of the
+ *   scene's synchronized copy, never a derived turn.
+ * @param rows the scene's own retained-row buffer, written in place so
+ *   `getMoveLogRows()` reads the live record whether or not the surface exists.
+ */
+function createDeveloperMoveLog(
+  scene: BattleScene,
+  readTurn: () => number | null,
+  rows: string[]
+) {
+  const layer = scene.add.container(0, 0);
+
+  const background = scene.add
+    .rectangle(
+      MOVE_LOG_LEFT + MOVE_LOG_WIDTH / 2,
+      MOVE_LOG_TOP + MOVE_LOG_HEIGHT / 2,
+      MOVE_LOG_WIDTH,
+      MOVE_LOG_HEIGHT,
+      0x0b1220,
+      0.9
+    )
+    .setStrokeStyle(1, 0x334155);
+
+  const caption = scene.add
+    .text(MOVE_LOG_LEFT + 4, MOVE_LOG_TOP + 4, MOVE_LOG_TITLE, {
+      fontFamily: 'system-ui, sans-serif',
+      fontSize: MOVE_LOG_FONT_SIZE,
+      color: '#64748b',
+    })
+    .setOrigin(0, 0);
+
+  const rowTexts: Phaser.GameObjects.Text[] = [];
+  for (let index = 0; index < MOVE_LOG_VISIBLE_ROWS; index++) {
+    rowTexts.push(
+      scene.add
+        .text(MOVE_LOG_LEFT + 4, MOVE_LOG_BODY_TOP + index * MOVE_LOG_ROW_HEIGHT, '', {
+          fontFamily: 'system-ui, sans-serif',
+          fontSize: MOVE_LOG_FONT_SIZE,
+          color: '#94a3b8',
+          wordWrap: { width: MOVE_LOG_WRAP_WIDTH, useAdvancedWrap: true },
+          maxLines: MOVE_LOG_ROW_LINES,
+        })
+        .setOrigin(0, 0)
+    );
+  }
+
+  layer.add([background, caption, ...rowTexts]);
+
+  /** The panel's own row counter, so the recorded order is readable. */
+  let ordinal = 0;
+  /** The battle the retained rows belong to. */
+  let battleId: string | null = null;
+  /** The newest `serverSequence` already recorded. */
+  let sequence: number | null = null;
+  /** The phase the machine is presenting, or `null` when none is in flight. */
+  let phaseInFlight: PresentedPhaseStep | null = null;
+
+  /**
+   * Writes the newest visible rows into the panel, oldest first — its auto-scroll.
+   *
+   * The window is pinned to the newest row, so the row just recorded is always on
+   * screen and the oldest visible rows scroll out of the top as newer ones arrive.
+   * Rows that leave the window are simply overwritten; the retained buffer still
+   * holds them for a reader of `BattleScene.getMoveLogRows()`.
+   */
+  const scrollToNewest = (): void => {
+    const visible = rows.slice(-rowTexts.length);
+
+    for (let index = 0; index < rowTexts.length; index++) {
+      rowTexts[index].setText(visible[index] ?? '');
+    }
+  };
+
+  /**
+   * Records one row, evicting the oldest once `MOVE_LOG_CAP` is reached.
+   *
+   * It is the only writer of the buffer: every row is a delivered value or a client
+   * presentation fact, and there is no path that fabricates one — an unknown or
+   * malformed event never reaches it, and a rejected action emits no events at all
+   * (`GAME_EVENTS.md` §1.2), so no row exists for either.
+   */
+  const append = (row: string): void => {
+    rows.push(row);
+
+    if (rows.length > MOVE_LOG_CAP) {
+      rows.splice(0, rows.length - MOVE_LOG_CAP);
+    }
+
+    scrollToNewest();
+  };
+
+  /** Records one lifecycle row of the client's own presentation. */
+  const lifecycle = (
+    scope: MoveLogLifecycleScope,
+    state: MoveLogLifecycleState,
+    at: number | null,
+    detail = ''
+  ): void => {
+    ordinal += 1;
+    append(formatMoveLogRow({ kind: 'lifecycle', ordinal, scope, state, sequence: at, detail }));
+  };
+
+  /**
+   * Closes the phase the machine was showing.
+   *
+   * The completion is the machine's own step advance — the next phase, or the
+   * timeline's end (`recordCompleted`) — and never a measured animation time.
+   */
+  const completePhase = (): void => {
+    const phase = phaseInFlight;
+    if (phase === null) {
+      return;
+    }
+
+    phaseInFlight = null;
+    lifecycle('phase', 'completed', sequence, `${phase.index}/${phase.total} ${phase.detail}`);
+  };
+
+  /**
+   * Re-keys the panel to a delivered battle identity, clearing it when it changed.
+   *
+   * The identity is the battle the rows belong to: a delivered state push and the
+   * event batch that follows it both carry it (`SIGNALR_PROTOCOL.md` §3, §4), and
+   * a different one means the battle whose resolution was on screen has ended.
+   */
+  const syncBattle = (nextBattleId: string | null): void => {
+    if (battleId === nextBattleId) {
+      return;
+    }
+
+    rows.length = 0;
+    ordinal = 0;
+    sequence = null;
+    phaseInFlight = null;
+    battleId = nextBattleId;
+    scrollToNewest();
+  };
+
+  scrollToNewest();
+
+  return {
+    /** The panel's single declared container, holding every text object of it. */
+    layer,
+    /** Records one delivered event's row, with the actor/action the one adapter names. */
+    recordEvent(event: InBattleServerEvent, at: number): void {
+      ordinal += 1;
+      append(
+        formatMoveLogRow({
+          kind: 'event',
+          ordinal,
+          sequence: at,
+          turn: readTurn(),
+          step: adaptPresentedEvent(event),
+          event,
+        })
+      );
+    },
+    /** Records that a timeline was built from a delivered batch, before it plays. */
+    recordQueued(at: number, phaseKinds: readonly PresentationPhaseKind[]): void {
+      lifecycle('timeline', 'queued', at, `phases=${phaseKinds.length} ${phaseKinds.join(',')}`);
+    },
+    /** Records the presentation machine's own state after a timeline started. */
+    recordTimelineAnimating(at: number | null, state: BattleOrchestrationState): void {
+      lifecycle('timeline', 'animating', at, `state=${state}`);
+    },
+    /** Records the timeline's own end, closing its last phase first. */
+    recordCompleted(at: number | null, phaseCount: number): void {
+      completePhase();
+      lifecycle('timeline', 'completed', at, `phases=${phaseCount}`);
+    },
+    /**
+     * Records that the machine entered one phase.
+     *
+     * It closes the phase the machine was showing first, so the panel's
+     * `animating` / `completed` pairs follow the machine's real step advance.
+     */
+    recordPhaseStarted(
+      position: number,
+      phaseCount: number,
+      kind: PresentationPhaseKind,
+      detail: string,
+      at: number | null
+    ): void {
+      completePhase();
+      phaseInFlight = { index: position, total: phaseCount, detail: `${kind} ${detail}` };
+      lifecycle('phase', 'animating', at, `${position}/${phaseCount} ${kind} ${detail}`);
+    },
+    /**
+     * Records the abandonment of the in-flight timeline, against the resolution it
+     * actually belonged to.
+     *
+     * The playing phase is recorded as `aborted`; the timeline is `failed` when its
+     * batch could not be presented at all and `aborted` when a newer delivered value
+     * superseded it. A timeline that belonged to a battle the panel has already been
+     * re-keyed away from is not recorded against the new battle.
+     */
+    recordAbandoned(
+      abortedBattleId: string | null,
+      at: number | null,
+      reason: MoveLogAbortReason
+    ): void {
+      if (battleId !== abortedBattleId) {
+        phaseInFlight = null;
+        return;
+      }
+
+      const phase = phaseInFlight;
+      phaseInFlight = null;
+
+      if (phase !== null) {
+        lifecycle('phase', 'aborted', at, `${phase.index}/${phase.total} ${phase.detail}`);
+      }
+
+      lifecycle('timeline', reason === 'malformed-batch' ? 'failed' : 'aborted', at, reason);
+    },
+    /** Records the terminal result, before the scene hands the battle off. */
+    recordOutcome(outcome: {
+      readonly outcome: string;
+      readonly finalBossHp: number;
+      readonly finalPlayerHp: number;
+    }): void {
+      ordinal += 1;
+      append(
+        formatMoveLogRow({
+          kind: 'outcome',
+          ordinal,
+          outcome: outcome.outcome,
+          finalBossHp: outcome.finalBossHp,
+          finalPlayerHp: outcome.finalPlayerHp,
+        })
+      );
+    },
+    /**
+     * Re-keys the panel to a delivered battle identity, clearing it when it changed.
+     *
+     * The identity is the battle the rows belong to: a delivered state push and the
+     * event batch that follows it both carry it (`SIGNALR_PROTOCOL.md` §3, §4), and
+     * a different one means the battle whose resolution was on screen has ended.
+     */
+    syncBattle,
+    /**
+     * Whether a delivered batch is a resolution the panel has not already recorded.
+     *
+     * Each resolution is recorded once: `serverSequence` is strictly increasing
+     * (`SIGNALR_PROTOCOL.md` §3 item 2), so a batch at or below the newest one
+     * already recorded is a repeat or an older delivery and adds no rows. This is
+     * the panel's own bookkeeping — it changes no presentation behaviour, and the
+     * diagnostic buffers the rest of the scene keeps are untouched by it.
+     */
+    beginBatch(envelope: BattleEventsEnvelope): boolean {
+      syncBattle(envelope.battleId);
+
+      return sequence === null || envelope.serverSequence > sequence;
+    },
+    /** Remembers the newest `serverSequence` recorded. */
+    commitSequence(at: number): void {
+      sequence = at;
+    },
+    /** Releases the panel's references: the engine owns the objects themselves. */
+    release(): void {
+      rows.length = 0;
+      phaseInFlight = null;
+    },
+  };
 }
 
 /**

@@ -960,6 +960,134 @@ export function adaptPresentedEvent(event: InBattleServerEvent): PresentedAction
 }
 
 // ---------------------------------------------------------------------------
+// The developer Move Log's row vocabulary (TASK-253, operator decision D-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The panel's caption — presentation text, not a delivered value.
+ *
+ * It is deliberately the only string in the panel that names no wire member: it
+ * labels the developer surface and nothing else.
+ */
+export const MOVE_LOG_TITLE = 'MOVE LOG';
+
+/**
+ * The lifecycle verbs one row records (TASK-253).
+ *
+ * ```text
+ * queued      the client built a resolution's ordered timeline from a delivered
+ *             batch, before any of it played
+ * animating   the presentation machine entered / advanced to this step
+ * completed   the step's own presentation finished and the machine moved on
+ * aborted     the in-flight timeline was abandoned because a newer delivered
+ *             value superseded it — not a failure of the resolution
+ * failed      the in-flight timeline was abandoned because the delivered batch
+ *             could not be presented at all
+ * ```
+ *
+ * They are the **client's own** presentation lifecycle, sourced from the
+ * orchestration machine's transitions and from the batch the client accepted —
+ * never from animation timing, and never from a server phase (there is none:
+ * `SIGNALR_PROTOCOL.md` §3.1 items 1–2).
+ */
+export type MoveLogLifecycleState =
+  | 'queued'
+  | 'animating'
+  | 'completed'
+  | 'aborted'
+  | 'failed';
+
+/**
+ * Why an in-flight presentation timeline was abandoned.
+ *
+ * Each value names a delivered/client fact the scene already acted on, so the
+ * row reports the actual cause rather than a generic "aborted".
+ */
+export type MoveLogAbortReason =
+  | 'superseded-state'
+  | 'superseded-batch'
+  | 'malformed-batch';
+
+/** Whether a row's lifecycle verb describes the whole timeline or one phase of it. */
+export type MoveLogLifecycleScope = 'timeline' | 'phase';
+
+/**
+ * Everything one Move Log row can be built from.
+ *
+ * It is a discriminated union of the three row kinds the panel draws, and every
+ * member of every kind is either a delivered wire value, the client's own
+ * orchestration fact, or a counter the panel owns. Nothing here is derived from a
+ * gameplay rule, and no row can be constructed for an event the server did not
+ * send (`AGENTS.md` §10).
+ */
+export type MoveLogRowInput =
+  | {
+      readonly kind: 'event';
+      readonly ordinal: number;
+      /** `ReceiveEvents.serverSequence` (`SIGNALR_PROTOCOL.md` §3). */
+      readonly sequence: number;
+      /** `BattleStateUpdated.turn` (`SIGNALR_PROTOCOL.md` §4), or `null` when none was delivered. */
+      readonly turn: number | null;
+      /** The adapter's step, or `null` when the delivered event names no step. */
+      readonly step: PresentedActionStep | null;
+      readonly event: InBattleServerEvent;
+    }
+  | {
+      readonly kind: 'lifecycle';
+      readonly ordinal: number;
+      readonly scope: MoveLogLifecycleScope;
+      readonly state: MoveLogLifecycleState;
+      /** The resolution's `serverSequence`, or `null` when none belongs to the row. */
+      readonly sequence: number | null;
+      /** The client's own detail: the phase's position and its delivered members. */
+      readonly detail: string;
+    }
+  | {
+      readonly kind: 'outcome';
+      readonly ordinal: number;
+      readonly outcome: string;
+      readonly finalBossHp: number;
+      readonly finalPlayerHp: number;
+    };
+
+/**
+ * Formats exactly one Move Log row.
+ *
+ * It is the **single** row formatter, and it is a formatter and nothing else:
+ *
+ * - an event row reuses `formatInBattleEvent`, so the delivered members are spelled
+ *   once in the codebase and the panel is not a second event vocabulary;
+ * - the `type=` field names the delivered `type` discriminator verbatim, so the
+ *   closed sixteen-name set of `SIGNALR_PROTOCOL.md` §3.2.2 stays the only event
+ *   vocabulary the row can name;
+ * - `actor`/`action` come from the one adapter (`adaptPresentedEvent`), and are
+ *   `-` when the delivered members name neither — never guessed (`AGENTS.md` §10);
+ * - `turn` is `-` when no `BattleStateUpdated` has been delivered.
+ *
+ * It performs no gameplay calculation, evaluates no rule, and infers no value the
+ * server did not deliver.
+ */
+export function formatMoveLogRow(row: MoveLogRowInput): string {
+  switch (row.kind) {
+    case 'event': {
+      const actor = row.step?.actor ?? '-';
+      const action = row.step?.action ?? '-';
+      const turn = row.turn === null ? '-' : `${row.turn}`;
+      return `#${row.ordinal} seq=${row.sequence} turn=${turn} type=${row.event.type} ${actor}/${action} | ${formatInBattleEvent(row.event)}`;
+    }
+
+    case 'lifecycle': {
+      const detail = row.detail.length > 0 ? ` ${row.detail}` : '';
+      const sequence = row.sequence === null ? '' : ` seq=${row.sequence}`;
+      return `#${row.ordinal} ${row.scope} ${row.state}${detail}${sequence}`;
+    }
+
+    case 'outcome':
+      return `#${row.ordinal} outcome ${row.outcome} bossHp=${row.finalBossHp} playerHp=${row.finalPlayerHp}`;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The client's own interaction indicator (TASK-246 §4)
 // ---------------------------------------------------------------------------
 

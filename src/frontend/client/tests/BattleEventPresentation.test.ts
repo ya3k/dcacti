@@ -32,6 +32,8 @@ import {
   INTERACTION_RESOLVING,
   INTERACTION_YOUR_TURN,
   resolveOutcomeStatement,
+  MOVE_LOG_TITLE,
+  formatMoveLogRow,
 } from '../src/game/scenes/BattleEventPresenter';
 import type {
   PresentedMatchCreated,
@@ -47,6 +49,45 @@ import type {
   PresentedRelicTriggered,
   PresentedPowerChanged,
 } from '../src/game/scenes/BattleEventPresenter';
+
+/**
+ * Every line the scene renders **except** the developer Move Log's own declared
+ * text objects.
+ *
+ * The Move Log is the one surface operator decision D-1 authorizes to render the
+ * delivered turn/sequence and the raw event feed (TASK-253); the diagnostic
+ * boundary that governs every other line is unchanged, so a scene-wide assertion
+ * about what is *not* rendered subtracts exactly the panel's own objects — by the
+ * single container D-1 declares them in, never by a pattern that could also hide a
+ * regression.
+ */
+function playerFacingText(
+  harness: { readonly texts: ReadonlyArray<{ readonly text: string; readonly containerIndex: number | null }> },
+  ctx: object
+): string {
+  const logIndex = moveLogContainerIndex(ctx);
+
+  return harness.texts
+    .filter((entry) => logIndex === null || entry.containerIndex !== logIndex)
+    .map((entry) => entry.text)
+    .join('\n');
+}
+
+/**
+ * The index of the developer Move Log's single declared container in a scene
+ * context, or `null` when the surface does not exist.
+ *
+ * Every text object the panel draws is a child of that one container, which is how
+ * a scene-wide assertion tells the one authorized developer surface from every
+ * other line the scene renders (TASK-253 D-1).
+ */
+function moveLogContainerIndex(ctx: object): number | null {
+  const log = (ctx as { developerMoveLog?: { layer?: { containerIndex?: number } } | null })
+    .developerMoveLog;
+  const index = log?.layer?.containerIndex;
+
+  return typeof index === 'number' ? index : null;
+}
 
 vi.mock('phaser', () => ({
   AUTO: 'AUTO',
@@ -106,7 +147,19 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
   const runtimeListeners = new Set<(event: { state: GameRuntimeState }) => void>();
   const battleStateListeners = new Set<(state: RuntimeBattleState) => void>();
   const battleEventListeners = new Set<(envelope: BattleEventsEnvelope) => void>();
-  const texts: Array<{ text: string; color?: string }> = [];
+  const texts: Array<{
+    text: string;
+    color?: string;
+    /**
+     * The container this object is a child of, as the harness numbered it, or
+     * `null` while it belongs to none.
+     *
+     * Every text object the developer Move Log draws is a child of the panel's
+     * single container, so this is what lets a scene-wide diagnostic assertion
+     * subtract exactly that one authorized surface (TASK-253 D-1).
+     */
+    readonly containerIndex: number | null;
+  }> = [];
   const boardInputHandlers = new Map<string, (pointer: { x: number; y: number }) => void>();
   const requestedActions: Array<Record<string, unknown>> = [];
   const sceneStarted: Array<{ key: string; data?: unknown }> = [];
@@ -151,10 +204,24 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
   };
 
   function context(scene: object, sceneKey: string): object {
+    /**
+     * How many containers this scene run has created, so each one can be numbered
+     * and the objects it owns identified by container membership.
+     */
+    let containerIndex = 0;
+
     const makeText = (value: string) => {
-      const entry = { text: value, color: undefined as string | undefined };
+      const entry = {
+        text: value,
+        color: undefined as string | undefined,
+        get containerIndex(): number | null {
+          return containerIndex;
+        },
+      };
       texts.push(entry);
       let alpha = 1;
+      /** The container this object was added to, as the harness numbered it. */
+      let containerIndex: number | null = null;
 
       const obj = {
         kind: 'label' as const,
@@ -167,6 +234,14 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         setColor: (next: string) => {
           entry.color = next;
           return obj;
+        },
+        /** The container this object is a child of, or `null` while it is in none. */
+        get containerIndex() {
+          return containerIndex;
+        },
+        /** Set by the container that takes this object as a child. */
+        set containerIndex(next: number | null) {
+          containerIndex = next;
         },
         // Phaser's `GameObject#setAlpha` — the combat callout resets it when a new
         // message replaces the one on screen (TASK-210 §7).
@@ -183,12 +258,23 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     };
 
     const makeContainer = () => {
+      const myIndex = ++containerIndex;
       const children: unknown[] = [];
       let size: { width: number; height: number } | null = null;
       const obj = {
+        /** This container's own number, so a panel can be named by its container. */
+        containerIndex: myIndex,
         add: (added: unknown) => {
           const list = Array.isArray(added) ? added : [added];
           children.push(...list);
+          // Phaser reparents each child into the container; the mock records the
+          // same fact, which is how a test tells a panel's own text objects from
+          // every other line the scene draws (TASK-253 D-1).
+          for (const child of list) {
+            if (typeof child === 'object' && child !== null && 'containerIndex' in child) {
+              (child as { containerIndex: number | null }).containerIndex = myIndex;
+            }
+          }
           return obj;
         },
         removeAll: () => {
@@ -1499,9 +1585,12 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
       expect(presented[0], `Expected presented output to contain "${token}"`).toContain(token);
     }
 
-    // And none of that raw line reaches the player-facing HUD.
-    const rendered = harness.texts.map((t) => t.text).join('\n');
+    // And none of that raw line reaches the player-facing HUD. The developer Move
+    // Log is the one surface D-1 authorizes to render the raw feed (TASK-253), so
+    // it is excluded by its own declared object name and every other line is not.
+    const rendered = playerFacingText(harness, ctx);
     expect(rendered).not.toContain(presented[0]);
+    expect(harness.texts.map((entry) => entry.text).join('\n')).toContain(presented[0]);
   });
 
   it('presents RelicTriggered and PowerChanged in delivered order alongside existing types (GAME_EVENTS.md §1)', () => {
@@ -1891,7 +1980,7 @@ describe('TASK-218B — the Relic trigger callout reaches the player (SIGNALR_PR
       events: [{ type: 'RelicTriggered', relicId: 'relicinst_berserker' }],
     });
 
-    const rendered = harness.texts.map((t) => t.text).join('\n');
+    const rendered = playerFacingText(harness, ctx);
     expect(rendered).toContain('RELIC: Berserker Core');
     expect(rendered).not.toContain('relicinst_berserker');
     expect(rendered).not.toContain('RelicTriggered');
@@ -1914,7 +2003,7 @@ describe('TASK-218B — the Relic trigger callout reaches the player (SIGNALR_PR
       serverSequence: 5,
       events: [{ type: 'RelicTriggered', relicId: 'relicinst_emergency' }],
     });
-    const rendered = harness.texts.map((t) => t.text).join('\n');
+    const rendered = playerFacingText(harness, ctx);
     expect(rendered).toContain('RELIC: Emergency Core');
     expect(rendered).not.toContain('relicinst_');
   });
@@ -1936,7 +2025,7 @@ describe('TASK-218B — the Relic trigger callout reaches the player (SIGNALR_PR
       ],
     });
 
-    const rendered = harness.texts.map((t) => t.text).join('\n');
+    const rendered = playerFacingText(harness, ctx);
     expect(rendered).not.toContain('relicinst_unowned');
     expect(rendered).not.toContain('RelicTriggered');
     expect(rendered).not.toContain('RELIC:');
@@ -1956,7 +2045,7 @@ describe('TASK-218B — the Relic trigger callout reaches the player (SIGNALR_PR
       events: [{ type: 'RelicTriggered', relicId: 'relicinst_berserker' }],
     });
 
-    const rendered = harness.texts.map((t) => t.text).join('\n');
+    const rendered = playerFacingText(harness, ctx);
     expect(rendered).not.toContain('RELIC:');
     expect(rendered).not.toContain('relicinst_berserker');
   });
@@ -2328,3 +2417,204 @@ describe('TASK-246 — the interaction indicator is client state, never wire sta
     }
   });
 });
+
+describe('TASK-253 — the developer Move Log row formatter (operator decision D-1)', () => {
+  /** The presenter's own source, with its prose removed. */
+  const presenterSource = readFileSync(
+    resolve(__dirname, '../src/game/scenes/BattleEventPresenter.ts'),
+    'utf8'
+  )
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+  /** The fourteen non-outcome names of the closed discriminator set (§3.2.2). */
+  const IN_BATTLE_TYPES = [
+    'MatchCreated',
+    'CascadeCreated',
+    'ComboChanged',
+    'GemMatched',
+    'DamageCalculated',
+    'DamageDealt',
+    'DamageTaken',
+    'PassiveCharged',
+    'PassiveTriggered',
+    'BossSkillCast',
+    'CardCast',
+    'PetSkillCast',
+    'RelicTriggered',
+    'PowerChanged',
+  ];
+
+  /** One delivered payload per in-battle discriminator. */
+  const DELIVERED: ReadonlyArray<{ readonly name: string; readonly event: unknown }> = [
+    { name: 'MatchCreated', event: { type: 'MatchCreated', shape: 'Lt', cells: [7, 15, 23], gemType: 'POWER', cascadeDepth: 4 } },
+    { name: 'CascadeCreated', event: { type: 'CascadeCreated', cascadeDepth: 2 } },
+    { name: 'ComboChanged', event: { type: 'ComboChanged', combo: 4 } },
+    { name: 'GemMatched', event: { type: 'GemMatched', cellIndex: 42, gemType: 'DEF' } },
+    { name: 'DamageCalculated', event: { type: 'DamageCalculated', base: 137, comboModifier: 2.5, elementModifier: 1.25, otherModifiers: 1.1, defense: 43, finalDamage: 99 } },
+    { name: 'DamageDealt', event: { type: 'DamageDealt', source: 'player', target: 'boss', amount: 99 } },
+    { name: 'DamageTaken', event: { type: 'DamageTaken', source: 'boss', target: 'player', amount: 77 } },
+    { name: 'PassiveCharged', event: { type: 'PassiveCharged', passiveId: 'pet-passive', source: 'pet', sourceId: 'pet-inst-1', progress: 1, threshold: 3 } },
+    { name: 'PassiveTriggered', event: { type: 'PassiveTriggered', passiveId: 'boss-rage', source: 'boss', sourceId: 'boss-1', progress: 3, threshold: 3 } },
+    { name: 'BossSkillCast', event: { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' } },
+    { name: 'CardCast', event: { type: 'CardCast', cardId: 'card-shield' } },
+    { name: 'PetSkillCast', event: { type: 'PetSkillCast', cardId: 'card-inferno' } },
+    { name: 'RelicTriggered', event: { type: 'RelicTriggered', relicId: 'relic-instance-berserker-core' } },
+    { name: 'PowerChanged', event: { type: 'PowerChanged', delta: 25, power: 45, source: 'card' } },
+  ];
+
+  /** One event row, built the way the scene builds it. */
+  function eventRow(name: string, turn: number | null = 4, ordinal = 1, sequence = 9): string {
+    const event = parseInBattleEvent(DELIVERED.find((payload) => payload.name === name)?.event);
+    expect(event, `${name} must parse`).not.toBeNull();
+
+    return formatMoveLogRow({
+      kind: 'event',
+      ordinal,
+      sequence,
+      turn,
+      step: adaptPresentedEvent(event as never),
+      event: event as never,
+    });
+  }
+
+  it('names the delivered discriminator and the adapter actor/action, then the delivered members', () => {
+    expect(eventRow('MatchCreated')).toBe(
+      '#1 seq=9 turn=4 type=MatchCreated swap/match | Match: Lt POWER [7, 15, 23] depth: 4'
+    );
+    expect(eventRow('BossSkillCast')).toBe(
+      '#1 seq=9 turn=4 type=BossSkillCast boss/boss-skill | BossSkillCast: flame-burst by boss-hoa-long'
+    );
+    expect(eventRow('CardCast')).toBe(
+      '#1 seq=9 turn=4 type=CardCast player/card-cast | CardCast: card-shield'
+    );
+    expect(eventRow('PowerChanged')).toBe(
+      '#1 seq=9 turn=4 type=PowerChanged power/power | PowerChanged: +25 -> 45 (card)'
+    );
+    expect(eventRow('DamageTaken')).toBe(
+      '#1 seq=9 turn=4 type=DamageTaken boss/retaliation | DamageTaken: 77 on player (from boss)'
+    );
+  });
+
+  it('names only a discriminator of the closed set, and claims no actor for an event that names none', () => {
+    const rows = DELIVERED.map((payload) => eventRow(payload.name));
+
+    const named = rows.map((row) => /type=([A-Za-z]+)/.exec(row)?.[1] ?? '');
+    expect(named).toEqual(IN_BATTLE_TYPES);
+    expect(named.every((name) => IN_BATTLE_TYPES.includes(name))).toBe(true);
+
+    // `DamageCalculated` presents nothing of its own, so the adapter names no
+    // actor/action for it — and the row claims neither rather than guessing.
+    expect(eventRow('DamageCalculated')).toContain('type=DamageCalculated -/-');
+
+    // The `turn` is `-` when no `BattleStateUpdated` has been delivered: the row
+    // never invents one.
+    expect(eventRow('ComboChanged', null)).toContain(' turn=- type=ComboChanged');
+  });
+
+  it('records the client lifecycle verbs without inventing a duration or a value', () => {
+    expect(
+      formatMoveLogRow({
+        kind: 'lifecycle',
+        ordinal: 3,
+        scope: 'timeline',
+        state: 'queued',
+        sequence: 12,
+        detail: 'phases=2 match,settle',
+      })
+    ).toBe('#3 timeline queued phases=2 match,settle seq=12');
+
+    expect(
+      formatMoveLogRow({
+        kind: 'lifecycle',
+        ordinal: 4,
+        scope: 'timeline',
+        state: 'animating',
+        sequence: 12,
+        detail: 'state=presenting',
+      })
+    ).toBe('#4 timeline animating state=presenting seq=12');
+
+    expect(
+      formatMoveLogRow({
+        kind: 'lifecycle',
+        ordinal: 5,
+        scope: 'phase',
+        state: 'animating',
+        sequence: 12,
+        detail: '1/2 match match depth=1',
+      })
+    ).toBe('#5 phase animating 1/2 match match depth=1 seq=12');
+
+    expect(
+      formatMoveLogRow({
+        kind: 'lifecycle',
+        ordinal: 6,
+        scope: 'phase',
+        state: 'completed',
+        sequence: 12,
+        detail: '1/2 match match depth=1',
+      })
+    ).toBe('#6 phase completed 1/2 match match depth=1 seq=12');
+
+    expect(
+      formatMoveLogRow({
+        kind: 'lifecycle',
+        ordinal: 7,
+        scope: 'timeline',
+        state: 'aborted',
+        sequence: 12,
+        detail: 'superseded-state',
+      })
+    ).toBe('#7 timeline aborted superseded-state seq=12');
+
+    expect(
+      formatMoveLogRow({
+        kind: 'lifecycle',
+        ordinal: 8,
+        scope: 'timeline',
+        state: 'failed',
+        sequence: 12,
+        detail: 'malformed-batch',
+      })
+    ).toBe('#8 timeline failed malformed-batch seq=12');
+
+    // A lifecycle row with no resolution to name says so rather than printing one.
+    expect(
+      formatMoveLogRow({
+        kind: 'lifecycle',
+        ordinal: 9,
+        scope: 'timeline',
+        state: 'completed',
+        sequence: null,
+        detail: '',
+      })
+    ).toBe('#9 timeline completed');
+  });
+
+  it('records the terminal result from the delivered outcome members', () => {
+    expect(
+      formatMoveLogRow({
+        kind: 'outcome',
+        ordinal: 11,
+        outcome: 'victory',
+        finalBossHp: 0,
+        finalPlayerHp: 85,
+      })
+    ).toBe('#11 outcome victory bossHp=0 playerHp=85');
+  });
+
+  it('reuses the one event formatter and adds no second event vocabulary', () => {
+    // The row's event text is `formatInBattleEvent`'s output, so the delivered
+    // members are spelled exactly once in the codebase.
+    expect(presenterSource).toContain('formatInBattleEvent(row.event)');
+    // One row formatter, and no arithmetic on a delivered value.
+    expect(presenterSource.match(/export function formatMoveLogRow\(/g)).toHaveLength(1);
+    expect(presenterSource).not.toMatch(/finalDamage\s*[-+*/]/);
+  });
+
+  it('declares the panel\'s caption, which names no wire member', () => {
+    expect(MOVE_LOG_TITLE).toBe('MOVE LOG');
+  });
+});
+

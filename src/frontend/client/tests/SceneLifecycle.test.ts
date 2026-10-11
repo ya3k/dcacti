@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { BattleScene, BATTLE_ORCHESTRATION_LEGAL_TRANSITIONS } from '../src/game/scenes/BattleScene';
@@ -162,6 +162,18 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     x: number;
     y: number;
     style?: Record<string, unknown>;
+    /**
+     * The index of the container this object is a child of, or `null` while it
+     * belongs to none.
+     *
+     * The developer Move Log's panel is the one surface in this scene whose text
+     * objects are *declared* — every one of them is a child of the panel's single
+     * container (`BattleScene.developerMoveLog.layer`) — which is what lets a test
+     * narrow a scene-wide diagnostic assertion to "everything except the panel's
+     * own objects" by container membership rather than by a pattern that could also
+     * hide a real regression (TASK-253 D-1).
+     */
+    readonly containerIndex: number | null;
   }> = [];
   /**
    * Every write a scene attempted against a `Text` object the engine has already
@@ -492,10 +504,21 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       into?: { kind: string; label: string }[],
       style?: Record<string, unknown>
     ) => {
-      const entry = { text: value, color: undefined as string | undefined, x, y, style };
+      const entry = {
+        text: value,
+        color: undefined as string | undefined,
+        x,
+        y,
+        style,
+        get containerIndex(): number | null {
+          return containerIndex;
+        },
+      };
       texts.push(entry);
       let alpha = 1;
       let fontSize: number | undefined;
+      /** The container this object was added to, as the harness numbered it. */
+      let containerIndex: number | null = null;
       /**
        * The object's live position.
        *
@@ -575,6 +598,14 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         /** The style config the scene passed to `add.text`, as Phaser stores it. */
         get style() {
           return style;
+        },
+        /** The container this object is a child of, or `null` while it is in none. */
+        get containerIndex() {
+          return containerIndex;
+        },
+        /** Set by the container that takes this object as a child. */
+        set containerIndex(next: number | null) {
+          containerIndex = next;
         },
         /** The font size the scene last set, in pixels. */
         get fontSize() {
@@ -677,8 +708,8 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
      * cannot fail on the real defect.
      */
     const makeContainer = () => {
-      containerIndex++;
-      const isBoard = containerIndex === 1;
+      const myIndex = ++containerIndex;
+      const isBoard = myIndex === 1;
       let children: Array<{ kind: string; label?: string }> = [];
       let size: { width: number; height: number } | null = null;
       let interactive = false;
@@ -691,6 +722,11 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       >();
 
       const obj = {
+        /**
+         * This container's own number, so a test can name a panel by the container
+         * that owns its objects rather than by a property of each object.
+         */
+        containerIndex: myIndex,
         add: (added: unknown) => {
           const list = Array.isArray(added) ? added : [added];
           children = children.concat(
@@ -701,6 +737,14 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
               strokeColor?: number;
             }>
           );
+          // Phaser reparents each child into the container; the mock records the
+          // same fact, which is how a test tells a panel's own text objects from
+          // every other line the scene draws (TASK-253 D-1).
+          for (const child of list) {
+            if (typeof child === 'object' && child !== null && 'containerIndex' in child) {
+              (child as { containerIndex: number | null }).containerIndex = myIndex;
+            }
+          }
           if (isBoard) syncBoard();
           return obj;
         },
@@ -708,6 +752,16 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
           children = [];
           if (isBoard) syncBoard();
           return obj;
+        },
+        /**
+         * Phaser's `Container#list`: the children the container currently owns.
+         *
+         * A test reads a panel's own objects through it — the developer Move Log
+         * registers its row text objects as container children, so "the panel's own
+         * declared objects" is a property of the scene rather than of the mock.
+         */
+        get list() {
+          return children;
         },
         destroy: () => {
           children = [];
@@ -1269,6 +1323,50 @@ async function flush(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
+}
+
+/**
+ * The index of the developer Move Log's single declared container in a scene
+ * context, or `null` when the surface does not exist.
+ *
+ * TASK-253's panel is the one development surface authorized to render the
+ * delivered turn/sequence and the raw event feed, and every text object it draws
+ * is a child of that one container (operator decision D-1). A scene-wide assertion
+ * about what is *not* rendered therefore subtracts exactly those objects — by
+ * container membership, never by a pattern that could also excuse a regression.
+ */
+function moveLogContainerIndex(ctx: object): number | null {
+  const log = (ctx as { developerMoveLog?: { layer?: { containerIndex?: number } } | null })
+    .developerMoveLog;
+  const index = log?.layer?.containerIndex;
+
+  return typeof index === 'number' ? index : null;
+}
+
+/** Every line the scene renders **except** the developer Move Log's own text objects. */
+function playerFacingText(
+  harness: ReturnType<typeof createSceneHarness>,
+  ctx: object
+): string {
+  const logIndex = moveLogContainerIndex(ctx);
+
+  return harness.texts
+    .filter((entry) => logIndex === null || entry.containerIndex !== logIndex)
+    .map((entry) => entry.text)
+    .join('\n');
+}
+
+/**
+ * The developer Move Log's own declared text objects, in creation order — the
+ * caption followed by the visible rows.
+ */
+function panelText(harness: ReturnType<typeof createSceneHarness>, ctx: object): string {
+  const logIndex = moveLogContainerIndex(ctx);
+
+  return harness.texts
+    .filter((entry) => logIndex !== null && entry.containerIndex === logIndex)
+    .map((entry) => entry.text)
+    .join('\n');
 }
 
 describe('Phaser scene lifecycle', () => {
@@ -6965,9 +7063,17 @@ describe('BattleScene — Relic definition lookup (TASK-218B, API_CONTRACTS.md �
       })
     ).not.toThrow();
 
-    const rendered = harness.texts.map((t) => t.text).join('\n');
+    // The player-facing surface names no Relic identity it could not resolve. The
+    // developer Move Log is excluded by its single declared container (TASK-253
+    // D-1): the delivered `RelicTriggered` row quotes the delivered `relicId`
+    // verbatim, which is exactly the developer record D-1 authorizes, and it is the
+    // ONLY surface that does.
+    const rendered = playerFacingText(harness, ctx);
     expect(rendered).not.toContain('RELIC:');
     expect(rendered).not.toContain('relicinst_berserker_core');
+    // ...and the row that quotes it really is the developer panel's, so the
+    // exclusion above is a narrowing and not a way of losing the observation.
+    expect(panelText(harness, ctx)).toContain('RelicTriggered: relicinst_berserker_core');
 
     // A scene that previously held Relic definitions must clear them across shutdown
     // and not retain stale definitions if the subsequent battle's read rejects.
@@ -8604,5 +8710,552 @@ describe('LobbyScene — asynchronous start attempt (TASK-211 §2)', () => {
     await flush();
 
     expect(harness.sceneStarted.map((s) => s.key)).toEqual(['BattleScene']);
+  });
+});
+
+describe('BattleScene — developer Move Log (TASK-253, operator decision D-1)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  afterEach(() => {
+    // The DEV gate is read through `import.meta.env.DEV`; a test that stubs it
+    // must not leak the stub into the next one.
+    vi.unstubAllEnvs();
+  });
+
+  const GEM_NAMES = ['ATK', 'DEF', 'HP', 'POWER'];
+  const CELL_SIZE = 56;
+  const CELL_GAP = 6;
+  const BOARD_WIDTH = 8 * CELL_SIZE + 7 * CELL_GAP;
+  const BOARD_ORIGIN_X = (GAME_WIDTH - BOARD_WIDTH) / 2;
+  const BOARD_ORIGIN_Y = SAFE_AREA.y + 96;
+  /** The free band the panel declares: right of the board, inside the safe area. */
+  const PANEL_LEFT = BOARD_ORIGIN_X + BOARD_WIDTH + 12;
+  const PANEL_RIGHT = SAFE_AREA.x + SAFE_AREA.width - 12;
+  /** The panel's documented visible-row window and retained-row cap. */
+  const VISIBLE_ROWS = 18;
+  const RETAINED_ROWS = 200;
+
+  /** The fourteen non-outcome discriminators of the closed wire set (§3.2.2). */
+  const CLOSED_EVENT_TYPES = [
+    'MatchCreated',
+    'CascadeCreated',
+    'ComboChanged',
+    'GemMatched',
+    'DamageCalculated',
+    'DamageDealt',
+    'DamageTaken',
+    'PassiveCharged',
+    'PassiveTriggered',
+    'BossSkillCast',
+    'CardCast',
+    'PetSkillCast',
+    'RelicTriggered',
+    'PowerChanged',
+  ];
+
+  function deliveredBoard(shift = 0): RuntimeBoard {
+    return {
+      cells: Array.from({ length: 64 }, (_, index) => ({
+        gemType: GEM_NAMES[(index + shift) % GEM_NAMES.length],
+      })),
+    };
+  }
+
+  function battleState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+    return {
+      battleId: 'battle-253',
+      turn: 4,
+      sequence: 0,
+      rngSeed: 42,
+      rngState: { state: 123456789, increment: 1 },
+      board: deliveredBoard(),
+      playerState: { combo: 0, matchCount: 0 },
+      petState: {
+        hp: 1000,
+        maxHp: 1000,
+        power: 0,
+        passiveId: 'xich-lang',
+        passiveProgress: { threshold: 5, current: 0 },
+        equippedCards: ['card-heal'],
+        statusEffects: [],
+      },
+      bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
+      ...overrides,
+    };
+  }
+
+  /** A battle scene with or without the recorded, test-driven tween queue. */
+  function createBattle(withTweens = false, state: RuntimeBattleState | null = battleState()) {
+    const harness = createSceneHarness({ battleState: state, withTweens });
+    const scene = new BattleScene();
+    const ctx = harness.context(scene, 'BattleScene');
+    runScene(scene, ctx, 'create');
+    return { harness, scene, ctx };
+  }
+
+  /** A scene-owned private field, read the way the scene wrote it. */
+  function field<T>(ctx: object, name: string): T {
+    return (ctx as Record<string, T>)[name];
+  }
+
+  /**
+   * The panel's own declared text objects, in creation order.
+   *
+   * They are the children of the panel's **single declared container** — the
+   * identity operator decision D-1 authorizes — so this is a statement about the
+   * scene rather than about a naming convention this suite keeps in step by hand.
+   */
+  function panelTexts(harness: ReturnType<typeof createSceneHarness>, ctx: object) {
+    const logIndex = moveLogContainerIndex(ctx);
+
+    return harness.texts.filter(
+      (text) => logIndex !== null && text.containerIndex === logIndex
+    );
+  }
+
+  /** The panel's declared text objects' current content, in creation order. */
+  function panelLines(harness: ReturnType<typeof createSceneHarness>, ctx: object): string[] {
+    return panelTexts(harness, ctx).map((text) => text.text);
+  }
+
+  /** One delivered resolution carrying every non-outcome discriminator. */
+  const EVERY_TYPE_BATCH: unknown[] = [
+    {
+      type: 'MatchCreated',
+      shape: 'Straight',
+      cells: [24, 25, 26],
+      gemType: 'ATK',
+      cascadeDepth: 1,
+      createdSpecialGems: [{ cellIndex: 24, specialGem: { type: 'Bomb' } }],
+    },
+    { type: 'GemMatched', cellIndex: 25, gemType: 'ATK' },
+    { type: 'CascadeCreated', cascadeDepth: 2 },
+    { type: 'ComboChanged', combo: 3 },
+    {
+      type: 'DamageCalculated',
+      base: 100,
+      comboModifier: 1.2,
+      elementModifier: 1,
+      otherModifiers: 1,
+      defense: 10,
+      finalDamage: 110,
+    },
+    { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+    { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
+    {
+      type: 'PassiveCharged',
+      passiveId: 'xich-lang',
+      source: 'pet',
+      sourceId: 'pet-instance-1',
+      progress: 4,
+      threshold: 5,
+    },
+    {
+      type: 'PassiveTriggered',
+      passiveId: 'boss-hoa-long-rage',
+      source: 'boss',
+      sourceId: 'boss-hoa-long',
+      progress: 5,
+      threshold: 5,
+    },
+    { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+    { type: 'CardCast', cardId: 'card-heal' },
+    { type: 'PetSkillCast', cardId: 'card-inferno' },
+    { type: 'RelicTriggered', relicId: 'relicinst_berserker_core' },
+    { type: 'PowerChanged', delta: 40, power: 40, source: 'match' },
+  ];
+
+  /** Delivers one resolution the way the server does: state push, then batch. */
+  function deliver(
+    harness: ReturnType<typeof createSceneHarness>,
+    sequence: number,
+    events: unknown[],
+    battleId = 'battle-253'
+  ): void {
+    harness.setBattleState(battleState({ battleId, sequence }));
+    harness.emitBattleEvents({ battleId, serverSequence: sequence, events } as BattleEventsEnvelope);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Placement and DEV gating
+  // ---------------------------------------------------------------------------
+
+  it('draws the panel in the free band to the right of the board, inside the safe area', () => {
+    const { harness, ctx } = createBattle();
+
+    const panel = panelTexts(harness, ctx);
+    // The caption plus one text object per visible row.
+    expect(panel.length).toBe(VISIBLE_ROWS + 1);
+
+    for (const text of panel) {
+      const wrapWidth = (text.style?.wordWrap as { width?: number } | undefined)?.width ?? 0;
+      // Right of the 8 x 8 board: the panel can never cover a matchable cell.
+      expect(text.x).toBeGreaterThanOrEqual(PANEL_LEFT);
+      expect(text.x).toBeGreaterThanOrEqual(BOARD_ORIGIN_X + BOARD_WIDTH);
+      // Inside the safe area, its declared wrap reaching no further than the
+      // panel's own right edge.
+      expect(text.x + wrapWidth).toBeLessThanOrEqual(PANEL_RIGHT);
+      expect(text.x + wrapWidth).toBeLessThanOrEqual(SAFE_AREA.x + SAFE_AREA.width);
+      // Within the board's own rows, so it reaches neither HUD band.
+      expect(text.y).toBeGreaterThanOrEqual(BOARD_ORIGIN_Y);
+      expect(text.y).toBeLessThan(BOARD_ORIGIN_Y + BOARD_WIDTH);
+    }
+
+    // No other line is placed in the band, so no HUD line and no cast control is
+    // drawn in it.
+    const logIndex = moveLogContainerIndex(ctx);
+    const inPanelBand = (x: number, y: number) =>
+      x >= PANEL_LEFT && x < PANEL_RIGHT && y >= BOARD_ORIGIN_Y && y < BOARD_ORIGIN_Y + BOARD_WIDTH;
+    const intruders = harness.texts
+      .filter((text) => text.containerIndex !== logIndex)
+      .filter((text) => inPanelBand(text.x, text.y));
+    expect(intruders.map((text) => text.text)).toEqual([]);
+  });
+
+  it('exists only when the DEV flag is true', () => {
+    vi.stubEnv('DEV', false);
+    const disabled = createBattle();
+
+    // The surface and every text object of it are absent, and no row is recorded.
+    expect(field<object | null>(disabled.ctx, 'developerMoveLog')).toBeNull();
+    expect(panelTexts(disabled.harness, disabled.ctx)).toEqual([]);
+    expect(disabled.scene.getMoveLogRows()).toEqual([]);
+    deliver(disabled.harness, 1, [{ type: 'ComboChanged', combo: 1 }]);
+    expect(disabled.scene.getMoveLogRows()).toEqual([]);
+
+    vi.unstubAllEnvs();
+
+    const enabled = createBattle();
+    expect(field<object | null>(enabled.ctx, 'developerMoveLog')).not.toBeNull();
+    deliver(enabled.harness, 1, [{ type: 'ComboChanged', combo: 1 }]);
+    expect(enabled.scene.getMoveLogRows().length).toBeGreaterThan(0);
+    expect(panelTexts(enabled.harness, enabled.ctx).length).toBe(VISIBLE_ROWS + 1);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Row construction: delivered members only
+  // ---------------------------------------------------------------------------
+
+  it('records one row per delivered event, with the delivered type and the adapter actor/action', () => {
+    const { harness, scene } = createBattle();
+    deliver(harness, 7, EVERY_TYPE_BATCH);
+
+    const rows = scene.getMoveLogRows();
+    const eventRows = rows.filter((row) => row.includes(' type='));
+    expect(eventRows).toHaveLength(EVERY_TYPE_BATCH.length);
+
+    // Every event row names a delivered discriminator, and only from the closed set.
+    const namedTypes = eventRows.map((row) => / type=([A-Za-z]+)/.exec(row)?.[1] ?? '');
+    expect(namedTypes).toEqual(EVERY_TYPE_BATCH.map((event) => (event as { type: string }).type));
+    expect(namedTypes.every((name) => CLOSED_EVENT_TYPES.includes(name))).toBe(true);
+
+    // The delivered `serverSequence` and `turn`, and nothing derived.
+    expect(eventRows.every((row) => row.includes(' seq=7 turn=4 '))).toBe(true);
+
+    // The actor/action comes from the one adapter: a board event is the committed
+    // Swap's, a cast is the player's, a Boss skill is the boss's, and
+    // `PowerChanged` is the mutation stage the delivered `source` names — never a
+    // side (SIGNALR_PROTOCOL.md §3.2.24 item 3).
+    const actorOf = (type: string) => {
+      const row = eventRows.find((entry) => entry.includes(`type=${type} `));
+      return /type=\S+ (\S+)/.exec(row ?? '')?.[1] ?? '';
+    };
+    expect(actorOf('MatchCreated')).toBe('swap/match');
+    expect(actorOf('GemMatched')).toBe('swap/match');
+    expect(actorOf('CascadeCreated')).toBe('swap/cascade');
+    expect(actorOf('ComboChanged')).toBe('swap/combo');
+    expect(actorOf('PowerChanged')).toBe('power/power');
+    expect(actorOf('PassiveCharged')).toBe('pet/passive-charge');
+    expect(actorOf('PassiveTriggered')).toBe('boss/passive-trigger');
+    expect(actorOf('BossSkillCast')).toBe('boss/boss-skill');
+    expect(actorOf('CardCast')).toBe('player/card-cast');
+    expect(actorOf('PetSkillCast')).toBe('player/pet-skill-cast');
+    expect(actorOf('RelicTriggered')).toBe('player/relic');
+    expect(actorOf('DamageDealt')).toBe('player/damage');
+    expect(actorOf('DamageTaken')).toBe('player/damage');
+    // The adapter presents nothing of its own for the damage pipeline detail, so
+    // no actor is claimed for it.
+    expect(actorOf('DamageCalculated')).toBe('-/-');
+
+    // The delivered members reach the row through the one event formatter.
+    const joined = eventRows.join('\n');
+    expect(joined).toContain('Match: Straight ATK [24, 25, 26] depth: 1 (created: Bomb@24)');
+    expect(joined).toContain('GemMatched: cell 25 (ATK)');
+    expect(joined).toContain('Cascade: depth 2');
+    expect(joined).toContain('Combo: 3');
+    expect(joined).toContain('DamageCalculated: base 100');
+    expect(joined).toContain('DamageDealt: 150 (player -> boss)');
+    expect(joined).toContain('DamageTaken: 150 on boss (from player)');
+    expect(joined).toContain('PassiveCharged: xich-lang (pet:pet-instance-1) 4/5');
+    expect(joined).toContain('PassiveTriggered: boss-hoa-long-rage (boss:boss-hoa-long) 5/5');
+    expect(joined).toContain('BossSkillCast: flame-burst by boss-hoa-long');
+    expect(joined).toContain('CardCast: card-heal');
+    expect(joined).toContain('PetSkillCast: card-inferno');
+    expect(joined).toContain('RelicTriggered: relicinst_berserker_core');
+    expect(joined).toContain('PowerChanged: +40 -> 40 (match)');
+  });
+
+  it('fabricates no row: an unknown or malformed event, and a rejected action, record nothing', async () => {
+    const { harness, scene } = createBattle();
+
+    // A batch whose events the contract does not define is ignored with no row at
+    // all — not guessed at, and not padded with a placeholder.
+    deliver(harness, 1, [
+      { type: 'NotADocumentedEvent', whatever: 1 },
+      { nope: true },
+      { type: 'MatchCreated', shape: 42 },
+    ]);
+    expect(scene.getMoveLogRows()).toEqual([]);
+
+    // A rejected Swap emits nothing at all (GAME_EVENTS.md §1.2): no batch, no row.
+    harness.setActionResult({ accepted: false, reason: 'NO_MATCH_FROM_SWAP' });
+    tapCell(harness, 20);
+    tapCell(harness, 21);
+    await flush();
+    expect(scene.getMoveLogRows()).toEqual([]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Lifecycle rows, sourced from the orchestration machine
+  // ---------------------------------------------------------------------------
+
+  it('records queued, animating and completed for the timeline and for each phase', () => {
+    const { harness, scene } = createBattle();
+    deliver(harness, 1, [
+      { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      { type: 'CascadeCreated', cascadeDepth: 2 },
+    ]);
+
+    const rows = scene.getMoveLogRows();
+    const index = (needle: string) => rows.findIndex((row) => row.includes(needle));
+
+    expect(rows.some((row) => row.includes('timeline queued phases=3 match,cascade,settle seq=1'))).toBe(true);
+    // The machine's own state, not an animation's start.
+    expect(rows.some((row) => row.includes('timeline animating state=presenting seq=1'))).toBe(true);
+    // Two delivered board phases (the Match and the Cascade) plus the settle step
+    // the board cycle ends with, each with its own animating/completed pair.
+    expect(rows.some((row) => row.includes('phase animating 1/3 match match depth=1 seq=1'))).toBe(true);
+    expect(rows.some((row) => row.includes('phase completed 1/3 match match depth=1 seq=1'))).toBe(true);
+    expect(rows.some((row) => row.includes('phase animating 2/3 cascade cascade depth=2 seq=1'))).toBe(true);
+    expect(rows.some((row) => row.includes('phase completed 2/3 cascade cascade depth=2 seq=1'))).toBe(true);
+    expect(rows.some((row) => row.includes('phase animating 3/3 settle settle seq=1'))).toBe(true);
+    expect(rows.some((row) => row.includes('phase completed 3/3 settle settle seq=1'))).toBe(true);
+    expect(rows.some((row) => row.includes('timeline completed phases=3 seq=1'))).toBe(true);
+
+    // ...and in the order the machine performed them.
+    expect(index('timeline queued')).toBeLessThan(index('timeline animating'));
+    expect(index('timeline animating')).toBeLessThan(index('phase animating 1/3'));
+    expect(index('phase animating 1/3')).toBeLessThan(index('phase completed 1/3'));
+    expect(index('phase completed 1/3')).toBeLessThan(index('phase animating 2/3'));
+    expect(index('phase completed 2/3')).toBeLessThan(index('phase animating 3/3'));
+    expect(index('phase completed 3/3')).toBeLessThan(index('timeline completed'));
+  });
+
+  it("records a committed Swap's coordinates and the terminal result before the handoff", async () => {
+    const { harness, scene, ctx } = createBattle(true);
+
+    const atHandoff: Array<readonly string[]> = [];
+    const sceneProxy = field<{ start: (key: string, data?: unknown) => void }>(ctx, 'scene');
+    const originalStart = sceneProxy.start;
+    sceneProxy.start = (key: string, data?: unknown) => {
+      // What the panel was showing at the instant the handoff happened.
+      atHandoff.push([...scene.getMoveLogRows()]);
+      originalStart(key, data);
+    };
+
+    // A committed Swap, whose own phase presents the two cells the player chose.
+    tapCell(harness, 20);
+    tapCell(harness, 21);
+    harness.setBattleState(battleState({ sequence: 1 }));
+    harness.emitBattleEvents({
+      battleId: 'battle-253',
+      serverSequence: 1,
+      events: [
+        { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+        { type: 'BattleWon', outcome: 'victory', finalBossHp: 0, finalPlayerHp: 420 },
+      ],
+    } as BattleEventsEnvelope);
+
+    for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+      harness.flushTweens(1);
+    }
+    await flush();
+
+    const rows = scene.getMoveLogRows();
+    expect(rows.some((row) => row.includes('swap 20->21'))).toBe(true);
+
+    // The delivered outcome, with the delivered final HP pair, is the last row the
+    // panel held when ResultScene was started — so it was recorded before the
+    // handoff rather than after the scene was replaced.
+    expect(atHandoff.length).toBeGreaterThan(0);
+    expect(atHandoff[0][atHandoff[0].length - 1]).toContain('outcome victory bossHp=0 playerHp=420');
+    // ...and the outcome phase that recorded it is the timeline's last phase, so
+    // the row precedes the timeline's own completion.
+    expect(rows.some((row) => row.includes('outcome victory bossHp=0 playerHp=420'))).toBe(true);
+    expect(rows.indexOf(rows.filter((row) => row.includes('outcome victory bossHp=0'))[0])).toBeLessThan(
+      rows.indexOf(rows.filter((row) => row.includes('timeline completed'))[0])
+    );
+  });
+
+  it('records the abandonment of an in-flight timeline with its reason, and never duplicates its rows', () => {
+    const { harness, scene } = createBattle(true);
+
+    deliver(harness, 1, [
+      { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+    ]);
+    const beforeAbort = scene.getMoveLogRows().filter((row) => row.includes(' type=')).length;
+
+    // A newer delivered state supersedes the playing timeline.
+    harness.setBattleState(battleState({ sequence: 2 }));
+
+    const rows = scene.getMoveLogRows();
+    // The playing phase is recorded as aborted, and the timeline with its reason.
+    expect(rows.some((row) => row.includes('phase aborted 1/2 match match depth=1 seq=1'))).toBe(true);
+    expect(rows.some((row) => row.includes('timeline aborted superseded-state seq=1'))).toBe(true);
+    // The superseded resolution's own event rows were not recorded a second time,
+    // and it did not also report itself completed.
+    expect(rows.filter((row) => row.includes(' type=')).length).toBe(beforeAbort);
+    expect(rows.some((row) => row.includes('timeline completed'))).toBe(false);
+  });
+
+  it('records a malformed batch as a failed timeline only when a timeline was there to fail', () => {
+    const { harness, scene } = createBattle(true);
+
+    // Nothing was playing, so there is no timeline to fail: no row is fabricated.
+    expect(() =>
+      harness.emitBattleEvents({
+        battleId: 'battle-253',
+        serverSequence: 1,
+        events: [
+          {
+            type: 'MatchCreated',
+            get shape() {
+              throw new Error('Exploding getter in presentation');
+            },
+          },
+        ],
+      } as unknown as BattleEventsEnvelope)
+    ).not.toThrow();
+    expect(scene.getMoveLogRows()).toEqual([]);
+
+    // A timeline that *is* playing when the malformed batch arrives is failed.
+    deliver(harness, 2, [
+      { type: 'MatchCreated', shape: 'Straight', cells: [3, 4, 5], gemType: 'ATK', cascadeDepth: 1 },
+    ]);
+    const before = scene.getMoveLogRows().length;
+
+    expect(() =>
+      harness.emitBattleEvents({
+        battleId: 'battle-253',
+        serverSequence: 3,
+        events: [
+          {
+            type: 'MatchCreated',
+            get shape() {
+              throw new Error('Exploding getter in presentation');
+            },
+          },
+        ],
+      } as unknown as BattleEventsEnvelope)
+    ).not.toThrow();
+
+    const rows = scene.getMoveLogRows();
+    expect(rows.length).toBeGreaterThan(before);
+    expect(rows.some((row) => row.includes('timeline failed malformed-batch seq=2'))).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Bounded retention, auto-scroll and reset
+  // ---------------------------------------------------------------------------
+
+  it('evicts the oldest rows at the documented cap and keeps the newest on screen', () => {
+    const { harness, scene, ctx } = createBattle();
+
+    for (let index = 0; index < 100; index++) {
+      deliver(harness, index + 1, [
+        { type: 'ComboChanged', combo: index },
+        { type: 'PowerChanged', delta: 1, power: index, source: 'match' },
+        { type: 'DamageDealt', source: 'player', target: 'boss', amount: index },
+      ]);
+    }
+
+    const rows = scene.getMoveLogRows();
+    // The panel's documented cap, asserted the way the scene's own buffer test
+    // asserts the diagnostic buffers' 256.
+    expect(rows.length).toBe(RETAINED_ROWS);
+    // The oldest rows are evicted...
+    expect(rows.some((row) => row.includes('seq=1 '))).toBe(false);
+    // ...and the newest are retained and readable.
+    expect(rows[rows.length - 1]).toMatch(/seq=100$/);
+
+    // Auto-scroll: the panel's own row objects show the newest rows, oldest first,
+    // with the newest row last — so the row just recorded is always on screen.
+    const visible = panelLines(harness, ctx).filter((line) => line.length > 0);
+    const newestWindow = rows.slice(-VISIBLE_ROWS);
+    expect(visible.slice(-newestWindow.length)).toEqual([...newestWindow]);
+    expect(visible[visible.length - 1]).toBe(rows[rows.length - 1]);
+  });
+
+  it('clears the panel after create(), on shutdown, and when the battle identity changes', () => {
+    const { harness, scene, ctx } = createBattle();
+    deliver(harness, 1, [{ type: 'ComboChanged', combo: 1 }]);
+    expect(scene.getMoveLogRows().length).toBeGreaterThan(0);
+
+    // A delivered state for another battle ends this one's record, and the panel's
+    // own lines go with it.
+    harness.setBattleState(battleState({ battleId: 'battle-253-next', sequence: 9 }));
+    expect(scene.getMoveLogRows()).toEqual([]);
+    expect(panelLines(harness, ctx).filter((line) => line.length > 0)).toEqual(['MOVE LOG']);
+
+    deliver(harness, 10, [{ type: 'ComboChanged', combo: 2 }], 'battle-253-next');
+    expect(scene.getMoveLogRows().length).toBeGreaterThan(0);
+
+    // Teardown releases the panel and clears its buffer.
+    harness.shutdownScene(ctx);
+    expect(field<object | null>(ctx, 'developerMoveLog')).toBeNull();
+    expect(scene.getMoveLogRows()).toEqual([]);
+
+    // A reused scene starts its next battle from an empty panel.
+    runScene(scene, ctx, 'create');
+    expect(scene.getMoveLogRows()).toEqual([]);
+    expect(field<object | null>(ctx, 'developerMoveLog')).not.toBeNull();
+  });
+
+  it('records a repeated or older serverSequence once, and never twice', () => {
+    const { harness, scene } = createBattle();
+    const batch = [
+      { type: 'ComboChanged', combo: 1 },
+      { type: 'PowerChanged', delta: 1, power: 1, source: 'match' },
+    ];
+
+    deliver(harness, 5, batch);
+    const afterFirst = scene.getMoveLogRows().filter((row) => row.includes(' type=')).length;
+    expect(afterFirst).toBe(batch.length);
+
+    deliver(harness, 5, batch);
+    expect(scene.getMoveLogRows().filter((row) => row.includes(' type=')).length).toBe(afterFirst);
+
+    deliver(harness, 4, batch);
+    expect(scene.getMoveLogRows().filter((row) => row.includes(' type=')).length).toBe(afterFirst);
+  });
+
+  it('renders the delivered turn and sequence inside the panel, and nowhere the diagnostic boundary governs', () => {
+    const { harness, ctx } = createBattle();
+    deliver(harness, 12, [{ type: 'ComboChanged', combo: 3 }]);
+
+    const panel = panelLines(harness, ctx).join('\n');
+    expect(panel).toContain('seq=12 turn=4');
+
+    // The boundary TASK-210 §9 draws still holds everywhere else: the panel is the
+    // one authorized surface (D-1), so every other rendered line is free of the
+    // transport/RNG/turn diagnostics and of the raw event log.
+    const outside = playerFacingText(harness, ctx);
+    for (const diagnostic of ['SignalR:', 'Sync:', 'BattleId:', 'RngSeed:', 'Turn:', 'Sequence:']) {
+      expect(outside).not.toContain(diagnostic);
+    }
+    expect(outside).not.toContain('seq=12');
+    expect(outside).not.toContain('Combo: 3');
   });
 });
