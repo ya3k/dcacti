@@ -1,6 +1,16 @@
 # Redis State
 
-**Version:** 1.13 (§3's lifecycle entry is **synchronized** with the verified
+**Version:** 1.14 (§4 item 2's compare-and-set refusal is **stated exactly**: the
+documented retry against the fresh state is not a licence to execute an action
+against a state version the request did not name. A request that carries a state
+precondition continues only while the precondition still holds against the fresh
+record, and a request that carries none is rejected as `STALE_ACTION` when its
+write is refused. **This changes no key, no structure, no lifecycle, no TTL, and
+no concurrency rule** — the `Sequence` compare-and-set, the one write-back per
+resolution, the sliding TTL, and the rejected-write-writes-nothing rule are
+unchanged; only the refused path's permitted continuation is now explicit.
+Decision source: TASK-257, `ADR-025` §4.)
+Prior 1.13 (§3's lifecycle entry is **synchronized** with the verified
 battle-end persistence contract: `battle:{battleId}:state` is deleted only after
 the battle-end **database unit of work has committed** — the `BattleResult` row
 together with both progression tracks, `DATABASE.md` §1, "Battle-end atomicity
@@ -229,7 +239,16 @@ retried in full (`DATABASE.md` §1 items 4–5; §7 item 5 below).
 2. On write, it uses an optimistic check: write succeeds only if
    `Sequence` in Redis still matches what was read (compare-and-set,
    e.g. via a Lua script or `WATCH`/`MULTI`/`EXEC`). If it does not match,
-   the resolution is aborted and retried against the fresh state.
+   the resolution is aborted and retried against the fresh state. **The retry
+   never executes an action against a state version the request did not name.**
+   A request carrying a state precondition (`SIGNALR_PROTOCOL.md` §2 item 1,
+   `ADR-025` §1) continues only while that precondition still holds against the
+   fresh record, and a request carrying none is rejected as `STALE_ACTION` as
+   soon as its write is refused: it cannot show that it observed the newer state,
+   so re-resolving it would apply an action to a board version its caller never
+   observed (`MATCH3_RULES.md` §2.1.4 item 1, `SIGNALR_PROTOCOL.md` §2 item 3).
+   A refused write still changes nothing (`§4` items 3 and 7): the newer
+   authoritative record is left exactly as its writer left it.
 3. This guarantees the single-writer-at-a-time property required by
    `SIGNALR_PROTOCOL.md` §6 item 1 even if two requests for the same battle
    somehow arrive concurrently.

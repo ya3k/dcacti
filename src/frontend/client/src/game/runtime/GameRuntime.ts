@@ -8,6 +8,7 @@ import type { CardResponse, PetResponse, RelicResponse } from '../../services/ap
 import { ApplicationSession } from '../../services/api/ApplicationSession';
 import { SignalRService } from '../../services/realtime/SignalRService';
 import type { BattleStateSnapshotResponse } from '../../services/realtime/SignalRService';
+import { createActionId } from './ActionIdentity';
 import {
   INITIAL_RUNTIME_STATE,
   type GameRuntimeState,
@@ -49,15 +50,14 @@ import {
 const BOARD_CELL_COUNT = 64;
 
 /**
- * Counter behind the opaque `clientSequence` correlation id
+ * Counter behind the opaque correlation id the non-Swap actions carry
  * (`SIGNALR_PROTOCOL.md` §2 item 1).
  *
- * It is a per-process request counter and nothing else: the value identifies a
- * request so the client can correlate it with its result. It is deliberately
- * **not** `BattleState.Sequence` — it is never seeded from, compared with, or
- * required to equal any server number, and no action is rejected on its value
- * (`SIGNALR_PROTOCOL.md` §2 item 1, `MATCH3_RULES.md` §2.1.4 item 1). Staleness
- * is the server's already-applied check, decided from its own committed record.
+ * It is a per-process request counter and nothing else: `CardCast` and
+ * `PetSkillCast` carry this value as an opaque correlation id, and nothing on
+ * either path compares it with any server value. It is **not** the Swap action
+ * identity — that is `createActionId`, whose value must stay unique across a
+ * runtime reset, and which the Swap path uses instead of this counter.
  */
 let clientSequenceCounter = 0;
 
@@ -141,6 +141,18 @@ export class GameRuntime implements GameRuntimePort {
   private disposeTransportHandlers: (() => void) | null = null;
   private initialized = false;
   private disposed = false;
+
+  /**
+   * The action identities of logical actions this runtime has submitted and not
+   * yet received an acknowledgement for, keyed by
+   * {@link logicalActionKey} (`ADR-025` §2).
+   *
+   * It is what makes a retry of one logical action carry the identity its first
+   * attempt carried, while a new logical action never reuses one. Entries are
+   * removed on acknowledgement and dropped with the battle
+   * (`clearActiveBattleState`), so it holds only genuinely unresolved actions.
+   */
+  private readonly unresolvedActionIds = new Map<string, string>();
 
   constructor(
     private readonly signalR: SignalRService = SignalRService.getInstance(),
@@ -375,8 +387,10 @@ export class GameRuntime implements GameRuntimePort {
 
     // The synchronized copy belongs to the session that received it: the next
     // battle arrives as a fresh server push (SIGNALR_PROTOCOL.md §4), never as
-    // a revision of this one.
+    // a revision of this one. The unresolved action identities go with it — they
+    // identify actions of a battle this runtime no longer holds (ADR-025 §2).
     this.battleState = null;
+    this.unresolvedActionIds.clear();
 
     // Detach before stopping: a stop must not report itself through this runtime
     // and overwrite the unauthenticated publication below.
@@ -485,6 +499,11 @@ export class GameRuntime implements GameRuntimePort {
    */
   public clearActiveBattleState(): void {
     this.battleState = null;
+
+    // No battle is held, so nothing remains unresolved in it: the identities of
+    // its logical actions are dropped with it, and no later action can be
+    // submitted under one (`ADR-025` §2).
+    this.unresolvedActionIds.clear();
 
     // The documented no-current-battle value is defined relative to the
     // connection the runtime actually has (`state/GameRuntimeState.ts`,
@@ -601,13 +620,39 @@ export class GameRuntime implements GameRuntimePort {
       // check is the scene's own interaction feedback (a clearly non-board or
       // same-cell tap is never submitted), and the authoritative validation is
       // `MATCH3_RULES.md` §2.1.2's, which the server performs.
-      return await this.signalR.swap(
+      //
+      // The two contract values are supplied separately (`ADR-025` §1–§2): the
+      // state version the runtime holds as `expectedSequence`, and the identity of
+      // this logical action as `actionId`.
+      const fromCell = candidate.fromCell as number;
+      const toCell = candidate.toCell as number;
+      // The pair is unordered (`MATCH3_RULES.md` §2.1.1 item 2), so the two
+      // spellings of one swap are one logical action and share one identity.
+      const logicalActionKey = this.logicalActionKey(
         battleState.battleId,
-        candidate.fromCell as number,
-        candidate.toCell as number,
-        battleState.sequence,
-        this.nextClientSequence('swap')
+        RUNTIME_ACTION_SWAP,
+        Math.min(fromCell, toCell),
+        Math.max(fromCell, toCell)
       );
+      const actionId = this.actionIdFor(logicalActionKey, 'swap');
+
+      const acknowledgement = await this.signalR.swap(
+        battleState.battleId,
+        fromCell,
+        toCell,
+        battleState.sequence,
+        actionId
+      );
+
+      // The action is settled by its acknowledgement, so the next submission of
+      // the same pair is a new logical action and takes a new identity. An action
+      // that throws instead keeps its identity: a transport failure is not an
+      // answer (`SIGNALR_PROTOCOL.md` §8.3), and a retry of it must carry the
+      // identity the first attempt carried or the server cannot recognise it as
+      // the same logical action (`ADR-025` §2).
+      this.unresolvedActionIds.delete(logicalActionKey);
+
+      return acknowledgement;
     }
 
     if (candidate.kind === RUNTIME_ACTION_CARD_CAST) {
@@ -629,19 +674,59 @@ export class GameRuntime implements GameRuntimePort {
   }
 
   /**
-   * Generates the opaque per-request correlation id
-   * (`SIGNALR_PROTOCOL.md` §2 item 1).
+   * Generates the opaque per-request correlation id the **non-Swap** actions
+   * carry (`SIGNALR_PROTOCOL.md` §2 item 1).
    *
    * It identifies a request, not a position in the battle's history: it is not
-   * `BattleState.Sequence`, is not derived from the synchronized `sequence`, and
-   * is never used to reject a stale action (`MATCH3_RULES.md` §2.1.4 item 1). No
-   * client-side randomness is involved — a monotonic counter is enough for
-   * correlation and introduces none of the non-determinism `AGENTS.md` §11
-   * forbids.
+   * `BattleState.Sequence` and is not derived from the synchronized `sequence`.
+   * `CardCast` and `PetSkillCast` have no precondition and no server-side
+   * deduplication (`ADR-025` is the Swap action's contract), so a monotonic
+   * counter is sufficient there, and no randomness is involved. The Swap action
+   * does **not** use this value: it carries the state precondition and the action
+   * identity `ADR-025` defines, and its identity must stay unique across runtime
+   * resets — see {@link createActionId}.
    */
   private nextClientSequence(prefix = 'action'): string {
     clientSequenceCounter += 1;
     return `${prefix}_${clientSequenceCounter}`;
+  }
+
+  /**
+   * The key one logical action is identified by, for as long as it is unresolved:
+   * the battle it addresses, its kind, and the action's own identity payload (the
+   * unordered cell pair for a Swap).
+   */
+  private logicalActionKey(
+    battleId: string,
+    kind: string,
+    first: number,
+    second: number
+  ): string {
+    return `${battleId}|${kind}|${first}|${second}`;
+  }
+
+  /**
+   * The action identity to submit with a logical action (`ADR-025` §2).
+   *
+   * A logical action the runtime has already submitted and not yet heard back
+   * about keeps the identity it was submitted with, so a retry of it is the same
+   * action to the server and cannot execute twice; a different logical action
+   * always takes a fresh, unique identity. The entry is dropped when the action's
+   * acknowledgement arrives (`requestAction`) and when the runtime stops holding
+   * the battle (`clearActiveBattleState`), so identities are retained only for
+   * genuinely unresolved actions.
+   */
+  private actionIdFor(logicalActionKey: string, prefix: string): string {
+    const existing = this.unresolvedActionIds.get(logicalActionKey);
+
+    if (existing !== undefined) {
+      return existing;
+    }
+
+    const actionId = createActionId(prefix);
+    this.unresolvedActionIds.set(logicalActionKey, actionId);
+
+    return actionId;
   }
 
   // ---------------------------------------------------------------------------
@@ -910,6 +995,7 @@ export class GameRuntime implements GameRuntimePort {
     // the documented "connected, no current battle" value rather than adding a
     // recovery-specific one.
     this.battleState = null;
+    this.unresolvedActionIds.clear();
     this.updateState({ sync: 'awaiting_battle', lastError: null });
 
     try {

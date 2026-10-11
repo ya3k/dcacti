@@ -295,7 +295,9 @@ public class RelicStageResolutionTests
     {
         // REDIS_STATE.md §4 items 2–3, 6: a refused compare-and-set aborts and retries
         // against fresh state, and the retried resolution re-runs the same
-        // deterministic computation — which includes step 11.
+        // deterministic computation — which includes step 11. The request states the
+        // state version it observed, which is what permits the retry rather than a
+        // staleness rejection (TASK-257, SIGNALR_PROTOCOL.md §2 item 3).
         var definitions = new RelicDefinition?[]
         {
             AtkRelic("relic-atk"),
@@ -308,7 +310,9 @@ public class RelicStageResolutionTests
         var state = await CreateBattleAsync(service, BattleId, definitions);
         var pair = FindAdjacentPairThatProducesAMatch(state.BoardState);
 
-        var result = await service.ExecuteSwapAsync(BattleId, pair);
+        var result = await service.ExecuteSwapAsync(
+            BattleId,
+            pair with { ExpectedSequence = state.Sequence, ActionId = "act-relic-cas-retry" });
 
         Assert.NotNull(result);
         Assert.Single(result!.Value.State.PetState.ATKModifiers);

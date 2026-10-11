@@ -1,6 +1,68 @@
 import * as signalR from '@microsoft/signalr';
 import { ApplicationSession } from '../api/ApplicationSession';
 
+/**
+ * Builds the `Swap` action token the hub parses
+ * (`SIGNALR_PROTOCOL.md` §2 item 1, `ADR-025` §1–§2).
+ *
+ * The two contract values are formatted as the documented
+ * `"{expectedSequence}:{actionId}"`, or as the legacy `"{actionId}"` when the
+ * caller states no precondition. The rules the formatter enforces are the ones
+ * the server's parse depends on, and each of them exists to keep a stated value
+ * from being discarded or guessed at:
+ *
+ * ```text
+ * actionId required        an action with no identity cannot be deduplicated,
+ *                          so a retry of it could execute twice (ADR-025 §2)
+ * actionId has no ":"      one delimiter, so the sequence part is unambiguous
+ * actionId is not all digits   a bare integer is the ambiguous form the server
+ *                          refuses; the client never emits one
+ * expectedSequence         a non-negative integer, or null for the legacy form
+ * ```
+ *
+ * It is deliberately not a fallback-to-something-else function: an input it
+ * cannot express as a documented token throws, so a malformed or ambiguous action
+ * is never put on the wire.
+ */
+function formatSwapActionToken(
+  expectedSequence: number | null,
+  actionId: string | null
+): string {
+  if (actionId === null || actionId.length === 0) {
+    throw new Error(
+      'A Swap action token requires an action id (ADR-025, SIGNALR_PROTOCOL.md §2 item 1): ' +
+        'an action without one cannot be recognised as a retry. No request was sent.'
+    );
+  }
+
+  if (actionId.includes(':')) {
+    throw new Error(
+      'A Swap action id must not contain ":" — the token\'s delimiter ' +
+        '(SIGNALR_PROTOCOL.md §2 item 1). No request was sent.'
+    );
+  }
+
+  if (/^[0-9]+$/.test(actionId)) {
+    throw new Error(
+      'A Swap action id must not be a bare integer: the token would be ambiguous ' +
+        '(SIGNALR_PROTOCOL.md §2 item 1). No request was sent.'
+    );
+  }
+
+  if (expectedSequence === null) {
+    return actionId;
+  }
+
+  if (!Number.isInteger(expectedSequence) || expectedSequence < 0) {
+    throw new Error(
+      'A Swap expectedSequence must be a non-negative integer state version ' +
+        '(ADR-025 §1). No request was sent.'
+    );
+  }
+
+  return `${expectedSequence}:${actionId}`;
+}
+
 export interface PingResult {
   accepted: boolean;
   clientSequence?: string;
@@ -740,20 +802,31 @@ export class SignalRService {
    * §5 acknowledgement verbatim.
    *
    * The four arguments are exactly the documented request, in the documented
-   * order: `battleId`, `fromCell`, `toCell`, `clientSequence`. Both cells are
-   * §1.0 row-major indices `0..63` and nothing else — no row/column pair, no
-   * screen coordinate, and no direction (`MATCH3_RULES.md` §2.1.1, §2.1.3) — and
-   * the pair is unordered, so `(12, 13)` and `(13, 12)` name the same swap
-   * (§2.1.1 item 2). No gameplay field is sent: the request carries no Gem type,
-   * match result, Combo, Turn, or `Sequence` value (§2.1 item 4,
-   * `GAME_RULES.md` §18).
+   * order: `battleId`, `fromCell`, `toCell`, and the action token built from the
+   * last two parameters. Both cells are §1.0 row-major indices `0..63` and
+   * nothing else — no row/column pair, no screen coordinate, and no direction
+   * (`MATCH3_RULES.md` §2.1.1, §2.1.3) — and the pair is unordered, so `(12, 13)`
+   * and `(13, 12)` name the same swap (§2.1.1 item 2). No gameplay field is sent:
+   * the request carries no Gem type, match result, Combo, Turn, or `Sequence`
+   * value (§2.1 item 4, `GAME_RULES.md` §18).
    *
-   * `clientSequence` is the opaque client-generated correlation id (§2 item 1).
-   * It is **not** `BattleState.Sequence`, is never compared with or derived from
-   * it, and is never used to reject a stale action — staleness is
-   * `MATCH3_RULES.md` §2.1.4 item 2's already-applied check, decided by the
-   * server. The client is never required to track a server number for its Swap
-   * to be accepted.
+   * `expectedSequence` and `actionId` are the two separate contract values
+   * `ADR-025` gives the action, and they are passed separately so that neither
+   * can be read as the other:
+   *
+   * ```text
+   * expectedSequence   the state version the client observed, or null when the
+   *                    caller states none (the documented legacy form)
+   * actionId           the identity of the logical action (ADR-025 §2), which is
+   *                    also what makes a retry of that action idempotent
+   * ```
+   *
+   * The token is then `"{expectedSequence}:{actionId}"`, or the legacy
+   * `"{actionId}"` when no precondition is stated (`SIGNALR_PROTOCOL.md` §2
+   * item 1). A bare sequence is **never** emitted: it is the one token form the
+   * server cannot read without guessing, and a caller that supplies no action
+   * identity has nothing to deduplicate a retry on, so it is refused here rather
+   * than sent as an ambiguous or unidentifiable action.
    *
    * This is transport only. Whether the swap is legal, whether it produces a
    * match, and what it resolves to are the server's decisions
@@ -766,20 +839,11 @@ export class SignalRService {
     battleId: string,
     fromCell: number,
     toCell: number,
-    expectedSequenceOrClientSequence: number | string,
-    clientSequence?: string
+    expectedSequence: number | null,
+    actionId: string | null
   ): Promise<SwapResult> {
     if (!this.connection || this.connection.state !== signalR.HubConnectionState.Connected) {
       throw new Error('SignalR connection is not established.');
-    }
-
-    let actionToken: string;
-    if (typeof expectedSequenceOrClientSequence === 'number') {
-      actionToken = clientSequence !== undefined
-        ? `${expectedSequenceOrClientSequence}:${clientSequence}`
-        : `${expectedSequenceOrClientSequence}`;
-    } else {
-      actionToken = expectedSequenceOrClientSequence;
     }
 
     return await this.connection.invoke<SwapResult>(
@@ -787,7 +851,7 @@ export class SignalRService {
       battleId,
       fromCell,
       toCell,
-      actionToken
+      formatSwapActionToken(expectedSequence, actionId)
     );
   }
 

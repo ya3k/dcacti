@@ -24,11 +24,12 @@ Supersede `ADR-010` and replace the coordinate-based lock with an explicit **dua
    - The server verifies `expectedSequence == state.Sequence`. If `expectedSequence != state.Sequence`, the action is evaluated against an obsolete state and is rejected as `STALE_ACTION`, performing zero state mutations and emitting zero events.
 
 2. **Action Identity and Idempotency (`actionId` / `clientSequence`):**
-   - Every logical action carries a unique client-generated action identifier (`actionId`, carried via the SignalR correlation parameter).
+   - Every logical action carries a unique client-generated action identifier (`actionId`, carried via the SignalR correlation parameter). The correlation parameter carries the precondition and the identity as an exact token — `"{expectedSequence}:{actionId}"`, or `"{actionId}"` alone for a caller that states no precondition — and a token outside those forms is refused as a transport contract violation rather than reinterpreted (`SIGNALR_PROTOCOL.md` §2 items 1–3, `TASK-257`).
    - `BattleState` records the most recent committed swap action (`LastCommittedSwap`, storing `MinCellIndex`, `MaxCellIndex`, `Sequence`, and `ActionId`).
    - When a request arrives with an `actionId` matching `LastCommittedSwap.ActionId`:
      - If the payload coordinates match the committed swap, the server recognizes an idempotent retry (e.g. following a lost SignalR acknowledgement) and returns `{ Accepted: true, Reason: null }` without re-executing, re-incrementing counters, or emitting duplicate events.
      - If the payload coordinates differ, the request is rejected with `INVALID_ACTION_PAYLOAD`.
+   - Recognition is against that one recorded action, so the retry window is one committed Swap wide: a retry arriving after a later action committed no longer matches and is rejected as `STALE_ACTION` by decision 1. That window is a property of the state shape this decision keeps (one committed-action record), and widening it would require a separate decision.
 
 3. **Retirement of Global Coordinate Restriction:**
    - Swapping the same unordered cell pair on consecutive turns (e.g., `(12, 13)` on Turn N and again on Turn N+1) is fully legal whenever the board at Turn N+1 permits it. Coordinate history is no longer used to reject swaps.
@@ -38,6 +39,7 @@ Supersede `ADR-010` and replace the coordinate-based lock with an explicit **dua
    - If CAS fails due to concurrent writer contention, the service re-reads the fresh state:
      - If the fresh state's committed action matches `request.ActionId`, the action succeeded in the race and returns success.
      - If another action committed and advanced `Sequence > request.ExpectedSequence`, the precondition is consumed and the request fails immediately with `STALE_ACTION` rather than re-executing against fresh board state.
+   - A request that states no precondition (the legacy `"{actionId}"` token form) cannot show that it observed any state version, so a refused compare-and-set is terminal for it as well: it is rejected as `STALE_ACTION` instead of being re-resolved against the newer state (`SIGNALR_PROTOCOL.md` §2 item 3, `REDIS_STATE.md` §4 item 2, `TASK-257`).
 
 ## Consequences
 

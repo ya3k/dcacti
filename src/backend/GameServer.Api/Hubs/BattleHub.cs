@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json.Serialization;
 using GameServer.Api.Authentication;
 using GameServer.Application.Battle;
@@ -1006,6 +1007,21 @@ public class BattleHub : Hub
     private const string BattleNotFoundReason = "BATTLE_NOT_FOUND";
 
     /// <summary>
+    /// The transport-level rejection code for a <c>Swap</c> action token that is
+    /// neither documented form (<c>SIGNALR_PROTOCOL.md</c> §2 item 1): it is
+    /// malformed, or it is a bare integer that cannot be read as a sequence or an
+    /// action identity without guessing.
+    ///
+    /// It is a transport contract violation and not a gameplay rejection, which
+    /// is why it is stated here rather than added to
+    /// <see cref="SwapRejectionReason"/> (<c>MATCH3_RULES.md</c> §2.1.2 owns the
+    /// gameplay checks, and <c>AGENTS.md</c> §7 forbids inventing one). The
+    /// malformed request resolves no action: no state is read or written and no
+    /// Battle Event is emitted (<c>MATCH3_RULES.md</c> §2.1.5 item 6).
+    /// </summary>
+    private const string InvalidActionTokenReason = "INVALID_ACTION_TOKEN";
+
+    /// <summary>
     /// Resolves one player Swap action (<c>SIGNALR_PROTOCOL.md</c> §2, §2.1).
     ///
     /// The hub only delegates: the two cells are handed to the Application layer,
@@ -1042,19 +1058,24 @@ public class BattleHub : Hub
     /// field, and it is the only member this method added to the projection
     /// (<c>SIGNALR_PROTOCOL.md</c> §4 item 4, §4.2).
     ///
-    /// <c>clientSequence</c> is accepted and ignored. It is an opaque correlation
-    /// id the client echoes to match a request with its result — it is **not** the
-    /// authoritative <c>BattleState.Sequence</c> and is never used to detect
-    /// staleness (<c>SIGNALR_PROTOCOL.md</c> §2 item 1, <c>MATCH3_RULES.md</c>
-    /// §2.1.4 item 1). Staleness is decided by the server from its own committed
-    /// record.
+    /// <c>clientSequence</c> is the action token (<c>SIGNALR_PROTOCOL.md</c> §2
+    /// item 1, <c>ADR-025</c>). It is parsed into the two separate contract
+    /// values and nothing else: the state precondition <c>expectedSequence</c>
+    /// and the action identity <c>actionId</c>. The token is <b>not</b> the
+    /// authoritative <c>BattleState.Sequence</c>, and neither value is invented
+    /// when the token does not state it — the legacy <c>"{actionId}"</c> form
+    /// carries no precondition, and a token that is neither documented form is
+    /// rejected as <c>INVALID_ACTION_TOKEN</c> rather than being reinterpreted
+    /// (see <see cref="TryParseSwapActionToken"/>).
     /// </summary>
     /// <param name="battleId">The battle the action applies to; also scopes the group.</param>
     /// <param name="fromCell">The §1.0 cell index the player is moving.</param>
     /// <param name="toCell">The §1.0 cell index it is exchanged with.</param>
     /// <param name="clientSequence">
-    /// The client's action idempotency token / correlation identifier (<c>ADR-025</c>).
-    /// When formatted as <c>"{expectedSequence}:{actionId}"</c>, carries the state precondition.
+    /// The client's action token (<c>ADR-025</c>): <c>"{expectedSequence}:{actionId}"</c>,
+    /// or the legacy <c>"{actionId}"</c> for a caller that states no
+    /// precondition. Absent/empty means the same as the legacy form with no
+    /// action identity.
     /// </param>
     /// <returns>The §5 acknowledgement: accepted, or rejected with its reason.</returns>
     public async Task<SwapResponse> Swap(
@@ -1065,17 +1086,15 @@ public class BattleHub : Hub
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
 
-        int? expectedSequence = null;
-        string? actionId = clientSequence;
-
-        if (!string.IsNullOrEmpty(clientSequence))
+        if (!TryParseSwapActionToken(clientSequence, out var expectedSequence, out var actionId))
         {
-            var colonIndex = clientSequence.IndexOf(':');
-            if (colonIndex > 0 && int.TryParse(clientSequence.AsSpan(0, colonIndex), out var parsedSeq))
-            {
-                expectedSequence = parsedSeq;
-                actionId = clientSequence[(colonIndex + 1)..];
-            }
+            // A token that is neither documented form is a transport contract
+            // violation, and it is nothing else: no action is resolved, no state
+            // is read, and no gameplay rejection reason is invented for it
+            // (MATCH3_RULES.md §2.1.2 owns those). The request is refused before
+            // the Application layer sees it, so a malformed token can never be
+            // downgraded into a precondition-less action.
+            return new SwapResponse(Accepted: false, Reason: InvalidActionTokenReason);
         }
 
         var request = new SwapRequest(fromCell, toCell, expectedSequence, actionId);
@@ -1083,7 +1102,7 @@ public class BattleHub : Hub
 
         if (result is null)
         {
-            return new SwapResponse(Accepted: false, Reason: "BATTLE_NOT_FOUND");
+            return new SwapResponse(Accepted: false, Reason: BattleNotFoundReason);
         }
 
         if (result.Value.IsRejected)
@@ -1102,6 +1121,105 @@ public class BattleHub : Hub
         await Clients.Group(battleId).SendAsync("ReceiveEvents", ToPayload(result.Value));
 
         return new SwapResponse(Accepted: true, Reason: null);
+    }
+
+    /// <summary>
+    /// Parses a <c>Swap</c> action token into the two separate contract values it
+    /// carries — the state precondition and the action identity
+    /// (<c>SIGNALR_PROTOCOL.md</c> §2 item 1, <c>ADR-025</c> §1–§2).
+    ///
+    /// The accepted forms are exactly these, and the parse is total over them:
+    ///
+    /// <code>
+    /// null / empty / whitespace   no precondition, no action identity (the
+    ///                             absent-token form)
+    /// "{expectedSequence}:{actionId}"   both values, e.g. "0:act-1"
+    /// "{actionId}"                the legacy form: an action identity and no
+    ///                             precondition, e.g. "act-1" — never a value
+    ///                             that is itself a bare integer
+    /// </code>
+    ///
+    /// <b>A stated sequence is never discarded.</b> A token that carries the
+    /// delimiter must carry a well-formed pair: a non-empty decimal sequence in
+    /// <c>int</c> range, exactly one delimiter, and a non-empty action identity
+    /// after it. A malformed delimiter form (<c>":act-1"</c>,
+    /// <c>"abc:act-1"</c>, <c>"0:"</c>, <c>"0:act:1"</c>) is reported as
+    /// malformed instead of being reinterpreted, so no caller's sequence is
+    /// silently dropped on the way to the Application layer.
+    ///
+    /// <b>A bare integer is not guessed at.</b> <c>"0"</c> is ambiguous between
+    /// the sequence <c>0</c> with no identity (undocumented) and an action
+    /// identity that happens to be numeric, so it is reported as malformed
+    /// rather than read as either. The legacy form is available for any other
+    /// colon-less token: the caller states an action identity that is not an
+    /// integer, and its absence of a precondition is the documented limitation
+    /// of that form rather than a claim that it observed the current state
+    /// (<c>MATCH3_RULES.md</c> §2.1.4 item 1).
+    ///
+    /// The parse decides no gameplay: it reads the transport's own token and
+    /// never compares either value with <c>BattleState.Sequence</c> — the
+    /// precondition is evaluated by the Application layer against the state it
+    /// reads, and <c>MATCH3_RULES.md</c> §2.1.2 owns that check.
+    /// </summary>
+    /// <param name="token">The <c>clientSequence</c> argument as received, if any.</param>
+    /// <param name="expectedSequence">
+    /// The stated precondition, or <c>null</c> when the form carries none.
+    /// </param>
+    /// <param name="actionId">
+    /// The stated action identity, or <c>null</c> when the form carries none.
+    /// </param>
+    /// <returns>
+    /// <c>true</c> when <paramref name="token"/> is one of the accepted forms;
+    /// <c>false</c> when it is malformed or ambiguous, in which case neither
+    /// output value is set.
+    /// </returns>
+    private static bool TryParseSwapActionToken(
+        string? token,
+        out int? expectedSequence,
+        out string? actionId)
+    {
+        expectedSequence = null;
+        actionId = null;
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return true;
+        }
+
+        var separator = token.IndexOf(':');
+
+        if (separator < 0)
+        {
+            // No delimiter: either the legacy "{actionId}" form or the ambiguous
+            // bare-integer token, which is rejected rather than guessed at.
+            if (int.TryParse(token, NumberStyles.None, CultureInfo.InvariantCulture, out _))
+            {
+                return false;
+            }
+
+            actionId = token;
+
+            return true;
+        }
+
+        var sequencePart = token.AsSpan(0, separator);
+        var actionIdPart = token.AsSpan(separator + 1);
+
+        // Exactly one delimiter, a non-empty identity after it, and a decimal
+        // sequence before it. NumberStyles.None is deliberate: it accepts no
+        // sign, no whitespace, and no group separator, so only a plain
+        // non-negative decimal integer is a sequence.
+        if (actionIdPart.IsEmpty
+            || actionIdPart.IndexOf(':') >= 0
+            || !int.TryParse(sequencePart, NumberStyles.None, CultureInfo.InvariantCulture, out var parsed))
+        {
+            return false;
+        }
+
+        expectedSequence = parsed;
+        actionId = actionIdPart.ToString();
+
+        return true;
     }
 
     /// <summary>

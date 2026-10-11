@@ -361,13 +361,13 @@ describe('SignalRService', () => {
       const hub = installFakeHub();
       await service.connect('/hubs/battle');
 
-      await service.swap('battle-1', 12, 13, 'req-1');
+      await service.swap('battle-1', 12, 13, 0, 'req-1');
 
       // §2.1: `Swap(battleId, fromCell, toCell, clientSequence)` — the documented
       // method name, the documented argument order, and nothing else. Both cells
       // are §1.0 indices and the pair is unordered (MATCH3_RULES.md §2.1.1).
       expect(hub.invokes).toEqual([
-        { method: 'Swap', args: ['battle-1', 12, 13, 'req-1'] },
+        { method: 'Swap', args: ['battle-1', 12, 13, '0:req-1'] },
       ]);
     });
 
@@ -375,13 +375,15 @@ describe('SignalRService', () => {
       const hub = installFakeHub();
       await service.connect('/hubs/battle');
 
-      await service.swap('battle-1', 0, 8, 'req-2');
+      await service.swap('battle-1', 0, 8, 0, 'req-2');
 
       // §2.1 item 4 / GAME_RULES.md §18: no Gem type, match result, Combo, Turn,
-      // or Sequence value is sent — every such value is server-determined.
+      // or Sequence value is sent — every such value is server-determined. The two
+      // values the token carries are the client-observed state version and the
+      // action's own identity (ADR-025 §1–§2), not a gameplay value.
       const [{ args }] = hub.invokes;
       expect(args).toHaveLength(4);
-      expect(args).toEqual(['battle-1', 0, 8, 'req-2']);
+      expect(args).toEqual(['battle-1', 0, 8, '0:req-2']);
     });
 
     it('encodes expectedSequence precondition into the action token (ADR-025)', async () => {
@@ -395,6 +397,61 @@ describe('SignalRService', () => {
       expect(args).toEqual(['battle-1', 4, 5, '2:req-adr025']);
     });
 
+    it('emits the documented legacy token when no precondition is stated', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      // SIGNALR_PROTOCOL.md §2 item 1: "{actionId}" — the form for a caller that
+      // states no state precondition. Its identity is still carried, so the action
+      // stays deduplicable.
+      await service.swap('battle-1', 6, 7, null, 'req-legacy');
+
+      const [{ args }] = hub.invokes;
+      expect(args).toEqual(['battle-1', 6, 7, 'req-legacy']);
+    });
+
+    it('never emits a bare sequence as a Swap action token', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      // A bare integer is the ambiguous form the hub refuses
+      // (SIGNALR_PROTOCOL.md §2 item 1: it cannot be read as a sequence or an
+      // action identity without guessing), and an action with no identity could
+      // not be recognised as a retry (ADR-025 §2). The client refuses to send one
+      // rather than putting an ambiguous request on the wire.
+      await expect(service.swap('battle-1', 0, 1, 0, null)).rejects.toThrow(/action id/i);
+      await expect(service.swap('battle-1', 0, 1, 0, '')).rejects.toThrow(/action id/i);
+      await expect(service.swap('battle-1', 0, 1, null, null)).rejects.toThrow(/action id/i);
+
+      expect(hub.invokes).toEqual([]);
+    });
+
+    it('refuses an action identity the token grammar cannot express unambiguously', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      // A delimiter inside the identity would make the sequence part ambiguous,
+      // and an all-digit identity is the bare-integer form itself.
+      await expect(service.swap('battle-1', 0, 1, 0, 'act:1')).rejects.toThrow(/delimiter/i);
+      await expect(service.swap('battle-1', 0, 1, 0, '42')).rejects.toThrow(/bare integer/i);
+
+      expect(hub.invokes).toEqual([]);
+    });
+
+    it('refuses a precondition that is not a state version', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      await expect(service.swap('battle-1', 0, 1, -1, 'req-negative')).rejects.toThrow(
+        /non-negative integer/i
+      );
+      await expect(service.swap('battle-1', 0, 1, 1.5, 'req-fractional')).rejects.toThrow(
+        /non-negative integer/i
+      );
+
+      expect(hub.invokes).toEqual([]);
+    });
+
     it('returns the §5 acknowledgement unchanged', async () => {
       const hub = installFakeHub();
       await service.connect('/hubs/battle');
@@ -402,7 +459,7 @@ describe('SignalRService', () => {
       // Accepted: the documented shape without a reason.
       hub.setInvokeResult({ accepted: true });
 
-      await expect(service.swap('battle-1', 12, 13, 'req-3')).resolves.toEqual({
+      await expect(service.swap('battle-1', 12, 13, 0, 'req-3')).resolves.toEqual({
         accepted: true,
       });
     });
@@ -416,7 +473,7 @@ describe('SignalRService', () => {
       // it verbatim and interprets nothing.
       hub.setInvokeResult({ accepted: false, reason: 'INVALID_SWAP' });
 
-      await expect(service.swap('battle-1', 12, 20, 'req-4')).resolves.toEqual({
+      await expect(service.swap('battle-1', 12, 20, 0, 'req-4')).resolves.toEqual({
         accepted: false,
         reason: 'INVALID_SWAP',
       });
@@ -429,12 +486,12 @@ describe('SignalRService', () => {
       // BattleHub.Swap's unknown-battle path.
       hub.setInvokeResult({ accepted: false, reason: 'BATTLE_NOT_FOUND' });
 
-      const result = await service.swap('missing-battle', 0, 1, 'req-5');
+      const result = await service.swap('missing-battle', 0, 1, 0, 'req-5');
       expect(result).toEqual({ accepted: false, reason: 'BATTLE_NOT_FOUND' });
     });
 
     it('throws on swap when no connection is established', async () => {
-      await expect(service.swap('battle-1', 0, 1, 'req-6')).rejects.toThrow(
+      await expect(service.swap('battle-1', 0, 1, 0, 'req-6')).rejects.toThrow(
         'SignalR connection is not established.'
       );
     });

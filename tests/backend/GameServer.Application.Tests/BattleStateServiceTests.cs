@@ -73,13 +73,17 @@ public class BattleStateServiceTests
     /// and the damage — is the same on every run.
     /// </summary>
     /// <param name="repository">
-    /// The store double to compose over, or <c>null</c> for a fresh one. A test that
-    /// asserts what the store received — the number of writes it applied
+    /// The store double to compose over, or <c>null</c> for a fresh
+    /// <see cref="InMemoryBattleStateRepository"/>. A test that asserts what the
+    /// store received — the number of writes it applied
     /// (<see cref="InMemoryBattleStateRepository.WriteCount"/>, counting creations
     /// and accepted updates alike), or the presence and contents of a record —
-    /// keeps the reference it passed in.
+    /// keeps the reference it passed in. The concurrency regressions pass a
+    /// <see cref="ContendedBattleStateRepository"/>, which is the same store with
+    /// a read rendezvous and an injectable competitor
+    /// (<c>REDIS_STATE.md</c> §4).
     /// </param>
-    private static BattleStateService NewService(InMemoryBattleStateRepository? repository = null) =>
+    private static BattleStateService NewService(IBattleStateRepository? repository = null) =>
         new(repository ?? new InMemoryBattleStateRepository(), new FixedRngSeedSource());
 
     [Fact]
@@ -557,6 +561,331 @@ public class BattleStateServiceTests
         Assert.True(result!.Value.IsRejected);
         Assert.Equal(SwapRejectionReason.StaleAction, result.Value.Reason);
     }
+
+    // =======================================================================
+    // TASK-257: the action identity's relationship to the precondition and to
+    // the committed sequence, the documented retention window, and the races a
+    // compare-and-set refusal can produce (ADR-025 §2/§4, MATCH3_RULES.md
+    // §2.1.4, REDIS_STATE.md §4 items 1–3).
+    // =======================================================================
+
+    /// <summary>
+    /// The action id the injected competitor's committed record carries in the
+    /// contention tests, so an assertion can tell "the competitor committed" from
+    /// "the request under test committed".
+    /// </summary>
+    private const string ConcurrentWinnerActionId = "act-concurrent-winner";
+
+    [Fact]
+    public async Task ExecuteSwap_RetryCarryingTheCommittedSequence_ShouldStillBeRecognisedAsAReplay()
+    {
+        // ADR-025 §2 / MATCH3_RULES.md §2.1.4 item 2: identity is evaluated before
+        // the state precondition, so a retry is recognised whichever of the two
+        // sequences its client last observed. The committed sequence is the one a
+        // client that lost the acknowledgement but received the post-commit state
+        // push — or resynchronized through GetBattleState — holds.
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
+        var battleId = "battle-retry-observed-sequence";
+        var created = await service.CreateBattleAsync(battleId, Owner, PetConfiguration, BossDefinition);
+        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+        const string actionId = "act-retry-observed";
+
+        var first = await service.ExecuteSwapAsync(
+            battleId,
+            new SwapRequest(pair.From, pair.To, ExpectedSequence: created.Sequence, ActionId: actionId));
+
+        Assert.True(first!.Value.IsAccepted);
+        Assert.False(first.Value.IsIdempotentReplay);
+
+        var committed = await service.GetBattleAsync(battleId);
+
+        Assert.NotNull(committed);
+        Assert.Equal(created.Sequence + 1, committed!.Sequence);
+        Assert.Equal(committed.Sequence, committed.LastCommittedSwapPair!.Value.Sequence);
+        Assert.Equal(actionId, committed.LastCommittedSwapPair.Value.ActionId);
+
+        var writesAfterCommit = repository.WriteCount;
+
+        var retry = await service.ExecuteSwapAsync(
+            battleId,
+            new SwapRequest(pair.From, pair.To, ExpectedSequence: committed.Sequence, ActionId: actionId));
+
+        Assert.True(retry!.Value.IsAccepted);
+        Assert.True(retry.Value.IsIdempotentReplay);
+        Assert.Empty(retry.Value.Events);
+        Assert.Equal(writesAfterCommit, repository.WriteCount);
+
+        var afterRetry = await service.GetBattleAsync(battleId);
+
+        Assert.Equal(committed.Sequence, afterRetry!.Sequence);
+        Assert.Equal(committed.Turn, afterRetry.Turn);
+        Assert.True(committed.BoardState.CellsEqual(afterRetry.BoardState));
+    }
+
+    [Fact]
+    public async Task ExecuteSwap_RetryAfterALaterActionCommitted_ShouldRejectAsStaleNotAsAReplay()
+    {
+        // ADR-025 §2 / GAME_STATE.md §2.1.10 item 5: exactly one committed Swap is
+        // recorded, so the window in which a retry is recognised as a replay is one
+        // swap wide. A retry that arrives after a later action committed matches no
+        // retained identity and its obsolete precondition rejects it as
+        // STALE_ACTION — it is recognised as an action from an old state, never
+        // re-executed, and never a duplicate write.
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
+        var battleId = "battle-retry-outside-the-window";
+        var created = await service.CreateBattleAsync(battleId, Owner, PetConfiguration, BossDefinition);
+        var firstPair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+        const string firstActionId = "act-outside-window-first";
+
+        var first = await service.ExecuteSwapAsync(
+            battleId,
+            new SwapRequest(firstPair.From, firstPair.To, created.Sequence, firstActionId));
+
+        Assert.True(first!.Value.IsAccepted);
+
+        var afterFirst = await service.GetBattleAsync(battleId);
+        var secondPair = FindAdjacentPairThatProducesAMatch(afterFirst!.BoardState, exclude: firstPair);
+
+        var second = await service.ExecuteSwapAsync(
+            battleId,
+            new SwapRequest(secondPair.From, secondPair.To, afterFirst.Sequence, "act-outside-window-second"));
+
+        Assert.True(second!.Value.IsAccepted);
+
+        var writesAfterSecondCommit = repository.WriteCount;
+
+        var retry = await service.ExecuteSwapAsync(
+            battleId,
+            new SwapRequest(firstPair.From, firstPair.To, created.Sequence, firstActionId));
+
+        Assert.True(retry!.Value.IsRejected);
+        Assert.Equal(SwapRejectionReason.StaleAction, retry.Value.Reason);
+        Assert.Equal(writesAfterSecondCommit, repository.WriteCount);
+
+        var afterRetry = await service.GetBattleAsync(battleId);
+
+        Assert.Equal(second.Value.State.Sequence, afterRetry!.Sequence);
+        Assert.Equal("act-outside-window-second", afterRetry.LastCommittedSwapPair!.Value.ActionId);
+    }
+
+    [Fact]
+    public async Task ExecuteSwap_TwoConcurrentRequestsWithOneActionIdentity_ShouldCommitOnceAndAnswerTheOtherAsARetry()
+    {
+        // SIGNALR_PROTOCOL.md §6 item 1 / REDIS_STATE.md §4 items 2–3: two
+        // deliveries of ONE logical action — the same action id, payload, and
+        // precondition — can only produce one commit. The read rendezvous forces
+        // both resolutions to start from the same state version, so the race is
+        // the contract's, not the scheduler's.
+        var repository = new ContendedBattleStateRepository();
+        var service = NewService(repository);
+        var battleId = "battle-race-same-identity";
+        var created = await service.CreateBattleAsync(battleId, Owner, PetConfiguration, BossDefinition);
+        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+
+        var request = new SwapRequest(
+            pair.From,
+            pair.To,
+            ExpectedSequence: created.Sequence,
+            ActionId: "act-race-identical");
+
+        repository.RendezvousReads(2);
+
+        var results = await Task.WhenAll(
+            service.ExecuteSwapAsync(battleId, request),
+            service.ExecuteSwapAsync(battleId, request));
+
+        var committed = results.Where(r => r!.Value.IsAccepted && !r.Value.IsIdempotentReplay).ToList();
+        var replays = results.Where(r => r!.Value.IsIdempotentReplay).ToList();
+
+        // Exactly one logical action committed, and the other delivery was answered
+        // as the retry it is (ADR-025 §2): accepted, without executing again and
+        // without a second event batch.
+        Assert.Single(committed);
+        Assert.Single(replays);
+        Assert.Empty(replays[0]!.Value.Events);
+
+        // Creation plus the one accepted write-back: the replay wrote nothing
+        // (REDIS_STATE.md §4 items 5, 7).
+        Assert.Equal(2, repository.WriteCount);
+
+        var stored = await service.GetBattleAsync(battleId);
+
+        Assert.Equal(created.Sequence + 1, stored!.Sequence);
+        Assert.Equal("act-race-identical", stored.LastCommittedSwapPair!.Value.ActionId);
+        Assert.Equal(committed[0]!.Value.State.Sequence, stored.Sequence);
+    }
+
+    [Fact]
+    public async Task ExecuteSwap_TwoConcurrentRequestsWithDifferentActionIdentities_ShouldCommitAtMostOne()
+    {
+        // ADR-025 §4: two different logical actions that observed the same state
+        // version cannot both commit. The winner's commit advances Sequence, so the
+        // loser's precondition is consumed and it is rejected as a stale action —
+        // it is never resolved against the winner's board.
+        var repository = new ContendedBattleStateRepository();
+        var service = NewService(repository);
+        var battleId = "battle-race-different-identities";
+        var created = await service.CreateBattleAsync(battleId, Owner, PetConfiguration, BossDefinition);
+        var firstPair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+        var secondPair = FindAdjacentPairThatProducesAMatch(created.BoardState, exclude: firstPair);
+
+        var firstRequest = new SwapRequest(
+            firstPair.From,
+            firstPair.To,
+            ExpectedSequence: created.Sequence,
+            ActionId: "act-race-first");
+        var secondRequest = new SwapRequest(
+            secondPair.From,
+            secondPair.To,
+            ExpectedSequence: created.Sequence,
+            ActionId: "act-race-second");
+
+        repository.RendezvousReads(2);
+
+        var results = await Task.WhenAll(
+            service.ExecuteSwapAsync(battleId, firstRequest),
+            service.ExecuteSwapAsync(battleId, secondRequest));
+
+        var committed = results.Where(r => r!.Value.IsAccepted).ToList();
+        var rejected = results.Where(r => r!.Value.IsRejected).ToList();
+
+        Assert.Single(committed);
+        Assert.Single(rejected);
+        Assert.Equal(SwapRejectionReason.StaleAction, rejected[0]!.Value.Reason);
+        Assert.Equal(2, repository.WriteCount);
+
+        var stored = await service.GetBattleAsync(battleId);
+
+        Assert.Equal(created.Sequence + 1, stored!.Sequence);
+        Assert.Equal(committed[0]!.Value.State.Sequence, stored.Sequence);
+    }
+
+    [Fact]
+    public async Task ExecuteSwap_WhenAConcurrentWinnerMovesTheState_ShouldRejectAnObsoletePreconditionAndWriteNothing()
+    {
+        // REDIS_STATE.md §4 items 2–3 / ADR-025 §4: a refused compare-and-set means
+        // the state moved on between the read and the write. A request whose
+        // precondition names the version it read must not be resolved against the
+        // newer state — the precondition is consumed and the action is rejected as
+        // stale, with no write and no change to the competitor's record.
+        var repository = new ContendedBattleStateRepository();
+        var service = NewService(repository);
+        var battleId = "battle-obsolete-precondition";
+        var created = await service.CreateBattleAsync(battleId, Owner, PetConfiguration, BossDefinition);
+        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+        var winnerPair = FindAdjacentPairThatProducesAMatch(created.BoardState, exclude: pair);
+
+        repository.ConcurrentWinnerBeforeFirstWrite =
+            stored => AdvanceSequenceAsAConcurrentWinner(stored, winnerPair);
+
+        var result = await service.ExecuteSwapAsync(
+            battleId,
+            new SwapRequest(pair.From, pair.To, ExpectedSequence: created.Sequence, ActionId: "act-obsolete"));
+
+        Assert.True(result!.Value.IsRejected);
+        Assert.Equal(SwapRejectionReason.StaleAction, result.Value.Reason);
+
+        // Creation only: the refused resolution wrote nothing, and the competitor's
+        // write is not attributed to this request's resolution.
+        Assert.Equal(1, repository.WriteCount);
+
+        var stored = await service.GetBattleAsync(battleId);
+
+        Assert.Equal(created.Sequence + 1, stored!.Sequence);
+        Assert.Equal(ConcurrentWinnerActionId, stored.LastCommittedSwapPair!.Value.ActionId);
+    }
+
+    [Fact]
+    public async Task ExecuteSwap_WithoutAPrecondition_ShouldStillCommitAgainstTheStateItRead()
+    {
+        // SIGNALR_PROTOCOL.md §2 item 1: the legacy form that states no
+        // precondition is still accepted, and with no competing writer it resolves
+        // against the state its read returned exactly as any other request does.
+        var repository = new ContendedBattleStateRepository();
+        var service = NewService(repository);
+        var battleId = "battle-legacy-no-contention";
+        var created = await service.CreateBattleAsync(battleId, Owner, PetConfiguration, BossDefinition);
+        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+
+        var result = await service.ExecuteSwapAsync(
+            battleId,
+            new SwapRequest(pair.From, pair.To, ExpectedSequence: null, ActionId: "act-legacy-committed"));
+
+        Assert.True(result!.Value.IsAccepted);
+        Assert.False(result.Value.IsIdempotentReplay);
+        Assert.Equal(2, repository.WriteCount);
+
+        var stored = await service.GetBattleAsync(battleId);
+
+        Assert.Equal(created.Sequence + 1, stored!.Sequence);
+        Assert.Equal("act-legacy-committed", stored.LastCommittedSwapPair!.Value.ActionId);
+    }
+
+    [Fact]
+    public async Task ExecuteSwap_WithoutAPrecondition_ShouldNotBeReExecutedAgainstAStateThatMovedOn()
+    {
+        // TASK-257 / MATCH3_RULES.md §2.1.4 item 1, ADR-025 §4: the legacy form
+        // states no state version it observed, so a refused compare-and-set is
+        // terminal for it too. Re-resolving it against the fresh record would
+        // execute a swap against a board version its caller never named and never
+        // observed — the bypass the state precondition exists to prevent.
+        //
+        // The competitor's record advances Sequence and records a different
+        // committed action while leaving the board unchanged, so a re-resolution
+        // WOULD succeed and commit: the test is sensitive to the bypass rather than
+        // passing because the re-resolution happens to fail a gameplay check.
+        var repository = new ContendedBattleStateRepository();
+        var service = NewService(repository);
+        var battleId = "battle-legacy-contention";
+        var created = await service.CreateBattleAsync(battleId, Owner, PetConfiguration, BossDefinition);
+        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+        var winnerPair = FindAdjacentPairThatProducesAMatch(created.BoardState, exclude: pair);
+
+        repository.ConcurrentWinnerBeforeFirstWrite =
+            stored => AdvanceSequenceAsAConcurrentWinner(stored, winnerPair);
+
+        var result = await service.ExecuteSwapAsync(
+            battleId,
+            new SwapRequest(pair.From, pair.To, ExpectedSequence: null, ActionId: "act-legacy-contended"));
+
+        Assert.True(result!.Value.IsRejected);
+        Assert.Equal(SwapRejectionReason.StaleAction, result.Value.Reason);
+
+        // Creation only: nothing was re-executed and nothing was written.
+        Assert.Equal(1, repository.WriteCount);
+
+        var stored = await service.GetBattleAsync(battleId);
+
+        Assert.Equal(created.Sequence + 1, stored!.Sequence);
+        Assert.Equal(ConcurrentWinnerActionId, stored.LastCommittedSwapPair!.Value.ActionId);
+    }
+
+    /// <summary>
+    /// The state a <b>concurrent winner</b> leaves behind for the contention tests:
+    /// the same board the request under test read, with <c>Sequence</c> advanced by
+    /// one and a different committed action recorded.
+    ///
+    /// The board is deliberately unchanged. What the contract under test turns on
+    /// is the <i>state version</i> moving on (<c>REDIS_STATE.md</c> §4 items 2–3):
+    /// keeping the board valid for the request's pair is what makes the test able
+    /// to tell "refused because the precondition was consumed" from "refused
+    /// because the new board happens not to permit the pair", so a bypass that
+    /// re-resolves against the newer version would commit and be caught.
+    /// </summary>
+    private static BattleState AdvanceSequenceAsAConcurrentWinner(
+        BattleState stored,
+        SwapRequest winnerPair) =>
+        stored with
+        {
+            Sequence = stored.Sequence + 1,
+            LastCommittedSwapPair = CommittedSwapPair.FromCells(
+                winnerPair.From,
+                winnerPair.To,
+                stored.Sequence + 1,
+                ConcurrentWinnerActionId),
+        };
 
     [Fact]
     public async Task ExecuteSwap_ShouldReturnNullForAnUnknownBattle()

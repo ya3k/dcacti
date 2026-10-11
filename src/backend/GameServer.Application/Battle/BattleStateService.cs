@@ -766,6 +766,20 @@ public sealed class BattleStateService
     /// progress and the Boss's post-damage <c>HP</c>, so the store is only ever
     /// handed a consistent post-resolution state (<c>GAME_STATE.md</c> §5.1).
     ///
+    /// <b>The action's state precondition and identity are its own contract.</b>
+    /// The request's <c>ExpectedSequence</c> is the state version its caller
+    /// observed and <c>ActionId</c> is the identity of the logical action
+    /// (<c>ADR-025</c> §1–§2, <c>MATCH3_RULES.md</c> §2.1.4). They are separate
+    /// values and never one value read twice: the precondition decides whether the
+    /// action was derived from the state it is being applied to, and the identity
+    /// decides whether the action has already been applied. A request that states
+    /// no precondition — the legacy form
+    /// (<c>SIGNALR_PROTOCOL.md</c> §2 item 1) — is resolved against the state the
+    /// read returned, and its precondition is treated as consumed if a concurrent
+    /// writer moves that state before its write-back: it is rejected as a stale
+    /// action rather than re-resolved against a board version its caller never
+    /// observed (<c>REDIS_STATE.md</c> §4 item 2, <c>TASK-257</c>).
+    ///
     /// <b>The Damage Pipeline runs here, after the Passive charge.</b>
     /// <c>GAME_RULES.md</c> §17 places "Calculate Damage" / "Apply Element
     /// Modifier" / "Apply Final Damage" at steps 15–17, after "Charge Passive"
@@ -835,6 +849,24 @@ public sealed class BattleStateService
         // ===================================================================
         // ADR-025: Action Idempotency Check
         // ===================================================================
+        // The action identity is checked BEFORE the state precondition, and the
+        // order is the contract rather than an optimization: a retry of an action
+        // that already committed observes a state whose Sequence has moved on, so
+        // it arrives carrying either the precondition it originally stated (S) or
+        // the sequence the commit produced (S+1) — whichever the client last saw.
+        // Both are legitimate spellings of "this logical action", so identity must
+        // be able to answer the retry without the precondition rejecting it first
+        // (MATCH3_RULES.md §2.1.4 item 2, ADR-025 §2).
+        //
+        // Recognition is against the MOST RECENTLY COMMITTED Swap and nothing
+        // else (GAME_STATE.md §2.1.10 item 5): BattleState records one committed
+        // swap, so the window in which a retry is recognized as a replay is one
+        // swap wide. A retry that arrives after a later action has committed
+        // therefore matches nothing here, and its obsolete precondition rejects it
+        // as STALE_ACTION below — it is not re-executed, and no duplicate event is
+        // emitted. That window is the documented behavior of §2.1.4 item 2 and is
+        // preserved here deliberately; widening it would be a separate state-shape
+        // decision (an action history), not a defect fix.
         if (!string.IsNullOrWhiteSpace(request.ActionId) &&
             state.LastCommittedSwapPair is { } initialLast &&
             initialLast.ActionId == request.ActionId)
@@ -926,7 +958,11 @@ public sealed class BattleStateService
                 return null;
             }
 
-            // ADR-025: Check if our action succeeded in the CAS race
+            // ADR-025 §4: the concurrent winner is checked for identity first, for
+            // the same reason the initial read is: a lost acknowledgement means the
+            // retry and the winner can be the same logical action, in which case
+            // the fresh state's committed record carries this very action id and
+            // the retry is answered as a replay rather than executed twice.
             if (!string.IsNullOrWhiteSpace(request.ActionId) &&
                 fresh.LastCommittedSwapPair is { } freshLast &&
                 freshLast.ActionId == request.ActionId)
@@ -942,6 +978,21 @@ public sealed class BattleStateService
             // ADR-025: If client submitted an expectedSequence and the state advanced,
             // the precondition was consumed by a concurrent action — reject as STALE_ACTION.
             if (request.ExpectedSequence.HasValue && request.ExpectedSequence.Value != fresh.Sequence)
+            {
+                return SwapExecutionResult.Rejected(SwapRejectionReason.StaleAction);
+            }
+
+            // TASK-257 / MATCH3_RULES.md §2.1.4 item 1, ADR-025 §4: a request that
+            // carries NO precondition — the legacy form SIGNALR_PROTOCOL.md §2
+            // item 1 documents — states no state version it observed, so the
+            // refused write is terminal for it and it is rejected as a stale
+            // action. Re-resolving it against `fresh` would execute the action
+            // against a state version its caller never named and never observed,
+            // which is exactly the bypass the state precondition exists to
+            // prevent: the legacy form's missing precondition is a limitation of
+            // that form, not a licence for it. Like every other rejection, this
+            // writes nothing (§4 item 7).
+            if (!request.ExpectedSequence.HasValue)
             {
                 return SwapExecutionResult.Rejected(SwapRejectionReason.StaleAction);
             }

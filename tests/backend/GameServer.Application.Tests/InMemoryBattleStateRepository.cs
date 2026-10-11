@@ -126,6 +126,33 @@ internal sealed class InMemoryBattleStateRepository : IBattleStateRepository
     }
 
     /// <summary>
+    /// Replaces a stored record with the complete value another writer left it as
+    /// — the state a <i>concurrent</i> resolution committed — without counting
+    /// the replacement as a write of the request under test
+    /// (<see cref="WriteCount"/>).
+    /// </summary>
+    /// <remarks>
+    /// It exists for the service-level race regressions
+    /// (<c>ContendedBattleStateRepository</c>, <c>BattleStateServiceTests</c>): a
+    /// test must be able to make the compare-and-set encounter a record that moved
+    /// on between the request's read and its write, deterministically and without
+    /// a second live request. The write is not attributed to the request under
+    /// test because the request did not perform it — <c>REDIS_STATE.md</c> §4
+    /// item 5's "one write-back per resolution" is about the resolution being
+    /// asserted, and counting a competitor's commit as one of its writes would
+    /// make a "wrote nothing" assertion meaningless.
+    ///
+    /// It models a writer that got there first; it does not make this double a
+    /// concurrency model of its own (see the type's own remarks on that).
+    /// </remarks>
+    public void ApplyConcurrentWrite(BattleState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+
+        _records[state.BattleId] = state;
+    }
+
+    /// <summary>
     /// The documented battle-end delete (<c>REDIS_STATE.md</c> §3), recorded so a
     /// test can assert the ordering rule the terminal path must obey: the
     /// durable result is written first, and the delete happens only after it.

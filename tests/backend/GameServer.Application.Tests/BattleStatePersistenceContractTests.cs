@@ -199,10 +199,18 @@ public class BattleStatePersistenceContractTests
 
         // The FIRST compare-and-set attempt is refused, as if another resolution
         // had committed in between. The service must re-read and retry.
+        //
+        // The request states the state version it observed, as a conforming
+        // request does (SIGNALR_PROTOCOL.md §2 item 1, ADR-025 §1): a request that
+        // states none is rejected as STALE_ACTION when its write is refused rather
+        // than re-resolved against the newer state (TASK-257), so the retry this
+        // test asserts is the precondition-carrying one.
         store.ForcedConflicts = 1;
 
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = await service.ExecuteSwapAsync("battle-cas-retry", pair);
+        var result = await service.ExecuteSwapAsync(
+            "battle-cas-retry",
+            pair with { ExpectedSequence = created.Sequence, ActionId = "act-cas-retry" });
 
         Assert.True(result!.Value.IsAccepted, "the retry must commit the action");
 
@@ -241,10 +249,14 @@ public class BattleStatePersistenceContractTests
         var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
 
         // More forced conflicts than the service's bounded retry budget, so the
-        // path that gives up is exercised.
+        // path that gives up is exercised. The request states the version it
+        // observed, so every refusal is re-read rather than terminating the request
+        // as stale on the first conflict (TASK-257, SIGNALR_PROTOCOL.md §2 item 3).
         store.ForcedConflicts = 64;
 
-        var result = await service.ExecuteSwapAsync("battle-cas-conflict", pair);
+        var result = await service.ExecuteSwapAsync(
+            "battle-cas-conflict",
+            pair with { ExpectedSequence = created.Sequence, ActionId = "act-cas-conflict" });
 
         // The action was NOT committed. Whether the service reports the
         // documented staleness rejection or reports the battle as unresolvable,

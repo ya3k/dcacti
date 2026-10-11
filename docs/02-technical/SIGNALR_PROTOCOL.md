@@ -1,6 +1,21 @@
 # SignalR Protocol
 
-**Version:** 2.19 (§7 **item 4 added** — the reconnect group re-join rule: on a
+**Version:** 2.20 (§2 **item 1 restated and items 2–3 added** — the `Swap` action
+token's grammar is now exact and total. `"{expectedSequence}:{actionId}"` and the
+legacy `"{actionId}"` are the only accepted forms; the sequence part is a
+non-negative decimal integer stated in full; and a token outside the grammar —
+a bare integer such as `"0"`, an empty/non-numeric/signed/padded sequence part, an
+empty identity, or a second delimiter — is answered `accepted: false` with the new
+transport-level code `INVALID_ACTION_TOKEN` (also noted in §5 item 3) instead of
+being reinterpreted as a precondition-less action. §2 item 3 and §6 item 5 state
+the same for the legacy form's own limitation: a request that names no state
+version is rejected as `STALE_ACTION` when a concurrent writer moves the state
+before its write-back, rather than re-resolved against a board version its caller
+never observed (`ADR-025` §4, `REDIS_STATE.md` §4 item 2). **No hub method,
+argument, wire member, event shape, delivery path, or gameplay rule is added or
+removed**: §2's method list and signatures are unchanged, `Swap` still carries
+`(battleId, fromCell, toCell, clientSequence)`, and the rejection surface remains
+the §5 envelope. Prior 2.19: (§7 **item 4 added** — the reconnect group re-join rule: on a
 successful reconnect the client re-adds its new connection to the battle's group
 by invoking `JoinBattle(battleId)`. Group membership is connection-scoped and is
 never restored by the server, and the re-join completes before §7 item 1's
@@ -256,16 +271,39 @@ PetSkillCast(battleId, clientSequence)     // shorthand; the active Pet's
 ```
 
 1. `clientSequence` is the unique client-generated action identifier / correlation
-   id (`ADR-025`). For `Swap`, it carries both the state precondition and action
-   idempotency token formatted as `"{expectedSequence}:{actionId}"` (e.g. `"0:client-seq-1"`),
-   or simply `"{actionId}"` for legacy callers omitting the precondition.
-   The server verifies `expectedSequence == state.Sequence` when provided and rejects
-   stale actions with `STALE_ACTION`. It tracks `actionId` for deduplication and
-   idempotent retries (`ADR-025`).
-2. Every method is validated server-side per its owning domain document
+   id (`ADR-025`). For `Swap`, it carries the state precondition and the action
+   identity as `"{expectedSequence}:{actionId}"` (e.g. `"0:client-seq-1"`), or as
+   `"{actionId}"` alone — the legacy form — for a caller that states no
+   precondition. The sequence part is a non-negative decimal integer stated in
+   full: a signed, padded, or otherwise partially numeric value is not a
+   sequence. The server verifies `expectedSequence == state.Sequence` when the
+   form states one and rejects the action as `STALE_ACTION` when it does not
+   match, and it tracks `actionId` as the action's identity for deduplication and
+   idempotent retries (`ADR-025` §2). A request whose identity matches the most
+   recently committed action is answered as `ADR-025` §2 defines — the retry is
+   recognized before the sequence comparison, so it is never rejected for the
+   version it states (`MATCH3_RULES.md` §2.1.4 item 2).
+2. **The `Swap` token grammar is exact, and a token outside it is refused rather
+   than reinterpreted.** A token that is neither form — a bare integer such as
+   `"0"`, which is ambiguous between a sequence with no identity and an identity
+   that happens to be numeric; an empty, non-numeric, signed, or padded sequence
+   part; an empty identity; or a second delimiter — is answered
+   `accepted: false` with `reason: "INVALID_ACTION_TOKEN"` and resolves no action
+   (no state is read or written, no Battle Event is emitted). A token is never
+   downgraded to the precondition-less form, because discarding a stated
+   sequence is exactly how an action derived from an obsolete state would reach
+   `MATCH3_RULES.md` §2.1.4 item 1 unexamined.
+3. **The legacy `"{actionId}"` form states no precondition, and that limitation
+   is real.** Such an action is resolved against the state the server reads for
+   it; if a concurrent writer moves that state before its write-back, the action
+   is rejected as `STALE_ACTION` instead of being re-resolved against the newer
+   state (`MATCH3_RULES.md` §2.1.4, `REDIS_STATE.md` §4 item 2, `ADR-025` §4). A
+   request that names no state version cannot show that it observed one, so it is
+   never executed against a board version its caller never observed.
+4. Every method is validated server-side per its owning domain document
    before any state changes (`MATCH3_RULES.md` §2 for Swap,
    `CARD_RULES.md` §3 for CardCast/PetSkillCast).
-3. An invalid request (e.g. non-adjacent Swap, insufficient Power) does not
+5. An invalid request (e.g. non-adjacent Swap, insufficient Power) does not
    throw a hard error to the connection — it returns a rejection result to
    the caller only (see §5) and emits no Battle Events.
 
@@ -276,7 +314,7 @@ PetSkillCast(battleId, clientSequence)     // shorthand; the active Pet's
 | `battleId` | the battle the action applies to; also scopes the group | §1.2 |
 | `fromCell` | §1.0 cell index `0..63` the player is moving | `MATCH3_RULES.md` §2.1.1 |
 | `toCell` | §1.0 cell index `0..63` it is exchanged with | `MATCH3_RULES.md` §2.1.1 |
-| `clientSequence` | action token `"{expectedSequence}:{actionId}"` (`ADR-025`) | this document |
+| `clientSequence` | action token `"{expectedSequence}:{actionId}"`, or `"{actionId}"` alone (legacy) — `ADR-025`, §2 item 1 | this document |
 
 1. **Both cells are §1.0 indices and nothing else.** No row/column pair, no
    screen or pixel coordinate, and no direction is carried
@@ -2241,7 +2279,10 @@ without waiting for/parsing the event broadcast.
    action by its domain document: for `Swap`, the rejection reasons are the
    failing checks of `MATCH3_RULES.md` §2.1.2 together with the staleness
    rejection of §2.1.4. This document does not maintain a parallel list, so the
-   protocol cannot drift from the rule.
+   protocol cannot drift from the rule. Its one transport-level code is
+   `INVALID_ACTION_TOKEN` (§2 item 2): a `Swap` token that is not one of the
+   documented forms, which is a transport contract violation rather than a
+   gameplay rejection and therefore resolves no action at all.
 4. The result is delivered to the **caller only**, never to the group: a
    rejection is not battle state and no other client has any use for it
    (§2 item 3).
@@ -2266,7 +2307,13 @@ without waiting for/parsing the event broadcast.
    (`ADR-025`, `MATCH3_RULES.md` §2.1.4), a second action sent before receiving
    the result of the first will fail as `STALE_ACTION` if it carries the obsolete
    state version. The client waits for action resolution, updates its state, and
-   submits subsequent actions with the updated state version.
+   submits subsequent actions with the updated state version. A token in the
+   legacy `"{actionId}"` form states no state version, so it has no such
+   protection: it is resolved against the state the server read for it and, if a
+   concurrent writer moves that state first, it is rejected as `STALE_ACTION`
+   rather than re-resolved against the newer board (§2 item 3,
+   `REDIS_STATE.md` §4 item 2). A client that needs the guarantee states the
+   precondition.
 
 ---
 

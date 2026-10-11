@@ -2622,6 +2622,239 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         await hubConnection.StopAsync();
     }
 
+    // =======================================================================
+    // TASK-257: Swap action-token parsing (SIGNALR_PROTOCOL.md §2 item 1,
+    // ADR-025 §1–§2). Every case goes through the real hub invocation, so what
+    // is asserted is the parsed contract the Application layer received — the
+    // precondition it enforced and the action identity it deduplicated on — not
+    // a private helper's return value.
+    // =======================================================================
+
+    [Fact]
+    public async Task Swap_WithSequenceAndActionIdToken_ShouldApplyThePreconditionAndTheIdentity()
+    {
+        const string battleId = "battle-token-both-values";
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
+
+        var hubConnection = BuildHubConnection();
+        var eventBatches = 0;
+        hubConnection.On<JsonElement>("ReceiveEvents", _ => Interlocked.Increment(ref eventBatches));
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+        // "0:act-token-both" — expectedSequence 0 against a battle whose Sequence
+        // is 0, plus the action identity.
+        var first = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, pair.From, pair.To, "0:act-token-both");
+        Assert.True(first.Accepted);
+
+        await Task.Delay(200);
+        Assert.Equal(1, Volatile.Read(ref eventBatches));
+
+        // The identity was parsed and retained: the same logical action is a retry,
+        // answered as accepted without executing again or emitting a second batch.
+        var retry = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, pair.From, pair.To, "0:act-token-both");
+        Assert.True(retry.Accepted);
+        Assert.Null(retry.Reason);
+
+        await Task.Delay(200);
+        Assert.Equal(1, Volatile.Read(ref eventBatches));
+
+        // The identity was parsed and compared with the payload: the same identity
+        // on a different pair is the documented conflict, not a new action.
+        var otherPair = await FindAdjacentPairThatProducesAMatchAsync(battleId, exclude: pair);
+        var conflict = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, otherPair.From, otherPair.To, "0:act-token-both");
+
+        Assert.False(conflict.Accepted);
+        Assert.Equal("INVALID_ACTION_PAYLOAD", conflict.Reason);
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task Swap_WithAnObsoleteSequenceInTheToken_ShouldRejectAsStaleAction()
+    {
+        // The precondition is carried by the token's sequence part and is enforced:
+        // a token whose sequence never reached the server would have been accepted
+        // as a precondition-less action, so this case fails if the sequence is
+        // dropped, misread, or replaced by the action identity.
+        const string battleId = "battle-token-obsolete-sequence";
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
+
+        var hubConnection = BuildHubConnection();
+        await hubConnection.StartAsync();
+
+        var stale = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, pair.From, pair.To, "7:act-obsolete-sequence");
+
+        Assert.False(stale.Accepted);
+        Assert.Equal("STALE_ACTION", stale.Reason);
+
+        // Nothing was consumed: the same pair still commits against the state the
+        // battle is really in, with the sequence it really has.
+        var valid = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, pair.From, pair.To, "0:act-after-obsolete");
+
+        Assert.True(valid.Accepted);
+        Assert.Null(valid.Reason);
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task Swap_WithALegacyActionIdToken_ShouldKeepTheDocumentedPreconditionlessForm()
+    {
+        // SIGNALR_PROTOCOL.md §2 item 1: "{actionId}" — a caller that states no
+        // precondition — remains a supported form, and its action identity is still
+        // parsed and used for deduplication.
+        const string battleId = "battle-token-legacy-action-id";
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
+
+        var hubConnection = BuildHubConnection();
+        var eventBatches = 0;
+        hubConnection.On<JsonElement>("ReceiveEvents", _ => Interlocked.Increment(ref eventBatches));
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+        var first = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, pair.From, pair.To, "legacy-act-1");
+        Assert.True(first.Accepted);
+
+        await Task.Delay(200);
+        Assert.Equal(1, Volatile.Read(ref eventBatches));
+
+        var retry = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, pair.From, pair.To, "legacy-act-1");
+
+        Assert.True(retry.Accepted);
+        Assert.Null(retry.Reason);
+
+        await Task.Delay(200);
+        Assert.Equal(1, Volatile.Read(ref eventBatches));
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task Swap_WithAnAbsentToken_ShouldResolveWithoutAPrecondition()
+    {
+        // The absent form: no precondition and no action identity are stated, so
+        // neither is invented.
+        const string battleId = "battle-token-absent";
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
+
+        var hubConnection = BuildHubConnection();
+        await hubConnection.StartAsync();
+
+        var result = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, pair.From, pair.To, null);
+
+        Assert.True(result.Accepted);
+        Assert.Null(result.Reason);
+
+        await hubConnection.StopAsync();
+    }
+
+    [Theory]
+    [InlineData("battle-token-bare-zero", "0")]
+    [InlineData("battle-token-bare-seven", "7")]
+    [InlineData("battle-token-empty-sequence", ":act-1")]
+    [InlineData("battle-token-non-numeric-sequence", "abc:act-1")]
+    [InlineData("battle-token-empty-identity", "0:")]
+    [InlineData("battle-token-second-delimiter", "0:act:1")]
+    [InlineData("battle-token-padded-sequence", " 0:act-1")]
+    [InlineData("battle-token-signed-sequence", "-1:act-1")]
+    public async Task Swap_WithAMalformedOrAmbiguousToken_ShouldRejectAsInvalidActionToken(
+        string battleId,
+        string token)
+    {
+        // A bare integer is ambiguous between a sequence with no identity and a
+        // numeric identity; a delimiter form with a missing, non-numeric, signed, or
+        // padded sequence, an empty identity, or a second delimiter is malformed.
+        // None of them may be reinterpreted as a precondition-less legacy action,
+        // which is what silently discarding a stated sequence would amount to.
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
+
+        var hubConnection = BuildHubConnection();
+        await hubConnection.StartAsync();
+
+        var rejected = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, pair.From, pair.To, token);
+
+        Assert.False(rejected.Accepted);
+        Assert.Equal("INVALID_ACTION_TOKEN", rejected.Reason);
+
+        // The malformed request resolved no action: the battle is still at its
+        // created version, so the documented token commits against it.
+        var valid = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, pair.From, pair.To, "0:act-after-malformed");
+
+        Assert.True(valid.Accepted);
+        Assert.Null(valid.Reason);
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task Swap_ShouldPushTheCommittedStateBeforeItsEvents()
+    {
+        // SIGNALR_PROTOCOL.md §6 item 4: `BattleStateUpdated` is delivered before
+        // any `ReceiveEvents` for that battle. Both are sent by the one invocation
+        // that committed the resolution, after its write-back, in that order
+        // (§2.1, §3.1) — the reproducible half of the broadcast-ordering question
+        // TASK-257 reassessed (the other half, two overlapping commits, is removed
+        // by the precondition: only one action can commit per observed state
+        // version, and MATCH3_RULES.md §2.1.4 item 4 requires it).
+        const string battleId = "battle-swap-push-order";
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
+
+        var hubConnection = BuildHubConnection();
+        var order = new List<string>();
+        hubConnection.On<JsonElement>("BattleStateUpdated", _ =>
+        {
+            lock (order)
+            {
+                order.Add("state");
+            }
+        });
+        hubConnection.On<JsonElement>("ReceiveEvents", _ =>
+        {
+            lock (order)
+            {
+                order.Add("events");
+            }
+        });
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+        // Joining pushes the initial state (§2.2, §4.1); the swap's own delivery is
+        // what this test orders.
+        await Task.Delay(200);
+        lock (order)
+        {
+            order.Clear();
+        }
+
+        var result = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, pair.From, pair.To, "0:act-push-order");
+
+        Assert.True(result.Accepted);
+
+        await Task.Delay(200);
+
+        lock (order)
+        {
+            Assert.Equal(new[] { "state", "events" }, order);
+        }
+
+        await hubConnection.StopAsync();
+    }
+
     [Fact]
     public async Task Swap_ForUnknownBattle_ShouldRejectWithoutCreatingState()
     {

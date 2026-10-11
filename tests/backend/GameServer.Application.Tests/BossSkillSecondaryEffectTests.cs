@@ -610,7 +610,9 @@ public class BossSkillSecondaryEffectTests
     {
         // REDIS_STATE.md §4 item 5: one action, one write-back. A refused first
         // attempt that the service retries must leave exactly one committed
-        // resolution — the effects are not applied twice by the retry.
+        // resolution — the effects are not applied twice by the retry. The request
+        // states the state version it observed, which is what permits the retry
+        // rather than a staleness rejection (TASK-257, SIGNALR_PROTOCOL.md §2 item 3).
         var harness = Harness.Create();
         var service = harness.Service;
         var battleId = "boss-effect-cas-retry";
@@ -622,7 +624,14 @@ public class BossSkillSecondaryEffectTests
 
         harness.Store.ForcedConflicts = 1;
 
-        var result = await service.ExecuteSwapAsync(battleId, FindMatchProducer(created));
+        var result = await service.ExecuteSwapAsync(
+            battleId,
+            FindMatchProducer(created) with
+            {
+                ExpectedSequence = created.Sequence,
+                ActionId = "act-boss-effect-retry",
+            });
+
         Assert.True(result!.Value.IsAccepted);
 
         var after = (await service.GetBattleAsync(battleId))!;

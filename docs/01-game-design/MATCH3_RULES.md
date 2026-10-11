@@ -1,6 +1,15 @@
 # Match-3 Rules
 
-**Version:** 1.5 (§6.1/§8 citations updated — `PlayerState.Combo`/
+**Version:** 1.6 (§2.1.4 item 2 **completed, not changed in its rules**: the
+action-identity recognition window is stated as what the rule and
+`GAME_STATE.md` §2.1.10 item 5 already define — the identity is compared with the
+most recently committed Swap, so a retry arriving after a later action committed
+is rejected by item 1 as `STALE_ACTION` — and the no-precondition request form's
+limitation is stated: such an action is resolved only against the state read for
+it and is rejected as `STALE_ACTION` if a concurrent writer moves that state
+first, never re-resolved against the newer board. `ADR-025`'s items 1–6 are
+unchanged, no rejection reason is added or removed, and no gameplay rule changes.
+Prior 1.5: (§6.1/§8 citations updated — `PlayerState.Combo`/
 `PlayerState.MatchCount` replaced with `BattleState.Combo`/
 `BattleState.MatchCount` per Player-as-owner / Pet-as-combat redesign;
 no gameplay rule changed — committed-swap state owner named for §2.1.4's
@@ -558,6 +567,23 @@ action-identity contract (`ADR-025`):
      acknowledgement) and returns the committed result without re-executing or
      duplicating events.
    - If the payload differs, the request is rejected (`INVALID_ACTION_PAYLOAD`).
+
+   The identity is compared with the **most recently committed Swap** and nothing
+   else — the one record `GAME_STATE.md` §2.1.10 item 5 keeps — so the window in
+   which a retry is recognized as a replay is one committed Swap wide. A retry
+   that arrives after a later action has committed matches no recorded identity
+   and is rejected by item 1 as `STALE_ACTION`: it is never re-executed and emits
+   no event. That window is this rule's behavior, and widening it would be a
+   state-shape decision (retaining an action history), not an interpretation of
+   it.
+
+   An action whose request states no `expectedSequence` — the legacy token form
+   (`SIGNALR_PROTOCOL.md` §2 item 1) — makes no claim about the state it observed,
+   so it is resolved only against the state read for it. If a concurrent writer
+   moves that state before its write-back, the action is rejected as
+   `STALE_ACTION` rather than re-resolved against the newer state
+   (`REDIS_STATE.md` §4 item 2). Not stating the precondition is a limitation of
+   that form and never a way around item 1.
 3. **Legitimate Consecutive-Turn Coordinate Reuse.** Swapping the same unordered
    pair `{from, to}` on consecutive turns (e.g. Turn N and Turn N+1) is fully
    valid whenever the new board state produced by cascades and spawns permits a

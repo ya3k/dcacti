@@ -362,15 +362,25 @@ public class Task173SonThachVeOncePerBattleFiringTests
         // The double's ForcedConflicts drives exactly that documented path
         // deterministically: the first write is refused, the retry resolves against
         // the same (unchanged) state, and the committed state must carry the Rage.
+        // The request states the state version it observed, which is what permits
+        // the retry rather than a staleness rejection (TASK-257,
+        // SIGNALR_PROTOCOL.md §2 item 3).
         var (service, repository) = NewHarness();
         var battleId = "stv-t173-refused-write";
 
         await ArmBossHpAsync(service, repository, battleId, HalfMaxHp);
 
+        var observed = (await repository.GetAsync(battleId))!;
+
         repository.ForcedConflicts = 1;
 
-        var first = await service.ExecuteSwapAsync(battleId, FindMatchProducingPair(
-            (await repository.GetAsync(battleId))!));
+        var first = await service.ExecuteSwapAsync(
+            battleId,
+            FindMatchProducingPair(observed) with
+            {
+                ExpectedSequence = observed.Sequence,
+                ActionId = "act-t173-refused-write",
+            });
 
         Assert.True(first!.Value.IsAccepted);
 

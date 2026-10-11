@@ -36,7 +36,7 @@ class FakeSignalR {
    */
   private registrationCounts = new Map<string, number>();
   /** Every `swap()` call the runtime made, in order (SIGNALR_PROTOCOL.md §2.1, ADR-025). */
-  public swapCalls: Array<[string, number, number, number, string]> = [];
+  public swapCalls: Array<[string, number, number, number | null, string | null]> = [];
   /** The acknowledgement `swap()` resolves with; overridden per case. */
   public swapResult: { accepted: boolean; reason?: string | null } = { accepted: true };
   /** When set, `swap()` rejects with it — a transport failure (§8.3). */
@@ -145,21 +145,19 @@ class FakeSignalR {
     battleId: string,
     fromCell: number,
     toCell: number,
-    expectedSequenceOrClientSequence: number | string,
-    clientSequence?: string
+    expectedSequence: number | null,
+    actionId: string | null
   ): Promise<{ accepted: boolean; reason?: string | null }> {
+    // Recorded before the behaviour runs, so an attempted request that fails at
+    // the transport still shows which arguments the runtime submitted — the fact a
+    // retry's identity is asserted on.
+    this.invokedMethods.push('Swap');
+    this.swapCalls.push([battleId, fromCell, toCell, expectedSequence, actionId]);
+
     if (this.swapBehaviour) {
       return await this.swapBehaviour();
     }
 
-    this.invokedMethods.push('Swap');
-    const seq = typeof expectedSequenceOrClientSequence === 'number'
-      ? expectedSequenceOrClientSequence
-      : 0;
-    const clientSeq = typeof expectedSequenceOrClientSequence === 'string'
-      ? expectedSequenceOrClientSequence
-      : (clientSequence ?? '');
-    this.swapCalls.push([battleId, fromCell, toCell, seq, clientSeq]);
     return this.swapResult;
   }
 
@@ -2075,17 +2073,17 @@ describe('GameRuntime', () => {
       });
 
       // MATCH3_RULES.md §2.1.1 / SIGNALR_PROTOCOL.md §2.1 / ADR-025: the documented
-      // arguments, in order — the battle, the two §1.0 cell indices, expectedSequence,
-      // and the opaque client correlation id.
+      // arguments, in order — the battle, the two §1.0 cell indices, the state
+      // precondition the runtime observed, and the identity of this logical action.
       expect(transport.swapCalls).toHaveLength(1);
-      const [battleId, fromCell, toCell, expectedSequence, clientSequence] = transport.swapCalls[0];
+      const [battleId, fromCell, toCell, expectedSequence, actionId] = transport.swapCalls[0];
 
       expect(battleId).toBe('battle-42');
       expect(fromCell).toBe(12);
       expect(toCell).toBe(13);
       expect(expectedSequence).toBe(0);
-      expect(typeof clientSequence).toBe('string');
-      expect(clientSequence.length).toBeGreaterThan(0);
+      expect(typeof actionId).toBe('string');
+      expect(actionId!.length).toBeGreaterThan(0);
 
       // §5: the acknowledgement is returned to the caller unchanged.
       expect(acknowledgement).toEqual({ accepted: true });
@@ -2102,11 +2100,11 @@ describe('GameRuntime', () => {
       expect(transport.swapCalls[0][0]).toBe('battle-42');
     });
 
-    it('does not require the correlation id to equal the server sequence', async () => {
-      // SIGNALR_PROTOCOL.md §2 item 1 / MATCH3_RULES.md §2.1.4 item 1:
-      // `clientSequence` is opaque, is NOT `BattleState.Sequence`, and is never
-      // used to reject a stale action. The client is never required to track a
-      // server number for its Swap to be accepted.
+    it('keeps the action identity separate from the state precondition', async () => {
+      // ADR-025 §1–§2: the two values are different things and are supplied
+      // separately. The precondition is the state version the runtime holds; the
+      // action identity is not a server number at all, so it is never equal to the
+      // sequence it accompanies — and the server never requires it to be.
       const { runtime, transport } = await joinedRuntime();
 
       const state = runtime.getBattleState()!;
@@ -2114,10 +2112,16 @@ describe('GameRuntime', () => {
 
       await runtime.requestAction({ kind: 'Swap', fromCell: 4, toCell: 5 });
 
-      expect(transport.swapCalls[0][4]).not.toBe(String(state.sequence));
+      const [battleId, , , expectedSequence, actionId] = transport.swapCalls[0];
+
+      expect(battleId).toBe(state.battleId);
+      expect(expectedSequence).toBe(state.sequence);
+      expect(actionId).not.toBe(String(state.sequence));
+      expect(actionId).not.toContain(':');
+      expect(actionId).not.toMatch(/^[0-9]+$/);
     });
 
-    it('generates a distinct opaque correlation id per request', async () => {
+    it('generates a distinct action identity per logical action', async () => {
       const { runtime, transport } = await joinedRuntime();
 
       await runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 });
@@ -2127,6 +2131,69 @@ describe('GameRuntime', () => {
       const second = transport.swapCalls[1][4];
 
       expect(first).not.toBe(second);
+    });
+
+    it('preserves one logical action’s identity for a retry after a transport failure', async () => {
+      // ADR-025 §2: the identity is what the server deduplicates on, so a retry of
+      // one logical action must carry the identity its first attempt carried. A
+      // transport failure is not an answer (SIGNALR_PROTOCOL.md §8.3), so the
+      // action stays unresolved and its identity is retained — and the retry that
+      // names the same two cells in the other order is the same action
+      // (MATCH3_RULES.md §2.1.1 item 2).
+      const { runtime, transport } = await joinedRuntime();
+      transport.swapBehaviour = async () => {
+        throw new Error('SignalR connection is not established.');
+      };
+
+      await expect(
+        runtime.requestAction({ kind: 'Swap', fromCell: 12, toCell: 13 })
+      ).rejects.toThrow('SignalR connection is not established.');
+
+      transport.swapBehaviour = null;
+
+      await runtime.requestAction({ kind: 'Swap', fromCell: 13, toCell: 12 });
+
+      expect(transport.swapCalls).toHaveLength(2);
+      expect(transport.swapCalls[1][4]).toBe(transport.swapCalls[0][4]);
+    });
+
+    it('gives a new logical action a new identity once the previous one is settled', async () => {
+      // The first submission was acknowledged, so the same pair submitted again is
+      // a new logical action — not a retry of the first — and must not reuse its
+      // identity, which the server would answer as a replay instead of executing
+      // the player's new intent (ADR-025 §2).
+      const { runtime, transport } = await joinedRuntime();
+
+      await runtime.requestAction({ kind: 'Swap', fromCell: 12, toCell: 13 });
+      await runtime.requestAction({ kind: 'Swap', fromCell: 12, toCell: 13 });
+
+      expect(transport.swapCalls[1][4]).not.toBe(transport.swapCalls[0][4]);
+    });
+
+    it('never reuses an action identity from an earlier client runtime', async () => {
+      // A page reload is a fresh module evaluation and a fresh runtime. A counter
+      // initialised at module scope would restart and give the first swap of the
+      // same pair the identity the earlier runtime used, which the server reads as
+      // a retry of that action — the swap would be answered as a replay and never
+      // executed (ADR-025 §2). The identity must therefore not be a counter's.
+      const { runtime, transport } = await joinedRuntime();
+
+      await runtime.requestAction({ kind: 'Swap', fromCell: 12, toCell: 13 });
+      const beforeReload = transport.swapCalls[0][4];
+      expect(beforeReload).toBeTruthy();
+
+      vi.resetModules();
+      const reloadedModule = await import('../src/game/runtime/GameRuntime');
+      const reloadedTransport = new FakeSignalR();
+      const reloadedRuntime = new reloadedModule.GameRuntime(reloadedTransport as never);
+
+      await reloadedRuntime.initialize();
+      reloadedTransport.emit('BattleStateUpdated', payload({ battleId: 'battle-42' }));
+
+      await reloadedRuntime.requestAction({ kind: 'Swap', fromCell: 12, toCell: 13 });
+
+      expect(reloadedTransport.swapCalls).toHaveLength(1);
+      expect(reloadedTransport.swapCalls[0][4]).not.toBe(beforeReload);
     });
 
     it('resolves with a rejection without mutating any state', async () => {
