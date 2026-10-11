@@ -38,6 +38,7 @@ internal static class BattleStateJsonNames
     public const string PetState = "petState";
     public const string BossState = "bossState";
     public const string LastCommittedSwapPair = "lastCommittedSwapPair";
+    public const string ActionId = "actionId";
     public const string CardCastsUsedThisTurn = "cardCastsUsedThisTurn";
 
     // RngState pair (GAME_STATE.md §2.6.2 item 1 — the two components stay together).
@@ -971,4 +972,12 @@ internal sealed record CommittedSwapPairJson
 
     [JsonPropertyName(BattleStateJsonNames.SwapMaxCellIndex)]
     public required int MaxCellIndex { get; init; }
+
+    [JsonPropertyName(BattleStateJsonNames.Sequence)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int Sequence { get; init; }
+
+    [JsonPropertyName(BattleStateJsonNames.ActionId)]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? ActionId { get; init; }
 }

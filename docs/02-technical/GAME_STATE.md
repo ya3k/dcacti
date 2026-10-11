@@ -926,84 +926,40 @@ SpecialGem
    activates a Special Gem (§2.0.5.4 item 1, `SIGNALR_PROTOCOL.md` §4.1
    item 2).
 
-### 2.1.10 `LastCommittedSwapPair` — the Commit Record `STALE_ACTION` Reads
+### 2.1.10 `LastCommittedSwap` — the Commit Record for Idempotency (`ADR-025`)
 
-**Resolution of the former contract gap.** `MATCH3_RULES.md` §2.1.2 requires
-the already-applied / idempotency check (§2.1.4) as check 3 of the Swap
-validation order, and §2.1.4 item 2 defines that check's input as "the pair
-most recently committed to the board". No field of `BattleState` held that
-value: the §2 field list had no such member, §2.0.5's stage had none, and
-`BoardState` cannot hold it (§2.1.2 item 1 fixes `BoardState` at one field,
-`Cells[64]` — a swap leaves no trace in the board that distinguishes
-"exchanged once" from "exchanged back"). This section closes that gap: the
-value is a **`BattleState` field**, because §2 is the authoritative runtime
-state and §0 item 5 requires a field added by a later stage to be a field §2
-already declares.
+**Supersedes ADR-010.** Under `ADR-025`, `BattleState.LastCommittedSwap` records
+the most recently committed Swap action for idempotency and lost-acknowledgement
+deduplication:
 
 ```text
 BattleState
-└── LastCommittedSwapPair?
-    └── (MinCellIndex, MaxCellIndex)   both §1.0 indices, MinCellIndex < MaxCellIndex
+└── LastCommittedSwap?
+    ├── (MinCellIndex, MaxCellIndex)   both §1.0 indices, MinCellIndex < MaxCellIndex
+    ├── Sequence                       authoritative sequence of the committed resolution
+    └── ActionId                       client-generated action idempotency key
 ```
 
-1. **What it records.** The unordered pair `{from, to}` of the most recently
-   **committed** Swap (`MATCH3_RULES.md` §2.1.4 item 2) — the pair whose
-   exchange the board currently reflects, and nothing else. It is the
-   authoritative input to that check and has no other reader. It is not a
-   version, not a request id, and not a Turn number.
-2. **Canonical ordering, because the pair is unordered.** `MATCH3_RULES.md`
-   §2.1.1 item 2 defines the swap's identity as the unordered pair `{from, to}`
-   and states the order of `from`/`to` has no gameplay meaning; §2.1.3 item 3
-   makes the two inputs symmetric. The field is therefore stored **canonically**
-   as `(min(from, to), max(from, to))` with `MinCellIndex < MaxCellIndex`, so a
-   request's argument order can never make the stored value ambiguous or make
-   two spellings of one pair compare unequal. `(13, 12)` and `(12, 13)` both
-   record `(12, 13)`, and the two are the same commit.
-3. **Absence is the initial value — there is no sentinel pair.** Before the
-   first committed Swap the field is **absent**, exactly as a cell's
-   `SpecialGem` is absent when the cell holds none (§2.1.7 item 3). It is never
-   `(0, 0)`, `(-1, -1)`, or a defaulted `(0, 1)`: `(0, 0)` is not even a
-   representable pair (item 2 requires two distinct indices), and any real pair
-   used as a stand-in would be a commit the battle never made. Battle creation
-   leaves it absent: board generation commits no Swap and is not an action
-   resolution (§2.0.5.2 item 1), so a newly created battle has no committed
-   pair.
-4. **Absent never rejects.** An action is rejected as already applied only when
-   the field is *present* and equals the action's canonical pair
-   (`MATCH3_RULES.md` §2.1.4 item 2). While the field is absent, check 3 can
-   never fail — no swap has been committed, so no swap is already applied.
-5. **Set only by a successful commit, to the committed pair.** Committing a
-   Swap (`MATCH3_RULES.md` §2.1.6 step 4, §8.3 step 3) writes the action's
-   canonical pair. It is written once per resolution, in the same single
-   post-resolution write-back as `Turn` and `Sequence` (§5.1): it is state, not
-   a mid-resolution flag, and a reader never observes it changed by a
-   resolution still in progress (§5.1 item 2).
-6. **A rejected action does not change it — by any rejection reason.** For
-   `INVALID_CELL_INDEX`, `INVALID_SWAP`, `NO_MATCH_FROM_SWAP`, and
-   `STALE_ACTION` alike, the field keeps the value it had
-   (`MATCH3_RULES.md` §2.1.5: a rejected action writes nothing). A rejection is
-   not a commit, so it neither records a pair nor clears one.
-7. **A rejection never clears the previous commit either.** Applying a *new*
-   pair replaces the stored value; a rejected request leaves the old pair in
-   force, so the previously committed Swap is still recognised as already
-   applied after an unrelated rejected action arrives. Only a later *committed*
-   Swap replaces it.
-8. **The client never supplies or reads it.** The field is derived by the
-   server from its own commit history; `clientSequence` is **not** its source
-   and is not consulted for staleness (`MATCH3_RULES.md` §2.1.4 items 1 and 5,
-   `SIGNALR_PROTOCOL.md` §2 item 1). No Swap request carries it
-   (`MATCH3_RULES.md` §2.1.1 item 3), so a client cannot declare an action
-   already committed.
-9. **It is authoritative state, and it is not delivered to the client.** It is
-   part of `BattleState` (§2) and is therefore serialized with it (item 10),
-   but it is **not** a member of the `BattleStateUpdated` payload: that record
-   carries exactly the implemented stage's fields and admits no other
-   (`SIGNALR_PROTOCOL.md` §4 item 4, §4 items 10–11). This is deliberate and
-   has no client-side consequence: §2.1.4 makes the client unable to
-   participate in staleness detection at all, so there is nothing for a client
-   to do with the value. It is server-side bookkeeping inside authoritative
-   state, not a new client-facing field, and the client must never author,
-   adjust, or recompute it (§2.1.9 item 4, `GAME_RULES.md` §18, `ADR-001`).
+1. **What it records.** The canonical unordered cell pair `{from, to}`, the resulting
+   `Sequence`, and the client-supplied `ActionId` of the most recently committed Swap.
+   `LastCommittedSwapPair` is retained as a projection `(MinCellIndex, MaxCellIndex)`
+   for backward compatibility.
+2. **Canonical ordering, because the pair is unordered.** `MATCH3_RULES.md` §2.1.1
+   item 2 defines the swap's identity as the unordered pair `{from, to}`. The cells
+   are stored canonically as `(min(from, to), max(from, to))` with `MinCellIndex < MaxCellIndex`.
+3. **Absence is the initial value.** Before the first committed Swap the field is
+   `null` / absent.
+4. **Staleness is evaluated against Sequence, not coordinates.** Unlike ADR-010's
+   coordinate lock, staleness is governed by `SwapRequest.ExpectedSequence == BattleState.Sequence`.
+   Swapping the same coordinates on consecutive turns is legal whenever the board permits it.
+5. **Idempotency.** When an arriving request carries an `ActionId` matching
+   `LastCommittedSwap.ActionId`, matching coordinates return the committed result
+   idempotently without re-execution; mismatched coordinates reject with
+   `INVALID_ACTION_PAYLOAD`.
+6. **Set only by a successful commit.** Written in the single post-resolution write-back
+   alongside `Turn` and `Sequence` (§5.1). Rejections change nothing.
+7. **Not delivered to the client.** The field is authoritative server-side bookkeeping
+   and is not sent on the wire in `BattleStateUpdated`.
 10. **Serialization.** The field is written with the rest of `BattleState`
     (§2.1.7 item 1). When present it carries the canonical pair, with
     `MinCellIndex < MaxCellIndex` so the serialized order is itself canonical

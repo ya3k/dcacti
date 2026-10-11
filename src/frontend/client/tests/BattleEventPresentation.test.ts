@@ -2240,6 +2240,7 @@ describe('TASK-218B — the Relic trigger callout reaches the player (SIGNALR_PR
       expect(formatSwapRejection('INVALID_SWAP')).toBe('Invalid swap. Gems must be adjacent.');
       expect(formatSwapRejection('INVALID_CELL_INDEX')).toBe('Invalid board position.');
       expect(formatSwapRejection('STALE_ACTION')).toBe('Board has changed. Please try again.');
+      expect(formatSwapRejection('INVALID_ACTION_PAYLOAD')).toBe('Action payload does not match previous submission.');
       expect(formatSwapRejection('BATTLE_NOT_FOUND')).toBe('Battle session not found.');
 
       // Fallbacks

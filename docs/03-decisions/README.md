@@ -1,6 +1,6 @@
 # Architecture Decision Records (ADR)
 
-**Version:** 1.16 (§7 — ADR-024 added per `TASK-250`: the database-driven
+**Version:** 1.17 (§7 — ADR-025 added per `TASK-256`: the swap action preconditions and idempotency architecture decision, superseding ADR-010. Replaces the coordinate-pair restriction with a dual state-precondition (`expectedSequence`) and action-idempotency (`actionId`) contract, restoring legitimate consecutive-turn coordinate reuse. Prior 1.16: §7 — ADR-024 added per `TASK-250`: the database-driven
 boss balance configuration architecture decision. Adopts Option 1 (Domain
 Overlay) to make PostgreSQL authoritative at runtime for boss combat balance
 (`MaxHP`, `ATK`, `DEF`, `EnrageThreshold`) while preserving `BossSkillDefinition.SecondaryEffect`
@@ -223,7 +223,7 @@ technical document.
 | ADR-007 | Discord SDK integration & server-side auth boundary    | Superseded by ADR-020 |
 | ADR-008 | Snapshot-based battle reconnection                             | Accepted |
 | ADR-009 | Deterministic PRNG for server-authoritative gameplay randomness | Proposed |
-| ADR-010 | Committed-swap state for idempotent Swap rejection            | Accepted |
+| ADR-010 | Committed-swap state for idempotent Swap rejection            | Superseded by ADR-025 |
 | ADR-011 | Player = account owner; Pet = combat character; PetState = battle combat runtime (no PlayerState) | Accepted (item 7 partially superseded by ADR-016) |
 | ADR-012 | Player Level + Pet Level clamp formula; Relic/Card ownership vs battle equip; MVP scope closure; no Evolution | Accepted (items 3, 4, 6 partially superseded by ADR-016) |
 | ADR-013 | Discord authorization-code → identity exchange contract (OAuth2 code grant, token endpoint, `/users/@me`, `DiscordUserId` source) | Superseded by ADR-020 |
@@ -238,6 +238,7 @@ technical document.
 | ADR-022 | Post-result preserved-loadout carrier — the loadout used in the battle that just ended is held as a second documented key in Phaser's game-wide registry behind the `game/state/PreservedLoadout.ts` accessor; owned by the client game-presentation layer (not `GameRuntime`), alive for the running game instance, written only on a successful battle start, and read only on the approved `ResultScene` → `PLAY AGAIN` entry, with `LobbyScene` remaining the editing surface. Records that the preserved loadout, active battle state, and battle result data are three distinct concepts, that the `D-202-04 = A` cleanup never clears the preserved loadout, and that the post-result exit clears active battle state through the dedicated client-local `clearActiveBattleState()` port capability (no disconnect, no wire message) rather than `SIGNALR_PROTOCOL.md` §7.3's `BATTLE_NOT_FOUND` path. Discharges the carrier requirement `ARCHITECTURE.md` §2.2.3 recorded without a mechanism per `TASK-202` `D-202-03 = D` | Accepted |
 | ADR-023 | Backend Discord identity seam resolution — formally retire the dormant backend Discord identity dependency injection seam (`IDiscordIdentityResolver`), resolver implementations, configuration options, and contract definitions, aligning backend architecture 100% with ADR-020 D1; records that physical deletion of runtime C# files and test stubs is deferred to downstream implementation work | Accepted |
 | ADR-024 | Database-driven boss balance configuration — PostgreSQL-authoritative runtime balance for `MaxHP`, `ATK`, `DEF`, and `EnrageThreshold` via Domain Overlay; static `BossDefinitions.All` retained as seed defaults and offline test fixtures; preserves `SecondaryEffect` (Burn, Drain Power, Root) without complex JSON migrations; snapshot isolation for in-progress battles; strict fail-closed validation | Accepted |
+| ADR-025 | Swap action preconditions and idempotency — replaces the `LastCommittedSwapPair` coordinate restriction with a dual state version precondition (`expectedSequence`) and action idempotency (`actionId`) contract, superseding ADR-010. Permits legitimate consecutive-turn coordinate reuse while deterministically rejecting stale requests and deduplicating retries | Accepted |
 
 **Partial supersession (ADR-016).** ADR-011 and ADR-012 remain in force
 except for the specific items named below, which ADR-016 supersedes. Their

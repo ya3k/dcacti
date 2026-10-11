@@ -320,6 +320,11 @@ namespace GameServer.Domain.Battle;
 /// resolution (§2.0.5.2 item 1) — which is also why a request can never be
 /// rejected as already applied against a battle that has not played a Swap.
 ///
+/// Under <c>ADR-025</c>, records the committed swap coordinates alongside the
+/// <see cref="Sequence"/> version and <c>ActionId</c> idempotency identifier.
+/// Stale requests are rejected via <c>ExpectedSequence</c> preconditions without
+/// global coordinate locking, permitting consecutive-turn coordinate reuse.
+///
 /// It is written only when a Swap is committed, in the same single
 /// post-resolution write-back as <see cref="Turn"/> and
 /// <see cref="Sequence"/> (§2.1.10 item 5, §5.1 item 7); a rejected action —
@@ -329,8 +334,7 @@ namespace GameServer.Domain.Battle;
 /// It is <b>not</b> delivered to the client and is never carried by a Swap
 /// request: it is server-side bookkeeping inside authoritative state
 /// (<c>SIGNALR_PROTOCOL.md</c> §4 item 12, <c>MATCH3_RULES.md</c> §2.1.1
-/// item 3, §2.1.10 item 8). It is not a version and is never used for
-/// concurrency control (§5 item 3, §2.1.10 item 11).
+/// item 3, §2.1.10 item 8).
 /// </param>
 /// <param name="CardCastsUsedThisTurn">
 /// How many Card casts have been **successfully** resolved during the current

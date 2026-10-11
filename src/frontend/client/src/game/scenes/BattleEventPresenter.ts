@@ -641,6 +641,7 @@ export const SWAP_REJECTION_MESSAGES: Readonly<Record<string, string>> = Object.
   INVALID_SWAP: 'Invalid swap. Gems must be adjacent.',
   INVALID_CELL_INDEX: 'Invalid board position.',
   STALE_ACTION: 'Board has changed. Please try again.',
+  INVALID_ACTION_PAYLOAD: 'Action payload does not match previous submission.',
   BATTLE_NOT_FOUND: 'Battle session not found.',
 });
 

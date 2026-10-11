@@ -832,6 +832,29 @@ public sealed class BattleStateService
             return null;
         }
 
+        // ===================================================================
+        // ADR-025: Action Idempotency Check
+        // ===================================================================
+        if (!string.IsNullOrWhiteSpace(request.ActionId) &&
+            state.LastCommittedSwapPair is { } initialLast &&
+            initialLast.ActionId == request.ActionId)
+        {
+            if (initialLast.MatchesPair(request.From, request.To))
+            {
+                return SwapExecutionResult.IdempotentReplay(state);
+            }
+
+            return SwapExecutionResult.Rejected(SwapRejectionReason.InvalidActionPayload);
+        }
+
+        // ===================================================================
+        // ADR-025: State Version Precondition Check
+        // ===================================================================
+        if (request.ExpectedSequence.HasValue && request.ExpectedSequence.Value != state.Sequence)
+        {
+            return SwapExecutionResult.Rejected(SwapRejectionReason.StaleAction);
+        }
+
         // §4 item 6 / §2 item 3: the retry re-runs the resolution against fresh
         // state. The bound is a safety net for pathological contention, not part
         // of the contract's semantics — the documented behaviour is that a
@@ -893,13 +916,7 @@ public sealed class BattleStateService
 
             // §4 items 2–3: the stored Sequence had moved on, so this resolution
             // was refused rather than allowed to overwrite a newer authoritative
-            // state. The documented behaviour is to abort and retry against the
-            // fresh state — re-read and resolve again.
-            //
-            // Nothing is consumed for a refused attempt: the eligibility is read by
-            // the resolution, not written by it, so the retry re-evaluates the same
-            // trigger against fresh state and (§4 item 6) produces the same
-            // activation when the condition still holds.
+            // state.
             if (await _repository.GetAsync(battleId, cancellationToken).ConfigureAwait(false)
                 is not { } fresh)
             {
@@ -909,7 +926,33 @@ public sealed class BattleStateService
                 return null;
             }
 
+            // ADR-025: Check if our action succeeded in the CAS race
+            if (!string.IsNullOrWhiteSpace(request.ActionId) &&
+                fresh.LastCommittedSwapPair is { } freshLast &&
+                freshLast.ActionId == request.ActionId)
+            {
+                if (freshLast.MatchesPair(request.From, request.To))
+                {
+                    return SwapExecutionResult.IdempotentReplay(fresh);
+                }
+
+                return SwapExecutionResult.Rejected(SwapRejectionReason.InvalidActionPayload);
+            }
+
+            // ADR-025: If client submitted an expectedSequence and the state advanced,
+            // the precondition was consumed by a concurrent action — reject as STALE_ACTION.
+            if (request.ExpectedSequence.HasValue && request.ExpectedSequence.Value != fresh.Sequence)
+            {
+                return SwapExecutionResult.Rejected(SwapRejectionReason.StaleAction);
+            }
+
             state = fresh;
+        }
+
+        // Contention did not settle within the bound.
+        if (request.ExpectedSequence.HasValue && request.ExpectedSequence.Value != state.Sequence)
+        {
+            return SwapExecutionResult.Rejected(SwapRejectionReason.StaleAction);
         }
 
         // Contention did not settle within the bound. The authoritative record is

@@ -35,8 +35,8 @@ class FakeSignalR {
    * real `HubConnection` would also hold both handlers.
    */
   private registrationCounts = new Map<string, number>();
-  /** Every `swap()` call the runtime made, in order (SIGNALR_PROTOCOL.md §2.1). */
-  public swapCalls: Array<[string, number, number, string]> = [];
+  /** Every `swap()` call the runtime made, in order (SIGNALR_PROTOCOL.md §2.1, ADR-025). */
+  public swapCalls: Array<[string, number, number, number, string]> = [];
   /** The acknowledgement `swap()` resolves with; overridden per case. */
   public swapResult: { accepted: boolean; reason?: string | null } = { accepted: true };
   /** When set, `swap()` rejects with it — a transport failure (§8.3). */
@@ -145,14 +145,21 @@ class FakeSignalR {
     battleId: string,
     fromCell: number,
     toCell: number,
-    clientSequence: string
+    expectedSequenceOrClientSequence: number | string,
+    clientSequence?: string
   ): Promise<{ accepted: boolean; reason?: string | null }> {
     if (this.swapBehaviour) {
       return await this.swapBehaviour();
     }
 
     this.invokedMethods.push('Swap');
-    this.swapCalls.push([battleId, fromCell, toCell, clientSequence]);
+    const seq = typeof expectedSequenceOrClientSequence === 'number'
+      ? expectedSequenceOrClientSequence
+      : 0;
+    const clientSeq = typeof expectedSequenceOrClientSequence === 'string'
+      ? expectedSequenceOrClientSequence
+      : (clientSequence ?? '');
+    this.swapCalls.push([battleId, fromCell, toCell, seq, clientSeq]);
     return this.swapResult;
   }
 
@@ -2067,15 +2074,16 @@ describe('GameRuntime', () => {
         toCell: 13,
       });
 
-      // MATCH3_RULES.md §2.1.1 / SIGNALR_PROTOCOL.md §2.1: exactly the four
-      // documented arguments, in order — the battle, the two §1.0 cell indices,
+      // MATCH3_RULES.md §2.1.1 / SIGNALR_PROTOCOL.md §2.1 / ADR-025: the documented
+      // arguments, in order — the battle, the two §1.0 cell indices, expectedSequence,
       // and the opaque client correlation id.
       expect(transport.swapCalls).toHaveLength(1);
-      const [battleId, fromCell, toCell, clientSequence] = transport.swapCalls[0];
+      const [battleId, fromCell, toCell, expectedSequence, clientSequence] = transport.swapCalls[0];
 
       expect(battleId).toBe('battle-42');
       expect(fromCell).toBe(12);
       expect(toCell).toBe(13);
+      expect(expectedSequence).toBe(0);
       expect(typeof clientSequence).toBe('string');
       expect(clientSequence.length).toBeGreaterThan(0);
 
@@ -2106,7 +2114,7 @@ describe('GameRuntime', () => {
 
       await runtime.requestAction({ kind: 'Swap', fromCell: 4, toCell: 5 });
 
-      expect(transport.swapCalls[0][3]).not.toBe(String(state.sequence));
+      expect(transport.swapCalls[0][4]).not.toBe(String(state.sequence));
     });
 
     it('generates a distinct opaque correlation id per request', async () => {
@@ -2115,8 +2123,8 @@ describe('GameRuntime', () => {
       await runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 });
       await runtime.requestAction({ kind: 'Swap', fromCell: 2, toCell: 3 });
 
-      const first = transport.swapCalls[0][3];
-      const second = transport.swapCalls[1][3];
+      const first = transport.swapCalls[0][4];
+      const second = transport.swapCalls[1][4];
 
       expect(first).not.toBe(second);
     });

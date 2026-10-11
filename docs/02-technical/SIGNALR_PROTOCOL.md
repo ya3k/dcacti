@@ -255,13 +255,13 @@ PetSkillCast(battleId, clientSequence)     // shorthand; the active Pet's
                                              // Signature Skill is implied
 ```
 
-1. `clientSequence` is an opaque client-generated request id, echoed back so
-   the client can correlate a request with its resulting events — it is
-   NOT the authoritative `BattleState.Sequence` (`GAME_STATE.md` §5). It is
-   **not** an action version and is not used to reject stale actions: staleness
-   is defined against the action's identity within its Turn, not against this
-   value (`MATCH3_RULES.md` §2.1.4 item 1). The client is never required to
-   track a server number in order to have its Swap accepted.
+1. `clientSequence` is the unique client-generated action identifier / correlation
+   id (`ADR-025`). For `Swap`, it carries both the state precondition and action
+   idempotency token formatted as `"{expectedSequence}:{actionId}"` (e.g. `"0:client-seq-1"`),
+   or simply `"{actionId}"` for legacy callers omitting the precondition.
+   The server verifies `expectedSequence == state.Sequence` when provided and rejects
+   stale actions with `STALE_ACTION`. It tracks `actionId` for deduplication and
+   idempotent retries (`ADR-025`).
 2. Every method is validated server-side per its owning domain document
    before any state changes (`MATCH3_RULES.md` §2 for Swap,
    `CARD_RULES.md` §3 for CardCast/PetSkillCast).
@@ -276,7 +276,7 @@ PetSkillCast(battleId, clientSequence)     // shorthand; the active Pet's
 | `battleId` | the battle the action applies to; also scopes the group | §1.2 |
 | `fromCell` | §1.0 cell index `0..63` the player is moving | `MATCH3_RULES.md` §2.1.1 |
 | `toCell` | §1.0 cell index `0..63` it is exchanged with | `MATCH3_RULES.md` §2.1.1 |
-| `clientSequence` | opaque correlation id (item 1) | this document |
+| `clientSequence` | action token `"{expectedSequence}:{actionId}"` (`ADR-025`) | this document |
 
 1. **Both cells are §1.0 indices and nothing else.** No row/column pair, no
    screen or pixel coordinate, and no direction is carried
@@ -2261,13 +2261,12 @@ without waiting for/parsing the event broadcast.
 4. `BattleStateUpdated` (§4) is delivered before any `ReceiveEvents` for that
    battle. It is not sequenced against resolutions and carries no event
    ordering meaning.
-5. **In-flight actions are not re-ordered by the client.** Because resolution
-   follows arrival order (item 2) and staleness is defined against the board
-   rather than against a client version number (`MATCH3_RULES.md` §2.1.4), a
-   client that sends two Swaps without waiting will have them resolved in the
-   order sent. It must not attempt to predict or roll back the first while the
-   second is in flight; it waits for the batch and the result, and renders what
-   it receives (§3.1 item 5).
+5. **In-flight actions are sequenced against authoritative state.** Because resolution
+   follows arrival order (item 2) and staleness is enforced via `expectedSequence`
+   (`ADR-025`, `MATCH3_RULES.md` §2.1.4), a second action sent before receiving
+   the result of the first will fail as `STALE_ACTION` if it carries the obsolete
+   state version. The client waits for action resolution, updates its state, and
+   submits subsequent actions with the updated state version.
 
 ---
 

@@ -502,12 +502,14 @@ before the swap is committed (§2 item 2—3):
    mapping. A diagonal pair, a distant pair, and a same-cell pair are all
    rejected (`INVALID_SWAP`). Diagonal swaps are invalid and no diagonal
    variant of the action exists.
-4. **Already applied / idempotency (§2.1.4).** The action's unordered pair
-   `{from, to}` must not be the pair most recently committed to the board.
-   The check reads `BattleState.LastCommittedSwapPair` (`GAME_STATE.md`
-   §2.1.10); when that record is present and its canonical pair equals the
-   action's, the action is rejected (`STALE_ACTION`). No RNG and no board
-   simulation is involved: the check compares two cell-index pairs.
+4. **State precondition / staleness (§2.1.4, ADR-025).** The action carries the
+   server-issued state version `expectedSequence` that the client observed. If
+   `expectedSequence` does not equal `BattleState.Sequence`, the action was
+   derived from an obsolete board/battle state and is rejected (`STALE_ACTION`).
+   If the request is a duplicate delivery or retry of the already-committed
+   action with matching action identity and payload coordinates, it returns
+   the committed result idempotently without executing again. Coordinate
+   history is not used to block legitimate swaps on subsequent turns.
 5. **Match-producing (§2 item 3).** The swap is simulated on a copy of the
    board (§2 item 2) and must produce **at least one** §3 Match.
    "At least one" is the whole requirement, exactly as §1.4 defines it for
@@ -540,46 +542,34 @@ Swap therefore always contains at least one Match, which is what §6.5 relies on
 
 ### 2.1.4 Staleness and Idempotency
 
-Idempotency is defined against the **action's identity within its Turn**, not
-against an opaque request identifier:
+Staleness and idempotency are governed by the dual state-precondition and
+action-identity contract (`ADR-025`):
 
-1. Each Swap action carries the client's correlation value, which correlates a
-   request with its result and is **not** the authoritative
-   `BattleState.Sequence` (`SIGNALR_PROTOCOL.md` §2 item 1). It is not used to
-   detect staleness: it identifies the request, not the position of the action
-   in the battle's history.
-2. **Already applied.** If the action's unordered pair `{from, to}` is exactly
-   the pair most recently committed to the board, the action is **rejected as
-   already applied** (`STALE_ACTION`). It is not applied a second time: the
-   previous commit already exchanged those two cells, so applying it again
-   would revert it – which is never a Swap (§2 item 3 requires a produced
-   Match). The two cells are exchanged once per Turn at most.
-
-   **Where that pair lives.** The comparison reads
-   `BattleState.LastCommittedSwapPair`, the authoritative record of the most
-   recently committed Swap, owned by `GAME_STATE.md` §2.1.10 — including its
-   canonical `(min, max)` ordering, its absent-before-first-commit initial
-   value, and when it is written. The rule is stated here; the state it reads
-   is stated there, and this section does not restate that state's shape.
-   Because the stored pair is canonical and the action's pair is `{from, to}`,
-   the comparison is between unordered pairs: `Swap(13, 12)` after a committed
-   `Swap(12, 13)` is the already-applied case, exactly as `Swap(12, 13)` is
-   (§2.1.1 item 2).
-3. **Superseded (out of order).** A Swap is a stateless exchange against the
-   *current* board: a Swap naming a pair that is not the pair most recently
-   committed is validated only as a swap of the board's current contents and
-   against the current Turn. There is no queue per Turn and no requirement
-   that a Turn's action exceed the value in force when it was issued: the
-   action either satisfies §2.1.2 against the current board, or it does not.
-   If it does not, it is rejected and no rejected action is ever replayed
-   later (§2.1.5).
-4. **No in-flight window is observable.** The server resolves one action at a
-   time per battle (`SIGNALR_PROTOCOL.md` §6 item 1); an action arriving before a
-   prior resolution has finished is resolved strictly after it, in arrival
-   order (`SIGNALR_PROTOCOL.md` §6 item 2), never concurrently with it.
-5. `STALE_ACTION` therefore has exactly the meaning in item 2. It is not a
-   version-mismatch code: nothing in this contract compares a client-supplied
-   number against `BattleState.Sequence`.
+1. **State Version Precondition (`expectedSequence`).** Each Swap action carries
+   the server-issued `expectedSequence` observed by the client. The server compares
+   this against `BattleState.Sequence`. If `expectedSequence != state.Sequence`,
+   the board has moved on since the client observed it; the action is rejected as
+   `STALE_ACTION`.
+2. **Action Identity and Idempotency (`actionId`).** Each Swap action carries a
+   unique client-generated action identifier (`actionId`). When a request's
+   `actionId` matches the battle's `LastCommittedSwap.ActionId`:
+   - If the coordinate payload `{from, to}` matches the recorded swap, the
+     server recognizes an idempotent retry (e.g. after a lost SignalR
+     acknowledgement) and returns the committed result without re-executing or
+     duplicating events.
+   - If the payload differs, the request is rejected (`INVALID_ACTION_PAYLOAD`).
+3. **Legitimate Consecutive-Turn Coordinate Reuse.** Swapping the same unordered
+   pair `{from, to}` on consecutive turns (e.g. Turn N and Turn N+1) is fully
+   valid whenever the new board state produced by cascades and spawns permits a
+   valid match at those coordinates. No coordinate-pair lock is retained across
+   turns.
+4. **No in-flight window is observable.** The server resolves actions sequentially
+   per battle (`SIGNALR_PROTOCOL.md` §6 item 1). Concurrent requests based on the
+   same observed state cannot both commit: the first committed action advances
+   `Sequence`, causing any subsequent concurrent action with the older
+   `expectedSequence` to be rejected as `STALE_ACTION`.
+5. `STALE_ACTION` indicates that the action's state precondition was violated
+   because the authoritative state advanced before the action committed.
 6. The rejection is deterministic: the same board and the same action always
    produce the same outcome.
 

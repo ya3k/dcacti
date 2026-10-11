@@ -743,6 +743,57 @@ public class SwapValidationTests
             () => SwapValidator.Validate(null!, lastCommittedSwapPair: null, 0, 1));
     }
 
+    // =======================================================================
+    // ADR-025 — State precondition validation (STALE_ACTION)
+    // =======================================================================
+
+    [Fact]
+    public void Validate_WithMismatchedExpectedSequence_ShouldRejectAsStaleAction()
+    {
+        var board = Background().WithGems(
+            (I(2, 2), GemType.Atk), (I(2, 3), GemType.Def),
+            (I(2, 4), GemType.Atk), (I(2, 5), GemType.Atk));
+
+        // Valid match-producing swap (2,2 <-> 2,3), but expectedSequence (0) != currentSequence (1)
+        var request = new SwapRequest(I(2, 2), I(2, 3), ExpectedSequence: 0);
+        var result = SwapValidator.Validate(board, lastCommittedSwapPair: null, currentSequence: 1, request);
+
+        Assert.True(result.IsRejected);
+        Assert.Equal(SwapRejectionReason.StaleAction, result.Reason);
+    }
+
+    [Fact]
+    public void Validate_WithMatchingExpectedSequence_ShouldAcceptValidSwap()
+    {
+        var board = Background().WithGems(
+            (I(2, 2), GemType.Atk), (I(2, 3), GemType.Def),
+            (I(2, 4), GemType.Atk), (I(2, 5), GemType.Atk));
+
+        // Matching sequence: passes Check 3 and produces match -> accepted
+        var request = new SwapRequest(I(2, 2), I(2, 3), ExpectedSequence: 1);
+        var result = SwapValidator.Validate(board, lastCommittedSwapPair: null, currentSequence: 1, request);
+
+        Assert.True(result.IsAccepted);
+        Assert.Equal(SwapRejectionReason.None, result.Reason);
+    }
+
+    [Fact]
+    public void Validate_WithMatchingExpectedSequence_ShouldPermitSwapOfPreviouslyCommittedPair()
+    {
+        var board = Background().WithGems(
+            (I(2, 2), GemType.Atk), (I(2, 3), GemType.Def),
+            (I(2, 4), GemType.Atk), (I(2, 5), GemType.Atk));
+
+        // Previously committed pair was (I(2, 2), I(2, 3)).
+        // Under ADR-025, when expectedSequence matches currentSequence, consecutive-turn coordinate reuse is legal!
+        var previousCommit = CommittedSwapPair.FromCells(I(2, 2), I(2, 3), sequence: 1);
+        var request = new SwapRequest(I(2, 2), I(2, 3), ExpectedSequence: 2);
+        var result = SwapValidator.Validate(board, lastCommittedSwapPair: previousCommit, currentSequence: 2, request);
+
+        Assert.True(result.IsAccepted);
+        Assert.Equal(SwapRejectionReason.None, result.Reason);
+    }
+
     /// <summary>
     /// Validates with no committed pair — the state of a battle that has played no
     /// Swap (<c>GAME_STATE.md</c> §2.1.10 item 3). Check 3 of

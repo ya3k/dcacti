@@ -106,107 +106,92 @@ public static class SwapValidator
     /// <paramref name="board"/> is <c>null</c>. A Swap is validated against an
     /// authoritative board; there is no board-less validation.
     /// </exception>
+    /// <summary>
+    /// Validates one requested Swap against the current authoritative board,
+    /// committed pair, and state sequence precondition (ADR-025), evaluating the
+    /// documented checks in the <c>MATCH3_RULES.md</c> §2.1.2 order:
+    ///
+    /// <code>
+    /// 1. Index range and distinctness   → INVALID_CELL_INDEX
+    /// 2. Adjacency (§2 item 1)          → INVALID_SWAP
+    /// 3. State precondition (§2.1.4)    → STALE_ACTION
+    /// 4. Match-producing (§2 item 3)    → NO_MATCH_FROM_SWAP
+    /// </code>
+    /// </summary>
     public static SwapValidationResult Validate(
         BoardState board,
         CommittedSwapPair? lastCommittedSwapPair,
+        int currentSequence,
         SwapRequest request)
     {
         ArgumentNullException.ThrowIfNull(board);
 
-        return Validate(board, lastCommittedSwapPair, request.From, request.To);
-    }
-
-    /// <summary>
-    /// Validates one requested Swap against the current authoritative board and
-    /// the current committed pair, evaluating the documented checks in the
-    /// <c>MATCH3_RULES.md</c> §2.1.2 order.
-    ///
-    /// This overload takes the two cell indices directly. It exists so a caller
-    /// holding the pair does not have to construct a <see cref="SwapRequest"/> to
-    /// ask the question; it is the same operation as
-    /// <see cref="Validate(BoardState, CommittedSwapPair?, SwapRequest)"/> and
-    /// implements no second rule.
-    /// </summary>
-    /// <param name="board">
-    /// The current authoritative board. It is read only and is never modified.
-    /// </param>
-    /// <param name="lastCommittedSwapPair">
-    /// The pair most recently committed to the board, or <c>null</c> when none has
-    /// been. Read only.
-    /// </param>
-    /// <param name="from">The §1.0 cell index the player is moving.</param>
-    /// <param name="to">The §1.0 cell index it is exchanged with.</param>
-    /// <returns>
-    /// The validation decision — accepted, or rejected with the first documented
-    /// reason that applies (§2.1.2).
-    /// </returns>
-    /// <exception cref="ArgumentNullException">
-    /// <paramref name="board"/> is <c>null</c>.
-    /// </exception>
-    public static SwapValidationResult Validate(
-        BoardState board,
-        CommittedSwapPair? lastCommittedSwapPair,
-        int from,
-        int to)
-    {
-        ArgumentNullException.ThrowIfNull(board);
-
         // 1. Index range and distinctness (§2.1.2 items 1–2).
-        //
-        // Both cells must be a §1.0 cell index in 0..63, and from must differ
-        // from to: "a swap of a cell with itself is not a Swap". An out-of-range
-        // value is rejected rather than clamped, folded, or reinterpreted
-        // (§2.1.3 item 2).
-        if (!IsCellIndex(from) || !IsCellIndex(to))
+        if (!IsCellIndex(request.From) || !IsCellIndex(request.To))
         {
             return SwapValidationResult.Rejected(SwapRejectionReason.InvalidCellIndex);
         }
 
-        if (from == to)
+        if (request.From == request.To)
         {
             return SwapValidationResult.Rejected(SwapRejectionReason.InvalidCellIndex);
         }
 
         // 2. Adjacency (§2.1.2 item 3, §2 item 1).
-        //
-        // Evaluated on the §1.0 row-major mapping by the board's own coordinate
-        // helper, never on raw index arithmetic alone: 7 and 8 differ by 1 but
-        // are not adjacent, and no wraparound exists across a row edge
-        // (§2.1.3 item 1). A diagonal pair and a distant pair are rejected here
-        // too — the same check covers all three.
-        if (!BoardState.AreOrthogonallyAdjacent(from, to))
+        if (!BoardState.AreOrthogonallyAdjacent(request.From, request.To))
         {
             return SwapValidationResult.Rejected(SwapRejectionReason.InvalidSwap);
         }
 
-        // 3. Already applied / idempotency (§2.1.2 item 4, §2.1.4 item 2).
-        //
-        // The action's unordered pair must not be the pair most recently committed
-        // to the board. The stored record is canonical (min, max) and the action's
-        // pair is {from, to}, so this is a comparison between unordered pairs:
-        // (13, 12) after a committed (12, 13) is the already-applied case exactly as
-        // (12, 13) is. A missing record — no Swap committed yet — never matches, so
-        // check 3 cannot fail on a fresh battle (§2.1.10 item 4). The record is read
-        // and never written: a rejection changes nothing, including clearing
-        // nothing (§2.1.10 items 6–7).
-        if (CommittedSwapPair.FromCells(from, to).Matches(lastCommittedSwapPair))
+        // 3. State precondition / staleness (ADR-025, MATCH3_RULES.md §2.1.2 item 4, §2.1.4).
+        if (request.ExpectedSequence.HasValue)
+        {
+            if (request.ExpectedSequence.Value != currentSequence)
+            {
+                return SwapValidationResult.Rejected(SwapRejectionReason.StaleAction);
+            }
+        }
+        else if (lastCommittedSwapPair is { } last && last.MatchesPair(request.From, request.To))
         {
             return SwapValidationResult.Rejected(SwapRejectionReason.StaleAction);
         }
 
         // 4. Match-producing (§2.1.2 item 5, §2 item 3).
-        //
-        // The swap is simulated on a copy of the board (§2 item 2) and must
-        // produce at least one §3 Match. "At least one" is the whole
-        // requirement: no minimum number of matches, no tier requirement, and no
-        // quality measure beyond this (§2.1.2 item 5).
-        if (!ProducesMatch(board, from, to))
+        if (!ProducesMatch(board, request.From, request.To))
         {
             return SwapValidationResult.Rejected(SwapRejectionReason.NoMatchFromSwap);
         }
 
         return SwapValidationResult.Accepted();
     }
+
+    /// <summary>
+    /// Validates one requested Swap against current sequence precondition (ADR-025).
+    /// </summary>
+    public static SwapValidationResult Validate(
+        BoardState board,
+        int currentSequence,
+        SwapRequest request) =>
+        Validate(board, lastCommittedSwapPair: null, currentSequence, request);
+
+    /// <summary>
+    /// Backward-compatible overload accepting LastCommittedSwapPair (ADR-010).
+    /// </summary>
+    public static SwapValidationResult Validate(
+        BoardState board,
+        CommittedSwapPair? lastCommittedSwapPair,
+        SwapRequest request) =>
+        Validate(board, lastCommittedSwapPair, currentSequence: request.ExpectedSequence ?? 0, request);
+
+    /// <summary>
+    /// Backward-compatible overload accepting raw from/to cells and optional committed pair.
+    /// </summary>
+    public static SwapValidationResult Validate(
+        BoardState board,
+        CommittedSwapPair? lastCommittedSwapPair,
+        int from,
+        int to) =>
+        Validate(board, lastCommittedSwapPair, 0, new SwapRequest(from, to));
 
     /// <summary>
     /// True when exchanging the two cells would produce at least one §3 Match

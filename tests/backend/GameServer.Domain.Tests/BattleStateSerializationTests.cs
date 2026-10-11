@@ -2182,4 +2182,24 @@ public class BattleStateSerializationTests
 
         Assert.Contains("2.3.2", thrown.Message, StringComparison.Ordinal);
     }
+
+    // =======================================================================
+    // ADR-025: LastCommittedSwapPair Serialization with Sequence & ActionId
+    // =======================================================================
+
+    [Fact]
+    public void RoundTrip_ShouldPreserveLastCommittedSwapPairWithActionIdAndSequence()
+    {
+        var committed = CommittedSwapPair.FromCells(12, 13, sequence: 5, actionId: "client-act-99");
+        var state = RepresentativeState() with { LastCommittedSwapPair = committed };
+
+        var json = BattleStateSerializer.Serialize(state);
+        var restored = BattleStateSerializer.Deserialize(json);
+
+        Assert.NotNull(restored.LastCommittedSwapPair);
+        Assert.Equal(12, restored.LastCommittedSwapPair.Value.MinCellIndex);
+        Assert.Equal(13, restored.LastCommittedSwapPair.Value.MaxCellIndex);
+        Assert.Equal(5, restored.LastCommittedSwapPair.Value.Sequence);
+        Assert.Equal("client-act-99", restored.LastCommittedSwapPair.Value.ActionId);
+    }
 }

@@ -206,6 +206,8 @@ public static class BattleStateSerializer
                 {
                     MinCellIndex = pair.MinCellIndex,
                     MaxCellIndex = pair.MaxCellIndex,
+                    Sequence = pair.Sequence,
+                    ActionId = pair.ActionId,
                 }
                 : null,
         };
@@ -505,11 +507,9 @@ public static class BattleStateSerializer
             FromBossStateJson(dto.BossState),
 
             // §2.1.10 item 3: an absent member is the documented representation of
-            // "no Swap has been committed". No sentinel pair is synthesized for it
-            // — the CommittedSwapPair constructor rejects any non-canonical value,
-            // including the (0, 0) stand-in the contract explicitly rules out.
+            // "no Swap has been committed".
             dto.LastCommittedSwapPair is { } pair
-                ? new CommittedSwapPair(pair.MinCellIndex, pair.MaxCellIndex)
+                ? new CommittedSwapPair(pair.MinCellIndex, pair.MaxCellIndex, pair.Sequence, pair.ActionId)
                 : null)
         {
             // CARD_RULES.md §3 item 6 / ADR-021: the spent cast allowance is

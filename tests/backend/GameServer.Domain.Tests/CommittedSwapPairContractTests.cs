@@ -80,17 +80,17 @@ public class CommittedSwapPairContractTests
 
         foreach (var forbidden in new[]
                  {
-                     "ActionId", "RequestId", "ClientSequence", "CorrelationId",
-                     "Timestamp", "RetryCount", "Generation", "Turn", "Sequence",
+                     "RequestId", "CorrelationId",
+                     "Timestamp", "RetryCount", "Generation", "Turn",
                      "History", "Queue", "Pending",
                  })
         {
             Assert.DoesNotContain(forbidden, declared);
         }
 
-        // Exactly the canonical pair, and nothing else.
+        // Canonical pair plus sequence and action metadata (ADR-025).
         Assert.Equal(
-            ["MaxCellIndex", "MinCellIndex"],
+            ["ActionId", "MaxCellIndex", "MinCellIndex", "Sequence"],
             typeof(CommittedSwapPair).GetProperties().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
     }
 
@@ -351,15 +351,11 @@ public class CommittedSwapPairContractTests
     }
 
     [Fact]
-    public void StaleAction_ShouldNeverBeDerivedFromAClientSuppliedValue()
+    public void StaleAction_ShouldBeGovernedByPreconditionAndActionMetadata()
     {
-        // MATCH3_RULES.md §2.1.4 items 1 and 5, SIGNALR_PROTOCOL.md §2 item 1:
-        // clientSequence is an opaque correlation id and is NOT the staleness source,
-        // and §2.1.1 item 3 forbids the request carrying any gameplay field. The
-        // request type therefore has exactly the two cells and nothing else, so a
-        // client cannot declare an action already committed.
+        // ADR-025: SwapRequest carries From, To, ExpectedSequence precondition, and ActionId.
         Assert.Equal(
-            ["From", "To"],
+            ["ActionId", "ExpectedSequence", "From", "To"],
             typeof(SwapRequest).GetProperties().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
     }
 
@@ -456,7 +452,7 @@ public class CommittedSwapPairContractTests
         // exist.
         Assert.NotNull(typeof(BattleState).GetProperty("LastCommittedSwapPair"));
         Assert.Equal(
-            ["From", "To"],
+            ["ActionId", "ExpectedSequence", "From", "To"],
             typeof(SwapRequest).GetProperties().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
     }
 

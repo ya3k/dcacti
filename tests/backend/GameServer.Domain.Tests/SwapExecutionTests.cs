@@ -767,7 +767,7 @@ public class SwapExecutionTests
         // exactly the two cells, so a client cannot declare an action already
         // committed.
         Assert.Equal(
-            ["From", "To"],
+            ["ActionId", "ExpectedSequence", "From", "To"],
             typeof(SwapRequest).GetProperties().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
         // The executor reads the record from the state it is given, and nothing
@@ -1208,4 +1208,55 @@ public class SwapExecutionTests
         SpecialGemType.Area => [SpecialGem.Area()],
         _ => throw new ArgumentOutOfRangeException(nameof(type), type, "unknown Special Gem type"),
     };
+
+    // =======================================================================
+    // ADR-025 — Execution with Precondition and Action Identity
+    // =======================================================================
+
+    [Fact]
+    public void Execute_WithMismatchedExpectedSequence_ShouldRejectAsStaleAction()
+    {
+        var state = BattleWith(MatchingBoard());
+        var request = new SwapRequest(From, To, ExpectedSequence: 99, ActionId: "act-1");
+
+        var result = SwapExecutor.Execute(state, request);
+
+        Assert.False(result.IsAccepted);
+        Assert.Equal(SwapRejectionReason.StaleAction, result.Reason);
+        Assert.Empty(result.Events);
+    }
+
+    [Fact]
+    public void Execute_WithMatchingExpectedSequence_ShouldCommitAndRecordActionId()
+    {
+        var state = BattleWith(MatchingBoard());
+        var request = new SwapRequest(From, To, ExpectedSequence: state.Sequence, ActionId: "act-42");
+
+        var result = SwapExecutor.Execute(state, request);
+
+        Assert.True(result.IsAccepted);
+        Assert.NotNull(result.State);
+        Assert.Equal(state.Sequence + 1, result.State.Sequence);
+        Assert.NotNull(result.State.LastCommittedSwapPair);
+        Assert.Equal("act-42", result.State.LastCommittedSwapPair.Value.ActionId);
+        Assert.Equal(state.Sequence + 1, result.State.LastCommittedSwapPair.Value.Sequence);
+    }
+
+    [Fact]
+    public void Execute_PermitsConsecutiveTurnSwapOfSameCoordinates_WhenBoardPermits()
+    {
+        // Turn 1: commit (From, To)
+        var state1 = BattleWith(MatchingBoard());
+        var commit1 = SwapExecutor.Execute(state1, new SwapRequest(From, To, ExpectedSequence: 0, ActionId: "act-1"));
+        Assert.True(commit1.IsAccepted);
+        Assert.Equal(1, commit1.State!.Sequence);
+
+        // Turn 2: Board at Turn 2 happens to permit swap of (From, To) again
+        var state2 = commit1.State with { BoardState = MatchingBoard() };
+        var commit2 = SwapExecutor.Execute(state2, new SwapRequest(From, To, ExpectedSequence: 1, ActionId: "act-2"));
+
+        Assert.True(commit2.IsAccepted);
+        Assert.Equal(2, commit2.State!.Sequence);
+        Assert.Equal("act-2", commit2.State.LastCommittedSwapPair!.Value.ActionId);
+    }
 }

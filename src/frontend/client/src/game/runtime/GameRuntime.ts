@@ -605,6 +605,7 @@ export class GameRuntime implements GameRuntimePort {
         battleState.battleId,
         candidate.fromCell as number,
         candidate.toCell as number,
+        battleState.sequence,
         this.nextClientSequence('swap')
       );
     }

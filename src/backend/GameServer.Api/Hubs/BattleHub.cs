@@ -1053,8 +1053,8 @@ public class BattleHub : Hub
     /// <param name="fromCell">The §1.0 cell index the player is moving.</param>
     /// <param name="toCell">The §1.0 cell index it is exchanged with.</param>
     /// <param name="clientSequence">
-    /// The client's opaque correlation value. Carried for transport compatibility
-    /// and not consulted (<c>SIGNALR_PROTOCOL.md</c> §2.1 item 1).
+    /// The client's action idempotency token / correlation identifier (<c>ADR-025</c>).
+    /// When formatted as <c>"{expectedSequence}:{actionId}"</c>, carries the state precondition.
     /// </param>
     /// <returns>The §5 acknowledgement: accepted, or rejected with its reason.</returns>
     public async Task<SwapResponse> Swap(
@@ -1065,40 +1065,40 @@ public class BattleHub : Hub
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
 
-        _ = clientSequence;
+        int? expectedSequence = null;
+        string? actionId = clientSequence;
 
-        var result = await _battles.ExecuteSwapAsync(battleId, new SwapRequest(fromCell, toCell));
+        if (!string.IsNullOrEmpty(clientSequence))
+        {
+            var colonIndex = clientSequence.IndexOf(':');
+            if (colonIndex > 0 && int.TryParse(clientSequence.AsSpan(0, colonIndex), out var parsedSeq))
+            {
+                expectedSequence = parsedSeq;
+                actionId = clientSequence[(colonIndex + 1)..];
+            }
+        }
+
+        var request = new SwapRequest(fromCell, toCell, expectedSequence, actionId);
+        var result = await _battles.ExecuteSwapAsync(battleId, request);
 
         if (result is null)
         {
-            // An unknown battle resolves nothing. The rejection code for this path
-            // is not a Swap-validation reason, so none of §2.1.2's four is
-            // fabricated for it; the action simply did not happen.
             return new SwapResponse(Accepted: false, Reason: "BATTLE_NOT_FOUND");
         }
 
         if (result.Value.IsRejected)
         {
-            // The documented rejection code (SIGNALR_PROTOCOL.md §5 item 3), spelled
-            // by its owning mapping rather than derived from the enum's identifier.
             return new SwapResponse(
                 Accepted: false,
                 Reason: SwapRejectionCodes.ToContractCode(result.Value.Reason));
         }
 
-        // The state is committed before anything is pushed: events and state
-        // describe a resolution that has already happened (SIGNALR_PROTOCOL.md
-        // §3.1 item 1, GAME_STATE.md §5.1 item 3).
-        await Clients.Group(battleId).SendAsync("BattleStateUpdated", ToPayload(result.Value.State));
+        if (result.Value.IsIdempotentReplay)
+        {
+            return new SwapResponse(Accepted: true, Reason: null);
+        }
 
-        // The resolution's ordered events follow the write-back, as one atomic
-        // batch for this one resolved action (SIGNALR_PROTOCOL.md §3, §3.1). The
-        // batch is projected one-to-one from the executor's own list onto the §3.2
-        // wire schema and its serverSequence is read from the committed state —
-        // nothing is sorted, filtered, regrouped, re-derived, or incremented here,
-        // and no second detection pass is run (GAME_EVENTS.md §3 item 6). The
-        // Domain events are replaced by wire DTOs precisely so that this send is
-        // serializable at all (§3.2.1 item 1).
+        await Clients.Group(battleId).SendAsync("BattleStateUpdated", ToPayload(result.Value.State));
         await Clients.Group(battleId).SendAsync("ReceiveEvents", ToPayload(result.Value));
 
         return new SwapResponse(Accepted: true, Reason: null);

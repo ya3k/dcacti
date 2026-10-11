@@ -384,6 +384,17 @@ describe('SignalRService', () => {
       expect(args).toEqual(['battle-1', 0, 8, 'req-2']);
     });
 
+    it('encodes expectedSequence precondition into the action token (ADR-025)', async () => {
+      const hub = installFakeHub();
+      await service.connect('/hubs/battle');
+
+      await service.swap('battle-1', 4, 5, 2, 'req-adr025');
+
+      const [{ args }] = hub.invokes;
+      expect(args).toHaveLength(4);
+      expect(args).toEqual(['battle-1', 4, 5, '2:req-adr025']);
+    });
+
     it('returns the §5 acknowledgement unchanged', async () => {
       const hub = installFakeHub();
       await service.connect('/hubs/battle');

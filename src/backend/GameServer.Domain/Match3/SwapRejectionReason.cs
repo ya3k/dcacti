@@ -78,7 +78,18 @@ public enum SwapRejectionReason
     /// unchanged and <c>LastCommittedSwapPair</c> keeps its value
     /// (<c>MATCH3_RULES.md</c> §2.1.5, <c>GAME_STATE.md</c> §2.1.10 items 6–7).
     /// </summary>
+    /// <summary>
+    /// The action's state precondition was violated (ADR-025): the requested
+    /// state version does not match the authoritative state sequence, or an
+    /// obsolete state was observed.
+    /// </summary>
     StaleAction = 4,
+
+    /// <summary>
+    /// The action identifier was previously committed with a different payload
+    /// (ADR-025 idempotency conflict).
+    /// </summary>
+    InvalidActionPayload = 5,
 }
 
 /// <summary>
@@ -110,6 +121,7 @@ public static class SwapRejectionCodes
         SwapRejectionReason.InvalidSwap => "INVALID_SWAP",
         SwapRejectionReason.NoMatchFromSwap => "NO_MATCH_FROM_SWAP",
         SwapRejectionReason.StaleAction => "STALE_ACTION",
+        SwapRejectionReason.InvalidActionPayload => "INVALID_ACTION_PAYLOAD",
         _ => throw new ArgumentOutOfRangeException(
             nameof(reason),
             reason,

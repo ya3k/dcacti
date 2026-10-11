@@ -80,24 +80,19 @@ public readonly record struct CommittedSwapPair
     public int MaxCellIndex { get; }
 
     /// <summary>
-    /// The canonical record of the pair two exchanged cells form
-    /// (<c>GAME_STATE.md</c> §2.1.10 item 2).
-    ///
-    /// This is how a committed pair is built from a Swap's two cells, in either
-    /// argument order: the stored value is the unordered pair's canonical
-    /// spelling, so the action's order has no effect on it.
+    /// The sequence number at which this swap was committed (ADR-025).
     /// </summary>
-    /// <param name="firstIndex">One of the two exchanged §1.0 cell indices.</param>
-    /// <param name="secondIndex">The other exchanged §1.0 cell index.</param>
-    /// <exception cref="ArgumentOutOfRangeException">
-    /// Either index is outside <c>0..63</c>, or the two are the same cell. Both
-    /// are <i>request</i> defects and are reported by
-    /// <see cref="SwapValidator"/>'s documented rejection
-    /// (<see cref="SwapRejectionReason.InvalidCellIndex"/>); this factory is the
-    /// commit path, which is only ever reached for an already-accepted swap, so
-    /// the same conditions are contract violations here.
-    /// </exception>
-    public static CommittedSwapPair FromCells(int firstIndex, int secondIndex)
+    public int Sequence { get; }
+
+    /// <summary>
+    /// The client-generated action idempotency identifier (ADR-025).
+    /// </summary>
+    public string? ActionId { get; }
+
+    public static CommittedSwapPair FromCells(int firstIndex, int secondIndex) =>
+        FromCells(firstIndex, secondIndex, 0, null);
+
+    public static CommittedSwapPair FromCells(int firstIndex, int secondIndex, int sequence, string? actionId = null)
     {
         if (!IsCellIndex(firstIndex) || !IsCellIndex(secondIndex))
         {
@@ -118,30 +113,16 @@ public readonly record struct CommittedSwapPair
         }
 
         return firstIndex < secondIndex
-            ? new CommittedSwapPair(firstIndex, secondIndex)
-            : new CommittedSwapPair(secondIndex, firstIndex);
+            ? new CommittedSwapPair(firstIndex, secondIndex, sequence, actionId)
+            : new CommittedSwapPair(secondIndex, firstIndex, sequence, actionId);
     }
 
-    /// <summary>
-    /// Reconstructs a committed pair from its canonical components — the form a
-    /// stored or deserialized record takes (<c>GAME_STATE.md</c> §2.1.10 item 10).
-    ///
-    /// Prefer <see cref="FromCells"/> when building the value from a Swap's two
-    /// cells: it establishes the canonical order for the caller. This constructor
-    /// exists so a serializer can rebuild the value it wrote, and it enforces the
-    /// same canonical invariant rather than normalizing silently
-    /// (<c>MATCH3_RULES.md</c> §2.1.3 item 2).
-    /// </summary>
-    /// <param name="MinCellIndex">The lower exchanged §1.0 cell index (<c>0..63</c>).</param>
-    /// <param name="MaxCellIndex">
-    /// The higher exchanged §1.0 cell index (<c>0..63</c>), strictly greater than
-    /// <paramref name="MinCellIndex"/>.
-    /// </param>
-    /// <exception cref="ArgumentOutOfRangeException">
-    /// Either index is outside <c>0..63</c>, or the pair is not in canonical
-    /// ascending order.
-    /// </exception>
     public CommittedSwapPair(int MinCellIndex, int MaxCellIndex)
+        : this(MinCellIndex, MaxCellIndex, 0, null)
+    {
+    }
+
+    public CommittedSwapPair(int MinCellIndex, int MaxCellIndex, int Sequence, string? ActionId = null)
     {
         if (!IsCellIndex(MinCellIndex) || !IsCellIndex(MaxCellIndex))
         {
@@ -163,24 +144,24 @@ public readonly record struct CommittedSwapPair
 
         this.MinCellIndex = MinCellIndex;
         this.MaxCellIndex = MaxCellIndex;
+        this.Sequence = Sequence;
+        this.ActionId = ActionId;
     }
 
     private static bool IsCellIndex(int index) => index >= 0 && index < BoardState.CellCount;
 
-    /// <summary>
-    /// True when <paramref name="candidate"/> names the same unordered pair as
-    /// this value — the comparison <c>MATCH3_RULES.md</c> §2.1.4 item 2 defines
-    /// for the already-applied check.
-    ///
-    /// Because both values are canonical, this is a plain field comparison; it
-    /// is exposed as a named operation so the call site reads as the documented
-    /// rule rather than as an equality of two numbers.
-    /// </summary>
-    /// <param name="candidate">The pair to compare, or <c>null</c>.</param>
-    /// <returns>
-    /// True when <paramref name="candidate"/> is present and names this pair.
-    /// A <c>null</c> candidate — "no other commit" — is never equal.
-    /// </returns>
     public bool Matches(CommittedSwapPair? candidate) =>
         candidate is { } other && other.MinCellIndex == MinCellIndex && other.MaxCellIndex == MaxCellIndex;
+
+    public bool MatchesPair(int firstIndex, int secondIndex)
+    {
+        var min = Math.Min(firstIndex, secondIndex);
+        var max = Math.Max(firstIndex, secondIndex);
+        return min == MinCellIndex && max == MaxCellIndex;
+    }
+
+    public bool Equals(CommittedSwapPair other) =>
+        MinCellIndex == other.MinCellIndex && MaxCellIndex == other.MaxCellIndex;
+
+    public override int GetHashCode() => HashCode.Combine(MinCellIndex, MaxCellIndex);
 }

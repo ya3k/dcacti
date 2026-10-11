@@ -766,10 +766,20 @@ export class SignalRService {
     battleId: string,
     fromCell: number,
     toCell: number,
-    clientSequence: string
+    expectedSequenceOrClientSequence: number | string,
+    clientSequence?: string
   ): Promise<SwapResult> {
     if (!this.connection || this.connection.state !== signalR.HubConnectionState.Connected) {
       throw new Error('SignalR connection is not established.');
+    }
+
+    let actionToken: string;
+    if (typeof expectedSequenceOrClientSequence === 'number') {
+      actionToken = clientSequence !== undefined
+        ? `${expectedSequenceOrClientSequence}:${clientSequence}`
+        : `${expectedSequenceOrClientSequence}`;
+    } else {
+      actionToken = expectedSequenceOrClientSequence;
     }
 
     return await this.connection.invoke<SwapResult>(
@@ -777,7 +787,7 @@ export class SignalRService {
       battleId,
       fromCell,
       toCell,
-      clientSequence
+      actionToken
     );
   }
 

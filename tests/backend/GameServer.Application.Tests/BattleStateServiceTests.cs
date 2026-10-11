@@ -492,6 +492,72 @@ public class BattleStateServiceTests
         }
     }
 
+    // =======================================================================
+    // ADR-025: Idempotency and Precondition Verification
+    // =======================================================================
+
+    [Fact]
+    public async Task ExecuteSwap_IdempotentRetry_ShouldReturnAcceptedWithoutDuplicateExecution()
+    {
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
+        var battleId = "battle-idempotent-retry";
+        var created = await service.CreateBattleAsync(battleId, Owner, PetConfiguration, BossDefinition);
+        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+
+        var firstRequest = new SwapRequest(pair.From, pair.To, ExpectedSequence: created.Sequence, ActionId: "client-act-1");
+        var firstResult = await service.ExecuteSwapAsync(battleId, firstRequest);
+
+        Assert.True(firstResult!.Value.IsAccepted);
+        Assert.False(firstResult.Value.IsIdempotentReplay);
+        var writeCountAfterFirst = repository.WriteCount;
+
+        // Retry identical request with same actionId (lost ack scenario)
+        var retryRequest = new SwapRequest(pair.From, pair.To, ExpectedSequence: created.Sequence, ActionId: "client-act-1");
+        var retryResult = await service.ExecuteSwapAsync(battleId, retryRequest);
+
+        Assert.True(retryResult!.Value.IsAccepted);
+        Assert.True(retryResult.Value.IsIdempotentReplay);
+        Assert.Equal(writeCountAfterFirst, repository.WriteCount); // No duplicate state mutation or write
+    }
+
+    [Fact]
+    public async Task ExecuteSwap_ReusedActionIdWithDifferentPayload_ShouldRejectAsInvalidActionPayload()
+    {
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
+        var battleId = "battle-reused-action-id";
+        var created = await service.CreateBattleAsync(battleId, Owner, PetConfiguration, BossDefinition);
+        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+
+        var firstRequest = new SwapRequest(pair.From, pair.To, ExpectedSequence: created.Sequence, ActionId: "client-act-reused");
+        var firstResult = await service.ExecuteSwapAsync(battleId, firstRequest);
+        Assert.True(firstResult!.Value.IsAccepted);
+
+        // Reusing actionId with different coordinates
+        var conflictRequest = new SwapRequest(0, 1, ExpectedSequence: created.Sequence, ActionId: "client-act-reused");
+        var conflictResult = await service.ExecuteSwapAsync(battleId, conflictRequest);
+
+        Assert.True(conflictResult!.Value.IsRejected);
+        Assert.Equal(SwapRejectionReason.InvalidActionPayload, conflictResult.Value.Reason);
+    }
+
+    [Fact]
+    public async Task ExecuteSwap_StaleExpectedSequence_ShouldRejectAsStaleAction()
+    {
+        var service = NewService();
+        var battleId = "battle-stale-sequence";
+        var created = await service.CreateBattleAsync(battleId, Owner, PetConfiguration, BossDefinition);
+        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
+
+        // Request carries obsolete sequence
+        var staleRequest = new SwapRequest(pair.From, pair.To, ExpectedSequence: 999, ActionId: "client-act-stale");
+        var result = await service.ExecuteSwapAsync(battleId, staleRequest);
+
+        Assert.True(result!.Value.IsRejected);
+        Assert.Equal(SwapRejectionReason.StaleAction, result.Value.Reason);
+    }
+
     [Fact]
     public async Task ExecuteSwap_ShouldReturnNullForAnUnknownBattle()
     {

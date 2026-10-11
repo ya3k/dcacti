@@ -1,6 +1,6 @@
 # ADR-010: Committed-Swap State for Idempotent Swap Rejection
 
-**Status:** Accepted
+**Status:** Superseded by ADR-025
 **Date:** 2026-09-20
 
 ## Context

@@ -2521,6 +2521,107 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         await hubConnection.StopAsync();
     }
 
+    // =======================================================================
+    // ADR-025: Precondition and Idempotency Integration Tests
+    // =======================================================================
+
+    [Fact]
+    public async Task Swap_WithMatchingExpectedSequence_ShouldCommitSuccessfully()
+    {
+        const string battleId = "battle-swap-matching-seq";
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
+
+        var hubConnection = BuildHubConnection();
+        await hubConnection.StartAsync();
+
+        // Pass format "expectedSequence:actionId" -> "0:act-matching-seq"
+        var result = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, pair.From, pair.To, "0:act-matching-seq");
+
+        Assert.True(result.Accepted);
+        Assert.Null(result.Reason);
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task Swap_WithMismatchedExpectedSequence_ShouldRejectAsStaleAction()
+    {
+        const string battleId = "battle-swap-mismatched-seq";
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
+
+        var hubConnection = BuildHubConnection();
+        await hubConnection.StartAsync();
+
+        // Pass obsolete expectedSequence -> "99:act-mismatched-seq"
+        var result = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, pair.From, pair.To, "99:act-mismatched-seq");
+
+        Assert.False(result.Accepted);
+        Assert.Equal("STALE_ACTION", result.Reason);
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task Swap_IdempotentRetry_ShouldReturnAcceptedWithoutDuplicateEvents()
+    {
+        const string battleId = "battle-swap-idempotent-events";
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
+
+        var hubConnection = BuildHubConnection();
+        var eventBatches = 0;
+        hubConnection.On<JsonElement>("ReceiveEvents", _ => Interlocked.Increment(ref eventBatches));
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+        // First commit
+        var first = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, pair.From, pair.To, "0:act-idempotent-replay");
+        Assert.True(first.Accepted);
+
+        await Task.Delay(200);
+        Assert.Equal(1, Volatile.Read(ref eventBatches));
+
+        // Retrying identical request with same actionId
+        var retry = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, pair.From, pair.To, "0:act-idempotent-replay");
+        Assert.True(retry.Accepted);
+        Assert.Null(retry.Reason);
+
+        await Task.Delay(200);
+        Assert.Equal(1, Volatile.Read(ref eventBatches)); // No second event batch emitted!
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task Swap_ReusedActionIdWithConflictingCoordinates_ShouldRejectAsInvalidActionPayload()
+    {
+        const string battleId = "battle-swap-conflicting-payload";
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
+
+        var hubConnection = BuildHubConnection();
+        await hubConnection.StartAsync();
+
+        // First commit with actionId "act-unique"
+        var first = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, pair.From, pair.To, "0:act-unique");
+        Assert.True(first.Accepted);
+
+        // Reusing same actionId with different coordinates
+        var conflictFrom = pair.From == 0 ? 20 : 0;
+        var conflictTo = pair.From == 0 ? 21 : 1;
+        var conflict = await hubConnection.InvokeAsync<SwapResponse>(
+            "Swap", battleId, conflictFrom, conflictTo, "0:act-unique");
+
+        Assert.False(conflict.Accepted);
+        Assert.Equal("INVALID_ACTION_PAYLOAD", conflict.Reason);
+
+        await hubConnection.StopAsync();
+    }
+
     [Fact]
     public async Task Swap_ForUnknownBattle_ShouldRejectWithoutCreatingState()
     {

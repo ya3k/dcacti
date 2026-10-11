@@ -32,4 +32,10 @@ namespace GameServer.Domain.Match3;
 /// </summary>
 /// <param name="From">The §1.0 cell index the player is moving.</param>
 /// <param name="To">The §1.0 cell index it is exchanged with.</param>
-public readonly record struct SwapRequest(int From, int To);
+/// <param name="ExpectedSequence">The client-observed authoritative state version precondition (ADR-025).</param>
+/// <param name="ActionId">The unique client-generated action idempotency identifier (ADR-025).</param>
+public readonly record struct SwapRequest(
+    int From,
+    int To,
+    int? ExpectedSequence = null,
+    string? ActionId = null);

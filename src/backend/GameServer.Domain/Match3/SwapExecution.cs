@@ -34,7 +34,8 @@ public readonly record struct SwapExecutionResult
         BattleState? state,
         CascadeResolver.CascadeResult resolution,
         IReadOnlyList<BattleEvent> events,
-        ResourceGeneration? resources)
+        ResourceGeneration? resources,
+        bool isIdempotentReplay = false)
     {
         IsAccepted = isAccepted;
         Reason = reason;
@@ -42,12 +43,18 @@ public readonly record struct SwapExecutionResult
         _resolution = resolution;
         _events = events;
         _resources = resources;
+        IsIdempotentReplay = isIdempotentReplay;
     }
 
     private readonly BattleState? _state;
     private readonly CascadeResolver.CascadeResult _resolution;
     private readonly IReadOnlyList<BattleEvent>? _events;
     private readonly ResourceGeneration? _resources;
+
+    /// <summary>
+    /// True when this result is an idempotent response to a previously committed action (ADR-025).
+    /// </summary>
+    public bool IsIdempotentReplay { get; }
 
     /// <summary>
     /// True when the Swap was accepted, committed, and resolved
@@ -260,8 +267,14 @@ public readonly record struct SwapExecutionResult
     /// nothing and emits nothing (<c>MATCH3_RULES.md</c> §2.1.5 items 5–6).
     /// </summary>
     /// <param name="reason">The failing check, as decided by the validator.</param>
-    internal static SwapExecutionResult Rejected(SwapRejectionReason reason) =>
+    public static SwapExecutionResult Rejected(SwapRejectionReason reason) =>
         new(false, reason, null, default, [], null);
+
+    /// <summary>
+    /// The idempotent result for a retried action that has already been committed (ADR-025).
+    /// </summary>
+    public static SwapExecutionResult IdempotentReplay(BattleState state) =>
+        new(true, SwapRejectionReason.None, state, default, [], null, isIdempotentReplay: true);
 
     /// <summary>
     /// The commit result for an accepted request: the resolved authoritative state,
@@ -415,6 +428,7 @@ public static class SwapExecutor
         var validation = SwapValidator.Validate(
             state.BoardState,
             state.LastCommittedSwapPair,
+            state.Sequence,
             request);
 
         if (validation.IsRejected)
@@ -516,10 +530,8 @@ public static class SwapExecutor
             // PetState is carried across unchanged by the `with` expression.
             PetState = petState,
 
-            // §2.1.6 step 4 / GAME_STATE.md §2.1.10 item 5: the committed pair,
-            // canonically (min, max) so either argument order records one value
-            // (§2.1.10 item 2).
-            LastCommittedSwapPair = CommittedSwapPair.FromCells(request.From, request.To),
+            // §2.1.6 step 4 / GAME_STATE.md §2.1.10: the committed pair and action metadata (ADR-025).
+            LastCommittedSwapPair = CommittedSwapPair.FromCells(request.From, request.To, state.Sequence + 1, request.ActionId),
         };
 
         return SwapExecutionResult.Committed(resolved, resolution, events, generation);
