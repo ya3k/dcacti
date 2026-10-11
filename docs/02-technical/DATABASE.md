@@ -1,6 +1,17 @@
 # Database
 
-**Version:** 1.38 (§1's battle-end atomicity block gains item 7, which states the
+**Version:** 1.39 (§1, §1 note items 1–2, §3, and §5 item 4 **synchronized with
+proposed ADR-024** per TASK-250: database-driven boss balance configuration
+proposing the Domain Overlay model. The proposed schema extends `BossDefinition`
+with runtime balance columns `MaxHP` (int), `ATK` (int), `DEF` (int), and
+`EnrageThreshold` (double precision), superseding the compile-time non-persisted
+restriction of §1 note item 1 upon approval. §1 note item 2 documents the proposed
+`GetDefinitionByIdentityAsync` lookup overlaying runtime database balance onto
+Domain structural baselines, preserving `SecondaryEffect` (Burn, Drain Power, Root)
+and offline unit tests without dual runtime truths. §3 records the range
+constraints, and §5 item 4 records the planned data migration conventions.
+All C# code and EF Core migration implementation is deferred to `TASK-251` pending
+operator approval. **Status: Proposed decision under operator review.** Prior 1.38: (§1's battle-end atomicity block gains item 7, which states the
 contract's **scope explicitly**: atomicity is a property of how the three
 already-documented writes commit and redefines no value, so the XP formula,
 Level formula, XP cap, reward amounts, Pet Tier/Star, Passive effects, the Redis
@@ -505,12 +516,10 @@ Relic                                (a player's OWNED instance, if Relics
 ├── RelicDefinitionId (FK → RelicDefinition)
 └── AcquiredAt
 
-BossDefinition                       (static content — MVP scope target:
- │                                    5 Bosses, MVP_SCOPE.md §1;
- │                                    content-defined: 5, BOSS_RULES.md
- │                                    §6; only content-defined rows may
- │                                    ever be provisioned — see contract
- │                                    note below)
+BossDefinition                       (static content & runtime balance — MVP
+ │                                    scope target: 5 Bosses, MVP_SCOPE.md §1;
+ │                                    content-defined: 5, BOSS_RULES.md §6;
+ │                                    ADR-024 proposes database-driven balance)
 ├── BossDefinitionId (PK)             (independent stable persistence key —
  │                                     content/Domain supplied, never
  │                                     database-generated; distinct from
@@ -525,6 +534,16 @@ BossDefinition                       (static content — MVP scope target:
  │                                     name; no display-name column exists
  │                                     on this table)
 ├── Element
+├── MaxHP                             (int, NOT NULL, proposed under ADR-024 —
+ │                                     runtime authoritative combat balance;
+ │                                     canonical baseline in BossDefinitions)
+├── ATK                               (int, NOT NULL, proposed under ADR-024 —
+ │                                     runtime authoritative combat balance)
+├── DEF                               (int, NOT NULL, proposed under ADR-024 —
+ │                                     runtime authoritative combat balance)
+├── EnrageThreshold                   (double precision, NOT NULL, proposed
+ │                                     under ADR-024 — runtime enrage trigger
+ │                                     ratio, strict comparison HP < MaxHP * threshold)
 ├── PassiveDefinition                (JSON, NOT NULL — member list:
  │                                    TASK-045; BOSS_RULES.md §6,
  │                                    PASSIVE_RULES.md §4)
@@ -852,26 +871,31 @@ D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
      condition is inserted for it. The column set, the `Relic` ownership table,
      and every other table are unchanged by those migrations.
 
-**Persistence contract for `BossDefinition`.** (TASK-045)
+**Persistence contract for `BossDefinition`.** (TASK-045, updated per proposed ADR-024 / TASK-250)
 
-1. **Persistent record vs combat-stat source.** The row is the
-   persistent static identity/configuration record: `Identity`,
-   `Element`, and the two JSON objects below. `Identity` holds the Boss's
-   canonical technical ID (`BOSS_RULES.md` §6.4, e.g. `boss-hoa-long`) —
-   it is **not** the display name, and it is **not** `BossDefinitionId`
-   (this row's persistence primary key): the three are never collapsed
-   (TASK-046). The display name is presentation content owned by
-   `BOSS_RULES.md` §6 and is not a column of this table. The combat-definition
-   values `MaxHP`, `ATK`, `DEF`, `EnrageThreshold` (`BOSS_RULES.md`
-   §6.1) are **not** stored in this table — they remain sourced from the
-   authoritative Domain `BossDefinition` content at battle creation. At
-   battle creation the server combines the persisted
-   identity/configuration with that combat-stat configuration to
-   construct the existing `BossState` (`GAME_STATE.md` §2.4); after
-   battle creation, the BattleState/Redis contract governs
-   (`REDIS_STATE.md`, ADR-005). No column may be added unless an
-   existing authoritative document explicitly requires it (anti-
-   overengineering, `AGENTS.md` §9).
+1. **Persistent record vs combat-stat source (Proposed ADR-024).** Historically,
+   combat stats (`MaxHP`, `ATK`, `DEF`, `EnrageThreshold`) were non-persisted
+   Domain configuration. Under proposed **ADR-024** (Domain Overlay model),
+   **PostgreSQL becomes authoritative at runtime** for these four combat balance
+   values. The row persists `BossDefinitionId`, `Identity`, `Element`, `MaxHP`,
+   `ATK`, `DEF`, `EnrageThreshold`, `PassiveDefinition`, and `SkillDefinition`.
+   `Identity` holds the Boss's canonical technical ID (`BOSS_RULES.md` §6.4, e.g.
+   `boss-hoa-long`) — it is **not** the display name, and it is **not**
+   `BossDefinitionId`: the three are never collapsed (TASK-046). The display name
+   is presentation content owned by `BOSS_RULES.md` §6 and is not a column.
+   `BossSkillDefinition.SecondaryEffect` (`BOSS_RULES.md` §6.3.1 — Flame Burst
+   Burn, Drain Power, Root) **remains Domain configuration and is not stored in
+   PostgreSQL**: the Domain Overlay model preserves it intact from the static
+   Domain baseline (`BossDefinitions.All`) when hydrating the runtime definition,
+   avoiding complex polymorphic JSON migrations for MVP while keeping secondary
+   skill mechanics 100% functional. Static `BossDefinitions.All` provides canonical
+   baseline defaults for migration seeding and offline unit test fixtures; it is
+   strictly prohibited from acting as a silent runtime fallback during battle
+   creation (fail-closed semantics). At battle creation, the server snapshots the
+   database-overlaid definition into `BossState` (`GAME_STATE.md` §2.4) and in-memory
+   battle configuration; after battle creation, the BattleState/Redis contract
+   governs (`REDIS_STATE.md`, ADR-005). All C# code and EF Core migration
+   implementation is deferred to TASK-251.
 2. **`BossDefinitionId` is a caller/content-supplied stable key.** (TASK-049)
    It is the row's primary key and is **independent**: distinct from
    `Identity` and from the display name, and never derived from either at
@@ -908,27 +932,29 @@ D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
      A caller resolves the row **by `Identity`** and then stores that row's
      `BossDefinitionId` as a foreign key; it must never substitute one value
      for the other.
-   - **Resolution mechanism and resolver owner.** (TASK-051) The resolution
-     `Identity` → `BossDefinitionId` is a **PostgreSQL lookup by `Identity`**,
-     performed on the battle-end path against the persisted `BossDefinition`
-     row whose `Identity` equals `BattleState.BossState.BossId`
-     (`§3` — `Identity NOT NULL, UNIQUE` is the unique target of that lookup).
-     The **`Infrastructure` layer owns the lookup**, expressed as a query on the
-     existing persistence boundary that `ARCHITECTURE.md` §3 designates for
-     `DATABASE.md` data (`BossDefinitionLookup`, implementation
-     `GameServer.Infrastructure.Postgres.BossDefinitionLookup`); the Application
-     layer orchestrates the battle-end step and the Domain layer supplies the
-     Identity value but neither performs nor owns the query
-     (`ARCHITECTURE.md` §2.1 — layer direction, `TDD.md` §4 item 3 — Postgres
-     is touched only on the terminal path, never on the hot resolution path).
-     This introduces **no new abstraction, resolver service, registry, or
-     read model**: the lookup is a query on the existing persistence boundary
-     (`ARCHITECTURE.md` §5 item 3 — "no separate read-model store").
-     `BattleState` is **unchanged** by this contract: no
-     `BossDefinitionId` member is added to `BossState` or to `BattleState`,
-     so no Redis serialization, snapshot, or wire contract is affected
-     (`GAME_STATE.md` §2.4 — "No second identity field … is added to
-     `BossState`"; `REDIS_STATE.md` §2 item 1).
+   - **Resolution mechanisms and resolver owner (TASK-051, updated ADR-024).**
+     Two lookups exist across the battle lifecycle:
+     1. **Battle Start (proposed under ADR-024 / TASK-251):** `BattleStartService`
+        calls `IBossDefinitionLookup.GetDefinitionByIdentityAsync(bossIdentity)`.
+        The Infrastructure implementation queries PostgreSQL for `MaxHP`, `ATK`,
+        `DEF`, and `EnrageThreshold`, overlays them onto the static Domain baseline
+        from `BossDefinitions.All`, and returns the populated `BossDefinition`.
+        If the client requests an unknown `bossId`, resolution returns `null`
+        and battle start fails closed with `BattleStartOutcome.BossNotFound`
+        (`BOSS_NOT_FOUND`, 400 Bad Request per `API_CONTRACTS.md` §3). If PostgreSQL
+        is unreachable (connection failure) or the provisioned row is missing/violates
+        range constraints, resolution fails closed with an unhandled exception bubbling
+        up as HTTP 500 Internal Server Error (never masked as a client 400).
+     2. **Battle End (TASK-051):** The resolution `Identity` → `BossDefinitionId`
+        is a PostgreSQL lookup by `Identity` (`FindBossDefinitionIdByIdentityAsync`),
+        performed on the battle-end path against the persisted `BossDefinition`
+        row whose `Identity` equals `BattleState.BossState.BossId` (`§3`).
+     The **`Infrastructure` layer owns both queries**, expressed on the existing
+     persistence boundary `BossDefinitionLookup` (Application interface `IBossDefinitionLookup`).
+     This introduces no separate read-model store (`ARCHITECTURE.md` §5 item 3).
+     `BattleState` is **unchanged** by this contract: no `BossDefinitionId` member
+     is added to `BossState` or to `BattleState`, so no Redis serialization,
+     snapshot, or wire contract is affected (`GAME_STATE.md` §2.4, `REDIS_STATE.md` §2 item 1).
 3. **`PassiveDefinition` members** (JSON object, NOT NULL — every Boss
    carries exactly one Passive, `BOSS_RULES.md` §1/§6.4):
    ```json
@@ -1593,6 +1619,10 @@ BossDefinition.BossDefinitionId     NOT NULL, UNIQUE, caller/content-supplied (i
                                                                       from the display name — §1 note item 2, TASK-049)
 BossDefinition.PassiveDefinition  NOT NULL                           (every Boss has one Passive — BOSS_RULES.md §1)
 BossDefinition.SkillDefinition    NOT NULL                           (every Boss has one Skill — BOSS_RULES.md §1)
+BossDefinition.MaxHP             NOT NULL, > 0                      (proposed under ADR-024: runtime Boss MaxHP)
+BossDefinition.ATK               NOT NULL, >= 0                     (proposed under ADR-024: runtime Boss ATK)
+BossDefinition.DEF               NOT NULL, >= 0                     (proposed under ADR-024: runtime Boss DEF)
+BossDefinition.EnrageThreshold   NOT NULL, 0.0 < x < 1.0            (proposed under ADR-024: runtime Boss enrage fraction)
 BossDefinition.Identity           NOT NULL, UNIQUE                   (canonical technical Boss ID — BOSS_RULES.md
                                                                       §6.4; the unique target of the FK lookup in §1)
 BossDefinition.PassiveDefinition.resetBehavior ∈ {Default, Partial, Persistent}   (PASSIVE_RULES.md §4)
@@ -1708,3 +1738,16 @@ when a real query pattern requires them (anti-overengineering,
    MVP rows (`boss-def-son-thach-ve`, `boss-def-kim-loi-vuong`); all five
    canonical rows are provisioned and every `BattleResult` write's FK target
    exists wherever the migrations have been applied (TASK-051 decision A3).
+   Under proposed **ADR-024 / TASK-251**, a schema migration will add the four
+   runtime balance columns (`MaxHP`, `ATK`, `DEF`, `EnrageThreshold`) with safe
+   transitional default values, immediately update all five provisioned rows with canonical baseline
+   values from `BOSS_RULES.md` §6.1 (including Hỏa Long `5000 / 100 / 50 / 0.30`) within
+   the same migration step before check constraints are activated,
+   apply check constraints (`MaxHP > 0`, `ATK >= 0`, `DEF >= 0`,
+   `0.0 < EnrageThreshold < 1.0`), and drop the four transitional defaults
+   via `ALTER COLUMN ... DROP DEFAULT` so subsequent direct inserts cannot
+   inherit them and fail closed on omission. Transitional defaults are never relied upon by
+   runtime lookups. Safe `Down()` rollback drops constraints and
+   columns while preserving the five provisioned rows intact for `BattleResult` FK
+   integrity. Subsequent balance adjustments are applied via data migrations
+   using `migrationBuilder.UpdateData`.

@@ -1,6 +1,12 @@
 # Architecture Decision Records (ADR)
 
-**Version:** 1.15 (§7 — ADR-023 added per `TASK-236`: the backend Discord
+**Version:** 1.16 (§7 — ADR-024 added per `TASK-250`: the database-driven
+boss balance configuration architecture decision. Adopts Option 1 (Domain
+Overlay) to make PostgreSQL authoritative at runtime for boss combat balance
+(`MaxHP`, `ATK`, `DEF`, `EnrageThreshold`) while preserving `BossSkillDefinition.SecondaryEffect`
+(Flame Burst Burn, Drain Power, Root) and offline unit test isolation by overlaying
+runtime database stats onto static Domain baselines. Records that implementation
+(EF Core migrations and wiring) is deferred to `TASK-251`. Status: Accepted. Prior 1.15: §7 — ADR-023 added per `TASK-236`: the backend Discord
 identity seam resolution decision. Following `ADR-020`'s adoption of standalone
 web account authentication and retirement of Discord dependencies, the Product
 Owner explicitly authorized `REMOVE` (Option 1) to formally retire the dormant
@@ -231,6 +237,7 @@ technical document.
 | ADR-021 | One Card cast per committed Match-3 Turn — a player may successfully cast at most one Card during each committed Match-3 Turn; the restriction is a cast-count constraint, **not** Turn consumption, so a Card cast still consumes no Turn, does not resolve the Match-3 board, and does not independently trigger the Boss response; the Match-3 Turn remains the authoritative unit of combat progression and the Boss response is reached only through a committed Swap. Option A (cast consumes a Turn and triggers the Boss response) and Option C (keep unlimited free casts, change only Power Charge's cost) are rejected. Records `TASK-191` §6 Q-4 = OPTION B and unblocks B-02 for implementation | Accepted |
 | ADR-022 | Post-result preserved-loadout carrier — the loadout used in the battle that just ended is held as a second documented key in Phaser's game-wide registry behind the `game/state/PreservedLoadout.ts` accessor; owned by the client game-presentation layer (not `GameRuntime`), alive for the running game instance, written only on a successful battle start, and read only on the approved `ResultScene` → `PLAY AGAIN` entry, with `LobbyScene` remaining the editing surface. Records that the preserved loadout, active battle state, and battle result data are three distinct concepts, that the `D-202-04 = A` cleanup never clears the preserved loadout, and that the post-result exit clears active battle state through the dedicated client-local `clearActiveBattleState()` port capability (no disconnect, no wire message) rather than `SIGNALR_PROTOCOL.md` §7.3's `BATTLE_NOT_FOUND` path. Discharges the carrier requirement `ARCHITECTURE.md` §2.2.3 recorded without a mechanism per `TASK-202` `D-202-03 = D` | Accepted |
 | ADR-023 | Backend Discord identity seam resolution — formally retire the dormant backend Discord identity dependency injection seam (`IDiscordIdentityResolver`), resolver implementations, configuration options, and contract definitions, aligning backend architecture 100% with ADR-020 D1; records that physical deletion of runtime C# files and test stubs is deferred to downstream implementation work | Accepted |
+| ADR-024 | Database-driven boss balance configuration — PostgreSQL-authoritative runtime balance for `MaxHP`, `ATK`, `DEF`, and `EnrageThreshold` via Domain Overlay; static `BossDefinitions.All` retained as seed defaults and offline test fixtures; preserves `SecondaryEffect` (Burn, Drain Power, Root) without complex JSON migrations; snapshot isolation for in-progress battles; strict fail-closed validation | Accepted |
 
 **Partial supersession (ADR-016).** ADR-011 and ADR-012 remain in force
 except for the specific items named below, which ADR-016 supersedes. Their

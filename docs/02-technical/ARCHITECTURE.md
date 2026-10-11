@@ -1,6 +1,13 @@
 # Architecture
 
-**Version:** 1.11 (§2.2, §2.2.2, and §2.3 **reconciled with the standalone web
+**Version:** 1.12 (§3 **synchronized with proposed ADR-024** per TASK-250:
+database-driven boss balance configuration proposing the Domain Overlay model.
+The §3 component catalog records that `BossDefinitions` provides canonical
+Domain baseline defaults and offline test fixtures, while `BossDefinitionLookup`
+(Infrastructure boundary) is planned to serve runtime PostgreSQL balance overlay
+(`GetDefinitionByIdentityAsync`) for battle creation alongside its battle-end key
+resolution. All code implementation deferred to `TASK-251` pending operator approval.
+Documentation-only. Decision source: TASK-250 / proposed ADR-024. Prior 1.11: (§2.2, §2.2.2, and §2.3 **reconciled with the standalone web
 client** per TASK-238: the §2.2 frontend diagram now names the standalone web
 browser as the hosting surface and lists only the `services/realtime/` and
 `services/api/` directories that exist, so the retired Discord Activity iframe,
@@ -731,8 +738,8 @@ CardCastExecutor               Domain            CARD_RULES.md §2–§4 — exe
                                                    a Card or Pet Skill cast
 BossState                      Domain            GAME_STATE.md §2.4 — the Boss's
                                                    battle state
-BossDefinitions                Domain            BOSS_RULES.md §6 — the static
-                                                   MVP Boss content
+BossDefinitions                Domain            BOSS_RULES.md §6 — canonical baseline
+                                                   defaults & offline test fixtures (ADR-024)
 BattleStateService             Application       GAME_RULES.md §17 sequencing:
                                                    battle creation and one Swap
                                                    resolution (§4.1)
@@ -744,6 +751,7 @@ BattleResultService               Application       DATABASE.md (the battle-end
 Persistence boundaries (Postgres) Infrastructure    DATABASE.md
   PlayerRepository / PetRepository /
   BattleResultRepository / BossDefinitionLookup
+  (battle-end FK & proposed battle-start balance overlay)
 BattleEndTransaction (Postgres)   Infrastructure    DATABASE.md §1 — the one
                                                     transaction the battle-end
                                                     writes commit in
