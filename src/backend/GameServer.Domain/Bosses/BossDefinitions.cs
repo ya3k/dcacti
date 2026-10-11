@@ -141,7 +141,7 @@ public static class BossDefinitions
     {
         // §6.1: MaxHP 5000, ATK 100, DEF 50, Enrage "1500 (30%)" — the shared
         // MVP base configuration (the Domain defaults, not persisted columns).
-        MaxHP = 1000,
+        MaxHP = 5000,
         ATK = 100,
         DEF = 50,
         EnrageThreshold = 0.30,
