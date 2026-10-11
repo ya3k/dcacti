@@ -10,6 +10,7 @@ import { SceneEventEmitter } from './support/SceneEventEmitter';
 import {
   parseInBattleEvent,
   formatInBattleEvent,
+  adaptPresentedEvent,
   describeEventCallout,
   selectBatchCallout,
   BOSS_SKILL_NAMES,
@@ -744,6 +745,253 @@ describe('TASK-245 — the SignalR wire contract is unchanged (PD-3, PD-4)', () 
       'BossHpChanged',
     ]) {
       expect(parseInBattleEvent({ type, board: [] }), `${type} must stay ignored`).toBeNull();
+    }
+  });
+});
+
+describe('TASK-252 — the delivered event → (actor, action, kind) adapter', () => {
+  /** The presenter's own source, with its prose removed. */
+  const presenterSource = readFileSync(
+    resolve(__dirname, '../src/game/scenes/BattleEventPresenter.ts'),
+    'utf8'
+  )
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+  /**
+   * One delivered payload per name of `SIGNALR_PROTOCOL.md` §3.2.2's closed
+   * sixteen-name discriminator set. The two outcome names are delivered the same
+   * way but are not `InBattleServerEvent`s, so they are asserted as "no in-battle
+   * presentation step of their own".
+   */
+  const DELIVERED_PAYLOADS: ReadonlyArray<{ readonly name: string; readonly event: unknown }> = [
+    { name: 'MatchCreated', event: { type: 'MatchCreated', shape: 'Lt', cells: [7, 15, 23, 24], gemType: 'POWER', cascadeDepth: 4 } },
+    { name: 'CascadeCreated', event: { type: 'CascadeCreated', cascadeDepth: 2 } },
+    { name: 'ComboChanged', event: { type: 'ComboChanged', combo: 4 } },
+    { name: 'GemMatched', event: { type: 'GemMatched', cellIndex: 42, gemType: 'DEF' } },
+    { name: 'DamageCalculated', event: { type: 'DamageCalculated', base: 137, comboModifier: 2.5, elementModifier: 1.25, otherModifiers: 1.1, defense: 43, finalDamage: 99 } },
+    { name: 'DamageDealt', event: { type: 'DamageDealt', source: 'player', target: 'boss', amount: 99 } },
+    { name: 'DamageTaken', event: { type: 'DamageTaken', source: 'boss', target: 'player', amount: 77 } },
+    { name: 'PassiveCharged', event: { type: 'PassiveCharged', passiveId: 'pet-passive', source: 'pet', sourceId: 'pet-inst-1', progress: 1, threshold: 3 } },
+    { name: 'PassiveTriggered', event: { type: 'PassiveTriggered', passiveId: 'pet-passive', source: 'pet', sourceId: 'pet-inst-1', progress: 3, threshold: 3 } },
+    { name: 'BossSkillCast', event: { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' } },
+    { name: 'CardCast', event: { type: 'CardCast', cardId: 'card-shield' } },
+    { name: 'PetSkillCast', event: { type: 'PetSkillCast', cardId: 'card-inferno' } },
+    { name: 'RelicTriggered', event: { type: 'RelicTriggered', relicId: 'relic-instance-berserker-core' } },
+    { name: 'PowerChanged', event: { type: 'PowerChanged', delta: 25, power: 45, source: 'card' } },
+    { name: 'BattleWon', event: { type: 'BattleWon', outcome: 'victory', finalBossHp: 0, finalPlayerHp: 85 } },
+    { name: 'BattleLost', event: { type: 'BattleLost', outcome: 'defeat', finalBossHp: 120, finalPlayerHp: 0 } },
+  ];
+
+  /** The closed discriminator set §3.2.2 fixes. */
+  const DISCRIMINATOR_SET = DELIVERED_PAYLOADS.map((payload) => payload.name);
+
+  it('keeps the closed discriminator set at exactly the sixteen documented names', () => {
+    expect(DISCRIMINATOR_SET).toEqual([
+      'MatchCreated',
+      'CascadeCreated',
+      'ComboChanged',
+      'GemMatched',
+      'DamageCalculated',
+      'DamageDealt',
+      'DamageTaken',
+      'PassiveCharged',
+      'PassiveTriggered',
+      'BossSkillCast',
+      'CardCast',
+      'PetSkillCast',
+      'RelicTriggered',
+      'PowerChanged',
+      'BattleWon',
+      'BattleLost',
+    ]);
+
+    // The parser's own switch admits exactly the fourteen in-battle names — no
+    // more (a phase, status or turn name would be a wire change) and no fewer.
+    const parsedNames = DELIVERED_PAYLOADS.filter(
+      (payload) => parseInBattleEvent(payload.event) !== null
+    ).map((payload) => payload.name);
+
+    expect(parsedNames).toEqual([
+      'MatchCreated',
+      'CascadeCreated',
+      'ComboChanged',
+      'GemMatched',
+      'DamageCalculated',
+      'DamageDealt',
+      'DamageTaken',
+      'PassiveCharged',
+      'PassiveTriggered',
+      'BossSkillCast',
+      'CardCast',
+      'PetSkillCast',
+      'RelicTriggered',
+      'PowerChanged',
+    ]);
+  });
+
+  it('maps every delivered in-battle event to its actor, action and phase kind', () => {
+    const steps = new Map<string, { actor: string | null; action: string; kind: string }>();
+
+    for (const payload of DELIVERED_PAYLOADS) {
+      const parsed = parseInBattleEvent(payload.event);
+      if (parsed === null) {
+        continue;
+      }
+
+      const step = adaptPresentedEvent(parsed);
+      // `DamageCalculated` is the one delivered in-battle event with no
+      // presentation step of its own; it is asserted separately below.
+      if (payload.name === 'DamageCalculated') {
+        expect(step).toBeNull();
+        continue;
+      }
+
+      expect(step, `${payload.name} must adapt`).not.toBeNull();
+      steps.set(payload.name, {
+        actor: step!.actor,
+        action: step!.action,
+        kind: step!.kind,
+      });
+    }
+
+    expect(Object.fromEntries(steps)).toEqual({
+      MatchCreated: { actor: 'swap', action: 'match', kind: 'match' },
+      CascadeCreated: { actor: 'swap', action: 'cascade', kind: 'cascade' },
+      ComboChanged: { actor: 'swap', action: 'combo', kind: 'feedback' },
+      GemMatched: { actor: 'swap', action: 'match', kind: 'match' },
+      DamageDealt: { actor: 'player', action: 'damage', kind: 'damage' },
+      DamageTaken: { actor: 'boss', action: 'retaliation', kind: 'retaliation' },
+      PassiveCharged: { actor: 'pet', action: 'passive-charge', kind: 'feedback' },
+      PassiveTriggered: { actor: 'pet', action: 'passive-trigger', kind: 'feedback' },
+      BossSkillCast: { actor: 'boss', action: 'boss-skill', kind: 'boss-skill' },
+      CardCast: { actor: 'player', action: 'card-cast', kind: 'cast' },
+      PetSkillCast: { actor: 'player', action: 'pet-skill-cast', kind: 'cast' },
+      RelicTriggered: { actor: 'player', action: 'relic', kind: 'relic' },
+      PowerChanged: { actor: 'power', action: 'power', kind: 'feedback' },
+    });
+
+    // Thirteen of the fourteen in-battle names adapt; the fourteenth is
+    // `DamageCalculated`, which presents nothing of its own.
+    expect(steps.size).toBe(13);
+  });
+
+  it('presents nothing of its own for DamageCalculated, and no in-battle step for either outcome', () => {
+    // The six pipeline factors are developer detail: the resulting number reaches
+    // the player as the damage floater and as the HP readout.
+    expect(adaptPresentedEvent(parseInBattleEvent({ type: 'DamageCalculated', base: 1, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 1 })!)).toBeNull();
+
+    // The two terminal outcomes are not in-battle events; the scene finds them on
+    // the envelope instead (§3.2.19) and hands the battle off.
+    for (const name of ['BattleWon', 'BattleLost']) {
+      expect(parseInBattleEvent(DELIVERED_PAYLOADS.find((p) => p.name === name)!.event)).toBeNull();
+    }
+  });
+
+  it('attributes each Passive to the entity its delivered source names', () => {
+    for (const [source, actor] of [
+      ['pet', 'pet'],
+      ['boss', 'boss'],
+    ] as const) {
+      const charged = adaptPresentedEvent({
+        type: 'PassiveCharged',
+        passiveId: 'p',
+        source,
+        sourceId: 'owner-1',
+        progress: 1,
+        threshold: 2,
+      });
+      const triggered = adaptPresentedEvent({
+        type: 'PassiveTriggered',
+        passiveId: 'p',
+        source,
+        sourceId: 'owner-1',
+        progress: 2,
+        threshold: 2,
+      });
+
+      expect(charged?.actor).toBe(actor);
+      expect(triggered?.actor).toBe(actor);
+    }
+
+    // A source outside the documented pair names no actor this contract defines,
+    // so none is claimed (AGENTS.md §7/§10).
+    expect(
+      adaptPresentedEvent({
+        type: 'PassiveCharged',
+        passiveId: 'p',
+        source: 'third-party',
+        sourceId: 'x',
+        progress: 1,
+        threshold: 2,
+      })?.actor
+    ).toBeNull();
+  });
+
+  it('claims no actor for a damage direction the contract does not define', () => {
+    for (const [source, target] of [
+      ['player', 'player'],
+      ['boss', 'boss'],
+      ['third-party', 'boss'],
+      ['boss', 'third-party'],
+    ] as const) {
+      const step = adaptPresentedEvent({ type: 'DamageDealt', source, target, amount: 10 });
+      expect(step?.actor, `${source}->${target}`).toBeNull();
+      expect(step?.kind).toBe('feedback');
+    }
+  });
+
+  it('reads no member outside the delivered payload, whatever extra members arrive', () => {
+    // A hypothetical `phase` / `status` / `role` / `turn` member changes nothing:
+    // the adapter reads only the documented members and derives the actor from
+    // them, so no wire widening can leak into the presentation model.
+    const widened = adaptPresentedEvent({
+      type: 'CardCast',
+      cardId: 'card-shield',
+      phase: 'boss',
+      status: 'active',
+      role: 'boss',
+      turn: 7,
+    } as unknown as Parameters<typeof adaptPresentedEvent>[0]);
+    const plain = adaptPresentedEvent({ type: 'CardCast', cardId: 'card-shield' });
+
+    expect(widened).toEqual(plain);
+    expect(widened?.actor).toBe('player');
+
+    // And the same for a PowerChanged whose extra members name a side.
+    expect(
+      adaptPresentedEvent({
+        type: 'PowerChanged',
+        delta: -5,
+        power: 10,
+        source: 'boss',
+        target: 'player',
+        party: 'boss',
+      } as unknown as Parameters<typeof adaptPresentedEvent>[0])?.actor
+    ).toBe('power');
+  });
+
+  it('applies one adapter and no per-actor branch anywhere in the presenter', () => {
+    const source = presenterSource;
+
+    // Exactly one adapter, and one damage classifier that the adapter reuses
+    // rather than a second one of its own.
+    expect(source.match(/export function adaptPresentedEvent\(/g) ?? []).toHaveLength(1);
+    expect(source.match(/export function resolveDamagePresentationPhase\(/g) ?? []).toHaveLength(1);
+    expect(source).toContain('resolveDamagePresentationPhase(event.source, event.target)');
+
+    // No second classifier, pipeline, registry or per-actor switch.
+    for (const forbidden of [
+      "actor === 'boss'",
+      'actor === "boss"',
+      "actor === 'player'",
+      'switch (actor',
+      'switch (step.actor',
+      'ActorPipeline',
+      'actorRegistry',
+      'actorHandlers',
+    ]) {
+      expect(source, `BattleEventPresenter must not contain "${forbidden}"`).not.toContain(forbidden);
     }
   });
 });

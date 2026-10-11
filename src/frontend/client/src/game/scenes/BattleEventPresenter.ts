@@ -692,6 +692,274 @@ export function resolveDamagePresentationPhase(
 }
 
 // ---------------------------------------------------------------------------
+// The presentation actor/action model (TASK-252)
+// ---------------------------------------------------------------------------
+
+/**
+ * The actor one presented action is attributed to.
+ *
+ * Every value is decision-free and is read from a **delivered member**; none is
+ * inferred from animation timing, from a client-held turn, or from a stage name
+ * used as a side. The mapping is exactly:
+ *
+ * ```text
+ * swap     the committed Swap — the resolution's board cycle. A Match, a matched
+ *          Gem, a Cascade pass and the Combo are the board's own delivered
+ *          arithmetic performed *by* that Swap (`GAME_EVENTS.md` §1.1), and none
+ *          of them carries a party member, so the Swap is the only actor the
+ *          delivered members name.
+ * player   CardCast, PetSkillCast and RelicTriggered — the player's own action
+ *          (`SIGNALR_PROTOCOL.md` §3.2.20, §3.2.21, §3.2.23), and a
+ *          DamageDealt / DamageTaken whose delivered `source` is `"player"`
+ *          (§3.2.14 item 1).
+ * pet      a PassiveCharged / PassiveTriggered whose delivered `source` is
+ *          `"pet"` — the active Pet's own Passive (§3.2.16 item 1).
+ * boss     a PassiveCharged / PassiveTriggered whose `source` is `"boss"`, a
+ *          BossSkillCast (§3.2.18), and a damage report whose `source` is
+ *          `"boss"` — the Boss acting.
+ * power    PowerChanged — the Pet Power **mutation stage** the delivered
+ *          `source` names (`"match"` / `"card"` / `"relic"` / `"boss"`). It is a
+ *          stage, never a side: those four values answer "which stage owns the
+ *          mutation", not "which party" (§3.2.24 item 3), so `"boss"` here is
+ *          never read as the Boss party and `"card"` never as the player party.
+ * battle   BattleWon / BattleLost — the battle's own terminal outcome
+ *          (§3.2.19).
+ * ```
+ *
+ * `null` is the honest answer when the delivered members name no actor this
+ * contract defines — a damage report whose `source`/`target` pair is neither of
+ * the two documented directions. No side is guessed for it (`AGENTS.md` §10).
+ */
+export type PresentationActor = 'swap' | 'player' | 'pet' | 'boss' | 'power' | 'battle';
+
+/**
+ * The action one presented event reports, in the delivered event's own terms.
+ *
+ * It is finer-grained than the phase kind: a `MatchCreated` and a `GemMatched`
+ * are both the board cycle's `match`, a `CardCast` and a `PetSkillCast` are two
+ * different casts that share one `cast` phase, and a `PassiveCharged` and a
+ * `PassiveTriggered` are two different Passive actions.
+ */
+export type PresentationAction =
+  | 'swap'
+  | 'match'
+  | 'combo'
+  | 'cascade'
+  | 'settle'
+  | 'card-cast'
+  | 'pet-skill-cast'
+  | 'relic'
+  | 'passive-charge'
+  | 'passive-trigger'
+  | 'boss-skill'
+  | 'damage'
+  | 'retaliation'
+  | 'power'
+  | 'outcome';
+
+/**
+ * The ordered presentation step one delivered event belongs to.
+ *
+ * These are presentation groupings only: they decide *which step of the local
+ * timeline* a delivered event is shown in, and are never a second event
+ * vocabulary, a wire member, or a server phase. No server-side phase exists to
+ * mirror — the server resolves an action completely, writes the state back, and
+ * only then sends the batch (`SIGNALR_PROTOCOL.md` §3.1 items 1–2) — so the
+ * names describe the client's own presentation and nothing else.
+ */
+export type PresentationPhaseKind =
+  | 'swap'
+  | 'match'
+  | 'cascade'
+  | 'cast'
+  | 'relic'
+  | 'boss-skill'
+  | 'settle'
+  | 'damage'
+  | 'retaliation'
+  | 'feedback'
+  | 'outcome';
+
+/** One delivered event's presentation step: who acted, what, and in which phase. */
+export interface PresentedActionStep {
+  /** The actor the delivered members name, or `null` when they name none. */
+  readonly actor: PresentationActor | null;
+  /** The delivered action this event reports. */
+  readonly action: PresentationAction;
+  /** The presentation phase this step is grouped into. */
+  readonly kind: PresentationPhaseKind;
+  /** The developer-diagnostic line the phase records when it plays. */
+  readonly detail: string;
+}
+
+/**
+ * The two entity-owner values a `PassiveCharged` / `PassiveTriggered` `source`
+ * carries (`SIGNALR_PROTOCOL.md` §3.2.16 item 1).
+ *
+ * They are the delivered values, read as sent, and they are the vocabulary that
+ * decides *whose* passive readout a phase presents: the Pet panel carries the
+ * active Pet's pair (`PetState.PassiveId` / `PassiveProgress`), so a Boss-owned
+ * Passive charge presents nothing there. The module owns the pair so the scene
+ * has one spelling of them.
+ */
+export const PASSIVE_OWNER_PET = 'pet';
+export const PASSIVE_OWNER_BOSS = 'boss';
+
+/**
+ * The actor a `PassiveCharged` / `PassiveTriggered` `source` names, or `null`.
+ *
+ * The value set is per-event (`SIGNALR_PROTOCOL.md` §3.2.16 item 1: `"pet"` or
+ * `"boss"`); a value outside it names no actor this contract defines, so none is
+ * claimed.
+ */
+export function passiveOwnerActor(source: string): PresentationActor | null {
+  if (source === PASSIVE_OWNER_BOSS) {
+    return 'boss';
+  }
+
+  if (source === PASSIVE_OWNER_PET) {
+    return 'pet';
+  }
+
+  return null;
+}
+
+/**
+ * Whether one delivered Passive event is the active Pet's own.
+ *
+ * It answers exactly that — the panel's pair is `PetState`'s, so only the Pet's
+ * own charge/trigger presents it — and nothing about any rule: no charge,
+ * threshold, overflow or reset is evaluated (`PASSIVE_RULES.md` §2–§5).
+ */
+export function isPetPassiveEvent(event: {
+  readonly source: string;
+}): boolean {
+  return event.source === PASSIVE_OWNER_PET;
+}
+
+/**
+ * The one adapter from a delivered event to its presentation step.
+ *
+ * It is the **single** place a delivered event is interpreted into the actor/
+ * action vocabulary: a Swap, a Boss Skill, a Boss Passive, a Card cast and a Pet
+ * Skill cast all reach their phases through this one call and through no branch,
+ * pipeline, registry, interface or event bus (`AGENTS.md` §9). It reads only
+ * delivered members, performs no gameplay derivation, and returns `null` for an
+ * event that presents nothing of its own:
+ *
+ * ```text
+ * DamageCalculated   the six pipeline factors are developer detail; the number
+ *                    reaches the player as the damage floater and the HP readout.
+ * ```
+ *
+ * A step whose `kind` is `feedback` is a **readout / floater step**: it is
+ * presented by the phase already showing, rather than opening a step of its own,
+ * so a delivered Combo, Power or Passive change neither reorders the resolution
+ * nor lengthens it (TASK-246 §5's bounded pacing). The readouts a `feedback`
+ * phase carries are still presented by the timeline — by the phase holding the
+ * event that owns them — and never by a raw push (operator decision D-2).
+ *
+ * `PowerChanged` is attributed to the **stage** the delivered `source` names and
+ * never to a side (§3.2.24 item 3), and a damage report whose parties are not
+ * one of the two documented directions keeps `actor: null` and joins the
+ * floater-only `feedback` phase rather than being guessed onto a side.
+ */
+export function adaptPresentedEvent(event: InBattleServerEvent): PresentedActionStep | null {
+  switch (event.type) {
+    case 'MatchCreated':
+      return { actor: 'swap', action: 'match', kind: 'match', detail: `match depth=${event.cascadeDepth}` };
+
+    case 'GemMatched':
+      // The Gem's feedback belongs to the Match/board cycle that consumed it
+      // (`GAME_EVENTS.md` §1.1 item 3) and carries no actor member of its own.
+      return { actor: 'swap', action: 'match', kind: 'match', detail: 'match' };
+
+    case 'CascadeCreated':
+      return {
+        actor: 'swap',
+        action: 'cascade',
+        kind: 'cascade',
+        detail: `cascade depth=${event.cascadeDepth}`,
+      };
+
+    case 'ComboChanged':
+      // The Combo is the board cycle's own accounting (`GAME_EVENTS.md` §1.1 item
+      // 5), emitted between the Matches of one pass, so its step is presented by
+      // the board phase it belongs to rather than splitting it.
+      return { actor: 'swap', action: 'combo', kind: 'feedback', detail: `combo ${event.combo}` };
+
+    case 'PowerChanged':
+      // The delivered `source` names the stage that owns the mutation
+      // (`"match"` / `"card"` / `"relic"` / `"boss"`), so the actor is the Power
+      // stage. Reading it as a side would be the §3.2.24 item 3 defect.
+      return { actor: 'power', action: 'power', kind: 'feedback', detail: `power ${event.delta}` };
+
+    case 'PassiveCharged':
+      return {
+        actor: passiveOwnerActor(event.source),
+        action: 'passive-charge',
+        kind: 'feedback',
+        detail: `passive ${event.passiveId}`,
+      };
+
+    case 'PassiveTriggered':
+      return {
+        actor: passiveOwnerActor(event.source),
+        action: 'passive-trigger',
+        kind: 'feedback',
+        detail: `passive ${event.passiveId}`,
+      };
+
+    case 'BossSkillCast':
+      return {
+        actor: 'boss',
+        action: 'boss-skill',
+        kind: 'boss-skill',
+        detail: `boss-skill ${event.skillId}`,
+      };
+
+    case 'CardCast':
+      return { actor: 'player', action: 'card-cast', kind: 'cast', detail: `cast ${event.cardId}` };
+
+    case 'PetSkillCast':
+      return {
+        actor: 'player',
+        action: 'pet-skill-cast',
+        kind: 'cast',
+        detail: `cast ${event.cardId}`,
+      };
+
+    case 'RelicTriggered':
+      // The player's own build paying off (RELIC_RULES.md §7): the delivered
+      // members name the player's side and nothing else.
+      return { actor: 'player', action: 'relic', kind: 'relic', detail: `relic ${event.relicId}` };
+
+    case 'DamageDealt':
+    case 'DamageTaken': {
+      const phase = resolveDamagePresentationPhase(event.source, event.target);
+
+      if (phase === null) {
+        // Neither documented direction: no side is guessed for it, so the step
+        // carries no actor and joins the floater-only feedback phase.
+        return { actor: null, action: 'damage', kind: 'feedback', detail: 'feedback' };
+      }
+
+      return {
+        actor: event.source === DAMAGE_PARTY_BOSS ? 'boss' : 'player',
+        action: phase,
+        kind: phase,
+        detail: `${phase} ${event.source}->${event.target}`,
+      };
+    }
+
+    case 'DamageCalculated':
+      // The six pipeline factors are developer detail; the resulting number
+      // reaches the player as the damage floater and as the HP readout.
+      return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The client's own interaction indicator (TASK-246 §4)
 // ---------------------------------------------------------------------------
 

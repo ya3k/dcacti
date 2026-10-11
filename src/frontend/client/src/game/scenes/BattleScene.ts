@@ -22,7 +22,13 @@ import type {
   PetSignatureSkillResponse,
   RelicResponse,
 } from '../../services/api/CollectionModels';
-import type { InBattleServerEvent, InteractionStatement } from './BattleEventPresenter';
+import type {
+  InBattleServerEvent,
+  InteractionStatement,
+  PresentationActor,
+  PresentationAction,
+  PresentationPhaseKind,
+} from './BattleEventPresenter';
 import {
   CALLOUT_BOSS_COLOR,
   DAMAGE_PARTY_BOSS,
@@ -30,13 +36,14 @@ import {
   INTERACTION_BOSS_ATTACK,
   INTERACTION_RESOLVING,
   INTERACTION_YOUR_TURN,
+  adaptPresentedEvent,
   formatCardCastRejection,
   formatGemCellLabel,
   formatInBattleEvent,
   formatSwapRejection,
   isBossEnraged,
+  isPetPassiveEvent,
   parseInBattleEvent,
-  resolveDamagePresentationPhase,
   resolveOutcomeStatement,
   resolveSpecialGemPresentation,
   selectBatchCallout,
@@ -255,6 +262,31 @@ const POWER_GAIN_COLOR = '#a78bfa';
 const POWER_LOSS_COLOR = '#fb7185';
 
 /**
+ * The cast controls' two presentations: the caption colour an enabled control
+ * draws, and the dimmed one a control held by the guard draws.
+ *
+ * Presentation only — neither colour carries a gameplay meaning, and the control's
+ * own responsiveness is its handler's, not its colour's.
+ */
+const CAST_CONTROL_ENABLED_TEXT = '#e2e8f0';
+const CAST_CONTROL_DISABLED_TEXT = '#475569';
+
+/**
+ * One drawn cast control: the tile, its caption, the styling its enabled
+ * presentation restores, and the handler it carries while input is permitted.
+ *
+ * The set is kept so the guard's changes toggle the controls **in place** instead
+ * of destroying and recreating them (`presentCastControlsEnabled`).
+ */
+interface CastControl {
+  readonly tile: Phaser.GameObjects.Rectangle;
+  readonly label: Phaser.GameObjects.Text;
+  readonly enabledFill: number;
+  readonly enabledStroke: number;
+  readonly onTrigger: () => void;
+}
+
+/**
  * The MVP damage party identifiers (`SIGNALR_PROTOCOL.md` §3.2.14 item 3).
  *
  * They are read as delivered to decide *which panel* a damage floater is drawn
@@ -405,19 +437,18 @@ interface GemView {
  * never reorders, filters, or re-derives it. Each phase carries the delivered
  * events it presents, so a phase is a *grouping* of what the server sent and
  * never a second event stream.
+ *
+ * `actor` and `action` come from the single delivered-event adapter
+ * (`BattleEventPresenter.adaptPresentedEvent`), so a Swap, a Boss Skill, a Boss
+ * Passive and a Card / Pet-Skill cast carry the same two members and reach their
+ * phases through the same call (`AGENTS.md` §9). `actor` is `null` when the
+ * delivered members name no actor this contract defines; it is never guessed
+ * (`AGENTS.md` §10).
  */
-type PresentationPhaseKind =
-  | 'swap'
-  | 'match'
-  | 'cascade'
-  | 'settle'
-  | 'damage'
-  | 'retaliation'
-  | 'feedback'
-  | 'outcome';
-
 interface PresentationPhase {
   readonly kind: PresentationPhaseKind;
+  readonly actor: PresentationActor | null;
+  readonly action: PresentationAction;
   /** The developer-diagnostic line this phase records when it plays. */
   readonly detail: string;
   /** How long the phase is held before the next one begins. */
@@ -425,6 +456,107 @@ interface PresentationPhase {
   /** The delivered events this phase presents, in delivery order. */
   readonly events: readonly InBattleServerEvent[];
 }
+
+/**
+ * The scene's presentation-orchestration machine (TASK-252).
+ *
+ * It replaces the three independent booleans that used to describe the guard
+ * (`swapPending`, `actionInFlight`, `presentationTimeline`) with one named
+ * state, so "locked ⟺ not accepting player input" is a single derived fact
+ * (`isInputLocked`).
+ *
+ * ```text
+ * idle                    no action is in flight and no timeline is playing: the
+ *                         scene accepts player input
+ * submitted               an action request is in flight and no timeline is playing
+ * presenting              a resolution's timeline is playing and no action is in flight
+ * presenting-submitted    both: the timeline plays while its request is still in flight
+ *                         (`SIGNALR_PROTOCOL.md` §3.1 — the state is written back and
+ *                         the batch is sent before the invocation result returns, so
+ *                         the batch normally arrives first)
+ * terminated              the battle's terminal outcome has been handed to
+ *                         `ResultScene`; the scene presents no further resolution
+ * ```
+ */
+export type BattleOrchestrationState =
+  | 'idle'
+  | 'submitted'
+  | 'presenting'
+  | 'presenting-submitted'
+  | 'terminated';
+
+/**
+ * The machine's legal transitions, and the only ones the scene performs.
+ *
+ * ```text
+ * idle                 → submitted             the player submitted an action
+ * idle                 → presenting            a delivered batch started a timeline
+ * idle                 → terminated            a delivered batch handed the outcome off
+ * submitted            → idle                  the request settled with no timeline
+ * submitted            → presenting            the request settled, then its batch started a timeline
+ * submitted            → presenting-submitted  its batch started a timeline while the request was in flight
+ * submitted            → terminated            its batch carried the terminal outcome
+ * presenting           → idle                  the timeline completed, aborted, or was superseded
+ * presenting           → terminated            the terminal outcome was handed off
+ * presenting-submitted → submitted             the timeline ended; the request is still in flight
+ * presenting-submitted → presenting            the request settled; the timeline plays on
+ * presenting-submitted → terminated            the terminal outcome was handed off
+ * ```
+ *
+ * A superseding batch leaves `presenting` and re-enters it through the aborted
+ * timeline's own end, so no state lists itself: a call naming the current state
+ * is not a transition at all.
+ *
+ * `terminated` has no outgoing transition: the battle is over and the scene is
+ * on its way to `ResultScene`. The scene's *lifecycle* resets the machine to
+ * `idle` (`create()` / `shutdown()`), which is the machine's initial value for a
+ * scene run rather than a transition between orchestration states.
+ */
+export const BATTLE_ORCHESTRATION_LEGAL_TRANSITIONS: Readonly<
+  Record<BattleOrchestrationState, readonly BattleOrchestrationState[]>
+> = Object.freeze({
+  idle: Object.freeze(['submitted', 'presenting', 'terminated'] as const),
+  submitted: Object.freeze(['idle', 'presenting', 'presenting-submitted', 'terminated'] as const),
+  presenting: Object.freeze(['idle', 'terminated'] as const),
+  'presenting-submitted': Object.freeze(['submitted', 'presenting', 'terminated'] as const),
+  terminated: Object.freeze([] as const),
+});
+
+/** The states in which the scene holds player input. */
+const ORCHESTRATION_LOCKED_STATES: readonly BattleOrchestrationState[] = Object.freeze([
+  'submitted',
+  'presenting',
+  'presenting-submitted',
+]);
+
+/**
+ * The documented cap on each diagnostic buffer (`presentedEventsLog`,
+ * `presentedPhases`).
+ *
+ * Both are developer/testing records and are never rendered (TASK-209 §5); they
+ * grow for the life of the scene, so they are bounded and evict oldest-first.
+ * They are also cleared when the delivered battle changes and on teardown.
+ */
+const PRESENTATION_LOG_CAP = 256;
+
+/**
+ * The phase kinds that start no animation at all, and are therefore held for no
+ * time at all.
+ *
+ * The terminal outcome is the original case (TASK-246 finding L-1): it hands the
+ * battle off and is padded with nothing. The delivered-action steps
+ * (`cast` / `relic` / `boss-skill`) join it: they present the action's own step in
+ * the timeline and carry the readouts and floaters their events own, but start no
+ * animation of their own, so holding them would lengthen every resolution for no
+ * feedback. A hold is never shorter than the longest animation its phase starts —
+ * for these kinds that longest animation is none.
+ */
+const ZERO_HOLD_PHASE_KINDS: readonly PresentationPhaseKind[] = Object.freeze([
+  'outcome',
+  'cast',
+  'relic',
+  'boss-skill',
+]);
 
 /**
  * The presentation key of one delivered cell: its Gem type and, when present,
@@ -594,6 +726,11 @@ export class BattleScene extends Phaser.Scene {
   /** Interactive cast controls container for equipped cards and signature skill. */
   private castControlsLayer: Phaser.GameObjects.Container | null = null;
   /**
+   * The cast controls currently drawn, so the guard's own changes are presented
+   * by toggling them rather than by rebuilding the set (D-2).
+   */
+  private castControls: CastControl[] = [];
+  /**
    * The first selected cell's §1.0 index, or `null` when nothing is selected.
    *
    * Presentation-local input state only — it is not board state and is never
@@ -611,18 +748,22 @@ export class BattleScene extends Phaser.Scene {
    * a resolution cleared, or a scene that has ended.
    */
   private selectionRing: Phaser.GameObjects.Rectangle | null = null;
-  /** True while a Swap request is outstanding, so further taps are ignored. */
-  private swapPending = false;
-  /** True while any action request (swap or cast) is in flight. */
-  private actionInFlight = false;
+  /**
+   * The presentation-orchestration machine's current state (TASK-252).
+   *
+   * It is the scene's **single** statement about whether it is accepting player
+   * input: `isInputLocked()` is exactly "this state holds input", so the guard
+   * and the interaction indicator can never disagree. It is moved only by
+   * `transitionOrchestration`, which applies the documented legal transitions
+   * (`BATTLE_ORCHESTRATION_LEGAL_TRANSITIONS`).
+   */
+  private orchestration: BattleOrchestrationState = 'idle';
   /**
    * The in-flight presentation timeline, or `null` when nothing is playing.
    *
-   * This **is** the scene's input guard: it is set when a resolution's timeline
-   * starts and cleared when the timeline completes, is aborted (supersession or
-   * a presentation error), or the scene is taken down. A guard that reported
-   * "locked" for anything shorter than the whole timeline would let the player
-   * act against a board that is still being shown mid-resolution.
+   * The machine's `presenting` / `presenting-submitted` states describe *when*
+   * this is set; the phase list itself stays here so an aborted timeline can be
+   * dropped whole.
    */
   private presentationTimeline: PresentationPhase[] | null = null;
   /** The next phase to play in the in-flight timeline. */
@@ -671,8 +812,6 @@ export class BattleScene extends Phaser.Scene {
   private presentationSequence: number | null = null;
   /** The battle the in-flight timeline belongs to. */
   private presentationBattleId: string | null = null;
-  /** Guard ensuring only the first terminal outcome event transitions to ResultScene. */
-  private outcomeHandled = false;
   /**
    * The terminal outcome this resolution is handing off, or `null`.
    *
@@ -720,21 +859,31 @@ export class BattleScene extends Phaser.Scene {
    */
   private heldSequence: number | null = null;
   /**
-   * The two §1.0 cells of the most recent Swap request, while it is outstanding.
+   * The two §1.0 cells of the committed Swap this client has still to present,
+   * or `null` when no committed Swap is outstanding.
    *
    * It is the interaction record of the player's own gesture — the same two
    * cells the request carried (`MATCH3_RULES.md` §2.1.1) — and it drives exactly
    * one presentation: the swap movement at the head of the resolution's
-   * timeline. It is dropped when the request settles, so a rejected Swap (which
-   * emits no events at all, `GAME_EVENTS.md` §1.2) can never present a swap.
+   * timeline.
+   *
+   * **It is dropped when that Swap's own phase plays, not when the request's
+   * acknowledgement settles.** The acknowledgement and the resolution's batch
+   * travel on different paths (`SIGNALR_PROTOCOL.md` §3.1: the state is written
+   * back and the batch is sent before the invocation result returns), so a
+   * timeline built from a batch that arrives after the acknowledgement has
+   * settled would otherwise lose the swap movement entirely. A rejected Swap
+   * emits no events at all (`GAME_EVENTS.md` §1.2), so the rejection and failure
+   * paths drop it explicitly rather than relying on a timeline that never comes.
    */
-  private pendingSwapCells: { readonly from: number; readonly to: number } | null = null;
+  private committedSwapCells: { readonly from: number; readonly to: number } | null = null;
   /**
    * Developer/testing log of the presentation phases played, in order.
    *
    * Like `getPresentedEvents()`, it is **not rendered**: it is the readable
    * record that lets development and the test suite inspect the timeline's
-   * order. It holds no gameplay value and nothing reads it back.
+   * order. It holds no gameplay value and nothing reads it back, and it is
+   * bounded by `PRESENTATION_LOG_CAP`.
    */
   private presentedPhases: string[] = [];
   /**
@@ -743,9 +892,38 @@ export class BattleScene extends Phaser.Scene {
    * It is **not rendered**: the raw event feed (`Match: … depth: 0`,
    * `DamageCalculated: base …`) is developer console material, not a player HUD.
    * It is kept as a readable diagnostic for development and tests, which is why
-   * it is still accumulated while `feedbackText` no longer exists.
+   * it is still accumulated while `feedbackText` no longer exists. It is bounded
+   * by `PRESENTATION_LOG_CAP`.
    */
   private presentedEventsLog: string[] = [];
+  /**
+   * The battle the two diagnostic buffers above belong to.
+   *
+   * A delivered state for another battle (or a cleared state) ends the battle
+   * whose record they hold, so both are dropped then — a new battle starts with
+   * an empty record rather than the previous one's.
+   */
+  private presentationLogBattleId: string | null = null;
+  /**
+   * Every transient effect the in-flight timeline has started and not yet had
+   * released: board highlights and floating numbers.
+   *
+   * A phase starts them and `abortPresentation` cancels them, so an abandoned
+   * resolution cannot animate over the next one. On a completed timeline they
+   * have already destroyed themselves inside their own phase's hold, and the
+   * references are simply dropped.
+   */
+  private timelineEffects: Phaser.GameObjects.GameObject[] = [];
+  /**
+   * Whether the callout currently on screen was raised by a presentation
+   * timeline: the batch's own single callout, or the Boss Enrage callout a phase
+   * presents.
+   *
+   * It is what bounds the callout to its own timeline: a callout raised outside a
+   * timeline (a transport rejection) is left to fade on its own, while one a
+   * timeline raised is cancelled with that timeline.
+   */
+  private timelineCalloutShown = false;
   /**
    * Card definition lookup populated via GameRuntimePort.getCards().
    *
@@ -808,19 +986,28 @@ export class BattleScene extends Phaser.Scene {
     // A reused scene instance must start its next battle from the initial
     // presentation state: no timeline, no held values, no views carried over
     // (`shutdown` already dropped them; this is the same reset made explicit for
-    // a scene that was never shut down).
+    // a scene that was never shut down). The orchestration machine is reset to
+    // its initial value *before* the timeline is released, so the release is not
+    // a transition out of a state the new run never entered.
+    this.orchestration = 'idle';
     this.releaseTimeline();
     this.pendingOutcomeHandoff = null;
     this.gemViews = [];
     this.settledBoardSequence = null;
     this.settledBattleId = null;
     this.heldSequence = null;
-    this.pendingSwapCells = null;
+    this.committedSwapCells = null;
     // No selection and no terminal statement survive into the next battle: both
     // belong to the battle that ended (`shutdown` drops them for the same reason).
     this.clearSelection();
     this.terminalStatement = null;
-    this.presentedPhases = [];
+    // The buffers are emptied *in place*: they are the scene's own diagnostic
+    // record, and a reset must not swap the array a reader already holds.
+    this.presentedPhases.length = 0;
+    this.presentedEventsLog.length = 0;
+    this.presentationLogBattleId = null;
+    this.timelineEffects = [];
+    this.timelineCalloutShown = false;
     this.runtime = readRuntime(this);
     this.drawRuntimeShell();
     this.registerBoardInput();
@@ -911,11 +1098,12 @@ export class BattleScene extends Phaser.Scene {
    *                        the phase pacing of an in-flight timeline and any
    *                        refill travel — `tweens.killAll()` releases them with
    *                        the scene, so no presentation animation outlives it
-   * per-battle guards      selectedCell, swapPending, actionInFlight, the
-   *                        in-flight presentation timeline, outcomeHandled — each
+   * per-battle guards      selectedCell, the orchestration machine (with the
+   *                        outcomeHandled fact its `terminated` state carries),
+   *                        and the in-flight presentation timeline — each
    *                        describes the battle that just ended, so the NEXT
    *                        battle must start from its initial value
-   *                        (`outcomeHandled` in particular: left true, it discards
+   *                        (`terminated` in particular: left latched, it discards
    *                        the next outcome; a timeline left in place would lock
    *                        the next battle's input)
    * interaction feedback   the selected-cell ring's and the interaction
@@ -925,7 +1113,7 @@ export class BattleScene extends Phaser.Scene {
    *                        each describes only this battle's own input state and
    *                        the resolution that just played, so the next battle
    *                        starts with no selection and no indicator statement
-   * held presentation      heldSequence and pendingSwapCells — the delivered
+   * held presentation      heldSequence and committedSwapCells — the delivered
    *                        values a timeline had not released yet and the swap
    *                        pair it was going to present. Both are dropped without
    *                        being applied: Phaser's DisplayList has already
@@ -984,12 +1172,12 @@ export class BattleScene extends Phaser.Scene {
     this.feedbackLayer = null;
     this.tweens?.killAll();
     this.selectedCell = null;
-    this.swapPending = false;
-    this.actionInFlight = false;
-    // The in-flight timeline and everything it was holding are dropped, not
-    // applied: the engine has already destroyed the game objects they would be
-    // written to. Releasing the guard here is what keeps a scene that is stopped
-    // mid-resolution from coming back locked.
+    // The orchestration machine returns to its initial value for the next
+    // battle, and the in-flight timeline and everything it was holding are
+    // dropped, not applied: the engine has already destroyed the game objects
+    // they would be written to. Releasing the guard here is what keeps a scene
+    // that is stopped mid-resolution from coming back locked.
+    this.orchestration = 'idle';
     this.releaseTimeline();
     this.pendingOutcomeHandoff = null;
     this.terminalStatement = null;
@@ -997,10 +1185,13 @@ export class BattleScene extends Phaser.Scene {
     this.settledBoardSequence = null;
     this.settledBattleId = null;
     this.heldSequence = null;
-    this.pendingSwapCells = null;
-    this.outcomeHandled = false;
-    this.presentedEventsLog = [];
-    this.presentedPhases = [];
+    this.committedSwapCells = null;
+    this.presentedEventsLog.length = 0;
+    this.presentedPhases.length = 0;
+    this.presentationLogBattleId = null;
+    this.timelineEffects = [];
+    this.timelineCalloutShown = false;
+    this.castControls = [];
     this.cardDefinitions.clear();
     this.relicDefinitions.clear();
     this.petCatalog.clear();
@@ -1492,14 +1683,27 @@ export class BattleScene extends Phaser.Scene {
    * **What is presented now, and what is held for the timeline.** The server
    * writes the resolution's state back and pushes it *before* it sends that
    * resolution's event batch (`SIGNALR_PROTOCOL.md` §3.1). So while the client is
-   * awaiting the resolution of its own action, the two things the batch itself
-   * sequences — the board's content and the two HP panels' delivered values — are
-   * held at their previous presentation and released by the timeline
-   * (`heldSequence`): the settle phase converges the board, the damage and
-   * retaliation phases move the panels, and anything left over is converged by
-   * the timeline's end, an abort, or the next push. Every other delivered value
-   * (identity, HP readouts, Power, Passive, Status Effects, cast controls) is
-   * presented immediately, and a push that is not an awaited resolution's — a
+   * awaiting the resolution of its own action — or while a resolution's timeline
+   * is already playing — every readout the timeline owns is held at its previous
+   * presentation and released by the timeline (`heldSequence`; operator decision
+   * D-2):
+   *
+   * ```text
+   * board                  the settle phase converges it (PD-1/PD-8)
+   * Boss hp / maxHp        the damage phase presents the pair, and the Boss
+   *                        Enraged label and callout with it
+   * Pet hp / maxHp         the retaliation phase presents the pair
+   * Combo / Match count    the combo phase presents them (ComboChanged)
+   * Pet Power value/gauge  the power phase presents them (PowerChanged)
+   * Passive progress/gauge the Pet's own passive phase presents them
+   * Status Effect instances  converged at the timeline's end
+   * cast controls          converged at the timeline's end, and presented
+   *                        disabled for as long as input is held
+   * ```
+   *
+   * Everything else — the Boss and Pet identities, the connection status, the
+   * board message and the interaction indicator — is presented immediately, and a
+   * push that is not an awaited resolution's and not superseding anything — a
    * join snapshot, a resync, a repeated push — is presented immediately too.
    *
    * Holding is *timing*, never computation: the values released are exactly the
@@ -1507,6 +1711,13 @@ export class BattleScene extends Phaser.Scene {
    */
   private renderBattleState(state: RuntimeBattleState | null): void {
     this.currentBattleState = state;
+
+    // The delivered battle changed (or ended): the previous battle's developer
+    // record is not this battle's, so both diagnostic buffers start empty.
+    if (state === null || (this.presentationLogBattleId !== null && this.presentationLogBattleId !== state.battleId)) {
+      this.resetPresentationLogs();
+    }
+    this.presentationLogBattleId = state?.battleId ?? null;
 
     // A newer authoritative state supersedes playback: the timeline is dropped,
     // its held values are converged, and the newer state is then presented
@@ -1523,7 +1734,7 @@ export class BattleScene extends Phaser.Scene {
       this.clearSelection();
       this.renderBossHud(null, false);
       this.renderPetHud(null, null, false);
-      this.renderPlayerHud(null);
+      this.renderPlayerHud(null, false);
       this.boardMessage = 'Preparing the board…';
       this.boardMessageText?.setText(this.boardMessage);
       this.renderBoard(null);
@@ -1532,7 +1743,7 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
-    const hold = !superseded && this.shouldHoldResolution(state);
+    const hold = !superseded && (this.shouldHoldResolution(state) || this.isPresenting());
     this.heldSequence = hold ? state.sequence : null;
 
     // A push that presents a board replaces the board the player's gesture was
@@ -1548,7 +1759,7 @@ export class BattleScene extends Phaser.Scene {
 
     this.renderBossHud(state, hold);
     this.renderPetHud(state, this.activePetId(), hold);
-    this.renderPlayerHud(state);
+    this.renderPlayerHud(state, hold);
 
     this.boardMessage = '';
     this.boardMessageText?.setText(this.boardMessage);
@@ -1557,8 +1768,41 @@ export class BattleScene extends Phaser.Scene {
       this.renderBoard(state.board);
     }
 
-    this.renderCastControls(state);
+    // The cast controls are a timeline-owned readout (D-2): a held push presents
+    // nothing of them, and a push that presents the board re-presents the set from
+    // the delivered loadout with the guard's own state applied to it.
+    if (!hold) {
+      this.renderCastControls(state);
+    }
     this.renderPhaseIndicator();
+  }
+
+  /**
+   * Drops both bounded diagnostic buffers.
+   *
+   * It runs when the delivered battle changes and on teardown, so the developer
+   * record always belongs to the battle on screen. Both are emptied **in place**:
+   * they are the scene's own diagnostic record, and a reader holding the array
+   * keeps seeing the live buffer.
+   */
+  private resetPresentationLogs(): void {
+    this.presentedEventsLog.length = 0;
+    this.presentedPhases.length = 0;
+  }
+
+  /**
+   * Appends one line to a bounded diagnostic buffer, evicting oldest-first.
+   *
+   * Both buffers are developer/testing records that are never rendered
+   * (TASK-209 §5); without a cap they would grow for the life of the scene
+   * (TASK-252 audit RC-5).
+   */
+  private static appendBounded(log: string[], entry: string): void {
+    log.push(entry);
+
+    if (log.length > PRESENTATION_LOG_CAP) {
+      log.splice(0, log.length - PRESENTATION_LOG_CAP);
+    }
   }
 
   /**
@@ -1595,7 +1839,8 @@ export class BattleScene extends Phaser.Scene {
    *                          for this state is known to be coming
    *                          (SIGNALR_PROTOCOL.md §2, §3.1); a join push, a
    *                          resync snapshot (`§7`) and any unsolicited push are
-   *                          therefore never held
+   *                          therefore never held. It is the orchestration
+   *                          machine's own fact (`isActionInFlight`)
    * same battle              a new battle's first state is a fresh board, not a
    *                          transition of the one on screen
    * exactly the next         `sequence` is the post-resolution counter and steps
@@ -1607,7 +1852,7 @@ export class BattleScene extends Phaser.Scene {
    * ```
    */
   private shouldHoldResolution(state: RuntimeBattleState): boolean {
-    if (!this.swapPending && !this.actionInFlight) {
+    if (!this.isActionInFlight()) {
       return false;
     }
 
@@ -1657,9 +1902,14 @@ export class BattleScene extends Phaser.Scene {
    * full-HP, zero-HP and out-of-range cases all keep the delivered numbers on
    * screen unchanged (`updateGauge`).
    *
-   * `hold` only decides *when* the pair is presented (see `renderBattleState`):
-   * the identity and the Enrage state are never held, because they are the
-   * battle's own state rather than the damage this resolution deals.
+   * `hold` decides *when* the delivered pair and the Enrage label are presented
+   * (see `renderBattleState`). Both are timeline-owned readouts under operator
+   * decision D-2: the Boss's HP moves in the damage phase this resolution deals,
+   * and the Enrage transition is a function of that same delivered HP pair, so
+   * both are presented by the phase that owns them. The identity is presented
+   * immediately because it is not one of them, and while a hold is in place the
+   * label keeps the *previously presented* latch rather than reading ahead
+   * (`presentBossEnrage`).
    */
   private renderBossHud(state: RuntimeBattleState | null, hold: boolean): void {
     if (!this.bossNameText || !this.bossHpText) {
@@ -1681,42 +1931,55 @@ export class BattleScene extends Phaser.Scene {
     this.currentBattleId = state.battleId;
 
     const bossId = state.bossState.bossId;
+
+    if (hold) {
+      // The Enrage latch and its callout are held for the phase that owns the
+      // damage: the label keeps whatever the last presented resolution latched.
+      this.bossNameText.setText(this.bossDisplayLabel(bossId));
+      return;
+    }
+
+    this.presentBossEnrage(state);
+    this.presentBossHp(state);
+  }
+
+  /** The Boss's display name with the currently presented Enrage label. */
+  private bossDisplayLabel(bossId: string): string {
+    const displayName = resolveBossDisplayName(bossId);
+    return this.bossEnraged ? `${displayName} [ENRAGED]` : displayName;
+  }
+
+  /**
+   * Presents the Boss's derived Enrage state — the latch, the `[ENRAGED]` label
+   * and, on the initial transition only, the `BOSS ENRAGED` callout.
+   *
+   * The pair is read from the authoritative `hp` / `maxHp` (`BOSS_RULES.md` §5
+   * item 4, §6.1) and the latch persists for the rest of the battle, so a later
+   * resolution — including one that heals the Boss past the threshold — presents
+   * no second transition and no second callout.
+   *
+   * It is a timeline-owned readout under D-2: `renderBossHud` presents it
+   * immediately only when nothing is held, and the damage phase (or convergence)
+   * presents it otherwise.
+   */
+  private presentBossEnrage(state: RuntimeBattleState): void {
+    if (!this.bossNameText) {
+      return;
+    }
+
+    const bossId = state.bossState.bossId;
     const initialTransition =
       !this.bossEnraged && isBossEnraged(bossId, state.bossState.hp, state.bossState.maxHp, false);
 
     if (initialTransition) {
       this.bossEnraged = true;
       this.showCallout('BOSS ENRAGED', CALLOUT_BOSS_COLOR);
+      this.timelineCalloutShown = this.isPresenting();
     }
 
-    const displayName = resolveBossDisplayName(bossId);
-
-    this.bossNameText.setText(this.bossEnraged ? `${displayName} [ENRAGED]` : displayName);
-
-    if (!hold) {
-      this.presentBossHp(state);
-    }
+    this.bossNameText.setText(this.bossDisplayLabel(bossId));
   }
 
-  /**
-   * Presents the Pet panel: the Pet's name, its authoritative `hp / maxHp` and
-   * Power, and the already-delivered Passive progress and Status Effect
-   * instances.
-   *
-   * The HP and Power values are the delivered `petState` values and nothing else
-   * (§4.3 item 15). The Pet's name is presentation content: `PetState` carries no
-   * client-visible identity (ADR-014), so it is resolved from the client's own
-   * loadout/catalog — the preserved pre-battle selection's `petId` plus the owned
-   * Pet collection. When that identity is unknown the panel states what it has
-   * (the identity it was given) or a neutral placeholder; it never invents a name.
-   *
-   * The Passive and Status Effect lines were already presented before TASK-209 and
-   * are carried over unchanged: they are values the projection already delivers
-   * (`petState.passiveId`, `passiveProgress`, `statusEffects[]`), so surfacing them
-   * expands no contract. Nothing is derived: no Passive is charged, no Threshold is
-   * evaluated, no progress is reset (§4.3 item 9), and no Status Effect is applied,
-   * refreshed, decremented, expired, or removed (§4.3 item 14).
-   */
   /**
    * Presents the Pet panel: the Pet's name, its authoritative `hp / maxHp` as
    * text over its HP gauge, its Power over the Power gauge, and the
@@ -1736,10 +1999,12 @@ export class BattleScene extends Phaser.Scene {
    * evaluated, no progress is reset (§4.3 item 9), and no Status Effect is applied,
    * refreshed, decremented, expired, or removed (§4.3 item 14).
    *
-   * `hold` only decides *when* the delivered `hp / maxHp` pair is presented (see
-   * `renderBattleState`); the Pet's identity, Power, Passive progress and Status
-   * Effects are never held, because they are not the damage this resolution deals
-   * and the timeline presents no phase for them.
+   * `hold` decides *when* the timeline-owned readouts are presented (operator
+   * decision D-2): the delivered `hp / maxHp` pair is presented by the retaliation
+   * phase, the Power value and gauge by the power phase, the Passive progress and
+   * gauge by the Pet's own passive phase, and the Status Effect instances by
+   * convergence at the timeline's end. The Pet's identity is presented
+   * immediately, because it is not one of them.
    */
   private renderPetHud(
     state: RuntimeBattleState | null,
@@ -1765,28 +2030,64 @@ export class BattleScene extends Phaser.Scene {
 
     this.petNameText.setText(resolvePetDisplayName(petId, this.petCatalog));
 
-    if (!hold) {
-      this.presentPetHp(state);
+    if (hold) {
+      return;
     }
 
-    // The `0–100` range is the documented invariant of GAME_RULES.md §12, shown as
-    // a static scale around the delivered value. No `maxPower` exists on the wire
-    // and none is invented; no cost, affordability, or cast legality is derived
-    // from the value (§4.3 item 15, CARD_RULES.md §3.6).
-    this.petPowerText.setText(`${state.petState.power} / ${POWER_RANGE_MAX}`);
-    this.updateGauge(this.powerGauge, state.petState.power, POWER_RANGE_MAX);
+    this.presentPetHp(state);
+    this.presentPetPower(state);
+    this.presentPetPassive(state);
+    this.presentPetStatus(state);
+  }
 
+  /**
+   * Presents the active Pet's delivered Power as text and as its gauge.
+   *
+   * The `0–100` range is the documented invariant of `GAME_RULES.md` §12, shown
+   * as a static scale around the delivered value. No `maxPower` exists on the
+   * wire and none is invented; no cost, affordability, or cast legality is derived
+   * from the value (§4.3 item 15, `CARD_RULES.md` §3.6).
+   *
+   * It is a timeline-owned readout under D-2, presented by the power phase (the
+   * delivered `PowerChanged`) or by convergence.
+   */
+  private presentPetPower(state: RuntimeBattleState, animate = false): void {
+    this.petPowerText?.setText(`${state.petState.power} / ${POWER_RANGE_MAX}`);
+    this.updateGauge(this.powerGauge, state.petState.power, POWER_RANGE_MAX, animate);
+  }
+
+  /**
+   * Presents the active Pet's delivered Passive identity and its
+   * `current / threshold` progress pair, over its progress gauge.
+   *
+   * The gauge is the delivered pair drawn as a proportion. Comparing the pair to
+   * the Threshold — and every charge, trigger, overflow and reset rule — is the
+   * server's (`PASSIVE_RULES.md` §2–§5, §4.3 item 9).
+   *
+   * It is a timeline-owned readout under D-2, presented by a `passive` phase whose
+   * delivered actor is the Pet itself — the panel's pair is `PetState`'s, so a
+   * Boss-owned Passive charge (whose owner is the Boss) presents nothing here —
+   * or by convergence.
+   */
+  private presentPetPassive(state: RuntimeBattleState, animate = false): void {
     const { current, threshold } = state.petState.passiveProgress;
 
     this.petPassiveText?.setText(`Passive: ${state.petState.passiveId}`);
     this.petPassiveProgressText?.setText(
       `${current} / ${threshold} Matches${describePassiveReset(state.petState)}`
     );
-    // Presentation only: the delivered pair drawn as a proportion. Comparing the
-    // pair to the Threshold — and every charge, trigger, overflow and reset rule —
-    // is the server's (`PASSIVE_RULES.md` §2–§5, §4.3 item 9).
-    this.updateGauge(this.passiveGauge, current, threshold);
+    this.updateGauge(this.passiveGauge, current, threshold, animate);
+  }
 
+  /**
+   * Presents the active Pet's delivered Status Effect instances.
+   *
+   * It is a timeline-owned readout under D-2 with no owning delivered event: the
+   * closed discriminator set contains no Status Effect event
+   * (`SIGNALR_PROTOCOL.md` §3.2.2), so the collection reaches the client through
+   * the state push alone and is converged at the timeline's end.
+   */
+  private presentPetStatus(state: RuntimeBattleState): void {
     this.petStatusText?.setText(
       `Effects: ${describeStatusEffects(state.petState.statusEffects)}`
     );
@@ -1812,8 +2113,14 @@ export class BattleScene extends Phaser.Scene {
    * disagree with the authoritative value. The moment a Combo is *earned* is
    * instead marked by the transient `COMBO ×N` callout, which is set from the
    * delivered `ComboChanged` event (`renderEventCallout`).
+   *
+   * Both lines are timeline-owned readouts under operator decision D-2, presented
+   * by a `combo` phase (the delivered `ComboChanged` that reports the value) or by
+   * convergence at the timeline's end. The cumulative Match count has no owned
+   * event in the closed discriminator set, so convergence is its only presentation
+   * point. `hold` is what keeps a raw push from writing either of them early.
    */
-  private renderPlayerHud(state: RuntimeBattleState | null): void {
+  private renderPlayerHud(state: RuntimeBattleState | null, hold = false): void {
     if (!this.comboText || !this.matchesText) {
       return;
     }
@@ -1821,6 +2128,10 @@ export class BattleScene extends Phaser.Scene {
     if (state === null) {
       this.comboText.setText('');
       this.matchesText.setText('');
+      return;
+    }
+
+    if (hold) {
       return;
     }
 
@@ -1871,7 +2182,7 @@ export class BattleScene extends Phaser.Scene {
       for (const card of cards) {
         this.cardDefinitions.set(card.cardId, card);
       }
-      if (this.currentBattleState) {
+      if (this.currentBattleState && !this.isInputLocked()) {
         this.renderCastControls(this.currentBattleState);
       }
     } catch {
@@ -1925,8 +2236,15 @@ export class BattleScene extends Phaser.Scene {
         this.signatureSkills.set(pet.signatureSkill.cardId, pet.signatureSkill);
       }
       if (this.currentBattleState) {
-        this.renderPetHud(this.currentBattleState, this.activePetId(), this.heldSequence !== null);
-        this.renderCastControls(this.currentBattleState);
+        // The same hold `renderBattleState` applies: while a resolution's timeline
+        // owns the Pet panel's readouts, a settled collection read refreshes the
+        // Pet's *name* (presentation content, not a delivered combat value) and
+        // nothing else — it never presents a held readout early (D-2).
+        const hold = this.heldSequence !== null || this.isPresenting();
+        this.renderPetHud(this.currentBattleState, this.activePetId(), hold);
+        if (!hold) {
+          this.renderCastControls(this.currentBattleState);
+        }
       }
     } catch {
       // Failed collection read is presentation feedback; the panel renders with the
@@ -1997,6 +2315,15 @@ export class BattleScene extends Phaser.Scene {
    * Skill's name is the delivered `signatureSkill.name` rather than the raw
    * `cardId` (`API_CONTRACTS.md` §5.1). No cost, affordability, or legality is
    * read or computed here (`CARD_RULES.md` §3.6, ADR-001).
+   *
+   * **`disabled` is the guard made visible (D-2).** The control set is a
+   * timeline-owned readout: while input is held the controls are drawn dimmed and
+   * carry **no** pointer handler, so a click during the lock submits nothing. The
+   * set itself is rebuilt only from a push that is not held, so it is never
+   * destroyed and recreated while a timeline is playing; the guard's own changes
+   * toggle the existing controls' presentation (`presentCastControlsEnabled`).
+   * `submitCardCast` / `submitPetSkillCast` keep their own guard check regardless,
+   * so the disabled presentation is feedback rather than the guard itself.
    */
   private renderCastControls(state: RuntimeBattleState | null): void {
     if (!this.castControlsLayer) {
@@ -2004,6 +2331,7 @@ export class BattleScene extends Phaser.Scene {
     }
 
     this.castControlsLayer.removeAll(true);
+    this.castControls = [];
 
     if (state === null || !state.petState.equippedCards) {
       return;
@@ -2025,33 +2353,70 @@ export class BattleScene extends Phaser.Scene {
       const x = BOARD_ORIGIN_X + index * (buttonWidth + buttonGap) + buttonWidth / 2;
       const y = originY + buttonHeight / 2;
 
+      const enabledFill = isPetSkill ? 0x4f46e5 : 0x1e293b;
+      const enabledStroke = isPetSkill ? 0x818cf8 : 0x475569;
+
       const tile = this.add
-        .rectangle(x, y, buttonWidth, buttonHeight, isPetSkill ? 0x4f46e5 : 0x1e293b)
-        .setStrokeStyle(1, isPetSkill ? 0x818cf8 : 0x475569)
+        .rectangle(x, y, buttonWidth, buttonHeight, enabledFill)
+        .setStrokeStyle(1, enabledStroke)
         .setInteractive({ useHandCursor: true });
 
       const label = this.add
         .text(x, y, labelText, {
           fontFamily: 'system-ui, sans-serif',
           fontSize: '12px',
-          color: '#e2e8f0',
+          color: CAST_CONTROL_ENABLED_TEXT,
           fontStyle: 'bold',
         })
         .setOrigin(0.5)
         .setInteractive({ useHandCursor: true });
 
-      const onTrigger = () => {
-        if (isPetSkill) {
-          void this.submitPetSkillCast();
-        } else {
-          void this.submitCardCast(cardId);
-        }
-      };
-
-      tile.on(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN, onTrigger);
-      label.on(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN, onTrigger);
-
       this.castControlsLayer.add([tile, label]);
+      this.castControls.push({
+        tile,
+        label,
+        enabledFill,
+        enabledStroke,
+        onTrigger: () => {
+          if (isPetSkill) {
+            void this.submitPetSkillCast();
+          } else {
+            void this.submitCardCast(cardId);
+          }
+        },
+      });
+    }
+
+    this.presentCastControlsEnabled(!this.isInputLocked());
+  }
+
+  /**
+   * Presents the cast controls as enabled or disabled **in place**.
+   *
+   * It is what makes the guard visible without rebuilding the set: an enabled
+   * control carries its own trigger handler and its own tile/label styling, and a
+   * disabled one carries neither — so a click during the lock submits nothing, and
+   * nothing about the control set is destroyed or recreated while a timeline
+   * plays.
+   */
+  private presentCastControlsEnabled(enabled: boolean): void {
+    for (const control of this.castControls) {
+      if (enabled) {
+        control.tile.setFillStyle(control.enabledFill);
+        control.tile.setStrokeStyle(1, control.enabledStroke);
+        control.label.setColor(CAST_CONTROL_ENABLED_TEXT);
+        control.tile.off(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN);
+        control.label.off(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN);
+        control.tile.on(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN, control.onTrigger);
+        control.label.on(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN, control.onTrigger);
+        continue;
+      }
+
+      control.tile.setFillStyle(0x0f172a);
+      control.tile.setStrokeStyle(1, 0x334155);
+      control.label.setColor(CAST_CONTROL_DISABLED_TEXT);
+      control.tile.off(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN);
+      control.label.off(Phaser.Input.Events.GAMEOBJECT_POINTER_DOWN);
     }
   }
 
@@ -2456,11 +2821,14 @@ export class BattleScene extends Phaser.Scene {
    * locally and nothing is retried automatically — the machine-readable `reason`
    * is shown as feedback only (`MATCH3_RULES.md` §2.1.5, §5 item 2).
    *
-   * The two requested cells are kept while the request is outstanding
-   * (`pendingSwapCells`). They are the player's own gesture, recorded so the
+   * The two requested cells are kept as the committed Swap
+   * (`committedSwapCells`). They are the player's own gesture, recorded so the
    * resolution's timeline can present the Swap itself as its first phase, and they
-   * are dropped as soon as the request settles — so a rejection, which emits no
-   * events at all (`GAME_EVENTS.md` §1.2), can present no swap movement.
+   * are dropped when **that Swap's own phase plays** — not when this request's
+   * acknowledgement settles, because the two travel on different paths
+   * (`SIGNALR_PROTOCOL.md` §3.1). A rejection, which emits no events at all
+   * (`GAME_EVENTS.md` §1.2), drops them here so no later resolution can present a
+   * swap movement the server refused.
    */
   private async submitSwap(fromCell: number, toCell: number): Promise<void> {
     if (this.isInputLocked()) {
@@ -2472,9 +2840,8 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
-    this.swapPending = true;
-    this.actionInFlight = true;
-    this.pendingSwapCells = { from: fromCell, to: toCell };
+    this.transitionOrchestration('submitted');
+    this.committedSwapCells = { from: fromCell, to: toCell };
     // The gesture is over the instant its pair is submitted, and the guard is
     // engaged for as long as the request and its resolution take — so the
     // selection must not survive either (TASK-246 §3).
@@ -2497,21 +2864,22 @@ export class BattleScene extends Phaser.Scene {
       if (!acknowledgement.accepted) {
         // A rejected Swap is a gameplay no-op that emits no events
         // (`MATCH3_RULES.md` §2.1.5 item 6, `GAME_EVENTS.md` §1.2): nothing may
-        // be left selected for the player's next tap to pair with.
+        // be left selected for the player's next tap to pair with, and no
+        // timeline will ever come to present the pair.
         this.clearSelection();
+        this.committedSwapCells = null;
       }
     } catch (error) {
       // A failed request is a transport/runtime failure — presentation state,
       // not game state (`SIGNALR_PROTOCOL.md` §8.3). No board value changes and
-      // nothing is retried.
+      // nothing is retried, and the request's own batch never arrives.
       this.clearSelection();
+      this.committedSwapCells = null;
       this.renderSwapStatus(
         `Swap not sent: ${error instanceof Error ? error.message : String(error)}`
       );
     } finally {
-      this.swapPending = false;
-      this.actionInFlight = false;
-      this.pendingSwapCells = null;
+      this.onActionSettled();
       this.renderPhaseIndicator();
     }
   }
@@ -2561,7 +2929,7 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
-    if (this.swapPending) {
+    if (this.isActionInFlight()) {
       this.swapText.setText('Swap request in flight…');
       this.swapText.setColor('#94a3b8');
       return;
@@ -2588,7 +2956,7 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
-    this.actionInFlight = true;
+    this.transitionOrchestration('submitted');
     // A cast engages the same guard a Swap does, so a board selection cannot be
     // left holding a cell across it — a later tap must start a new gesture
     // rather than complete the one the guard interrupted (TASK-246 §3).
@@ -2608,7 +2976,7 @@ export class BattleScene extends Phaser.Scene {
         `CardCast ${cardId} not sent: ${error instanceof Error ? error.message : String(error)}`
       );
     } finally {
-      this.actionInFlight = false;
+      this.onActionSettled();
       this.renderPhaseIndicator();
     }
   }
@@ -2626,7 +2994,7 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
-    this.actionInFlight = true;
+    this.transitionOrchestration('submitted');
     // Same guard, same consequence as a CardCast: no selection survives it.
     this.clearSelection();
     this.renderCastStatus('PetSkillCast in flight…');
@@ -2643,7 +3011,7 @@ export class BattleScene extends Phaser.Scene {
         `PetSkillCast not sent: ${error instanceof Error ? error.message : String(error)}`
       );
     } finally {
-      this.actionInFlight = false;
+      this.onActionSettled();
       this.renderPhaseIndicator();
     }
   }
@@ -2770,7 +3138,7 @@ export class BattleScene extends Phaser.Scene {
       }
 
       presented.push(parsed);
-      this.presentedEventsLog.push(formatInBattleEvent(parsed));
+      BattleScene.appendBounded(this.presentedEventsLog, formatInBattleEvent(parsed));
     }
 
     // A batch that arrives while an earlier one is still playing. The server's
@@ -2813,6 +3181,9 @@ export class BattleScene extends Phaser.Scene {
     );
     if (callout) {
       this.showCallout(callout.message, callout.color);
+      // The batch's own callout belongs to the resolution it reports, so the
+      // timeline that is about to start owns its lifetime (D-2/RC-3).
+      this.timelineCalloutShown = true;
     }
 
     const phases = this.buildPresentationPhases(presented, envelope);
@@ -2828,39 +3199,48 @@ export class BattleScene extends Phaser.Scene {
     // before it started must not survive it, or the player's next tap would
     // complete a gesture from before the resolution (TASK-246 §3).
     this.clearSelection();
+    this.onTimelineStarted();
     this.advancePresentation();
   }
 
   /**
    * Builds the ordered phases of one delivered batch, in the batch's own order.
    *
-   * The grouping is a single forward pass: every event is placed on the phase it
+   * The grouping is a single forward pass: every event is mapped by the one
+   * delivered-event adapter (`adaptPresentedEvent`) and is placed on the phase it
    * belongs to, either extending the phase already open or opening the next one,
    * so the delivered order is preserved exactly and nothing is re-sorted,
    * filtered, or re-derived (`ARCHITECTURE.md` §2.2.1 rule 4,
-   * `SIGNALR_PROTOCOL.md` §3.1 item 5). The phases are:
+   * `SIGNALR_PROTOCOL.md` §3.1 item 5). A Swap, a Boss Skill, a Boss Passive, a
+   * Relic trigger and a Card / Pet-Skill cast all reach their phases through that
+   * same adapter call — there is no per-actor branch, pipeline, registry,
+   * interface or event bus (`AGENTS.md` §9).
    *
    * ```text
-   * swap          the player's own committed Swap, when this batch is the
-   *               resolution of a request still in flight (`pendingSwapCells`)
-   * match         a Match's or a Gem's feedback, keyed on the delivered
-   *               MatchCreated.cells / GemMatched.cellIndex
-   * cascade       one per delivered CascadeCreated.cascadeDepth (MATCH3_RULES.md
-   *               §4.2 item 2) — the pass the event introduces, with that pass's
-   *               own feedback
+   * swap / match / cascade
+   *               the committed Swap's own board cycle, in the delivered order of
+   *               `GAME_EVENTS.md` §1.1: one phase per delivered
+   *               `CascadeCreated.cascadeDepth` (MATCH3_RULES.md §4.2 item 2), with
+   *               that pass's own Match / Gem feedback
+   * damage        the player's hit, classified from the delivered
+   *               `source`/`target` (`SIGNALR_PROTOCOL.md` §3.2.14); it also owns
+   *               the Boss `hp / maxHp` pair and the Enrage label/callout the pair
+   *               drives
+   * retaliation  the Boss's response, classified the same way; it owns the Pet
+   *               `hp / maxHp` pair
+   * cast / relic / boss-skill
+   *               the delivered action's own step, attributed to the actor the
+   *               adapter derived, held for no time
    * settle        the gravity/refill interpolation onto the authoritative board
    *               (PD-1/PD-8), played where the board cycle ends
-   * damage        the player's hit, classified from the delivered
-   *               `source`/`target` (`SIGNALR_PROTOCOL.md` §3.2.14)
-   * retaliation  the Boss's response, classified the same way
-   * feedback      the delivered events that present through a floater only
-   *               (Power, or a damage direction the contract does not define),
-   *               which join the phase already open
+   * feedback      a readout / floater step — the delivered Combo, Power and
+   *               Passive changes, and a damage direction the contract does not
+   *               define — which joins the phase already open (or opens one when
+   *               nothing is open) and is presented by it
    * outcome       the terminal BattleWon / BattleLost handoff, last
    * ```
    *
-   * An event that presents nothing of its own (Combo, Passive, Relic, a cast,
-   * `DamageCalculated`) opens and extends no phase: it stays in the batch's
+   * `DamageCalculated` presents nothing of its own: it stays in the batch's
    * developer log and in the batch's single callout, and adds no step to the
    * timeline.
    *
@@ -2875,20 +3255,30 @@ export class BattleScene extends Phaser.Scene {
   ): PresentationPhase[] {
     const phases: PresentationPhase[] = [];
 
-    // The Swap itself, when the client is still awaiting the resolution of the
-    // pair it sent. A rejected Swap emits no events and reaches no timeline.
-    const swapCells = this.pendingSwapCells;
-    if (this.swapPending && swapCells) {
+    // The Swap itself, when a committed Swap this client has not yet presented
+    // belongs to this resolution. The dependency is the committed pair alone —
+    // never "the request happened to still be in flight when the batch arrived"
+    // — so a batch that arrives after its acknowledgement settled still presents
+    // the exchange (SIGNALR_PROTOCOL.md §3.1).
+    const swapCells = this.committedSwapCells;
+    if (swapCells) {
       phases.push({
         kind: 'swap',
+        actor: 'swap',
+        action: 'swap',
         detail: `swap ${swapCells.from}->${swapCells.to}`,
         holdMs: BattleScene.phaseHoldMs('swap', []),
         events: [],
       });
     }
 
-    let open: { kind: PresentationPhaseKind; detail: string; events: InBattleServerEvent[] } | null =
-      null;
+    let open: {
+      kind: PresentationPhaseKind;
+      actor: PresentationActor | null;
+      action: PresentationAction;
+      detail: string;
+      events: InBattleServerEvent[];
+    } | null = null;
 
     const flush = () => {
       if (open === null) {
@@ -2897,6 +3287,8 @@ export class BattleScene extends Phaser.Scene {
 
       phases.push({
         kind: open.kind,
+        actor: open.actor,
+        action: open.action,
         detail: open.detail,
         holdMs: BattleScene.phaseHoldMs(open.kind, open.events),
         events: open.events,
@@ -2905,9 +3297,9 @@ export class BattleScene extends Phaser.Scene {
     };
 
     for (const event of presented) {
-      const opening = BattleScene.openingPhaseKind(event);
+      const step = adaptPresentedEvent(event);
 
-      if (opening === null) {
+      if (step === null) {
         // The event presents nothing of its own: it is already recorded in
         // `presentedEventsLog`, and whatever a player needs told about it is the
         // batch's single callout. It therefore opens and extends no phase.
@@ -2917,23 +3309,28 @@ export class BattleScene extends Phaser.Scene {
       // A CascadeCreated always opens its own phase: it *is* the pass boundary,
       // and one phase per delivered `cascadeDepth` is the contract
       // (`MATCH3_RULES.md` §4.2 item 2). Match and Gem feedback extends whichever
-      // phase is showing this pass. A floater-only event (Power, or a damage
-      // direction the contract does not define) joins the open phase rather than
-      // splitting it. A damage instance extends the phase already showing the
-      // same delivered direction.
+      // phase is showing this pass. A floater-only event joins the open phase
+      // rather than splitting it. A step of the same kind extends the phase
+      // already open.
       const extendsOpen =
         open !== null &&
-        opening !== 'cascade' &&
-        (opening === 'feedback' ||
-          open.kind === opening ||
-          (opening === 'match' && open.kind === 'cascade'));
+        step.kind !== 'cascade' &&
+        (step.kind === 'feedback' ||
+          open.kind === step.kind ||
+          (step.kind === 'match' && open.kind === 'cascade'));
 
       if (!extendsOpen) {
         flush();
       }
 
       if (open === null) {
-        open = { kind: opening, detail: BattleScene.phaseDetail(opening, event), events: [] };
+        open = {
+          kind: step.kind,
+          actor: step.actor,
+          action: step.action,
+          detail: step.detail,
+          events: [],
+        };
       }
 
       open.events.push(event);
@@ -2964,6 +3361,12 @@ export class BattleScene extends Phaser.Scene {
 
       phases.splice(at === -1 ? phases.length : at, 0, {
         kind: 'settle',
+        // The settle step converges the resolution's board. The committed Swap is
+        // the actor when this resolution presented a board cycle at all; a batch
+        // that moved no board (a Card cast) names no board actor, so none is
+        // claimed.
+        actor: boardPresented ? 'swap' : null,
+        action: 'settle',
         detail: 'settle',
         holdMs: BattleScene.phaseHoldMs('settle', []),
         events: [],
@@ -2973,6 +3376,8 @@ export class BattleScene extends Phaser.Scene {
     if (this.pendingOutcomeHandoff) {
       phases.push({
         kind: 'outcome',
+        actor: 'battle',
+        action: 'outcome',
         detail: `outcome ${this.pendingOutcomeHandoff.outcome}`,
         holdMs: BattleScene.phaseHoldMs('outcome', []),
         events: [],
@@ -2983,71 +3388,22 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
-   * The phase one event opens, or `null` when the event presents nothing of its
-   * own.
-   *
-   * `null` means the event has no board, combat, or floater presentation: it is
-   * carried by the batch's developer log and its callout only, so it opens and
-   * extends no phase. A `feedback` result is a floater-only event — the delivered
-   * Power movement, or a damage direction this contract does not define — which
-   * joins the phase already open rather than splitting it.
-   */
-  private static openingPhaseKind(event: InBattleServerEvent): PresentationPhaseKind | null {
-    switch (event.type) {
-      case 'MatchCreated':
-      case 'GemMatched':
-        return 'match';
-      case 'CascadeCreated':
-        return 'cascade';
-      case 'DamageDealt':
-      case 'DamageTaken':
-        // The delivered parties decide which of the two ordered combat phases the
-        // hit belongs to. A direction the contract does not define is still drawn
-        // over the panel its delivered `target` names, so it joins the open phase
-        // as feedback rather than opening a combat phase of its own
-        // (SIGNALR_PROTOCOL.md §3.2.14 item 3).
-        return resolveDamagePresentationPhase(event.source, event.target) ?? 'feedback';
-      case 'PowerChanged':
-        return 'feedback';
-      default:
-        return null;
-    }
-  }
-
-  /** The diagnostic detail one opening event records. */
-  private static phaseDetail(kind: PresentationPhaseKind, event: InBattleServerEvent): string {
-    if (kind === 'cascade' && event.type === 'CascadeCreated') {
-      return `cascade depth=${event.cascadeDepth}`;
-    }
-
-    if (kind === 'match' && event.type === 'MatchCreated') {
-      return `match depth=${event.cascadeDepth}`;
-    }
-
-    if ((kind === 'damage' || kind === 'retaliation') && 'source' in event && 'target' in event) {
-      return `${kind} ${event.source}->${event.target}`;
-    }
-
-    return kind;
-  }
-
-  /**
    * How long one phase is held before the next begins.
    *
    * It is **derived from the phase's own delivered events**, so the hold covers
    * exactly the animations this phase starts and nothing more: a Match's hold is
-   * its highlight's lifetime, a phase that also carries a floating number is held
-   * for that number, and a phase that starts no animation at all (the terminal
-   * outcome handoff) is held for no time at all. That is what keeps the
-   * relationship true for every batch shape rather than only for the common one —
-   * a `feedback` event joins the phase already open, so the phase that receives it
-   * must grow to cover it (TASK-246 §5).
+   * its highlight's lifetime, a phase that also carries a floating number or a
+   * gauge travel is held for that, and a phase that starts no animation at all
+   * (the terminal outcome handoff) is held for no time at all. That is what keeps
+   * the relationship true for every batch shape rather than only for the common
+   * one — a `feedback` event joins the phase already open, so the phase that
+   * receives it must grow to cover it (TASK-246 §5).
    */
   private static phaseHoldMs(
     kind: PresentationPhaseKind,
     events: readonly InBattleServerEvent[]
   ): number {
-    if (kind === 'outcome') {
+    if (ZERO_HOLD_PHASE_KINDS.includes(kind)) {
       return 0;
     }
 
@@ -3060,8 +3416,10 @@ export class BattleScene extends Phaser.Scene {
    * It reads the *delivered* events, and only to decide how long to look at what
    * they present — never what they mean: `MatchCreated`/`GemMatched` flash the
    * cells they name, a damage instance draws a floater and moves an HP panel,
-   * `PowerChanged` draws a signed floater, the swap tweens two views, and the
-   * settle phase plays the refill. No value is computed from any of them.
+   * `PowerChanged` draws a signed floater over a travelling Power gauge, the
+   * active Pet's own Passive change travels the Passive gauge, the swap tweens two
+   * views, and the settle phase plays the refill. No value is computed from any of
+   * them.
    */
   private static phaseEffectMs(
     kind: PresentationPhaseKind,
@@ -3072,8 +3430,6 @@ export class BattleScene extends Phaser.Scene {
         return SWAP_TWEEN_MS;
       case 'settle':
         return GEM_REFILL_MS;
-      case 'outcome':
-        return 0;
       case 'damage':
       case 'retaliation':
         // Either combat phase moves the panel of the side the delivered events
@@ -3105,8 +3461,17 @@ export class BattleScene extends Phaser.Scene {
           longest = Math.max(longest, FLOATER_LIFE_MS, GAUGE_TWEEN_MS);
           break;
         case 'PowerChanged':
-          // The signed Power floater of §3.2.24, and nothing else.
-          longest = Math.max(longest, FLOATER_LIFE_MS);
+          // The signed Power floater of §3.2.24 and the Power gauge it is drawn
+          // over.
+          longest = Math.max(longest, FLOATER_LIFE_MS, GAUGE_TWEEN_MS);
+          break;
+        case 'PassiveCharged':
+        case 'PassiveTriggered':
+          // Only the active Pet's own Passive pair has a gauge on this panel, so
+          // only the Pet's own charge/trigger travels it.
+          if (isPetPassiveEvent(event)) {
+            longest = Math.max(longest, GAUGE_TWEEN_MS);
+          }
           break;
         default:
           // Every other event presents through the callout alone, or not at all.
@@ -3145,7 +3510,7 @@ export class BattleScene extends Phaser.Scene {
 
       this.presentationPhaseKind = phase.kind;
       this.playPresentationPhase(phase);
-      this.presentedPhases.push(phase.detail);
+      BattleScene.appendBounded(this.presentedPhases, phase.detail);
       this.renderPhaseIndicator();
 
       if (phase.holdMs > 0 && this.tweens) {
@@ -3172,8 +3537,10 @@ export class BattleScene extends Phaser.Scene {
    *
    * Every value presented is a delivered one: the phase's own events go through
    * the same batch feedback path the scene already had (`presentCombatFeedback`),
-   * the settle phase applies the authoritative board, the two combat phases move
-   * the side the delivered events name, and the outcome phase hands off. No step
+   * the readouts the phase's events own are presented by it
+   * (`presentPhaseReadouts`), the settle phase applies the authoritative board,
+   * the two combat phases move the side the delivered events name — and the Boss's
+   * Enrage label with the Boss's HP — and the outcome phase hands off. No step
    * computes a gameplay value, and none is conditioned on one.
    */
   private playPresentationPhase(phase: PresentationPhase): void {
@@ -3188,6 +3555,9 @@ export class BattleScene extends Phaser.Scene {
         break;
       case 'damage':
         if (this.currentBattleState) {
+          // The Boss's HP moves here, so the Enrage transition that same delivered
+          // pair drives is presented here too — label and callout together.
+          this.presentBossEnrage(this.currentBattleState);
           this.presentBossHp(this.currentBattleState);
         }
         break;
@@ -3200,8 +3570,12 @@ export class BattleScene extends Phaser.Scene {
         this.handOffOutcome();
         break;
       default:
+        // `match`, `cascade`, `feedback`, `cast`, `relic` and `boss-skill` present
+        // through the readouts and floaters their own events carry, below.
         break;
     }
+
+    this.presentPhaseReadouts(phase);
 
     if (phase.events.length > 0) {
       this.presentCombatFeedback(phase.events);
@@ -3209,20 +3583,69 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
+   * Presents the timeline-owned readouts the phase's own delivered events own
+   * (operator decision D-2).
+   *
+   * A Combo change owns the Combo / Match counters, a Power change owns the Pet's
+   * Power value and gauge, and the active Pet's own Passive change owns the
+   * Passive pair and its gauge. Each is presented by the phase holding the event
+   * that reports it — the board phase between whose Matches the server emitted it,
+   * or the phase a later delivered event opened — so no readout is written by a
+   * raw push while a timeline plays, and none is presented before the step that
+   * owns it.
+   *
+   * A Boss-owned Passive change owns no readout on this panel: the panel carries
+   * `PetState`'s pair, so nothing is presented for it (`SIGNALR_PROTOCOL.md`
+   * §3.2.16 item 1). Nothing is derived: no Passive is charged, no Threshold is
+   * evaluated, and no Combo or Match count is computed.
+   */
+  private presentPhaseReadouts(phase: PresentationPhase): void {
+    const state = this.currentBattleState;
+    if (!state) {
+      return;
+    }
+
+    for (const event of phase.events) {
+      switch (event.type) {
+        case 'ComboChanged':
+          this.renderPlayerHud(state);
+          break;
+        case 'PowerChanged':
+          this.presentPetPower(state, true);
+          break;
+        case 'PassiveCharged':
+        case 'PassiveTriggered':
+          if (isPetPassiveEvent(event)) {
+            this.presentPetPassive(state, true);
+          }
+          break;
+        default:
+          break;
+      }
+    }
+  }
+
+  /**
    * Plays the committed Swap's first step: the two Gems the player exchanged
    * change places (`MATCH3_RULES.md` §2.1.6).
    *
-   * The two cells are the ones the player's own request carried, and the views
-   * are the ones already rendered there. Nothing is validated, no adjacency is
-   * checked, and no match is looked for — a Swap the server rejected emits no
-   * events at all (`GAME_EVENTS.md` §1.2), so no timeline, and therefore no swap
-   * movement, is ever played for one.
+   * The two cells are the ones the player's own request carried
+   * (`committedSwapCells`), and the views are the ones already rendered there.
+   * Nothing is validated, no adjacency is checked, and no match is looked for — a
+   * Swap the server rejected emits no events at all (`GAME_EVENTS.md` §1.2), so
+   * no timeline, and therefore no swap movement, is ever played for one.
+   *
+   * The pair is consumed here rather than by the request's `finally`: this phase
+   * is the one presentation the pair drives, and it plays whether or not the
+   * request's acknowledgement has already settled.
    */
   private playSwapPhase(): void {
-    const pair = this.pendingSwapCells;
+    const pair = this.committedSwapCells;
     if (!pair) {
       return;
     }
+
+    this.committedSwapCells = null;
 
     const fromView = this.gemViews[pair.from];
     const toView = this.gemViews[pair.to];
@@ -3298,10 +3721,11 @@ export class BattleScene extends Phaser.Scene {
    * server's values rather than mid-animation.
    *
    * It is used by supersession (`renderBattleState`) and by a presentation error
-   * (`handleBattleEvents`). It deliberately leaves the short-lived feedback
-   * animations (highlights, floaters, the callout fade) to complete on their own:
-   * they own no board state and destroy themselves, and killing them would strand
-   * the objects they were about to remove.
+   * (`handleBattleEvents`). It cancels everything the abandoned timeline started —
+   * its pacing, the gem-view travels, and every transient effect a phase spawned
+   * (`timelineEffects`) — so no abandoned resolution animates over the next one
+   * (TASK-252 audit RC-2). The values it was holding are converged on the
+   * authoritative state immediately afterwards.
    */
   private abortPresentation(): void {
     this.tweens?.killTweensOf(this.phaseClock);
@@ -3310,8 +3734,31 @@ export class BattleScene extends Phaser.Scene {
     // presentation: cancelling it is what leaves the board converged rather than
     // drifting to a position the newer state has already replaced.
     this.killGemViewTweens();
+    this.cancelTimelineEffects();
+    // The pair the abandoned timeline was going to present is dropped with it: a
+    // newer state has already replaced the board it would have moved.
+    this.committedSwapCells = null;
     this.settleHeldPresentation();
     this.handOffOutcome();
+  }
+
+  /**
+   * Cancels and releases every transient effect the in-flight timeline started.
+   *
+   * A phase's highlights and floaters are created, animated and destroyed inside
+   * the phase's own hold, so on a completed timeline they have already released
+   * themselves and this only drops the references. On an abort their tweens are
+   * still running, so both the tween and the object are released here — that is
+   * what keeps an abandoned resolution's effects from overlapping the next one.
+   */
+  private cancelTimelineEffects(): void {
+    const effects = this.timelineEffects;
+    this.timelineEffects = [];
+
+    for (const effect of effects) {
+      this.tweens?.killTweensOf(effect);
+      effect.destroy();
+    }
   }
 
   /**
@@ -3326,6 +3773,10 @@ export class BattleScene extends Phaser.Scene {
    * teardown all arrive here, so no phase can leak into the next interaction and
    * no stale selection can outlive the resolution it was made in
    * (`TASK-246` §3–§4).
+   *
+   * It also bounds the batch callout to its own timeline: a callout a timeline
+   * raised is cancelled and hidden here, so it can never still be on screen when
+   * the next resolution's callout arrives (TASK-252 audit RC-3).
    */
   private releaseTimeline(): void {
     this.presentationTimeline = null;
@@ -3333,25 +3784,56 @@ export class BattleScene extends Phaser.Scene {
     this.presentationSequence = null;
     this.presentationBattleId = null;
     this.presentationPhaseKind = null;
+    this.onTimelineEnded();
+    this.cancelTimelineCallout();
     this.clearSelection();
     this.renderPhaseIndicator();
   }
 
   /**
+   * Cancels a callout the timeline raised, so it does not outlive that timeline.
+   *
+   * A callout raised outside a timeline — a transport rejection's own feedback —
+   * is left to fade on its own; only the batch's callout and the Boss Enrage
+   * callout a phase presents belong to a resolution.
+   */
+  private cancelTimelineCallout(): void {
+    if (!this.timelineCalloutShown) {
+      return;
+    }
+
+    this.timelineCalloutShown = false;
+
+    const text = this.calloutText;
+    if (!text) {
+      return;
+    }
+
+    this.tweens?.killTweensOf(text);
+    // The line's own text is left as the record of what was said; hiding it is
+    // what ends its life with the timeline that raised it.
+    text.setAlpha(0);
+  }
+
+  /**
    * Applies everything the timeline was still holding — the board's content and
-   * the two HP panels' delivered values — immediately and without animation.
+   * every readout the timeline owns (operator decision D-2) — immediately and
+   * without animation.
    *
    * It is the guarantee behind "the displayed state is the authoritative state":
    * whatever a timeline did not reach, an abort, the timeline's own end, and the
    * next push all converge here, so a held value can never outlive the
-   * presentation that held it. Nothing is derived: the values written are the
-   * delivered ones already in `currentBattleState`.
+   * presentation that held it. Timeline completion, an abort and state
+   * supersession therefore each converge the board **and** the Combo / Match
+   * counters, the Pet Power value and gauge, the Passive progress and gauge, the
+   * Status Effect instances, the Boss Enraged label and the cast controls onto the
+   * delivered authoritative state.
+   *
+   * Nothing is derived: the values written are the delivered ones already in
+   * `currentBattleState`.
    */
   private settleHeldPresentation(): void {
-    if (this.heldSequence === null) {
-      return;
-    }
-
+    const held = this.heldSequence !== null;
     this.heldSequence = null;
 
     const state = this.currentBattleState;
@@ -3360,8 +3842,22 @@ export class BattleScene extends Phaser.Scene {
     }
 
     this.renderBoard(state.board, false);
+    this.presentBossEnrage(state);
     this.presentBossHp(state, false);
     this.presentPetHp(state, false);
+    this.renderPlayerHud(state);
+    this.presentPetPower(state, false);
+    this.presentPetPassive(state, false);
+    this.presentPetStatus(state);
+
+    // The cast controls are rebuilt from the delivered loadout only when a hold
+    // actually deferred them, and never while a timeline plays: convergence runs
+    // after the machine has left `presenting`, so the set it draws is the one the
+    // guard actually permits. A timeline that held nothing leaves the set it
+    // already presented in place rather than churning it.
+    if (held) {
+      this.renderCastControls(state);
+    }
   }
 
   /**
@@ -3379,6 +3875,10 @@ export class BattleScene extends Phaser.Scene {
    * taken from the delivered `outcome` member of `BattleWon` / `BattleLost`
    * (`SIGNALR_PROTOCOL.md` §3.2.19 item 1) — the battle's end is the server's own
    * fact, and this only names it (`TASK-246` §4).
+   *
+   * The handoff moves the orchestration machine to its terminal state, which both
+   * latches "this battle already handed its outcome off" and releases the input
+   * guard.
    */
   private handOffOutcome(): void {
     const outcome = this.pendingOutcomeHandoff;
@@ -3386,7 +3886,7 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
-    this.outcomeHandled = true;
+    this.transitionOrchestration('terminated');
     this.pendingOutcomeHandoff = null;
     this.terminalStatement = resolveOutcomeStatement(outcome.outcome);
     this.renderPhaseIndicator();
@@ -3469,6 +3969,9 @@ export class BattleScene extends Phaser.Scene {
    * An index outside the 8 x 8 board is ignored rather than clamped: the scene
    * presents the event's own cells and never invents a position for one it cannot
    * place (`MATCH3_RULES.md` §1.0).
+   *
+   * The highlight is registered as a timeline-owned effect, so an aborted
+   * timeline cancels it instead of letting it fade over the next resolution.
    */
   private spawnCellHighlight(
     cellIndex: number,
@@ -3490,6 +3993,7 @@ export class BattleScene extends Phaser.Scene {
       .rectangle(x, y, CELL_SIZE, CELL_SIZE, fill, fillAlpha)
       .setStrokeStyle(2, stroke);
     this.feedbackLayer.add(highlight);
+    this.timelineEffects.push(highlight);
 
     if (this.tweens) {
       this.tweens.add({
@@ -3547,10 +4051,14 @@ export class BattleScene extends Phaser.Scene {
   /**
    * Spawns one transient floating number in the feedback layer.
    *
-   * The object is created, animated, destroyed on completion, and never stored:
-   * nothing accumulates per frame, and the layer is destroyed with the scene
-   * (TASK-210 §15). Without a tween manager (a unit harness) the number is left
-   * in place, which is what makes it observable without a running clock.
+   * The object is created, animated, and destroyed on completion, and it is
+   * registered as a timeline-owned effect for as long as the timeline that
+   * started it is alive: an abort cancels it with the rest of that timeline's
+   * effects, and a completed timeline drops the reference because the object
+   * destroyed itself inside its own phase's hold. Nothing accumulates per frame,
+   * and the layer is destroyed with the scene (TASK-210 §15). Without a tween
+   * manager (a unit harness) the number is left in place, which is what makes it
+   * observable without a running clock.
    */
   private spawnFloater(x: number, y: number, message: string, color: string): void {
     if (!this.feedbackLayer) {
@@ -3566,6 +4074,7 @@ export class BattleScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
     this.feedbackLayer.add(label);
+    this.timelineEffects.push(label);
 
     if (!this.tweens) {
       return;
@@ -3591,6 +4100,12 @@ export class BattleScene extends Phaser.Scene {
    * presentation. The fade is a tween like every other transient effect, so
    * `shutdown()`'s `tweens.killAll()` releases it with the scene
    * (TASK-205's lifecycle contract).
+   *
+   * A callout a **timeline** raises — the batch's own single callout, and the
+   * `BOSS ENRAGED` callout a phase presents — is owned by that timeline and
+   * cancelled with it (`cancelTimelineCallout`), so it can never outlive the
+   * resolution that raised it. A callout raised outside a timeline (a transport
+   * rejection's own feedback) is left to fade on its own.
    */
   private showCallout(message: string, color: string): void {
     const text = this.calloutText;
@@ -3715,9 +4230,114 @@ export class BattleScene extends Phaser.Scene {
    * resolved. A player can therefore never act against a board that is still
    * being shown mid-resolution, and the guard is released on the timeline's
    * completion, on an error, on supersession, and on scene teardown.
+   *
+   * It is one derived fact over the orchestration machine
+   * (`BATTLE_ORCHESTRATION_LEGAL_TRANSITIONS`'s state set): every state except
+   * `idle` — the state that accepts player input — and `terminated` holds input.
    */
   isInputLocked(): boolean {
-    return this.presentationTimeline !== null || this.swapPending || this.actionInFlight;
+    return ORCHESTRATION_LOCKED_STATES.includes(this.orchestration);
+  }
+
+  /**
+   * Whether an action request this scene submitted is still in flight.
+   *
+   * It is the machine's own fact — `submitted` alone, or `presenting-submitted`
+   * when the resolution's timeline is playing at the same time — and replaces the
+   * former `swapPending` / `actionInFlight` conjunction.
+   */
+  private isActionInFlight(): boolean {
+    return this.orchestration === 'submitted' || this.orchestration === 'presenting-submitted';
+  }
+
+  /** Whether a resolution's presentation timeline is playing. */
+  private isPresenting(): boolean {
+    return this.orchestration === 'presenting' || this.orchestration === 'presenting-submitted';
+  }
+
+  /**
+   * Whether this scene has handed its battle's terminal outcome to `ResultScene`.
+   *
+   * It is the machine's `terminated` state read as a fact, so the terminal latch
+   * and the orchestration state cannot disagree. It is read by
+   * `handleBattleEvents` (one battle accepts one outcome) and reset by `create()`
+   * / `shutdown()` with the rest of the machine.
+   */
+  private get outcomeHandled(): boolean {
+    return this.orchestration === 'terminated';
+  }
+
+  /**
+   * Applies one transition of the orchestration machine.
+   *
+   * It is the **only** writer of `orchestration`, and it refuses a transition the
+   * documented table does not allow: presentation never throws
+   * (`handleBattleEvents` turns a malformed batch into an abort), so an illegal
+   * transition leaves the machine where it is rather than corrupting the guard.
+   * A call naming the current state is not a transition and does nothing.
+   */
+  private transitionOrchestration(to: BattleOrchestrationState): void {
+    if (to === this.orchestration) {
+      return;
+    }
+
+    if (!BATTLE_ORCHESTRATION_LEGAL_TRANSITIONS[this.orchestration]?.includes(to)) {
+      return;
+    }
+
+    this.orchestration = to;
+    // The guard is presented the moment it changes: the cast controls are dimmed
+    // and made non-responsive while input is held, and restored when it is
+    // permitted again. This toggles the existing controls' presentation; it never
+    // rebuilds the set, so no delivered push can churn them mid-resolution (D-2).
+    this.presentCastControlsEnabled(!this.isInputLocked());
+    this.renderPhaseIndicator();
+  }
+
+  /**
+   * Records that a resolution's timeline has started.
+   *
+   * A batch can arrive before its own request's acknowledgement or after it
+   * (`SIGNALR_PROTOCOL.md` §3.1), and both are legal: the machine keeps the
+   * in-flight fact when it is present, so the guard is never released while a
+   * request is still unanswered.
+   */
+  private onTimelineStarted(): void {
+    this.transitionOrchestration(
+      this.isActionInFlight() ? 'presenting-submitted' : 'presenting'
+    );
+  }
+
+  /**
+   * Records that a resolution's timeline has ended — completed, aborted, or been
+   * superseded.
+   *
+   * The in-flight fact, if there is one, is kept: a scene whose timeline ended
+   * before its request was answered stays locked until that answer arrives.
+   */
+  private onTimelineEnded(): void {
+    if (this.orchestration === 'presenting') {
+      this.transitionOrchestration('idle');
+      return;
+    }
+
+    if (this.orchestration === 'presenting-submitted') {
+      this.transitionOrchestration('submitted');
+    }
+  }
+
+  /**
+   * Records that an action request's acknowledgement has settled.
+   *
+   * The cast controls need no re-presentation of their own: the machine's
+   * transition presents the guard's new state, and no control set is rebuilt.
+   */
+  private onActionSettled(): void {
+    if (this.orchestration === 'submitted') {
+      this.transitionOrchestration('idle');
+    } else if (this.orchestration === 'presenting-submitted') {
+      this.transitionOrchestration('presenting');
+    }
   }
 
   /**
