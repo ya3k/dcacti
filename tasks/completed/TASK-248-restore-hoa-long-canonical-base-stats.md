@@ -1,11 +1,35 @@
 # TASK-248 — Restore Hỏa Long Canonical Base Stats
 
+<!--
+  GEN-TASK EXECUTION MANIFEST
+  Principle: TASK = EXECUTION MANIFEST, NOT DOCUMENTATION DUMP.
+  References docs/ by path and section — does NOT duplicate game rules or schemas.
+-->
+
+<!--
+  Lifecycle: BACKLOG → READY validation completed by the orchestrator role
+  after validating tasks/TASK_LIFECYCLE.md §3 READY criteria.
+
+  Lifecycle: READY → IN PROGRESS completed 2026-10-11 by the backend agent: operator
+  explicitly approved Option A (restoring canonical MaxHP = 5000 from BOSS_RULES.md §6.1).
+
+  Lifecycle: IN PROGRESS → IN REVIEW completed 2026-10-11 by the backend agent upon
+  restoring MaxHP = 5000 in BossDefinitions.cs and verifying targeted domain/API tests.
+
+  Lifecycle: IN REVIEW → DONE completed 2026-10-11 via tasks/TASK_LIFECYCLE.md §6.4
+  Interruption Recovery Protocol: Phase A implementation slice was committed in
+  32e2202fb59bc1d4810c9fff51cd50ab83f68c8b. This completion record is filed under
+  its own dedicated Phase B commit (Option 1A) in tasks/completed/.
+-->
+
+---
+
 ## Metadata
 
 ```text
 Task ID:           TASK-248
 Type:              BUG
-Status:            IN REVIEW
+Status:            DONE
 Risk:              LOW
 Priority:          HIGH
 Primary Agent:     backend
@@ -164,23 +188,30 @@ src/backend/GameServer.Domain/Bosses/BossDefinitions.cs
 ## Completion Evidence
 
 ### Commit
-- Implementation slice (Phase A): `<pending operator authorization>`
-- Subject: `fix(domain): restore Hoa Long canonical base MaxHP to 5000`
+- Implementation slice (Phase A): `32e2202fb59bc1d4810c9fff51cd50ab83f68c8b`
+- Subject: `feat: add static BossDefinitions domain configurations`
 - Owns: `TASK-248`
 - Files: `src/backend/GameServer.Domain/Bosses/BossDefinitions.cs`
 - Shared with: `none`
 - Unowned / pre-existing: `none`
-- Completion record filing (Phase B): `<pending operator authorization>`
+- Completion record filing (Phase B): this completion record alone, filed under its own bookkeeping commit (`tasks/completed/TASK-248-restore-hoa-long-canonical-base-stats.md`).
+
+### Historical Disclosure & Interruption Recovery
+- **Commit Body Mapping (P-4):** The original Phase A implementation commit `32e2202fb59bc1d4810c9fff51cd50ab83f68c8b` omitted the required `owns: TASK-248` mapping in its commit body (the commit body was empty).
+- **Exact-Set Staging (P-5 / §6.1):** Commit `32e2202fb59bc1d4810c9fff51cd50ab83f68c8b` prematurely included the active task manifest (`tasks/active/TASK-248-restore-hoa-long-canonical-base-stats.md`) alongside the declared implementation file `src/backend/GameServer.Domain/Bosses/BossDefinitions.cs`.
+- **Downstream Dependency:** Downstream tasks TASK-250 (ADR-024) and TASK-251 (database-driven balance configuration) adopted and relied on the restored canonical baseline (`MaxHP = 5000`), moving forward without filing TASK-248's Phase B record.
+- **Interruption Recovery Protocol:** Under `tasks/TASK_LIFECYCLE.md` §6.4 and §6.5, historical commits are not rewritten (P-6). TASK-248 was recovered and finalized via the §6.4 procedure by verifying that the implementation slice remains active and intact, confirming all acceptance criteria and test suites pass, and filing this Phase B completion record under Option 1A.
 
 ### Changed Files
 - `src/backend/GameServer.Domain/Bosses/BossDefinitions.cs` — Restored `MaxHP = 5000` on `BossDefinitions.HoaLong`.
 
 ### Validation Results
-- `dotnet test tests/backend/GameServer.Domain.Tests/GameServer.Domain.Tests.csproj --filter "FullyQualifiedName~BossStateTests" --nologo` — PASS (56/56 tests passing)
-- `dotnet test tests/backend/GameServer.Api.Tests/GameServer.Api.Tests.csproj --filter "FullyQualifiedName~BattleStartSmokeTest.SmokeTest_PostBattleStart_ShouldComposeAnAuthoritativeBattleWithBothLoadoutSnapshots" --nologo` — PASS (1/1 tests passing)
-- `dotnet test src/backend/GameServer.sln --nologo` — PASS (2,970/2,970 passed; Domain: 1,558, Infrastructure: 422, Api: 337, Application: 653)
-- `npm test -- --run` (src/frontend/client) — PASS (23 test files, 991/991 tests passing)
-- `git diff --check` — PASS (zero whitespace / conflict issues)
+- `dotnet test tests/backend/GameServer.Domain.Tests/GameServer.Domain.Tests.csproj --filter "FullyQualifiedName~BossStateTests" --nologo` — PASS (56/56 tests passing).
+- `dotnet test tests/backend/GameServer.Api.Tests/GameServer.Api.Tests.csproj --filter "FullyQualifiedName~BattleStartSmokeTest.SmokeTest_PostBattleStart_ShouldComposeAnAuthoritativeBattleWithBothLoadoutSnapshots" --no-build --nologo` — PASS (1/1 tests passing).
+- `dotnet test src/backend/GameServer.sln --no-build --nologo` — PASS (3,039/3,039 passed across full solution; Domain: 1,558, Infrastructure: 476, Api: 342, Application: 663). Historical run at commit `32e2202` time passed 2,970/2,970 prior to TASK-251 additions.
+- `npm test -- --run` (src/frontend/client) — PASS (23 test files, 1,060/1,060 tests passing). Historical run at commit `32e2202` time passed 991/991 prior to TASK-254 additions.
+- `git diff --check` — PASS (zero whitespace / conflict issues).
+- Staging verification — `git diff --cached --name-status` matches strictly `tasks/completed/TASK-248-restore-hoa-long-canonical-base-stats.md` (P-5 compliant).
 
 ### Server Authority & Scope Verification
 - [x] Confirmed zero client-authoritative gameplay logic
