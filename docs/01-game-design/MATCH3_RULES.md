@@ -1,6 +1,6 @@
 # Match-3 Rules
 
-**Version:** 1.7 (§2, §8 updated per ADR-026 / TASK-259: Player and Boss share the one Match-3 board; both act via valid swaps; cell type determines effect; acting side determines ownership and target; Turn represents an atomic combat Round; Sequence increments once per committed round write-back. Prior 1.6: §2.1.4 item 2 **completed, not changed in its rules**: the
+**Version:** 1.8 (§1.6 "Runtime Board Deadlock Recovery" added and §2.1.4 item 7 added per ADR-026 / TASK-267: every committed board that is non-terminal and permits a Player action has at least one legal match-producing adjacent swap, evaluated and recovered at the Round commit boundary on the battle's retained Pcg32 stream with §1.5 item 2's unchanged 64-attempt bound, with terminal boards exempt, the Boss's pre-move recovery retained, and no Battle Event emitted; a Swap against an already-terminal battle is rejected under §2.1.4's existing state-precondition code before any resolution or RNG. §7.2's RNG-consumer list now names that recovery, §1.6.4's citations and §2.1.2's ordering pointer are corrected, and §1.6.3 records that a regenerated board preserves no Special Gem (TASK-268). Prior 1.7 (§2, §8 updated per ADR-026 / TASK-259: Player and Boss share the one Match-3 board; both act via valid swaps; cell type determines effect; acting side determines ownership and target; Turn represents an atomic combat Round; Sequence increments once per committed round write-back. Prior 1.6: §2.1.4 item 2 **completed, not changed in its rules**: the
 action-identity recognition window is stated as what the rule and
 `GAME_STATE.md` §2.1.10 item 5 already define — the identity is compared with the
 most recently committed Swap, so a retry arriving after a later action committed
@@ -521,32 +521,49 @@ about to act on.
 4. **Exhaustion fails closed.** If no candidate satisfies §1.3 and §1.4 within
    the bound, recovery fails as §1.5 item 3 fails generation: the Round is not
    committed, and no partially recovered board and no advanced RNG state reach
-   the store. §1.5 item 3's rules apply unchanged — there is no fallback board,
-   and a board that violates §1.3 or §1.4 is never committed as the playable
-   board. Recovery failure is a server failure, not a gameplay outcome: it emits
-   no Battle Event and states no outcome.
-5. **Nothing else is redistributed.** The fill draws from §1.1's four Gem types
-   under §1.2.1.2's constraint. No Gem-type probability or distribution (§7.3)
-   and no generator algorithm changes, and recovery places no Special Gem.
+   the store. §1.5 item 3's construction rules apply unchanged — there is no
+   fallback board, no forced pattern, and no partial fill, and a board that
+   violates §1.3 or §1.4 is never committed as the playable board. What differs
+   is only *where* the failure lands: §1.5 item 3 fails a battle's creation,
+   while recovery fails an already-created battle's Round, so the Round is
+   refused rather than the battle. Recovery failure is a server failure, not a
+   gameplay outcome: it emits no Battle Event and states no outcome.
+5. **Nothing else is redistributed, and no Special Gem survives the replacement.**
+   The fill draws from §1.1's four Gem types under §1.2.1.2's constraint. No
+   Gem-type probability or distribution (§7.3) and no generator algorithm
+   changes, and recovery places no Special Gem. It also **preserves** none: a §5
+   Special Gem is carried by the cell it was created in, and a regenerated board
+   fills every cell from §1.1's types, so any Line Clear, Burst, or Area Gem on
+   the board being replaced is discarded with it. That is a consequence of
+   replacing the board rather than rebuilding around its contents, it applies to
+   the Boss's pre-move recovery on the same terms (§1.6.5 item 4), and no
+   compensation, carry-over, or re-placement is defined.
 
 ### 1.6.4 Terminal boards are exempt
 
 1. Recovery is **never** performed on the board of a battle that has ended
-   (§1.6.1 item 3). The outcome is already authoritative and the Player never
-   acts again (`GAME_RULES.md` §1.4, `GAME_EVENTS.md` §2), so the invariant has
-   no subject there.
+   (§1.6.1 item 3). The outcome is already authoritative (`GAME_RULES.md` §1.4,
+   `GAME_EVENTS.md` §2) and no Swap action is admitted against it (§2.1.4 item 7),
+   so the invariant has no subject there.
 2. A deadlocked terminal board is therefore committed as it is, and a
    generation failure can never invalidate an otherwise valid terminal result:
    recovery is not attempted for a terminal Round, so it cannot fail.
 3. This is not an exception to the invariant. The invariant's own scope is
    "committed, non-terminal, and permits a Player action" (§1.6.1 item 3), and
    the exemption is that scope read literally.
+4. **What the exemption does not decide.** It says nothing about a Card cast or a
+   Pet Skill cast after the battle has ended: those are not board actions, they
+   resolve no Swap and reach no cascade, and whether they are refused once the
+   battle has ended is a gameplay rule this section does not own. The one action
+   whose post-terminal admission §2.1.4 item 7 fixes is the Swap.
 
 ### 1.6.5 This recovery and the Boss's pre-move recovery
 
 1. **The Boss keeps its own pre-move recovery, unchanged.** Before the Boss
    selects its board action, a deadlocked board must be recovered for the Boss to
-   have a legal move at all (`ADR-026` §8, `GAME_RULES.md` §17 step 18a). That is
+   have a legal move at all (`ADR-026` §8; `GAME_RULES.md` §17 step 18a is the
+   step it runs inside, and that step's own text states the Boss's move selection
+   and execution — the recovery is the operation `ADR-026` §8 owns). That is
    a separate, earlier evaluation of the same deadlock question and is retained.
 2. **They cover different boards.** The Boss's pre-move recovery covers the board
    the **Player's** action and cascades left. This section's recovery covers the
@@ -663,7 +680,11 @@ before the swap is committed (§2 item 2—3):
    (§2 item 4).
 
 Checks are evaluated in the order above so that two implementations reject the
-same action with the same reason when more than one check could fail.
+same action with the same reason when more than one check could fail. That order
+governs an action against a battle **still in progress**: §2.1.4 item 7 places one
+precondition ahead of all five checks for a battle that has already ended, and
+names the reason it produces, so a terminal battle's rejection does not depend on
+which of these checks the action would also have failed.
 
 A Swap that produces no Match is **not** a resolved Swap with a zero-Match
 result: it is a rejected action and the board reverts (§2 item 4). A committed
@@ -2892,11 +2913,19 @@ Consumes RNG during gameplay
                                                     spawned cell
   initial board generation (§1.2.1.4)              exactly 1 selection per
                                                     cell, initialization only
+  runtime deadlock recovery (§1.6.3 item 3)        §1.2.1.4's selections per
+                                                    attempt, up to §1.5 item 2's
+                                                    bound, on the retained stream
 ```
 
-1. These are the only board operations that consume randomness. Anything else
-   that consumes randomness on the board would be a rule change and must go
-   through `GAME_RULES.md` §20 before implementation.
+1. These are the only board operations that consume randomness — the list above is
+   exhaustive, and each entry names the section that owns its consumption. Anything
+   else that consumes randomness on the board would be a rule change and must go
+   through `GAME_RULES.md` §20 before implementation. The third entry is
+   `TASK-267`'s approved authorization (§1.6, decisions D1–D4) of the operation
+   `ADR-026` §8 had already introduced for the Boss's pre-move recovery: both are
+   the same mechanism — `BoardGenerator.Generate` over the battle's retained
+   stream, bounded by §1.5 item 2 — evaluated at two different points (`§1.6.5`).
 2. The following **must not** consume RNG. Each is a pure function of the board
    state and the resolution's inputs:
 

@@ -1,6 +1,6 @@
 # Game Events
 
-**Version:** 2.13 (§3 item 8 added per TASK-265: the `BoardReshuffled` event `ADR-026` §8 promised is recorded as **not existing** — the shared board's deadlock reshuffle is a server-internal operation of the Boss Response phase, it emits no Battle Event, and the board that follows from it reaches the client as the Round's committed board in that Round's single state push. **No event, payload member, ordering rule, delivery path, game rule or implementation is changed**: `GAME_RULES.md` §16, §2 of this document, `SIGNALR_PROTOCOL.md` §3.2.2's closed discriminator set and the code already agree that the event does not exist; only the document that promised it (`ADR-026` §8) is corrected, and this document's own §3 now records the absence and the path a future event would have to take. Prior 2.12: §1 updated per ADR-026 / TASK-259: Event ordering synchronized with shared-board round execution — damage events occur iff acting actor produced a valid ATK-gem match (D1); Boss response phase incorporates Boss board swap and cascades; Boss skill deals zero direct damage (D3); fixed basic attack fallback retired. Prior 2.11: §2 `PowerChanged` reconciled with the TASK-150 Product Owner
+**Version:** 2.14 (§3 item 8 extended per ADR-026 / TASK-267: the operation that emits no Battle Event has a **second** documented case — `MATCH3_RULES.md` §1.6's commit-boundary board recovery — recorded alongside the Boss Response phase's deadlock reshuffle, as the same deterministic regeneration at a second evaluation point. **No event, payload member, ordering rule, delivery path, game rule or implementation is changed**: the item's rule is unchanged and only its example set is completed, so the closed discriminator set (`SIGNALR_PROTOCOL.md` §3.2.2) and `GAME_RULES.md` §16 remain exactly as they were (TASK-268). Prior 2.13 (§3 item 8 added per TASK-265: the `BoardReshuffled` event `ADR-026` §8 promised is recorded as **not existing** — the shared board's deadlock reshuffle is a server-internal operation of the Boss Response phase, it emits no Battle Event, and the board that follows from it reaches the client as the Round's committed board in that Round's single state push. **No event, payload member, ordering rule, delivery path, game rule or implementation is changed**: `GAME_RULES.md` §16, §2 of this document, `SIGNALR_PROTOCOL.md` §3.2.2's closed discriminator set and the code already agree that the event does not exist; only the document that promised it (`ADR-026` §8) is corrected, and this document's own §3 now records the absence and the path a future event would have to take. Prior 2.12: §1 updated per ADR-026 / TASK-259: Event ordering synchronized with shared-board round execution — damage events occur iff acting actor produced a valid ATK-gem match (D1); Boss response phase incorporates Boss board swap and cascades; Boss skill deals zero direct damage (D3); fixed basic attack fallback retired. Prior 2.11: §2 `PowerChanged` reconciled with the TASK-150 Product Owner
 decisions D-1–D-8: the `source` value set is now the four values
 `"match"`, `"card"`, `"relic"`, and `"boss"`; the owning-stage emission rule
 replaces the stale "the `"match"` and `"card"` sources remain their own stages'"
@@ -708,9 +708,14 @@ Payload:  Outcome, final BattleState summary, reward summary (BattleWon
    shared board's **deadlock reshuffle** is the documented case: when the Boss
    Response phase's move selection finds no legal match-producing swap, it
    replaces the board with a deterministically generated valid one and selects
-   on that board (`ADR-026` §8, `GAME_RULES.md` §17 step 18a). It emits
-   **nothing** — there is no `BoardReshuffled` event, discriminator, or payload
-   member, and none is promised by any owning document (`GAME_RULES.md` §16,
+   on that board (`ADR-026` §8, `GAME_RULES.md` §17 step 18a). **The second
+   documented case is `MATCH3_RULES.md` §1.6's commit-boundary recovery**: when
+   the finished board of a non-terminal Round has no legal match-producing swap,
+   it is replaced by the same deterministic generation on the battle's retained
+   stream, before the Round's single write-back. Both are the same mechanism at
+   two evaluation points, and neither emits anything — there is no
+   `BoardReshuffled` event, discriminator, or payload member, and none is promised
+   by any owning document (`GAME_RULES.md` §16,
    §2 above, `SIGNALR_PROTOCOL.md` §3.2.2). The reshuffle becomes authoritative
    only in the Round's single state write-back — the delivered committed board
    is the board that follows from it — and it reaches the client in the state
