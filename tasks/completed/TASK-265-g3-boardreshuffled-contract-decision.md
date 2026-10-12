@@ -322,24 +322,28 @@ reports it, and how a future need is raised).
 
 ## Acceptance Criteria
 
-- [ ] `ADR-026` §8 no longer promises a `BoardReshuffled` event, states that the reshuffle is a
+*(Marked satisfied at completion, matching the convention every recent DONE record follows. No
+criterion was altered after the fact; the marks were applied by this task's own annotation commit,
+recorded under `### Commit`.)*
+
+- [x] `ADR-026` §8 no longer promises a `BoardReshuffled` event, states that the reshuffle is a
       server-internal recovery operation, that the committed board remains authoritative and reaches
       the client through the round's existing state transition, and that the client cannot identify
       the operation from the event stream; its runtime predicate matches the implementation.
-- [ ] The correction is recorded in `ADR-026` itself (what was wrong, why it was wrong, why the
+- [x] The correction is recorded in `ADR-026` itself (what was wrong, why it was wrong, why the
       decision itself is unchanged and no new ADR is required).
-- [ ] `GAME_EVENTS.md` §3 states the absence at the event contract's owner, with the delivery path
+- [x] `GAME_EVENTS.md` §3 states the absence at the event contract's owner, with the delivery path
       that carries the result instead, and points to `GAME_RULES.md` §16 as the place a future event
       must be introduced; its Version line records the revision.
-- [ ] No event, discriminator, payload member, hub method, state field, Redis key or database column
+- [x] No event, discriminator, payload member, hub method, state field, Redis key or database column
       is added; no wire, state, persistence, gameplay or frontend file changes
       (`git diff --name-only` equals the declared set exactly).
-- [ ] The decision is evidenced from current source and documents (not from earlier reports), and the
+- [x] The decision is evidenced from current source and documents (not from earlier reports), and the
       Option A/B comparison and the Option B decision-level specification are recorded here.
-- [ ] The declared-file-set validation and documentation-consistency validation pass; the repository's
+- [x] The declared-file-set validation and documentation-consistency validation pass; the repository's
       applicable documentation checks are run and any check that could not be run is reported as
       NOT RUN rather than as passing.
-- [ ] Zero unrelated working-tree change: the Phase A staged set equals the declared file set exactly,
+- [x] Zero unrelated working-tree change: the Phase A staged set equals the declared file set exactly,
       and every unowned/pre-existing path is left unstaged and disclosed.
 
 ---
@@ -451,6 +455,10 @@ this environment in any case — reported as NOT RUN.)*
   `.ai/workflow/core/task-selection.md`, `.claude/`
 - Completion record filing (Phase B): this completion record alone, filed under its own
   bookkeeping commit (a rename: `tasks/active/` → `tasks/completed/`).
+- Completion annotation (bookkeeping, immediately after Phase B): this record alone, marking the
+  `## Acceptance Criteria` boxes satisfied — the Phase B commit filed the record before the marks
+  were applied. No criterion, decision, or evidence was changed by it; it exists so this DONE record
+  follows the same all-satisfied convention as every other recent completion record.
 
 ### Changed Files
 
