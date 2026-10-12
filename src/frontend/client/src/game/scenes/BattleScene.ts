@@ -409,6 +409,24 @@ const CALLOUT_HOLD_MS = 420;
 const CALLOUT_FADE_MS = 240;
 
 /**
+ * The swap step's **coordinate marker** (TASK-264): how long one of the two §1.0
+ * cells a delivered board action named is marked, and the colour it is marked
+ * with.
+ *
+ * The marker is the swap step's own presentation of those two cells, shown when
+ * the step cannot present the exchange itself — when the contents at those cells
+ * on screen are not the Gems the action exchanged. Its lifetime is deliberately
+ * below the swap phase's own hold (`SWAP_TWEEN_MS` + `PHASE_SETTLE_MS`), so the
+ * phase that starts it still outlasts it (TASK-246 §5), and it is drawn as a
+ * translucent fill with the same colour's border so it is distinct from a
+ * Match's white flash and a Gem's blue one (`spawnCellHighlight`'s other two
+ * call sites).
+ */
+const SWAP_MARK_MS = 260;
+const SWAP_MARK_COLOR = 0xf87171;
+const SWAP_MARK_FILL_ALPHA = 0.2;
+
+/**
  * The beat each phase is held *after* the animation it triggered has finished.
  *
  * Without it a phase boundary would land exactly on the last frame of its own
@@ -4151,7 +4169,9 @@ export class BattleScene extends Phaser.Scene {
 
   /**
    * Plays one committed board action's first step: the two Gems it exchanged
-   * change places (`MATCH3_RULES.md` §2.1.6 steps 3→7).
+   * change places (`MATCH3_RULES.md` §2.1.6 steps 3→7) — or, for an action whose
+   * two cells are not cells of the board on screen, the two §1.0 cells it named
+   * are marked instead (TASK-264).
    *
    * **The pair is the delivered one whenever the step carries it.** A step opened
    * by a `SwapStarted` holds that event, and the two cells it presents are the
@@ -4162,10 +4182,29 @@ export class BattleScene extends Phaser.Scene {
    * step for a batch that delivered no boundary falls back to the pair this
    * client submitted (`committedSwapCells`).
    *
-   * The views are the ones already rendered at those cells. Nothing is validated,
-   * no adjacency is checked, and no match is looked for — a Swap the server
-   * rejected emits no events at all (`GAME_EVENTS.md` §1.2), so no timeline, and
-   * therefore no swap movement, is ever played for one.
+   * **A pair is only *exchanged* when those two cells' contents are the ones the
+   * action exchanged** — that is, when the coordinates name an exchange on the
+   * board this scene is showing. The displayed board is the last committed board
+   * the server delivered (`renderBoard` writes it at the round's single
+   * transition), and under `ADR-026` §2 the round's first board action is the
+   * Player's, whose action is validated against exactly that committed board. So
+   * the Player's own step (and the submitted-pair fallback that is that step's
+   * pre-extension form) exchanges the views it names, and every other delivered
+   * boundary does not: the Boss's action is validated against the board its own
+   * resolution continues from — the post-Player-cycle board, and, after a deadlock
+   * reshuffle, a board the AI generated and the client has never held
+   * (`BossAiEngine.SelectMove`, `ADR-026` §8) — and `SIGNALR_PROTOCOL.md` §3.1
+   * item 2 delivers no per-pass board, so the client can neither know those
+   * contents nor honestly move them. Moving the displayed cells there would
+   * present an exchange no authoritative state contains, and after a reshuffle a
+   * movement of Gems that had nothing to do with the Boss's action.
+   *
+   * The cell **indices** are board-independent (`MATCH3_RULES.md` §1.0), so the
+   * delivered pair is still presented: the two cells are marked, and the round's
+   * committed board follows at its one transition. Nothing is validated, no
+   * adjacency is checked, no match is looked for, and no board is reconstructed —
+   * a Swap the server rejected emits no events at all (`GAME_EVENTS.md` §1.2), so
+   * no timeline, and therefore no swap step, is ever played for one.
    *
    * The fallback pair is consumed here rather than by the request's `finally`:
    * this phase is the one presentation it drives, and it plays whether or not the
@@ -4176,8 +4215,7 @@ export class BattleScene extends Phaser.Scene {
       phase.events.map((event) => deliveredSwapOf(event)).find((swap) => swap !== null) ?? null;
 
     // Both sources are read as one shape: the delivered pair's own member names and
-    // the submitted pair's, so the tween below reads one pair whatever opened the
-    // step.
+    // the submitted pair's, so the step below reads one pair whatever opened it.
     const pair = delivered
       ? { from: delivered.fromCell, to: delivered.toCell }
       : this.committedSwapCells;
@@ -4187,6 +4225,19 @@ export class BattleScene extends Phaser.Scene {
     }
 
     this.committedSwapCells = null;
+
+    // A boundary that names the Player is the round's first board action, validated
+    // against the committed board this scene renders; no boundary at all is this
+    // client's own committed action, which is the same board. Both are exchanges the
+    // displayed contents really made. Everything else — the Boss's action, or an
+    // `actor` word outside the contract's two values, which names no side
+    // (`SIGNALR_PROTOCOL.md` §3.2.26 item 2) — is presented as marked cells only.
+    const exchangedOnHeldBoard = delivered === null || delivered.actor === 'player';
+
+    if (!exchangedOnHeldBoard) {
+      this.markSwapCells(pair.from, pair.to);
+      return;
+    }
 
     const fromView = this.gemViews[pair.from];
     const toView = this.gemViews[pair.to];
@@ -4225,6 +4276,39 @@ export class BattleScene extends Phaser.Scene {
     // board as the Swap left it.
     this.gemViews[pair.from] = toView;
     this.gemViews[pair.to] = fromView;
+  }
+
+  /**
+   * Marks the two §1.0 cells a delivered board action named, moving nothing.
+   *
+   * It is the swap step's presentation for an action whose exchange the scene
+   * cannot show as a movement of its views (see `playSwapPhase`): the coordinates
+   * are delivered and true of any board, while the contents at those cells are
+   * not — so the step states *where* the action acted and claims nothing about
+   * what it exchanged. The round's committed board is what the round's single
+   * transition then applies (`settle`).
+   *
+   * Both marks are the scene's existing transient board highlights, so each is
+   * registered as a timeline-owned effect: a supersession, an abort and a teardown
+   * cancel them with the timeline that started them, exactly as a Match's own
+   * flash is cancelled, and no mark can outlive the resolution that raised it.
+   * Their lifetime is `SWAP_MARK_MS`, inside the swap phase's own hold.
+   */
+  private markSwapCells(from: number, to: number): void {
+    this.spawnCellHighlight(
+      from,
+      SWAP_MARK_COLOR,
+      SWAP_MARK_FILL_ALPHA,
+      SWAP_MARK_COLOR,
+      SWAP_MARK_MS
+    );
+    this.spawnCellHighlight(
+      to,
+      SWAP_MARK_COLOR,
+      SWAP_MARK_FILL_ALPHA,
+      SWAP_MARK_COLOR,
+      SWAP_MARK_MS
+    );
   }
 
   /** Exchanges two cells' occupants, placing each view on the other's cell. */

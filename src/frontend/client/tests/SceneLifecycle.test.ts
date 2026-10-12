@@ -7999,6 +7999,492 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       expect(phases.find((phase) => phase.detail === 'match depth=1')?.actor).toBe('swap');
     });
   });
+
+  // =========================================================================
+  // TASK-264 — the Boss's board action on a board the client does not hold
+  // (SIGNALR_PROTOCOL.md §3.1 items 1–3, ADR-026 §2/§8): the delivered pair is
+  // presented as the two §1.0 cells it names, never as a movement of the
+  // contents on screen, because the board the Boss's action was validated
+  // against — post-Player-cycle, and reshuffled after a deadlock — is never
+  // delivered.
+  // =========================================================================
+
+  describe('TASK-264 — Boss swap choreography on the board the client holds', () => {
+    /**
+     * One committed shared-board round in which both sides act, each board action
+     * opened by its own delivered boundary (`GAME_EVENTS.md` §1,
+     * `SIGNALR_PROTOCOL.md` §3.2.26): the Player's committed Swap on the board the
+     * client is showing, then the Boss's step 18a board action — whose coordinates
+     * index the board its own resolution continued from, which no delivered member
+     * describes (`SIGNALR_PROTOCOL.md` §3.1 item 2).
+     */
+    const BOTH_ACTORS_ROUND: unknown[] = [
+      { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+      { type: 'SwapResolved', outcome: 'committed' },
+      { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      { type: 'GemMatched', cellIndex: 24, gemType: 'ATK' },
+      { type: 'ComboChanged', combo: 1 },
+      { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+      { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
+      { type: 'SwapStarted', actor: 'boss', fromCell: 27, toCell: 28 },
+      { type: 'SwapResolved', outcome: 'committed' },
+      { type: 'MatchCreated', shape: 'Straight', cells: [32, 33, 34], gemType: 'DEF', cascadeDepth: 1 },
+      { type: 'GemMatched', cellIndex: 33, gemType: 'DEF' },
+      { type: 'ComboChanged', combo: 1 },
+      { type: 'DamageTaken', source: 'boss', target: 'player', amount: 90 },
+    ];
+
+    /**
+     * The one timeline that round plays, in the delivered order: both board actions
+     * in the order the wire delivered them, and the round's single committed board
+     * transition where the round's board work ends (TASK-254/262).
+     */
+    const BOTH_ACTORS_PHASES = [
+      'swap 20->21',
+      'match depth=1',
+      'damage player->boss',
+      'swap 27->28',
+      'match depth=1',
+      'settle',
+      'retaliation boss->player',
+    ];
+
+    /** A round whose Boss phase ends the battle, with the Boss's own boundary. */
+    const TERMINAL_BOSS_ROUND: unknown[] = [
+      { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+      { type: 'SwapResolved', outcome: 'committed' },
+      { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+      { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
+      { type: 'SwapStarted', actor: 'boss', fromCell: 27, toCell: 28 },
+      { type: 'SwapResolved', outcome: 'committed' },
+      { type: 'MatchCreated', shape: 'Straight', cells: [32, 33, 34], gemType: 'ATK', cascadeDepth: 1 },
+      { type: 'DamageDealt', source: 'boss', target: 'player', amount: 9999 },
+      { type: 'DamageTaken', source: 'boss', target: 'player', amount: 9999 },
+      { type: 'BattleLost', outcome: 'defeat', finalBossHp: 1250, finalPlayerHp: 0 },
+    ];
+
+    const GEM_LABELS_BY_TYPE: Readonly<Record<string, string>> = {
+      ATK: 'ATK',
+      DEF: 'DEF',
+      HP: 'HP',
+      POWER: 'PWR',
+    };
+
+    /** The labels one delivered board renders as, in §1.0 index order. */
+    function expectedBoardLabels(shift: number): string[] {
+      return Array.from({ length: 64 }, (_, index) =>
+        GEM_LABELS_BY_TYPE[GEM_NAMES[(index + shift) % GEM_NAMES.length]]
+      );
+    }
+
+    /**
+     * The label rendered at each §1.0 cell, read from the view's own position.
+     *
+     * It is TASK-245's reading: a committed Swap exchanges two views' cells without
+     * relabelling them, so the cell a label *shows* is the cell it sits on.
+     */
+    function boardLabels(harness: ReturnType<typeof createSceneHarness>): string[] {
+      const labels: string[] = new Array(64).fill('');
+
+      for (const cell of harness.boardCells) {
+        if (cell.kind !== 'label') {
+          continue;
+        }
+
+        const view = cell as unknown as { x: number; y: number; label?: string };
+        const column = Math.round((view.x - BOARD_ORIGIN_X - CELL_SIZE / 2) / BOARD_PITCH);
+        const row = Math.round((view.y - BOARD_ORIGIN_Y - CELL_SIZE / 2) / BOARD_PITCH);
+
+        if (row < 0 || row >= 8 || column < 0 || column >= 8) {
+          continue;
+        }
+
+        labels[row * 8 + column] = view.label ?? '';
+      }
+
+      return labels;
+    }
+
+    /** The delivered board's own label at one §1.0 cell. */
+    function deliveredLabelAt(shift: number, index: number): string {
+      return expectedBoardLabels(shift)[index];
+    }
+
+    /** The board-local centre of one §1.0 cell. */
+    function cellCentre(index: number): { x: number; y: number } {
+      const column = index % 8;
+      const row = Math.floor(index / 8);
+
+      return {
+        x: BOARD_ORIGIN_X + column * BOARD_PITCH + CELL_SIZE / 2,
+        y: BOARD_ORIGIN_Y + row * BOARD_PITCH + CELL_SIZE / 2,
+      };
+    }
+
+    /** The Gem views the board is rendered with: a tile and a label per cell. */
+    function gemViews(harness: ReturnType<typeof createSceneHarness>): object[] {
+      return harness.boardCells.filter((cell) => cell.kind === 'tile' || cell.kind === 'label');
+    }
+
+    /** Plays the timeline one tween at a time until `detail` has started. */
+    function playUntilPhase(
+      harness: ReturnType<typeof createSceneHarness>,
+      ctx: object,
+      detail: string
+    ): void {
+      for (let step = 0; step < 500; step++) {
+        if (playedPhases(ctx).includes(detail) || harness.pendingTweenCount() === 0) {
+          return;
+        }
+        harness.flushTweens(1);
+      }
+    }
+
+    /**
+     * The animations one phase started, its own pacing excluded.
+     *
+     * The callout's own hold/fade is excluded for the same reason the pacing test
+     * excludes it: one delivered batch is one resolution, so the callout belongs to
+     * the whole timeline rather than to the phase playing when it was raised.
+     */
+    function phaseEffects(
+      harness: ReturnType<typeof createSceneHarness>,
+      ctx: object
+    ): Array<{ readonly duration: number; readonly targets: ReadonlyArray<object> }> {
+      const phaseClock = field<object>(ctx, 'phaseClock');
+      const callout = field<object>(ctx, 'calloutText');
+
+      return harness
+        .pendingTweenRecords()
+        .filter(
+          (tween) => !tween.targets.includes(phaseClock) && !tween.targets.includes(callout)
+        );
+    }
+
+    /** Whether any animation the phase playing started moves a Gem view. */
+    function movesGemViews(
+      harness: ReturnType<typeof createSceneHarness>,
+      ctx: object
+    ): boolean {
+      const views = gemViews(harness);
+
+      return phaseEffects(harness, ctx).some((tween) =>
+        tween.targets.some((target) => views.includes(target))
+      );
+    }
+
+    it('presents both delivered board actions in the delivered order, with one board transition', async () => {
+      const { harness, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), BOTH_ACTORS_ROUND);
+      settle();
+      await flush();
+
+      const phases = timelinePhases(ctx);
+
+      // GAME_EVENTS.md §1's order, unchanged by this task: `SwapStarted` opens its
+      // own step, its board cycle follows it, and the round's single committed board
+      // transition sits where the round's board work ends.
+      expect(phases.map((phase) => `${phase.detail}:${phase.actor}`)).toEqual([
+        'swap 20->21:player',
+        'match depth=1:player',
+        'damage player->boss:player',
+        'swap 27->28:boss',
+        'match depth=1:boss',
+        'settle:swap',
+        'retaliation boss->player:boss',
+      ]);
+      expect(phases.filter((phase) => phase.kind === 'swap')).toHaveLength(2);
+      expect(phases.filter((phase) => phase.kind === 'settle')).toHaveLength(1);
+
+      playToEnd(harness);
+      expect(playedPhases(ctx)).toEqual(BOTH_ACTORS_PHASES);
+
+      // The round ends on the committed board the server delivered — the board the
+      // reshuffle produced and the Boss's cycle resolved, not a locally reconstructed
+      // one (SIGNALR_PROTOCOL.md §3.1 items 1–3).
+      expect(boardLabels(harness)).toEqual(expectedBoardLabels(1));
+    });
+
+    it('exchanges the Player’s own pair and marks the Boss’s instead of moving stale contents', async () => {
+      const { harness, ctx } = createBattle();
+
+      const preRound = expectedBoardLabels(0);
+      const exchanged = [...preRound];
+      [exchanged[20], exchanged[21]] = [exchanged[21], exchanged[20]];
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), BOTH_ACTORS_ROUND);
+      settle();
+      await flush();
+
+      // The Player's step: the Player's action was validated against the committed
+      // board on screen, so its two cells' contents really did change places.
+      playUntilPhase(harness, ctx, 'swap 20->21');
+      harness.flushTweens(2);
+      expect(boardLabels(harness)).toEqual(exchanged);
+
+      // The Boss's step: the two cells it names are not cells of a board this client
+      // holds, so nothing on the board moves for it.
+      const beforeBossStep = boardLabels(harness).join('|');
+      playUntilPhase(harness, ctx, 'swap 27->28');
+
+      const effects = phaseEffects(harness, ctx);
+
+      // It presents the two delivered §1.0 cells — and nothing else: no animation of
+      // this step targets a Gem view, so no content is exchanged.
+      expect(effects).toHaveLength(2);
+      expect(movesGemViews(harness, ctx)).toBe(false);
+      expect(
+        effects.map((tween) => {
+          const target = tween.targets[0] as { x: number; y: number };
+          return { x: target.x, y: target.y };
+        })
+      ).toEqual([cellCentre(27), cellCentre(28)]);
+
+      // Its own mark is shorter than the hold of the phase that started it
+      // (TASK-246 §5), so the step still outlasts its presentation.
+      const hold = harness
+        .pendingTweenRecords()
+        .find((tween) => tween.targets.includes(field<object>(ctx, 'phaseClock')));
+      expect(hold).toBeDefined();
+      for (const effect of effects) {
+        expect(effect.duration).toBeGreaterThan(0);
+        expect(effect.duration).toBeLessThan(hold?.duration ?? 0);
+      }
+
+      // Completing the step's own animations moves nothing: the board is still where
+      // the Player's own exchange left it.
+      harness.flushTweens(effects.length);
+      expect(boardLabels(harness).join('|')).toBe(beforeBossStep);
+      playToEnd(harness);
+      expect(boardLabels(harness)).toEqual(expectedBoardLabels(1));
+    });
+
+    it('moves nothing for the Boss’s step when a reshuffle changed the cells’ contents', async () => {
+      const { harness, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), BOTH_ACTORS_ROUND);
+      settle();
+      await flush();
+
+      // The fixture is the deadlock case the presentation has to survive: the Boss's
+      // action was selected on a board whose contents at those two cells differ from
+      // the contents on screen (ADR-026 §8's reshuffle; the delivered board is the
+      // reshuffled one's own resolution). Nothing delivered says so, which is exactly
+      // why the client may not move the contents it holds.
+      const onScreen = boardLabels(harness);
+
+      playUntilPhase(harness, ctx, 'swap 20->21');
+      harness.flushTweens(2);
+
+      const displayed = boardLabels(harness);
+      expect(displayed[27]).not.toBe(deliveredLabelAt(1, 27));
+      expect(displayed[28]).not.toBe(deliveredLabelAt(1, 28));
+
+      playUntilPhase(harness, ctx, 'swap 27->28');
+      const effects = phaseEffects(harness, ctx);
+      expect(movesGemViews(harness, ctx)).toBe(false);
+
+      // The delivered pair is still presented — as the two cells it names, and as no
+      // Gem view's movement.
+      const marked = effects.map((tween) => {
+        const target = tween.targets[0] as { x: number; y: number };
+        return `${target.x},${target.y}`;
+      });
+      expect(marked).toEqual([
+        `${cellCentre(27).x},${cellCentre(27).y}`,
+        `${cellCentre(28).x},${cellCentre(28).y}`,
+      ]);
+
+      // Completing them leaves the displayed contents untouched.
+      harness.flushTweens(effects.length);
+      expect(boardLabels(harness)).toEqual(displayed);
+
+      // The round still converges on the delivered committed board — the reshuffled
+      // one's own resolution — and on nothing the client derived.
+      playToEnd(harness);
+      expect(boardLabels(harness)).toEqual(expectedBoardLabels(1));
+
+      // The board the client held is never patched towards the delivered one by this
+      // step: the only write is the round's single transition.
+      expect(onScreen).toEqual(expectedBoardLabels(0));
+    });
+
+    it('keeps the Player’s exchange from the delivered boundary and from the submitted-pair fallback', async () => {
+      // The delivered boundary names cells other than the submitted pair: the
+      // committed pair is the one presented, and it is presented as the exchange the
+      // Player's own action made on the board on screen.
+      const committedBoundary = createBattle();
+      const settleCommitted = submitHeldSwap(committedBoundary.harness, 20, 21);
+      deliverResolution(committedBoundary.harness, resolvedState(), [
+        { type: 'SwapStarted', actor: 'player', fromCell: 12, toCell: 13 },
+        { type: 'SwapResolved', outcome: 'committed' },
+        { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      ]);
+      settleCommitted();
+      await flush();
+
+      playUntilPhase(committedBoundary.harness, committedBoundary.ctx, 'swap 12->13');
+      committedBoundary.harness.flushTweens(2);
+
+      const committed = expectedBoardLabels(0);
+      [committed[12], committed[13]] = [committed[13], committed[12]];
+      expect(boardLabels(committedBoundary.harness)).toEqual(committed);
+
+      // A batch that delivers no boundary at all (the pre-extension shape) keeps the
+      // submitted pair's own exchange, exactly as before this task.
+      const fallback = createBattle();
+      const settleFallback = submitHeldSwap(fallback.harness, 20, 21);
+      deliverResolution(fallback.harness, resolvedState(), TASK_252_BATCH);
+      settleFallback();
+      await flush();
+
+      playUntilPhase(fallback.harness, fallback.ctx, 'swap 20->21');
+      fallback.harness.flushTweens(2);
+
+      const submitted = expectedBoardLabels(0);
+      [submitted[20], submitted[21]] = [submitted[21], submitted[20]];
+      expect(boardLabels(fallback.harness)).toEqual(submitted);
+    });
+
+    it('marks the delivered cells and claims no side for an actor word the contract does not define', async () => {
+      const { harness, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), [
+        { type: 'SwapStarted', actor: 'third-party', fromCell: 3, toCell: 4 },
+        { type: 'SwapResolved', outcome: 'committed' },
+        { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      ]);
+      settle();
+      await flush();
+
+      const phase = timelinePhases(ctx).find((entry) => entry.detail === 'swap 3->4');
+      expect(phase?.actor).toBeNull();
+
+      const before = boardLabels(harness).join('|');
+      playUntilPhase(harness, ctx, 'swap 3->4');
+
+      const effects = phaseEffects(harness, ctx);
+
+      // No side is claimed, so no exchange is presented either: the two delivered
+      // cells are marked, and no animation moves a Gem view.
+      expect(movesGemViews(harness, ctx)).toBe(false);
+      expect(effects.map((tween) => tween.targets[0])).toEqual([
+        expect.objectContaining(cellCentre(3)),
+        expect.objectContaining(cellCentre(4)),
+      ]);
+      harness.flushTweens(effects.length);
+      expect(boardLabels(harness).join('|')).toBe(before);
+    });
+
+    it('cancels the Boss swap mark with the timeline it belongs to, and leaves no lock', async () => {
+      const { harness, scene, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), BOTH_ACTORS_ROUND);
+      settle();
+      await flush();
+
+      playUntilPhase(harness, ctx, 'swap 27->28');
+      const marks = phaseEffects(harness, ctx).flatMap((tween) => [...tween.targets]);
+      expect(marks).toHaveLength(2);
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      // A newer authoritative state supersedes the playing round.
+      harness.setBattleState(resolvedState({ sequence: 2, board: deliveredBoard(2) }));
+
+      // Every mark is cancelled and released with the timeline that started it, so no
+      // mark can outlive the resolution it belonged to.
+      for (const mark of marks) {
+        expect(harness.killedTweenTargets).toContain(mark);
+      }
+      expect(field<object[]>(ctx, 'timelineEffects')).toEqual([]);
+
+      // The abandoned round converges on the delivered board and releases the guard.
+      expect(boardLabels(harness)).toEqual(expectedBoardLabels(2));
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(harness.pendingTweenCount()).toBe(0);
+    });
+
+    it('presents and marks nothing for a duplicate or older batch', async () => {
+      const { harness, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), BOTH_ACTORS_ROUND);
+      settle();
+      await flush();
+      playToEnd(harness);
+
+      const played = playedPhases(ctx);
+      const board = boardLabels(harness);
+      const logged = field<string[]>(ctx, 'presentedEventsLog').length;
+
+      harness.emitBattleEvents({
+        battleId: 'battle-252',
+        serverSequence: 1,
+        events: BOTH_ACTORS_ROUND,
+      });
+      harness.emitBattleEvents({
+        battleId: 'battle-252',
+        serverSequence: 0,
+        events: BOTH_ACTORS_ROUND,
+      });
+
+      // Recorded, and presented no second time: no timeline, no board movement, and
+      // no mark left behind.
+      expect(field<string[]>(ctx, 'presentedEventsLog').length).toBeGreaterThan(logged);
+      expect(playedPhases(ctx)).toEqual(played);
+      expect(timelinePhases(ctx)).toEqual([]);
+      expect(boardLabels(harness)).toEqual(board);
+      expect(harness.pendingTweenCount()).toBe(0);
+    });
+
+    it('marks the Boss’s terminal board action and hands the outcome off last', async () => {
+      const { harness, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(
+        harness,
+        resolvedState({ petState: { ...resolvedState().petState, hp: 0 } }),
+        TERMINAL_BOSS_ROUND
+      );
+      settle();
+      await flush();
+
+      expect(timelinePhases(ctx).map((phase) => phase.detail)).toEqual([
+        'swap 20->21',
+        'match depth=1',
+        'damage player->boss',
+        'swap 27->28',
+        'match depth=1',
+        'settle',
+        'retaliation boss->player',
+        'outcome defeat',
+      ]);
+
+      // Through the Player's own step the board shows the exchange the Player's
+      // action made; the Boss's step must leave exactly that board alone.
+      playUntilPhase(harness, ctx, 'damage player->boss');
+      const beforeBossStep = boardLabels(harness).join('|');
+
+      playUntilPhase(harness, ctx, 'swap 27->28');
+      const effects = phaseEffects(harness, ctx);
+      expect(effects).toHaveLength(2);
+      expect(movesGemViews(harness, ctx)).toBe(false);
+      harness.flushTweens(effects.length);
+      expect(boardLabels(harness).join('|')).toBe(beforeBossStep);
+
+      playToEnd(harness);
+      expect(playedPhases(ctx)[playedPhases(ctx).length - 1]).toBe('outcome defeat');
+      expect(harness.sceneStarted.map((started) => started.key)).toEqual(['ResultScene']);
+      expect(harness.sceneStarted[0].data).toMatchObject({ outcome: 'defeat' });
+    });
+  });
 });
 
 describe('BattleScene — CardCast and PetSkillCast input (SIGNALR_PROTOCOL.md §2, TASK-120)', () => {
