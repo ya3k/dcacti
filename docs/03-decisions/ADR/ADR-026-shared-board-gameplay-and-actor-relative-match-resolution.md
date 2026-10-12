@@ -64,7 +64,8 @@ To resolve these deficiencies, the Product Owner approved the following authorit
 
 8. **Deterministic Boss AI & Deadlock Reshuffling:**
    - The Boss selects moves via a pure, deterministic scoring function over immediate first-pass legal swaps (from the 112 orthogonal candidate swaps), tie-breaking by lowest cell index, consuming zero unseeded PRNG.
-   - If a cascade resolution leaves zero valid swaps (`BoardGenerationValidator.HasValidSwap == false`), the board is deterministically reshuffled using the server PRNG stream (`Pcg32`), guaranteeing a valid swap and emitting `BoardReshuffled`.
+   - Deadlock recovery is a **server-internal operation of that selection**: when the Boss's move selection finds no legal match-producing swap on the board the Player's action and cascades left, the board is replaced with a deterministically generated valid one (`BoardGenerator.Generate`, bounded by `BoardGenerator.MaxAttempts`) on the same server PRNG stream (`Pcg32`), and the Boss then selects its move on the reshuffled board (`BossAiEngine.SelectMove`).
+   - **The reshuffle emits no Battle Event, and none is promised.** No `BoardReshuffled` event, discriminator, or payload member exists — the canonical event-name list (`GAME_RULES.md` §16), the event semantics (`GAME_EVENTS.md` §2) and the closed wire discriminator set (`SIGNALR_PROTOCOL.md` §3.2.2) contain none, and no code path emits one. The reshuffle becomes authoritative only through the Round's single `BattleState` write-back — the committed board is the board that follows from the reshuffled one — and it reaches the client as the Round's committed board in the state push (`GAME_STATE.md` §5.1, `SIGNALR_PROTOCOL.md` §3.1 items 1–3 and §4). The client therefore cannot identify the reshuffle operation from the delivered stream — an accepted limitation of the contract, recorded by the event list's owner at `GAME_EVENTS.md` §3 item 8, not a missing event.
 
 ## Unresolved Balance Choices (Explicitly Preserved)
 
@@ -91,6 +92,48 @@ The following parameters are non-blocking balance tuning decisions and are expli
 - Requires synchronized updates across game rules (`GAME_RULES.md`, `MATCH3_RULES.md`, `COMBAT_RULES.md`, `BOSS_RULES.md`) and technical contracts (`GAME_STATE.md`, `SIGNALR_PROTOCOL.md`).
 - Requires extending SignalR protocol to transmit Boss swap coordinates (`SwapStarted`) for client presentation.
 
+## Amendment — Deadlock-Reshuffle Reporting (TASK-265)
+
+The first revision of Decision item 8 stated that the deadlock reshuffle was performed
+"…guaranteeing a valid swap and **emitting `BoardReshuffled`**", and named
+`BoardGenerationValidator.HasValidSwap` as the runtime predicate. Neither statement was
+accurate:
+
+- **No owning document ever defined that event.** `GAME_RULES.md` §16's canonical
+  event-name list does not list it, `GAME_EVENTS.md` §2 gives it no payload,
+  `SIGNALR_PROTOCOL.md` §3.2.2's discriminator set is closed against events
+  `GAME_EVENTS.md` §2 does not define, and the Domain `BattleEventType` has no such
+  member. No code path emits it. The name entered the repository as an *engineering
+  proposal* in the `TASK-258` audit (row C-TRX-03) and was carried into item 8 by the
+  `TASK-259` documentation synchronization without ever being added to the event list's
+  owner. An ADR may not create a contract: `docs/03-decisions/README.md` §3 makes the
+  technical document the owner of the *what*, and precedence places `GAME_EVENTS.md`
+  above the ADR (`AGENTS.md` §2, `GAME_RULES.md` §21).
+- **The runtime predicate is not `HasValidSwap`.** The deadlock test is the Boss move
+  selection's own enumeration of legal match-producing swaps
+  (`BossAiEngine.SelectMove`); `BoardGenerationValidator.HasValidSwap` is a
+  generation-time helper (`MATCH3_RULES.md` §1.4.1) that the runtime path does not call.
+
+**Corrected rule (Decision item 8, as amended).** Item 8's decision is unchanged —
+deadlock recovery is deterministic, server-side, and consumes only the server PRNG
+stream — but it is **server-internal and reported by state, not by an event**: the
+reshuffle becomes authoritative only in the Round's single write-back, whose committed
+board is the board that follows from it, and that board is delivered once per Round by
+`SIGNALR_PROTOCOL.md` §4's state push. No event is added for the operation
+(`GAME_EVENTS.md` §3 item 8). The client cannot identify the reshuffle from the delivered
+stream; that limitation is deliberate and does not prevent presenting the Boss's board
+action honestly (TASK-264).
+
+**Why the record is amended in place and no ADR is created or superseded.** No decision
+is reversed: the recovery mechanism, its determinism, the Boss AI's scoring, and the
+Round's atomicity are all unchanged, so the superseding path of
+`.ai/workflow/architecture/adr-change.md` §3 does not apply. The amendment instead makes
+this record stop contradicting the event owner, which is what `docs/03-decisions/README.md`
+§3 requires of an ADR — the same in-place-amendment treatment `ADR-018` received for its
+Decision 12. The option of defining the event was considered and rejected because no
+consumer requires it and an event would not deliver the board the client would need to
+animate it (`TASK-265` §Decision).
+
 ## Related Documents
 
 - `docs/00-overview/MVP_SCOPE.md` §1
@@ -99,8 +142,9 @@ The following parameters are non-blocking balance tuning decisions and are expli
 - `docs/01-game-design/COMBAT_RULES.md` §2, §3, §4
 - `docs/01-game-design/BOSS_RULES.md` §3, §4, §6
 - `docs/02-technical/GAME_STATE.md` §2.1, §2.4, §5
+- `docs/02-technical/GAME_EVENTS.md` §1, §2, §3 item 8
 - `docs/02-technical/SIGNALR_PROTOCOL.md` §3, §3.1, §3.2
 - `docs/03-decisions/ADR/ADR-001-server-authoritative-battle.md`
 - `docs/03-decisions/ADR/ADR-008-battle-recovery.md`
 - `docs/03-decisions/ADR/ADR-025-swap-action-preconditions-and-idempotency.md`
-- `tasks/active/TASK-258-shared-board-gameplay-contract-audit-and-design.md`
+- `tasks/completed/TASK-258-shared-board-gameplay-contract-audit-and-design.md`
