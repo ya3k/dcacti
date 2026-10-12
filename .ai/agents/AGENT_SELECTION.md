@@ -31,6 +31,7 @@
 | Documentation change | Review | (determined by domain) | documentation-discovery, documentation-consistency, impact-analysis | documentation/documentation-change.md |
 | Testing | Testing | (determined by domain) | test-scenario-generation, gameplay-behavior-derivation | quality/testing.md |
 | Code review | Review | (determined by domain) | implementation-review, scope-validation | quality/review.md |
+| Task selection / project audit | Orchestrator | Review | task-readiness-assessment, documentation-discovery, scope-validation | core/task-selection.md |
 
 ---
 

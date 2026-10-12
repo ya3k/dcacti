@@ -43,7 +43,8 @@ tasks/ (Task Management)               ───────► Direct File Mani
 | :--- | :--- | :--- |
 | **Discovery** | [.ai/skills/discovery/documentation-discovery.md](file:///e:/dcacti/.ai/skills/discovery/documentation-discovery.md) | [.agents/skills/documentation-discovery/SKILL.md](file:///e:/dcacti/.agents/skills/documentation-discovery/SKILL.md) |
 | **Discovery** | [.ai/skills/discovery/impact-analysis.md](file:///e:/dcacti/.ai/skills/discovery/impact-analysis.md) | [.agents/skills/impact-analysis/SKILL.md](file:///e:/dcacti/.agents/skills/impact-analysis/SKILL.md) |
-| **Discovery** | [.ai/skills/discovery/scope-validation.md](file:///e:/dcacti/.ai/skills/discovery/scope-validation.md) | [.agents/skills/scope-validation/SKILL.md](file:///e:/dcacti/.agents/skills/scope-validation/SKILL.md) |
+| **Discovery** | [.ai/skills/discovery/task-readiness-assessment.md](file:///e:/dcacti/.ai/skills/discovery/task-readiness-assessment.md) | [.agents/skills/task-readiness-assessment/SKILL.md](file:///e:/dcacti/.agents/skills/task-readiness-assessment/SKILL.md)<br>[.claude/skills/task-readiness-assessment/SKILL.md](file:///e:/dcacti/.claude/skills/task-readiness-assessment/SKILL.md) |
+| **Quality** | [.ai/skills/quality/scope-validation.md](file:///e:/dcacti/.ai/skills/quality/scope-validation.md) | [.agents/skills/scope-validation/SKILL.md](file:///e:/dcacti/.agents/skills/scope-validation/SKILL.md) |
 | **Backend** | [.ai/skills/backend/api-contract-validation.md](file:///e:/dcacti/.ai/skills/backend/api-contract-validation.md) | [.agents/skills/api-contract-validation/SKILL.md](file:///e:/dcacti/.agents/skills/api-contract-validation/SKILL.md) |
 | **Backend** | [.ai/skills/backend/persistence-analysis.md](file:///e:/dcacti/.ai/skills/backend/persistence-analysis.md) | [.agents/skills/persistence-analysis/SKILL.md](file:///e:/dcacti/.agents/skills/persistence-analysis/SKILL.md) |
 | **Gameplay** | [.ai/skills/gameplay/authority-determinism-audit.md](file:///e:/dcacti/.ai/skills/gameplay/authority-determinism-audit.md) | [.agents/skills/authority-determinism-audit/SKILL.md](file:///e:/dcacti/.agents/skills/authority-determinism-audit/SKILL.md) |
@@ -62,7 +63,7 @@ Workflows in `.ai/workflow/` serve as executable process specifications. Runtime
 
 | Workflow Category | Canonical Runbooks | Runtime Invocation |
 | :--- | :--- | :--- |
-| **Core Lifecycle** | `core/task-intake.md`<br>`core/context-discovery.md`<br>`core/planning.md`<br>`core/implementation.md`<br>`core/validation.md`<br>`core/completion.md` | Executed sequentially during task processing |
+| **Core Lifecycle** | `core/task-selection.md`<br>`core/task-intake.md`<br>`core/context-discovery.md`<br>`core/planning.md`<br>`core/implementation.md`<br>`core/validation.md`<br>`core/completion.md` | Executed sequentially during task processing |
 | **Development** | `development/feature.md`<br>`development/bug-fix.md`<br>`development/refactor.md`<br>`development/gameplay-change.md` | Selected based on task type |
 | **Quality** | `quality/review.md`<br>`quality/testing.md` | Triggered during verification phase |
 | **Architecture** | `architecture/adr-lifecycle.md`<br>`architecture/boundary-change.md` | Invoked when architectural decisions shift |

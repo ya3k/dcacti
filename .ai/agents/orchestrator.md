@@ -18,6 +18,7 @@ Role Type:    orchestrator
 ## Responsibilities
 
 ```text
+- Task selection and project readiness assessment (core/task-selection.md)
 - Task intake and classification (type, scope, risk, domain)
 - Context discovery coordination
 - Relevant documentation identification
@@ -55,6 +56,7 @@ Completion reports
 
 **Can execute:**
 ```text
+Task selection & readiness assessment (core/task-selection.md)
 Task intake (core/task-intake.md)
 Context discovery (core/context-discovery.md)
 Workflow selection

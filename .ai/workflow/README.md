@@ -61,7 +61,7 @@ quality/                Not usually invoked directly — referenced by
 # 2. General Lifecycle
 
 ```text
-TASK
+PROJECT AUDIT & TASK SELECTION  (core/task-selection.md)
  ↓
 INTAKE                    (core/task-intake.md)
  ↓
@@ -161,6 +161,7 @@ See `core/task-intake.md` §3 for how size and risk are determined, and
 .ai/workflow/
 ├── README.md                          this file
 ├── core/
+│   ├── task-selection.md               baseline collection, audit depth, candidate selection
 │   ├── task-intake.md                  classify task type/scope/risk
 │   ├── context-discovery.md            find + read the relevant docs,
 │   │                                    detect conflicts

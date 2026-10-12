@@ -51,6 +51,7 @@
 | **Repository Core & Domain Skills (`.ai/skills/`)** | | | | |
 | `discovery/documentation-discovery` | DCacti | **ACTIVE** | yes | Identify, read, and bound authoritative docs for a task |
 | `discovery/impact-analysis` | DCacti | **ACTIVE** | yes | Trace code and documentation dependency chains |
+| `discovery/task-readiness-assessment` | DCacti | **ACTIVE** | yes | Assess candidate task readiness and determine next eligible project task |
 | `gameplay/gameplay-behavior-derivation` | DCacti | **ACTIVE** | yes | Derive expected gameplay behavior from domain rules |
 | `gameplay/authority-determinism-audit` | DCacti | **ACTIVE** | yes | Audit state ownership, server authority, RNG, ordering |
 | `backend/api-contract-validation` | DCacti | **ACTIVE** | conditional | Validate REST behavior against `API_CONTRACTS.md` |

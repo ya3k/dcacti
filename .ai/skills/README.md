@@ -104,6 +104,7 @@ See [.ai/skills/SKILL_REGISTRY.md](file:///E:/dcacti/.ai/skills/SKILL_REGISTRY.m
 | --- | --- | --- | --- |
 | documentation-discovery | `discovery/documentation-discovery.md` | discovery | Find, read, and bound the authoritative documents for a task |
 | impact-analysis | `discovery/impact-analysis.md` | discovery | Trace a change along its real dependency chain |
+| task-readiness-assessment | `discovery/task-readiness-assessment.md` | discovery | Assess candidate task readiness and determine next eligible project task |
 | gameplay-behavior-derivation | `gameplay/gameplay-behavior-derivation.md` | gameplay | Derive expected gameplay behavior (steps, state, events) from rule docs |
 | authority-determinism-audit | `gameplay/authority-determinism-audit.md` | gameplay | Audit state ownership, server authority, RNG, ordering |
 | react-phaser-boundary | `client/react-phaser-boundary/SKILL.md` | client | Coordinate React DOM UI and Phaser 4 Game Runtime boundaries |
@@ -160,6 +161,9 @@ ARCHITECTURE CHANGE    architecture-conformance, impact-analysis
 
 DOCUMENTATION          documentation-consistency, documentation-discovery
 
+TASK SELECTION / AUDIT task-readiness-assessment, documentation-discovery,
+                       scope-validation
+
 (all categories)       documentation-discovery first; scope-validation if new
                        system/content
 ```
@@ -188,6 +192,8 @@ Complex Task (multi-view battle scene / full event playback):
 ## 5.3 Workflow → Skill Mapping
 
 ```text
+core/task-selection.md         task-readiness-assessment, documentation-discovery,
+                               scope-validation
 core/task-intake.md            scope-validation (when the task adds any system/content)
 core/context-discovery.md      documentation-discovery, documentation-consistency
 core/planning.md               impact-analysis, scope-validation

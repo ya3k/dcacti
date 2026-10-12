@@ -30,10 +30,10 @@ The canonical `.ai/` system remains the single project-level AI architecture. Na
 
 | Capability | Antigravity IDE (`.agents/`) | Claude Code (`.claude/`) | Generic CLI / OpenCode | Notes |
 | :--- | :--- | :--- | :--- | :--- |
-| **Status in Repo** | **Active & Configured** | *Not Configured* | *Not Configured* | Only active harnesses have physical adapters. |
+| **Status in Repo** | *Configured Target* | **Active in Workspace** | *Not Configured* | Physical adapters exist under `.agents/` and `.claude/`. |
 | **Root Instructions** | Supported (`AGENTS.md`, `.agents/rules/*.md`) | Supported (`CLAUDE.md`) | Supported (System prompt / config) | Auto-injected at session start. |
 | **Agents / Roles** | Virtual (Role adoption via instructions) | Subagents (`.claude/agents/`) | System prompt config | Antigravity uses single-agent role-shifting driven by `.ai/agents/`. |
-| **Skills Format** | Directory (`skills/<name>/SKILL.md`) | Tool/Skill definitions | Varies | Antigravity auto-discovers YAML frontmatter skills in `.agents/skills/`. |
+| **Skills Format** | Directory (`skills/<name>/SKILL.md`) | Directory (`skills/<name>/SKILL.md`) | Varies | Both Antigravity and Claude Code support markdown skill definitions. |
 | **Workflows** | Referenced (`.ai/workflow/`) | Referenced (`.claude/`) | Referenced | Runbooks loaded dynamically during execution. |
 | **Subagent Delegation** | Supported via subagent tools | Supported natively | Varies | Subagents inherit workspace rules and skills. |
 | **Task Discovery** | File-based (`tasks/active/`, etc.) | File-based (`tasks/`) | File-based (`tasks/`) | Direct inspection of `tasks/` directory. |
@@ -58,6 +58,13 @@ The canonical `.ai/` system remains the single project-level AI architecture. Na
 * **Agent Mechanism:** Antigravity operates as a unified agent that can dynamically adopt specialized personas defined in `.ai/agents/` based on context and task type.
 * **Workflows:** Read on demand from `.ai/workflow/` when executing standard processes (features, bug fixes, refactoring, reviews).
 
+## 3.2 Claude Code (`.claude/`)
+
+* **Discovery Root:** Project root with auto-loaded `CLAUDE.md`.
+* **Global Rules:** Reads `CLAUDE.md` and `AGENTS.md` at session initialization.
+* **Skill Discovery:** Discovers `.claude/skills/<skill-name>/SKILL.md` thin wrappers that delegate directly to canonical `.ai/` specifications.
+* **Workflows:** Invoked per workflow runbook (e.g., `core/task-selection.md`) referenced by skills and agent roles.
+
 ---
 
 # 4. Adapter Strategy Applied
@@ -66,7 +73,7 @@ The canonical `.ai/` system remains the single project-level AI architecture. Na
 | :--- | :--- | :--- | :--- |
 | **Global Contract** | `AGENTS.md` | Direct Root Load | Root `AGENTS.md` (Native Auto-discovery) |
 | **Agent Roles** | `.ai/agents/*.md` | Strategy A (Reference) | `.agents/rules/agent-routing.md` |
-| **Skills** | `.ai/skills/*/*.md` | Strategy B (Generated Adapter) | `.agents/skills/<name>/SKILL.md` |
+| **Skills** | `.ai/skills/*/*.md` | Strategy B (Generated Adapter) | `.agents/skills/<name>/SKILL.md`<br>`.claude/skills/<name>/SKILL.md` |
 | **Workflows** | `.ai/workflow/*/*.md` | Strategy A (Reference) | Referenced via skills & routing rules |
 | **Tasks** | `tasks/**` | Strategy A (Direct Operation) | `tasks/` file system |
 
