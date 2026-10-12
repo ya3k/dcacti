@@ -1,6 +1,9 @@
 using GameServer.Application.Battle;
+using GameServer.Application.Cards;
 using GameServer.Domain.Battle;
+using GameServer.Domain.Battle.Serialization;
 using GameServer.Domain.Bosses;
+using GameServer.Domain.Cards;
 using GameServer.Domain.Combat;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
@@ -357,6 +360,545 @@ public class BattleStateServiceTerminalActionGuardTests
 
         Assert.True(result.IsRejected);
         Assert.Equal(SwapRejectionReason.NoMatchFromSwap, result.Reason);
+    }
+
+    // =======================================================================
+    // 4. Terminal Card and Pet Skill casts — CARD_RULES.md §3 item 8 (TASK-270)
+    // =======================================================================
+
+    private const string GuardHealCardId = "card-terminal-guard-heal";
+    private const string GuardSkillCardId = "card-terminal-guard-skill";
+
+    /// <summary>
+    /// The Power the cast scenarios arrange: enough for the scenario Card's Cost, so a live
+    /// battle accepts the cast and a rejection's "no Power was spent" is not a vacuous claim
+    /// about a zero-Cost Card (<c>CARD_RULES.md</c> §3.6).
+    /// </summary>
+    private const int GuardPower = 50;
+
+    /// <summary>
+    /// A Basic Card the scenario casts. Its Cost is non-zero and its effect is irrelevant to
+    /// what the guard asserts — the guard must run before any effect.
+    /// </summary>
+    private static readonly CardDefinition GuardHealCard = new()
+    {
+        CardDefinitionId = GuardHealCardId,
+        Name = "Terminal Guard Heal",
+        Category = CardCategory.Basic,
+        PowerCost = 20,
+        LoadoutCopyLimit = 1,
+        EffectDefinition = CardEffectDefinitions.Create(
+            CardEffectDefinition.Create(CardEffectType.Heal, CardEffectValueType.PercentMaxHp, 20)),
+    };
+
+    /// <summary>
+    /// The active Pet's one Pet Skill Card for the cast scenarios
+    /// (<c>CARD_RULES.md</c> §4): <c>ExecutePetSkillCastAsync</c> resolves it from the
+    /// loadout snapshot, so it must be equipped.
+    /// </summary>
+    private static readonly CardDefinition GuardSkillCard = new()
+    {
+        CardDefinitionId = GuardSkillCardId,
+        Name = "Terminal Guard Skill",
+        Category = CardCategory.PetSkill,
+        PowerCost = 20,
+        LoadoutCopyLimit = 1,
+        EffectDefinition = CardEffectDefinitions.Create(
+            CardEffectDefinition.Create(CardEffectType.Damage, CardEffectValueType.Flat, 10)),
+    };
+
+    /// <summary>
+    /// The active Pet for the cast scenarios, carrying the two Cards above in its battle
+    /// loadout snapshot (<c>CARD_RULES.md</c> §3 item 2, <c>GAME_STATE.md</c> §2.3).
+    /// </summary>
+    private static readonly BattleStateService.PetConfiguration CastPet = new(
+        new PetId("pet_instance_1"),
+        Element.Hoa,
+        new PassiveId("xich-lang"),
+        PassiveThreshold: 5,
+        EquippedCards:
+        [
+            new EquippedCardIdentity(GuardHealCardId),
+            new EquippedCardIdentity(GuardSkillCardId),
+        ]);
+
+    // -----------------------------------------------------------------------
+    // 4.1 Rejection for both terminal sides, both cast methods
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public async Task CardCast_AgainstABossTerminalBattle_ShouldBeRejectedAsStaleAction()
+    {
+        // CARD_RULES.md §3 item 8 / GAME_RULES.md §1.4: a battle whose Boss has reached 0 HP
+        // admits no Card cast. The cast is rejected at the action boundary under the
+        // established state-precondition code — the cast-side counterpart of
+        // MATCH3_RULES.md §2.1.4 item 7's terminal Swap guard.
+        var arranged = await ArrangeTerminalCastAsync("terminal-cast-card-boss", bossHp: 0);
+
+        var result = await arranged.Service.ExecuteCardCastAsync(arranged.BattleId, GuardHealCardId);
+
+        Assert.NotNull(result);
+        Assert.True(result!.Value.IsRejected);
+        Assert.Equal(CardCastRejectionReason.StaleAction, result.Value.Reason);
+    }
+
+    [Fact]
+    public async Task CardCast_AgainstAPlayerTerminalBattle_ShouldBeRejectedAsStaleAction()
+    {
+        // The other terminal side: the active Pet's HP has reached 0. The guard is the same
+        // condition read from the same state, so the rejection is identical.
+        var arranged = await ArrangeTerminalCastAsync("terminal-cast-card-player", petHp: 0);
+
+        var result = await arranged.Service.ExecuteCardCastAsync(arranged.BattleId, GuardHealCardId);
+
+        Assert.NotNull(result);
+        Assert.True(result!.Value.IsRejected);
+        Assert.Equal(CardCastRejectionReason.StaleAction, result.Value.Reason);
+    }
+
+    [Fact]
+    public async Task PetSkillCast_AgainstABossTerminalBattle_ShouldBeRejectedAsStaleAction()
+    {
+        // CARD_RULES.md §3 item 8 governs both cast methods (SIGNALR_PROTOCOL.md §2 item 4
+        // delegates CardCast and PetSkillCast validation to §3), so a Pet Skill cast is
+        // refused on exactly the same terms.
+        var arranged = await ArrangeTerminalCastAsync("terminal-cast-skill-boss", bossHp: 0);
+
+        var result = await arranged.Service.ExecutePetSkillCastAsync(arranged.BattleId);
+
+        Assert.NotNull(result);
+        Assert.True(result!.Value.IsRejected);
+        Assert.Equal(CardCastRejectionReason.StaleAction, result.Value.Reason);
+    }
+
+    [Fact]
+    public async Task PetSkillCast_AgainstAPlayerTerminalBattle_ShouldBeRejectedAsStaleAction()
+    {
+        // The other terminal side, for the second cast method.
+        var arranged = await ArrangeTerminalCastAsync("terminal-cast-skill-player", petHp: 0);
+
+        var result = await arranged.Service.ExecutePetSkillCastAsync(arranged.BattleId);
+
+        Assert.NotNull(result);
+        Assert.True(result!.Value.IsRejected);
+        Assert.Equal(CardCastRejectionReason.StaleAction, result.Value.Reason);
+    }
+
+    [Fact]
+    public void TerminalCastRejectionCode_ShouldBeTheEstablishedStaleAction()
+    {
+        // SIGNALR_PROTOCOL.md §5 item 3 owns no parallel code list and delegates a cast
+        // rejection's code to CARD_RULES.md §3, and the code the rule names is the
+        // established STALE_ACTION — the same string MATCH3_RULES.md §2.1.4 item 5 defines
+        // for the Swap guard. The Domain carrier added for the cast path therefore
+        // introduces no new wire code, no discriminator, and no hub method: the existing
+        // (bool Accepted, string? Reason) acknowledgement carries it unchanged.
+        Assert.Equal(
+            "STALE_ACTION",
+            CardCastRejectionCodes.ToContractCode(CardCastRejectionReason.StaleAction));
+
+        var codes = new[]
+        {
+            CardCastRejectionReason.CardNotInLoadout,
+            CardCastRejectionReason.InsufficientPower,
+            CardCastRejectionReason.InvalidCard,
+            CardCastRejectionReason.CardCastAlreadyUsedThisTurn,
+            CardCastRejectionReason.StaleAction,
+        }.Select(CardCastRejectionCodes.ToContractCode).OrderBy(c => c, StringComparer.Ordinal).ToArray();
+
+        Assert.Equal(
+            [
+                "CARD_CAST_ALREADY_USED_THIS_TURN",
+                "CARD_NOT_IN_LOADOUT",
+                "INSUFFICIENT_POWER",
+                "INVALID_CARD",
+                "STALE_ACTION",
+            ],
+            codes);
+
+        Assert.DoesNotContain("BATTLE_ENDED", codes);
+    }
+
+    // -----------------------------------------------------------------------
+    // 4.2 Nothing happens on a terminal cast rejection
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public async Task TerminalCastRejection_ShouldChangeNoStateValue_SpendNoPower_AndWriteNothing()
+    {
+        // CARD_RULES.md §3 item 8 with §3 item 3: the rejection is a gameplay no-op. The whole
+        // record is compared structurally through the serializer the Redis round trip uses
+        // (GAME_STATE.md §2.1.7), never by reference — the board, HP, Power, statuses, Crit
+        // modifiers, Sequence, Turn, the committed-pair record, and RngState are all in it —
+        // and every value the rule names is asserted individually as well.
+        var arranged = await ArrangeTerminalCastAsync("terminal-cast-no-op", bossHp: 0);
+
+        var writesBefore = arranged.Store.WriteCount;
+        var before = arranged.Before;
+
+        var card = (await arranged.Service.ExecuteCardCastAsync(arranged.BattleId, GuardHealCardId))!.Value;
+        var skill = (await arranged.Service.ExecutePetSkillCastAsync(arranged.BattleId))!.Value;
+
+        Assert.True(card.IsRejected);
+        Assert.True(skill.IsRejected);
+        Assert.Equal(CardCastRejectionReason.StaleAction, card.Reason);
+        Assert.Equal(CardCastRejectionReason.StaleAction, skill.Reason);
+
+        // REDIS_STATE.md §4 item 7: no store call at all — not a write and not a TTL refresh.
+        Assert.Equal(writesBefore, arranged.Store.WriteCount);
+
+        var stored = (await arranged.Service.GetBattleAsync(arranged.BattleId))!;
+
+        Assert.Equal(BattleStateSerializer.Serialize(before), BattleStateSerializer.Serialize(stored));
+
+        Assert.Equal(GuardPower, before.PetState.Power);
+        Assert.Equal(before.PetState.Power, stored.PetState.Power);
+        Assert.Equal(before.PetState.HP, stored.PetState.HP);
+        Assert.Equal(before.BossState.HP, stored.BossState.HP);
+        Assert.Equal(before.RngState, stored.RngState);
+        Assert.Equal(before.Sequence, stored.Sequence);
+        Assert.Equal(before.Turn, stored.Turn);
+        Assert.Equal(before.CardCastsUsedThisTurn, stored.CardCastsUsedThisTurn);
+        Assert.Equal(before.MatchCount, stored.MatchCount);
+        Assert.Equal(before.Combo, stored.Combo);
+        Assert.Equal(before.LastCommittedSwapPair, stored.LastCommittedSwapPair);
+        Assert.True(before.BoardState.CellsEqual(stored.BoardState));
+        Assert.True(StatusEffectLifecycle.EffectsEqual(
+            before.PetState.ActiveStatusEffects,
+            stored.PetState.ActiveStatusEffects));
+        Assert.True(StatusEffectLifecycle.EffectsEqual(
+            before.BossState.ActiveStatusEffects,
+            stored.BossState.ActiveStatusEffects));
+    }
+
+    [Fact]
+    public async Task TerminalCastRejection_ShouldResolveNoRound_EmitNoEvent_AndReachNoBattleEnd()
+    {
+        // CARD_RULES.md §3 item 8: the guard runs before §3 item 2's validation, so the cast
+        // resolves no effect, produces no Boss response, advances no Round, and — per
+        // ARCHITECTURE.md §4 item 4 / REDIS_STATE.md §3 — reaches no durable battle end and
+        // clears nothing.
+        var arranged = await ArrangeTerminalCastAsync("terminal-cast-no-gameplay", petHp: 0);
+
+        var before = arranged.Before;
+
+        var card = (await arranged.Service.ExecuteCardCastAsync(arranged.BattleId, GuardHealCardId))!.Value;
+        var skill = (await arranged.Service.ExecutePetSkillCastAsync(arranged.BattleId))!.Value;
+
+        Assert.True(card.IsRejected);
+        Assert.True(skill.IsRejected);
+
+        // A rejected cast produces no result state and no event batch at all
+        // (CARD_RULES.md §3 item 3), so their absence is structural rather than an empty
+        // list: reading either is the documented failure.
+        Assert.Throws<InvalidOperationException>(() => _ = card.Events);
+        Assert.Throws<InvalidOperationException>(() => _ = card.State);
+        Assert.Throws<InvalidOperationException>(() => _ = skill.Events);
+        Assert.Throws<InvalidOperationException>(() => _ = skill.State);
+
+        var stored = (await arranged.Service.GetBattleAsync(arranged.BattleId))!;
+
+        Assert.Equal(before.BossState.SkillCharge, stored.BossState.SkillCharge);
+        Assert.Equal(before.BossState.SkillCooldown, stored.BossState.SkillCooldown);
+        Assert.Equal(before.BossState.PassiveProgress, stored.BossState.PassiveProgress);
+        Assert.Equal(before.Turn, stored.Turn);
+        Assert.Equal(before.Sequence, stored.Sequence);
+
+        // No durable battle end, no reward, and no cleanup ran.
+        Assert.Equal(0, arranged.Persistence.Calls);
+        Assert.Equal(0, arranged.Store.DeleteCount);
+    }
+
+    // -----------------------------------------------------------------------
+    // 4.3 The retry path's fresh record is guarded too
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public async Task TerminalCastGuard_ShouldAlsoHoldOnTheFreshRecordOfTheCardCastRetryPath()
+    {
+        // CARD_RULES.md §3 item 8 reads the same condition from the record the action read AND
+        // from the fresh record a refused compare-and-set re-reads (REDIS_STATE.md §4 item 2).
+        // A concurrent winner can end the battle between the two reads — and because a
+        // committed Swap restores the cast allowance (CARD_RULES.md §3 item 6), a guard that
+        // inspected only the first read would let this cast resolve against a battle that had
+        // already ended.
+        var arranged = await ArrangeContendedTerminalCastAsync("terminal-cast-card-fresh");
+
+        arranged.Store.ConcurrentWinnerBeforeFirstWrite = stored => stored with
+        {
+            Sequence = stored.Sequence + 1,
+            BossState = stored.BossState with { HP = 0 },
+        };
+
+        var writesBefore = arranged.Store.WriteCount;
+
+        var result = await arranged.Service.ExecuteCardCastAsync(arranged.BattleId, GuardHealCardId);
+
+        Assert.NotNull(result);
+        Assert.True(result!.Value.IsRejected);
+        Assert.Equal(CardCastRejectionReason.StaleAction, result.Value.Reason);
+
+        // The refused attempt wrote nothing and the refused retry committed nothing
+        // (REDIS_STATE.md §4 items 5, 7) and reached no battle end.
+        Assert.Equal(writesBefore, arranged.Store.WriteCount);
+        Assert.Equal(0, arranged.Persistence.Calls);
+    }
+
+    [Fact]
+    public async Task TerminalCastGuard_ShouldAlsoHoldOnTheFreshRecordOfThePetSkillCastRetryPath()
+    {
+        // The same retry-path condition for the second cast method.
+        var arranged = await ArrangeContendedTerminalCastAsync("terminal-cast-skill-fresh");
+
+        arranged.Store.ConcurrentWinnerBeforeFirstWrite = stored => stored with
+        {
+            Sequence = stored.Sequence + 1,
+            PetState = stored.PetState with { HP = 0 },
+        };
+
+        var writesBefore = arranged.Store.WriteCount;
+
+        var result = await arranged.Service.ExecutePetSkillCastAsync(arranged.BattleId);
+
+        Assert.NotNull(result);
+        Assert.True(result!.Value.IsRejected);
+        Assert.Equal(CardCastRejectionReason.StaleAction, result.Value.Reason);
+
+        Assert.Equal(writesBefore, arranged.Store.WriteCount);
+        Assert.Equal(0, arranged.Persistence.Calls);
+    }
+
+    // -----------------------------------------------------------------------
+    // 4.4 Compatibility: live battles, missing battles, and the allowance
+    // -----------------------------------------------------------------------
+
+    [Fact]
+    public async Task LiveBattle_CardCastAndPetSkillCast_ShouldKeepTheirExistingBehaviour()
+    {
+        // The guard must not touch a battle that is in progress: a Card cast commits and
+        // spends its Cost (CARD_RULES.md §3 item 4), and the committed Turn's one-cast
+        // allowance then rejects the Pet Skill cast with its own reason (item 6, ADR-021) —
+        // never with the terminal guard's.
+        var store = new InMemoryBattleStateRepository();
+        var persistence = new RecordingBattleResultPersistence();
+        var service = new BattleStateService(
+            store,
+            new FixedRngSeedSource(),
+            persistence,
+            new StubCardDefinitionLookup(GuardHealCard, GuardSkillCard));
+
+        var battleId = "terminal-cast-live";
+        var created = await service.CreateBattleAsync(battleId, Owner, CastPet, BossDefinitions.HoaLong);
+
+        store.ApplyConcurrentWrite(created with { PetState = created.PetState with { Power = GuardPower } });
+
+        var card = (await service.ExecuteCardCastAsync(battleId, GuardHealCardId))!.Value;
+
+        Assert.True(card.IsAccepted);
+        Assert.Equal(GuardPower - GuardHealCard.PowerCost, card.State.PetState.Power);
+        Assert.Equal(created.Sequence + 1, card.State.Sequence);
+
+        var skill = (await service.ExecutePetSkillCastAsync(battleId))!.Value;
+
+        Assert.True(skill.IsRejected);
+        Assert.Equal(CardCastRejectionReason.CardCastAlreadyUsedThisTurn, skill.Reason);
+        Assert.NotEqual(CardCastRejectionReason.StaleAction, skill.Reason);
+
+        // CARD_RULES.md §3 item 6: the rejected second cast spends nothing, and a
+        // non-terminal cast reaches no durable battle end.
+        var stored = (await service.GetBattleAsync(battleId))!;
+
+        Assert.Equal(card.State.PetState.Power, stored.PetState.Power);
+        Assert.Equal(0, persistence.Calls);
+    }
+
+    [Fact]
+    public async Task LiveBattle_PetSkillCastThatEndsTheBattle_ShouldStillPersistTheTerminalResult()
+    {
+        // The guard must not block a legitimate cast either: a Pet Skill cast against a live
+        // battle whose damage reduces the Boss to 0 HP commits, emits BattleWon, and reaches
+        // the documented battle end exactly once — the guard's precondition is that the battle
+        // is still in progress, which it was when this request arrived
+        // (ARCHITECTURE.md §4 item 4).
+        var store = new InMemoryBattleStateRepository();
+        var persistence = new RecordingBattleResultPersistence();
+        var service = new BattleStateService(
+            store,
+            new FixedRngSeedSource(),
+            persistence,
+            new StubCardDefinitionLookup(GuardHealCard, GuardSkillCard));
+
+        var battleId = "terminal-cast-live-kill";
+        var created = await service.CreateBattleAsync(
+            battleId,
+            Owner,
+            CastPet,
+            BossDefinitions.HoaLong with { MaxHP = 1 });
+
+        store.ApplyConcurrentWrite(created with { PetState = created.PetState with { Power = GuardPower } });
+
+        var skill = (await service.ExecutePetSkillCastAsync(battleId))!.Value;
+
+        Assert.True(skill.IsAccepted);
+        Assert.Contains(skill.Events, e => e.Type == BattleEventType.BattleWon);
+        Assert.Equal(0, skill.State.BossState.HP);
+        Assert.Equal(1, persistence.Calls);
+    }
+
+    [Fact]
+    public async Task MissingBattle_ShouldRemainDistinctFromATerminalCastRejection()
+    {
+        // The two outcomes are different paths and different responses, and this asserts both
+        // rather than equating them:
+        //   * a battle with no record at all  → the service returns null, which the caller
+        //     reports as BATTLE_NOT_FOUND (SIGNALR_PROTOCOL.md §5, §7 item 3);
+        //   * a battle whose record still holds a terminal state → a non-null rejection whose
+        //     reason is the state-precondition code (CARD_RULES.md §3 item 8).
+        var arranged = await ArrangeTerminalCastAsync("terminal-cast-distinct", bossHp: 0);
+
+        Assert.Null(await arranged.Service.ExecuteCardCastAsync("terminal-cast-no-such-battle", GuardHealCardId));
+        Assert.Null(await arranged.Service.ExecutePetSkillCastAsync("terminal-cast-no-such-battle"));
+
+        var card = await arranged.Service.ExecuteCardCastAsync(arranged.BattleId, GuardHealCardId);
+        var skill = await arranged.Service.ExecutePetSkillCastAsync(arranged.BattleId);
+
+        Assert.NotNull(card);
+        Assert.NotNull(skill);
+        Assert.True(card!.Value.IsRejected);
+        Assert.True(skill!.Value.IsRejected);
+        Assert.Equal(CardCastRejectionReason.StaleAction, card.Value.Reason);
+        Assert.Equal(CardCastRejectionReason.StaleAction, skill.Value.Reason);
+        Assert.Equal("STALE_ACTION", CardCastRejectionCodes.ToContractCode(card.Value.Reason));
+        Assert.NotEqual("BATTLE_NOT_FOUND", CardCastRejectionCodes.ToContractCode(card.Value.Reason));
+    }
+
+    // -----------------------------------------------------------------------
+    // 4.5 Cast-scenario fixtures
+    // -----------------------------------------------------------------------
+
+    private sealed record ArrangedCast(
+        string BattleId,
+        BattleStateService Service,
+        InMemoryBattleStateRepository Store,
+        RecordingBattleResultPersistence Persistence,
+        BattleState Before);
+
+    private sealed record ArrangedCastRace(
+        string BattleId,
+        BattleStateService Service,
+        ContendedBattleStateRepository Store,
+        RecordingBattleResultPersistence Persistence);
+
+    /// <summary>
+    /// Creates a battle with the cast loadout and forces the terminal side the scenario names
+    /// — the reachable service-level path, since a terminal record survives whenever the
+    /// documented battle end did not clear it (<c>DATABASE.md</c> §1 sourcing item 3).
+    /// </summary>
+    /// <remarks>
+    /// The Pet's Power is arranged so the guard's "nothing was spent" half is observable. The
+    /// write is the store double's documented concurrent-writer idiom, which is not counted as
+    /// a write of the request under test. A recording durable-result boundary is composed so a
+    /// rejection can prove it reached no battle end.
+    /// </remarks>
+    private static async Task<ArrangedCast> ArrangeTerminalCastAsync(
+        string battleId,
+        int? bossHp = null,
+        int? petHp = null)
+    {
+        var store = new InMemoryBattleStateRepository();
+        var persistence = new RecordingBattleResultPersistence();
+        var service = new BattleStateService(
+            store,
+            new FixedRngSeedSource(),
+            persistence,
+            new StubCardDefinitionLookup(GuardHealCard, GuardSkillCard));
+
+        var created = await service.CreateBattleAsync(battleId, Owner, CastPet, BossDefinitions.HoaLong);
+
+        store.ApplyConcurrentWrite(created with
+        {
+            BossState = bossHp is { } bossHitPoints
+                ? created.BossState with { HP = bossHitPoints }
+                : created.BossState,
+            PetState = (petHp is { } petHitPoints
+                ? created.PetState with { HP = petHitPoints }
+                : created.PetState) with { Power = GuardPower },
+        });
+
+        var before = (await store.GetAsync(battleId))!;
+
+        return new ArrangedCast(battleId, service, store, persistence, before);
+    }
+
+    /// <summary>
+    /// The same cast scenario over the store double that injects a competitor's commit at the
+    /// first compare-and-set (<c>REDIS_STATE.md</c> §4 item 2), which is what makes a refused
+    /// write and its fresh re-read deterministic rather than a scheduler coincidence.
+    /// </summary>
+    /// <remarks>
+    /// The Pet's Power is armed so the cast clears <c>CARD_RULES.md</c> §3 item 2's checks on
+    /// the live record and therefore reaches the compare-and-set the competitor refuses.
+    /// </remarks>
+    private static async Task<ArrangedCastRace> ArrangeContendedTerminalCastAsync(string battleId)
+    {
+        var store = new ContendedBattleStateRepository();
+        var persistence = new RecordingBattleResultPersistence();
+        var service = new BattleStateService(
+            store,
+            new FixedRngSeedSource(),
+            persistence,
+            new StubCardDefinitionLookup(GuardHealCard, GuardSkillCard));
+
+        var created = await service.CreateBattleAsync(battleId, Owner, CastPet, BossDefinitions.HoaLong);
+
+        var armed = created with { PetState = created.PetState with { Power = GuardPower } };
+
+        Assert.True(await store.TryUpdateAsync(armed, created.Sequence));
+
+        return new ArrangedCastRace(battleId, service, store, persistence);
+    }
+
+    /// <summary>
+    /// The Card definition lookup the cast scenarios run against — the same in-memory
+    /// double the Card-cast suite uses, so no production seam is added for the guard.
+    /// </summary>
+    private sealed class StubCardDefinitionLookup : ICardDefinitionLookup
+    {
+        private readonly Dictionary<string, CardDefinition> _definitions = new(StringComparer.Ordinal);
+
+        public StubCardDefinitionLookup(params CardDefinition[] definitions)
+        {
+            foreach (var definition in definitions)
+            {
+                _definitions[definition.CardDefinitionId] = definition;
+            }
+        }
+
+        public Task<CardDefinition?> GetDefinitionAsync(
+            string cardDefinitionId,
+            CancellationToken cancellationToken = default) =>
+            Task.FromResult(_definitions.TryGetValue(cardDefinitionId, out var definition) ? definition : null);
+    }
+
+    /// <summary>
+    /// Records every call to the documented battle-end step (<c>ARCHITECTURE.md</c> §4 item 4),
+    /// so a rejection can prove it reached no durable result and a committed terminal cast can
+    /// prove it reached exactly one. It stores nothing: what that boundary does with the result
+    /// is <c>BattleResultService</c>'s contract and is covered by its own suites.
+    /// </summary>
+    private sealed class RecordingBattleResultPersistence : IBattleResultPersistence
+    {
+        public int Calls { get; private set; }
+
+        public Task<bool> PersistTerminalResultAsync(
+            BattleState state,
+            BattleOutcome outcome,
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+
+            return Task.FromResult(true);
+        }
     }
 
     // =======================================================================

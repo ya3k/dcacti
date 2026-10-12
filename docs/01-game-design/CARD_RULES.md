@@ -1,6 +1,15 @@
 # Card Rules
 
-**Version:** 1.9 (§3 — the Card-cast restriction approved by `TASK-191` Q-4
+**Version:** 1.10 (§3 item 8 added per the Product Owner "Option A" decision: a
+Card cast or a Pet Skill cast that reaches the server against a battle that has already
+ended (`GAME_RULES.md` §1.4) is rejected at the action boundary under the established
+`STALE_ACTION` code, before §3 item 2's validation runs — no Power spent, no state value
+changed, no Battle Event emitted, no Boss response produced, no round resolved, and no
+result persisted or reward granted. The rule reuses `MATCH3_RULES.md` §2.1.4 item 7's
+code and the existing `CardCast`/`PetSkillCast` acknowledgement contract, and
+`MATCH3_RULES.md` §1.6.4 item 4 now names this item as the owner of the question it
+declines to decide. No cost, effect, magnitude, category, or item 2–7 rule is changed.
+Prior 1.9: (§3 — the Card-cast restriction approved by `TASK-191` Q-4
 (OPTION B) is recorded: **a player may successfully cast at most one Card during
 each committed Match-3 Turn** (new §3 item 6; former item 6 promoted to item 7).
 This is a **cast-count constraint, not Turn consumption** — §3 item 5's rule that
@@ -203,6 +212,42 @@ Rules:
 7. Card casts are never authoritative from the client; the client sends a
    cast *request*, and the server computes and emits the actual result
    (GAME_RULES.md §18).
+8. **A battle that has ended admits no Card cast and no Pet Skill cast.** A battle
+   that has ended (`GAME_RULES.md` §1.4: the Boss's HP or the active Pet's HP has
+   reached 0) permits no further cast of either kind. A cast request that reaches
+   the server against such a battle is rejected **at the action boundary** —
+   before item 2's validation is consulted, before `EffectiveCardCost` (§3.6) is
+   composed or spent, and before any effect is applied — under the established
+   state-precondition rejection `STALE_ACTION`. A cast's precondition is that the
+   battle is still in progress, and a terminal state satisfies no precondition of
+   a cast; the code is the one `MATCH3_RULES.md` §2.1.4 item 5 defines, which
+   `SIGNALR_PROTOCOL.md` §5 item 3 delegates to this section for a cast. The
+   rejection is a gameplay no-op in the sense of item 3:
+
+   * no Power is spent and no `EffectiveCardCost` is composed;
+   * no board, HP, buff, debuff, status, `Sequence`, `CardCastsUsedThisTurn`, or
+     `RngState` value changes;
+   * no Battle Event is emitted, and no Boss response is produced;
+   * no round is resolved, no Battle Result is persisted, and no reward is granted.
+
+   Because the guard precedes item 2's checks, a cast against a terminal battle is
+   rejected as `STALE_ACTION` even when it would also have failed one of them —
+   the same precedence `MATCH3_RULES.md` §2.1.4 item 7 fixes for a Swap. It does
+   not reorder item 2 for a live battle.
+
+   **Relationship to the terminal Swap guard.** This item is the cast-side
+   counterpart of `MATCH3_RULES.md` §2.1.4 item 7, which refuses a Swap against a
+   terminal battle under the same code, and it is the owner of the cast question
+   that `MATCH3_RULES.md` §1.6.4 item 4 records as not belonging to that section.
+   Both guards read the same authoritative terminal condition
+   (`GAME_RULES.md` §1.4) and both sit at their action's boundary; neither changes
+   the other's action.
+
+   **Compatibility with the acknowledgement contract.** The rejection is delivered
+   to the caller only, through the `reason` member of the existing `CardCast` /
+   `PetSkillCast` acknowledgement (`SIGNALR_PROTOCOL.md` §5), as the code
+   `STALE_ACTION`. No new code, message, event, rejection vocabulary, or response
+   shape is introduced, and a live battle's rejection reasons are unchanged.
 
 **"Card Cost" in items 2 and 4 is the Effective Card Cost**, defined in §3.6 —
 not the authored `CardDefinition.PowerCost` on its own. §3.6 owns that value's

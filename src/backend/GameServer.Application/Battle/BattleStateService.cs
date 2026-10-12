@@ -1082,6 +1082,23 @@ public sealed class BattleStateService
             battleId,
             lastAttempt.ActivatedOncePerBattleBossPassive);
 
+        // ARCHITECTURE.md §4 item 4 / REDIS_STATE.md §3: this write-back committed a
+        // resolution, so a committed resolution whose own event list states
+        // BattleWon/BattleLost has ended the battle — and its durable result is
+        // recorded and its active state cleared here exactly as the loop's committed
+        // path does above. The fallback is not a different kind of commit: it is one
+        // more `TryUpdateAsync` of the same resolution shape, and a terminal
+        // transition committed here must not stay unpersisted, which would leave a
+        // terminal record in the store with no BattleResult row, no XP grant, and no
+        // documented battle end (DATABASE.md §1 sourcing item 3).
+        //
+        // The call is unconditional for the same reason it is on that path: the
+        // helper reads the resolution's OWN event list and returns without writing
+        // for a non-terminal one, so no terminal predicate is repeated here and no
+        // second write, event, reward, or cleanup path is introduced.
+        await PersistTerminalResultAsync(lastAttempt.Result.State, lastAttempt.Result.Events, cancellationToken)
+            .ConfigureAwait(false);
+
         return lastAttempt.Result;
     }
 
@@ -1106,6 +1123,36 @@ public sealed class BattleStateService
         if (await _repository.GetAsync(battleId, cancellationToken).ConfigureAwait(false) is not { } state)
         {
             return null;
+        }
+
+        // ===================================================================
+        // CARD_RULES.md §3 item 8: Terminal-battle cast guard
+        // ===================================================================
+        // A battle that has ended admits no Card cast and no Pet Skill cast
+        // (CARD_RULES.md §3 item 8, GAME_RULES.md §1.4). The guard runs at the action
+        // boundary — AFTER the record read, so a battle that is gone is still reported
+        // as absence rather than as a rejection, and BEFORE the definition lookup,
+        // before §3 item 2's validation, and before any effect, so this request
+        // composes no EffectiveCardCost, spends no Power, changes no board/HP/buff/
+        // debuff/status/Sequence/RNG value, resolves no round, emits no Battle Event,
+        // produces no Boss response, and writes nothing.
+        //
+        // It reuses the established state-precondition rejection rather than
+        // introducing a rejection code or a wire member: a terminal battle satisfies
+        // no precondition of a cast, and SIGNALR_PROTOCOL.md §5 item 3 delegates a
+        // cast rejection's code to §3, so the protocol gains no new value and the
+        // acknowledgement shape is unchanged. It is the cast-side counterpart of
+        // MATCH3_RULES.md §2.1.4 item 7's terminal Swap guard.
+        //
+        // There is no replay recognition for the guard to follow, and this is the one
+        // structural difference from the Swap path: CardCast and PetSkillCast carry no
+        // action identity (SIGNALR_PROTOCOL.md §2 item 1 makes clientSequence an
+        // opaque, unconsulted correlation value), so there is no already-committed
+        // action to answer as a replay. A repeated cast against a battle that has ended
+        // is a rejection either way, and no replay semantics are redefined.
+        if (IsTerminalBattle(state))
+        {
+            return CardCastExecutionResult.Rejected(CardCastRejectionReason.StaleAction);
         }
 
         if (_cardDefinitions is null)
@@ -1153,6 +1200,16 @@ public sealed class BattleStateService
                 return null;
             }
 
+            // CARD_RULES.md §3 item 8: the fresh record is guarded on the same terms as
+            // the record this cast first read. A concurrent winner can have ended the
+            // battle, and an ended battle yields no cast — no Power spent, no state
+            // change, no Battle Event, no Boss response, no round, and no write — so it
+            // is rejected here rather than resolved against.
+            if (IsTerminalBattle(fresh))
+            {
+                return CardCastExecutionResult.Rejected(CardCastRejectionReason.StaleAction);
+            }
+
             state = fresh;
         }
 
@@ -1173,6 +1230,36 @@ public sealed class BattleStateService
         if (await _repository.GetAsync(battleId, cancellationToken).ConfigureAwait(false) is not { } state)
         {
             return null;
+        }
+
+        // ===================================================================
+        // CARD_RULES.md §3 item 8: Terminal-battle cast guard
+        // ===================================================================
+        // A battle that has ended admits no Card cast and no Pet Skill cast
+        // (CARD_RULES.md §3 item 8, GAME_RULES.md §1.4). The guard runs at the action
+        // boundary — AFTER the record read, so a battle that is gone is still reported
+        // as absence rather than as a rejection, and BEFORE the definition lookup,
+        // before §3 item 2's validation, and before any effect, so this request
+        // composes no EffectiveCardCost, spends no Power, changes no board/HP/buff/
+        // debuff/status/Sequence/RNG value, resolves no round, emits no Battle Event,
+        // produces no Boss response, and writes nothing.
+        //
+        // It reuses the established state-precondition rejection rather than
+        // introducing a rejection code or a wire member: a terminal battle satisfies
+        // no precondition of a cast, and SIGNALR_PROTOCOL.md §5 item 3 delegates a
+        // cast rejection's code to §3, so the protocol gains no new value and the
+        // acknowledgement shape is unchanged. It is the cast-side counterpart of
+        // MATCH3_RULES.md §2.1.4 item 7's terminal Swap guard.
+        //
+        // There is no replay recognition for the guard to follow, and this is the one
+        // structural difference from the Swap path: CardCast and PetSkillCast carry no
+        // action identity (SIGNALR_PROTOCOL.md §2 item 1 makes clientSequence an
+        // opaque, unconsulted correlation value), so there is no already-committed
+        // action to answer as a replay. A repeated cast against a battle that has ended
+        // is a rejection either way, and no replay semantics are redefined.
+        if (IsTerminalBattle(state))
+        {
+            return CardCastExecutionResult.Rejected(CardCastRejectionReason.StaleAction);
         }
 
         if (_cardDefinitions is null)
@@ -1232,6 +1319,16 @@ public sealed class BattleStateService
                 is not { } fresh)
             {
                 return null;
+            }
+
+            // CARD_RULES.md §3 item 8: the fresh record is guarded on the same terms as
+            // the record this cast first read. A concurrent winner can have ended the
+            // battle, and an ended battle yields no cast — no Power spent, no state
+            // change, no Battle Event, no Boss response, no round, and no write — so it
+            // is rejected here rather than resolved against.
+            if (IsTerminalBattle(fresh))
+            {
+                return CardCastExecutionResult.Rejected(CardCastRejectionReason.StaleAction);
             }
 
             state = fresh;

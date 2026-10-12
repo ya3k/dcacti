@@ -550,6 +550,232 @@ public class BattleResultTerminalFlowTests
     }
 
     // =======================================================================
+    // The compare-and-set contention fallback — TASK-269
+    // =======================================================================
+
+    /// <summary>
+    /// The bounded retry budget of the resolution loop
+    /// (<c>BattleStateService.ExecuteSwapAsync</c>, <c>REDIS_STATE.md</c> §4 item 2).
+    /// Arranging exactly this many refusals makes every loop attempt fail and leaves the
+    /// final fallback's own compare-and-set as the one that lands; arranging more makes
+    /// that one fail too.
+    /// </summary>
+    private const int RetryBudget = 8;
+
+    [Fact]
+    public async Task FallbackCommit_WithATerminalVictory_ShouldWriteOneResultRow_AndDeleteTheActiveState()
+    {
+        // REDIS_STATE.md §4 item 2 bounds the abort-and-retry loop, and when contention
+        // does not settle inside the bound the service resolves once more and commits that
+        // resolution. ARCHITECTURE.md §4 item 4 and REDIS_STATE.md §3 draw no distinction:
+        // a committed resolution whose own event list states BattleWon has ended the
+        // battle, so its durable result is recorded and its active state cleared — the
+        // same documented battle end the loop's committed path performs.
+        var harness = Harness.Create(BossDefinitions.HoaLong);
+        var battleId = "terminal-fallback-victory";
+
+        var created = await harness.Battles.CreateBattleAsync(
+            battleId,
+            Owner,
+            Pet,
+            FragileBoss());
+
+        var pair = (await PinPlayerAtkBoardAsync(harness, created)).Swap;
+        var writesAfterPin = harness.Store.WriteCount;
+
+        // Every loop attempt is refused, so this terminal resolution reaches the fallback.
+        harness.Store.ForcedConflicts = RetryBudget;
+
+        var result = await harness.Battles.ExecuteSwapAsync(
+            battleId,
+            pair with { ExpectedSequence = created.Sequence, ActionId = "act-fallback-victory" });
+
+        Assert.NotNull(result);
+        Assert.True(result!.Value.IsAccepted);
+        Assert.Contains(result.Value.Events, e => e.Type == BattleEventType.BattleWon);
+
+        var row = Assert.Single(harness.Results.Rows);
+
+        // DATABASE.md §1: the row is the accepted transition's own values.
+        Assert.Equal(battleId, row.BattleResultId);
+        Assert.Equal(Owner.Value, row.PlayerId);
+        Assert.Equal(Pet.PetId.Value, row.PetInstanceId);
+        Assert.Equal(BattleOutcome.Victory, row.Outcome);
+        Assert.Equal(result.Value.State.Turn, row.DurationTurns);
+
+        // REDIS_STATE.md §3: the active state was cleared once, after the durable write.
+        Assert.Equal(1, harness.Store.DeleteCount);
+        Assert.Null(await harness.Store.GetAsync(battleId));
+
+        // REDIS_STATE.md §4 item 5: the fallback is ONE write-back for the resolution.
+        Assert.Equal(writesAfterPin + 1, harness.Store.WriteCount);
+    }
+
+    [Fact]
+    public async Task FallbackCommit_WithATerminalDefeat_ShouldWriteOneResultRow_WithTheDefeatOutcome()
+    {
+        // The other terminal path through the same fallback: the state the final
+        // compare-and-set accepted emitted BattleLost, so the documented "defeat" row is
+        // recorded and the record is cleared — and a defeat grants no XP
+        // (DATABASE.md §1 "Reward semantics", COMBAT_RULES.md §7.2, PET_RULES.md §5.3).
+        var harness = Harness.Create(BossDefinitions.HoaLong);
+        var battleId = "terminal-fallback-defeat";
+
+        var created = await harness.Battles.CreateBattleAsync(
+            battleId,
+            Owner,
+            Pet,
+            LethalBoss());
+
+        var result = await RunUntilTheBossInstanceLandsAsync(
+            harness,
+            battleId,
+            created,
+            forcedConflictsPerRound: RetryBudget);
+
+        Assert.True(result.IsAccepted);
+        Assert.Contains(result.Events, e => e.Type == BattleEventType.BattleLost);
+        Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.BattleWon);
+
+        var row = Assert.Single(harness.Results.Rows);
+
+        Assert.Equal(battleId, row.BattleResultId);
+        Assert.Equal(BattleOutcome.Defeat, row.Outcome);
+        Assert.Equal(1, harness.Store.DeleteCount);
+
+        Assert.Equal(Player.InitialXp, harness.Players.Find(Owner.Value)!.XP);
+        Assert.Equal(GameServer.Domain.Pets.Pet.InitialXp, harness.Pets.Find(Pet.PetId.Value)!.XP);
+    }
+
+    [Fact]
+    public async Task FallbackCommit_ThatIsNotTerminal_ShouldWriteNoResultRow_AndDeleteNoKey()
+    {
+        // The fallback is subject to the same terminal test as any other commit: the
+        // battle-end step reads the resolution's OWN event list, so a resolution that
+        // emitted neither outcome event has not ended the battle and nothing durable is
+        // written and no key cleared (GAME_EVENTS.md §2, DATABASE.md §1).
+        var harness = Harness.Create(BossDefinitions.HoaLong);
+        var battleId = "terminal-fallback-none";
+
+        var created = await harness.Battles.CreateBattleAsync(
+            battleId,
+            Owner,
+            Pet,
+            BossDefinitions.HoaLong);
+
+        var pair = FindMatchProducingPair(created.BoardState);
+        harness.Store.ForcedConflicts = RetryBudget;
+
+        var result = await harness.Battles.ExecuteSwapAsync(
+            battleId,
+            pair with { ExpectedSequence = created.Sequence, ActionId = "act-fallback-none" });
+
+        Assert.True(result!.Value.IsAccepted);
+        Assert.DoesNotContain(
+            result.Value.Events,
+            e => e.Type is BattleEventType.BattleWon or BattleEventType.BattleLost);
+
+        // The committed state advanced normally…
+        Assert.Equal(1, result.Value.State.Turn);
+        Assert.True(result.Value.State.BossState.HP > 0);
+        Assert.True(result.Value.State.PetState.HP > 0);
+
+        // …and the fallback commit wrote and cleared nothing durable.
+        Assert.Empty(harness.Results.Rows);
+        Assert.Equal(0, harness.Results.WriteAttempts);
+        Assert.Equal(0, harness.Store.DeleteCount);
+    }
+
+    [Fact]
+    public async Task FallbackCommit_ThatDoesNotLand_ShouldWriteNoResultRow_AndDeleteNoKey()
+    {
+        // REDIS_STATE.md §4 item 7: a refused write is not a commit. When the fallback's own
+        // compare-and-set is refused, its terminal resolution never became authoritative —
+        // so nothing may be persisted, nothing cleared, and no write may be attributed to
+        // it. The battle stays recoverable and retryable (DATABASE.md §1 sourcing item 3).
+        var harness = Harness.Create(BossDefinitions.HoaLong);
+        var battleId = "terminal-fallback-refused";
+
+        var created = await harness.Battles.CreateBattleAsync(
+            battleId,
+            Owner,
+            Pet,
+            FragileBoss());
+
+        var pair = (await PinPlayerAtkBoardAsync(harness, created)).Swap;
+        var writesAfterPin = harness.Store.WriteCount;
+
+        // More refusals than the loop budget plus the fallback can absorb.
+        harness.Store.ForcedConflicts = 64;
+
+        var result = await harness.Battles.ExecuteSwapAsync(
+            battleId,
+            pair with { ExpectedSequence = created.Sequence, ActionId = "act-fallback-refused" });
+
+        Assert.Null(result);
+
+        Assert.Empty(harness.Results.Rows);
+        Assert.Equal(0, harness.Results.WriteAttempts);
+        Assert.Equal(0, harness.Store.DeleteCount);
+        Assert.Equal(writesAfterPin, harness.Store.WriteCount);
+
+        // The authoritative state is the one the refusals left — the record survived.
+        Assert.NotNull(await harness.Battles.GetBattleAsync(battleId));
+    }
+
+    [Fact]
+    public async Task FallbackCommit_TerminalReplay_ShouldProduceNoSecondRow_AndNoSecondReward()
+    {
+        // DATABASE.md §1 sourcing item 1 makes the row's key the battle's own BattleId, and
+        // COMBAT_RULES.md §7.2 / PET_RULES.md §5.3 bind each track's grant to the first
+        // durable write — so the terminal fallback cannot double-apply a reward. The same
+        // documented battle end cleared the record, so a repeat of the action resolves
+        // nothing at all (REDIS_STATE.md §3).
+        var harness = Harness.Create(BossDefinitions.HoaLong);
+        var battleId = "terminal-fallback-replay";
+
+        var created = await harness.Battles.CreateBattleAsync(
+            battleId,
+            Owner,
+            Pet,
+            FragileBoss());
+
+        var pair = (await PinPlayerAtkBoardAsync(harness, created)).Swap;
+
+        var playerXpBefore = harness.Players.Find(Owner.Value)!.XP;
+        var petXpBefore = harness.Pets.Find(Pet.PetId.Value)!.XP;
+
+        harness.Store.ForcedConflicts = RetryBudget;
+
+        var request = pair with { ExpectedSequence = created.Sequence, ActionId = "act-fallback-replay" };
+        var first = await harness.Battles.ExecuteSwapAsync(battleId, request);
+
+        Assert.NotNull(first);
+        Assert.True(first!.Value.IsAccepted);
+        Assert.Contains(first.Value.Events, e => e.Type == BattleEventType.BattleWon);
+
+        var row = Assert.Single(harness.Results.Rows);
+
+        Assert.Equal(BattleOutcome.Victory, row.Outcome);
+
+        // The documented victory grant (+100 to both tracks) applied exactly once.
+        Assert.Equal(playerXpBefore + Player.BattleWonXpReward, harness.Players.Find(Owner.Value)!.XP);
+        Assert.Equal(
+            petXpBefore + GameServer.Domain.Pets.Pet.BattleWonXpReward,
+            harness.Pets.Find(Pet.PetId.Value)!.XP);
+
+        var second = await harness.Battles.ExecuteSwapAsync(battleId, request);
+
+        Assert.Null(second);
+        Assert.Single(harness.Results.Rows);
+        Assert.Equal(1, harness.Store.DeleteCount);
+        Assert.Equal(playerXpBefore + Player.BattleWonXpReward, harness.Players.Find(Owner.Value)!.XP);
+        Assert.Equal(
+            petXpBefore + GameServer.Domain.Pets.Pet.BattleWonXpReward,
+            harness.Pets.Find(Pet.PetId.Value)!.XP);
+    }
+
+    // =======================================================================
     // Helpers
     // =======================================================================
 
@@ -591,11 +817,19 @@ public class BattleResultTerminalFlowTests
     /// (<c>ADR-026</c> §5). It is deterministic for the battle's fixed seed, and a
     /// scenario that cannot reach the instance fails rather than skips.
     /// </summary>
+    /// <param name="forcedConflictsPerRound">
+    /// When non-zero, the number of compare-and-set refusals arranged on each round's
+    /// write — set <b>after</b> the round's board is pinned, so the pinning write itself
+    /// is not refused. Exhausting the loop's own budget with it makes every round commit
+    /// through the final contention fallback (<c>REDIS_STATE.md</c> §4 item 2), which is
+    /// what the fallback scenarios need.
+    /// </param>
     private static async Task<SwapExecutionResult> RunUntilTheBossInstanceLandsAsync(
         Harness harness,
         string battleId,
         BattleState created,
-        int maxRounds = 40)
+        int maxRounds = 40,
+        int forcedConflictsPerRound = 0)
     {
         var state = created with { PetState = created.PetState with { HP = 1 } };
 
@@ -612,7 +846,22 @@ public class BattleResultTerminalFlowTests
                 pinned.Board,
                 petState: state.PetState with { HP = 1 });
 
-            var result = (await harness.Battles.ExecuteSwapAsync(battleId, pinned.Swap))!.Value;
+            harness.Store.ForcedConflicts = forcedConflictsPerRound;
+
+            // The request states the state version it observed, as a conforming request does
+            // (SIGNALR_PROTOCOL.md §2 item 1, ADR-025 §1). That is required — not merely
+            // tidier — for the forced-conflict scenarios: a request that states no
+            // precondition is refused as stale on its FIRST refused write rather than
+            // retried (TASK-257), so it could never reach the retry path under test. Each
+            // Round carries its own action identity because the recognition window is one
+            // committed Swap wide (MATCH3_RULES.md §2.1.4 item 2).
+            var request = pinned.Swap with
+            {
+                ExpectedSequence = state.Sequence,
+                ActionId = $"act-boss-instance-round-{round}",
+            };
+
+            var result = (await harness.Battles.ExecuteSwapAsync(battleId, request))!.Value;
 
             Assert.True(result.IsAccepted);
 

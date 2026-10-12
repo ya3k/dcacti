@@ -40,11 +40,39 @@ public enum CardCastRejectionReason
     /// the Turn would otherwise have accepted.
     /// </summary>
     CardCastAlreadyUsedThisTurn = 4,
+
+    /// <summary>
+    /// The battle the cast was requested against has already ended, so the cast's
+    /// state precondition is violated (<c>CARD_RULES.md</c> §3 item 8,
+    /// <c>GAME_RULES.md</c> §1.4).
+    ///
+    /// The guard runs at the action boundary — before §3 item 2's validation is
+    /// consulted — so a cast rejected for this reason spends no Power, changes no
+    /// state value, advances no <c>Sequence</c>, consumes no RNG, and emits no Battle
+    /// Event: it is a gameplay no-op in the sense of §3 item 3. Because the guard
+    /// precedes the other checks, this reason is reported for a terminal battle even
+    /// when an earlier §3 item 2 check would also have failed, which is the
+    /// precedence <c>MATCH3_RULES.md</c> §2.1.4 item 7 fixes for a Swap.
+    ///
+    /// It is the cast-side carrier of the established <c>STALE_ACTION</c> code
+    /// (<c>MATCH3_RULES.md</c> §2.1.4 item 5, <c>SIGNALR_PROTOCOL.md</c> §5 item 3),
+    /// not a new code: the wire spelling is stated once in
+    /// <see cref="CardCastRejectionCodes.ToContractCode"/>.
+    /// </summary>
+    StaleAction = 5,
 }
 
 /// <summary>
 /// The documented wire spelling of a Card cast rejection reason
 /// (<c>SIGNALR_PROTOCOL.md</c> §5 item 3).
+///
+/// §5 item 3 keeps no parallel code list and delegates each action's rejection
+/// codes to the domain document that owns the action, which is
+/// <c>CARD_RULES.md</c> §3 for <c>CardCast</c> and <c>PetSkillCast</c>. This is the
+/// one place the mapping is stated, so the transport does not derive a code by
+/// casing an identifier: a mechanical translation of
+/// <see cref="CardCastRejectionReason.StaleAction"/> yields <c>STALEACTION</c>,
+/// which is a code the protocol never defines.
 /// </summary>
 public static class CardCastRejectionCodes
 {
@@ -59,6 +87,7 @@ public static class CardCastRejectionCodes
         CardCastRejectionReason.InsufficientPower => "INSUFFICIENT_POWER",
         CardCastRejectionReason.InvalidCard => "INVALID_CARD",
         CardCastRejectionReason.CardCastAlreadyUsedThisTurn => "CARD_CAST_ALREADY_USED_THIS_TURN",
+        CardCastRejectionReason.StaleAction => "STALE_ACTION",
         _ => throw new ArgumentOutOfRangeException(
             nameof(reason),
             reason,

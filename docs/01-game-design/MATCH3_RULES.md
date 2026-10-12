@@ -1,6 +1,10 @@
 # Match-3 Rules
 
-**Version:** 1.8 (§1.6 "Runtime Board Deadlock Recovery" added and §2.1.4 item 7 added per ADR-026 / TASK-267: every committed board that is non-terminal and permits a Player action has at least one legal match-producing adjacent swap, evaluated and recovered at the Round commit boundary on the battle's retained Pcg32 stream with §1.5 item 2's unchanged 64-attempt bound, with terminal boards exempt, the Boss's pre-move recovery retained, and no Battle Event emitted; a Swap against an already-terminal battle is rejected under §2.1.4's existing state-precondition code before any resolution or RNG. §7.2's RNG-consumer list now names that recovery, §1.6.4's citations and §2.1.2's ordering pointer are corrected, and §1.6.3 records that a regenerated board preserves no Special Gem (TASK-268). Prior 1.7 (§2, §8 updated per ADR-026 / TASK-259: Player and Boss share the one Match-3 board; both act via valid swaps; cell type determines effect; acting side determines ownership and target; Turn represents an atomic combat Round; Sequence increments once per committed round write-back. Prior 1.6: §2.1.4 item 2 **completed, not changed in its rules**: the
+**Version:** 1.9 (§1.6.4 item 4 now names `CARD_RULES.md` §3 item 8 as the owner of the
+post-terminal Card/Pet Skill cast question it previously left unattributed — that rule
+refuses such a cast under the same `STALE_ACTION` contract §2.1.4 item 7 uses for the
+Swap. No Match-3 rule, guard, step, code, event, or RNG behaviour changes; §2.1.4 item 7
+and §1.6's recovery rule are untouched. Prior 1.8: (§1.6 "Runtime Board Deadlock Recovery" added and §2.1.4 item 7 added per ADR-026 / TASK-267: every committed board that is non-terminal and permits a Player action has at least one legal match-producing adjacent swap, evaluated and recovered at the Round commit boundary on the battle's retained Pcg32 stream with §1.5 item 2's unchanged 64-attempt bound, with terminal boards exempt, the Boss's pre-move recovery retained, and no Battle Event emitted; a Swap against an already-terminal battle is rejected under §2.1.4's existing state-precondition code before any resolution or RNG. §7.2's RNG-consumer list now names that recovery, §1.6.4's citations and §2.1.2's ordering pointer are corrected, and §1.6.3 records that a regenerated board preserves no Special Gem (TASK-268). Prior 1.7 (§2, §8 updated per ADR-026 / TASK-259: Player and Boss share the one Match-3 board; both act via valid swaps; cell type determines effect; acting side determines ownership and target; Turn represents an atomic combat Round; Sequence increments once per committed round write-back. Prior 1.6: §2.1.4 item 2 **completed, not changed in its rules**: the
 action-identity recognition window is stated as what the rule and
 `GAME_STATE.md` §2.1.10 item 5 already define — the identity is compared with the
 most recently committed Swap, so a retry arriving after a later action committed
@@ -554,8 +558,10 @@ about to act on.
 4. **What the exemption does not decide.** It says nothing about a Card cast or a
    Pet Skill cast after the battle has ended: those are not board actions, they
    resolve no Swap and reach no cascade, and whether they are refused once the
-   battle has ended is a gameplay rule this section does not own. The one action
-   whose post-terminal admission §2.1.4 item 7 fixes is the Swap.
+   battle has ended is a gameplay rule this section does not own — it is owned by
+   `CARD_RULES.md` §3 item 8, which refuses such a cast under the same established
+   `STALE_ACTION` contract this section's §2.1.4 item 7 uses for the Swap. The one
+   action whose post-terminal admission §2.1.4 item 7 fixes is the Swap.
 
 ### 1.6.5 This recovery and the Boss's pre-move recovery
 
