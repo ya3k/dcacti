@@ -4007,6 +4007,10 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                 e.GetProperty("type").GetString(),
                 new[]
                 {
+                    // §3.2.26–§3.2.27: the committed board action's own boundary pair.
+                    // Both open the Player's board cycle and the Boss's, so a committed
+                    // round's batch carries two of each.
+                    "SwapStarted", "SwapResolved",
                     "MatchCreated", "CascadeCreated", "ComboChanged", "GemMatched",
                     // §3.3/§3.2.16–§3.2.17: the Passive stage's two shared events travel
                     // in this same batch on this same path (§4.3 item 10), so they are
@@ -4064,6 +4068,13 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
             var allowed = type switch
             {
+                // §3.2.26: the acting side and the two §1.0 cells the accepted
+                // action named — exactly four members, no direction, no identity.
+                "SwapStarted" => new[] { "type", "actor", "fromCell", "toCell" },
+                // §3.2.27: the delivered outcome alone, under the member name
+                // BattleWon/BattleLost already own, with this event's value set.
+                // The actor is the sibling SwapStarted's member, not repeated here.
+                "SwapResolved" => new[] { "type", "outcome" },
                 "MatchCreated" => new[] { "type", "shape", "cells", "gemType", "cascadeDepth", "createdSpecialGems" },
                 "CascadeCreated" => new[] { "type", "cascadeDepth" },
                 "ComboChanged" => new[] { "type", "combo" },
@@ -4209,6 +4220,19 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
         return e.Type switch
         {
+            // §3.2.26: the acting side projected to its lowercase contract name by the
+            // same value-projection rule the damage and Power sources use, and the two
+            // cells as the accepted action named them.
+            BattleEventType.SwapStarted => BattleEventWireDto.SwapStarted(
+                e.SwapStarted.Actor.ToString().ToLowerInvariant(),
+                e.SwapStarted.FromCell,
+                e.SwapStarted.ToCell),
+
+            // §3.2.27: the outcome as the contract word for the committed fact the
+            // payload carries, exactly as the production projection writes it.
+            BattleEventType.SwapResolved => BattleEventWireDto.SwapResolved(
+                e.SwapResolved.Committed ? "committed" : "reverted"),
+
             BattleEventType.MatchCreated => BattleEventWireDto.MatchCreated(
                 e.Match.Shape.IsLt ? "Lt" : "Straight",
                 e.Match.Shape.Cells,
@@ -4298,7 +4322,7 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             _ => throw new ArgumentOutOfRangeException(
                 nameof(e),
                 e.Type,
-                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.24, §3.3)."),
+                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.24, §3.2.26–§3.2.27, §3.3)."),
         };
     }
 

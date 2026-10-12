@@ -1,6 +1,6 @@
 # SignalR Protocol
 
-**Version:** 2.21 (§3.1, §3.2.2 updated per ADR-026 / TASK-259: Atomic round persistence boundaries documented — Redis CAS guarantees single-record state persistence atomicity, but does not provide distributed 2PC or guarantee exactly-once SignalR broadcast across network drops; recovery from connection interruption or missed events remains strictly governed by ADR-008 snapshot recovery via GetBattleState; proposed admission of SwapStarted event ({actor, fromCell, toCell}) in §3.2.2 to transmit Boss swap coordinates for client presentation. Prior 2.20: §2 **item 1 restated and items 2–3 added** — the `Swap` action
+**Version:** 2.22 (§3.2.2, §3.2.12, **§3.2.26 and §3.2.27 added** per ADR-026 / TASK-263: the `SwapStarted` protocol proposal §3.2.2 carried is now **formalized and discharged**. `SwapStarted` (`type`, `actor: "player" | "boss"`, `fromCell`, `toCell`) and its `SwapResolved` counterpart (`type`, `outcome: "committed" | "reverted"`) are members of the closed discriminator set, projected by their own subsections, emitted once per committed board action by the Player's Swap and by the Boss's `GAME_RULES.md` §17 step 18a board action, and omitted entirely for a rejected action. **No hub method, argument, subscription, delivery path, state-push member, or gameplay rule is added or removed**: §2's method list and the §4/§6 delivery paths are unchanged, the `ReceiveEvents` envelope keeps its three members, and the two new discriminators add no `BattleState` member. Prior 2.21: (§3.1, §3.2.2 updated per ADR-026 / TASK-259: Atomic round persistence boundaries documented — Redis CAS guarantees single-record state persistence atomicity, but does not provide distributed 2PC or guarantee exactly-once SignalR broadcast across network drops; recovery from connection interruption or missed events remains strictly governed by ADR-008 snapshot recovery via GetBattleState; proposed admission of SwapStarted event ({actor, fromCell, toCell}) in §3.2.2 to transmit Boss swap coordinates for client presentation. Prior 2.20: §2 **item 1 restated and items 2–3 added** — the `Swap` action
 token's grammar is now exact and total. `"{expectedSequence}:{actionId}"` and the
 legacy `"{actionId}"` are the only accepted forms; the sequence part is a
 non-negative decimal integer stated in full; and a token outside the grammar —
@@ -511,7 +511,7 @@ discriminator member and that event's own payload members at the same level.
 
 | Member | Type | Value |
 | --- | --- | --- |
-| `type` | string | one of `MatchCreated`, `CascadeCreated`, `ComboChanged`, `GemMatched`, `DamageCalculated`, `DamageDealt`, `DamageTaken`, `PassiveCharged`, `PassiveTriggered`, `BossSkillCast`, `BattleWon`, `BattleLost`, `CardCast`, `PetSkillCast`, `RelicTriggered`, `PowerChanged` |
+| `type` | string | one of `SwapStarted`, `SwapResolved`, `MatchCreated`, `CascadeCreated`, `ComboChanged`, `GemMatched`, `DamageCalculated`, `DamageDealt`, `DamageTaken`, `PassiveCharged`, `PassiveTriggered`, `BossSkillCast`, `BattleWon`, `BattleLost`, `CardCast`, `PetSkillCast`, `RelicTriggered`, `PowerChanged` |
 
 1. **The property name is `type`.** The string spelling matches the event name
    `GAME_RULES.md` §16 lists and `GAME_EVENTS.md` §2 defines.
@@ -521,18 +521,22 @@ discriminator member and that event's own payload members at the same level.
    `GAME_EVENTS.md` §2 does not define** — not against events it does define:
    a name `GAME_RULES.md` §16 lists and `GAME_EVENTS.md` §2 gives a payload for
    is a valid `type` once this section tabulates its members (§3.2.20, §3.2.21,
-   §3.2.23, §3.2.24).
+   §3.2.23, §3.2.24, §3.2.26, §3.2.27).
    No `MatchResolved`, no `SpecialGemActivated`, no `TurnChanged`, no
    `BoardChanged`, and no other name is a valid `type`: those are either state
    (`SIGNALR_PROTOCOL.md` §3.1 item 3, §8 items 5–7) or undefined
-   (`GAME_EVENTS.md` §2 item 3). This is the TASK-104 A-1A ruling; the four
-   events it admits are projected by their own subsections below, and
-   `GAME_EVENTS.md` §3 item 5 already required that every event §2 defines be
-   delivered.
-   *(Protocol Proposal per ADR-026 / TASK-259: Admission of `SwapStarted`
-   (`type: "SwapStarted"`, `actor: "player" | "boss"`, `fromCell: number`, `toCell: number`)
-   is proposed to transmit Boss swap coordinates so Phaser can animate Boss board actions.
-   Its schema admission will be formalized upon downstream implementation).*
+   (`GAME_EVENTS.md` §2 item 3). This is the TASK-104 A-1A ruling; the events it
+   admits are projected by their own subsections below, and `GAME_EVENTS.md` §3
+   item 5 already required that every event §2 defines be delivered.
+   **The ADR-026 / TASK-259 `SwapStarted` proposal is formalized by this
+   revision**: `SwapStarted` and its `SwapResolved` counterpart are members of
+   the table above, with their members owned by §3.2.26 and §3.2.27. They were
+   held out only by the proposal note that stood here, which is discharged and
+   removed. `TurnStarted`, `TurnEnded`, `BattleStarted` and `MatchResolved`
+   remain outside the set for the reasons this item gives: each of them reports
+   a value the state push already carries (§4: `turn`, the board) or is defined
+   only as a start-of-session marker §0/§4 delivers as state — none of them is a
+   per-resolution report the batch needs, and §3.2.26/§3.2.27 add none of them.
 3. **The enum is projected to its name, not to its ordinal.** The ordinal
    (`BattleEventType`) is a Domain identity and is not part of the wire
    contract; renumbering the enum must not change the wire.
@@ -863,8 +867,9 @@ specialGem
 
 1. **The events tabulated above carry exactly the members this section gives
    them** — the twelve of §3.2.6–§3.2.19 plus the four of §3.2.20, §3.2.21,
-   §3.2.23, and §3.2.24 (§3.2.22 owns their order and §3.2.25 owns the
-   `effect summary` convention; neither is an event). No
+   §3.2.23, and §3.2.24, plus the two of §3.2.26 and §3.2.27 (§3.2.22 owns their
+   order and §3.2.25 owns the `effect summary` convention; neither is an event).
+   No
    event carries a `battleId`, a `serverSequence`, a `turn`, a board, a `combo`,
    a `matchCount`, a timestamp, a GUID, or a generated id: the first two belong
    to the envelope (§3), and the rest are state (§3.1 item 3) or nonexistent
@@ -1437,6 +1442,112 @@ different answers to the same question.
 7. **No new convention is invented, and no member is added.** The ruling selects
    between the two conventions the document already contained rather than
    authoring a third, and it adds no wire member to any event.
+
+### 3.2.26 `SwapStarted`
+
+```json
+{
+    "type": "SwapStarted",
+    "actor": "boss",
+    "fromCell": 27,
+    "toCell": 28
+}
+```
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | always | `"SwapStarted"` |
+| `actor` | string | always | the side that acted on the shared board: `"player"` or `"boss"` |
+| `fromCell` | int | always | the first §1.0 cell the accepted action named |
+| `toCell` | int | always | the second §1.0 cell the accepted action named |
+
+1. **The payload's meaning is `GAME_EVENTS.md` §2's and is not restated here.**
+   This subsection fixes the wire shape only: which members a `SwapStarted` item
+   carries, how each is spelled, and what may not be carried. §2 owns what the
+   event *means* and what its payload *contains* (`§3.2.1`, `GAME_EVENTS.md` §3
+   item 1). It was admitted under the ADR-026 / TASK-259 proposal recorded at
+   §3.2.2, now formalized.
+2. **`actor` is one of the two §2 values, as a string** — `"player"` or
+   `"boss"`, never the numeric enum value and never a PascalCase variant
+   (`§3.2.3`, `§3.2.4`). It shares its *value set* with the damage events'
+   `source`/`target` (`§3.2.14` item 1) and the Passive events' `source`
+   (`§3.2.16` item 1) — one two-sided vocabulary, three events — and it answers
+   a different question from `PowerChanged.source`'s four stage values
+   (`§3.2.24` item 3): `actor` names **which side acted**, not which stage owns a
+   mutation.
+3. **`fromCell`/`toCell` are the accepted action's own two cells**, in the order
+   the action supplied them (`MATCH3_RULES.md` §2.1.1 items 1–2). There is **no
+   direction member**, no row/column member, and no screen or pixel coordinate:
+   the unordered pair is the Swap's identity and the order it is reported in is
+   the order the action named, not a gameplay distinction the schema invents.
+   The two cells are the ones the action named — they are reported, never
+   re-derived, and the exchange's resolved board is state, not this event
+   (`§3.1` item 3).
+4. **Both cells are integers in `0..63`, and neither is ever omitted.** `0` is a
+   real §1.0 cell index and is written as `0`; neither member has an
+   "not applicable" case, so `§3.2.5`'s omission rule never applies to them.
+5. **It is emitted once per committed board action, and never for a rejected
+   one.** A batch carries one `SwapStarted` for the Player's committed Swap and
+   one for the Boss Response Phase's board action (`GAME_RULES.md` §17 step 18a)
+   — never one per Match, per Cascade pass, or per delivery. An action that fails
+   validation emits no Battle Event at all, so **no** `SwapStarted` item appears
+   for it (`§3.1` item 4, `GAME_EVENTS.md` §1.2, `MATCH3_RULES.md` §2.1.5
+   item 6). A repeated or idempotent retry re-broadcasts nothing (`§3.1` item 6).
+6. **It opens the board cycle it belongs to.** Within the batch, a
+   `SwapStarted` precedes its `SwapResolved` (`§3.2.27`), which precedes the
+   `MatchCreated`/`GemMatched`/`ComboChanged`/`CascadeCreated` items of the same
+   action's board cycle, in the delivered order `GAME_EVENTS.md` §1 fixes and
+   `§3.2.1` item 3 preserves. That position — not an inference from which cycle
+   looks like whose — is the correlation: the `actor` of the nearest preceding
+   `SwapStarted` is the actor of the cycle that follows it.
+7. **It carries no other member.** No `battleId` and no `serverSequence` (the
+   envelope's, `§3`), no turn, no `actionId` (the action's client correlation
+   value returns through `§5`'s direct result and is not an event member,
+   `ADR-025`), no Match, Gem, Combo, or board — those are the cycle's own events
+   or the state push (`§3.1` item 3, `§3.2.12` item 1).
+
+### 3.2.27 `SwapResolved`
+
+```json
+{
+    "type": "SwapResolved",
+    "outcome": "committed"
+}
+```
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | always | `"SwapResolved"` |
+| `outcome` | string | always | the swap's delivered outcome (`§2`): `"committed"` or `"reverted"` |
+
+1. **The payload's meaning is `GAME_EVENTS.md` §2's** — "whether the swap was
+   committed or reverted" — and this subsection fixes its wire representation
+   only.
+2. **It is a string and not a boolean**, matching the convention `§3.2.19`
+   item 1 already fixed for an outcome-shaped member, and it **reuses the
+   `outcome` member name** those two events own. The two share a name and not a
+   value set — `"victory"`/`"defeat"` there, `"committed"`/`"reverted"` here —
+   which is the same shared-name convention `§3.2.7` item 2 records for
+   `cascadeDepth` and `§3.2.24` item 3 states for `source`.
+3. **On the delivered path the value is always `"committed"`.** A rejected
+   action emits no Battle Event at all (`§3.1` item 4, `GAME_EVENTS.md` §1.2,
+   `MATCH3_RULES.md` §2.1.5 item 6), so the `reverted` case §2 names is
+   unreachable in a batch: a delivered `SwapResolved` reports the committed
+   outcome and nothing else. The member is carried because §2 defines the
+   payload and a schema that omitted it would leave the event's documented
+   content unrepresented — **not** because a client is expected to branch on
+   it. A client must not read `"committed"` as an alternative to the state
+   push: the authoritative board is state (`§3.1` item 3, `§4`, ADR-008).
+4. **It is emitted once per `SwapStarted`, immediately after it**, for the
+   Player's committed Swap and for the Boss's board action alike, at the point
+   `MATCH3_RULES.md` §2.1.6 fixes (step 7 — the exchange committed, the Turn
+   begun, Combo reset — and before Match detection at step 8). It is omitted
+   exactly when its `SwapStarted` is (§3.2.26 item 5).
+5. **It carries no other member.** In particular it carries no `actor`: §2's
+   payload for this event is the outcome alone, and the actor is the sibling
+   `SwapStarted`'s member. A client that needs the actor reads the
+   `SwapStarted` the item follows (`§3.2.26` item 6) rather than being sent a
+   second copy of it that could disagree.
 
 ---
 

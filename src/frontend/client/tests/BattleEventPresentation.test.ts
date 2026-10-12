@@ -11,6 +11,7 @@ import {
   parseInBattleEvent,
   formatInBattleEvent,
   adaptPresentedEvent,
+  deliveredSwapOf,
   describeEventCallout,
   selectBatchCallout,
   selectBatchCalloutEvent,
@@ -37,6 +38,8 @@ import {
   formatMoveLogRow,
 } from '../src/game/scenes/BattleEventPresenter';
 import type {
+  PresentedSwapStarted,
+  PresentedSwapResolved,
   PresentedMatchCreated,
   PresentedCascadeCreated,
   PresentedComboChanged,
@@ -422,6 +425,44 @@ async function flush(): Promise<void> {
 }
 
 describe('TASK-088 — BattleEventPresenter parser & formatter', () => {
+  it('parses and formats SwapStarted with verbatim actor and cells', () => {
+    // SIGNALR_PROTOCOL.md §3.2.26: the acting side and the two §1.0 cells the
+    // accepted action named, all four members verbatim.
+    const raw: PresentedSwapStarted = {
+      type: 'SwapStarted',
+      actor: 'boss',
+      fromCell: 27,
+      toCell: 28,
+    };
+
+    const parsed = parseInBattleEvent(raw);
+    expect(parsed).toEqual(raw);
+    expect(formatInBattleEvent(parsed!)).toBe('SwapStarted: boss 27->28');
+
+    // Cell 0 is a real §1.0 index and is parsed, not treated as absent.
+    expect(
+      parseInBattleEvent({ type: 'SwapStarted', actor: 'player', fromCell: 0, toCell: 1 })
+    ).toEqual({ type: 'SwapStarted', actor: 'player', fromCell: 0, toCell: 1 });
+  });
+
+  it('parses and formats SwapResolved with the delivered outcome verbatim', () => {
+    // SIGNALR_PROTOCOL.md §3.2.27: the outcome word is read as sent and is not
+    // validated against a client-side vocabulary — an outcome outside the
+    // contract's two values is still reported verbatim rather than reinterpreted.
+    const raw: PresentedSwapResolved = {
+      type: 'SwapResolved',
+      outcome: 'committed',
+    };
+
+    const parsed = parseInBattleEvent(raw);
+    expect(parsed).toEqual(raw);
+    expect(formatInBattleEvent(parsed!)).toBe('SwapResolved: committed');
+
+    expect(
+      parseInBattleEvent({ type: 'SwapResolved', outcome: 'reverted' })
+    ).toEqual({ type: 'SwapResolved', outcome: 'reverted' });
+  });
+
   it('parses and formats MatchCreated with verbatim members', () => {
     const raw: PresentedMatchCreated = {
       type: 'MatchCreated',
@@ -717,6 +758,20 @@ describe('TASK-088 — BattleEventPresenter parser & formatter', () => {
     expect(parseInBattleEvent({ type: 'PetSkillCast' })).toBeNull();
     expect(parseInBattleEvent({ type: 'PetSkillCast', cardId: '' })).toBeNull();
     expect(parseInBattleEvent({ type: 'PetSkillCast', cardId: 123 })).toBeNull();
+
+    // §3.2.26/§3.2.27: a boundary event whose required members are missing or
+    // mistyped is malformed, so it presents nothing rather than opening a swap
+    // step with a guessed actor or cell.
+    expect(parseInBattleEvent({ type: 'SwapStarted' })).toBeNull();
+    expect(parseInBattleEvent({ type: 'SwapStarted', actor: 'boss', fromCell: 3 })).toBeNull();
+    expect(parseInBattleEvent({ type: 'SwapStarted', actor: '', fromCell: 3, toCell: 4 })).toBeNull();
+    expect(parseInBattleEvent({ type: 'SwapStarted', actor: 1, fromCell: 3, toCell: 4 })).toBeNull();
+    expect(
+      parseInBattleEvent({ type: 'SwapStarted', actor: 'boss', fromCell: '3', toCell: 4 })
+    ).toBeNull();
+    expect(parseInBattleEvent({ type: 'SwapResolved' })).toBeNull();
+    expect(parseInBattleEvent({ type: 'SwapResolved', outcome: '' })).toBeNull();
+    expect(parseInBattleEvent({ type: 'SwapResolved', outcome: 1 })).toBeNull();
   });
 
   // ---------------------------------------------------------------------------
@@ -847,11 +902,14 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
 
   /**
    * One delivered payload per name of `SIGNALR_PROTOCOL.md` §3.2.2's closed
-   * sixteen-name discriminator set. The two outcome names are delivered the same
-   * way but are not `InBattleServerEvent`s, so they are asserted as "no in-battle
-   * presentation step of their own".
+   * eighteen-name discriminator set, in the order that section's table lists them.
+   * The two outcome names are delivered the same way but are not
+   * `InBattleServerEvent`s, so they are asserted as "no in-battle presentation step
+   * of their own".
    */
   const DELIVERED_PAYLOADS: ReadonlyArray<{ readonly name: string; readonly event: unknown }> = [
+    { name: 'SwapStarted', event: { type: 'SwapStarted', actor: 'boss', fromCell: 27, toCell: 28 } },
+    { name: 'SwapResolved', event: { type: 'SwapResolved', outcome: 'committed' } },
     { name: 'MatchCreated', event: { type: 'MatchCreated', shape: 'Lt', cells: [7, 15, 23, 24], gemType: 'POWER', cascadeDepth: 4 } },
     { name: 'CascadeCreated', event: { type: 'CascadeCreated', cascadeDepth: 2 } },
     { name: 'ComboChanged', event: { type: 'ComboChanged', combo: 4 } },
@@ -873,8 +931,10 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
   /** The closed discriminator set §3.2.2 fixes. */
   const DISCRIMINATOR_SET = DELIVERED_PAYLOADS.map((payload) => payload.name);
 
-  it('keeps the closed discriminator set at exactly the sixteen documented names', () => {
+  it('keeps the closed discriminator set at exactly the eighteen documented names', () => {
     expect(DISCRIMINATOR_SET).toEqual([
+      'SwapStarted',
+      'SwapResolved',
       'MatchCreated',
       'CascadeCreated',
       'ComboChanged',
@@ -893,13 +953,18 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       'BattleLost',
     ]);
 
-    // The parser's own switch admits exactly the fourteen in-battle names — no
+    // The parser's own switch admits exactly the sixteen in-battle names — no
     // more (a phase, status or turn name would be a wire change) and no fewer.
+    // `SwapStarted` and `SwapResolved` are the two ADR-026 / TASK-259 proposal
+    // formalized by SIGNALR_PROTOCOL.md §3.2.26–§3.2.27, which GAME_EVENTS.md §1/§2
+    // had already defined.
     const parsedNames = DELIVERED_PAYLOADS.filter(
       (payload) => parseInBattleEvent(payload.event) !== null
     ).map((payload) => payload.name);
 
     expect(parsedNames).toEqual([
+      'SwapStarted',
+      'SwapResolved',
       'MatchCreated',
       'CascadeCreated',
       'ComboChanged',
@@ -926,10 +991,14 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
         continue;
       }
 
+      // The board-cycle actor is threaded from the batch, so a board-cycle event
+      // read on its own keeps the side-free `swap` answer — asserted here, and
+      // against a delivered boundary in the batch-attribution tests.
       const step = adaptPresentedEvent(parsed);
-      // `DamageCalculated` is the one delivered in-battle event with no
-      // presentation step of its own; it is asserted separately below.
-      if (payload.name === 'DamageCalculated') {
+      // `DamageCalculated` and `SwapResolved` are the two delivered in-battle
+      // events with no presentation step of their own; they are asserted
+      // separately below.
+      if (payload.name === 'DamageCalculated' || payload.name === 'SwapResolved') {
         expect(step).toBeNull();
         continue;
       }
@@ -943,6 +1012,7 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
     }
 
     expect(Object.fromEntries(steps)).toEqual({
+      SwapStarted: { actor: 'boss', action: 'swap', kind: 'swap' },
       MatchCreated: { actor: 'swap', action: 'match', kind: 'match' },
       CascadeCreated: { actor: 'swap', action: 'cascade', kind: 'cascade' },
       ComboChanged: { actor: 'swap', action: 'combo', kind: 'feedback' },
@@ -958,15 +1028,70 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       PowerChanged: { actor: 'power', action: 'power', kind: 'feedback' },
     });
 
-    // Thirteen of the fourteen in-battle names adapt; the fourteenth is
-    // `DamageCalculated`, which presents nothing of its own.
-    expect(steps.size).toBe(13);
+    // Fourteen of the sixteen in-battle names adapt; the other two are
+    // `DamageCalculated` and `SwapResolved`, which present nothing of their own.
+    expect(steps.size).toBe(14);
   });
 
-  it('presents nothing of its own for DamageCalculated, and no in-battle step for either outcome', () => {
+  it('attributes a board cycle to the actor of the delivered SwapStarted that opened it', () => {
+    // SIGNALR_PROTOCOL.md §3.2.26 item 6 / GAME_EVENTS.md §1: the Match, Gem,
+    // Cascade and Combo events of a cycle carry no party member, so the actor is
+    // the one the boundary delivered — not the cycle's position in the batch and not
+    // a client-held turn. Both cycles of one round are attributed this way, and the
+    // side-free `swap` answer survives only for a cycle whose boundary was not
+    // delivered.
+    const playerCycle = { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 } as const;
+    const bossCycle = playerCycle;
+
+    expect(adaptPresentedEvent(playerCycle, 'player')?.actor).toBe('player');
+    expect(adaptPresentedEvent(bossCycle, 'boss')?.actor).toBe('boss');
+
+    // No boundary context: the honest side-free answer, unchanged from TASK-252.
+    expect(adaptPresentedEvent(playerCycle)?.actor).toBe('swap');
+
+    expect(adaptPresentedEvent({ type: 'CascadeCreated', cascadeDepth: 1 }, 'boss')?.actor).toBe('boss');
+    expect(adaptPresentedEvent({ type: 'GemMatched', cellIndex: 3, gemType: 'HP' }, 'boss')?.actor).toBe('boss');
+    expect(adaptPresentedEvent({ type: 'ComboChanged', combo: 2 }, 'boss')?.actor).toBe('boss');
+  });
+
+  it('reads one delivered board-action boundary through one projection', () => {
+    // `deliveredSwapOf` is the single place the delivered boundary is projected, so
+    // the swap step's actor and the swap animation's two cells cannot disagree. A
+    // delivered actor word outside the contract's two values names no side.
+    expect(deliveredSwapOf({ type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 })).toEqual({
+      actor: 'player',
+      fromCell: 20,
+      toCell: 21,
+    });
+
+    expect(deliveredSwapOf({ type: 'SwapStarted', actor: 'boss', fromCell: 3, toCell: 4 })).toEqual({
+      actor: 'boss',
+      fromCell: 3,
+      toCell: 4,
+    });
+
+    expect(
+      deliveredSwapOf({ type: 'SwapStarted', actor: 'third-party', fromCell: 3, toCell: 4 })
+    ).toEqual({ actor: null, fromCell: 3, toCell: 4 });
+
+    // Not a boundary at all: no swap step, no cells, no actor.
+    expect(deliveredSwapOf({ type: 'ComboChanged', combo: 2 })).toBeNull();
+    expect(deliveredSwapOf({ type: 'SwapResolved', outcome: 'committed' })).toBeNull();
+  });
+
+  it('presents nothing of its own for DamageCalculated and SwapResolved, and no in-battle step for either outcome', () => {
     // The six pipeline factors are developer detail: the resulting number reaches
     // the player as the damage floater and as the HP readout.
     expect(adaptPresentedEvent(parseInBattleEvent({ type: 'DamageCalculated', base: 1, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 1 })!)).toBeNull();
+
+    // `SwapResolved` closes the exchange its own `SwapStarted` already opened
+    // (MATCH3_RULES.md §2.1.6 steps 3 and 7), so it opens no step of its own
+    // whatever context it is read with — its delivered outcome is not a second
+    // swap to present.
+    const resolved = parseInBattleEvent({ type: 'SwapResolved', outcome: 'committed' });
+    expect(resolved).not.toBeNull();
+    expect(adaptPresentedEvent(resolved!)).toBeNull();
+    expect(adaptPresentedEvent(resolved!, 'boss')).toBeNull();
 
     // The two terminal outcomes are not in-battle events; the scene finds them on
     // the envelope instead (§3.2.19) and hands the battle off.
@@ -2452,17 +2577,20 @@ describe('TASK-246 — the interaction indicator is client state, never wire sta
   });
 
   it('accepts no turn or phase event the discriminator set does not define', () => {
-    // GAME_EVENTS.md §1/§2 define `BattleStarted`, `TurnStarted`, `SwapStarted`,
-    // `SwapResolved`, `MatchResolved` and `TurnEnded`, but SIGNALR_PROTOCOL.md
+    // `GAME_EVENTS.md` §1/§2 define `BattleStarted`, `TurnStarted`, `TurnEnded`,
+    // `MatchResolved` and `PhaseChanged`-style names, but `SIGNALR_PROTOCOL.md`
     // §3.2.2's closed set does not admit them and the implementation emits none
     // (TASK-246's C-1 — reported, not resolved here). The indicator therefore
     // cannot be sourced from a turn or phase event, and none is accepted.
+    //
+    // `SwapStarted` and `SwapResolved` are **not** in this list any more: this task
+    // formalized them into §3.2.26–§3.2.27, so they are admitted — and they are
+    // still not a turn or phase signal: neither carries a `turn`, a `phase`, or
+    // any "whose turn it is" member (`§3.2.26` item 7, `§3.2.27` item 5).
     for (const type of [
       'BattleStarted',
       'TurnStarted',
       'TurnEnded',
-      'SwapStarted',
-      'SwapResolved',
       'MatchResolved',
       'PhaseChanged',
       'BossPhaseChanged',
@@ -2482,8 +2610,10 @@ describe('TASK-253 — the developer Move Log row formatter (operator decision D
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
 
-  /** The fourteen non-outcome names of the closed discriminator set (§3.2.2). */
+  /** The sixteen non-outcome names of the closed discriminator set (§3.2.2). */
   const IN_BATTLE_TYPES = [
+    'SwapStarted',
+    'SwapResolved',
     'MatchCreated',
     'CascadeCreated',
     'ComboChanged',
@@ -2502,6 +2632,8 @@ describe('TASK-253 — the developer Move Log row formatter (operator decision D
 
   /** One delivered payload per in-battle discriminator. */
   const DELIVERED: ReadonlyArray<{ readonly name: string; readonly event: unknown }> = [
+    { name: 'SwapStarted', event: { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 } },
+    { name: 'SwapResolved', event: { type: 'SwapResolved', outcome: 'committed' } },
     { name: 'MatchCreated', event: { type: 'MatchCreated', shape: 'Lt', cells: [7, 15, 23], gemType: 'POWER', cascadeDepth: 4 } },
     { name: 'CascadeCreated', event: { type: 'CascadeCreated', cascadeDepth: 2 } },
     { name: 'ComboChanged', event: { type: 'ComboChanged', combo: 4 } },
@@ -2534,6 +2666,15 @@ describe('TASK-253 — the developer Move Log row formatter (operator decision D
   }
 
   it('names the delivered discriminator and the adapter actor/action, then the delivered members', () => {
+    expect(eventRow('SwapStarted')).toBe(
+      '#1 seq=9 turn=4 type=SwapStarted player/swap | SwapStarted: player 20->21'
+    );
+    // `SwapResolved` opens no step of its own (its `SwapStarted` already opened the
+    // exchange), so the row claims neither an actor nor an action — the same
+    // `-/-` the other step-less events carry.
+    expect(eventRow('SwapResolved')).toBe(
+      '#1 seq=9 turn=4 type=SwapResolved -/- | SwapResolved: committed'
+    );
     expect(eventRow('MatchCreated')).toBe(
       '#1 seq=9 turn=4 type=MatchCreated swap/match | Match: Lt POWER [7, 15, 23] depth: 4'
     );

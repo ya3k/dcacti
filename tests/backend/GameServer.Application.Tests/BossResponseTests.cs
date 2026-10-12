@@ -1637,16 +1637,32 @@ public class BossResponseTests
 
     /// <summary>
     /// The position at which the <b>Boss response phase's</b> Match-3 cycle begins in
-    /// the committed list — the first board event after the Player action phase's own
-    /// board events, which are the list's prefix
-    /// (<see cref="RoundTestSupport.PlayerBoardEvents"/>,
-    /// <see cref="RoundTestSupport.BossBoardEvents"/>, <c>GAME_EVENTS.md</c> §1).
+    /// the committed list — the start of the round's second contiguous board-event
+    /// run (<see cref="RoundTestSupport.PlayerBoardEvents"/>,
+    /// <see cref="RoundTestSupport.BossBoardEvents"/>, <c>GAME_EVENTS.md</c> §1, §1.1).
     /// </summary>
+    /// <remarks>
+    /// The Player's cycle is the first board-event run, not the list's prefix: the
+    /// committed list opens with the action's own <c>SwapStarted</c>/<c>SwapResolved</c>
+    /// pair, which is not a board event (<c>SIGNALR_PROTOCOL.md</c>
+    /// §3.2.26–§3.2.27).
+    /// </remarks>
     private static int BossBoardStartIndex(SwapExecutionResult result)
     {
         var events = result.Events;
+        var index = 0;
 
-        for (var index = RoundTestSupport.PlayerBoardEvents(result).Count; index < events.Count; index++)
+        while (index < events.Count && !IsBoardEvent(events[index]))
+        {
+            index++;
+        }
+
+        while (index < events.Count && IsBoardEvent(events[index]))
+        {
+            index++;
+        }
+
+        for (; index < events.Count; index++)
         {
             if (IsBoardEvent(events[index]))
             {

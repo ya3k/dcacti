@@ -7805,21 +7805,21 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       const settle = submitHeldSwap(harness, 20, 21);
       deliverResolution(harness, resolvedState(), [
         { type: 'TurnStarted', turn: 1 },
-        { type: 'SwapStarted', actor: 'boss', fromCell: 3, toCell: 4 },
-        { type: 'SwapResolved' },
         { type: 'BossPhaseChanged', phase: 'boss' },
         { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+        { type: 'MatchResolved' },
         { type: 'TurnEnded' },
       ]);
       settle();
       await flush();
 
       // `GAME_EVENTS.md` §1 defines names `SIGNALR_PROTOCOL.md` §3.2.2's closed set does
-      // not admit — a turn boundary, a swap boundary and a Boss phase boundary among
-      // them. None is a delivered event this protocol carries, so none presents a
+      // not admit — a turn boundary, a Boss phase boundary and a resolved-Match report
+      // among them. None is a delivered event this protocol carries, so none presents a
       // phase, claims a party, or advances the timeline: the delivered Match presents,
-      // and the rest are ignored. That is why the two board cycles are presented on
-      // their delivered order alone (the contract decision G-1 reports).
+      // and the rest are ignored. `SwapStarted`/`SwapResolved` were on this list until
+      // TASK-263 formalized them into §3.2.26–§3.2.27; they are covered by the
+      // TASK-263 block below.
       expect(timelinePhases(ctx).map((phase) => phase.detail)).toEqual([
         'swap 20->21',
         'match depth=1',
@@ -7854,6 +7854,149 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       expect(timelinePhases(ctx).map((phase) => phase.detail)).not.toEqual([]);
       playToEnd(harness);
       expect(playedPhases(ctx)).toContain('match depth=1');
+    });
+  });
+
+  // =========================================================================
+  // TASK-263 — the delivered board-action boundary (SIGNALR_PROTOCOL.md
+  // §3.2.26–§3.2.27, GAME_EVENTS.md §1/§2): the actor of each committed board
+  // action comes from the wire, never from the batch's order.
+  // =========================================================================
+
+  describe('TASK-263 — actor-aware board actions on the shared board', () => {
+    it('opens each board action from its delivered boundary and attributes its cycle', async () => {
+      const { harness, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), [
+        { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+        { type: 'SwapResolved', outcome: 'committed' },
+        { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+        { type: 'GemMatched', cellIndex: 24, gemType: 'ATK' },
+        { type: 'ComboChanged', combo: 1 },
+        { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+        { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
+        { type: 'SwapStarted', actor: 'boss', fromCell: 27, toCell: 28 },
+        { type: 'SwapResolved', outcome: 'committed' },
+        { type: 'MatchCreated', shape: 'Straight', cells: [32, 33, 34], gemType: 'DEF', cascadeDepth: 1 },
+        { type: 'GemMatched', cellIndex: 33, gemType: 'DEF' },
+        { type: 'ComboChanged', combo: 1 },
+        { type: 'DamageTaken', source: 'boss', target: 'player', amount: 90 },
+      ]);
+      settle();
+      await flush();
+
+      const phases = timelinePhases(ctx);
+
+      // Each delivered `SwapStarted` opens its own swap step, in the delivered
+      // order, carrying its own delivered cells; each following Match/Gem/Combo
+      // names no party of its own, so it is attributed to the boundary that opened
+      // its cycle. The one board transition still sits where the round's board work
+      // ends (TASK-254/262), and the terminal steps keep their own parties.
+      expect(phases.map((phase) => `${phase.detail}:${phase.actor}`)).toEqual([
+        'swap 20->21:player',
+        'match depth=1:player',
+        'damage player->boss:player',
+        'swap 27->28:boss',
+        'match depth=1:boss',
+        'settle:swap',
+        'retaliation boss->player:boss',
+      ]);
+
+      // The delivered pair opened each step — not the submitted pair and not a
+      // board difference: the Boss's two cells exist on the wire only through this
+      // member, and the client derives no swap from a board it has already moved.
+      expect(phases.filter((phase) => phase.kind === 'swap')).toHaveLength(2);
+      expect(phases.filter((phase) => phase.kind === 'settle')).toHaveLength(1);
+
+      playToEnd(harness);
+      expect(playedPhases(ctx)).toContain('swap 27->28');
+    });
+
+    it('takes the swap step from the delivered boundary, not from the submitted pair', async () => {
+      const { harness, ctx } = createBattle();
+
+      // The client submitted (20, 21); the committed action the server delivered
+      // named (12, 13). The committed, validated pair is the one presented: the
+      // delivered event is authoritative for the exchange, and no second step is
+      // opened for the local pair (SIGNALR_PROTOCOL.md §3.2.26 item 8).
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), [
+        { type: 'SwapStarted', actor: 'player', fromCell: 12, toCell: 13 },
+        { type: 'SwapResolved', outcome: 'committed' },
+        { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      ]);
+      settle();
+      await flush();
+
+      const details = timelinePhases(ctx).map((phase) => phase.detail);
+
+      expect(details).toEqual(['swap 12->13', 'match depth=1', 'settle']);
+      expect(details).not.toContain('swap 20->21');
+    });
+
+    it('keys the swap step to the submitted pair when the batch delivers no boundary', async () => {
+      const { harness, ctx } = createBattle();
+
+      // The pre-extension batch shape (TASK-254's fixtures): no delivered boundary,
+      // so the pair this client submitted is what the step presents, and the board
+      // cycle keeps the side-free actor TASK-252 gave it.
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), TASK_252_BATCH);
+      settle();
+      await flush();
+
+      const phases = timelinePhases(ctx);
+
+      expect(phases.map((phase) => phase.detail)).toContain('swap 20->21');
+      expect(phases.filter((phase) => phase.kind === 'swap').map((phase) => phase.actor)).toEqual([
+        'swap',
+      ]);
+      expect(phases.find((phase) => phase.detail === 'match depth=1')?.actor).toBe('swap');
+    });
+
+    it('claims no side for an actor word the contract does not define', async () => {
+      const { harness, ctx } = createBattle();
+
+      // ADR-001 / AGENTS.md §10: the delivered word names the side, so a word
+      // outside the contract's two values names no side — the step still presents
+      // the delivered cells, and neither the step nor the cycle it opens claims a
+      // party it was not told.
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), [
+        { type: 'SwapStarted', actor: 'third-party', fromCell: 3, toCell: 4 },
+        { type: 'SwapResolved', outcome: 'committed' },
+        { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      ]);
+      settle();
+      await flush();
+
+      const phases = timelinePhases(ctx);
+
+      expect(phases.find((phase) => phase.detail === 'swap 3->4')?.actor).toBeNull();
+      expect(phases.find((phase) => phase.detail === 'match depth=1')?.actor).toBe('swap');
+    });
+
+    it('ignores a malformed boundary event and keeps the submitted-pair fallback', async () => {
+      const { harness, ctx } = createBattle();
+
+      // A boundary event whose required members are missing is malformed, so it
+      // presents nothing: no swap step is opened from a guessed cell or actor, and
+      // the batch falls back to the pair this client submitted — the same behaviour
+      // a batch with no boundary at all has.
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), [
+        { type: 'SwapStarted', actor: 'boss' },
+        { type: 'SwapResolved' },
+        { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      ]);
+      settle();
+      await flush();
+
+      const phases = timelinePhases(ctx);
+
+      expect(phases.map((phase) => phase.detail)).toEqual(['swap 20->21', 'match depth=1', 'settle']);
+      expect(phases.find((phase) => phase.detail === 'match depth=1')?.actor).toBe('swap');
     });
   });
 });
@@ -10087,8 +10230,10 @@ describe('BattleScene — developer Move Log (TASK-253, operator decision D-1)',
   const VISIBLE_ROWS = 18;
   const RETAINED_ROWS = 200;
 
-  /** The fourteen non-outcome discriminators of the closed wire set (§3.2.2). */
+  /** The sixteen non-outcome discriminators of the closed wire set (§3.2.2). */
   const CLOSED_EVENT_TYPES = [
+    'SwapStarted',
+    'SwapResolved',
     'MatchCreated',
     'CascadeCreated',
     'ComboChanged',
@@ -10172,6 +10317,10 @@ describe('BattleScene — developer Move Log (TASK-253, operator decision D-1)',
 
   /** One delivered resolution carrying every non-outcome discriminator. */
   const EVERY_TYPE_BATCH: unknown[] = [
+    // The committed board action's own boundary (§3.2.26–§3.2.27), which is what
+    // attributes the board cycle that follows it.
+    { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+    { type: 'SwapResolved', outcome: 'committed' },
     {
       type: 'MatchCreated',
       shape: 'Straight',
@@ -10304,18 +10453,23 @@ describe('BattleScene — developer Move Log (TASK-253, operator decision D-1)',
     // The delivered `serverSequence` and `turn`, and nothing derived.
     expect(eventRows.every((row) => row.includes(' seq=7 turn=4 '))).toBe(true);
 
-    // The actor/action comes from the one adapter: a board event is the committed
-    // Swap's, a cast is the player's, a Boss skill is the boss's, and
-    // `PowerChanged` is the mutation stage the delivered `source` names — never a
-    // side (SIGNALR_PROTOCOL.md §3.2.24 item 3).
+    // The actor/action comes from the one adapter, with the board-cycle actor the
+    // delivered boundary named: the swap step is the delivered action's, the board
+    // cycle that follows it is the actor that opened it, a cast is the player's, a
+    // Boss skill is the boss's, and `PowerChanged` is the mutation stage the
+    // delivered `source` names — never a side (SIGNALR_PROTOCOL.md §3.2.24 item 3).
     const actorOf = (type: string) => {
       const row = eventRows.find((entry) => entry.includes(`type=${type} `));
       return /type=\S+ (\S+)/.exec(row ?? '')?.[1] ?? '';
     };
-    expect(actorOf('MatchCreated')).toBe('swap/match');
-    expect(actorOf('GemMatched')).toBe('swap/match');
-    expect(actorOf('CascadeCreated')).toBe('swap/cascade');
-    expect(actorOf('ComboChanged')).toBe('swap/combo');
+    expect(actorOf('SwapStarted')).toBe('player/swap');
+    // `SwapResolved` opens no step of its own: the exchange it closes is already the
+    // step its `SwapStarted` opened, so the row claims neither actor nor action.
+    expect(actorOf('SwapResolved')).toBe('-/-');
+    expect(actorOf('MatchCreated')).toBe('player/match');
+    expect(actorOf('GemMatched')).toBe('player/match');
+    expect(actorOf('CascadeCreated')).toBe('player/cascade');
+    expect(actorOf('ComboChanged')).toBe('player/combo');
     expect(actorOf('PowerChanged')).toBe('power/power');
     expect(actorOf('PassiveCharged')).toBe('pet/passive-charge');
     expect(actorOf('PassiveTriggered')).toBe('boss/passive-trigger');

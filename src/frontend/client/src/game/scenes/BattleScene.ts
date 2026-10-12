@@ -42,6 +42,7 @@ import {
   INTERACTION_YOUR_TURN,
   MOVE_LOG_TITLE,
   adaptPresentedEvent,
+  deliveredSwapOf,
   describeEventCallout,
   formatCardCastRejection,
   formatGemCellLabel,
@@ -3443,17 +3444,25 @@ export class BattleScene extends Phaser.Scene {
     const moveLog = this.developerMoveLog;
     const recordForMoveLog = moveLog !== null && moveLog.beginBatch(envelope);
 
+    // The batch's board-action actor, tracked in the delivered order for the
+    // panel's own rows. It is the same delivered member the phase builder reads
+    // (`deliveredSwapOf`), so the Move Log's `actor/action` column reports the
+    // same attribution the timeline presents instead of a second, side-free one.
+    let boardActionActor: 'player' | 'boss' | null = null;
+
     for (const raw of envelope.events) {
       const parsed = parseInBattleEvent(raw);
       if (!parsed) {
         continue;
       }
 
+      boardActionActor = deliveredSwapOf(parsed)?.actor ?? boardActionActor;
+
       presented.push(parsed);
       BattleScene.appendBounded(this.presentedEventsLog, formatInBattleEvent(parsed));
 
       if (recordForMoveLog) {
-        moveLog?.recordEvent(parsed, envelope.serverSequence);
+        moveLog?.recordEvent(parsed, envelope.serverSequence, boardActionActor);
       }
     }
 
@@ -3542,17 +3551,31 @@ export class BattleScene extends Phaser.Scene {
    * belongs to, either extending the phase already open or opening the next one,
    * so the delivered order is preserved exactly and nothing is re-sorted,
    * filtered, or re-derived (`ARCHITECTURE.md` §2.2.1 rule 4,
-   * `SIGNALR_PROTOCOL.md` §3.1 item 5). A Swap, a Boss Skill, a Boss Passive, a
-   * Relic trigger and a Card / Pet-Skill cast all reach their phases through that
-   * same adapter call — there is no per-actor branch, pipeline, registry,
-   * interface or event bus (`AGENTS.md` §9).
+   * `SIGNALR_PROTOCOL.md` §3.1 item 5). A committed board action, a Boss Skill, a
+   * Boss Passive, a Relic trigger and a Card / Pet-Skill cast all reach their
+   * phases through that same adapter call — there is no per-actor branch,
+   * pipeline, registry, interface or event bus (`AGENTS.md` §9).
+   *
+   * The pass also carries the batch's **delivered board-action actor** forward —
+   * the side the newest `SwapStarted` names (`deliveredSwapOf`) — and hands it to
+   * that same adapter call, because no Match/Gem/Cascade/Combo event carries a
+   * party member of its own (`SIGNALR_PROTOCOL.md` §3.2.6–§3.2.12). It is read
+   * from the delivered member and never from the cycle's position in the batch, a
+   * client-held turn, or a board difference, so a two-cycle round attributes each
+   * cycle to the side that actually acted (`GAME_EVENTS.md` §1, ADR-026 §2).
    *
    * ```text
-   * swap / match / cascade
-   *               the committed Swap's own board cycle, in the delivered order of
-   *               `GAME_EVENTS.md` §1.1: one phase per delivered
+   * swap          one committed board action's exchange, opened by its own
+   *               delivered `SwapStarted` (actor + the two §1.0 cells it named,
+   *               `SIGNALR_PROTOCOL.md` §3.2.26) and closed by its `SwapResolved`.
+   *               A batch that delivers no boundary keeps the pre-extension
+   *               fallback: the pair this client submitted, side-free
+   * match / cascade
+   *               that action's own board cycle, in the delivered
+   *               order of `GAME_EVENTS.md` §1.1: one phase per delivered
    *               `CascadeCreated.cascadeDepth` (MATCH3_RULES.md §4.2 item 2), with
-   *               that pass's own Match / Gem feedback
+   *               that pass's own Match / Gem feedback, each attributed to the
+   *               actor the delivered boundary named
    * damage        the player's hit, classified from the delivered
    *               `source`/`target` (`SIGNALR_PROTOCOL.md` §3.2.14); it also owns
    *               the Boss `hp / maxHp` pair and the Enrage label/callout the pair
@@ -3573,9 +3596,10 @@ export class BattleScene extends Phaser.Scene {
    * outcome       the terminal BattleWon / BattleLost handoff, last
    * ```
    *
-   * `DamageCalculated` presents nothing of its own: it stays in the batch's
-   * developer log and in the batch's single callout, and adds no step to the
-   * timeline.
+   * `DamageCalculated` and `SwapResolved` present nothing of their own: they stay
+   * in the batch's developer log and in the batch's single callout, and add no
+   * step to the timeline — the exchange `SwapResolved` closes is already the step
+   * its `SwapStarted` opened.
    *
    * `MatchCreated.cascadeDepth` and `CascadeCreated.cascadeDepth` are **not the
    * same value** for one pass and are never equated (`SIGNALR_PROTOCOL.md`
@@ -3596,23 +3620,6 @@ export class BattleScene extends Phaser.Scene {
       (cardId) => this.cardDisplayName(cardId),
       (relicId) => this.relicDisplayName(relicId)
     );
-
-    // The Swap itself, when a committed Swap this client has not yet presented
-    // belongs to this resolution. The dependency is the committed pair alone —
-    // never "the request happened to still be in flight when the batch arrived"
-    // — so a batch that arrives after its acknowledgement settled still presents
-    // the exchange (SIGNALR_PROTOCOL.md §3.1).
-    const swapCells = this.committedSwapCells;
-    if (swapCells) {
-      phases.push({
-        kind: 'swap',
-        actor: 'swap',
-        action: 'swap',
-        detail: `swap ${swapCells.from}->${swapCells.to}`,
-        holdMs: BattleScene.phaseHoldMs('swap', []),
-        events: [],
-      });
-    }
 
     let open: {
       kind: PresentationPhaseKind;
@@ -3640,8 +3647,19 @@ export class BattleScene extends Phaser.Scene {
       open = null;
     };
 
+    // The session's board-action actor: the side the newest delivered
+    // `SwapStarted` names. Each board cycle's Match/Gem/Cascade/Combo events
+    // carry no party member of their own (`SIGNALR_PROTOCOL.md`
+    // §3.2.6–§3.2.12), so the delivered boundary is what attributes them — never
+    // the cycle's position in the batch and never a client-held turn. It starts
+    // `null`, which is the side-free answer for a batch that delivers no boundary
+    // at all.
+    let boardActionActor: 'player' | 'boss' | null = null;
+
     for (const event of presented) {
-      const step = adaptPresentedEvent(event);
+      boardActionActor = deliveredSwapOf(event)?.actor ?? boardActionActor;
+
+      const step = adaptPresentedEvent(event, boardActionActor);
 
       if (step === null) {
         // The event presents nothing of its own: it is already recorded in
@@ -3688,6 +3706,34 @@ export class BattleScene extends Phaser.Scene {
     }
 
     flush();
+
+    // The fallback swap step: the pair this client submitted, presented when the
+    // batch delivered **no** swap boundary of its own. It is the pre-extension
+    // behaviour preserved for a batch that carries no `SwapStarted`, and it is
+    // suppressed as soon as the delivered boundary opened a swap step — the
+    // delivered, committed pair is what the timeline presents whenever there is
+    // one, so no second step can present the same exchange
+    // (SIGNALR_PROTOCOL.md §3.2.26).
+    //
+    // The dependency is the committed pair alone — never "the request happened to
+    // still be in flight when the batch arrived" — so a batch that arrives after
+    // its acknowledgement settled still presents the exchange
+    // (SIGNALR_PROTOCOL.md §3.1).
+    const swapCells = this.committedSwapCells;
+    const deliveredSwapStep = phases.some((phase) => phase.kind === 'swap');
+
+    if (swapCells && !deliveredSwapStep) {
+      phases.unshift({
+        kind: 'swap',
+        // The side-free board actor: this step is the client's own submitted pair,
+        // and no delivered member of this batch names the side that exchanged it.
+        actor: 'swap',
+        action: 'swap',
+        detail: `swap ${swapCells.from}->${swapCells.to}`,
+        holdMs: BattleScene.phaseHoldMs('swap', []),
+        events: [],
+      });
+    }
 
     // Where the board cycle ends: the one transition the wire can honestly
     // support, because no per-pass board is ever delivered
@@ -3982,7 +4028,7 @@ export class BattleScene extends Phaser.Scene {
 
     switch (phase.kind) {
       case 'swap':
-        this.playSwapPhase();
+        this.playSwapPhase(phase);
         break;
       case 'settle':
         if (this.currentBattleState) {
@@ -4104,21 +4150,38 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
-   * Plays the committed Swap's first step: the two Gems the player exchanged
-   * change places (`MATCH3_RULES.md` §2.1.6).
+   * Plays one committed board action's first step: the two Gems it exchanged
+   * change places (`MATCH3_RULES.md` §2.1.6 steps 3→7).
    *
-   * The two cells are the ones the player's own request carried
-   * (`committedSwapCells`), and the views are the ones already rendered there.
-   * Nothing is validated, no adjacency is checked, and no match is looked for — a
-   * Swap the server rejected emits no events at all (`GAME_EVENTS.md` §1.2), so
-   * no timeline, and therefore no swap movement, is ever played for one.
+   * **The pair is the delivered one whenever the step carries it.** A step opened
+   * by a `SwapStarted` holds that event, and the two cells it presents are the
+   * cells the accepted action named — committed, validated data the server
+   * delivered (`SIGNALR_PROTOCOL.md` §3.2.26), which is what makes the Boss's own
+   * board action presentable at all: the client never sees the Boss's move except
+   * through this member, and it derives no swap from a board difference. Only a
+   * step for a batch that delivered no boundary falls back to the pair this
+   * client submitted (`committedSwapCells`).
    *
-   * The pair is consumed here rather than by the request's `finally`: this phase
-   * is the one presentation the pair drives, and it plays whether or not the
+   * The views are the ones already rendered at those cells. Nothing is validated,
+   * no adjacency is checked, and no match is looked for — a Swap the server
+   * rejected emits no events at all (`GAME_EVENTS.md` §1.2), so no timeline, and
+   * therefore no swap movement, is ever played for one.
+   *
+   * The fallback pair is consumed here rather than by the request's `finally`:
+   * this phase is the one presentation it drives, and it plays whether or not the
    * request's acknowledgement has already settled.
    */
-  private playSwapPhase(): void {
-    const pair = this.committedSwapCells;
+  private playSwapPhase(phase: PresentationPhase): void {
+    const delivered =
+      phase.events.map((event) => deliveredSwapOf(event)).find((swap) => swap !== null) ?? null;
+
+    // Both sources are read as one shape: the delivered pair's own member names and
+    // the submitted pair's, so the tween below reads one pair whatever opened the
+    // step.
+    const pair = delivered
+      ? { from: delivered.fromCell, to: delivered.toCell }
+      : this.committedSwapCells;
+
     if (!pair) {
       return;
     }
@@ -5238,8 +5301,20 @@ function createDeveloperMoveLog(
   return {
     /** The panel's single declared container, holding every text object of it. */
     layer,
-    /** Records one delivered event's row, with the actor/action the one adapter names. */
-    recordEvent(event: InBattleServerEvent, at: number): void {
+    /**
+     * Records one delivered event's row, with the actor/action the one adapter
+     * names for it.
+     *
+     * `boardActionActor` is the side the batch's newest delivered `SwapStarted`
+     * named, supplied by the caller that walked the batch in order — the same
+     * value the timeline's phase builder threads through the adapter — so the
+     * panel's `actor/action` column cannot contradict the phase it describes.
+     */
+    recordEvent(
+      event: InBattleServerEvent,
+      at: number,
+      boardActionActor: 'player' | 'boss' | null = null
+    ): void {
       ordinal += 1;
       append(
         formatMoveLogRow({
@@ -5247,7 +5322,7 @@ function createDeveloperMoveLog(
           ordinal,
           sequence: at,
           turn: readTurn(),
-          step: adaptPresentedEvent(event),
+          step: adaptPresentedEvent(event, boardActionActor),
           event,
         })
       );

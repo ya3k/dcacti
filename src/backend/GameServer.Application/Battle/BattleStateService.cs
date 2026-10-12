@@ -1319,16 +1319,19 @@ public sealed class BattleStateService
 
         // GAME_EVENTS.md §1, §1.1 / GAME_RULES.md §17 step 10: the events of this
         // resolution, in the order the pipeline produced them. The executor's list
-        // is the Match-3 part, which §1 places from MatchCreated through
-        // ComboChanged; the tracker's reports follow it, one PassiveCharged per
-        // Match in Match order and then, when the Threshold was crossed, the single
-        // PassiveTriggered. Nothing is sorted, filtered, or rebuilt — the assembled
-        // list is the stages' own output concatenated, and WithEvents carries every
-        // other member of the result across unchanged.
+        // opens with the Player's committed board action and its outcome
+        // (`SwapStarted`/`SwapResolved`, §2, SIGNALR_PROTOCOL.md §3.2.26–§3.2.27)
+        // and then carries the Match-3 part, which §1 places from MatchCreated
+        // through ComboChanged; the tracker's reports follow it, one
+        // PassiveCharged per Match in Match order and then, when the Threshold was
+        // crossed, the single PassiveTriggered. Nothing is sorted, filtered, or
+        // rebuilt — the assembled list is the stages' own output concatenated, and
+        // WithEvents carries every other member of the result across unchanged.
         var events = new List<BattleEvent>(
             result.Events.Count
             + charged.Charges.Count
             + charged.Triggers.Count
+            + 2   // the Boss board action's SwapStarted/SwapResolved pair
             + 3   // Player→Boss damage
             + 8   // Boss Passive charges + trigger (bounded by the Match total) + Boss response
             + 1); // outcome
@@ -1632,6 +1635,23 @@ public sealed class BattleStateService
             swapOriginIndex: null);
 
         var bossGeneration = ResourceGenerator.Generate(bossResolution);
+
+        // GAME_EVENTS.md §1/§1.1, MATCH3_RULES.md §2.1.6 steps 3 and 7,
+        // SIGNALR_PROTOCOL.md §3.2.26–§3.2.27: the Boss's own board action opens
+        // with its own boundary pair, exactly as the Player's does. The actor is
+        // the Boss side, and the coordinates are the deterministic AI's selected
+        // pair — the two cells the step-18a action accepted on this board — placed
+        // before the cycle they resolved, which is the order §1 fixes. They are
+        // reported, not re-derived: the swap below is applied to the very pair the
+        // event names, so the delivered coordinates and the resolved exchange
+        // cannot disagree. The outcome is `committed` because a board action that
+        // reached this point is committed; a rejected action never gets here and
+        // emits nothing at all (§2.1.5 item 6).
+        events.Add(BattleEvent.ForSwapStarted(
+            DamageParty.Boss,
+            bossMove.SelectedMove.From,
+            bossMove.SelectedMove.To));
+        events.Add(BattleEvent.ForSwapResolved(committed: true));
 
         // GAME_EVENTS.md §1.1: the Boss's own Match-3 cycle reports exactly as the
         // Player's does — the builder reads the resolution the pipeline produced and

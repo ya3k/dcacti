@@ -18,7 +18,7 @@ namespace GameServer.Domain.Match3;
 /// (<c>GAME_EVENTS.md</c> §3 item 7) — because the model is the one ordered list
 /// a resolution emits, not the board stage's private list.
 ///
-/// <b>It is deliberately twelve members, not fifteen.</b> The Boss Response stage
+/// <b>It is not one member per stage.</b> The Boss Response stage
 /// adds <see cref="BossSkillCast"/>, <see cref="BattleWon"/>, and
 /// <see cref="BattleLost"/>, and <b>no</b> Boss-specific Passive or State event:
 /// <c>BOSS_RULES.md</c> §7 states that Boss Passive triggers "use the general
@@ -248,6 +248,102 @@ public enum BattleEventType
     /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.24 items 5–6).
     /// </summary>
     PowerChanged = 15,
+
+    /// <summary>
+    /// One committed board action was accepted and is about to be reported
+    /// (<c>GAME_EVENTS.md</c> §1, §2 <c>SwapStarted</c>;
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.26).
+    ///
+    /// Its payload is the side that acted and the two §1.0 cells the accepted
+    /// action named. It is emitted <b>once per committed board action</b> — the
+    /// Player's committed Swap and the Boss Response Phase's board action
+    /// (<c>GAME_RULES.md</c> §17 step 18a, ADR-026 §2) — at
+    /// <c>MATCH3_RULES.md</c> §2.1.6 step 3: after validation passed and before
+    /// the exchange is reported. A rejected action emits <b>no</b> event at all,
+    /// so it never emits this one (<c>GAME_EVENTS.md</c> §1.2,
+    /// <c>MATCH3_RULES.md</c> §2.1.5 item 6).
+    ///
+    /// It <b>opens</b> its board cycle: it precedes <see cref="SwapResolved"/>,
+    /// which precedes the <see cref="MatchCreated"/>/<see cref="GemMatched"/>/
+    /// <see cref="ComboChanged"/>/<see cref="CascadeCreated"/> items of the same
+    /// action. The delivered order therefore correlates a board cycle with its
+    /// actor without any member on those events, and without inferring a side
+    /// from which cycle happened to come first in the batch.
+    /// </summary>
+    SwapStarted = 16,
+
+    /// <summary>
+    /// One committed board action's exchange is committed
+    /// (<c>GAME_EVENTS.md</c> §1, §2 <c>SwapResolved</c>;
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.27).
+    ///
+    /// Its payload is the delivered outcome — the value
+    /// <c>GAME_EVENTS.md</c> §2 names as "whether the swap was committed or
+    /// reverted". It is emitted at <c>MATCH3_RULES.md</c> §2.1.6 step 7: the
+    /// exchange is committed, the Turn has begun and Combo has reset, and Match
+    /// detection (step 8) has not run. It follows its own
+    /// <see cref="SwapStarted"/> and precedes that action's board cycle.
+    ///
+    /// On the delivered path the outcome is always <c>committed</c>: a rejected
+    /// action emits no event at all (<c>GAME_EVENTS.md</c> §1.2), so the
+    /// <c>reverted</c> case §2 names is unreachable in a batch. The payload is
+    /// carried because §2 defines it; it is not a branch a client may use in
+    /// place of the state push.
+    /// </summary>
+    SwapResolved = 17,
+}
+
+/// <summary>
+/// The <c>SwapStarted</c> payload — which side acted on the shared board and the
+/// two §1.0 cells its accepted action named (<c>GAME_EVENTS.md</c> §2;
+/// <c>SIGNALR_PROTOCOL.md</c> §3.2.26).
+///
+/// <b>The actor is the existing two-sided identity, not a new vocabulary.</b>
+/// <see cref="DamageParty"/> is already the acting side for a board action
+/// (<c>ResourceGenerator.ApplyActorMatchEffects(DamageParty.Boss, …)</c> is the
+/// Boss's own §17 step 18a resolution), and its two values are projected to the
+/// lowercase wire names <c>"player"</c>/<c>"boss"</c> by the same rule
+/// <c>PowerChanged.source</c> uses. No second enum and no second spelling is
+/// introduced (<c>AGENTS.md</c> §9).
+/// </summary>
+/// <param name="Actor">The side that acted — the Player's Swap or the Boss's board action.</param>
+/// <param name="FromCell">
+/// The first §1.0 cell the accepted action named, as the action named it
+/// (<c>MATCH3_RULES.md</c> §2.1.1 item 1). It is reported, never re-derived.
+/// </param>
+/// <param name="ToCell">
+/// The second §1.0 cell the accepted action named. The unordered pair is the
+/// Swap's identity and the action carries no direction field
+/// (<c>MATCH3_RULES.md</c> §2.1.1 item 2), so neither cell is a "primary" one.
+/// </param>
+public readonly record struct SwapStartedEvent(DamageParty Actor, int FromCell, int ToCell)
+{
+    /// <summary>"SwapStarted (Player 12->13)" — for test diagnostics only.</summary>
+    public override string ToString() => $"SwapStarted ({Actor} {FromCell}->{ToCell})";
+}
+
+/// <summary>
+/// The <c>SwapResolved</c> payload — the delivered outcome of a committed board
+/// action, which <c>GAME_EVENTS.md</c> §2 states as "whether the swap was
+/// committed or reverted" (<c>SIGNALR_PROTOCOL.md</c> §3.2.27).
+///
+/// <b>The Domain value is the fact; the wire member is its documented name.</b>
+/// The projection writes the contract word (<c>"committed"</c>/<c>"reverted"</c>,
+/// §3.2.27 item 2) from this flag. On the delivered path the flag is always
+/// <c>true</c> because a rejected action emits no event at all
+/// (<c>GAME_EVENTS.md</c> §1.2) — the same reason the event is only ever built
+/// on the committed path.
+/// </summary>
+/// <param name="Committed">
+/// Whether the exchange was committed. <c>false</c> (reverted) is unreachable in
+/// a delivered batch: a Swap that fails validation emits neither this event nor
+/// its <c>SwapStarted</c>.
+/// </param>
+public readonly record struct SwapResolvedEvent(bool Committed)
+{
+    /// <summary>"SwapResolved (committed)" — for test diagnostics only.</summary>
+    public override string ToString() =>
+        $"SwapResolved ({(Committed ? "committed" : "reverted")})";
 }
 
 /// <summary>
@@ -416,7 +512,9 @@ public readonly record struct BattleLostEvent(int FinalBossHp, int FinalPlayerHp
 /// ├── DamageTaken        the DamageTaken payload, when Type is DamageTaken
 /// ├── BossSkillCast      the BossSkillCast payload, when Type is BossSkillCast
 /// ├── BattleWon          the BattleWon payload, when Type is BattleWon
-/// └── BattleLost         the BattleLost payload, when Type is BattleLost
+/// ├── BattleLost         the BattleLost payload, when Type is BattleLost
+/// ├── SwapStarted        the SwapStarted payload, when Type is SwapStarted
+/// └── SwapResolved       the SwapResolved payload, when Type is SwapResolved
 /// </code>
 ///
 /// <b>This is an output, never state.</b> Emitting, holding, or reading an event
@@ -469,7 +567,9 @@ public readonly record struct BattleEvent
         CardCastEvent? cardCast,
         PetSkillCastEvent? petSkillCast,
         RelicTriggeredEvent? relicTriggered = null,
-        PowerChangedEvent? powerChanged = null)
+        PowerChangedEvent? powerChanged = null,
+        SwapStartedEvent? swapStarted = null,
+        SwapResolvedEvent? swapResolved = null)
     {
         Type = type;
         _match = match;
@@ -488,6 +588,8 @@ public readonly record struct BattleEvent
         _petSkillCast = petSkillCast;
         _relicTriggered = relicTriggered;
         _powerChanged = powerChanged;
+        _swapStarted = swapStarted;
+        _swapResolved = swapResolved;
     }
 
     private readonly MatchResolution? _match;
@@ -506,6 +608,8 @@ public readonly record struct BattleEvent
     private readonly PetSkillCastEvent? _petSkillCast;
     private readonly RelicTriggeredEvent? _relicTriggered;
     private readonly PowerChangedEvent? _powerChanged;
+    private readonly SwapStartedEvent? _swapStarted;
+    private readonly SwapResolvedEvent? _swapResolved;
 
     /// <summary>Which documented event this is.</summary>
     public BattleEventType Type { get; }
@@ -708,6 +812,32 @@ public readonly record struct BattleEvent
         _powerChanged ?? throw new InvalidOperationException(
             $"A {Type} event carries no PowerChanged payload (GAME_EVENTS.md §2). "
             + "Check Type before reading PowerChanged.");
+
+    /// <summary>
+    /// The <c>SwapStarted</c> payload — the side that acted and the two §1.0
+    /// cells its accepted action named (<c>GAME_EVENTS.md</c> §2,
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.26).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// This event is not a <see cref="BattleEventType.SwapStarted"/>.
+    /// </exception>
+    public SwapStartedEvent SwapStarted =>
+        _swapStarted ?? throw new InvalidOperationException(
+            $"A {Type} event carries no SwapStarted payload (GAME_EVENTS.md §2). "
+            + "Check Type before reading SwapStarted.");
+
+    /// <summary>
+    /// The <c>SwapResolved</c> payload — the delivered outcome of the committed
+    /// board action this event closes (<c>GAME_EVENTS.md</c> §2,
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.27).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// This event is not a <see cref="BattleEventType.SwapResolved"/>.
+    /// </exception>
+    public SwapResolvedEvent SwapResolved =>
+        _swapResolved ?? throw new InvalidOperationException(
+            $"A {Type} event carries no SwapResolved payload (GAME_EVENTS.md §2). "
+            + "Check Type before reading SwapResolved.");
 
     /// <summary>
     /// A <c>MatchCreated</c> event for one detected Match.
@@ -999,6 +1129,57 @@ public readonly record struct BattleEvent
             null,
             changed);
 
+    /// <summary>
+    /// A <c>SwapStarted</c> event for one accepted board action
+    /// (<c>GAME_EVENTS.md</c> §1, §2; <c>SIGNALR_PROTOCOL.md</c> §3.2.26).
+    ///
+    /// Public for the same reason as the Boss and Relic factories: the two
+    /// emitters live on opposite sides of a layer boundary. The Player's
+    /// committed Swap is executed by the Domain <c>SwapExecutor</c>, while the
+    /// Boss Response Phase's board action is orchestrated by the Application-layer
+    /// pipeline step that owns <c>GAME_RULES.md</c> §17 step 18a. Both call this
+    /// once, and each hands in its own accepted cells unchanged — the Player's
+    /// from the request it validated, the Boss's from the deterministic AI's
+    /// selected move. Nothing is re-derived here, and no cell is recomputed from
+    /// the board (<c>MATCH3_RULES.md</c> §2.1.1).
+    /// </summary>
+    /// <param name="actor">
+    /// The side that acted — <see cref="DamageParty.Player"/> for the committed
+    /// Swap, <see cref="DamageParty.Boss"/> for the step 18a board action.
+    /// </param>
+    /// <param name="fromCell">The first §1.0 cell the accepted action named.</param>
+    /// <param name="toCell">The second §1.0 cell the accepted action named.</param>
+    public static BattleEvent ForSwapStarted(DamageParty actor, int fromCell, int toCell) =>
+        new(
+            BattleEventType.SwapStarted,
+            null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            null,
+            null,
+            new SwapStartedEvent(actor, fromCell, toCell));
+
+    /// <summary>
+    /// A <c>SwapResolved</c> event closing one committed board action
+    /// (<c>GAME_EVENTS.md</c> §1, §2; <c>SIGNALR_PROTOCOL.md</c> §3.2.27).
+    ///
+    /// Public for the same reason as <see cref="ForSwapStarted"/>. It is emitted
+    /// only on the committed path — a rejected action emits no event at all
+    /// (<c>GAME_EVENTS.md</c> §1.2) — which is why the delivered outcome is
+    /// always <c>true</c>: the flag is handed in explicitly rather than assumed
+    /// here, so the value the wire reports is the one the emitting stage owns.
+    /// </summary>
+    /// <param name="committed">
+    /// Whether the board action's exchange was committed. The delivered path
+    /// passes <c>true</c>; a rejected action never reaches this factory.
+    /// </param>
+    public static BattleEvent ForSwapResolved(bool committed) =>
+        new(
+            BattleEventType.SwapResolved,
+            null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            null,
+            null,
+            null,
+            new SwapResolvedEvent(committed));
+
     /// <summary>"MatchCreated (Horizontal x3 at 25 (Atk))" — for test diagnostics only.</summary>
     public override string ToString() => Type switch
     {
@@ -1019,6 +1200,8 @@ public readonly record struct BattleEvent
         BattleEventType.PetSkillCast => PetSkillCast.ToString(),
         BattleEventType.RelicTriggered => RelicTriggered.ToString(),
         BattleEventType.PowerChanged => PowerChanged.ToString(),
+        BattleEventType.SwapStarted => SwapStarted.ToString(),
+        BattleEventType.SwapResolved => SwapResolved.ToString(),
         _ => Type.ToString(),
     };
 }

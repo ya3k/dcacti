@@ -14,13 +14,15 @@ namespace GameServer.Api.Hubs;
 /// It is a <b>flat camelCase record</b> carrying exactly one discriminator
 /// member plus that event's own payload members at the same level
 /// (<c>§3.2.2</c>). The discriminator is the documented string
-/// <c>MatchCreated</c> / <c>CascadeCreated</c> / <c>ComboChanged</c> /
+/// <c>SwapStarted</c> / <c>SwapResolved</c> / <c>MatchCreated</c> /
+/// <c>CascadeCreated</c> / <c>ComboChanged</c> /
 /// <c>GemMatched</c> / <c>PassiveCharged</c> / <c>PassiveTriggered</c> /
 /// <c>DamageCalculated</c> / <c>DamageDealt</c> / <c>DamageTaken</c> /
 /// <c>BossSkillCast</c> / <c>BattleWon</c> / <c>BattleLost</c> / <c>CardCast</c> /
 /// <c>PetSkillCast</c> / <c>RelicTriggered</c> / <c>PowerChanged</c> — never
 /// the Domain enum's ordinal, which is a Domain identity and not part of the
-/// wire contract (<c>§3.2.2</c> item 3). The first four are the board
+/// wire contract (<c>§3.2.2</c> item 3). The first two are the committed board
+/// action's own boundary pair (<c>§3.2.26–§3.2.27</c>); the next four are the board
 /// resolution's events (<c>§3.2.6–§3.2.9</c>); the next two are the Passive
 /// stage's (<c>§3.3</c>, the shared Pet/Boss events; <c>§3.2.16–§3.2.17</c>);
 /// the three after them are the Damage Pipeline's (<c>§3.2.13–§3.2.15</c>); the
@@ -63,8 +65,8 @@ namespace GameServer.Api.Hubs;
 /// than left to the host's naming policy.
 /// </summary>
 /// <param name="Type">
-/// The discriminator (<c>§3.2.2</c>): always present, one of the four
-/// documented event names.
+/// The discriminator (<c>§3.2.2</c>): always present, one of the documented
+/// event names tabulated there.
 /// </param>
 /// <param name="Shape">
 /// <c>MatchCreated</c> only (<c>§3.2.6</c>): the Match's shape <b>identity</b>,
@@ -255,8 +257,48 @@ public sealed record BattleEventWireDto(
     [property: JsonPropertyName("delta")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Delta = null,
     [property: JsonPropertyName("power")]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Power = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Power = null,
+    [property: JsonPropertyName("actor")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Actor = null,
+    [property: JsonPropertyName("fromCell")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? FromCell = null,
+    [property: JsonPropertyName("toCell")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ToCell = null)
 {
+    /// <summary>
+    /// The wire item for one <c>SwapStarted</c>
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.26) — the acting side and the two §1.0
+    /// cells the accepted action named.
+    /// </summary>
+    /// <param name="actor">
+    /// <c>"player"</c> or <c>"boss"</c>, produced by
+    /// <see cref="BattleEventWireProjection"/>, which is the one place the
+    /// Domain <c>DamageParty</c> is projected to its lowercase contract name
+    /// (<c>§3.2.4</c>, the rule <c>PowerChanged.source</c> already follows).
+    /// </param>
+    /// <param name="fromCell">The first cell the accepted action named (§1.0 index).</param>
+    /// <param name="toCell">The second cell the accepted action named (§1.0 index).</param>
+    public static BattleEventWireDto SwapStarted(string actor, int fromCell, int toCell) =>
+        new(
+            Type: "SwapStarted",
+            Actor: actor,
+            FromCell: fromCell,
+            ToCell: toCell);
+
+    /// <summary>
+    /// The wire item for one <c>SwapResolved</c>
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.27) — the delivered outcome and nothing
+    /// else.
+    /// </summary>
+    /// <param name="outcome">
+    /// <c>"committed"</c> or <c>"reverted"</c>, produced by
+    /// <see cref="BattleEventWireProjection"/>. It reuses the <c>outcome</c> member
+    /// name <c>BattleWon</c>/<c>BattleLost</c> already own (<c>§3.2.19</c> item 1,
+    /// <c>§3.2.27</c> item 2) with this event's own two values.
+    /// </param>
+    public static BattleEventWireDto SwapResolved(string outcome) =>
+        new(Type: "SwapResolved", Outcome: outcome);
+
     /// <summary>
     /// The wire item for one <c>MatchCreated</c>
     /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.6).
@@ -723,15 +765,25 @@ public static class BattleEventWireProjection
     /// (<c>§3.2.1</c> item 2).
     /// </summary>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// The event's <see cref="BattleEventType"/> is not one of the four
-    /// documented events. The set is closed (<c>§3.2.2</c> item 2), so an
-    /// unknown kind is a defect rather than a fifth event — it is never silently
-    /// dropped, because dropping one would break the one-to-one projection the
-    /// batch's atomicity depends on.
+    /// The event's <see cref="BattleEventType"/> is not one of the documented
+    /// events tabulated by <c>§3.2.2</c>. The set is closed (<c>§3.2.2</c>
+    /// item 2), so an unknown kind is a defect rather than a further event — it
+    /// is never silently dropped, because dropping one would break the
+    /// one-to-one projection the batch's atomicity depends on.
     /// </exception>
     private static BattleEventWireDto Project(BattleEvent battleEvent) =>
         battleEvent.Type switch
         {
+            BattleEventType.SwapStarted => BattleEventWireDto.SwapStarted(
+                // §3.2.26 item 2 / §3.2.4: the two-sided identity projected to its
+                // lowercase contract name, never the enum's ordinal or a
+                // PascalCase variant. The values are the ones the damage events'
+                // `source`/`target` and the Passive events' `source` already use.
+                actor: battleEvent.SwapStarted.Actor.ToString().ToLowerInvariant(),
+                // §3.2.26 items 3–4: the action's own two cells, reported as named.
+                fromCell: battleEvent.SwapStarted.FromCell,
+                toCell: battleEvent.SwapStarted.ToCell),
+            BattleEventType.SwapResolved => ProjectSwapResolved(battleEvent.SwapResolved),
             BattleEventType.MatchCreated => ProjectMatch(battleEvent.Match),
             BattleEventType.CascadeCreated => BattleEventWireDto.CascadeCreated(battleEvent.CascadeDepth),
             BattleEventType.ComboChanged => BattleEventWireDto.ComboChanged(battleEvent.Combo),
@@ -751,8 +803,25 @@ public static class BattleEventWireProjection
             _ => throw new ArgumentOutOfRangeException(
                 nameof(battleEvent),
                 battleEvent.Type,
-                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.24, §3.3)."),
+                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.24, §3.2.26–§3.2.27, §3.3)."),
         };
+
+    /// <summary>
+    /// Projects the <c>SwapResolved</c> payload (<c>SIGNALR_PROTOCOL.md</c>
+    /// §3.2.27) — the delivered outcome, as the contract word for the committed
+    /// fact the payload carries.
+    ///
+    /// The Domain value is the fact ("was the exchange committed") and the wire
+    /// member is the name §2 uses for it (<c>"committed"</c> / <c>"reverted"</c>,
+    /// §3.2.27 item 2). This is the same value-name projection
+    /// <see cref="ProjectMatch"/> performs for the shape identity, and it derives
+    /// no gameplay value. On the delivered path the outcome is always
+    /// <c>"committed"</c>: a rejected action emits no event at all
+    /// (<c>§3.1</c> item 4, <c>GAME_EVENTS.md</c> §1.2), so the emitting stage
+    /// only ever hands in the committed fact.
+    /// </summary>
+    private static BattleEventWireDto ProjectSwapResolved(SwapResolvedEvent resolved) =>
+        BattleEventWireDto.SwapResolved(outcome: resolved.Committed ? "committed" : "reverted");
 
     /// <summary>
     /// Projects the <c>RelicTriggered</c> payload (<c>SIGNALR_PROTOCOL.md</c>

@@ -285,6 +285,116 @@ public class BossWireProjectionTests
     }
 
     // =======================================================================
+    // The committed board action's boundary pair —
+    // SIGNALR_PROTOCOL.md §3.2.26–§3.2.27
+    // =======================================================================
+
+    [Fact]
+    public void SwapStarted_ShouldCarryTheActorAndBothCells_AndNothingElse()
+    {
+        // §3.2.26: four members — the discriminator, the acting side, and the two
+        // §1.0 cells the accepted action named. No battleId, no serverSequence, no
+        // turn, no actionId, no board.
+        var started = Serialize(BattleEvent.ForSwapStarted(DamageParty.Boss, 27, 28));
+
+        Assert.Equal("SwapStarted", started.GetProperty("type").GetString());
+        Assert.Equal("boss", started.GetProperty("actor").GetString());
+        Assert.Equal(27, started.GetProperty("fromCell").GetInt32());
+        Assert.Equal(28, started.GetProperty("toCell").GetInt32());
+
+        Assert.Equal(
+            ["actor", "fromCell", "toCell", "type"],
+            Members(started).OrderBy(n => n, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void SwapStarted_ShouldProjectBothSidesToTheirLowercaseContractNames()
+    {
+        // §3.2.26 item 2 / §3.2.4: the two-sided identity reaches the wire as the
+        // documented lowercase name — the same two words the damage events'
+        // source/target and the Passive events' source already use — and never as
+        // the Domain enum's ordinal or a PascalCase variant.
+        Assert.Equal(
+            "player",
+            Serialize(BattleEvent.ForSwapStarted(DamageParty.Player, 25, 33))
+                .GetProperty("actor").GetString());
+
+        Assert.Equal(
+            "boss",
+            Serialize(BattleEvent.ForSwapStarted(DamageParty.Boss, 25, 33))
+                .GetProperty("actor").GetString());
+    }
+
+    [Fact]
+    public void SwapStarted_ShouldWriteCellZero_NotOmitIt()
+    {
+        // §3.2.26 item 4: 0 is a real §1.0 cell index and is written as 0. Neither
+        // cell has an "not applicable" case, so §3.2.5's omission rule never applies:
+        // a null here would be an inapplicable member, not a first-column cell.
+        var started = Serialize(BattleEvent.ForSwapStarted(DamageParty.Player, 0, 1));
+
+        Assert.Equal(0, started.GetProperty("fromCell").GetInt32());
+        Assert.Equal(1, started.GetProperty("toCell").GetInt32());
+    }
+
+    [Fact]
+    public void SwapResolved_ShouldCarryTheOutcomeAlone()
+    {
+        // §3.2.27: the delivered outcome, under the member name BattleWon/BattleLost
+        // already own, with this event's own value set. On the delivered path the
+        // value is always "committed" (a rejected action emits no event at all).
+        var resolved = Serialize(BattleEvent.ForSwapResolved(committed: true));
+
+        Assert.Equal("SwapResolved", resolved.GetProperty("type").GetString());
+        Assert.Equal("committed", resolved.GetProperty("outcome").GetString());
+
+        Assert.Equal(
+            ["outcome", "type"],
+            Members(resolved).OrderBy(n => n, StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void SwapResolved_ShouldCarryNoActorAndNoCells()
+    {
+        // §3.2.27 item 5: the actor is the sibling SwapStarted's member and the cells
+        // are its members too. A second copy here could disagree with it, and §3.2.12
+        // item 1 admits no member outside this event's own table.
+        var resolved = Serialize(BattleEvent.ForSwapResolved(committed: true));
+
+        foreach (var member in new[] { "actor", "fromCell", "toCell" })
+        {
+            Assert.False(resolved.TryGetProperty(member, out _), $"SwapResolved must not carry {member}");
+        }
+    }
+
+    [Fact]
+    public void BoundaryPair_ShouldProjectInDeliveredOrderAndOmitNoItem()
+    {
+        // §3.2.1 item 3 / §3.2.12 item 4: the projection is one-to-one and
+        // order-preserving, so the pair the resolution emitted is the pair the batch
+        // carries — the Player action's, then the Boss's, each with its own actor.
+        var events = new[]
+        {
+            BattleEvent.ForSwapStarted(DamageParty.Player, 25, 33),
+            BattleEvent.ForSwapResolved(committed: true),
+            BattleEvent.ForSwapStarted(DamageParty.Boss, 27, 28),
+            BattleEvent.ForSwapResolved(committed: true),
+        };
+
+        var wire = BattleEventWireProjection.Project(events);
+
+        Assert.Equal(events.Length, wire.Count);
+
+        Assert.Equal(
+            ["SwapStarted", "SwapResolved", "SwapStarted", "SwapResolved"],
+            wire.Select(w => w.Type));
+
+        Assert.Equal(
+            ["player", "boss"],
+            wire.Where(w => w.Type == "SwapStarted").Select(w => w.Actor));
+    }
+
+    // =======================================================================
     // The projection stays one-to-one and side-effect free
     // =======================================================================
 

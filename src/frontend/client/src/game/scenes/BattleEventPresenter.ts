@@ -1,23 +1,25 @@
 /**
  * BattleEventPresenter — Scene-local interpretation and formatting of in-battle server events.
  *
- * Implements interpretation for the fourteen non-outcome event types of the closed wire discriminator
- * (SIGNALR_PROTOCOL.md §3.2.2, §3.2.6–§3.2.24, GAME_EVENTS.md §2):
+ * Implements interpretation for the sixteen non-outcome event types of the closed wire discriminator
+ * (SIGNALR_PROTOCOL.md §3.2.2, §3.2.6–§3.2.27, GAME_EVENTS.md §2):
  *
- *   1. MatchCreated
- *   2. CascadeCreated
- *   3. ComboChanged
- *   4. GemMatched
- *   5. DamageCalculated
- *   6. DamageDealt
- *   7. DamageTaken
- *   8. PassiveCharged
- *   9. PassiveTriggered
- *  10. BossSkillCast
- *  11. CardCast
- *  12. PetSkillCast
- *  13. RelicTriggered
- *  14. PowerChanged
+ *   1. SwapStarted
+ *   2. SwapResolved
+ *   3. MatchCreated
+ *   4. CascadeCreated
+ *   5. ComboChanged
+ *   6. GemMatched
+ *   7. DamageCalculated
+ *   8. DamageDealt
+ *   9. DamageTaken
+ *  10. PassiveCharged
+ *  11. PassiveTriggered
+ *  12. BossSkillCast
+ *  13. CardCast
+ *  14. PetSkillCast
+ *  15. RelicTriggered
+ *  16. PowerChanged
  *
  * Server-authoritative boundary (GAME_RULES.md §18, AGENTS.md §10):
  * - Presents only delivered members verbatim.
@@ -25,6 +27,45 @@
  *   no match detection, no passive threshold evaluation).
  * - Unknown event types are safely ignored with no fabricated presentation.
  */
+
+/**
+ * One committed board action's own boundary event — which side acted and the two
+ * §1.0 cells its accepted action named (`GAME_EVENTS.md` §2,
+ * `SIGNALR_PROTOCOL.md` §3.2.26).
+ *
+ * It is the only delivered member that names the actor of a board cycle: the
+ * Match/Gem/Cascade/Combo events of that cycle carry no party member of their
+ * own, so the cycle is attributed to the `actor` of the `SwapStarted` that opens
+ * it (`GAME_EVENTS.md` §1). Nothing here is inferred from the batch's order
+ * beyond that delivered pairing, and no actor is guessed for a cycle whose
+ * boundary was not delivered.
+ */
+export interface PresentedSwapStarted {
+  readonly type: 'SwapStarted';
+  /** The side that acted, as delivered: `'player'` or `'boss'`. */
+  readonly actor: string;
+  /** The first §1.0 cell the accepted action named. */
+  readonly fromCell: number;
+  /** The second §1.0 cell the accepted action named. */
+  readonly toCell: number;
+}
+
+/**
+ * One committed board action's delivered outcome (`GAME_EVENTS.md` §2,
+ * `SIGNALR_PROTOCOL.md` §3.2.27).
+ *
+ * `outcome` is the delivered string, read verbatim and not validated against a
+ * client-side vocabulary — the same convention the delivered `PowerChanged`
+ * `source` follows. On the delivered path it is always `'committed'`: a rejected
+ * action emits no event at all (`GAME_EVENTS.md` §1.2), so the `'reverted'` case
+ * `GAME_EVENTS.md` §2 names never reaches a batch and is never presented as an
+ * alternative to the authoritative state.
+ */
+export interface PresentedSwapResolved {
+  readonly type: 'SwapResolved';
+  /** The delivered outcome word, read as sent. */
+  readonly outcome: string;
+}
 
 export interface PresentedMatchCreated {
   readonly type: 'MatchCreated';
@@ -144,6 +185,8 @@ export interface PresentedPowerChanged {
 }
 
 export type InBattleServerEvent =
+  | PresentedSwapStarted
+  | PresentedSwapResolved
   | PresentedMatchCreated
   | PresentedCascadeCreated
   | PresentedComboChanged
@@ -174,6 +217,10 @@ export function parseInBattleEvent(raw: unknown): InBattleServerEvent | null {
   }
 
   switch (candidate.type) {
+    case 'SwapStarted':
+      return parseSwapStarted(raw);
+    case 'SwapResolved':
+      return parseSwapResolved(raw);
     case 'MatchCreated':
       return parseMatchCreated(raw);
     case 'CascadeCreated':
@@ -206,6 +253,57 @@ export function parseInBattleEvent(raw: unknown): InBattleServerEvent | null {
       // Unknown event type or outcome event — ignored safely per SIGNALR_PROTOCOL.md §3.2.2
       return null;
   }
+}
+
+/**
+ * Parses one delivered `SwapStarted` (SIGNALR_PROTOCOL.md §3.2.26).
+ *
+ * Every member is required and typed, so a malformed boundary event is ignored
+ * rather than opening a swap step with a guessed actor or cell. `actor` is read
+ * as the delivered string and is **not** validated against a client-side enum —
+ * the same convention the delivered `PowerChanged.source` follows
+ * (`parsePowerChanged`): an unrecognised value names no actor this contract
+ * defines, and `deliveredSwapActor` answers `null` for it rather than choosing
+ * a side.
+ */
+function parseSwapStarted(raw: unknown): PresentedSwapStarted | null {
+  const p = raw as Partial<PresentedSwapStarted>;
+  if (
+    typeof p.actor !== 'string' ||
+    p.actor.length === 0 ||
+    typeof p.fromCell !== 'number' ||
+    typeof p.toCell !== 'number'
+  ) {
+    return null;
+  }
+
+  return {
+    type: 'SwapStarted',
+    actor: p.actor,
+    fromCell: p.fromCell,
+    toCell: p.toCell,
+  };
+}
+
+/**
+ * Parses one delivered `SwapResolved` (SIGNALR_PROTOCOL.md §3.2.27).
+ *
+ * `outcome` is read as the delivered string and is not validated against a
+ * client-side vocabulary: the member reports the outcome the server sent, and
+ * the client presents no branch on it (`GAME_EVENTS.md` §1.2 makes the
+ * `reverted` case unreachable in a batch, and the authoritative state remains
+ * the state push).
+ */
+function parseSwapResolved(raw: unknown): PresentedSwapResolved | null {
+  const p = raw as Partial<PresentedSwapResolved>;
+  if (typeof p.outcome !== 'string' || p.outcome.length === 0) {
+    return null;
+  }
+
+  return {
+    type: 'SwapResolved',
+    outcome: p.outcome,
+  };
 }
 
 function parseMatchCreated(raw: unknown): PresentedMatchCreated | null {
@@ -495,6 +593,10 @@ function parsePowerChanged(raw: unknown): PresentedPowerChanged | null {
  */
 export function formatInBattleEvent(event: InBattleServerEvent): string {
   switch (event.type) {
+    case 'SwapStarted':
+      return `SwapStarted: ${event.actor} ${event.fromCell}->${event.toCell}`;
+    case 'SwapResolved':
+      return `SwapResolved: ${event.outcome}`;
     case 'MatchCreated': {
       const specialGemsDesc =
         event.createdSpecialGems && event.createdSpecialGems.length > 0
@@ -704,20 +806,26 @@ export function resolveDamagePresentationPhase(
  * used as a side. The mapping is exactly:
  *
  * ```text
- * swap     the committed Swap — the resolution's board cycle. A Match, a matched
- *          Gem, a Cascade pass and the Combo are the board's own delivered
- *          arithmetic performed *by* that Swap (`GAME_EVENTS.md` §1.1), and none
- *          of them carries a party member, so the Swap is the only actor the
- *          delivered members name.
+ * swap     the committed board action's own boundary — the `SwapStarted` that
+ *          opens a cycle. It names the acting side explicitly
+ *          (`SIGNALR_PROTOCOL.md` §3.2.26), so a Match, a matched Gem, a Cascade
+ *          pass and the Combo are attributed to the **actor that opened their
+ *          cycle** rather than to the cycle's position in the batch.
+ *          `swap` is also the honest side-free answer for a board cycle whose
+ *          batch delivered no `SwapStarted` at all — a synthetic or pre-extension
+ *          batch — and for the `settle` step, which converges one board on behalf
+ *          of both cycles (`GAME_EVENTS.md` §1.1, ADR-026 §2).
  * player   CardCast, PetSkillCast and RelicTriggered — the player's own action
- *          (`SIGNALR_PROTOCOL.md` §3.2.20, §3.2.21, §3.2.23), and a
+ *          (`SIGNALR_PROTOCOL.md` §3.2.20, §3.2.21, §3.2.23), a `SwapStarted`
+ *          whose delivered `actor` is `"player"`, and a
  *          DamageDealt / DamageTaken whose delivered `source` is `"player"`
  *          (§3.2.14 item 1).
  * pet      a PassiveCharged / PassiveTriggered whose delivered `source` is
  *          `"pet"` — the active Pet's own Passive (§3.2.16 item 1).
  * boss     a PassiveCharged / PassiveTriggered whose `source` is `"boss"`, a
- *          BossSkillCast (§3.2.18), and a damage report whose `source` is
- *          `"boss"` — the Boss acting.
+ *          BossSkillCast (§3.2.18), a `SwapStarted` whose delivered `actor` is
+ *          `"boss"`, and a damage report whose `source` is `"boss"` — the Boss
+ *          acting.
  * power    PowerChanged — the Pet Power **mutation stage** the delivered
  *          `source` names (`"match"` / `"card"` / `"relic"` / `"boss"`). It is a
  *          stage, never a side: those four values answer "which stage owns the
@@ -729,7 +837,9 @@ export function resolveDamagePresentationPhase(
  *
  * `null` is the honest answer when the delivered members name no actor this
  * contract defines — a damage report whose `source`/`target` pair is neither of
- * the two documented directions. No side is guessed for it (`AGENTS.md` §10).
+ * the two documented directions, or a `SwapStarted` whose `actor` word is
+ * outside the contract's two values. No side is guessed for either
+ * (`AGENTS.md` §10).
  */
 export type PresentationActor = 'swap' | 'player' | 'pet' | 'boss' | 'power' | 'battle';
 
@@ -826,6 +936,47 @@ export function passiveOwnerActor(source: string): PresentationActor | null {
 }
 
 /**
+ * The two sides a delivered `SwapStarted` may name
+ * (`SIGNALR_PROTOCOL.md` §3.2.26 item 2) — the same two words the damage events'
+ * `source`/`target` and the Passive events' `source` already use.
+ *
+ * The table exists so the delivered word reaches the actor vocabulary by
+ * **lookup** rather than by a comparison chain: a value this contract does not
+ * define names no side, and both this module and the scene then claim none.
+ */
+const DELIVERED_SWAP_ACTORS: Readonly<Record<string, 'player' | 'boss'>> = Object.freeze({
+  player: 'player',
+  boss: 'boss',
+});
+
+/**
+ * One delivered committed board action, projected for presentation: the side it
+ * names and the two §1.0 cells it names (`SIGNALR_PROTOCOL.md` §3.2.26), or
+ * `null` when the event is not a `SwapStarted`.
+ *
+ * It is the **one** place the delivered boundary is read, so the swap step's
+ * actor and the swap animation's two cells come from the same delivered member
+ * and cannot disagree. `actor` is `null` when the delivered word is outside the
+ * contract's two values — an unrecognised value names no actor, and no side is
+ * guessed for it (`AGENTS.md` §10).
+ */
+export function deliveredSwapOf(event: InBattleServerEvent): {
+  readonly actor: 'player' | 'boss' | null;
+  readonly fromCell: number;
+  readonly toCell: number;
+} | null {
+  if (event.type !== 'SwapStarted') {
+    return null;
+  }
+
+  return {
+    actor: DELIVERED_SWAP_ACTORS[event.actor] ?? null,
+    fromCell: event.fromCell,
+    toCell: event.toCell,
+  };
+}
+
+/**
  * Whether one delivered Passive event is the active Pet's own.
  *
  * It answers exactly that — the panel's pair is `PetState`'s, so only the Pet's
@@ -865,19 +1016,63 @@ export function isPetPassiveEvent(event: {
  * one of the two documented directions keeps `actor: null` and joins the
  * floater-only `feedback` phase rather than being guessed onto a side.
  */
-export function adaptPresentedEvent(event: InBattleServerEvent): PresentedActionStep | null {
+export function adaptPresentedEvent(
+  event: InBattleServerEvent,
+  boardActionActor: 'player' | 'boss' | null = null
+): PresentedActionStep | null {
   switch (event.type) {
+    case 'SwapStarted': {
+      // The committed board action's own boundary (SIGNALR_PROTOCOL.md §3.2.26):
+      // the actor and the two cells are the delivered event's own members, so the
+      // swap step is opened by committed, validated data — never by the client's
+      // request, by an optimistic exchange, or by a difference between two boards.
+      // An `actor` value this contract does not define names no side, so the step
+      // claims none rather than choosing one (AGENTS.md §10).
+      const swap = deliveredSwapOf(event);
+      if (swap === null) {
+        return null;
+      }
+
+      return {
+        actor: swap.actor,
+        action: 'swap',
+        kind: 'swap',
+        detail: `swap ${swap.fromCell}->${swap.toCell}`,
+      };
+    }
+
+    case 'SwapResolved':
+      // The committed exchange's outcome (SIGNALR_PROTOCOL.md §3.2.27). It
+      // presents nothing of its own: the swap step is opened by the
+      // `SwapStarted` it closes (MATCH3_RULES.md §2.1.6 steps 3 and 7), and its
+      // delivered `committed` outcome word is not a second step to show. It is
+      // recorded in the diagnostic log and in the Move Log row, like every other
+      // event that opens no phase.
+      return null;
+
     case 'MatchCreated':
-      return { actor: 'swap', action: 'match', kind: 'match', detail: `match depth=${event.cascadeDepth}` };
+      return {
+        actor: boardActionActor ?? 'swap',
+        action: 'match',
+        kind: 'match',
+        detail: `match depth=${event.cascadeDepth}`,
+      };
 
     case 'GemMatched':
       // The Gem's feedback belongs to the Match/board cycle that consumed it
-      // (`GAME_EVENTS.md` §1.1 item 3) and carries no actor member of its own.
-      return { actor: 'swap', action: 'match', kind: 'match', detail: 'match' };
+      // (`GAME_EVENTS.md` §1.1 item 3). The cycle's actor is the delivered
+      // boundary's — the `SwapStarted` that opened it — and no party is claimed
+      // when the batch delivered no boundary (TASK-252's side-free `swap`).
+      return {
+        actor: boardActionActor ?? 'swap',
+        action: 'match',
+        kind: 'match',
+        detail: 'match',
+      };
 
     case 'CascadeCreated':
       return {
-        actor: 'swap',
+        actor: boardActionActor ?? 'swap',
         action: 'cascade',
         kind: 'cascade',
         detail: `cascade depth=${event.cascadeDepth}`,
@@ -886,8 +1081,15 @@ export function adaptPresentedEvent(event: InBattleServerEvent): PresentedAction
     case 'ComboChanged':
       // The Combo is the board cycle's own accounting (`GAME_EVENTS.md` §1.1 item
       // 5), emitted between the Matches of one pass, so its step is presented by
-      // the board phase it belongs to rather than splitting it.
-      return { actor: 'swap', action: 'combo', kind: 'feedback', detail: `combo ${event.combo}` };
+      // the board phase it belongs to rather than splitting it. It is never
+      // folded into a readout: the authoritative `Combo`/`MatchCount` values are
+      // `BattleState`'s (`GAME_STATE.md` §2.2) and only *trigger* that render.
+      return {
+        actor: boardActionActor ?? 'swap',
+        action: 'combo',
+        kind: 'feedback',
+        detail: `combo ${event.combo}`,
+      };
 
     case 'PowerChanged':
       // The delivered `source` names the stage that owns the mutation

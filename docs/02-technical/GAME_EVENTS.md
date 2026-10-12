@@ -307,16 +307,31 @@ follows its last Cascade (§1.1).
 
 ## SwapStarted / SwapResolved
 ```text
-Trigger:  Client Swap request received / server finished validating+
-          committing it (MATCH3_RULES.md §2)
-Payload:  SwapStarted: from-cell, to-cell
+Trigger:  SwapStarted: the action passed validation, before its exchange is
+          committed; SwapResolved: the exchange is committed, the Turn has
+          begun and Combo has reset, before Match detection
+          (MATCH3_RULES.md §2.1.6 steps 3 and 7)
+Payload:  SwapStarted: actor, from-cell, to-cell
           SwapResolved: whether the swap was committed or reverted
 ```
 
-`from-cell`/`to-cell` are the two §1.0 cell indices the action named
-(`MATCH3_RULES.md` §2.1.1). `SwapStarted` reports a **received** action,
-`SwapResolved` reports its outcome; for a rejected action there is no outcome
-to report and both events are omitted (`MATCH3_RULES.md` §2.1.5 item 6).
+`from-cell`/`to-cell` are the two §1.0 cell indices the action named, reported
+in the order the action named them: the unordered pair is the Swap's identity
+and the action carries no direction field (`MATCH3_RULES.md` §2.1.1 items 1–2).
+
+`actor` is the side that acted on the shared board — `"player"` for the
+Player's committed Swap and `"boss"` for the Boss Response Phase's board action
+(`GAME_RULES.md` §17 step 18a, `§1` of this document). It is the same two-value
+vocabulary segment the damage events and the Passive events use, and it is what
+makes a board cycle attributable to the actor that opened it rather than to its
+position in the batch.
+
+`SwapStarted` reports an **accepted** action. An action that fails validation
+emits no Battle Event at all — not `SwapStarted`, not `SwapResolved`
+(`§1.2`, `MATCH3_RULES.md` §2.1.5 item 6) — so the event is never a report of a
+request merely received, and `SwapResolved` never reports `reverted` on the
+delivered path: the only Swap whose outcome is delivered is one that committed.
+Both events are omitted together for a rejected action.
 
 ## MatchCreated / MatchResolved
 ```text

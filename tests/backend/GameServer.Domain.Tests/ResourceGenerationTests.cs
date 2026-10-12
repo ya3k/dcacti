@@ -963,7 +963,10 @@ public class ResourceGenerationTests
         // This stage introduces no event: GAME_EVENTS.md §3 item 7 gives PowerChanged
         // to its own owning task, and SIGNALR_PROTOCOL.md §3.2.2 item 2 closes the
         // wire event set. The events of a committed Swap are still exactly the
-        // Match-3 ones the resolution produced.
+        // Match-3 ones the resolution produced, plus the committed board action's own
+        // boundary pair, which the executor emits for the action itself
+        // (GAME_EVENTS.md §1, §2; SIGNALR_PROTOCOL.md §3.2.26–§3.2.27) — not for this
+        // stage, which adds none.
         var result = SwapExecutor.Execute(
             BattleWith(Match3Board(GemType.Atk)),
             new SwapRequest(From, To));
@@ -971,7 +974,9 @@ public class ResourceGenerationTests
         Assert.True(result.IsAccepted);
         Assert.NotEmpty(result.Events);
         Assert.All(result.Events, e => Assert.True(
-            e.Type is BattleEventType.MatchCreated
+            e.Type is BattleEventType.SwapStarted
+                or BattleEventType.SwapResolved
+                or BattleEventType.MatchCreated
                 or BattleEventType.CascadeCreated
                 or BattleEventType.ComboChanged
                 or BattleEventType.GemMatched,

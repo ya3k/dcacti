@@ -2404,16 +2404,38 @@ public class BattleStateServiceTests
     }
 
     /// <summary>
-    /// The position of the first event of the <b>Boss response phase</b> — the first
-    /// Match-3 board event after the Player action's own board-events prefix
-    /// (<c>GAME_EVENTS.md</c> §1, <c>ADR-026</c> §2), or <c>-1</c> when the phase
-    /// produced none because the Boss HP terminal check skipped it
+    /// The position of the first event of the <b>Boss response phase</b> — the start
+    /// of the round's <b>second</b> contiguous run of Match-3 board events, i.e. the
+    /// first board event after the Player action's own cycle
+    /// (<c>GAME_EVENTS.md</c> §1, §1.1; <c>ADR-026</c> §2), or <c>-1</c> when the
+    /// phase produced none because the Boss HP terminal check skipped it
     /// (<c>BOSS_RULES.md</c> §5 item 4).
     /// </summary>
+    /// <remarks>
+    /// The Player's cycle is the list's first board-event run, not its prefix: the
+    /// committed list opens with the action's own
+    /// <c>SwapStarted</c>/<c>SwapResolved</c> pair, which is not a board event
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.26–§3.2.27). Counting the Player's cycle
+    /// alone and then scanning forward is therefore what finds the Boss's, and the
+    /// boundary pair of either action is skipped rather than classified.
+    /// </remarks>
     private static int FirstBossBoardEventIndex(SwapExecutionResult result)
     {
         var events = result.Events;
-        var index = RoundTestSupport.PlayerBoardEvents(result).Count;
+        var index = 0;
+
+        // Skip the Player action's own boundary pair and reach its board cycle.
+        while (index < events.Count && !IsBoardEvent(events[index]))
+        {
+            index++;
+        }
+
+        // Walk that cycle out, then skip the next non-board run (the Player's
+        // combat stages and, after them, the Boss action's boundary pair).
+        while (index < events.Count && IsBoardEvent(events[index]))
+        {
+            index++;
+        }
 
         while (index < events.Count && !IsBoardEvent(events[index]))
         {

@@ -485,7 +485,26 @@ public static class SwapExecutor
         // They are built AFTER the board is stable and the accounting is complete,
         // so every value they report is a finished resolution's
         // (GAME_STATE.md §5.1 item 2, SIGNALR_PROTOCOL.md §3.1 item 1).
-        var events = BattleEventBuilder.Build(resolution, combo);
+        //
+        // The committed board action's own boundary opens and closes that cycle
+        // (MATCH3_RULES.md §2.1.6 steps 3 and 7, GAME_EVENTS.md §1, §2;
+        // SIGNALR_PROTOCOL.md §3.2.26–§3.2.27). The pair is placed ahead of the
+        // builder's events because §1 fixes that order — the action boundary
+        // first, then the Match/Cascade cycle it resolved — and it carries the
+        // request's own two cells, which are the cells validation accepted
+        // (§2.1.1: they are reported as named, never re-derived from the board).
+        // Nothing about the resolution or the write-back below depends on them.
+        //
+        // The outcome is `committed` and can only be `committed` on this path:
+        // a rejected request returned above, and a rejection emits no event at all
+        // (§2.1.5 item 6, GAME_EVENTS.md §1.2).
+        var events = new List<BattleEvent>
+        {
+            BattleEvent.ForSwapStarted(DamageParty.Player, request.From, request.To),
+            BattleEvent.ForSwapResolved(committed: true),
+        };
+
+        events.AddRange(BattleEventBuilder.Build(resolution, combo));
 
         // Step 7 (§8.3 steps 3–4, 8 and GAME_STATE.md §5.1): the single
         // post-resolution write-back. Board, RngState, Turn, Sequence, the

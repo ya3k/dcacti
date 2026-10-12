@@ -491,6 +491,10 @@ public class BattleEventEmissionTests
         //   per pass:  [CascadeCreated]  MatchCreated, GemMatched…, ComboChanged …
         //   GemMatched for the pass's activations last
         //
+        // The committed action's own boundary pair opens the list, before the cycle
+        // it resolved (GAME_EVENTS.md §1, MATCH3_RULES.md §2.1.6 steps 3 and 7,
+        // SIGNALR_PROTOCOL.md §3.2.26–§3.2.27).
+        //
         // The expected sequence is built from the resolution's own report, so the
         // assertion is "the events are exactly the documented rendering of this
         // resolution" rather than "this board produces this literal list".
@@ -498,7 +502,11 @@ public class BattleEventEmissionTests
 
         Assert.True(result.IsAccepted);
 
-        var expectedTypes = new List<BattleEventType>();
+        var expectedTypes = new List<BattleEventType>
+        {
+            BattleEventType.SwapStarted,
+            BattleEventType.SwapResolved,
+        };
 
         foreach (var pass in result.Resolution.Passes)
         {
@@ -915,7 +923,16 @@ public class BattleEventEmissionTests
     public void EventSequence_ShouldNotDependOnTheRequestArgumentOrder()
     {
         // §2.1.1 item 2: the pair is unordered — (from, to) and (to, from) name the
-        // same swap, and the event sequence reports the resolution, which is the same.
+        // same swap, resolve the same board cycle, and produce the same state.
+        //
+        // The committed action's own boundary pair is the one part of the list that
+        // does depend on the argument order, and deliberately so: GAME_EVENTS.md §2
+        // has SwapStarted report the cells "the action named", so the event echoes the
+        // request's two cells in the order the request supplied them rather than
+        // canonicalizing a pair the action itself does not order (§2.1.1 item 2
+        // makes the pair unordered for *gameplay*, and fixes no reporting order).
+        // Everything the pair opens — the board cycle — is order-independent, which
+        // is the invariant §2.1.1 item 2 actually states.
         var state = CascadeBattle();
 
         var forward = SwapExecutor.Execute(state, new SwapRequest(CascadeFrom, CascadeTo));
@@ -923,7 +940,22 @@ public class BattleEventEmissionTests
 
         Assert.True(forward.IsAccepted);
         Assert.True(reversed.IsAccepted);
-        Assert.Equal(Describe(forward.Events), Describe(reversed.Events));
+
+        // The boundary pair is the list's only order-sensitive part, and it echoes
+        // each request's own cells.
+        Assert.Equal(BattleEventType.SwapStarted, forward.Events[0].Type);
+        Assert.Equal(BattleEventType.SwapStarted, reversed.Events[0].Type);
+        Assert.Equal(
+            (CascadeFrom, CascadeTo),
+            (forward.Events[0].SwapStarted.FromCell, forward.Events[0].SwapStarted.ToCell));
+        Assert.Equal(
+            (CascadeTo, CascadeFrom),
+            (reversed.Events[0].SwapStarted.FromCell, reversed.Events[0].SwapStarted.ToCell));
+
+        // The whole rest of the sequence — the board cycle the pair opens — is
+        // identical, as is the state the two executions commit.
+        Assert.Equal(Describe(forward.Events.Skip(2).ToArray()), Describe(reversed.Events.Skip(2).ToArray()));
+        Assert.Equal(DescribeState(forward.State), DescribeState(reversed.State));
     }
 
     [Fact]
@@ -987,6 +1019,8 @@ public class BattleEventEmissionTests
                 "PetSkillCast",
                 "PowerChanged",
                 "RelicTriggered",
+                "SwapResolved",
+                "SwapStarted",
                 "Type",
             ],
             members);
@@ -1315,6 +1349,107 @@ public class BattleEventEmissionTests
     }
 
     // =======================================================================
+    // The committed board action's boundary — GAME_EVENTS.md §1, §2;
+    // SIGNALR_PROTOCOL.md §3.2.26–§3.2.27
+    // =======================================================================
+
+    [Fact]
+    public void CommittedSwap_ShouldOpenWithItsOwnBoundaryPair_BeforeTheBoardCycle()
+    {
+        // GAME_EVENTS.md §1 places SwapStarted and SwapResolved at the head of the
+        // committed action's events, and MATCH3_RULES.md §2.1.6 fixes the same two
+        // points (step 3 after validation, step 7 before Match detection at step 8).
+        // The pair reports the acting side and the cells the accepted action named,
+        // so a board cycle is attributable to its actor from a delivered member
+        // rather than from its position in the batch.
+        var request = new SwapRequest(From, To);
+
+        var result = SwapExecutor.Execute(BattleWith(MatchingBoard()), request);
+
+        Assert.True(result.IsAccepted);
+        Assert.True(result.Events.Count >= 3, "the boundary pair precedes the board cycle");
+
+        Assert.Equal(BattleEventType.SwapStarted, result.Events[0].Type);
+        Assert.Equal(DamageParty.Player, result.Events[0].SwapStarted.Actor);
+        Assert.Equal(From, result.Events[0].SwapStarted.FromCell);
+        Assert.Equal(To, result.Events[0].SwapStarted.ToCell);
+
+        Assert.Equal(BattleEventType.SwapResolved, result.Events[1].Type);
+        Assert.True(result.Events[1].SwapResolved.Committed);
+
+        // The board cycle follows the pair, and the pair is not one of its events.
+        Assert.Equal(BattleEventType.MatchCreated, result.Events[2].Type);
+    }
+
+    [Fact]
+    public void SwapStarted_ShouldReportTheCellsTheActionNamed_InTheOrderItNamedThem()
+    {
+        // MATCH3_RULES.md §2.1.1 item 2: the unordered pair is the Swap's identity
+        // and the action carries no direction field, so the two cells are reported as
+        // the action supplied them — the same Swap is the same Swap either way, and
+        // the event does not impose a canonical order on the wire.
+        var forward = SwapExecutor.Execute(BattleWith(MatchingBoard()), new SwapRequest(From, To));
+        var reversed = SwapExecutor.Execute(BattleWith(MatchingBoard()), new SwapRequest(To, From));
+
+        Assert.True(forward.IsAccepted);
+        Assert.True(reversed.IsAccepted);
+
+        Assert.Equal((From, To), (forward.Events[0].SwapStarted.FromCell, forward.Events[0].SwapStarted.ToCell));
+        Assert.Equal((To, From), (reversed.Events[0].SwapStarted.FromCell, reversed.Events[0].SwapStarted.ToCell));
+
+        // The same unordered pair is one identity: the resolved board and the Combo
+        // are the same, so only the reported order differs (MATCH3_RULES.md §2.1.1
+        // item 2, §2.1.3 item 3). The board is compared field-by-field because
+        // BoardState has reference equality (`DescribeState`).
+        Assert.Equal(DescribeState(forward.State), DescribeState(reversed.State));
+        Assert.Equal(forward.State.Combo, reversed.State.Combo);
+    }
+
+    [Theory]
+    // INVALID_CELL_INDEX — out of range, and a cell swapped with itself.
+    [InlineData(99, To)]
+    [InlineData(From, From)]
+    // INVALID_SWAP — diagonal, and non-adjacent across a row edge.
+    [InlineData(13, 15)]
+    [InlineData(0, 9)]
+    // NO_MATCH_FROM_SWAP — adjacent but producing no Match.
+    [InlineData(5, 6)]
+    public void RejectedSwap_ShouldEmitNeitherSwapStartedNorSwapResolved(int from, int to)
+    {
+        // GAME_EVENTS.md §1.2 item 1 / MATCH3_RULES.md §2.1.5 item 6: a rejected
+        // action emits no Battle Event at all — "not SwapStarted, not SwapResolved,
+        // not any Match-3 event". The boundary pair is therefore absent by the same
+        // rule that removes the board cycle, and not by a second check.
+        var result = SwapExecutor.Execute(BattleWith(MatchingBoard()), new SwapRequest(from, to));
+
+        Assert.True(result.IsRejected);
+        Assert.Empty(result.Events);
+        Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.SwapStarted);
+        Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.SwapResolved);
+    }
+
+    [Fact]
+    public void BoundaryPayloads_ShouldBeReadableOnlyOnTheirOwnEvent()
+    {
+        // GAME_EVENTS.md §2 + SIGNALR_PROTOCOL.md §3.2.26–§3.2.27: the payload
+        // accessors throw rather than returning a plausible default, so a wrong-kind
+        // read is a defect and never a silent zero coordinate or a guessed actor.
+        var result = SwapExecutor.Execute(BattleWith(MatchingBoard()), new SwapRequest(From, To));
+
+        var swapStarted = result.Events[0];
+        var swapResolved = result.Events[1];
+        var matchCreated = result.Events[2];
+
+        Assert.Equal(BattleEventType.SwapStarted, swapStarted.Type);
+        Assert.Equal(BattleEventType.SwapResolved, swapResolved.Type);
+
+        Assert.Throws<InvalidOperationException>(() => swapStarted.SwapResolved);
+        Assert.Throws<InvalidOperationException>(() => swapResolved.SwapStarted);
+        Assert.Throws<InvalidOperationException>(() => matchCreated.SwapStarted);
+        Assert.Throws<InvalidOperationException>(() => matchCreated.SwapResolved);
+    }
+
+    // =======================================================================
     // Boundary — no second pipeline, no undocumented event, no event infrastructure
     // =======================================================================
 
@@ -1334,7 +1469,11 @@ public class BattleEventEmissionTests
         // (GAME_RULES.md §17 step 11, RELIC_RULES.md §7) adds RelicTriggered, and the
         // Power stage's PowerChanged is its payload (GAME_EVENTS.md §2,
         // SIGNALR_PROTOCOL.md §3.2.23–§3.2.24) — both names are on §16's canonical
-        // list, so this set is exactly that list. No undocumented name may be added
+        // list, so this set is exactly that list. The committed board action's own
+        // boundary adds the two names §16 has always carried and GAME_EVENTS.md §2
+        // defines — SwapStarted and SwapResolved (SIGNALR_PROTOCOL.md
+        // §3.2.26–§3.2.27) — which this task formalized rather than invented. No
+        // undocumented name may be added
         // (AGENTS.md §7). In particular no MatchCountChanged, SpecialGemActivated,
         // SpecialGemCreated, TurnChanged, SequenceChanged, or BoardChanged exists.
         //
@@ -1368,6 +1507,8 @@ public class BattleEventEmissionTests
                 "PetSkillCast",
                 "PowerChanged",
                 "RelicTriggered",
+                "SwapResolved",
+                "SwapStarted",
             ],
             names);
 
@@ -1525,6 +1666,13 @@ public class BattleEventEmissionTests
                 + $"created={string.Join(',', e.Match.CreatedSpecialGems.Select(c => c.CellIndex))}",
             BattleEventType.CascadeCreated => $"CascadeCreated depth={e.CascadeDepth}",
             BattleEventType.ComboChanged => $"ComboChanged combo={e.Combo}",
+            // The committed board action's own boundary (GAME_EVENTS.md §2,
+            // SIGNALR_PROTOCOL.md §3.2.26–§3.2.27). It has its own arms because the
+            // fallback arm below reads `Gem`, which a boundary event does not carry.
+            BattleEventType.SwapStarted =>
+                $"SwapStarted actor={e.SwapStarted.Actor} "
+                + $"from={e.SwapStarted.FromCell} to={e.SwapStarted.ToCell}",
+            BattleEventType.SwapResolved => $"SwapResolved committed={e.SwapResolved.Committed}",
             _ => $"GemMatched cell={e.Gem.CellIndex} type={e.Gem.GemType} "
                  + $"special={e.Gem.ConsumedSpecialGem?.Type.ToString() ?? "none"}",
         }).ToArray();

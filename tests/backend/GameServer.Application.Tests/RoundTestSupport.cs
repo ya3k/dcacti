@@ -198,55 +198,93 @@ internal static class RoundTestSupport
     }
 
     /// <summary>
-    /// The Match-3 board events of the <b>Player action phase</b> — the prefix the
-    /// event list begins with (<c>GAME_EVENTS.md</c> §1.1).
+    /// The Match-3 board events of the <b>Player action phase</b> — the first
+    /// contiguous run of board events in the committed round's own event list
+    /// (<c>GAME_EVENTS.md</c> §1.1).
     /// </summary>
     /// <remarks>
-    /// The Player resolution's own report is the authoritative source, so this is a
-    /// reading of the committed resolution rather than a second detection pass.
+    /// Read from the delivered list, not re-derived: the round's list is
+    /// <c>[SwapStarted(player), SwapResolved(player), &lt;player board run&gt;, …,
+    /// SwapStarted(boss), SwapResolved(boss), &lt;boss board run&gt;, …]</c>
+    /// (<c>GAME_EVENTS.md</c> §1, <c>SIGNALR_PROTOCOL.md</c> §3.2.26–§3.2.27), so
+    /// the action's boundary pair is <b>not</b> a board event
+    /// (<see cref="IsBoardEvent"/>) and the player's cycle is the first run, not
+    /// the list's prefix. Re-deriving it from <c>BattleEventBuilder</c> would
+    /// answer a different list than the one the round delivered.
     /// </remarks>
-    public static IReadOnlyList<BattleEvent> PlayerBoardEvents(SwapExecutionResult result) =>
-        BattleEventBuilder.Build(result.Resolution, result.Resolution.TotalMatches);
+    public static IReadOnlyList<BattleEvent> PlayerBoardEvents(SwapExecutionResult result)
+    {
+        var runs = BoardEventRuns(result);
+
+        return runs.Count > 0 ? runs[0] : [];
+    }
 
     /// <summary>
-    /// The Match-3 board events of the <b>Boss response phase</b> — the contiguous
-    /// run of <c>MatchCreated</c>/<c>CascadeCreated</c>/<c>GemMatched</c>/
-    /// <c>ComboChanged</c> events that follows the Player action's own events
-    /// (<c>GAME_EVENTS.md</c> §1, <c>ADR-026</c> §2).
+    /// The Match-3 board events of the <b>Boss response phase</b> — the second
+    /// contiguous run of board events in the committed round's own event list
+    /// (<c>GAME_EVENTS.md</c> §1, §1.1; <c>ADR-026</c> §2).
     /// </summary>
     /// <param name="result">The committed round's result.</param>
     /// <remarks>
-    /// The Player's board events are the list's prefix (the Application layer
-    /// appends them first), and the only other board events in the round are the
-    /// Boss's, so the next contiguous run of board-event types after that prefix is
-    /// the Boss's cycle. Nothing is re-detected: the events are the resolution's own
-    /// output, read by position.
+    /// The Player's board cycle is the list's first run, and the only other board
+    /// events in a committed round are the Boss's, so the second run is the Boss's
+    /// cycle. Nothing is re-detected: the events are the resolution's own output,
+    /// read by position.
     /// </remarks>
     public static IReadOnlyList<BattleEvent> BossBoardEvents(SwapExecutionResult result)
     {
+        var runs = BoardEventRuns(result);
+
+        return runs.Count > 1 ? runs[1] : [];
+    }
+
+    /// <summary>
+    /// The round's contiguous runs of board events, in delivered order — the
+    /// Player action's cycle first, the Boss response phase's second
+    /// (<c>GAME_EVENTS.md</c> §1.1).
+    /// </summary>
+    /// <remarks>
+    /// A run is maximal: it opens at the first board event that follows a
+    /// non-board event (or the list's start) and closes at the first board event
+    /// that is followed by a non-board one. The events between two runs — the
+    /// action's boundary pair, the Passive/Relic/Power stage reports, the damage
+    /// reports, and the terminal outcome — are not board events and are skipped,
+    /// never reclassified: the classification stays the four-name set
+    /// <see cref="IsBoardEvent"/> has always used, and admitting
+    /// <c>SwapStarted</c>/<c>SwapResolved</c> does not add a fifth name to it.
+    /// </remarks>
+    private static IReadOnlyList<IReadOnlyList<BattleEvent>> BoardEventRuns(SwapExecutionResult result)
+    {
         var events = result.Events;
-        var index = PlayerBoardEvents(result).Count;
+        var runs = new List<IReadOnlyList<BattleEvent>>();
+        var index = 0;
 
-        while (index < events.Count && !IsBoardEvent(events[index]))
+        while (index < events.Count)
         {
-            index++;
+            if (!IsBoardEvent(events[index]))
+            {
+                index++;
+                continue;
+            }
+
+            var start = index;
+
+            while (index < events.Count && IsBoardEvent(events[index]))
+            {
+                index++;
+            }
+
+            var run = new List<BattleEvent>(index - start);
+
+            for (var position = start; position < index; position++)
+            {
+                run.Add(events[position]);
+            }
+
+            runs.Add(run);
         }
 
-        var end = index;
-
-        while (end < events.Count && IsBoardEvent(events[end]))
-        {
-            end++;
-        }
-
-        var bossEvents = new List<BattleEvent>(end - index);
-
-        for (var position = index; position < end; position++)
-        {
-            bossEvents.Add(events[position]);
-        }
-
-        return bossEvents;
+        return runs;
     }
 
     /// <summary>
