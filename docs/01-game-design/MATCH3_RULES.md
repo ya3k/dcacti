@@ -441,6 +441,138 @@ full on its own terms.
    error. It is not a Match, cascade, or gameplay outcome, and it does not
    involve Turn, Combo, Power, or damage.
 
+## 1.6 Runtime Board Deadlock Recovery
+
+§1.3–§1.5 govern the **initial** board, at battle creation. This section
+governs the board of a battle already in progress: the board the Player is
+about to act on.
+
+### 1.6.1 The playable-board invariant
+
+> **Every committed board that is non-terminal and permits a Player action has
+> at least one legal match-producing adjacent swap.**
+
+1. **"Legal match-producing adjacent swap" is §2.1.2's rule, not a second
+   definition.** It is a pair of orthogonally adjacent cells whose exchange
+   produces at least one §3 Match — exactly the pair §2.1.2 item 5 accepts and
+   §1.4 calls a valid Swap. A merely adjacent pair that produces no Match is
+   not a legal move (§2 item 4), so the invariant is not "the board has at
+   least one adjacent pair".
+2. **A deadlocked board** is a **stable** board — §4.3's terminating state, with
+   no Match anywhere and every cell filled (§1) — that contains **zero** legal
+   match-producing adjacent swaps. A stable board on which the Player has no
+   legal move at all is the condition this section removes.
+3. **The invariant's scope is non-terminal boards only.** A board is *terminal*
+   for this section when the battle has ended under `GAME_RULES.md` §1.4 —
+   the Boss's HP or the active Pet's HP has reached 0 — whether that happened at
+   the Boss terminal check (`GAME_RULES.md` §17 step 18, `BOSS_RULES.md` §5
+   item 4), at the Player terminal check, or in a step 19a damage-over-time tick
+   (`GAME_RULES.md` §17 step 19a). A terminal board is **exempt** (§1.6.4).
+4. **Stability is an input, not the check.** The invariant is evaluated on the
+   finished board of a Round, after every cascade of that Round has terminated
+   (§4.3). A board in a transient intermediate state (§4.1) is never evaluated
+   and is never committed (`GAME_STATE.md` §3).
+
+### 1.6.2 The recovery boundary
+
+1. **The boundary is the Round commit.** Recovery is evaluated at the end of a
+   Round's resolution — after the Player action, after the Boss response phase
+   where it runs (`GAME_RULES.md` §17 steps 18a–18d), after combat effects, and
+   after the step 19a Status Effect pass — and **before** the Round's single
+   write-back. The recovered board and the RNG state it consumed are part of the
+   **same** state that write-back commits. Recovery therefore introduces no
+   second write, no second Round, no intermediate persisted state, and no
+   separate persistence mechanism (`GAME_STATE.md` §5.1, `REDIS_STATE.md` §4).
+2. **Terminal first.** The terminal determination is made before the invariant
+   is evaluated, and a terminal Round performs no recovery (§1.6.4).
+3. **No unnecessary reshuffle.** When the finished board already contains at
+   least one legal match-producing adjacent swap it is preserved exactly, and
+   neither the board nor the RNG state moves. A playable board is never
+   regenerated.
+4. **Deadlock recovery.** When the finished board contains none, the board is
+   regenerated (§1.6.3), and the regenerated board and the advanced RNG state
+   replace the deadlocked pair in the Round's committed state.
+5. **Recovery is not deferred to the Player's action.** The board is never left
+   deadlocked for the Player to discover by attempting a Swap, and no Swap
+   action is ever validated against a board that violates this section.
+
+### 1.6.3 The recovery mechanism
+
+1. **The mechanism is §1.2.1's generation, unchanged.** Recovery draws a
+   replacement board with the documented deterministic row-major constrained
+   random fill (§1.2.1) and accepts it only when it satisfies §1.3 and §1.4 — so
+   the accepted board contains at least one legal match-producing adjacent swap
+   by construction (§1.4). No separate repair pass, forced pattern, or partial
+   fill exists: §1.5 item 3's "no fallback construction" applies to recovery
+   exactly as it applies to initial generation.
+2. **The mechanism is not Match Detection, Swap Validation, or Cascade
+   Resolution.** It creates no Match, resolves no Swap, runs no pass of §4,
+   creates no Special Gem, and awards no Combo, Match, Power, Passive, or Relic
+   progression. It writes the board and the RNG state and nothing else.
+3. **One stream, bounded retries, deterministic outcome.** Recovery consumes the
+   battle's existing server-seeded RNG stream (`GAME_STATE.md` §2.6.2,
+   `ADR-009`, `ADR-026` §8) — never a system, unseeded, or second generator, and
+   never a re-seed — and continues that same stream across rejected candidates
+   as §1.5 item 1 requires. It is bounded by the **64** attempts of §1.5 item 2:
+   the bound is not raised for recovery, and no unbounded retry loop is
+   introduced. Because both the stream and the bound are fixed, an identical
+   input board and RNG state always produce the identical replacement board and
+   the identical resulting RNG state (§7.1).
+4. **Exhaustion fails closed.** If no candidate satisfies §1.3 and §1.4 within
+   the bound, recovery fails as §1.5 item 3 fails generation: the Round is not
+   committed, and no partially recovered board and no advanced RNG state reach
+   the store. §1.5 item 3's rules apply unchanged — there is no fallback board,
+   and a board that violates §1.3 or §1.4 is never committed as the playable
+   board. Recovery failure is a server failure, not a gameplay outcome: it emits
+   no Battle Event and states no outcome.
+5. **Nothing else is redistributed.** The fill draws from §1.1's four Gem types
+   under §1.2.1.2's constraint. No Gem-type probability or distribution (§7.3)
+   and no generator algorithm changes, and recovery places no Special Gem.
+
+### 1.6.4 Terminal boards are exempt
+
+1. Recovery is **never** performed on the board of a battle that has ended
+   (§1.6.1 item 3). The outcome is already authoritative and the Player never
+   acts again (`GAME_RULES.md` §1.4, `GAME_EVENTS.md` §2), so the invariant has
+   no subject there.
+2. A deadlocked terminal board is therefore committed as it is, and a
+   generation failure can never invalidate an otherwise valid terminal result:
+   recovery is not attempted for a terminal Round, so it cannot fail.
+3. This is not an exception to the invariant. The invariant's own scope is
+   "committed, non-terminal, and permits a Player action" (§1.6.1 item 3), and
+   the exemption is that scope read literally.
+
+### 1.6.5 This recovery and the Boss's pre-move recovery
+
+1. **The Boss keeps its own pre-move recovery, unchanged.** Before the Boss
+   selects its board action, a deadlocked board must be recovered for the Boss to
+   have a legal move at all (`ADR-026` §8, `GAME_RULES.md` §17 step 18a). That is
+   a separate, earlier evaluation of the same deadlock question and is retained.
+2. **They cover different boards.** The Boss's pre-move recovery covers the board
+   the **Player's** action and cascades left. This section's recovery covers the
+   board the **Boss's** action and cascades left, immediately before the commit —
+   a board the Boss's pre-move check has already passed. Neither alone covers
+   both cases, which is why both exist.
+3. **They do not double-recover.** The commit boundary evaluates the invariant on
+   the finished board and regenerates only if that board is deadlocked, so a
+   board the Boss's recovery already made playable is preserved exactly
+   (§1.6.2 item 3). At most one recovery happens per board.
+4. **Both consume the same single stream.** Neither introduces a second
+   randomization mechanism (`ADR-009`).
+
+### 1.6.6 Visibility — server-internal, no event
+
+1. Recovery is a **server-internal** operation of the Round. It emits **no**
+   Battle Event: there is no `BoardReshuffled` event, no reshuffle flag, and no
+   payload member for it (`GAME_EVENTS.md` §3 item 8; TASK-265's approved
+   Option A).
+2. The recovered board reaches the client only as the Round's committed board —
+   in the Round's single existing state push and in the existing
+   `GetBattleState` snapshot (`SIGNALR_PROTOCOL.md` §4, §7; `ADR-008`) — which is
+   the path every other committed board takes.
+3. No hub method, argument, subscription, delivery path, or wire discriminator
+   is added by this section, and §2.1.2's rejection code set is unchanged by it.
+
 ---
 
 # 2. Swap
@@ -601,6 +733,23 @@ action-identity contract (`ADR-025`):
    because the authoritative state advanced before the action committed.
 6. The rejection is deterministic: the same board and the same action always
    produce the same outcome.
+7. **A terminal battle admits no Swap action.** A battle that has ended
+   (`GAME_RULES.md` §1.4: the Boss's HP or the active Pet's HP has reached 0)
+   permits no further Swap. An action that reaches the server against such a
+   battle is rejected **at the action boundary**, before any Swap is resolved
+   and before any RNG is consumed, under this section's existing
+   state-precondition rejection, `STALE_ACTION` (item 5): the action's
+   precondition is that the battle is still in progress, and a terminal state
+   satisfies no precondition of a resolution. No additional rejection code is
+   introduced for it and §2.1.2's check set is unchanged.
+   - The guard is evaluated **after** the idempotency recognition of item 2 and
+     before any resolution, so a retry of the very action that *produced* the
+     terminal state is still answered as an idempotent replay rather than
+     rejected, and a retry is never re-executed (item 2).
+   - Because the guard precedes §2.1.2's checks, an action against a terminal
+     battle is rejected as `STALE_ACTION` even when it would also have failed an
+     earlier §2.1.2 check. That is this section's order for a battle that is no
+     longer in progress; it does not reorder §2.1.2 for a live battle.
 
 ### 2.1.5 Rejection Is a Gameplay No-Op
 

@@ -470,6 +470,20 @@ Step 19 ("End Turn") expands to:
 The implementation may split these into multiple internal steps, but
 observable game behavior must preserve this logical ordering.
 
+**The committed board of a non-terminal Round is playable.** Before the Round's
+single write-back (`GAME_STATE.md` §5.1), the board the resolution produced is
+held to `MATCH3_RULES.md` §1.6's playable-board invariant: every committed,
+non-terminal board on which the Player may act contains at least one legal
+match-producing adjacent swap, and a board that contains none is replaced by
+§1.6's deterministic regeneration on the battle's existing PRNG stream. This
+paragraph adds no step to the list above and reorders none — it is evaluated on
+the finished board, after the Boss response phase (step 18) and the step 19a
+Status Effect pass, and before the write-back that `GAME_STATE.md` §5.1 owns.
+A terminal Round (`§1.4` above) performs no recovery, and a deadlocked terminal
+board is committed as it is (`MATCH3_RULES.md` §1.6.4). The operation is
+server-internal and emits no event: it is reported by the state it commits
+(`MATCH3_RULES.md` §1.6.6, `GAME_EVENTS.md` §3 item 8).
+
 **Where a Card cast sits relative to this order.** The list above is the
 resolution order of a **committed Swap**, and it is unchanged. A Card cast is
 not one of its steps and is not inserted into it: a cast is an auxiliary action

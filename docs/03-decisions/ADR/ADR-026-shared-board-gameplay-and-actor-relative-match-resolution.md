@@ -65,6 +65,8 @@ To resolve these deficiencies, the Product Owner approved the following authorit
 8. **Deterministic Boss AI & Deadlock Reshuffling:**
    - The Boss selects moves via a pure, deterministic scoring function over immediate first-pass legal swaps (from the 112 orthogonal candidate swaps), tie-breaking by lowest cell index, consuming zero unseeded PRNG.
    - Deadlock recovery is a **server-internal operation of that selection**: when the Boss's move selection finds no legal match-producing swap on the board the Player's action and cascades left, the board is replaced with a deterministically generated valid one (`BoardGenerator.Generate`, bounded by `BoardGenerator.MaxAttempts`) on the same server PRNG stream (`Pcg32`), and the Boss then selects its move on the reshuffled board (`BossAiEngine.SelectMove`).
+   - **The authoritative rule is `MATCH3_RULES.md` §1.6, not this item.** §1.6 owns what a deadlocked stable board is, the playable-board invariant and its non-terminal scope, the commit-boundary evaluation point, the deterministic mechanism and its bounded retry, the terminal-board exemption, and the relationship between the Boss's pre-move recovery and the commit-boundary one. This item records only *why* the operation is server-internal, deterministic, and stream-preserving; it neither restates nor extends §1.6, and a change to the recovery rule is a change to §1.6.
+   - **The runtime predicate is the legal-move enumeration, in both recoveries.** The deadlock test is the Boss move selection's own enumeration of legal match-producing swaps (`BossAiEngine.EnumerateLegalMoves` / `BossAiEngine.SelectMove`), which is also the predicate `MATCH3_RULES.md` §1.6 evaluates at the commit boundary; `BoardGenerationValidator.HasValidSwap` is a generation-time helper (§1.4.1) that the runtime path does not call.
    - **The reshuffle emits no Battle Event, and none is promised.** No `BoardReshuffled` event, discriminator, or payload member exists — the canonical event-name list (`GAME_RULES.md` §16), the event semantics (`GAME_EVENTS.md` §2) and the closed wire discriminator set (`SIGNALR_PROTOCOL.md` §3.2.2) contain none, and no code path emits one. The reshuffle becomes authoritative only through the Round's single `BattleState` write-back — the committed board is the board that follows from the reshuffled one — and it reaches the client as the Round's committed board in the state push (`GAME_STATE.md` §5.1, `SIGNALR_PROTOCOL.md` §3.1 items 1–3 and §4). The client therefore cannot identify the reshuffle operation from the delivered stream — an accepted limitation of the contract, recorded by the event list's owner at `GAME_EVENTS.md` §3 item 8, not a missing event.
 
 ## Unresolved Balance Choices (Explicitly Preserved)
@@ -134,11 +136,32 @@ Decision 12. The option of defining the event was considered and rejected becaus
 consumer requires it and an event would not deliver the board the client would need to
 animate it (`TASK-265` §Decision).
 
+## Amendment — Rule Ownership of Deadlock Recovery (TASK-267)
+
+Decision item 8 described the recovery operation without naming the document that owns
+the rule. `TASK-266` established that the rule had no authoritative game-design or
+technical owner outside this ADR, and the Product Owner decisions recorded for it
+(D1–D4) place the rule in the domain document per `AGENTS.md` §2's precedence — a
+specific domain rule governs an ADR.
+
+**Ownership recorded, no decision reversed.** `MATCH3_RULES.md` §1.6 now owns what a
+deadlocked stable board is, the playable-board invariant and its non-terminal scope, the
+commit-boundary evaluation point, the deterministic mechanism and its 64-attempt bound,
+the terminal-board exemption, and the relationship between the Boss's pre-move recovery
+and the commit-boundary one. Item 8's own decision is unchanged: recovery is
+deterministic, server-internal, consumes only the server PRNG stream, and is reported by
+the state it commits rather than by an event. Two clarifications were also folded into
+item 8 — that the runtime predicate is the legal-move enumeration in both recoveries
+(the `TASK-265` amendment's finding), and that a *second* recovery now exists at the
+Round commit boundary while the Boss's pre-move recovery is retained. This is the same
+in-place-amendment treatment the `TASK-265` amendment received, for the same reason: an
+ADR may explain a decision, but it may not own a rule the domain document owns.
+
 ## Related Documents
 
 - `docs/00-overview/MVP_SCOPE.md` §1
 - `docs/01-game-design/GAME_RULES.md` §1.3, §2, §14, §15, §17
-- `docs/01-game-design/MATCH3_RULES.md` §1.4, §2, §8
+- `docs/01-game-design/MATCH3_RULES.md` §1.4, §1.6, §2, §8
 - `docs/01-game-design/COMBAT_RULES.md` §2, §3, §4
 - `docs/01-game-design/BOSS_RULES.md` §3, §4, §6
 - `docs/02-technical/GAME_STATE.md` §2.1, §2.4, §5

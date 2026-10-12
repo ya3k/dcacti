@@ -880,6 +880,37 @@ public sealed class BattleStateService
         }
 
         // ===================================================================
+        // MATCH3_RULES.md §2.1.4 item 7: Terminal-battle action guard
+        // ===================================================================
+        // A battle that has ended admits no further Swap (MATCH3_RULES.md §2.1.4
+        // item 7, GAME_RULES.md §1.4). The guard runs at the action boundary —
+        // AFTER the action-identity recognition above, so a retry of the very
+        // action that produced the terminal state is still answered as a replay
+        // rather than rejected, and BEFORE any resolution, so this action runs no
+        // gameplay stage, consumes no RNG, and produces no Boss response, no new
+        // Round, and no Battle Event.
+        //
+        // It reuses the established state-precondition rejection of §2.1.4 rather
+        // than introducing a rejection code or a wire member: a terminal battle
+        // satisfies no precondition of a resolution, and SIGNALR_PROTOCOL.md §5
+        // item 3 makes §2.1.2/§2.1.4 the owner of a Swap rejection's code, so the
+        // protocol gains no new value and no new response shape.
+        //
+        // The path is reachable whenever a terminal state survives in the store.
+        // The documented battle end deletes the record once the durable result is
+        // written (REDIS_STATE.md §3), but a battle whose result boundary is
+        // absent or whose durable write failed keeps its state
+        // (PersistTerminalResultAsync, DATABASE.md §1 sourcing item 3), and this
+        // guard is what keeps such a state from producing gameplay. It is a
+        // separate response from the missing-battle one: a battle that is gone
+        // returns null here and is reported as BATTLE_NOT_FOUND by the caller,
+        // while an ended battle that is still stored is rejected as STALE_ACTION.
+        if (IsTerminalBattle(state))
+        {
+            return SwapExecutionResult.Rejected(SwapRejectionReason.StaleAction);
+        }
+
+        // ===================================================================
         // ADR-025: State Version Precondition Check
         // ===================================================================
         if (request.ExpectedSequence.HasValue && request.ExpectedSequence.Value != state.Sequence)
@@ -973,6 +1004,16 @@ public sealed class BattleStateService
                 }
 
                 return SwapExecutionResult.Rejected(SwapRejectionReason.InvalidActionPayload);
+            }
+
+            // MATCH3_RULES.md §2.1.4 item 7: the fresh record is guarded on the
+            // same terms as the record this resolution first read. A concurrent
+            // winner can have ended the battle, and an ended battle yields no
+            // resolution, no Boss response, no new Round, and no further event —
+            // so it is rejected here rather than re-resolved against.
+            if (IsTerminalBattle(fresh))
+            {
+                return SwapExecutionResult.Rejected(SwapRejectionReason.StaleAction);
             }
 
             // ADR-025: If client submitted an expectedSequence and the state advanced,
@@ -2396,7 +2437,33 @@ public sealed class BattleStateService
         bossState = afterStep19a.BossState;
 
         // ===================================================================
-        // Step 14: the finished post-resolution state — GAME_STATE.md §5.1
+        // Commit-boundary playable-board invariant — MATCH3_RULES.md §1.6
+        // ===================================================================
+        // The Round's last evaluation point, and the only one that guarantees the
+        // board the Player is about to be given. Every cascade of the Round has
+        // terminated and step 19a has run, so the board is the finished, stable
+        // board this Round commits (§1.6.1 item 4); the terminal determination is
+        // made on that same finished state and a terminal Round is exempt
+        // (§1.6.4); and the result — board and RNG state together — is what the
+        // caller's single Sequence compare-and-set writes, so recovery is one
+        // round's one write-back and never a second write, a second Round, or a
+        // separate persistence path (§1.6.2 item 1, GAME_STATE.md §5.1).
+        //
+        // It complements, and does not replace, the Boss's own pre-move recovery in
+        // BossAiEngine.SelectMove (§1.6.5): that one covers the board the Player's
+        // action left, so the Boss has a legal move; this one covers the board the
+        // Boss's action and cascades left, so the Player has one. A board the
+        // Boss's recovery already made playable is preserved untouched and the RNG
+        // stream does not move (§1.6.2 item 3).
+        //
+        // A generated replacement is reported by the state it commits and by
+        // nothing else: no Battle Event is added to `events` here and no
+        // reshuffle member exists (§1.6.6, GAME_EVENTS.md §3 item 8, TASK-265
+        // Option A).
+        resolved = EnsurePlayableBoard(resolved with { BossState = bossState });
+
+        // ===================================================================
+        // The finished post-resolution state — GAME_STATE.md §5.1
         // ===================================================================
         // The caller performs the one write-back, under the Sequence
         // compare-and-set (REDIS_STATE.md §4 items 2 and 5), and — when this
@@ -2410,7 +2477,7 @@ public sealed class BattleStateService
         return new SwapResolution(
             result
                 .WithEvents(events)
-                .WithState(resolved with { BossState = bossState }),
+                .WithState(resolved),
             activatedOncePerBattleBossPassive);
     }
     /// <summary>
@@ -2798,6 +2865,125 @@ public sealed class BattleStateService
     private readonly record struct SwapResolution(
         SwapExecutionResult Result,
         PassiveId? ActivatedOncePerBattleBossPassive);
+
+    /// <summary>
+    /// True when the battle has ended — the Boss's HP or the active Pet's HP has
+    /// reached 0 (<c>GAME_RULES.md</c> §1.4, <c>BOSS_RULES.md</c> §5 item 4).
+    ///
+    /// <b>It is the resolution's own terminal condition, read from state.</b> The
+    /// resolution's terminal branches are ordered Boss-first and each ends the
+    /// resolution, and <c>GAME_STATE.md</c> §2.0.3 forbids a lifecycle field on
+    /// <c>BattleState</c>, so the HP values are what the condition is read from —
+    /// this method decides no rule, it evaluates the documented one
+    /// (<c>GAME_RULES.md</c> §1.4: "a battle ends when either the Boss or the
+    /// active Pet reaches 0 HP").
+    ///
+    /// <b>Both comparisons are <c>&lt;= 0</c>.</b> The Damage Pipeline clamps HP and
+    /// never lets it become negative (<c>COMBAT_RULES.md</c> §3), so <c>0</c> is
+    /// the only reachable terminal value and the two spellings cannot disagree; the
+    /// resolution's own checks read Boss <c>== 0</c> and Pet <c>&lt;= 0</c> for the
+    /// same reason. The asymmetric spelling is not reproduced here because this is
+    /// the battle's terminal condition, not one of its two ordered check sites.
+    /// </summary>
+    /// <param name="state">The battle state to evaluate.</param>
+    private static bool IsTerminalBattle(BattleState state) =>
+        state.BossState.HP <= 0 || state.PetState.HP <= 0;
+
+    /// <summary>
+    /// Applies the commit-boundary playable-board invariant
+    /// (<c>MATCH3_RULES.md</c> §1.6) to a finished Round's state: the returned
+    /// state's board contains at least one legal match-producing adjacent swap
+    /// whenever the battle is non-terminal, and is otherwise the state it was
+    /// given.
+    ///
+    /// <code>
+    /// terminal battle                        → unchanged        §1.6.4
+    /// board already has a legal move         → unchanged        §1.6.2 item 3
+    /// board deadlocked                       → regenerated board
+    ///                                          + advanced RngState
+    /// </code>
+    ///
+    /// <b>The legality predicate is the gameplay one, reused.</b>
+    /// <see cref="BossAiEngine.EnumerateLegalMoves"/> is the existing enumeration
+    /// of the 112 orthogonal adjacent pairs whose exchange produces at least one
+    /// §3 Match — the same predicate <see cref="SwapValidator"/> accepts a Player
+    /// Swap against (<c>MATCH3_RULES.md</c> §2.1.2 item 5) and the same one
+    /// <see cref="BossAiEngine.SelectMove"/> already uses for the Boss's own
+    /// pre-move recovery (§1.6.5). No second deadlock detector is introduced, and
+    /// <see cref="BoardGenerationValidator.HasValidSwap"/> is deliberately not
+    /// used: it is a generation-time helper (§1.4.1, the <c>TASK-265</c> amendment
+    /// to <c>ADR-026</c> §8) that the runtime path does not call. Enumeration
+    /// resolves no Swap, mutates nothing, and draws no RNG.
+    ///
+    /// <b>Recovery is the documented generation path over the battle's own
+    /// stream.</b> <see cref="BoardGenerator.Generate(Pcg32)"/> continues the
+    /// caller's <see cref="Pcg32"/> stream and accepts a candidate only when it
+    /// satisfies §1.3 and §1.4, so the replacement board has a legal move by
+    /// construction using the unchanged algorithm, the unchanged Gem
+    /// distribution, and the unchanged <see cref="BoardGenerator.MaxAttempts"/>
+    /// bound (§1.6.3). The generator is advanced in place, and the state it
+    /// reaches is what the Round commits, so the board and the RNG state it
+    /// consumed travel together (§1.6.2 item 1).
+    ///
+    /// <b>Exhaustion fails closed.</b> <see cref="BoardGenerator.Generate(Pcg32)"/>
+    /// throws <see cref="BoardGenerationFailedException"/> when no candidate
+    /// satisfies the constraints within the bound, and it throws before the
+    /// caller's compare-and-set, so no partially recovered board and no advanced
+    /// RNG state are ever stored (§1.6.3 item 4, the failure contract of §1.5
+    /// item 3 — the same one generation has at battle creation).
+    ///
+    /// <b>It writes a board and an RNG state and nothing else.</b> No Match is
+    /// created, no Swap resolved, no pass of §4 run, no Special Gem placed, and no
+    /// Combo, Match, Power, Passive, or Relic progression awarded (§1.6.3 item 2);
+    /// nothing is appended to the resolution's event list (§1.6.6).
+    /// </summary>
+    /// <param name="state">
+    /// The finished post-resolution state — the value the Round is about to
+    /// commit.
+    /// </param>
+    /// <returns>
+    /// The state to commit: the same state when no recovery is required, or the
+    /// same state with a regenerated <c>BoardState</c> and the advanced
+    /// <c>RngState</c>.
+    /// </returns>
+    /// <exception cref="BoardGenerationFailedException">
+    /// The deadlocked board could not be replaced within
+    /// <see cref="BoardGenerator.MaxAttempts"/> attempts (<c>MATCH3_RULES.md</c>
+    /// §1.6.3 item 4).
+    /// </exception>
+    private static BattleState EnsurePlayableBoard(BattleState state)
+    {
+        // §1.6.4 / §1.6.1 item 3: a terminal board is exempt. The outcome is
+        // already authoritative and the Player never acts again, so the invariant
+        // has no subject — and because recovery is not attempted, a generation
+        // failure can never invalidate a valid terminal result.
+        if (IsTerminalBattle(state))
+        {
+            return state;
+        }
+
+        // §1.6.2 item 3: a playable board is preserved exactly — the board and the
+        // RngState are returned untouched, so the new check cannot consume entropy
+        // or reshuffle a board the Boss's own recovery already made playable.
+        if (BossAiEngine.EnumerateLegalMoves(state.BoardState).Count > 0)
+        {
+            return state;
+        }
+
+        // §1.6.3: the board is deadlocked, so it is replaced by the documented
+        // deterministic generation on the battle's existing stream, bounded by
+        // §1.5 item 2. The generator is advanced in place and `CurrentState` is the
+        // state it reached after the accepted attempt — never a reset, never a
+        // second generator (§1.6.3 item 3, ADR-009).
+        var rng = new Pcg32(state.RngState.State, state.RngState.Increment);
+        var generation = BoardGenerator.Generate(rng);
+
+        return state with
+        {
+            BoardState = generation.Board!,
+            RngState = rng.CurrentState,
+        };
+    }
 
     /// <summary>
     /// Persists the durable result for a resolution that reached a terminal

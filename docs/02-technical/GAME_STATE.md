@@ -2760,6 +2760,9 @@ write LastCommittedSwapPair                 (§2.1.10 item 5, §5.1 item 7)
     ↓
 write resulting RngState                    (§2.6.2)
     ↓
+ensure the non-terminal committed board has a legal match-producing
+adjacent swap                               (MATCH3_RULES.md §1.6)
+    ↓
 one atomic write-back of the whole BattleState, gated on the pre-round
 Sequence via Redis CAS (REDIS_STATE.md §4)
     ↓
@@ -2802,6 +2805,21 @@ publish (SIGNALR_PROTOCOL.md §3, §4)
    step. It is not a resolution counter and is never used for concurrency
    control: `Sequence` remains the only concurrency token (§5, §5.1 item 4,
    `REDIS_STATE.md` §4 item 6).
+8. **The playable-board invariant is part of that same write-back.** The rule is
+   `MATCH3_RULES.md` §1.6's and is not restated here; what this section owns is
+   where its result lands. It is evaluated on the finished board of a
+   non-terminal Round, after the step 19a pass and before the write-back above.
+   When the board already contains a legal match-producing adjacent swap it is
+   preserved exactly, so neither `BoardState` nor `RngState` moves. When it
+   contains none, §1.6's deterministic regeneration replaces the board and
+   advances `RngState` on the battle's existing stream, and that regenerated
+   pair is what the single write-back carries: recovery adds no second write, no
+   second `Sequence`, no intermediate persisted state, and no separate
+   persistence path, and the board and the RNG state it consumed are committed
+   together under the unchanged compare-and-set (`REDIS_STATE.md` §4). If
+   regeneration cannot satisfy §1.5's bound, nothing is written at all: the
+   compare-and-set is never reached, so the stored board and `RngState` remain
+   the pre-round ones (`MATCH3_RULES.md` §1.6.3 item 4).
 
 ### 5.1.1 `StatusEffects[]` Lifecycle (Apply, Consume, Expire)
 
