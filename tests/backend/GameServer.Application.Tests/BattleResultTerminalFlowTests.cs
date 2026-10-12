@@ -162,7 +162,11 @@ public class BattleResultTerminalFlowTests
 
         Assert.Equal(0, harness.Results.WriteAttempts);
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        // ADR-026 D1: the Boss's HP is reduced only by the Player's own confirmed
+        // ATK-Gem match, so the terminal round's Swap is pinned to clear ATK Gems
+        // rather than taken from the battle's own RNG, where the matched Gem type is
+        // uncontrolled.
+        var pair = (await PinPlayerAtkBoardAsync(harness, created)).Swap;
 
         // The committed terminal state is captured before the swap result is
         // inspected: the terminal path clears the battle's active record
@@ -212,6 +216,11 @@ public class BattleResultTerminalFlowTests
         // The other terminal path: GAME_RULES.md §1.4 ends the battle when the
         // player's side reaches 0 HP, reported as BattleLost (GAME_EVENTS.md §2) —
         // stored as the documented "defeat".
+        //
+        // ADR-026 D1 and §5: the Pet can only be reduced by the Boss's own confirmed
+        // ATK-Gem match (the fallback basic attack is retired), and which swap the Boss
+        // selects is its own deterministic choice on the shared board — so the
+        // scenario pins the Pet to 1 HP and runs rounds until that instance lands.
         var harness = Harness.Create(BossDefinitions.HoaLong);
         var battleId = "terminal-flow-defeat";
 
@@ -221,13 +230,11 @@ public class BattleResultTerminalFlowTests
             Pet,
             LethalBoss());
 
-        var pair = FindMatchProducingPair(created.BoardState);
-        var result = await harness.Battles.ExecuteSwapAsync(battleId, pair);
+        var result = await RunUntilTheBossInstanceLandsAsync(harness, battleId, created);
 
-        Assert.NotNull(result);
-        Assert.True(result!.Value.IsAccepted);
-        Assert.Contains(result.Value.Events, e => e.Type == BattleEventType.BattleLost);
-        Assert.DoesNotContain(result.Value.Events, e => e.Type == BattleEventType.BattleWon);
+        Assert.True(result.IsAccepted);
+        Assert.Contains(result.Events, e => e.Type == BattleEventType.BattleLost);
+        Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.BattleWon);
 
         var row = Assert.Single(harness.Results.Rows);
 
@@ -253,7 +260,7 @@ public class BattleResultTerminalFlowTests
             Pet,
             FragileBoss());
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = (await PinPlayerAtkBoardAsync(harness, created)).Swap;
         var result = await harness.Battles.ExecuteSwapAsync(battleId, pair);
 
         Assert.NotNull(result);
@@ -357,7 +364,7 @@ public class BattleResultTerminalFlowTests
             Pet,
             FragileBoss());
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = (await PinPlayerAtkBoardAsync(harness, created)).Swap;
         var result = await harness.Battles.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -395,7 +402,7 @@ public class BattleResultTerminalFlowTests
             Pet,
             FragileBoss());
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = (await PinPlayerAtkBoardAsync(harness, created)).Swap;
         var result = await harness.Battles.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -432,7 +439,7 @@ public class BattleResultTerminalFlowTests
             Pet,
             FragileBoss());
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = (await PinPlayerAtkBoardAsync(harness, created)).Swap;
         var result = await harness.Battles.ExecuteSwapAsync(battleId, pair);
 
         Assert.True(result!.Value.IsAccepted);
@@ -473,7 +480,7 @@ public class BattleResultTerminalFlowTests
             Pet,
             FragileBoss());
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = (await PinPlayerAtkBoardAsync(harness, created)).Swap;
 
         var first = await harness.Battles.ExecuteSwapAsync(battleId, pair);
 
@@ -512,11 +519,16 @@ public class BattleResultTerminalFlowTests
             Pet,
             FragileBoss());
 
-        var pair = FindMatchProducingPair(created.BoardState);
+        var pair = (await PinPlayerAtkBoardAsync(harness, created)).Swap;
         var result = await harness.Battles.ExecuteSwapAsync(battleId, pair);
 
         Assert.NotNull(result);
         Assert.True(result!.Value.IsAccepted);
+
+        // The first action really is terminal, so the row below is a battle-end
+        // record and not an ordinary resolution (ADR-026 D1: the pinned ATK board is
+        // what makes the Player's instance exist).
+        Assert.Contains(result.Value.Events, e => e.Type == BattleEventType.BattleWon);
 
         // The record is still there — the delete failed and REDIS_STATE.md §3
         // performs no retry — so the documented battle-end step can run again from
@@ -540,6 +552,86 @@ public class BattleResultTerminalFlowTests
     // =======================================================================
     // Helpers
     // =======================================================================
+
+    /// <summary>
+    /// Pins the battle's authoritative board to a <see cref="RoundTestSupport"/>
+    /// fixture whose committed Swap clears ATK Gems, so the Player's
+    /// <c>GAME_RULES.md</c> §17 steps 15–17 instance exists and the Boss's HP can be
+    /// reduced at all (<c>ADR-026</c> D1).
+    ///
+    /// <b>Why a pinned board and not the generated one.</b> A board drawn from the
+    /// battle's own RNG matches a Gem type the test does not control, so under D1 it
+    /// may produce no attack instance — and the terminal round would silently not be
+    /// terminal. The fixture is self-validating: a board that stopped producing the
+    /// promised Match fails loudly rather than weakening the scenario.
+    /// </summary>
+    private static async Task<PinnedPlayerRound> PinPlayerAtkBoardAsync(Harness harness, BattleState created)
+    {
+        var pinned = RoundTestSupport.PlayerMatch(
+            GemType.Atk,
+            created.RngState,
+            created.LastCommittedSwapPair);
+
+        await RoundTestSupport.PinAsync(harness.Store, created, pinned.Board);
+
+        return pinned;
+    }
+
+    /// <summary>
+    /// Commits rounds — each pinned to a Player Swap that clears a non-ATK Gem, with
+    /// the Pet held at 1 HP — until the Boss's own <c>GAME_RULES.md</c> §17 step 18d
+    /// ATK-gated instance lands and ends the battle (<c>ADR-026</c> D1).
+    ///
+    /// <b>Why rounds rather than one round.</b> The Boss selects its swap
+    /// deterministically, but from the board the Player's cascade left
+    /// (<c>ADR-026</c> §8), which no Player-side fixture controls — so a one-round
+    /// defeat is not forceable. The scenario therefore asserts the documented
+    /// equivalence: the <c>BattleLost</c> round is the round in which the Boss's own
+    /// swap cleared an ATK Gem, never the retired fallback basic attack
+    /// (<c>ADR-026</c> §5). It is deterministic for the battle's fixed seed, and a
+    /// scenario that cannot reach the instance fails rather than skips.
+    /// </summary>
+    private static async Task<SwapExecutionResult> RunUntilTheBossInstanceLandsAsync(
+        Harness harness,
+        string battleId,
+        BattleState created,
+        int maxRounds = 40)
+    {
+        var state = created with { PetState = created.PetState with { HP = 1 } };
+
+        for (var round = 0; round < maxRounds; round++)
+        {
+            var pinned = RoundTestSupport.PlayerMatch(
+                round % 2 == 0 ? GemType.Def : GemType.Hp,
+                state.RngState,
+                state.LastCommittedSwapPair);
+
+            await RoundTestSupport.PinAsync(
+                harness.Store,
+                state,
+                pinned.Board,
+                petState: state.PetState with { HP = 1 });
+
+            var result = (await harness.Battles.ExecuteSwapAsync(battleId, pinned.Swap))!.Value;
+
+            Assert.True(result.IsAccepted);
+
+            if (result.Events.Any(e => e.Type == BattleEventType.BattleLost))
+            {
+                Assert.True(
+                    RoundTestSupport.BossClearedAtkGem(result),
+                    "the BattleLost round must be the round the Boss's ATK-gated instance landed in");
+
+                return result;
+            }
+
+            state = result.State;
+        }
+
+        throw new InvalidOperationException(
+            "ADR-026 D1: the Boss's ATK-gated instance must be able to defeat a 1-HP Pet "
+            + $"within {maxRounds} rounds.");
+    }
 
     private static SwapRequest FindMatchProducingPair(BoardState board)
     {

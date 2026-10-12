@@ -34,6 +34,24 @@ namespace GameServer.Application.Tests;
 /// and the absence of any ATK modifier on the Turns that follow expiry — with the
 /// trigger condition held true on every one of those Turns.
 ///
+/// <b>The board is pinned by construction, not drawn (<c>ADR-026</c> D1).</b>
+/// <c>GAME_RULES.md</c> §17's Player phase damages the Boss only when the committed
+/// Swap cleared at least one ATK Gem, so a board drawn from the battle's own RNG
+/// gives the scenario no control over whether a Player attack — or how large a
+/// Boss-side step-18a HP-Gem heal — occurs at all. Every Turn here therefore pins
+/// <see cref="RoundTestSupport.PlayerMatch"/>'s self-validating ATK fixture, which
+/// is the board whose Swap clears ATK Gems.
+///
+/// <b>Where step 18b reads its HP.</b> <c>GAME_RULES.md</c> §17 orders 18a (the
+/// Boss's own board action, which heals the Boss from its HP Gems) <i>before</i>
+/// 18b (the Passive's trigger evaluation), and no later step changes
+/// <c>BossState.HP</c> — §18c deals no direct damage (<c>ADR-026</c> D3) and §18d
+/// targets the Pet. The settled Boss HP is therefore the value the trigger was
+/// evaluated against, and every Turn pins the pre-Turn HP low enough that the
+/// condition holds whatever that Turn's own (damage − healing) movement is: the
+/// settled value is asserted against the boundary as the scenario's own
+/// self-validating precondition.
+///
 /// <b>Every expected value traces to a section, never to the implementation.</b>
 /// The Boss configuration is read from <see cref="BossDefinitions"/>, which
 /// transcribes <c>BOSS_RULES.md</c> §6, and each Turn is driven through the real
@@ -71,6 +89,19 @@ public class Task173SonThachVeOncePerBattleFiringTests
     /// </summary>
     private const int HalfMaxHp = 1500;
 
+    /// <summary>
+    /// The pre-Turn Boss HP the multi-Turn scenarios pin while the trigger must keep
+    /// holding.
+    ///
+    /// <c>GAME_RULES.md</c> §17 orders 18a (the Boss's own board action, whose HP Gems
+    /// heal it) before 18b (this trigger), so pinning the boundary value itself would
+    /// leave the condition at the mercy of that Turn's own healing. The pin therefore
+    /// carries a margin below the boundary, and each Turn asserts its settled HP
+    /// against the boundary — so a Turn whose healing exceeded the margin fails
+    /// loudly instead of silently turning into an unmet condition.
+    /// </summary>
+    private const int BelowHalfMaxHp = HalfMaxHp - 500;
+
     // =======================================================================
     // First activation — BOSS_RULES.md §6.2.4
     // =======================================================================
@@ -80,29 +111,47 @@ public class Task173SonThachVeOncePerBattleFiringTests
     {
         // §6.2.4's boundary operator is `≤`, so `HP == 1500` — exactly 50% of the
         // documented MaxHP 3000 — DOES satisfy the trigger. This Turn therefore
-        // proves both the inclusive comparison and the activation itself against
-        // the post-damage state (§3.3 item 1), and it is the control the
+        // proves both the inclusive comparison and the activation itself against the
+        // post-Player-phase state (§3.3 item 1), and it is the control the
         // post-expiry tests are read against: the same conditions that produce an
         // activation here must produce none once the eligibility is consumed.
+        //
+        // <b>Placing the Boss exactly on the boundary.</b> §17 orders 18a (the Boss's
+        // own board action, whose HP Gems heal it) before 18b (this trigger), so the
+        // value step 18b reads is the pre-Turn HP moved by that Round's own
+        // (Player damage − Boss healing). A probe Round on the identical pinned state
+        // measures that movement — the two battles share the seed, the board, and the
+        // Swap, so their board resolutions are the same computation — and the observed
+        // Round pins the pre-Turn HP so the evaluation-point HP is exactly the
+        // boundary. That is what keeps this an equality case rather than an
+        // at-or-below one.
         var (service, repository) = NewHarness();
-        var battleId = "stv-t173-exact-half";
 
-        var armed = await ArmBossHpAsync(service, repository, battleId, HalfMaxHp);
+        var probe = await ResolveAtPinnedHpAsync(
+            service,
+            repository,
+            "stv-t173-exact-half-probe",
+            HalfMaxHp);
+
+        var movement = probe.SettledBoss.HP - HalfMaxHp;
+
+        var battleId = "stv-t173-exact-half";
+        var armed = await ArmBossHpAsync(service, repository, battleId, HalfMaxHp - movement);
 
         // §6.1: MaxHP 3000, so the boundary this Turn sits on is 1500.
-        Assert.Equal(3000, armed.BossState.MaxHP);
-        Assert.Equal(HalfMaxHp, armed.BossState.MaxHP * 50 / 100);
+        Assert.Equal(3000, armed.PinnedBoss.MaxHP);
+        Assert.Equal(HalfMaxHp, armed.PinnedBoss.MaxHP * 50 / 100);
 
-        var result = await service.ExecuteSwapAsync(battleId, FindMatchProducingPair(armed));
+        var result = await service.ExecuteSwapAsync(battleId, armed.Swap);
 
         Assert.True(result!.Value.IsAccepted);
 
         var boss = result.Value.State.BossState;
 
-        // The trigger saw the POST-damage HP (§3.3 item 1), which is ≤ 1500.
-        Assert.True(
-            boss.HP <= HalfMaxHp,
-            $"expected post-damage HP ≤ {HalfMaxHp} but was {boss.HP}");
+        // The scenario's own precondition: the HP step 18b evaluated is EXACTLY the
+        // boundary, so the inclusive `≤` is what decides this activation
+        // (§3.3 item 1 places the evaluation after the Player phase and after 18a).
+        Assert.Equal(HalfMaxHp, boss.HP);
 
         // §6.2.4: the existing Boss ATK modifier representation, unchanged.
         var rage = Assert.Single(
@@ -114,7 +163,7 @@ public class Task173SonThachVeOncePerBattleFiringTests
         Assert.Equal("ATK", rage.TargetStat);
         Assert.Equal(20, rage.Magnitude);
 
-        // Applied at step 18a then consumed once at step 19a (COMBAT_RULES.md §5.3),
+        // Applied at step 18b then consumed once at step 19a (COMBAT_RULES.md §5.3),
         // so a 3-Turn instance reads back as 2 remaining in the settled state.
         Assert.Equal(2, rage.RemainingTurns);
 
@@ -134,13 +183,13 @@ public class Task173SonThachVeOncePerBattleFiringTests
 
         var armed = await ArmBossHpAsync(service, repository, battleId, hp: 1400);
 
-        var result = await service.ExecuteSwapAsync(battleId, FindMatchProducingPair(armed));
+        var result = await service.ExecuteSwapAsync(battleId, armed.Swap);
 
         Assert.True(result!.Value.IsAccepted);
 
         var boss = result.Value.State.BossState;
 
-        Assert.True(boss.HP <= HalfMaxHp, $"expected post-damage HP ≤ {HalfMaxHp} but was {boss.HP}");
+        Assert.True(boss.HP <= HalfMaxHp, $"expected post-Player-phase HP ≤ {HalfMaxHp} but was {boss.HP}");
         Assert.Equal(BossStateKind.Enraged, boss.State);
 
         var rage = Assert.Single(
@@ -166,9 +215,9 @@ public class Task173SonThachVeOncePerBattleFiringTests
         var (service, repository) = NewHarness();
         var battleId = "stv-t173-while-active";
 
-        await ArmBossHpAsync(service, repository, battleId, HalfMaxHp);
+        await ArmBossHpAsync(service, repository, battleId, BelowHalfMaxHp);
 
-        var turns = await RunTurnsTakingStateAsync(service, repository, battleId, HalfMaxHp, HalfMaxHp);
+        var turns = await RunTurnsTakingStateAsync(service, repository, battleId, BelowHalfMaxHp, BelowHalfMaxHp);
 
         Assert.Equal(2, Assert.Single(
             turns[0].SettledBoss.ActiveStatusEffects,
@@ -197,7 +246,7 @@ public class Task173SonThachVeOncePerBattleFiringTests
         // THE regression this contract exists for (BOSS_RULES.md §6.2.4 /
         // PASSIVE_RULES.md §4's Boss Passive clause).
         //
-        // Turn 1: HP drops to the boundary → the Passive activates.
+        // Turn 1: HP at or below the boundary → the Passive activates.
         // Turn 2: still active, duration 1.
         // Turn 3: the 3-Turn instance expires and is removed at step 19a.
         // Turn 4: HP is again at or below 50% and the applied instance is GONE —
@@ -209,16 +258,16 @@ public class Task173SonThachVeOncePerBattleFiringTests
         var (service, repository) = NewHarness();
         var battleId = "stv-t173-after-expiry";
 
-        await ArmBossHpAsync(service, repository, battleId, HalfMaxHp);
+        await ArmBossHpAsync(service, repository, battleId, BelowHalfMaxHp);
 
         var turns = await RunTurnsTakingStateAsync(
             service,
             repository,
             battleId,
-            HalfMaxHp,
-            HalfMaxHp,
-            HalfMaxHp,
-            HalfMaxHp);
+            BelowHalfMaxHp,
+            BelowHalfMaxHp,
+            BelowHalfMaxHp,
+            BelowHalfMaxHp);
 
         // Turn 1 — the single activation.
         Assert.Equal(2, Assert.Single(
@@ -267,19 +316,19 @@ public class Task173SonThachVeOncePerBattleFiringTests
         var (service, repository) = NewHarness();
         var battleId = "stv-t173-sustained";
 
-        await ArmBossHpAsync(service, repository, battleId, HalfMaxHp);
+        await ArmBossHpAsync(service, repository, battleId, BelowHalfMaxHp);
 
         var turns = await RunTurnsTakingStateAsync(
             service,
             repository,
             battleId,
-            HalfMaxHp,
-            HalfMaxHp,
-            HalfMaxHp,
-            HalfMaxHp,
-            HalfMaxHp,
-            HalfMaxHp,
-            HalfMaxHp);
+            BelowHalfMaxHp,
+            BelowHalfMaxHp,
+            BelowHalfMaxHp,
+            BelowHalfMaxHp,
+            BelowHalfMaxHp,
+            BelowHalfMaxHp,
+            BelowHalfMaxHp);
 
         Assert.True(HoldsRage(turns[0].SettledBoss), "the first eligible Turn must activate the Passive");
 
@@ -314,7 +363,7 @@ public class Task173SonThachVeOncePerBattleFiringTests
         var (service, repository) = NewHarness();
         var battleId = "stv-t173-recrossing";
 
-        await ArmBossHpAsync(service, repository, battleId, HalfMaxHp);
+        await ArmBossHpAsync(service, repository, battleId, BelowHalfMaxHp);
 
         // Turns 1–3 take the first activation to its expiry; Turn 4 starts above the
         // threshold and Turn 5 returns to it.
@@ -322,11 +371,11 @@ public class Task173SonThachVeOncePerBattleFiringTests
             service,
             repository,
             battleId,
-            HalfMaxHp,
-            HalfMaxHp,
-            HalfMaxHp,
+            BelowHalfMaxHp,
+            BelowHalfMaxHp,
+            BelowHalfMaxHp,
             2600,
-            HalfMaxHp);
+            BelowHalfMaxHp);
 
         Assert.False(
             HoldsRage(turns[2].SettledBoss),
@@ -368,15 +417,20 @@ public class Task173SonThachVeOncePerBattleFiringTests
         var (service, repository) = NewHarness();
         var battleId = "stv-t173-refused-write";
 
-        await ArmBossHpAsync(service, repository, battleId, HalfMaxHp);
+        await ArmBossHpAsync(service, repository, battleId, BelowHalfMaxHp);
 
         var observed = (await repository.GetAsync(battleId))!;
+
+        // The Turn fixture is pinned first: the conflict counter refuses the NEXT
+        // write, and the write it must refuse is the resolution's own write-back —
+        // not this scenario arrangement.
+        var armed = await PinTurnAsync(repository, observed, BelowHalfMaxHp);
 
         repository.ForcedConflicts = 1;
 
         var first = await service.ExecuteSwapAsync(
             battleId,
-            FindMatchProducingPair(observed) with
+            armed.Swap with
             {
                 ExpectedSequence = observed.Sequence,
                 ActionId = "act-t173-refused-write",
@@ -398,9 +452,9 @@ public class Task173SonThachVeOncePerBattleFiringTests
             service,
             repository,
             battleId,
-            HalfMaxHp,
-            HalfMaxHp,
-            HalfMaxHp);
+            BelowHalfMaxHp,
+            BelowHalfMaxHp,
+            BelowHalfMaxHp);
 
         Assert.Equal(0, later[^1].ActivationsSoFar);
         Assert.False(HoldsRage(later[^1].SettledBoss));
@@ -416,29 +470,29 @@ public class Task173SonThachVeOncePerBattleFiringTests
         var (service, repository) = NewHarness();
 
         var firstBattleId = "stv-t173-battle-a";
-        await ArmBossHpAsync(service, repository, firstBattleId, HalfMaxHp);
+        await ArmBossHpAsync(service, repository, firstBattleId, BelowHalfMaxHp);
 
         var firstBattle = await RunTurnsTakingStateAsync(
             service,
             repository,
             firstBattleId,
-            HalfMaxHp,
-            HalfMaxHp,
-            HalfMaxHp,
-            HalfMaxHp);
+            BelowHalfMaxHp,
+            BelowHalfMaxHp,
+            BelowHalfMaxHp,
+            BelowHalfMaxHp);
 
         Assert.Equal(1, firstBattle[^1].ActivationsSoFar);
 
         // Battle B: a new battle id, the same Boss, the same boundary. The Passive
         // must be eligible again — the consumed record belongs to Battle A.
         var secondBattleId = "stv-t173-battle-b";
-        await ArmBossHpAsync(service, repository, secondBattleId, HalfMaxHp);
+        await ArmBossHpAsync(service, repository, secondBattleId, BelowHalfMaxHp);
 
         var secondBattle = await RunTurnsTakingStateAsync(
             service,
             repository,
             secondBattleId,
-            HalfMaxHp);
+            BelowHalfMaxHp);
 
         var rage = Assert.Single(
             secondBattle[0].SettledBoss.ActiveStatusEffects,
@@ -477,6 +531,13 @@ public class Task173SonThachVeOncePerBattleFiringTests
         int ActivationsSoFar);
 
     /// <summary>
+    /// The pinned Turn fixture: the ATK board, the one Swap that acts on it
+    /// (<see cref="RoundTestSupport.PlayerMatch"/>), and the Boss state the write
+    /// pinned with it.
+    /// </summary>
+    private readonly record struct PinnedTurn(BoardState Board, SwapRequest Swap, BossState PinnedBoss);
+
+    /// <summary>
     /// A fresh service over a fresh in-memory repository — the same harness the
     /// existing MVP Boss Passive suites use.
     /// </summary>
@@ -493,7 +554,7 @@ public class Task173SonThachVeOncePerBattleFiringTests
     /// boundary value written onto its own state. Only documented state values are
     /// written; the Passive's effect and its firing eligibility are not.
     /// </summary>
-    private static async Task<BattleState> ArmBossHpAsync(
+    private static async Task<PinnedTurn> ArmBossHpAsync(
         BattleStateService service,
         InMemoryBattleStateRepository repository,
         string battleId,
@@ -505,31 +566,66 @@ public class Task173SonThachVeOncePerBattleFiringTests
         Assert.Equal(120, created.BossState.ATK);
         Assert.Empty(created.BossState.ActiveStatusEffects);
 
-        return await PinBossHpAsync(repository, created, hp);
+        return await PinTurnAsync(repository, created, hp);
     }
 
     /// <summary>
-    /// Writes <paramref name="hp"/> onto the stored battle's Boss HP without
-    /// advancing <c>Sequence</c>, so the next resolution reads it as the
-    /// authoritative state.
+    /// Resolves one Turn against a battle whose Boss HP is already pinned to
+    /// <paramref name="hp"/>, and returns that Turn's Boss states. It is the probe
+    /// the exact-boundary scenario uses: a second battle with the seed, board, and
+    /// Swap the observed battle uses resolves the identical computation, so the HP
+    /// movement it reports is the movement the observed Round will apply.
     /// </summary>
-    private static async Task<BattleState> PinBossHpAsync(
+    private static async Task<(BossState SettledBoss, int PlayerDamage)> ResolveAtPinnedHpAsync(
+        BattleStateService service,
+        InMemoryBattleStateRepository repository,
+        string battleId,
+        int hp)
+    {
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, BossDefinitions.SonThachVe);
+        var armed = await PinTurnAsync(repository, created, hp);
+        var result = await service.ExecuteSwapAsync(battleId, armed.Swap);
+
+        Assert.True(result!.Value.IsAccepted, "the probe Turn must be accepted");
+
+        return (result.Value.State.BossState, PlayerDamageTotal(result.Value));
+    }
+
+    /// <summary>
+    /// Pins the Turn's board (<see cref="RoundTestSupport.PlayerMatch"/>'s ATK
+    /// fixture, whose precondition the fixture itself verifies) and
+    /// <paramref name="hp"/> on the stored battle, without advancing
+    /// <c>Sequence</c>, so the next resolution reads both as the authoritative state.
+    /// </summary>
+    private static async Task<PinnedTurn> PinTurnAsync(
         InMemoryBattleStateRepository repository,
         BattleState state,
         int hp)
     {
-        var pinned = state with { BossState = state.BossState with { HP = hp } };
+        var pinned = RoundTestSupport.PlayerMatch(
+            GemType.Atk,
+            state.RngState,
+            state.LastCommittedSwapPair);
 
         Assert.True(
-            await repository.TryUpdateAsync(pinned, pinned.Sequence),
-            "the seeded Boss HP must be written to the authoritative record");
+            pinned.Resources.ClearedGemCounts.Atk > 0,
+            "the ADR-026 fixture must clear ATK Gems for the Player's phase to attack at all");
 
-        return pinned;
+        var pinnedBoss = state.BossState with { HP = hp };
+
+        await RoundTestSupport.PinAsync(
+            repository,
+            state,
+            pinned.Board,
+            bossState: pinnedBoss);
+
+        return new PinnedTurn(pinned.Board, pinned.Swap, pinnedBoss);
     }
 
     /// <summary>
     /// Runs one committed Swap per entry of <paramref name="hpPerTurn"/>, pinning the
-    /// Boss's HP to that entry before the Turn, and returns each Turn's observation.
+    /// ATK Turn fixture and the Boss's HP to that entry before the Turn, and returns
+    /// each Turn's observation.
     /// </summary>
     private static async Task<List<TurnObservation>> RunTurnsTakingStateAsync(
         BattleStateService service,
@@ -546,9 +642,9 @@ public class Task173SonThachVeOncePerBattleFiringTests
 
             Assert.NotNull(current);
 
-            var pinned = await PinBossHpAsync(repository, current!, hpPerTurn[turn - 1]);
+            var armed = await PinTurnAsync(repository, current!, hpPerTurn[turn - 1]);
 
-            var result = await service.ExecuteSwapAsync(battleId, FindMatchProducingPair(pinned));
+            var result = await service.ExecuteSwapAsync(battleId, armed.Swap);
 
             Assert.True(result!.Value.IsAccepted, $"Turn {turn} was rejected");
 
@@ -558,16 +654,27 @@ public class Task173SonThachVeOncePerBattleFiringTests
             // holds it and the state the Turn resolved against did not. A Turn whose
             // effect is merely still counting down therefore adds nothing, and a Turn
             // that re-applied the Rage after an expiry is counted.
-            if (HoldsRage(settled) && !HoldsRage(pinned.BossState))
+            if (HoldsRage(settled) && !HoldsRage(armed.PinnedBoss))
             {
                 activations++;
             }
 
-            observations.Add(new TurnObservation(pinned.BossState, settled, activations));
+            observations.Add(new TurnObservation(armed.PinnedBoss, settled, activations));
         }
 
         return observations;
     }
+
+    /// <summary>
+    /// The round's Player → Boss damage total, read from the emitted reports
+    /// (<c>GAME_EVENTS.md</c> §2). It is the Player phase's own contribution to the
+    /// HP movement the probe reports.
+    /// </summary>
+    private static int PlayerDamageTotal(SwapExecutionResult result) =>
+        result.Events
+            .Where(e => e.Type == BattleEventType.DamageDealt
+                && e.DamageDealt.Source == GameServer.Domain.Combat.DamageParty.Player)
+            .Sum(e => e.DamageDealt.Amount);
 
     /// <summary>
     /// Whether a Boss state holds Sơn Thạch Vệ's Rage instance — the observable a
@@ -576,48 +683,4 @@ public class Task173SonThachVeOncePerBattleFiringTests
     private static bool HoldsRage(BossState boss) =>
         boss.ActiveStatusEffects.Any(
             e => string.Equals(e.Id, SonThachVePassiveId, StringComparison.Ordinal));
-
-    /// <summary>
-    /// A match-producing adjacent pair on <paramref name="state"/>'s board that is
-    /// not the pair already recorded as committed (<c>MATCH3_RULES.md</c> §2.1.4).
-    /// </summary>
-    private static SwapRequest FindMatchProducingPair(BattleState state)
-    {
-        foreach (var (from, to) in AllAdjacentPairs())
-        {
-            if (state.LastCommittedSwapPair is { } pair
-                && CommittedSwapPair.FromCells(from, to)
-                    == CommittedSwapPair.FromCells(pair.MinCellIndex, pair.MaxCellIndex))
-            {
-                continue;
-            }
-
-            if (MatchDetector.Detect(state.BoardState.WithSwapped(from, to)).Count > 0)
-            {
-                return new SwapRequest(from, to);
-            }
-        }
-
-        throw new InvalidOperationException(
-            "A generated board has at least one valid Swap (MATCH3_RULES.md §1.4).");
-    }
-
-    private static IEnumerable<(int From, int To)> AllAdjacentPairs()
-    {
-        for (var index = 0; index < BoardState.CellCount; index++)
-        {
-            var right = BoardState.ToColumn(index) + 1 < BoardState.Columns ? index + 1 : -1;
-            var down = index + BoardState.Width < BoardState.CellCount ? index + BoardState.Width : -1;
-
-            if (right >= 0)
-            {
-                yield return (index, right);
-            }
-
-            if (down >= 0)
-            {
-                yield return (index, down);
-            }
-        }
-    }
 }

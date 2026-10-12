@@ -611,14 +611,22 @@ public class BattleResultEndpointTests
             var battles = scope.ServiceProvider.GetRequiredService<BattleStateService>();
             var results = scope.ServiceProvider.GetRequiredService<IBattleResultRepository>();
 
-            // The fixture Boss dies to one committed Swap (Victory) or kills the
-            // player in one Basic Attack (Defeat), with every other value left at
-            // the MVP configuration (BOSS_RULES.md §6.1/§6.3–§6.4).
+            // The fixture Boss dies to the Player's first ATK-gated instance (Victory),
+            // or kills the player with its first one (Defeat), with every other value
+            // left at the MVP configuration (BOSS_RULES.md §6.1/§6.3–§6.4).
+            //
+            // The Victory fixture gives the Boss ATK 0 as well as MaxHP 1, so the round
+            // can never end the other way: ADR-026 D1 makes an attack possible at all
+            // only on an ATK-Gem match, and a zero-ATK instance deals no damage, so the
+            // Pet cannot die while the loop waits for the Player's ATK match. The
+            // Defeat fixture gives the Boss a MaxHP the Player cannot remove, so the
+            // Player cannot win while the loop waits for the Boss's instance.
             var boss = expected == BattleOutcome.Victory
-                ? BossDefinitions.HoaLong with { MaxHP = 1 }
+                ? BossDefinitions.HoaLong with { MaxHP = 1, ATK = 0 }
                 : BossDefinitions.HoaLong with
                 {
                     ATK = 100_000,
+                    MaxHP = 1_000_000,
                     SkillDefinition = BossDefinitions.HoaLong.SkillDefinition
                         with { ChargeRequirement = int.MaxValue },
                     PassiveDefinition = BossDefinitions.HoaLong.PassiveDefinition
@@ -627,7 +635,7 @@ public class BattleResultEndpointTests
 
             var battleId = $"result-ep-battle-{Guid.NewGuid():N}";
 
-            var created = await battles.CreateBattleAsync(
+            await battles.CreateBattleAsync(
                 battleId,
                 new PlayerId(playerId),
                 new BattleStateService.PetConfiguration(
@@ -637,17 +645,44 @@ public class BattleResultEndpointTests
                     PassiveThreshold: 5),
                 boss);
 
-            var pair = FindMatchProducingPair(created.BoardState);
-            var result = await battles.ExecuteSwapAsync(battleId, pair);
-
-            Assert.NotNull(result);
-            Assert.True(result!.Value.IsAccepted);
-
+            // GAME_RULES.md §17 step 18 / ADR-026 D1: every attack is gated on the
+            // acting side's own ATK-Gem match, so no single Swap is guaranteed to be
+            // terminal. The battle is therefore played — one legal Swap per round, each
+            // a new logical action — until the documented terminal event lands. The
+            // fixture Boss (1 HP, or a 100 000-ATK board attacker) makes that a handful
+            // of rounds at most.
             var terminalEvent = expected == BattleOutcome.Victory
                 ? BattleEventType.BattleWon
                 : BattleEventType.BattleLost;
 
-            Assert.Contains(result.Value.Events, e => e.Type == terminalEvent);
+            SwapExecutionResult? result = null;
+
+            for (var round = 0; round < 200; round++)
+            {
+                var state = await battles.GetBattleAsync(battleId)
+                    ?? throw new InvalidOperationException($"battle '{battleId}' has no active-state record.");
+
+                var pair = FindMatchProducingPair(state.BoardState, state.LastCommittedSwapPair);
+
+                result = await battles.ExecuteSwapAsync(
+                    battleId,
+                    new SwapRequest(
+                        pair.From,
+                        pair.To,
+                        ExpectedSequence: state.Sequence,
+                        ActionId: $"{battleId}-round-{round}"));
+
+                Assert.NotNull(result);
+                Assert.True(result!.Value.IsAccepted);
+
+                if (result.Value.Events.Any(e => e.Type == terminalEvent))
+                {
+                    break;
+                }
+            }
+
+            Assert.NotNull(result);
+            Assert.Contains(result!.Value.Events, e => e.Type == terminalEvent);
 
             var row = await results.GetByIdAsync(battleId);
             var store = (ApiTestBattleStateRepository)scope.ServiceProvider
@@ -818,10 +853,19 @@ public class BattleResultEndpointTests
     // Fixtures and helpers
     // -----------------------------------------------------------------------
 
-    private static SwapRequest FindMatchProducingPair(BoardState board)
+    private static SwapRequest FindMatchProducingPair(
+        BoardState board,
+        CommittedSwapPair? committed = null)
     {
         foreach (var (from, to) in AllAdjacentPairs())
         {
+            // MATCH3_RULES.md §2.1.4 item 2: a Swap already recorded as committed is
+            // rejected as already applied, so a multi-round scenario skips it.
+            if (committed is { } recorded && recorded.MatchesPair(from, to))
+            {
+                continue;
+            }
+
             if (MatchDetector.Detect(board.WithSwapped(from, to)).Count > 0)
             {
                 return new SwapRequest(from, to);

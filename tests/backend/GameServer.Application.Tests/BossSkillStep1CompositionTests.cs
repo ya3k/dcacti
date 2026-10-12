@@ -12,58 +12,626 @@ using Xunit;
 namespace GameServer.Application.Tests;
 
 /// <summary>
-/// The Boss Skill Step-1 damage composition driven through a real Turn —
-/// <c>COMBAT_RULES.md</c> §3.4's "Boss Skill Step-1 composition" (decided by
-/// TASK-125, authored by TASK-126), whose consumption rule is §5.5.
+/// The Boss's ATK-match-gated attack instance driven through a real atomic round —
+/// its Step-1 composition (<c>COMBAT_RULES.md</c> §3.4 item 1, §5.5.1), the gate
+/// that decides whether the instance exists at all (<c>ADR-026</c> D1,
+/// <c>GAME_RULES.md</c> §17 step 18d), and the Skill's non-damaging secondary
+/// effect (<c>ADR-026</c> D3/D5, <c>BOSS_RULES.md</c> §6.3, §6.3.1).
 ///
 /// <code>
-/// Rule (COMBAT_RULES.md §3.4's composition, §5.5.1's Step-1 consumption point)
+/// Rule (COMBAT_RULES.md §3.4 / §5.5.1; ADR-026 D1, D3; BOSS_RULES.md §6.3)
 ///  ↓
-/// Scenario (Given a Boss with a documented ATK modifier state, When step 18b
-///           resolves, Then the Skill's Step-1 Base Damage is the documented value)
+/// Scenario (Given a pinned board whose Boss board action is known, When the round
+///           resolves, Then the documented Step-1 value, gate, and effect)
 ///  ↓
 /// Test
 /// </code>
 ///
-/// <b>Why this suite exists separately from the Domain consumer tests.</b> §3.4 is
-/// a statement about what the <i>resolution</i> feeds the Damage Pipeline: the
-/// composed value must arrive at the existing step-18b <c>DamagePipeline.Calculate</c>
-/// call exactly once, the Basic Attack must be untouched, and <c>BossState.ATK</c>
-/// must survive unchanged. Only a real resolution can demonstrate those, so these
-/// scenarios drive <see cref="BattleStateService"/> and read the composed value out
-/// of the <c>DamageCalculated</c> breakdown the resolution itself reports.
+/// <b>What this suite asserts NOW.</b> The legacy fallback basic attack
+/// ("Step 1 — Base Damage = Boss.ATK", independent of the board) is RETIRED
+/// (<c>ADR-026</c> §5, "Elimination of Default Fixed-Damage Attacks";
+/// <c>COMBAT_RULES.md</c> §3.4 item 1), and every MVP Boss Skill declares
+/// <c>BaseDamage = 0</c> (<c>ADR-026</c> D3; <c>BOSS_RULES.md</c> §6.3/§6.3.1), so
+/// the retired "Boss Skill Step-1 = EffectiveBossATK + authored SkillBaseDamage"
+/// composition no longer has an authored term to compose. What survives, and is
+/// what this file tests, is:
+/// <list type="number">
+/// <item><c>EffectiveBossATK</c> — <c>BossState.ATK</c> composed with the Boss's own
+/// active <c>TargetStat = "ATK"</c> instances in <c>Id</c>-ordinal order,
+/// <c>truncate(ATK × (100 + Magnitude) / 100)</c>, never written back to
+/// <c>BossState.ATK</c> (<c>COMBAT_RULES.md</c> §5.5.1 items 3–4, §5.5.4) —
+/// reaching the Boss's ATK-gated instance's Step 1, which §3.4 item 1 fixes as
+/// that value plus the <c>BaseDamagePool</c> the Boss's own ATK Gems generated
+/// (<c>COMBAT_RULES.md</c> §2);</item>
+/// <item>selection by <c>Type</c> + <c>TargetStat</c> and never by <c>Id</c>
+/// (<c>COMBAT_RULES.md</c> §5.5.3): a DoT, a Shield, a State, or a BuffDebuff
+/// naming another stat is not an ATK modifier;</item>
+/// <item>the instance's Step 2 Combo Modifier of <c>1</c> and Step 4 of
+/// <c>1.0</c> (<c>COMBAT_RULES.md</c> §3.4 item 1);</item>
+/// <item>a fired Skill applying its declared non-damaging secondary effect in the
+/// same round as, and independently of, that attack instance (<c>ADR-026</c>
+/// D3/D5; <c>BOSS_RULES.md</c> §6.3.1 item 1).</item>
+/// </list>
 ///
-/// <b>Every expected value traces to §3.4 / §5.5 / §6.3.1, not to the
-/// implementation.</b> §3.4's worked example (<c>100 + 150 = 250</c> with Rage
-/// inactive; <c>120 + 150 = 270</c> with Rage active) is asserted verbatim, and the
-/// authored <c>150</c> is read from the Boss definition's own declaration.
+/// <b>Every Boss instance is located by <c>DamageDealt.Source</c>.</b>
+/// <c>ADR-026</c> D1 makes a round carry at most one Boss-sourced instance, and
+/// only when the Boss's own swap cleared an ATK Gem, so an instance is never
+/// identified by position or by a "large base value" heuristic — it is found by
+/// the report that says who dealt it (<c>GAME_EVENTS.md</c> §2).
 ///
-/// <b>How the Rage-active case is arranged without implementing step 18a.</b>
-/// Hỏa Long's Rage <i>application</i> is the step-18a Boss Passive half and is not
-/// implemented by this task; no production path creates a Rage instance. The
-/// instance is therefore seeded into the Boss's own
-/// <c>BossState.StatusEffects[]</c> through the documented public
-/// <see cref="StatusEffectLifecycle.Apply"/> — the same technique
-/// <c>RootAttackConsumptionTests</c> uses for the Pet side — and a real Turn is
-/// then resolved over it. No production code path is widened for a test.
+/// <b>How a scenario is arranged.</b> The Player's Swap is the pinned
+/// non-ATK-Gem fixture (<see cref="RoundTestSupport"/>), so the Player phase emits
+/// no attack instance and consumes no crit draw (<c>ADR-026</c> D1), which makes
+/// the Boss's own board action a pure function of the pinned board and the
+/// round's committed <c>RngState</c> (<c>ADR-026</c> §8). The suite reads that
+/// action forward with the Domain stages the production path itself uses, and
+/// self-verifies the reading against the committed round before asserting on it:
+/// <see cref="RoundTestSupport.BossClearedAtkGem"/> must agree with the reading,
+/// so an expectation derived from the Boss's own ATK-Gem output can never be a
+/// statement about some other board action.
+///
+/// <b>Expected values come from the documents, not from the implementation.</b>
+/// <c>EffectiveBossATK</c> is compared against <c>StatusEffectLifecycle.EffectiveBossAttack</c>
+/// — the §5.5.1 formula's own Domain consumer, as the documents' worked examples
+/// (100 at +20% → 120; 100 at −30% → 70) state them — and the pool is the §2 rate
+/// table applied by the Domain <c>ResourceGenerator</c> to the Boss's own cleared
+/// ATK Gems. Step 2, Step 4, and the report contiguity are asserted from
+/// <c>COMBAT_RULES.md</c> §3.4 item 1 and <c>GAME_EVENTS.md</c> §1.
 /// </summary>
 public class BossSkillStep1CompositionTests
 {
     /// <summary>
     /// The Pet these battles carry (<c>GAME_STATE.md</c> §2.3), Xích Lang's MVP
-    /// Element and Passive. Its DEF and HP are the documented MVP values
-    /// (<c>COMBAT_RULES.md</c> §1.1).
+    /// Element and Passive. Hỏa Long's Hỏa Element therefore meets a Hỏa defender,
+    /// which <c>ELEMENT_RULES.md</c> §2.1 resolves as Neutral.
     /// </summary>
     private static readonly BattleStateService.PetConfiguration Pet =
         new(new PetId("pet_instance_1"), Element.Hoa, new PassiveId("xich-lang"), PassiveThreshold: 5);
 
     /// <summary>The owning Player of these battles (<c>GAME_STATE.md</c> §2.8).</summary>
-    private static readonly PlayerId Owner = new("player_boss_step1_owner");
+    private static readonly PlayerId Owner = new("player_boss_attack_owner");
+
+    /// <summary>
+    /// The arrangement attempt bound. The fixture search is deterministic, so the
+    /// first accepted arrangement is the same on every run; the bound only keeps a
+    /// future fixture change from looping forever.
+    /// </summary>
+    private const ulong MaxSeedAttempts = 48;
+
+    /// <summary>
+    /// The Gem types the Player-phase fixture may clear. Every one of them is a
+    /// non-ATK type, so the Player produces no attack instance of its own
+    /// (<c>ADR-026</c> D1) and this suite's round holds the Boss's instance alone.
+    /// </summary>
+    private static readonly GemType[] PlayerFixtureTypes = [GemType.Def, GemType.Hp, GemType.Power];
+
+    // =======================================================================
+    // 1. Step 1 with no active ATK modifier — stored ATK + the ATK-Gem pool
+    //    (COMBAT_RULES.md §3.4 item 1, §5.5.1 item 4; ADR-026 D3)
+    // =======================================================================
+
+    [Fact]
+    public async Task BossAttack_ShouldUseTheStoredBossAtkPlusTheAtkGemPool_WhenNoAtkModifierIsActive()
+    {
+        // COMBAT_RULES.md §3.4 item 1: "Step 1 — Base Damage = EffectiveBossATK +
+        // BaseDamagePool". With no active TargetStat="ATK" instance, §5.5.1 items
+        // 3–4 leave EffectiveBossATK the stored stat itself.
+        //
+        // ADR-026 D3 / BOSS_RULES.md §6.3.1 item 1: Flame Burst's authored Base
+        // Damage is 0, so Step 1 has no authored Skill term at all — the retired
+        // "100 + 150" spelling of this test's subject no longer exists.
+        var round = await ResolveBossAtkRoundAsync("boss-attack-no-modifier", bossClearsAtkGem: true);
+        var boss = BossDefinitions.HoaLong;
+
+        // The scenario really is free of a second ATK modifier, so the assertion
+        // below is about the stored stat alone — read on the PRE-resolution state,
+        // which COMBAT_RULES.md §5.5.1's "Activity" bullet makes the collection the
+        // attack's Step 1 consumed (§5.3: activity follows the committed state).
+        Assert.Empty(AtkModifiers(round.Before.BossState));
+
+        // BOSS_RULES.md §6.1: Hỏa Long's MVP ATK is 100.
+        Assert.Equal(100, boss.ATK);
+
+        // COMBAT_RULES.md §2: the Boss's own ATK match generated the pool, at +10
+        // Base Damage per cleared ATK Gem times the shape's tier.
+        Assert.True(round.BossGeneration.ClearedGemCounts.Atk > 0);
+        Assert.True(round.BossGeneration.BaseDamagePool > 0);
+
+        Assert.Equal(
+            boss.ATK + round.BossGeneration.BaseDamagePool,
+            BossAttackCalculation(round.Result).Base);
+
+        // Exactly one instance, and it is the Boss's: the gate opened once.
+        Assert.Equal(1, BossAttackInstanceCount(round.Result));
+
+        // ADR-026 D3: the Skill contributes no authored Step-1 value, so nothing
+        // resembling the retired "+150" can be part of the composed Base.
+        Assert.Equal(0, boss.SkillBaseDamage);
+    }
+
+    // =======================================================================
+    // 2. EffectiveBossATK reaches the instance (COMBAT_RULES.md §3.4 item 1,
+    //    §5.5.1's worked example; BOSS_RULES.md §6.2.1)
+    // =======================================================================
+
+    [Fact]
+    public async Task BossAttack_ShouldUseEffectiveBossAtk_WhenRageIsActive()
+    {
+        // COMBAT_RULES.md §5.5.1 item 3's worked example, asserted verbatim:
+        //   BossState.ATK = 100, active Magnitude = +20
+        //   EffectiveBossATK = truncate(100 × (100 + 20) / 100) = 120
+        // and §3.4 item 1's Step 1 = 120 + the ATK-Gem BaseDamagePool.
+        var round = await ResolveBossAtkRoundAsync(
+            "boss-attack-rage",
+            bossClearsAtkGem: true,
+            arrangeBoss: boss => boss with { ActiveStatusEffects = [Rage()] });
+
+        var boss = BossDefinitions.HoaLong;
+
+        // The one ATK modifier this scenario carries is the pinned Rage instance
+        // (BOSS_RULES.md §6.2.1's representation: Turn-based, TargetStat "ATK", +20).
+        var active = Assert.Single(AtkModifiers(round.Before.BossState));
+        Assert.Equal(20, active.Magnitude);
+
+        Assert.Equal(120, StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, [Rage()]));
+        Assert.Equal(
+            120 + round.BossGeneration.BaseDamagePool,
+            BossAttackCalculation(round.Result).Base);
+    }
+
+    [Fact]
+    public async Task BossAttack_ShouldDifferByExactlyTheModifiersEffect_WhenRageIsActive()
+    {
+        // The increase comes entirely from the EffectiveBossATK contribution: §5.5.1
+        // item 3 applies the percentage to BossState.ATK ALONE, and §3.4 item 1 keeps
+        // the ATK-Gem pool a separate Step-1 contribution that no ATK modifier
+        // scales. Both runs therefore act on the same board action and differ by
+        // exactly Rage's effect: 120 − 100 = 20.
+        var without = await ResolveBossAtkRoundAsync("boss-attack-delta-off", bossClearsAtkGem: true);
+        var with = await ResolveBossAtkRoundAsync(
+            "boss-attack-delta-on",
+            bossClearsAtkGem: true,
+            arrangeBoss: boss => boss with { ActiveStatusEffects = [Rage()] });
+
+        // Same pinned board and same Boss move, so the pool is identical and the
+        // delta below is the modifier's and nothing else.
+        Assert.Equal(without.BossGeneration.BaseDamagePool, with.BossGeneration.BaseDamagePool);
+
+        var withoutBase = BossAttackCalculation(without.Result).Base;
+        var withBase = BossAttackCalculation(with.Result).Base;
+
+        Assert.Equal(100 + without.BossGeneration.BaseDamagePool, withoutBase);
+        Assert.Equal(120 + with.BossGeneration.BaseDamagePool, withBase);
+        Assert.Equal(20, withBase - withoutBase);
+
+        // The pool was never scaled: recovering it from the buffed instance returns
+        // the same ATK-Gem contribution the unbuffed instance reported.
+        Assert.Equal(
+            withoutBase - 100,
+            withBase - StatusEffectLifecycle.EffectiveBossAttack(100, [Rage()]));
+    }
+
+    // =======================================================================
+    // 3. The signed Magnitude's OTHER direction (COMBAT_RULES.md §5.5.1 item 4)
+    // =======================================================================
+
+    [Fact]
+    public async Task BossAttack_ShouldUseTheDecreasedEffectiveBossAtk_WhenAModifierDecreases()
+    {
+        // §5.5.1 item 4: "Magnitude < 0 → decrease", through §3.4 item 1's Step 1:
+        //   EffectiveBossATK = truncate(100 × (100 + (−30)) / 100) = 70
+        //   Step 1 = 70 + BaseDamagePool
+        var round = await ResolveBossAtkRoundAsync(
+            "boss-attack-decrease",
+            bossClearsAtkGem: true,
+            arrangeBoss: boss => boss with { ActiveStatusEffects = [AtkDecrease(-30)] });
+
+        var pool = round.BossGeneration.BaseDamagePool;
+
+        Assert.Equal(70, StatusEffectLifecycle.EffectiveBossAttack(100, [AtkDecrease(-30)]));
+        Assert.Equal(70 + pool, BossAttackCalculation(round.Result).Base);
+
+        // Emphatically NOT the superseded inverted reading, which applied the
+        // magnitude's absolute value as an increase and produced 130 here.
+        Assert.NotEqual(130 + pool, BossAttackCalculation(round.Result).Base);
+
+        // And NOT the unmodified stored stat either.
+        Assert.NotEqual(100 + pool, BossAttackCalculation(round.Result).Base);
+
+        // COMBAT_RULES.md §5.5.4 applies to both directions: the 70 is derived and
+        // discarded, and the committed BossState.ATK is still the stored 100 — not 70,
+        // and not a "restored" value. The modifier instance survives unmodified.
+        Assert.Equal(100, round.Committed.BossState.ATK);
+        Assert.Equal(-30, Assert.Single(AtkModifiers(round.Committed.BossState)).Magnitude);
+    }
+
+    [Fact]
+    public async Task BossAttack_ShouldTreatAZeroMagnitudeAsUnchanged()
+    {
+        // §5.5.1 item 4: "Magnitude = 0 → unchanged  EffectiveBossATK =
+        // BossState.ATK". A zero is neither an error nor a 100% reduction, so the
+        // composed Step 1 is the same as with no instance at all.
+        var round = await ResolveBossAtkRoundAsync(
+            "boss-attack-zero",
+            bossClearsAtkGem: true,
+            arrangeBoss: boss => boss with { ActiveStatusEffects = [AtkDecrease(0)] });
+
+        Assert.Equal(100, StatusEffectLifecycle.EffectiveBossAttack(100, [AtkDecrease(0)]));
+        Assert.Equal(
+            100 + round.BossGeneration.BaseDamagePool,
+            BossAttackCalculation(round.Result).Base);
+    }
+
+    // =======================================================================
+    // 4. The derivation is a function of the stored stat (COMBAT_RULES.md §5.5.1)
+    // =======================================================================
+
+    [Fact]
+    public async Task BossAttack_ShouldDeriveFromTheStoredStat_ForANonDefaultBossAtk()
+    {
+        // §5.5.1 item 3: EffectiveBossATK = the modified BossState.ATK — a function of
+        // the stored stat, never a constant. A Boss whose ATK is not the MVP default
+        // must therefore produce a different composed value, so an implementation
+        // that hard-coded 120 cannot pass.
+        var boss = BossDefinitions.HoaLong with { ATK = 200 };
+
+        var without = await ResolveBossAtkRoundAsync("boss-attack-nondefault-off", bossClearsAtkGem: true, boss);
+        var with = await ResolveBossAtkRoundAsync(
+            "boss-attack-nondefault-on",
+            bossClearsAtkGem: true,
+            boss,
+            arrangeBoss: state => state with { ActiveStatusEffects = [Rage()] });
+
+        // truncate(200 × 120 / 100) = 240.
+        Assert.Equal(240, StatusEffectLifecycle.EffectiveBossAttack(200, [Rage()]));
+        Assert.Equal(without.BossGeneration.BaseDamagePool, with.BossGeneration.BaseDamagePool);
+
+        var withoutBase = BossAttackCalculation(without.Result).Base;
+        var withBase = BossAttackCalculation(with.Result).Base;
+
+        Assert.Equal(200 + without.BossGeneration.BaseDamagePool, withoutBase);
+        Assert.Equal(240 + with.BossGeneration.BaseDamagePool, withBase);
+        Assert.Equal(40, withBase - withoutBase);
+    }
+
+    // =======================================================================
+    // 5. BossState.ATK immutability (COMBAT_RULES.md §5.5.4)
+    // =======================================================================
+
+    [Fact]
+    public async Task BossAttack_ShouldNeverOverwriteTheStoredBossAtk()
+    {
+        // §5.5.4: "BossState.ATK is never overwritten by the modifier, and there is
+        // no 'restore' step". The committed stat must therefore be identical before
+        // and after the resolution that derived the increased value — and the
+        // modifier instance itself must survive unmodified, because the composition
+        // only READS it (§5.5.5 duration is the existing step 19a countdown's).
+        var round = await ResolveBossAtkRoundAsync(
+            "boss-attack-immutability",
+            bossClearsAtkGem: true,
+            arrangeBoss: boss => boss with { ActiveStatusEffects = [Rage()] });
+
+        Assert.Equal(100, round.Before.BossState.ATK);
+        Assert.Equal(120 + round.BossGeneration.BaseDamagePool, BossAttackCalculation(round.Result).Base);
+
+        // Still the base stat, not the derived 120 and not a scaled one.
+        Assert.Equal(100, round.Committed.BossState.ATK);
+
+        // The instance was read, not consumed or rewritten: its own magnitude and
+        // target survive, with exactly step 19a's one Turn consumed (3 → 2).
+        var rage = Assert.Single(AtkModifiers(round.Committed.BossState));
+
+        Assert.Equal(20, rage.Magnitude);
+        Assert.Equal("ATK", rage.TargetStat);
+        Assert.Equal(2, rage.RemainingTurns);
+    }
+
+    // =======================================================================
+    // 6. Selection by Type + TargetStat, never by Id (COMBAT_RULES.md §5.5.3)
+    // =======================================================================
+
+    [Fact]
+    public async Task BossAttack_ShouldApplyAnAtkModifierBearingAnUnrelatedIdentity()
+    {
+        // §5.5.3 applies §5.4.5's discipline: selection is by Type + TargetStat, so
+        // an "ATK" instance whose Id is not "Rage" still applies. This is the
+        // positive half of "never dispatch on Id".
+        var round = await ResolveBossAtkRoundAsync(
+            "boss-attack-unrelated-id",
+            bossClearsAtkGem: true,
+            arrangeBoss: boss => boss with
+            {
+                ActiveStatusEffects =
+                [
+                    StatusEffect.TurnBased(
+                        "SomeOtherAtkBuff", StatusEffectType.BuffDebuff, StatusEffectSource.Boss, 20, 3, "ATK"),
+                ],
+            });
+
+        Assert.Equal(
+            120 + round.BossGeneration.BaseDamagePool,
+            BossAttackCalculation(round.Result).Base);
+    }
+
+    [Fact]
+    public async Task BossAttack_ShouldIgnoreInstancesThatAreNotAtkModifiers()
+    {
+        // §5.5.3's negative set: a BuffDebuff naming another stat, a DoT (the Boss's
+        // own Burn tick lives in this very collection), a State, and a Shield are all
+        // non-ATK instances and must leave Step 1 at the unmodified stored ATK plus
+        // the pool.
+        var round = await ResolveBossAtkRoundAsync(
+            "boss-attack-non-atk",
+            bossClearsAtkGem: true,
+            arrangeBoss: boss => boss with
+            {
+                ActiveStatusEffects =
+                [
+                    StatusEffect.TurnBased("Guard", StatusEffectType.BuffDebuff, StatusEffectSource.Boss, 50, 3, "DEF"),
+                    StatusEffect.TurnBased("Burn", StatusEffectType.DoT, StatusEffectSource.Boss, 50, 2),
+                    StatusEffect.TurnBased("Stun", StatusEffectType.State, StatusEffectSource.Boss, 1, 1),
+                    StatusEffect.TriggerBased(
+                        "Shield",
+                        StatusEffectType.Shield,
+                        StatusEffectSource.Boss,
+                        150,
+                        StatusEffect.ShieldDepletedCondition),
+                ],
+            });
+
+        Assert.Equal(
+            100 + round.BossGeneration.BaseDamagePool,
+            BossAttackCalculation(round.Result).Base);
+
+        // The instances genuinely were present when the attack's Step 1 was composed —
+        // the negative above is not the trivial result of nothing having been pinned.
+        // Asserted on the PRE-resolution state, because step 19a legitimately consumes
+        // the 1-Turn State within the same round (GAME_STATE.md §5.1.1 items 2–4).
+        Assert.Equal(4, round.Before.BossState.ActiveStatusEffects.Length);
+        Assert.Empty(AtkModifiers(round.Before.BossState));
+    }
+
+    // =======================================================================
+    // 7. Damage Pipeline integration, exactly once, with §3.4 item 1's steps 2 and 4
+    // =======================================================================
+
+    [Fact]
+    public async Task BossAttack_ShouldEnterThePipelineWithComboOneAndStep4Unchanged()
+    {
+        // §3.4 item 1: a Boss attack is the same six-step Damage Pipeline as the
+        // Player's, with "Step 2 — Combo Modifier = 1 (Boss attacks are not part of a
+        // Combo chain)" and "Step 4 — Other Modifiers = 1.0". The ATK modifier is a
+        // Step-1 input consumed through EffectiveBossATK, never a Step-4 factor
+        // (§5.5.3), so it must NOT also appear as 1.2 here.
+        var round = await ResolveBossAtkRoundAsync(
+            "boss-attack-pipeline",
+            bossClearsAtkGem: true,
+            arrangeBoss: boss => boss with { ActiveStatusEffects = [Rage()] });
+
+        var result = round.Result;
+        var index = BossAttackCalculatedIndex(result);
+        var calculation = result.Events[index].DamageCalculated;
+
+        Assert.Equal(120 + round.BossGeneration.BaseDamagePool, calculation.Base);
+        Assert.Equal(1.00, calculation.ComboModifier);
+        Assert.Equal(1.00, calculation.OtherModifiers);
+
+        // §3.4 item 1 Step 3: the defending target is the Pet, and Hỏa Long is Hỏa
+        // against this Pet's Hỏa — ELEMENT_RULES.md §2.1 resolves equal Elements as
+        // Neutral, whose factor is §2.2's 1.00.
+        Assert.Equal(1.00, calculation.ElementModifier);
+
+        // GAME_EVENTS.md §1: one instance is reported by three contiguous events —
+        // DamageCalculated, DamageDealt, DamageTaken — carrying one Final Damage.
+        Assert.Equal(BattleEventType.DamageDealt, result.Events[index + 1].Type);
+        Assert.Equal(BattleEventType.DamageTaken, result.Events[index + 2].Type);
+
+        var dealt = result.Events[index + 1].DamageDealt;
+        var taken = result.Events[index + 2].DamageTaken;
+
+        Assert.Equal(DamageParty.Boss, dealt.Source);
+        Assert.Equal(DamageParty.Player, dealt.Target);
+        Assert.Equal(calculation.FinalDamage, dealt.Amount);
+        Assert.Equal(DamageParty.Player, taken.Target);
+        Assert.Equal(calculation.FinalDamage, taken.Amount);
+
+        // The instance is emitted exactly once: two DamageCalculated reports for the
+        // composed Base would mean the composition ran twice.
+        Assert.Equal(1, BossAttackInstanceCount(result));
+        Assert.Equal(1, BossDamageCalculationCount(result));
+    }
+
+    // =======================================================================
+    // 8. The ATK-match gate (ADR-026 D1; GAME_RULES.md §17 step 18d)
+    // =======================================================================
+
+    [Fact]
+    public async Task BossAttack_ShouldNotExist_WhenTheBossClearedNoAtkGem()
+    {
+        // ADR-026 D1 / COMBAT_RULES.md §3.4 item 1: "A Boss attack occurs if and only
+        // if the Boss's swap produces a confirmed ATK-gem match ... If zero ATK gems
+        // are matched, zero attack damage is dealt." With the legacy fallback basic
+        // attack retired (ADR-026 §5), a gate-closed round therefore carries no
+        // Boss-sourced instance at all — no DamageCalculated, no DamageDealt, no
+        // DamageTaken — rather than an un-gated Basic Attack.
+        var round = await ResolveBossAtkRoundAsync(
+            "boss-attack-gate-closed",
+            bossClearsAtkGem: false,
+            playerMatchType: GemType.Def);
+
+        Assert.Equal(0, round.BossGeneration.ClearedGemCounts.Atk);
+        Assert.False(RoundTestSupport.BossClearedAtkGem(round.Result));
+
+        Assert.Equal(0, BossAttackInstanceCount(round.Result));
+        Assert.Equal(0, BossDamageCalculationCount(round.Result));
+        Assert.DoesNotContain(
+            round.Result.Events,
+            e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Boss);
+        Assert.DoesNotContain(
+            round.Result.Events,
+            e => e.Type == BattleEventType.DamageTaken && e.DamageTaken.Target == DamageParty.Player);
+
+        // The Pet is untouched: the Player phase cleared DEF Gems only, which neither
+        // heals nor damages (COMBAT_RULES.md §2), so a Pet HP that did not move is a
+        // statement that the Boss dealt nothing.
+        Assert.Equal(round.Before.PetState.HP, round.Committed.PetState.HP);
+    }
+
+    // =======================================================================
+    // 9. A fired Skill applies its secondary effect in the same round, and
+    //    contributes no Step-1 damage of its own (ADR-026 D3/D5)
+    // =======================================================================
+
+    [Fact]
+    public async Task FiredBossSkill_ShouldApplyItsSecondaryEffectInTheSameRound()
+    {
+        // BOSS_RULES.md §6.3: the Skill fires iff SkillCharge ≥ ChargeRequirement AND
+        // SkillCooldown = 0, and "after the Skill fires: SkillCharge resets to 0,
+        // SkillCooldown resets to the Boss's cooldown value". Pin the charge at the
+        // definition's own requirement — a state the Boss genuinely reaches by
+        // accumulating its own POWER matches (ADR-026 D2, BOSS_RULES.md §6.3).
+        //
+        // ADR-026 D5 (Option 5B) / BOSS_RULES.md §6.3.1 item 1: Flame Burst's direct
+        // damage and Burn DoT are removed and replaced by a temporary Boss ATK buff on
+        // BossState.ActiveStatusEffects — applied here, in the same round, and
+        // independently of whether the round produced an ATK-gated attack instance.
+        var boss = BossDefinitions.HoaLong;
+        var round = await ResolveBossAtkRoundAsync(
+            "boss-attack-skill-secondary",
+            bossClearsAtkGem: false,
+            boss,
+            arrangeBoss: state => state with
+            {
+                SkillCharge = boss.SkillChargeRequirement,
+                SkillCooldown = 0,
+            });
+
+        Assert.Contains(round.Result.Events, e => e.Type == BattleEventType.BossSkillCast);
+
+        // The buff is a Turn-based TargetStat="ATK" BuffDebuff on the BOSS, with the
+        // definition's own declared magnitude (BOSS_RULES.md §6.3.1 item 1; the
+        // magnitude is a preserved balance parameter, so it is read from the
+        // definition rather than authored here).
+        var declared = boss.SkillDefinition.SecondaryEffect!.Value;
+
+        var buff = Assert.Single(
+            round.Committed.BossState.ActiveStatusEffects,
+            e => e.Id == declared.StatusEffectId);
+
+        Assert.Equal(StatusEffectType.BuffDebuff, buff.Type);
+        Assert.Equal(StatusEffectSource.Boss, buff.Source);
+        Assert.Equal("ATK", buff.TargetStat);
+        Assert.Equal(declared.Magnitude, buff.Magnitude);
+
+        // 2 declared Turns, one consumed by this same round's step 19a — an instance
+        // applied before GAME_RULES.md §17 step 19a consumes one Turn of duration at
+        // that Turn's step 19a (COMBAT_RULES.md §5.3.1/DR6, §5.5.5).
+        Assert.Equal(declared.DurationTurns!.Value - 1, buff.RemainingTurns);
+
+        // BOSS_RULES.md §6.3's post-cast reset, applied in the same write-back.
+        Assert.Equal(0, round.Committed.BossState.SkillCharge);
+        Assert.Equal(boss.SkillCooldownTurns, round.Committed.BossState.SkillCooldown);
+
+        // ADR-026 D3: the fired Skill produced NO damage instance of its own. The
+        // round's Boss instance count is exactly the ATK gate's answer, never one more.
+        Assert.Equal(
+            RoundTestSupport.BossClearedAtkGem(round.Result) ? 1 : 0,
+            BossAttackInstanceCount(round.Result));
+        Assert.Equal(0, boss.SkillBaseDamage);
+
+        // NOTE (ADR-026 D5): because the buff is applied at step 18c and the Boss's
+        // ATK-gated instance is resolved at step 18d of the SAME round, a round in
+        // which the Boss also cleared an ATK Gem already carries this buff into that
+        // instance's EffectiveBossATK (COMBAT_RULES.md §5.5.1). This scenario pins a
+        // gate-closed round so the buff's own committed state is what is asserted;
+        // FiredBossSkill_ShouldReachTheSameRoundsAtkGatedInstance covers the
+        // gate-open case.
+    }
+
+    [Fact]
+    public async Task FiredBossSkill_ShouldReachTheSameRoundsAtkGatedInstance_ThroughEffectiveBossAtk()
+    {
+        // ADR-026 D5 / BOSS_RULES.md §6.3.1 item 1: the buff "modifies Boss ATK but
+        // deals no damage independently; Boss damage is applied only when Hỏa Long
+        // produces a valid ATK-gem match (D1)". Applied at step 18c, it is in force
+        // for the §18d instance resolved later in the same round, through
+        // COMBAT_RULES.md §5.5.1's EffectiveBossATK — so the instance's Step 1 is
+        // truncate(100 × (100 + 50) / 100) + the ATK-Gem pool = 150 + pool.
+        var boss = BossDefinitions.HoaLong;
+
+        var withoutSkill = await ResolveBossAtkRoundAsync("boss-attack-same-round-off", bossClearsAtkGem: true, boss);
+        var withSkill = await ResolveBossAtkRoundAsync(
+            "boss-attack-same-round-on",
+            bossClearsAtkGem: true,
+            boss,
+            arrangeBoss: state => state with
+            {
+                SkillCharge = boss.SkillChargeRequirement,
+                SkillCooldown = 0,
+            });
+
+        // Same board action in both runs, so the pool is identical and the increase
+        // below is the buff's alone.
+        Assert.Equal(withoutSkill.BossGeneration.BaseDamagePool, withSkill.BossGeneration.BaseDamagePool);
+
+        // The no-Skill run carries no ATK modifier at all — Hỏa Long's match-charged
+        // Passive (BOSS_RULES.md §6.2.1, threshold 5) did not trigger on this board —
+        // so the buffed run's arithmetic is fully determined by Flame Burst.
+        Assert.Empty(AtkModifiers(withoutSkill.Committed.BossState));
+
+        var bonus = (int)boss.SkillDefinition.SecondaryEffect!.Value.Magnitude;
+
+        Assert.Equal(100 + bonus, StatusEffectLifecycle.EffectiveBossAttack(100, [FlameBurst()]));
+        Assert.Equal(
+            100 + bonus + withSkill.BossGeneration.BaseDamagePool,
+            BossAttackCalculation(withSkill.Result).Base);
+        Assert.Equal(
+            100 + withoutSkill.BossGeneration.BaseDamagePool,
+            BossAttackCalculation(withoutSkill.Result).Base);
+
+        // The attack instance count is unchanged by the Skill: the buff adds no
+        // damage of its own (ADR-026 D3, D5).
+        Assert.Equal(
+            BossAttackInstanceCount(withoutSkill.Result),
+            BossAttackInstanceCount(withSkill.Result));
+
+        // And the buff is still on the Boss afterwards, on the step 19a countdown.
+        var buff = Assert.Single(withSkill.Committed.BossState.ActiveStatusEffects, e => e.Id == "flame-burst");
+
+        Assert.Equal(1, buff.RemainingTurns);
+    }
+
+    // =======================================================================
+    // Helpers
+    // =======================================================================
+
+    /// <summary>
+    /// One resolved round, together with the Boss board action that produced it.
+    /// </summary>
+    /// <param name="Result">The committed round (<c>GAME_STATE.md</c> §5.1).</param>
+    /// <param name="BossGeneration">
+    /// The resources the Boss's OWN board action generated — read forward from the
+    /// pinned board and the round's committed <c>RngState</c> through the same Domain
+    /// stages the production path uses (<c>COMBAT_RULES.md</c> §2), and verified
+    /// against the committed round's own board events before it is used.
+    /// </param>
+    /// <param name="Before">
+    /// The pinned state the round started from — the state whose Boss
+    /// <c>ActiveStatusEffects</c> the attack's Step 1 read.
+    /// </param>
+    /// <param name="Committed">The state the round committed.</param>
+    private readonly record struct BossAttackRound(
+        SwapExecutionResult Result,
+        ResourceGeneration BossGeneration,
+        BattleState Before,
+        BattleState Committed);
 
     /// <summary>
     /// Rage as <c>BOSS_RULES.md</c> §6.2.1 fixes it — a Turn-based
     /// <c>BuffDebuff</c> held in the Boss's own <c>StatusEffects[]</c> with
-    /// <c>TargetStat = "ATK"</c>, <c>Magnitude = +20%</c>, <c>RemainingTurns = 3</c>.
+    /// <c>TargetStat = "ATK"</c>, <c>Magnitude = +20</c>, duration 3 Turns. Built
+    /// through the documented factory, so the <c>TargetStat</c>-iff-<c>BuffDebuff</c>
+    /// pairing holds by construction (<c>GAME_STATE.md</c> §2.3.1 item 7).
     /// </summary>
     private static StatusEffect Rage(int duration = 3) =>
         StatusEffect.TurnBased(
@@ -72,732 +640,223 @@ public class BossSkillStep1CompositionTests
     /// <summary>
     /// A Boss-side ATK modifier expressed as a <b>decrease</b>, which
     /// <c>COMBAT_RULES.md</c> §5.5.1 item 4 carries as the negative
-    /// <c>Magnitude</c>: "<c>Magnitude &lt; 0 → decrease</c>". Built through the
-    /// documented factory so the <c>TargetStat</c>-iff-<c>BuffDebuff</c> pairing
-    /// holds by construction (<c>GAME_STATE.md</c> §2.3.1 item 7).
+    /// <c>Magnitude</c>: "<c>Magnitude &lt; 0 → decrease</c>".
     /// </summary>
     private static StatusEffect AtkDecrease(double magnitude) =>
         StatusEffect.TurnBased(
             "Weaken", StatusEffectType.BuffDebuff, StatusEffectSource.Boss, magnitude, 3, "ATK");
 
-    // =======================================================================
-    // Scenario 1 — Boss Skill with no ATK modifier (COMBAT_RULES.md §3.4)
-    // =======================================================================
-
-    [Fact]
-    public async Task BossSkill_ShouldUseBossAtkPlusSkillBaseDamage_WhenNoAtkModifierIsActive()
+    /// <summary>
+    /// Flame Burst's declared secondary effect as the instance the Skill applies
+    /// (<c>BOSS_RULES.md</c> §6.3.1 item 1): the same +50% Boss ATK modifier, built
+    /// from the definition's own declaration.
+    /// </summary>
+    private static StatusEffect FlameBurst()
     {
-        // §3.4's composition with the modifier inactive:
-        //   EffectiveBossATK = BossState.ATK = 100
-        //   Step 1 = 100 + 150 = 250
-        //
-        // The expected breakdown is derived from the definition's own values and
-        // §3.4's composition, never read back from the implementation.
-        var harness = Harness.Create();
-        var boss = CastingHoaLong();
+        var effect = BossDefinitions.HoaLong.SkillDefinition.SecondaryEffect!.Value;
 
-        var turn = await ResolveCastingTurnAsync(harness, boss, "boss-step1-no-modifier");
-
-        Assert.Equal(250, turn.SkillBase);
-
-        // The composed sum is exactly the two documented contributions — the
-        // stored stat and the authored value — and the authored value is unchanged.
-        Assert.Equal(boss.ATK + boss.SkillBaseDamage, turn.SkillBase);
-        Assert.Equal(150, boss.SkillBaseDamage);
+        return StatusEffect.TurnBased(
+            effect.StatusEffectId!,
+            effect.StatusEffectType!.Value,
+            StatusEffectSource.Boss,
+            effect.Magnitude,
+            effect.DurationTurns!.Value,
+            effect.TargetStat!);
     }
-
-    // =======================================================================
-    // Scenario 2 — Hỏa Long Rage active (COMBAT_RULES.md §3.4's worked example)
-    // =======================================================================
-
-    [Fact]
-    public async Task BossSkill_ShouldUseEffectiveBossAtk_WhenRageIsActive()
-    {
-        // §3.4's worked example, asserted verbatim:
-        //   BossState.ATK = 100, Hỏa Long Rage = +20%
-        //   EffectiveBossATK = truncate(100 × (100 + 20) / 100) = 120
-        //   Flame Burst authored Base Damage = 150  (unchanged by the modifier)
-        //   Step 1 Base Damage = 120 + 150 = 270
-        var harness = Harness.Create();
-        var boss = CastingHoaLong();
-
-        var turn = await ResolveCastingTurnAsync(harness, boss, "boss-step1-rage", seedRage: true);
-
-        Assert.Equal(270, turn.SkillBase);
-    }
-
-    [Fact]
-    public async Task BossSkill_ShouldDifferByExactlyTheModifiersEffect_WhenRageIsActive()
-    {
-        // The increase comes entirely from the EffectiveBossATK contribution: the
-        // authored term is identical in both cases, so the two composed values
-        // differ by exactly Rage's effect on the stat (120 − 100 = 20) and by
-        // nothing else. This is the assertion that fails if the implementation
-        // scaled the authored 150 as well.
-        var harness = Harness.Create();
-        var boss = CastingHoaLong();
-
-        var without = await ResolveCastingTurnAsync(harness, boss, "boss-step1-delta-off");
-        var with = await ResolveCastingTurnAsync(harness, boss, "boss-step1-delta-on", seedRage: true);
-
-        Assert.Equal(250, without.SkillBase);
-        Assert.Equal(270, with.SkillBase);
-        Assert.Equal(20, with.SkillBase - without.SkillBase);
-
-        // The authored value was never transformed: neither 150 → 180 (the modifier
-        // reaching the authored term) nor a dropped ATK contribution. The recovered
-        // authored contribution is the declared value in both cases.
-        var effectiveBossAtk = StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, [Rage()]);
-
-        Assert.Equal(150, boss.SkillBaseDamage);
-        Assert.Equal(boss.SkillBaseDamage, without.SkillBase - boss.ATK);
-        Assert.Equal(boss.SkillBaseDamage, with.SkillBase - effectiveBossAtk);
-    }
-
-    // =======================================================================
-    // Scenario 2b — the signed Magnitude's OTHER direction (COMBAT_RULES.md §5.5.1)
-    // =======================================================================
-
-    [Fact]
-    public async Task BossSkill_ShouldUseTheDecreasedEffectiveBossAtk_WhenAModifierDecreases()
-    {
-        // §5.5.1 item 4: "Magnitude < 0 -> decrease", through §3.4's composition.
-        //   EffectiveBossATK = truncate(100 × (100 + (−30)) / 100) = 70
-        //   Step 1 = 70 + 150 = 220
-        //
-        // This is the direction the rework corrects. The superseded implementation
-        // read |Magnitude| and inferred "debuff" from the sign, so it applied a
-        // REDUCTION as an INCREASE and produced 130 + 150 = 280 here. Asserting only
-        // the +20 case is what let that defect ship.
-        var harness = Harness.Create();
-        var boss = CastingHoaLong();
-
-        var turn = await ResolveCastingTurnAsync(
-            harness, boss, "boss-step1-decrease", seedRage: false, AtkDecrease(-30));
-
-        Assert.Equal(220, turn.SkillBase);
-
-        // The decrease is the EffectiveBossATK contribution alone: the authored 150
-        // is recovered unchanged by subtracting the derived ATK term, exactly as in
-        // the increase case (§5.5.2).
-        Assert.Equal(150, turn.SkillBase - 70);
-
-        // And it is emphatically NOT the old inverted reading.
-        Assert.NotEqual(280, turn.SkillBase);
-        Assert.NotEqual(130, turn.SkillBase - 150);
-    }
-
-    [Fact]
-    public async Task BossSkill_ShouldLeaveTheStoredStatUnchanged_ForADecrease()
-    {
-        // §5.5.4 applies to both directions: the 70 is derived and discarded, and
-        // the committed BossState.ATK is still the stored 100 — not 70, and not a
-        // "restored" value.
-        var harness = Harness.Create();
-        var boss = CastingHoaLong();
-        const string battleId = "boss-step1-decrease-immutability";
-
-        await harness.Service.CreateBattleAsync(battleId, Owner, Pet, boss);
-        await SeedBossStatusEffectAsync(harness.Store, battleId, AtkDecrease(-30));
-
-        var before = (await harness.Service.GetBattleAsync(battleId))!;
-
-        Assert.Equal(100, before.BossState.ATK);
-
-        var result = (await harness.Service.ExecuteSwapAsync(
-            battleId, FindMatchProducer(before)))!.Value;
-
-        Assert.True(result.IsAccepted);
-
-        var committed = (await harness.Service.GetBattleAsync(battleId))!;
-
-        Assert.Equal(220, result.Events
-            .Where(e => e.Type == BattleEventType.DamageCalculated)
-            .Select(e => e.DamageCalculated)
-            .Where(c => c.Base > boss.ATK + 50)
-            .Max(c => c.Base));
-
-        Assert.Equal(100, committed.BossState.ATK);
-    }
-
-    [Fact]
-    public async Task BossSkill_ShouldTreatAZeroMagnitudeAsUnchanged()
-    {
-        // §5.5.1 item 4: "Magnitude = 0 -> unchanged  EffectiveBossATK =
-        // BossState.ATK". A zero is not an error and not a 100% reduction: the
-        // composed value is the same as with no instance at all.
-        var harness = Harness.Create();
-        var boss = CastingHoaLong();
-
-        var turn = await ResolveCastingTurnAsync(
-            harness, boss, "boss-step1-zero", seedRage: false, AtkDecrease(0));
-
-        Assert.Equal(250, turn.SkillBase);
-    }
-
-    // =======================================================================
-    // Scenario 3 — the authored Skill Base Damage is not modified
-    // =======================================================================
-
-    [Fact]
-    public async Task BossSkill_ShouldLeaveTheAuthoredBaseDamageUnmodified_WhileRageApplies()
-    {
-        // §5.5.2: "Does NOT reach the Skill's authored Base Damage. That authored
-        // value is a separate Step-1 contribution and does not receive the
-        // modifier." The definition's declared value is read directly, and the
-        // Step-1 value minus the derived ATK term recovers the contribution the
-        // pipeline actually received — which must still be the authored 150.
-        var harness = Harness.Create();
-        var boss = CastingHoaLong();
-
-        var turn = await ResolveCastingTurnAsync(harness, boss, "boss-step1-authored", seedRage: true);
-
-        // §3.4: EffectiveBossATK = 120, so the authored contribution is 270 − 120.
-        var effectiveBossAtk = StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, [Rage()]);
-
-        Assert.Equal(120, effectiveBossAtk);
-        Assert.Equal(270, turn.SkillBase);
-
-        // The recovered authored contribution is exactly the declared 150 — not 180
-        // (which would mean the modifier reached it) and not 270 (which would mean
-        // the ATK term was dropped).
-        Assert.Equal(boss.SkillBaseDamage, turn.SkillBase - effectiveBossAtk);
-        Assert.Equal(150, turn.SkillBase - effectiveBossAtk);
-    }
-
-    // =======================================================================
-    // Scenario 4 — BossState.ATK immutability (COMBAT_RULES.md §5.5.4)
-    // =======================================================================
-
-    [Fact]
-    public async Task BossSkill_ShouldNeverOverwriteTheStoredBossAtk()
-    {
-        // §5.5.4: "BossState.ATK is never overwritten by the modifier, and there is
-        // no 'restore' step". The committed stat must therefore be identical before
-        // and after the resolution that derived the increased value — and the
-        // modifier instance itself must survive unmodified, since the composition
-        // only READS it.
-        var harness = Harness.Create();
-        var boss = CastingHoaLong();
-        const string battleId = "boss-step1-immutability";
-
-        // Created first, then seeded, then re-read — the store's Sequence
-        // compare-and-set can only apply to an existing battle (REDIS_STATE.md §4).
-        await harness.Service.CreateBattleAsync(battleId, Owner, Pet, boss);
-        await SeedBossStatusEffectAsync(harness.Store, battleId, Rage());
-
-        var before = (await harness.Service.GetBattleAsync(battleId))!;
-
-        Assert.Equal(100, before.BossState.ATK);
-        Assert.Single(RageOn(before.BossState));
-
-        var result = (await harness.Service.ExecuteSwapAsync(
-            battleId, FindMatchProducer(before)))!.Value;
-
-        Assert.True(result.IsAccepted);
-        Assert.Contains(result.Events, e => e.Type == BattleEventType.BossSkillCast);
-
-        var committed = (await harness.Service.GetBattleAsync(battleId))!;
-
-        var skillBase = result.Events
-            .Where(e => e.Type == BattleEventType.DamageCalculated)
-            .Select(e => e.DamageCalculated)
-            .Where(c => c.Base > boss.ATK + 50)
-            .Max(c => c.Base);
-
-        Assert.Equal(270, skillBase);
-
-        // Still the base stat, not the derived value (120) and not a scaled one.
-        Assert.Equal(100, committed.BossState.ATK);
-
-        // The instance was read, not consumed or rewritten: it survives with its
-        // own magnitude intact, decremented by exactly step 19a's one Turn.
-        var rage = Assert.Single(RageOn(committed.BossState));
-
-        Assert.Equal(20, rage.Magnitude);
-        Assert.Equal("ATK", rage.TargetStat);
-    }
-
-    // =======================================================================
-    // Scenario 5 — Damage Pipeline integration, exactly once
-    // =======================================================================
-
-    [Fact]
-    public async Task BossSkill_ShouldEnterTheExistingPipelineExactlyOnce_WithNoPoolAndStep4Unchanged()
-    {
-        // §3.4: the composed value is the Skill's Step-1 Base Damage and it reaches
-        // the EXISTING pipeline (steps 1-6) — there is no second damage path. A Boss
-        // Skill contributes no ATK-Gem-generated damage pool (Bosses match no Gems),
-        // and the modifier is a Step-1 input, never a Step-4 factor (§5.5.3).
-        var harness = Harness.Create();
-        var boss = CastingHoaLong();
-
-        var turn = await ResolveCastingTurnAsync(harness, boss, "boss-step1-pipeline", seedRage: true);
-
-        // Exactly one DamageCalculated carries the Skill's own instance. The
-        // composition is identified by its Step-1 value, which no other instance in
-        // this resolution can produce (the Burn tick ticks later at step 19a with
-        // base 50).
-        var skillCalculation = Assert.Single(
-            turn.Events
-                .Where(e => e.Type == BattleEventType.DamageCalculated)
-                .Select(e => e.DamageCalculated),
-            c => c.Base == 270);
-
-        Assert.Equal(270, skillCalculation.Base);
-
-        // §3.4 step 4: the Boss side's Other Modifiers stays 1.0 — the +20% is a
-        // Step-1 input, so it must NOT also appear as a Step-4 factor (120 × 1.0,
-        // not 120 × 1.2).
-        Assert.Equal(1.00, skillCalculation.OtherModifiers);
-
-        // No ATK-Gem pool contributed: §3.4 states a Boss Skill contributes none.
-        Assert.Equal(1.00, skillCalculation.ComboModifier);
-
-        // And the Skill's own damage instance is emitted exactly once, which is what
-        // "no double application" means observably: two instances carrying the
-        // composed base would mean the modifier was applied twice.
-        Assert.Single(
-            turn.Events
-                .Where(e => e.Type == BattleEventType.DamageCalculated)
-                .Select(e => e.DamageCalculated),
-            c => c.Base == 270);
-    }
-
-    // =======================================================================
-    // Scenario 6 — Basic Attack is unchanged (COMBAT_RULES.md §3.4)
-    // =======================================================================
-
-    [Fact]
-    public async Task BossBasicAttack_ShouldUseBossAtkAlone_WithNoSkillBaseDamage()
-    {
-        // §3.4's Basic Attack clause: "Step 1 — Base Damage = Boss.ATK". The Skill's
-        // authored base value contributes NOTHING here, and the fallback must remain
-        // exactly what TASK-022 implemented.
-        var harness = Harness.Create();
-
-        // A Charge Requirement no single Swap can reach leaves the Skill unfired, so
-        // step 18c's Basic Attack is the path taken.
-        var boss = BossDefinitions.HoaLong with
-        {
-            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 100 },
-        };
-
-        var created = await harness.Service.CreateBattleAsync(
-            "boss-step1-basic-attack", Owner, Pet, boss);
-
-        var result = (await harness.Service.ExecuteSwapAsync(
-            "boss-step1-basic-attack", FindMatchProducer(created)))!.Value;
-
-        Assert.True(result.IsAccepted);
-        Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.BossSkillCast);
-
-        var bossCalculation = Assert.Single(
-            result.Events
-                .Where(e => e.Type == BattleEventType.DamageCalculated)
-                .Select(e => e.DamageCalculated),
-            c => c.Base == boss.ATK);
-
-        // Step 1 is the stored stat alone: not 100 + 150 = 250.
-        Assert.Equal(100, bossCalculation.Base);
-        Assert.Equal(boss.ATK, bossCalculation.Base);
-    }
-
-    [Fact]
-    public async Task BossBasicAttack_ShouldNotChange_WhenAModifierIsActive()
-    {
-        // §5.5.2: the modifier "Reaches the Boss BASIC ATTACK". The Basic Attack's
-        // Step-1 input is therefore the derived ATK ALONE — it gains the +20% but
-        // still receives no authored Skill Base Damage, so it is 120 and never 270.
-        var harness = Harness.Create();
-        var boss = BossDefinitions.HoaLong with
-        {
-            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 100 },
-        };
-
-        const string battleId = "boss-step1-basic-modifier";
-
-        var created = await harness.Service.CreateBattleAsync(battleId, Owner, Pet, boss);
-
-        await SeedBossStatusEffectAsync(harness.Store, battleId, Rage());
-
-        var result = (await harness.Service.ExecuteSwapAsync(
-            battleId, FindMatchProducer(created)))!.Value;
-
-        Assert.True(result.IsAccepted);
-        Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.BossSkillCast);
-
-        // 120 — the derived stat. NOT 270 (no Skill term) and NOT 100 (the modifier
-        // does reach this path).
-        var bossCalculation = Assert.Single(
-            result.Events
-                .Where(e => e.Type == BattleEventType.DamageCalculated)
-                .Select(e => e.DamageCalculated),
-            c => c.Base == 120);
-
-        Assert.Equal(120, bossCalculation.Base);
-        Assert.Equal(1.00, bossCalculation.OtherModifiers);
-    }
-
-    [Fact]
-    public async Task BossBasicAttack_ShouldUseTheDecreasedStat_WhenAModifierDecreases()
-    {
-        // §5.5.1 item 4's other direction on the Basic Attack path: §5.5.2 states
-        // the modifier "Reaches the Boss BASIC ATTACK", so the Step-1 input is the
-        // derived ATK alone — here 70, never 220 (no Skill term) and never 130.
-        var harness = Harness.Create();
-        var boss = BossDefinitions.HoaLong with
-        {
-            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 100 },
-        };
-
-        const string battleId = "boss-step1-basic-decrease";
-
-        var created = await harness.Service.CreateBattleAsync(battleId, Owner, Pet, boss);
-
-        await SeedBossStatusEffectAsync(harness.Store, battleId, AtkDecrease(-30));
-
-        var result = (await harness.Service.ExecuteSwapAsync(
-            battleId, FindMatchProducer(created)))!.Value;
-
-        Assert.True(result.IsAccepted);
-        Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.BossSkillCast);
-
-        var bossCalculation = Assert.Single(
-            result.Events
-                .Where(e => e.Type == BattleEventType.DamageCalculated)
-                .Select(e => e.DamageCalculated),
-            c => c.Base == 70);
-
-        Assert.Equal(70, bossCalculation.Base);
-        Assert.Equal(1.00, bossCalculation.OtherModifiers);
-    }
-
-    // =======================================================================
-    // Scenario 7 — modifier selection (COMBAT_RULES.md §5.5.3, §5.4.5)
-    // =======================================================================
-
-    [Fact]
-    public async Task BossSkill_ShouldIgnoreAnAtkModifierBearingAnUnrelatedIdentity()
-    {
-        // §5.5.3 applies §5.4.5's discipline: selection is by Type + TargetStat, so
-        // an "ATK" instance whose Id is NOT "Rage" still applies. This is the
-        // positive half of "never dispatch on Id".
-        var harness = Harness.Create();
-        var boss = CastingHoaLong();
-
-        var turn = await ResolveCastingTurnAsync(
-            harness,
-            boss,
-            "boss-step1-unrelated-id",
-            seedRage: false,
-            StatusEffect.TurnBased(
-                "SomeOtherAtkBuff", StatusEffectType.BuffDebuff, StatusEffectSource.Boss, 20, 3, "ATK"));
-
-        Assert.Equal(270, turn.SkillBase);
-    }
-
-    [Fact]
-    public async Task BossSkill_ShouldIgnoreInstancesThatAreNotAtkModifiers()
-    {
-        // §5.5.3's negative set: a BuffDebuff naming another stat, a DoT (the Boss's
-        // own Burn tick lives in this very collection), a Shield, and a State are
-        // all non-ATK instances and must leave the composed value at its
-        // unmodified 250.
-        var harness = Harness.Create();
-        var boss = CastingHoaLong();
-
-        var turn = await ResolveCastingTurnAsync(
-            harness,
-            boss,
-            "boss-step1-non-atk",
-            seedRage: false,
-            StatusEffect.TurnBased("Guard", StatusEffectType.BuffDebuff, StatusEffectSource.Boss, 50, 3, "DEF"),
-            StatusEffect.TurnBased("Burn", StatusEffectType.DoT, StatusEffectSource.Player, 50, 2),
-            StatusEffect.TurnBased("Stun", StatusEffectType.State, StatusEffectSource.Player, 1, 1));
-
-        Assert.Equal(250, turn.SkillBase);
-
-        // The instances genuinely were present at attack resolution — the negative
-        // above is not the trivial result of nothing having been seeded. Asserted on
-        // the PRE-resolution state, because the 1-Turn Stun is consumed and removed
-        // by that same Turn's step 19a (§5.3 DR5) and so is correctly absent from
-        // the committed state.
-        Assert.Equal(3, turn.Before.BossState.ActiveStatusEffects.Length);
-        Assert.DoesNotContain(
-            turn.Before.BossState.ActiveStatusEffects,
-            e => e.Type == StatusEffectType.BuffDebuff && e.TargetStat == "ATK");
-    }
-
-    // =======================================================================
-    // Scenario 8 — the derivation is a function of the stored stat, not a constant
-    // =======================================================================
-
-    [Fact]
-    public async Task BossSkill_ShouldDeriveFromTheStoredStat_ForANonDefaultBossAtk()
-    {
-        // §5.5.1 item 3: "EffectiveBossATK = the modified BossState.ATK" — the
-        // derivation is a function of the stored stat. A Boss whose ATK is not the
-        // MVP default must therefore produce a different composed value, so an
-        // implementation that hard-coded the documented 120 cannot pass.
-        var harness = Harness.Create();
-
-        // ATK 200 with the same authored 150 and the same +20%.
-        var boss = CastingHoaLong() with { ATK = 200 };
-
-        var turn = await ResolveCastingTurnAsync(harness, boss, "boss-step1-nondefault-atk", seedRage: true);
-
-        // truncate(200 × 120 / 100) = 240, so Step 1 = 240 + 150 = 390.
-        Assert.Equal(390, turn.SkillBase);
-    }
-
-    // =======================================================================
-    // Scenario 9 — modifier filtering keeps TASK-118's effects intact
-    // =======================================================================
-
-    [Fact]
-    public async Task FiredBossSkill_ShouldStillApplyItsSecondaryEffect_AlongsideTheComposition()
-    {
-        // TASK-118's step-18b ordering must be undisturbed: the Skill's damage is
-        // composed by this task, and its declared secondary effect (Flame Burst's
-        // Burn, BOSS_RULES.md §6.3.1 item 1) is applied exactly as before. Both
-        // happen in the same resolution's single write-back.
-        var harness = Harness.Create();
-        var boss = CastingHoaLong();
-
-        var turn = await ResolveCastingTurnAsync(harness, boss, "boss-step1-secondary", seedRage: true);
-
-        Assert.Equal(270, turn.SkillBase);
-
-        // The Burn instance is still applied to the PET, with its authored
-        // magnitude and duration — unaffected by the Boss-side ATK composition.
-        var burn = Assert.Single(
-            turn.Committed.PetState.ActiveStatusEffects,
-            e => e.Id == "Burn");
-
-        Assert.Equal(50, burn.Magnitude);
-        Assert.Equal(StatusEffectType.DoT, burn.Type);
-        Assert.Equal(StatusEffectSource.Boss, burn.Source);
-    }
-
-    [Fact]
-    public async Task BossSkill_ShouldNotTreatTheBossOwnBurnDotAsAnAtkModifier()
-    {
-        // The Boss's OWN collection can legitimately hold a DoT (its step-19a tick
-        // path reads one). §5.5.3 excludes DoT instances from the ATK consumer, so a
-        // Boss-sourced Burn sitting on the BOSS must not scale the Skill's damage —
-        // the composed value stays at the unmodified 250.
-        var harness = Harness.Create();
-        var boss = CastingHoaLong();
-
-        var turn = await ResolveCastingTurnAsync(
-            harness,
-            boss,
-            "boss-step1-boss-dot",
-            seedRage: false,
-            StatusEffect.TurnBased("Burn", StatusEffectType.DoT, StatusEffectSource.Boss, 50, 2));
-
-        Assert.Equal(250, turn.SkillBase);
-    }
-
-    // =======================================================================
-    // Helpers
-    // =======================================================================
 
     /// <summary>
-    /// One resolved Turn's Boss Skill damage instance and the resulting committed
-    /// state.
+    /// The Boss's active ATK modifiers — the <c>Type</c> + <c>TargetStat</c>
+    /// selection <c>COMBAT_RULES.md</c> §5.5.1/§5.5.3 defines, restated here for
+    /// assertions only (the production consumer is
+    /// <see cref="StatusEffectLifecycle.EffectiveBossAttack"/>).
     /// </summary>
-    /// <param name="SkillBase">
-    /// The Boss Skill's Step-1 Base Damage as the pipeline itself reported it —
-    /// read from the resolution's own <c>DamageCalculated</c> event, never
-    /// recomputed by the test.
+    private static StatusEffect[] AtkModifiers(BossState boss) =>
+        [.. boss.ActiveStatusEffects.Where(
+            e => e.Type == StatusEffectType.BuffDebuff && e.TargetStat == "ATK")];
+
+    /// <summary>
+    /// Resolves one atomic round, searching deterministically for an arrangement
+    /// whose Boss board action has the requested ATK-Gem outcome
+    /// (<c>ADR-026</c> §8: the Boss's move is a pure function of the board and the
+    /// retained <c>RngState</c>).
+    ///
+    /// <b>The Player phase is the pinned non-ATK fixture.</b> A fixture that clears
+    /// no ATK Gem makes the Player phase resolve no attack instance and consume no
+    /// crit draw (<c>ADR-026</c> D1), so the Boss's own action is exactly the reading
+    /// <see cref="PredictBossBoardGeneration"/> produces from the fixture. The
+    /// committed round is then checked against that reading before anything is
+    /// asserted on it, so a test can never silently describe a different board.
+    /// </summary>
+    /// <param name="battleIdPrefix">
+    /// Namespace for the generated battle ids, so the arrangements a test searches
+    /// are its own.
     /// </param>
-    /// <param name="Events">The resolution's events (<c>GAME_EVENTS.md</c> §1).</param>
-    /// <param name="Before">
-    /// The committed state the Turn started from — the post-seed, pre-resolution
-    /// state. It is what a negative assertion about a seeded instance's
-    /// <i>presence</i> must read, because step 19a may legitimately remove a
-    /// short-duration instance within the same Turn.
+    /// <param name="bossClearsAtkGem">
+    /// Whether the arrangement must produce a confirmed Boss ATK match — the gate
+    /// <c>ADR-026</c> D1 makes the whole difference between "one Damage Pipeline
+    /// execution" and "no instance at all".
     /// </param>
-    /// <param name="Committed">The battle state the resolution committed.</param>
-    private readonly record struct ResolvedSkillTurn(
-        int SkillBase,
-        IReadOnlyList<BattleEvent> Events,
-        BattleState Before,
-        BattleState Committed);
-
-    /// <summary>
-    /// Hỏa Long configured so Flame Burst fires on the Turn's own Matches: a Charge
-    /// Requirement one Match satisfies. The authored values — ATK 100 and the
-    /// Skill's 150 — are <c>BOSS_RULES.md</c> §6.1/§6.3's and are deliberately not
-    /// overridden, so the scenarios assert the documents' own numbers.
-    /// </summary>
-    private static BossDefinition CastingHoaLong() =>
-        BossDefinitions.HoaLong with
-        {
-            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 1 },
-        };
-
-    /// <summary>
-    /// Resolves one Turn in which the Boss Skill fires, optionally seeding the
-    /// documented Rage instance first, and reports the Skill's own Step-1 value.
-    ///
-    /// <b>The battle is created before the seed and re-read after it.</b> The seed
-    /// writes through the repository's <c>Sequence</c> compare-and-set
-    /// (<c>REDIS_STATE.md</c> §4), so it can only apply to a battle that exists, and
-    /// the Turn must start from the POST-seed state rather than the creation
-    /// snapshot — the same ordering <c>RootAttackConsumptionTests</c> uses.
-    ///
-    /// <b>The Skill's instance is identified structurally, not positionally.</b>
-    /// Flame Burst applies a Pet Burn that ticks at step 19a with base 50, and the
-    /// Boss's own DoT ticks are separate instances, so "the last" or "the only"
-    /// <c>DamageCalculated</c> would not reliably identify the Skill. The Skill's
-    /// instance is selected by its Step-1 value, which for every MVP Boss is at
-    /// least the stored ATK plus the authored value (≥ 200), while the step-19a
-    /// Burn tick's base is the flat 50 (<c>BOSS_RULES.md</c> §6.3.1 item 1).
-    /// </summary>
-    private static async Task<ResolvedSkillTurn> ResolveCastingTurnAsync(
-        Harness harness,
-        BossDefinition boss,
-        string battleId,
-        bool seedRage = false,
-        params StatusEffect[] seeds)
+    /// <param name="definition">The Boss definition, defaulting to Hỏa Long.</param>
+    /// <param name="arrangeBoss">
+    /// Pins the Boss combat state — its <c>ActiveStatusEffects</c>, its
+    /// <c>ATK</c>, and its <c>SkillCharge</c>/<c>SkillCooldown</c> — through
+    /// <see cref="RoundTestSupport.PinAsync"/>.
+    /// </param>
+    /// <param name="playerMatchType">
+    /// Restricts the fixture's Gem type, when a scenario needs the Player phase to
+    /// have a specific non-damaging effect (e.g. no HP-Gem healing).
+    /// </param>
+    private static async Task<BossAttackRound> ResolveBossAtkRoundAsync(
+        string battleIdPrefix,
+        bool bossClearsAtkGem,
+        BossDefinition? definition = null,
+        Func<BossState, BossState>? arrangeBoss = null,
+        GemType? playerMatchType = null)
     {
-        await harness.Service.CreateBattleAsync(battleId, Owner, Pet, boss);
+        var boss = definition ?? BossDefinitions.HoaLong;
 
-        var toSeed = seedRage ? [Rage(), .. seeds] : seeds;
-
-        foreach (var effect in toSeed)
+        for (var seed = 0UL; seed < MaxSeedAttempts; seed++)
         {
-            await SeedBossStatusEffectAsync(harness.Store, battleId, effect);
-        }
-
-        // The seed wrote through the store, so the Turn must start from the
-        // POST-seed state — re-reading it keeps the seeded instances in scope.
-        var state = (await harness.Service.GetBattleAsync(battleId))!;
-
-        if (seedRage)
-        {
-            Assert.Single(RageOn(state.BossState));
-        }
-
-        var result = (await harness.Service.ExecuteSwapAsync(
-            battleId, FindMatchProducer(state)))!.Value;
-
-        Assert.True(result.IsAccepted);
-        Assert.Contains(result.Events, e => e.Type == BattleEventType.BossSkillCast);
-
-        var committed = (await harness.Service.GetBattleAsync(battleId))!;
-
-        var skillBase = result.Events
-            .Where(e => e.Type == BattleEventType.DamageCalculated)
-            .Select(e => e.DamageCalculated)
-            .Where(c => c.Base > boss.ATK + 50)
-            .Max(c => c.Base);
-
-        return new ResolvedSkillTurn(skillBase, result.Events, state, committed);
-    }
-
-    private static StatusEffect[] RageOn(BossState boss) =>
-        [.. boss.ActiveStatusEffects.Where(e => e.Id == "Rage")];
-
-    /// <summary>
-    /// Seeds a Boss Status Effect instance through the documented Domain operation
-    /// (<c>GAME_STATE.md</c> §5.1.1 item 1), preserving every other member and
-    /// leaving <c>Sequence</c> untouched.
-    ///
-    /// <b>Why the store is written directly.</b> Hỏa Long's Rage <i>application</i>
-    /// is step 18a's Boss Passive effect and is not implemented — it is the separate
-    /// Passive half of <c>ROADMAP.md</c> Phase 1 and is explicitly out of this
-    /// task's scope. The instance is therefore arranged with the same public
-    /// <see cref="StatusEffectLifecycle.Apply"/> the resolution itself uses, so the
-    /// scenarios can demonstrate the composition §3.4 defines without a synthetic
-    /// production path. This applies no game rule and widens no production API.
-    /// </summary>
-    private static async Task SeedBossStatusEffectAsync(
-        IBattleStateRepository repository,
-        string battleId,
-        StatusEffect effect)
-    {
-        var stored = (await repository.GetAsync(battleId))!;
-
-        var applied = await repository.TryUpdateAsync(
-            stored with
+            foreach (var matchType in PlayerFixtureTypes)
             {
-                BossState = stored.BossState with
+                if (playerMatchType is { } required && matchType != required)
                 {
-                    ActiveStatusEffects = StatusEffectLifecycle.Apply(
-                        stored.BossState.ActiveStatusEffects,
-                        effect),
-                },
-            },
-            stored.Sequence);
+                    continue;
+                }
 
-        Assert.True(applied);
-    }
+                var repository = new InMemoryBattleStateRepository();
+                var service = new BattleStateService(repository, new FixedRngSeedSource());
+                var battleId = $"{battleIdPrefix}-{matchType}-{seed}";
 
-    /// <summary>
-    /// A battle service over an in-memory store, plus the store itself, so a
-    /// scenario can both run real Turns and arrange the one documented state no
-    /// implemented code path produces.
-    ///
-    /// The double models the documented creation and <c>Sequence</c>
-    /// compare-and-set (<c>REDIS_STATE.md</c> §4), so no test here passes against a
-    /// more permissive contract than the store offers.
-    /// </summary>
-    private sealed record Harness(BattleStateService Service, InMemoryBattleStateRepository Store)
-    {
-        public static Harness Create()
-        {
-            var store = new InMemoryBattleStateRepository();
+                var created = await service.CreateBattleAsync(battleId, Owner, Pet, boss, new BattleSeed(seed));
 
-            return new Harness(new BattleStateService(store, new FixedRngSeedSource()), store);
-        }
-    }
+                PinnedPlayerRound pinned;
 
-    private static SwapRequest FindMatchProducer(BattleState state) =>
-        FindMatchProducingPair(state);
+                try
+                {
+                    pinned = RoundTestSupport.PlayerMatch(
+                        matchType, created.RngState, created.LastCommittedSwapPair);
+                }
+                catch (InvalidOperationException)
+                {
+                    // The fixture could not be built for this RngState; the next
+                    // arrangement is tried rather than weakening the scenario.
+                    continue;
+                }
 
-    private static SwapRequest FindMatchProducingPair(BattleState state)
-    {
-        var committed = state.LastCommittedSwapPair;
+                // The fixture's own contract: the Player cleared no ATK Gem, so the
+                // Player phase contributes no instance to this round (ADR-026 D1).
+                Assert.Equal(0, pinned.Resources.ClearedGemCounts.Atk);
 
-        foreach (var (from, to) in AllAdjacentPairs())
-        {
-            if (committed is { } pair
-                && CommittedSwapPair.FromCells(from, to)
-                    == CommittedSwapPair.FromCells(pair.MinCellIndex, pair.MaxCellIndex))
-            {
-                continue;
-            }
+                var generation = PredictBossBoardGeneration(pinned);
 
-            if (MatchDetector.Detect(state.BoardState.WithSwapped(from, to)).Count > 0)
-            {
-                return new SwapRequest(from, to);
+                // Keep the first arrangement whose Boss action lands on the requested
+                // side of the gate: "cleared at least one ATK Gem" is the branch under
+                // test, and the search is deterministic so the same arrangement is
+                // found on every run.
+                if (generation.ClearedGemCounts.Atk > 0 != bossClearsAtkGem)
+                {
+                    continue;
+                }
+
+                var bossState = arrangeBoss?.Invoke(created.BossState) ?? created.BossState;
+
+                await RoundTestSupport.PinAsync(repository, created, pinned.Board, bossState);
+
+                var before = (await service.GetBattleAsync(battleId))!;
+                var result = (await service.ExecuteSwapAsync(battleId, pinned.Swap))!.Value;
+
+                Assert.True(result.IsAccepted);
+
+                // The reading mirrors the committed round — otherwise every expected
+                // value below would be a statement about a different board action.
+                Assert.Equal(bossClearsAtkGem, RoundTestSupport.BossClearedAtkGem(result));
+
+                var committed = (await service.GetBattleAsync(battleId))!;
+
+                return new BossAttackRound(result, generation, before, committed);
             }
         }
 
         throw new InvalidOperationException(
-            "A generated board has at least one valid Swap (MATCH3_RULES.md §1.4).");
+            $"No pinned arrangement produced a Boss board action with clearedAtk={bossClearsAtkGem}. "
+            + "This is a test-arrangement defect (ADR-026 §8): the fixture search no longer covers "
+            + "the branch under test.");
     }
 
-    private static IEnumerable<(int From, int To)> AllAdjacentPairs()
+    /// <summary>
+    /// The resources the Boss's own board action generates, read forward from the
+    /// Player-phase fixture: the board the Player phase left
+    /// (<c>pinned.Resolution.Board</c>) and the retained <c>RngState</c> the round
+    /// committed (<c>GAME_STATE.md</c> §2.6.2 item 2).
+    ///
+    /// <b>This is the documented rate table applied to the Boss's own clears, not a
+    /// second implementation of the round.</b> The move is
+    /// <see cref="BossAiEngine.SelectMove"/>'s (<c>ADR-026</c> §8), the cascade is
+    /// <see cref="CascadeResolver"/>'s, and the pools are
+    /// <see cref="ResourceGenerator"/>'s (<c>COMBAT_RULES.md</c> §2) — the same
+    /// Domain stages <c>BattleStateService.ResolveSwapAsync</c> calls for the Boss
+    /// phase, in the same order.
+    /// </summary>
+    private static ResourceGeneration PredictBossBoardGeneration(PinnedPlayerRound pinned)
     {
-        for (var index = 0; index < BoardState.CellCount; index++)
+        var rngState = pinned.Resolution.RngState;
+
+        var move = BossAiEngine.SelectMove(
+            pinned.Resolution.Board, new Pcg32(rngState.State, rngState.Increment));
+
+        // ADR-026 §8: only a deadlock (zero legal swaps) moves the board and the
+        // stream, through the engine's own bounded deterministic reshuffle.
+        var resolveState = move.Reshuffled ? move.RngState : rngState;
+
+        var resolution = CascadeResolver.Resolve(
+            move.Board.WithSwapped(move.SelectedMove.From, move.SelectedMove.To),
+            new Pcg32(resolveState.State, resolveState.Increment),
+            swapOriginIndex: null);
+
+        return ResourceGenerator.Generate(resolution);
+    }
+
+    /// <summary>
+    /// The index of the round's Boss damage instance — located by
+    /// <c>DamageDealt.Source == DamageParty.Boss</c>, the report that names the
+    /// dealer (<c>GAME_EVENTS.md</c> §2), never by position or by a value heuristic.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// The round carries no Boss-sourced instance, which <c>ADR-026</c> D1 makes the
+    /// correct outcome for a gate-closed round — callers that expect one must have
+    /// arranged the gate open.
+    /// </exception>
+    private static int BossAttackCalculatedIndex(SwapExecutionResult result)
+    {
+        for (var index = 0; index + 1 < result.Events.Count; index++)
         {
-            var right = BoardState.ToColumn(index) + 1 < BoardState.Columns ? index + 1 : -1;
-            var down = index + BoardState.Width < BoardState.CellCount ? index + BoardState.Width : -1;
-
-            if (right >= 0)
+            if (result.Events[index].Type == BattleEventType.DamageCalculated
+                && result.Events[index + 1].Type == BattleEventType.DamageDealt
+                && result.Events[index + 1].DamageDealt.Source == DamageParty.Boss)
             {
-                yield return (index, right);
-            }
-
-            if (down >= 0)
-            {
-                yield return (index, down);
+                return index;
             }
         }
+
+        throw new InvalidOperationException(
+            "ADR-026 D1: the round carries no Boss-sourced damage instance — its "
+            + "DamageDealt.Source == DamageParty.Boss report is absent.");
     }
+
+    /// <summary>The step-1..6 breakdown of the round's Boss instance.</summary>
+    private static DamageCalculation BossAttackCalculation(SwapExecutionResult result) =>
+        result.Events[BossAttackCalculatedIndex(result)].DamageCalculated;
+
+    /// <summary>
+    /// How many Boss-sourced damage instances the round carries — <c>ADR-026</c> D1
+    /// makes it zero or one.
+    /// </summary>
+    private static int BossAttackInstanceCount(SwapExecutionResult result) =>
+        result.Events.Count(
+            e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Boss);
+
+    /// <summary>How many damage calculations the round reports at all.</summary>
+    private static int BossDamageCalculationCount(SwapExecutionResult result) =>
+        result.Events.Count(e => e.Type == BattleEventType.DamageCalculated);
 }

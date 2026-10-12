@@ -1,6 +1,7 @@
 namespace GameServer.Domain.Match3;
 
 using GameServer.Domain.Battle;
+using GameServer.Domain.Combat;
 
 /// <summary>
 /// The outcome of executing one requested Swap
@@ -468,13 +469,11 @@ public static class SwapExecutor
         // cumulative total forward.
         var (combo, matchCount) = AccountMatches(state.MatchCount, resolution);
 
-        // Step 6 (GAME_RULES.md §17 step 12, COMBAT_RULES.md §2): Generate
-        // Resources. The cleared Gems the resolution already recorded are converted
-        // into the documented pools — permanently for Power, transiently for the
-        // three pools the downstream steps of this same resolution consume.
-        //
+        // Step 6 (GAME_RULES.md §17 step 12, COMBAT_RULES.md §2, ADR-026): Generate
+        // Resources & Apply actor-relative DEF and HP match effects.
         var generation = ResourceGenerator.Generate(resolution);
         var petState = ResourceGenerator.ApplyHeal(state.PetState, generation, state.BossState.ActiveStatusEffects);
+        petState = ResourceGenerator.ApplyShield(petState, generation);
 
         // Step 7 (GAME_EVENTS.md §1, §1.1, §2): the ordered Battle Events that
         // describe the resolution just performed. They are produced from

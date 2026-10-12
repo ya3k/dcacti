@@ -622,11 +622,20 @@ public class Task177RelicFiringPointRuntimeTests
         Assert.NotNull(stored);
 
         var prepared = stored! with { BossState = stored.BossState with { HP = 10 } };
-        await repository.TryUpdateAsync(prepared, prepared.Sequence);
 
-        var second = await service.ExecuteSwapAsync(
-            "battle-next-attack-sharing",
-            FindMatchProducingPair(prepared));
+        // The second Swap's own attack is the shared consumption site, so its board is
+        // the pinned ATK fixture (ADR-026 D1): a Swap that cleared no ATK Gem resolves
+        // no qualifying attack and would legitimately leave both elements standing.
+        var pinned = RoundTestSupport.PlayerMatch(
+            GemType.Atk,
+            prepared.RngState,
+            prepared.LastCommittedSwapPair);
+
+        Assert.True(pinned.Resources.ClearedGemCounts.Atk > 0);
+
+        await RoundTestSupport.PinAsync(repository, prepared, pinned.Board);
+
+        var second = await service.ExecuteSwapAsync("battle-next-attack-sharing", pinned.Swap);
 
         Assert.NotNull(second);
         Assert.True(second!.Value.IsAccepted);
@@ -922,10 +931,20 @@ public class Task177RelicFiringPointRuntimeTests
         {
             BossState = stored.BossState with { HP = 10 },
         };
-        await repository.TryUpdateAsync(prepared, prepared.Sequence);
 
-        var pair = FindMatchProducingPair(prepared);
-        var second = await service.ExecuteSwapAsync(battleId, pair);
+        // The second Swap's own attack must qualify (ADR-026 D1) for the consumption
+        // boundary under test to be reached at all, so its board is the pinned ATK
+        // fixture rather than a drawn one.
+        var pinned = RoundTestSupport.PlayerMatch(
+            GemType.Atk,
+            prepared.RngState,
+            prepared.LastCommittedSwapPair);
+
+        Assert.True(pinned.Resources.ClearedGemCounts.Atk > 0);
+
+        await RoundTestSupport.PinAsync(repository, prepared, pinned.Board);
+
+        var second = await service.ExecuteSwapAsync(battleId, pinned.Swap);
 
         Assert.NotNull(second);
         Assert.True(second!.Value.IsAccepted);

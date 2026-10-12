@@ -445,4 +445,156 @@ public static class ResourceGenerator
         ResourceGeneration generation,
         IReadOnlyList<Battle.StatusEffect>? bossStatusEffects = null) =>
         ApplyHeal(previous, generation.HealPool, bossStatusEffects);
+
+    /// <summary>
+    /// Applies HP-gem healing to Boss HP, clamped to MaxHP (<c>ADR-026</c> D2, <c>COMBAT_RULES.md</c> §4 item 1).
+    /// </summary>
+    public static Battle.BossState ApplyBossHeal(
+        Battle.BossState previous,
+        int rawHeal) =>
+        Combat.HealResolution.ApplyBossHeal(previous, rawHeal);
+
+    public static Battle.BossState ApplyBossHeal(
+        Battle.BossState previous,
+        ResourceGeneration generation) =>
+        ApplyBossHeal(previous, generation.HealPool);
+
+    /// <summary>
+    /// Applies DEF-gem Shield to the active Pet (<c>ADR-026</c> Scope B, <c>COMBAT_RULES.md</c> §4 items 2–3).
+    /// </summary>
+    public static Battle.PetState ApplyShield(
+        Battle.PetState previous,
+        int defensePool)
+    {
+        if (defensePool <= 0)
+        {
+            return previous;
+        }
+
+        var shield = Battle.StatusEffect.TriggerBased(
+            "Shield",
+            Battle.StatusEffectType.Shield,
+            Battle.StatusEffectSource.Player,
+            defensePool,
+            Battle.StatusEffect.ShieldDepletedCondition);
+
+        return previous with
+        {
+            ActiveStatusEffects = Battle.StatusEffectLifecycle.ApplyShield(previous.ActiveStatusEffects, shield),
+        };
+    }
+
+    public static Battle.PetState ApplyShield(
+        Battle.PetState previous,
+        ResourceGeneration generation) =>
+        ApplyShield(previous, generation.DefensePool);
+
+    /// <summary>
+    /// Applies DEF-gem Shield to the Boss (<c>ADR-026</c> Scope B, <c>COMBAT_RULES.md</c> §4 items 2–3).
+    /// </summary>
+    public static Battle.BossState ApplyShield(
+        Battle.BossState previous,
+        int defensePool)
+    {
+        if (defensePool <= 0)
+        {
+            return previous;
+        }
+
+        var shield = Battle.StatusEffect.TriggerBased(
+            "Shield",
+            Battle.StatusEffectType.Shield,
+            Battle.StatusEffectSource.Boss,
+            defensePool,
+            Battle.StatusEffect.ShieldDepletedCondition);
+
+        return previous with
+        {
+            ActiveStatusEffects = Battle.StatusEffectLifecycle.ApplyShield(previous.ActiveStatusEffects, shield),
+        };
+    }
+
+    public static Battle.BossState ApplyShield(
+        Battle.BossState previous,
+        ResourceGeneration generation) =>
+        ApplyShield(previous, generation.DefensePool);
+
+    /// <summary>
+    /// Counts valid POWER match groups in a cascade resolution (<c>ADR-026</c> T1).
+    /// Each valid POWER match shape contributes +1 group.
+    /// </summary>
+    public static int CountPowerMatchGroups(CascadeResolver.CascadeResult resolution)
+    {
+        var count = 0;
+        if (resolution.Passes == null)
+        {
+            return 0;
+        }
+
+        for (var i = 0; i < resolution.Passes.Count; i++)
+        {
+            var matches = resolution.Passes[i].Matches;
+            for (var j = 0; j < matches.Count; j++)
+            {
+                if (matches[j].Shape.GemType == GemType.Power)
+                {
+                    count++;
+                }
+            }
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// Increments Boss SkillCharge from Boss-matched POWER match groups, clamped to ChargeRequirement
+    /// (<c>ADR-026</c> T1, T2, D2).
+    /// </summary>
+    public static Battle.BossState ApplyBossSkillCharge(
+        Battle.BossState previous,
+        int powerMatchGroups,
+        int chargeRequirement)
+    {
+        if (powerMatchGroups <= 0)
+        {
+            return previous;
+        }
+
+        var updated = Math.Min(previous.SkillCharge + powerMatchGroups, chargeRequirement);
+        return previous with { SkillCharge = updated };
+    }
+
+    public static Battle.BossState ApplyBossSkillCharge(
+        Battle.BossState previous,
+        CascadeResolver.CascadeResult resolution,
+        int chargeRequirement) =>
+        ApplyBossSkillCharge(previous, CountPowerMatchGroups(resolution), chargeRequirement);
+
+    /// <summary>
+    /// Applies actor-relative match effects (DEF Shield, HP Heal, POWER) according to the acting actor
+    /// (<c>ADR-026</c> Scope B, Scope E).
+    /// </summary>
+    public static (Battle.PetState Pet, Battle.BossState Boss) ApplyActorMatchEffects(
+        Combat.DamageParty actingParty,
+        Battle.PetState petState,
+        Battle.BossState bossState,
+        ResourceGeneration generation,
+        CascadeResolver.CascadeResult resolution,
+        int bossSkillChargeRequirement)
+    {
+        if (actingParty == Combat.DamageParty.Player)
+        {
+            var updatedPet = ApplyHeal(petState, generation, bossState.ActiveStatusEffects);
+            updatedPet = ApplyShield(updatedPet, generation);
+            updatedPet = ApplyPower(updatedPet, generation);
+            return (updatedPet, bossState);
+        }
+        else
+        {
+            var updatedBoss = ApplyBossHeal(bossState, generation);
+            updatedBoss = ApplyShield(updatedBoss, generation);
+            updatedBoss = ApplyBossSkillCharge(updatedBoss, resolution, bossSkillChargeRequirement);
+            return (petState, updatedBoss);
+        }
+    }
 }

@@ -161,36 +161,65 @@ public class BossPassiveEffectsTests
     [Fact]
     public async Task MocYeuRegen_ShouldHealFivePercentMaxHpAtStep18a()
     {
+        // BOSS_RULES.md §6.2.3: the Boss heals 5% of MaxHP per trigger, truncated, at
+        // GAME_RULES.md §17 step 18b. Two battles carry the SAME pinned Turn fixture and
+        // the SAME Boss HP and differ only in whether the Passive's Threshold is
+        // reachable: the firing arm's Threshold is 1 (any batch reaches it) and the
+        // control's is 1000 (no batch can), so the HP difference between them IS the
+        // §6.2.3 regen — the round's own Player damage and the Boss's own step-18a HP-Gem
+        // healing are identical in both arms and cancel.
+        //
+        // Deriving the value this way is what ADR-026 makes necessary: §17 orders 18a
+        // (the Boss's own board action, which heals it from its HP Gems) before 18b, so
+        // "3000 − damage + regen" is no longer the whole movement.
         var repo = new InMemoryBattleStateRepository();
         var service = new BattleStateService(repo, new FixedRngSeedSource());
-        var boss = BossDefinitions.MocYeu with
-        {
-            PassiveDefinition = BossDefinitions.MocYeu.PassiveDefinition with { Threshold = 1 },
-        };
 
-        var created = await service.CreateBattleAsync("battle-regen-1", Owner, Pet, boss);
+        var firing = await ResolveMocYeuTurnAsync(
+            repo,
+            service,
+            "battle-regen-1",
+            boss: BossDefinitions.MocYeu with
+            {
+                PassiveDefinition = BossDefinitions.MocYeu.PassiveDefinition with { Threshold = 1 },
+            },
+            bossHp: 3000,
+            progressCurrent: 0);
 
-        // Put Boss at 3000 HP (out of 5000)
-        var setup = created with
-        {
-            BoardState = Match3Board(),
-            BossState = created.BossState with { HP = 3000 },
-        };
-        await repo.TryUpdateAsync(setup, setup.Sequence);
+        var control = await ResolveMocYeuTurnAsync(
+            repo,
+            service,
+            "battle-regen-1-control",
+            boss: BossDefinitions.MocYeu with
+            {
+                PassiveDefinition = BossDefinitions.MocYeu.PassiveDefinition with { Threshold = 1000 },
+            },
+            bossHp: 3000,
+            progressCurrent: 0);
 
-        var result = await service.ExecuteSwapAsync("battle-regen-1", new SwapRequest(26, 34));
-        Assert.NotNull(result);
+        Assert.Contains(
+            firing.Events,
+            e => e.Type == BattleEventType.PassiveTriggered
+                && e.PassiveTriggered.PassiveId.Value == "boss-moc-yeu-regen");
+        Assert.DoesNotContain(firing.Events, e => e.Type == BattleEventType.BattleWon);
 
-        var playerDmg = result!.Value.Events
-            .First(e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Player)
-            .DamageDealt.Amount;
+        Assert.DoesNotContain(
+            control.Events,
+            e => e.Type == BattleEventType.PassiveTriggered
+                && e.PassiveTriggered.PassiveId.Value == "boss-moc-yeu-regen");
 
-        // 5% of 5000 = 250 regen
-        var expectedHp = 3000 - playerDmg + 250;
-        Assert.Equal(expectedHp, result.Value.State.BossState.HP);
+        // 5% of 5000 = 250: the ONLY difference between the two arms.
+        Assert.Equal(5000, firing.SettledBoss.MaxHP);
+        Assert.Equal(250, firing.SettledBoss.HP - control.SettledBoss.HP);
 
-        // No StatusEffect created
-        Assert.Empty(result.Value.State.BossState.ActiveStatusEffects);
+        // No StatusEffect is created by the regen: the firing arm's Boss effect
+        // collection is exactly the control's (both carry whatever this Turn's step 18a
+        // produced from the Boss's own Gems, and nothing more).
+        Assert.True(
+            StatusEffectLifecycle.EffectsEqual(
+                control.SettledBoss.ActiveStatusEffects,
+                firing.SettledBoss.ActiveStatusEffects),
+            "§6.2.3's regen is an HP mutation and creates no Status Effect instance");
     }
 
     [Fact]
@@ -442,10 +471,22 @@ public class BossPassiveEffectsTests
         var bossDmg3 = turn3Result.Value.Events
             .Where(e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Boss)
             .Sum(e => e.DamageDealt.Amount);
-        Assert.Equal(500 + expectedTurn3Heal - bossDmg3, turn3Result.Value.State.PetState.HP);
 
-        // After Step 19a, boss-thuy-ma-heal is expired and removed
-        Assert.Empty(turn3Result.Value.State.BossState.ActiveStatusEffects);
+        // COMBAT_RULES.md §4 item 1: healing restores HP up to Max HP and the overheal is
+        // discarded, so the settled value is the heal less the Boss's instance, bounded by
+        // the 1000 pinned here.
+        Assert.Equal(
+            Math.Min(500 + expectedTurn3Heal - bossDmg3, 1000),
+            turn3Result.Value.State.PetState.HP);
+
+        // After Step 19a, boss-thuy-ma-heal is expired and removed. The assertion is
+        // scoped to that instance: §17 step 18a's actor-relative effects put whatever the
+        // Boss's own board action produced (its DEF Gems' Shield, its HP Gems' healing)
+        // on the same collection in the same round, and none of those is this Passive's
+        // healing reduction.
+        Assert.DoesNotContain(
+            turn3Result.Value.State.BossState.ActiveStatusEffects,
+            e => e.Id == "boss-thuy-ma-heal");
 
         // Setup Turn 4 swap with another HP match
         var setupTurn4 = turn3Result.Value.State with
@@ -456,14 +497,19 @@ public class BossPassiveEffectsTests
         };
         await repo.TryUpdateAsync(setupTurn4, setupTurn4.Sequence);
 
-        // Turn 4 swap: effect is gone, healing is at 100%
+        // Turn 4 swap: effect is gone, healing is at 100% — and COMBAT_RULES.md §4
+        // item 1's MaxHP ceiling still bounds the restored HP, because the Boss's own
+        // step-18a board action advances the RngState, so this Turn's spawned board can
+        // cascade far more HP Gems than the Turn-3 board did.
         var turn4Result = await service.ExecuteSwapAsync("battle-thuy-ma-expiry", new SwapRequest(26, 34));
         Assert.NotNull(turn4Result);
         Assert.True(turn4Result!.Value.Resources.HealPool > 0);
         var bossDmg4 = turn4Result.Value.Events
             .Where(e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Boss)
             .Sum(e => e.DamageDealt.Amount);
-        Assert.Equal(500 + turn4Result.Value.Resources.HealPool - bossDmg4, turn4Result.Value.State.PetState.HP);
+        Assert.Equal(
+            Math.Min(500 + turn4Result.Value.Resources.HealPool - bossDmg4, 1000),
+            turn4Result.Value.State.PetState.HP);
     }
 
     // =======================================================================
@@ -475,40 +521,55 @@ public class BossPassiveEffectsTests
     {
         var repo = new InMemoryBattleStateRepository();
         var service = new BattleStateService(repo, new FixedRngSeedSource());
-        var boss = BossDefinitions.MocYeu;
 
-        Assert.Equal(8, boss.PassiveThreshold);
+        Assert.Equal(8, BossDefinitions.MocYeu.PassiveThreshold);
 
-        var created = await service.CreateBattleAsync("task200-under-thresh", Owner, Pet, boss);
-        var setup = created with
-        {
-            BoardState = Match3Board(),
-            BossState = created.BossState with
-            {
-                HP = 3000,
-                // Match3Board() swap (26,34) produces 7 matches.
-                // Setting initial Current to 0 produces 0 + 7 = 7 matches (< 8).
-                PassiveProgress = new PassiveProgress(Current: 0, Threshold: 8),
-            },
-        };
-        await repo.TryUpdateAsync(setup, setup.Sequence);
+        // The un-triggered arm: progress starts at 0 against the documented Threshold 8,
+        // and the Turn's own batch is asserted to be short of it rather than assumed to
+        // be.
+        var below = await ResolveMocYeuTurnAsync(
+            repo,
+            service,
+            "task200-under-thresh",
+            BossDefinitions.MocYeu,
+            bossHp: 3000,
+            progressCurrent: 0);
 
-        var result = await service.ExecuteSwapAsync("task200-under-thresh", new SwapRequest(26, 34));
-        Assert.NotNull(result);
-        Assert.True(result!.Value.IsAccepted);
+        Assert.True(
+            below.PlayerMatches < 8,
+            $"the fixture Turn must produce fewer than 8 Player Matches but produced {below.PlayerMatches}");
 
-        var bossState = result.Value.State.BossState;
-        Assert.Equal(7, bossState.PassiveProgress.Current);
-        Assert.Equal(8, bossState.PassiveProgress.Threshold);
+        // §2 item 1 / §2 item 3: below the Threshold nothing resets, so the settled
+        // progress is the accumulated batch.
+        Assert.Equal(below.PlayerMatches, below.SettledBoss.PassiveProgress.Current);
+        Assert.Equal(8, below.SettledBoss.PassiveProgress.Threshold);
 
         // No PassiveTriggered event emitted
-        Assert.DoesNotContain(result.Value.Events, e => e.Type == BattleEventType.PassiveTriggered && e.PassiveTriggered.PassiveId.Value == "boss-moc-yeu-regen");
+        Assert.DoesNotContain(below.Events, e => e.Type == BattleEventType.PassiveTriggered && e.PassiveTriggered.PassiveId.Value == "boss-moc-yeu-regen");
 
-        // Boss HP does NOT receive 250 HP regen
-        var playerDmg = result.Value.Events
-            .First(e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Player)
-            .DamageDealt.Amount;
-        Assert.Equal(3000 - playerDmg, bossState.HP);
+        // The positive control: the same pinned Turn with progress pinned to the exact
+        // crossing (8 − the batch). Its HP is the below arm's plus §6.2.3's one 250-HP
+        // regen and nothing else — which is what makes "the Boss HP does NOT receive 250
+        // HP regen" below an assertion about the Passive rather than about the Turn's
+        // other movements.
+        var crossing = await ResolveMocYeuTurnAsync(
+            repo,
+            service,
+            "task200-under-thresh-crossing",
+            BossDefinitions.MocYeu,
+            bossHp: 3000,
+            progressCurrent: 8 - below.PlayerMatches);
+
+        Assert.Contains(
+            crossing.Events,
+            e => e.Type == BattleEventType.PassiveTriggered
+                && e.PassiveTriggered.PassiveId.Value == "boss-moc-yeu-regen");
+
+        Assert.Equal(250, crossing.SettledBoss.HP - below.SettledBoss.HP);
+
+        // Boss HP does NOT receive 250 HP regen on the below arm: it is the crossing
+        // arm's HP less that same regen, with every other movement identical.
+        Assert.Equal(crossing.SettledBoss.HP - 250, below.SettledBoss.HP);
     }
 
     [Fact]
@@ -516,39 +577,49 @@ public class BossPassiveEffectsTests
     {
         var repo = new InMemoryBattleStateRepository();
         var service = new BattleStateService(repo, new FixedRngSeedSource());
-        var boss = BossDefinitions.MocYeu;
 
-        var created = await service.CreateBattleAsync("task200-exact-thresh", Owner, Pet, boss);
-        var setup = created with
-        {
-            BoardState = Match3Board(),
-            BossState = created.BossState with
-            {
-                HP = 3000,
-                // Match3Board() swap (26,34) produces 7 matches.
-                // Setting initial Current to 1 produces 1 + 7 = 8 matches (== 8) -> triggers!
-                PassiveProgress = new PassiveProgress(Current: 1, Threshold: 8),
-            },
-        };
-        await repo.TryUpdateAsync(setup, setup.Sequence);
+        // The exact crossing is arranged from the Turn's OWN batch: the un-triggered arm
+        // reports how many Player Matches this pinned Turn produced, and the crossing arm
+        // pins progress to exactly 8 − that batch. So the batch carries progress to 8 and
+        // no further — the boundary §2 item 3's single post-batch evaluation turns on.
+        var below = await ResolveMocYeuTurnAsync(
+            repo,
+            service,
+            "task200-exact-thresh",
+            BossDefinitions.MocYeu,
+            bossHp: 3000,
+            progressCurrent: 0);
 
-        var result = await service.ExecuteSwapAsync("task200-exact-thresh", new SwapRequest(26, 34));
-        Assert.NotNull(result);
-        Assert.True(result!.Value.IsAccepted);
+        Assert.True(
+            below.PlayerMatches < 8,
+            $"the fixture Turn must produce fewer than 8 Player Matches but produced {below.PlayerMatches}");
 
-        var bossState = result.Value.State.BossState;
+        var crossing = await ResolveMocYeuTurnAsync(
+            repo,
+            service,
+            "task200-exact-thresh-crossing",
+            BossDefinitions.MocYeu,
+            bossHp: 3000,
+            progressCurrent: 8 - below.PlayerMatches);
+
+        var bossState = crossing.SettledBoss;
+
         // Default reset behavior resets to 0
         Assert.Equal(0, bossState.PassiveProgress.Current);
         Assert.Equal(8, bossState.PassiveProgress.Threshold);
 
-        // PassiveTriggered event emitted for boss-moc-yeu-regen
-        Assert.Contains(result.Value.Events, e => e.Type == BattleEventType.PassiveTriggered && e.PassiveTriggered.PassiveId.Value == "boss-moc-yeu-regen");
+        // PassiveTriggered event emitted for boss-moc-yeu-regen, reporting the
+        // pre-reset progress at the crossing (GAME_EVENTS.md §2 item 2).
+        var triggered = Assert.Single(
+            crossing.Events,
+            e => e.Type == BattleEventType.PassiveTriggered
+                && e.PassiveTriggered.PassiveId.Value == "boss-moc-yeu-regen");
 
-        // Boss HP receives exactly 5% MaxHP (250 HP)
-        var playerDmg = result.Value.Events
-            .First(e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Player)
-            .DamageDealt.Amount;
-        Assert.Equal(3000 - playerDmg + 250, bossState.HP);
+        Assert.Equal(8, triggered.PassiveTriggered.Progress);
+
+        // Boss HP receives exactly 5% MaxHP (250 HP) — measured against the identical
+        // un-triggered arm, so the Turn's own damage and step-18a healing cancel.
+        Assert.Equal(250, crossing.SettledBoss.HP - below.SettledBoss.HP);
     }
 
     [Fact]
@@ -556,30 +627,36 @@ public class BossPassiveEffectsTests
     {
         var repo = new InMemoryBattleStateRepository();
         var service = new BattleStateService(repo, new FixedRngSeedSource());
-        var boss = BossDefinitions.MocYeu;
 
-        var created = await service.CreateBattleAsync("task200-magnitude", Owner, Pet, boss);
-        var setup = created with
-        {
-            BoardState = Match3Board(),
-            BossState = created.BossState with
-            {
-                HP = 2000,
-                PassiveProgress = new PassiveProgress(Current: 1, Threshold: 8),
-            },
-        };
-        await repo.TryUpdateAsync(setup, setup.Sequence);
+        var below = await ResolveMocYeuTurnAsync(
+            repo,
+            service,
+            "task200-magnitude",
+            BossDefinitions.MocYeu,
+            bossHp: 2000,
+            progressCurrent: 0);
 
-        var result = await service.ExecuteSwapAsync("task200-magnitude", new SwapRequest(26, 34));
-        Assert.NotNull(result);
+        var crossing = await ResolveMocYeuTurnAsync(
+            repo,
+            service,
+            "task200-magnitude-crossing",
+            BossDefinitions.MocYeu,
+            bossHp: 2000,
+            progressCurrent: 8 - below.PlayerMatches);
 
-        var playerDmg = result!.Value.Events
-            .First(e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Player)
-            .DamageDealt.Amount;
-
-        // 5000 * 5 / 100 = 250 exactly
+        // BOSS_RULES.md §6.2.3: 5000 * 5 / 100 = 250 exactly, truncated toward zero and
+        // clamped to MaxHP. The two arms share every other movement of the Turn, so the
+        // difference is the regen itself.
         const int expectedRegen = 250;
-        Assert.Equal(2000 - playerDmg + expectedRegen, result.Value.State.BossState.HP);
+
+        Assert.Equal(5000, crossing.SettledBoss.MaxHP);
+        Assert.Equal(expectedRegen, crossing.SettledBoss.HP - below.SettledBoss.HP);
+
+        // And the settled value is the pinned HP moved by that regen plus the Turn's own
+        // (Boss healing − Player damage), which the un-triggered arm reports exactly.
+        Assert.Equal(
+            below.SettledBoss.HP + expectedRegen,
+            crossing.SettledBoss.HP);
     }
 
     [Fact]
@@ -587,40 +664,72 @@ public class BossPassiveEffectsTests
     {
         var repo = new InMemoryBattleStateRepository();
         var service = new BattleStateService(repo, new FixedRngSeedSource());
-        var boss = BossDefinitions.MocYeu;
 
-        var created = await service.CreateBattleAsync("task200-repeated", Owner, Pet, boss);
+        // Cycle 1: progress pinned AT the Threshold, so the Turn's own batch carries it
+        // across the single post-batch evaluation and the Default reset
+        // (PASSIVE_RULES.md §4 item 1 / §2 item 3) settles it at 0.
+        var cycle1 = await ResolveMocYeuTurnAsync(
+            repo,
+            service,
+            "task200-repeated",
+            BossDefinitions.MocYeu,
+            bossHp: 3000,
+            progressCurrent: 8);
 
-        // Cycle 1: 1 + 7 -> 8 (trigger 1)
-        var setup1 = created with
-        {
-            BoardState = Match3Board(),
-            BossState = created.BossState with
-            {
-                HP = 3000,
-                PassiveProgress = new PassiveProgress(Current: 1, Threshold: 8),
-            },
-        };
-        await repo.TryUpdateAsync(setup1, setup1.Sequence);
-        var res1 = await service.ExecuteSwapAsync("task200-repeated", new SwapRequest(26, 34));
-        Assert.NotNull(res1);
-        Assert.Equal(0, res1!.Value.State.BossState.PassiveProgress.Current);
+        Assert.Equal(0, cycle1.SettledBoss.PassiveProgress.Current);
+        Assert.Contains(
+            cycle1.Events,
+            e => e.Type == BattleEventType.PassiveTriggered
+                && e.PassiveTriggered.PassiveId.Value == "boss-moc-yeu-regen");
 
-        // Cycle 2: set to 1 again with fresh board state and LastCommittedSwapPair = null
-        var setup2 = res1.Value.State with
-        {
-            BoardState = Match3Board(),
-            LastCommittedSwapPair = null,
-            BossState = res1.Value.State.BossState with
-            {
-                PassiveProgress = new PassiveProgress(Current: 1, Threshold: 8),
-            },
-        };
-        await repo.TryUpdateAsync(setup2, setup2.Sequence);
-        var res2 = await service.ExecuteSwapAsync("task200-repeated", new SwapRequest(26, 34));
-        Assert.NotNull(res2);
-        Assert.Equal(0, res2!.Value.State.BossState.PassiveProgress.Current);
-        Assert.Contains(res2.Value.Events, e => e.Type == BattleEventType.PassiveTriggered && e.PassiveTriggered.PassiveId.Value == "boss-moc-yeu-regen");
+        // Cycle 2: the same battle's next Turn, re-pinned to the same documented
+        // arrangement — a fresh Turn fixture (the committed pair may not repeat,
+        // MATCH3_RULES.md §2.1.4) and progress at the Threshold again. The crossing is
+        // therefore arranged identically rather than left to whatever the advanced RNG
+        // stream happened to spawn.
+        var cycle2 = await ResolveLaterMocYeuTurnAsync(
+            repo,
+            service,
+            "task200-repeated",
+            bossHp: 3000,
+            progressCurrent: 8);
+
+        Assert.Equal(0, cycle2.SettledBoss.PassiveProgress.Current);
+        Assert.Contains(
+            cycle2.Events,
+            e => e.Type == BattleEventType.PassiveTriggered
+                && e.PassiveTriggered.PassiveId.Value == "boss-moc-yeu-regen");
+
+        // Both cycles produced §6.2.3's one 250-HP regen. Each cycle is compared against
+        // a control battle with the SAME history whose Passive progress is pinned below
+        // the crossing, so the two arms differ in nothing but whether the regen fired.
+        //
+        // Cycle 1's control is a first Turn at progress 0; cycle 2's must replay cycle 1
+        // as well, because a Turn's own HP movement depends on the RngState the previous
+        // Turn's Boss phase left behind.
+        var control1 = await ResolveMocYeuTurnAsync(
+            repo,
+            service,
+            "task200-repeated-control",
+            BossDefinitions.MocYeu,
+            bossHp: 3000,
+            progressCurrent: 0);
+
+        Assert.Equal(250, cycle1.SettledBoss.HP - control1.SettledBoss.HP);
+
+        var control2 = await ResolveLaterMocYeuTurnAsync(
+            repo,
+            service,
+            "task200-repeated-control",
+            bossHp: 3000,
+            progressCurrent: 0);
+
+        Assert.DoesNotContain(
+            control2.Events,
+            e => e.Type == BattleEventType.PassiveTriggered
+                && e.PassiveTriggered.PassiveId.Value == "boss-moc-yeu-regen");
+
+        Assert.Equal(250, cycle2.SettledBoss.HP - control2.SettledBoss.HP);
     }
 
     [Fact]
@@ -701,5 +810,133 @@ public class BossPassiveEffectsTests
 
         // No PassiveTriggered event on terminal path (GAME_RULES.md §17 step 18 skipped on boss death)
         Assert.DoesNotContain(result.Value.Events, e => e.Type == BattleEventType.PassiveTriggered && e.PassiveTriggered.PassiveId.Value == "boss-moc-yeu-regen");
+    }
+
+    // =======================================================================
+    // Mộc Yêu Turn harness — ADR-026's pinned board and the step-18b HP point
+    // =======================================================================
+
+    /// <summary>
+    /// One committed Mộc Yêu Turn: the settled Boss state, the round's events, the
+    /// Player Match count its Cascade produced, and the Player → Boss damage it dealt.
+    /// </summary>
+    /// <param name="SettledBoss">The Boss state the Turn settled at.</param>
+    /// <param name="Events">The round's ordered events (<c>GAME_EVENTS.md</c> §1).</param>
+    /// <param name="PlayerMatches">
+    /// The Cascade's own Match total (<c>MATCH3_RULES.md</c> §3 item 5) — the batch
+    /// <c>PASSIVE_RULES.md</c> §2 item 1 charges the Boss Passive with.
+    /// </param>
+    /// <param name="PlayerDamage">
+    /// The Player → Boss instance's damage, read from the round's own reports. It is the
+    /// Player phase's contribution to the HP movement a Turn reports.
+    /// </param>
+    private readonly record struct MocYeuTurn(
+        BossState SettledBoss,
+        IReadOnlyList<BattleEvent> Events,
+        int PlayerMatches,
+        int PlayerDamage);
+
+    /// <summary>
+    /// Creates a Mộc Yêu battle and resolves one pinned Turn of it.
+    /// </summary>
+    /// <param name="repository">The battle's active-state store.</param>
+    /// <param name="service">The pipeline under test.</param>
+    /// <param name="battleId">The battle session to create and resolve.</param>
+    /// <param name="boss">The Boss definition the Turn is fought against.</param>
+    /// <param name="bossHp">The documented state value the Boss's HP is pinned to.</param>
+    /// <param name="progressCurrent">
+    /// The Boss Passive's progress entering the Turn, against the definition's own
+    /// Threshold. <c>PASSIVE_RULES.md</c> §2 item 3 evaluates the Threshold once, after
+    /// the whole batch, so pinning this value is what makes an exact crossing (or a
+    /// deliberate non-crossing) a property of the scenario.
+    /// </param>
+    private static async Task<MocYeuTurn> ResolveMocYeuTurnAsync(
+        InMemoryBattleStateRepository repository,
+        BattleStateService service,
+        string battleId,
+        BossDefinition boss,
+        int bossHp,
+        int progressCurrent)
+    {
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, boss);
+
+        return await ResolvePinnedTurnAsync(repository, service, battleId, created, bossHp, progressCurrent);
+    }
+
+    /// <summary>
+    /// Resolves one further Turn of an existing Mộc Yêu battle, on a fresh Turn fixture
+    /// (the committed pair may not repeat — <c>MATCH3_RULES.md</c> §2.1.4) and with the
+    /// Boss HP and Passive progress re-pinned to the same documented arrangement.
+    /// </summary>
+    private static async Task<MocYeuTurn> ResolveLaterMocYeuTurnAsync(
+        InMemoryBattleStateRepository repository,
+        BattleStateService service,
+        string battleId,
+        int bossHp,
+        int progressCurrent)
+    {
+        var stored = (await repository.GetAsync(battleId))!;
+
+        return await ResolvePinnedTurnAsync(repository, service, battleId, stored, bossHp, progressCurrent);
+    }
+
+    /// <summary>
+    /// Pins the Turn's board fixture, the Boss HP, and the Boss Passive's progress on the
+    /// stored battle, then resolves the committed Swap.
+    ///
+    /// <b>Why the board is pinned.</b> <c>ADR-026</c> D1 calculates and applies the
+    /// Player's damage only when the committed Swap cleared at least one ATK Gem, so the
+    /// fixture pins the self-validating ATK board
+    /// (<see cref="RoundTestSupport.PlayerMatch"/>) and verifies its precondition here. A
+    /// board drawn from the battle's own RNG leaves the Turn's Player part uncontrolled.
+    ///
+    /// <b>Why the HP is pinned, and why two arms are compared.</b>
+    /// <c>GAME_RULES.md</c> §17 orders 18a (the Boss's own board action, whose HP Gems
+    /// heal it) before 18b (the Passive's evaluation), so a Turn's settled HP is the pin
+    /// moved by that Turn's own (Player damage − Boss healing) plus any regen. Two arms
+    /// pinned identically differ by the regen alone, which is what makes the §6.2.3
+    /// magnitude measurable without re-deriving the Turn's other movements.
+    /// </summary>
+    private static async Task<MocYeuTurn> ResolvePinnedTurnAsync(
+        InMemoryBattleStateRepository repository,
+        BattleStateService service,
+        string battleId,
+        BattleState state,
+        int bossHp,
+        int progressCurrent)
+    {
+        var pinned = RoundTestSupport.PlayerMatch(
+            GemType.Atk,
+            state.RngState,
+            state.LastCommittedSwapPair);
+
+        Assert.True(
+            pinned.Resources.ClearedGemCounts.Atk > 0,
+            "the ADR-026 fixture must clear ATK Gems for the Player's attack to resolve");
+
+        await RoundTestSupport.PinAsync(
+            repository,
+            state,
+            pinned.Board,
+            bossState: state.BossState with
+            {
+                HP = bossHp,
+                PassiveProgress = new PassiveProgress(
+                    Threshold: state.BossState.PassiveProgress.Threshold,
+                    Current: progressCurrent),
+            });
+
+        var result = await service.ExecuteSwapAsync(battleId, pinned.Swap);
+
+        Assert.True(result!.Value.IsAccepted, $"{battleId} was rejected");
+
+        return new MocYeuTurn(
+            result.Value.State.BossState,
+            result.Value.Events,
+            result.Value.Resolution.TotalMatches,
+            result.Value.Events
+                .Where(e => e.Type == BattleEventType.DamageDealt
+                    && e.DamageDealt.Source == DamageParty.Player)
+                .Sum(e => e.DamageDealt.Amount));
     }
 }

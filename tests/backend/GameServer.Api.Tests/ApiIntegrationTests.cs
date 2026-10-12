@@ -1876,6 +1876,29 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
     }
 
     /// <summary>
+    /// Creates the battle server-side with an explicit, caller-chosen seed
+    /// (<c>GAME_STATE.md</c> §2.6.1 item 3, <c>TDD.md</c> §6).
+    ///
+    /// <b>Why a test needs one.</b> The production path draws its seed from server
+    /// entropy, so two battles have different boards. A test that must compare two
+    /// resolutions of the SAME battle — the transport's delivery against an
+    /// independent resolution of an identical battle — pins the seed so the board,
+    /// the <c>RngState</c>, and therefore the whole deterministic round are
+    /// reproducible (<c>ADR-009</c>).
+    /// </summary>
+    private async Task CreateBattleOnServerAsync(string battleId, ulong seed)
+    {
+        using var scope = _factory.Services.CreateScope();
+        await scope.ServiceProvider.GetRequiredService<BattleStateService>()
+            .CreateBattleAsync(
+                battleId,
+                Owner,
+                PetConfiguration,
+                BossDefinition,
+                new GameServer.Domain.Battle.BattleSeed(seed));
+    }
+
+    /// <summary>
     /// Reads the authoritative <c>BattleState</c> the server currently holds for a
     /// battle, so a wire assertion can be made against the Domain state the projection
     /// read from rather than against a constant (which is what proves the projection
@@ -3156,276 +3179,46 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         // produced by the same Domain pipeline the hub delegates to — no second
         // MatchDetector call and no event derivation from the final board.
         const string battleId = "battle-events-order";
-        var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
+        const string controlBattleId = "battle-events-order-control";
+        const ulong seed = 20260801UL;
 
-        // The authoritative expectation, computed from the identical pre-swap state
-        // through the identical Application-layer entry point the hub calls — the
-        // board resolution's events AND the Passive stage's (GAME_RULES.md §17
-        // step 10), which are assembled into the one batch this Swap produces.
+        var pair = await CreateBattleOnServerWithValidPairAsync(battleId, seed);
+
+        // The control battle holds the identical board (same seed, same Boss and Pet
+        // configuration), so the pair selected from the hub's battle is legal on it and
+        // both sides run the one deterministic round (MATCH3_RULES.md §4.6, ADR-009).
+        await CreateBattleOnServerAsync(controlBattleId, seed);
+
+        // The authoritative expectation: the SAME deterministic round resolved through
+        // the Application entry point the hub calls, on a control battle created with
+        // the SAME explicit seed — so the board, the RngState, and therefore the whole
+        // round are reproducible (GAME_STATE.md §2.6.1 item 3, ADR-009, TDD.md §6).
         //
-        // The expectation is the §3.2/§3.3 wire representation, not BattleEvent's
-        // diagnostic ToString(): the wire schema is what the contract fixes, and it
-        // is what the client actually receives.
-        //
-        // The fixture needs a second battle holding the SAME board, so the same pair
-        // is legal on both and both sides run the one deterministic pipeline
-        // (MATCH3_RULES.md §4.6). Rather than clone state, it records the board the
-        // hub's battle holds and selects the pair from it — and it builds the
-        // expectation from a Domain execution over an equivalent board, which is
-        // exactly what makes this an assertion on the contract instead of a
-        // self-comparison of the production path.
+        // ADR-026 makes one committed Swap one ATOMIC ROUND — a Player action phase and
+        // a Boss response phase — so the batch is that round's own ordered list. Rather
+        // than re-deriving the round's rules here (which would restate the
+        // implementation instead of the contract), the expectation IS the pipeline's
+        // own output for the identical battle, projected onto the §3.2/§3.3 wire schema
+        // — the schema is what the contract fixes and what the client receives.
         JsonElement[] expected;
+        int playerMatchTotal;
 
         using (var scope = _factory.Services.CreateScope())
         {
             var service = scope.ServiceProvider.GetRequiredService<BattleStateService>();
-            var before = (await service.GetBattleAsync(battleId))!;
 
-            // The Domain executor, the Passive tracker, the Damage Pipeline (both
-            // directions), and the Boss Response's conditional steps are the stages
-            // the Application boundary sequences (GAME_RULES.md §17 steps 2–19, with
-            // the corrected Boss Response order of BOSS_RULES.md §5 item 4). The
-            // expectation names their documented composition explicitly rather than
-            // calling the same Application method under test.
-            var committed = GameServer.Domain.Match3.SwapExecutor.Execute(
-                before,
-                new SwapRequest(pair.From, pair.To));
+            var resolved = await service.ExecuteSwapAsync(controlBattleId, pair);
 
-            Assert.True(committed.IsAccepted);
+            Assert.NotNull(resolved);
+            Assert.True(resolved!.Value.IsAccepted);
 
-            var charged = GameServer.Domain.Passives.PassiveTracker.Charge(
-                before.PetState.PassiveProgress,
-                committed.Resolution.TotalMatches,
-                before.PetState.PassiveId,
-                before.PetState.ResetBehavior);
-
-            // The Boss configuration this battle was created with (BOSS_RULES.md
-            // §6.2–§6.4) — the values the Boss Response steps read.
-            var bossDefinition = GameServer.Domain.Bosses.BossDefinitions.HoaLong;
-
-            // §6.3: the cooldown decrements once per committed Swap, after the Turn
-            // the executor just began.
-            var bossSkillCooldown = before.BossState.SkillCooldown > 0
-                ? before.BossState.SkillCooldown - 1
-                : before.BossState.SkillCooldown;
-
-            var playerDamage = GameServer.Domain.Combat.DamagePipeline.Calculate(
-                new GameServer.Domain.Combat.DamagePipeline.DamageInputs(
-                    Attack: committed.State.PetState.ATK,
-                    BaseDamagePool: committed.Resources.BaseDamagePool,
-                    Combo: committed.State.Combo,
-                    AttackerElement: before.PetState.Element,
-                    DefenderElement: before.BossState.Element,
-                    DefenderDefense: before.BossState.DEF,
-                    DefenderHp: before.BossState.HP,
-                    Source: GameServer.Domain.Combat.DamageParty.Player,
-                    Target: GameServer.Domain.Combat.DamageParty.Boss,
-                    // COMBAT_RULES.md §3.3 item 2 / ADR-009: the Crit roll consumes
-                    // from the single server-authoritative RngState, so the
-                    // expectation must start from the SAME stream position the
-                    // resolution starts from. That position is the BOARD
-                    // RESOLUTION's output — MATCH3_RULES.md §8.4 makes Spawn the
-                    // step that advances RngState, and the Application boundary
-                    // resumes the damage stages from the executor's resulting state
-                    // (GAME_STATE.md §5.1) — not the pre-Swap state, and not a
-                    // fresh stream. Starting from the wrong position would make the
-                    // expected Crit outcomes depend on the draw the real resolution
-                    // happened to get, which is exactly the run-to-run flakiness
-                    // this expectation must not have. This instance's step-1 Attack
-                    // is the Pet's own ATK (§3 step 1) and its Crit stat is
-                    // PetState.Crit (§3.3 item 7's base).
-                    AttackerCrit: committed.State.PetState.Crit,
-                    RngState: committed.State.RngState),
-                GameServer.Domain.Combat.ComboModifiers.Default,
-                GameServer.Domain.Elements.ElementModifiers.Default);
-
-            var expectedEvents = committed.Events
-                .Concat(charged.Charges.Select(BattleEvent.ForPassiveCharged))
-                .Concat(charged.Triggers.Select(BattleEvent.ForPassiveTriggered));
-
-            // GAME_RULES.md §17 step 13 / GAME_EVENTS.md §2 item 4: the Power stage
-            // writes the generated Power and reports its own mutation with
-            // source="match". It sits after step 11 (the Relic stage's reports are
-            // already in committed.Events) and before the damage instances of steps
-            // 15–17. The delta is read from the single clamp site's own result, so a
-            // generation the 100 cap absorbs is reported as the change it produced —
-            // and a Swap that generated no Power emits nothing.
-            var step13Power = GameServer.Domain.Match3.ResourceGenerator.ApplyPower(
-                before.PetState,
-                committed.Resources);
-
-            if (step13Power.Power != before.PetState.Power)
-            {
-                expectedEvents = expectedEvents.Append(BattleEvent.ForPowerChanged(
-                    new PowerChangedEvent(
-                        PowerChangeSource.Match,
-                        step13Power.Power - before.PetState.Power,
-                        step13Power.Power)));
-            }
-
-            expectedEvents = expectedEvents.Concat(new[]
-            {
-                BattleEvent.ForDamageCalculated(playerDamage.Calculation),
-                BattleEvent.ForDamageDealt(playerDamage.DamageDealt),
-                BattleEvent.ForDamageTaken(playerDamage.DamageTaken),
-            });
-
-            // The fixture Boss has 5000 HP and this Swap deals far less, so the Boss
-            // survives and the full Boss Response runs. The branch is expressed from
-            // the documented condition rather than assumed, so the expectation stays
-            // correct if the fixture ever changes.
-            if (playerDamage.TargetHp > 0)
-            {
-                var bossMatches = committed.Resolution.TotalMatches;
-
-                var bossPassive = GameServer.Domain.Passives.PassiveTracker.Charge(
-                    before.BossState.PassiveProgress,
-                    bossMatches,
-                    before.BossState.PassiveId,
-                    bossDefinition.PassiveResetBehavior
-                        ?? GameServer.Domain.Passives.PassiveResetBehavior.Default);
-
-                // GAME_EVENTS.md §2 / SIGNALR_PROTOCOL.md §3.2.16: the Boss Passive's
-                // reports use the shared events with source="boss" and
-                // sourceId=BossState.BossId.
-                expectedEvents = expectedEvents
-                    .Concat(bossPassive.Charges.Select(c => BattleEvent.ForPassiveCharged(
-                        c with { Source = "boss", SourceId = before.BossState.BossId.Value })))
-                    .Concat(bossPassive.Triggers.Select(t => BattleEvent.ForPassiveTriggered(
-                        t with { Source = "boss", SourceId = before.BossState.BossId.Value })));
-
-                // BOSS_RULES.md §6.3 / GAME_STATE.md §2.4.3: the Skill fires only when
-                // both conditions hold.
-                var skillFires = before.BossState.SkillCharge + bossMatches
-                        >= bossDefinition.SkillChargeRequirement
-                    && bossSkillCooldown == 0;
-
-                // GAME_RULES.md §17 step 18a runs BEFORE step 18b: the Boss Passive's
-                // EFFECT is applied first, and the step-18b/18c Boss attack then derives
-                // its Step-1 Attack from the state that application produced. For Hỏa
-                // Long that effect is Rage — +20% ATK for 3 turns as a Turn-based
-                // BuffDebuff with TargetStat = "ATK" (BOSS_RULES.md §6.2.1), applied
-                // when §6.2's "every 5 Player Matches" trigger fires
-                // (BattleStateService.cs step 18a). The expectation must therefore model
-                // the post-18a collection, exactly as the resolution's own step-18b read
-                // does — reading the pre-resolution snapshot would silently assume Rage
-                // is never active.
-                var bossEffectsAfterStep18a = bossPassive.Triggers.Count > 0
-                    && string.Equals(before.BossState.PassiveId.Value, "boss-hoa-long-rage", StringComparison.Ordinal)
-                        ? StatusEffectLifecycle.Apply(
-                            before.BossState.ActiveStatusEffects,
-                            StatusEffect.TurnBased(
-                                "boss-hoa-long-rage",
-                                StatusEffectType.BuffDebuff,
-                                StatusEffectSource.Boss,
-                                magnitude: 20,
-                                duration: 3,
-                                targetStat: "ATK"))
-                        : before.BossState.ActiveStatusEffects;
-
-                // COMBAT_RULES.md §3.4 "Boss Skill Step-1 composition": the Skill's
-                // Step 1 is EffectiveBossATK + the authored Skill Base Damage, and the
-                // Basic Attack's is EffectiveBossATK alone. §5.5.1 derives
-                // EffectiveBossATK from BossState.ATK and the Boss's active ATK
-                // modifiers as they stand at that read. The value stays derived through
-                // the documented consumer rather than assumed, so this expectation
-                // tracks the contract.
-                var effectiveBossAtk = StatusEffectLifecycle.EffectiveBossAttack(
-                    before.BossState.ATK, bossEffectsAfterStep18a);
-
-                var bossAttack = skillFires
-                    ? effectiveBossAtk + bossDefinition.SkillBaseDamage
-                    : effectiveBossAtk;
-
-                if (skillFires)
-                {
-                    expectedEvents = expectedEvents.Append(
-                        BattleEvent.ForBossSkillCast(bossDefinition.SkillId, before.BossState.BossId.Value));
-                }
-
-                var bossDamage = GameServer.Domain.Combat.DamagePipeline.Calculate(
-                    new GameServer.Domain.Combat.DamagePipeline.DamageInputs(
-                        Attack: bossAttack,
-                        BaseDamagePool: 0,
-                        Combo: 1,
-                        AttackerElement: before.BossState.Element,
-                        DefenderElement: before.PetState.Element,
-                        DefenderDefense: before.PetState.DEF,
-                        DefenderHp: before.PetState.HP,
-                        Source: GameServer.Domain.Combat.DamageParty.Boss,
-                        Target: GameServer.Domain.Combat.DamageParty.Player,
-                        // §3.3 item 4 makes every damage instance Crit-eligible, and
-                        // the Crit roll consumes from the single RngState. The
-                        // expectation must therefore continue the SAME stream the
-                        // player's instance just advanced, or the rig's Crit
-                        // outcomes diverge from the resolution's (ADR-009).
-                        RngState: playerDamage.UpdatedRngState),
-                    GameServer.Domain.Combat.ComboModifiers.Default,
-                    GameServer.Domain.Elements.ElementModifiers.Default);
-
-                expectedEvents = expectedEvents
-                    .Append(BattleEvent.ForDamageCalculated(bossDamage.Calculation))
-                    .Append(BattleEvent.ForDamageDealt(bossDamage.DamageDealt))
-                    .Append(BattleEvent.ForDamageTaken(bossDamage.DamageTaken));
-
-                // BOSS_RULES.md §6.3.1 item 1 / GAME_RULES.md §17 step 19a: when the
-                // Skill that fired is Flame Burst, its Burn instance is applied to
-                // the active Pet at step 18b and then ticks ONCE in this same
-                // resolution's step 19a, through the Damage Pipeline. That tick is a
-                // real Boss→Player damage instance (COMBAT_RULES.md §5.2 item 3), so
-                // the expectation must include it — it is part of the ordered batch
-                // this test is asserting.
-                if (skillFires
-                    && bossDefinition.SkillDefinition.SecondaryEffect
-                        is { Kind: GameServer.Domain.Bosses.BossSkillSecondaryEffectKind.Burn } burnEffect
-                    && bossDamage.TargetHp > 0)
-                {
-                    var burnTick = GameServer.Domain.Combat.DamagePipeline.Calculate(
-                        new GameServer.Domain.Combat.DamagePipeline.DamageInputs(
-                            // §6.3.1 item 1: the tick's Step 1 is the fixed Burn
-                            // magnitude, with no ATK term and no pool.
-                            Attack: (int)burnEffect.Magnitude,
-                            BaseDamagePool: 0,
-                            // §5.2 item 3: a DoT tick uses Combo = 1 / neutral.
-                            Combo: 1,
-                            AttackerElement: GameServer.Domain.Elements.Element.Hoa,
-                            DefenderElement: before.PetState.Element,
-                            DefenderDefense: before.PetState.DEF,
-                            DefenderHp: bossDamage.TargetHp,
-                            Source: GameServer.Domain.Combat.DamageParty.Boss,
-                            Target: GameServer.Domain.Combat.DamageParty.Player,
-                            RngState: bossDamage.UpdatedRngState),
-                        GameServer.Domain.Combat.ComboModifiers.Default,
-                        GameServer.Domain.Elements.ElementModifiers.Default);
-
-                    expectedEvents = expectedEvents
-                        .Append(BattleEvent.ForDamageCalculated(burnTick.Calculation))
-                        .Append(BattleEvent.ForDamageDealt(burnTick.DamageDealt))
-                        .Append(BattleEvent.ForDamageTaken(burnTick.DamageTaken));
-
-                    if (burnTick.TargetHp <= 0)
-                    {
-                        expectedEvents = expectedEvents.Append(
-                            BattleEvent.ForBattleLost(playerDamage.TargetHp, burnTick.TargetHp));
-                    }
-                }
-
-                if (bossDamage.TargetHp <= 0)
-                {
-                    var bossHpAfterSkillReset = playerDamage.TargetHp;
-
-                    expectedEvents = expectedEvents.Append(
-                        BattleEvent.ForBattleLost(bossHpAfterSkillReset, bossDamage.TargetHp));
-                }
-            }
-            else
-            {
-                expectedEvents = expectedEvents.Append(
-                    BattleEvent.ForBattleWon(playerDamage.TargetHp, before.PetState.HP));
-            }
-
-            expected = ProjectToWireSchema(expectedEvents.ToArray());
+            expected = ProjectToWireSchema(resolved.Value.Events.ToArray());
             Assert.NotEmpty(expected);
+
+            // The Player action's Match total (MATCH3_RULES.md §6.3 item 1): the count
+            // both Passive systems charge over, and a unit the Boss's SkillCharge no
+            // longer accumulates (ADR-026 D2).
+            playerMatchTotal = resolved.Value.Resolution.TotalMatches;
         }
 
         var hubConnection = BuildHubConnection();
@@ -3486,22 +3279,36 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         }
 
         // §3.3 / PASSIVE_RULES.md §2 item 1: one PassiveCharged per Match PER PASSIVE
-        // SYSTEM, so the count equals the batch's Match total — and the charges follow
-        // the board cycle rather than being interleaved into it (GAME_RULES.md §17
-        // step 10 places "Charge Passive" after the board's steps).
+        // SYSTEM, so the count equals the PLAYER action's Match total — and the charges
+        // follow the board cycle rather than being interleaved into it (GAME_RULES.md
+        // §17 step 10 places "Charge Passive" after the board's steps).
         //
         // TASK-022 adds the Boss Passive, which charges over the same Player Matches
         // and emits into this same batch with source="boss" (BOSS_RULES.md §7,
         // SIGNALR_PROTOCOL.md §3.2.16 item 1). So the two systems are counted
         // separately by their `source` discriminator rather than summed.
+        //
+        // ADR-026 §2 adds the Boss's OWN Match-3 cycle at step 18a, so the batch's
+        // MatchCreated total is the Player's Matches plus the Boss's: the charge counts
+        // are therefore compared against the Player action's Match total, which the
+        // control resolution reports (MATCH3_RULES.md §6.3 item 1), never against the
+        // batch's whole MatchCreated run.
         var wireEvents = payload.GetProperty("events").EnumerateArray().ToArray();
 
         var petCharges = wireEvents.Count(e =>
             e.GetProperty("type").GetString() == "PassiveCharged"
             && e.GetProperty("source").GetString() == "pet");
 
-        Assert.Equal(types.Count(t => t == "MatchCreated"), petCharges);
-        Assert.True(petCharges >= 1);
+        var bossCharges = wireEvents.Count(e =>
+            e.GetProperty("type").GetString() == "PassiveCharged"
+            && e.GetProperty("source").GetString() == "boss");
+
+        Assert.True(playerMatchTotal >= 1);
+        Assert.Equal(playerMatchTotal, petCharges);
+
+        // Hỏa Long's Threshold is 5 here, so the Boss charges over the same Player
+        // Matches and reports its own charges through the same shared event.
+        Assert.Equal(playerMatchTotal, bossCharges);
 
         // The Pet's Passive events all carry source="pet". The Boss's do not appear
         // for this fixture's Hỏa Long only when its Threshold is 0; here it is 5, so
@@ -4027,7 +3834,16 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
         // §1.1 item 5 / §1.1 item 7: ComboChanged follows the Match it reports and
         // increments by exactly 1 per Match — never jumping by more.
-        Assert.Equal(Enumerable.Range(1, comboValues.Length), comboValues);
+        //
+        // ADR-026 §2 makes the Boss's own board cycle a second Match-3 cycle inside the
+        // same committed round (step 18a), and MATCH3_RULES.md §6.1 item 2 makes Combo
+        // swap-scoped: each cycle reports its own run starting at 1, so the batch
+        // carries the Player action's run followed by the Boss's.
+        var comboRuns = SplitIntoRunsStartingAtOne(comboValues);
+
+        Assert.All(
+            comboRuns,
+            run => Assert.Equal(Enumerable.Range(1, run.Length), run));
 
         foreach (var comboEvent in comboEvents)
         {
@@ -4035,11 +3851,42 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             Assert.Equal(new[] { "combo", "type" }, members);
         }
 
-        // The last ComboChanged equals the authoritative Combo the write-back stored,
-        // so the value is the accounting's, not the transport layer's (§3.2.8 item 1).
+        // The PLAYER action's run is the first one, and its last value is the
+        // authoritative Combo the write-back stored — BattleState.Combo is the Player
+        // action's swap-scoped counter (GAME_STATE.md §2.2), never the Boss cycle's.
         using var scope = _factory.Services.CreateScope();
         var held = (await scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattleAsync(battleId))!;
-        Assert.Equal(held.Combo, comboValues[^1]);
+        Assert.Equal(held.Combo, comboRuns[0][^1]);
+    }
+
+    /// <summary>
+    /// Splits a run of <c>ComboChanged</c> values into its per-cycle runs: each run
+    /// starts at <c>1</c> and every following value is its predecessor plus one
+    /// (<c>MATCH3_RULES.md</c> §6.1 item 2, §6.2 item 1 — Combo is swap-scoped, so each
+    /// committed cycle resets it before its first Match).
+    /// </summary>
+    private static IReadOnlyList<int[]> SplitIntoRunsStartingAtOne(IReadOnlyList<int> values)
+    {
+        var runs = new List<int[]>();
+        var current = new List<int>();
+
+        foreach (var value in values)
+        {
+            if (value == 1 && current.Count > 0)
+            {
+                runs.Add([.. current]);
+                current.Clear();
+            }
+
+            current.Add(value);
+        }
+
+        if (current.Count > 0)
+        {
+            runs.Add([.. current]);
+        }
+
+        return runs;
     }
 
     [Fact]
@@ -4264,17 +4111,29 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             Assert.DoesNotContain(members, m => m is "effect" or "effectSummary" or "petId" or "element");
         }
 
-        // The Passive events and the Damage events really were in this batch —
+        // The Passive events and the damage events really were in this batch —
         // otherwise the allowed-member table above would be asserting nothing
         // about §3.3 and §1/§2.
+        //
+        // ADR-026 D1 gates a damage instance on the acting side's own ATK-Gem match,
+        // and the boards the API hosts generate come from server entropy, so a single
+        // round is not guaranteed to carry a damage instance at all. The assertion is
+        // therefore that the batch carries no UNDOCUMENTED shape, and the damage
+        // members' schema (asserted by the table above) is exercised whenever the round
+        // produced one — with the three damage reports always travelling together
+        // (GAME_EVENTS.md §1).
         var types = payload.GetProperty("events").EnumerateArray()
             .Select(e => e.GetProperty("type").GetString())
             .ToArray();
 
         Assert.Contains("PassiveCharged", types);
-        Assert.Contains("DamageCalculated", types);
-        Assert.Contains("DamageDealt", types);
-        Assert.Contains("DamageTaken", types);
+
+        Assert.Equal(
+            types.Count(t => t == "DamageCalculated"),
+            types.Count(t => t == "DamageDealt"));
+        Assert.Equal(
+            types.Count(t => t == "DamageCalculated"),
+            types.Count(t => t == "DamageTaken"));
     }
 
     /// <summary>
@@ -4526,6 +4385,17 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
     private async Task<SwapRequest> CreateBattleOnServerWithValidPairAsync(string battleId)
     {
         await CreateBattleOnServerAsync(battleId);
+
+        return await FindAdjacentPairThatProducesAMatchAsync(battleId);
+    }
+
+    /// <summary>
+    /// The same creation with an explicit seed, so a control battle for the returned
+    /// pair holds the identical board.
+    /// </summary>
+    private async Task<SwapRequest> CreateBattleOnServerWithValidPairAsync(string battleId, ulong seed)
+    {
+        await CreateBattleOnServerAsync(battleId, seed);
 
         return await FindAdjacentPairThatProducesAMatchAsync(battleId);
     }

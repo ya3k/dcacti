@@ -115,20 +115,79 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
 
     /// <summary>
     /// Creates a battle server-side against <paramref name="bossDefinition"/> and
-    /// returns an adjacent pair of its generated board that produces a Match.
+    /// returns the created authoritative state.
     /// </summary>
-    private async Task<SwapRequest> CreateBattleWithPairAsync(string battleId, BossDefinition bossDefinition)
+    private async Task<BattleState> CreateBattleWithStateAsync(string battleId, BossDefinition bossDefinition)
     {
         using var scope = _factory.Services.CreateScope();
         var service = scope.ServiceProvider.GetRequiredService<BattleStateService>();
 
-        var created = await service.CreateBattleAsync(battleId, Owner, Pet, bossDefinition);
+        return await service.CreateBattleAsync(battleId, Owner, Pet, bossDefinition);
+    }
+
+    /// <summary>
+    /// Creates a battle server-side against <paramref name="bossDefinition"/> and
+    /// returns an adjacent pair of its generated board that produces a Match.
+    /// </summary>
+    private async Task<SwapRequest> CreateBattleWithPairAsync(string battleId, BossDefinition bossDefinition)
+    {
+        var created = await CreateBattleWithStateAsync(battleId, bossDefinition);
 
         return FindMatchProducingPair(created.BoardState);
     }
 
-    /// <summary>Commits one Swap and returns the received <c>ReceiveEvents</c> batch.</summary>
-    private async Task<JsonElement> SwapOnceAndReadTheBatch(string battleId, SwapRequest pair)
+    /// <summary>
+    /// The battle's current authoritative state as the host's store holds it — the
+    /// record a client would recover by snapshot (<c>ADR-008</c>).
+    /// </summary>
+    private async Task<BattleState> ReadStateAsync(string battleId)
+    {
+        var repository = _factory.Services.GetRequiredService<IBattleStateRepository>();
+
+        return await repository.GetAsync(battleId)
+            ?? throw new InvalidOperationException($"battle '{battleId}' has no active-state record.");
+    }
+
+    /// <summary>
+    /// Writes a Boss state into an existing battle, through the store's own
+    /// <c>Sequence</c> compare-and-set, so a scenario can start from a state the game
+    /// genuinely produces rather than from an invented one
+    /// (<c>REDIS_STATE.md</c> §4 items 1–3).
+    ///
+    /// <b>Why the wire suite needs it.</b> Under <c>ADR-026</c> D2 the Boss's
+    /// <c>SkillCharge</c> is fed only by the Boss's own POWER matches, so no single
+    /// round can be relied on to reach a Skill's ChargeRequirement; pinning the
+    /// counter is how a test drives the documented eligibility condition
+    /// (<c>GAME_STATE.md</c> §2.4.3) deterministically.
+    /// </summary>
+    private async Task PinBossStateAsync(string battleId, BossState bossState)
+    {
+        var repository = _factory.Services.GetRequiredService<IBattleStateRepository>();
+        var state = await ReadStateAsync(battleId);
+
+        var written = await repository.TryUpdateAsync(
+            state with { BossState = bossState },
+            state.Sequence);
+
+        Assert.True(written, "the scenario's Boss state could not be pinned: the stored Sequence moved on.");
+    }
+
+    /// <summary>
+    /// Commits one Swap and returns the received <c>ReceiveEvents</c> batch.
+    /// </summary>
+    /// <param name="battleId">The battle to act on.</param>
+    /// <param name="pair">The two cells to exchange.</param>
+    /// <param name="actionId">
+    /// The action's idempotency token. It must be unique per logical action: the
+    /// legacy token form states no state precondition, and a retry of an action whose
+    /// token is already recorded against a different pair is rejected as an invalid
+    /// payload (<c>ADR-025</c> §2). A multi-round scenario therefore passes one token
+    /// per round.
+    /// </param>
+    private async Task<JsonElement> SwapOnceAndReadTheBatch(
+        string battleId,
+        SwapRequest pair,
+        string actionId = "client-seq-boss-response")
     {
         var hubConnection = BuildHubConnection();
         var batch = new TaskCompletionSource<JsonElement>(
@@ -140,7 +199,7 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
         await hubConnection.InvokeAsync("JoinBattle", battleId);
 
         var result = await hubConnection.InvokeAsync<SwapResponse>(
-            "Swap", battleId, pair.From, pair.To, "client-seq-boss-response");
+            "Swap", battleId, pair.From, pair.To, actionId);
 
         Assert.True(result.Accepted);
 
@@ -149,6 +208,44 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
         await hubConnection.StopAsync();
 
         return payload;
+    }
+
+    /// <summary>
+    /// The batch a round delivered together with the authoritative state the round
+    /// began from, so a terminal-round assertion can name the values the round's own
+    /// commit produced.
+    /// </summary>
+    private readonly record struct RoundBatch(JsonElement Batch, BattleState StateBeforeRound);
+
+    /// <summary>
+    /// Commits rounds until one round's batch satisfies
+    /// <paramref name="isTheRoundUnderTest"/>, and returns that batch.
+    ///
+    /// <b>Why rounds rather than one Swap.</b> <c>ADR-026</c> D1 gates every attack on
+    /// the acting side's own ATK-Gem match, so no single round guarantees either
+    /// direction's damage instance. Each round is a new legal Swap on the board the
+    /// previous round committed, so the loop is the documented game, not a retry of
+    /// one action.
+    /// </summary>
+    private async Task<RoundBatch> SwapRoundsUntilAsync(
+        string battleId,
+        Func<JsonElement, bool> isTheRoundUnderTest,
+        int maxRounds = 30)
+    {
+        for (var round = 0; round < maxRounds; round++)
+        {
+            var state = await ReadStateAsync(battleId);
+            var pair = FindMatchProducingPair(state.BoardState, state.LastCommittedSwapPair);
+            var payload = await SwapOnceAndReadTheBatch(battleId, pair, $"{battleId}-round-{round}");
+
+            if (isTheRoundUnderTest(payload))
+            {
+                return new RoundBatch(payload, state);
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"no round satisfied the scenario within {maxRounds} committed rounds.");
     }
 
     // =======================================================================
@@ -234,21 +331,27 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
     public async Task ReceiveEvents_BossSkillCast_ShouldCarrySkillIdAndSourceId()
     {
         // §3.2.18: `skillId` and `sourceId`, both always present. The Skill is driven
-        // to fire through the documented condition — SkillCharge reaching the
-        // requirement with SkillCooldown at 0 (GAME_STATE.md §2.4.3) — by using a
-        // definition whose requirement one Swap's Matches satisfy.
+        // to fire through the documented condition — SkillCharge at the requirement
+        // with SkillCooldown at 0 (GAME_STATE.md §2.4.3) — by pinning the counter,
+        // because ADR-026 D2 feeds it only from the Boss's own POWER matches.
         const string battleId = "wire-boss-skill-cast";
 
-        var boss = BossDefinitions.HoaLong with
-        {
-            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition
-                with { ChargeRequirement = 1 },
-        };
-        var pair = await CreateBattleWithPairAsync(battleId, boss);
+        var boss = BossDefinitions.HoaLong;
+        var created = await CreateBattleWithStateAsync(battleId, boss);
 
-        var payload = await SwapOnceAndReadTheBatch(battleId, pair);
+        await PinBossStateAsync(
+            battleId,
+            created.BossState with
+            {
+                SkillCharge = boss.SkillChargeRequirement,
+                SkillCooldown = 0,
+            });
 
-        var casts = payload.GetProperty("events").EnumerateArray()
+        var payload = await SwapOnceAndReadTheBatch(battleId, FindMatchProducingPair(created.BoardState));
+
+        var events = payload.GetProperty("events").EnumerateArray().ToArray();
+
+        var casts = events
             .Where(e => e.GetProperty("type").GetString() == "BossSkillCast")
             .ToArray();
 
@@ -262,21 +365,29 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
             new[] { "skillId", "sourceId", "type" },
             casts[0].EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
-        // §3.2.18 item 3: the Skill's damage is carried by the damage events in the
-        // same batch, with source="boss" and target="player".
-        //
-        // The Skill's own instance is the first Boss-sourced one of the response. A
-        // Burn instance that Flame Burst then applies (BOSS_RULES.md §6.3.1 item 1)
-        // also reports source="boss" when it ticks at step 19a, so the batch can
-        // carry more than one Boss-sourced instance; that later one is a
-        // Status-Effect tick, not the Skill's damage.
-        var bossDamage = payload.GetProperty("events").EnumerateArray()
-            .Where(e => e.GetProperty("type").GetString() == "DamageDealt"
-                && e.GetProperty("source").GetString() == "boss")
-            .ToArray();
+        // ADR-026 D3: the Skill deals no direct damage of its own, so the cast is not
+        // promised a damage instance. What the round does promise is the order
+        // GAME_EVENTS.md §1 / §3.2.18 item 3 fixes: the cast precedes any Boss-sourced
+        // damage the round carries — which is the ATK-match-gated board instance of
+        // step 18d (ADR-026 D1), never the Skill's own.
+        var castIndex = Array.FindIndex(events, e => e.GetProperty("type").GetString() == "BossSkillCast");
+        var bossDamageIndex = Array.FindIndex(
+            events,
+            e => e.GetProperty("type").GetString() == "DamageDealt"
+                && e.GetProperty("source").GetString() == "boss");
 
-        Assert.NotEmpty(bossDamage);
-        Assert.Equal("player", bossDamage[0].GetProperty("target").GetString());
+        if (bossDamageIndex >= 0)
+        {
+            Assert.True(castIndex < bossDamageIndex);
+            Assert.Equal("player", events[bossDamageIndex].GetProperty("target").GetString());
+        }
+
+        // At most one Boss-sourced damage instance exists in the round: the ATK-gated
+        // board instance of step 18d. The retired Burn effect would have added a
+        // second one at step 19a (ADR-026 D3/D5).
+        Assert.True(
+            events.Count(e => e.GetProperty("type").GetString() == "DamageDealt"
+                && e.GetProperty("source").GetString() == "boss") <= 1);
     }
 
     [Fact]
@@ -284,27 +395,29 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
     {
         // COMBAT_RULES.md §3.4 / SIGNALR_PROTOCOL.md §3.2.14 item 3: the Boss's
         // instance reports source="boss", target="player" — the widening §3.2.14
-        // records for Boss→Player damage. Both damage directions now travel in one
-        // batch, so the two pairs are distinguished by these members.
+        // records for Boss→Player damage. Both damage directions travel in one batch,
+        // and each pair is distinguished by these members.
+        //
+        // Under ADR-026 D1 the Boss's instance exists only in a round where the Boss's
+        // own swap cleared an ATK Gem, so the scenario commits rounds until one lands.
         const string battleId = "wire-boss-damage-direction";
-        var pair = await CreateBattleWithPairAsync(battleId, BossDefinitions.HoaLong);
+        await CreateBattleWithStateAsync(battleId, BossDefinitions.HoaLong);
 
-        var payload = await SwapOnceAndReadTheBatch(battleId, pair);
+        var round = await SwapRoundsUntilAsync(
+            battleId,
+            batch => batch.GetProperty("events").EnumerateArray().Any(
+                e => e.GetProperty("type").GetString() == "DamageDealt"
+                    && e.GetProperty("source").GetString() == "boss"));
+
+        var payload = round.Batch;
 
         var dealt = payload.GetProperty("events").EnumerateArray()
             .Where(e => e.GetProperty("type").GetString() == "DamageDealt")
             .ToArray();
 
-        // The batch carries both directions, the player's first. Flame Burst's Burn
-        // (BOSS_RULES.md §6.3.1 item 1) adds a further Boss-sourced instance when it
-        // ticks at step 19a, so the assertion is on each direction's members rather
-        // than on a fixed total that a documented Status Effect tick can change.
-        Assert.True(dealt.Length >= 2);
-
-        Assert.Equal("player", dealt[0].GetProperty("source").GetString());
-        Assert.Equal("boss", dealt[0].GetProperty("target").GetString());
-
-        // Every Boss-sourced instance of the batch reports target="player".
+        // The Boss's instance exists, reports the documented direction, and carries a
+        // positive amount — an instance of 0 would make the direction assertion
+        // vacuous.
         var bossInstances = dealt
             .Where(e => e.GetProperty("source").GetString() == "boss")
             .ToArray();
@@ -312,15 +425,21 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
         Assert.NotEmpty(bossInstances);
         Assert.All(
             bossInstances,
-            e => Assert.Equal("player", e.GetProperty("target").GetString()));
+            e =>
+            {
+                Assert.Equal("player", e.GetProperty("target").GetString());
+                Assert.True(e.GetProperty("amount").GetInt32() > 0);
+            });
 
-        // Each instance reports its own amount, and both directions are positive at
-        // the MVP stats — an instance of 0 would make the direction assertion
-        // vacuous.
-        Assert.True(dealt[0].GetProperty("amount").GetInt32() > 0);
+        // The Player's own instance, when the round carried one, reports the mirrored
+        // direction and precedes the Boss's (GAME_EVENTS.md §1).
+        var playerInstances = dealt
+            .Where(e => e.GetProperty("source").GetString() == "player")
+            .ToArray();
+
         Assert.All(
-            bossInstances,
-            e => Assert.True(e.GetProperty("amount").GetInt32() > 0));
+            playerInstances,
+            e => Assert.Equal("boss", e.GetProperty("target").GetString()));
     }
 
     // =======================================================================
@@ -331,14 +450,25 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
     public async Task ReceiveEvents_BattleWon_ShouldCarryTheOutcomeAndTerminalHp()
     {
         // §3.2.19: `outcome` is the string "victory" (item 1), and both terminal HP
-        // values are always present (item 2). A 1-HP Boss cannot survive one Swap's
-        // damage, so the Boss terminal check fires.
+        // values are always present (item 2). A 1-HP Boss cannot survive the Player's
+        // ATK-gated instance (ADR-026 D1), so the Boss's terminal check fires — and
+        // under ADR-026 D1 the round that carries it is the one where the Player's Swap
+        // cleared an ATK Gem, so the scenario commits rounds until it does.
+        //
+        // The Boss's ATK is set to 0 as well, so the round can never end the other way:
+        // a zero-ATK instance deals no damage, so the Pet cannot die while the loop
+        // waits for the Player's ATK match.
         const string battleId = "wire-battle-won";
 
-        var boss = BossDefinitions.HoaLong with { MaxHP = 1 };
-        var pair = await CreateBattleWithPairAsync(battleId, boss);
+        var boss = BossDefinitions.HoaLong with { MaxHP = 1, ATK = 0 };
+        await CreateBattleWithStateAsync(battleId, boss);
 
-        var payload = await SwapOnceAndReadTheBatch(battleId, pair);
+        var round = await SwapRoundsUntilAsync(
+            battleId,
+            batch => batch.GetProperty("events").EnumerateArray().Any(
+                e => e.GetProperty("type").GetString() == "BattleWon"));
+
+        var payload = round.Batch;
 
         var events = payload.GetProperty("events").EnumerateArray().ToArray();
         var won = events.Where(e => e.GetProperty("type").GetString() == "BattleWon").ToArray();
@@ -347,9 +477,19 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
         Assert.Equal("victory", won[0].GetProperty("outcome").GetString());
         Assert.Equal(0, won[0].GetProperty("finalBossHp").GetInt32());
 
-        // The player was untouched — the Boss died before it could respond
-        // (BOSS_RULES.md §5 item 4).
-        Assert.Equal(1000, won[0].GetProperty("finalPlayerHp").GetInt32());
+        // The Boss died before it could respond, so the terminal round's Boss phase was
+        // skipped (BOSS_RULES.md §5 item 4) and the Pet's HP cannot have fallen in that
+        // round: the fixed protocol value is the Pet's HP as the round's own commit left
+        // it, which the Player phase can only have raised (COMBAT_RULES.md §4 item 1's
+        // HP-Gem healing). An earlier round of the same battle may legitimately have
+        // damaged the Pet, because ADR-026 D1 lets the Boss act only on its own ATK-Gem
+        // match — so the untouchability claim is scoped to the terminal round, exactly
+        // as §5 item 4 scopes it.
+        Assert.True(
+            won[0].GetProperty("finalPlayerHp").GetInt32() >= round.StateBeforeRound.PetState.HP,
+            "the skipped Boss response cannot reduce the Pet's HP");
+
+        Assert.True(won[0].GetProperty("finalPlayerHp").GetInt32() <= round.StateBeforeRound.PetState.MaxHP);
 
         // §3.2.19 item 3: no `reward summary` — deferred, not a wire member.
         Assert.False(won[0].TryGetProperty("reward", out _));
@@ -358,34 +498,48 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
         // The outcome is the batch's LAST event: nothing follows the battle's end.
         Assert.Equal("BattleWon", events[^1].GetProperty("type").GetString());
 
-        // And no Boss Response occurred at all.
+        // And no Boss Response occurred at all: no cast, no Boss-sourced damage, and
+        // no Boss board cycle — the Boss phase was skipped whole (GAME_RULES.md §17
+        // step 18, ADR-026 §2).
         Assert.DoesNotContain(events, e => e.GetProperty("type").GetString() == "BossSkillCast");
         Assert.DoesNotContain(
             events,
             e => e.GetProperty("type").GetString() == "DamageDealt"
+                && e.GetProperty("source").GetString() == "boss");
+        Assert.DoesNotContain(
+            events,
+            e => e.GetProperty("type").GetString() == "PassiveCharged"
                 && e.GetProperty("source").GetString() == "boss");
     }
 
     [Fact]
     public async Task ReceiveEvents_BattleLost_ShouldCarryTheOutcomeAndTerminalHp()
     {
-        // §3.2.19's defeat shape. A Boss whose Basic Attack exceeds the player's
-        // whole HP pool ends the battle at the post-response check.
+        // §3.2.19's defeat shape. Under ADR-026 D1 the Boss's only attack is its
+        // ATK-match-gated board instance, so the scenario commits rounds until the
+        // Boss's instance lands; the Boss's ATK is set far above the Pet's whole HP
+        // pool, so that instance is terminal. The Skill is held out of the way and the
+        // Passive made inert, so the instance under test is the board attack alone.
         const string battleId = "wire-battle-lost";
 
         var boss = BossDefinitions.HoaLong with
         {
             ATK = 100_000,
-            // Keep the Skill out of the way and the Passive inert so the
-            // instance under test is the Basic Attack.
+            // A Boss the Player cannot remove, so the loop cannot end the other way
+            // while it waits for the Boss's instance.
+            MaxHP = 1_000_000,
             SkillDefinition = BossDefinitions.HoaLong.SkillDefinition
                 with { ChargeRequirement = int.MaxValue },
             PassiveDefinition = BossDefinitions.HoaLong.PassiveDefinition
                 with { Threshold = null },
         };
 
-        var pair = await CreateBattleWithPairAsync(battleId, boss);
-        var payload = await SwapOnceAndReadTheBatch(battleId, pair);
+        await CreateBattleWithStateAsync(battleId, boss);
+
+        var payload = (await SwapRoundsUntilAsync(
+            battleId,
+            batch => batch.GetProperty("events").EnumerateArray().Any(
+                e => e.GetProperty("type").GetString() == "BattleLost"))).Batch;
 
         var events = payload.GetProperty("events").EnumerateArray().ToArray();
         var lost = events.Where(e => e.GetProperty("type").GetString() == "BattleLost").ToArray();
@@ -404,12 +558,27 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
     public async Task ReceiveEvents_ShouldCarryNoOutcomeWhenBothSurvive()
     {
         // GAME_RULES.md §1.4: the battle ends only when a side reaches 0. At the MVP
-        // stats neither does in one Swap, so neither outcome event is emitted — the
-        // absence is the documented statement that the action was not terminal.
+        // stats neither does in one round, so neither outcome event is emitted — the
+        // absence is the documented statement that the round was not terminal.
+        //
+        // The round is made deterministic in what it DOES emit by pinning the Boss's
+        // SkillCharge: the Skill fires (its eligibility condition is
+        // GAME_STATE.md §2.4.3's), and it is a non-damaging Skill (ADR-026 D3), so the
+        // batch still carries no outcome.
         const string battleId = "wire-no-outcome";
-        var pair = await CreateBattleWithPairAsync(battleId, BossDefinitions.HoaLong);
 
-        var payload = await SwapOnceAndReadTheBatch(battleId, pair);
+        var boss = BossDefinitions.HoaLong;
+        var created = await CreateBattleWithStateAsync(battleId, boss);
+
+        await PinBossStateAsync(
+            battleId,
+            created.BossState with
+            {
+                SkillCharge = boss.SkillChargeRequirement,
+                SkillCooldown = 0,
+            });
+
+        var payload = await SwapOnceAndReadTheBatch(battleId, FindMatchProducingPair(created.BoardState));
 
         var types = payload.GetProperty("events").EnumerateArray()
             .Select(e => e.GetProperty("type").GetString())
@@ -418,19 +587,11 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
         Assert.DoesNotContain("BattleWon", types);
         Assert.DoesNotContain("BattleLost", types);
 
-        // The full response still ran: the player's instance first, then the Boss's.
-        // Flame Burst's Burn (BOSS_RULES.md §6.3.1 item 1) may add a further
-        // Boss-sourced instance when it ticks at step 19a, so the assertion is on
-        // both directions being present and the player's coming first — not on a
-        // total that a documented Status Effect tick can legitimately change.
-        var dealt = payload.GetProperty("events").EnumerateArray()
-            .Where(e => e.GetProperty("type").GetString() == "DamageDealt")
-            .ToArray();
-
-        Assert.True(dealt.Length >= 2);
-        Assert.Equal("player", dealt[0].GetProperty("source").GetString());
-        Assert.Equal("boss", dealt[0].GetProperty("target").GetString());
-        Assert.Contains(dealt, e => e.GetProperty("source").GetString() == "boss");
+        // The round genuinely ran and resolved the board, and the Skill fired: the
+        // absence of an outcome is a statement about the round, not about an empty
+        // batch.
+        Assert.Contains("MatchCreated", types);
+        Assert.Contains("BossSkillCast", types);
     }
 
     [Fact]
@@ -462,10 +623,19 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
     // Helpers
     // =======================================================================
 
-    private static SwapRequest FindMatchProducingPair(BoardState board)
+    private static SwapRequest FindMatchProducingPair(
+        BoardState board,
+        CommittedSwapPair? committed = null)
     {
         foreach (var (from, to) in AllAdjacentPairs())
         {
+            // MATCH3_RULES.md §2.1.4 item 2: a Swap already recorded as committed is
+            // rejected as already applied, so a multi-round scenario skips it.
+            if (committed is { } recorded && recorded.MatchesPair(from, to))
+            {
+                continue;
+            }
+
             if (MatchDetector.Detect(board.WithSwapped(from, to)).Count > 0)
             {
                 return new SwapRequest(from, to);

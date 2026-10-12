@@ -837,15 +837,8 @@ public class DamagePipelineTests
     [Fact]
     public void BossSkill_BaseDamage_ShouldBeBossAtkPlusSkillBaseDamage()
     {
-        // COMBAT_RULES.md §3.4 "Boss Skill Step-1 composition" / §3 step 1: the
-        // Skill/Card base value is an ADDITIVE Step-1 contribution and does not
-        // replace the ATK term. Hỏa Long's Skill Base Dmg is 150 (§6.3) against ATK
-        // 100, so 250 — not 150, and not 100.
-        //
-        // The ATK term passed here is the Rage-INACTIVE EffectiveBossATK, which
-        // equals BossState.ATK when no Boss ATK modifier is active (§5.5.1). The
-        // composition's Rage-ACTIVE case (120 + 150 = 270) is asserted in
-        // EffectiveBossAttackTests and in the Application suite.
+        // COMBAT_RULES.md §3.4 / ADR-026 D3: Boss Skill direct BaseDamage is 0.
+        // Step 1 Base Damage equals EffectiveBossATK + SkillBaseDamage (100 + 0 = 100).
         var boss = BossDefinitions.HoaLong;
 
         var effectiveBossAtk = StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, []);
@@ -859,8 +852,8 @@ public class DamagePipelineTests
             ComboModifiers.Default,
             ElementModifiers.Default);
 
-        Assert.Equal(150, boss.SkillBaseDamage);
-        Assert.Equal(250, result.Calculation.Base);
+        Assert.Equal(0, boss.SkillBaseDamage);
+        Assert.Equal(100, result.Calculation.Base);
     }
 
     [Fact]

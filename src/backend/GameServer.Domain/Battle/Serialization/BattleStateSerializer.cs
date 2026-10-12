@@ -976,6 +976,13 @@ public static class BattleStateSerializer
         // and item 8's positive duration, so neither is re-checked here — the
         // violation surfaces as the ArgumentException the domain already raises
         // for it, rather than as a second, weaker spelling of the same rule.
+        //
+        // The TargetStat is carried on BOTH duration models. §2.3.1 item 7 makes it
+        // the stat a BuffDebuff's Magnitude is consumed for and scopes it to the
+        // element rather than to the countdown, so a trigger-based BuffDebuff
+        // (ADR-026 D7's next-qualifying ATK modifier) carries one exactly as a
+        // Turn-based one does; dropping it here would make a committed state
+        // unrecoverable (ADR-008, §2.3.2 item 5).
         return hasTurnCountdown
             ? (dto.TargetStat is not null
                 ? StatusEffect.TurnBased(
@@ -996,7 +1003,8 @@ public static class BattleStateSerializer
                 type,
                 source,
                 dto.Magnitude,
-                dto.ExpiryCondition!);
+                dto.ExpiryCondition!,
+                dto.TargetStat);
     }
 
     /// <summary>

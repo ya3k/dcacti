@@ -387,6 +387,45 @@ public sealed class PowerChangedEmissionTests
         };
     }
 
+    /// <summary>
+    /// Creates a Thủy Ma battle, pins the Turn fixture and the Boss Skill's
+    /// eligibility, and returns the one committed Swap of that Turn.
+    ///
+    /// <b>Why the board is pinned.</b> <c>ADR-026</c> D1 gates the Player's attack on a
+    /// cleared ATK Gem, so a drawn board gives the scenario no control over the round's
+    /// Player part; the DEF fixture clears DEF Gems only, which is what keeps this
+    /// Turn's Power movement the Skill's own and the Power-Gem stage's.
+    ///
+    /// <b>Why the charge is pinned.</b> The Skill is eligible only when
+    /// <c>SkillCharge ≥ ChargeRequirement</c> AND <c>SkillCooldown == 0</c>
+    /// (<c>GAME_STATE.md</c> §2.4.3 / <c>BOSS_RULES.md</c> §6.3), and
+    /// <c>ADR-026</c> D2 makes that counter increment exclusively from the BOSS's own
+    /// POWER matches. A real battle reaches the requirement by accumulating those over
+    /// several Turns; the fixture states that state directly, so the Skill under test
+    /// really fires rather than the assertion passing vacuously.
+    /// </summary>
+    private static async Task<SwapRequest> PinDrainTurnAsync(
+        InMemoryBattleStateRepository repository,
+        BattleState state)
+    {
+        var pinned = RoundTestSupport.PlayerMatch(
+            GemType.Def,
+            state.RngState,
+            state.LastCommittedSwapPair);
+
+        await RoundTestSupport.PinAsync(
+            repository,
+            state,
+            pinned.Board,
+            bossState: state.BossState with
+            {
+                SkillCharge = DrainBoss().SkillChargeRequirement,
+                SkillCooldown = 0,
+            });
+
+        return pinned.Swap;
+    }
+
     [Fact]
     public async Task CommittedSwap_ShouldEmitPowerChangedForBossDrain_WithSourceBoss()
     {
@@ -407,10 +446,15 @@ public sealed class PowerChangedEmissionTests
         };
         await repository.TryUpdateAsync(setup, setup.Sequence);
 
-        var pair = FindAdjacentPairThatProducesAMatch(setup.BoardState);
-        var result = await service.ExecuteSwapAsync(BattleId, pair);
+        var swap = await PinDrainTurnAsync(repository, setup);
+        var result = await service.ExecuteSwapAsync(BattleId, swap);
 
         Assert.NotNull(result);
+
+        // The Skill really fired: without this the "no event" and "one event"
+        // assertions below would hold for a Turn in which no drain ran at all.
+        Assert.Contains(result.Value.Events, e => e.Type == BattleEventType.BossSkillCast);
+
         var committed = result!.Value.State;
 
         var change = Assert.Single(
@@ -451,10 +495,11 @@ public sealed class PowerChangedEmissionTests
         };
         await repository.TryUpdateAsync(setup, setup.Sequence);
 
-        var pair = FindAdjacentPairThatProducesAMatch(setup.BoardState);
-        var result = await service.ExecuteSwapAsync(BattleId, pair);
+        var swap = await PinDrainTurnAsync(repository, setup);
+        var result = await service.ExecuteSwapAsync(BattleId, swap);
 
         Assert.NotNull(result);
+        Assert.Contains(result.Value.Events, e => e.Type == BattleEventType.BossSkillCast);
         Assert.Equal(0, result!.Value.State.PetState.Power);
 
         var change = Assert.Single(
@@ -485,13 +530,16 @@ public sealed class PowerChangedEmissionTests
         };
         await repository.TryUpdateAsync(setup, setup.Sequence);
 
-        var pair = FindAdjacentPairThatProducesAMatch(setup.BoardState);
-        var result = await service.ExecuteSwapAsync(BattleId, pair);
+        var swap = await PinDrainTurnAsync(repository, setup);
+        var result = await service.ExecuteSwapAsync(BattleId, swap);
 
         Assert.NotNull(result);
 
-        // The board is an ATK board, so no POWER Gem was cleared either — neither the
-        // Boss drain nor the Match generation moved the value.
+        // The Skill fired and its drain is a no-op on a Power of 0 — which is the case
+        // the assertion below is about, so it is stated rather than left vacuous. The
+        // pinned DEF board clears no POWER Gem either, so the Match generation moved
+        // nothing either.
+        Assert.Contains(result.Value.Events, e => e.Type == BattleEventType.BossSkillCast);
         Assert.Equal(0, result!.Value.State.PetState.Power);
         Assert.DoesNotContain(
             result.Value.Events,
@@ -537,12 +585,21 @@ public sealed class PowerChangedEmissionTests
         {
             PetState = created.PetState with { Power = 0, HP = 5000, DEF = 1000 },
             BoardState = PowerBoard(),
+            // The Boss Skill's eligibility is pinned (GAME_STATE.md §2.4.3): ADR-026 D2
+            // charges SkillCharge from the BOSS's own POWER matches only, so the charge
+            // a battle accumulates over several Turns is stated rather than waited for.
+            BossState = created.BossState with
+            {
+                SkillCharge = DrainBoss().SkillChargeRequirement,
+                SkillCooldown = 0,
+            },
         };
         await repository.TryUpdateAsync(setup, setup.Sequence);
 
         var result = await service.ExecuteSwapAsync(BattleId, new SwapRequest(26, 34));
 
         Assert.NotNull(result);
+        Assert.Contains(result.Value.Events, e => e.Type == BattleEventType.BossSkillCast);
 
         var changes = result!.Value.Events
             .Where(e => e.Type == BattleEventType.PowerChanged)
@@ -621,32 +678,5 @@ public sealed class PowerChangedEmissionTests
         }
 
         return BoardState.FromCells(cells);
-    }
-
-    /// <summary>
-    /// An adjacent pair of the board whose exchange produces a §3 Match — guaranteed
-    /// to exist by <c>MATCH3_RULES.md</c> §1.4, and asserted found rather than
-    /// assumed.
-    /// </summary>
-    private static SwapRequest FindAdjacentPairThatProducesAMatch(BoardState board)
-    {
-        for (var index = 0; index < BoardState.CellCount; index++)
-        {
-            var right = BoardState.ToColumn(index) + 1 < BoardState.Columns ? index + 1 : -1;
-            var down = index + BoardState.Width < BoardState.CellCount ? index + BoardState.Width : -1;
-
-            if (right >= 0 && MatchDetector.Detect(board.WithSwapped(index, right)).Count > 0)
-            {
-                return new SwapRequest(index, right);
-            }
-
-            if (down >= 0 && MatchDetector.Detect(board.WithSwapped(index, down)).Count > 0)
-            {
-                return new SwapRequest(index, down);
-            }
-        }
-
-        throw new InvalidOperationException(
-            "A generated board has at least one valid Swap (MATCH3_RULES.md §1.4).");
     }
 }

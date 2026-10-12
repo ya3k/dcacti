@@ -304,17 +304,17 @@ public class EffectiveBossAttackTests
         // EffectiveBossATK contribution.
         var boss = BossDefinitions.HoaLong;
 
-        Assert.Equal(150, boss.SkillBaseDamage);   // §6.3.1 item 1's authored value
+        Assert.Equal(0, boss.SkillBaseDamage);   // ADR-026 D3: SkillBaseDamage = 0
 
-        // Rage inactive (§3.4: "100 + 150 = 250").
+        // Rage inactive (ATK 100 + 0 = 100).
         var withoutRage = StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, []) + boss.SkillBaseDamage;
 
-        Assert.Equal(250, withoutRage);
+        Assert.Equal(100, withoutRage);
 
-        // Rage active (§3.4's worked example: "120 + 150 = 270").
+        // Rage active (EffectiveBossATK 120 + 0 = 120).
         var withRage = StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, [Rage()]) + boss.SkillBaseDamage;
 
-        Assert.Equal(270, withRage);
+        Assert.Equal(120, withRage);
 
         // The entire +20 increase is the EffectiveBossATK contribution: the delta
         // between the two composed values is Rage's own effect on the stat, and the
@@ -327,15 +327,15 @@ public class EffectiveBossAttackTests
     {
         // §5.5.1 item 4's decrease, composed under §3.4 exactly as the increase is:
         // an active Magnitude = -30 gives EffectiveBossATK = 70, so the same Skill's
-        // Step 1 is 70 + 150 = 220 — and the authored 150 is still 150, because
+        // Step 1 is 70 + 0 = 70 — and the authored 0 is still 0, because
         // §5.5.2 lets the modifier reach the Skill's damage only through the
         // EffectiveBossATK contribution.
         var boss = BossDefinitions.HoaLong;
         var decrease = BuffDebuff("Weaken", "ATK", -30, 2);
 
         Assert.Equal(70, StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, [decrease]));
-        Assert.Equal(220, StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, [decrease]) + boss.SkillBaseDamage);
-        Assert.Equal(150, boss.SkillBaseDamage);
+        Assert.Equal(70, StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, [decrease]) + boss.SkillBaseDamage);
+        Assert.Equal(0, boss.SkillBaseDamage);
     }
 
     // =======================================================================

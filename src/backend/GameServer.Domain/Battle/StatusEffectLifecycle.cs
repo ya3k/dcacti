@@ -166,6 +166,94 @@ public static class StatusEffectLifecycle
     }
 
     /// <summary>
+    /// Applies or refreshes a <b>trigger-based</b> instance that is not a Shield —
+    /// the same "replace the active instance of this identity, or append it"
+    /// operation <see cref="Apply"/> performs for a Turn-based instance, on the
+    /// other documented duration model (<c>GAME_STATE.md</c> §2.3.1 item 3).
+    ///
+    /// <b>Why this exists.</b> Until <c>ADR-026</c> D7 the trigger-based model was
+    /// Shield's alone, so <see cref="ApplyShield"/> covered it. Kim Lôi Vương's
+    /// Thunder Strike installs a trigger-based <c>TargetStat = "ATK"</c>
+    /// <c>BuffDebuff</c> whose expiry is
+    /// <see cref="StatusEffect.NextQualifyingAttackCondition"/>, and it is applied
+    /// exactly as any other instance is: at most one element per
+    /// <see cref="StatusEffect.Id"/> (<c>GAME_STATE.md</c> §2.3.1 item 6), replaced
+    /// in place when one is already active and appended otherwise. Neither
+    /// <see cref="Apply"/> (which requires a Turn countdown to set, §5.1.1 item 1)
+    /// nor <see cref="ApplyShield"/> (which requires the Shield type) may carry it,
+    /// so the shared operation is stated once here rather than re-implemented by a
+    /// caller.
+    ///
+    /// <b>The instance keeps its own magnitude; nothing accumulates.</b>
+    /// <c>COMBAT_RULES.md</c> §5.2 item 2's refresh — "set, do not stack" — is the
+    /// whole of the operation, so a re-application carries the new instance's
+    /// magnitude and never sums it with the old one. Duration is not involved: a
+    /// trigger-based instance has no <c>RemainingTurns</c> and is removed by its own
+    /// condition, not by the step 19a countdown (§5.1.1 item 7).
+    /// </summary>
+    /// <param name="effects">
+    /// The entity's current active instances (<c>GAME_STATE.md</c> §2.3.1), always a
+    /// collection and never <c>null</c> (§2.3.2 item 1).
+    /// </param>
+    /// <param name="effect">
+    /// The trigger-based instance to apply or refresh.
+    /// </param>
+    /// <returns>
+    /// The resulting collection: the same elements in the same order, with the
+    /// matching instance replaced in place, or <paramref name="effect"/> appended
+    /// when no active instance carried its <see cref="StatusEffect.Id"/>.
+    /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="effects"/> is <c>null</c>.</exception>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="effect"/> uses the Turn countdown. That instance's refresh is
+    /// <see cref="Apply"/>'s, which sets its duration (§5.1.1 item 1).
+    /// </exception>
+    public static StatusEffect[] ApplyTriggerBased(
+        IReadOnlyList<StatusEffect> effects,
+        StatusEffect effect)
+    {
+        ArgumentNullException.ThrowIfNull(effects);
+
+        // §2.3.1 item 3: the two duration models are exclusive, and this operation is
+        // the trigger-based one. A Turn-based instance belongs to Apply, which has a
+        // duration to set.
+        if (effect.UsesTurnCountdown)
+        {
+            throw new ArgumentException(
+                "ApplyTriggerBased applies an instance whose expiry is its own condition "
+                + "(GAME_STATE.md §2.3.1 item 3); a Turn-countdown instance is refreshed by "
+                + "StatusEffectLifecycle.Apply.",
+                nameof(effect));
+        }
+
+        var result = new StatusEffect[effects.Count + 1];
+        var replaced = false;
+
+        for (var index = 0; index < effects.Count; index++)
+        {
+            var existing = effects[index];
+
+            // §2.3.1 item 6: at most one element per Id, refreshed in place — so the
+            // operation neither grows the collection nor reorders it (item 10).
+            if (!replaced && string.Equals(existing.Id, effect.Id, StringComparison.Ordinal))
+            {
+                result[index] = effect;
+                replaced = true;
+                continue;
+            }
+
+            result[index] = existing;
+        }
+
+        if (!replaced)
+        {
+            result[effects.Count] = effect;
+        }
+
+        return replaced ? result[..^1] : result;
+    }
+
+    /// <summary>
     /// Applies or refreshes a trigger-based Standalone Shield instance — the
     /// absorption pool <c>COMBAT_RULES.md</c> §4 items 2–3 defines.
     ///
@@ -343,6 +431,69 @@ public static class StatusEffectLifecycle
         }
 
         return [.. remaining];
+    }
+
+    /// <summary>
+    /// Updates an entity's active Status Effect collection following damage absorption
+    /// (<c>COMBAT_RULES.md</c> §4 items 4–5).
+    /// </summary>
+    public static StatusEffect[] ApplyDamageShieldAbsorption(
+        IReadOnlyList<StatusEffect> effects,
+        int remainingShieldPool,
+        int absorbedDamage,
+        StatusEffectSource targetSource)
+    {
+        ArgumentNullException.ThrowIfNull(effects);
+
+        if (remainingShieldPool == 0 && absorbedDamage > 0)
+        {
+            return RemoveDepletedShield(effects);
+        }
+
+        if (remainingShieldPool > 0 && absorbedDamage > 0)
+        {
+            var refreshedShield = StatusEffect.TriggerBased(
+                "Shield",
+                StatusEffectType.Shield,
+                targetSource,
+                remainingShieldPool,
+                StatusEffect.ShieldDepletedCondition);
+
+            return ApplyShield(effects, refreshedShield);
+        }
+
+        return effects is StatusEffect[] array ? array : [.. effects];
+    }
+
+    /// <summary>
+    /// Consumes trigger-based modifiers configured with <see cref="StatusEffect.NextQualifyingAttackCondition"/>
+    /// upon a confirmed qualifying attack (<c>ADR-026</c> D7).
+    /// </summary>
+    public static StatusEffect[] ConsumeNextQualifyingAttackModifiers(IReadOnlyList<StatusEffect> effects)
+    {
+        ArgumentNullException.ThrowIfNull(effects);
+
+        if (effects.Count == 0)
+        {
+            return [];
+        }
+
+        var result = new List<StatusEffect>(effects.Count);
+        var anyConsumed = false;
+
+        for (var i = 0; i < effects.Count; i++)
+        {
+            var effect = effects[i];
+            if (string.Equals(effect.ExpiryCondition, StatusEffect.NextQualifyingAttackCondition, StringComparison.Ordinal))
+            {
+                anyConsumed = true;
+                continue;
+            }
+
+            result.Add(effect);
+        }
+
+        return anyConsumed ? [.. result] : (effects is StatusEffect[] array ? array : [.. effects]);
     }
     /// <summary>
     /// Runs the <c>GAME_RULES.md</c> §17 step 19a pass: one Turn of duration is

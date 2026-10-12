@@ -607,6 +607,11 @@ public class RelicStageResolutionTests
         // Berserker Core +5% triggered at Step 11
         // EffectivePetATK = 105, seen by current Swap's later damage calculation
         // Base PetState.ATK = 100 must remain unchanged.
+        //
+        // The Turn fixture is pinned (ADR-026 D1): the Player's instance is calculated
+        // and applied only when the committed Swap cleared an ATK Gem, so the board is
+        // the self-validating ATK one and this Turn's first DamageCalculated really is
+        // the Player → Boss instance the Step-1 assertion below reads.
         var berserkerCore = Definition(
             "relic-berserker-core",
             "OnMatchCount",
@@ -622,10 +627,17 @@ public class RelicStageResolutionTests
         {
             PetState = created.PetState with { ATK = 100 },
         };
-        await repository.TryUpdateAsync(setupState, setupState.Sequence);
 
-        var pair = FindAdjacentPairThatProducesAMatch(setupState.BoardState);
-        var result = await service.ExecuteSwapAsync(BattleId, pair);
+        var pinned = RoundTestSupport.PlayerMatch(
+            GemType.Atk,
+            setupState.RngState,
+            setupState.LastCommittedSwapPair);
+
+        Assert.True(pinned.Resources.ClearedGemCounts.Atk > 0);
+
+        await RoundTestSupport.PinAsync(repository, setupState, pinned.Board);
+
+        var result = await service.ExecuteSwapAsync(BattleId, pinned.Swap);
 
         Assert.NotNull(result);
         var committed = result!.Value.State;
@@ -657,6 +669,12 @@ public class RelicStageResolutionTests
         // Assassin Eye triggers at Step 11 -> modifier exists ->
         // current Swap attack reaches Damage Pipeline -> modifier contributes ->
         // modifier consumed exactly once in the same resolution.
+        //
+        // The NextAttack-lifetime consumption boundary is the QUALIFYING attack
+        // (ADR-026 D1), so the Turn fixture is pinned to the board whose Swap clears
+        // ATK Gems: on a Swap that cleared none, nothing would reach the pipeline and
+        // the modifier would legitimately be preserved (§3.3 item 8), which is not
+        // what this scenario asserts.
         var assassinEye = Definition(
             "relic-assassin-eye",
             "OnMatchCount",
@@ -668,8 +686,16 @@ public class RelicStageResolutionTests
         var service = NewService(repository);
         var created = await CreateBattleAsync(service, BattleId, [assassinEye, null, null]);
 
-        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = await service.ExecuteSwapAsync(BattleId, pair);
+        var pinned = RoundTestSupport.PlayerMatch(
+            GemType.Atk,
+            created.RngState,
+            created.LastCommittedSwapPair);
+
+        Assert.True(pinned.Resources.ClearedGemCounts.Atk > 0);
+
+        await RoundTestSupport.PinAsync(repository, created, pinned.Board);
+
+        var result = await service.ExecuteSwapAsync(BattleId, pinned.Swap);
 
         Assert.NotNull(result);
         var committed = result!.Value.State;
@@ -678,6 +704,13 @@ public class RelicStageResolutionTests
         Assert.Contains(
             result.Value.Events,
             e => e.Type == BattleEventType.RelicTriggered && e.RelicTriggered.RelicId == Slot1);
+
+        // The Qualifying Attack this Turn's own Swap resolved is the consumption site
+        // (ADR-026 D1).
+        Assert.Contains(
+            result.Value.Events,
+            e => e.Type == BattleEventType.DamageDealt
+                && e.DamageDealt.Source == DamageParty.Player);
 
         // The modifier was consumed by the current Swap's qualifying player attack (Step 15–17)
         Assert.Empty(committed.PetState.NextAttackCritModifiers);

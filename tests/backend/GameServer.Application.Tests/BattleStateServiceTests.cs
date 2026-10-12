@@ -909,21 +909,45 @@ public class BattleStateServiceTests
     [Fact]
     public async Task ExecuteSwap_ShouldLeaveTheBoardStableAndConsistentWithTheResolution()
     {
-        // §4.3 item 1: the committed board is stable — a fresh detection pass finds
-        // nothing — and the counters describe that finished resolution.
-        var service = NewService();
+        // MATCH3_RULES.md §4.3 item 1 / ADR-026 §2: one atomic round commits the board
+        // the BOSS's own §18a cascade produced — the Player's cascade is not the
+        // round's last board write — and that board is stable: a fresh detection pass
+        // finds nothing. Combo and MatchCount stay the PLAYER's counters
+        // (GAME_STATE.md §2.2; BOSS_RULES.md §6.2.5 reads "Player Combo").
+        //
+        // The committed board and stream are re-derived from the round's own
+        // documented pipeline (see ReplayRoundPipeline) rather than copied out of the
+        // result, so the assertion is against GAME_RULES.md §17's steps and not
+        // against "whatever the code did".
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
         var created = await service.CreateBattleAsync("battle-swap-stable", Owner, PetConfiguration, BossDefinition);
 
-        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = await service.ExecuteSwapAsync("battle-swap-stable", pair);
+        var pinned = RoundTestSupport.PlayerMatch(GemType.Atk, created.RngState, created.LastCommittedSwapPair);
+        await RoundTestSupport.PinAsync(repository, created, pinned.Board);
+
+        var before = (await service.GetBattleAsync("battle-swap-stable"))!;
+        var result = await service.ExecuteSwapAsync("battle-swap-stable", pinned.Swap);
 
         Assert.True(result!.Value.IsAccepted);
-        Assert.Empty(MatchDetector.Detect(result.Value.State.BoardState));
 
-        var expectedPcg = new Pcg32(result.Value.Resolution.RngState.State, result.Value.Resolution.RngState.Increment);
-        expectedPcg.NextBounded(100); // Player damage crit evaluation
-        expectedPcg.NextBounded(100); // Boss damage crit evaluation
-        Assert.Equal(expectedPcg.CurrentState, result.Value.State.RngState);
+        var committed = result.Value.State;
+        var expected = ReplayRoundPipeline(result.Value);
+
+        // §4.3 item 1: a fresh detection pass over the committed board finds nothing.
+        Assert.Empty(MatchDetector.Detect(committed.BoardState));
+
+        // The round's last board write is the Boss's own cascade's output.
+        Assert.True(committed.BoardState.CellsEqual(expected.Board));
+
+        // §8.4 / §2.6.2 item 3: the committed stream is the state the round's own
+        // draws reached.
+        Assert.Equal(expected.RngState, committed.RngState);
+
+        // The Swap's own Match total is the PLAYER's action's; the Boss's Matches are
+        // not the Player's and never move either counter.
+        Assert.Equal(result.Value.Resolution.TotalMatches, committed.Combo);
+        Assert.Equal(before.MatchCount + result.Value.Resolution.TotalMatches, committed.MatchCount);
     }
 
     // -----------------------------------------------------------------------
@@ -1213,11 +1237,19 @@ public class BattleStateServiceTests
         // follow them — one PassiveCharged per Match, and then the single
         // PassiveTriggered when the Threshold was crossed. The assembled list keeps
         // both stages' own order; nothing is re-sorted or interleaved.
-        var service = NewService();
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
         var created = await service.CreateBattleAsync("battle-passive-order", Owner, PetConfiguration, BossDefinition);
 
-        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = await service.ExecuteSwapAsync("battle-passive-order", pair);
+        // ADR-026 D1: the Player's steps 15–17 run only for a confirmed ATK-Gem match,
+        // so the Swap is pinned to clear ATK Gems. That is what fixes the round's
+        // FIRST damage instance as the Player's — the window between the Passive run
+        // and it is then exactly the Pet's own reports, with no Boss board cycle and
+        // no Boss Passive interleaved into it (§6 step 6 places the Boss's after).
+        var pinned = RoundTestSupport.PlayerMatch(GemType.Atk, created.RngState, created.LastCommittedSwapPair);
+        await RoundTestSupport.PinAsync(repository, created, pinned.Board);
+
+        var result = await service.ExecuteSwapAsync("battle-passive-order", pinned.Swap);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -1234,6 +1266,12 @@ public class BattleStateServiceTests
                 or BattleEventType.DamageDealt
                 or BattleEventType.DamageTaken)
             .index;
+
+        // The window's right-hand boundary is the PLAYER's own instance: the round's
+        // first damage report is DamageCalculated for the player→boss direction
+        // (GAME_EVENTS.md §1 — the Player phase's reports precede the Boss phase's).
+        Assert.Equal(BattleEventType.DamageDealt, events[firstDamage + 1].Type);
+        Assert.Equal(DamageParty.Player, events[firstDamage + 1].DamageDealt.Source);
 
         // The Pet's Passive run precedes the player's damage instance, and the Boss's
         // Passive events come after it (GAME_EVENTS.md §1, §6 step 6) — so the run
@@ -1575,10 +1613,11 @@ public class BattleStateServiceTests
     [Fact]
     public async Task ExecuteSwap_ShouldReduceBossHpThroughTheDamagePipeline()
     {
-        // GAME_RULES.md §17 steps 15–17 / COMBAT_RULES.md §3: the Application
-        // boundary invokes the Domain Damage Pipeline as part of the swap resolution,
-        // so a committed Swap reduces Boss HP. Before this stage no damage reached the
-        // Boss at all (BossState.HP was never written).
+        // GAME_RULES.md §17 steps 15–17 / COMBAT_RULES.md §3 / ADR-026 D1: the
+        // Application boundary invokes the Domain Damage Pipeline as part of the round,
+        // but only for a confirmed ATK-Gem match — so the round's Swap is pinned to
+        // clear ATK Gems (RoundTestSupport) and the Boss's HP is asserted against that
+        // one instance.
         //
         // The expected damage is derived from the documented formula and the values
         // the resolution itself reports — never from the pipeline's output:
@@ -1588,11 +1627,15 @@ public class BattleStateServiceTests
         //   ×     1.00 (no Other Modifiers in MVP)
         //   ×     K / (K + BossState.DEF), K = 100                 (COMBAT_RULES.md §3.2)
         //   truncate toward zero, minimum 0                        (COMBAT_RULES.md §3 step 6)
-        var service = NewService();
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
         var created = await service.CreateBattleAsync("battle-damage-hp", Owner, PetConfiguration, BossDefinition);
 
-        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = await service.ExecuteSwapAsync("battle-damage-hp", pair);
+        var pinned = RoundTestSupport.PlayerMatch(GemType.Atk, created.RngState, created.LastCommittedSwapPair);
+        await RoundTestSupport.PinAsync(repository, created, pinned.Board);
+
+        var before = (await service.GetBattleAsync("battle-damage-hp"))!;
+        var result = await service.ExecuteSwapAsync("battle-damage-hp", pinned.Swap);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -1601,16 +1644,16 @@ public class BattleStateServiceTests
 
         var expectedDamage = DamagePipeline.Calculate(
             new DamagePipeline.DamageInputs(
-                Attack: created.PetState.ATK,
+                Attack: before.PetState.ATK,
                 BaseDamagePool: generation.BaseDamagePool,
                 Combo: state.Combo,
-                AttackerElement: created.PetState.Element,
-                DefenderElement: created.BossState.Element,
-                DefenderDefense: created.BossState.DEF,
-                DefenderHp: created.BossState.HP,
+                AttackerElement: before.PetState.Element,
+                DefenderElement: before.BossState.Element,
+                DefenderDefense: before.BossState.DEF,
+                DefenderHp: before.BossState.HP,
                 Source: DamageParty.Player,
                 Target: DamageParty.Boss,
-                AttackerCrit: created.PetState.Crit,
+                AttackerCrit: before.PetState.Crit,
                 RngState: result.Value.Resolution.RngState),
             ComboModifiers.Default,
             ElementModifiers.Default);
@@ -1618,23 +1661,39 @@ public class BattleStateServiceTests
         var expected = expectedDamage.DamageDealt.Amount;
 
         Assert.True(expected > 0, "this fixture's Swap must deal damage for the assertion to mean anything");
-        Assert.Equal(expected, created.BossState.HP - state.BossState.HP);
-        Assert.Equal(created.BossState.HP - expected, state.BossState.HP);
+
+        // The instance is the one the round reported, and the committed Boss HP is
+        // that instance applied and then the Boss's own §18a HP-Gem heal, clamped to
+        // MaxHP (ADR-026 §4; COMBAT_RULES.md §4 item 1) — the two HP writes of the
+        // round, and no others.
+        Assert.Equal(
+            expected,
+            result.Value.Events
+                .Single(e => e.Type == BattleEventType.DamageDealt
+                    && e.DamageDealt.Source == DamageParty.Player)
+                .DamageDealt.Amount);
+
+        Assert.Equal(ExpectedBossHpAfterRound(before, result.Value, expected), state.BossState.HP);
     }
 
     [Fact]
     public async Task ExecuteSwap_ShouldEmitTheThreeDamageEventsInTheDocumentedOrder()
     {
         // GAME_EVENTS.md §1: DamageCalculated, DamageDealt, DamageTaken — for each
-        // damage instance. GAME_RULES.md §17 / COMBAT_RULES.md §3.4 put TWO instances
-        // on one committed Swap now: the player's (steps 15–17) and the Boss's
-        // Response (step 18b/18c). Each instance emits its own three events in the
-        // documented order, and the player's precedes the Boss's.
-        var service = NewService();
+        // damage instance. ADR-026 D1 gates each direction on the acting side's own
+        // confirmed ATK-Gem match, so one atomic round carries AT MOST two instances:
+        // the Player's steps 15–17 (present here, because the pinned board's cascade
+        // clears an ATK Gem) and — iff the Boss's own swap also cleared an ATK Gem —
+        // its §17 step 18d instance. The legacy fallback basic attack is retired, so
+        // a Boss instance never appears without a Boss ATK match.
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
         var created = await service.CreateBattleAsync("battle-damage-events", Owner, PetConfiguration, BossDefinition);
 
-        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = await service.ExecuteSwapAsync("battle-damage-events", pair);
+        var pinned = RoundTestSupport.PlayerMatch(GemType.Atk, created.RngState, created.LastCommittedSwapPair);
+        await RoundTestSupport.PinAsync(repository, created, pinned.Board);
+
+        var result = await service.ExecuteSwapAsync("battle-damage-events", pinned.Swap);
 
         Assert.True(result!.Value.IsAccepted);
 
@@ -1644,26 +1703,48 @@ public class BattleStateServiceTests
                 or BattleEventType.DamageTaken)
             .ToArray();
 
-        // Two instances of three events, in the documented per-instance order, with
-        // the player's instance first — the Boss Response runs only after the player's
-        // damage has been applied (BOSS_RULES.md §3.3 item 1).
+        // The Player's instance is the round's first triple, in the documented
+        // per-instance order: COMBAT_RULES.md §3.1 runs steps 1–6 in order for every
+        // instance and GAME_EVENTS.md §1 reports Calc/Dealt/Taken per instance.
         Assert.Equal(
             [
                 BattleEventType.DamageCalculated,
                 BattleEventType.DamageDealt,
                 BattleEventType.DamageTaken,
-                BattleEventType.DamageCalculated,
-                BattleEventType.DamageDealt,
-                BattleEventType.DamageTaken,
             ],
-            damageEvents.Select(e => e.Type));
+            damageEvents.Take(3).Select(e => e.Type));
 
-        // The first instance is the player's and the second the Boss's, read from the
-        // source/target the events themselves carry (GAME_EVENTS.md §2).
         Assert.Equal(DamageParty.Player, damageEvents[1].DamageDealt.Source);
         Assert.Equal(DamageParty.Boss, damageEvents[1].DamageDealt.Target);
-        Assert.Equal(DamageParty.Boss, damageEvents[4].DamageDealt.Source);
-        Assert.Equal(DamageParty.Player, damageEvents[4].DamageDealt.Target);
+
+        // The Boss's own instance exists exactly when the Boss's own swap produced a
+        // confirmed ATK-Gem match (GAME_RULES.md §17 step 18d, ADR-026 D1).
+        var bossClearedAtkGem = RoundTestSupport.BossClearedAtkGem(result.Value);
+        Assert.Equal(bossClearedAtkGem ? 6 : 3, damageEvents.Length);
+
+        if (bossClearedAtkGem)
+        {
+            Assert.Equal(
+                [
+                    BattleEventType.DamageCalculated,
+                    BattleEventType.DamageDealt,
+                    BattleEventType.DamageTaken,
+                ],
+                damageEvents.Skip(3).Select(e => e.Type));
+
+            Assert.Equal(DamageParty.Boss, damageEvents[4].DamageDealt.Source);
+            Assert.Equal(DamageParty.Player, damageEvents[4].DamageDealt.Target);
+        }
+
+        // GAME_EVENTS.md §1: the Player phase's own reports — its damage instance
+        // included — precede every event of the Boss response phase, whose board cycle
+        // is the next run of Match-3 events (ADR-026 §2).
+        var bossBoardEventIndex = FirstBossBoardEventIndex(result.Value);
+
+        Assert.True(bossBoardEventIndex >= 0, "an alive Boss always acts on the shared board (§17 step 18a)");
+        Assert.True(
+            result.Value.Events.ToList().FindIndex(
+                e => e.Type == BattleEventType.DamageCalculated) < bossBoardEventIndex);
     }
 
     [Fact]
@@ -1673,14 +1754,22 @@ public class BattleStateServiceTests
         // Modifier, Other Modifiers, Defense, Final Damage (full breakdown, for
         // client feedback)". All six members must be reported, including the
         // pass-through Other Modifiers (COMBAT_RULES.md §3 step 4).
-        var service = NewService();
+        //
+        // ADR-026 D1: the Player's instance is the round's first DamageCalculated only
+        // when the Player's own Swap cleared an ATK Gem, so the board is pinned to do
+        // exactly that; the Boss's own §18d instance (when it exists) follows it.
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
         var created = await service.CreateBattleAsync("battle-damage-breakdown", Owner, PetConfiguration, BossDefinition);
 
-        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = await service.ExecuteSwapAsync("battle-damage-breakdown", pair);
+        var pinned = RoundTestSupport.PlayerMatch(GemType.Atk, created.RngState, created.LastCommittedSwapPair);
+        await RoundTestSupport.PinAsync(repository, created, pinned.Board);
+
+        var before = (await service.GetBattleAsync("battle-damage-breakdown"))!;
+        var result = await service.ExecuteSwapAsync("battle-damage-breakdown", pinned.Swap);
 
         // The player's instance is the FIRST DamageCalculated — the Boss's Response
-        // instance follows it (GAME_RULES.md §17 steps 15–17 then 18b/18c).
+        // instance follows it (GAME_RULES.md §17 steps 15–17 then 18a–18d).
         Assert.True(result!.Value.IsAccepted);
 
         var calculation = result.Value.Events
@@ -1689,16 +1778,16 @@ public class BattleStateServiceTests
 
         var generation = result.Value.Resources;
 
-        Assert.Equal(created.PetState.ATK + generation.BaseDamagePool, calculation.Base);
+        Assert.Equal(before.PetState.ATK + generation.BaseDamagePool, calculation.Base);
         Assert.Equal(
             ComboModifiers.Default.NumeratorFor(result.Value.State.Combo) / 100d,
             calculation.ComboModifier);
         Assert.Equal(
             ElementModifiers.Default.For(
-                ElementMatchups.Resolve(created.PetState.Element, created.BossState.Element)),
+                ElementMatchups.Resolve(before.PetState.Element, before.BossState.Element)),
             calculation.ElementModifier);
         var expectedCritRoll = new Pcg32(result.Value.Resolution.RngState.State, result.Value.Resolution.RngState.Increment).NextBounded(100);
-        var expectedOtherModifier = expectedCritRoll < created.PetState.Crit ? 1.50 : 1.00;
+        var expectedOtherModifier = expectedCritRoll < before.PetState.Crit ? 1.50 : 1.00;
         Assert.Equal(expectedOtherModifier, calculation.OtherModifiers);
         Assert.True(calculation.Defense > 0d);
         Assert.True(calculation.FinalDamage >= 0);
@@ -1709,33 +1798,41 @@ public class BattleStateServiceTests
     {
         // GAME_EVENTS.md §2 gives both events "source, target, Final Damage amount".
         // They describe ONE application of damage, so the amount both report must be
-        // exactly the change the committed state shows — an event is never a
+        // exactly the application the committed state shows — an event is never a
         // substitute for the write-back and never disagrees with it
         // (GAME_EVENTS.md §3 item 6, GAME_STATE.md §5.1).
         //
         // This is the PLAYER's instance: the first DamageDealt, whose source is the
-        // player (COMBAT_RULES.md §3). It must equal the Boss's HP loss.
-        var service = NewService();
+        // player (COMBAT_RULES.md §3) — present because the pinned board's cascade
+        // clears an ATK Gem (ADR-026 D1).
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
         var created = await service.CreateBattleAsync("battle-damage-agree", Owner, PetConfiguration, BossDefinition);
 
-        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = await service.ExecuteSwapAsync("battle-damage-agree", pair);
+        var pinned = RoundTestSupport.PlayerMatch(GemType.Atk, created.RngState, created.LastCommittedSwapPair);
+        await RoundTestSupport.PinAsync(repository, created, pinned.Board);
+
+        var before = (await service.GetBattleAsync("battle-damage-agree"))!;
+        var result = await service.ExecuteSwapAsync("battle-damage-agree", pinned.Swap);
 
         Assert.True(result!.Value.IsAccepted);
 
         var dealt = result.Value.Events.First(e => e.Type == BattleEventType.DamageDealt).DamageDealt;
         var taken = result.Value.Events.First(e => e.Type == BattleEventType.DamageTaken).DamageTaken;
 
-        // The Boss's total HP loss across the action is the player's damage minus
-        // nothing — the Boss takes damage only from the player's instance.
-        var applied = created.BossState.HP - result.Value.State.BossState.HP;
-
         Assert.Equal(DamageParty.Player, dealt.Source);
         Assert.Equal(DamageParty.Boss, dealt.Target);
         Assert.Equal(dealt.Amount, taken.Amount);
         Assert.Equal(dealt.Source, taken.Source);
         Assert.Equal(dealt.Target, taken.Target);
-        Assert.Equal(applied, dealt.Amount);
+
+        // The Boss's HP is written twice in the round and by nothing else: the player's
+        // instance (this one) and the Boss's own §18a HP-Gem heal, clamped at MaxHP
+        // (ADR-026 §4; COMBAT_RULES.md §4 item 1). The committed value is exactly that
+        // composition of the amount above — so the reports and the write-back agree.
+        Assert.Equal(
+            ExpectedBossHpAfterRound(before, result.Value, dealt.Amount),
+            result.Value.State.BossState.HP);
     }
 
     [Fact]
@@ -1745,18 +1842,37 @@ public class BattleStateServiceTests
         // part of that single value, so the active-state store holds exactly the state
         // the result carries — a client reading the DamageDealt event and a client
         // reading the state cannot disagree.
-        var service = NewService();
+        //
+        // The HP the round reports is the Player's ATK-gated instance (ADR-026 D1, so
+        // the board is pinned to clear ATK Gems) applied to the Boss, then the Boss's
+        // own §18a HP-Gem heal clamped at MaxHP (ADR-026 §4). Those are the round's
+        // two Boss-HP writes, so the stored value is the documented composition of
+        // them rather than a bare inequality.
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
         var created = await service.CreateBattleAsync("battle-damage-writeback", Owner, PetConfiguration, BossDefinition);
 
-        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = await service.ExecuteSwapAsync("battle-damage-writeback", pair);
+        var pinned = RoundTestSupport.PlayerMatch(GemType.Atk, created.RngState, created.LastCommittedSwapPair);
+        await RoundTestSupport.PinAsync(repository, created, pinned.Board);
+
+        var before = (await service.GetBattleAsync("battle-damage-writeback"))!;
+        var result = await service.ExecuteSwapAsync("battle-damage-writeback", pinned.Swap);
 
         Assert.True(result!.Value.IsAccepted);
 
         var stored = await service.GetBattleAsync("battle-damage-writeback")!;
 
         Assert.Equal(result.Value.State.BossState, stored.BossState);
-        Assert.True(stored.BossState.HP < created.BossState.HP);
+
+        var playerDamage = result.Value.Events
+            .Single(e => e.Type == BattleEventType.DamageDealt
+                && e.DamageDealt.Source == DamageParty.Player)
+            .DamageDealt.Amount;
+
+        Assert.Equal(ExpectedBossHpAfterRound(before, result.Value, playerDamage), stored.BossState.HP);
+
+        // COMBAT_RULES.md §3 step 6 / GAME_RULES.md §1.4: overkill stops at 0, so the
+        // committed Boss HP is never negative.
         Assert.True(stored.BossState.HP >= 0);
     }
 
@@ -1790,54 +1906,63 @@ public class BattleStateServiceTests
         // owns: the Boss's identity, its Element, and its base stats are configuration
         // set at battle creation (GAME_STATE.md §2.4, BOSS_RULES.md §6.1) and the
         // resolution rewrites none of them.
-        var service = NewService();
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
         var created = await service.CreateBattleAsync("battle-damage-bossfield", Owner, PetConfiguration, BossDefinition);
 
-        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = await service.ExecuteSwapAsync("battle-damage-bossfield", pair);
+        var pinned = RoundTestSupport.PlayerMatch(GemType.Atk, created.RngState, created.LastCommittedSwapPair);
+        await RoundTestSupport.PinAsync(repository, created, pinned.Board);
+
+        var before = (await service.GetBattleAsync("battle-damage-bossfield"))!;
+        var result = await service.ExecuteSwapAsync("battle-damage-bossfield", pinned.Swap);
 
         Assert.True(result!.Value.IsAccepted);
 
         var after = result.Value.State.BossState;
 
-        Assert.Equal(created.BossState.BossId, after.BossId);
-        Assert.Equal(created.BossState.Element, after.Element);
-        Assert.Equal(created.BossState.MaxHP, after.MaxHP);
-        Assert.Equal(created.BossState.ATK, after.ATK);
-        Assert.Equal(created.BossState.DEF, after.DEF);
-        Assert.Equal(created.BossState.PassiveId, after.PassiveId);
+        Assert.Equal(before.BossState.BossId, after.BossId);
+        Assert.Equal(before.BossState.Element, after.Element);
+        Assert.Equal(before.BossState.MaxHP, after.MaxHP);
+        Assert.Equal(before.BossState.ATK, after.ATK);
+        Assert.Equal(before.BossState.DEF, after.DEF);
+        Assert.Equal(before.BossState.PassiveId, after.PassiveId);
 
-        // The HP fell by exactly the player's damage instance — the Boss takes damage
-        // from no other source in this action.
+        // The Boss's HP is written by exactly two steps of this round: the Player's
+        // ATK-gated instance (ADR-026 D1) and the Boss's own §18a HP-Gem heal clamped
+        // at MaxHP. Nothing else in the round reaches it.
         var playerDamage = result.Value.Events
-            .First(e => e.Type == BattleEventType.DamageDealt
+            .Single(e => e.Type == BattleEventType.DamageDealt
                 && e.DamageDealt.Source == DamageParty.Player)
             .DamageDealt.Amount;
 
-        Assert.Equal(created.BossState.HP - playerDamage, after.HP);
+        Assert.Equal(ExpectedBossHpAfterRound(before, result.Value, playerDamage), after.HP);
 
         // And the Skill charge followed the documented rule (GAME_STATE.md §2.4.3 /
-        // BOSS_RULES.md §6.3), whichever branch this board's Match total lands on:
+        // BOSS_RULES.md §6.3 / ADR-026 D2), whichever branch this board lands on:
         //
-        //   the Skill did not fire -> the charge accumulated this Swap's Matches
+        //   the Skill did not fire -> the charge accumulated +1 per POWER match group
+        //                             the BOSS's own swap produced, clamped at the
+        //                             Skill's ChargeRequirement
         //   the Skill fired        -> the charge was reset to 0
         //
-        // The branch is read from the events, not assumed, because the Match count
-        // depends on the generated board — and the rule is a rule for both cases.
+        // The Player's POWER matches never charge the Boss (D2), so the PLAYER's Match
+        // total is not this counter's unit; the branch is read from the events, not
+        // assumed.
         var skillFired = result.Value.Events.Any(e => e.Type == BattleEventType.BossSkillCast);
+        var bossPowerMatchGroups = RoundTestSupport.BossPowerMatchGroups(result.Value);
 
         var expectedSkillCharge = skillFired
             ? 0
-            : created.BossState.SkillCharge + result.Value.Resolution.TotalMatches;
+            : Math.Min(before.BossState.SkillCharge + bossPowerMatchGroups, BossDefinition.SkillChargeRequirement);
 
         Assert.Equal(expectedSkillCharge, after.SkillCharge);
 
         // A fired Skill must have met both documented conditions before it did
-        // (GAME_STATE.md §2.4.3).
+        // (GAME_STATE.md §2.4.3: SkillCharge ≥ ChargeRequirement AND SkillCooldown = 0).
         if (skillFired)
         {
             Assert.True(
-                created.BossState.SkillCharge + result.Value.Resolution.TotalMatches
+                before.BossState.SkillCharge + bossPowerMatchGroups
                     >= BossDefinition.SkillChargeRequirement);
 
             Assert.Equal(BossDefinition.SkillCooldownTurns, after.SkillCooldown);
@@ -1847,20 +1972,39 @@ public class BattleStateServiceTests
     [Fact]
     public async Task ExecuteSwap_ShouldAdvanceRngStateForDamageCritEvaluation()
     {
-        // AGENTS.md §11 / COMBAT_RULES.md §3.3: the Damage Pipeline draws exactly one
-        // bounded RNG selection (bound 100) from the single PRNG stream (BattleState.RngState).
-        var service = NewService();
+        // AGENTS.md §11 / ADR-009 / COMBAT_RULES.md §3.3 item 2: every Crit evaluation
+        // draws exactly one bounded-100 selection from the single PCG32 stream
+        // (BattleState.RngState). Under ADR-026 §2 one atomic round makes four kinds of
+        // draw:
+        //   * the Player Swap's Spawn draws              (MATCH3_RULES.md §4.5 item 4)
+        //   * the Player attack's one bound-100 Crit     (COMBAT_RULES.md §3.3 item 2)
+        //   * the Boss's own swap's Spawn draws          (GAME_RULES.md §17 step 18a)
+        //   * the Boss attack's one bound-100 Crit       (GAME_RULES.md §17 step 18d)
+        // Each Crit draw happens iff that side's cascade cleared an ATK Gem, because
+        // the Damage Pipeline only runs for a qualifying attack (ADR-026 D1).
+        //
+        // The stronger, exact form is asserted — the committed RngState equals the
+        // state the round's own two board actions and two Crit evaluations reached,
+        // re-derived by ReplayRoundPipeline — rather than the weaker, still-true
+        // "the state advanced and differs from the pre-round value". GAME_STATE.md
+        // §2.6.2 item 3 makes RngState a function of exactly the draws made, so an
+        // exact equality is what that contract states, and only it detects a missing
+        // or an extra draw (e.g. a revived fallback Crit roll for a non-qualifying
+        // attack).
+        var repository = new InMemoryBattleStateRepository();
+        var service = NewService(repository);
         var created = await service.CreateBattleAsync("battle-damage-rng", Owner, PetConfiguration, BossDefinition);
 
-        var pair = FindAdjacentPairThatProducesAMatch(created.BoardState);
-        var result = await service.ExecuteSwapAsync("battle-damage-rng", pair);
+        var pinned = RoundTestSupport.PlayerMatch(GemType.Atk, created.RngState, created.LastCommittedSwapPair);
+        await RoundTestSupport.PinAsync(repository, created, pinned.Board);
+
+        var before = (await service.GetBattleAsync("battle-damage-rng"))!;
+        var result = await service.ExecuteSwapAsync("battle-damage-rng", pinned.Swap);
 
         Assert.True(result!.Value.IsAccepted);
 
-        var expectedPcg = new Pcg32(result.Value.Resolution.RngState.State, result.Value.Resolution.RngState.Increment);
-        expectedPcg.NextBounded(100); // Player damage crit evaluation
-        expectedPcg.NextBounded(100); // Boss damage crit evaluation
-        Assert.Equal(expectedPcg.CurrentState, result.Value.State.RngState);
+        Assert.Equal(ReplayRoundPipeline(result.Value).RngState, result.Value.State.RngState);
+        Assert.NotEqual(before.RngState, result.Value.State.RngState);
     }
 
     // -----------------------------------------------------------------------
@@ -2153,4 +2297,150 @@ public class BattleStateServiceTests
             }
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Atomic-round derivation helpers (ADR-026 §2/§8, GAME_RULES.md §17)
+    //
+    // These do not re-implement a rule: they call the Domain stages the round
+    // itself calls, in the order the documents fix, so a test can state the
+    // board, the stream, and the Boss phase's resources the round must carry
+    // instead of restating whatever the implementation produced.
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// The board, the Boss phase's generated resources, and the RNG stream one
+    /// committed atomic round must have reached — re-derived from the round's own
+    /// committed reports by running the documented steps in the order
+    /// <c>BattleStateService.ResolveSwapAsync</c> fixes them (<c>GAME_RULES.md</c>
+    /// §17, <c>ADR-026</c> §2 and §8).
+    ///
+    /// <code>
+    /// Player resolution's retained stream          MATCH3_RULES.md §4.5 item 4
+    ///   + one bound-100 Crit draw iff Atk > 0      COMBAT_RULES.md §3.3 item 2, ADR-026 D1
+    ///   + BossAiEngine.SelectMove on that board    GAME_RULES.md §17 step 18a, ADR-026 §8
+    ///   + CascadeResolver over the Boss's swap     MATCH3_RULES.md §4
+    ///   + ResourceGenerator over that cascade      COMBAT_RULES.md §2
+    ///   + one bound-100 Crit draw iff Atk > 0      GAME_RULES.md §17 step 18d
+    /// </code>
+    ///
+    /// <b>The Boss HP terminal check short-circuits the phase.</b> A Boss the Player's
+    /// own instance has just reduced to 0 HP makes no swap, generates nothing, and
+    /// draws no Crit: <c>BOSS_RULES.md</c> §5 item 4 ends the battle "with no Boss
+    /// Response", so the round's board and stream are the Player phase's.
+    /// </summary>
+    private static RoundPipelineReplay ReplayRoundPipeline(SwapExecutionResult result)
+    {
+        // The Player resolution's own report is where its Spawn draws left the stream
+        // (MATCH3_RULES.md §4.5 item 4), and the Player attack's Crit selection is the
+        // first draw the Application layer adds on top of it.
+        var playerPhaseRng = new Pcg32(
+            result.Resolution.RngState.State,
+            result.Resolution.RngState.Increment);
+
+        if (result.Resources.ClearedGemCounts.Atk > 0)
+        {
+            playerPhaseRng.NextBounded(DamagePipeline.CritRollBound);
+        }
+
+        if (result.State.BossState.HP == 0)
+        {
+            return new RoundPipelineReplay(
+                result.Resolution.Board,
+                ResourceGeneration.None,
+                playerPhaseRng.CurrentState);
+        }
+
+        // §17 step 18a: the Boss selects one legal match-producing swap on the shared
+        // board. Selection itself draws nothing; only a deadlocked board's bounded
+        // deterministic reshuffle consumes the stream, and the engine reports both the
+        // board it acted on and the stream it reached (ADR-026 §8,
+        // BossMoveSelectionResult).
+        var bossMove = BossAiEngine.SelectMove(
+            result.Resolution.Board,
+            new Pcg32(playerPhaseRng.CurrentState.State, playerPhaseRng.CurrentState.Increment));
+
+        var bossResolution = CascadeResolver.Resolve(
+            bossMove.Board.WithSwapped(bossMove.SelectedMove.From, bossMove.SelectedMove.To),
+            new Pcg32(bossMove.RngState.State, bossMove.RngState.Increment),
+            swapOriginIndex: null);
+
+        var bossGeneration = ResourceGenerator.Generate(bossResolution);
+
+        // §17 step 18d: the Boss's own instance draws its Crit selection iff its
+        // cascade cleared an ATK Gem — the same gate the Player's carries (D1).
+        var bossPhaseRng = new Pcg32(bossResolution.RngState.State, bossResolution.RngState.Increment);
+
+        if (bossGeneration.ClearedGemCounts.Atk > 0)
+        {
+            bossPhaseRng.NextBounded(DamagePipeline.CritRollBound);
+        }
+
+        return new RoundPipelineReplay(
+            bossResolution.Board,
+            bossGeneration,
+            bossPhaseRng.CurrentState);
+    }
+
+    /// <summary>
+    /// The Boss's committed HP after one atomic round: the Player's ATK-gated instance
+    /// applied to it, then the Boss's own §17 step 18a HP-Gem heal clamped at
+    /// <c>MaxHP</c> (<c>ADR-026</c> §4, <c>COMBAT_RULES.md</c> §4 item 1).
+    ///
+    /// Those are the round's only two Boss-HP writes in these scenarios: the Boss's
+    /// DEF-Gem Shield is created after the Player's instance, and the MVP Boss here
+    /// (<c>Hỏa Long</c>) declares no HP-restoring Passive (<c>BOSS_RULES.md</c> §6.2).
+    /// The <c>Math.Max(0, …)</c> is <c>COMBAT_RULES.md</c> §3 step 6's own "minimum 0"
+    /// / <c>GAME_RULES.md</c> §1.4's clamp.
+    /// </summary>
+    private static int ExpectedBossHpAfterRound(
+        BattleState before,
+        SwapExecutionResult result,
+        int playerFinalDamage)
+    {
+        var afterPlayerInstance = Math.Max(0, before.BossState.HP - playerFinalDamage);
+        var healed = afterPlayerInstance + ReplayRoundPipeline(result).BossResources.HealPool;
+
+        return Math.Min(healed, before.BossState.MaxHP);
+    }
+
+    /// <summary>
+    /// The position of the first event of the <b>Boss response phase</b> — the first
+    /// Match-3 board event after the Player action's own board-events prefix
+    /// (<c>GAME_EVENTS.md</c> §1, <c>ADR-026</c> §2), or <c>-1</c> when the phase
+    /// produced none because the Boss HP terminal check skipped it
+    /// (<c>BOSS_RULES.md</c> §5 item 4).
+    /// </summary>
+    private static int FirstBossBoardEventIndex(SwapExecutionResult result)
+    {
+        var events = result.Events;
+        var index = RoundTestSupport.PlayerBoardEvents(result).Count;
+
+        while (index < events.Count && !IsBoardEvent(events[index]))
+        {
+            index++;
+        }
+
+        return index < events.Count ? index : -1;
+    }
+
+    /// <summary>
+    /// Whether a Battle Event belongs to a Match-3 board cycle
+    /// (<c>GAME_EVENTS.md</c> §1.1) — the same reading
+    /// <see cref="RoundTestSupport.BossBoardEvents"/> delimits the Boss's cycle with.
+    /// </summary>
+    private static bool IsBoardEvent(BattleEvent battleEvent) =>
+        battleEvent.Type
+            is BattleEventType.MatchCreated
+            or BattleEventType.CascadeCreated
+            or BattleEventType.GemMatched
+            or BattleEventType.ComboChanged;
+
+    /// <summary>
+    /// The board, Boss-phase resources, and stream
+    /// <see cref="ReplayRoundPipeline"/> derives for one atomic round.
+    /// </summary>
+    private readonly record struct RoundPipelineReplay(
+        BoardState Board,
+        ResourceGeneration BossResources,
+        RngState RngState);
 }

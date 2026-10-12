@@ -263,10 +263,9 @@ public class Task172BossDefinitionsContentTests
     // =======================================================================
 
     [Theory]
-    // §6.3's Skill table, transcribed per Boss: Charge Req. / CD (T) / Base Dmg,
-    // each with `Secondary Effect: None`.
-    [InlineData("boss-son-thach-ve", "earthquake", 5, 0, 150)]
-    [InlineData("boss-kim-loi-vuong", "thunder-strike", 5, 0, 180)]
+    // §6.3's Skill table, transcribed per Boss: Charge Req. / CD (T) / Base Dmg (ADR-026 D3: BaseDamage = 0).
+    [InlineData("boss-son-thach-ve", "earthquake", 5, 0, 0)]
+    [InlineData("boss-kim-loi-vuong", "thunder-strike", 5, 0, 0)]
     public void BothNewSkills_ShouldCarryTheDocumentedTimingAndBaseDamage(
         string bossId,
         string skillId,
@@ -283,50 +282,44 @@ public class Task172BossDefinitionsContentTests
     }
 
     [Fact]
-    public void BothNewSkills_ShouldDeclareNoSecondaryEffect()
+    public void BothNewSkills_ShouldDeclareTheirApprovedSecondaryEffects()
     {
-        // §6.3.1 items 4–5: "Secondary Effect: None. The Skill applies no debuff,
-        // no status effect, and no resource change." Neither applies a board
-        // effect either. The declaration is therefore the ABSENCE of a
-        // SecondaryEffect — §6.3's explicit "None", not an omission — so the step
-        // 18b resolution applies nothing and no new effect kind is needed.
-        Assert.Null(BossDefinitions.SonThachVe.SkillDefinition.SecondaryEffect);
-        Assert.Null(BossDefinitions.KimLoiVuong.SkillDefinition.SecondaryEffect);
+        // ADR-026 D6 / D7:
+        // Sơn Thạch Vệ declares BossShield (150 magnitude).
+        // Kim Lôi Vương declares NextAtkBuff (50 magnitude, NextQualifyingAttack).
+        var sonThachVeEffect = BossDefinitions.SonThachVe.SkillDefinition.SecondaryEffect;
+        Assert.NotNull(sonThachVeEffect);
+        Assert.Equal(BossSkillSecondaryEffectKind.BossShield, sonThachVeEffect!.Value.Kind);
+        Assert.Equal(150, sonThachVeEffect.Value.Magnitude);
 
-        // §6.3's closed secondary-effect vocabulary is unchanged: the three
-        // documented kinds are still the only members, and neither new Skill adds
-        // a fourth.
-        Assert.Equal(3, Enum.GetValues<BossSkillSecondaryEffectKind>().Length);
+        var kimLoiVuongEffect = BossDefinitions.KimLoiVuong.SkillDefinition.SecondaryEffect;
+        Assert.NotNull(kimLoiVuongEffect);
+        Assert.Equal(BossSkillSecondaryEffectKind.NextAtkBuff, kimLoiVuongEffect!.Value.Kind);
+        Assert.Equal(50, kimLoiVuongEffect.Value.Magnitude);
+        Assert.Equal(StatusEffect.NextQualifyingAttackCondition, kimLoiVuongEffect.Value.ExpiryCondition);
     }
 
     [Fact]
-    public void BothNewSkills_ShouldNotBeEncodableAsAnyExistingSecondaryEffect()
+    public void BothNewSkills_ShouldCarryExpectedSecondaryEffectKinds()
     {
-        // A guard against a future edit quietly attaching one of the three
-        // documented effects to a Skill §6.3.1 says has none. Each kind belongs to
-        // exactly one earlier Skill (Burn → Flame Burst, PowerDrain → Drain Power,
-        // AtkDebuff → Root), which §6.3.1's per-item authoring fixes.
+        // ADR-026 D3, D5, D6, D7:
+        // Flame Burst: AtkBuff, Drain Power: PowerDrain, Root: AtkDebuff,
+        // Earthquake: BossShield, Thunder Strike: NextAtkBuff.
         var documented = new Dictionary<string, BossSkillSecondaryEffectKind>(StringComparer.Ordinal)
         {
-            ["boss-hoa-long"] = BossSkillSecondaryEffectKind.Burn,
+            ["boss-hoa-long"] = BossSkillSecondaryEffectKind.AtkBuff,
             ["boss-thuy-ma"] = BossSkillSecondaryEffectKind.PowerDrain,
             ["boss-moc-yeu"] = BossSkillSecondaryEffectKind.AtkDebuff,
+            ["boss-son-thach-ve"] = BossSkillSecondaryEffectKind.BossShield,
+            ["boss-kim-loi-vuong"] = BossSkillSecondaryEffectKind.NextAtkBuff,
         };
 
         foreach (var boss in BossDefinitions.All)
         {
             var effect = boss.SkillDefinition.SecondaryEffect;
 
-            if (documented.TryGetValue(boss.BossId.Value, out var expected))
-            {
-                Assert.NotNull(effect);
-                Assert.Equal(expected, effect!.Value.Kind);
-            }
-            else
-            {
-                // Sơn Thạch Vệ and Kim Lôi Vương — §6.3.1's "None" rows.
-                Assert.Null(effect);
-            }
+            Assert.NotNull(effect);
+            Assert.Equal(documented[boss.BossId.Value], effect!.Value.Kind);
         }
     }
 }

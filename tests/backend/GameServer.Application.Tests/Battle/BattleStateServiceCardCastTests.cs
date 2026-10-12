@@ -514,24 +514,39 @@ public sealed class BattleStateServiceCardCastTests
                 ActiveStatusEffects = [burn],
             },
         };
-        await repo.TryUpdateAsync(stateWithBurn, initial.Sequence);
 
-        var pair = FindAdjacentPairThatProducesAMatch(stateWithBurn.BoardState);
-        var result = await service.ExecuteSwapAsync("battle-burn-tick", pair);
+        var swap = await PinAttackTurnAsync(repo, stateWithBurn);
+        var result = await service.ExecuteSwapAsync("battle-burn-tick", swap);
 
         Assert.NotNull(result);
         Assert.True(result.Value.IsAccepted);
 
-        // Burn duration decremented from 2 to 1
-        Assert.Single(result.Value.State.BossState.ActiveStatusEffects);
-        Assert.Equal(1, result.Value.State.BossState.ActiveStatusEffects[0].RemainingTurns);
+        // Burn duration decremented from 2 to 1 — the step-19a pass ticks and decrements
+        // every Turn-based instance in the same resolution (GAME_STATE.md §5.1.1). The
+        // assertion is scoped to the Burn instance: §17 step 18a's actor-relative effects
+        // also put whatever the Boss's own board action produced (its DEF Gems' Shield)
+        // on the same collection in the same round.
+        var remainingBurn = Assert.Single(result.Value.State.BossState.ActiveStatusEffects, e => e.Id == "Burn");
+        Assert.Equal(1, remainingBurn.RemainingTurns);
 
-        // Damage events should include player direct damage (3 events), boss response damage (3 events), and burn tick damage (3 events)
+        // The round's damage instances, each reported as the documented three events
+        // (GAME_EVENTS.md §1: DamageCalculated, DamageDealt, DamageTaken):
+        //   * the step-19a Burn tick, always — its own instance (COMBAT_RULES.md
+        //     §5.2 item 3);
+        //   * the Player's §17 steps 15–17 instance, iff the committed Swap cleared an
+        //     ATK Gem (ADR-026 D1) — which the pinned fixture guarantees and asserts;
+        //   * the Boss's §17 step 18d instance, iff the BOSS's own board action cleared
+        //     one — read from the Boss's own cycle reports rather than assumed
+        //     (RoundTestSupport.BossClearedAtkGem).
         var damageEvents = result.Value.Events
             .Where(e => e.Type is BattleEventType.DamageCalculated or BattleEventType.DamageDealt or BattleEventType.DamageTaken)
             .ToList();
 
-        Assert.Equal(9, damageEvents.Count); // 3 instances x 3 events
+        var expectedInstances = 1                       // the step-19a Burn tick
+            + 1                                         // the Player's, guaranteed by the pinned ATK fixture
+            + (RoundTestSupport.BossClearedAtkGem(result.Value) ? 1 : 0);   // the Boss's, iff its own cycle cleared one
+
+        Assert.Equal(expectedInstances * 3, damageEvents.Count);
     }
 
     [Fact]
@@ -628,10 +643,9 @@ public sealed class BattleStateServiceCardCastTests
                 NextAttackCritModifiers = [new NextAttackCritModifier("card-iron-fang", 10)],
             },
         };
-        await repo.TryUpdateAsync(state, initial.Sequence);
 
-        var pair = FindAdjacentPairThatProducesAMatch(state.BoardState);
-        var result = await service.ExecuteSwapAsync("battle-burn-crit", pair);
+        var swap = await PinAttackTurnAsync(repo, state);
+        var result = await service.ExecuteSwapAsync("battle-burn-crit", swap);
 
         Assert.NotNull(result);
         Assert.True(result.Value.IsAccepted);
@@ -641,8 +655,10 @@ public sealed class BattleStateServiceCardCastTests
         Assert.Empty(result.Value.State.PetState.NextAttackCritModifiers);
         Assert.Equal(PetState.DefaultCrit, result.Value.State.PetState.Crit);
 
-        // The Burn instance survived its tick (duration 3 → 2) and is still active.
-        var remainingBurn = Assert.Single(result.Value.State.BossState.ActiveStatusEffects);
+        // The Burn instance survived its tick (duration 3 → 2) and is still active. The
+        // assertion is scoped to it because §17 step 18a's actor-relative effects put the
+        // Boss's own DEF-Gem Shield on the same collection in the same round.
+        var remainingBurn = Assert.Single(result.Value.State.BossState.ActiveStatusEffects, e => e.Id == "Burn");
         Assert.Equal(2, remainingBurn.RemainingTurns);
     }
 
@@ -723,11 +739,12 @@ public sealed class BattleStateServiceCardCastTests
                 NextAttackCritModifiers = [new NextAttackCritModifier("test-source", 10)],
             },
         };
-        await repo.TryUpdateAsync(stateWithModifier, initial.Sequence);
 
-        // The Swap is the owner's qualifying attack, so it consumes the modifier.
-        var pair = FindAdjacentPairThatProducesAMatch(initial.BoardState);
-        var swapResult = await service.ExecuteSwapAsync("battle-crit-persist", pair);
+        // The Swap is the owner's qualifying attack, so it consumes the modifier — which
+        // is why its board is pinned to the ATK fixture (ADR-026 D1): a Swap that cleared
+        // no ATK Gem resolves no attack and would preserve the modifier instead.
+        var swap = await PinAttackTurnAsync(repo, stateWithModifier);
+        var swapResult = await service.ExecuteSwapAsync("battle-crit-persist", swap);
         Assert.NotNull(swapResult);
         Assert.True(swapResult.Value.IsAccepted);
         Assert.Empty(swapResult.Value.State.PetState.NextAttackCritModifiers);
@@ -792,10 +809,11 @@ public sealed class BattleStateServiceCardCastTests
                 ],
             },
         };
-        await repo.TryUpdateAsync(stateWithTwoSources, initial.Sequence);
 
-        var pair = FindAdjacentPairThatProducesAMatch(initial.BoardState);
-        var swapResult = await service.ExecuteSwapAsync("battle-two-crit-sources", pair);
+        // One qualifying attack is what consumes both (ADR-026 D1), so the Turn fixture
+        // is pinned to the ATK board that guarantees one.
+        var swap = await PinAttackTurnAsync(repo, stateWithTwoSources);
+        var swapResult = await service.ExecuteSwapAsync("battle-two-crit-sources", swap);
 
         Assert.NotNull(swapResult);
         Assert.True(swapResult.Value.IsAccepted);
@@ -901,10 +919,12 @@ public sealed class BattleStateServiceCardCastTests
                 ],
             },
         };
-        await repo.TryUpdateAsync(stateOverCap, initial.Sequence);
 
-        var pair = FindAdjacentPairThatProducesAMatch(initial.BoardState);
-        var swapResult = await service.ExecuteSwapAsync("battle-crit-cap", pair);
+        // The Crit outcome is reported on the Player's own instance, which exists only on
+        // a qualifying attack (ADR-026 D1) — so the Turn fixture is pinned to the ATK
+        // board rather than drawn.
+        var swap = await PinAttackTurnAsync(repo, stateOverCap);
+        var swapResult = await service.ExecuteSwapAsync("battle-crit-cap", swap);
 
         Assert.NotNull(swapResult);
         Assert.True(swapResult.Value.IsAccepted);
@@ -937,6 +957,36 @@ public sealed class BattleStateServiceCardCastTests
             events[playerDamageIndex].DamageCalculated.OtherModifiers);
 
         Assert.Empty(swapResult.Value.State.PetState.NextAttackCritModifiers);
+    }
+
+    /// <summary>
+    /// Pins the Turn fixture — <see cref="RoundTestSupport.PlayerMatch"/>'s ATK board,
+    /// whose one Swap clears ATK Gems — together with the state the scenario declares,
+    /// and returns the Swap to commit.
+    ///
+    /// <b>Why the board is pinned.</b> <c>ADR-026</c> D1 calculates and applies the
+    /// Player's attack, and therefore consumes its <c>NextAttack</c> modifiers, only
+    /// when the committed Swap cleared at least one ATK Gem. A board drawn from the
+    /// battle's own RNG gives the scenario no control over that, so a consumption
+    /// assertion made on one would be an assertion about which Gem the Swap happened to
+    /// clear. The fixture verifies its own precondition below.
+    /// </summary>
+    private static async Task<SwapRequest> PinAttackTurnAsync(
+        InMemoryBattleStateRepository repository,
+        BattleState state)
+    {
+        var pinned = RoundTestSupport.PlayerMatch(
+            GemType.Atk,
+            state.RngState,
+            state.LastCommittedSwapPair);
+
+        Assert.True(
+            pinned.Resources.ClearedGemCounts.Atk > 0,
+            "the ADR-026 fixture must clear ATK Gems for the Player's attack to resolve");
+
+        await RoundTestSupport.PinAsync(repository, state, pinned.Board);
+
+        return pinned.Swap;
     }
 
     private static SwapRequest FindAdjacentPairThatProducesAMatch(BoardState board)

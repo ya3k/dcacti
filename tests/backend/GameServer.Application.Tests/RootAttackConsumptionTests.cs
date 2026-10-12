@@ -320,47 +320,73 @@ public class RootAttackConsumptionTests
     {
         // COMBAT_RULES.md §5.4.5: the rule "Does NOT apply to the Boss's damage —
         // §3.4 pins the Boss side's Step 4 to 1.0, and this rule authors no
-        // Boss-side factor". The Pet is Root's owner, so the Boss's own instance in
-        // the same reduced Turn must be unaffected.
+        // Boss-side factor". Root's owner is the Pet, so the Boss's own instance in
+        // the same reduced Turn must be untouched on both sides §5.4 governs: the
+        // derived Step-1 ATK input (§5.5.1 reads BossState.ATK and the BOSS's own
+        // TargetStat="ATK" instances) and Step 4 (§3.4's 1.0).
         //
-        // The reduced Turn is the one AFTER the cast, and Mộc Yêu's cooldown makes
-        // that Turn a §18c Basic Attack. Both arms are asserted by identity rather
-        // than assumed, so the test states which documented Boss action it observed.
+        // The Turn observed is the one AFTER the cast, so Root is genuinely in force
+        // while the Boss acts. The Boss's instance is the §17 step 18d ATK-gated one
+        // (ADR-026 D1): the legacy fallback Basic Attack, whose Step 1 was the bare
+        // Boss ATK, is retired, so the instance's existence is asserted as its gate
+        // rather than assumed.
         var harness = Harness.Create();
         var casting = await CastRootAsync(harness);
         var turnNPlus1 = await ResolveNextTurnAsync(harness, casting.BattleId);
 
-        // Turn N+1's Player attack IS reduced — the Boss-side assertion below is
-        // therefore made on a Turn where Root is genuinely in force.
+        // Turn N+1's Player attack IS reduced — the Boss-side assertions below are
+        // therefore made on a Turn where Root is genuinely in force (§5.4.1 item 3),
+        // and the stored stat is still the documented MVP 50 (§5.4.4).
         Assert.Equal(35, turnNPlus1.Attack);
+        Assert.Equal(50, turnNPlus1.Committed.PetState.ATK);
 
-        // The Boss's instance follows the Player's (GAME_RULES.md §17 steps 15–17
-        // then 18b/18c), so it is the first DamageCalculated after the Player's.
+        // The Pet is Root's owner. The Boss carries no Root instance in this
+        // scenario, so the Boss's own derived Step-1 ATK input is its §6.1 base stat
+        // 100 (§5.5.1), and §5.5.4 keeps the stored stat itself unwritten.
+        Assert.DoesNotContain(
+            turnNPlus1.Committed.BossState.ActiveStatusEffects,
+            e => e.Id == "Root");
+
+        Assert.Equal(100, turnNPlus1.Committed.BossState.ATK);
+
+        var bossDerivedAttack = StatusEffectLifecycle.EffectiveBossAttack(
+            turnNPlus1.Committed.BossState.ATK,
+            turnNPlus1.Committed.BossState.ActiveStatusEffects);
+
+        Assert.Equal(100, bossDerivedAttack);
+
+        // The Boss's instance exists exactly when the Boss's own board action cleared
+        // an ATK Gem (GAME_RULES.md §17 step 18d / ADR-026 D1) — asserted as the
+        // equivalence, so the magnitude assertions below are about an instance the
+        // gate really produced.
         var bossCalculations = turnNPlus1.Events
             .Where(e => e.Type == BattleEventType.DamageCalculated)
-            .Skip(1)
+            .Skip(1)                    // the first is the Player → Boss instance
             .Select(e => e.DamageCalculated)
             .ToArray();
 
-        Assert.NotEmpty(bossCalculations);
+        Assert.Equal(
+            turnNPlus1.BossClearedAtkGem ? 1 : 0,
+            bossCalculations.Length);
 
-        // §6.1 gives every MVP Boss ATK 100 and §6.3 gives Mộc Yêu SkillBaseDamage
-        // 100. §3.4 fixes the Skill's Step 1 as EffectiveBossATK + SkillBaseDamage and
-        // the Basic Attack's as EffectiveBossATK alone (§5.5.1 derives
-        // EffectiveBossATK from BossState.ATK; no MVP path applies a Boss ATK modifier
-        // yet). This Turn is the Basic Attack (the Skill is on cooldown), so the
-        // documented value is the stored ATK, 100 — and a Boss-side ATK factor would
-        // move it.
-        var skillFired = turnNPlus1.Events.Any(e => e.Type == BattleEventType.BossSkillCast);
+        foreach (var bossCalculation in bossCalculations)
+        {
+            // §3.4: "MVP: no Relic/Passive/Buff modifiers on Boss side" — the Boss
+            // side's Step 4 stays 1.0. Root authors no Boss-side factor, and the Boss
+            // passes AttackerCrit 0, so no Crit roll can succeed either.
+            Assert.Equal(1.00, bossCalculation.OtherModifiers);
 
-        Assert.False(skillFired);
-        Assert.Equal(100, bossCalculations[0].Base);
-
-        // §3.4: the Boss side's Step 4 stays 1.0 ("MVP: no Relic/Passive/Buff
-        // modifiers on Boss side"). The Boss passes AttackerCrit 0, so no Crit roll
-        // can succeed and OtherModifiers is exactly the identity — Root authors no
-        // Boss-side factor.
-        Assert.Equal(1.00, bossCalculations[0].OtherModifiers);
+            // §3.4 / §3 step 1: the Boss's Step 1 is EffectiveBossATK plus the pool
+            // the BOSS's own cleared ATK Gems generated. That pool is Transient
+            // Resolution State that reaches no report (GAME_STATE.md §3), so the sum
+            // is bounded here rather than reconstructed: it can only be at or above
+            // the derived Boss ATK, which a Root-reduced reading
+            // (truncate(100 × 70 / 100) = 70, before the pool) is not.
+            Assert.True(
+                bossCalculation.Base >= bossDerivedAttack,
+                $"the Boss's Step-1 sum {bossCalculation.Base} must carry the unmodified "
+                + $"EffectiveBossATK {bossDerivedAttack} that §3.4 gives it");
+        }
     }
 
     [Fact]
@@ -369,7 +395,8 @@ public class RootAttackConsumptionTests
         // §5.4.5: "Does NOT apply to a DoT tick or a Shield: those Types have their
         // own rules (§5.2 item 3, §4) and are not ATK modifiers." With a Boss-sourced
         // Burn active alongside Root, the ATK reduction is Root's alone — the DoT
-        // instance neither adds a second reduction nor is reduced itself.
+        // instance neither adds a second reduction nor is reduced itself, and its own
+        // tick is COMBAT_RULES.md §5.2 item 3's, executed at step 19a.
         var harness = Harness.Create();
         var battleId = $"root-consumption-with-burn-present-{Guid.NewGuid():N}";
 
@@ -377,25 +404,33 @@ public class RootAttackConsumptionTests
             battleId, Owner, Pet, MocYeuCastingOnce());
 
         // Seed a Boss-sourced Burn instance through the documented Domain operation
-        // — the same Apply the step 18b resolution uses — because Flame Burst is
+        // — the same Apply the step 18c resolution uses — because Flame Burst is
         // Hỏa Long's Skill and no MVP Boss casts both.
         await SeedPetStatusEffectAsync(
             harness.Store,
             battleId,
             StatusEffect.TurnBased("Burn", StatusEffectType.DoT, StatusEffectSource.Boss, 50, 5));
 
-        var casting = await ResolveNextTurnAsync(harness, battleId, created);
+        // The state is re-read after the seed, so the pinned Turn carries it — the
+        // Skill's charge is armed on the same pin, because ADR-026 D2 charges it from
+        // the Boss's own POWER matches only.
+        var casting = await ResolveNextTurnAsync(
+            harness,
+            battleId,
+            armSkillCharge: MocYeuCastingOnce().SkillChargeRequirement);
+
         var pet = casting.Committed.PetState;
 
         Assert.Contains(pet.ActiveStatusEffects, e => e.Id == "Burn");
         Assert.Contains(pet.ActiveStatusEffects, e => e.Id == "Root");
 
-        // The seeded Burn has 5 Turns, so it survives into the reduced Turn.
+        // The seeded Burn has 5 Turns, so it survives into the reduced Turn (its own
+        // step 19a tick and decrement are §5.2/§5.3's, and do not touch Root).
         var reduced = await ResolveNextTurnAsync(harness, battleId);
 
-        // Exactly the −30%: a DoT instance wrongly treated as an ATK modifier would
-        // make this 35 × (100 − 50) / 100 = 17, and folding the Burn magnitude into
-        // the ATK term would move it elsewhere.
+        // Exactly the −30%: the DoT instance is not an ATK modifier, so it neither
+        // scales the ATK term (35 × (100 − 50) / 100 = 17) nor contributes a second
+        // reduction of its own.
         Assert.Equal(35, reduced.Attack);
         Assert.Contains(reduced.Committed.PetState.ActiveStatusEffects, e => e.Id == "Burn");
     }
@@ -418,30 +453,73 @@ public class RootAttackConsumptionTests
     /// <param name="Base">Step 1's sum as the pipeline reported it.</param>
     /// <param name="Events">The resolution's events (<c>GAME_EVENTS.md</c> §1).</param>
     /// <param name="Committed">The battle state the resolution committed.</param>
+    /// <param name="BossClearedAtkGem">
+    /// Whether the <b>Boss</b> response phase's own board action cleared an ATK Gem —
+    /// the §17 step 18d gate (<c>ADR-026</c> D1). It is read from the resolution's own
+    /// Boss-cycle reports (<see cref="RoundTestSupport.BossClearedAtkGem"/>), so the
+    /// Boss's own instance is never inferred from the instance count it explains.
+    /// </param>
     private readonly record struct ResolvedTurn(
         string BattleId,
         int Attack,
         int Pool,
         int Base,
         IReadOnlyList<BattleEvent> Events,
-        BattleState Committed);
+        BattleState Committed,
+        bool BossClearedAtkGem);
 
     /// <summary>
     /// Resolves one Turn on a battle and reports the Player → Boss instance's Step-1
     /// terms. The Player's instance is the FIRST <c>DamageCalculated</c>
-    /// (<c>GAME_RULES.md</c> §17 steps 15–17 precede 18b/18c), which is the
+    /// (<c>GAME_RULES.md</c> §17 steps 15–17 precede 18a–18d), which is the
     /// documented correlation <c>BattleStateServiceTests</c> already relies on —
     /// <c>DamageCalculation</c> itself carries no direction member.
+    ///
+    /// <b>The board is pinned, not drawn (<c>ADR-026</c> D1).</b> The Player's attack
+    /// is calculated and applied only when the committed Swap cleared at least one
+    /// ATK Gem, so the fixture under test pins a board whose Swap clears ATK Gems
+    /// (<see cref="RoundTestSupport.PlayerMatch"/>) and its own precondition is
+    /// asserted rather than assumed. A drawn board offers no such control: a Swap
+    /// that cleared only DEF/HP/POWER Gems resolves no Player → Boss instance at all,
+    /// and the first <c>DamageCalculated</c> of the round would be the Boss's.
     /// </summary>
+    /// <param name="armSkillCharge">
+    /// When supplied, the Boss's <c>SkillCharge</c> is pinned to that value together
+    /// with <c>SkillCooldown = 0</c>, which is the documented eligibility pair
+    /// (<c>GAME_STATE.md</c> §2.4.3 / <c>BOSS_RULES.md</c> §6.3: charge ≥ the Skill's
+    /// Charge Requirement AND cooldown 0). <c>ADR-026</c> D2 charges the counter
+    /// exclusively from the Boss's own POWER matches, which a pinned board does not
+    /// produce, so the charge a real battle accumulates over several rounds is stated
+    /// rather than waited for — the same arrangement the atomic-round reference suite
+    /// uses to fire a Skill deterministically.
+    /// </param>
     private static async Task<ResolvedTurn> ResolveNextTurnAsync(
         Harness harness,
         string battleId,
-        BattleState? startingState = null)
+        BattleState? startingState = null,
+        int? armSkillCharge = null)
     {
         var service = harness.Service;
         var before = startingState ?? (await service.GetBattleAsync(battleId))!;
 
-        var result = (await service.ExecuteSwapAsync(battleId, FindMatchProducer(before)))
+        var pinned = RoundTestSupport.PlayerMatch(
+            GemType.Atk,
+            before.RngState,
+            before.LastCommittedSwapPair);
+
+        // The gate this whole suite reads through: the pinned Swap really did clear
+        // ATK Gems, so the Player's attack qualifies (ADR-026 D1).
+        Assert.True(
+            pinned.Resources.ClearedGemCounts.Atk > 0,
+            "the ADR-026 fixture must clear ATK Gems for the Player's attack to resolve");
+
+        var bossState = armSkillCharge is { } requirement
+            ? before.BossState with { SkillCharge = requirement, SkillCooldown = 0 }
+            : before.BossState;
+
+        await RoundTestSupport.PinAsync(harness.Store, before, pinned.Board, bossState: bossState);
+
+        var result = (await service.ExecuteSwapAsync(battleId, pinned.Swap))
             ?? throw new InvalidOperationException("the Swap must resolve");
 
         Assert.True(result.IsAccepted);
@@ -461,12 +539,21 @@ public class RootAttackConsumptionTests
             pool,
             calculation.Base,
             result.Events,
-            committed);
+            committed,
+            RoundTestSupport.BossClearedAtkGem(result));
     }
 
     /// <summary>
-    /// Resolves Mộc Yêu's Root on a fresh battle by making one Swap's Matches
-    /// satisfy the Skill's Charge Requirement, and returns that Turn's terms.
+    /// Resolves Mộc Yêu's Root on a fresh battle and returns that Turn's terms.
+    ///
+    /// <b>The Skill's charge is pinned, because ADR-026 D2 moved what charges it.</b>
+    /// The Skill is eligible only when the Boss's own <c>SkillCharge</c> has reached
+    /// the Skill's Charge Requirement (<c>GAME_STATE.md</c> §2.4.3), and that counter
+    /// now increments exclusively from POWER Gems the BOSS matched during its own
+    /// board action — never from the Player's Matches (<c>ADR-026</c> D2). A pinned
+    /// board cannot promise the Boss's own move produces a POWER match, so the
+    /// charge a real battle accumulates over rounds is arranged explicitly
+    /// (<see cref="ResolveNextTurnAsync"/>).
     /// </summary>
     private static async Task<ResolvedTurn> CastRootAsync(Harness harness)
     {
@@ -475,7 +562,11 @@ public class RootAttackConsumptionTests
         var created = await harness.Service.CreateBattleAsync(
             battleId, Owner, Pet, MocYeuCastingOnce());
 
-        var result = await ResolveNextTurnAsync(harness, battleId, created);
+        var result = await ResolveNextTurnAsync(
+            harness,
+            battleId,
+            created,
+            armSkillCharge: MocYeuCastingOnce().SkillChargeRequirement);
 
         Assert.Contains(result.Events, e => e.Type == BattleEventType.BossSkillCast);
 
@@ -544,9 +635,6 @@ public class RootAttackConsumptionTests
         Assert.True(applied);
     }
 
-    private static SwapRequest FindMatchProducer(BattleState state) =>
-        FindMatchProducingPair(state);
-
     /// <summary>
     /// A battle service over an in-memory store, plus the store itself, so a
     /// scenario can both run real Turns and arrange the one documented state no
@@ -563,48 +651,6 @@ public class RootAttackConsumptionTests
             var store = new InMemoryBattleStateRepository();
 
             return new Harness(new BattleStateService(store, new FixedRngSeedSource()), store);
-        }
-    }
-
-    private static SwapRequest FindMatchProducingPair(BattleState state)
-    {
-        var committed = state.LastCommittedSwapPair;
-
-        foreach (var (from, to) in AllAdjacentPairs())
-        {
-            if (committed is { } pair
-                && CommittedSwapPair.FromCells(from, to)
-                    == CommittedSwapPair.FromCells(pair.MinCellIndex, pair.MaxCellIndex))
-            {
-                continue;
-            }
-
-            if (MatchDetector.Detect(state.BoardState.WithSwapped(from, to)).Count > 0)
-            {
-                return new SwapRequest(from, to);
-            }
-        }
-
-        throw new InvalidOperationException(
-            "A generated board has at least one valid Swap (MATCH3_RULES.md §1.4).");
-    }
-
-    private static IEnumerable<(int From, int To)> AllAdjacentPairs()
-    {
-        for (var index = 0; index < BoardState.CellCount; index++)
-        {
-            var right = BoardState.ToColumn(index) + 1 < BoardState.Columns ? index + 1 : -1;
-            var down = index + BoardState.Width < BoardState.CellCount ? index + BoardState.Width : -1;
-
-            if (right >= 0)
-            {
-                yield return (index, right);
-            }
-
-            if (down >= 0)
-            {
-                yield return (index, down);
-            }
         }
     }
 }

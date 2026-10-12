@@ -546,16 +546,16 @@ public class BossStateTests
     }
 
     [Theory]
-    // BOSS_RULES.md §6.3's Skill timing and Base Damage, transcribed per Boss.
+    // BOSS_RULES.md §6.3's Skill timing and Base Damage, transcribed per Boss (ADR-026 D3: BaseDamage = 0).
     // CD 0 (Sơn Thạch Vệ, Kim Lôi Vương) needs no special case: §6.3's post-fire
     // reset stores the Boss's cooldown value (0), so `SkillCooldown = 0` is
     // immediately satisfiable on recharge and the "blocked while CD > 0" rule
     // simply never binds.
-    [InlineData("boss-hoa-long", 5, 2, 150)]
-    [InlineData("boss-thuy-ma", 4, 3, 120)]
-    [InlineData("boss-moc-yeu", 6, 2, 100)]
-    [InlineData("boss-son-thach-ve", 5, 0, 150)]
-    [InlineData("boss-kim-loi-vuong", 5, 0, 180)]
+    [InlineData("boss-hoa-long", 5, 2, 0)]
+    [InlineData("boss-thuy-ma", 4, 3, 0)]
+    [InlineData("boss-moc-yeu", 6, 2, 0)]
+    [InlineData("boss-son-thach-ve", 5, 0, 0)]
+    [InlineData("boss-kim-loi-vuong", 5, 0, 0)]
     public void Definitions_ShouldCarryTheDocumentedSkillTiming(
         string bossId,
         int chargeRequirement,
@@ -644,10 +644,10 @@ public class BossStateTests
                     boss.PassiveId));
 
             // Each one's Skill timing is nonetheless fully declared — a
-            // non-match-charged Passive is not an absent Passive.
+            // non-match-charged Passive is not an absent Passive (ADR-026 D3: SkillBaseDamage = 0).
             Assert.NotEmpty(boss.SkillId);
             Assert.True(boss.SkillChargeRequirement > 0);
-            Assert.True(boss.SkillBaseDamage > 0);
+            Assert.Equal(0, boss.SkillBaseDamage);
         }
 
         // The documented set: exactly the three alternate-trigger Bosses.

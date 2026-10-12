@@ -481,36 +481,86 @@ public readonly record struct BossSkillSecondaryEffect
     /// (<c>COMBAT_RULES.md</c> §5.3 DR1) — 2 for both Burn and Root. Absent for
     /// <see cref="BossSkillSecondaryEffectKind.PowerDrain"/>, whose §6.3.1
     /// item 2 duration is "None (instant stat reduction, not a persistent
-    /// status effect)".
+    /// status effect)", and for trigger-based effects.
     /// </summary>
     public int? DurationTurns { get; init; }
+
+    /// <summary>
+    /// The trigger-based expiry condition for a trigger-based instance
+    /// (e.g. <see cref="Battle.StatusEffect.ShieldDepletedCondition"/> or
+    /// <see cref="Battle.StatusEffect.NextQualifyingAttackCondition"/>).
+    /// </summary>
+    public string? ExpiryCondition { get; init; }
+
+    /// <summary>
+    /// Converts this secondary effect declaration into a <see cref="Battle.StatusEffect"/> instance,
+    /// or <c>null</c> if this effect does not produce an instance (e.g. PowerDrain).
+    /// </summary>
+    public Battle.StatusEffect? ToStatusEffect()
+    {
+        if (Kind == BossSkillSecondaryEffectKind.PowerDrain)
+        {
+            return null;
+        }
+
+        if (StatusEffectId == null || StatusEffectType == null)
+        {
+            return null;
+        }
+
+        if (!string.IsNullOrEmpty(ExpiryCondition))
+        {
+            return Battle.StatusEffect.TriggerBased(
+                StatusEffectId,
+                StatusEffectType.Value,
+                Battle.StatusEffectSource.Boss,
+                Magnitude,
+                ExpiryCondition,
+                TargetStat);
+        }
+
+        if (DurationTurns.HasValue)
+        {
+            if (!string.IsNullOrEmpty(TargetStat))
+            {
+                return Battle.StatusEffect.TurnBased(
+                    StatusEffectId,
+                    StatusEffectType.Value,
+                    Battle.StatusEffectSource.Boss,
+                    Magnitude,
+                    DurationTurns.Value,
+                    TargetStat);
+            }
+
+            return Battle.StatusEffect.TurnBased(
+                StatusEffectId,
+                StatusEffectType.Value,
+                Battle.StatusEffectSource.Boss,
+                Magnitude,
+                DurationTurns.Value);
+        }
+
+        return null;
+    }
 }
 
 /// <summary>
-/// Which of <c>BOSS_RULES.md</c> §6.3.1's three documented secondary effects a
-/// <see cref="BossSkillSecondaryEffect"/> declaration describes.
+/// Which of <c>BOSS_RULES.md</c> §6.3.1's documented secondary effects a
+/// <see cref="BossSkillSecondaryEffect"/> declaration describes (<c>ADR-026</c>).
 ///
 /// <code>
-/// Burn        §6.3.1 item 1 — a DoT instance on the active Pet
+/// Burn        retired — DoT instance (ADR-026 D3/D5)
 /// PowerDrain  §6.3.1 item 2 — an instant flat PetState.Power reduction
 /// AtkDebuff   §6.3.1 item 3 — a Turn-based BuffDebuff instance on the Pet
+/// AtkBuff     ADR-026 D5 — Flame Burst: temporary Boss ATK buff
+/// BossShield  ADR-026 D6 — Earthquake: temporary Boss Shield
+/// NextAtkBuff ADR-026 D7 — Thunder Strike: next qualifying Boss ATK match buff
 /// </code>
-///
-/// <b>This is a declaration kind, not a new Status Effect type.</b>
-/// <c>GAME_STATE.md</c> §2.3.1 item 3's <c>Type</c> vocabulary
-/// (<c>DoT</c> | <c>BuffDebuff</c> | <c>Shield</c> | <c>State</c>) is unchanged
-/// and complete: an <see cref="AtkDebuff"/> declares a <c>BuffDebuff</c>
-/// instance and a <see cref="Burn"/> declares a <c>DoT</c> one. The distinction
-/// exists because §6.3.1 item 2's Drain Power is documented as creating no
-/// instance at all, so it cannot be described by a <c>StatusEffect</c>'s
-/// members alone.
 /// </summary>
 public enum BossSkillSecondaryEffectKind
 {
     /// <summary>
-    /// <c>BOSS_RULES.md</c> §6.3.1 item 1 — Flame Burst's Burn: a <c>DoT</c>
-    /// instance applied to the active Pet, ticked by the existing step 19a DoT
-    /// pass (<c>GAME_RULES.md</c> §17 step 19a).
+    /// Retired Burn DoT (<c>ADR-026</c> D3/D5). Kept for historical enumeration compatibility.
     /// </summary>
     Burn = 0,
 
@@ -526,6 +576,21 @@ public enum BossSkillSecondaryEffectKind
     /// <c>BuffDebuff</c> instance applied to the active Pet.
     /// </summary>
     AtkDebuff = 2,
+
+    /// <summary>
+    /// <c>ADR-026</c> D5 — Flame Burst's temporary Boss ATK buff applied to <c>BossState.ActiveStatusEffects</c>.
+    /// </summary>
+    AtkBuff = 3,
+
+    /// <summary>
+    /// <c>ADR-026</c> D6 — Earthquake's temporary Shield applied to <c>BossState.ActiveStatusEffects</c>.
+    /// </summary>
+    BossShield = 4,
+
+    /// <summary>
+    /// <c>ADR-026</c> D7 — Thunder Strike's next-qualifying-ATK match buff applied to <c>BossState.ActiveStatusEffects</c>.
+    /// </summary>
+    NextAtkBuff = 5,
 }
 
 /// <summary>

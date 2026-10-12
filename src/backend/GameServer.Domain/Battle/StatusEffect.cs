@@ -162,6 +162,13 @@ public readonly record struct StatusEffect(
     public const string ShieldDepletedCondition = "ShieldDepleted";
 
     /// <summary>
+    /// The <c>ExpiryCondition</c> label a next-qualifying-attack modifier carries
+    /// (<c>ADR-026</c> D7, <c>BOSS_RULES.md</c> §6.3.1 item 5: Kim Lôi Vương's
+    /// Thunder Strike).
+    /// </summary>
+    public const string NextQualifyingAttackCondition = "NextQualifyingAttack";
+
+    /// <summary>
     /// Whether this instance uses the Turn countdown rather than a trigger-based
     /// expiry (<c>GAME_STATE.md</c> §2.3.1 item 3).
     ///
@@ -406,27 +413,45 @@ public readonly record struct StatusEffect(
     /// </param>
     /// <exception cref="ArgumentException">
     /// <paramref name="id"/> or <paramref name="expiryCondition"/> is null, empty,
-    /// or whitespace; or <paramref name="type"/> is not
-    /// <see cref="StatusEffectType.Shield"/>.
+    /// or whitespace; or <paramref name="type"/> is neither
+    /// <see cref="StatusEffectType.Shield"/> nor a valid trigger-based
+    /// <see cref="StatusEffectType.BuffDebuff"/>.
     /// </exception>
     public static StatusEffect TriggerBased(
         string id,
         StatusEffectType type,
         StatusEffectSource source,
         double magnitude,
-        string expiryCondition)
+        string expiryCondition) =>
+        TriggerBased(id, type, source, magnitude, expiryCondition, targetStat: null);
+
+    /// <summary>
+    /// Builds a trigger-based instance with an optional <paramref name="targetStat"/>
+    /// (<c>GAME_STATE.md</c> §2.3.1 item 3, item 7; <c>ADR-026</c> D7).
+    /// </summary>
+    public static StatusEffect TriggerBased(
+        string id,
+        StatusEffectType type,
+        StatusEffectSource source,
+        double magnitude,
+        string expiryCondition,
+        string? targetStat)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
         ArgumentException.ThrowIfNullOrWhiteSpace(expiryCondition);
 
-        // §2.3.1 item 3: the trigger-based model belongs to Shield; the other
-        // three types are Turn-based by the same item.
-        if (type != StatusEffectType.Shield)
+        if (type != StatusEffectType.Shield && type != StatusEffectType.BuffDebuff)
         {
             throw new ArgumentException(
-                $"Type '{type}' uses the Turn countdown (GAME_STATE.md §2.3.1 item 3); "
-                + "the trigger-based model is Shield's.",
+                $"Type '{type}' does not support trigger-based expiry (GAME_STATE.md §2.3.1 item 3).",
                 nameof(type));
+        }
+
+        if (type == StatusEffectType.BuffDebuff && string.IsNullOrWhiteSpace(targetStat))
+        {
+            throw new ArgumentException(
+                $"BuffDebuff '{id}' requires a TargetStat when created as trigger-based (GAME_STATE.md §2.3.1 item 7).",
+                nameof(targetStat));
         }
 
         return new StatusEffect(
@@ -434,7 +459,7 @@ public readonly record struct StatusEffect(
             type,
             source,
             magnitude,
-            TargetStat: null,
+            TargetStat: targetStat,
             RemainingTurns: null,
             ExpiryCondition: expiryCondition);
     }

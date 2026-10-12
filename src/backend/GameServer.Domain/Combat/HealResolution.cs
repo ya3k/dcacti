@@ -64,4 +64,23 @@ public static class HealResolution
         var updatedHp = Math.Min(petState.HP + finalHeal, petState.MaxHP);
         return petState with { HP = updatedHp };
     }
+
+    /// <summary>
+    /// Applies the shared Heal Resolution step to a Boss's HP (<c>ADR-026</c> D2, <c>COMBAT_RULES.md</c> §4 item 1).
+    /// </summary>
+    /// <param name="bossState">The Boss's state before healing.</param>
+    /// <param name="rawHeal">The raw heal amount.</param>
+    /// <returns>The updated BossState with clamped HP.</returns>
+    public static BossState ApplyBossHeal(
+        BossState bossState,
+        int rawHeal)
+    {
+        if (rawHeal <= 0)
+        {
+            return bossState;
+        }
+
+        var updatedHp = Math.Min(bossState.HP + rawHeal, bossState.MaxHP);
+        return bossState with { HP = updatedHp };
+    }
 }
