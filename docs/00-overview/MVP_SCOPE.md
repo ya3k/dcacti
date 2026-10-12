@@ -1,6 +1,6 @@
 # MVP Scope
 
-**Version:** 1.6 (§1/§3 updated per TASK-213 — the MVP content set is owned by a
+**Version:** 1.7 (§1 Match-3, Bosses, and Combat updated per ADR-026 / TASK-259: Player and Boss share the one 8×8 Match-3 board; both act via valid swaps; matched cell type determines effect; acting side determines ownership and target; attack damage is strictly gated on confirmed ATK matches; fallback fixed basic attacks are retired; Boss skills deal zero direct damage; Boss SkillCharge charges exclusively from Boss POWER matches. Prior 1.6: §1/§3 updated per TASK-213 — the MVP content set is owned by a
 newly created Player's deterministic starter grant, MVP has no post-creation
 acquisition system, and per-Pet Passive effect application, Pet Star progression
 and post-creation content acquisition are explicitly FUTURE; no other IN/OUT
@@ -27,7 +27,7 @@ this document rather than repeating the list.
 
 ## Match-3
 ```text
-8×8 board
+8×8 shared board (Player and Boss share one board; both act via valid swaps; ADR-026)
 4 Gem types (ATK, DEF, HP, POWER)
 Match 3 / Match 4 / Match 5
 L/T matches
@@ -84,12 +84,12 @@ Trigger system (OnMatch, OnCombo, OnHpBelow, etc.)
 ## Bosses
 ```text
 5 Bosses
-Element, Passive, Skill per Boss
+Element, Passive, Skill per Boss (skills modify board, resources, or modifiers with zero direct damage; ADR-026)
 ```
 
 ## Combat
 ```text
-HP, ATK, DEF, Power, Crit, Status Effects, Damage, Element interaction
+HP, ATK, DEF, Power, Crit, Status Effects, Damage (gated on confirmed ATK match; ADR-026), Element interaction
 ```
 
 ## Technical (MVP-required infrastructure)

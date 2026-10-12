@@ -1,6 +1,6 @@
 # Boss Rules
 
-**Version:** 2.12 (§6.2.6's client-visibility constraint reworded, applying the
+**Version:** 2.13 (§3, §6.3, §6.3.1 updated per ADR-026 / TASK-259: Bosses share the Match-3 board and execute valid swaps (D1, D4); Boss Skill direct damage is eliminated (BaseDamage = 0 on all 5 skills) and Burn DoT is removed (D3); Flame Burst becomes temporary Boss ATK buff (Option 5B, D5); Earthquake becomes temporary Boss Shield (Option 2A, D6); Thunder Strike buffs next qualifying Boss ATK match (Option 3A, D7); Drain Power retains -20 Pet Power drain; Root retains -30% Pet ATK debuff; SkillCharge increments solely from Boss POWER gem matches (D2). Prior 2.12: §6.2.6's client-visibility constraint reworded, applying the
 TASK-208 Product Owner decision **D-208-03**: the Boss's canonical technical
 Identity (`BossState.BossId`, §6.4) is client-visible alongside the
 already-delivered live `HP`/`MaxHP`, and the rest of `BossState` remains
@@ -166,9 +166,8 @@ Per GAME_RULES.md §15.1–15.3 and GDD §13:
 # 3. Boss Passive
 
 1. A Boss Passive is automatic and reactive, similar in structure to a Pet
-   Passive (PASSIVE_RULES.md), but triggered by the *player's* actions or
-   battle state rather than the Boss's own Matches (Bosses do not match
-   Gems).
+   Passive (PASSIVE_RULES.md), triggered by the player's actions, battle
+   state, or the Boss's own actions on the shared board (ADR-026).
 2. Supported Boss Passive triggers (mirrors GAME_RULES.md §15, "Bosses may
    react to"):
    ```text
@@ -594,13 +593,14 @@ the Boss's, and it does not widen this boundary.
 
 Each Boss Skill has two timing parameters:
 
-- **Charge Requirement**: number of player matches required before the Skill
-  is eligible to fire. Matches increment `BossState.SkillCharge`
-  (`GAME_STATE.md` §2.4.3). When `SkillCharge ≥ Charge Requirement` AND
+- **Charge Requirement**: amount of charge required before the Skill is eligible
+  to fire. Under ADR-026 (D2), POWER gems matched by the Boss during the Boss's
+  turn increment `BossState.SkillCharge` (`GAME_STATE.md` §2.4.3); player matches
+  never charge the Boss. When `SkillCharge ≥ Charge Requirement` AND
   `SkillCooldown = 0`, the Skill fires.
 - **Cooldown (CD)**: turns remaining after each Skill use before the Skill
   can fire again. Decrements by 1 at each Turn increment
-  (`MATCH3_RULES.md` §8.1 — one committed Swap begins exactly one Turn;
+  (`MATCH3_RULES.md` §8.1 — one committed Round begins exactly one Turn;
   the stored Turn advances once in that resolution's single write-back,
   `GAME_STATE.md` §5.1). The Skill is blocked while `CD > 0`.
 
@@ -608,14 +608,16 @@ After the Skill fires: `SkillCharge` resets to 0, `SkillCooldown` resets to
 the Boss's cooldown value.
 
 ```text
-Boss        Skill         Charge Req.   CD (T)   Base Dmg   Secondary Effect & Magnitude
----------   -----------   -----------   ------   --------   --------------------------------------------------------
-Hỏa Long    Flame Burst   5 matches     2        150        Burn: 50 fixed damage/tick for 2 Turns (step 19a ticks)
-Thủy Ma     Drain Power   4 matches     3        120        -20 flat Pet Power (instant, no duration)
-Mộc Yêu     Root          6 matches     2        100        -30% Pet ATK debuff for 2 Turns
-Sơn Thạch Vệ Earthquake   5 matches     0        150        None
-Kim Lôi Vương Thunder Strike 5 matches   0        180        None
+Boss          Skill           Charge Req.*  CD (T)   Base Dmg   Secondary Effect & Magnitude
+---------     -----------     ------------  ------   --------   --------------------------------------------------------
+Hỏa Long      Flame Burst     5 matches*    2        0          Temporary Boss ATK buff (ADR-026, D5; Option 5B)
+Thủy Ma       Drain Power     4 matches*    3        0          -20 flat Pet Power (instant, no duration)
+Mộc Yêu       Root            6 matches*    2        0          -30% Pet ATK debuff for 2 Turns
+Sơn Thạch Vệ  Earthquake      5 matches*    0        0          Temporary Boss Shield (ADR-026, D6; Option 2A)
+Kim Lôi Vương Thunder Strike  5 matches*    0        0          Buff next qualifying Boss ATK match (ADR-026, D7; Option 3A)
 ```
+
+*\* Charge Requirement is charged solely by POWER gems matched by the Boss during the Boss's turn (D2). The exact charge unit metric (+1 per match vs gem energy) and charge overflow clamp policy remain unresolved balance tuning proposals.*
 
 These are **MVP base configuration** — not universal balance invariants. The
 project owner approved these values. They are configuration defaults used at
@@ -624,30 +626,30 @@ battle creation; they do not represent formulas or scaling rules.
 #### 6.3.1 Boss Skill Effect Magnitudes & Duration Semantics
 
 1. **Flame Burst (Hỏa Long):**
-   - **Base Damage:** 150 (deals damage through Damage Pipeline to active Pet).
-   - **Secondary Effect (Burn):** Applies Burn status effect to the active Pet.
-   - **Burn Magnitude:** Fixed 50 damage per tick (does not scale with Boss ATK, Pet ATK, percentage MaxHP, or elemental multipliers).
-   - **Burn Duration & Timing:** 2 Turns = exactly 2 End Turn ticks (`GAME_RULES.md` §17 step 19a; `COMBAT_RULES.md` §5.1, §5.2). When applied during Turn $N$ Boss Response (step 18b), Burn tick #1 (50 damage) occurs at Turn $N$ step 19a (End Turn). Burn tick #2 (50 damage) occurs at Turn $N+1$ step 19a (End Turn), after which the Burn expires before Turn $N+2$.
+   - **Base Damage:** 0 (D3, direct damage removed).
+   - **Secondary Effect (Boss ATK Buff, Option 5B, D5):** Applies a temporary Boss ATK buff to `BossState.ActiveStatusEffects`. The buff modifies Boss ATK but deals no damage independently; Boss damage is applied only when Hỏa Long produces a valid ATK-gem match (D1). Burn DoT is removed.
+   - **Compounding Interaction:** In `StatusEffectLifecycle.cs:752`, multiple ATK modifiers compound multiplicatively; downstream implementation must review whether `flame-burst` and `boss-hoa-long-rage` (+20% passive) compound multiplicatively, additively, or refresh/override.
+   - **Magnitude & Duration:** Non-blocking balance tuning parameters.
 2. **Drain Power (Thủy Ma):**
-   - **Base Damage:** 120 (deals damage through Damage Pipeline to active Pet).
+   - **Base Damage:** 0 (D3, direct damage removed).
    - **Secondary Effect (Drain Power):** Instantly subtracts 20 flat Power from the active Pet (`PetState.Power = max(0, PetState.Power - 20)` per `GAME_RULES.md` §12).
    - **Representation:** Flat Power reduction (not a percentage).
    - **Duration:** None (instant stat reduction, not a persistent status effect).
 3. **Root (Mộc Yêu):**
-   - **Base Damage:** 100 (deals damage through Damage Pipeline to active Pet).
+   - **Base Damage:** 0 (D3, direct damage removed).
    - **Secondary Effect (Root):** Applies a -30% Pet ATK debuff to the active Pet (`COMBAT_RULES.md` §5.1 Buff/Debuff).
    - **Representation:** Percentage-based ATK reduction (-30% active Pet ATK).
    - **Root Duration:** 2 Turns using the authoritative Turn model (`MATCH3_RULES.md` §8.1 / `GAME_RULES.md` §17). Root is a Turn-based Buff/Debuff, so its one-Turn-of-duration consumption point is governed by the canonical rule in `COMBAT_RULES.md` §5.3 and is not restated here.
 4. **Earthquake (Sơn Thạch Vệ):**
-   - **Base Damage:** 150 (deals damage through Damage Pipeline to active Pet).
-   - **Secondary Effect:** **None.** The Skill applies no debuff, no status effect, and no resource change.
-   - **Duration:** None applies — no secondary effect exists to persist.
-   - **Board Effect:** **None.** The Skill performs no board transformation, gem destruction, gem conversion, freeze, lock, or any other board mechanic.
+   - **Base Damage:** 0 (D3, direct damage removed).
+   - **Secondary Effect (Boss Shield, Option 2A, D6):** Grants a temporary Shield to the Boss on `BossState.ActiveStatusEffects`. Absorbs incoming player attack damage before Boss HP via `DamagePipeline` (`COMBAT_RULES.md` §4).
+   - **Magnitude:** Non-blocking balance tuning parameter.
+   - **Board Effect:** None.
 5. **Thunder Strike (Kim Lôi Vương):**
-   - **Base Damage:** 180 (deals damage through Damage Pipeline to active Pet).
-   - **Secondary Effect:** **None.** The Skill applies no debuff, no status effect, and no resource change.
-   - **Duration:** None applies — no secondary effect exists to persist.
-   - **Board Effect:** **None.** The Skill performs no board transformation, gem destruction, gem conversion, freeze, lock, or any other board mechanic.
+   - **Base Damage:** 0 (D3, direct damage removed).
+   - **Secondary Effect (Next-ATK Buff, Option 3A, D7):** Applies a trigger-based modifier on `BossState.ActiveStatusEffects` (`ExpiryCondition = "NextQualifyingAttack"`) buffing the Boss's next valid ATK match. Never deals damage independently and is not consumed on turns with zero ATK matches.
+   - **Magnitude:** Non-blocking balance tuning parameter.
+   - **Board Effect:** None.
 
 **All five MVP Bosses are now content-defined.** The set is complete at five
 (`MVP_SCOPE.md` §1; `ROADMAP.md` §1 Phase 2). Each has an Element, a Passive with

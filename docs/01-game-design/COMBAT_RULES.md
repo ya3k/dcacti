@@ -1,6 +1,6 @@
 # Combat Rules
 
-**Version:** 2.5 (§3.3 item 8 and §5.2 item 4 extended per **TASK-178** — the
+**Version:** 2.6 (§2, §3, §3.4, §4 updated per ADR-026 / TASK-259: ATK-gem match gating on damage (D1); DEF gem matches generate temporary Shield for acting actor; HP gem matches heal acting actor; Boss POWER gem matches generate Boss SkillCharge (D2); Boss basic attack fallback retired; Boss skills deal zero direct damage (D3); Heal resolution expanded to Boss HP. Prior 2.5: §3.3 item 8 and §5.2 item 4 extended per **TASK-178** — the
 canonicalization of the Product Owner-approved runtime decisions **Q-1 = A** and
 **Q-4 = C**. §3.3 item 8, which is the canonical owner of the `NextAttack`
 lifetime and the qualifying-attack consumption boundary, now states explicitly
@@ -272,12 +272,12 @@ BOSS_RULES.md §1) used by Boss mechanics; see BOSS_RULES.md.
 Baseline generation per consumed Gem (MVP defaults, all configuration):
 
 ```text
-Gem Type   Base Output (per Gem, Match-3 tier)
---------   -----------------------------------
-ATK Gem    +10 Base Damage
-DEF Gem    +5 Defense pool
-HP Gem     +20 Heal pool
-POWER Gem  +10 Power (flat, per GDD example)
+Gem Type   Base Output (per Gem, Match-3 tier)   Actor-Relative Output (ADR-026)
+--------   -----------------------------------   -------------------------------------------------
+ATK Gem    +10 Base Damage                       BaseDamagePool for acting actor (ATK-match gated)
+DEF Gem    +5 Defense pool                       Temporary Shield for acting actor (§4)
+HP Gem     +20 Heal pool                         Heal pool for acting actor (clamped to MaxHP, §4)
+POWER Gem  +10 Power / SkillCharge               Player: +Power for Pet; Boss: +SkillCharge for Boss (D2)
 ```
 
 Match tier multipliers (applied to the above base output, per Gem consumed in
@@ -289,6 +289,13 @@ Match 4   → 1.5×  (+ Special Gem, see MATCH3_RULES.md §5.2)
 Match 5   → 2.0×  (+ Special Gem, see MATCH3_RULES.md §5.3)
 L/T       → 1.25× (+ Special Gem, see MATCH3_RULES.md §5.4)
 ```
+
+**Actor-relative resource handling (ADR-026):**
+The type of cells matched determines the effect; the acting side determines ownership and target:
+- **ATK Gems:** Generates `BaseDamagePool`. Attack damage may be calculated and applied only when the acting side produces a valid ATK-gem match (`ClearedGemCounts.Atk > 0`, ADR-026, D1). If zero ATK gems are matched, no attack occurs and the Damage Pipeline does not execute.
+- **DEF Gems:** Generates temporary Shield for the acting actor (`PetState.ActiveStatusEffects` for Player; `BossState.ActiveStatusEffects` for Boss) using `StatusEffectType.Shield` (§4).
+- **HP Gems:** Generates Heal pool restoring HP to the acting actor (Pet HP for Player; Boss HP for Boss), passing through Heal Resolution (§4 item 7) and clamped to MaxHP (§4 item 1).
+- **POWER Gems:** Generates Power for the active Pet (range 0–100) during the Player turn, or increments `BossState.SkillCharge` during the Boss turn (D2). Player POWER matches never charge the Boss. Whether `SkillCharge` is measured in match counts (+1 per match) or gem energy units (+10 per gem) and whether it clamps at `ChargeRequirement` remain balance tuning parameters.
 
 **Scope of the tier multiplier — matched Gems only.** The table above applies to
 the Gems **consumed by a Match**, at the tier of the shape they formed. It is
@@ -312,10 +319,9 @@ document references.
    row exists in this table.
 5. **The HP Gem heal pool is a healing source.** The HP Gem's generated output
    is a Heal pool: `GAME_RULES.md` §17 step 12 generates it and step 14
-   ("Resolve Player Effects") applies it to the active Pet's HP. When it is
-   applied, it passes through the **Heal Resolution** step (§4 item 7) — the
-   same step every Pet-HP healing source uses — and therefore receives the
-   applicable Heal modifiers and the item-1 overheal clamp. This item states
+   applies it to the acting actor's HP. When it is
+   applied, it passes through the **Heal Resolution** step (§4 item 7) and
+   receives the applicable Heal modifiers and the item-1 overheal clamp. This item states
    only where the pool is **consumed**; the pool's rate is the table above and
    is not restated elsewhere.
 
@@ -331,8 +337,8 @@ this document is the sole source of truth for match-tier resource output).
 Full conceptual pipeline (expands GAME_RULES.md §14):
 
 ```text
-1. Base Damage           (from ATK stat, Skill/Card base value, and any
-                           ATK-Gem-generated damage pool for this action)
+1. Base Damage           (from acting actor ATK stat, Skill/Card base value, and any
+                           ATK-Gem-generated damage pool for this action — gated on confirmed ATK match)
 2. × Combo Modifier      (GAME_RULES.md §5 table)
 3. × Element Modifier    (ELEMENT_RULES.md §2.2)
 4. × Other Modifiers     (Relic bonuses, Passive bonuses, Buffs/Debuffs,
@@ -340,6 +346,22 @@ Full conceptual pipeline (expands GAME_RULES.md §14):
 5. − Defense Mitigation  (target DEF, reduced per the mitigation formula below)
 6. → Final Damage        (minimum 0; cannot reduce HP-restoring effects negative)
 ```
+
+**Order of operations (ADR-026, D1):**
+```text
+1. Confirm valid ATK match (ClearedGemCounts.Atk > 0)
+2. Derive match-based inputs (BaseDamagePool)
+3. Apply acting actor's effective ATK stat (EffectivePetATK or EffectiveBossATK)
+4. Calculate damage through steps 1–6
+5. Apply damage to target Shield/HP
+```
+
+If zero ATK gems are matched (`ClearedGemCounts.Atk == 0`):
+- The Damage Pipeline does **not** execute.
+- The acting actor's ATK stat is **not** used.
+- Zero attack damage is dealt.
+- No `DamageCalculated`, `DamageDealt`, or `DamageTaken` events are emitted.
+- Applicable `NextAttack` modifiers are **preserved unconsumed** (§3.3 item 8).
 
 ## 3.1 Order Is Fixed
 
@@ -556,27 +578,20 @@ separate Player entity (`ELEMENT_RULES.md` §5).
 
 ## 3.4 Boss Damage
 
-Boss basic attacks and Boss Skills both use the same Damage Pipeline (steps 1–6):
+Under the shared-board contract (ADR-026, D1, D3):
 
-```text
-Boss Basic Attack:
-  Step 1 — Base Damage = Boss.ATK
-  Step 2 — Combo Modifier = 1 (Boss attacks are not part of a Combo chain)
-  Step 3 — Element Modifier = Boss.Element vs. the active Pet's Element (ELEMENT_RULES.md §2, §5 — the defender is the Pet, not the Player)
-  Step 4 — Other Modifiers = 1.0 (MVP: no Relic/Passive/Buff modifiers on Boss side)
-  Step 5 — Defense Mitigation = Defender DEF (COMBAT_RULES.md §3.2)
-  Step 6 — Final Damage applied to active Pet HP (PetState.HP)
+1. **Boss Attacks Require ATK Matches:** The legacy fallback basic attack (`Base Damage = Boss.ATK` independently of the board) is **RETIRED**. A Boss attack occurs if and only if the Boss's swap produces a confirmed ATK-gem match (`ClearedGemCounts.Atk > 0`). When confirmed:
+  - Step 1 — Base Damage = EffectiveBossATK + BaseDamagePool
+  - Step 2 — Combo Modifier = 1 (Boss attacks are not part of a Combo chain)
+  - Step 3 — Element Modifier = Boss.Element vs. the active Pet's Element (ELEMENT_RULES.md §2, §5 — the defender is the Pet, not the Player)
+  - Step 4 — Other Modifiers = 1.0 (or applicable Boss combat modifiers)
+  - Step 5 — Defense Mitigation = Defender DEF (COMBAT_RULES.md §3.2)
+  - Step 6 — Final Damage applied to active Pet HP (PetState.HP)
+  If zero ATK gems are matched, zero attack damage is dealt.
 
-Boss Skill:
-  Same pipeline as above, but Step 1 Base Damage is defined per Skill
-  (BOSS_RULES.md §6). Boss Skill damage may also include non-damage
-  effects (debuffs, resource drain) which are applied outside the pipeline.
-```
+2. **Boss Skills Deal Zero Direct Damage:** Direct damage from Boss skills is prohibited by default (D3). Boss skills configure `BaseDamage = 0` and modify the board, resources, or combat modifiers (BOSS_RULES.md §6.3).
 
-**Boss Skill Step-1 composition.** A Boss Skill's Step 1 Base Damage is the
-**sum of its applicable Step-1 contributions**, per §3 step 1's existing rule —
-the same rule this document already applies to every other pipeline user. Both
-of the following contribute:
+**Boss Skill Step-1 composition.** A Boss Skill's Step 1 Base Damage is 0 by default (D3), so the skill deals no direct damage. Any temporary Boss ATK modifier applied by a skill (e.g. Hỏa Long Flame Burst, ADR-026, D5) contributes to `EffectiveBossATK` (§5.5.1) and is realized only when the Boss produces a valid ATK-gem match. Both of the following contribute:
 
 ```text
 1. EffectiveBossATK  — the Boss's `ATK` for this attack, after any applicable
@@ -619,28 +634,28 @@ separate Step-1 contributions under §3 step 1:
   Skill/Card base value is a separate Step-1 contribution and is not modified.
 - **This is the Boss-side counterpart of §5.4.1 item 2**, which spells the
   same sum out for the Pet (`EffectiveATK + Skill/Card base value +
-  ATK-Gem-generated damage pool`). Unlike the Pet, a Boss Skill contributes
-  **no ATK-Gem-generated damage pool** — Bosses match no Gems (§3.4 above).
+  ATK-Gem-generated damage pool`). Under the shared-board contract (ADR-026),
+  a Boss attack contributes `BaseDamagePool` when the Boss produces an ATK match.
 - **Step 4 is unaffected.** The Boss side's `Step 4 = 1.0` (above) stands; a
   Boss ATK modifier is a Step-1 input, never a Step-4 factor (§5.5.3).
 
 **Worked example** — Rage active, using the documents' existing values
 (`§1.1`'s MVP `ATK` default, `BOSS_RULES.md` §6.2's `+20%`, and
-`BOSS_RULES.md` §6.3.1 item 1's authored `150`):
+`ADR-026` / `D3`'s `BaseDamage = 0`):
 
 ```text
 BossState.ATK                = 100
 Hỏa Long Rage                = +20%
 EffectiveBossATK             = truncate(100 × (100 + 20) / 100) = 120
 
-Flame Burst authored Base Damage = 150        (unchanged by the modifier)
+Flame Burst authored Base Damage = 0          (D3, direct damage removed)
+ATK-Gem BaseDamagePool       = 30             (e.g. 3 ATK gems matched by Boss)
 
-Step 1 Base Damage = 120 + 150 = 270
+Step 1 Base Damage = 120 + 0 + 30 = 150
 ```
 
-With Rage inactive (`EffectiveBossATK = 100`) the same Skill yields
-`100 + 150 = 250`. The authored `150` is the same in both cases — only the
-`EffectiveBossATK` contribution carries the modifier.
+If the Boss matched zero ATK gems (`BaseDamagePool = 0`), no attack occurs and
+Step 1 does not run (D1).
 
 `EffectiveBossATK` is derived terminology for a value used within **one**
 pipeline execution. It is **not** a `BattleState`/`BossState` member, not
@@ -683,8 +698,12 @@ Turn countdown (§5.3.2).
    created: **at most one Shield is active per entity**, identified by the
    Status Effect identity `"Shield"` (`GAME_STATE.md` §2.3.1 item 1, item 6) —
    so two different Shield sources (e.g. the Shield Basic Card and a
-   Shield-granting Passive) applying to the same entity refresh one another
-   rather than forming a second pool. This is `§5.2 item 2`'s refresh default
+   Shield-granting Passive or DEF-gem match) applying to the same entity refresh one another
+   rather than forming a second pool. Under the shared-board contract (ADR-026),
+   Shield applies to the acting actor: Player DEF matches grant Shield to the Pet,
+   while Boss DEF matches and Boss skills (such as Sơn Thạch Vệ Earthquake, D6)
+   grant Shield to the Boss (`BossState.ActiveStatusEffects`), using this identical
+   trigger-based absorption and refresh mechanism. This is `§5.2 item 2`'s refresh default
    applied to Shield, and the refresh is the same "set, not an increment"
    operation `GAME_STATE.md` §5.1.1 item 1 defines for every Status Effect. The
    carve-out is preserved: a **Relic** may explicitly specify otherwise. **No
@@ -781,15 +800,12 @@ Turn countdown (§5.3.2).
      last step**: it runs *after* the modifiers, on the Final Heal Amount, and
      the HP update applies its result. This item does not re-order, reword, or
      replace item 1.
-   - **Scope — Pet HP only.** This step covers healing that restores **Pet
-     HP**. It does **not** govern a Boss-side HP change: a Boss's own HP
-     restoration is that effect's own rule and does not route through this
-     step. The cross-entity read authorized above consults a Boss-**owned**
-     modifier while resolving **Pet** healing; it does not add a second heal
-     target and does not bring a Boss-side HP change into this step. Widening
-     this step to another target would require its own recorded
-     decision; this item does not do so
-     (`BOSS_RULES.md` §6.2's Mộc Yêu regeneration).
+   - **Scope.** This step governs modifier resolution for Pet HP healing.
+     Under the shared-board contract (ADR-026), when the Boss matches HP gems
+     during the Boss's turn, the generated Heal pool restores `BossState.HP`
+     directly up to `BossState.MaxHP`, applying item 1's clamp (overheal discarded),
+     without modifying MaxHP or Shield. This does not alter the Pet-scoped modifier
+     resolution above.
    - **It does not modify MaxHP, and it does not affect Shield.** A Heal
      modifier changes the Heal amount only; MaxHP is untouched (§1.2) and
      Shield keeps its own §4 rules (items 2–5).

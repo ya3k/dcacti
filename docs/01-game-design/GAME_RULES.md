@@ -1,6 +1,6 @@
 # Core Game Rules
 
-**Version:** 3.4 (§11 and §17 — the Card-cast restriction approved by `TASK-191`
+**Version:** 3.5 (§1.3, §2, §14, §15, §17 updated per ADR-026 / TASK-259: Player and Boss share the one 8×8 Match-3 board; both sides act by making valid swaps; cell type determines effect; acting side determines ownership and target; attack damage is strictly gated on confirmed ATK-gem matches (D1); default fallback basic attacks are retired (step 18c); Boss skills deal zero direct damage (D3); Boss SkillCharge charges exclusively from Boss POWER matches (D2); Turn advances once per committed atomic round (D4). Prior 3.4: §11 and §17 — the Card-cast restriction approved by `TASK-191`
 Q-4 (OPTION B) is recorded: §11 gains item 4 stating that a Card cast is an
 **auxiliary action within the current Turn** — it does not increment `Turn`, does
 not resolve the board, does not independently trigger the Boss response, and is
@@ -63,8 +63,10 @@ the conflict must be identified and reported before implementation
 2. A player may own multiple Pets; only one Pet is active in a battle.
    The Player owns the collection and issues Swap/Card/Skill requests;
    the active Pet is the combat character that fights the Boss.
-3. The player uses a Match-3 board to generate combat resources for the
-   active Pet.
+3. Player and Boss share one Match-3 board. Both sides act by making
+   valid swaps on that board. The type of cells matched determines the effect;
+   the acting side determines ownership and target. Neither side performs a
+   default fixed-damage attack independently of the board (ADR-026).
 4. A battle ends when either the Boss or the active Pet reaches 0 HP.
 5. The server is authoritative for battle state and results (§18).
 
@@ -72,7 +74,9 @@ the conflict must be identified and reported before implementation
 
 # 2. Turn Rules
 
-1. A Turn represents one player Swap/Action.
+1. A Turn represents one atomic combat Round consisting of a Player action phase
+   and the Boss response phase (ADR-026, D4). Turn advances by exactly 1 upon the
+   commit of the atomic round.
 2. Turn ≠ Match ≠ Cascade ≠ Combo. One Turn may produce multiple Matches.
 3. Boss mechanics may use Turn-based triggers; Passive systems should
    primarily use Match-based triggers (see `PASSIVE_RULES.md`).
@@ -286,28 +290,39 @@ Combat stats for the active Pet: `HP, Max HP, ATK, DEF, Power, Crit,
 Status Effects`. These belong to the combat character (the active Pet);
 the Player (account) carries no separate combat stats during battle.
 
-Damage conceptually flows in this fixed order:
+Damage conceptually flows in this fixed order, gated strictly on a confirmed
+ATK match (ADR-026, D1):
 
 ```text
 Base Damage → Combo Modifier → Element Modifier → Other Modifiers
   → Defense → Final Damage
 ```
 
-No client-provided damage value is authoritative. Exact mathematical
-formulas: see `COMBAT_RULES.md`.
+Damage may be calculated and applied only when the acting side produces a valid
+ATK-gem match (`ClearedGemCounts.Atk > 0`). Only after confirming an ATK match
+may the combat formula use the acting side's ATK stat. If zero ATK gems are
+matched, no attack occurs, the Damage Pipeline does not execute, and applicable
+attack modifiers (e.g. NextAttack modifiers) are preserved unconsumed. No
+client-provided damage value is authoritative. Exact mathematical formulas: see
+`COMBAT_RULES.md`.
 
 ---
 
 # 15. Boss Rules
 
-Every Boss has: `Element, HP, Max HP, ATK, DEF, Passive, Skill`. Bosses may
+Every Boss has: `Element, HP, Max HP, ATK, DEF, Passive, Skill, State`. Bosses may
 react to Turn, Match Count, Combo, active Pet Power, active Pet HP, Boss
 HP, or Status.
 
-1. Bosses should have unique mechanics; not all Bosses should use the same
+1. Bosses share the Match-3 board and act by executing valid swaps on that board (ADR-026).
+2. Boss skills modify the board, resources, or combat modifiers/multipliers, and
+   deal zero direct damage by default (ADR-026, D3).
+3. Bosses generate SkillCharge exclusively from POWER gems matched by the Boss during
+   the Boss's turn (D2).
+4. Bosses should have unique mechanics; not all Bosses should use the same
    trigger pattern.
-2. Boss difficulty should not depend exclusively on HP/ATK inflation.
-3. Boss mechanics must be deterministic where possible; Boss state is
+5. Boss difficulty should not depend exclusively on HP/ATK inflation.
+6. Boss mechanics must be deterministic where possible; Boss state is
    server authoritative.
 
 Exact MVP Boss list and mechanics: see `BOSS_RULES.md`.
@@ -357,7 +372,7 @@ may expand individual steps but must not reorder them):
 12. Generate Resources
 13. Update Power
 14. Resolve Player Effects
-15. Calculate Damage
+15. Calculate Damage          (gated on confirmed ATK match; if ClearedGemCounts.Atk == 0, steps 15–17 do not run)
 16. Apply Element Modifier
 17. Apply Final Damage
 18. Resolve Boss Response
@@ -404,24 +419,29 @@ step 15  Calculate Damage
    authors no Trigger, Condition form, effect, magnitude, threshold, or
    lifetime (`RELIC_RULES.md` §3, §8).
 
-Step 18 ("Resolve Boss Response") expands to:
+Step 18 ("Resolve Boss Response") expands to the Boss response phase on the shared board (ADR-026):
 
 ```text
-18a. Boss Passive — evaluate the Boss's Passive trigger condition against
-     the post-damage battle state. If the trigger is met, apply the
-     Passive effect and emit PassiveCharged/PassiveTriggered
-     (BOSS_RULES.md §3, GAME_EVENTS.md §2).
-18b. Boss Skill — evaluate Skill eligibility: SkillCharge ≥ Charge
+18a. Boss Move Selection & Execution — if the Boss is alive and not Stunned, the
+     Boss evaluates candidate swaps on the shared board via deterministic AI and
+     executes a valid swap, resolving board cascades and generating actor-relative
+     resources (POWER -> SkillCharge per D2, DEF -> Shield, HP -> Heal).
+18b. Boss Passive — evaluate the Boss's Passive trigger condition against
+     the battle state. If the trigger is met, apply the Passive effect and emit
+     PassiveCharged/PassiveTriggered (BOSS_RULES.md §3, GAME_EVENTS.md §2).
+18c. Boss Skill — evaluate Skill eligibility: SkillCharge ≥ Charge
      Requirement AND SkillCooldown = 0 (BOSS_RULES.md §4,
-     GAME_STATE.md §2.4.3). If eligible, execute the Skill (damage
-     through Damage Pipeline, apply non-damage effects) and emit
+     GAME_STATE.md §2.4.3). If eligible, execute the non-damaging Skill
+     (modifying board, resources, or combat modifiers; ADR-026, D3) and emit
      BossSkillCast. Reset SkillCharge to 0, set SkillCooldown to the
-     Boss's cooldown value. If not eligible, skip to 18c.
-18c. Boss Attack — if the Boss Skill did not fire (step 18b skipped),
-     the Boss performs a basic attack: Base Damage = Boss.ATK, Element
-     = Boss.Element, through Damage Pipeline (COMBAT_RULES.md §3) to
-     the active Pet. Emit DamageCalculated, DamageDealt (source=boss,
-     target=player), DamageTaken (source=boss, target=player). The
+     Boss's cooldown value.
+18d. Boss Attack — if and only if the Boss's swap produced a confirmed ATK-gem
+     match (ClearedGemCounts.Atk > 0), the Boss's ATK stat applies and damage is
+     calculated through the Damage Pipeline (COMBAT_RULES.md §3) to the active
+     Pet. Emit DamageCalculated, DamageDealt (source=boss, target=player),
+     DamageTaken (source=boss, target=player). If zero ATK gems were matched,
+     zero attack damage is dealt. The legacy fallback basic attack (Base Damage =
+     Boss.ATK independently of the board) is RETIRED (ADR-026, D1). The
      `target=player` wire label denotes the player's side (the active
      Pet) — it is a fixed protocol label, not a separate Player HP pool
      (SIGNALR_PROTOCOL.md §3.2).

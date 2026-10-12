@@ -1,6 +1,6 @@
 # Game State
 
-**Version:** 2.25 (§2.3's delivery split and §2.4's client-visible boundary
+**Version:** 2.26 (§2.1, §2.4.3, §5 updated per ADR-026 / TASK-259: Player and Boss share the single 8×8 BoardState (D1, D4); BossState.SkillCharge charges exclusively from Boss POWER gem matches during the Boss turn (D2); Player POWER matches do not charge the Boss; atomic round persistence commits complete round via single Redis CAS write-back with Sequence incrementing once per round. Prior 2.25: §2.3's delivery split and §2.4's client-visible boundary
 recorded for the amended projection — applying the TASK-208 Product Owner
 decisions D-208-01, D-208-02 and D-208-03. The active Pet's `HP`, `MaxHP` and
 `Power` are delivered as `petState.hp`/`maxHp`/`power`, and the Boss's canonical
@@ -2442,13 +2442,14 @@ lifetime and never the fact that the Passive fired.
 ### 2.4.3 Boss Skill Charge and Cooldown
 
 `SkillCharge` tracks progress toward the Boss Skill's charge requirement.
-It increments per player match (same trigger as Passive charging, but
-independent counter). When `SkillCharge ≥ SkillChargeRequirement` (defined
-per Boss in BOSS_RULES.md §6), the Skill is eligible to fire.
+Under ADR-026 (D2), it increments exclusively from POWER gems matched by the
+Boss during the Boss's turn (player matches never charge the Boss). When
+`SkillCharge ≥ SkillChargeRequirement` (defined per Boss in BOSS_RULES.md §6)
+AND `SkillCooldown = 0`, the Skill is eligible to fire.
 
 `SkillCooldown` tracks turns remaining before the Skill can fire again.
 It starts at the Boss's cooldown value after each Skill use, decrements by 1
-at each Turn increment (`MATCH3_RULES.md` §8.1 — one committed Swap begins
+at each Turn increment (`MATCH3_RULES.md` §8.1 — one committed Round begins
 exactly one Turn; the stored Turn advances once in that resolution's single
 write-back, `GAME_STATE.md` §5.1), and blocks Skill use
 while `> 0`.
@@ -2729,37 +2730,45 @@ No other field is used for concurrency control.
 been successfully resolved. This rule is unchanged by §2.0 or §2.0.5 — the
 staged subsets simply have no resolutions yet.
 
-## 5.1 When `Sequence` and `Turn` Change (Board Resolution)
+## 5.1 When `Sequence` and `Turn` Change (Board Resolution & Atomic Round)
 
 This section owns the **state write-back** of the two counters. The board rules
 that determine *what counts* are owned by `MATCH3_RULES.md` §8 and are not
-restated here.
+restated here. Under the shared-board contract (`ADR-026`, D4), one round encompasses
+both Player action and Boss response within a single atomic state transition:
 
 ```text
-one attempt to resolve one action
+one attempt to resolve one atomic round (ADR-026)
     ↓
-validate                                  (MATCH3_RULES.md §2.1.2)
+validate Player action                    (MATCH3_RULES.md §2.1.2, ADR-025)
     ├── rejected  → no state change at all: no board, no Turn, no Sequence,
     │                no RngState, no LastCommittedSwapPair, no event
     │                (MATCH3_RULES.md §2.1.5, §2.1.10 item 6)
-    └── accepted  → SwapStarted, exchange committed, Turn begins,
-                    Combo reset, SwapResolved, board resolved to stability
+    └── accepted  → Player Swap executed, board cascades resolved,
+                    resources generated, damage applied, Terminal Check 1
     ↓
-write Turn and Sequence                     (MATCH3_RULES.md §8.3)
+execute Boss response                     (GAME_RULES.md §17 step 18, ADR-026)
+    ├── Boss dead (Terminal Check 1) → Boss phase skipped, BattleWon emitted
+    └── Boss alive → Boss AI selects swap, board cascades resolved,
+                     Skill evaluated & cast, ATK damage applied, Terminal Check 2
+    ↓
+end round step 19a status effect ticks    (§5.1.1, COMBAT_RULES.md §5.3)
+    ↓
+advance Turn and Sequence                   (Turn++, Sequence++; MATCH3_RULES.md §8.3)
     ↓
 write LastCommittedSwapPair                 (§2.1.10 item 5, §5.1 item 7)
     ↓
 write resulting RngState                    (§2.6.2)
     ↓
-one atomic write-back of the whole BattleState, gated on the pre-resolution
-Sequence (§4)
+one atomic write-back of the whole BattleState, gated on the pre-round
+Sequence via Redis CAS (REDIS_STATE.md §4)
     ↓
 publish (SIGNALR_PROTOCOL.md §3, §4)
 ```
 
-1. **One action, one resolution, one `Sequence` value.** A committed Swap
-   produces exactly one new `Sequence` value, whatever number of Matches,
-   Cascades, or Special Gems it contains (`MATCH3_RULES.md` §8.2).
+1. **One atomic round, one `Sequence` value.** A committed round produces
+   exactly one new `Sequence` value (`Sequence = Sequence + 1`), whatever number of Matches,
+   Cascades, or Special Gems either actor produced (`MATCH3_RULES.md` §8.2, `ADR-026`).
 2. **Nothing is written mid-resolution.** The board after the exchange, the
    intermediate states of `MATCH3_RULES.md` §4.1 (remove / create / gravity /
    spawn), intermediate Combo values, intermediate Match counts, the pass's

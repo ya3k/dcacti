@@ -1,6 +1,6 @@
 # SignalR Protocol
 
-**Version:** 2.20 (§2 **item 1 restated and items 2–3 added** — the `Swap` action
+**Version:** 2.21 (§3.1, §3.2.2 updated per ADR-026 / TASK-259: Atomic round persistence boundaries documented — Redis CAS guarantees single-record state persistence atomicity, but does not provide distributed 2PC or guarantee exactly-once SignalR broadcast across network drops; recovery from connection interruption or missed events remains strictly governed by ADR-008 snapshot recovery via GetBattleState; proposed admission of SwapStarted event ({actor, fromCell, toCell}) in §3.2.2 to transmit Boss swap coordinates for client presentation. Prior 2.20: §2 **item 1 restated and items 2–3 added** — the `Swap` action
 token's grammar is now exact and total. `"{expectedSequence}:{actionId}"` and the
 legacy `"{actionId}"` are the only accepted forms; the sequence part is a
 non-negative decimal integer stated in full; and a token outside the grammar —
@@ -450,6 +450,15 @@ server                                        client
    Cascades, Combo, Special Gems, gravity results, or spawned Gems, and never
    draws from `rngSeed`/`rngState` (`§4.1 item 2`, `GAME_RULES.md` §18,
    `TDD.md` §2.1).
+6. **Persistence vs. Event Delivery Boundaries (ADR-026, D4).** Redis CAS guarantees
+   single-record state persistence atomicity, but does not provide distributed
+   two-phase commit with SignalR delivery or guarantee exactly-once event broadcast.
+   Broadcasts occur after CAS commit. If a connection drops between the Redis write
+   and the WebSocket send, events may be lost in transit. Client recovery is
+   strictly governed by §7 snapshot recovery (`GetBattleState`), not event stream
+   guarantees. An idempotent retry (`actionId`) returns `SwapResponse(Accepted: true)`
+   without re-broadcasting events; state resynchronization is achieved via
+   `GetBattleState`.
 
 ## 3.2 The `events[]` Wire Schema
 
@@ -520,6 +529,10 @@ discriminator member and that event's own payload members at the same level.
    events it admits are projected by their own subsections below, and
    `GAME_EVENTS.md` §3 item 5 already required that every event §2 defines be
    delivered.
+   *(Protocol Proposal per ADR-026 / TASK-259: Admission of `SwapStarted`
+   (`type: "SwapStarted"`, `actor: "player" | "boss"`, `fromCell: number`, `toCell: number`)
+   is proposed to transmit Boss swap coordinates so Phaser can animate Boss board actions.
+   Its schema admission will be formalized upon downstream implementation).*
 3. **The enum is projected to its name, not to its ordinal.** The ordinal
    (`BattleEventType`) is a Domain identity and is not part of the wire
    contract; renumbering the enum must not change the wire.

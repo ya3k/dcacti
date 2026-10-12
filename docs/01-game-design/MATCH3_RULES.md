@@ -1,6 +1,6 @@
 # Match-3 Rules
 
-**Version:** 1.6 (§2.1.4 item 2 **completed, not changed in its rules**: the
+**Version:** 1.7 (§2, §8 updated per ADR-026 / TASK-259: Player and Boss share the one Match-3 board; both act via valid swaps; cell type determines effect; acting side determines ownership and target; Turn represents an atomic combat Round; Sequence increments once per committed round write-back. Prior 1.6: §2.1.4 item 2 **completed, not changed in its rules**: the
 action-identity recognition window is stated as what the rule and
 `GAME_STATE.md` §2.1.10 item 5 already define — the identity is compared with the
 most recently committed Swap, so a retry arriving after a later action committed
@@ -445,13 +445,16 @@ full on its own terms.
 
 # 2. Swap
 
-1. The player selects two orthogonally adjacent Gems (up/down/left/right). Diagonal
+Player and Boss share one Match-3 board (ADR-026). Both sides act by executing
+valid swaps on that board:
+
+1. The acting actor selects two orthogonally adjacent Gems (up/down/left/right). Diagonal
    swaps are invalid.
 2. The server simulates the swap on a copy of the board.
 3. If the simulated swap produces at least one valid Match, the swap is committed.
 4. If the simulated swap produces no Match, the board is reverted and no Turn,
    Match, Combo, Power, Passive or Relic progression occurs.
-5. A committed Swap always begins exactly one new Turn (GAME_RULES.md §2) and
+5. A committed Swap begins an action phase within the combat Round (GAME_RULES.md §2, ADR-026) and
    resets Combo to 0 before the first Match of that Swap is counted.
 
 The items below make the server-side implementation contract of that rule
@@ -2806,12 +2809,13 @@ this section rather than restating it.
 
 ## 8.1 When Turn Changes
 
-1. **A Turn is a successfully resolved player Swap/Action** (`GAME_RULES.md` §2
-   item 1). It begins when a Swap is **committed** (§2.1.6 step 5) – after
-   validation has passed, never before it.
-2. **One committed Swap begins exactly one Turn** (§2 item 5). The Turn's whole
-   resolution – every Match, every Cascade, every Special Gem, and the entire
-   §4 loop – belongs to that one Turn and begins no additional Turn.
+1. **A Turn is an atomic combat Round** (`GAME_RULES.md` §2 item 1, `ADR-026`),
+   encompassing the Player action phase and the Boss response phase. It advances
+   by exactly 1 upon the commit of the atomic round (§2.1.6 step 9, `GAME_STATE.md` §5.1) —
+   after both phases complete, never before.
+2. **One committed Round advances Turn by exactly 1** (§2 item 5, `ADR-026`). The Round's whole
+   resolution – Player resolution, Boss resolution, every Cascade, every Special Gem,
+   and the entire §4 loop for both actors – belongs to that one atomic Round.
 3. **A rejected Swap begins no Turn** (§2.1.5 item 2). Out-of-range, non-
    adjacent, already-applied, and no-match-producing actions all leave `Turn`
    unchanged.
@@ -2852,10 +2856,12 @@ this section rather than restating it.
 
 ## 8.2 When Sequence Changes
 
-1. **One successfully resolved action increments `Sequence` by exactly 1** – a
-   committed Swap is one such action (`GAME_STATE.md` §5). It is not one
+1. **One successfully resolved atomic round increments `Sequence` by exactly 1** – a
+   committed round write-back is one such action (`GAME_STATE.md` §5, `ADR-026`). It is not one
    increment per Match, per pass, per Cascade, per Special Gem, per removed
-   cell, or per increment of anything else.
+   cell, or per increment of anything else. Monotonic `Sequence` advancement provides
+   authoritative state versioning in Redis; it does not guarantee gap-free client
+   event delivery, which is governed by `ADR-008` snapshot recovery.
 2. **Board resolution substeps do not increment `Sequence`.** The §4 loop's
    Gravity, Spawn, detection passes, Special Gem creation and activation, and
    Combo changes are *inside* one resolution and increment nothing. `Sequence`

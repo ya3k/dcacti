@@ -1,6 +1,6 @@
 # Game Events
 
-**Version:** 2.11 (§2 `PowerChanged` reconciled with the TASK-150 Product Owner
+**Version:** 2.12 (§1 updated per ADR-026 / TASK-259: Event ordering synchronized with shared-board round execution — damage events occur iff acting actor produced a valid ATK-gem match (D1); Boss response phase incorporates Boss board swap and cascades; Boss skill deals zero direct damage (D3); fixed basic attack fallback retired. Prior 2.11: §2 `PowerChanged` reconciled with the TASK-150 Product Owner
 decisions D-1–D-8: the `source` value set is now the four values
 `"match"`, `"card"`, `"relic"`, and `"boss"`; the owning-stage emission rule
 replaces the stale "the `"match"` and `"card"` sources remain their own stages'"
@@ -109,13 +109,16 @@ PassiveTriggered            (only when threshold crossed)
 RelicTriggered                (0..N, deterministic order, RELIC_RULES.md §4)
 CardCast                       (only for a Card Cast action, not a Swap)
 PetSkillCast                    (only when the cast Card is the Signature Skill)
-DamageCalculated                (player→boss damage)
-DamageDealt                     (player→boss)
-DamageTaken                     (player→boss)
-  [Boss Response — GAME_RULES.md §17 step 18:]
+DamageCalculated                (player→boss damage, only iff valid ATK match produced; D1)
+DamageDealt                     (player→boss, only iff valid ATK match produced)
+DamageTaken                     (player→boss, only iff valid ATK match produced)
+  [Boss Response Phase — GAME_RULES.md §17 step 18, ADR-026:]
+  SwapStarted                          (Boss move on shared board, actor="boss")
+  SwapResolved                         (Boss swap resolved)
+  [Boss Match / Cascade cycle: MatchCreated, GemMatched, etc.]
   PassiveCharged / PassiveTriggered   (Boss Passive, source="boss")
-  BossSkillCast                        (only when Skill fires)
-  DamageCalculated                     (boss→player, only if Skill or Attack fires)
+  BossSkillCast                        (only when Skill fires; zero direct damage, D3)
+  DamageCalculated                     (boss→player, only iff Boss produced valid ATK match; D1)
   DamageDealt                          (boss→player, source="boss", target="player")
   DamageTaken                          (boss→player, source="boss", target="player")
 TurnEnded
