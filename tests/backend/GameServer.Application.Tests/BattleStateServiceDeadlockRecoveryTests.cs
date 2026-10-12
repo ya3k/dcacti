@@ -1,5 +1,6 @@
 using GameServer.Application.Battle;
 using GameServer.Domain.Battle;
+using GameServer.Domain.Battle.Serialization;
 using GameServer.Domain.Bosses;
 using GameServer.Domain.Combat;
 using GameServer.Domain.Elements;
@@ -150,7 +151,7 @@ public class BattleStateServiceDeadlockRecoveryTests
 
         // GAME_STATE.md §5.1 item 8: the board and the RngState it consumed are the
         // record the store holds, and the Round wrote exactly once.
-        Assert.Equal(result.State, (await arranged.Service.GetBattleAsync(arranged.BattleId))!);
+        AssertStateStructurallyEqual(result.State, (await arranged.Service.GetBattleAsync(arranged.BattleId))!);
         Assert.Equal(writesBefore + 1, arranged.Store.WriteCount);
     }
 
@@ -407,7 +408,7 @@ public class BattleStateServiceDeadlockRecoveryTests
 
         // No second write, and the authoritative record is untouched by the retry.
         Assert.Equal(writesAfterCommit, arranged.Store.WriteCount);
-        Assert.Equal(committed.State, (await arranged.Service.GetBattleAsync(arranged.BattleId))!);
+        AssertStateStructurallyEqual(committed.State, (await arranged.Service.GetBattleAsync(arranged.BattleId))!);
     }
 
     [Fact]
@@ -428,8 +429,8 @@ public class BattleStateServiceDeadlockRecoveryTests
         var first = (await arranged.Service.GetBattleAsync(arranged.BattleId))!;
         var second = (await arranged.Service.GetBattleAsync(arranged.BattleId))!;
 
-        Assert.Equal(committed.State, first);
-        Assert.Equal(first, second);
+        AssertStateStructurallyEqual(committed.State, first);
+        AssertStateStructurallyEqual(first, second);
         Assert.NotEmpty(BossAiEngine.EnumerateLegalMoves(first.BoardState));
         Assert.Equal(writesAfterCommit, arranged.Store.WriteCount);
     }
@@ -458,9 +459,22 @@ public class BattleStateServiceDeadlockRecoveryTests
         var recoveryRng = new Pcg32(replay.RngState.State, replay.RngState.Increment);
         var expected = BoardGenerator.Generate(recoveryRng);
 
-        // One refused write: the first attempt loses, the retry resolves against the
-        // fresh record (which the double leaves at the same Sequence) and commits.
+        // One refused write: the first attempt loses. To prove the retry resolves against
+        // fresh state (and would fail if `state = fresh;` were omitted), inject an observable
+        // change to Pet HP and Power while preserving Sequence == expectedSequence.
         arranged.Store.ForcedConflicts = 1;
+
+        const int freshPetHp = 777;
+        const int freshPetPower = 25;
+
+        arranged.Store.ConcurrentWinnerBeforeFirstWrite = stored => stored with
+        {
+            PetState = stored.PetState with
+            {
+                HP = freshPetHp,
+                Power = freshPetPower,
+            },
+        };
 
         var writesBefore = arranged.Store.WriteCount;
 
@@ -478,10 +492,16 @@ public class BattleStateServiceDeadlockRecoveryTests
         Assert.Equal(expected.Board!.Cells, result.State.BoardState.Cells);
         Assert.Equal(recoveryRng.CurrentState, result.State.RngState);
 
+        // Prove that the retried resolution depended on the fresh state re-read after
+        // the CAS refusal, rather than re-using the stale pre-conflict state:
+        Assert.NotEqual(arranged.Before.PetState.HP, result.State.PetState.HP);
+        Assert.Equal(freshPetHp, result.State.PetState.HP);
+        Assert.Equal(freshPetPower + replay.Player.Resources.Power, result.State.PetState.Power);
+
         // Exactly one commit for the logical action: no double commit, no duplicate
         // recovery.
         Assert.Equal(writesBefore + 1, arranged.Store.WriteCount);
-        Assert.Equal(result.State, (await arranged.Service.GetBattleAsync(arranged.BattleId))!);
+        AssertStateStructurallyEqual(result.State, (await arranged.Service.GetBattleAsync(arranged.BattleId))!);
     }
 
     [Fact]
@@ -543,7 +563,7 @@ public class BattleStateServiceDeadlockRecoveryTests
     // =======================================================================
 
     [Fact]
-    public async Task Recovery_ShouldAddNoEventAndNoWireDiscriminator()
+    public async Task Recovery_ShouldEmitNoBattleEvent()
     {
         // §1.6.6 item 1 / GAME_EVENTS.md §3 item 8 / TASK-265 Option A: recovery is
         // server-internal and reported by the state it commits. No event is added for
@@ -562,53 +582,123 @@ public class BattleStateServiceDeadlockRecoveryTests
 
         Assert.True(result.IsAccepted);
 
-        // The canonical event-name list is exactly the closed set (GAME_RULES.md §16,
-        // GAME_EVENTS.md §2, SIGNALR_PROTOCOL.md §3.2.2) — no BoardReshuffled and no
-        // other name was added for this operation.
-        var names = Enum.GetNames<BattleEventType>().OrderBy(n => n, StringComparer.Ordinal).ToArray();
+        // F-05 / GAME_EVENTS.md §1 & §3 item 8: Assert the complete, ordered event sequence
+        // for the round, verifying Player action phase, Boss response phase, and that
+        // commit-boundary deadlock recovery contributes zero additional Battle Events.
+        BattleEventType[] expectedEventTypes =
+        [
+            BattleEventType.SwapStarted,
+            BattleEventType.SwapResolved,
+            BattleEventType.MatchCreated,
+            BattleEventType.GemMatched,
+            BattleEventType.GemMatched,
+            BattleEventType.GemMatched,
+            BattleEventType.ComboChanged,
+            BattleEventType.PassiveCharged,
+            BattleEventType.PowerChanged,
+            BattleEventType.SwapStarted,
+            BattleEventType.SwapResolved,
+            BattleEventType.MatchCreated,
+            BattleEventType.GemMatched,
+            BattleEventType.GemMatched,
+            BattleEventType.GemMatched,
+            BattleEventType.ComboChanged,
+            BattleEventType.PassiveCharged,
+        ];
 
+        Assert.Equal(expectedEventTypes, result.Events.Select(e => e.Type));
+
+        // Verify Player board events match exactly:
+        var expectedPlayerBoardEvents = BattleEventBuilder.Build(replay.Player.Resolution, replay.Player.Resolution.TotalMatches);
         Assert.Equal(
-            [
-                "BattleLost",
-                "BattleWon",
-                "BossSkillCast",
-                "CardCast",
-                "CascadeCreated",
-                "ComboChanged",
-                "DamageCalculated",
-                "DamageDealt",
-                "DamageTaken",
-                "GemMatched",
-                "MatchCreated",
-                "PassiveCharged",
-                "PassiveTriggered",
-                "PetSkillCast",
-                "PowerChanged",
-                "RelicTriggered",
-                "SwapResolved",
-                "SwapStarted",
-            ],
-            names);
+            expectedPlayerBoardEvents.Select(e => e.Type),
+            RoundTestSupport.PlayerBoardEvents(result).Select(e => e.Type));
 
-        Assert.DoesNotContain("BoardReshuffled", names);
-
-        // Every delivered event is one of those names, and the Boss's board cycle is
-        // reported exactly as the cascades the Boss's own resolution produced — the
-        // recovery did not alter or re-report any part of the cycle.
-        Assert.All(result.Events, e => Assert.Contains(e.Type.ToString(), names));
-
+        // Verify Boss board events match exactly:
         var expectedBossBoardEvents = BattleEventBuilder.Build(replay.BossResolution, replay.BossResolution.TotalMatches);
-
         Assert.Equal(
             expectedBossBoardEvents.Select(e => e.Type),
             RoundTestSupport.BossBoardEvents(result).Select(e => e.Type));
 
-        // The Round still reports exactly the two board actions the shared-board
-        // contract fixes: the Player's and the Boss's (SIGNALR_PROTOCOL.md
-        // §3.2.26–§3.2.27). Recovery adds no third.
+        // Verify that board-event runs across the whole event sequence are strictly two
+        // (Player run and Boss run) and detect any unexpected appended or interleaved events.
+        var boardRuns = new List<List<BattleEvent>>();
+        List<BattleEvent>? currentRun = null;
+        foreach (var evt in result.Events)
+        {
+            var isBoardEvt = evt.Type is BattleEventType.MatchCreated
+                or BattleEventType.GemMatched
+                or BattleEventType.CascadeCreated
+                or BattleEventType.ComboChanged;
+
+            if (isBoardEvt)
+            {
+                currentRun ??= [];
+                currentRun.Add(evt);
+            }
+            else if (currentRun != null)
+            {
+                boardRuns.Add(currentRun);
+                currentRun = null;
+            }
+        }
+
+        if (currentRun != null)
+        {
+            boardRuns.Add(currentRun);
+        }
+
+        Assert.Equal(2, boardRuns.Count);
+        Assert.Equal(expectedPlayerBoardEvents.Count, boardRuns[0].Count);
+        Assert.Equal(expectedBossBoardEvents.Count, boardRuns[1].Count);
+
+        // Exactly the two SwapStarted actions (Player and Boss):
         Assert.Equal(
             2,
             result.Events.Count(e => e.Type == BattleEventType.SwapStarted));
+
+        // Zero recovery events or reshuffle discriminator:
+        Assert.DoesNotContain(result.Events, e => e.Type.ToString() == "BoardReshuffled");
+    }
+
+    [Fact]
+    public Task Recovery_ShouldAddNoEventAndNoWireDiscriminator() =>
+        Recovery_ShouldEmitNoBattleEvent();
+
+    [Fact]
+    public async Task StructuralStateEquality_ShouldDetectChangedCellInSeparateBoardStateInstance()
+    {
+        // F-06: BattleState is a C# record, but BoardState is a class without value equality.
+        // Record equality (stateA == stateB) evaluates reference equality on BoardState,
+        // which fails across distinct instances with identical cells and would silently
+        // miss cell mutations if instances shared references. Structural comparison
+        // via BoardState.CellsEqual and BattleStateSerializer detects cell modifications.
+        var arranged = await ArrangeAsync("recovery-structural-test", PlayableRoundSeed, GemType.Power, BossDefinitions.HoaLong);
+        var baseState = arranged.Before;
+        var baseBoard = baseState.BoardState;
+
+        // Distinct instance with identical cells:
+        var clonedBoard = BoardState.FromCells(baseBoard.Cells.Select(c => c.GemType));
+        Assert.NotSame(baseBoard, clonedBoard);
+        Assert.True(baseBoard.CellsEqual(clonedBoard));
+
+        var stateA = baseState;
+        var stateB = baseState with { BoardState = clonedBoard };
+
+        // Reference equality on BoardState is false across separate instances:
+        Assert.False(ReferenceEquals(stateA.BoardState, stateB.BoardState));
+
+        // Structural assertion recognizes identical content:
+        AssertStateStructurallyEqual(stateA, stateB);
+
+        // Mutated cell in distinct instance is detected:
+        var modifiedTypes = baseBoard.Cells.Select(c => c.GemType).ToArray();
+        modifiedTypes[0] = modifiedTypes[0] == GemType.Atk ? GemType.Def : GemType.Atk;
+        var modifiedBoard = BoardState.FromCells(modifiedTypes);
+        var stateModified = baseState with { BoardState = modifiedBoard };
+
+        Assert.False(stateA.BoardState.CellsEqual(stateModified.BoardState));
+        Assert.NotEqual(BattleStateSerializer.Serialize(stateA), BattleStateSerializer.Serialize(stateModified));
     }
 
     // =======================================================================
@@ -622,7 +712,7 @@ public class BattleStateServiceDeadlockRecoveryTests
     private sealed record Arranged(
         string BattleId,
         BattleStateService Service,
-        InMemoryBattleStateRepository Store,
+        ContendedBattleStateRepository Store,
         PinnedPlayerRound Pinned,
         BattleState Before);
 
@@ -665,7 +755,7 @@ public class BattleStateServiceDeadlockRecoveryTests
         int? petHp = null,
         StatusEffect? bossEffect = null)
     {
-        var store = new InMemoryBattleStateRepository();
+        var store = new ContendedBattleStateRepository();
         var service = new BattleStateService(store, new FixedRngSeedSource());
 
         var created = await service.CreateBattleAsync(battleId, Owner, Pet, boss);
@@ -751,4 +841,28 @@ public class BattleStateServiceDeadlockRecoveryTests
     /// </summary>
     private static void AssertBossConsumedNoCritDraw(PreCommitReplay replay) =>
         Assert.Equal(0, ResourceGenerator.Generate(replay.BossResolution).ClearedGemCounts.Atk);
+
+    /// <summary>
+    /// F-06: Asserts structural equality between two BattleState values.
+    /// <c>BattleState</c> is a C# record whose <c>BoardState</c> property is a class
+    /// that does not override <c>Equals</c>, making record equality reference-dependent.
+    /// This method enforces structural equivalence on cells, essential scalar fields,
+    /// and the canonical deterministic serialized payload.
+    /// </summary>
+    private static void AssertStateStructurallyEqual(BattleState expected, BattleState actual)
+    {
+        Assert.True(
+            expected.BoardState.CellsEqual(actual.BoardState),
+            "BoardState cells must be structurally identical across separate instances.");
+        Assert.Equal(expected.Sequence, actual.Sequence);
+        Assert.Equal(expected.Turn, actual.Turn);
+        Assert.Equal(expected.RngState, actual.RngState);
+        Assert.Equal(expected.PetState.HP, actual.PetState.HP);
+        Assert.Equal(expected.PetState.Power, actual.PetState.Power);
+        Assert.Equal(expected.BossState.HP, actual.BossState.HP);
+        Assert.Equal(expected.MatchCount, actual.MatchCount);
+        Assert.Equal(expected.Combo, actual.Combo);
+        Assert.Equal(expected.LastCommittedSwapPair, actual.LastCommittedSwapPair);
+        Assert.Equal(BattleStateSerializer.Serialize(expected), BattleStateSerializer.Serialize(actual));
+    }
 }

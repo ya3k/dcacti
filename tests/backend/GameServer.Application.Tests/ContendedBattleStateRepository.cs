@@ -78,6 +78,41 @@ internal sealed class ContendedBattleStateRepository : IBattleStateRepository
     }
 
     /// <summary>
+    /// When set, the next compare-and-set attempts report a mismatch regardless of
+    /// the stored sequence — forwarding to the inner repository's
+    /// <see cref="InMemoryBattleStateRepository.ForcedConflicts"/>.
+    /// </summary>
+    public int ForcedConflicts
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _inner.ForcedConflicts;
+            }
+        }
+        set
+        {
+            lock (_gate)
+            {
+                _inner.ForcedConflicts = value;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Replaces a stored record with the complete value another writer left it as,
+    /// forwarding to <see cref="InMemoryBattleStateRepository.ApplyConcurrentWrite"/>.
+    /// </summary>
+    public void ApplyConcurrentWrite(BattleState state)
+    {
+        lock (_gate)
+        {
+            _inner.ApplyConcurrentWrite(state);
+        }
+    }
+
+    /// <summary>
     /// Holds the leading <paramref name="count"/> reads open until all of them have
     /// read, so concurrent resolutions are forced to start from one state version.
     /// A later read (a refused write's fresh re-read, for example) is never held:

@@ -245,27 +245,38 @@ public class RuntimeBoardDeadlockTests
         // what "no fallback construction" means — there is no partial fill, forced
         // pattern, or best-effort board to commit.
         //
-        // The path is unreachable with the real PRNG (a candidate is rejected only if
-        // the completed board happens to contain no valid Swap, and 64 consecutive
-        // rejections cannot be produced from a chosen state), so the failure contract
-        // is driven directly — the same treatment the generation suite gives it
-        // (BoardGeneratorFailureTests) — rather than by pretending the PRNG reaches
-        // it.
-        var failure = new BoardGenerationFailedException("recovery found no valid candidate")
-        {
-            Attempts = BoardGenerator.MaxAttempts,
-        };
+        // Note: This test exercises the public failure contract and attempt-bound
+        // invariants, but does not exercise actual exhaustion through
+        // BoardGenerator.Generate directly. Under the deterministic row-major
+        // constrained fill algorithm (MATCH3_RULES.md §1.2.1 / §1.5), encountering
+        // 64 consecutive candidate rejections across the PRNG stream has not been
+        // produced from any known seed. We do not claim exhaustion is mathematically
+        // impossible; rather, actual exhaustion through the generator is not reached
+        // by known seeds and cannot be exercised without artificial production seams,
+        // which are prohibited.
+        Assert.Equal(64, BoardGenerator.MaxAttempts);
 
-        Assert.Equal(64, failure.Attempts);
-        Assert.IsNotType<BoardGenerationResult>(failure);
-        Assert.Contains("recovery found no valid candidate", failure.Message);
+        // Meaningful exception metadata contract:
+        Assert.True(typeof(Exception).IsAssignableFrom(typeof(BoardGenerationFailedException)));
+        var attemptsProperty = typeof(BoardGenerationFailedException).GetProperty(nameof(BoardGenerationFailedException.Attempts));
+        Assert.NotNull(attemptsProperty);
+        Assert.Equal(typeof(int), attemptsProperty.PropertyType);
+
+        var unassignedException = new BoardGenerationFailedException("exhaustion");
+        Assert.Equal(0, unassignedException.Attempts);
 
         // A successful recovery result is the only carrier of a board, and it is
-        // non-null exactly when generation succeeded.
-        var succeeded = BoardGenerator.Generate(seed: 7UL);
+        // non-null exactly when generation succeeded. Bounded attempt counts and
+        // the absence of fallback boards are verified on real generation outcomes:
+        foreach (var seed in new[] { 7UL, 31337UL, 47UL })
+        {
+            var succeeded = BoardGenerator.Generate(seed);
 
-        Assert.True(succeeded.Succeeded);
-        Assert.NotNull(succeeded.Board);
-        Assert.InRange(succeeded.Attempts, 1, BoardGenerator.MaxAttempts);
+            Assert.True(succeeded.Succeeded);
+            Assert.NotNull(succeeded.Board);
+            Assert.InRange(succeeded.Attempts, 1, BoardGenerator.MaxAttempts);
+            Assert.True(BoardGenerationValidator.IsValidInitialBoard(succeeded.Board));
+            Assert.NotEmpty(BossAiEngine.EnumerateLegalMoves(succeeded.Board));
+        }
     }
 }

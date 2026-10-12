@@ -121,6 +121,97 @@ public class BattleStateServiceTerminalActionGuardTests
         Assert.Equal(SwapRejectionReason.StaleAction, result.Value.Reason);
     }
 
+    [Theory]
+    [InlineData(0, 0, "Identical coordinates")]
+    [InlineData(-1, 0, "Out-of-bounds negative index")]
+    [InlineData(0, 64, "Out-of-bounds upper index")]
+    [InlineData(0, 2, "Non-adjacent coordinates")]
+    public async Task InvalidSwapPayload_AgainstBossTerminalBattle_ShouldBeRejectedAsStaleAction_PriorToSwapValidation(
+        int from,
+        int to,
+        string scenario)
+    {
+        // MATCH3_RULES.md §2.1.4 item 7: Terminal Swap guard takes precedence over ordinary
+        // Swap validation (§2.1.2). Even when the payload is structurally invalid or non-adjacent,
+        // a terminal battle rejects with STALE_ACTION rather than INVALID_CELL_INDEX or INVALID_SWAP.
+        _ = scenario;
+        var arranged = await ArrangeTerminalAsync($"terminal-invalid-swap-boss-{from}-{to}", bossHp: 0);
+        var writesBefore = arranged.Store.WriteCount;
+
+        var request = new SwapRequest(from, to);
+        var result = await arranged.Service.ExecuteSwapAsync(arranged.BattleId, request);
+
+        Assert.NotNull(result);
+        Assert.True(result!.Value.IsRejected);
+        Assert.Equal(SwapRejectionReason.StaleAction, result.Value.Reason);
+        Assert.Empty(result.Value.Events);
+        Assert.Equal(writesBefore, arranged.Store.WriteCount);
+    }
+
+    [Fact]
+    public async Task AdjacentSwapProducingNoMatch_AgainstBossTerminalBattle_ShouldBeRejectedAsStaleAction_PriorToSwapValidation()
+    {
+        // MATCH3_RULES.md §2.1.4 item 7: An adjacent swap that produces no match yields STALE_ACTION
+        // on a terminal battle, rather than NO_MATCH_FROM_SWAP (§2.1.2 item 5).
+        var arranged = await ArrangeTerminalAsync("terminal-nomatch-swap-boss", bossHp: 0);
+        var noMatchPair = FindAdjacentPairThatProducesNoMatch(arranged.Before.BoardState);
+        var writesBefore = arranged.Store.WriteCount;
+
+        var request = new SwapRequest(noMatchPair.From, noMatchPair.To);
+        var result = await arranged.Service.ExecuteSwapAsync(arranged.BattleId, request);
+
+        Assert.NotNull(result);
+        Assert.True(result!.Value.IsRejected);
+        Assert.Equal(SwapRejectionReason.StaleAction, result.Value.Reason);
+        Assert.Empty(result.Value.Events);
+        Assert.Equal(writesBefore, arranged.Store.WriteCount);
+    }
+
+    [Theory]
+    [InlineData(0, 0, "Identical coordinates")]
+    [InlineData(-1, 0, "Out-of-bounds negative index")]
+    [InlineData(0, 64, "Out-of-bounds upper index")]
+    [InlineData(0, 2, "Non-adjacent coordinates")]
+    public async Task InvalidSwapPayload_AgainstPlayerTerminalBattle_ShouldBeRejectedAsStaleAction_PriorToSwapValidation(
+        int from,
+        int to,
+        string scenario)
+    {
+        // MATCH3_RULES.md §2.1.4 item 7: Terminal Swap guard takes precedence over ordinary
+        // Swap validation (§2.1.2) for Player-terminal battles as well.
+        _ = scenario;
+        var arranged = await ArrangeTerminalAsync($"terminal-invalid-swap-player-{from}-{to}", petHp: 0);
+        var writesBefore = arranged.Store.WriteCount;
+
+        var request = new SwapRequest(from, to);
+        var result = await arranged.Service.ExecuteSwapAsync(arranged.BattleId, request);
+
+        Assert.NotNull(result);
+        Assert.True(result!.Value.IsRejected);
+        Assert.Equal(SwapRejectionReason.StaleAction, result.Value.Reason);
+        Assert.Empty(result.Value.Events);
+        Assert.Equal(writesBefore, arranged.Store.WriteCount);
+    }
+
+    [Fact]
+    public async Task AdjacentSwapProducingNoMatch_AgainstPlayerTerminalBattle_ShouldBeRejectedAsStaleAction_PriorToSwapValidation()
+    {
+        // MATCH3_RULES.md §2.1.4 item 7: An adjacent swap producing no match yields STALE_ACTION
+        // on a Player-terminal battle.
+        var arranged = await ArrangeTerminalAsync("terminal-nomatch-swap-player", petHp: 0);
+        var noMatchPair = FindAdjacentPairThatProducesNoMatch(arranged.Before.BoardState);
+        var writesBefore = arranged.Store.WriteCount;
+
+        var request = new SwapRequest(noMatchPair.From, noMatchPair.To);
+        var result = await arranged.Service.ExecuteSwapAsync(arranged.BattleId, request);
+
+        Assert.NotNull(result);
+        Assert.True(result!.Value.IsRejected);
+        Assert.Equal(SwapRejectionReason.StaleAction, result.Value.Reason);
+        Assert.Empty(result.Value.Events);
+        Assert.Equal(writesBefore, arranged.Store.WriteCount);
+    }
+
     // =======================================================================
     // 2. Nothing happens on a terminal rejection
     // =======================================================================
