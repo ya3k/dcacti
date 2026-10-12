@@ -920,6 +920,21 @@ export class BattleScene extends Phaser.Scene {
   /** The battle the in-flight timeline belongs to. */
   private presentationBattleId: string | null = null;
   /**
+   * The newest `serverSequence` this scene has accepted a resolution for, or `null`.
+   *
+   * `serverSequence` is the post-resolution counter and is strictly increasing with no
+   * gaps (`SIGNALR_PROTOCOL.md` §3 item 2; `GAME_STATE.md` §5), so a batch at or below
+   * this value is a re-delivery or an older one and is a resolution the presentation
+   * has already played. It is remembered **after** its timeline ends as well, which is
+   * what stops an old round's animations from being replayed once a newer resolution
+   * has been accepted (ADR-008: recovery is a snapshot, never an event replay). It is
+   * dropped when the delivered battle changes, so a new battle starts at its own first
+   * sequence — the same bookkeeping the developer Move Log keeps for its own rows.
+   */
+  private acceptedResolutionSequence: number | null = null;
+  /** The battle {@link acceptedResolutionSequence} belongs to. */
+  private acceptedResolutionBattleId: string | null = null;
+  /**
    * The terminal outcome this resolution is handing off, or `null`.
    *
    * It is recorded as soon as the batch names one, so the handoff cannot be lost
@@ -1164,6 +1179,11 @@ export class BattleScene extends Phaser.Scene {
     this.settledBoardSequence = null;
     this.settledBattleId = null;
     this.heldSequence = null;
+    // No resolution of a previous run has been accepted for this one: the memory is
+    // keyed by the delivered battle, and this run's battle has not delivered a batch
+    // yet (`shutdown` drops the same pair).
+    this.acceptedResolutionSequence = null;
+    this.acceptedResolutionBattleId = null;
     // No submission and no resolution of a previous run can be outstanding for
     // this one (`shutdown` drops the same pair).
     this.submissionOutstanding = false;
@@ -1365,6 +1385,11 @@ export class BattleScene extends Phaser.Scene {
     this.settledBoardSequence = null;
     this.settledBattleId = null;
     this.heldSequence = null;
+    // The accepted-resolution memory belongs to the battle that just ended: the next
+    // battle delivers its own first `serverSequence`, which must not be mistaken for a
+    // re-delivery of this one's (`create()` drops the same pair).
+    this.acceptedResolutionSequence = null;
+    this.acceptedResolutionBattleId = null;
     // A submission or a resolution of the battle that just ended is not the next
     // battle's: the machine is reset to `idle` above, so neither fact may keep
     // the next run locked.
@@ -3083,7 +3108,7 @@ export class BattleScene extends Phaser.Scene {
    * swap movement the server refused.
    */
   private async submitSwap(fromCell: number, toCell: number): Promise<void> {
-    if (this.isInputLocked()) {
+    if (!this.acceptsPlayerAction()) {
       return;
     }
 
@@ -3207,7 +3232,7 @@ export class BattleScene extends Phaser.Scene {
    * Submits one CardCast request through the runtime port and presents the result.
    */
   private async submitCardCast(cardId: string): Promise<void> {
-    if (this.isInputLocked()) {
+    if (!this.acceptsPlayerAction()) {
       return;
     }
 
@@ -3255,7 +3280,7 @@ export class BattleScene extends Phaser.Scene {
    * Submits one PetSkillCast request through the runtime port and presents the result.
    */
   private async submitPetSkillCast(): Promise<void> {
-    if (this.isInputLocked()) {
+    if (!this.acceptsPlayerAction()) {
       return;
     }
 
@@ -3405,8 +3430,9 @@ export class BattleScene extends Phaser.Scene {
    *
    * A batch that produces no phases — an unknown or malformed event set, or a
    * rejection (which emits no events at all, `GAME_EVENTS.md` §1.2) — produces
-   * no timeline, raises no callout, and locks nothing. A batch superseded by a
-   * newer one presents nothing and is recorded only.
+   * no timeline, raises no callout, and locks nothing. A batch already accepted, an
+   * older one, and one superseded by a newer one present nothing and are recorded
+   * only (`acceptedResolutionSequence`).
    */
   private playEventBatch(envelope: BattleEventsEnvelope): void {
     const presented: InBattleServerEvent[] = [];
@@ -3435,20 +3461,36 @@ export class BattleScene extends Phaser.Scene {
       moveLog?.commitSequence(envelope.serverSequence);
     }
 
+    // A resolution this scene has already accepted is presented no second time.
+    // `serverSequence` is the post-resolution counter and is strictly increasing with
+    // no gaps (`SIGNALR_PROTOCOL.md` §3 item 2, `GAME_STATE.md` §5), so a batch at or
+    // below the newest one already accepted is a re-delivery or an older one — whether
+    // or not its own timeline is still playing. The memory outlives the timeline, which
+    // is what stops an old round's animations from being replayed after a newer
+    // resolution has been accepted, and it is keyed by battle so a new battle's first
+    // sequence is never mistaken for a repeat of the previous battle's (ADR-008:
+    // recovery is a snapshot, never an event replay).
+    if (this.acceptedResolutionBattleId !== envelope.battleId) {
+      this.acceptedResolutionBattleId = envelope.battleId;
+      this.acceptedResolutionSequence = null;
+    }
+
+    if (
+      this.acceptedResolutionSequence !== null &&
+      envelope.serverSequence <= this.acceptedResolutionSequence
+    ) {
+      // Already accepted, or older than what has been accepted: recorded above, and
+      // presented no second time.
+      return;
+    }
+
+    this.acceptedResolutionSequence = envelope.serverSequence;
+
     // A batch that arrives while an earlier one is still playing. The server's
     // own sequencing (`serverSequence` is the post-resolution counter,
-    // `GAME_STATE.md` §5) makes the newer resolution the one that matters and a
-    // repeated one a duplicate:
+    // `GAME_STATE.md` §5) makes the newer resolution the one that matters, and the
+    // guard above has already established that this one is strictly newer:
     if (this.presentationTimeline !== null) {
-      if (
-        this.presentationSequence !== null &&
-        envelope.serverSequence <= this.presentationSequence
-      ) {
-        // Already presented, or older than what is on screen: recorded above, and
-        // presented no second time.
-        return;
-      }
-
       // Newer: the playing timeline is superseded, exactly as a newer
       // authoritative state supersedes it. Its pacing is cancelled and its guard
       // released before this batch's timeline takes over.
@@ -3667,11 +3709,27 @@ export class BattleScene extends Phaser.Scene {
     );
 
     if (boardPresented) {
-      const at = phases.findIndex(
+      // TASK-254's placement: the one supported board transition sits at the first
+      // combat stage the resolution delivers, or at the resolution's end when it
+      // delivers none (`SIGNALR_PROTOCOL.md` §3.1 item 2: no per-pass board is ever
+      // delivered, so there is exactly one board to converge on).
+      const firstCombat = phases.findIndex(
         (phase) => phase.kind === 'damage' || phase.kind === 'retaliation'
       );
 
-      phases.splice(at === -1 ? phases.length : at, 0, {
+      // ADR-026 §2 makes *one round's* board cycle span both actors: the Player's
+      // committed Swap **and** the Boss's own board action at `GAME_RULES.md` §17
+      // step 18a. The Boss's board cycle is delivered after the Player's damage
+      // reports (`GAME_EVENTS.md` §1), so the round's board work does not end at the
+      // first combat stage. The committed board is therefore applied where that work
+      // actually ends — after the round's last board-cycle phase — and TASK-254's
+      // placement still governs every resolution whose board cycle ends at or before
+      // it. It is still exactly one transition, and the displayed board is still the
+      // delivered one: nothing is derived and nothing is invented.
+      const lastBoardCycle = BattleScene.lastBoardCyclePhaseIndex(phases);
+      const at = firstCombat === -1 ? phases.length : Math.max(firstCombat, lastBoardCycle + 1);
+
+      phases.splice(at, 0, {
         kind: 'settle',
         // The settle step converges the resolution's board, and the committed
         // Swap is its actor: this step exists only when a board cycle was
@@ -3801,6 +3859,35 @@ export class BattleScene extends Phaser.Scene {
     }
 
     return longest;
+  }
+
+  /**
+   * The position of the last phase that belongs to the round's board cycle, or `-1`
+   * when the round delivered none.
+   *
+   * The board cycle is the committed Swap and everything the board itself reported —
+   * TASK-254's `swap` / `match` / `cascade` phases, plus the floater step a delivered
+   * `ComboChanged` joins (`GAME_EVENTS.md` §1.1). It is a **presentation** grouping
+   * read from the phases' own kinds: no actor is inferred, nothing is re-sorted, and
+   * no gameplay value is derived from it.
+   *
+   * It exists for one fact: `settle` converges the round's single committed board, and
+   * under ADR-026 §2 the round's board cycle spans the Player's Swap *and* the Boss's
+   * step 18a board action, whose events are delivered after the Player's combat stages
+   * (`GAME_EVENTS.md` §1).
+   */
+  private static lastBoardCyclePhaseIndex(phases: readonly PresentationPhase[]): number {
+    let last = -1;
+
+    for (let index = 0; index < phases.length; index++) {
+      const kind = phases[index].kind;
+
+      if (kind === 'swap' || kind === 'match' || kind === 'cascade') {
+        last = index;
+      }
+    }
+
+    return last;
   }
 
   /**
@@ -4695,6 +4782,22 @@ export class BattleScene extends Phaser.Scene {
   /** Whether a resolution's presentation timeline is playing. */
   private isPresenting(): boolean {
     return this.orchestration === 'presenting' || this.orchestration === 'presenting-submitted';
+  }
+
+  /**
+   * Whether this battle can still accept a player action request.
+   *
+   * It is the input guard **and** the terminal latch: a round that handed its outcome
+   * to `ResultScene` accepts no further Swap, Card cast, or Pet Skill cast. `terminated`
+   * is deliberately not one of the input-locked states (the machine's own doc: the
+   * battle is over and the scene is on its way out), so the guard alone would let a tap
+   * in that window send a request the server has no battle for; the latch is what makes
+   * "a terminal round stops gameplay input" true of the request itself. It reads two
+   * client-local facts and answers a question about this client's own interaction — it
+   * is not a server turn, phase, or status (`GAME_STATE.md` §2.0.3; TASK-246 §4).
+   */
+  private acceptsPlayerAction(): boolean {
+    return !this.isInputLocked() && !this.outcomeHandled;
   }
 
   /**

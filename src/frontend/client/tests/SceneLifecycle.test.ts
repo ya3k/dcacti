@@ -7269,6 +7269,593 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       expect(rendered).toContain('BOSS SKILL');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // TASK-262 — the shared-board round: two board cycles, one committed board
+  // ---------------------------------------------------------------------------
+
+  describe('TASK-262 — shared-board round presentation and event handling', () => {
+    /**
+     * One committed round of the shared board (ADR-026 §2), exactly as the server
+     * delivers it (`GAME_EVENTS.md` §1):
+     *
+     * ```text
+     * Player phase   its board cycle, its Passive and Power, its ATK-gated instance
+     * Boss phase     the Boss's own board cycle on the same board, its Passive, its
+     *                non-damaging Skill, its own ATK-gated instance
+     * ```
+     *
+     * Both board cycles carry the same event shapes, and **none** of them names the
+     * actor of a `MatchCreated`, `GemMatched`, `ComboChanged` or `CascadeCreated`
+     * (`SIGNALR_PROTOCOL.md` §3.2.6–§3.2.12): that is why the timeline claims no
+     * party for the board cycle and only the delivered damage parties, Passives and
+     * `BossSkillCast` are attributed to a side.
+     */
+    const SHARED_ROUND: unknown[] = [
+      // Player phase — §17 steps 2–9, the board cycle the committed Swap resolved.
+      { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      { type: 'GemMatched', cellIndex: 24, gemType: 'ATK' },
+      { type: 'ComboChanged', combo: 1 },
+      // §17 step 10, step 11 and step 13: the Player's Passive, and the Power its
+      // POWER Gems generated.
+      { type: 'PassiveCharged', passiveId: 'xich-lang', source: 'pet', sourceId: 'pet-instance-1', progress: 4, threshold: 5 },
+      { type: 'PowerChanged', delta: 30, power: 30, source: 'match' },
+      // §17 steps 15–17: the Player's ATK-gated instance (ADR-026 D1).
+      { type: 'DamageCalculated', base: 150, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 150 },
+      { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+      { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
+      // Boss Response Phase, §17 step 18a: the Boss's own board cycle on the same
+      // board — one pass with a Match and a Cascade.
+      { type: 'MatchCreated', shape: 'Straight', cells: [3, 4, 5], gemType: 'POWER', cascadeDepth: 1 },
+      { type: 'GemMatched', cellIndex: 3, gemType: 'POWER' },
+      { type: 'ComboChanged', combo: 1 },
+      { type: 'CascadeCreated', cascadeDepth: 1 },
+      { type: 'MatchCreated', shape: 'Straight', cells: [11, 12, 13], gemType: 'DEF', cascadeDepth: 2 },
+      { type: 'GemMatched', cellIndex: 11, gemType: 'DEF' },
+      { type: 'ComboChanged', combo: 2 },
+      // §17 steps 18b–18d: the Boss's Passive, its Skill, and its own instance.
+      { type: 'PassiveCharged', passiveId: 'boss-hoa-long-rage', source: 'boss', sourceId: 'boss-hoa-long', progress: 1, threshold: 5 },
+      { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+      { type: 'DamageCalculated', base: 80, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 80 },
+      { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
+      { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
+    ];
+
+    /**
+     * The whole timeline that round plays, in the delivered order: the Player's board
+     * cycle, the Player's damage step, the Boss's own board cycle, the one supported
+     * board transition **at the end of the round's board cycle**, then the Boss's own
+     * Passive/Skill/retaliation steps.
+     */
+    const SHARED_ROUND_PHASES = [
+      'swap 20->21',
+      'match depth=1',
+      'damage player->boss',
+      'match depth=1',
+      'cascade depth=1',
+      'settle',
+      'boss-skill flame-burst',
+      'retaliation boss->player',
+    ];
+
+    /**
+     * The Player's Swap kills the Boss: the round is terminal inside its Player phase,
+     * so no Boss Response Phase is delivered at all (`GAME_RULES.md` §17 step 18a's
+     * terminal check).
+     */
+    const KILLING_ROUND: unknown[] = [
+      { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      { type: 'DamageCalculated', base: 5000, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 5000 },
+      { type: 'DamageDealt', source: 'player', target: 'boss', amount: 5000 },
+      { type: 'DamageTaken', source: 'player', target: 'boss', amount: 5000 },
+      { type: 'BattleWon', outcome: 'victory', finalBossHp: 0, finalPlayerHp: 640 },
+    ];
+
+    /**
+     * The Boss's own board cycle, its Skill and its ATK-gated instance kill the active
+     * Pet: the round is terminal inside its Boss phase, and its outcome is last.
+     */
+    const DEFEAT_ROUND: unknown[] = [
+      { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+      { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
+      { type: 'MatchCreated', shape: 'Straight', cells: [3, 4, 5], gemType: 'ATK', cascadeDepth: 1 },
+      { type: 'GemMatched', cellIndex: 3, gemType: 'ATK' },
+      { type: 'BossSkillCast', skillId: 'drain-power', sourceId: 'boss-thuy-ma' },
+      { type: 'PowerChanged', delta: -20, power: 20, source: 'boss' },
+      { type: 'DamageCalculated', base: 640, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 640 },
+      { type: 'DamageDealt', source: 'boss', target: 'player', amount: 640 },
+      { type: 'DamageTaken', source: 'boss', target: 'player', amount: 640 },
+      { type: 'BattleLost', outcome: 'defeat', finalBossHp: 1250, finalPlayerHp: 0 },
+    ];
+
+    /** The labels one delivered board renders as, in §1.0 index order. */
+    function expectedBoardLabels(shift: number): string[] {
+      const labels: Readonly<Record<string, string>> = {
+        ATK: 'ATK',
+        DEF: 'DEF',
+        HP: 'HP',
+        POWER: 'PWR',
+      };
+
+      return Array.from({ length: 64 }, (_, index) =>
+        labels[GEM_NAMES[(index + shift) % GEM_NAMES.length]]
+      );
+    }
+
+    /**
+     * The label rendered at each §1.0 cell, read from the view's own position.
+     *
+     * It is TASK-245's reading: a committed Swap exchanges two views' cells without
+     * relabelling them, so the cell a label *shows* is the cell it sits on.
+     */
+    function boardLabels(harness: ReturnType<typeof createSceneHarness>): string[] {
+      const labels: string[] = new Array(BOARD_COLUMNS * 8).fill('');
+
+      for (const cell of harness.boardCells) {
+        if (cell.kind !== 'label') {
+          continue;
+        }
+
+        const view = cell as unknown as { x: number; y: number; label?: string };
+        const column = Math.round((view.x - BOARD_ORIGIN_X - CELL_SIZE / 2) / BOARD_PITCH);
+        const row = Math.round((view.y - BOARD_ORIGIN_Y - CELL_SIZE / 2) / BOARD_PITCH);
+
+        if (row < 0 || row >= BOARD_COLUMNS || column < 0 || column >= BOARD_COLUMNS) {
+          continue;
+        }
+
+        labels[row * BOARD_COLUMNS + column] = view.label ?? '';
+      }
+
+      return labels;
+    }
+
+    /** Plays the in-flight timeline until `count` phases have started. */
+    function playUntil(
+      harness: ReturnType<typeof createSceneHarness>,
+      ctx: object,
+      count: number
+    ): void {
+      for (let step = 0; step < 500; step++) {
+        if (playedPhases(ctx).length >= count || harness.pendingTweenCount() === 0) {
+          return;
+        }
+        harness.flushTweens(1);
+      }
+    }
+
+    /** The Combo readout on screen. */
+    function comboReadout(ctx: object): string {
+      return field<{ text: string } | null>(ctx, 'comboText')?.text ?? '';
+    }
+
+    it('presents the round’s Player phase and Boss phase in the delivered order on one board', async () => {
+      const { harness, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), SHARED_ROUND);
+      settle();
+      await flush();
+
+      const phases = timelinePhases(ctx);
+      const details = phases.map((phase) => phase.detail);
+
+      // GAME_EVENTS.md §1's own order, and nothing re-sorted, filtered or duplicated:
+      // the Player's board cycle, the Player's damage step, the Boss's own board cycle
+      // on the same board, then the Boss's Passive/Skill/retaliation steps.
+      expect(details).toEqual(SHARED_ROUND_PHASES);
+
+      // The round's board work does not end at the Player's combat stage: the Boss's
+      // board cycle is delivered after it, so the one supported board transition is
+      // placed at the end of that cycle and before the Boss's own steps.
+      expect(details.indexOf('damage player->boss')).toBeLessThan(
+        details.lastIndexOf('cascade depth=1')
+      );
+      expect(details.indexOf('settle')).toBeGreaterThan(details.lastIndexOf('cascade depth=1'));
+      expect(details.indexOf('settle')).toBeLessThan(details.indexOf('boss-skill flame-burst'));
+
+      // One timeline, played in the order it was built.
+      playToEnd(harness);
+      expect(playedPhases(ctx)).toEqual(SHARED_ROUND_PHASES);
+    });
+
+    it('applies the round’s committed board once, at the end of the round’s board cycle', async () => {
+      const { harness, ctx } = createBattle();
+
+      const preRound = expectedBoardLabels(0);
+      const exchanged = [...preRound];
+      [exchanged[20], exchanged[21]] = [exchanged[21], exchanged[20]];
+      const committed = expectedBoardLabels(1);
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), SHARED_ROUND);
+      settle();
+      await flush();
+
+      // Through the Player's board cycle and its damage step the displayed board is the
+      // one the Player acted on — the committed round board is not on screen yet
+      // (SIGNALR_PROTOCOL.md §3.1 item 2: no per-pass board is delivered, so exactly
+      // one transition exists, and it has not happened).
+      playUntil(harness, ctx, 3);
+      const duringPlayerPhase = boardLabels(harness).join('|');
+      expect([preRound.join('|'), exchanged.join('|')]).toContain(duringPlayerPhase);
+      expect(duringPlayerPhase).not.toBe(committed.join('|'));
+
+      // Exactly one board transition, and it lands after the Boss's board cycle.
+      const phases = timelinePhases(ctx).map((phase) => phase.detail);
+      expect(phases.filter((phase) => phase === 'settle')).toHaveLength(1);
+      expect(phases.indexOf('settle')).toBeGreaterThan(phases.lastIndexOf('cascade depth=1'));
+
+      // The round ends on the delivered committed board.
+      playToEnd(harness);
+      expect(boardLabels(harness)).toEqual(committed);
+    });
+
+    it('keeps the actor attribution the delivered members support and claims no other', async () => {
+      const { harness, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), SHARED_ROUND);
+      settle();
+      await flush();
+
+      const phases = timelinePhases(ctx);
+
+      // Every phase's attribution is the one adapter's answer for the event it presents
+      // (TASK-252's invariant), held again for a two-cycle round.
+      for (const phase of phases) {
+        if (phase.events.length === 0) {
+          continue;
+        }
+        const step = adaptPresentedEvent(phase.events[0]);
+        expect(step?.actor, `${phase.detail} actor`).toBe(phase.actor);
+        expect(step?.action, `${phase.detail} action`).toBe(phase.action);
+      }
+
+      const actorOf = (detail: string) =>
+        phases.find((phase) => phase.detail === detail)?.actor;
+
+      // The Boss's own delivered steps are the Boss's: its Skill cast and the
+      // retaliation its ATK-gated instance opens.
+      expect(actorOf('boss-skill flame-burst')).toBe('boss');
+      expect(actorOf('retaliation boss->player')).toBe('boss');
+      expect(actorOf('damage player->boss')).toBe('player');
+
+      // The round's board cycle names no side in any delivered member, so neither of
+      // its two cycles is attributed to one: both keep the adapter's side-free board
+      // actor. Claiming the Boss for its board cycle here would invent a party no
+      // delivered member names (AGENTS.md §10) — the contract decision that would make
+      // it attributable is reported, not assumed.
+      expect(actorOf('match depth=1')).toBe('swap');
+      expect(actorOf('cascade depth=1')).toBe('swap');
+      expect(actorOf('settle')).toBe('swap');
+
+      // The same is true of a delivered board-cycle event read on its own, including
+      // the Boss cycle's own Combo report.
+      expect(
+        adaptPresentedEvent({ type: 'ComboChanged', combo: 2 })?.actor
+      ).toBe('swap');
+      expect(
+        adaptPresentedEvent({ type: 'MatchCreated', shape: 'Straight', cells: [3, 4, 5], gemType: 'POWER', cascadeDepth: 1 })?.actor
+      ).toBe('swap');
+    });
+
+    it('never lets the Boss phase’s own Combo values reach the authoritative counters', async () => {
+      const { harness, scene, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), SHARED_ROUND);
+      settle();
+      await flush();
+
+      // The Boss's own board cycle really does report its own Combo run — the value
+      // TASK-261 §11 records — so the assertion below is not vacuous.
+      expect((scene as BattleScene).getPresentedEvents()).toContain('Combo: 2');
+
+      const samples: string[] = [];
+      let seen = 0;
+      const record = () => {
+        const played = playedPhases(ctx);
+        if (played.length === seen) {
+          return;
+        }
+        seen = played.length;
+        samples.push(comboReadout(ctx));
+      };
+
+      record();
+      for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+        harness.flushTweens(1);
+        record();
+      }
+
+      // GAME_STATE.md §2.2 / §4: `Combo` and `MatchCount` are the Player action's
+      // counters, rendered from the authoritative state and never folded from the
+      // delivered `ComboChanged` values — so the Boss cycle's own run never reaches
+      // them, at any point of the round.
+      expect(samples).not.toContain('COMBO ×2');
+      expect(readouts(harness, ctx).combo).toBe('COMBO ×3');
+      expect(readouts(harness, ctx).matches).toBe('MATCHES 12');
+    });
+
+    it('presents an accepted resolution once and never replays an older round', async () => {
+      const { harness, scene, ctx } = createBattle();
+
+      // Round 1, played to its end.
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), TASK_252_BATCH);
+      settle();
+      await flush();
+      playToEnd(harness);
+
+      const played = playedPhases(ctx);
+      const recorded = (scene as BattleScene).getPresentedEvents().length;
+
+      // A re-delivery of the resolution that just played: recorded, and presented no
+      // second time — its own timeline has ended, which is exactly the case the
+      // in-flight comparison alone cannot catch.
+      harness.emitBattleEvents({
+        battleId: 'battle-252',
+        serverSequence: 1,
+        events: TASK_252_BATCH,
+      });
+
+      expect(playedPhases(ctx)).toEqual(played);
+      expect(timelinePhases(ctx)).toEqual([]);
+      expect((scene as BattleScene).getPresentedEvents().length).toBeGreaterThan(recorded);
+
+      // An older resolution than one already accepted: presented no second time either
+      // (SIGNALR_PROTOCOL.md §3 item 2 — `serverSequence` is strictly increasing).
+      harness.emitBattleEvents({
+        battleId: 'battle-252',
+        serverSequence: 0,
+        events: [{ type: 'DamageDealt', source: 'boss', target: 'player', amount: 999 }],
+      });
+
+      expect(playedPhases(ctx)).toEqual(played);
+
+      // A resolution the scene has not accepted is presented: the guard is a
+      // duplicate/older rule, not a latch.
+      deliverResolution(harness, resolvedState({ sequence: 2 }), [
+        { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      ]);
+
+      expect(playedPhases(ctx).length).toBeGreaterThan(played.length);
+    });
+
+    it('converges on a recovery snapshot and does not replay the interrupted round', async () => {
+      const { harness, scene, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), SHARED_ROUND);
+      settle();
+      await flush();
+
+      // Mid-presentation: the Player's board cycle has played and the round is still
+      // being presented.
+      playUntil(harness, ctx, 2);
+      expect(timelinePhases(ctx).length).toBeGreaterThan(0);
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      // The client missed a resolution: the snapshot the server delivers on recovery
+      // is two sequences ahead (ADR-008 — recovery is a snapshot, not an event replay).
+      const recovered = battleState({
+        sequence: 3,
+        board: deliveredBoard(3),
+        playerState: { combo: 5, matchCount: 20 },
+      });
+      harness.setBattleState(recovered);
+
+      // The interrupted timeline is abandoned rather than left playing, the guard is
+      // released, and the board and the readouts are the recovered snapshot's.
+      expect(timelinePhases(ctx)).toEqual([]);
+      expect((ctx as { orchestration: string }).orchestration).toBe('idle');
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(boardLabels(harness)).toEqual(expectedBoardLabels(3));
+      expect(readouts(harness, ctx).combo).toBe('COMBO ×5');
+      expect(readouts(harness, ctx).matches).toBe('MATCHES 20');
+
+      // The abandoned round is not replayed afterwards: it is older than the
+      // resolution the snapshot proved the server had already committed. It is still
+      // recorded in the diagnostic log — that is the boundary TASK-209 §5 draws — but
+      // no phase of it plays again.
+      const played = playedPhases(ctx);
+      harness.emitBattleEvents({
+        battleId: 'battle-252',
+        serverSequence: 1,
+        events: SHARED_ROUND,
+      });
+
+      expect(playedPhases(ctx)).toEqual(played);
+      expect(timelinePhases(ctx)).toEqual([]);
+      expect(inputLocked(scene, ctx)).toBe(false);
+    });
+
+    it('locks input for the whole round and restores it when the presentation ends', async () => {
+      const { harness, scene, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+
+      // Submission through the round's first phase: locked.
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      deliverResolution(harness, resolvedState(), SHARED_ROUND);
+      settle();
+      await flush();
+
+      // The Player phase, its combat step, the Boss phase and the Boss's own steps are
+      // one committed round: input stays held across all of them (TASK-254 AF-5).
+      playUntil(harness, ctx, 3);
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      // A tap during the Boss phase selects nothing and submits nothing.
+      tapCell(harness, 30);
+      tapCell(harness, 31);
+      expect(harness.actionInvocations).toHaveLength(1);
+      expect((ctx as { selectedCell: number | null }).selectedCell).toBeNull();
+
+      playToEnd(harness);
+      expect(playedPhases(ctx)).toEqual(SHARED_ROUND_PHASES);
+      expect((ctx as { orchestration: string }).orchestration).toBe('idle');
+      expect(inputLocked(scene, ctx)).toBe(false);
+
+      // Interaction is restored: the next gesture is submitted.
+      tapCell(harness, 30);
+      tapCell(harness, 31);
+      await flush();
+      expect(harness.actionInvocations).toHaveLength(2);
+    });
+
+    it('stops presentation and gameplay input after a terminal round', async () => {
+      const { harness, scene, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(
+        harness,
+        resolvedState({ bossState: { bossId: 'boss-hoa-long', hp: 0, maxHp: 5000 } }),
+        KILLING_ROUND
+      );
+      settle();
+      await flush();
+      playToEnd(harness);
+
+      // The outcome is the timeline's last phase and the handoff happens once: nothing
+      // is presented after it, and the battle reaches `ResultScene` (GAME_EVENTS.md §1).
+      expect(playedPhases(ctx)).toEqual([
+        'swap 20->21',
+        'match depth=1',
+        'settle',
+        'damage player->boss',
+        'outcome victory',
+      ]);
+      expect(harness.sceneStarted.map((started) => started.key)).toEqual(['ResultScene']);
+      expect((ctx as { orchestration: string }).orchestration).toBe('terminated');
+      // `terminated` is deliberately not an input-locked state (the machine's own doc:
+      // the battle is over and the scene is on its way out), so the terminal latch —
+      // not the guard — is what refuses the request asserted below.
+      expect(inputLocked(scene, ctx)).toBe(false);
+
+      const played = playedPhases(ctx);
+      const invocations = harness.actionInvocations.length;
+
+      // A further delivered batch presents nothing at all, and a gesture submits
+      // nothing: the battle is over (GAME_RULES.md §1.4; the `terminated` state is not
+      // an input-locked state, so the terminal latch is what refuses the request).
+      harness.emitBattleEvents({
+        battleId: 'battle-252',
+        serverSequence: 2,
+        events: [{ type: 'DamageDealt', source: 'boss', target: 'player', amount: 999 }],
+      });
+      tapCell(harness, 30);
+      tapCell(harness, 31);
+      await flush();
+
+      expect(playedPhases(ctx)).toEqual(played);
+      expect(timelinePhases(ctx)).toEqual([]);
+      expect(harness.actionInvocations).toHaveLength(invocations);
+      expect(harness.sceneStarted.map((started) => started.key)).toEqual(['ResultScene']);
+    });
+
+    it('presents a defeat round’s board update before its combat stages and its outcome last', async () => {
+      const { harness, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(
+        harness,
+        resolvedState({ petState: { ...resolvedState().petState, hp: 0 } }),
+        DEFEAT_ROUND
+      );
+      settle();
+      await flush();
+
+      // The Boss's own board cycle is the round's last board work, so the board
+      // converges after it; the Boss's Skill step and its retaliation follow, and the
+      // delivered outcome is last.
+      expect(timelinePhases(ctx).map((phase) => phase.detail)).toEqual([
+        'swap 20->21',
+        'match depth=1',
+        'damage player->boss',
+        'match depth=1',
+        'settle',
+        'boss-skill drain-power',
+        'retaliation boss->player',
+        'outcome defeat',
+      ]);
+
+      playToEnd(harness);
+
+      expect(playedPhases(ctx)).toEqual([
+        'swap 20->21',
+        'match depth=1',
+        'damage player->boss',
+        'match depth=1',
+        'settle',
+        'boss-skill drain-power',
+        'retaliation boss->player',
+        'outcome defeat',
+      ]);
+      expect(harness.sceneStarted.map((started) => started.key)).toEqual(['ResultScene']);
+      expect(harness.sceneStarted[0].data).toMatchObject({ outcome: 'defeat' });
+    });
+
+    it('presents nothing for a name the discriminator set does not admit', async () => {
+      const { harness, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState(), [
+        { type: 'TurnStarted', turn: 1 },
+        { type: 'SwapStarted', actor: 'boss', fromCell: 3, toCell: 4 },
+        { type: 'SwapResolved' },
+        { type: 'BossPhaseChanged', phase: 'boss' },
+        { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+        { type: 'TurnEnded' },
+      ]);
+      settle();
+      await flush();
+
+      // `GAME_EVENTS.md` §1 defines names `SIGNALR_PROTOCOL.md` §3.2.2's closed set does
+      // not admit — a turn boundary, a swap boundary and a Boss phase boundary among
+      // them. None is a delivered event this protocol carries, so none presents a
+      // phase, claims a party, or advances the timeline: the delivered Match presents,
+      // and the rest are ignored. That is why the two board cycles are presented on
+      // their delivered order alone (the contract decision G-1 reports).
+      expect(timelinePhases(ctx).map((phase) => phase.detail)).toEqual([
+        'swap 20->21',
+        'match depth=1',
+        'settle',
+      ]);
+
+      playToEnd(harness);
+      expect(playedPhases(ctx)).toEqual(['swap 20->21', 'match depth=1', 'settle']);
+    });
+
+    it('keys the accepted-resolution memory to the battle, not the counter', async () => {
+      const { harness, ctx } = createBattle();
+
+      const settle = submitHeldSwap(harness, 20, 21);
+      deliverResolution(harness, resolvedState({ sequence: 5 }), TASK_252_BATCH);
+      settle();
+      await flush();
+      playToEnd(harness);
+
+      // A new battle starts its own `serverSequence` run: its first resolution is
+      // presented even though it is numerically below the previous battle's.
+      const next = battleState({ battleId: 'battle-262-next', sequence: 1, board: deliveredBoard(2) });
+      harness.setBattleState(next);
+      harness.emitBattleEvents({
+        battleId: 'battle-262-next',
+        serverSequence: 1,
+        events: [
+          { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+        ],
+      });
+
+      expect(timelinePhases(ctx).map((phase) => phase.detail)).not.toEqual([]);
+      playToEnd(harness);
+      expect(playedPhases(ctx)).toContain('match depth=1');
+    });
+  });
 });
 
 describe('BattleScene — CardCast and PetSkillCast input (SIGNALR_PROTOCOL.md §2, TASK-120)', () => {
