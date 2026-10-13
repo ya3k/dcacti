@@ -7,6 +7,7 @@ import type { GameRuntime } from '../runtime/GameRuntime';
 import type { GameRuntimeState } from '../../state/GameRuntimeState';
 import type {
   BattleEventsEnvelope,
+  BattleStateMetadata,
   RuntimeBattleState,
   RuntimeBoard,
   RuntimeCell,
@@ -15,6 +16,7 @@ import {
   RUNTIME_ACTION_SWAP,
   RUNTIME_ACTION_CARD_CAST,
   RUNTIME_ACTION_PET_SKILL_CAST,
+  RuntimeActionOutcomeUnknownError,
 } from '../runtime/GameRuntimeEvents';
 import type {
   CardResponse,
@@ -90,6 +92,7 @@ const BOARD_ORIGIN_Y = SAFE_AREA.y + 96;
  * ```text
  *   24 ┌───────────────────────────────────────────────────────────┐
  *      │ BOSS  Kim Lôi Vương     <connection>          YOUR TURN    │ ← boss band
+ *      │                    <sync, only while unsynchronized>       │
  *      │ [██████████░░░░░░░░]  2680 / 2800                         │
  *  104 │                    MATCH / COMBO ×4                       │ ← callout
  *  120 │ PET  Xich Lang   ┌───────────────┐                        │
@@ -147,6 +150,53 @@ const BOSS_HP_TEXT_Y = BOSS_BAR_Y;
 
 /** The connection line: centered in the boss band, clear of the Boss panel. */
 const CONNECTION_Y = HUD_TOP + 12;
+
+/**
+ * The synchronization indicator: the centered line directly beneath the
+ * connection line, on the boss band's second row.
+ *
+ * It is the player-facing half of `GameRuntimeState.sync` — the one technical
+ * value this scene renders besides the connection status, and the one
+ * `GameRuntimeState.ts` defines for it (`unsynchronized` / `awaiting_battle` /
+ * `synchronized`). It is deliberately **not** a battle fact: no turn, phase,
+ * status, HP, or board value reaches it, it is not interactive, and it never
+ * blocks the board or a cast control.
+ *
+ * **Why this position.** It shares the boss band's own row with nothing: the
+ * connection line sits at `CONNECTION_Y` centered, the interaction indicator is
+ * right-aligned on the safe-area inset, and the board starts at
+ * `BOARD_ORIGIN_Y`. A short centered line therefore reaches neither the Boss
+ * panel (x 36–286), the board, nor the safe area, and it is drawn with a
+ * centered origin so it grows symmetrically rather than towards a control.
+ *
+ * **What it says.** `unsynchronized` while connected is a client that is
+ * re-establishing its copy of the server's state — `SYNCHRONIZING…`, in the
+ * warning colour the scene uses for pending feedback. `unsynchronized` on a
+ * connection that is not up is stated as a state rather than as progress —
+ * `NOT SYNCHRONIZED` — because no recovery is in flight to promise. It is
+ * hidden for every other value, including `synchronized`, so the line can never
+ * claim the copy is restored before the runtime has actually published that.
+ */
+const SYNC_INDICATOR_Y = CONNECTION_Y + 16;
+const SYNC_INDICATOR_WIDTH = 260;
+const SYNC_RECOVERING_MESSAGE = 'SYNCHRONIZING…';
+const SYNC_UNSYNCHRONIZED_MESSAGE = 'NOT SYNCHRONIZED';
+const SYNC_RECOVERING_COLOR = '#fbbf24';
+const SYNC_UNSYNCHRONIZED_COLOR = '#f87171';
+
+/**
+ * What the board area states when the runtime publishes that the battle can no
+ * longer be recovered (`SIGNALR_PROTOCOL.md` §7.3, `BattleStateSource` of
+ * `'ended'`).
+ *
+ * It is a statement about **this client's** hold on the battle, not about the
+ * battle: the scene knows only that the authoritative snapshot could not be
+ * retrieved, so it says exactly that and presents no board, no HP, no outcome, and
+ * no fabricated victory or defeat. The documented result fallback is the runtime's
+ * own `GET /api/battle/{battleId}/result` read, which this boundary does not
+ * carry.
+ */
+const BATTLE_ENDED_MESSAGE = 'Battle no longer available';
 
 /**
  * The persistent interaction indicator, at the right-hand end of the boss band.
@@ -427,6 +477,55 @@ const SWAP_MARK_COLOR = 0xf87171;
 const SWAP_MARK_FILL_ALPHA = 0.2;
 
 /**
+ * The turn banner (TASK-275): one presentation-only `PLAYER TURN` / `BOSS TURN`
+ * marker, played as its own phase at each board cycle's own delivered boundary.
+ *
+ * ```text
+ * source          the `actor` member of a delivered `SwapStarted`
+ *                 (`SIGNALR_PROTOCOL.md` §3.2.26 item 2) — `"player"` or `"boss"`
+ * enter → hold → exit
+ *                 three beats: the label fades and scales in over
+ *                 `TURN_BANNER_ENTER_MS`, is held for `TURN_BANNER_HOLD_MS`, and
+ *                 fades out over `TURN_BANNER_EXIT_MS`
+ * ```
+ *
+ * **It is a display of a delivered member and nothing else.** The server sends no
+ * turn, phase, or ownership signal of its own: `TurnStarted`/`TurnEnded` are
+ * defined in `GAME_EVENTS.md` §2 but are **not** in the closed wire discriminator
+ * set and are never emitted (`SIGNALR_PROTOCOL.md` §3.2.2 item 2), so the banner
+ * never claims a turn number, never names a phase the batch did not deliver, and
+ * never adds a gameplay event or a sequence increment. It is drawn only where a
+ * delivered `SwapStarted` opens a board cycle, and only for the side that member
+ * names; a batch whose boundary names no recognized side (or delivers none at
+ * all) plays no banner (`AGENTS.md` §10).
+ *
+ * It is a transient overlay in the feedback layer — **not** a new HUD region and
+ * not a second notification system: it is created for its phase and destroyed
+ * with it, exactly like a Match highlight (TASK-218A's "no new HUD region, no
+ * second notification system" boundary is kept).
+ *
+ * The three beats are declared here, together, so a phase's total hold is derived
+ * from them by one expression (`phaseEffectMs`) rather than scattered through the
+ * event handlers (`TASK-275` §6.6: durations centralized, not scattered).
+ */
+const TURN_BANNER_ENTER_MS = 160;
+const TURN_BANNER_HOLD_MS = 320;
+const TURN_BANNER_EXIT_MS = 160;
+const TURN_BANNER_TOTAL_MS = TURN_BANNER_ENTER_MS + TURN_BANNER_HOLD_MS + TURN_BANNER_EXIT_MS;
+/** The scale the label enters from; it settles at 1 over `TURN_BANNER_ENTER_MS`. */
+const TURN_BANNER_ENTER_SCALE = 0.85;
+const TURN_BANNER_FONT_SIZE = '26px';
+/** The label each delivered side is presented with (display text, not a wire value). */
+const TURN_BANNER_TEXT: Readonly<Record<'player' | 'boss', string>> = Object.freeze({
+  player: 'PLAYER TURN',
+  boss: 'BOSS TURN',
+});
+const TURN_BANNER_COLOR: Readonly<Record<'player' | 'boss', string>> = Object.freeze({
+  player: '#38bdf8',
+  boss: CALLOUT_BOSS_COLOR,
+});
+
+/**
  * The beat each phase is held *after* the animation it triggered has finished.
  *
  * Without it a phase boundary would land exactly on the last frame of its own
@@ -503,11 +602,21 @@ interface HudGauge {
  * `content` is a presentation key of the delivered `gemType` + `specialGem`
  * currently rendered; it is compared only to decide whether a cell's content
  * changed, and is never read as a gameplay value.
+ *
+ * `cleared` records that a **delivered** clear has removed this cell's content
+ * during the timeline that is playing (TASK-275): the view is hidden and its
+ * `content` emptied, and the phase that converges the board re-labels it from
+ * the delivered cell — with the refill entrance — because a cleared view counts
+ * as a content change. It is a presentation flag only: it is written by the
+ * cells `MatchCreated.cells` / `GemMatched.cellIndex` name, never derived from a
+ * board difference or a match rule, and it holds no Gem identity (the wire
+ * carries none — `SIGNALR_PROTOCOL.md` §4.1).
  */
 interface GemView {
   readonly tile: Phaser.GameObjects.Rectangle;
   readonly label: Phaser.GameObjects.Text;
   content: string;
+  cleared: boolean;
 }
 
 /**
@@ -668,10 +777,22 @@ const ZERO_HOLD_PHASE_KINDS: readonly PresentationPhaseKind[] = Object.freeze(['
  * It answers "is what this cell renders the same as what the server now
  * delivers" and nothing else — no rule, matchup, or gameplay meaning is read
  * from either part.
+ *
+ * The **one** spelling of that key: `gemContentKey` projects a delivered board
+ * cell, and `gemContentKeyFor` projects the `gemType` + `specialGem` pair an
+ * event names. A delivered clear is compared against the same key, so "the cell
+ * this event confirms was cleared" and "the content this view renders" are
+ * stated in one vocabulary and can never drift apart.
  */
+function gemContentKeyFor(
+  gemType: string,
+  specialGem?: { readonly type: string; readonly orientation?: string }
+): string {
+  return `${gemType}|${specialGem?.type ?? ''}|${specialGem?.orientation ?? ''}`;
+}
+
 function gemContentKey(cell: RuntimeCell): string {
-  const special = cell.specialGem;
-  return `${cell.gemType}|${special?.type ?? ''}|${special?.orientation ?? ''}`;
+  return gemContentKeyFor(cell.gemType, cell.specialGem);
 }
 
 /**
@@ -766,11 +887,23 @@ export class BattleScene extends Phaser.Scene {
   private battleEventsUnsubscribe: (() => void) | null = null;
   /**
    * The player-facing connection line — a short statement of whether the battle
-   * is connected, reconnecting, or unavailable. It reports no transport detail
-   * (no hub name, no connection id, no sync flag): those are diagnostics and are
-   * deliberately not the player's HUD.
+   * is connected, reconnecting, or unavailable. It reports the connection only:
+   * no hub name, no connection id, no battle id, no sequence, and no RNG value.
+   * The runtime's synchronization status is a player-facing state of its own and
+   * has its own line (`syncText`, `SYNC_INDICATOR_*`), not a diagnostic flag on
+   * this one.
    */
   private connectionText: Phaser.GameObjects.Text | null = null;
+  /**
+   * The player-facing synchronization indicator (`SYNC_INDICATOR_*`), or `null`
+   * before the shell is drawn and after teardown.
+   *
+   * One line, derived from `GameRuntimeState.sync` alone (`renderSyncIndicator`):
+   * it is visible exactly while the runtime reports `unsynchronized`, and hidden
+   * for `synchronized` and `awaiting_battle`. It holds no battle value, takes no
+   * input, and is never on the board's own input path.
+   */
+  private syncText: Phaser.GameObjects.Text | null = null;
   /** The Boss's display name, resolved from the client catalog by `bossState.bossId`. */
   private bossNameText: Phaser.GameObjects.Text | null = null;
   /** Whether the Boss is currently in Enraged state according to authoritative HP and threshold. */
@@ -1034,6 +1167,42 @@ export class BattleScene extends Phaser.Scene {
    */
   private resolutionPending = false;
   /**
+   * The presentation generation: the token that bounds in-flight presentation
+   * work to the state it was started for.
+   *
+   * A recovery snapshot is authoritative and may arrive at any point of a
+   * resolution — mid-cascade, mid-combat, or while a phase's pacing tween is
+   * still holding. Everything the interrupted timeline had queued is cancelled
+   * (its pacing tween, its gem-view travels, its transient effects), and this
+   * counter is what makes the cancellation safe even for a callback that is
+   * already in flight: `advancePresentation`'s pacing callback captures the
+   * generation it was scheduled under and does nothing when it no longer
+   * matches, so a stale phase can neither advance an abandoned timeline nor
+   * release a newer action's lock.
+   *
+   * It is bumped by every path that replaces the state a timeline was presenting
+   * — a recovery convergence, `create()` and `shutdown()` — and by the rejection
+   * rollback, which restores the authoritative board. It is scene-local
+   * bookkeeping and holds no battle value.
+   */
+  private presentationGeneration = 0;
+  /**
+   * The submission serial: the token that bounds one action request's
+   * continuation to the submission it belongs to.
+   *
+   * An acknowledgement, a rejection, or a transport outcome can arrive after the
+   * scene has moved on — after a recovery converged the state, after the battle
+   * was replaced, or after the scene was torn down and re-created. The serial is
+   * incremented when a submission is opened and by every path that invalidates
+   * the outstanding ones (a recovery convergence, `create()`, `shutdown()`,
+   * `clearActiveBattleState`-driven state replacement), and a continuation whose
+   * serial — or whose battle id — no longer matches does nothing at all: it
+   * cannot write feedback, cannot clear a newer gesture's committed pair, and
+   * cannot release a lock that belongs to a different submission (`P0.3` §5,
+   * `SIGNALR_PROTOCOL.md` §3.1).
+   */
+  private submissionSerial = 0;
+  /**
    * The two §1.0 cells of the committed Swap this client has still to present,
    * or `null` when no committed Swap is outstanding.
    *
@@ -1185,6 +1354,7 @@ export class BattleScene extends Phaser.Scene {
     // already taken down. The shell this run draws replaces them.
     this.selectionRing = null;
     this.phaseText = null;
+    this.syncText = null;
     // A reused scene instance must start its next battle from the initial
     // presentation state: no timeline, no held values, no views carried over
     // (`shutdown` already dropped them; this is the same reset made explicit for
@@ -1208,6 +1378,13 @@ export class BattleScene extends Phaser.Scene {
     this.submissionOutstanding = false;
     this.resolutionPending = false;
     this.committedSwapCells = null;
+    // No continuation of a previous run may write into this one, and no
+    // presentation callback scheduled by that run may advance a phase here: both
+    // tokens are moved forward rather than reset, so an in-flight request or a
+    // pacing tween of the previous run can never match this run's values
+    // (`shutdown` does the same).
+    this.presentationGeneration += 1;
+    this.submissionSerial += 1;
     // No selection and no terminal statement survive into the next battle: both
     // belong to the battle that ended (`shutdown` drops them for the same reason).
     this.clearSelection();
@@ -1239,8 +1416,8 @@ export class BattleScene extends Phaser.Scene {
       this.runtimeUnsubscribe = this.runtime.onRuntimeEvent((event) => {
         this.renderRuntimeState(event.state);
       });
-      this.battleStateUnsubscribe = this.runtime.onBattleState((state) => {
-        this.renderBattleState(state);
+      this.battleStateUnsubscribe = this.runtime.onBattleState((state, metadata) => {
+        this.renderBattleState(state, metadata);
       });
       this.battleEventsUnsubscribe = this.runtime.onBattleEvents((envelope) => {
         this.handleBattleEvents(envelope);
@@ -1356,6 +1533,7 @@ export class BattleScene extends Phaser.Scene {
     this.battleEventsUnsubscribe?.();
     this.battleEventsUnsubscribe = null;
     this.connectionText = null;
+    this.syncText = null;
     this.bossNameText = null;
     this.bossEnraged = false;
     this.currentBattleId = null;
@@ -1415,6 +1593,12 @@ export class BattleScene extends Phaser.Scene {
     this.submissionOutstanding = false;
     this.resolutionPending = false;
     this.committedSwapCells = null;
+    // A continuation of the request this scene had in flight, and any pacing
+    // callback the timeline it was playing had queued, must not write into the
+    // scene that comes next: both tokens move forward, so neither can match
+    // (`create()` does the same).
+    this.presentationGeneration += 1;
+    this.submissionSerial += 1;
     this.presentedEventsLog.length = 0;
     this.presentedPhases.length = 0;
     this.presentationLogBattleId = null;
@@ -1524,6 +1708,23 @@ export class BattleScene extends Phaser.Scene {
         color: '#94a3b8',
       })
       .setOrigin(0.5);
+
+    // The synchronization indicator (`SYNC_INDICATOR_*`): the second centered
+    // line of the boss band, hidden until the runtime reports that it is
+    // unsynchronized. It is created hidden rather than conditionally, so its
+    // lifetime is the shell's and no push allocates an object — and it is a
+    // plain text line, so it is never an input target and can never intercept a
+    // board tap or cover a cast control.
+    this.syncText = this.add
+      .text(GAME_WIDTH / 2, SYNC_INDICATOR_Y, '', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '12px',
+        color: SYNC_RECOVERING_COLOR,
+        wordWrap: { width: SYNC_INDICATOR_WIDTH, useAdvancedWrap: true },
+        maxLines: 1,
+      })
+      .setOrigin(0.5)
+      .setVisible(false);
 
     // The interaction indicator: the client's own statement of what it permits
     // right now (`PHASE_TEXT_*`). It is the one line that answers "is it my
@@ -1897,13 +2098,17 @@ export class BattleScene extends Phaser.Scene {
   /**
    * Presents the runtime's connection status in player-facing terms.
    *
-   * This is the one line that reports infrastructure state, and it says only what
-   * a player needs: whether the battle is connected, still connecting,
+   * This is the one line that reports the transport connection, and it says only
+   * what a player needs: whether the battle is connected, still connecting,
    * reconnecting, or unavailable. It reports no transport detail — no SignalR
-   * label, no sync flag, no connection id — because that readout is developer
-   * console material and not the player's battle HUD (TASK-209 §5).
+   * label, no connection id, no battle id — because that readout is developer
+   * console material and not the player's battle HUD (TASK-209 §5). The
+   * runtime's synchronization status is presented by its own line
+   * (`renderSyncIndicator`), which is a state rather than a diagnostic.
    */
   private renderRuntimeState(state: GameRuntimeState | null): void {
+    this.renderSyncIndicator(state);
+
     if (!this.connectionText) {
       return;
     }
@@ -1917,6 +2122,59 @@ export class BattleScene extends Phaser.Scene {
     const { message, color } = describeConnection(state.connection);
     this.connectionText.setText(message);
     this.connectionText.setColor(color);
+  }
+
+  /**
+   * Presents `GameRuntimeState.sync` as the one non-blocking line that says
+   * whether the client's copy of the authoritative state is restored.
+   *
+   * ```text
+   * unsynchronized, connected       SYNCHRONIZING…      a recovery is in flight
+   *                                                     (reconnect, or a
+   *                                                     submission whose outcome
+   *                                                     was never answered)
+   * unsynchronized, not connected   NOT SYNCHRONIZED    a state, not a promise:
+   *                                                     no connection is up to
+   *                                                     recover over
+   * awaiting_battle, synchronized   hidden              `awaiting_battle` is
+   *                                                     "connected, no battle"
+   *                                                     and needs no line, and
+   *                                                     `synchronized` is the
+   *                                                     state the line is the
+   *                                                     absence of
+   * no runtime at all               hidden              the connection line
+   *                                                     already reports it
+   * ```
+   *
+   * It is driven by the runtime's published value and by nothing else: the scene
+   * neither predicts nor reports synchronization the runtime has not confirmed,
+   * and it derives no battle meaning from the value — `sync` is technical state
+   * (`state/GameRuntimeState.ts`), never a turn, phase, or gameplay status
+   * (`GAME_RULES.md` §18, `AGENTS.md` §10).
+   *
+   * The line is a plain, non-interactive text object: it never registers
+   * pointer input, it is not on the board's input path, and it sits in the boss
+   * band's own free row, clear of the board and of every cast control.
+   */
+  private renderSyncIndicator(state: GameRuntimeState | null): void {
+    const text = this.syncText;
+    if (!text) {
+      return;
+    }
+
+    if (state === null || state.sync !== 'unsynchronized') {
+      // Hidden rather than left showing the last statement, so the line cannot
+      // claim an outage the runtime no longer reports — and the delivered
+      // `synchronized` is what hides it, never the scene's own assumption.
+      text.setText('');
+      text.setVisible(false);
+      return;
+    }
+
+    const recovering = state.connection === 'connected';
+    text.setText(recovering ? SYNC_RECOVERING_MESSAGE : SYNC_UNSYNCHRONIZED_MESSAGE);
+    text.setColor(recovering ? SYNC_RECOVERING_COLOR : SYNC_UNSYNCHRONIZED_COLOR);
+    text.setVisible(true);
   }
 
   /**
@@ -1957,9 +2215,43 @@ export class BattleScene extends Phaser.Scene {
    *
    * Holding is *timing*, never computation: the values released are exactly the
    * delivered ones.
+   *
+   * **A recovery snapshot is never held (`P0.3` §4).** `metadata.source` is the
+   * runtime's own statement of where an authoritative state came from
+   * (`BattleStateMetadata`): `push` is the §4 delivery, `recovery` is the §7.1
+   * snapshot the runtime requested because it could no longer vouch for its copy.
+   * A recovery is applied **directly and immediately** — board, HUD, health,
+   * turn-owned readouts and Status Effects, with no animation and with no
+   * matching `ReceiveEvents` batch required, because a reconciliation snapshot is
+   * exactly the case in which the batch may never arrive (`ADR-008`: recovery is
+   * a snapshot, never an event replay). It also converges every in-flight
+   * presentation first (`invalidatePendingPresentation`), so no lock, pacing
+   * tween, transient effect, or submission continuation can survive it — an
+   * authoritative recovery always leaves the scene idle and rendered from the
+   * delivered values.
+   *
+   * An **equal-sequence** recovery takes the same path: the runtime accepts a
+   * snapshot level with the copy it holds as an idempotent re-application
+   * (`GameRuntime.receiveBattleState`), and the scene treats it as authoritative
+   * too — the board and readouts it writes are the delivered ones, so a recovery
+   * that confirms the state already presented costs no visible change, while one
+   * that arrives for a resolution still being presented ends that presentation
+   * rather than leaving it (or its lock) pending on a batch that may never come.
+   *
+   * Ordinary `push` updates keep the event-driven animation described above:
+   * their timeline is built from the batch and presented in the batch's own
+   * order, and only a superseding push aborts it.
    */
-  private renderBattleState(state: RuntimeBattleState | null): void {
+  private renderBattleState(
+    state: RuntimeBattleState | null,
+    metadata?: BattleStateMetadata
+  ): void {
     this.currentBattleState = state;
+
+    // The delivered battle identity this push replaces, read before it is
+    // overwritten: a change of battle — or the loss of one — is the boundary at
+    // which a request addressed to the old battle stops being this scene's.
+    const previousBattleId = this.presentationLogBattleId;
 
     // The delivered battle changed (or ended): the previous battle's developer
     // record is not this battle's, so both diagnostic buffers start empty.
@@ -1971,26 +2263,54 @@ export class BattleScene extends Phaser.Scene {
     // identity is what its rows belong to, and a different one clears it.
     this.developerMoveLog?.syncBattle(state?.battleId ?? null);
 
-    // A newer authoritative state supersedes playback: the timeline is dropped,
-    // its held values are converged, and the newer state is then presented
-    // immediately rather than being held for an older resolution's batch.
-    const superseded = this.isSupersededBy(state);
-    if (superseded) {
-      this.abortPresentation('superseded-state');
-    }
+    const recovery = metadata?.source === 'recovery';
+    const ended = metadata?.source === 'ended';
+    const battleGone =
+      state === null || (previousBattleId !== null && state.battleId !== previousBattleId);
+    let superseded = false;
 
-    // A resolution this client is still awaiting whose delivered state this is
-    // not: a recovery snapshot, a resync, a jump in the post-resolution counter,
-    // or another battle's state (`GAME_STATE.md` §5, `ADR-008`). The server has
-    // already moved past it, so nothing will ever present it — the guard is
-    // released and the delivered state is presented immediately, rather than
-    // leaving the client locked behind a resolution that can no longer arrive.
-    if (
-      this.resolutionPending &&
-      !this.isPresenting() &&
-      (state === null || !this.isExpectedResolutionState(state))
-    ) {
-      this.releasePendingResolution();
+    if (recovery) {
+      // The authoritative reconciliation: everything a timeline was holding or
+      // still playing is converged and released before the snapshot is
+      // presented, and the snapshot itself is then presented immediately.
+      this.invalidatePendingPresentation();
+
+      // The snapshot's own sequence is the newest resolution this scene has seen,
+      // so a later batch for a resolution it already contains is never replayed.
+      if (state !== null) {
+        this.seedAcceptedResolution(state);
+      }
+    } else {
+      // A newer authoritative state supersedes playback: the timeline is dropped,
+      // its held values are converged, and the newer state is then presented
+      // immediately rather than being held for an older resolution's batch.
+      superseded = this.isSupersededBy(state);
+      if (superseded) {
+        this.abortPresentation('superseded-state');
+      }
+
+      if (battleGone) {
+        // The battle a submission was addressed to is gone — replaced by another
+        // battle, or dropped (`clearActiveBattleState`) — so that submission can
+        // never become the active scene's, and the lock it held is released with
+        // it rather than waiting for an answer for a battle that is over
+        // (P0.3 §5).
+        this.invalidatePendingPresentation();
+      }
+
+      // A resolution this client is still awaiting whose delivered state this is
+      // not: a resync, a jump in the post-resolution counter, or another battle's
+      // state (`GAME_STATE.md` §5, `ADR-008`). The server has already moved past
+      // it, so nothing will ever present it — the guard is released and the
+      // delivered state is presented immediately, rather than leaving the client
+      // locked behind a resolution that can no longer arrive.
+      if (
+        this.resolutionPending &&
+        !this.isPresenting() &&
+        (state === null || !this.isExpectedResolutionState(state))
+      ) {
+        this.releasePendingResolution();
+      }
     }
 
     if (state === null) {
@@ -2001,7 +2321,16 @@ export class BattleScene extends Phaser.Scene {
       this.renderBossHud(null, false);
       this.renderPetHud(null, null, false);
       this.renderPlayerHud(null, false);
-      this.boardMessage = 'Preparing the board…';
+      // `metadata.source === 'ended'` is the runtime publishing §7.3's
+      // `BATTLE_NOT_FOUND`: the battle cannot be recovered, so the stale board and
+      // every lock it held have already been released above (`invalidatePendingPresentation`)
+      // and the board layer is emptied by `renderBoard(null)` below. The scene
+      // presents the loss and **fabricates no result**: the documented fallback is
+      // the runtime's own read of `GET /api/battle/{battleId}/result`
+      // (`API_CONTRACTS.md` §4, `SIGNALR_PROTOCOL.md` §7.3), which this boundary
+      // does not carry, so there is nothing here to navigate to and no outcome to
+      // invent. A battle that never delivered an outcome delivers none now.
+      this.boardMessage = ended ? BATTLE_ENDED_MESSAGE : 'Preparing the board…';
       this.boardMessageText?.setText(this.boardMessage);
       this.renderBoard(null);
       this.renderCastControls(null);
@@ -2009,7 +2338,7 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
-    const hold = !superseded && (this.shouldHoldResolution(state) || this.isPresenting());
+    const hold = !recovery && !superseded && (this.shouldHoldResolution(state) || this.isPresenting());
     this.heldSequence = hold ? state.sequence : null;
 
     // A push that presents a board replaces the board the player's gesture was
@@ -2156,6 +2485,163 @@ export class BattleScene extends Phaser.Scene {
 
     if (this.orchestration === 'submitted' && !this.submissionOutstanding) {
       this.transitionOrchestration('idle');
+    }
+  }
+
+  /**
+   * Accepts a resolution that cannot be presented and releases everything it
+   * engaged, so no lock survives a batch that will never build a timeline
+   * (`TASK-273` §4.3).
+   *
+   * It is the empty-phase counterpart of `invalidatePendingPresentation`: that
+   * lifecycle releases the locks a *superseded* presentation held, and this one
+   * releases the locks a presentation that was never built would have held. Both
+   * end with the same machine state — no pending resolution, no unanswered
+   * submission bookkeeping, and the readouts converged on the delivered state.
+   *
+   * ```text
+   * settle      the values a hold deferred are applied from the delivered state,
+   *             so the board and the timeline-owned readouts leave the mid-hold
+   *             values they would otherwise keep forever
+   * release     `resolutionPending` and `committedSwapCells` are dropped and the
+   *             machine's own transitions release input; the request fact, if one
+   *             is still unanswered, is kept — an acknowledgement that has not
+   *             arrived is still outstanding, and releasing it here would let a
+   *             second action be submitted against a board the answered resolution
+   *             has not presented
+   * re-derive   the transport feedback lines are re-derived from the released
+   *             state, so a submission that is no longer pending cannot still be
+   *             reported as one
+   * ```
+   *
+   * **Nothing is invented.** Every value applied is a delivered one; no HP,
+   * board, combo, or power is computed (`GAME_RULES.md` §18, `AGENTS.md` §10). The
+   * batch carries no terminal outcome in this path — a `BattleWon`/`BattleLost`
+   * always produces the timeline's `outcome` phase, so a batch that produced no
+   * phase produced no handoff either — and none is fabricated.
+   *
+   * **An older `expectedSequence` cannot be resubmitted.** Releasing the guard
+   * does not change the state version a later action is submitted with: the
+   * runtime reads `expectedSequence` from the state it holds, which this path
+   * leaves exactly as delivered.
+   */
+  private releaseUnpresentableResolution(): void {
+    this.settleHeldPresentation();
+    this.resolutionPending = false;
+    this.committedSwapCells = null;
+    this.onActionSettled();
+    this.renderSwapStatus();
+    this.renderCastStatus();
+  }
+
+  /**
+   * Invalidates everything the scene had in flight and releases every
+   * presentation lock — **exactly once**, and only through the lifecycle the
+   * scene already has (`P0.3` §4, §5).
+   *
+   * It is the one lifecycle for the two moments a presentation stops belonging to
+   * the scene's current state: an **authoritative recovery** converged the state
+   * a timeline was presenting (`metadata.source === 'recovery'`), and the
+   * **delivered battle is gone** — replaced by another battle's state, or dropped
+   * entirely.
+   *
+   * ```text
+   * 1. invalidate   the presentation generation and the submission serial move
+   *                 forward, so a pacing callback or a request continuation that
+   *                 is already in flight can no longer write — it belongs to the
+   *                 state this call replaced
+   * 2. cancel       the in-flight timeline is abandoned with everything it
+   *                 started: pacing, gem-view travels, transient highlights and
+   *                 floaters, and the callout it raised. With no timeline there is
+   *                 no pacing left to cancel — the generation above is what makes
+   *                 any callback already in flight a no-op — and what can still be
+   *                 live (a gem travel, a transient effect, a raised callout, a
+   *                 value a hold deferred) is released or converged here, without
+   *                 animation, on the state this scene already adopted
+   * 3. release      the resolution and the unanswered submission are settled
+   *                 through the machine's own transitions, so input is released
+   *                 and no lock survives the call, and the transport feedback lines
+   *                 are re-derived from the released state
+   * ```
+   *
+   * **Nothing is derived and nothing is invented.** Every value applied is a
+   * delivered one; no HP, board, combo, or power is computed, and a delivered
+   * state is never merged with a local prediction (`GAME_RULES.md` §18,
+   * `AGENTS.md` §10).
+   *
+   * **Idempotent.** Each step is a no-op when its subject is already absent: a
+   * second call finds no timeline, no held values, no outstanding lock, and no
+   * request continuation that is still current, so it re-renders the delivered
+   * state and changes nothing else. That is what lets a repeated reconciliation
+   * snapshot be applied without duplicating an abort, a convergence, or a lock
+   * release — and what stops the release from being scattered through the paths
+   * that only want its effect.
+   */
+  private invalidatePendingPresentation(): void {
+    // 1. Everything already queued belongs to the state this call replaced.
+    this.presentationGeneration += 1;
+    this.submissionSerial += 1;
+
+    // 2. Cancel the interrupted presentation — and, with no timeline, anything an
+    //    earlier abort left behind.
+    if (this.presentationTimeline !== null) {
+      // A newer authoritative state superseding playback is the abandonment the
+      // scene already has a name for. The abort cancels the pacing, the gem
+      // travels and the timeline's transient effects, converges the held values,
+      // and releases the timeline and its callout.
+      this.abortPresentation('superseded-state');
+    } else {
+      // No timeline is playing, so there is no pacing to cancel: the generation
+      // above is what makes any callback that is already in flight a no-op. What
+      // can still be live is a gem-view travel, a transient effect, a callout a
+      // timeline raised, and a value a hold deferred — each released or converged
+      // here.
+      this.killGemViewTweens();
+      this.cancelTimelineEffects();
+      this.cancelTimelineCallout();
+      this.timelineCalloutShown = false;
+      this.settleHeldPresentation();
+    }
+
+    // 3. Release every presentation lock. The resolution this client was awaiting
+    //    can no longer be presented — its batch may never arrive — and no request
+    //    is left outstanding: a continuation of one is invalidated above, so it
+    //    cannot re-lock the scene when it settles. The transport feedback lines are
+    //    re-derived from the released state, so a request that is no longer
+    //    outstanding cannot still be reported as one.
+    this.resolutionPending = false;
+    this.committedSwapCells = null;
+    this.onActionSettled();
+    this.renderSwapStatus();
+    this.renderCastStatus();
+  }
+
+  /**
+   * Adopts a recovered snapshot's `sequence` as the newest resolution this scene
+   * has accepted.
+   *
+   * A recovery is the runtime's reconciliation, not a delivery of events
+   * (`ADR-008`), so a later batch at or below the recovered sequence describes a
+   * resolution the snapshot already contains: it is recorded in the developer
+   * log and presented no second time — which is the scene's own guard
+   * (`acceptedResolutionSequence`) and not a second one. A batch past it is a
+   * genuinely newer resolution and plays normally.
+   *
+   * It advances a counter and compares two delivered numbers; it derives no
+   * gameplay value and decides nothing about the battle.
+   */
+  private seedAcceptedResolution(state: RuntimeBattleState): void {
+    if (this.acceptedResolutionBattleId !== state.battleId) {
+      this.acceptedResolutionBattleId = state.battleId;
+      this.acceptedResolutionSequence = state.sequence;
+      return;
+    }
+
+    if (
+      this.acceptedResolutionSequence === null ||
+      state.sequence > this.acceptedResolutionSequence
+    ) {
+      this.acceptedResolutionSequence = state.sequence;
     }
   }
 
@@ -2810,7 +3296,13 @@ export class BattleScene extends Phaser.Scene {
           continue;
         }
 
-        const changed = view.content !== gemContentKey(cell);
+        // A view a delivered clear emptied during this resolution counts as a
+        // content change whatever the delivered cell holds: the board this
+        // transition applies is the resolution's committed board, and every cell
+        // it reports is re-labelled from it — the cleared ones entering from
+        // above (`placeGemView`'s refill entrance). `cleared` is written only by
+        // `clearConfirmedCell`, from an event the contract delivered.
+        const changed = view.cleared || view.content !== gemContentKey(cell);
         if (changed) {
           this.drawGemContent(view, cell);
         }
@@ -2848,7 +3340,7 @@ export class BattleScene extends Phaser.Scene {
 
     this.boardLayer?.add([tile, label]);
 
-    const view: GemView = { tile, label, content: '' };
+    const view: GemView = { tile, label, content: '', cleared: false };
     this.drawGemContent(view, cell);
 
     return view;
@@ -2862,6 +3354,12 @@ export class BattleScene extends Phaser.Scene {
    * as an inert placeholder — the scene never substitutes a valid-looking Gem,
    * because that would fabricate authoritative board content
    * (`SIGNALR_PROTOCOL.md` §4 item 10).
+   *
+   * It also **restores** a view a delivered clear had emptied (TASK-275): the
+   * tiles a `cleared` flag hid are shown again, and the flag is dropped, so a
+   * cell's appearance is always the delivered cell's and a cleared cell can
+   * never stay empty after the board has been converged. The gem that arrives is
+   * `board.cells[index]` as delivered — the scene chooses nothing.
    */
   private drawGemContent(view: GemView, cell: RuntimeCell): void {
     const presentation = GEM_PRESENTATION[cell.gemType] ?? { color: 0x475569, label: '?' };
@@ -2875,6 +3373,9 @@ export class BattleScene extends Phaser.Scene {
     view.label.setFontSize(specialPresentation ? 11 : 14);
     view.label.setText(formatGemCellLabel(presentation.label, cell.specialGem));
 
+    view.tile.setVisible(true);
+    view.label.setVisible(true);
+    view.cleared = false;
     view.content = gemContentKey(cell);
   }
 
@@ -3111,11 +3612,33 @@ export class BattleScene extends Phaser.Scene {
    * The scene calls the runtime and nothing else: it does not touch
    * `SignalRService`, the hub, or the board (`ARCHITECTURE.md` §2.2 rule 3).
    *
-   * On `accepted: true` the scene changes **no** board, turn, or sequence value:
-   * the next authoritative `BattleStateUpdated` push re-renders the board
-   * (`SIGNALR_PROTOCOL.md` §3.1, §4). On `accepted: false` nothing is mutated
-   * locally and nothing is retried automatically — the machine-readable `reason`
-   * is shown as feedback only (`MATCH3_RULES.md` §2.1.5, §5 item 2).
+   * **The three outcomes are three different things (`P0.3` §5).**
+   *
+   * ```text
+   * accepted: true          the request was resolved; the scene changes no board,
+   *                         turn, or sequence value and the next authoritative
+   *                         push plus that resolution's batch present it
+   *                         (`SIGNALR_PROTOCOL.md` §3.1, §4)
+   * accepted: false         a definitive server rejection: a gameplay no-op that
+   *                         emits no events (`MATCH3_RULES.md` §2.1.5,
+   *                         `GAME_EVENTS.md` §1.2). Nothing is retried, the
+   *                         machine-readable reason is feedback only, and the
+   *                         board and every timeline-owned readout are rolled
+   *                         back onto the newest authoritative state the runtime
+   *                         holds (`SIGNALR_PROTOCOL.md` §5 item 2)
+   * RuntimeActionOutcomeUnknownError
+   *                         the request was submitted and never answered, so
+   *                         whether it committed is **unknown**. The scene
+   *                         assumes nothing: the swap's own pair stays the
+   *                         committed gesture and the resolution stays pending
+   *                         while the runtime re-establishes synchronization
+   *                         (§7), and the recovery snapshot is what converges
+   *                         the scene and releases the guard
+   * any other failure       the runtime refused the request before submitting it
+   *                         (no battle known, an unimplemented action, an answer
+   *                         for a battle that is no longer active): nothing was
+   *                         sent, so nothing is outstanding
+   * ```
    *
    * The two requested cells are kept as the committed Swap
    * (`committedSwapCells`). They are the player's own gesture, recorded so the
@@ -3124,7 +3647,15 @@ export class BattleScene extends Phaser.Scene {
    * acknowledgement settles, because the two travel on different paths
    * (`SIGNALR_PROTOCOL.md` §3.1). A rejection, which emits no events at all
    * (`GAME_EVENTS.md` §1.2), drops them here so no later resolution can present a
-   * swap movement the server refused.
+   * swap movement the server refused; an unconfirmed outcome keeps them, because
+   * that resolution may still arrive.
+   *
+   * **A continuation that no longer belongs to the active scene does nothing.**
+   * The answer can arrive after a recovery converged the state, after the battle
+   * was replaced, or after the scene was torn down, so every write below is
+   * gated on {@link isCurrentSubmission}: a stale answer cannot report feedback
+   * for the current battle, cannot clear a newer gesture's committed pair, and
+   * cannot release a lock another submission owns (`P0.3` §5).
    */
   private async submitSwap(fromCell: number, toCell: number): Promise<void> {
     if (!this.acceptsPlayerAction()) {
@@ -3136,6 +3667,7 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
+    const submission = this.beginSubmission();
     this.transitionOrchestration('submitted');
     // Two facts, not one (TASK-254 AF-5): the request is unanswered, and the
     // resolution it was accepted for has yet to be presented and reconciled. The
@@ -3161,6 +3693,10 @@ export class BattleScene extends Phaser.Scene {
         toCell,
       });
 
+      if (!this.isCurrentSubmission(submission)) {
+        return;
+      }
+
       this.renderSwapStatus(undefined, fromCell, toCell, acknowledgement);
 
       if (!acknowledgement.accepted) {
@@ -3171,21 +3707,89 @@ export class BattleScene extends Phaser.Scene {
         this.clearSelection();
         this.committedSwapCells = null;
         this.resolutionPending = false;
+        // The rollback: the board and every timeline-owned readout are restored
+        // to the authoritative state, so a refused gesture leaves nothing behind
+        // on screen.
+        this.rollbackToAuthoritativeState();
       }
     } catch (error) {
-      // A failed request is a transport/runtime failure — presentation state,
-      // not game state (`SIGNALR_PROTOCOL.md` §8.3). No board value changes and
-      // nothing is retried, and the request's own batch never arrives.
+      if (!this.isCurrentSubmission(submission)) {
+        return;
+      }
+
       this.clearSelection();
-      this.committedSwapCells = null;
-      this.resolutionPending = false;
-      this.renderSwapStatus(
-        `Swap not sent: ${error instanceof Error ? error.message : String(error)}`
-      );
+
+      if (error instanceof RuntimeActionOutcomeUnknownError) {
+        // Submitted, never answered: the swap may have committed, so nothing is
+        // rolled back and the guard is kept until the runtime's authoritative
+        // recovery converges the scene (`markActionOutcomeUnknown` already put
+        // the runtime in `unsynchronized`, which is what the synchronization
+        // indicator is presenting).
+        this.renderSwapStatus(
+          `Swap ${fromCell} -> ${toCell} unconfirmed: the server's answer was not ` +
+            'received; synchronizing with the server.',
+          undefined,
+          undefined,
+          undefined,
+          '#fbbf24'
+        );
+      } else {
+        // A failed request is a transport/runtime failure — presentation state,
+        // not game state (`SIGNALR_PROTOCOL.md` §8.3) — and it produced no
+        // acknowledgement because the runtime never submitted it. No board value
+        // changes, nothing is retried, and the request's own batch never arrives.
+        this.committedSwapCells = null;
+        this.resolutionPending = false;
+        this.renderSwapStatus(
+          `Swap not sent: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
     } finally {
-      this.onActionSettled();
-      this.renderPhaseIndicator();
+      // Another submission may have replaced this one — a newer gesture, or a
+      // recovery that already released the guard. A superseded continuation does
+      // not settle the current one.
+      if (this.isCurrentSubmission(submission)) {
+        this.onActionSettled();
+        this.renderPhaseIndicator();
+      }
     }
+  }
+
+  /**
+   * Opens one action submission and returns the token its continuation is bound
+   * to: the submission's serial, and the battle the request was addressed to.
+   *
+   * A newer submission, a recovery convergence, a new battle, or scene teardown
+   * moves one half of the pair, and {@link isCurrentSubmission} then answers
+   * `false` for the older one — so the older answer cannot write into the
+   * active scene (`P0.3` §5).
+   */
+  private beginSubmission(): { readonly serial: number; readonly battleId: string | null } {
+    this.submissionSerial += 1;
+
+    return {
+      serial: this.submissionSerial,
+      battleId: this.currentBattleState?.battleId ?? null,
+    };
+  }
+
+  /**
+   * Whether one submission's continuation is still the active scene's: its serial
+   * is the newest, and the battle it addressed is the one on screen.
+   *
+   * Both halves matter. The serial rules out an answer that a recovery, a newer
+   * gesture, or a scene run has already superseded; the battle id rules out an
+   * answer for a battle that is no longer active, which is the one cross-battle
+   * case the runtime's own guard cannot report as anything but a rejection.
+   */
+  private isCurrentSubmission(submission: {
+    readonly serial: number;
+    readonly battleId: string | null;
+  }): boolean {
+    return (
+      submission.serial === this.submissionSerial &&
+      (this.currentBattleState?.battleId ?? null) === submission.battleId
+    );
   }
 
   /**
@@ -3195,12 +3799,18 @@ export class BattleScene extends Phaser.Scene {
    * This is transport feedback (`SIGNALR_PROTOCOL.md` §2.1, §5) — not resolution
    * presentation. It reports no match, cascade, combo, damage, or boss value,
    * because the client computes none of those.
+   *
+   * A caller supplying `message` may also supply its colour: a failure the client
+   * knows about (the red default) and an outcome it does **not** know (the
+   * warning colour an unconfirmed submission uses) are different statements, and
+   * the line must not present them alike (`P0.3` §5).
    */
   private renderSwapStatus(
     message?: string,
     fromCell?: number,
     toCell?: number,
-    acknowledgement?: { readonly accepted: boolean; readonly reason?: string | null }
+    acknowledgement?: { readonly accepted: boolean; readonly reason?: string | null },
+    messageColor = '#f87171'
   ): void {
     if (!this.swapText) {
       return;
@@ -3208,7 +3818,7 @@ export class BattleScene extends Phaser.Scene {
 
     if (message !== undefined) {
       this.swapText.setText(message);
-      this.swapText.setColor('#f87171');
+      this.swapText.setColor(messageColor);
       return;
     }
 
@@ -3260,6 +3870,7 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
+    const submission = this.beginSubmission();
     this.transitionOrchestration('submitted');
     this.submissionOutstanding = true;
     this.resolutionPending = true;
@@ -3276,27 +3887,60 @@ export class BattleScene extends Phaser.Scene {
         cardId,
       });
 
+      if (!this.isCurrentSubmission(submission)) {
+        return;
+      }
+
       if (!acknowledgement.accepted) {
         // A rejected cast is a gameplay no-op that emits no events
         // (`GAME_EVENTS.md` §1.2, `SIGNALR_PROTOCOL.md` §2): no resolution is
-        // coming, so the guard is not held waiting for one (TASK-254 AF-5).
+        // coming, so the guard is not held waiting for one (TASK-254 AF-5), and
+        // the board and every timeline-owned readout are rolled back onto the
+        // authoritative state (P0.3 §5).
         this.resolutionPending = false;
+        this.rollbackToAuthoritativeState();
       }
 
       this.renderCastStatus(undefined, cardId, false, acknowledgement);
     } catch (error) {
-      this.resolutionPending = false;
-      this.renderCastStatus(
-        `CardCast ${cardId} not sent: ${error instanceof Error ? error.message : String(error)}`
-      );
+      if (!this.isCurrentSubmission(submission)) {
+        return;
+      }
+
+      if (error instanceof RuntimeActionOutcomeUnknownError) {
+        // Submitted, never answered: the cast may have committed, so nothing is
+        // rolled back and the resolution stays pending until the runtime's
+        // authoritative recovery converges the scene.
+        this.renderCastStatus(
+          `CardCast ${cardId} unconfirmed: the server's answer was not received; ` +
+            'synchronizing with the server.',
+          cardId,
+          false,
+          undefined,
+          '#fbbf24'
+        );
+      } else {
+        this.resolutionPending = false;
+        this.renderCastStatus(
+          `CardCast ${cardId} not sent: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
     } finally {
-      this.onActionSettled();
-      this.renderPhaseIndicator();
+      if (this.isCurrentSubmission(submission)) {
+        this.onActionSettled();
+        this.renderPhaseIndicator();
+      }
     }
   }
 
   /**
    * Submits one PetSkillCast request through the runtime port and presents the result.
+   *
+   * Its three outcomes are the Swap's (`submitSwap`): an accepted cast awaits the
+   * authoritative push, a rejected one is a definitive no-op that converges the
+   * board on the authoritative state, and an **unanswered** one is neither — the
+   * cast may have committed, so the resolution stays pending and the runtime's
+   * recovery is what settles the scene (P0.3 §5).
    */
   private async submitPetSkillCast(): Promise<void> {
     if (!this.acceptsPlayerAction()) {
@@ -3308,6 +3952,7 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
+    const submission = this.beginSubmission();
     this.transitionOrchestration('submitted');
     this.submissionOutstanding = true;
     this.resolutionPending = true;
@@ -3321,32 +3966,60 @@ export class BattleScene extends Phaser.Scene {
         kind: RUNTIME_ACTION_PET_SKILL_CAST,
       });
 
+      if (!this.isCurrentSubmission(submission)) {
+        return;
+      }
+
       if (!acknowledgement.accepted) {
         // As for a CardCast: a rejection resolves nothing and emits nothing.
         this.resolutionPending = false;
+        this.rollbackToAuthoritativeState();
       }
 
       this.renderCastStatus(undefined, undefined, true, acknowledgement);
     } catch (error) {
-      this.resolutionPending = false;
-      this.renderCastStatus(
-        `PetSkillCast not sent: ${error instanceof Error ? error.message : String(error)}`
-      );
+      if (!this.isCurrentSubmission(submission)) {
+        return;
+      }
+
+      if (error instanceof RuntimeActionOutcomeUnknownError) {
+        this.renderCastStatus(
+          'PetSkillCast unconfirmed: the server\'s answer was not received; ' +
+            'synchronizing with the server.',
+          undefined,
+          true,
+          undefined,
+          '#fbbf24'
+        );
+      } else {
+        this.resolutionPending = false;
+        this.renderCastStatus(
+          `PetSkillCast not sent: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
     } finally {
-      this.onActionSettled();
-      this.renderPhaseIndicator();
+      if (this.isCurrentSubmission(submission)) {
+        this.onActionSettled();
+        this.renderPhaseIndicator();
+      }
     }
   }
 
   /**
    * Presents cast interaction transport feedback: in flight, accepted, or rejected
    * with server machine-readable reason (SIGNALR_PROTOCOL.md §2, §5).
+   *
+   * `messageColor` overrides the message caption's colour for a caller that has
+   * something other than a failure to report — the unconfirmed-submission line
+   * uses the warning colour, because an outcome the client does not know is not
+   * the same statement as one it does (`P0.3` §5).
    */
   private renderCastStatus(
     message?: string,
     cardId?: string,
     isSkill?: boolean,
-    acknowledgement?: { readonly accepted: boolean; readonly reason?: string | null }
+    acknowledgement?: { readonly accepted: boolean; readonly reason?: string | null },
+    messageColor?: string
   ): void {
     if (!this.castText) {
       return;
@@ -3354,7 +4027,9 @@ export class BattleScene extends Phaser.Scene {
 
     if (message !== undefined) {
       this.castText.setText(message);
-      this.castText.setColor(message.includes('in flight') ? '#94a3b8' : '#f87171');
+      this.castText.setColor(
+        messageColor ?? (message.includes('in flight') ? '#94a3b8' : '#f87171')
+      );
       return;
     }
 
@@ -3405,9 +4080,44 @@ export class BattleScene extends Phaser.Scene {
    * read the persisted reward summary (API_CONTRACTS.md §4). The outcome members
    * themselves are unchanged; the id is transport metadata the envelope already
    * carries, not a gameplay value.
+   *
+   * **Defense in depth: a batch is admitted before anything is built.** The
+   * runtime already withholds a batch it cannot place against its synchronized
+   * state (its delivery-integrity check), and this is the scene's own half of the
+   * same invariant — a resolution may only be animated against the authoritative
+   * state that represents it. A batch the held state contradicts — a foreign
+   * battle's, or one ahead of (or behind) the delivered `sequence` — is refused
+   * whole: no timeline, no callout, no outcome handoff, no accepted resolution,
+   * no settled-board stamp (`admitsBatch`).
    */
   private handleBattleEvents(envelope: BattleEventsEnvelope): void {
     if (this.outcomeHandled) {
+      return;
+    }
+
+    if (!this.admitsBatch(envelope)) {
+      // A batch the held authoritative state does not represent is refused whole
+      // (`admitsBatch`). Nothing is built and nothing is booked:
+      //
+      //   no timeline          no resolution is animated over a board that does
+      //                        not represent it
+      //   no callout           no combat feedback and no Boss Enrage line is
+      //                        raised for a resolution the scene cannot place
+      //   no outcome handoff   `pendingOutcomeHandoff` is not written, so an
+      //                        unrepresentable batch can never end the battle on
+      //                        screen or hand `ResultScene` an outcome it did not
+      //                        produce
+      //   no accepted sequence `acceptedResolutionSequence` is not advanced
+      //   no settled stamp     `settledBoardSequence` is not written
+      //   no state rendered    the held state is not re-rendered from it
+      //
+      // It is not a release path either: a refused batch means the client is
+      // desynchronized, and the runtime — which owns recovery orchestration — has
+      // already marked `sync` unsynchronized and requested the §7.1 snapshot for
+      // that gap (`SIGNALR_PROTOCOL.md` §6 item 3). The scene's locks are
+      // released when that authoritative state arrives (`renderBattleState`), not
+      // by inventing a local answer here. The scene never calls the transport or
+      // asks for a snapshot of its own (`ARCHITECTURE.md` §2.2.1 rule 1).
       return;
     }
 
@@ -3425,6 +4135,66 @@ export class BattleScene extends Phaser.Scene {
       // (`SIGNALR_PROTOCOL.md` §8.3, `AGENTS.md` §10).
       this.abortPresentation('malformed-batch');
     }
+  }
+
+  /**
+   * Whether one delivered batch may be presented at all — the scene's admission
+   * gate before any timeline, callout or handoff is built (`TASK-273` §4.2).
+   *
+   * ```text
+   * batch's battle ≠ the held battle   → refuse  cross-battle contamination
+   * batch is ahead of the held state   → refuse  the state for that resolution
+   *                                               never arrived
+   * batch is at the held state         → admit   the documented push-then-batch
+   *                                               delivery (SIGNALR_PROTOCOL.md
+   *                                               §3.1, §6 item 4)
+   * batch is behind the held state     → refuse  the held state already contains
+   *                                               that resolution's result
+   *                                               (GAME_STATE.md §5.1 item 3)
+   * no authoritative state held        → refuse  no state to represent resolution
+   *                                               (TASK-274 Review A)
+   * ```
+   *
+   * **It compares two delivered versions and nothing else.** The held state is
+   * the one the runtime pushed through the port; `sequence` is the
+   * post-resolution counter (`GAME_STATE.md` §5), so `held.sequence` names exactly
+   * the resolution the state represents. No gameplay value, board cell, HP,
+   * combo, or event payload is read, and no rule is evaluated: the answer is
+   * "does the authoritative state on screen represent this batch's resolution",
+   * which is the only question a presentation may depend on
+   * (`GAME_RULES.md` §18, `AGENTS.md` §10).
+   *
+   * **A batch behind the held state is refused rather than replayed.** The
+   * delivered state at `sequence = n` is the complete result of the n-th
+   * resolution (§5.1 item 3), so a batch for an earlier resolution describes a
+   * resolution the state already contains — the snapshot-over-replay rule
+   * (`ADR-008`) and the reason a recovery may never be followed by the animation
+   * of the resolutions it superseded.
+   *
+   * **With no state held at all the batch is refused.** Under the documented
+   * delivery order, the state push precedes any batch for that battle (§6 item 4),
+   * and the runtime's own delivery-integrity check drops a batch for a battle it
+   * does not hold (`ARCHITECTURE.md` §2.2.1 rules 1 and 4). The scene refuses an
+   * unversioned batch when it holds no authoritative state, ensuring that unheld
+   * batches cannot reach presentation (TASK-274 Review A).
+   *
+   * The second, independent memory (`acceptedResolutionSequence`) still governs
+   * the repeat case inside an admitted batch: this gate answers "may this batch be
+   * presented at all", and `playEventBatch` answers "has this exact resolution
+   * already been presented".
+   */
+  private admitsBatch(envelope: BattleEventsEnvelope): boolean {
+    const held = this.currentBattleState;
+
+    if (held === null) {
+      return false;
+    }
+
+    if (held.battleId !== envelope.battleId) {
+      return false;
+    }
+
+    return envelope.serverSequence === held.sequence;
   }
 
   /**
@@ -3511,8 +4281,6 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
-    this.acceptedResolutionSequence = envelope.serverSequence;
-
     // A batch that arrives while an earlier one is still playing. The server's
     // own sequencing (`serverSequence` is the post-resolution counter,
     // `GAME_STATE.md` §5) makes the newer resolution the one that matters, and the
@@ -3538,9 +4306,26 @@ export class BattleScene extends Phaser.Scene {
     }
 
     const phases = this.buildPresentationPhases(presented);
+
+    // **Presentability is decided before the resolution is committed.** The
+    // batch has been recorded and it is strictly newer than the newest accepted
+    // one, but whether it can be *presented* is a separate question — and a batch
+    // that produces no phase must not leave the scene waiting for a timeline that
+    // will never exist (`TASK-273` §4.3).
     if (phases.length === 0) {
+      // An empty or unrecognized phase set is accepted and deliberately
+      // superseded: the delivered state already represents this resolution, so
+      // the resolution is marked accepted — a re-delivery presents nothing a
+      // second time — and **every lock the batch engaged is released**, because
+      // nothing will ever come to release them. The held readouts are converged
+      // on the authoritative state first, so the board on screen is the delivered
+      // one rather than a mid-resolution one this batch could never finish.
+      this.acceptedResolutionSequence = envelope.serverSequence;
+      this.releaseUnpresentableResolution();
       return;
     }
+
+    this.acceptedResolutionSequence = envelope.serverSequence;
 
     this.presentationTimeline = phases;
     this.presentationStep = 0;
@@ -3674,6 +4459,13 @@ export class BattleScene extends Phaser.Scene {
     // at all.
     let boardActionActor: 'player' | 'boss' | null = null;
 
+    // The side the newest presented turn banner named, or `null` when this batch
+    // has played none. It exists so the banner marks a **boundary** rather than a
+    // repeated label: one banner per delivered board cycle, and only when the
+    // boundary opens a cycle for a side the previous banner did not already mark
+    // (`TASK-275` §6.6).
+    let bannerSide: 'player' | 'boss' | null = null;
+
     for (const event of presented) {
       boardActionActor = deliveredSwapOf(event)?.actor ?? boardActionActor;
 
@@ -3684,6 +4476,34 @@ export class BattleScene extends Phaser.Scene {
         // `presentedEventsLog`, and whatever a player needs told about it is the
         // batch's single callout. It therefore opens and extends no phase.
         continue;
+      }
+
+      // A delivered board-action boundary opens the cycle's turn banner before
+      // the exchange it introduces (TASK-275 §6.6). The banner is a
+      // **presentation-only marker of a delivered member**: the side comes from
+      // the `SwapStarted`'s own `actor` (`SIGNALR_PROTOCOL.md` §3.2.26 item 2),
+      // never from a client-held turn, the batch's position, or a board
+      // difference — and a boundary whose `actor` is outside the contract's two
+      // values plays no banner at all, because it names no side
+      // (`AGENTS.md` §10). It adds no gameplay event, no sequence increment, and
+      // no server phase; `TurnStarted`/`TurnEnded` exist in `GAME_EVENTS.md` §2
+      // but are outside the closed wire discriminator set and are never emitted
+      // (`SIGNALR_PROTOCOL.md` §3.2.2 item 2), so nothing here claims a turn.
+      if (step.kind === 'swap') {
+        const side = step.actor === 'player' || step.actor === 'boss' ? step.actor : null;
+
+        if (side !== null && side !== bannerSide) {
+          flush();
+          bannerSide = side;
+          phases.push({
+            kind: 'banner',
+            actor: side,
+            action: 'turn-banner',
+            detail: side === 'player' ? 'banner PLAYER TURN' : 'banner BOSS TURN',
+            holdMs: BattleScene.phaseHoldMs('banner', []),
+            events: [],
+          });
+        }
       }
 
       // A CascadeCreated always opens its own phase: it *is* the pass boundary,
@@ -3745,6 +4565,10 @@ export class BattleScene extends Phaser.Scene {
         kind: 'swap',
         // The side-free board actor: this step is the client's own submitted pair,
         // and no delivered member of this batch names the side that exchanged it.
+        // **No turn banner is played for it** (TASK-275): the banner's whole
+        // content is the delivered `SwapStarted.actor`, and a fallback step has no
+        // delivered actor to show — presenting `PLAYER TURN` here would state a
+        // side the batch did not name.
         actor: 'swap',
         action: 'swap',
         detail: `swap ${swapCells.from}->${swapCells.to}`,
@@ -3862,6 +4686,11 @@ export class BattleScene extends Phaser.Scene {
     events: readonly InBattleServerEvent[]
   ): number {
     switch (kind) {
+      case 'banner':
+        // The banner's own three beats: its enter and exit tweens run inside its
+        // hold, so the next phase cannot begin over a banner still on screen
+        // (TASK-275 §6.6).
+        return TURN_BANNER_TOTAL_MS;
       case 'swap':
         return SWAP_TWEEN_MS;
       case 'settle':
@@ -3998,13 +4827,21 @@ export class BattleScene extends Phaser.Scene {
 
       if (phase.holdMs > 0 && this.tweens) {
         // The pacing runs on the phase clock, so an aborted timeline can cancel
-        // exactly its own pacing without disturbing any feedback animation.
+        // exactly its own pacing without disturbing any feedback animation. The
+        // generation it was scheduled under is captured with it: a completion
+        // that lands after the timeline was abandoned by an authoritative
+        // recovery does nothing, so no stale callback can advance an abandoned
+        // timeline or unlock a newer action (`P0.3` §4).
+        const generation = this.presentationGeneration;
         this.phaseClock.progress = 0;
         this.tweens.add({
           targets: this.phaseClock,
           progress: 1,
           duration: phase.holdMs,
           onComplete: () => {
+            if (generation !== this.presentationGeneration) {
+              return;
+            }
             this.advancePresentation();
           },
         });
@@ -4045,6 +4882,9 @@ export class BattleScene extends Phaser.Scene {
     }
 
     switch (phase.kind) {
+      case 'banner':
+        this.playTurnBanner(phase.actor);
+        break;
       case 'swap':
         this.playSwapPhase(phase);
         break;
@@ -4085,6 +4925,15 @@ export class BattleScene extends Phaser.Scene {
 
     if (phase.events.length > 0) {
       this.presentCombatFeedback(phase.events);
+    }
+
+    // The match/cascade step's own destruction, **after** its highlight: the
+    // cells this pass's delivered events confirm were cleared lose their content
+    // here (TASK-275 §6.2). It is the same step's events and nothing else, so a
+    // phase with no Match/Gem event removes nothing, and a duplicate batch never
+    // re-runs it (`acceptedResolutionSequence`).
+    if (phase.kind === 'match' || phase.kind === 'cascade') {
+      this.presentMatchDestruction(phase.events);
     }
   }
 
@@ -4524,6 +5373,27 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
+   * Restores the rendered board and every timeline-owned readout to the newest
+   * authoritative state the runtime holds, without animation — the rollback half
+   * of a **definitive** server rejection (`P0.3` §5,
+   * `SIGNALR_PROTOCOL.md` §5 item 2).
+   *
+   * A rejection is the server's own answer that the action was a gameplay no-op
+   * and emitted no events (`GAME_EVENTS.md` §1.2), so nothing of the refused
+   * gesture may remain presented. The rollback converges on
+   * `currentBattleState` — **the state the runtime currently holds**, never a
+   * snapshot captured when the request was submitted — so a state that arrived
+   * while the request was in flight is never overwritten by an older rendering,
+   * and a rollback is never applied from an obsolete snapshot.
+   *
+   * It writes delivered values only, and it is idempotent: with nothing held and
+   * the board already converged, it re-renders the same delivered state.
+   */
+  private rollbackToAuthoritativeState(): void {
+    this.settleHeldPresentation();
+  }
+
+  /**
    * Hands the resolution's terminal outcome to `ResultScene`, once.
    *
    * The handoff is the timeline's last phase and is also performed by every path
@@ -4559,6 +5429,185 @@ export class BattleScene extends Phaser.Scene {
     this.terminalStatement = resolveOutcomeStatement(outcome.outcome);
     this.renderPhaseIndicator();
     this.scene.start('ResultScene', outcome);
+  }
+
+  /**
+   * Plays the turn banner for the side a delivered board-action boundary named
+   * (`TASK-275` §6.6).
+   *
+   * ```text
+   * enter   the label appears: alpha 1 and scale settling to 1 over
+   *         TURN_BANNER_ENTER_MS
+   * hold    TURN_BANNER_HOLD_MS, while the phase's own hold runs
+   * exit    alpha to 0 over TURN_BANNER_EXIT_MS, then the object destroys itself
+   * ```
+   *
+   * **Everything it shows is a delivered member**: `actor` came from the
+   * `SwapStarted` that opened the cycle, and the label is the display text for
+   * that one value (`TURN_BANNER_TEXT`). No turn number, no phase name, no status
+   * word, and no server event is claimed — `SIGNALR_PROTOCOL.md` §3.2.2 item 2
+   * admits no turn or phase discriminator, so the banner states only which side's
+   * board cycle the delivered batch has reached.
+   *
+   * It is a transient overlay created for its phase, registered as a
+   * timeline-owned effect so an abort or a teardown destroys it with the
+   * resolution that started it, and destroyed by its own exit tween on a
+   * completed timeline. It is **not** a HUD region and **not** a second
+   * notification system: one text object, one phase, no queue (TASK-218A's
+   * boundary; §6.6's "do not use banners to hide missing animation phases" — the
+   * banner presents a delivered boundary and stands in for nothing).
+   *
+   * Without a tween manager (a unit harness) the label is created and left
+   * visible, which is what makes the phase observable without a running clock —
+   * exactly as a floater behaves.
+   */
+  private playTurnBanner(actor: PresentationActor | null): void {
+    if (actor !== 'player' && actor !== 'boss') {
+      // No side: no banner. A banner for a boundary that named none would state
+      // whose turn it is from nothing (`AGENTS.md` §10).
+      return;
+    }
+
+    if (!this.feedbackLayer) {
+      return;
+    }
+
+    // The board's centre: the middle two cells' midpoint, derived from the same
+    // cell geometry every other board effect uses. It is a display position and
+    // nothing else.
+    const upper = BattleScene.cellCoordinates(27);
+    const lower = BattleScene.cellCoordinates(28);
+    const x = (upper.x + lower.x) / 2;
+    const y = (upper.y + lower.y) / 2;
+
+    const label = this.add
+      .text(x, y, TURN_BANNER_TEXT[actor], {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: TURN_BANNER_FONT_SIZE,
+        color: TURN_BANNER_COLOR[actor],
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5);
+    this.feedbackLayer.add(label);
+    this.timelineEffects.push(label);
+
+    if (!this.tweens) {
+      return;
+    }
+
+    label.setAlpha(1);
+    label.setScale(TURN_BANNER_ENTER_SCALE);
+
+    // The enter beat, on its own property so it cannot fight the exit beat's
+    // `alpha` on the same target.
+    this.tweens.add({
+      targets: label,
+      scale: 1,
+      duration: TURN_BANNER_ENTER_MS,
+    });
+
+    // The hold and the exit beat. `delay` is the hold, so the three beats are one
+    // schedule derived from the three constants — the label is gone by
+    // `TURN_BANNER_TOTAL_MS`, which is exactly the phase's hold, so the next
+    // phase can never begin over a banner still on screen.
+    this.tweens.add({
+      targets: label,
+      alpha: 0,
+      delay: TURN_BANNER_ENTER_MS + TURN_BANNER_HOLD_MS,
+      duration: TURN_BANNER_EXIT_MS,
+      onComplete: () => {
+        label.destroy();
+      },
+    });
+  }
+
+  /**
+   * Removes the content of the cells one match/cascade step's delivered events
+   * confirm were cleared (`TASK-275` §6.2).
+   *
+   * ```text
+   * MatchCreated   its `cells`, each confirmed by the event's own `gemType`
+   * GemMatched     its `cellIndex`, confirmed by the event's own `gemType` and,
+   *                when the contract carries one, the Special Gem consumed there
+   * ```
+   *
+   * Both are the **pre-removal** facts the contract defines
+   * (`SIGNALR_PROTOCOL.md` §3.2.6, §3.2.9 item 3): the cell and the Gem type it
+   * held. Nothing else is read, no board difference is diffed, and no match is
+   * detected. Every other event type removes nothing.
+   */
+  private presentMatchDestruction(events: readonly InBattleServerEvent[]): void {
+    for (const event of events) {
+      if (event.type === 'MatchCreated') {
+        for (const cellIndex of event.cells) {
+          // The Match's `cells` are the shape's cells and share its Gem type
+          // (§3.2.6 item 5), so the type is the whole confirmation available
+          // here.
+          this.clearConfirmedCell(cellIndex, event.gemType, null, true);
+        }
+        continue;
+      }
+
+      if (event.type === 'GemMatched') {
+        this.clearConfirmedCell(event.cellIndex, event.gemType, event.specialGem ?? null, false);
+      }
+    }
+  }
+
+  /**
+   * Empties one board cell's view **only when the cell's rendered content is the
+   * content the delivered event confirms** (`TASK-275` §6.2).
+   *
+   * ```text
+   * view missing, or already empty   → nothing (idempotent: a replayed event and
+   *                                    the second event naming one cell both no-op)
+   * rendered content ≠ delivered     → nothing (the scene will not remove a Gem
+   *                                    the server did not confirm at that cell)
+   * rendered content = delivered     → hide the tile and label, drop the content
+   * ```
+   *
+   * **The gate is what keeps the destruction honest under the delivered
+   * contract.** Pass 1 of a round is detected on the board the client renders —
+   * the authoritative board the push delivered, with the accepted exchange
+   * applied from its own `SwapStarted` — so its cells agree and are removed. A
+   * later pass is detected on an intermediate board the contract never sends
+   * (`SIGNALR_PROTOCOL.md` §3.1 item 2), so the client cannot know which Gem sat
+   * at a given cell then; when the delivered `gemType` does not match what the
+   * cell renders, the clear is **not** invented and the cell is left as it is.
+   * Either way the board converges on the accepted authoritative board at the
+   * round's single transition, and a cleared cell is re-labelled from it with
+   * the refill entrance (`drawGemContent`, `placeGemView`).
+   *
+   * `typeOnly` is the `MatchCreated` case: that payload carries the shape's Gem
+   * type and no per-cell Special Gem, so only the type segment of the key is
+   * compared.
+   */
+  private clearConfirmedCell(
+    cellIndex: number,
+    gemType: string,
+    specialGem: { readonly type: string; readonly orientation?: string } | null,
+    typeOnly: boolean
+  ): boolean {
+    const view = this.gemViews[cellIndex];
+
+    if (!view || view.cleared) {
+      return false;
+    }
+
+    const confirmed = typeOnly
+      ? view.content.startsWith(`${gemType}|`)
+      : view.content === gemContentKeyFor(gemType, specialGem ?? undefined);
+
+    if (!confirmed) {
+      return false;
+    }
+
+    view.cleared = true;
+    view.content = '';
+    view.tile.setVisible(false);
+    view.label.setVisible(false);
+
+    return true;
   }
 
   /**

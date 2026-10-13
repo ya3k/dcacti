@@ -7,6 +7,7 @@ using GameServer.Domain.Battle;
 using GameServer.Domain.Cards;
 using GameServer.Domain.Match3;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Logging;
 
 namespace GameServer.Api.Hubs;
 
@@ -765,11 +766,16 @@ public class BattleHub : Hub
 {
     private readonly RuntimeService _runtime;
     private readonly BattleStateService _battles;
+    private readonly ILogger<BattleHub>? _logger;
 
-    public BattleHub(RuntimeService runtime, BattleStateService battles)
+    public BattleHub(
+        RuntimeService runtime,
+        BattleStateService battles,
+        ILogger<BattleHub>? logger = null)
     {
         _runtime = runtime;
         _battles = battles;
+        _logger = logger;
     }
 
     /// <summary>
@@ -1114,11 +1120,40 @@ public class BattleHub : Hub
 
         if (result.Value.IsIdempotentReplay)
         {
+            // Deliver the committed authoritative state to the retrying caller
+            // so it can synchronize even if the original state push was lost,
+            // without broadcasting to the group or duplicating combat events.
+            try
+            {
+                await Clients.Caller.SendAsync("BattleStateUpdated", ToPayload(result.Value.State));
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(
+                    ex,
+                    "Failed to deliver idempotent replay state push to caller for battle {BattleId}, sequence {Sequence}, action {ActionId}",
+                    battleId,
+                    result.Value.State.Sequence,
+                    request.ActionId);
+            }
+
             return new SwapResponse(Accepted: true, Reason: null);
         }
 
-        await Clients.Group(battleId).SendAsync("BattleStateUpdated", ToPayload(result.Value.State));
-        await Clients.Group(battleId).SendAsync("ReceiveEvents", ToPayload(result.Value));
+        try
+        {
+            await Clients.Group(battleId).SendAsync("BattleStateUpdated", ToPayload(result.Value.State));
+            await Clients.Group(battleId).SendAsync("ReceiveEvents", ToPayload(result.Value));
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(
+                ex,
+                "Failed to broadcast post-commit notifications for battle {BattleId}, sequence {Sequence}, action {ActionId}",
+                battleId,
+                result.Value.State.Sequence,
+                request.ActionId);
+        }
 
         return new SwapResponse(Accepted: true, Reason: null);
     }
@@ -1257,8 +1292,20 @@ public class BattleHub : Hub
                 Reason: CardCastRejectionCodes.ToContractCode(result.Value.Reason));
         }
 
-        await Clients.Group(battleId).SendAsync("BattleStateUpdated", ToPayload(result.Value.State));
-        await Clients.Group(battleId).SendAsync("ReceiveEvents", ToPayload(result.Value));
+        try
+        {
+            await Clients.Group(battleId).SendAsync("BattleStateUpdated", ToPayload(result.Value.State));
+            await Clients.Group(battleId).SendAsync("ReceiveEvents", ToPayload(result.Value));
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(
+                ex,
+                "Failed to broadcast post-commit notifications for CardCast in battle {BattleId}, sequence {Sequence}, card {CardId}",
+                battleId,
+                result.Value.State.Sequence,
+                cardId);
+        }
 
         return new CardCastResponse(Accepted: true, Reason: null);
     }
@@ -1291,8 +1338,19 @@ public class BattleHub : Hub
                 Reason: CardCastRejectionCodes.ToContractCode(result.Value.Reason));
         }
 
-        await Clients.Group(battleId).SendAsync("BattleStateUpdated", ToPayload(result.Value.State));
-        await Clients.Group(battleId).SendAsync("ReceiveEvents", ToPayload(result.Value));
+        try
+        {
+            await Clients.Group(battleId).SendAsync("BattleStateUpdated", ToPayload(result.Value.State));
+            await Clients.Group(battleId).SendAsync("ReceiveEvents", ToPayload(result.Value));
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogError(
+                ex,
+                "Failed to broadcast post-commit notifications for PetSkillCast in battle {BattleId}, sequence {Sequence}",
+                battleId,
+                result.Value.State.Sequence);
+        }
 
         return new PetSkillCastResponse(Accepted: true, Reason: null);
     }

@@ -531,7 +531,7 @@ Owner: **agent** · **PO** · **operator**.
 |---|---|---|---|---|---|---|
 | 3.1 | Server-authoritative resolution; client derives nothing | Suite 1 `phase5c.feedbackMutatesNoAuthoritativeState`; `RuntimeBoundaries.test.ts` (in the 944) | **VERIFIED (historical)** | agent | none | — |
 | 3.2 | Persistent battle results + rewards | Suite 1 `phase10.realBattleReachedItsOwnResult`, `.deliveredRewardsAreRendered`, `.durationIsRenderedFromTheDeliveredResult` | **VERIFIED (historical)** | agent | none | — |
-| 3.3 | Active battle state in Redis, recovered on reconnect | Suite 1 `phase6c.*` (6 checks), `phase10b.*` (3 checks); ADR-008 | **VERIFIED (historical)** | agent | none | — |
+| 3.3 | Active battle state in Redis, recovered on reconnect | Suite 1 `phase6c.*` (**7** checks), `phase10b.*` (**5** checks); ADR-008 | **VERIFIED (historical)** | agent | none | — |
 | 3.4 | Persistence suite green against real PostgreSQL | `GameServer.Infrastructure.Tests` 422 passed (at `5a56ef1`) | **VERIFIED (historical)** | agent | none recorded; re-run to claim a current result | — |
 | 3.5 | Starter-grant creation-only rule holds | Code re-verified: `PlayerRepository.cs:36-39` early return; `PlayerStarterGrantFactory.cs:166-171`; reconfirmed by TASK-242 §4.1 | **VERIFIED** | agent | none | — |
 | 3.6 | No post-creation content acquisition (MVP rule) | `MVP_SCOPE.md:116-120`; `DATABASE.md:1457-1459`; no acquisition path located in code; confirmed by TASK-242 §4.3 under E-F1 Option A | **VERIFIED (documented + code)** | agent | none | — |

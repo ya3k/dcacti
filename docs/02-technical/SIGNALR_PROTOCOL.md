@@ -1,6 +1,6 @@
 # SignalR Protocol
 
-**Version:** 2.22 (§3.2.2, §3.2.12, **§3.2.26 and §3.2.27 added** per ADR-026 / TASK-263: the `SwapStarted` protocol proposal §3.2.2 carried is now **formalized and discharged**. `SwapStarted` (`type`, `actor: "player" | "boss"`, `fromCell`, `toCell`) and its `SwapResolved` counterpart (`type`, `outcome: "committed" | "reverted"`) are members of the closed discriminator set, projected by their own subsections, emitted once per committed board action by the Player's Swap and by the Boss's `GAME_RULES.md` §17 step 18a board action, and omitted entirely for a rejected action. **No hub method, argument, subscription, delivery path, state-push member, or gameplay rule is added or removed**: §2's method list and the §4/§6 delivery paths are unchanged, the `ReceiveEvents` envelope keeps its three members, and the two new discriminators add no `BattleState` member. Prior 2.21: (§3.1, §3.2.2 updated per ADR-026 / TASK-259: Atomic round persistence boundaries documented — Redis CAS guarantees single-record state persistence atomicity, but does not provide distributed 2PC or guarantee exactly-once SignalR broadcast across network drops; recovery from connection interruption or missed events remains strictly governed by ADR-008 snapshot recovery via GetBattleState; proposed admission of SwapStarted event ({actor, fromCell, toCell}) in §3.2.2 to transmit Boss swap coordinates for client presentation. Prior 2.20: §2 **item 1 restated and items 2–3 added** — the `Swap` action
+**Version:** 2.23 (§6 item 3 **expanded**, §7 **amended** per TASK-273: *sequence desync* is defined operationally as a `ReceiveEvents` batch whose `serverSequence` is ahead of the `sequence` of the state the client holds; a client withholds such a batch — whole, never partially applied — and requests the same §7.1 `GetBattleState` snapshot a reconnect uses, deduplicated to one request in flight per battle; a batch at or below the held `sequence` is the documented delivery or superseded respectively and is never a desync. §7 records that **a snapshot supersedes every pending or in-flight batch at or below its `sequence`** and that a superseded resolution is never replayed, and §7 item 5 fixes the recovery response's two sequence spellings (`serverSequence`, `state.sequence`) as one value that must agree. The incorrect `§6` cross-references to the snapshot path in §3.2.12/§3.1/§3.2.12 records, §4 items 7–8 and §8 items 7 and 9 are corrected to §7, and the flat `§8.x` references are corrected to `§8 item n`. **No hub method, argument, subscription, delivery path, state-push member, or gameplay rule is added or removed.** Prior 2.22: (§3.2.2, §3.2.12, **§3.2.26 and §3.2.27 added** per ADR-026 / TASK-263: the `SwapStarted` protocol proposal §3.2.2 carried is now **formalized and discharged**. `SwapStarted` (`type`, `actor: "player" | "boss"`, `fromCell`, `toCell`) and its `SwapResolved` counterpart (`type`, `outcome: "committed" | "reverted"`) are members of the closed discriminator set, projected by their own subsections, emitted once per committed board action by the Player's Swap and by the Boss's `GAME_RULES.md` §17 step 18a board action, and omitted entirely for a rejected action. **No hub method, argument, subscription, delivery path, state-push member, or gameplay rule is added or removed**: §2's method list and the §4/§7 delivery paths are unchanged, the `ReceiveEvents` envelope keeps its three members, and the two new discriminators add no `BattleState` member. Prior 2.21: (§3.1, §3.2.2 updated per ADR-026 / TASK-259: Atomic round persistence boundaries documented — Redis CAS guarantees single-record state persistence atomicity, but does not provide distributed 2PC or guarantee exactly-once SignalR broadcast across network drops; recovery from connection interruption or missed events remains strictly governed by ADR-008 snapshot recovery via GetBattleState; proposed admission of SwapStarted event ({actor, fromCell, toCell}) in §3.2.2 to transmit Boss swap coordinates for client presentation. Prior 2.20: §2 **item 1 restated and items 2–3 added** — the `Swap` action
 token's grammar is now exact and total. `"{expectedSequence}:{actionId}"` and the
 legacy `"{actionId}"` are the only accepted forms; the sequence part is a
 non-negative decimal integer stated in full; and a token outside the grammar —
@@ -163,7 +163,7 @@ Owner rulings. Two stale count statements are corrected in the same revision:
 was already wrong (the table it referred to listed 12 names) and is replaced by
 an enumeration of all 16, and §3.2.4 item 3's "in any of the four events" — a
 phrase about enum-member scope, not the discriminator set — is widened to "in
-any event". No SignalR method, no §4/§6
+any event". No SignalR method, no §4/§7
 delivery path, and no gameplay rule is changed by this revision. Prior 2.6:
 §1 connection authentication made explicit per `ADR-015` —
 the application session is the self-contained signed JWT of
@@ -358,7 +358,7 @@ JoinBattle(battleId)
 3. It is not a battle-creation mechanism: §8.4 remains unchanged, and
    `POST /api/battle/start` remains the only documented way to create a battle.
 4. `JoinBattle` is a transport step, not a state contract. It carries no battle
-   field and introduces no `Status`/lifecycle value (§8.3).
+   field and introduces no `Status`/lifecycle value (§8 item 3).
 
 #### `Ping`
 
@@ -437,7 +437,7 @@ server                                        client
    (`GAME_STATE.md` §3) and are never sent. There is no "gravity" message, no
    per-pass message, and no partial batch.
 3. **No gameplay message type is introduced.** The board and the resolution's
-   resulting values travel in the state push of §4 (and §6 on resync); the
+   resulting values travel in the state push of §4 (and §7 on resync); the
    resolution's events travel in §3. Special Gem state is part of the board
    itself (`GAME_STATE.md` §2.1) and therefore travels in that same §4 push
    with no additional member — no special-gem-specific message, method, or
@@ -544,7 +544,7 @@ discriminator member and that event's own payload members at the same level.
    member that identifies the event, and it is always present. An item without
    a recognized `type` is malformed, not a fifth event.
 5. **Admitting a §2 event adds no method and no state-push member.** The
-   gameplay methods remain exactly the three of §2 (§8 item 7), and the §4/§6
+   gameplay methods remain exactly the three of §2 (§8 item 7), and the §4/§7
    delivery paths are unchanged. `RelicTriggered` and `PowerChanged` are
    projected by schema here, and their emission is owned elsewhere and is not
    restated here: `RelicTriggered` by `RELIC_RULES.md` §7 (`GAME_RULES.md` §17
@@ -1583,7 +1583,7 @@ Pet Status Effects / Boss HP (GAME_STATE.md §2.3.1, §2.4)
 ```
 
 No gameplay field beyond the stage's own is carried, and no `Status`/lifecycle
-value is carried anywhere in the protocol (§8.3).
+value is carried anywhere in the protocol (§8 item 3).
 
 `turn` and `sequence` are the battle's current values
 (`GAME_STATE.md` §2.0.1, §5): once board resolution exists, a client that joins
@@ -1605,7 +1605,7 @@ action: it reports state (§4 item 6).
    needs it.
 4. **Payload.** The fields of the implemented `GAME_STATE.md` §2.0 stage (§0
    above), projected one-to-one from that state. Casing is an implementation
-   detail (§8.1). No other field may be added to this record: additional state
+   detail (§8 item 1). No other field may be added to this record: additional state
    is introduced by extending `GAME_STATE.md` §2.0, not by the wire shape.
    Several members are **narrowed projections** of the state field they report
    rather than the whole field: `playerState` (§4.2 item 2), `petState` (§4.3
@@ -1625,15 +1625,15 @@ action: it reports state (§4 item 6).
    carries no battle state. `BattleStateUpdated` carries **state**, and
    carries no events. Neither replaces the other; once resolution exists,
    both are used, and §3 remains the only event-delivery path.
-7. **Relationship to `GetBattleState` (§6).** Different mechanism, and §6 is
+7. **Relationship to `GetBattleState` (§7).** Different mechanism, and §7 is
    unchanged. `GetBattleState` is a request/response snapshot used for
    reconnect/resync, where the client has lost synchronization and must
    re-render from a full `GAME_STATE.md` §2 snapshot (`ADR-008`).
-   `BattleStateUpdated` is an unsolicited push on join. §6 is **not**
+   `BattleStateUpdated` is an unsolicited push on join. §7 is **not**
    redefined as an initial-creation mechanism, and the initial path does not
    require a client invocation.
-8. **Not a substitute for §6.** If the joining client is already
-   resynchronizing a battle that progressed, the snapshot semantics of §6
+8. **Not a substitute for §7.** If the joining client is already
+   resynchronizing a battle that progressed, the snapshot semantics of §7
    apply; §4 alone is not the documented recovery path.
 9. **Ownership.** The payload is authoritative server state
    (`GAME_RULES.md` §18, `ADR-001`). The client stores it as a synchronized
@@ -2422,7 +2422,50 @@ without waiting for/parsing the event broadcast.
    prior one, the server still resolves them strictly in arrival order.
 3. The client must apply `ReceiveEvents` payloads in `serverSequence` order;
    if it receives a `serverSequence` that skips a number, it must treat this
-   as state desync (§7).
+   as state desync (§7). **What that means operationally, and what the client
+   does about it.** Because item 4 orders the state push ahead of the batch,
+   a resolution's `serverSequence` is exactly the `sequence` of the state the
+   client already holds when its batch arrives. The client therefore reads
+   the relation between one delivered batch and the synchronized state's own
+   `sequence`:
+
+   ```text
+   batch.serverSequence = held.sequence   the documented delivery (item 4): the
+                                          batch describes the resolution the held
+                                          state represents. Apply it in order.
+   batch.serverSequence <  held.sequence   the held state already contains that
+                                          resolution's result (GAME_STATE.md §5.1
+                                          item 3): the batch is superseded, never
+                                          replayed, and never a desync.
+   batch.serverSequence >  held.sequence   the state write-back of a committed
+                                          resolution was never delivered: this is
+                                          the desync item 3 names. The client
+                                          withholds the batch — it holds no state
+                                          the resolution could be presented
+                                          against — and requests the §7.1
+                                          snapshot once for that gap, rather than
+                                          replaying its events.
+   ```
+
+   **A gap is a delivery-integrity fact, not an event fact.** The batch's own
+   events are not evidence that the client holds the resulting board: the board
+   travels in the state push (§3.1 item 3, §4.1), and item 4 puts that push
+   first. A desynchronized client therefore resynchronizes from §7's snapshot
+   and never from the withheld batch (§8 item 8, `ADR-008`).
+
+   **The state version and the event order are different things.** This item
+   constrains the *state version* a batch is placed against — `serverSequence`
+   is `BattleState.Sequence` after the resolution (`GAME_STATE.md` §5), an
+   integer the server commits and this protocol compares — while item 1
+   constrains the *order of the events inside one batch*, which is
+   `GAME_RULES.md` §17's resolution order and is applied exactly as delivered.
+   The client never reorders, filters, or splits `events[]`, and a batch it
+   cannot place against its state is withheld **whole** rather than partially
+   applied.
+
+   **A batch is never requested again.** There is no retransmission, no
+   `GetMissedEvents`, and no replay channel (§8 item 8): a withheld batch is
+   lost to presentation, and the §7.1 snapshot is what converges the client.
 4. `BattleStateUpdated` (§4) is delivered before any `ReceiveEvents` for that
    battle. It is not sequenced against resolutions and carries no event
    ordering meaning.
@@ -2442,6 +2485,32 @@ without waiting for/parsing the event broadcast.
 ---
 
 # 7. Reconnect & Resync
+
+This section owns the **snapshot recovery** mechanism, and it is the one the
+client uses for **both** moments it can be desynchronized:
+
+```text
+reconnect        the transport was re-established and the connection rejoined no
+                 group, so the state it holds may be arbitrarily old
+detected desync  §6 item 3's skipped `serverSequence`: a `ReceiveEvents` batch
+                 arrived ahead of the `sequence` the client's synchronized state
+                 carries, so the write-back for a committed resolution was never
+                 delivered
+```
+
+Neither moment is a special case of the other, and neither adds a mechanism:
+both are answered by item 1's `GetBattleState(battleId)` request/response
+snapshot, ingested by the existing §4 path. A client that detects a desync must
+**not** wait for an event batch it may never receive, and must not treat the
+withheld batch as authoritative — the snapshot is the only resynchronization
+path item 2 defines.
+
+The client deduplicates that request against the gap it is recovering: **at most
+one `GetBattleState` request is in flight per battle**, so repeated observations
+of one unresolved gap (several withheld batches, or a withheld batch and an
+unanswered action) do not become a request storm. A snapshot that cannot be
+retrieved after the client's bounded retry leaves it honestly desynchronized —
+it never fabricates the state it could not recover.
 
 1. On reconnect, the client calls `GetBattleState(battleId)` (a request/
    response Hub method, not a broadcast) to fetch the current authoritative
@@ -2463,6 +2532,22 @@ without waiting for/parsing the event broadcast.
    battle's group before normal post-reconnect battle event delivery is
    expected — a reconnect whose runtime holds no current battle knows no
    group to re-join and issues no `JoinBattle`.
+5. **The response's two sequence spellings must agree, and when they do the
+   snapshot's own `sequence` governs.** An accepted `GetBattleState` response
+   carries the version twice — as the envelope's `serverSequence` and as
+   `state.sequence` — because both are projected from the same committed
+   `BattleState.Sequence` (`BattleHub.GetBattleState`), the first so a caller
+   can read the version without opening the state. They are therefore **one
+   value, not two**: an accepted response whose two spellings disagree is an
+   **invalid recovery response**, and the client must not converge from it at
+   all. It stores nothing, claims no synchronization, and reports the
+   contradiction — it never silently prefers one number over the other, because
+   choosing would be the client authoring the version it is supposed to read
+   (`GAME_RULES.md` §18, `ADR-001`). When they agree, the value the client
+   ingests is the **state's own `sequence`**: `state` is the §4 projection, and
+   its `sequence` is the field the ingestion guard compares
+   (`GAME_STATE.md` §5). The envelope copy is an integrity cross-check, never a
+   second source of truth.
 
 The snapshot is **the same projection** the §4 push carries, member for member:
 the record's own members (§4 item 4), `playerState` (§4.2 item 2), `petState`
@@ -2500,6 +2585,18 @@ initial-synchronization path — that is §4. The two are not interchangeable:
 §4 is an unsolicited push on join carrying the `GAME_STATE.md` §2.0 subset,
 while §7 is a client-requested full-snapshot recovery per `ADR-008`.
 
+**A snapshot supersedes every pending or in-flight batch it covers.** The
+snapshot is taken between resolutions (`GAME_STATE.md` §5.3 item 3) and carries
+the complete result of the resolutions up to its `sequence`, so any batch whose
+`serverSequence` is **at or below** that value describes a resolution the
+snapshot already contains. Such a batch is **never replayed**: presenting its
+events would animate resolutions the client has already jumped past, which is
+exactly the event replay item 2 and §8 item 8 exclude. A batch strictly above the
+snapshot's `sequence` is a genuinely newer resolution and is delivered through
+the ordinary §3 path. A snapshot also supersedes a batch the client had
+*withheld*: the withheld batch is never applied afterwards, because the snapshot
+is the answer to the gap it opened.
+
 ---
 
 # 8. What Is Not Here
@@ -2533,7 +2630,7 @@ while §7 is a client-requested full-snapshot recovery per `ADR-008`.
    the rest of the state (§4.1). No gameplay method is added by this stage
    (§2).
 7. **Any board-resolution-specific message.** The gameplay methods are exactly
-   the three of §2 and the delivery paths are exactly the three of §0/§3/§4/§6.
+   the three of §2 and the delivery paths are exactly the three of §0/§3/§4/§7.
    A committed Swap's board outcome and its resolution events use those
    existing paths (§3.1); no `MatchCreated`-style *method*, no
    `BoardResolved`, no `CascadeUpdated`, no `SpecialGemActivated` message, and
@@ -2556,7 +2653,7 @@ while §7 is a client-requested full-snapshot recovery per `ADR-008`.
    `BossHpChanged`, no `PetHpChanged`, no `PowerUpdated`, and no additional
    subscription, and none may be introduced.
    The gameplay methods remain exactly the three of §2 and the delivery paths
-   remain exactly the three of §0/§3/§4/§6 — extending the state is how new data
+   remain exactly the three of §0/§3/§4/§7 — extending the state is how new data
    is delivered, and extending this protocol's method list is not
    (`§4` item 11). Nor is a Boss member the exception that reopens the narrow
    projections: `bossState` is the three-member projection §4.4 item 2 fixes,

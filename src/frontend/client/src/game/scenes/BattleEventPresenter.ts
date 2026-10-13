@@ -866,6 +866,7 @@ export type PresentationAction =
   | 'damage'
   | 'retaliation'
   | 'power'
+  | 'turn-banner'
   | 'outcome';
 
 /**
@@ -879,6 +880,7 @@ export type PresentationAction =
  * names describe the client's own presentation and nothing else.
  */
 export type PresentationPhaseKind =
+  | 'banner'
   | 'swap'
   | 'match'
   | 'cascade'

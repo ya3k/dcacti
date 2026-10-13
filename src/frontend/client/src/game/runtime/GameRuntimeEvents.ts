@@ -13,10 +13,19 @@
  *    `BattleState.Sequence` (GAME_STATE.md §5).
  *
  * `GameRuntime` is a transport boundary: it forwards battle events to the
- * presentation layer unchanged. It never produces, reorders, filters, or
- * interprets them — reordering would corrupt the resolution order the protocol
- * guarantees, and interpreting them would make the client authoritative
- * (GAME_RULES.md §18, ADR-001, AGENTS.md §10).
+ * presentation layer unchanged. It never produces, reorders, or interprets them,
+ * and it never synthesises one — reordering would corrupt the resolution order
+ * the protocol guarantees, and interpreting them would make the client
+ * authoritative (GAME_RULES.md §18, ADR-001, AGENTS.md §10).
+ *
+ * The one thing it does with a delivered envelope is a **delivery-integrity
+ * check** (`ARCHITECTURE.md` §2.2.1 rule 4's narrow exception): a batch whose
+ * battle is not the synchronized one, or whose `serverSequence` is ahead of the
+ * synchronized state's `sequence`, is withheld rather than forwarded, and the
+ * authoritative snapshot is requested instead (SIGNALR_PROTOCOL.md §6 item 3,
+ * §7.1). That check compares two delivered versions and dispatches or withholds;
+ * it interprets no gameplay value, computes no outcome, and never rewrites the
+ * batch it forwards.
  *
  * No battle event *names* are invented here. The `events` array is opaque
  * payload: GAME_EVENTS.md §2 owns event content and §3.1 leaves the wire schema
@@ -64,8 +73,14 @@ export interface BattleEventsEnvelope {
   readonly battleId: string;
   /**
    * `BattleState.Sequence` after the resolution (GAME_STATE.md §5) —
-   * strictly increasing, no gaps. Used only for gap detection per
-   * SIGNALR_PROTOCOL.md §5.3; the runtime does not act on it beyond reporting.
+   * strictly increasing, no gaps, one value per resolved action.
+   *
+   * The runtime reads it for **delivery integrity only**: it is compared with
+   * the synchronized state's own `sequence`, and a batch that is ahead of that
+   * copy is withheld while the authoritative snapshot is requested
+   * (SIGNALR_PROTOCOL.md §6 item 3, §7.1). The value is never interpreted as a
+   * gameplay value, never compared across two different battles, and never
+   * adjusted — the batch that is forwarded is forwarded exactly as delivered.
    */
   readonly serverSequence: number;
   /** Ordered events produced by resolving one action. Opaque to the runtime. */
@@ -87,7 +102,7 @@ export type BattleEventsListener = (envelope: BattleEventsEnvelope) => void;
  * `bossState`. The client stores this and renders it; it never authors, adjusts,
  * or recomputes it (§4.9, `GAME_RULES.md` §18, ADR-001). No gameplay field beyond
  * the stage's own is modelled here and no `Status`/lifecycle value exists in the
- * protocol (§8.3).
+ * protocol (§8 item 3).
  *
  * `board` is the server-generated `Cells[64]`. The client must not generate,
  * fill, repair, validate, or re-derive it, and no client-side RNG participates
@@ -391,8 +406,44 @@ export interface RuntimeSpecialGem {
   readonly orientation?: string;
 }
 
-/** Listener signature for authoritative battle-state pushes. */
-export type BattleStateListener = (state: RuntimeBattleState) => void;
+/**
+ * The delivery source of an authoritative battle-state publication.
+ *
+ * ```text
+ * push      SIGNALR_PROTOCOL.md §4 — an unsolicited `BattleStateUpdated` push
+ *           (the join push, and the push that precedes every resolution batch)
+ * recovery  SIGNALR_PROTOCOL.md §7.1 — the client-requested `GetBattleState`
+ *           snapshot: a reconciliation, never an event replay (ADR-008)
+ * ended     SIGNALR_PROTOCOL.md §7.3 / GAME_STATE.md §5 — the battle is no
+ *           longer recoverable (`BATTLE_NOT_FOUND`), so the runtime holds no
+ *           battle and publishes `null` instead of a state
+ * ```
+ *
+ * `push` and `recovery` carry a state; `ended` carries none.
+ */
+export type BattleStateSource = 'push' | 'recovery' | 'ended';
+
+/** Metadata accompanying an authoritative battle-state publication. */
+export interface BattleStateMetadata {
+  readonly source: BattleStateSource;
+}
+
+/**
+ * Listener signature for authoritative battle-state publications.
+ *
+ * `state` is `null` exactly when `metadata.source` is `'ended'`: the battle the
+ * scene was presenting can no longer be recovered (`SIGNALR_PROTOCOL.md` §7.3),
+ * so the runtime publishes the loss of the battle rather than a replacement
+ * state — it invents none, and no result is read here. A scene answers it by
+ * dropping its stale presentation and every lock the ended battle was holding.
+ *
+ * The metadata is optional only because a caller may publish a state without
+ * classifying it; the runtime always supplies it.
+ */
+export type BattleStateListener = (
+  state: RuntimeBattleState | null,
+  metadata?: BattleStateMetadata
+) => void;
 
 /**
  * The runtime surface the presentation layer (Phaser scenes / React) depends on.
@@ -440,7 +491,7 @@ export interface GameRuntimePort {
    * connection is `connected`, and `unsynchronized` otherwise. It performs **no
    * transport operation** — it never connects, disconnects, or invokes a hub
    * method — and it reads no result route. It introduces no wire message:
-   * no battle lifecycle/status message exists (SIGNALR_PROTOCOL.md §8.3). It is
+   * no battle lifecycle/status message exists (SIGNALR_PROTOCOL.md §8 item 3). It is
    * therefore **not** §7.3's `BATTLE_NOT_FOUND` path, which is a failed
    * recovery that additionally takes the result fallback.
    *
@@ -454,9 +505,16 @@ export interface GameRuntimePort {
   /** Subscribes to server-authoritative battle event batches. */
   onBattleEvents(listener: BattleEventsListener): () => void;
   /**
-   * Subscribes to authoritative battle-state pushes
-   * (SIGNALR_PROTOCOL.md §4). The state is delivered unchanged; the runtime
+   * Subscribes to authoritative battle-state publications
+   * (SIGNALR_PROTOCOL.md §4, §7.1). The state is delivered unchanged; the runtime
    * derives nothing from it. Returns an unsubscribe.
+   *
+   * A publication whose `metadata.source` is `'ended'` carries `null`: §7.3's
+   * `BATTLE_NOT_FOUND` means the runtime no longer holds a battle, so the scene
+   * is told the battle is gone rather than being given a state that does not
+   * exist. The document's result fallback is the runtime's own read of
+   * `GET /api/battle/{battleId}/result` (`API_CONTRACTS.md` §4), which this
+   * boundary does not carry.
    */
   onBattleState(listener: BattleStateListener): () => void;
   /**
@@ -699,5 +757,43 @@ export class RuntimeActionNotImplementedError extends Error {
         `GetBattleState (§7) is not a caller-submitted action.`
     );
     this.name = 'RuntimeActionNotImplementedError';
+  }
+}
+
+/**
+ * Raised when an action request was submitted but no acknowledgement was
+ * received, so **whether the action committed is unknown**.
+ *
+ * It is the one distinction the caller cannot make for itself
+ * (`SIGNALR_PROTOCOL.md` §5, §8 item 3): a definitive rejection arrives as an
+ * acknowledgement with `accepted: false` and settles the action as a gameplay
+ * no-op, while a transport/RPC failure answers nothing at all — the server may
+ * already have resolved and broadcast the action. Treating that as "not sent"
+ * would be the client asserting an outcome it does not have (`GAME_RULES.md`
+ * §18, `AGENTS.md` §10).
+ *
+ * The runtime therefore preserves the logical action's identity
+ * (`ADR-025` §2), publishes the desynchronization it now has (`sync` becomes
+ * `unsynchronized`) and requests the authoritative snapshot
+ * (`SIGNALR_PROTOCOL.md` §7.1) before raising this. The caller's part is to
+ * keep presenting nothing as final and to converge on that snapshot — never to
+ * assume the action did not happen.
+ *
+ * `cause` is carried through the standard `Error` member so the transport's own
+ * message is still readable, and this error's message contains it verbatim.
+ */
+export class RuntimeActionOutcomeUnknownError extends Error {
+  constructor(
+    /** The action kind that was submitted (`SIGNALR_PROTOCOL.md` §2). */
+    readonly kind: string,
+    override readonly cause: unknown
+  ) {
+    const detail = cause instanceof Error ? cause.message : String(cause ?? 'no detail');
+    super(
+      `Action "${kind}" was submitted but no acknowledgement was received (${detail}). ` +
+        'Whether it committed is unknown: nothing is assumed, and authoritative ' +
+        'recovery is awaited (SIGNALR_PROTOCOL.md §5, §7).'
+    );
+    this.name = 'RuntimeActionOutcomeUnknownError';
   }
 }

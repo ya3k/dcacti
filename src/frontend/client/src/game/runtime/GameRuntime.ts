@@ -18,9 +18,12 @@ import {
   RUNTIME_ACTION_CARD_CAST,
   RUNTIME_ACTION_PET_SKILL_CAST,
   RuntimeActionNotImplementedError,
+  RuntimeActionOutcomeUnknownError,
   type BattleEventsEnvelope,
   type BattleEventsListener,
   type BattleStateListener,
+  type BattleStateMetadata,
+  type BattleStateSource,
   type GameRuntimePort,
   type RuntimeActionAcknowledgement,
   type RuntimeActionRequest,
@@ -84,9 +87,19 @@ const BATTLE_NOT_FOUND_REASON = 'BATTLE_NOT_FOUND';
  * It owns ONLY:
  *   - connection state (delegated from `SignalRService` lifecycle callbacks),
  *   - runtime lifecycle (initialize / dispose),
- *   - server event subscription (forwarding `ReceiveEvents` batches),
+ *   - server event subscription (forwarding `ReceiveEvents` batches) and the
+ *     **delivery-integrity check** that decides whether one may be forwarded: a
+ *     batch for another battle, or one whose `serverSequence` is ahead of the
+ *     synchronized state's `sequence`, is withheld and the authoritative snapshot
+ *     is requested instead (`SIGNALR_PROTOCOL.md` §6 item 3, §7.1; the narrow
+ *     exception `ARCHITECTURE.md` §2.2.1 rule 4 records),
  *   - the synchronized copy of the server's authoritative battle state
- *     (`BattleStateUpdated`, SIGNALR_PROTOCOL.md §4),
+ *     (`BattleStateUpdated`, SIGNALR_PROTOCOL.md §4, and the §7.1 snapshot),
+ *   - the monotonic guard on ingesting that copy (`receiveBattleState`): a
+ *     payload for the active battle that is behind the sequence already
+ *     delivered, and a payload for a battle no lifecycle transition has
+ *     established, are refused rather than stored, so the synchronized copy
+ *     cannot be overwritten by stale or cross-battle state (`GAME_STATE.md` §5),
  *   - scene lifecycle coordination (scenes publish/receive through the port),
  *   - the client → server request boundary for the documented Swap action
  *     (`requestAction`, SIGNALR_PROTOCOL.md §2.1) — coordination only,
@@ -95,7 +108,13 @@ const BATTLE_NOT_FOUND_REASON = 'BATTLE_NOT_FOUND';
  *   - reconnect/resync recovery (`SIGNALR_PROTOCOL.md` §7, ADR-008) — the
  *     documented group re-join of §7 item 4 (`JoinBattle`, §1.2, §2) followed
  *     by the `GetBattleState` snapshot request (`recoverBattleState`, §7.1),
- *     ingested by the same `receiveBattleState` path the §4 push uses,
+ *     ingested by the same `receiveBattleState` path the §4 push uses. The same
+ *     snapshot path serves a **detected desynchronization**, not only a
+ *     reconnect: §6 item 3's skipped `serverSequence`, and an action whose
+ *     acknowledgement never arrived (`markActionOutcomeUnknown`), request the
+ *     same §7.1 snapshot, deduplicated to one request in flight per battle, and
+ *     the bounded retry of `MAX_RECOVERY_ATTEMPTS` is what keeps a persistent
+ *     failure from spinning,
  *   - the client-local post-result cleanup (`clearActiveBattleState`) — dropping
  *     the synchronized copy when the player leaves a completed battle
  *     (`D-202-04 = A`, ARCHITECTURE.md §2.2.3, ADR-022): state only, no
@@ -112,8 +131,14 @@ const BATTLE_NOT_FOUND_REASON = 'BATTLE_NOT_FOUND';
  * It deliberately does NOT (task §9, AGENTS.md §10, ADR-001):
  *   - calculate damage, match, combo, cascade, passive, or power,
  *   - validate a Swap, decide whether one is legal, or commit an exchange,
- *   - interpret, filter, reorder, or synthesise Battle Events,
- *   - author, adjust, or recompute any battle state,
+ *   - interpret, reorder, or synthesise Battle Events, or drop an event from a
+ *     batch it forwards: the delivery-integrity check withholds or dispatches a
+ *     batch **whole**, reads no event payload, and decides nothing an event
+ *     means (`ARCHITECTURE.md` §2.2.1 rule 4),
+ *   - author, adjust, or recompute any battle state — refusing to store a
+ *     payload is not authoring it: the guard above compares the delivered
+ *     version and either stores what arrived or keeps what it holds, and no
+ *     value is ever adjusted, derived, or invented,
  *   - generate, fill, repair, validate, or re-derive the board
  *     (SIGNALR_PROTOCOL.md §4 item 10),
  *   - hold authoritative state of any kind.
@@ -134,6 +159,23 @@ const BATTLE_NOT_FOUND_REASON = 'BATTLE_NOT_FOUND';
 export class GameRuntime implements GameRuntimePort {
   private state: GameRuntimeState = INITIAL_RUNTIME_STATE;
   private battleState: RuntimeBattleState | null = null;
+  /**
+   * The battle identity a lifecycle transition has explicitly established for
+   * the *next* active battle, or `null` when no transition is outstanding.
+   *
+   * `startBattle` sets it from the server's own `BattleStartResponse.battleId`
+   * (SIGNALR_PROTOCOL.md §1 items 1–2, `GAME_RULES.md` §18, ADR-001) — that is
+   * the documented lifecycle transition, and it is what authorises the §4 push
+   * for a battle other than the synchronized one to replace it. It is consumed
+   * when that battle's own state is ingested, and dropped by every path that
+   * stops holding a battle (`clearActiveBattleState`,
+   * `handleBattleNotRecoverable`, `invalidateSession`) and by a start that
+   * fails, which establishes nothing.
+   *
+   * It holds no state: it is an identity, not a battle copy, so it is never
+   * exposed through `getBattleState()` and never read as gameplay data.
+   */
+  private establishedBattleId: string | null = null;
   private runtimeListeners = new Set<RuntimeEventListener>();
   private battleListeners = new Set<BattleEventsListener>();
   private battleStateListeners = new Set<BattleStateListener>();
@@ -153,6 +195,68 @@ export class GameRuntime implements GameRuntimePort {
    * (`clearActiveBattleState`), so it holds only genuinely unresolved actions.
    */
   private readonly unresolvedActionIds = new Map<string, string>();
+
+  /**
+   * Maximum consecutive snapshot recovery retry attempts before terminating
+   * the recovery retry loop (P0.2 §4.E). Bounded to prevent tight or infinite
+   * spinning when server snapshots are persistently unavailable or stale.
+   */
+  private static readonly MAX_RECOVERY_ATTEMPTS = 3;
+
+  /**
+   * Pending retry timer handle for snapshot recovery backoff. Cleared when
+   * recovery succeeds, the battle ends/clears, or the runtime is disposed.
+   */
+  private recoveryRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * The battle one recovery request is currently in flight for, or `null` when
+   * none is (`SIGNALR_PROTOCOL.md` §7.1).
+   *
+   * **At most one recovery request is in flight per battle.** A second
+   * observation of the same unresolved desynchronization — another batch of the
+   * same gap, an unanswered action, a repeated client request — joins the
+   * request already in flight instead of opening a second one, which is what
+   * keeps a desynchronized client from issuing a storm of identical
+   * `GetBattleState` calls. It is cleared on every path that ends, supersedes, or
+   * abandons the attempt (`receiveBattleState`'s convergence, the bounded retry,
+   * `handleBattleNotRecoverable`, `clearActiveBattleState`, `invalidateSession`,
+   * `dispose`).
+   */
+  private recoveryInFlightBattleId: string | null = null;
+
+  /**
+   * The newest `ReceiveEvents.serverSequence` withheld as a delivery-integrity
+   * gap (`forwardBattleEvents`), or `null` when no gap is outstanding.
+   *
+   * It is the one piece of bookkeeping the gap path adds: a repeated
+   * observation of the **same** gap does not re-request a snapshot that is
+   * already in flight for it, and a recovered state at or past it clears the
+   * entry. It is a delivered version used for coordination only — never a
+   * gameplay value, and never compared across two different battles.
+   */
+  private withheldGapSequence: number | null = null;
+
+  private clearRecoveryRetry(): void {
+    if (this.recoveryRetryTimer !== null) {
+      clearTimeout(this.recoveryRetryTimer);
+      this.recoveryRetryTimer = null;
+    }
+  }
+
+  /**
+   * Drops every piece of recovery bookkeeping: the retry timer, the in-flight
+   * marker and the withheld gap.
+   *
+   * Every boundary that stops the runtime holding a battle — or that has just
+   * converged one — releases all three together, so no timer, no in-flight
+   * marker and no stale gap can outlive the battle they belong to.
+   */
+  private clearRecoveryState(): void {
+    this.clearRecoveryRetry();
+    this.recoveryInFlightBattleId = null;
+    this.withheldGapSequence = null;
+  }
 
   constructor(
     private readonly signalR: SignalRService = SignalRService.getInstance(),
@@ -300,6 +404,7 @@ export class GameRuntime implements GameRuntimePort {
     this.runtimeListeners.clear();
     this.battleListeners.clear();
     this.battleStateListeners.clear();
+    this.clearRecoveryState();
 
     await this.signalR.disconnect();
 
@@ -388,9 +493,13 @@ export class GameRuntime implements GameRuntimePort {
     // The synchronized copy belongs to the session that received it: the next
     // battle arrives as a fresh server push (SIGNALR_PROTOCOL.md §4), never as
     // a revision of this one. The unresolved action identities go with it — they
-    // identify actions of a battle this runtime no longer holds (ADR-025 §2).
+    // identify actions of a battle this runtime no longer holds (ADR-025 §2) —
+    // and so does any identity a start in flight had established, which belongs
+    // to the ended session.
     this.battleState = null;
     this.unresolvedActionIds.clear();
+    this.establishedBattleId = null;
+    this.clearRecoveryState();
 
     // Detach before stopping: a stop must not report itself through this runtime
     // and overwrite the unauthenticated publication below.
@@ -482,7 +591,7 @@ export class GameRuntime implements GameRuntimePort {
    * **The transport is untouched.** No connect, disconnect, or hub invocation
    * happens here — `D-202-04 = C/D` (clearing the SignalR battle connection)
    * was not approved — and the process-wide connection rule is unaffected
-   * (§2.2.1 rule 6). No wire message is introduced either: §8.3 records that no
+   * (§2.2.1 rule 6). No wire message is introduced either: §8 item 3 records that no
    * battle lifecycle/status message exists.
    *
    * **This is not §7.3's `BATTLE_NOT_FOUND` path.** That path is a failed
@@ -500,10 +609,16 @@ export class GameRuntime implements GameRuntimePort {
   public clearActiveBattleState(): void {
     this.battleState = null;
 
+    // The identity a transition established belongs to a battle the runtime no
+    // longer holds, so it is dropped with it: the next battle is established by
+    // its own transition or by its own first push, never by a leftover identity.
+    this.establishedBattleId = null;
+
     // No battle is held, so nothing remains unresolved in it: the identities of
     // its logical actions are dropped with it, and no later action can be
     // submitted under one (`ADR-025` §2).
     this.unresolvedActionIds.clear();
+    this.clearRecoveryState();
 
     // The documented no-current-battle value is defined relative to the
     // connection the runtime actually has (`state/GameRuntimeState.ts`,
@@ -582,7 +697,7 @@ export class GameRuntime implements GameRuntimePort {
    * @throws RuntimeActionNotImplementedError for any action other than `Swap`, `CardCast`, or `PetSkillCast`.
    * @throws Error when no battle state is known, or the transport rejects the
    * request (no connection / connection lost). Both are presentation-level
-   * failures, not game state (`SIGNALR_PROTOCOL.md` §8.3).
+   * failures, not game state (`SIGNALR_PROTOCOL.md` §8 item 3).
    */
   public async requestAction(
     action: RuntimeActionRequest
@@ -626,28 +741,52 @@ export class GameRuntime implements GameRuntimePort {
       // this logical action as `actionId`.
       const fromCell = candidate.fromCell as number;
       const toCell = candidate.toCell as number;
+      const submittedBattleId = battleState.battleId;
       // The pair is unordered (`MATCH3_RULES.md` §2.1.1 item 2), so the two
       // spellings of one swap are one logical action and share one identity.
       const logicalActionKey = this.logicalActionKey(
-        battleState.battleId,
+        submittedBattleId,
         RUNTIME_ACTION_SWAP,
         Math.min(fromCell, toCell),
         Math.max(fromCell, toCell)
       );
       const actionId = this.actionIdFor(logicalActionKey, 'swap');
 
-      const acknowledgement = await this.signalR.swap(
-        battleState.battleId,
-        fromCell,
-        toCell,
-        battleState.sequence,
-        actionId
-      );
+      let acknowledgement: RuntimeActionAcknowledgement;
+
+      try {
+        acknowledgement = await this.signalR.swap(
+          submittedBattleId,
+          fromCell,
+          toCell,
+          battleState.sequence,
+          actionId
+        );
+      } catch (error) {
+        // A transport or RPC failure is not a definitive answer from the server
+        // (SIGNALR_PROTOCOL.md §8 item 3, P0.2 §4.A, §4.D): no acknowledgement was
+        // received, so whether the swap committed is **unknown**. The action
+        // identity stays in `unresolvedActionIds` so an idempotent retry reuses
+        // the identical actionId, the runtime publishes the desynchronization it
+        // now has, and it asks for the authoritative snapshot rather than
+        // assuming the swap did not happen (P0.3 §5).
+        this.markActionOutcomeUnknown(error);
+        throw new RuntimeActionOutcomeUnknownError(RUNTIME_ACTION_SWAP, error);
+      }
+
+      // Cross-battle guard (P0.2 §4.D item 5, item 12):
+      // A delayed action response belonging to an older battle must not settle the
+      // current battle's action or overwrite state if the active battle changed or ended.
+      if (this.battleState?.battleId !== submittedBattleId) {
+        throw new Error(
+          `Action response for battle "${submittedBattleId}" arrived after active battle changed to "${this.battleState?.battleId ?? 'none'}".`
+        );
+      }
 
       // The action is settled by its acknowledgement, so the next submission of
       // the same pair is a new logical action and takes a new identity. An action
       // that throws instead keeps its identity: a transport failure is not an
-      // answer (`SIGNALR_PROTOCOL.md` §8.3), and a retry of it must carry the
+      // answer (`SIGNALR_PROTOCOL.md` §8 item 3), and a retry of it must carry the
       // identity the first attempt carried or the server cannot recognise it as
       // the same logical action (`ADR-025` §2).
       this.unresolvedActionIds.delete(logicalActionKey);
@@ -659,18 +798,83 @@ export class GameRuntime implements GameRuntimePort {
       if (typeof candidate.cardId !== 'string' || candidate.cardId.length === 0) {
         throw new Error('CardCast action requires a non-empty cardId.');
       }
-      return await this.signalR.cardCast(
-        battleState.battleId,
-        candidate.cardId,
-        this.nextClientSequence('card_cast')
-      );
+      const submittedBattleId = battleState.battleId;
+      let acknowledgement: RuntimeActionAcknowledgement;
+
+      try {
+        acknowledgement = await this.signalR.cardCast(
+          submittedBattleId,
+          candidate.cardId,
+          this.nextClientSequence('card_cast')
+        );
+      } catch (error) {
+        // As for a Swap: an unanswered request is not a refusal, so nothing is
+        // assumed about whether the cast committed (P0.3 §5).
+        this.markActionOutcomeUnknown(error);
+        throw new RuntimeActionOutcomeUnknownError(RUNTIME_ACTION_CARD_CAST, error);
+      }
+
+      if (this.battleState?.battleId !== submittedBattleId) {
+        throw new Error(
+          `Action response for battle "${submittedBattleId}" arrived after active battle changed to "${this.battleState?.battleId ?? 'none'}".`
+        );
+      }
+      return acknowledgement;
     }
 
     // candidate.kind === RUNTIME_ACTION_PET_SKILL_CAST
-    return await this.signalR.petSkillCast(
-      battleState.battleId,
-      this.nextClientSequence('pet_skill_cast')
-    );
+    const submittedBattleId = battleState.battleId;
+    let acknowledgement: RuntimeActionAcknowledgement;
+
+    try {
+      acknowledgement = await this.signalR.petSkillCast(
+        submittedBattleId,
+        this.nextClientSequence('pet_skill_cast')
+      );
+    } catch (error) {
+      // Same contract as the two actions above (P0.3 §5).
+      this.markActionOutcomeUnknown(error);
+      throw new RuntimeActionOutcomeUnknownError(RUNTIME_ACTION_PET_SKILL_CAST, error);
+    }
+
+    if (this.battleState?.battleId !== submittedBattleId) {
+      throw new Error(
+        `Action response for battle "${submittedBattleId}" arrived after active battle changed to "${this.battleState?.battleId ?? 'none'}".`
+      );
+    }
+    return acknowledgement;
+  }
+
+  /**
+   * Records the one thing a client can know when a submitted action is never
+   * acknowledged: **it is no longer synchronized with the server**, and the
+   * authoritative snapshot is the only way to find out what happened.
+   *
+   * ```text
+   * action submitted, no acknowledgement received
+   *         ↓
+   * sync = 'unsynchronized'      the runtime holds a copy it can no longer vouch
+   *                              for — a resolution the server may already have
+   *                              committed is missing from it
+   *         ↓
+   * recoverBattleState() §7.1    the authoritative snapshot, ingested by the
+   *                              existing §4 path and published to the
+   *                              presentation layer with source 'recovery'
+   * ```
+   *
+   * It invents no state and settles nothing: the action's identity is left
+   * unresolved (a retry must carry it — `ADR-025` §2), no withdrawal of the
+   * request is attempted (no such message exists, `SIGNALR_PROTOCOL.md` §8 item 3),
+   * and a failed recovery leaves the runtime honestly `unsynchronized` rather
+   * than guessing an outcome. Nothing here is gameplay state.
+   */
+  private markActionOutcomeUnknown(error: unknown): void {
+    this.updateState({ sync: 'unsynchronized', lastError: this.describeError(error) });
+
+    // Best-effort and self-contained: `recoverBattleState` reports its own
+    // transport failure through the existing technical channel and returns, so
+    // this never throws into the action's rejection path.
+    void this.recoverBattleState();
   }
 
   /**
@@ -782,8 +986,21 @@ export class GameRuntime implements GameRuntimePort {
    * failure, or a join failure propagates to the caller with `sync`,
    * `battleState`, and `connection` unchanged. No battle state is invented, no
    * `battleId` is manufactured, and no partial battle is initialized
-   * (`SIGNALR_PROTOCOL.md` §8.3). The runtime adds no duplicate-start guard: no
+   * (`SIGNALR_PROTOCOL.md` §8 item 3). The runtime adds no duplicate-start guard: no
    * document defines the behavior of overlapping calls, so none is invented here.
+   *
+   * **The transition establishes the new battle's identity, and only after the
+   * REST step has answered with one.** The server-owned `battleId` the start
+   * response carries is recorded as the identity this transition has established,
+   * which is what lets the join's §4 push for that battle replace a synchronized
+   * copy of a *different* battle (`receiveBattleState`). It is dropped if either
+   * transport step then fails: a start that does not proceed establishes nothing.
+   *
+   * **The held copy is never reset here.** A battle the runtime already holds is
+   * left exactly as it is — it is replaced only when the new battle's own §4 push
+   * arrives — so a failed start leaves a still-valid active battle synchronized
+   * instead of silently erasing it. Nothing is cleared in advance of the
+   * transition succeeding.
    *
    * @throws Error when the runtime is disposed, or when any of the three
    * documented steps fails.
@@ -797,14 +1014,27 @@ export class GameRuntime implements GameRuntimePort {
       this.api.startBattle(request)
     );
 
-    await this.signalR.connect(response.signalrHub);
+    // The documented lifecycle transition (`SIGNALR_PROTOCOL.md` §1 items 1–2):
+    // the server created this battle and named it, so this identity is what the
+    // §4 push that follows the join may replace the currently synchronized
+    // battle with.
+    this.establishedBattleId = response.battleId;
 
-    // The subscriptions the join's push arrives on. Registered before the join
-    // so the push is never silently unobserved, and registered exactly once
-    // (case A/B/C, task §9).
-    this.registerTransportSubscriptions();
+    try {
+      await this.signalR.connect(response.signalrHub);
 
-    await this.signalR.joinBattle(response.battleId);
+      // The subscriptions the join's push arrives on. Registered before the join
+      // so the push is never silently unobserved, and registered exactly once
+      // (case A/B/C, task §9).
+      this.registerTransportSubscriptions();
+
+      await this.signalR.joinBattle(response.battleId);
+    } catch (error) {
+      // The transition did not proceed, so it established no identity: the
+      // runtime is left exactly as it was, still holding whatever battle it held.
+      this.establishedBattleId = null;
+      throw error;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -869,52 +1099,89 @@ export class GameRuntime implements GameRuntimePort {
   }
 
   /**
-   * Requests the authoritative snapshot after a reconnect and synchronizes the
-   * runtime from it (`SIGNALR_PROTOCOL.md` §7.1–§7.3, `ADR-008`).
+   * Requests the authoritative snapshot after a reconnect **or** when the client
+   * has detected that it is desynchronized — a withheld batch ahead of the
+   * synchronized state (`forwardBattleEvents`), or an action whose
+   * acknowledgement never arrived (`markActionOutcomeUnknown`) — and
+   * synchronizes the runtime from it (`SIGNALR_PROTOCOL.md` §6 item 3, §7.1–§7.3,
+   * `ADR-008`).
    *
    * ```text
-   * SignalR reconnect
+   * SignalR reconnect, a withheld batch, or an unanswered action
    *         ↓
-   * SignalRService.getBattleState(battleId)
-   *         ↓
+   * SignalRService.getBattleState(battleId)          §7.1 — the request/response
+   *         ↓                                        snapshot; no broadcast
    * BattleHub.GetBattleState
    *         ↓
    * authoritative snapshot
    *         ↓
-   * receiveBattleState()          ← the existing §4 ingestion path
+   * ingestBattleState()          ← the existing §4 ingestion path
    * ```
    *
+   * **The same snapshot answers both desynchronizations.** `ADR-008` makes the
+   * snapshot the only resynchronization path, so a detected gap uses the request
+   * the reconnect already uses rather than adding a mechanism: no second
+   * ingestion path, no second state store, and no recovery-specific state model
+   * exists.
+   *
    * **Only a known battle is recovered.** The identity is the one the runtime
-   * already holds from the server's own state (`§4.9`) — the same source
-   * `requestAction` resolves an action's battle from, and the same source
-   * `BattleScene` reads through `getBattleState()`. There is no second battle-id
-   * store, no URL/localStorage/React/scene-sourced id, and no caller-supplied
-   * one. With no battle known there is nothing to recover, so no request is
-   * issued and no state is invented.
+   * already holds from the server's own state (`SIGNALR_PROTOCOL.md` §4.9) — the
+   * same source `requestAction` resolves an action's battle from, and the same
+   * source `BattleScene` reads through `getBattleState()`. There is no second
+   * battle-id store, no URL/localStorage/React/scene-sourced id, and no
+   * caller-supplied one. With no battle known there is nothing to recover and no
+   * state is invented to give the request a target.
    *
-   * **The snapshot is ingested by the existing path.** An accepted response is
-   * routed through `receiveBattleState` (`§4`), so recovery produces exactly
-   * what a push produces and no more: the recovered snapshot replaces the
-   * runtime's copy, `sync` reaches `'synchronized'`, and the existing
-   * `battle_state_changed` notification and `battleStateListeners` dispatch
-   * fire. No second ingestion path, no second state store, and no
-   * recovery-specific state model exists.
+   * **The response's two sequence spellings must agree.** An accepted response
+   * carries the version as its own `serverSequence` and again as
+   * `state.sequence`, both projected from the same committed
+   * `BattleState.Sequence` (`SIGNALR_PROTOCOL.md` §7 item 5). A response whose two
+   * spellings disagree is an invalid recovery response: nothing is stored, no
+   * synchronization is claimed, and the contradiction is reported — neither value
+   * is silently preferred, because choosing would be the client authoring the
+   * version it is supposed to read (`GAME_RULES.md` §18, `ADR-001`). When they
+   * agree, the version ingested is the state's own `sequence`, the field the
+   * ingestion guard compares; the envelope copy is an integrity cross-check.
    *
-   * **Local prediction is discarded, not merged.** §7.2 makes the snapshot
-   * authoritative: nothing the client previously held is merged into it, and a
-   * snapshot is never reconciled against or rejected in favour of a stale local
-   * copy. Missed events are not replayed and none is requested — a
-   * desynchronized client resynchronizes from a snapshot only (§8 item 8,
-   * `ARCHITECTURE.md` §5.2).
+   * **Local prediction is discarded, not merged.** `SIGNALR_PROTOCOL.md` §7.2
+   * makes the snapshot authoritative: nothing the client previously held is merged
+   * into it, and no local prediction survives it. Missed events are not replayed
+   * and none is requested — a desynchronized client resynchronizes from a snapshot
+   * only (`SIGNALR_PROTOCOL.md` §8 item 8, `ARCHITECTURE.md` §5 item 2).
    *
-   * **No sequence logic is invented.** The response's `serverSequence` is the
-   * server's `BattleState.Sequence` and is documented state metadata, not a
-   * client correlation id (`§5.2` item 3): the runtime does not seed
-   * `clientSequence` from it, does not compare the snapshot against it, does not
-   * increment it, and does not reject a snapshot on it. The value the runtime
-   * stores is the one the snapshot itself carries, exactly as sent.
+   * **A snapshot of the active battle is ingested by the shared guard, and the
+   * guard's one refusal is versioning rather than reconciliation.** Because this
+   * routes through `ingestBattleState`, a snapshot that is *behind* the copy the
+   * same battle has already delivered is refused there, so recovery can never
+   * roll the synchronized state backward; a snapshot that is current or ahead —
+   * the ordinary recovery answer — is ingested verbatim and remains authoritative,
+   * and a snapshot that is level with the copy is the idempotent re-application
+   * described on that method. No sequence comparison is made between two
+   * different battles, and a rejected payload leaves the held copy untouched
+   * rather than being replaced, merged, or completed.
+   *
+   * **No sequence logic is invented from `serverSequence`.** The response's
+   * `serverSequence` is the server's `BattleState.Sequence` and is documented
+   * state metadata, not a client correlation id (`GAME_STATE.md` §5.2 item 3):
+   * the runtime does not seed `clientSequence` from it and does not increment it.
+   * The version the guard reads is the one the snapshot's own state carries,
+   * exactly as sent; the value the runtime stores is that of the payload it
+   * accepted.
+   *
+   * **One request in flight per battle.** A caller that arrives while a request
+   * for the same battle is already in flight joins that attempt: it issues
+   * nothing and returns, because the answer already on its way is the answer to
+   * the same question. That is what keeps repeated observations of one unresolved
+   * gap — several withheld batches, or a withheld batch plus an unanswered
+   * action — from becoming a request storm, and it is why §7.1's snapshot is
+   * never requested twice concurrently for one battle.
+   *
+   * A refused snapshot that is stale (sequence behind the held state), or a
+   * transport failure that answered nothing, schedules a bounded retry up to
+   * {@link MAX_RECOVERY_ATTEMPTS} attempts, so a transient failure does not leave
+   * the client permanently desynchronized and a persistent one does not spin.
    */
-  private async recoverBattleState(): Promise<void> {
+  public async recoverBattleState(): Promise<void> {
     // §7.1's precondition: a current battle is known. `battleId` comes from the
     // runtime's own synchronized state and nowhere else.
     const battleId = this.battleState?.battleId;
@@ -923,24 +1190,95 @@ export class GameRuntime implements GameRuntimePort {
       return;
     }
 
+    if (this.recoveryInFlightBattleId === battleId) {
+      // The same question is already being asked for this battle. Joining it
+      // means issuing nothing: the in-flight response settles both callers.
+      return;
+    }
+
+    await this.runRecovery(battleId, 1);
+  }
+
+  /**
+   * One snapshot request attempt, and the bounded retry it may schedule.
+   *
+   * `battleId` is passed in rather than re-read, so a battle that changes while
+   * the request is in flight cannot make this attempt's bookkeeping or its retry
+   * apply to the new one: every continuation is checked against the battle it was
+   * issued for.
+   */
+  private async runRecovery(battleId: string, attempt: number): Promise<void> {
+    // The battle this attempt is for must still be the synchronized one, and no
+    // other attempt may already be in flight for it.
+    if (
+      this.disposed ||
+      this.battleState?.battleId !== battleId ||
+      this.recoveryInFlightBattleId === battleId
+    ) {
+      return;
+    }
+
+    this.recoveryInFlightBattleId = battleId;
+
     let response: BattleStateSnapshotResponse;
 
     try {
       response = await this.signalR.getBattleState(battleId);
     } catch (error) {
+      this.recoveryInFlightBattleId = null;
+
       // A transport failure is a technical failure, not battle state: nothing
       // is fabricated and the runtime keeps whatever it held. The §4 push
       // remains the only other way state arrives.
       const detail = this.describeError(error);
       this.updateState({ lastError: detail });
       this.emit({ type: 'runtime_error', state: this.state, detail });
+
+      // The recovery is still needed — the client is still desynchronized and
+      // still holds this battle — so the bounded retry is what gives the
+      // request another chance without turning a persistent outage into a loop.
+      await this.retryRecoveryIfStillNeeded(battleId, attempt);
       return;
     }
 
+    this.recoveryInFlightBattleId = null;
+
     if (response.accepted) {
+      // §7.1's envelope and the snapshot it carries are two spellings of one
+      // value: the server builds both from the same committed `BattleState`
+      // (`BattleHub.GetBattleState` projects `state.Sequence` as the envelope's
+      // `serverSequence` and the §4 payload's `sequence` alike). An accepted
+      // response whose two spellings disagree is therefore not a snapshot this
+      // client may converge from, and neither value is preferred: nothing is
+      // stored, synchronization is not claimed, and the contradiction is
+      // reported through the existing technical channel.
+      const state = this.readBattleState(response.state);
+
+      if (state === null) {
+        const detail = 'Received a malformed GetBattleState recovery payload; ignored.';
+        this.updateState({ lastError: detail });
+        this.emit({ type: 'runtime_error', state: this.state, detail });
+        return;
+      }
+
+      if (response.serverSequence !== state.sequence) {
+        const detail =
+          `GetBattleState returned an inconsistent recovery envelope: serverSequence ` +
+          `${this.describeDeliveredValue(response.serverSequence)} for a snapshot at sequence ` +
+          `${state.sequence}; ignored so no version is silently chosen ` +
+          '(SIGNALR_PROTOCOL.md §7.1).';
+        this.updateState({ lastError: detail });
+        this.emit({ type: 'runtime_error', state: this.state, detail });
+        return;
+      }
+
       // The documented §4 shape, validated and stored by the same reader the
       // push uses — no recovery-only validator and no recovery-only model.
-      this.receiveBattleState(response.state);
+      const result = this.ingestBattleState(state, 'recovery');
+
+      if (result.isStale) {
+        await this.retryRecoveryIfStillNeeded(battleId, attempt);
+      }
       return;
     }
 
@@ -956,6 +1294,52 @@ export class GameRuntime implements GameRuntimePort {
       'no snapshot was received.';
     this.updateState({ lastError: detail });
     this.emit({ type: 'runtime_error', state: this.state, detail });
+  }
+
+  /**
+   * Schedules the next bounded recovery attempt when recovery is still needed.
+   *
+   * ```text
+   * still needed  the battle is still the synchronized one, the client is still
+   *               `unsynchronized`, and attempts remain
+   * otherwise     nothing is scheduled: a converged, replaced, cleared, disposed
+   *               or exhausted runtime has nothing left to retry
+   * ```
+   *
+   * The attempt counter is what bounds the retry: once
+   * {@link MAX_RECOVERY_ATTEMPTS} have run, the client stays honestly
+   * `unsynchronized` with its last reported failure rather than retrying forever.
+   */
+  private async retryRecoveryIfStillNeeded(battleId: string, attempt: number): Promise<void> {
+    if (attempt >= GameRuntime.MAX_RECOVERY_ATTEMPTS) {
+      return;
+    }
+
+    await this.scheduleRecoveryRetry(battleId, attempt + 1);
+  }
+
+  private async scheduleRecoveryRetry(battleId: string, nextAttempt: number): Promise<void> {
+    this.clearRecoveryRetry();
+
+    if (this.disposed || this.battleState?.battleId !== battleId || this.state.sync === 'synchronized') {
+      return;
+    }
+
+    const delayMs = 25 * Math.pow(2, nextAttempt - 2);
+
+    await new Promise<void>((resolve) => {
+      this.recoveryRetryTimer = setTimeout(async () => {
+        this.recoveryRetryTimer = null;
+
+        if (this.disposed || this.battleState?.battleId !== battleId || this.state.sync === 'synchronized') {
+          resolve();
+          return;
+        }
+
+        await this.runRecovery(battleId, nextAttempt);
+        resolve();
+      }, delayMs);
+    });
   }
 
   /**
@@ -993,10 +1377,31 @@ export class GameRuntime implements GameRuntimePort {
     // Treated as ended: the synchronized copy is dropped, so no stale client
     // state survives and no state is reconstructed locally. `sync` returns to
     // the documented "connected, no current battle" value rather than adding a
-    // recovery-specific one.
+    // recovery-specific one. Any identity a transition had established goes with
+    // it: the battle it named is the one that could not be recovered. Every piece
+    // of recovery bookkeeping goes too — there is no battle left to recover, so no
+    // retry timer, in-flight marker or withheld gap may outlive it.
     this.battleState = null;
     this.unresolvedActionIds.clear();
+    this.establishedBattleId = null;
+    this.clearRecoveryState();
     this.updateState({ sync: 'awaiting_battle', lastError: null });
+
+    // **The loss is published, so the presentation layer can answer it.** The
+    // battle the scene was rendering is gone; leaving the scene to discover that
+    // from `getBattleState() === null` would leave whatever it was presenting —
+    // a board, a timeline, a lock — in place until it happened to look. The
+    // publication carries no state (`null`) and the `'ended'` source, because
+    // there is none to carry and none is invented: §7.3's answer is that the
+    // battle cannot be recovered, not a substitute state.
+    //
+    // The publication precedes the fallback read below, so a scene answering it
+    // drops its stale presentation at the moment the battle is known to be over
+    // rather than after a network round trip.
+    const endedMetadata: BattleStateMetadata = { source: 'ended' };
+    for (const listener of this.battleStateListeners) {
+      listener(null, endedMetadata);
+    }
 
     try {
       await this.throughAuthenticatedTransport(() => this.api.getBattleResult(battleId));
@@ -1210,7 +1615,7 @@ export class GameRuntime implements GameRuntimePort {
       // The documented initial state push (SIGNALR_PROTOCOL.md §4). Server-
       // initiated, delivered on group join — never requested by the client.
       this.signalR.on<[unknown]>('BattleStateUpdated', (payload) => {
-        this.receiveBattleState(payload);
+        this.receiveBattleState(payload, 'push');
       }),
     ];
   }
@@ -1227,12 +1632,61 @@ export class GameRuntime implements GameRuntimePort {
   }
 
   /**
-   * Forwards a server-authoritative `ReceiveEvents` batch
-   * (SIGNALR_PROTOCOL.md §3) to battle-event subscribers unchanged.
+   * Forwards one server-authoritative `ReceiveEvents` batch
+   * (SIGNALR_PROTOCOL.md §3) to battle-event subscribers unchanged — after the
+   * delivery-integrity check below has admitted it.
    *
-   * The payload is not reshaped, filtered, or interpreted. A malformed payload
-   * is reported as a technical runtime error and otherwise ignored — the
-   * runtime never fabricates gameplay data to fill a gap.
+   * The payload is never reshaped, re-sorted, filtered member-by-member, or
+   * interpreted: an admitted batch is dispatched exactly as delivered, and the
+   * runtime neither adds an event nor drops one. A malformed payload is reported
+   * as a technical runtime error and otherwise ignored — the runtime never
+   * fabricates gameplay data to fill a gap.
+   *
+   * **The one check, and why it is a delivery-integrity check.** The server
+   * commits a resolution's `BattleState` and pushes it *before* it sends that
+   * resolution's batch (`SIGNALR_PROTOCOL.md` §3.1, §6 item 4), so the batch's
+   * `serverSequence` should be exactly the sequence the synchronized copy
+   * already carries. Two delivered versions are therefore compared — never a
+   * gameplay value, never a board, never an event payload:
+   *
+   * ```text
+   * no battle held                          → withhold  the batch's battle is not
+   *                                                      the synchronized one, and
+   *                                                      there is no state it could
+   *                                                      be presented against
+   * different battle than the held one      → withhold  it belongs to no battle this
+   *                                                      runtime synchronizes
+   * serverSequence equal to held sequence   → forward   the documented §6 item 4
+   *                                                      push-then-batch delivery
+   * serverSequence below the held sequence  → forward   the synchronized state
+   *                                                      already represents that
+   *                                                      resolution; the scene's
+   *                                                      own accepted-resolution
+   *                                                      memory decides whether it
+   *                                                      is re-presented
+   * serverSequence above the held sequence  → withhold  a delivery-integrity gap:
+   *                                                      the state for a committed
+   *                                                      resolution never arrived,
+   *                                                      so nothing the client
+   *                                                      holds can represent it
+   * ```
+   *
+   * **Only the gap is a desynchronization.** §6 item 3 makes a skipped
+   * `serverSequence` state desync, and §7.1's snapshot is the documented
+   * reconciliation (`ADR-008`: a snapshot, never an event replay) — so the
+   * withheld batch is *not* forwarded, `sync` becomes `unsynchronized`, and the
+   * authoritative snapshot is requested once for the gap. A batch **at or below**
+   * the held sequence is the ordinary path and the superseded case respectively:
+   * the held state already contains that resolution's result
+   * (`GAME_STATE.md` §5.1 item 3), so no snapshot is fetched for it — a
+   * re-delivery must not turn into an unnecessary recovery, and it is not a
+   * desynchronization at all.
+   *
+   * **It is deliberately not an event filter.** Nothing here reads an event
+   * payload, counts events, drops an event from an admitted batch, or decides
+   * what an event means; a batch the runtime cannot place against its
+   * synchronized state is withheld whole, and a batch it can place is forwarded
+   * whole and in order (`ARCHITECTURE.md` §2.2.1 rule 4, `GAME_RULES.md` §18).
    */
   private forwardBattleEvents(payload: unknown): void {
     const envelope = this.readBattleEventsEnvelope(payload);
@@ -1244,9 +1698,96 @@ export class GameRuntime implements GameRuntimePort {
       return;
     }
 
+    const held = this.battleState;
+
+    if (held === null) {
+      // No synchronized battle: there is no state this resolution could be
+      // presented against. `SIGNALR_PROTOCOL.md` §6 item 4 orders the state push
+      // before any batch for that battle, and §7.1's recovery is addressed by a
+      // battle id — with no battle held there is nothing to recover and nothing
+      // is invented to give one a target.
+      const detail =
+        `Received a ReceiveEvents batch for "${envelope.battleId}" while no battle ` +
+        'is synchronized; ignored (SIGNALR_PROTOCOL.md §4, §6 item 4).';
+      this.updateState({ lastError: detail });
+      this.emit({ type: 'runtime_error', state: this.state, detail });
+      return;
+    }
+
+    if (envelope.battleId !== held.battleId) {
+      // Cross-battle contamination: the batch belongs to a battle this runtime
+      // does not synchronize, so it must not reach a listener that is presenting
+      // `held`. No recovery is requested — a foreign batch says nothing about the
+      // active battle.
+      const detail =
+        `Received a ReceiveEvents batch for "${envelope.battleId}" while ` +
+        `"${held.battleId}" is synchronized; ignored (SIGNALR_PROTOCOL.md §3, §4).`;
+      this.updateState({ lastError: detail });
+      this.emit({ type: 'runtime_error', state: this.state, detail });
+      return;
+    }
+
+    if (envelope.serverSequence > held.sequence) {
+      this.withholdBatchAheadOfState(envelope, held.sequence);
+      return;
+    }
+
+    // Equal to, or below, the synchronized sequence: exactly what §6 item 4
+    // delivers, or a re-delivery the synchronized state already represents. Both
+    // are forwarded unchanged and neither changes synchronization.
     for (const listener of this.battleListeners) {
       listener(envelope);
     }
+  }
+
+  /**
+   * Withholds one `ReceiveEvents` batch that is ahead of the synchronized state
+   * and asks for the authoritative snapshot (`SIGNALR_PROTOCOL.md` §6 item 3,
+   * §7.1, `ADR-008`).
+   *
+   * This is the one client-observable meaning of "sequence desync": a
+   * `serverSequence` that steps past the sequence the synchronized copy carries
+   * means the state written back for that resolution was never delivered, so the
+   * client holds no board its events could be presented against. The resolution
+   * is therefore not animated — there is nothing to animate it over — and the
+   * §7.1 snapshot is requested instead of the missing events, because §8 item 8
+   * and `ADR-008` make a snapshot the only resynchronization path and no event is
+   * ever replayed.
+   *
+   * The request is deduplicated: the newest withheld gap is remembered, and a
+   * second observation while a request for it (or a retry of it) is still in
+   * flight joins that attempt rather than opening another. The bounded retry of
+   * `recoverBattleState` is what keeps a persistently unrecoverable gap from
+   * spinning.
+   */
+  private withholdBatchAheadOfState(
+    envelope: BattleEventsEnvelope,
+    heldSequence: number
+  ): void {
+    // The gap observed before this one, so a repeat of the *same* unresolved gap
+    // joins the attempt already outstanding for it instead of asking again
+    // (`recoverBattleState` issues at most one request per battle in flight).
+    const previousGap = this.withheldGapSequence;
+    this.withheldGapSequence = envelope.serverSequence;
+
+    const detail =
+      `Withheld a ReceiveEvents batch for "${envelope.battleId}" at serverSequence ` +
+      `${envelope.serverSequence}, ahead of the synchronized sequence ${heldSequence}: ` +
+      'the state for that resolution was not delivered, so the authoritative ' +
+      'snapshot is requested instead of replaying its events ' +
+      '(SIGNALR_PROTOCOL.md §6 item 3, §7.1).';
+
+    this.updateState({ sync: 'unsynchronized', lastError: detail });
+    this.emit({ type: 'runtime_error', state: this.state, detail });
+
+    if (previousGap === envelope.serverSequence) {
+      return;
+    }
+
+    // Best-effort and self-contained: `recoverBattleState` reports its own
+    // failures through the existing technical channel, so this never throws into
+    // the transport callback.
+    void this.recoverBattleState();
   }
 
   /**
@@ -1299,24 +1840,167 @@ export class GameRuntime implements GameRuntimePort {
    *
    * A malformed payload is reported as a technical runtime error and ignored —
    * the runtime never fabricates battle state to fill a gap.
+   *
+   * **A well-formed payload is then guarded before it is stored.** This is the
+   * one ingestion path, shared by the §4 push and the §7.1 recovery snapshot, so
+   * the guard is what keeps a stale or cross-battle payload from overwriting the
+   * active battle (`GAME_STATE.md` §5 — `Sequence` is the version the client
+   * detects missed or out-of-order delivery with, and §5.1 item 3 — a state at
+   * `Sequence = n` is the complete result of the n-th resolution). It compares
+   * versions only inside one battle; nothing is assumed between two different
+   * battles (`GAME_STATE.md` §5.2 item 3, `SIGNALR_PROTOCOL.md` §2 item 1 — this is not the
+   * client's `clientSequence` and is not the action token's `expectedSequence`):
+   *
+   * ```text
+   * no battle held                 → store   the §4 delivery that establishes it
+   * same battle, sequence lower    → refuse  it is behind what was delivered
+   * same battle, sequence level    → store   the idempotent duplicate below
+   * same battle, sequence higher   → store   the ordinary next delivery
+   * other battle, established      → store   the lifecycle transition's push
+   * other battle, not established  → refuse  no transition named it
+   * ```
+   *
+   * **A refusal stores nothing and is not a second error state.** The held copy
+   * is left exactly as it is — not merged, not completed, not partially
+   * overwritten — no battle-state listener is dispatched, and the refusal is
+   * reported through the existing technical channel (`lastError` plus the
+   * `runtime_error` event) that a malformed payload already uses. Nothing is
+   * derived from the refused payload, and the runtime still holds the server's
+   * own most recent state for the battle.
+   *
+   * **A duplicate sequence is idempotent and is not reported.** Two payloads of
+   * the same battle at the same `Sequence` describe the same complete resolution
+   * (`§5.1` item 3), and this projection carries battle state only: the record's
+   * exact member set (`§4` item 4) holds no non-gameplay metadata — no `Status`
+   * or lifecycle value exists anywhere in the protocol (`§8 item 3`) — so there is
+   * nothing a duplicate could update that a suppressed delivery would preserve.
+   * Storing it is therefore a plain re-application of the same value rather than
+   * a state change, and it stays an accepted delivery: recovery must still reach
+   * `'synchronized'` and re-render from its snapshot even when the snapshot is
+   * level with the copy already held (§7.2). Suppressing the ingestion would
+   * leave such a client permanently `'unsynchronized'`, which is why a duplicate
+   * is not treated as an anomaly and produces no `lastError` or `runtime_error`.
    */
-  private receiveBattleState(payload: unknown): void {
+  private receiveBattleState(
+    payload: unknown,
+    source: BattleStateSource = 'push'
+  ): { accepted: boolean; isStale: boolean } {
     const state = this.readBattleState(payload);
 
     if (state === null) {
-      const detail = 'Received a malformed BattleStateUpdated payload; ignored.';
+      const detail =
+        source === 'recovery'
+          ? 'Received a malformed GetBattleState recovery payload; ignored.'
+          : 'Received a malformed BattleStateUpdated payload; ignored.';
       this.updateState({ lastError: detail });
       this.emit({ type: 'runtime_error', state: this.state, detail });
-      return;
+      return { accepted: false, isStale: false };
+    }
+
+    return this.ingestBattleState(state, source);
+  }
+
+  /**
+   * Stores one already-read authoritative state and publishes it to the scenes —
+   * the shared half of the §4 push and the §7.1 recovery snapshot, so both
+   * deliveries produce exactly the same observables and no recovery-only
+   * ingestion path or recovery-only model exists.
+   *
+   * It is the single decision point of the ingestion guard
+   * (`refuseStateDelivery`), so an accepted push and an accepted snapshot are
+   * stored, versioned, and dispatched identically.
+   */
+  private ingestBattleState(
+    state: RuntimeBattleState,
+    source: BattleStateSource
+  ): { accepted: boolean; isStale: boolean } {
+    const refusal = this.refuseStateDelivery(state);
+
+    if (refusal !== null) {
+      this.updateState({ lastError: refusal });
+      this.emit({ type: 'runtime_error', state: this.state, detail: refusal });
+      const isStale =
+        this.battleState !== null &&
+        state.battleId === this.battleState.battleId &&
+        state.sequence < this.battleState.sequence;
+      return { accepted: false, isStale };
     }
 
     this.battleState = state;
+
+    // The transition's identity is consumed by the battle it named: once that
+    // battle's own state is stored, the copy it replaced is no longer current and
+    // no later payload may be admitted on that transition's authority.
+    if (state.battleId === this.establishedBattleId) {
+      this.establishedBattleId = null;
+      this.unresolvedActionIds.clear();
+    }
+
+    // The client is synchronized again: the state it now holds represents the
+    // resolution any withheld gap was about, so the scheduled retry ends and the
+    // outstanding-gap bookkeeping is released with it (`SIGNALR_PROTOCOL.md`
+    // §7.1).
+    this.clearRecoveryRetry();
+    this.withheldGapSequence = null;
+
     this.updateState({ sync: 'synchronized', lastError: null });
     this.emit({ type: 'battle_state_changed', state: this.state });
 
+    const metadata: BattleStateMetadata = { source };
     for (const listener of this.battleStateListeners) {
-      listener(state);
+      listener(state, metadata);
     }
+
+    return { accepted: true, isStale: false };
+  }
+
+  /**
+   * The monotonic and cross-battle guard on state ingestion — see
+   * `receiveBattleState` for the decision table and its documentation basis.
+   *
+   * Returns the technical detail to report when the delivered state must not
+   * replace the synchronized copy, or `null` when it may be stored. It reads only
+   * the two versions it compares (`battleId`, `sequence`) and the identity a
+   * lifecycle transition established; it interprets no gameplay value, adjusts
+   * nothing, and never invents state to fill a gap.
+   */
+  private refuseStateDelivery(state: RuntimeBattleState): string | null {
+    const held = this.battleState;
+
+    // The documented §4 delivery: joining the battle's group is what triggers it,
+    // and with no battle held there is no copy for it to overwrite — it is the
+    // delivery that establishes the active battle.
+    if (held === null) {
+      return null;
+    }
+
+    if (state.battleId === held.battleId) {
+      if (state.sequence < held.sequence) {
+        return (
+          `Received battle state for "${state.battleId}" at sequence ` +
+          `${state.sequence}, behind the synchronized sequence ${held.sequence}; ` +
+          'ignored so synchronized state cannot roll backward (GAME_STATE.md §5).'
+        );
+      }
+
+      // Level with, or ahead of, what was delivered: a duplicate of one complete
+      // resolution or the battle's next one. Both are stored (see above).
+      return null;
+    }
+
+    if (state.battleId === this.establishedBattleId) {
+      // A lifecycle transition (`startBattle`) established this identity from the
+      // server's own start response, so this is the push for the battle that
+      // transition created — the one case in which state for another battle
+      // legitimately replaces the held copy.
+      return null;
+    }
+
+    return (
+      `Received battle state for "${state.battleId}" while "${held.battleId}" is ` +
+      'synchronized and no lifecycle transition established it; ignored ' +
+      '(SIGNALR_PROTOCOL.md §4).'
+    );
   }
 
   /**
@@ -1327,7 +2011,7 @@ export class GameRuntime implements GameRuntimePort {
    * The record carries no other field and no `Status`/lifecycle value
    * (SIGNALR_PROTOCOL.md §4 item 4 — the payload carries the implemented stage's
    * own fields and no others, with the resulting member set part of the contract
-   * per §8.1 — and §8.3), so nothing else is read or defaulted.
+   * per §8 item 1 — and §8 item 3), so nothing else is read or defaulted.
    *
    * This checks *shape*, not gameplay meaning: it does not know what a Gem is,
    * does not validate the board against any game rule, and cannot repair one.
@@ -1819,5 +2503,17 @@ export class GameRuntime implements GameRuntimePort {
       return null;
     }
     return error instanceof Error ? error.message : String(error);
+  }
+
+  /**
+   * Renders one delivered protocol value for a technical diagnostic message.
+   *
+   * It is presentation of a received value, never a substitution for one: an
+   * absent optional member is reported as `absent`, so a diagnostic can state
+   * that the envelope carried no version at all instead of printing an empty
+   * string that would read like a version of `0`.
+   */
+  private describeDeliveredValue(value: number | null | undefined): string {
+    return typeof value === 'number' ? String(value) : 'absent';
   }
 }

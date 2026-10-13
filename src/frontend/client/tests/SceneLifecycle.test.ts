@@ -22,10 +22,12 @@ import { INITIAL_RUNTIME_STATE } from '../src/state/GameRuntimeState';
 import type { GameRuntimeState } from '../src/state/GameRuntimeState';
 import type {
   BattleEventsEnvelope,
+  BattleStateMetadata,
   RuntimeBattleState,
   RuntimeBoard,
   RuntimeEventListener,
 } from '../src/game/runtime/GameRuntimeEvents';
+import { RuntimeActionOutcomeUnknownError } from '../src/game/runtime/GameRuntimeEvents';
 import type { CardResponse, PetResponse } from '../src/services/api/CollectionModels';
 import { SceneEventEmitter } from './support/SceneEventEmitter';
 import { parseGemBaseLabel, parseSpecialGemBadge } from '../src/game/scenes/BattleEventPresenter';
@@ -147,7 +149,9 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     withTweens = false,
   } = options;
   const listeners = new Set<RuntimeEventListener>();
-  const battleStateListeners = new Set<(state: RuntimeBattleState | null) => void>();
+  const battleStateListeners = new Set<
+    (state: RuntimeBattleState | null, metadata?: BattleStateMetadata) => void
+  >();
   const battleEventListeners = new Set<(envelope: BattleEventsEnvelope) => void>();
   /**
    * Every `Text` object the scene created, in creation order.
@@ -518,6 +522,14 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       texts.push(entry);
       let alpha = 1;
       let fontSize: number | undefined;
+      /**
+       * Whether the object is drawn.
+       *
+       * The synchronization indicator is created hidden and shown only while the
+       * runtime reports `unsynchronized` (`GameRuntimeState.sync`), so a test has
+       * to be able to read the line's visibility as the scene actually set it.
+       */
+      let visible = true;
       /** The container this object was added to, as the harness numbered it. */
       let containerIndex: number | null = null;
       /**
@@ -664,6 +676,14 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         },
         set scale(next: number) {
           scale = next;
+        },
+        /** Phaser's `GameObject#setVisible` — the sync indicator is shown/hidden in place. */
+        setVisible: (next: boolean) => {
+          visible = next;
+          return obj;
+        },
+        get visible() {
+          return visible;
         },
         setWordWrapWidth: () => obj,
         setInteractive: () => {
@@ -1030,6 +1050,78 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     battleStateListeners,
     battleEventListeners,
     emitBattleEvents: (envelope: BattleEventsEnvelope) => {
+      // TASK-273: deliver the batch in the documented order. The server pushes the
+      // resolution's state *before* its batch (`SIGNALR_PROTOCOL.md` §3.1, §6
+      // item 4), and the scene admits a batch only when the authoritative state it
+      // holds represents it. A harness that already delivered a state that does
+      // not yet carry the batch's own battle and `serverSequence` (the values the
+      // server would have written back) re-keys that delivered state first — every
+      // other delivered member is left exactly as the test configured it, and no
+      // fixture value is invented here. A test that already delivered the matching
+      // state itself is left alone, so its own delivery is the one exercised.
+      const baseState = currentBattleState ?? {
+        battleId: envelope.battleId,
+        sequence: envelope.serverSequence,
+        turn: 1,
+        board: {
+          cells: Array.from({ length: 64 }, (_, idx) => ({
+            cellIndex: idx,
+            gemType: 'FIRE',
+          })),
+        },
+        playerState: { hp: 1000, maxHp: 1000, power: 0, statusEffects: [] },
+        petState: {
+          hp: 1000,
+          maxHp: 1000,
+          power: 0,
+          statusEffects: [],
+          equippedCards: [],
+          passiveId: null,
+          passiveProgress: { current: 0, threshold: 0 },
+        },
+        bossState: {
+          bossId: 'boss-test',
+          hp: 3000,
+          maxHp: 3000,
+          power: 0,
+          statusEffects: [],
+          enrageThreshold: 0,
+          isEnraged: false,
+        },
+      };
+
+      const alreadyDelivered =
+        currentBattleState !== null &&
+        currentBattleState.battleId === envelope.battleId &&
+        currentBattleState.sequence === envelope.serverSequence;
+
+      if (!alreadyDelivered) {
+        currentBattleState = {
+          ...baseState,
+          battleId: envelope.battleId,
+          sequence: envelope.serverSequence,
+        } as unknown as RuntimeBattleState;
+
+        for (const listener of battleStateListeners) {
+          listener(currentBattleState, { source: 'push' });
+        }
+      }
+
+      for (const listener of battleEventListeners) {
+        listener(envelope);
+      }
+    },
+    /**
+     * Delivers a batch **without** the state push that precedes it
+     * (`SIGNALR_PROTOCOL.md` §3.1, §6 item 4).
+     *
+     * It exists for the one test family that must exercise the scene's own
+     * delivery-integrity gate (`TASK-273` §4.2): a batch the authoritative state
+     * the scene holds does not represent — a foreign battle's, one ahead of the
+     * delivered `sequence`, or one behind it. `emitBattleEvents` deliberately
+     * cannot express that, because it delivers the documented order.
+     */
+    emitUnmatchedBattleEvents: (envelope: BattleEventsEnvelope) => {
       for (const listener of battleEventListeners) {
         listener(envelope);
       }
@@ -1043,19 +1135,27 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
      */
     pendingTweenCount: () => pendingTweens.length,
     /**
-     * The pending tweens' own durations and targets, in creation order.
+     * The pending tweens' own durations, targets, and completion callback, in
+     * creation order.
      *
      * It is what makes "a phase's hold covers the animations that phase starts"
      * (TASK-246 §5) an assertion about the scene's real tween configuration
      * rather than about a constant copied into this suite: a test can find the
      * pacing tween by its target (the scene's own `phaseClock`) and compare its
      * duration with every animation tween that same phase queued.
+     *
+     * `completion` is the callback Phaser would fire when the tween finishes. A
+     * test can hold it and invoke it *after* the tween has been killed, which is
+     * the one shape a killed tween cannot reproduce: a callback that was already
+     * in flight when an authoritative recovery abandoned the timeline it belonged
+     * to (P0.3 §4).
      */
     pendingTweenRecords: () =>
       pendingTweens.map((tween) => ({
         duration: tween.duration,
         targets: tween.targets,
         props: tween.props,
+        completion: tween.onComplete,
       })),
     /** The targets `killTweensOf` has been asked for, in order. */
     killedTweenTargets,
@@ -1139,10 +1239,10 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     },
     sceneStarted,
     loadHandlers,
-    setBattleState: (next: RuntimeBattleState | null) => {
+    setBattleState: (next: RuntimeBattleState | null, metadata?: BattleStateMetadata) => {
       currentBattleState = next;
       for (const listener of battleStateListeners) {
-        listener(next);
+        listener(next, metadata);
       }
     },
     /** Reports a technical runtime state transition to the runtime's subscribers. */
@@ -2763,6 +2863,12 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
     runScene(scene, ctx, 'create');
 
+    // TASK-273: the delivered state the batch belongs to, pushed in the
+    // documented order (`SIGNALR_PROTOCOL.md` §3.1, §6 item 4) before the
+    // baseline below is read, so the baseline covers the HUD the push presents
+    // and the assertion covers only what the batch adds.
+    harness.setBattleState(serverState({ battleId: 'b-210', sequence: 2 }));
+
     const beforePlayerHit = harness.texts.length;
     harness.emitBattleEvents({
       battleId: 'b-210',
@@ -2781,6 +2887,7 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     expect(bossHit[0].x).toBe(161);
     expect(bossHit[0].y).toBe(108);
 
+    harness.setBattleState(serverState({ battleId: 'b-210', sequence: 3 }));
     const beforePetHit = harness.texts.length;
     harness.emitBattleEvents({
       battleId: 'b-210',
@@ -2806,6 +2913,8 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
     runScene(scene, ctx, 'create');
 
+    harness.setBattleState(serverState({ battleId: 'b-210', sequence: 4 }));
+
     const before = harness.texts.length;
     harness.emitBattleEvents({
       battleId: 'b-210',
@@ -2823,6 +2932,8 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
     runScene(scene, ctx, 'create');
 
+    harness.setBattleState(serverState({ battleId: 'b-210', sequence: 5 }));
+
     const before = harness.texts.length;
     harness.emitBattleEvents({
       battleId: 'b-210',
@@ -2839,6 +2950,8 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
     runScene(scene, ctx, 'create');
 
+    harness.setBattleState(serverState({ battleId: 'b-210', sequence: 6 }));
+
     const beforeGain = harness.texts.length;
     harness.emitBattleEvents({
       battleId: 'b-210',
@@ -2851,6 +2964,7 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     expect(gain[0].x).toBe(166);
     expect(gain[0].y).toBe(213);
 
+    harness.setBattleState(serverState({ battleId: 'b-210', sequence: 7 }));
     const beforeLoss = harness.texts.length;
     harness.emitBattleEvents({
       battleId: 'b-210',
@@ -2972,6 +3086,8 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     // shape a real heal would arrive in — into an invented `+N`.
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
     runScene(scene, ctx, 'create');
+
+    harness.setBattleState(serverState({ battleId: 'b-210', sequence: 14 }));
 
     const before = harness.texts.length;
     harness.emitBattleEvents({
@@ -3097,10 +3213,13 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     expect(callout().text).toBe('BOSS ENRAGED');
     expect(callout().color).toBe('#f87171');
 
-    // Emit a different event to change callout text
+    // Emit a different event to change callout text. It is delivered at the
+    // state the scene already holds — the push that precedes a batch
+    // (`SIGNALR_PROTOCOL.md` §3.1, §6 item 4) is the one above, and a further
+    // battle-identity change here would be a new battle rather than an update.
     harness.emitBattleEvents({
-      battleId: 'b-231',
-      serverSequence: 40,
+      battleId: 'battle-1',
+      serverSequence: 0,
       events: [
         { type: 'MatchCreated', shape: 'Straight', cells: [0, 1, 2], gemType: 'ATK', cascadeDepth: 0 },
       ],
@@ -6027,9 +6146,13 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
     const played = playedPhases(ctx);
     const held = readouts(harness, ctx);
 
-    // An older batch — the server's `serverSequence` is strictly increasing and
-    // has no gaps (SIGNALR_PROTOCOL.md §3 item 2) — is recorded and presented no
-    // second time, and a duplicate of the batch playing is treated the same way.
+    // An older batch — an earlier `serverSequence` than the one this scene has
+    // already accepted — is recorded and presented no second time, and a duplicate
+    // of the batch playing is treated the same way. Only the two sequences below
+    // are delivered here: this test covers the duplicate/older rule, **not** a gap
+    // in the sequence. Gap detection is the runtime's
+    // (`GameRuntime.test.ts`, P0.4) and the scene's admission gate is covered by
+    // the P0.4 suite's `own` tests.
     for (const serverSequence of [0, 1]) {
       harness.emitBattleEvents({
         battleId: 'battle-252',
@@ -7132,9 +7255,15 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       expect(inputLocked(scene, ctx)).toBe(true);
       expect(readouts(harness, ctx).bossHp).toBe('5000 / 5000');
 
-      // ...and a delivered state this resolution cannot be — a recovery snapshot, a
-      // resync, a sequence jump (ADR-008) — releases it, because that is a delivery
-      // fact and not a duration.
+      // ...and a delivered state this resolution cannot be — a recovery snapshot or
+      // any delivered version that is not `settled + 1` (ADR-008) — releases it,
+      // because that is a delivery fact and not a duration.
+      //
+      // This is a **state-push** hold-release, not coverage for a missing event
+      // batch: the batch never arrives here, and nothing rebroadcasts it. The
+      // missing-batch paths (a withheld batch ahead of the delivered state, and a
+      // resolution with no presentable phase) are covered by the P0.4 suite below
+      // and by `GameRuntime.test.ts`'s P0.4 suite.
       harness.setBattleState(resolvedState({ sequence: 4 }));
       expect((ctx as { orchestration: string }).orchestration).toBe('idle');
       expect(inputLocked(scene, ctx)).toBe(false);
@@ -7893,10 +8022,15 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       // names no party of its own, so it is attributed to the boundary that opened
       // its cycle. The one board transition still sits where the round's board work
       // ends (TASK-254/262), and the terminal steps keep their own parties.
+      // TASK-275 adds one presentation-only turn banner per delivered boundary,
+      // labelled from that boundary's own `actor` and placed before the exchange it
+      // introduces — it opens no gameplay step and adds no sequence.
       expect(phases.map((phase) => `${phase.detail}:${phase.actor}`)).toEqual([
+        'banner PLAYER TURN:player',
         'swap 20->21:player',
         'match depth=1:player',
         'damage player->boss:player',
+        'banner BOSS TURN:boss',
         'swap 27->28:boss',
         'match depth=1:boss',
         'settle:swap',
@@ -7908,6 +8042,12 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       // member, and the client derives no swap from a board it has already moved.
       expect(phases.filter((phase) => phase.kind === 'swap')).toHaveLength(2);
       expect(phases.filter((phase) => phase.kind === 'settle')).toHaveLength(1);
+      // One banner per delivered boundary, and each names the side that boundary
+      // named — never a client-held turn (TASK-275 §6.6).
+      expect(phases.filter((phase) => phase.kind === 'banner').map((phase) => phase.actor)).toEqual([
+        'player',
+        'boss',
+      ]);
 
       playToEnd(harness);
       expect(playedPhases(ctx)).toContain('swap 27->28');
@@ -7931,7 +8071,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
 
       const details = timelinePhases(ctx).map((phase) => phase.detail);
 
-      expect(details).toEqual(['swap 12->13', 'match depth=1', 'settle']);
+      expect(details).toEqual(['banner PLAYER TURN', 'swap 12->13', 'match depth=1', 'settle']);
       expect(details).not.toContain('swap 20->21');
     });
 
@@ -8040,9 +8180,11 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
      * transition where the round's board work ends (TASK-254/262).
      */
     const BOTH_ACTORS_PHASES = [
+      'banner PLAYER TURN',
       'swap 20->21',
       'match depth=1',
       'damage player->boss',
+      'banner BOSS TURN',
       'swap 27->28',
       'match depth=1',
       'settle',
@@ -8186,11 +8328,14 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
 
       // GAME_EVENTS.md §1's order, unchanged by this task: `SwapStarted` opens its
       // own step, its board cycle follows it, and the round's single committed board
-      // transition sits where the round's board work ends.
+      // transition sits where the round's board work ends. TASK-275's presentation-only
+      // banner precedes each delivered boundary and stands in for no gameplay step.
       expect(phases.map((phase) => `${phase.detail}:${phase.actor}`)).toEqual([
+        'banner PLAYER TURN:player',
         'swap 20->21:player',
         'match depth=1:player',
         'damage player->boss:player',
+        'banner BOSS TURN:boss',
         'swap 27->28:boss',
         'match depth=1:boss',
         'settle:swap',
@@ -8457,9 +8602,11 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       await flush();
 
       expect(timelinePhases(ctx).map((phase) => phase.detail)).toEqual([
+        'banner PLAYER TURN',
         'swap 20->21',
         'match depth=1',
         'damage player->boss',
+        'banner BOSS TURN',
         'swap 27->28',
         'match depth=1',
         'settle',
@@ -11139,7 +11286,11 @@ describe('BattleScene — developer Move Log (TASK-253, operator decision D-1)',
     expect(() =>
       harness.emitBattleEvents({
         battleId: 'battle-253',
-        serverSequence: 3,
+        // Re-delivered at the sequence the synchronized state already carries, so
+        // the malformed payload — not a superseding state — is what the playing
+        // timeline meets (`TASK-273` §4.3: the parse runs before any
+        // presentability decision).
+        serverSequence: 2,
         events: [
           {
             type: 'MatchCreated',
@@ -11247,5 +11398,1817 @@ describe('BattleScene — developer Move Log (TASK-253, operator decision D-1)',
     }
     expect(outside).not.toContain('seq=12');
     expect(outside).not.toContain('Combo: 3');
+  });
+});
+
+/**
+ * P0.3 — authoritative recovery, action outcomes, and the synchronization
+ * indicator.
+ *
+ * The three gaps this suite covers are all *scene-level* consequences of the
+ * runtime contract:
+ *
+ * ```text
+ * recovery snapshot   `onBattleState(state, { source: 'recovery' })` is the
+ *                     §7.1 reconciliation. It is applied directly — board, HUD,
+ *                     health, turn-owned readouts and Status Effects — with no
+ *                     matching `ReceiveEvents` batch required, and it converges
+ *                     and releases everything the interrupted presentation was
+ *                     holding (`ADR-008`: recovery is a snapshot, never an event
+ *                     replay)
+ * action outcomes     a definitive rejection (`accepted: false`) is a gameplay
+ *                     no-op that is rolled back onto the newest authoritative
+ *                     state; a transport failure with no acknowledgement is
+ *                     **not** a rejection, so nothing is assumed about whether
+ *                     the action committed and the runtime's recovery is what
+ *                     settles the scene (`SIGNALR_PROTOCOL.md` §5, §7)
+ * sync indicator      `GameRuntimeState.sync` drives one non-blocking line:
+ *                     visible while `unsynchronized`, hidden once the runtime
+ *                     confirms `synchronized`
+ * ```
+ *
+ * The fixtures below are the delivered values only: a board is rotated by cell
+ * count so "the board on screen" is provably the delivered one, and no test
+ * asserts on a value the client computes — it computes none.
+ */
+describe('BattleScene — authoritative recovery, action outcomes & synchronization (P0.3)', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const GEM_NAMES = ['ATK', 'DEF', 'HP', 'POWER'];
+  const GEM_LABELS: Readonly<Record<string, string>> = {
+    ATK: 'ATK',
+    DEF: 'DEF',
+    HP: 'HP',
+    POWER: 'PWR',
+  };
+  const BATTLE_ID = 'battle-p03';
+
+  /** A scene-owned presentation field, read the way the scene wrote it. */
+  function field<T>(ctx: object, name: string): T {
+    return (ctx as Record<string, T>)[name];
+  }
+
+  /**
+   * A delivered 8 x 8 board, rotated by `shift` cells — so the board a recovery
+   * snapshot carries is provably different from the one already on screen.
+   */
+  function deliveredBoard(shift = 0): RuntimeBoard {
+    return {
+      cells: Array.from({ length: 64 }, (_, index) => ({
+        gemType: GEM_NAMES[(index + shift) % GEM_NAMES.length],
+      })),
+    };
+  }
+
+  /** The labels the delivered board must be rendered as, in §1.0 index order. */
+  function expectedLabels(shift = 0): string[] {
+    return Array.from({ length: 64 }, (_, index) =>
+      GEM_LABELS[GEM_NAMES[(index + shift) % GEM_NAMES.length]]
+    );
+  }
+
+  /** The §1.0 cell index a board-local point sits on, or `null` outside the board. */
+  function cellIndexOf(x: number, y: number): number | null {
+    const column = Math.round((x - BOARD_ORIGIN_X - CELL_SIZE / 2) / BOARD_PITCH);
+    const row = Math.round((y - BOARD_ORIGIN_Y - CELL_SIZE / 2) / BOARD_PITCH);
+
+    if (row < 0 || row >= BOARD_COLUMNS || column < 0 || column >= BOARD_COLUMNS) {
+      return null;
+    }
+
+    return row * BOARD_COLUMNS + column;
+  }
+
+  /**
+   * The label rendered at each §1.0 cell, read from the view's own position.
+   *
+   * A committed Swap deliberately exchanges two views' cells, so the cell a
+   * label *shows* is the cell it sits on, not its slot in the container.
+   */
+  function labelsByCell(harness: ReturnType<typeof createSceneHarness>): string[] {
+    const labels: string[] = new Array(BOARD_COLUMNS * BOARD_COLUMNS).fill('');
+
+    for (const cell of harness.boardCells) {
+      if (cell.kind !== 'label') {
+        continue;
+      }
+
+      const view = cell as unknown as { x: number; y: number; label?: string };
+      const index = cellIndexOf(view.x, view.y);
+
+      if (index !== null) {
+        labels[index] = view.label ?? '';
+      }
+    }
+
+    return labels;
+  }
+
+  /** One delivered authoritative state, shaped exactly as the §4 push is. */
+  function battleState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+    return {
+      battleId: BATTLE_ID,
+      turn: 1,
+      sequence: 0,
+      rngSeed: 42,
+      rngState: { state: 123456789, increment: 1 },
+      board: deliveredBoard(),
+      playerState: { combo: 0, matchCount: 0 },
+      petState: {
+        hp: 1000,
+        maxHp: 1000,
+        power: 0,
+        passiveId: 'xich-lang',
+        passiveProgress: { threshold: 5, current: 0 },
+        equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+        statusEffects: [],
+      },
+      bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
+      ...overrides,
+    };
+  }
+
+  /** One technical runtime state, as `GameRuntimeState` publishes it. */
+  function runtimeState(overrides: Partial<GameRuntimeState> = {}): GameRuntimeState {
+    return {
+      ...INITIAL_RUNTIME_STATE,
+      session: 'authenticated',
+      connection: 'connected',
+      runtime: 'ready',
+      sync: 'synchronized',
+      ...overrides,
+    };
+  }
+
+  /** A battle scene with the recorded, test-driven tween queue. */
+  function createBattle(
+    state: RuntimeBattleState | null = battleState(),
+    runtimeStateValue: GameRuntimeState = runtimeState()
+  ) {
+    const harness = createSceneHarness({
+      battleState: state,
+      withTweens: true,
+      state: runtimeStateValue,
+    });
+    const scene = new BattleScene();
+    const ctx = harness.context(scene, 'BattleScene');
+    runScene(scene, ctx, 'create');
+    return { harness, scene, ctx };
+  }
+
+  function inputLocked(scene: BattleScene, ctx: object): boolean {
+    return (
+      Object.getPrototypeOf(scene) as { isInputLocked(this: object): boolean }
+    ).isInputLocked.call(ctx);
+  }
+
+  /** The presentation phases the scene has played, in order. */
+  function playedPhases(ctx: object): string[] {
+    return [...field<string[]>(ctx, 'presentedPhases')];
+  }
+
+  /** Every line the scene renders, joined — the player-facing text. */
+  function renderedText(harness: ReturnType<typeof createSceneHarness>): string {
+    return harness.texts.map((entry) => entry.text).join('\n');
+  }
+
+  /** The delivered §4 push, with the metadata the runtime publishes for it. */
+  function push(
+    harness: ReturnType<typeof createSceneHarness>,
+    next: RuntimeBattleState
+  ): void {
+    harness.setBattleState(next, { source: 'push' });
+  }
+
+  /** The §7.1 authoritative reconciliation snapshot. */
+  function recovery(
+    harness: ReturnType<typeof createSceneHarness>,
+    next: RuntimeBattleState
+  ): void {
+    harness.setBattleState(next, { source: 'recovery' });
+  }
+
+  function emitBatch(
+    harness: ReturnType<typeof createSceneHarness>,
+    serverSequence: number,
+    events: unknown[],
+    battleId = BATTLE_ID
+  ): void {
+    harness.emitBattleEvents({ battleId, serverSequence, events });
+  }
+
+  /**
+   * Submits one action whose acknowledgement is held open, which is the state a
+   * real request is in while its resolution's push and batch arrive
+   * (`SIGNALR_PROTOCOL.md` §3.1). The returned handles settle it.
+   */
+  function holdAction(harness: ReturnType<typeof createSceneHarness>): {
+    resolve: (acknowledgement: { accepted: boolean; reason?: string | null }) => void;
+    reject: (error: unknown) => void;
+  } {
+    let resolve!: (acknowledgement: { accepted: boolean; reason?: string | null }) => void;
+    let reject!: (error: unknown) => void;
+
+    harness.setActionBehaviour(
+      () =>
+        new Promise<never>((res, rej) => {
+          resolve = res as unknown as (acknowledgement: {
+            accepted: boolean;
+            reason?: string | null;
+          }) => void;
+          reject = rej;
+        })
+    );
+
+    return {
+      // Read through the binding, not a snapshot of it: the behaviour is invoked
+      // when the scene actually submits, which is after this call returns.
+      resolve: (acknowledgement) => resolve(acknowledgement),
+      reject: (error) => reject(error),
+    };
+  }
+
+  /** A Swap that resolves through two cascade passes and both combat stages. */
+  const CASCADE_BATCH: unknown[] = [
+    { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+    { type: 'GemMatched', cellIndex: 24, gemType: 'ATK' },
+    { type: 'CascadeCreated', cascadeDepth: 1 },
+    { type: 'MatchCreated', shape: 'Straight', cells: [32, 33, 34], gemType: 'DEF', cascadeDepth: 2 },
+    { type: 'GemMatched', cellIndex: 32, gemType: 'DEF' },
+    { type: 'CascadeCreated', cascadeDepth: 2 },
+    { type: 'DamageCalculated', base: 100, comboModifier: 1.5, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 150 },
+    { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+    { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
+    { type: 'DamageCalculated', base: 80, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 80 },
+    { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
+    { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
+  ];
+
+  /** The same resolution's combat stages only — no board cycle at all. */
+  const COMBAT_BATCH: unknown[] = [
+    { type: 'DamageCalculated', base: 100, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 100 },
+    { type: 'DamageDealt', source: 'player', target: 'boss', amount: 100 },
+    { type: 'DamageTaken', source: 'player', target: 'boss', amount: 100 },
+    { type: 'DamageCalculated', base: 80, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 80 },
+    { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
+    { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
+  ];
+
+  /** Plays the timeline forward until `count` phases have played, step by step. */
+  function playUntil(
+    harness: ReturnType<typeof createSceneHarness>,
+    ctx: object,
+    count: number
+  ): void {
+    for (let step = 0; step < 500 && playedPhases(ctx).length < count; step++) {
+      if (harness.pendingTweenCount() === 0) {
+        return;
+      }
+      harness.flushTweens(1);
+    }
+  }
+
+  it('1. converges and releases the lock when a recovery snapshot arrives during a cascade', () => {
+    const { harness, scene, ctx } = createBattle();
+    const held = holdAction(harness);
+
+    tapCell(harness, 20);
+    tapCell(harness, 21);
+
+    // The resolution's own state push arrives first — held, because its batch is
+    // what sequences it — and then that batch: the cascade timeline plays while
+    // the request is still unanswered.
+    push(harness, battleState({ sequence: 1, turn: 2, board: deliveredBoard(1) }));
+    expect(labelsByCell(harness)).toEqual(expectedLabels(0));
+
+    emitBatch(harness, 1, CASCADE_BATCH);
+    playUntil(harness, ctx, 3);
+
+    expect(playedPhases(ctx)).toEqual(['swap 20->21', 'match depth=1', 'cascade depth=1']);
+    expect(harness.pendingTweenCount()).toBeGreaterThan(0);
+    expect(inputLocked(scene, ctx)).toBe(true);
+
+    // The recovery snapshot: the authoritative state at sequence 2, with a
+    // different board, and no `ReceiveEvents` batch at all.
+    recovery(harness, battleState({ sequence: 2, turn: 3, board: deliveredBoard(2) }));
+
+    // The cascade presentation is abandoned exactly where it stood — the settle
+    // step that would converge the resolution's board is never played — the lock
+    // is released, and the scene renders the snapshot's own board.
+    expect(playedPhases(ctx)).toEqual(['swap 20->21', 'match depth=1', 'cascade depth=1']);
+    expect(playedPhases(ctx)).not.toContain('settle');
+    expect(harness.pendingTweenCount()).toBe(0);
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(field<string>(ctx, 'orchestration')).toBe('idle');
+    expect(field<number | null>(ctx, 'heldSequence')).toBeNull();
+    expect(labelsByCell(harness)).toEqual(expectedLabels(2));
+
+    // The answer to the request that was in flight cannot re-lock the scene.
+    held.resolve({ accepted: true });
+    expect(inputLocked(scene, ctx)).toBe(false);
+  });
+
+  it('2. converges and releases the lock when a recovery snapshot arrives during combat', () => {
+    const { harness, scene, ctx } = createBattle();
+
+    // The resolution's own state push, then its combat batch: the damage phase
+    // presents the pair the push carried.
+    push(
+      harness,
+      battleState({
+        sequence: 1,
+        turn: 2,
+        board: deliveredBoard(1),
+        bossState: { bossId: 'boss-hoa-long', hp: 4500, maxHp: 5000 },
+      })
+    );
+    emitBatch(harness, 1, COMBAT_BATCH);
+
+    expect(playedPhases(ctx)).toEqual(['damage player->boss']);
+    expect(field<{ text: string }>(ctx, 'bossHpText').text).toBe('4500 / 5000');
+    expect(inputLocked(scene, ctx)).toBe(true);
+
+    // The recovery snapshot carries the authoritative values — including an HP
+    // pair no damage event in the batch derives.
+    recovery(
+      harness,
+      battleState({
+        sequence: 2,
+        turn: 3,
+        board: deliveredBoard(2),
+        bossState: { bossId: 'boss-hoa-long', hp: 4000, maxHp: 5000 },
+        petState: {
+          hp: 700,
+          maxHp: 1000,
+          power: 35,
+          passiveId: 'xich-lang',
+          passiveProgress: { threshold: 5, current: 3 },
+          equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+          statusEffects: [],
+        },
+      })
+    );
+
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(harness.pendingTweenCount()).toBe(0);
+    expect(playedPhases(ctx)).toEqual(['damage player->boss']);
+    expect(field<{ text: string }>(ctx, 'bossHpText').text).toBe('4000 / 5000');
+    expect(field<{ text: string }>(ctx, 'petHpText').text).toBe('700 / 1000');
+    expect(field<{ text: string }>(ctx, 'petPowerText').text).toBe('35 / 100');
+    expect(labelsByCell(harness)).toEqual(expectedLabels(2));
+  });
+
+  it('3. invalidates pending callbacks, so none can advance a newer timeline or restore a stale board', () => {
+    const { harness, scene, ctx } = createBattle();
+    const phaseClock = field<object>(ctx, 'phaseClock');
+
+    emitBatch(harness, 1, CASCADE_BATCH);
+
+    // The abandoned timeline's pacing callback, held exactly as Phaser would
+    // have it queued when the recovery lands.
+    const abandoned = harness
+      .pendingTweenRecords()
+      .find((tween) => tween.targets.includes(phaseClock));
+    expect(abandoned?.completion).toBeTypeOf('function');
+
+    recovery(harness, battleState({ sequence: 2, board: deliveredBoard(2) }));
+    expect(labelsByCell(harness)).toEqual(expectedLabels(2));
+
+    const phasesAfterRecovery = playedPhases(ctx);
+    expect(phasesAfterRecovery).toEqual(['match depth=1']);
+
+    // A newer resolution arrives and starts its own timeline.
+    emitBatch(harness, 3, CASCADE_BATCH);
+    expect(playedPhases(ctx)).toEqual([...phasesAfterRecovery, 'match depth=1']);
+
+    const pendingBefore = harness.pendingTweenCount();
+    expect(pendingBefore).toBeGreaterThan(0);
+
+    // The abandoned timeline's callback lands late. It belongs to a presentation
+    // that no longer exists, so it advances nothing and writes nothing — not even
+    // into the timeline that replaced it.
+    abandoned?.completion?.();
+
+    expect(playedPhases(ctx)).toEqual([...phasesAfterRecovery, 'match depth=1']);
+    expect(harness.pendingTweenCount()).toBe(pendingBefore);
+    expect(field<number>(ctx, 'presentationSequence')).toBe(3);
+    expect(inputLocked(scene, ctx)).toBe(true);
+    expect(labelsByCell(harness)).toEqual(expectedLabels(2));
+  });
+
+  it('4. releases the pending presentation exactly once, including an equal-sequence recovery', async () => {
+    const { harness, scene, ctx } = createBattle();
+    const phaseClock = field<object>(ctx, 'phaseClock');
+    const held = holdAction(harness);
+
+    tapCell(harness, 20);
+    tapCell(harness, 21);
+
+    // The resolution this client is awaiting is playing, with its state held.
+    const resolved = battleState({ sequence: 1, turn: 2, board: deliveredBoard(1) });
+    push(harness, resolved);
+    emitBatch(harness, 1, CASCADE_BATCH);
+
+    expect(field<object | null>(ctx, 'presentationTimeline')).not.toBeNull();
+    expect(field<number | null>(ctx, 'heldSequence')).toBe(1);
+    expect(inputLocked(scene, ctx)).toBe(true);
+
+    // An equal-sequence recovery — the runtime's idempotent re-application of the
+    // very resolution this scene is presenting — still ends that presentation and
+    // releases the lock it was holding. Nothing is left waiting for a batch.
+    recovery(harness, resolved);
+
+    // The pacing waiter was released once, by the abort of the timeline it
+    // belonged to: the phase clock is killed exactly here.
+    expect(harness.killedTweenTargets.filter((target) => target === phaseClock)).toHaveLength(1);
+    expect(field<object | null>(ctx, 'presentationTimeline')).toBeNull();
+    expect(field<number | null>(ctx, 'heldSequence')).toBeNull();
+    expect(harness.pendingTweenCount()).toBe(0);
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(labelsByCell(harness)).toEqual(expectedLabels(1));
+
+    // A second, identical recovery releases nothing a second time.
+    recovery(harness, resolved);
+
+    expect(harness.killedTweenTargets.filter((target) => target === phaseClock)).toHaveLength(1);
+    expect(harness.pendingTweenCount()).toBe(0);
+    expect(field<string>(ctx, 'orchestration')).toBe('idle');
+    expect(field<object | null>(ctx, 'presentationTimeline')).toBeNull();
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(labelsByCell(harness)).toEqual(expectedLabels(1));
+
+    // And the answer to the request that was in flight when the first recovery
+    // landed cannot settle, report, or re-lock the released scene.
+    held.resolve({ accepted: true });
+    await flush();
+
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(renderedText(harness)).not.toContain('20 -> 21');
+  });
+
+  it('5. requires no ReceiveEvents batch: a recovery applies the state a push would still be holding', () => {
+    const { harness, scene, ctx } = createBattle();
+    const held = holdAction(harness);
+
+    tapCell(harness, 20);
+    tapCell(harness, 21);
+
+    const resolved = battleState({
+      sequence: 1,
+      turn: 2,
+      board: deliveredBoard(3),
+      playerState: { combo: 3, matchCount: 7 },
+      bossState: { bossId: 'boss-hoa-long', hp: 3000, maxHp: 5000 },
+      petState: {
+        hp: 800,
+        maxHp: 1000,
+        power: 40,
+        passiveId: 'xich-lang',
+        passiveProgress: { threshold: 5, current: 4 },
+        equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+        statusEffects: [],
+      },
+    });
+
+    // As a push this is the awaited resolution's state: it is held at the
+    // presentation the gesture was made on until its batch arrives.
+    push(harness, resolved);
+
+    expect(labelsByCell(harness)).toEqual(expectedLabels(0));
+    expect(field<number | null>(ctx, 'heldSequence')).toBe(1);
+    expect(inputLocked(scene, ctx)).toBe(true);
+
+    // Delivered as the authoritative reconciliation instead, the same state is
+    // applied directly — with no batch at all, and with no event fabricated for
+    // it — and the lock is released.
+    recovery(harness, resolved);
+
+    expect(labelsByCell(harness)).toEqual(expectedLabels(3));
+    expect(field<{ text: string }>(ctx, 'bossHpText').text).toBe('3000 / 5000');
+    expect(field<{ text: string }>(ctx, 'petHpText').text).toBe('800 / 1000');
+    expect(field<{ text: string }>(ctx, 'petPowerText').text).toBe('40 / 100');
+    expect(field<{ text: string }>(ctx, 'comboText').text).toBe('COMBO ×3');
+    expect(field<{ text: string }>(ctx, 'matchesText').text).toBe('MATCHES 7');
+    expect(field<{ text: string }>(ctx, 'petPassiveProgressText').text).toContain('4 / 5');
+    expect(scene.getPresentedEvents()).toEqual([]);
+    expect(playedPhases(ctx)).toEqual([]);
+    expect(field<number | null>(ctx, 'heldSequence')).toBeNull();
+    expect(inputLocked(scene, ctx)).toBe(false);
+
+    held.resolve({ accepted: true });
+  });
+
+  it('6. keeps the ordinary push animation: the batch still drives the timeline', () => {
+    const { harness, scene, ctx } = createBattle();
+
+    push(harness, battleState({ sequence: 1, turn: 2, board: deliveredBoard(1) }));
+
+    // An unsolicited push presents immediately: nothing is pending for it.
+    expect(labelsByCell(harness)).toEqual(expectedLabels(1));
+    expect(inputLocked(scene, ctx)).toBe(false);
+
+    emitBatch(harness, 1, CASCADE_BATCH);
+
+    // The batch's own order is the timeline's order, phase by phase.
+    expect(inputLocked(scene, ctx)).toBe(true);
+    expect(playedPhases(ctx)).toEqual(['match depth=1']);
+    harness.flushTweens();
+    expect(playedPhases(ctx)).toEqual([
+      'match depth=1',
+      'cascade depth=1',
+      'cascade depth=2',
+      'settle',
+      'damage player->boss',
+      'retaliation boss->player',
+    ]);
+
+    // The timeline's own end releases the guard and leaves the delivered board and
+    // readouts on screen: the push path is unchanged by the recovery lifecycle.
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(harness.pendingTweenCount()).toBe(0);
+    expect(labelsByCell(harness)).toEqual(expectedLabels(1));
+    expect(field<{ text: string }>(ctx, 'bossHpText').text).toBe('5000 / 5000');
+  });
+
+  it('7. rolls the board back onto the newest authoritative state on a definitive rejection', async () => {
+    const { harness, scene, ctx } = createBattle();
+    const held = holdAction(harness);
+
+    tapCell(harness, 20);
+    tapCell(harness, 21);
+    expect(inputLocked(scene, ctx)).toBe(true);
+
+    // A newer authoritative state arrives while the request is unanswered: it is
+    // the awaited resolution's own state, so the board is held at the state the
+    // gesture was made on.
+    push(harness, battleState({ sequence: 1, turn: 2, board: deliveredBoard(1) }));
+    expect(labelsByCell(harness)).toEqual(expectedLabels(0));
+    expect(field<number | null>(ctx, 'heldSequence')).toBe(1);
+
+    // The server's definitive answer: the swap was a gameplay no-op.
+    held.resolve({ accepted: false, reason: 'INVALID_SWAP' });
+    await flush();
+
+    // The rollback converges on the authoritative state the runtime now holds —
+    // the newer one, never the snapshot the request was submitted against — and
+    // the guard is released.
+    expect(labelsByCell(harness)).toEqual(expectedLabels(1));
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(field<number | null>(ctx, 'heldSequence')).toBeNull();
+    expect(field<object | null>(ctx, 'committedSwapCells')).toBeNull();
+    expect(renderedText(harness)).toContain('INVALID_SWAP');
+    expect(scene.getPresentedEvents()).toEqual([]);
+
+    // And the refused pair can never be presented by a later resolution.
+    push(harness, battleState({ sequence: 2, turn: 3, board: deliveredBoard(2) }));
+    emitBatch(harness, 2, [{ type: 'ComboChanged', combo: 1 }]);
+
+    expect(playedPhases(ctx).some((phase) => phase.startsWith('swap'))).toBe(false);
+    expect(labelsByCell(harness)).toEqual(expectedLabels(2));
+  });
+
+  it('8. keeps an unanswered action unresolved and reconciles it through the recovery snapshot', async () => {
+    const { harness, scene, ctx } = createBattle();
+
+    harness.setActionBehaviour(async () => {
+      throw new RuntimeActionOutcomeUnknownError('Swap', new Error('Transport timeout'));
+    });
+
+    tapCell(harness, 20);
+    tapCell(harness, 21);
+    await flush();
+
+    // The request was submitted and never answered, so the scene claims nothing:
+    // the gesture stays the committed pair, the resolution stays pending, and the
+    // lock is held until authoritative state arrives.
+    expect(inputLocked(scene, ctx)).toBe(true);
+    expect(field<object | null>(ctx, 'committedSwapCells')).toEqual({ from: 20, to: 21 });
+    expect(field<boolean>(ctx, 'resolutionPending')).toBe(true);
+    expect(renderedText(harness)).toContain('unconfirmed');
+    expect(renderedText(harness)).not.toContain('not sent');
+
+    // The runtime's recovery answers what happened: the swap did commit, so the
+    // authoritative state is one sequence step on and carries its board.
+    recovery(harness, battleState({ sequence: 1, turn: 2, board: deliveredBoard(1) }));
+
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(field<boolean>(ctx, 'resolutionPending')).toBe(false);
+    expect(field<object | null>(ctx, 'committedSwapCells')).toBeNull();
+    expect(harness.pendingTweenCount()).toBe(0);
+    expect(labelsByCell(harness)).toEqual(expectedLabels(1));
+  });
+
+  it('9. ignores a late response for a battle that is no longer active', async () => {
+    const { harness, scene, ctx } = createBattle(
+      battleState({ battleId: 'battle-a', sequence: 0 })
+    );
+    const held = holdAction(harness);
+
+    tapCell(harness, 20);
+    tapCell(harness, 21);
+    expect(inputLocked(scene, ctx)).toBe(true);
+    expect(field<object | null>(ctx, 'committedSwapCells')).toEqual({ from: 20, to: 21 });
+
+    // Battle B replaces battle A: the lifecycle transition's own push. A's
+    // submission belongs to A, so it is invalidated with it and the lock it held
+    // is released.
+    push(
+      harness,
+      battleState({ battleId: 'battle-b', sequence: 0, turn: 1, board: deliveredBoard(3) })
+    );
+
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(field<object | null>(ctx, 'committedSwapCells')).toBeNull();
+    expect(labelsByCell(harness)).toEqual(expectedLabels(3));
+
+    // Battle A's answer finally arrives. It cannot settle, report, or lock the
+    // active scene.
+    held.resolve({ accepted: true });
+    await flush();
+
+    expect(inputLocked(scene, ctx)).toBe(false);
+    expect(field<string>(ctx, 'orchestration')).toBe('idle');
+    expect(renderedText(harness)).not.toContain('20 -> 21');
+    expect(harness.requestedActions).toHaveLength(0);
+    expect(labelsByCell(harness)).toEqual(expectedLabels(3));
+    expect(field<RuntimeBattleState | null>(ctx, 'currentBattleState')?.battleId).toBe('battle-b');
+  });
+
+  it('10. shows the synchronization indicator while unsynchronized and hides it once synchronized', () => {
+    const { harness, ctx } = createBattle(
+      battleState({ sequence: 1 }),
+      runtimeState({ sync: 'unsynchronized', connection: 'connected' })
+    );
+
+    const indicator = field<{
+      text: string;
+      color?: string;
+      visible: boolean;
+      interactive: boolean;
+      y: number;
+    }>(ctx, 'syncText');
+
+    // Recovering: the runtime has published that its copy is not synchronized and
+    // a connection is up to re-establish it.
+    expect(indicator.visible).toBe(true);
+    expect(indicator.text).toBe('SYNCHRONIZING…');
+    expect(indicator.color).toBe('#fbbf24');
+
+    // Non-blocking: a plain, non-interactive line placed in the band above the
+    // board, never over a cell or a control.
+    expect(indicator.interactive).toBe(false);
+    expect(indicator.y).toBeLessThan(BOARD_ORIGIN_Y);
+
+    // The runtime confirms synchronization: the line is hidden, and it is the
+    // runtime's own value that hides it — never a client assumption.
+    harness.emitRuntimeState(runtimeState({ sync: 'synchronized' }));
+    expect(indicator.visible).toBe(false);
+    expect(indicator.text).toBe('');
+
+    // Connected with no battle is not an outage.
+    harness.emitRuntimeState(runtimeState({ sync: 'awaiting_battle' }));
+    expect(indicator.visible).toBe(false);
+
+    // A connection that is not up cannot promise recovery: the line states the
+    // state instead.
+    harness.emitRuntimeState(runtimeState({ sync: 'unsynchronized', connection: 'reconnecting' }));
+    expect(indicator.visible).toBe(true);
+    expect(indicator.text).toBe('NOT SYNCHRONIZED');
+    expect(indicator.color).toBe('#f87171');
+
+    // A scene with no runtime at all reports nothing here: its connection line
+    // already states that the battle is unavailable.
+    const withoutRuntime = createSceneHarness({ withRuntime: false, withTweens: true });
+    const orphan = new BattleScene();
+    const orphanCtx = withoutRuntime.context(orphan, 'BattleScene');
+    runScene(orphan, orphanCtx, 'create');
+
+    expect(field<{ visible: boolean }>(orphanCtx, 'syncText').visible).toBe(false);
+  });
+
+  it('11. leaks no timers, tweens, listeners, or Phaser objects across repeated recoveries and shutdown', () => {
+    const { harness, scene, ctx } = createBattle();
+
+    expect(harness.battleStateListeners.size).toBe(1);
+    expect(harness.battleEventListeners.size).toBe(1);
+    expect(harness.boardCells).toHaveLength(128);
+
+    // Three recoveries, each interrupting a real timeline: nothing accumulates.
+    let sequence = 1;
+
+    for (let round = 0; round < 3; round++) {
+      push(harness, battleState({ sequence, board: deliveredBoard(sequence) }));
+      emitBatch(harness, sequence, CASCADE_BATCH);
+      expect(harness.pendingTweenCount()).toBeGreaterThan(0);
+
+      sequence += 1;
+      recovery(harness, battleState({ sequence, board: deliveredBoard(sequence) }));
+
+      expect(harness.pendingTweenCount()).toBe(0);
+      expect(field<object | null>(ctx, 'presentationTimeline')).toBeNull();
+      expect(inputLocked(scene, ctx)).toBe(false);
+      // The board is still exactly one view pair per cell: a recovery converges
+      // the views it has rather than creating or destroying them.
+      expect(harness.boardCells).toHaveLength(128);
+      expect(harness.boardInputHandlerCounts.get('gameobjectdown')).toBe(1);
+
+      sequence += 1;
+    }
+
+    expect(labelsByCell(harness)).toEqual(expectedLabels(sequence - 1));
+
+    // Teardown releases the subscriptions, the deferred work, the game objects,
+    // and the indicator's own reference.
+    harness.shutdownScene(ctx);
+
+    expect(harness.battleStateListeners.size).toBe(0);
+    expect(harness.battleEventListeners.size).toBe(0);
+    expect(harness.listeners.size).toBe(0);
+    expect(harness.pendingTweenCount()).toBe(0);
+    expect(harness.boardCells).toHaveLength(0);
+    expect(field<object | null>(ctx, 'syncText')).toBeNull();
+    expect(field<object | null>(ctx, 'presentationTimeline')).toBeNull();
+  });
+
+  /**
+   * TASK-273 / P0.4 — the scene's own delivery-integrity gate, the release of a
+   * resolution that cannot be presented, and the battle-ended publication.
+   *
+   * The runtime withholds a batch it cannot place against its synchronized state
+   * (its own delivery-integrity check); these tests pin the scene's **defense in
+   * depth** — a batch the authoritative state on screen does not represent is
+   * refused whole (`SIGNALR_PROTOCOL.md` §3.1, §6 item 4, `GAME_STATE.md` §5.1
+   * item 3) — plus the two deadlock paths `TASK-273` §4.3/§4.4 close:
+   *
+   * ```text
+   * unrepresentable batch   a foreign battle's, one ahead of the delivered
+   *                         `sequence`, or one behind it: no timeline, no callout,
+   *                         no outcome handoff, no accepted sequence, no stamp
+   * empty phase set         a resolution that is accepted but cannot be presented
+   *                         releases every lock it engaged rather than holding
+   *                         `resolutionPending` for a timeline that cannot exist
+   * ended battle            §7.3's loss arrives as `null` + `source: 'ended'`: the
+   *                         stale presentation is released and no result is invented
+   * ```
+   */
+  describe('TASK-273 — unrepresentable batches, unpresentable resolutions & ended battles (P0.4)', () => {
+    /** One batch that produces a timeline, keyed to `sequence` for `battleId`. */
+    function cascadeAt(battleId: string, sequence: number): BattleEventsEnvelope {
+      return { battleId, serverSequence: sequence, events: CASCADE_BATCH } as BattleEventsEnvelope;
+    }
+
+    it('13. never builds a timeline over a board the held state does not represent', () => {
+      const { harness, scene, ctx } = createBattle(
+        battleState({ sequence: 1, board: deliveredBoard(1) })
+      );
+
+      // The resolution's state never arrived: the batch is one sequence step past
+      // the delivered state, so nothing on screen represents it. The batch is
+      // delivered without a matching push on purpose, which is exactly what the
+      // scene's own gate must survive.
+      harness.emitUnmatchedBattleEvents(cascadeAt('battle-p03', 2));
+
+      expect(playedPhases(ctx)).toEqual([]);
+      expect(field<object | null>(ctx, 'presentationTimeline')).toBeNull();
+      expect(harness.pendingTweenCount()).toBe(0);
+      expect(inputLocked(scene, ctx)).toBe(false);
+
+      // The board on screen is still the delivered one, and no feedback claims a
+      // resolution the scene could not place.
+      expect(labelsByCell(harness)).toEqual(expectedLabels(1));
+      expect(field<{ text: string }>(ctx, 'calloutText').text).toBe('');
+
+      // Nothing was booked for it: no resolution was accepted and no board was
+      // stamped from it.
+      expect(field<number | null>(ctx, 'acceptedResolutionSequence')).toBeNull();
+      expect(field<number | null>(ctx, 'settledBoardSequence')).toBe(1);
+    });
+
+    it('14. cannot let a cross-battle batch reach presentation, the board, a callout or ResultScene', () => {
+      const { harness, scene, ctx } = createBattle(
+        battleState({ sequence: 3, board: deliveredBoard(2) })
+      );
+
+      // A terminal batch belonging to another battle: `BattleWon` would normally
+      // end the battle and hand its outcome to `ResultScene`.
+      harness.emitUnmatchedBattleEvents({
+        battleId: 'battle-elsewhere',
+        serverSequence: 3,
+        events: [
+          { type: 'BattleWon', outcome: 'victory', finalBossHp: 0, finalPlayerHp: 640 },
+        ],
+      } as BattleEventsEnvelope);
+
+      expect(harness.sceneStarted).toEqual([]);
+      expect(playedPhases(ctx)).toEqual([]);
+      expect(scene.getPresentedEvents()).toEqual([]);
+      expect(labelsByCell(harness)).toEqual(expectedLabels(2));
+      expect(field<{ text: string }>(ctx, 'calloutText').text).toBe('');
+      expect(field<{ text: string }>(ctx, 'orchestration')).toBe('idle');
+      expect(inputLocked(scene, ctx)).toBe(false);
+    });
+
+    it('15. accepts an empty phase set and releases every lock it engaged', async () => {
+      const { harness, scene, ctx } = createBattle();
+      const held = holdAction(harness);
+
+      // A cast engages the same presentation lock a Swap does, and it commits no
+      // swap pair — so a batch that produces no presentable phase at all leaves the
+      // guard with nothing to release it.
+      await flush();
+      harness.clickOption(/^Card: card-heal$/);
+      await flush();
+
+      expect(inputLocked(scene, ctx)).toBe(true);
+      expect(field<boolean>(ctx, 'resolutionPending')).toBe(true);
+
+      // The awaiting cast's own resolution state, then a batch that produces no
+      // presentable phase at all.
+      push(harness, battleState({ sequence: 1, turn: 2, board: deliveredBoard(1) }));
+      expect(field<number | null>(ctx, 'heldSequence')).toBe(1);
+
+      emitBatch(harness, 1, []);
+
+      // No timeline is built, and the resolution cannot retain the presentation:
+      // the held readouts are converged on the delivered state and every lock the
+      // batch engaged is released, so the scene cannot wait forever for a timeline
+      // that will never exist.
+      expect(playedPhases(ctx)).toEqual([]);
+      expect(field<object | null>(ctx, 'presentationTimeline')).toBeNull();
+      expect(field<boolean>(ctx, 'resolutionPending')).toBe(false);
+      expect(field<object | null>(ctx, 'committedSwapCells')).toBeNull();
+      expect(field<number | null>(ctx, 'heldSequence')).toBeNull();
+      expect(field<string>(ctx, 'orchestration')).toBe('idle');
+      expect(inputLocked(scene, ctx)).toBe(false);
+
+      // Accepted (a repeat presents nothing a second time) and converged on the
+      // delivered board — never on a fabricated one.
+      expect(field<number | null>(ctx, 'acceptedResolutionSequence')).toBe(1);
+      expect(labelsByCell(harness)).toEqual(expectedLabels(1));
+      expect(scene.getPresentedEvents()).toEqual([]);
+
+      held.resolve({ accepted: true });
+      expect(inputLocked(scene, ctx)).toBe(false);
+    });
+
+    it('16. converges a replay-style state push without a batch and releases the appropriate locks', async () => {
+      const { harness, scene, ctx } = createBattle();
+      const held = holdAction(harness);
+
+      tapCell(harness, 20);
+      tapCell(harness, 21);
+
+      // The acknowledgement settles, but the resolution's batch never arrives —
+      // the server does not rebroadcast events (`SIGNALR_PROTOCOL.md` §8 item 8,
+      // `ADR-008`).
+      held.resolve({ accepted: true });
+      await flush();
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: deliveredBoard(1) }));
+      expect(field<number | null>(ctx, 'heldSequence')).toBe(1);
+      expect(labelsByCell(harness)).toEqual(expectedLabels(0));
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      // The next resolution's state arrives instead. It proves the client has
+      // moved past the resolution the batch would have described, so the guard is
+      // released and the delivered board is presented — no fabricated combat
+      // state, no invented timeline.
+      push(harness, battleState({ sequence: 2, turn: 3, board: deliveredBoard(2) }));
+
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(field<boolean>(ctx, 'resolutionPending')).toBe(false);
+      expect(field<number | null>(ctx, 'heldSequence')).toBeNull();
+      expect(field<string>(ctx, 'orchestration')).toBe('idle');
+      expect(labelsByCell(harness)).toEqual(expectedLabels(2));
+      expect(scene.getPresentedEvents()).toEqual([]);
+      expect(playedPhases(ctx)).toEqual([]);
+    });
+
+    it('17. cancels a boss animation in flight and converges on the recovery snapshot', () => {
+      const { harness, scene, ctx } = createBattle();
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: deliveredBoard(1) }));
+      emitBatch(harness, 1, [
+        { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+      ]);
+
+      expect(playedPhases(ctx)).toEqual(['boss-skill flame-burst']);
+      expect(harness.pendingTweenCount()).toBeGreaterThan(0);
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      recovery(
+        harness,
+        battleState({
+          sequence: 2,
+          turn: 3,
+          board: deliveredBoard(2),
+          petState: {
+            hp: 700,
+            maxHp: 1000,
+            power: 0,
+            passiveId: 'xich-lang',
+            passiveProgress: { threshold: 5, current: 0 },
+            equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
+            statusEffects: [],
+          },
+        })
+      );
+
+      // The interrupted animation's tweens are released rather than left to land,
+      // and the scene converges on the snapshot's own values.
+      expect(harness.pendingTweenCount()).toBe(0);
+      expect(field<object | null>(ctx, 'presentationTimeline')).toBeNull();
+      expect(field<number | null>(ctx, 'heldSequence')).toBeNull();
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(labelsByCell(harness)).toEqual(expectedLabels(2));
+      expect(field<{ text: string }>(ctx, 'petHpText').text).toBe('700 / 1000');
+    });
+
+    it('18. never replays a batch at or below the recovered snapshot and refuses one behind it', () => {
+      const { harness, scene, ctx } = createBattle(battleState({ sequence: 3 }));
+
+      // The authoritative reconciliation: `sequence = 5`, a board the client has
+      // never presented.
+      recovery(harness, battleState({ sequence: 5, turn: 4, board: deliveredBoard(2) }));
+      expect(labelsByCell(harness)).toEqual(expectedLabels(2));
+
+      // A late batch for a resolution the snapshot already contains: recorded, and
+      // presented no second time (the snapshot is never followed by the animation
+      // of what it superseded).
+      emitBatch(harness, 5, CASCADE_BATCH);
+      expect(playedPhases(ctx)).toEqual([]);
+      expect(harness.pendingTweenCount()).toBe(0);
+
+      // A batch for an *older* resolution, delivered without a matching push: the
+      // held state already contains that resolution's result, so it is refused
+      // whole and the recovered board is untouched.
+      harness.emitUnmatchedBattleEvents(cascadeAt('battle-p03', 4));
+      expect(playedPhases(ctx)).toEqual([]);
+      expect(labelsByCell(harness)).toEqual(expectedLabels(2));
+      expect(inputLocked(scene, ctx)).toBe(false);
+    });
+
+    it('19. lets no delayed callback from an invalidated timeline alter the recovered board', () => {
+      const { harness, scene, ctx } = createBattle();
+
+      emitBatch(harness, 1, CASCADE_BATCH);
+      expect(harness.pendingTweenCount()).toBeGreaterThan(0);
+
+      // Every callback the abandoned timeline had queued, captured before the
+      // recovery invalidates it.
+      const stale = harness
+        .pendingTweenRecords()
+        .map((tween) => tween.completion)
+        .filter((completion): completion is () => void => typeof completion === 'function');
+      expect(stale.length).toBeGreaterThan(0);
+
+      recovery(harness, battleState({ sequence: 4, board: deliveredBoard(2) }));
+      const phasesAfterRecovery = playedPhases(ctx);
+      expect(labelsByCell(harness)).toEqual(expectedLabels(2));
+      expect(harness.pendingTweenCount()).toBe(0);
+
+      // They land late. Not one of them advances a phase, re-locks the scene, or
+      // restores a board the snapshot replaced.
+      for (const completion of stale) {
+        completion();
+      }
+
+      expect(playedPhases(ctx)).toEqual(phasesAfterRecovery);
+      expect(labelsByCell(harness)).toEqual(expectedLabels(2));
+      expect(harness.pendingTweenCount()).toBe(0);
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(field<number | null>(ctx, 'presentationSequence')).toBeNull();
+    });
+
+    it('20. keeps the presentation lock on the valid push-then-batch path until the batch is handled', async () => {
+      const { harness, scene, ctx } = createBattle();
+      const held = holdAction(harness);
+
+      tapCell(harness, 20);
+      tapCell(harness, 21);
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      // The resolution's own state push — held for the batch that sequences it, so
+      // the board the gesture was made on stays on screen.
+      push(harness, battleState({ sequence: 1, turn: 2, board: deliveredBoard(1) }));
+      expect(field<number | null>(ctx, 'heldSequence')).toBe(1);
+      expect(labelsByCell(harness)).toEqual(expectedLabels(0));
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      // The matching batch: the timeline starts under the same lock, opening with
+      // the exchange this client submitted and then the delivered board cycle.
+      emitBatch(harness, 1, CASCADE_BATCH);
+      expect(playedPhases(ctx)).toEqual(['swap 20->21']);
+      expect(field<number | null>(ctx, 'presentationSequence')).toBe(1);
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      // The acknowledgement settles while the resolution plays: the lock is kept
+      // for the timeline that has not finished presenting it (AF-5/AF-6).
+      held.resolve({ accepted: true });
+      await flush();
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      // The timeline's own end releases it, having converged the board on the
+      // delivered state.
+      harness.flushTweens();
+
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(field<boolean>(ctx, 'resolutionPending')).toBe(false);
+      expect(field<number | null>(ctx, 'heldSequence')).toBeNull();
+      expect(labelsByCell(harness)).toEqual(expectedLabels(1));
+      expect(playedPhases(ctx)).toEqual([
+        'swap 20->21',
+        'match depth=1',
+        'cascade depth=1',
+        'cascade depth=2',
+        'settle',
+        'damage player->boss',
+        'retaliation boss->player',
+      ]);
+    });
+
+    it('21. releases stale presentation on the battle-ended publication and fabricates no result', () => {
+      const { harness, scene, ctx } = createBattle(
+        battleState({ sequence: 1, board: deliveredBoard(1) })
+      );
+      const held = holdAction(harness);
+
+      tapCell(harness, 20);
+      tapCell(harness, 21);
+      push(harness, battleState({ sequence: 2, turn: 3, board: deliveredBoard(2) }));
+      emitBatch(harness, 2, CASCADE_BATCH);
+
+      expect(field<object | null>(ctx, 'presentationTimeline')).not.toBeNull();
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      // §7.3: the authoritative snapshot cannot be recovered, so the runtime
+      // publishes the loss — `null` with the `'ended'` source.
+      harness.setBattleState(null, { source: 'ended' });
+
+      // Every lock the ended battle held is released and the stale board is gone:
+      // nothing is left hidden behind the empty presentation.
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(field<boolean>(ctx, 'resolutionPending')).toBe(false);
+      expect(field<object | null>(ctx, 'committedSwapCells')).toBeNull();
+      expect(field<object | null>(ctx, 'presentationTimeline')).toBeNull();
+      expect(field<number | null>(ctx, 'heldSequence')).toBeNull();
+      expect(field<string>(ctx, 'orchestration')).toBe('idle');
+      expect(harness.pendingTweenCount()).toBe(0);
+      expect(harness.boardCells).toHaveLength(0);
+      expect(field<RuntimeBattleState | null>(ctx, 'currentBattleState')).toBeNull();
+
+      // No result is invented: the outcome of a battle that could not be recovered
+      // is not fabricated into a `ResultScene` handoff, and no terminal statement
+      // is claimed. The documented fallback is the runtime's own result read.
+      expect(harness.sceneStarted).toEqual([]);
+      expect(scene.getPresentedEvents()).toEqual([]);
+      expect(field<object | null>(ctx, 'pendingOutcomeHandoff')).toBeNull();
+      expect(renderedText(harness)).toContain('Battle no longer available');
+
+      // A late answer for the ended battle cannot settle or re-lock the scene.
+      held.resolve({ accepted: true });
+      expect(inputLocked(scene, ctx)).toBe(false);
+    });
+
+    it('22. treats a rejected action as a gameplay no-op: no recovery, no sequence bookkeeping', async () => {
+      const { harness, scene, ctx } = createBattle();
+
+      harness.setActionResult({ accepted: false, reason: 'INVALID_SWAP' });
+
+      tapCell(harness, 20);
+      tapCell(harness, 21);
+      await flush();
+
+      // The one request the scene made was the action itself: a rejection is the
+      // server's own answer, so no snapshot is asked for, no resolution is
+      // accepted, and no sequence is advanced (`SIGNALR_PROTOCOL.md` §5 item 2,
+      // `MATCH3_RULES.md` §2.1.5).
+      expect(harness.requestedActions).toHaveLength(1);
+      expect(harness.requestedActions[0]).toMatchObject({ kind: 'Swap', fromCell: 20, toCell: 21 });
+      expect(field<number | null>(ctx, 'acceptedResolutionSequence')).toBeNull();
+      expect(field<number | null>(ctx, 'heldSequence')).toBeNull();
+      expect(field<boolean>(ctx, 'resolutionPending')).toBe(false);
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(playedPhases(ctx)).toEqual([]);
+      expect(scene.getPresentedEvents()).toEqual([]);
+      expect(harness.sceneStarted).toEqual([]);
+
+      // The refusal is reported as lightweight feedback, and the board on screen is
+      // still the delivered one.
+      expect(renderedText(harness)).toContain('INVALID_SWAP');
+      expect(labelsByCell(harness)).toEqual(expectedLabels(0));
+    });
+  });
+
+  describe('TASK-274 — final recovery boundary review & scene admission gate verification', () => {
+    function cascadeAt(battleId: string, sequence: number): BattleEventsEnvelope {
+      return { battleId, serverSequence: sequence, events: CASCADE_BATCH } as BattleEventsEnvelope;
+    }
+
+    it('Review A.1: refuses an unversioned batch when BattleScene holds no authoritative state', () => {
+      const { harness, scene, ctx } = createBattle(null);
+      expect(field<RuntimeBattleState | null>(ctx, 'currentBattleState')).toBeNull();
+
+      // Emit batch without prior state
+      harness.emitUnmatchedBattleEvents(cascadeAt('battle-test', 1));
+
+      // Invariant verified: admitsBatch returns false when held === null.
+      // No timeline built, no phases played, no events recorded as presented.
+      expect(playedPhases(ctx)).toEqual([]);
+      expect(field<object | null>(ctx, 'presentationTimeline')).toBeNull();
+      expect(scene.getPresentedEvents()).toEqual([]);
+      expect(inputLocked(scene, ctx)).toBe(false);
+    });
+
+    it('Review A.4: late batch after battle-ended publication cannot restart presentation or re-lock scene', () => {
+      const { harness, scene, ctx } = createBattle(
+        battleState({ sequence: 1, board: deliveredBoard(1) })
+      );
+
+      // Battle ends per BATTLE_NOT_FOUND (published as null with source: 'ended')
+      harness.setBattleState(null, { source: 'ended' });
+      expect(field<RuntimeBattleState | null>(ctx, 'currentBattleState')).toBeNull();
+      expect(renderedText(harness)).toContain('Battle no longer available');
+      expect(inputLocked(scene, ctx)).toBe(false);
+
+      // Late batch arrives for the ended battle
+      harness.emitUnmatchedBattleEvents(cascadeAt('battle-p03', 1));
+
+      // Batch is refused: old presentation cannot restart, message remains, locks stay unlocked
+      expect(playedPhases(ctx)).toEqual([]);
+      expect(field<object | null>(ctx, 'presentationTimeline')).toBeNull();
+      expect(scene.getPresentedEvents()).toEqual([]);
+      expect(renderedText(harness)).toContain('Battle no longer available');
+      expect(inputLocked(scene, ctx)).toBe(false);
+    });
+
+    it('Review A.5: late batch from old battle cannot affect newly active battle on scene', () => {
+      const { harness, ctx } = createBattle(
+        battleState({ battleId: 'battle-new', sequence: 0, board: deliveredBoard(0) })
+      );
+
+      // Late batch for old battle arrives
+      harness.emitUnmatchedBattleEvents(cascadeAt('battle-old', 0));
+
+      // Refused: cross-battle batch rejected
+      expect(playedPhases(ctx)).toEqual([]);
+      expect(field<object | null>(ctx, 'presentationTimeline')).toBeNull();
+      expect(field<RuntimeBattleState | null>(ctx, 'currentBattleState')?.battleId).toBe('battle-new');
+    });
+
+    it('Review B.8: presentation lock is safely retained until valid recovery convergence without indefinite deadlock', async () => {
+      const { harness, scene, ctx } = createBattle(
+        battleState({ sequence: 1, board: deliveredBoard(1) })
+      );
+
+      let pendingAction!: { resolve: (val: { accepted: boolean }) => void };
+      harness.setActionBehaviour(
+        () =>
+          new Promise<never>((res) => {
+            pendingAction = { resolve: res as unknown as (val: { accepted: boolean }) => void };
+          })
+      );
+
+      // Player swaps cells: locks input and sets resolutionPending
+      tapCell(harness, 20);
+      tapCell(harness, 21);
+
+      expect(inputLocked(scene, ctx)).toBe(true);
+      expect(field<boolean>(ctx, 'resolutionPending')).toBe(true);
+
+      // Suppose runtime receives a malformed recovery response (inconsistent envelope).
+      // Runtime rejects it and publishes NO state to the scene.
+      // Scene lock remains safely held waiting for valid recovery snapshot.
+      expect(inputLocked(scene, ctx)).toBe(true);
+      expect(field<boolean>(ctx, 'resolutionPending')).toBe(true);
+
+      // When subsequent valid recovery snapshot arrives:
+      const recoveredState = battleState({
+        sequence: 2,
+        board: deliveredBoard(2),
+      });
+      harness.setBattleState(recoveredState, { source: 'recovery' });
+
+      // InvalidatePendingPresentation converges presentation and releases the locks safely
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(field<boolean>(ctx, 'resolutionPending')).toBe(false);
+      expect(field<RuntimeBattleState | null>(ctx, 'currentBattleState')?.sequence).toBe(2);
+
+      // Clean up in-flight promise
+      pendingAction.resolve({ accepted: true });
+    });
+
+    it('Review C.1 & C.5: BATTLE_NOT_FOUND clears board and locks, fabricates no result, and provides stable fallback', () => {
+      const { harness, scene, ctx } = createBattle(
+        battleState({ sequence: 1, board: deliveredBoard(1) })
+      );
+
+      // Engage a lock
+      (ctx as { inputLocked: boolean }).inputLocked = true;
+      (ctx as { resolutionPending: boolean }).resolutionPending = true;
+
+      // Deliver ended battle
+      harness.setBattleState(null, { source: 'ended' });
+
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(field<boolean>(ctx, 'resolutionPending')).toBe(false);
+      expect(harness.boardCells).toHaveLength(0);
+      expect(renderedText(harness)).toContain('Battle no longer available');
+      expect(harness.sceneStarted).toEqual([]); // No ResultScene fabricated
+    });
+
+    it('Review C.4: authoritative outcome event in admitted batch navigates to ResultScene', () => {
+      const { harness } = createBattle(
+        battleState({ battleId: 'battle-p03', sequence: 5, board: deliveredBoard(1) })
+      );
+
+      // Deliver matching state push, then batch with BattleWon
+      harness.emitBattleEvents({
+        battleId: 'battle-p03',
+        serverSequence: 5,
+        events: [
+          {
+            type: 'BattleWon',
+            outcome: 'victory',
+            finalBossHp: 0,
+            finalPlayerHp: 800,
+          },
+        ],
+      });
+
+      expect(harness.sceneStarted).toHaveLength(1);
+      expect(harness.sceneStarted[0]).toEqual({
+        key: 'ResultScene',
+        data: {
+          outcome: 'victory',
+          finalBossHp: 0,
+          finalPlayerHp: 800,
+          battleId: 'battle-p03',
+        },
+      });
+    });
+  });
+
+  /**
+   * TASK-275 — the turn banner, the confirmed-gem destruction, and the single
+   * supported board transition.
+   *
+   * ```text
+   * turn banner     one presentation-only `PLAYER TURN` / `BOSS TURN` marker per
+   *                 delivered board-action boundary, labelled from that
+   *                 boundary's own `actor` (`SIGNALR_PROTOCOL.md` §3.2.26 item 2)
+   *                 and completed before the next phase begins (`§6.6`)
+   * destruction     the cells a `MatchCreated` / `GemMatched` confirms are
+   *                 cleared, and **only** those: a cell whose rendered content is
+   *                 not the content the delivered event names is left alone,
+   *                 because the contract sends no per-pass board for a cascade
+   *                 pass to be checked against (`SIGNALR_PROTOCOL.md` §3.1
+   *                 item 2) — `§6.2`, `§6.4`
+   * board           exactly one transition per round, onto the accepted
+   *                 authoritative board, where a cleared cell is re-labelled from
+   *                 the delivered cell with the refill entrance — `§6.3`'s
+   *                 supported subset: no gem view is ever moved between cells
+   *                 except by a delivered `SwapStarted` (`§7`)
+   * recovery        a snapshot during any of those phases converges the board,
+   *                 restores every cleared cell, and cancels the phase's own
+   *                 resources (`§8`)
+   * ```
+   *
+   * **The fixtures state delivered values only.** The board below is written out
+   * cell by cell so one delivered `gemType` agrees with the rendered content (pass
+   * 1, whose board the client holds) and another disagrees with it (a later pass,
+   * whose board the contract never sends). Nothing here asserts a value the client
+   * computes, because it computes none.
+   */
+  describe('TASK-275 — turn banners, confirmed-gem destruction & the single board transition', () => {
+    /** The label each Gem type renders as (`GEM_LABELS`, spelled once). */
+    const BOARD_LABELS: Readonly<Record<string, string>> = Object.freeze({
+      ATK: 'ATK',
+      DEF: 'DEF',
+      HP: 'HP',
+      POWER: 'PWR',
+    });
+
+    /**
+     * The fixture board: all cells `POWER`, except a `Straight` ATK match at
+     * 24–26 and an HP cell at 32.
+     *
+     * It is written out rather than rotated so one delivered event can be made to
+     * **agree** with the rendered content (24–26) and another to **disagree** with
+     * it (32) — which is exactly the difference between pass 1, whose board the
+     * client holds, and a later pass, whose board the contract never sends.
+     */
+    function board(): RuntimeBoard {
+      const cells: Array<{ gemType: string }> = Array.from(
+        { length: BOARD_COLUMNS * BOARD_COLUMNS },
+        () => ({ gemType: 'POWER' })
+      );
+
+      for (const index of [24, 25, 26]) {
+        cells[index] = { gemType: 'ATK' };
+      }
+      cells[32] = { gemType: 'HP' };
+
+      return { cells };
+    }
+
+    /** What the fixture board must render as, in §1.0 index order. */
+    function boardLabels(): string[] {
+      return board().cells.map((cell) => BOARD_LABELS[cell.gemType] ?? cell.gemType);
+    }
+
+    /** One board cell's view, as the scene holds it. */
+    interface ViewLike {
+      content: string;
+      cleared: boolean;
+      tile: { x: number; y: number; visible: boolean };
+      label: { visible: boolean };
+    }
+
+    function views(ctx: object): Array<ViewLike | null> {
+      return field<Array<ViewLike | null>>(ctx, 'gemViews');
+    }
+
+    /** The indices whose view a delivered clear has emptied. */
+    function clearedCells(ctx: object): number[] {
+      return views(ctx)
+        .map((view, index) => (view?.cleared ? index : -1))
+        .filter((index) => index >= 0);
+    }
+
+    /**
+     * Every view that is still showing content sits on its own §1.0 cell.
+     *
+     * The delivered exchange is the one movement the contract authorises, so a
+     * view a Swap moved is checked against the cell it now *occupies*; no other
+     * view may leave its cell, which is what makes "the client derived no gravity
+     * destination" observable (`TASK-275` §6.3, §7).
+     */
+    function everyViewOnItsOwnCell(ctx: object): boolean {
+      return views(ctx).every((view, index) => {
+        if (!view || view.cleared) {
+          return true;
+        }
+
+        return cellIndexOf(view.tile.x, view.tile.y) === index;
+      });
+    }
+
+    /** Plays the timeline to its end, phase by phase. */
+    function playAllTweens(harness: ReturnType<typeof createSceneHarness>): void {
+      for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+        harness.flushTweens(1);
+      }
+    }
+
+    /** The timeline the scene built for one batch, read before it is released. */
+    interface TimelinePhaseLike {
+      kind: string;
+      detail: string;
+      actor: string | null;
+      events: unknown[];
+    }
+
+    function builtTimeline(ctx: object): TimelinePhaseLike[] {
+      return [
+        ...(field<TimelinePhaseLike[] | null>(ctx, 'presentationTimeline') ?? []),
+      ];
+    }
+
+    /**
+     * A round's board cycle: one committed Player Swap whose first pass clears
+     * 24–26, and a second delivered pass that names 32 as a DEF clear — a cell the
+     * board on screen renders as HP.
+     */
+    const MATCH_CLEAR_BATCH: unknown[] = [
+      { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+      { type: 'SwapResolved', outcome: 'committed' },
+      { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      { type: 'GemMatched', cellIndex: 24, gemType: 'ATK' },
+      { type: 'GemMatched', cellIndex: 25, gemType: 'ATK' },
+      { type: 'GemMatched', cellIndex: 26, gemType: 'ATK' },
+      { type: 'CascadeCreated', cascadeDepth: 1 },
+      { type: 'MatchCreated', shape: 'Straight', cells: [32, 33, 34], gemType: 'DEF', cascadeDepth: 2 },
+      { type: 'GemMatched', cellIndex: 32, gemType: 'DEF' },
+    ];
+
+    /** The same round with both actors' board cycles, in the delivered order. */
+    const BOTH_TURNS_BATCH: unknown[] = [
+      { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+      { type: 'SwapResolved', outcome: 'committed' },
+      { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+      { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
+      { type: 'SwapStarted', actor: 'boss', fromCell: 27, toCell: 28 },
+      { type: 'SwapResolved', outcome: 'committed' },
+      { type: 'MatchCreated', shape: 'Straight', cells: [32, 33, 34], gemType: 'HP', cascadeDepth: 1 },
+      { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
+      { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
+    ];
+
+    /** A battle already holding the fixture board, with one action in flight. */
+    function battleWithHeldAction(): {
+      harness: ReturnType<typeof createSceneHarness>;
+      scene: BattleScene;
+      ctx: object;
+      resolveAction: () => void;
+    } {
+      const { harness, scene, ctx } = createBattle(battleState({ sequence: 0, board: board() }));
+      const held = holdAction(harness);
+
+      tapCell(harness, 20);
+      tapCell(harness, 21);
+
+      return { harness, scene, ctx, resolveAction: () => held.resolve({ accepted: true }) };
+    }
+
+    it('7. plays one banner per delivered board-action boundary, labelled from that boundary’s own actor', () => {
+      const { harness, ctx, resolveAction } = battleWithHeldAction();
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
+      emitBatch(harness, 1, BOTH_TURNS_BATCH);
+
+      playAllTweens(harness);
+
+      // The banner precedes the cycle it introduces and stands in for no gameplay
+      // step: the delivered order of the round is otherwise untouched.
+      expect(playedPhases(ctx)).toEqual([
+        'banner PLAYER TURN',
+        'swap 20->21',
+        'match depth=1',
+        'damage player->boss',
+        'banner BOSS TURN',
+        'swap 27->28',
+        'match depth=1',
+        'settle',
+        'retaliation boss->player',
+      ]);
+
+      // The label the player reads names the side the wire delivered, and the board
+      // is the accepted authoritative board once the timeline is done.
+      expect(renderedText(harness)).toContain('PLAYER TURN');
+      expect(renderedText(harness)).toContain('BOSS TURN');
+      expect(labelsByCell(harness)).toEqual(boardLabels());
+
+      resolveAction();
+    });
+
+    it('7b. starts the next phase only after the banner phase has completed', () => {
+      const { harness, scene, ctx, resolveAction } = battleWithHeldAction();
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
+      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
+
+      // The banner is the first phase, and it is the only one that has played.
+      expect(playedPhases(ctx)).toEqual(['banner PLAYER TURN']);
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      // Its own two beats (the enter and the exit) complete without advancing the
+      // timeline: the exchange the banner introduces has not begun.
+      harness.flushTweens(2);
+      expect(playedPhases(ctx)).toEqual(['banner PLAYER TURN']);
+
+      // The banner's pacing tween is what completes the phase, and only then does
+      // the swap step play.
+      harness.flushTweens(1);
+      expect(playedPhases(ctx)).toEqual(['banner PLAYER TURN', 'swap 20->21']);
+
+      resolveAction();
+    });
+
+    it('7c. plays no banner for a boundary that names no side, and none for a batch that delivers none', () => {
+      const unnamed = battleWithHeldAction();
+
+      push(unnamed.harness, battleState({ sequence: 1, turn: 2, board: board() }));
+      emitBatch(unnamed.harness, 1, [
+        { type: 'SwapStarted', actor: 'nobody', fromCell: 20, toCell: 21 },
+        { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      ]);
+
+      playAllTweens(unnamed.harness);
+
+      // An `actor` outside the contract's two values names no side, so no banner is
+      // shown for it — the step itself still presents the delivered cells.
+      expect(playedPhases(unnamed.ctx).some((detail) => detail.startsWith('banner'))).toBe(false);
+      expect(playedPhases(unnamed.ctx)).toContain('swap 20->21');
+      unnamed.resolveAction();
+
+      const boundaryless = battleWithHeldAction();
+
+      push(boundaryless.harness, battleState({ sequence: 1, turn: 2, board: board() }));
+      emitBatch(boundaryless.harness, 1, [
+        { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      ]);
+
+      playAllTweens(boundaryless.harness);
+
+      // No delivered boundary at all: the submitted pair is presented side-free and
+      // no turn is claimed (`TASK-275` §6.6: no invented turn/phase signal).
+      expect(playedPhases(boundaryless.ctx).some((detail) => detail.startsWith('banner'))).toBe(false);
+      expect(playedPhases(boundaryless.ctx)).toContain('swap 20->21');
+      boundaryless.resolveAction();
+    });
+
+    it('7d. adds no gameplay event, no sequence increment and no state for the banner', () => {
+      const { harness, scene, ctx, resolveAction } = battleWithHeldAction();
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
+      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
+
+      // The banner is a phase of its own carrying no delivered event, and the
+      // diagnostic event record holds exactly the batch's own events.
+      const banner = builtTimeline(ctx).find((phase) => phase.kind === 'banner');
+      expect(banner).toBeDefined();
+      expect(banner?.events).toEqual([]);
+      expect(banner?.actor).toBe('player');
+      expect(scene.getPresentedEvents()).toHaveLength(MATCH_CLEAR_BATCH.length);
+      expect(scene.getPresentedEvents().some((line) => line.includes('banner'))).toBe(false);
+
+      // No second request is made, and the delivered turn is the state push's own
+      // value — the banner writes no state and advances no sequence.
+      expect(harness.actionInvocations).toHaveLength(1);
+      expect(harness.actionInvocations[0]).toMatchObject({ fromCell: 20, toCell: 21 });
+      expect(field<RuntimeBattleState | null>(ctx, 'currentBattleState')?.turn).toBe(2);
+
+      playAllTweens(harness);
+      resolveAction();
+    });
+
+    it('3. clears exactly the cells the delivered events confirm, in the order the phases play', () => {
+      const { harness, ctx, resolveAction } = battleWithHeldAction();
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
+      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
+
+      // Nothing is removed before the match step plays.
+      expect(clearedCells(ctx)).toEqual([]);
+
+      // The banner, the exchange and the first pass have played: the pass-1 cells
+      // are gone, with their tile and label hidden, and the board has not yet been
+      // converged onto the round's board.
+      playUntil(harness, ctx, 3);
+      expect(playedPhases(ctx)).toEqual([
+        'banner PLAYER TURN',
+        'swap 20->21',
+        'match depth=1',
+      ]);
+      expect(clearedCells(ctx)).toEqual([24, 25, 26]);
+      for (const index of [24, 25, 26]) {
+        expect(views(ctx)[index]?.tile.visible).toBe(false);
+        expect(views(ctx)[index]?.label.visible).toBe(false);
+      }
+
+      // The second delivered pass: its `MatchCreated` / `GemMatched` name cell 32 as
+      // a DEF clear, and the cell renders HP. No per-pass board is delivered for the
+      // pass to be checked against, so the clear is refused and the cell is left
+      // alone — the client fabricates no cascade state (`TASK-275` §3, §6.4).
+      playUntil(harness, ctx, 4);
+      expect(playedPhases(ctx)).toEqual([
+        'banner PLAYER TURN',
+        'swap 20->21',
+        'match depth=1',
+        'cascade depth=1',
+      ]);
+      expect(clearedCells(ctx)).toEqual([24, 25, 26]);
+      expect(views(ctx)[32]?.tile.visible).toBe(true);
+      expect(views(ctx)[32]?.cleared).toBe(false);
+
+      // The round's single board transition is what puts every cell back, from the
+      // accepted authoritative board.
+      playUntil(harness, ctx, 5);
+      playAllTweens(harness);
+      expect(clearedCells(ctx)).toEqual([]);
+      expect(labelsByCell(harness)).toEqual(boardLabels());
+
+      resolveAction();
+    });
+
+    it('4. converges the board in one transition after the clear phases, and never moves a view between cells', () => {
+      const { harness, ctx, resolveAction } = battleWithHeldAction();
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
+      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
+
+      // Once the exchange has played, every surviving view sits on its own cell: no
+      // view has left it for a gravity destination the client would have had to
+      // compute. The invariant is asserted again after the clear phases and after
+      // the transition — only a delivered `SwapStarted` may move a view.
+      playUntil(harness, ctx, 3);
+      expect(playedPhases(ctx)).toContain('swap 20->21');
+      expect(everyViewOnItsOwnCell(ctx)).toBe(true);
+
+      playUntil(harness, ctx, 4);
+      expect(everyViewOnItsOwnCell(ctx)).toBe(true);
+
+      // Every clear phase has played and the transition has not: the board beneath
+      // the cleared cells is still the pre-round one, so a pass could not have been
+      // resolved against a board the client invented.
+      expect(playedPhases(ctx)).toEqual([
+        'banner PLAYER TURN',
+        'swap 20->21',
+        'match depth=1',
+        'cascade depth=1',
+      ]);
+      expect(clearedCells(ctx)).toEqual([24, 25, 26]);
+
+      // The transition is exactly one phase, and it is played after the round's
+      // board cycle.
+      playUntil(harness, ctx, 5);
+      playAllTweens(harness);
+      const phases = playedPhases(ctx);
+      expect(phases.filter((detail) => detail === 'settle')).toHaveLength(1);
+      expect(phases.indexOf('settle')).toBeGreaterThan(phases.indexOf('cascade depth=1'));
+
+      expect(everyViewOnItsOwnCell(ctx)).toBe(true);
+      expect(field<number | null>(ctx, 'settledBoardSequence')).toBe(1);
+      expect(field<string | null>(ctx, 'settledBattleId')).toBe(BATTLE_ID);
+      expect(labelsByCell(harness)).toEqual(boardLabels());
+
+      resolveAction();
+    });
+
+    it('10. converges and releases the lock when a recovery snapshot arrives during the turn banner', () => {
+      const { harness, scene, ctx, resolveAction } = battleWithHeldAction();
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
+      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
+      playUntil(harness, ctx, 1);
+
+      expect(playedPhases(ctx)).toEqual(['banner PLAYER TURN']);
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      // The banner's own text object is the timeline's owned effect while it plays.
+      const bannerEffects = [...field<object[]>(ctx, 'timelineEffects')];
+      expect(bannerEffects).toHaveLength(1);
+
+      recovery(harness, battleState({ sequence: 2, turn: 3, board: deliveredBoard(2) }));
+
+      // The banner's timeline is abandoned where it stood: its phase never advanced,
+      // its effect was cancelled with it, and the snapshot's board is on screen.
+      expect(playedPhases(ctx)).toEqual(['banner PLAYER TURN']);
+      expect(harness.killedTweenTargets).toContain(bannerEffects[0]);
+      expect(field<object[]>(ctx, 'timelineEffects')).toEqual([]);
+      expect(harness.pendingTweenCount()).toBe(0);
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(field<string>(ctx, 'orchestration')).toBe('idle');
+      expect(labelsByCell(harness)).toEqual(expectedLabels(2));
+
+      // The answer to the action that was in flight cannot re-lock the scene.
+      resolveAction();
+      expect(inputLocked(scene, ctx)).toBe(false);
+    });
+
+    it('11. converges and releases the lock when a recovery snapshot arrives during the swap phase', () => {
+      const { harness, scene, ctx, resolveAction } = battleWithHeldAction();
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
+      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
+      playUntil(harness, ctx, 2);
+
+      expect(playedPhases(ctx)).toEqual(['banner PLAYER TURN', 'swap 20->21']);
+      expect(clearedCells(ctx)).toEqual([]);
+
+      recovery(harness, battleState({ sequence: 2, turn: 3, board: deliveredBoard(2) }));
+
+      expect(playedPhases(ctx)).not.toContain('match depth=1');
+      expect(harness.pendingTweenCount()).toBe(0);
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(labelsByCell(harness)).toEqual(expectedLabels(2));
+
+      resolveAction();
+    });
+
+    it('12. restores every cleared cell when a recovery snapshot arrives during the destruction', () => {
+      const { harness, scene, ctx, resolveAction } = battleWithHeldAction();
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
+      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
+      playUntil(harness, ctx, 3);
+
+      expect(clearedCells(ctx)).toEqual([24, 25, 26]);
+
+      recovery(harness, battleState({ sequence: 2, turn: 3, board: deliveredBoard(2) }));
+
+      // A recovered snapshot supersedes the obsolete presentation: no cell may stay
+      // empty over it, and the board on screen is the snapshot's.
+      expect(clearedCells(ctx)).toEqual([]);
+      for (const view of views(ctx)) {
+        if (view) {
+          expect(view.tile.visible).toBe(true);
+          expect(view.label.visible).toBe(true);
+        }
+      }
+      expect(labelsByCell(harness)).toEqual(expectedLabels(2));
+      expect(field<number | null>(ctx, 'settledBoardSequence')).toBe(2);
+      expect(inputLocked(scene, ctx)).toBe(false);
+
+      resolveAction();
+    });
+
+    it('13. converges and releases the lock when a recovery snapshot arrives during the refill transition', () => {
+      const { harness, scene, ctx, resolveAction } = battleWithHeldAction();
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
+      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
+      playUntil(harness, ctx, 5);
+
+      // The transition has played: the board is converged and its refill tweens are
+      // in flight.
+      expect(playedPhases(ctx)).toContain('settle');
+      expect(harness.pendingTweenCount()).toBeGreaterThan(0);
+
+      recovery(harness, battleState({ sequence: 2, turn: 3, board: deliveredBoard(3) }));
+
+      expect(harness.pendingTweenCount()).toBe(0);
+      expect(field<string>(ctx, 'orchestration')).toBe('idle');
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(labelsByCell(harness)).toEqual(expectedLabels(3));
+
+      resolveAction();
+    });
+
+    it('20. keeps input locked through the banner, the destruction and the transition, and releases it at the end', async () => {
+      const { harness, scene, ctx, resolveAction } = battleWithHeldAction();
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
+      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
+
+      // The action's acknowledgement settles while its resolution plays — the
+      // server's own order (`SIGNALR_PROTOCOL.md` §3.1) — so the guard that is
+      // observed below is the presentation's, not the request's.
+      resolveAction();
+      await flush();
+
+      for (const phaseCount of [1, 2, 3, 4, 5]) {
+        playUntil(harness, ctx, phaseCount);
+        expect(inputLocked(scene, ctx), `after ${phaseCount} phase(s)`).toBe(true);
+      }
+
+      expect(playedPhases(ctx)).toEqual([
+        'banner PLAYER TURN',
+        'swap 20->21',
+        'match depth=1',
+        'cascade depth=1',
+        'settle',
+      ]);
+
+      playAllTweens(harness);
+
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(field<string>(ctx, 'orchestration')).toBe('idle');
+      expect(harness.pendingTweenCount()).toBe(0);
+      expect(labelsByCell(harness)).toEqual(boardLabels());
+    });
+
+    it('17. causes no duplicate banner, clear or effect when the same batch is delivered twice', () => {
+      const { harness, ctx, resolveAction } = battleWithHeldAction();
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
+      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
+      playAllTweens(harness);
+
+      const phasesAfterFirstDelivery = [...playedPhases(ctx)];
+      const bannersAfterFirstDelivery = harness.texts.filter(
+        (entry) => entry.text === 'PLAYER TURN'
+      ).length;
+      expect(bannersAfterFirstDelivery).toBe(1);
+      expect(clearedCells(ctx)).toEqual([]);
+
+      // The same resolution, delivered again: recorded, and presented no second time
+      // (SIGNALR_PROTOCOL.md §3 item 2, GAME_STATE.md §5.1 item 3).
+      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
+
+      expect(playedPhases(ctx)).toEqual(phasesAfterFirstDelivery);
+      expect(harness.pendingTweenCount()).toBe(0);
+      expect(harness.texts.filter((entry) => entry.text === 'PLAYER TURN').length).toBe(
+        bannersAfterFirstDelivery
+      );
+      expect(labelsByCell(harness)).toEqual(boardLabels());
+
+      resolveAction();
+    });
+
+    it('22. destroys the banner’s own resource when the scene goes down mid-banner', () => {
+      const { harness, ctx, resolveAction } = battleWithHeldAction();
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
+      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
+      playUntil(harness, ctx, 1);
+
+      const bannerEffects = [...field<object[]>(ctx, 'timelineEffects')];
+      expect(bannerEffects).toHaveLength(1);
+
+      harness.shutdownScene(ctx);
+
+      expect(harness.pendingTweenCount()).toBe(0);
+      expect(field<object[]>(ctx, 'timelineEffects')).toEqual([]);
+      expect(field<boolean>(ctx, 'resolutionPending')).toBe(false);
+      expect(field<number | null>(ctx, 'heldSequence')).toBeNull();
+      expect(field<string>(ctx, 'orchestration')).toBe('idle');
+
+      resolveAction();
+    });
   });
 });

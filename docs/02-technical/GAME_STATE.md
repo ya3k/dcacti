@@ -1,6 +1,6 @@
 # Game State
 
-**Version:** 2.27 (§5.1 gains item 8 and a diagram line per ADR-026 / TASK-267: `MATCH3_RULES.md` §1.6's playable-board invariant is evaluated on the finished board of a non-terminal Round, after the step 19a pass and before the single write-back, so a regenerated board and the `RngState` it consumed are committed together under the unchanged compare-and-set, with no second write and with nothing written when regeneration cannot satisfy §1.5's bound. Prior 2.26 (§2.1, §2.4.3, §5 updated per ADR-026 / TASK-259: Player and Boss share the single 8×8 BoardState (D1, D4); BossState.SkillCharge charges exclusively from Boss POWER gem matches during the Boss turn (D2); Player POWER matches do not charge the Boss; atomic round persistence commits complete round via single Redis CAS write-back with Sequence incrementing once per round. Prior 2.25: §2.3's delivery split and §2.4's client-visible boundary
+**Version:** 2.28 (§5.0 **added** per TASK-273 — the client-side use of `Sequence` on delivery: the batch's `serverSequence` against the `sequence` of the state the client holds, per relation (equal / below / above / no state held), and what the client must not do with it. It restates no write-back rule (§5.1's) and adds no state member. Prior 2.27 (§5.1 gains item 8 and a diagram line per ADR-026 / TASK-267: `MATCH3_RULES.md` §1.6's playable-board invariant is evaluated on the finished board of a non-terminal Round, after the step 19a pass and before the single write-back, so a regenerated board and the `RngState` it consumed are committed together under the unchanged compare-and-set, with no second write and with nothing written when regeneration cannot satisfy §1.5's bound. Prior 2.26 (§2.1, §2.4.3, §5 updated per ADR-026 / TASK-259: Player and Boss share the single 8×8 BoardState (D1, D4); BossState.SkillCharge charges exclusively from Boss POWER gem matches during the Boss turn (D2); Player POWER matches do not charge the Boss; atomic round persistence commits complete round via single Redis CAS write-back with Sequence incrementing once per round. Prior 2.25: §2.3's delivery split and §2.4's client-visible boundary
 recorded for the amended projection — applying the TASK-208 Product Owner
 decisions D-208-01, D-208-02 and D-208-03. The active Pet's `HP`, `MaxHP` and
 `Power` are delivered as `petState.hp`/`maxHp`/`power`, and the Boss's canonical
@@ -2729,6 +2729,68 @@ No other field is used for concurrency control.
 `Sequence` starts at `0` (§2.0.2) and is `0` for as long as no action has
 been successfully resolved. This rule is unchanged by §2.0 or §2.0.5 — the
 staged subsets simply have no resolutions yet.
+
+## 5.0 The Client's Use of `Sequence` on Delivery
+
+This section owns the **client-side** meaning of the version; the write-back
+that produces it is §5.1's, and the delivery paths are
+`SIGNALR_PROTOCOL.md` §3 (`ReceiveEvents`), §4 (`BattleStateUpdated`) and §7
+(`GetBattleState`).
+
+The server commits a resolution's state and pushes it **before** it sends that
+resolution's event batch (`SIGNALR_PROTOCOL.md` §3.1, §6 item 4), so the batch's
+`serverSequence` and the `sequence` of the state the client already holds are two
+readings of **one committed value**. A client therefore compares them, and only
+them, when a batch arrives:
+
+```text
+client holds             batch.serverSequence   client does
+─────────────────────────────────────────────────────────────────────────────
+sequence = n             = n                     apply the batch, in order. The
+                                                 documented push-then-batch
+                                                 delivery: the held state is the
+                                                 complete result of the n-th
+                                                 resolution (§5.1 item 3) and the
+                                                 batch is its events.
+sequence = n             < n                     apply nothing for it. The held
+                                                 state already contains that
+                                                 resolution's complete result, so
+                                                 the batch is superseded and is
+                                                 never replayed
+                                                 (`SIGNALR_PROTOCOL.md` §7, §8
+                                                 item 8). It is **not** a desync.
+sequence = n             > n                     do **not** apply it. The state
+                                                 written back for a resolution the
+                                                 batch describes was never
+                                                 delivered, so nothing the client
+                                                 holds can represent the batch's
+                                                 events. This is the missed /
+                                                 out-of-order delivery §5 names:
+                                                 mark the client unsynchronized and
+                                                 request the §7.1 snapshot
+                                                 (`SIGNALR_PROTOCOL.md` §6 item 3)
+no state held at all     any                     there is no version to compare
+                                                 against. Under §6 item 4 of the
+                                                 protocol this cannot arise for a
+                                                 battle the client is
+                                                 synchronized with, because the
+                                                 push precedes the batch; the
+                                                 client neither invents a version
+                                                 to compare with nor treats the
+                                                 batch as authoritative state.
+```
+
+**What the client must not do with it.** It never writes, increments, decrements,
+or re-derives `Sequence` (`SIGNALR_PROTOCOL.md` §8, `GAME_RULES.md` §18): it is
+the server's committed value on every path, and §5.2 fixes what it is *not*. It
+does not compare a batch's `serverSequence` with anything but the `sequence` of
+the state for the **same** battle — a different battle's version is not a
+version of this one (§5.2 item 3, `SIGNALR_PROTOCOL.md` §2 item 1). It does not
+treat a batch's events as evidence of the resulting board: the board arrives in
+the state push, which is why the version — not the events — is what a gap is
+detected from. And when the version proves a gap, it converges from §7's
+snapshot rather than replaying or requesting the missing events
+(`SIGNALR_PROTOCOL.md` §8 item 8, `ADR-008`).
 
 ## 5.1 When `Sequence` and `Turn` Change (Board Resolution & Atomic Round)
 

@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { GameRuntime } from '../src/game/runtime/GameRuntime';
 import { RuntimeActionNotImplementedError } from '../src/game/runtime/GameRuntimeEvents';
+import { RuntimeActionOutcomeUnknownError } from '../src/game/runtime/GameRuntimeEvents';
+import type { BattleEventsEnvelope } from '../src/game/runtime/GameRuntimeEvents';
 import { ApiRequestError } from '../src/services/api/ApiService';
 import { ApplicationSession } from '../src/services/api/ApplicationSession';
 import type { SignalRConnectionHandlers } from '../src/services/realtime/SignalRService';
@@ -199,6 +201,12 @@ class FakeSignalR {
     state?: unknown;
     reason?: string | null;
   }> {
+    // Recorded before the behaviour runs, exactly as `swap()` records its call, so
+    // a gated or failing request still shows that the runtime issued it — the fact
+    // "one request in flight per battle" is asserted on.
+    this.invokedMethods.push('GetBattleState');
+    this.getBattleStateCalls.push(battleId);
+
     if (this.getBattleStateBehaviour) {
       return await this.getBattleStateBehaviour();
     }
@@ -207,8 +215,6 @@ class FakeSignalR {
       throw new Error('SignalR connection is not established.');
     }
 
-    this.invokedMethods.push('GetBattleState');
-    this.getBattleStateCalls.push(battleId);
     return this.getBattleStateResult;
   }
 
@@ -473,15 +479,22 @@ describe('GameRuntime', () => {
       const received: unknown[] = [];
       runtime.onBattleEvents((envelope) => received.push(envelope));
 
-      const payload = {
+      // The documented delivery order (`SIGNALR_PROTOCOL.md` §3.1, §6 item 4):
+      // the resolution's state is pushed before its batch, so the batch is at the
+      // sequence the synchronized copy already carries. That is the path this
+      // test asserts passes through unchanged.
+      const serverState = payload({ battleId: 'battle-1', sequence: 7 });
+      transport.emit('BattleStateUpdated', serverState);
+
+      const payloadEnvelope = {
         battleId: 'battle-1',
         serverSequence: 7,
         events: [{ some: 'server-owned-event' }, { another: true }],
       };
-      transport.emit('ReceiveEvents', payload);
+      transport.emit('ReceiveEvents', payloadEnvelope);
 
       expect(received).toHaveLength(1);
-      expect(received[0]).toEqual(payload);
+      expect(received[0]).toEqual(payloadEnvelope);
     });
 
     it('does not reorder events', async () => {
@@ -490,6 +503,9 @@ describe('GameRuntime', () => {
 
       const received: unknown[][] = [];
       runtime.onBattleEvents((envelope) => received.push([...envelope.events]));
+
+      // As above: the state push that precedes the batch (`§6 item 4`).
+      transport.emit('BattleStateUpdated', payload({ battleId: 'b', sequence: 1 }));
 
       transport.emit('ReceiveEvents', {
         battleId: 'b',
@@ -1878,24 +1894,47 @@ describe('GameRuntime', () => {
       expect(runtime.getBattleState()!.playerState).toEqual({ combo: 4, matchCount: 12 });
     });
 
-    it('does not compare the snapshot against a locally held sequence', async () => {
-      // GAME_STATE.md §5.2 item 3 / SIGNALR_PROTOCOL.md §2 item 1: `Sequence`
-      // is not the client's correlation id, and no document defines a
-      // "snapshot is stale, discard it" rule. A snapshot carrying a lower value
-      // than the copy the runtime holds is still the authoritative one and is
-      // ingested verbatim — no comparison, no rejection, no increment.
+    it('refuses a snapshot that is behind the sequence already delivered', async () => {
+      // `GAME_STATE.md` §5 (Sequence is the basis for the client's detection of
+      // missed/out-of-order delivery) and §5.1 item 3 (`Sequence = n` is the
+      // complete result of the n-th resolution): a snapshot behind the copy the
+      // same battle has already delivered is older than what the client holds, so
+      // recovery must not roll the synchronized state backward.
+      //
+      // This test replaces the previous assertion that a lower-sequence snapshot
+      // was ingested verbatim. The ingestion guard now refuses it; the refusal
+      // stores nothing, dispatches no listener, and is reported through the
+      // existing technical channel, exactly as a malformed payload is.
+      //
+      // **It covers that refusal only.** It issues a client-requested recovery on a
+      // reconnect and never withholds a batch, so it asserts nothing about
+      // `GAME_STATE.md` §5's missed/out-of-order detection: a snapshot at or ahead
+      // of the copy would be ingested here. The batch-gap detection and the
+      // snapshot it requests are covered by this file's P0.4 suite.
       const { runtime, transport } = await joinedRuntime({ turn: 4, sequence: 9 });
 
       const recovered = payload({ turn: 2, sequence: 3 });
       transport.getBattleStateResult = { accepted: true, serverSequence: 3, state: recovered };
 
+      const delivered: unknown[] = [];
+      runtime.onBattleState((state) => delivered.push(state));
+
       reconnect(transport);
 
       await vi.waitFor(() => {
-        expect(runtime.getBattleState()).toEqual(recovered);
+        expect(runtime.getState().lastError).toContain('behind the synchronized sequence 9');
       });
 
-      expect(runtime.getBattleState()!.sequence).toBe(3);
+      // The newer copy the runtime holds survives the stale snapshot untouched.
+      expect(runtime.getBattleState()!.sequence).toBe(9);
+      expect(runtime.getBattleState()!.turn).toBe(4);
+      expect(runtime.getBattleState()).toEqual(payload({ turn: 4, sequence: 9 }));
+
+      // Nothing was re-rendered from a payload that was not stored, and no
+      // synchronization is claimed for a resync that produced no usable snapshot —
+      // the same outcome the malformed-snapshot case already has.
+      expect(delivered).toEqual([]);
+      expect(runtime.getState().sync).toBe('unsynchronized');
     });
 
     it('treats the battle as ended and falls back to the result route on BATTLE_NOT_FOUND', async () => {
@@ -2035,6 +2074,275 @@ describe('GameRuntime', () => {
       ]) {
         expect(source, `GameRuntime must not contain "${forbidden}"`).not.toContain(forbidden);
       }
+    });
+  });
+
+  describe('monotonic state ingestion guard (GAME_STATE.md §5, SIGNALR_PROTOCOL.md §4, §7)', () => {
+    /**
+     * P0.1. `receiveBattleState` is the single ingestion path for both the §4 push
+     * and the §7.1 recovery snapshot, so these tests drive the guard through the
+     * real runtime and the transport port: a well-formed payload is delivered
+     * exactly as the server delivers it, and every assertion is on what the runtime
+     * then holds, reports, and dispatches. No private field is mutated to
+     * manufacture an outcome.
+     *
+     * The recovery-path case — a stale snapshot received during the documented §7
+     * reconnect cycle — is covered by "refuses a snapshot that is behind the
+     * sequence already delivered" in the reconnect & resync block above, which
+     * exercises the same guard through the same `recoverBattleState` entry point.
+     */
+
+    /** A synchronized battle, established by the server's own §4 push. */
+    async function synchronizedBattle(overrides: Record<string, unknown> = {}) {
+      const { runtime, transport } = createRuntime();
+      await runtime.initialize();
+      transport.emit(
+        'BattleStateUpdated',
+        payload({ battleId: 'battle-1', turn: 11, sequence: 11, ...overrides })
+      );
+      return { runtime, transport };
+    }
+
+    /** A `POST /api/battle/start` 200 body (API_CONTRACTS.md §3). */
+    function startResponse(battleId: string) {
+      return {
+        battleId,
+        signalrHub: '/hubs/battle',
+        // Defined by the contract and deliberately never promoted into runtime
+        // state: the §4 push is the only synchronization path (TASK-077).
+        initialState: { battleId, turn: 0, sequence: 0 },
+      };
+    }
+
+    /** The documented request selection (API_CONTRACTS.md §3). */
+    const startRequest = {
+      petId: 'pet-001',
+      bossId: 'boss-hoa-long',
+      cardLoadout: ['heal', 'shield', 'power_charge'],
+      relicLoadout: ['relic-1', 'relic-2', 'relic-3'],
+    };
+
+    /** A runtime over the fake transport and a start-request double. */
+    async function startedRuntime(battleId: string) {
+      const transport = new FakeSignalR();
+      const api = { startBattle: vi.fn(async () => startResponse(battleId)) };
+      const runtime = new GameRuntime(transport as never, api as never);
+      await runtime.initialize();
+      return { runtime, transport, api };
+    }
+
+    it('refuses a payload whose sequence is behind the one already delivered', async () => {
+      // Sequence 11 followed by sequence 10: the same battle, one complete
+      // resolution behind the copy already delivered (GAME_STATE.md §5.1 item 3).
+      const { runtime, transport } = await synchronizedBattle({
+        playerState: { combo: 4, matchCount: 21 },
+      });
+      expect(runtime.getBattleState()!.sequence).toBe(11);
+
+      const delivered: unknown[] = [];
+      const errors: Array<string | null> = [];
+      runtime.onBattleState((state) => delivered.push(state));
+      runtime.onRuntimeEvent((event) => {
+        if (event.type === 'runtime_error') {
+          errors.push(event.detail ?? null);
+        }
+      });
+
+      transport.emit(
+        'BattleStateUpdated',
+        payload({
+          battleId: 'battle-1',
+          turn: 10,
+          sequence: 10,
+          playerState: { combo: 3, matchCount: 17 },
+        })
+      );
+
+      // Nothing rolled back: the copy is still the server's sequence 11.
+      expect(runtime.getBattleState()!.sequence).toBe(11);
+      expect(runtime.getBattleState()!.turn).toBe(11);
+      expect(runtime.getBattleState()!.playerState).toEqual({ combo: 4, matchCount: 21 });
+
+      // The refused payload is neither stored nor rendered from, and the refusal
+      // is reported through the technical channel a malformed payload already
+      // uses — the runtime holds the server's most recent state either way.
+      expect(delivered).toEqual([]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain('sequence 10');
+      expect(errors[0]).toContain('behind the synchronized sequence 11');
+      expect(runtime.getState().lastError).toBe(errors[0]);
+      expect(runtime.getState().sync).toBe('synchronized');
+    });
+
+    it('stores a payload that advances the sequence', async () => {
+      // The guard is monotonic, not a freeze: the battle's next resolution is the
+      // ordinary delivery and is stored as sent.
+      const { runtime, transport } = await synchronizedBattle();
+
+      transport.emit(
+        'BattleStateUpdated',
+        payload({
+          battleId: 'battle-1',
+          turn: 12,
+          sequence: 12,
+          playerState: { combo: 1, matchCount: 1 },
+        })
+      );
+
+      expect(runtime.getBattleState()!.sequence).toBe(12);
+      expect(runtime.getState().sync).toBe('synchronized');
+      expect(runtime.getState().lastError).toBeNull();
+    });
+
+    it('ingests a duplicate sequence idempotently and reports no error', async () => {
+      const { runtime, transport } = await synchronizedBattle({
+        playerState: { combo: 4, matchCount: 21 },
+      });
+
+      const delivered: unknown[] = [];
+      const events: string[] = [];
+      runtime.onBattleState((state) => delivered.push(state));
+      runtime.onRuntimeEvent((event) => events.push(event.type));
+
+      const duplicate = payload({
+        battleId: 'battle-1',
+        turn: 11,
+        sequence: 11,
+        playerState: { combo: 4, matchCount: 21 },
+      });
+      transport.emit('BattleStateUpdated', duplicate);
+
+      // Applying the same complete resolution again is a re-application of the
+      // same value rather than a state change (GAME_STATE.md §5.1 item 3).
+      expect(runtime.getBattleState()).toEqual(duplicate);
+      expect(runtime.getState().sync).toBe('synchronized');
+
+      // An expected duplicate is not an anomaly: no error is reported for it and
+      // no noisy log is introduced.
+      expect(events).not.toContain('runtime_error');
+      expect(runtime.getState().lastError).toBeNull();
+
+      // Delivery is not suppressed. The record carries battle state only — its
+      // exact member set (SIGNALR_PROTOCOL.md §4 item 4) holds no non-gameplay
+      // metadata, and no `Status`/lifecycle value exists anywhere in the protocol
+      // (§8.3) — so suppressing it would preserve nothing, while a recovering
+      // client must still reach `synchronized` and re-render from its snapshot
+      // even when that snapshot is level with the copy it holds (§7.2).
+      expect(delivered).toEqual([duplicate]);
+    });
+
+    it('refuses state for a different battle while one is active', async () => {
+      const { runtime, transport } = await synchronizedBattle({
+        battleId: 'battle-1',
+        turn: 3,
+        sequence: 3,
+      });
+
+      const delivered: unknown[] = [];
+      const errors: Array<string | null> = [];
+      runtime.onBattleState((state) => delivered.push(state));
+      runtime.onRuntimeEvent((event) => {
+        if (event.type === 'runtime_error') {
+          errors.push(event.detail ?? null);
+        }
+      });
+
+      transport.emit(
+        'BattleStateUpdated',
+        payload({ battleId: 'battle-other', turn: 0, sequence: 0 })
+      );
+
+      // The active battle is untouched: a payload for another battle, at a lower
+      // sequence, cannot replace it — and no sequence is assumed between the two
+      // battles (GAME_STATE.md §5.2 item 3), so the refusal is the identity's, not
+      // the version's.
+      expect(runtime.getBattleState()!.battleId).toBe('battle-1');
+      expect(runtime.getBattleState()!.sequence).toBe(3);
+      expect(delivered).toEqual([]);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain('battle-other');
+      expect(errors[0]).toContain('no lifecycle transition established it');
+
+      // The action boundary still addresses the battle that is actually active, so
+      // a foreign payload cannot redirect a request either.
+      await runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 });
+      expect(transport.swapCalls[0][0]).toBe('battle-1');
+      expect(transport.swapCalls[0][3]).toBe(3);
+    });
+
+    it('accepts the new battle a lifecycle transition established, whatever its sequence', async () => {
+      const { runtime, transport } = await startedRuntime('battle-b');
+
+      // Battle A is active and synchronized at a sequence battle B cannot share:
+      // B is a different battle and starts at 0 (GAME_STATE.md §2.0.2, §5).
+      transport.emit(
+        'BattleStateUpdated',
+        payload({ battleId: 'battle-a', turn: 5, sequence: 5 })
+      );
+
+      const delivered: unknown[] = [];
+      runtime.onBattleState((state) => delivered.push(state));
+
+      // The documented transition: the REST step names the battle, then the group
+      // join triggers that battle's own §4 push (SIGNALR_PROTOCOL.md §1 items 1–2).
+      await runtime.startBattle(startRequest);
+
+      transport.emit(
+        'BattleStateUpdated',
+        payload({ battleId: 'battle-b', turn: 0, sequence: 0 })
+      );
+
+      // The transition's own push replaced the battle that was held, even though
+      // its sequence is lower than the one A had reached.
+      expect(runtime.getBattleState()!.battleId).toBe('battle-b');
+      expect(runtime.getBattleState()!.sequence).toBe(0);
+      expect(runtime.getState().sync).toBe('synchronized');
+      expect(runtime.getState().lastError).toBeNull();
+      expect(delivered).toHaveLength(1);
+
+      // The action boundary follows the transition to the new battle.
+      await runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 });
+      expect(transport.swapCalls[0][0]).toBe('battle-b');
+    });
+
+    it('keeps a still-valid active battle when a new battle cannot be started', async () => {
+      const { runtime, transport } = await startedRuntime('battle-b');
+
+      transport.emit(
+        'BattleStateUpdated',
+        payload({ battleId: 'battle-a', turn: 5, sequence: 5 })
+      );
+      transport.joinBehaviour = async () => {
+        throw new Error('JoinBattle failed');
+      };
+
+      await expect(runtime.startBattle(startRequest)).rejects.toThrow('JoinBattle failed');
+
+      // The still-valid active battle survives the failed transition: it was not
+      // reset in advance of the new battle becoming enterable, and nothing was
+      // fabricated to stand in for the battle that was never entered.
+      expect(runtime.getBattleState()!.battleId).toBe('battle-a');
+      expect(runtime.getBattleState()!.sequence).toBe(5);
+      expect(runtime.getBattleState()!.turn).toBe(5);
+      expect(runtime.getState().sync).toBe('synchronized');
+
+      // The failed start established no identity, so a payload for the battle it
+      // had named is still a cross-battle payload and cannot replace A.
+      const errors: Array<string | null> = [];
+      runtime.onRuntimeEvent((event) => {
+        if (event.type === 'runtime_error') {
+          errors.push(event.detail ?? null);
+        }
+      });
+
+      transport.emit(
+        'BattleStateUpdated',
+        payload({ battleId: 'battle-b', turn: 0, sequence: 0 })
+      );
+
+      expect(runtime.getBattleState()!.battleId).toBe('battle-a');
+      expect(runtime.getBattleState()!.sequence).toBe(5);
+      expect(errors[0]).toContain('no lifecycle transition established it');
     });
   });
 
@@ -3464,6 +3772,1183 @@ describe('GameRuntime', () => {
         'session',
         'sync',
       ]);
+    });
+  });
+
+  describe('P0.2: Action Idempotency, Submission & Recovery Coordination', () => {
+    function createP02Runtime() {
+      const transport = new FakeSignalR();
+      const api = {
+        getBattleResult: vi.fn(async () => ({
+          battleId: 'battle-1',
+          outcome: 'victory',
+          rewards: {},
+          durationTurns: 5,
+        })),
+        startBattle: vi.fn(async () => ({
+          battleId: 'battle-2',
+          signalrHub: 'http://localhost/hubs/battle',
+          initialState: payload({ battleId: 'battle-2' }),
+        })),
+      };
+      const runtime = new GameRuntime(transport as never, api as never);
+      return { runtime, transport, api };
+    }
+
+    async function joinedP02Runtime(overrides: Record<string, unknown> = {}) {
+      const ctx = createP02Runtime();
+      await ctx.runtime.initialize();
+      ctx.transport.emit('BattleStateUpdated', payload(overrides));
+      return ctx;
+    }
+
+    it('1. preserves action identity when transport throws during submission', async () => {
+      const { runtime, transport } = await joinedP02Runtime({ battleId: 'battle-1', sequence: 0 });
+
+      transport.swapBehaviour = async () => {
+        throw new Error('Transport dropped');
+      };
+
+      await expect(
+        runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 })
+      ).rejects.toThrow('Transport dropped');
+
+      expect(transport.swapCalls).toHaveLength(1);
+      const originalActionId = transport.swapCalls[0][4];
+      expect(originalActionId).toBeTruthy();
+
+      // Reset transport to succeed and retry the same logical swap
+      transport.swapBehaviour = null;
+      transport.swapResult = { accepted: true };
+
+      const ack = await runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 });
+      expect(ack.accepted).toBe(true);
+      expect(transport.swapCalls).toHaveLength(2);
+      expect(transport.swapCalls[1][4]).toBe(originalActionId);
+    });
+
+    it('2. retry reuses the same logical action identity for reversed cell pair', async () => {
+      const { runtime, transport } = await joinedP02Runtime({ battleId: 'battle-1', sequence: 0 });
+
+      transport.swapBehaviour = async () => {
+        throw new Error('Timeout');
+      };
+
+      await expect(
+        runtime.requestAction({ kind: 'Swap', fromCell: 2, toCell: 3 })
+      ).rejects.toThrow('Timeout');
+
+      const originalActionId = transport.swapCalls[0][4];
+
+      transport.swapBehaviour = null;
+      transport.swapResult = { accepted: true };
+
+      // Reverse order (3, 2 instead of 2, 3) is the same logical action
+      const ack = await runtime.requestAction({ kind: 'Swap', fromCell: 3, toCell: 2 });
+      expect(ack.accepted).toBe(true);
+      expect(transport.swapCalls[1][4]).toBe(originalActionId);
+    });
+
+    it('3. a definitive server rejection settles the submission without treating it as committed', async () => {
+      const { runtime, transport } = await joinedP02Runtime({ battleId: 'battle-1', sequence: 0 });
+
+      transport.swapResult = { accepted: false, reason: 'INVALID_SWAP' };
+
+      const ack = await runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 });
+      expect(ack.accepted).toBe(false);
+      expect(ack.reason).toBe('INVALID_SWAP');
+
+      const firstActionId = transport.swapCalls[0][4];
+
+      // A subsequent submission of the same cells receives a NEW logical action identity
+      transport.swapResult = { accepted: true };
+      const secondAck = await runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 });
+      expect(secondAck.accepted).toBe(true);
+      expect(transport.swapCalls[1][4]).not.toBe(firstActionId);
+    });
+
+    it('4. a newer authoritative state arriving before a delayed action response is preserved', async () => {
+      const { runtime, transport } = await joinedP02Runtime({ battleId: 'battle-1', sequence: 0 });
+
+      let resolveSwap!: (value: { accepted: boolean }) => void;
+      transport.swapBehaviour = () =>
+        new Promise<{ accepted: boolean }>((resolve) => {
+          resolveSwap = resolve;
+        }) as unknown as Promise<never>;
+
+      const swapPromise = runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 });
+
+      // While swap is in flight, the server pushes sequence 1
+      transport.emit(
+        'BattleStateUpdated',
+        payload({ battleId: 'battle-1', turn: 1, sequence: 1 })
+      );
+      expect(runtime.getBattleState()!.sequence).toBe(1);
+
+      // Now the delayed swap response arrives
+      resolveSwap({ accepted: true });
+      const ack = await swapPromise;
+      expect(ack.accepted).toBe(true);
+
+      // Newer authoritative state remains preserved at sequence 1
+      expect(runtime.getBattleState()!.sequence).toBe(1);
+    });
+
+    it('5. a reconnect-requested recovery ingests the snapshot and restores synchronization', async () => {
+      const { runtime, transport } = await joinedP02Runtime({ battleId: 'battle-1', sequence: 0 });
+
+      // Simulate connection reconnected and unsynchronized
+      transport.handlers.onReconnecting?.(new Error('lost'));
+      transport.handlers.onReconnected?.('conn-2');
+      expect(runtime.getState().sync).toBe('unsynchronized');
+
+      // The snapshot reports a sequence ahead of the copy the runtime holds. This
+      // test issues the recovery itself on the reconnect path: it never delivers a
+      // batch whose state is missing, so it is **not** coverage for a
+      // gap-triggered recovery — that is this file's P0.4 suite, where a withheld
+      // batch opens the request.
+      transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 1,
+        state: payload({ battleId: 'battle-1', turn: 1, sequence: 1 }),
+      };
+
+      await runtime.recoverBattleState();
+
+      expect(runtime.getBattleState()!.sequence).toBe(1);
+      expect(runtime.getState().sync).toBe('synchronized');
+    });
+
+    it('6. a recovery with no batch at all re-renders from the snapshot and fabricates no event', async () => {
+      const { runtime, transport } = await joinedP02Runtime({ battleId: 'battle-1', sequence: 0 });
+
+      const events: unknown[] = [];
+      runtime.onBattleEvents((env) => events.push(env));
+
+      // Recovery snapshot arrives without any ReceiveEvents batch. The batch is not
+      // withheld here — none was ever delivered, so this is not coverage for a
+      // missed batch either (P0.4 covers both directions of that).
+      transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 1,
+        state: payload({ battleId: 'battle-1', turn: 1, sequence: 1 }),
+      };
+
+      await runtime.recoverBattleState();
+
+      expect(runtime.getBattleState()!.sequence).toBe(1);
+      expect(runtime.getState().sync).toBe('synchronized');
+      // No combat events were fabricated
+      expect(events).toHaveLength(0);
+    });
+
+    it('7. a valid newer snapshot restores synchronization after a stale snapshot was rejected', async () => {
+      const { runtime, transport } = await joinedP02Runtime({ battleId: 'battle-1', turn: 4, sequence: 9 });
+
+      // Put into unsynchronized state (e.g. disconnect)
+      transport.handlers.onReconnecting?.(new Error('lost'));
+      expect(runtime.getState().sync).toBe('unsynchronized');
+
+      // Stale snapshot at sequence 3
+      transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 3,
+        state: payload({ battleId: 'battle-1', turn: 2, sequence: 3 }),
+      };
+
+      await runtime.recoverBattleState();
+      expect(runtime.getState().sync).toBe('unsynchronized');
+      expect(runtime.getState().lastError).toContain('behind the synchronized sequence 9');
+      expect(runtime.getBattleState()!.sequence).toBe(9);
+
+      // Now a valid newer snapshot at sequence 10 arrives
+      transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 10,
+        state: payload({ battleId: 'battle-1', turn: 5, sequence: 10 }),
+      };
+
+      await runtime.recoverBattleState();
+      expect(runtime.getState().sync).toBe('synchronized');
+      expect(runtime.getState().lastError).toBeNull();
+      expect(runtime.getBattleState()!.sequence).toBe(10);
+    });
+
+    it('8. equal-sequence recovery still notifies consumers and finishes synchronization', async () => {
+      const { runtime, transport } = await joinedP02Runtime({ battleId: 'battle-1', turn: 2, sequence: 5 });
+
+      transport.handlers.onReconnecting?.(new Error('lost'));
+      expect(runtime.getState().sync).toBe('unsynchronized');
+
+      const notified: Array<{ sequence: number; source?: string }> = [];
+      runtime.onBattleState((st, meta) =>
+        notified.push({ sequence: st?.sequence ?? -1, source: meta?.source })
+      );
+
+      transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 5,
+        state: payload({ battleId: 'battle-1', turn: 2, sequence: 5 }),
+      };
+
+      await runtime.recoverBattleState();
+
+      expect(runtime.getState().sync).toBe('synchronized');
+      expect(notified).toHaveLength(1);
+      expect(notified[0].sequence).toBe(5);
+      expect(notified[0].source).toBe('recovery');
+    });
+
+    it('9. cross-battle and stale-sequence guards from P0.1 remain effective', async () => {
+      const { runtime, transport } = await joinedP02Runtime({ battleId: 'battle-1', turn: 2, sequence: 4 });
+
+      // Unsolicited foreign battle push
+      transport.emit('BattleStateUpdated', payload({ battleId: 'foreign-battle', sequence: 0 }));
+      expect(runtime.getBattleState()!.battleId).toBe('battle-1');
+      expect(runtime.getState().lastError).toContain('foreign-battle');
+
+      // Stale sequence push
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 1, sequence: 2 }));
+      expect(runtime.getBattleState()!.sequence).toBe(4);
+      expect(runtime.getState().lastError).toContain('behind the synchronized sequence 4');
+    });
+
+    it('10. recovery-source metadata is propagated correctly for push vs recovery', async () => {
+      const { runtime, transport } = await joinedP02Runtime({ battleId: 'battle-1', sequence: 0 });
+
+      const sources: string[] = [];
+      runtime.onBattleState((_, meta) => {
+        if (meta?.source) sources.push(meta.source);
+      });
+
+      // Push delivery
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', sequence: 1 }));
+      expect(sources[0]).toBe('push');
+
+      // Recovery delivery
+      transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 2,
+        state: payload({ battleId: 'battle-1', sequence: 2 }),
+      };
+      await runtime.recoverBattleState();
+      expect(sources[1]).toBe('recovery');
+    });
+
+    it('11. recovery retries are bounded and do not spin indefinitely on stale snapshots', async () => {
+      const { runtime, transport } = await joinedP02Runtime({ battleId: 'battle-1', sequence: 9 });
+
+      transport.handlers.onReconnecting?.(new Error('lost'));
+      expect(runtime.getState().sync).toBe('unsynchronized');
+
+      transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 3,
+        state: payload({ battleId: 'battle-1', sequence: 3 }),
+      };
+
+      await runtime.recoverBattleState();
+
+      // Bounded retries: 3 attempts total, then terminates
+      expect(transport.getBattleStateCalls).toHaveLength(3);
+      expect(runtime.getState().sync).toBe('unsynchronized');
+    });
+
+    it('12. a delayed response from a previous battle cannot settle the current battle action', async () => {
+      const { runtime, transport } = await joinedP02Runtime({ battleId: 'battle-1', sequence: 0 });
+
+      let resolveSwap!: (value: { accepted: boolean }) => void;
+      transport.swapBehaviour = () =>
+        new Promise<{ accepted: boolean }>((resolve) => {
+          resolveSwap = resolve;
+        }) as unknown as Promise<never>;
+
+      // Submit swap for battle-1
+      const swapPromise = runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 });
+
+      // Start new battle battle-2
+      await runtime.startBattle({
+        petId: 'pet-1',
+        bossId: 'boss-1',
+        cardLoadout: ['c1', 'c2', 'c3'],
+        relicLoadout: [],
+      });
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-2', sequence: 0 }));
+      expect(runtime.getBattleState()!.battleId).toBe('battle-2');
+
+      // Now delayed swap for battle-1 arrives
+      resolveSwap({ accepted: true });
+
+      await expect(swapPromise).rejects.toThrow(
+        'Action response for battle "battle-1" arrived after active battle changed to "battle-2"'
+      );
+
+      // Active battle-2 is unaffected
+      expect(runtime.getBattleState()!.battleId).toBe('battle-2');
+    });
+  });
+
+  describe('P0.3: transport-uncertain action outcomes and recovery coordination', () => {
+    function createP03Runtime() {
+      const transport = new FakeSignalR();
+      const runtime = new GameRuntime(transport as never);
+      return { runtime, transport };
+    }
+
+    async function joinedP03Runtime(overrides: Record<string, unknown> = {}) {
+      const ctx = createP03Runtime();
+      await ctx.runtime.initialize();
+      ctx.transport.emit('BattleStateUpdated', payload(overrides));
+      return ctx;
+    }
+
+    it('reports a submitted-but-unanswered action as an unknown outcome, and asks the server instead of assuming', async () => {
+      const { runtime, transport } = await joinedP03Runtime({ battleId: 'battle-1', sequence: 2 });
+
+      transport.swapBehaviour = async () => {
+        throw new Error('Transport timeout');
+      };
+
+      const failure = await runtime
+        .requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 })
+        .catch((error: unknown) => error);
+
+      // The distinction the caller cannot make for itself: no acknowledgement is
+      // neither an acceptance nor a rejection (SIGNALR_PROTOCOL.md §5, §8.3).
+      expect(failure).toBeInstanceOf(RuntimeActionOutcomeUnknownError);
+      expect((failure as RuntimeActionOutcomeUnknownError).kind).toBe('Swap');
+      expect((failure as Error).message).toContain('Transport timeout');
+
+      // The copy the runtime holds can no longer be vouched for, and it says so —
+      // which is the state the synchronization indicator presents.
+      expect(runtime.getState().sync).toBe('unsynchronized');
+
+      // It asks for the authoritative snapshot rather than concluding that the
+      // action did not happen, and it fabricates no state while doing so.
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+      expect(runtime.getBattleState()!.sequence).toBe(2);
+
+      // The logical action's identity is still unresolved: a retry of the same
+      // pair carries the identical action token (ADR-025 §2 / P0.2).
+      const originalActionId = transport.swapCalls[0][4];
+      expect(originalActionId).toBeTruthy();
+
+      transport.swapBehaviour = null;
+      transport.swapResult = { accepted: true };
+      await runtime.requestAction({ kind: 'Swap', fromCell: 1, toCell: 0 });
+
+      expect(transport.swapCalls).toHaveLength(2);
+      expect(transport.swapCalls[1][4]).toBe(originalActionId);
+    });
+
+    it('lets the snapshot decide what the unanswered action did — committed or not', async () => {
+      // The action committed: the authoritative state is a step further on.
+      const committed = await joinedP03Runtime({ battleId: 'battle-1', sequence: 2 });
+      committed.transport.swapBehaviour = async () => {
+        throw new Error('Transport timeout');
+      };
+      await committed.runtime
+        .requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 })
+        .catch(() => undefined);
+
+      committed.transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 3,
+        state: payload({ battleId: 'battle-1', turn: 2, sequence: 3 }),
+      };
+      await committed.runtime.recoverBattleState();
+
+      expect(committed.runtime.getBattleState()!.sequence).toBe(3);
+      expect(committed.runtime.getState().sync).toBe('synchronized');
+
+      // The action did not commit: the snapshot is level with the copy already
+      // held — accepted and re-applied, never read as a rollback the client
+      // performed (GameRuntime.receiveBattleState's idempotent duplicate).
+      const refused = await joinedP03Runtime({ battleId: 'battle-1', sequence: 2 });
+      refused.transport.swapBehaviour = async () => {
+        throw new Error('Transport timeout');
+      };
+      await refused.runtime
+        .requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 })
+        .catch(() => undefined);
+
+      refused.transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 2,
+        state: payload({ battleId: 'battle-1', sequence: 2 }),
+      };
+      await refused.runtime.recoverBattleState();
+
+      expect(refused.runtime.getBattleState()!.sequence).toBe(2);
+      expect(refused.runtime.getState().sync).toBe('synchronized');
+    });
+
+    it('does not desynchronize or recover on a definitive rejection', async () => {
+      const { runtime, transport } = await joinedP03Runtime({ battleId: 'battle-1', sequence: 2 });
+
+      transport.swapResult = { accepted: false, reason: 'INVALID_SWAP' };
+
+      const acknowledgement = await runtime.requestAction({
+        kind: 'Swap',
+        fromCell: 0,
+        toCell: 1,
+      });
+
+      // A rejection is the server's own answer: the action is settled as a
+      // gameplay no-op, the client is still synchronized, and there is nothing to
+      // reconcile.
+      expect(acknowledgement).toEqual({ accepted: false, reason: 'INVALID_SWAP' });
+      expect(runtime.getState().sync).toBe('synchronized');
+      expect(transport.getBattleStateCalls).toEqual([]);
+      expect(runtime.getBattleState()!.sequence).toBe(2);
+    });
+
+    it('treats an unanswered cast as an unknown outcome too, and a refusal as settled', async () => {
+      const uncertain = await joinedP03Runtime({ battleId: 'battle-1', sequence: 2 });
+
+      uncertain.transport.cardCastBehaviour = async () => {
+        throw new Error('Connection lost');
+      };
+
+      const failure = await uncertain.runtime
+        .requestAction({ kind: 'CardCast', cardId: 'card-heal' })
+        .catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(RuntimeActionOutcomeUnknownError);
+      expect((failure as RuntimeActionOutcomeUnknownError).kind).toBe('CardCast');
+      expect(uncertain.runtime.getState().sync).toBe('unsynchronized');
+      expect(uncertain.transport.getBattleStateCalls).toEqual(['battle-1']);
+
+      const refused = await joinedP03Runtime({ battleId: 'battle-1', sequence: 2 });
+      refused.transport.petSkillCastResult = {
+        accepted: false,
+        reason: 'PET_SKILL_NOT_OWNED',
+      };
+
+      const acknowledgement = await refused.runtime.requestAction({ kind: 'PetSkillCast' });
+
+      expect(acknowledgement).toEqual({ accepted: false, reason: 'PET_SKILL_NOT_OWNED' });
+      expect(refused.runtime.getState().sync).toBe('synchronized');
+      expect(refused.transport.getBattleStateCalls).toEqual([]);
+    });
+  });
+
+  /**
+   * TASK-273 / P0.4 — client sequence desync detection and recovery convergence at
+   * the runtime boundary.
+   *
+   * The contract under test (`SIGNALR_PROTOCOL.md` §3.1, §6 items 3–4, §7.1–§7.3,
+   * `GAME_STATE.md` §5):
+   *
+   * ```text
+   * push-then-batch   BattleStateUpdated(S) precedes ReceiveEvents(S), so the batch's
+   *                   serverSequence equals the sequence the synchronized copy holds
+   * gap               a batch ahead of the held sequence means the state for a
+   *                   committed resolution never arrived: withhold it, publish
+   *                   unsynchronized, request the §7.1 snapshot once
+   * at or below       the held state already represents that resolution: forward, and
+   *                   never fetch a snapshot for it
+   * cross-battle      a batch for another battle never reaches a listener
+   * ended             §7.3's BATTLE_NOT_FOUND is published as `null` + `source:
+   *                   'ended'`, so the scene can drop what it was presenting
+   * ```
+   */
+  describe('P0.4: client sequence desync detection and recovery convergence', () => {
+    function createP04Runtime() {
+      const transport = new FakeSignalR();
+      const api = {
+        getBattleResult: vi.fn(async () => ({
+          battleId: 'battle-1',
+          outcome: 'victory',
+          rewards: {},
+          durationTurns: 5,
+        })),
+        startBattle: vi.fn(async () => ({
+          battleId: 'battle-2',
+          signalrHub: 'http://localhost/hubs/battle',
+          initialState: payload({ battleId: 'battle-2' }),
+        })),
+      };
+      const runtime = new GameRuntime(transport as never, api as never);
+      return { runtime, transport, api };
+    }
+
+    /** A joined runtime with the documented §4 push already delivered. */
+    async function joinedP04Runtime(overrides: Record<string, unknown> = {}) {
+      const ctx = createP04Runtime();
+      await ctx.runtime.initialize();
+      ctx.transport.emit('BattleStateUpdated', payload(overrides));
+      return ctx;
+    }
+
+    /** The batches a listener observed, in dispatch order. */
+    function observeBatches(runtime: GameRuntime): BattleEventsEnvelope[] {
+      const seen: BattleEventsEnvelope[] = [];
+      runtime.onBattleEvents((envelope) => seen.push(envelope));
+      return seen;
+    }
+
+    function batch(battleId: string, serverSequence: number, events: unknown[] = []) {
+      return { battleId, serverSequence, events };
+    }
+
+    it('1. lets the documented push-then-batch path pass through unchanged', async () => {
+      const { runtime, transport } = await joinedP04Runtime({
+        battleId: 'battle-1',
+        sequence: 3,
+      });
+      const seen = observeBatches(runtime);
+      const syncBefore = runtime.getState().sync;
+
+      const delivered = batch('battle-1', 3, [{ type: 'GemMatched' }]);
+      transport.emit('ReceiveEvents', delivered);
+
+      // Forwarded exactly as delivered, with no state change and no snapshot
+      // request: the sequence equals the one the synchronized copy holds, which is
+      // what §6 item 4's push-then-batch order guarantees.
+      expect(seen).toEqual([delivered]);
+      expect(runtime.getState().sync).toBe(syncBefore);
+      expect(runtime.getState().sync).toBe('synchronized');
+      expect(transport.getBattleStateCalls).toEqual([]);
+      expect(runtime.getBattleState()!.sequence).toBe(3);
+    });
+
+    it('2. withholds a batch ahead of the held state and requests the snapshot', async () => {
+      const { runtime, transport } = await joinedP04Runtime({
+        battleId: 'battle-1',
+        sequence: 3,
+      });
+      const seen = observeBatches(runtime);
+
+      // The state for the resolution this batch belongs to never arrived: the
+      // batch is at 4 while the synchronized copy is still at 3 (§6 item 3). The
+      // snapshot the gap is recovered with is the resolution's own state.
+      transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 4,
+        state: payload({ battleId: 'battle-1', turn: 4, sequence: 4 }),
+      };
+
+      transport.emit('ReceiveEvents', batch('battle-1', 4, [{ type: 'GemMatched' }]));
+
+      // Withheld: nothing the client holds can represent that resolution, so it is
+      // not presented, and the authoritative snapshot is requested instead
+      // (§7.1 — a snapshot, never a replay).
+      expect(seen).toEqual([]);
+      expect(runtime.getState().sync).toBe('unsynchronized');
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+
+      // The snapshot converges it: the state is ingested by the ordinary §4 path
+      // and synchronization is claimed again.
+      await vi.waitFor(() => {
+        expect(runtime.getBattleState()!.sequence).toBe(4);
+      });
+
+      expect(runtime.getState().sync).toBe('synchronized');
+    });
+
+    it('3. detects a skipped sequence, not only a single-step gap', async () => {
+      const { runtime, transport } = await joinedP04Runtime({
+        battleId: 'battle-1',
+        sequence: 4,
+      });
+      const seen = observeBatches(runtime);
+
+      // Sequences 5 and 6 were both committed and neither state arrived.
+      transport.emit('ReceiveEvents', batch('battle-1', 6, [{ type: 'GemMatched' }]));
+
+      expect(seen).toEqual([]);
+      expect(runtime.getState().sync).toBe('unsynchronized');
+      expect(runtime.getState().lastError).toContain('serverSequence 6');
+      expect(runtime.getState().lastError).toContain('synchronized sequence 4');
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+    });
+
+    it('4. drops a batch from another battle and leaves the active state untouched', async () => {
+      const { runtime, transport } = await joinedP04Runtime({
+        battleId: 'battle-1',
+        sequence: 3,
+      });
+      const seen = observeBatches(runtime);
+
+      transport.emit('ReceiveEvents', batch('battle-other', 3, [{ type: 'BattleWon' }]));
+
+      // Cross-battle contamination: the batch belongs to no battle this runtime
+      // synchronizes, so it reaches no listener and no recovery is requested for
+      // the active battle — a foreign batch says nothing about it.
+      expect(seen).toEqual([]);
+      expect(runtime.getBattleState()!.battleId).toBe('battle-1');
+      expect(runtime.getBattleState()!.sequence).toBe(3);
+      expect(transport.getBattleStateCalls).toEqual([]);
+      expect(runtime.getState().lastError).toContain('battle-other');
+    });
+
+    it('5. forwards a duplicate or older batch without an unnecessary recovery', async () => {
+      const { runtime, transport } = await joinedP04Runtime({
+        battleId: 'battle-1',
+        sequence: 4,
+      });
+      const seen = observeBatches(runtime);
+
+      // A re-delivery of the resolution the copy already represents, and a batch
+      // for an earlier one: both are forwarded (the scene's own accepted-resolution
+      // memory decides presentation) and neither is a desynchronization.
+      transport.emit('ReceiveEvents', batch('battle-1', 4, [{ type: 'GemMatched' }]));
+      transport.emit('ReceiveEvents', batch('battle-1', 3, [{ type: 'GemMatched' }]));
+
+      expect(seen).toHaveLength(2);
+      expect(runtime.getState().sync).toBe('synchronized');
+      expect(transport.getBattleStateCalls).toEqual([]);
+      expect(runtime.getBattleState()!.sequence).toBe(4);
+    });
+
+    it('6. preserves unsynchronized status and retries a bounded number of times after a transport failure', async () => {
+      const { runtime, transport } = await joinedP04Runtime({
+        battleId: 'battle-1',
+        sequence: 1,
+      });
+
+      transport.getBattleStateBehaviour = async () => {
+        throw new Error('connection lost');
+      };
+
+      transport.emit('ReceiveEvents', batch('battle-1', 2, [{ type: 'GemMatched' }]));
+
+      // The recovery request failed, so the client is honestly still
+      // desynchronized: nothing is fabricated and no synchronization is claimed.
+      await vi.waitFor(() => {
+        expect(runtime.getState().lastError).toBe('connection lost');
+      });
+
+      expect(runtime.getState().sync).toBe('unsynchronized');
+      expect(runtime.getBattleState()!.sequence).toBe(1);
+
+      // Bounded: the retry policy issues a fixed number of attempts and stops,
+      // rather than spinning on a persistent outage.
+      await vi.waitFor(() => {
+        expect(transport.getBattleStateCalls.length).toBe(3);
+      });
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(transport.getBattleStateCalls.length).toBe(3);
+      expect(runtime.getState().sync).toBe('unsynchronized');
+    });
+
+    it('7. keeps one recovery request in flight for one unresolved gap', async () => {
+      const { runtime, transport } = await joinedP04Runtime({
+        battleId: 'battle-1',
+        sequence: 1,
+      });
+
+      let release!: (value: { accepted: boolean; state?: unknown; serverSequence?: number }) => void;
+      transport.getBattleStateBehaviour = () =>
+        new Promise<never>((resolve) => {
+          release = resolve as unknown as (value: {
+            accepted: boolean;
+            state?: unknown;
+            serverSequence?: number;
+          }) => void;
+        });
+
+      // Several observations of the same unresolved desynchronization: the gap
+      // itself, a later gap, and the action path that also asks for recovery.
+      transport.emit('ReceiveEvents', batch('battle-1', 2, [{ type: 'GemMatched' }]));
+      transport.emit('ReceiveEvents', batch('battle-1', 3, [{ type: 'GemMatched' }]));
+      transport.emit('ReceiveEvents', batch('battle-1', 2, [{ type: 'GemMatched' }]));
+      void runtime.recoverBattleState();
+
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+
+      release({
+        accepted: true,
+        serverSequence: 3,
+        state: payload({ battleId: 'battle-1', turn: 3, sequence: 3 }),
+      });
+
+      await vi.waitFor(() => {
+        expect(runtime.getState().sync).toBe('synchronized');
+      });
+      expect(runtime.getBattleState()!.sequence).toBe(3);
+    });
+
+    it('8. requests no recovery for gap-free consecutive batches', async () => {
+      const { runtime, transport } = await joinedP04Runtime({
+        battleId: 'battle-1',
+        sequence: 1,
+      });
+      const seen = observeBatches(runtime);
+
+      for (const sequence of [1, 2, 3]) {
+        transport.emit(
+          'BattleStateUpdated',
+          payload({ battleId: 'battle-1', turn: sequence, sequence })
+        );
+        transport.emit('ReceiveEvents', batch('battle-1', sequence, [{ type: 'GemMatched' }]));
+      }
+
+      expect(seen.map((envelope) => envelope.serverSequence)).toEqual([1, 2, 3]);
+      expect(transport.getBattleStateCalls).toEqual([]);
+      expect(runtime.getState().sync).toBe('synchronized');
+    });
+
+    it('9. refuses a recovery response whose envelope and snapshot sequences disagree', async () => {
+      // Equal: the documented response, ingested by the ordinary §4 path.
+      const equal = await joinedP04Runtime({ battleId: 'battle-1', sequence: 1 });
+      equal.transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 2,
+        state: payload({ battleId: 'battle-1', turn: 2, sequence: 2 }),
+      };
+      await equal.runtime.recoverBattleState();
+      expect(equal.runtime.getBattleState()!.sequence).toBe(2);
+      expect(equal.runtime.getState().sync).toBe('synchronized');
+
+      // The envelope ahead of the snapshot it carries: two spellings of one value
+      // that disagree, so neither is chosen — nothing is stored, no synchronization
+      // is claimed, and the contradiction is reported.
+      const ahead = await joinedP04Runtime({ battleId: 'battle-1', sequence: 1 });
+      ahead.transport.handlers.onReconnecting?.(new Error('lost'));
+      ahead.transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 5,
+        state: payload({ battleId: 'battle-1', turn: 2, sequence: 2 }),
+      };
+      await ahead.runtime.recoverBattleState();
+
+      expect(ahead.runtime.getBattleState()!.sequence).toBe(1);
+      expect(ahead.runtime.getState().sync).toBe('unsynchronized');
+      expect(ahead.runtime.getState().lastError).toContain('inconsistent recovery envelope');
+      expect(ahead.runtime.getState().lastError).toContain('serverSequence 5');
+      expect(ahead.runtime.getState().lastError).toContain('sequence 2');
+
+      // The envelope behind the snapshot: the same refusal, in the other direction.
+      const behind = await joinedP04Runtime({ battleId: 'battle-1', sequence: 1 });
+      behind.transport.handlers.onReconnecting?.(new Error('lost'));
+      behind.transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 1,
+        state: payload({ battleId: 'battle-1', turn: 4, sequence: 4 }),
+      };
+      await behind.runtime.recoverBattleState();
+
+      expect(behind.runtime.getBattleState()!.sequence).toBe(1);
+      expect(behind.runtime.getState().sync).toBe('unsynchronized');
+      expect(behind.runtime.getState().lastError).toContain('serverSequence 1');
+      expect(behind.runtime.getState().lastError).toContain('sequence 4');
+    });
+
+    it('10. refuses a recovery response for another battle, so it cannot replace the active state', async () => {
+      const { runtime, transport } = await joinedP04Runtime({
+        battleId: 'battle-1',
+        sequence: 3,
+      });
+
+      transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 7,
+        state: payload({ battleId: 'battle-other', turn: 7, sequence: 7 }),
+      };
+
+      await runtime.recoverBattleState();
+
+      // No lifecycle transition established the other battle, so the shared
+      // ingestion guard refuses it: the active copy is untouched and no
+      // synchronization is claimed for a battle this runtime does not hold.
+      expect(runtime.getBattleState()!.battleId).toBe('battle-1');
+      expect(runtime.getBattleState()!.sequence).toBe(3);
+      expect(runtime.getState().lastError).toContain('battle-other');
+    });
+
+    it('11. publishes BATTLE_NOT_FOUND as an ended battle through the scene boundary', async () => {
+      const { runtime, transport } = await joinedP04Runtime({
+        battleId: 'battle-9',
+        sequence: 2,
+      });
+
+      const publications: Array<{ battleId: string | null; source?: string }> = [];
+      runtime.onBattleState((state, metadata) =>
+        publications.push({
+          battleId: state?.battleId ?? null,
+          source: metadata?.source,
+        })
+      );
+
+      transport.getBattleStateResult = {
+        accepted: false,
+        serverSequence: null,
+        state: null,
+        reason: 'BATTLE_NOT_FOUND',
+      };
+
+      await runtime.recoverBattleState();
+
+      // §7.3: the battle cannot be recovered, so the runtime holds none and says
+      // so. It publishes the loss — `null` with the `'ended'` source — rather than a
+      // state, and it invents neither a state nor an outcome.
+      expect(publications).toEqual([{ battleId: null, source: 'ended' }]);
+      expect(runtime.getBattleState()).toBeNull();
+      expect(runtime.getState().sync).toBe('awaiting_battle');
+    });
+
+    it('12. lets no recovery continuation from a previous battle or session mutate the current one', async () => {
+      const { runtime, transport } = await joinedP04Runtime({
+        battleId: 'battle-1',
+        sequence: 1,
+      });
+
+      let release!: (value: { accepted: boolean; state?: unknown; serverSequence?: number }) => void;
+      transport.getBattleStateBehaviour = () =>
+        new Promise<never>((resolve) => {
+          release = resolve as unknown as (value: {
+            accepted: boolean;
+            state?: unknown;
+            serverSequence?: number;
+          }) => void;
+        });
+
+      // Battle 1's gap opens a recovery that stays in flight.
+      transport.emit('ReceiveEvents', batch('battle-1', 2, [{ type: 'GemMatched' }]));
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+
+      // A new battle is established while that answer is still on its way: the
+      // lifecycle transition's own push is what makes battle 2 the active one.
+      await runtime.startBattle({
+        petId: 'pet-1',
+        bossId: 'boss-1',
+        cardLoadout: ['c1', 'c2', 'c3'],
+        relicLoadout: [],
+      });
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-2', sequence: 0 }));
+      expect(runtime.getBattleState()!.battleId).toBe('battle-2');
+
+      // The old battle's snapshot finally arrives. It is not the active battle and
+      // no transition established it, so the shared guard refuses it: it cannot
+      // replace, settle, or roll back the battle now on screen.
+      release({
+        accepted: true,
+        serverSequence: 9,
+        state: payload({ battleId: 'battle-1', turn: 9, sequence: 9 }),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(runtime.getBattleState()!.battleId).toBe('battle-2');
+      expect(runtime.getBattleState()!.sequence).toBe(0);
+      expect(runtime.getState().sync).toBe('synchronized');
+    });
+
+    describe('TASK-274 — final recovery boundary & runtime invariant verification', () => {
+      // --- Review A ---
+      it('Review A.1: drops a batch for a battle with no held state before reaching listeners', async () => {
+        const { runtime, transport } = createP04Runtime();
+        await runtime.initialize();
+        // Runtime has initialized but no battle has been joined or synchronized (battleState is null).
+        expect(runtime.getBattleState()).toBeNull();
+
+        const seen = observeBatches(runtime);
+        const errors: string[] = [];
+        runtime.onRuntimeEvent((e) => {
+          if (e.type === 'runtime_error' && e.detail) {
+            errors.push(e.detail);
+          }
+        });
+
+        // Transport emits a batch for battle-1.
+        transport.emit('ReceiveEvents', batch('battle-1', 1, [{ type: 'GemMatched' }]));
+
+        // Dropped: no listeners receive the unattached batch.
+        expect(seen).toHaveLength(0);
+        expect(runtime.getBattleState()).toBeNull();
+        expect(transport.getBattleStateCalls).toHaveLength(0);
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toContain('while no battle is synchronized');
+      });
+
+      it('Review A.2: drops a batch for battle A when battle B is active', async () => {
+        const { runtime, transport } = await joinedP04Runtime({
+          battleId: 'battle-B',
+          sequence: 2,
+        });
+
+        const seen = observeBatches(runtime);
+        const errors: string[] = [];
+        runtime.onRuntimeEvent((e) => {
+          if (e.type === 'runtime_error' && e.detail) {
+            errors.push(e.detail);
+          }
+        });
+
+        transport.emit('ReceiveEvents', batch('battle-A', 2, [{ type: 'GemMatched' }]));
+
+        // Dropped: battle-A batch cannot reach listeners while battle-B is active.
+        expect(seen).toHaveLength(0);
+        expect(runtime.getBattleState()!.battleId).toBe('battle-B');
+        expect(runtime.getBattleState()!.sequence).toBe(2);
+        expect(runtime.getState().sync).toBe('synchronized');
+        expect(errors).toHaveLength(1);
+        expect(errors[0]).toContain('while "battle-B" is synchronized');
+      });
+
+      it('Review A.3: allows state push followed by matching batch to work normally through runtime', async () => {
+        const { runtime, transport } = await joinedP04Runtime({
+          battleId: 'battle-B',
+          sequence: 1,
+        });
+
+        const seen = observeBatches(runtime);
+        // Push state for sequence 2
+        transport.emit('BattleStateUpdated', payload({ battleId: 'battle-B', sequence: 2 }));
+        expect(runtime.getBattleState()!.sequence).toBe(2);
+
+        // Batch for sequence 2 arrives
+        const b = batch('battle-B', 2, [{ type: 'GemMatched' }]);
+        transport.emit('ReceiveEvents', b);
+
+        expect(seen).toEqual([b]);
+        expect(runtime.getState().sync).toBe('synchronized');
+        expect(transport.getBattleStateCalls).toEqual([]);
+      });
+
+      it('Review A.4: drops late batch arriving after battle-ended publication and cannot restart old presentation', async () => {
+        const { runtime, transport } = await joinedP04Runtime({
+          battleId: 'battle-1',
+          sequence: 2,
+        });
+
+        const statePublications: Array<{ battleId: string | null; source?: string }> = [];
+        runtime.onBattleState((s, m) =>
+          statePublications.push({ battleId: s?.battleId ?? null, source: m?.source })
+        );
+
+        // Recovery returns BATTLE_NOT_FOUND, causing runtime to end the battle.
+        transport.getBattleStateResult = {
+          accepted: false,
+          serverSequence: null,
+          state: null,
+          reason: 'BATTLE_NOT_FOUND',
+        };
+        await runtime.recoverBattleState();
+
+        expect(statePublications).toContainEqual({ battleId: null, source: 'ended' });
+        expect(runtime.getBattleState()).toBeNull();
+        expect(runtime.getState().sync).toBe('awaiting_battle');
+
+        // Late batch arrives for the ended battle.
+        const seen = observeBatches(runtime);
+        transport.emit('ReceiveEvents', batch('battle-1', 2, [{ type: 'GemMatched' }]));
+
+        // Dropped: cannot restart or resurrect the ended battle.
+        expect(seen).toHaveLength(0);
+        expect(runtime.getBattleState()).toBeNull();
+        expect(runtime.getState().sync).toBe('awaiting_battle');
+      });
+
+      it('Review A.5: drops late batch from previous battle after new battle is active without affecting new battle', async () => {
+        const { runtime, transport } = await joinedP04Runtime({
+          battleId: 'battle-1',
+          sequence: 4,
+        });
+
+        // Switch to battle-2
+        await runtime.startBattle({
+          petId: 'pet-1',
+          bossId: 'boss-1',
+          cardLoadout: ['c1', 'c2', 'c3'],
+          relicLoadout: [],
+        });
+        transport.emit('BattleStateUpdated', payload({ battleId: 'battle-2', sequence: 0 }));
+        expect(runtime.getBattleState()!.battleId).toBe('battle-2');
+        expect(runtime.getBattleState()!.sequence).toBe(0);
+
+        const seen = observeBatches(runtime);
+        // Late batch for battle-1 arrives
+        transport.emit('ReceiveEvents', batch('battle-1', 4, [{ type: 'GemMatched' }]));
+
+        expect(seen).toHaveLength(0);
+        expect(runtime.getBattleState()!.battleId).toBe('battle-2');
+        expect(runtime.getBattleState()!.sequence).toBe(0);
+        expect(runtime.getState().sync).toBe('synchronized');
+      });
+
+      // --- Review B ---
+      it('Review B.1-B.5: rejects mismatched recovery envelope, remains unsynchronized, clears in-flight state without infinite retry loop', async () => {
+        const { runtime, transport } = await joinedP04Runtime({
+          battleId: 'battle-1',
+          sequence: 1,
+        });
+
+        // Trigger gap recovery: batch ahead of state (sequence 2)
+        transport.getBattleStateResult = {
+          accepted: true,
+          serverSequence: 99, // Mismatched envelope
+          state: payload({ battleId: 'battle-1', turn: 2, sequence: 2 }),
+        };
+
+        transport.emit('ReceiveEvents', batch('battle-1', 2, [{ type: 'GemMatched' }]));
+
+        await vi.waitFor(() => {
+          expect(runtime.getState().lastError).toContain('inconsistent recovery envelope');
+        });
+
+        // 1. Authoritative held state is not replaced
+        expect(runtime.getBattleState()!.sequence).toBe(1);
+        // 2. Runtime remains unsynchronized
+        expect(runtime.getState().sync).toBe('unsynchronized');
+        // 4. In-flight flag is cleared (allows future requests)
+        // 5. No infinite automatic retry loop: only 1 call made
+        expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+      });
+
+      it('Review B.6: restores synchronization when a subsequent valid recovery response arrives', async () => {
+        const { runtime, transport } = await joinedP04Runtime({
+          battleId: 'battle-1',
+          sequence: 1,
+        });
+
+        // Trigger gap recovery: batch ahead of state (sequence 2) withholds and marks unsynchronized
+        transport.emit('ReceiveEvents', batch('battle-1', 2, [{ type: 'GemMatched' }]));
+        expect(runtime.getState().sync).toBe('unsynchronized');
+
+        // First attempt returns malformed response
+        transport.getBattleStateResult = {
+          accepted: true,
+          serverSequence: 99,
+          state: payload({ battleId: 'battle-1', turn: 2, sequence: 2 }),
+        };
+        await runtime.recoverBattleState();
+
+        expect(runtime.getState().sync).toBe('unsynchronized');
+        expect(runtime.getBattleState()!.sequence).toBe(1);
+
+        // Second attempt returns valid consistent response
+        transport.getBattleStateResult = {
+          accepted: true,
+          serverSequence: 3,
+          state: payload({ battleId: 'battle-1', turn: 3, sequence: 3 }),
+        };
+        await runtime.recoverBattleState();
+
+        expect(runtime.getState().sync).toBe('synchronized');
+        expect(runtime.getBattleState()!.sequence).toBe(3);
+        expect(runtime.getState().lastError).toBeNull();
+      });
+
+      it('Review B.7: rejects malformed recovery response for old battle A and prevents it from mutating active battle B', async () => {
+        const { runtime, transport } = await joinedP04Runtime({
+          battleId: 'battle-A',
+          sequence: 1,
+        });
+
+        // Start battle-2 (the id returned by the api mock)
+        await runtime.startBattle({
+          petId: 'pet-1',
+          bossId: 'boss-1',
+          cardLoadout: ['c1', 'c2', 'c3'],
+          relicLoadout: [],
+        });
+        transport.emit('BattleStateUpdated', payload({ battleId: 'battle-2', sequence: 0 }));
+
+        // Malformed recovery for old battle-A arrives
+        transport.getBattleStateResult = {
+          accepted: true,
+          serverSequence: 50,
+          state: payload({ battleId: 'battle-A', turn: 10, sequence: 10 }),
+        };
+        await runtime.recoverBattleState();
+
+        expect(runtime.getBattleState()!.battleId).toBe('battle-2');
+        expect(runtime.getBattleState()!.sequence).toBe(0);
+        expect(runtime.getState().sync).toBe('synchronized');
+      });
+
+      // --- Review C ---
+      it('Review C.2: late state push or batch cannot resurrect an ended battle', async () => {
+        const { runtime, transport } = await joinedP04Runtime({
+          battleId: 'battle-1',
+          sequence: 1,
+        });
+
+        // Battle ends via BATTLE_NOT_FOUND
+        transport.getBattleStateResult = {
+          accepted: false,
+          serverSequence: null,
+          state: null,
+          reason: 'BATTLE_NOT_FOUND',
+        };
+        await runtime.recoverBattleState();
+        expect(runtime.getBattleState()).toBeNull();
+        expect(runtime.getState().sync).toBe('awaiting_battle');
+
+        // Late ReceiveEvents arrives for battle-1
+        const seen = observeBatches(runtime);
+        transport.emit('ReceiveEvents', batch('battle-1', 2, [{ type: 'GemMatched' }]));
+        expect(seen).toHaveLength(0);
+        expect(runtime.getBattleState()).toBeNull();
+        expect(runtime.getState().sync).toBe('awaiting_battle');
+
+        // Now start battle-2 as a new battle
+        await runtime.startBattle({
+          petId: 'pet-1',
+          bossId: 'boss-1',
+          cardLoadout: ['c1', 'c2', 'c3'],
+          relicLoadout: [],
+        });
+        transport.emit('BattleStateUpdated', payload({ battleId: 'battle-2', sequence: 0 }));
+        expect(runtime.getBattleState()!.battleId).toBe('battle-2');
+
+        // A late BattleStateUpdated for old battle-1 cannot resurrect or overwrite battle-2
+        transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', sequence: 5 }));
+        expect(runtime.getBattleState()!.battleId).toBe('battle-2');
+        expect(runtime.getBattleState()!.sequence).toBe(0);
+      });
+
+      it('Review C.3: delayed getBattleResult response for old battle cannot replace active battle', async () => {
+        const { runtime, api, transport } = await joinedP04Runtime({
+          battleId: 'battle-1',
+          sequence: 1,
+        });
+
+        let releaseResult!: (val: {
+          battleId: string;
+          outcome: 'victory' | 'defeat';
+          rewards: Record<string, unknown>;
+          durationTurns: number;
+        }) => void;
+        api.getBattleResult = vi.fn(
+          () =>
+            new Promise((res) => {
+              releaseResult = res as typeof releaseResult;
+            })
+        );
+
+        // Fetch result for battle-1 in background
+        const resultPromise = runtime.getBattleResult('battle-1');
+
+        // Battle-2 starts while result is still in flight
+        await runtime.startBattle({
+          petId: 'pet-1',
+          bossId: 'boss-1',
+          cardLoadout: ['c1', 'c2', 'c3'],
+          relicLoadout: [],
+        });
+        transport.emit('BattleStateUpdated', payload({ battleId: 'battle-2', sequence: 0 }));
+        expect(runtime.getBattleState()!.battleId).toBe('battle-2');
+
+        // Delayed result for battle-1 arrives
+        releaseResult({
+          battleId: 'battle-1',
+          outcome: 'victory',
+          rewards: {},
+          durationTurns: 5,
+        });
+        const r = await resultPromise;
+        expect(r.battleId).toBe('battle-1');
+
+        // Active battle remains battle-2, unchanged
+        expect(runtime.getBattleState()!.battleId).toBe('battle-2');
+        expect(runtime.getBattleState()!.sequence).toBe(0);
+        expect(runtime.getState().sync).toBe('synchronized');
+      });
     });
   });
 });

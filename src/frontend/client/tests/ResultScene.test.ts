@@ -99,6 +99,8 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     click: () => void;
   }> = [];
 
+  let currentBattleState = battleState;
+
   const runtime = {
     getState: () => state,
     onRuntimeEvent: (listener: (event: { state: GameRuntimeState }) => void) => {
@@ -107,7 +109,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         runtimeListeners.delete(listener);
       };
     },
-    getBattleState: () => battleState,
+    getBattleState: () => currentBattleState,
     onBattleState: (listener: (state: RuntimeBattleState) => void) => {
       battleStateListeners.add(listener);
       return () => {
@@ -167,6 +169,8 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
           return entry.destroyed;
         },
         setOrigin: () => obj,
+        setFontSize: () => obj,
+        setPosition: () => obj,
         setText: (next: string) => {
           entry.text = next;
           return obj;
@@ -175,6 +179,8 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
           entry.color = next;
           return obj;
         },
+        /** Phaser's `GameObject#setVisible` (P0.3 synchronization indicator). */
+        setVisible: () => obj,
         // Phaser's `GameObject#setAlpha` — the HUD's combat callout resets it when a
         // new message replaces the one on screen (TASK-210 §7).
         setAlpha: () => obj,
@@ -284,6 +290,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
               return rect;
             },
             setVisible: () => rect,
+            setFillStyle: () => rect,
             setStrokeStyle: () => rect,
             setInteractive: () => {
               interactive = true;
@@ -356,6 +363,50 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     battleEventListeners,
     battleResultRequests,
     emitBattleEvents: (envelope: BattleEventsEnvelope) => {
+      // Under SIGNALR_PROTOCOL.md §3.1 / §6 item 4, the state push precedes its batch.
+      if (
+        envelope &&
+        typeof envelope.battleId === 'string' &&
+        typeof envelope.serverSequence === 'number' &&
+        (currentBattleState === null ||
+          currentBattleState.battleId !== envelope.battleId ||
+          currentBattleState.sequence !== envelope.serverSequence)
+      ) {
+        currentBattleState = {
+          battleId: envelope.battleId,
+          sequence: envelope.serverSequence,
+          turn: 1,
+          board: {
+            cells: Array.from({ length: 64 }, (_, idx) => ({
+              cellIndex: idx,
+              gemType: 'FIRE',
+            })),
+          },
+          playerState: { hp: 1000, maxHp: 1000, power: 0, statusEffects: [] },
+          petState: {
+            hp: 1000,
+            maxHp: 1000,
+            power: 0,
+            statusEffects: [],
+            equippedCards: [],
+            passiveId: null,
+            passiveProgress: { current: 0, threshold: 0 },
+          },
+          bossState: {
+            bossId: 'boss-test',
+            hp: 3000,
+            maxHp: 3000,
+            power: 0,
+            statusEffects: [],
+            enrageThreshold: 0,
+            isEnraged: false,
+          },
+        } as unknown as RuntimeBattleState;
+
+        for (const listener of battleStateListeners) {
+          listener(currentBattleState);
+        }
+      }
       for (const listener of battleEventListeners) {
         listener(envelope);
       }

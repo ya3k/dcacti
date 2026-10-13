@@ -33,3 +33,4 @@ Thumbs.db
 *.ncrunchproject
 launchSettings.json
 scripts
+run-dev.bat

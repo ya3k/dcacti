@@ -169,6 +169,8 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
   const sceneStarted: Array<{ key: string; data?: unknown }> = [];
   const createdRectangles: Array<{ kind: string; fill?: number }> = [];
 
+  let currentBattleState = battleState;
+
   const runtime = {
     getState: () => state,
     onRuntimeEvent: (listener: (event: { state: GameRuntimeState }) => void) => {
@@ -177,7 +179,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         runtimeListeners.delete(listener);
       };
     },
-    getBattleState: () => battleState,
+    getBattleState: () => currentBattleState,
     onBattleState: (listener: (state: RuntimeBattleState) => void) => {
       battleStateListeners.add(listener);
       return () => {
@@ -224,6 +226,8 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       };
       texts.push(entry);
       let alpha = 1;
+      /** Whether the object is drawn — the synchronization indicator is hidden in place. */
+      let visible = true;
       /** The container this object was added to, as the harness numbered it. */
       let containerIndex: number | null = null;
 
@@ -231,6 +235,8 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         kind: 'label' as const,
         label: value,
         setOrigin: () => obj,
+        setPosition: () => obj,
+        setFontSize: () => obj,
         setText: (next: string) => {
           entry.text = next;
           return obj;
@@ -255,6 +261,14 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         },
         get alpha() {
           return alpha;
+        },
+        /** Phaser's `GameObject#setVisible` — the sync indicator is shown/hidden in place. */
+        setVisible: (next: boolean) => {
+          visible = next;
+          return obj;
+        },
+        get visible() {
+          return visible;
         },
         destroy: () => {},
       };
@@ -343,6 +357,10 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
             },
             setPosition: () => rect,
             setVisible: () => rect,
+            setFillStyle: (nextFill: number) => {
+              rect.fill = nextFill;
+              return rect;
+            },
             setStrokeStyle: () => rect,
             destroy: () => {},
           };
@@ -369,6 +387,51 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
     battleStateListeners,
     battleEventListeners,
     emitBattleEvents: (envelope: BattleEventsEnvelope) => {
+      // Under SIGNALR_PROTOCOL.md §3.1 / §6 item 4, the state push precedes its batch.
+      // Deliver the matching state first so the scene holds valid authoritative state for this resolution.
+      if (
+        envelope &&
+        typeof envelope.battleId === 'string' &&
+        typeof envelope.serverSequence === 'number' &&
+        (currentBattleState === null ||
+          currentBattleState.battleId !== envelope.battleId ||
+          currentBattleState.sequence !== envelope.serverSequence)
+      ) {
+        currentBattleState = {
+          battleId: envelope.battleId,
+          sequence: envelope.serverSequence,
+          turn: 1,
+          board: {
+            cells: Array.from({ length: 64 }, (_, idx) => ({
+              cellIndex: idx,
+              gemType: 'FIRE',
+            })),
+          },
+          playerState: { hp: 1000, maxHp: 1000, power: 0, statusEffects: [] },
+          petState: {
+            hp: 1000,
+            maxHp: 1000,
+            power: 0,
+            statusEffects: [],
+            equippedCards: [],
+            passiveId: null,
+            passiveProgress: { current: 0, threshold: 0 },
+          },
+          bossState: {
+            bossId: 'boss-test',
+            hp: 3000,
+            maxHp: 3000,
+            power: 0,
+            statusEffects: [],
+            enrageThreshold: 0,
+            isEnraged: false,
+          },
+        } as unknown as RuntimeBattleState;
+
+        for (const listener of battleStateListeners) {
+          listener(currentBattleState);
+        }
+      }
       for (const listener of battleEventListeners) {
         listener(envelope);
       }
@@ -1204,6 +1267,66 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       'actorHandlers',
     ]) {
       expect(source, `BattleEventPresenter must not contain "${forbidden}"`).not.toContain(forbidden);
+    }
+  });
+});
+
+describe('TASK-275 — the turn banner is scene presentation, never a delivered step', () => {
+  /** The presenter's own source, with its prose removed (TASK-252's reader). */
+  const presenterSource = readFileSync(
+    resolve(__dirname, '../src/game/scenes/BattleEventPresenter.ts'),
+    'utf8'
+  )
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+  /** One delivered payload per in-battle name of the closed discriminator set. */
+  const IN_BATTLE_EVENTS: readonly unknown[] = [
+    { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+    { type: 'SwapResolved', outcome: 'committed' },
+    { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+    { type: 'CascadeCreated', cascadeDepth: 1 },
+    { type: 'ComboChanged', combo: 2 },
+    { type: 'GemMatched', cellIndex: 24, gemType: 'ATK' },
+    { type: 'DamageCalculated', base: 100, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 100 },
+    { type: 'DamageDealt', source: 'player', target: 'boss', amount: 100 },
+    { type: 'DamageTaken', source: 'player', target: 'boss', amount: 100 },
+    { type: 'PassiveCharged', passiveId: 'pet-passive', source: 'pet', sourceId: 'pet-inst-1', progress: 1, threshold: 3 },
+    { type: 'PassiveTriggered', passiveId: 'pet-passive', source: 'pet', sourceId: 'pet-inst-1', progress: 3, threshold: 3 },
+    { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+    { type: 'CardCast', cardId: 'card-shield' },
+    { type: 'PetSkillCast', cardId: 'card-inferno' },
+    { type: 'RelicTriggered', relicId: 'relic-instance-berserker-core' },
+    { type: 'PowerChanged', delta: 25, power: 45, source: 'card' },
+  ];
+
+  it('maps no delivered event to the banner phase or the turn-banner action', () => {
+    // The banner is a grouping the **scene** opens from a delivered board-action
+    // boundary; no event adapts into it. If one did, a banner would appear for an
+    // event the contract never made a turn boundary (TASK-275 §6.6).
+    for (const event of IN_BATTLE_EVENTS) {
+      const parsed = parseInBattleEvent(event);
+      expect(parsed, JSON.stringify(event)).not.toBeNull();
+
+      const step = adaptPresentedEvent(parsed as Parameters<typeof adaptPresentedEvent>[0], 'player');
+      expect(step?.kind, JSON.stringify(event)).not.toBe('banner');
+      expect(step?.action, JSON.stringify(event)).not.toBe('turn-banner');
+    }
+  });
+
+  it('only names the banner vocabulary: the presenter derives it from no delivered member', () => {
+    // One phase name and one action name, and neither is produced by the adapter —
+    // the side a banner labels is read from `SwapStarted.actor` by the scene
+    // (`deliveredSwapOf`, the contract's own two values `DELIVERED_SWAP_ACTORS`).
+    expect(presenterSource.match(/'banner'/g) ?? []).toHaveLength(1);
+    expect(presenterSource.match(/'turn-banner'/g) ?? []).toHaveLength(1);
+
+    // No turn or phase member is introduced or read: the wire carries none
+    // (`SIGNALR_PROTOCOL.md` §3.2.2 item 2, TASK-246 C-1).
+    for (const forbidden of ['turnStarted', 'turnEnded', 'turnChanged', 'whoseTurn', 'activeTurn']) {
+      expect(presenterSource, `BattleEventPresenter must not read "${forbidden}"`).not.toContain(
+        forbidden
+      );
     }
   });
 });

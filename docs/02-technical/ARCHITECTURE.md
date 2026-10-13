@@ -1,6 +1,16 @@
 # Architecture
 
-**Version:** 1.12 (§3 **synchronized with proposed ADR-024** per TASK-250:
+**Version:** 1.13 (§2.2.1 rule 4 **amended** per TASK-273: the runtime's
+batch-forwarding rule gains one narrow **delivery-integrity exception** — a
+`ReceiveEvents` batch for another battle, or one whose `serverSequence` is ahead
+of the synchronized state's `sequence`, is withheld whole and the
+`SIGNALR_PROTOCOL.md` §7.1 snapshot is requested instead. What the exception
+permits (two comparisons of delivered transport versions, and a whole-batch
+dispatch-or-withhold) and what it still forbids (reading an event payload,
+dropping an event from an admitted batch, or deriving any gameplay value) are
+stated there, together with the scene-side half of the same invariant and the
+runtime/scene ownership split. Rule 3 — the runtime coordinates and never
+computes — is untouched. Prior 1.12 (§3 **synchronized with proposed ADR-024** per TASK-250:
 database-driven boss balance configuration proposing the Domain Overlay model.
 The §3 component catalog records that `BossDefinitions` provides canonical
 Domain baseline defaults and offline test fixtures, while `BossDefinitionLookup`
@@ -293,10 +303,51 @@ Application Runtime        connection lifecycle tracking only
    runtime lifecycle, server event subscription and scene lifecycle
    coordination only. It performs no gameplay calculation — no damage, match,
    combo, cascade, passive, or power (`GAME_RULES.md` §18, ADR-001).
-4. **Battle events pass through unchanged.** `GameRuntime` forwards
-   `ReceiveEvents` batches exactly as the server sent them. It does not
-   reorder (which would break the resolution order guaranteed by
-   `SIGNALR_PROTOCOL.md` §3), filter, or interpret them.
+4. **Battle events pass through unchanged, with one delivery-integrity
+   exception.** `GameRuntime` forwards `ReceiveEvents` batches exactly as the
+   server sent them. It does not reorder (which would break the resolution order
+   guaranteed by `SIGNALR_PROTOCOL.md` §3), filter an admitted batch's events, or
+   interpret them.
+
+   The exception is **withholding a batch the client's synchronized state cannot
+   represent**, and it is a transport-delivery decision, not a gameplay one
+   (`SIGNALR_PROTOCOL.md` §6 items 3–4, §7). §3.1 and §6 item 4 order the
+   resolution's `BattleStateUpdated` push before its `ReceiveEvents` batch, so
+   the batch's `serverSequence` should equal the `sequence` of the state the
+   runtime already holds. When it does not:
+
+   ```text
+   batch.serverSequence equal to held.sequence   forward unchanged — the documented path
+   batch.serverSequence below the held sequence  forward unchanged — the held state already
+                                                 contains that resolution; whether it is
+                                                 re-presented is the scene's decision
+   batch.serverSequence above the held sequence  withhold: the state for a committed
+                                                 resolution never arrived, so no state the
+                                                 client holds can represent it. Mark
+                                                 synchronization unsynchronized and request
+                                                 the §7.1 snapshot
+   batch.battleId differs from the held battle   withhold: it belongs to no battle this
+                                                 runtime synchronizes
+   ```
+
+   **What the exception permits, and what it still forbids.** It permits exactly
+   two comparisons of *delivered transport versions* — the batch's battle
+   identity and its `serverSequence` — and two whole-batch outcomes, dispatched
+   or withheld. It does **not** permit reading an event payload, dropping an
+   event from an admitted batch, counting events, deriving a board or combat
+   value, or deciding what an event means: rule 3 stands unchanged, and a batch
+   that is withheld is withheld **whole**, never partially applied. The
+   authoritative reconciliation remains `SIGNALR_PROTOCOL.md` §7's snapshot,
+   never a replay (§8 item 8, `ADR-008`) — the runtime requests it; it never
+   fabricates, merges, or advances state from the batch.
+
+   The **presentation layer** makes the matching decision for what it shows:
+   `BattleScene` owns presentation admission and refuses to build or animate a
+   timeline from a batch the authoritative state it is rendering does not
+   represent (`GAME_STATE.md` §5.0, §5.1 item 3). The two are the same invariant
+   at the two boundaries this section separates — the runtime decides whether a
+   batch may be **delivered**, the scene decides whether a resolution may be
+   **presented** — and neither interprets gameplay to do it.
 5. **Client runtime state is technical only.** `state/GameRuntimeState.ts`
    carries connection, session, runtime and synchronization status. It carries
    no gameplay state: authoritative `BattleState` is server-owned
@@ -323,7 +374,7 @@ otherwise — `state/GameRuntimeState.ts`'s `SyncStatus`), and performs no hub
 call, no disconnect, and no result read. It is **not**
 `SIGNALR_PROTOCOL.md` §7.3's `BATTLE_NOT_FOUND` path, which is a failed
 recovery that additionally takes the result fallback, and it introduces no wire
-message (§8.3). It never touches the preserved pre-battle selection: active
+message (§8 item 3). It never touches the preserved pre-battle selection: active
 battle state and the preserved loadout are different concepts with independent
 lifetimes (§2.2.3, ADR-022).
 
@@ -344,7 +395,7 @@ synchronized battle copy, detaches its transport subscriptions and disconnects
 the authenticated connection, and publishes the existing
 `session: 'unauthenticated'` value of `state/GameRuntimeState.ts` (rule 5),
 which is the state `App` already renders `AuthScreen` for. It issues no HTTP
-request of its own, introduces no wire message (§8.3), and is idempotent: a
+request of its own, introduces no wire message (§8 item 3), and is idempotent: a
 second call — including a second overlapping `401`, which `API_CONTRACTS.md`
 §2.3 makes indistinguishable — clears once and disconnects once.
 
