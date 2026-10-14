@@ -1249,6 +1249,22 @@ export class BattleScene extends Phaser.Scene {
    */
   private presentationLogBattleId: string | null = null;
   /**
+   * The turn of the last battle state for which the player turn banner was presented.
+   *
+   * It bounds the banner to its turn: entering the player turn triggers the banner
+   * before player input is required, and repeated state notifications or selections
+   * during that turn do not duplicate it.
+   */
+  private lastPlayerTurnBannerTurn: number | null = null;
+  /**
+   * The battle identity the turn above belongs to.
+   */
+  private lastPlayerTurnBannerBattleId: string | null = null;
+  /**
+   * Currently active turn banner label, tracked to prevent overlapping banner tweens.
+   */
+  private activeTurnBanner: Phaser.GameObjects.Text | null = null;
+  /**
    * Every transient effect the in-flight timeline has started and not yet had
    * released: board highlights and floating numbers.
    *
@@ -1394,6 +1410,13 @@ export class BattleScene extends Phaser.Scene {
     this.presentedPhases.length = 0;
     this.presentedEventsLog.length = 0;
     this.presentationLogBattleId = null;
+    this.lastPlayerTurnBannerTurn = null;
+    this.lastPlayerTurnBannerBattleId = null;
+    if (this.activeTurnBanner) {
+      this.tweens?.killTweensOf(this.activeTurnBanner);
+      this.activeTurnBanner.destroy();
+      this.activeTurnBanner = null;
+    }
     // The developer Move Log belongs to the battle that just ended: its rows, its
     // row counter and its recorded sequence start empty for this run. The panel's
     // own objects are drawn by `drawRuntimeShell` below.
@@ -1602,6 +1625,13 @@ export class BattleScene extends Phaser.Scene {
     this.presentedEventsLog.length = 0;
     this.presentedPhases.length = 0;
     this.presentationLogBattleId = null;
+    this.lastPlayerTurnBannerTurn = null;
+    this.lastPlayerTurnBannerBattleId = null;
+    if (this.activeTurnBanner) {
+      this.tweens?.killTweensOf(this.activeTurnBanner);
+      this.activeTurnBanner.destroy();
+      this.activeTurnBanner = null;
+    }
     // The developer Move Log: the engine has already destroyed the panel's
     // container and every text object in it with the display list, so the
     // references are dropped and the buffer is cleared — a scene that is shut down
@@ -2370,6 +2400,16 @@ export class BattleScene extends Phaser.Scene {
       this.renderCastControls(state);
     }
     this.renderPhaseIndicator();
+
+    if (
+      !recovery &&
+      !hold &&
+      !this.isInputLocked() &&
+      !this.outcomeHandled &&
+      this.pendingOutcomeHandoff === null
+    ) {
+      this.presentPlayerTurnBannerIfNeeded();
+    }
   }
 
   /**
@@ -2383,6 +2423,45 @@ export class BattleScene extends Phaser.Scene {
   private resetPresentationLogs(): void {
     this.presentedEventsLog.length = 0;
     this.presentedPhases.length = 0;
+    this.lastPlayerTurnBannerTurn = null;
+    this.lastPlayerTurnBannerBattleId = null;
+    if (this.activeTurnBanner) {
+      this.tweens?.killTweensOf(this.activeTurnBanner);
+      this.activeTurnBanner.destroy();
+      this.activeTurnBanner = null;
+    }
+  }
+
+  /**
+   * Presents the player turn banner if entering a new player turn.
+   *
+   * It ensures the banner appears when the turn begins without requiring player
+   * input, while preventing duplicate presentation on repeated lifecycle pushes,
+   * user selection events, or recovery of the same turn.
+   */
+  private presentPlayerTurnBannerIfNeeded(): void {
+    const state = this.currentBattleState;
+    if (
+      !state ||
+      this.outcomeHandled ||
+      this.pendingOutcomeHandoff !== null ||
+      this.isInputLocked() ||
+      this.isPresenting() ||
+      this.heldSequence !== null
+    ) {
+      return;
+    }
+
+    if (
+      this.lastPlayerTurnBannerBattleId === state.battleId &&
+      this.lastPlayerTurnBannerTurn === state.turn
+    ) {
+      return;
+    }
+
+    this.lastPlayerTurnBannerBattleId = state.battleId;
+    this.lastPlayerTurnBannerTurn = state.turn;
+    this.playTurnBanner('player');
   }
 
   /**
@@ -4492,14 +4571,14 @@ export class BattleScene extends Phaser.Scene {
       if (step.kind === 'swap') {
         const side = step.actor === 'player' || step.actor === 'boss' ? step.actor : null;
 
-        if (side !== null && side !== bannerSide) {
+        if (side === 'boss' && side !== bannerSide) {
           flush();
           bannerSide = side;
           phases.push({
             kind: 'banner',
             actor: side,
             action: 'turn-banner',
-            detail: side === 'player' ? 'banner PLAYER TURN' : 'banner BOSS TURN',
+            detail: 'banner BOSS TURN',
             holdMs: BattleScene.phaseHoldMs('banner', []),
             events: [],
           });
@@ -5191,12 +5270,25 @@ export class BattleScene extends Phaser.Scene {
    * timeline that has just ended.
    */
   private finishPresentation(): void {
+    if (this.presentationTimeline === null) {
+      return;
+    }
+
+    if (
+      this.presentationBattleId !== null &&
+      this.currentBattleState !== null &&
+      this.presentationBattleId !== this.currentBattleState.battleId
+    ) {
+      this.releaseTimeline();
+      return;
+    }
+
     // The timeline's own end: the last phase is completed by the same step advance
     // a phase boundary uses, and the resolution's timeline row is closed before the
     // guard is released, so the panel's order is the order the machine played.
     this.developerMoveLog?.recordCompleted(
       this.presentationSequence,
-      this.presentationTimeline?.length ?? 0
+      this.presentationTimeline.length
     );
     this.cancelTimelineCallout();
     this.settleHeldPresentation();
@@ -5206,6 +5298,13 @@ export class BattleScene extends Phaser.Scene {
     this.timelineCalloutShown = false;
     this.releaseTimeline();
     this.handOffOutcome();
+    if (
+      !this.outcomeHandled &&
+      this.pendingOutcomeHandoff === null &&
+      !this.isInputLocked()
+    ) {
+      this.presentPlayerTurnBannerIfNeeded();
+    }
   }
 
   /**
@@ -5270,6 +5369,11 @@ export class BattleScene extends Phaser.Scene {
     for (const effect of effects) {
       this.tweens?.killTweensOf(effect);
       effect.destroy();
+    }
+    if (this.activeTurnBanner) {
+      this.tweens?.killTweensOf(this.activeTurnBanner);
+      this.activeTurnBanner.destroy();
+      this.activeTurnBanner = null;
     }
   }
 
@@ -5472,6 +5576,12 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
+    if (this.activeTurnBanner) {
+      this.tweens?.killTweensOf(this.activeTurnBanner);
+      this.activeTurnBanner.destroy();
+      this.activeTurnBanner = null;
+    }
+
     // The board's centre: the middle two cells' midpoint, derived from the same
     // cell geometry every other board effect uses. It is a display position and
     // nothing else.
@@ -5490,6 +5600,7 @@ export class BattleScene extends Phaser.Scene {
       .setOrigin(0.5);
     this.feedbackLayer.add(label);
     this.timelineEffects.push(label);
+    this.activeTurnBanner = label;
 
     if (!this.tweens) {
       return;
@@ -5517,6 +5628,9 @@ export class BattleScene extends Phaser.Scene {
       duration: TURN_BANNER_EXIT_MS,
       onComplete: () => {
         label.destroy();
+        if (this.activeTurnBanner === label) {
+          this.activeTurnBanner = null;
+        }
       },
     });
   }

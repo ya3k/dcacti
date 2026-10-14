@@ -4062,6 +4062,9 @@ describe('BattleScene — cascade presentation timeline (TASK-245, GAME_EVENTS.m
     const scene = new BattleScene();
     const ctx = harness.context(scene, 'BattleScene');
     runScene(scene, ctx, 'create');
+    if (harness.pendingTweenCount() > 0) {
+      harness.flushTweens(harness.pendingTweenCount());
+    }
     return { harness, scene, ctx };
   }
 
@@ -4955,6 +4958,9 @@ describe('BattleScene — selected-cell treatment, interaction indicator & pacin
     const scene = new BattleScene();
     const ctx = harness.context(scene, 'BattleScene');
     runScene(scene, ctx, 'create');
+    if (harness.pendingTweenCount() > 0) {
+      harness.flushTweens(harness.pendingTweenCount());
+    }
     return { harness, scene, ctx };
   }
 
@@ -5716,6 +5722,9 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
     const scene = new BattleScene();
     const ctx = harness.context(scene, 'BattleScene');
     runScene(scene, ctx, 'create');
+    if (withTweens && harness.pendingTweenCount() > 0) {
+      harness.flushTweens(harness.pendingTweenCount());
+    }
     return { harness, scene, ctx };
   }
 
@@ -8022,11 +8031,10 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       // names no party of its own, so it is attributed to the boundary that opened
       // its cycle. The one board transition still sits where the round's board work
       // ends (TASK-254/262), and the terminal steps keep their own parties.
-      // TASK-275 adds one presentation-only turn banner per delivered boundary,
-      // labelled from that boundary's own `actor` and placed before the exchange it
-      // introduces — it opens no gameplay step and adds no sequence.
+      // The player turn banner was presented when the player turn began; the round's
+      // presentation timeline opens with the player swap and presents the boss banner
+      // before the boss's board cycle.
       expect(phases.map((phase) => `${phase.detail}:${phase.actor}`)).toEqual([
-        'banner PLAYER TURN:player',
         'swap 20->21:player',
         'match depth=1:player',
         'damage player->boss:player',
@@ -8042,10 +8050,8 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       // member, and the client derives no swap from a board it has already moved.
       expect(phases.filter((phase) => phase.kind === 'swap')).toHaveLength(2);
       expect(phases.filter((phase) => phase.kind === 'settle')).toHaveLength(1);
-      // One banner per delivered boundary, and each names the side that boundary
-      // named — never a client-held turn (TASK-275 §6.6).
+      // The timeline presents the Boss turn banner before its board cycle.
       expect(phases.filter((phase) => phase.kind === 'banner').map((phase) => phase.actor)).toEqual([
-        'player',
         'boss',
       ]);
 
@@ -8071,7 +8077,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
 
       const details = timelinePhases(ctx).map((phase) => phase.detail);
 
-      expect(details).toEqual(['banner PLAYER TURN', 'swap 12->13', 'match depth=1', 'settle']);
+      expect(details).toEqual(['swap 12->13', 'match depth=1', 'settle']);
       expect(details).not.toContain('swap 20->21');
     });
 
@@ -8180,7 +8186,6 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
      * transition where the round's board work ends (TASK-254/262).
      */
     const BOTH_ACTORS_PHASES = [
-      'banner PLAYER TURN',
       'swap 20->21',
       'match depth=1',
       'damage player->boss',
@@ -8331,7 +8336,6 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       // transition sits where the round's board work ends. TASK-275's presentation-only
       // banner precedes each delivered boundary and stands in for no gameplay step.
       expect(phases.map((phase) => `${phase.detail}:${phase.actor}`)).toEqual([
-        'banner PLAYER TURN:player',
         'swap 20->21:player',
         'match depth=1:player',
         'damage player->boss:player',
@@ -8602,7 +8606,6 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       await flush();
 
       expect(timelinePhases(ctx).map((phase) => phase.detail)).toEqual([
-        'banner PLAYER TURN',
         'swap 20->21',
         'match depth=1',
         'damage player->boss',
@@ -11555,6 +11558,9 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
     const scene = new BattleScene();
     const ctx = harness.context(scene, 'BattleScene');
     runScene(scene, ctx, 'create');
+    if (harness.pendingTweenCount() > 0) {
+      harness.flushTweens(harness.pendingTweenCount());
+    }
     return { harness, scene, ctx };
   }
 
@@ -12832,10 +12838,9 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
 
       playAllTweens(harness);
 
-      // The banner precedes the cycle it introduces and stands in for no gameplay
+      // The boss banner precedes the cycle it introduces and stands in for no gameplay
       // step: the delivered order of the round is otherwise untouched.
       expect(playedPhases(ctx)).toEqual([
-        'banner PLAYER TURN',
         'swap 20->21',
         'match depth=1',
         'damage player->boss',
@@ -12848,7 +12853,6 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
 
       // The label the player reads names the side the wire delivered, and the board
       // is the accepted authoritative board once the timeline is done.
-      expect(renderedText(harness)).toContain('PLAYER TURN');
       expect(renderedText(harness)).toContain('BOSS TURN');
       expect(labelsByCell(harness)).toEqual(boardLabels());
 
@@ -12859,21 +12863,38 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
       const { harness, scene, ctx, resolveAction } = battleWithHeldAction();
 
       push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
-      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
+      emitBatch(harness, 1, BOTH_TURNS_BATCH);
 
-      // The banner is the first phase, and it is the only one that has played.
-      expect(playedPhases(ctx)).toEqual(['banner PLAYER TURN']);
+      // Play until the boss banner phase starts.
+      playUntil(harness, ctx, 4);
+      expect(playedPhases(ctx)).toEqual([
+        'swap 20->21',
+        'match depth=1',
+        'damage player->boss',
+        'banner BOSS TURN',
+      ]);
       expect(inputLocked(scene, ctx)).toBe(true);
 
       // Its own two beats (the enter and the exit) complete without advancing the
       // timeline: the exchange the banner introduces has not begun.
       harness.flushTweens(2);
-      expect(playedPhases(ctx)).toEqual(['banner PLAYER TURN']);
+      expect(playedPhases(ctx)).toEqual([
+        'swap 20->21',
+        'match depth=1',
+        'damage player->boss',
+        'banner BOSS TURN',
+      ]);
 
       // The banner's pacing tween is what completes the phase, and only then does
-      // the swap step play.
+      // the boss swap step play.
       harness.flushTweens(1);
-      expect(playedPhases(ctx)).toEqual(['banner PLAYER TURN', 'swap 20->21']);
+      expect(playedPhases(ctx)).toEqual([
+        'swap 20->21',
+        'match depth=1',
+        'damage player->boss',
+        'banner BOSS TURN',
+        'swap 27->28',
+      ]);
 
       resolveAction();
     });
@@ -12915,15 +12936,15 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
       const { harness, scene, ctx, resolveAction } = battleWithHeldAction();
 
       push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
-      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
+      emitBatch(harness, 1, BOTH_TURNS_BATCH);
 
       // The banner is a phase of its own carrying no delivered event, and the
       // diagnostic event record holds exactly the batch's own events.
       const banner = builtTimeline(ctx).find((phase) => phase.kind === 'banner');
       expect(banner).toBeDefined();
       expect(banner?.events).toEqual([]);
-      expect(banner?.actor).toBe('player');
-      expect(scene.getPresentedEvents()).toHaveLength(MATCH_CLEAR_BATCH.length);
+      expect(banner?.actor).toBe('boss');
+      expect(scene.getPresentedEvents()).toHaveLength(BOTH_TURNS_BATCH.length);
       expect(scene.getPresentedEvents().some((line) => line.includes('banner'))).toBe(false);
 
       // No second request is made, and the delivered turn is the state push's own
@@ -12945,12 +12966,11 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
       // Nothing is removed before the match step plays.
       expect(clearedCells(ctx)).toEqual([]);
 
-      // The banner, the exchange and the first pass have played: the pass-1 cells
+      // The exchange and the first pass have played: the pass-1 cells
       // are gone, with their tile and label hidden, and the board has not yet been
       // converged onto the round's board.
-      playUntil(harness, ctx, 3);
+      playUntil(harness, ctx, 2);
       expect(playedPhases(ctx)).toEqual([
-        'banner PLAYER TURN',
         'swap 20->21',
         'match depth=1',
       ]);
@@ -12964,9 +12984,8 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
       // a DEF clear, and the cell renders HP. No per-pass board is delivered for the
       // pass to be checked against, so the clear is refused and the cell is left
       // alone — the client fabricates no cascade state (`TASK-275` §3, §6.4).
-      playUntil(harness, ctx, 4);
+      playUntil(harness, ctx, 3);
       expect(playedPhases(ctx)).toEqual([
-        'banner PLAYER TURN',
         'swap 20->21',
         'match depth=1',
         'cascade depth=1',
@@ -12977,7 +12996,7 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
 
       // The round's single board transition is what puts every cell back, from the
       // accepted authoritative board.
-      playUntil(harness, ctx, 5);
+      playUntil(harness, ctx, 4);
       playAllTweens(harness);
       expect(clearedCells(ctx)).toEqual([]);
       expect(labelsByCell(harness)).toEqual(boardLabels());
@@ -12995,18 +13014,17 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
       // view has left it for a gravity destination the client would have had to
       // compute. The invariant is asserted again after the clear phases and after
       // the transition — only a delivered `SwapStarted` may move a view.
-      playUntil(harness, ctx, 3);
+      playUntil(harness, ctx, 2);
       expect(playedPhases(ctx)).toContain('swap 20->21');
       expect(everyViewOnItsOwnCell(ctx)).toBe(true);
 
-      playUntil(harness, ctx, 4);
+      playUntil(harness, ctx, 3);
       expect(everyViewOnItsOwnCell(ctx)).toBe(true);
 
       // Every clear phase has played and the transition has not: the board beneath
       // the cleared cells is still the pre-round one, so a pass could not have been
       // resolved against a board the client invented.
       expect(playedPhases(ctx)).toEqual([
-        'banner PLAYER TURN',
         'swap 20->21',
         'match depth=1',
         'cascade depth=1',
@@ -13015,7 +13033,7 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
 
       // The transition is exactly one phase, and it is played after the round's
       // board cycle.
-      playUntil(harness, ctx, 5);
+      playUntil(harness, ctx, 4);
       playAllTweens(harness);
       const phases = playedPhases(ctx);
       expect(phases.filter((detail) => detail === 'settle')).toHaveLength(1);
@@ -13033,22 +13051,25 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
       const { harness, scene, ctx, resolveAction } = battleWithHeldAction();
 
       push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
-      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
-      playUntil(harness, ctx, 1);
+      emitBatch(harness, 1, BOTH_TURNS_BATCH);
+      playUntil(harness, ctx, 4);
 
-      expect(playedPhases(ctx)).toEqual(['banner PLAYER TURN']);
+      expect(playedPhases(ctx)).toContain('banner BOSS TURN');
       expect(inputLocked(scene, ctx)).toBe(true);
 
-      // The banner's own text object is the timeline's owned effect while it plays.
+      // The banner's own text object is among the timeline's owned effects while it plays.
       const bannerEffects = [...field<object[]>(ctx, 'timelineEffects')];
-      expect(bannerEffects).toHaveLength(1);
+      const bannerEffect = bannerEffects.find(
+        (effect) => (effect as { text?: string }).text === 'BOSS TURN'
+      );
+      expect(bannerEffect).toBeDefined();
 
       recovery(harness, battleState({ sequence: 2, turn: 3, board: deliveredBoard(2) }));
 
       // The banner's timeline is abandoned where it stood: its phase never advanced,
       // its effect was cancelled with it, and the snapshot's board is on screen.
-      expect(playedPhases(ctx)).toEqual(['banner PLAYER TURN']);
-      expect(harness.killedTweenTargets).toContain(bannerEffects[0]);
+      expect(playedPhases(ctx)).toContain('banner BOSS TURN');
+      expect(harness.killedTweenTargets).toContain(bannerEffect);
       expect(field<object[]>(ctx, 'timelineEffects')).toEqual([]);
       expect(harness.pendingTweenCount()).toBe(0);
       expect(inputLocked(scene, ctx)).toBe(false);
@@ -13065,9 +13086,9 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
 
       push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
       emitBatch(harness, 1, MATCH_CLEAR_BATCH);
-      playUntil(harness, ctx, 2);
+      playUntil(harness, ctx, 1);
 
-      expect(playedPhases(ctx)).toEqual(['banner PLAYER TURN', 'swap 20->21']);
+      expect(playedPhases(ctx)).toEqual(['swap 20->21']);
       expect(clearedCells(ctx)).toEqual([]);
 
       recovery(harness, battleState({ sequence: 2, turn: 3, board: deliveredBoard(2) }));
@@ -13085,7 +13106,7 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
 
       push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
       emitBatch(harness, 1, MATCH_CLEAR_BATCH);
-      playUntil(harness, ctx, 3);
+      playUntil(harness, ctx, 2);
 
       expect(clearedCells(ctx)).toEqual([24, 25, 26]);
 
@@ -13112,7 +13133,7 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
 
       push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
       emitBatch(harness, 1, MATCH_CLEAR_BATCH);
-      playUntil(harness, ctx, 5);
+      playUntil(harness, ctx, 4);
 
       // The transition has played: the board is converged and its refill tweens are
       // in flight.
@@ -13141,13 +13162,12 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
       resolveAction();
       await flush();
 
-      for (const phaseCount of [1, 2, 3, 4, 5]) {
+      for (const phaseCount of [1, 2, 3, 4]) {
         playUntil(harness, ctx, phaseCount);
         expect(inputLocked(scene, ctx), `after ${phaseCount} phase(s)`).toBe(true);
       }
 
       expect(playedPhases(ctx)).toEqual([
-        'banner PLAYER TURN',
         'swap 20->21',
         'match depth=1',
         'cascade depth=1',
@@ -13166,23 +13186,23 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
       const { harness, ctx, resolveAction } = battleWithHeldAction();
 
       push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
-      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
+      emitBatch(harness, 1, BOTH_TURNS_BATCH);
       playAllTweens(harness);
 
       const phasesAfterFirstDelivery = [...playedPhases(ctx)];
       const bannersAfterFirstDelivery = harness.texts.filter(
-        (entry) => entry.text === 'PLAYER TURN'
+        (entry) => entry.text === 'BOSS TURN'
       ).length;
       expect(bannersAfterFirstDelivery).toBe(1);
       expect(clearedCells(ctx)).toEqual([]);
 
       // The same resolution, delivered again: recorded, and presented no second time
       // (SIGNALR_PROTOCOL.md §3 item 2, GAME_STATE.md §5.1 item 3).
-      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
+      emitBatch(harness, 1, BOTH_TURNS_BATCH);
 
       expect(playedPhases(ctx)).toEqual(phasesAfterFirstDelivery);
       expect(harness.pendingTweenCount()).toBe(0);
-      expect(harness.texts.filter((entry) => entry.text === 'PLAYER TURN').length).toBe(
+      expect(harness.texts.filter((entry) => entry.text === 'BOSS TURN').length).toBe(
         bannersAfterFirstDelivery
       );
       expect(labelsByCell(harness)).toEqual(boardLabels());
@@ -13194,11 +13214,14 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
       const { harness, ctx, resolveAction } = battleWithHeldAction();
 
       push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
-      emitBatch(harness, 1, MATCH_CLEAR_BATCH);
-      playUntil(harness, ctx, 1);
+      emitBatch(harness, 1, BOTH_TURNS_BATCH);
+      playUntil(harness, ctx, 4);
 
       const bannerEffects = [...field<object[]>(ctx, 'timelineEffects')];
-      expect(bannerEffects).toHaveLength(1);
+      const bannerEffect = bannerEffects.find(
+        (effect) => (effect as { text?: string }).text === 'BOSS TURN'
+      );
+      expect(bannerEffect).toBeDefined();
 
       harness.shutdownScene(ctx);
 
@@ -13209,6 +13232,244 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
       expect(field<string>(ctx, 'orchestration')).toBe('idle');
 
       resolveAction();
+    });
+  });
+
+  describe('Player-turn banner lifecycle & deduplication (Defect 1)', () => {
+    function playAllTweens(harness: ReturnType<typeof createSceneHarness>): void {
+      for (let i = 0; i < 200 && harness.pendingTweenCount() > 0; i++) {
+        harness.flushTweens(harness.pendingTweenCount());
+      }
+    }
+
+    it('1. triggers the player-turn banner at initial player-turn entry without player input', () => {
+      const state = battleState({ sequence: 0, turn: 1 });
+      const harness = createSceneHarness({ battleState: state, withTweens: true });
+      const scene = new BattleScene();
+      const ctx = harness.context(scene, 'BattleScene');
+
+      // Before create(), no banner exists.
+      expect(harness.texts.some((t) => t.text === 'PLAYER TURN')).toBe(false);
+
+      // Entering the scene starts the player turn.
+      runScene(scene, ctx, 'create');
+
+      // Exactly one banner exists immediately without any cell selection or pointer input.
+      const banners = harness.texts.filter((t) => t.text === 'PLAYER TURN');
+      expect(banners).toHaveLength(1);
+
+      // Two tweens are scheduled: enter scale and exit alpha/destroy.
+      expect(harness.pendingTweenCount()).toBe(2);
+
+      // Flushing the tweens finishes the banner and destroys the text object.
+      harness.flushTweens(2);
+      expect(harness.pendingTweenCount()).toBe(0);
+    });
+
+    it('2. emits exactly one banner per player turn despite repeated pushes and input events', async () => {
+      const state = battleState({ sequence: 0, turn: 1 });
+      const harness = createSceneHarness({ battleState: state, withTweens: true });
+      const scene = new BattleScene();
+      const ctx = harness.context(scene, 'BattleScene');
+      runScene(scene, ctx, 'create');
+
+      // Flush startup banner tweens.
+      harness.flushTweens(harness.pendingTweenCount());
+      const initialBannerCount = harness.texts.filter((t) => t.text === 'PLAYER TURN').length;
+      expect(initialBannerCount).toBe(1);
+
+      // Selecting a cell does not trigger a duplicate banner.
+      tapCell(harness, 12);
+      expect(harness.texts.filter((t) => t.text === 'PLAYER TURN')).toHaveLength(1);
+      expect(harness.pendingTweenCount()).toBe(0);
+
+      // Deselecting the cell does not trigger a duplicate banner.
+      tapCell(harness, 12);
+      expect(harness.texts.filter((t) => t.text === 'PLAYER TURN')).toHaveLength(1);
+      expect(harness.pendingTweenCount()).toBe(0);
+
+      // Repeated state push for the same turn does not trigger a duplicate banner.
+      harness.setBattleState(battleState({ sequence: 0, turn: 1 }));
+      expect(harness.texts.filter((t) => t.text === 'PLAYER TURN')).toHaveLength(1);
+      expect(harness.pendingTweenCount()).toBe(0);
+
+      // Submitting a swap does not emit a duplicate banner.
+      const held = holdAction(harness);
+      tapCell(harness, 20);
+      tapCell(harness, 21);
+      held.resolve({ accepted: true });
+      await flush();
+
+      expect(harness.texts.filter((t) => t.text === 'PLAYER TURN')).toHaveLength(1);
+    });
+
+    it('3. triggers a subsequent player-turn banner after a complete resolution', async () => {
+      const state = battleState({ sequence: 0, turn: 1 });
+      const harness = createSceneHarness({ battleState: state, withTweens: true });
+      const scene = new BattleScene();
+      const ctx = harness.context(scene, 'BattleScene');
+      runScene(scene, ctx, 'create');
+
+      // Flush initial banner for turn 1.
+      expect(harness.texts.filter((t) => t.text === 'PLAYER TURN')).toHaveLength(1);
+      harness.flushTweens(harness.pendingTweenCount());
+
+      // Submit an action and deliver round resolution that advances to turn 2.
+      const held = holdAction(harness);
+      tapCell(harness, 20);
+      tapCell(harness, 21);
+      held.resolve({ accepted: true });
+      await flush();
+
+      // State push arrives with turn: 2, but held during timeline playback.
+      push(harness, battleState({ sequence: 1, turn: 2, board: deliveredBoard(1) }));
+      emitBatch(harness, 1, [
+        { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+        { type: 'SwapResolved', outcome: 'committed' },
+        { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      ]);
+
+      // During resolution playback, turn 2 banner is NOT yet triggered.
+      expect(harness.texts.filter((t) => t.text === 'PLAYER TURN')).toHaveLength(1);
+
+      // Play all tweens of the round presentation to reach finishPresentation.
+      playAllTweens(harness);
+
+      // The new player turn (turn 2) has begun: exactly one new 'PLAYER TURN' banner was triggered and played.
+      const turnBanners = harness.texts.filter((t) => t.text === 'PLAYER TURN');
+      expect(turnBanners).toHaveLength(2);
+      expect(harness.pendingTweenCount()).toBe(0);
+    });
+
+    it('4. does not duplicate player-turn banner upon recovery of the same turn', () => {
+      const state = battleState({ sequence: 0, turn: 1 });
+      const harness = createSceneHarness({ battleState: state, withTweens: true });
+      const scene = new BattleScene();
+      const ctx = harness.context(scene, 'BattleScene');
+      runScene(scene, ctx, 'create');
+
+      // Flush initial banner for turn 1.
+      expect(harness.texts.filter((t) => t.text === 'PLAYER TURN')).toHaveLength(1);
+      harness.flushTweens(harness.pendingTweenCount());
+      expect(harness.pendingTweenCount()).toBe(0);
+
+      // Authoritative recovery snapshot arrives for the same turn (turn 1).
+      recovery(harness, battleState({ sequence: 0, turn: 1, board: deliveredBoard(1) }));
+
+      // Exactly one banner total; no duplicate triggered.
+      expect(harness.texts.filter((t) => t.text === 'PLAYER TURN')).toHaveLength(1);
+      expect(harness.pendingTweenCount()).toBe(0);
+      expect(inputLocked(scene, ctx)).toBe(false);
+    });
+
+    it('5. resets deduplication on battle replacement and ignores stale callbacks from old battle', async () => {
+      const state1 = battleState({ battleId: 'battle-1', sequence: 0, turn: 1 });
+      const harness = createSceneHarness({ battleState: state1, withTweens: true });
+      const scene = new BattleScene();
+      const ctx = harness.context(scene, 'BattleScene');
+      runScene(scene, ctx, 'create');
+
+      // Initial banner for battle-1, turn 1.
+      expect(harness.texts.filter((t) => t.text === 'PLAYER TURN')).toHaveLength(1);
+      harness.flushTweens(harness.pendingTweenCount());
+      expect(harness.pendingTweenCount()).toBe(0);
+
+      // Battle replacement: a new battle arrives with battleId: 'battle-2', turn 1.
+      const state2 = battleState({ battleId: 'battle-2', sequence: 0, turn: 1 });
+      harness.setBattleState(state2);
+
+      // A fresh banner is presented for battle-2's turn 1.
+      expect(harness.texts.filter((t) => t.text === 'PLAYER TURN')).toHaveLength(2);
+      harness.flushTweens(harness.pendingTweenCount());
+      expect(harness.pendingTweenCount()).toBe(0);
+
+      // A stale event batch from the old battle-1 arrives without matching state.
+      harness.emitUnmatchedBattleEvents({
+        battleId: 'battle-1',
+        serverSequence: 1,
+        events: [
+          { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+          { type: 'SwapResolved', outcome: 'committed' },
+        ],
+      });
+      await flush();
+
+      // The stale batch is refused; no banner is triggered for battle-1 or duplicated for battle-2.
+      expect(harness.texts.filter((t) => t.text === 'PLAYER TURN')).toHaveLength(2);
+      expect(harness.pendingTweenCount()).toBe(0);
+    });
+
+    it('6. does not trigger a player-turn banner for terminal battle state', async () => {
+      const state = battleState({ sequence: 0, turn: 1 });
+      const harness = createSceneHarness({ battleState: state, withTweens: true });
+      const scene = new BattleScene();
+      const ctx = harness.context(scene, 'BattleScene');
+      runScene(scene, ctx, 'create');
+
+      // Flush turn 1 startup banner.
+      expect(harness.texts.filter((t) => t.text === 'PLAYER TURN')).toHaveLength(1);
+      harness.flushTweens(harness.pendingTweenCount());
+
+      // Submit action and resolve with terminal BattleWon event.
+      const held = holdAction(harness);
+      tapCell(harness, 20);
+      tapCell(harness, 21);
+      held.resolve({ accepted: true });
+      await flush();
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: deliveredBoard(1) }));
+      emitBatch(harness, 1, [
+        { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+        { type: 'SwapResolved', outcome: 'committed' },
+        { type: 'BattleWon', outcome: 'victory', finalBossHp: 0, finalPlayerHp: 850 },
+      ]);
+
+      // Play all tweens of the terminal timeline.
+      playAllTweens(harness);
+
+      // Battle was won and handed off to ResultScene; NO new player turn banner was triggered.
+      expect(harness.texts.filter((t) => t.text === 'PLAYER TURN')).toHaveLength(1);
+      expect(harness.sceneStarted.some((s) => s.key === 'ResultScene')).toBe(true);
+    });
+
+    it('7. is not triggered merely by unlocking input or ending an arbitrary presentation timeline', async () => {
+      const state = battleState({ sequence: 0, turn: 1 });
+      const harness = createSceneHarness({ battleState: state, withTweens: true });
+      const scene = new BattleScene();
+      const ctx = harness.context(scene, 'BattleScene');
+      runScene(scene, ctx, 'create');
+
+      // Flush startup banner for turn 1.
+      expect(harness.texts.filter((t) => t.text === 'PLAYER TURN')).toHaveLength(1);
+      harness.flushTweens(harness.pendingTweenCount());
+
+      // 1. Action rejection: input locks and unlocks without turn change.
+      const held = holdAction(harness);
+      tapCell(harness, 20);
+      tapCell(harness, 21);
+      held.resolve({ accepted: false, reason: 'InvalidSwap' });
+      await flush();
+
+      // Input is unlocked, but turn has not changed: banner count remains 1.
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(harness.texts.filter((t) => t.text === 'PLAYER TURN')).toHaveLength(1);
+      // Flush any callout fade tween.
+      harness.flushTweens(harness.pendingTweenCount());
+      expect(harness.pendingTweenCount()).toBe(0);
+
+      // 2. An arbitrary non-turn-advancing event batch (e.g. CardCast where turn remains 1).
+      harness.setBattleState(battleState({ sequence: 1, turn: 1, board: deliveredBoard(1) }));
+      emitBatch(harness, 1, [
+        { type: 'CardCast', cardId: 'test-card' },
+      ]);
+
+      // Timeline plays and completes finishPresentation().
+      playAllTweens(harness);
+
+      // Ending the arbitrary presentation timeline does NOT infer a new player turn.
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(harness.texts.filter((t) => t.text === 'PLAYER TURN')).toHaveLength(1);
+      expect(harness.pendingTweenCount()).toBe(0);
     });
   });
 });

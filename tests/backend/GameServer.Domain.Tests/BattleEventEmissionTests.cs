@@ -17,7 +17,9 @@ namespace GameServer.Domain.Tests;
 ///   CascadeCreated          once, when the pass is a Cascade — first
 ///   per Match, in the pass's §3.2 order
 ///     MatchCreated
-///     GemMatched            the pass's matched cells, ascending §1.0 index
+///     GemMatched            the pass's matched cells — ONE union for the pass,
+///                           ascending §1.0 index, once per cell, emitted with
+///                           the pass's first MatchCreated (§1.3 items 1-2)
 ///     ComboChanged          the NEW Combo value for that Match
 ///   GemMatched              the pass's activation sub-step, ascending index
 /// </code>
@@ -314,9 +316,9 @@ public class BattleEventEmissionTests
             Enumerable.Range(1, matchEvents.Length),
             comboEvents.Select(e => e.Combo));
 
-        // Each ComboChanged sits immediately after its own MatchCreated (the last
-        // GemMatched of that Match's matched cells, when there are any, comes
-        // between them) and before the next MatchCreated.
+        // Each ComboChanged sits immediately after its own MatchCreated and before
+        // the next MatchCreated (the pass's single matched GemMatched run, when there
+        // are any, sits after the MatchCreated that opens the pass's match sequence).
         for (var i = 0; i < comboEvents.Length; i++)
         {
             var comboIndex = IndexOf(result.Events, comboEvents[i]);
@@ -353,6 +355,299 @@ public class BattleEventEmissionTests
         Assert.True(
             cleared > matches,
             "cleared cells must outnumber Matches, or the counts would be indistinguishable");
+    }
+
+    // =======================================================================
+    // Several Matches, one cleared union — GAME_EVENTS.md §1.3
+    //
+    // A pass's matched cells are ONE union, reported once per cell (§1.3 items 1
+    // and 2): the sub-step is a property of the pass, not of each Match in it.
+    // Every pass of the `CascadeBattle()` fixture holds a single Match, so that
+    // fixture cannot observe the difference; these fixtures each hold two Matches in
+    // one pass and pin the union semantics directly.
+    // =======================================================================
+
+    /// <summary>
+    /// A deterministic two-Match fixture: one adjacent exchange produces two
+    /// <b>disjoint</b> horizontal Match 3s in the same detection pass — row 3
+    /// columns 0-2 making ATK, row 4 columns 0-2 making HP.
+    ///
+    /// <code>
+    /// A D H P A D H P
+    /// D H P A D H P A
+    /// H P A D H P A D
+    /// A H A H P A D H      row 3: (3,0)=A (3,1)=H (3,2)=A  →  AAA after the swap
+    /// H A H P A D H P      row 4: (4,0)=H (4,1)=A (4,2)=H  →  HHH after the swap
+    /// D H P A D H P A
+    /// H P A D H P A D
+    /// P A D H P A D H
+    /// </code>
+    ///
+    /// Exchanging <c>(3,1)&lt;-&gt;(4,1)</c> puts the 'A' at (3,1) and the 'H' at (4,1),
+    /// so both rows complete at once: the pass holds two Matches of three cells each
+    /// with no shared cell and no Special Gem (<c>MATCH3_RULES.md</c> §3 item 5,
+    /// §3.2 order). The board is match-free before the exchange, which every test
+    /// using this fixture asserts rather than assumes.
+    ///
+    /// The two Matches then cascade: the fixture's later passes are single-Match,
+    /// so the multi-Match shape and the Cascade shape are both present in one Swap
+    /// (<c>MATCH3_RULES.md</c> §4.2).
+    /// </summary>
+    private static BoardState TwoDisjointMatchesBoard() =>
+        TestBoard.FromRows(
+            "ADHPADHP",
+            "DHPADHPA",
+            "HPADHPAD",
+            "AHAHPADH",
+            "HAHPADHP",
+            "DHPADHPA",
+            "HPADHPAD",
+            "PADHPADH");
+
+    private const int TwoMatchFrom = 25; // I(3, 1)
+    private const int TwoMatchTo = 33;   // I(4, 1)
+
+    /// <summary>
+    /// The same two-Match board with a horizontal Line Clear Gem held at
+    /// <c>I(3,0)</c> — a cell the completing swap's first match set consumes
+    /// (<c>MATCH3_RULES.md</c> §5.5.5 item 1), so that pass runs an activation
+    /// sub-step as well as its matched sub-step. The pass therefore carries two
+    /// Matches, a matched run, and an activation run at once.
+    /// </summary>
+    private static BoardState TwoDisjointMatchesWithALineClearGemBoard() =>
+        TwoDisjointMatchesBoard().WithSpecial(
+            (I(3, 0), SpecialGem.LineClear(SpecialGemOrientation.Horizontal)));
+
+    [Fact]
+    public void SeveralMatchesInOnePass_ShouldEmitEachMatchedCellExactlyOnce()
+    {
+        // §1.3 item 1: "the pass's matched cells first" — the matched sub-step is one
+        // union per pass, ascending §1.0 index. §1.3 item 2: no two cells share an
+        // index and a cell named by several sources is reported once. §1.3 item 7: a
+        // GemMatched sequence "that repeats a cell" is an ordering defect.
+        //
+        // The defect this pins: the matched run is emitted once per Match, so a pass
+        // with M Matches reports every matched cell M times.
+        var state = BattleWith(TwoDisjointMatchesBoard());
+
+        // The fixture is a match-free board whose completing exchange produces two
+        // disjoint Matches (asserted, not assumed: a fixture that silently stopped
+        // doing so would test nothing).
+        Assert.Empty(MatchDetector.Detect(state.BoardState));
+
+        var result = SwapExecutor.Execute(state, new SwapRequest(TwoMatchFrom, TwoMatchTo));
+
+        Assert.True(result.IsAccepted);
+
+        var firstPass = result.Resolution.Passes[0];
+
+        Assert.Equal(2, firstPass.Matches.Count);
+        Assert.Equal(6, firstPass.MatchedCellGemMatched.Count);
+        Assert.Empty(firstPass.ActivationCellGemMatched);
+
+        var expectedCells = firstPass.MatchedCellGemMatched.Select(g => g.CellIndex).ToArray();
+
+        Assert.Equal(expectedCells.OrderBy(i => i), expectedCells);
+        Assert.Equal(expectedCells.Length, expectedCells.Distinct().Count());
+
+        var matchCreatedIndices = result.Events
+            .Select((e, index) => (e, index))
+            .Where(x => x.e.Type == BattleEventType.MatchCreated)
+            .Select(x => x.index)
+            .ToArray();
+
+        Assert.Equal(result.Resolution.Passes.Sum(p => p.Matches.Count), matchCreatedIndices.Length);
+
+        // Every expected matched-cell event is emitted exactly once over the whole
+        // Swap, and no unexpected one is. The unfixed builder emitted this pass's six
+        // cells once per Match — twelve GemMatched events where six are expected.
+        Assert.Equal(
+            result.Resolution.Passes.Sum(p => p.MatchedCellGemMatched.Count + p.ActivationCellGemMatched.Count),
+            result.Events.Count(e => e.Type == BattleEventType.GemMatched));
+
+        // The pass's matched run is emitted once, ascending, immediately after the
+        // MatchCreated that opens the pass's match sequence (§1.1: MatchCreated
+        // precedes the GemMatched run it introduces).
+        var matchedRun = result.Events
+            .Skip(matchCreatedIndices[0] + 1)
+            .Take(expectedCells.Length)
+            .ToArray();
+
+        Assert.All(matchedRun, e => Assert.Equal(BattleEventType.GemMatched, e.Type));
+        Assert.Equal(expectedCells, matchedRun.Select(e => e.Gem.CellIndex));
+
+        // The pass's second Match adds no second copy of that run: its MatchCreated
+        // is followed by its own ComboChanged (§1.1 item 5), not by the six cells
+        // again.
+        Assert.Equal(BattleEventType.ComboChanged, result.Events[matchCreatedIndices[1] + 1].Type);
+
+        // And no cell is reported at an unexpected place: the emitted GemMatched
+        // sequence is exactly the resolver's own per-pass reports, sub-step by
+        // sub-step.
+        Assert.Equal(
+            result.Resolution.Passes
+                .SelectMany(p => p.MatchedCellGemMatched.Concat(p.ActivationCellGemMatched))
+                .Select(g => g.CellIndex),
+            result.Events
+                .Where(e => e.Type == BattleEventType.GemMatched)
+                .Select(e => e.Gem.CellIndex));
+    }
+
+    [Fact]
+    public void SeveralMatchesInOnePass_ShouldFollowTheDocumentedCycleOrder()
+    {
+        // §1.1's cycle over a Swap whose first pass holds two Matches: the pass's
+        // single matched run sits between the MatchCreated that opens the pass's
+        // match sequence and the ComboChanged of each Match, which item 5 keeps one
+        // per Match and inside the pass's match-set order.
+        var result = SwapExecutor.Execute(
+            BattleWith(TwoDisjointMatchesBoard()),
+            new SwapRequest(TwoMatchFrom, TwoMatchTo));
+
+        Assert.True(result.IsAccepted);
+
+        var firstPass = result.Resolution.Passes[0];
+        Assert.Equal(2, firstPass.Matches.Count);
+
+        // The expected sequence is built from the resolution's own report — the
+        // documented rendering of this resolution, never a literal list for this
+        // board.
+        var expectedTypes = new List<BattleEventType>
+        {
+            BattleEventType.SwapStarted,
+            BattleEventType.SwapResolved,
+        };
+
+        foreach (var pass in result.Resolution.Passes)
+        {
+            // §1.1 item 1: CascadeCreated is emitted once for its pass, first.
+            if (pass.Matches[0].CascadeDepth >= 2)
+            {
+                expectedTypes.Add(BattleEventType.CascadeCreated);
+            }
+
+            var matchedSubStepAdded = false;
+
+            foreach (var _ in pass.Matches)
+            {
+                // §1.1 item 2: MatchCreated per Match, in the pass's match-set order.
+                expectedTypes.Add(BattleEventType.MatchCreated);
+
+                // §1.3 item 1: the pass's matched sub-step is one union, emitted
+                // once — never once per Match.
+                if (!matchedSubStepAdded)
+                {
+                    for (var i = 0; i < pass.MatchedCellGemMatched.Count; i++)
+                    {
+                        expectedTypes.Add(BattleEventType.GemMatched);
+                    }
+
+                    matchedSubStepAdded = true;
+                }
+
+                // §1.1 item 5: ComboChanged follows the Match it reports.
+                expectedTypes.Add(BattleEventType.ComboChanged);
+            }
+
+            // §1.3 item 1: the activation sub-step of the same pass comes after the
+            // matched one.
+            for (var i = 0; i < pass.ActivationCellGemMatched.Count; i++)
+            {
+                expectedTypes.Add(BattleEventType.GemMatched);
+            }
+        }
+
+        Assert.Equal(expectedTypes, result.Events.Select(e => e.Type));
+
+        // The same facts asserted without the projection above: the two Matches of the
+        // first pass, in §3.2 match-set order, each keeping its own Combo increment.
+        var firstPassMatchEvents = result.Events
+            .Where(e => e.Type == BattleEventType.MatchCreated && e.Match.CascadeDepth == 1)
+            .ToArray();
+
+        Assert.Equal(2, firstPassMatchEvents.Length);
+        Assert.Equal(
+            firstPass.Matches.Select(m => m.Shape.StartIndex),
+            firstPassMatchEvents.Select(e => e.Match.Shape.StartIndex));
+
+        var combos = result.Events
+            .Where(e => e.Type == BattleEventType.ComboChanged)
+            .Select(e => e.Combo)
+            .ToArray();
+
+        Assert.Equal(Enumerable.Range(1, combos.Length), combos);
+        Assert.Equal(result.State.Combo, combos[^1]);
+
+        // Cascade depth is unaffected by the number of Matches in a pass: one
+        // CascadeCreated per pass at depth ≥ 2, depths 1..n−1 in order, and every
+        // MatchCreated keeps its own pass's depth (MATCH3_RULES.md §4.2 item 2).
+        var cascadePasses = result.Resolution.Passes.Count(p => p.Matches[0].CascadeDepth >= 2);
+
+        Assert.True(cascadePasses >= 1, "the fixture must cascade, or the depth assertions would be vacuous");
+        Assert.Equal(result.Resolution.CascadeDepth, cascadePasses);
+        Assert.Equal(
+            Enumerable.Range(1, cascadePasses),
+            result.Events
+                .Where(e => e.Type == BattleEventType.CascadeCreated)
+                .Select(e => e.CascadeDepth));
+
+        Assert.Equal(
+            result.Resolution.Passes.SelectMany(p => p.Matches).Select(m => m.CascadeDepth),
+            result.Events
+                .Where(e => e.Type == BattleEventType.MatchCreated)
+                .Select(e => e.Match.CascadeDepth));
+    }
+
+    [Fact]
+    public void SeveralMatchesInOnePass_ShouldEmitTheActivationSubStepOnceAfterTheMatchedSubStep()
+    {
+        // The same two-Match pass with a Special Gem its match set consumes
+        // (MATCH3_RULES.md §5.5.5 item 1): the pass then carries a matched run and an
+        // activation run, and §1.3's two sub-steps must each be emitted once, in
+        // order, with the activation reporting only what the matched run did not
+        // (MATCH3_RULES.md §5.8.2 item 2).
+        var result = SwapExecutor.Execute(
+            BattleWith(TwoDisjointMatchesWithALineClearGemBoard()),
+            new SwapRequest(TwoMatchFrom, TwoMatchTo));
+
+        Assert.True(result.IsAccepted);
+
+        var firstPass = result.Resolution.Passes[0];
+
+        Assert.Equal(2, firstPass.Matches.Count);
+        Assert.Single(firstPass.ActivatedSpecialGems);
+        Assert.NotEmpty(firstPass.ActivationCellGemMatched);
+
+        var matched = firstPass.MatchedCellGemMatched.Select(g => g.CellIndex).ToArray();
+        var activation = firstPass.ActivationCellGemMatched.Select(g => g.CellIndex).ToArray();
+
+        Assert.Equal(matched.OrderBy(i => i), matched);
+        Assert.Equal(activation.OrderBy(i => i), activation);
+        Assert.Empty(matched.Intersect(activation));
+
+        // The consumed Special Gem is reported once, on its own cell, carrying the
+        // Special Gem it held (GAME_EVENTS.md §2 item 2).
+        var consumed = Assert.Single(firstPass.MatchedCellGemMatched, g => g.CellIndex == I(3, 0));
+        Assert.NotNull(consumed.ConsumedSpecialGem);
+
+        // §1.3: over the whole Swap the emitted cells are the pass's matched run and
+        // then its activation run — each once. The unfixed builder repeats the
+        // matched run per Match and breaks this sequence.
+        Assert.Equal(
+            matched.Concat(activation),
+            result.Events
+                .Where(e => e.Type == BattleEventType.GemMatched)
+                .Select(e => e.Gem.CellIndex));
+
+        Assert.Equal(
+            matched.Length + activation.Length,
+            result.Events.Count(e => e.Type == BattleEventType.GemMatched));
+
+        // The activation clears no Match and no Combo (MATCH3_RULES.md §5.5.5 item 8):
+        // the pass contributes exactly one ComboChanged per Match and nothing more.
+        Assert.Equal(
+            result.Resolution.Passes.Sum(p => p.Matches.Count),
+            result.Events.Count(e => e.Type == BattleEventType.ComboChanged));
     }
 
     // =======================================================================
@@ -486,10 +781,10 @@ public class BattleEventEmissionTests
     [Fact]
     public void Events_ShouldFollowTheDocumentedCycleOrder()
     {
-        // §1.1's cycle, asserted structurally over a real multi-pass resolution:
-        //
-        //   per pass:  [CascadeCreated]  MatchCreated, GemMatched…, ComboChanged …
-        //   GemMatched for the pass's activations last
+        // §1.1's cycle asserted structurally over a real multi-pass resolution. Every
+        // pass of this fixture holds a single Match, so the union and per-Match
+        // readings of the matched sub-step coincide here; the several-Matches-in-one-
+        // pass fixtures below are what distinguish them.
         //
         // The committed action's own boundary pair opens the list, before the cycle
         // it resolved (GAME_EVENTS.md §1, MATCH3_RULES.md §2.1.6 steps 3 and 7,
@@ -515,13 +810,22 @@ public class BattleEventEmissionTests
                 expectedTypes.Add(BattleEventType.CascadeCreated);
             }
 
+            var matchedSubStepAdded = false;
+
             foreach (var _ in pass.Matches)
             {
                 expectedTypes.Add(BattleEventType.MatchCreated);
 
-                for (var i = 0; i < pass.MatchedCellGemMatched.Count; i++)
+                // §1.3 item 1: the pass's matched cells are ONE union, emitted once —
+                // never once per Match (see the two-Match fixtures above).
+                if (!matchedSubStepAdded)
                 {
-                    expectedTypes.Add(BattleEventType.GemMatched);
+                    for (var i = 0; i < pass.MatchedCellGemMatched.Count; i++)
+                    {
+                        expectedTypes.Add(BattleEventType.GemMatched);
+                    }
+
+                    matchedSubStepAdded = true;
                 }
 
                 expectedTypes.Add(BattleEventType.ComboChanged);

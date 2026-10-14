@@ -797,3 +797,37 @@ export class RuntimeActionOutcomeUnknownError extends Error {
     this.name = 'RuntimeActionOutcomeUnknownError';
   }
 }
+
+/**
+ * The documented initial watchdog duration for the runtime's resolution-batch
+ * expectation (`SIGNALR_PROTOCOL.md` §7).
+ *
+ * It is a **client policy**, not a protocol value: the protocol fixes the
+ * behaviour (one bounded, client-local expectation; on expiry the client marks
+ * itself unsynchronized and requests the §7 item 1 `GetBattleState` snapshot),
+ * while the initial duration the protocol records is 2,500 ms. The duration is
+ * construction-time configuration so a caller can choose it; nothing else about
+ * the expectation is configurable, because nothing else about it is policy.
+ */
+export const DEFAULT_RESOLUTION_WATCHDOG_MS = 2500;
+
+/**
+ * Construction-time configuration for `GameRuntime`.
+ *
+ * It carries no gameplay value, no wire member, and no state: it selects how
+ * long the runtime waits for a delivered resolution's `ReceiveEvents` batch
+ * before it treats the batch as lost (`SIGNALR_PROTOCOL.md` §7).
+ */
+export interface GameRuntimeOptions {
+  /**
+   * How long, in milliseconds, an armed resolution-batch expectation waits for
+   * the batch of the authoritative advance that armed it, before the runtime
+   * marks itself unsynchronized and requests the §7 item 1 snapshot. Defaults to
+   * {@link DEFAULT_RESOLUTION_WATCHDOG_MS}.
+   *
+   * It bounds **detection only**. The recovery the expiry requests keeps its own
+   * existing bound (`MAX_RECOVERY_ATTEMPTS`), so no value here can create a
+   * retry loop.
+   */
+  readonly resolutionWatchdogMs?: number;
+}

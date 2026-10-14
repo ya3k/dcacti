@@ -1,6 +1,17 @@
 # SignalR Protocol
 
-**Version:** 2.23 (§6 item 3 **expanded**, §7 **amended** per TASK-273: *sequence desync* is defined operationally as a `ReceiveEvents` batch whose `serverSequence` is ahead of the `sequence` of the state the client holds; a client withholds such a batch — whole, never partially applied — and requests the same §7.1 `GetBattleState` snapshot a reconnect uses, deduplicated to one request in flight per battle; a batch at or below the held `sequence` is the documented delivery or superseded respectively and is never a desync. §7 records that **a snapshot supersedes every pending or in-flight batch at or below its `sequence`** and that a superseded resolution is never replayed, and §7 item 5 fixes the recovery response's two sequence spellings (`serverSequence`, `state.sequence`) as one value that must agree. The incorrect `§6` cross-references to the snapshot path in §3.2.12/§3.1/§3.2.12 records, §4 items 7–8 and §8 items 7 and 9 are corrected to §7, and the flat `§8.x` references are corrected to `§8 item n`. **No hub method, argument, subscription, delivery path, state-push member, or gameplay rule is added or removed.** Prior 2.22: (§3.2.2, §3.2.12, **§3.2.26 and §3.2.27 added** per ADR-026 / TASK-263: the `SwapStarted` protocol proposal §3.2.2 carried is now **formalized and discharged**. `SwapStarted` (`type`, `actor: "player" | "boss"`, `fromCell`, `toCell`) and its `SwapResolved` counterpart (`type`, `outcome: "committed" | "reverted"`) are members of the closed discriminator set, projected by their own subsections, emitted once per committed board action by the Player's Swap and by the Boss's `GAME_RULES.md` §17 step 18a board action, and omitted entirely for a rejected action. **No hub method, argument, subscription, delivery path, state-push member, or gameplay rule is added or removed**: §2's method list and the §4/§7 delivery paths are unchanged, the `ReceiveEvents` envelope keeps its three members, and the two new discriminators add no `BattleState` member. Prior 2.21: (§3.1, §3.2.2 updated per ADR-026 / TASK-259: Atomic round persistence boundaries documented — Redis CAS guarantees single-record state persistence atomicity, but does not provide distributed 2PC or guarantee exactly-once SignalR broadcast across network drops; recovery from connection interruption or missed events remains strictly governed by ADR-008 snapshot recovery via GetBattleState; proposed admission of SwapStarted event ({actor, fromCell, toCell}) in §3.2.2 to transmit Boss swap coordinates for client presentation. Prior 2.20: §2 **item 1 restated and items 2–3 added** — the `Swap` action
+**Version:** 2.24 (§7 **amended** per TASK-284: an accepted action whose
+authoritative state push was delivered but whose `ReceiveEvents` batch never
+arrived is recorded as a third desynchronization moment — §6 item 3's comparison
+keys on a batch that *arrives* ahead of the held `sequence`, and here no batch
+arrives — together with the one bounded client-local expectation that detects it
+(**2,500 ms** initially, and configuration rather than protocol), the requirement
+that expiry mark the client unsynchronized and request the same §7 item 1
+`GetBattleState(battleId)` snapshot, the explicit statements that the expectation
+releases no input lock and determines no outcome, and the exclusion of a
+documented no-broadcast acceptance (the §3.1 item 6 idempotent retry) from the
+trigger. **No hub method, argument, subscription, delivery path, state-push
+member, or gameplay rule is added or removed.** Prior 2.23: (§6 item 3 **expanded**, §7 **amended** per TASK-273: *sequence desync* is defined operationally as a `ReceiveEvents` batch whose `serverSequence` is ahead of the `sequence` of the state the client holds; a client withholds such a batch — whole, never partially applied — and requests the same §7.1 `GetBattleState` snapshot a reconnect uses, deduplicated to one request in flight per battle; a batch at or below the held `sequence` is the documented delivery or superseded respectively and is never a desync. §7 records that **a snapshot supersedes every pending or in-flight batch at or below its `sequence`** and that a superseded resolution is never replayed, and §7 item 5 fixes the recovery response's two sequence spellings (`serverSequence`, `state.sequence`) as one value that must agree. The incorrect `§6` cross-references to the snapshot path in §3.2.12/§3.1/§3.2.12 records, §4 items 7–8 and §8 items 7 and 9 are corrected to §7, and the flat `§8.x` references are corrected to `§8 item n`. **No hub method, argument, subscription, delivery path, state-push member, or gameplay rule is added or removed.** Prior 2.22: (§3.2.2, §3.2.12, **§3.2.26 and §3.2.27 added** per ADR-026 / TASK-263: the `SwapStarted` protocol proposal §3.2.2 carried is now **formalized and discharged**. `SwapStarted` (`type`, `actor: "player" | "boss"`, `fromCell`, `toCell`) and its `SwapResolved` counterpart (`type`, `outcome: "committed" | "reverted"`) are members of the closed discriminator set, projected by their own subsections, emitted once per committed board action by the Player's Swap and by the Boss's `GAME_RULES.md` §17 step 18a board action, and omitted entirely for a rejected action. **No hub method, argument, subscription, delivery path, state-push member, or gameplay rule is added or removed**: §2's method list and the §4/§7 delivery paths are unchanged, the `ReceiveEvents` envelope keeps its three members, and the two new discriminators add no `BattleState` member. Prior 2.21: (§3.1, §3.2.2 updated per ADR-026 / TASK-259: Atomic round persistence boundaries documented — Redis CAS guarantees single-record state persistence atomicity, but does not provide distributed 2PC or guarantee exactly-once SignalR broadcast across network drops; recovery from connection interruption or missed events remains strictly governed by ADR-008 snapshot recovery via GetBattleState; proposed admission of SwapStarted event ({actor, fromCell, toCell}) in §3.2.2 to transmit Boss swap coordinates for client presentation. Prior 2.20: §2 **item 1 restated and items 2–3 added** — the `Swap` action
 token's grammar is now exact and total. `"{expectedSequence}:{actionId}"` and the
 legacy `"{actionId}"` are the only accepted forms; the sequence part is a
 non-negative decimal integer stated in full; and a token outside the grammar —
@@ -2487,7 +2498,7 @@ without waiting for/parsing the event broadcast.
 # 7. Reconnect & Resync
 
 This section owns the **snapshot recovery** mechanism, and it is the one the
-client uses for **both** moments it can be desynchronized:
+client uses for **every** moment it can be desynchronized:
 
 ```text
 reconnect        the transport was re-established and the connection rejoined no
@@ -2496,14 +2507,65 @@ detected desync  §6 item 3's skipped `serverSequence`: a `ReceiveEvents` batch
                  arrived ahead of the `sequence` the client's synchronized state
                  carries, so the write-back for a committed resolution was never
                  delivered
+unbatched        the authoritative state push for a committed, accepted action
+  resolution     was delivered (so the client's `sequence` advanced to n), but
+                 the `ReceiveEvents` batch at n did not arrive. §6 item 3's
+                 comparison cannot see this: it keys on a batch that ARRIVES
+                 ahead of the held sequence, and here no batch arrives
 ```
 
-Neither moment is a special case of the other, and neither adds a mechanism:
-both are answered by item 1's `GetBattleState(battleId)` request/response
-snapshot, ingested by the existing §4 path. A client that detects a desync must
-**not** wait for an event batch it may never receive, and must not treat the
-withheld batch as authoritative — the snapshot is the only resynchronization
-path item 2 defines.
+No moment is a special case of another, and none adds a mechanism: every one is
+answered by item 1's `GetBattleState(battleId)` request/response snapshot,
+ingested by the existing §4 path. A client that detects a desync must **not**
+wait for an event batch it may never receive, and must not treat a withheld
+batch as authoritative — the snapshot is the only resynchronization path item 2
+defines.
+
+**An accepted action's missing resolution batch is the third moment, and it is
+closed by the same item 1 request.** A client MUST NOT wait indefinitely for a
+batch it may never receive, and it is not required to: it MAY arm **one**
+bounded, client-local expectation — 2,500 ms initially, a client policy and not
+a protocol value — when a delivered `BattleStateUpdated` push (§4) advances the
+`sequence` for a battle it has an action submitted and not yet settled, and, if
+the `ReceiveEvents` batch at **that delivered `sequence`** has not been admitted
+before the expectation expires, it marks itself unsynchronized and requests the
+same item 1 `GetBattleState(battleId)` snapshot. The expectation carries the
+version the delivered push itself carries; the client never derives it, and may
+not spell it as `expectedSequence + 1` or by any other increment
+(`GAME_STATE.md` §5.0 — the client does not author `Sequence`).
+
+```text
+the expectation is a delivery-timing fact only:
+  · it adds no hub method, argument, subscription, message, or state-push member,
+  · it requests nothing new and no event is ever replayed,
+  · it releases no input lock by itself,
+  · it determines, infers, and fabricates no outcome — `BattleStateUpdated`
+    remains the reconstruction-safe carrier (§4 item 18), and the expired
+    expectation's answer is the snapshot, exactly as for the other two moments,
+  · it fires at most once per observation, and every retry is the item 1
+    request's own existing bound: no second timer family, retry loop, backoff,
+    or recovery path exists,
+  · it is cleared by the admission of the matching batch, by a snapshot that
+    covers it (the precedence rule below), by the battle it belongs to being
+    replaced, cleared, or ended, and by disposal.
+```
+
+**An accepted acknowledgement that produces no new broadcast is not this
+moment.** The idempotent retry of §3.1 item 6 (ADR-025 §2) answers
+`Accepted: true` without re-committing or re-broadcasting anything, so it
+advances no `sequence`, produces no state push, and arms nothing: its resolution
+was already committed and is already carried by the state the client holds, and
+it is never reported as a desync. Only a delivered push that **advances** the
+held `sequence` can arm the expectation — which is also why an expectation is
+armed by the push and not by the acknowledgement: §3.1 item 1 publishes the
+state before the hub call returns, so the push legitimately arrives first. An
+action with no acknowledgement at all is the separate case above, and is not
+this trigger either.
+
+**A snapshot supersedes an armed expectation whose resolution it covers.** A
+snapshot at or beyond the expectation's `sequence` ends it rather than racing it
+(the precedence rule below), so a late batch for the resolution it superseded is
+delivered by the ordinary §3 path and is never replayed.
 
 The client deduplicates that request against the gap it is recovering: **at most
 one `GetBattleState` request is in flight per battle**, so repeated observations

@@ -32,8 +32,11 @@ namespace GameServer.Domain.Match3;
 ///                            because it reports the pass itself
 ///   2. per Match, in the pass's §3.2 order:
 ///          MatchCreated
-///          GemMatched        the pass's matched cells, ascending §1.0 index
+///          GemMatched        ONLY for the pass's first Match: the pass's matched
+///                            cells are ONE union for the pass, ascending §1.0
+///                            index, once per cell (§1.3 items 1–2)
 ///          ComboChanged      the NEW Combo value for that Match
+///   3. GemMatched            the pass's activation sub-step, ascending index
 /// </code>
 ///
 /// <b>Nothing is mutated, drawn, or advanced.</b> The builder is a pure function
@@ -111,6 +114,15 @@ public static class BattleEventBuilder
                 events.Add(BattleEvent.ForCascade(pass.Matches[0].CascadeDepth - 1));
             }
 
+            // §1.3 items 1–2: the matched sub-step is ONE union for the pass — the
+            // pass's matched cells, ascending §1.0 index, each cell once — and it is
+            // not a per-Match list. It is therefore reported once per pass: with the
+            // MatchCreated that opens the pass's match sequence, which is the position
+            // §1.1's cycle fixes for it. Emitting it once per Match would report every
+            // matched cell of a pass with M ≥ 2 Matches M times, which §1.3 item 2's
+            // "reported once" and item 7's "repeats a cell" forbid.
+            var matchedSubStepReported = false;
+
             foreach (var match in pass.Matches)
             {
                 // §1.1 items 2 and 5: MatchCreated precedes this Match's
@@ -120,12 +132,18 @@ public static class BattleEventBuilder
 
                 // §2 GemMatched / §1.3: the matched sub-step's consumed Gems, once
                 // per cell, ascending §1.0 index — the enumeration the resolver
-                // already applied. Reported here, after the MatchCreated it belongs
-                // to, so the GemMatched run reads as the Match's own consumption
-                // and then, for this pass, the activation sub-step's.
-                foreach (var gem in pass.MatchedCellGemMatched)
+                // already applied. Reported with the first MatchCreated of the pass
+                // it belongs to, so the GemMatched run reads as the pass's own
+                // matched sub-step and then, for this pass, the activation
+                // sub-step's.
+                if (!matchedSubStepReported)
                 {
-                    events.Add(BattleEvent.ForGem(gem));
+                    foreach (var gem in pass.MatchedCellGemMatched)
+                    {
+                        events.Add(BattleEvent.ForGem(gem));
+                    }
+
+                    matchedSubStepReported = true;
                 }
 
                 comboSoFar++;

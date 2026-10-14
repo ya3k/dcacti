@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { GameRuntime } from '../src/game/runtime/GameRuntime';
 import { RuntimeActionNotImplementedError } from '../src/game/runtime/GameRuntimeEvents';
 import { RuntimeActionOutcomeUnknownError } from '../src/game/runtime/GameRuntimeEvents';
+import { DEFAULT_RESOLUTION_WATCHDOG_MS } from '../src/game/runtime/GameRuntimeEvents';
 import type { BattleEventsEnvelope } from '../src/game/runtime/GameRuntimeEvents';
 import { ApiRequestError } from '../src/services/api/ApiService';
 import { ApplicationSession } from '../src/services/api/ApplicationSession';
@@ -4635,6 +4636,37 @@ describe('GameRuntime', () => {
       expect(runtime.getState().sync).toBe('synchronized');
     });
 
+    it('13. cannot detect a batch lost after its own state push advanced the sequence (TASK-280)', async () => {
+      const { runtime, transport } = await joinedP04Runtime({
+        battleId: 'battle-1',
+        sequence: 0,
+      });
+      const seen = observeBatches(runtime);
+
+      // Resolution 1: its §4 state push is delivered — §3.1 item 1 and §6 item 4
+      // place the push before any batch for that battle — and its ReceiveEvents
+      // batch is lost in transit (§3.1 item 6). The synchronized copy therefore
+      // advances to 1 while no batch for 1 ever arrives.
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 1, sequence: 1 }));
+
+      // Resolution 2: its push advances the copy to 2 before its own batch, so that
+      // batch is compared against a held sequence it already equals — §6 item 3's
+      // documented push-then-batch delivery, not the `>` case that opens a gap.
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 2, sequence: 2 }));
+      transport.emit('ReceiveEvents', batch('battle-1', 2, [{ type: 'GemMatched' }]));
+
+      // The lost batch is applied by nobody and recorded by nothing: the runtime
+      // keeps no set of received sequences and no expected-sequence map, so batch 1
+      // is indistinguishable from a batch that was never committed. No snapshot is
+      // requested, because no gap is ever observed — the state push, not the batch,
+      // is what the copy's version comes from (GAME_STATE.md §5.0).
+      expect(seen.map((envelope) => envelope.serverSequence)).toEqual([2]);
+      expect(transport.getBattleStateCalls).toEqual([]);
+      expect(runtime.getState().lastError).toBeNull();
+      expect(runtime.getState().sync).toBe('synchronized');
+      expect(runtime.getBattleState()!.sequence).toBe(2);
+    });
+
     describe('TASK-274 — final recovery boundary & runtime invariant verification', () => {
       // --- Review A ---
       it('Review A.1: drops a batch for a battle with no held state before reaching listeners', async () => {
@@ -4949,6 +4981,555 @@ describe('GameRuntime', () => {
         expect(runtime.getBattleState()!.sequence).toBe(0);
         expect(runtime.getState().sync).toBe('synchronized');
       });
+    });
+  });
+
+  /**
+   * TASK-284 — the bounded, client-local expectation that a delivered
+   * authoritative state push is followed by its `ReceiveEvents` batch
+   * (`SIGNALR_PROTOCOL.md` §7).
+   *
+   * Every case below is deterministic: fake timers drive the watchdog and
+   * controlled promises drive the transport, so no case sleeps and no case
+   * depends on wall-clock ordering. The scenarios are the nine the task fixes,
+   * plus the exclusions the approved design requires (the §3.1 item 6
+   * no-broadcast acceptance, a definitive rejection, and a push with no
+   * submitted action) and the configurability of the duration.
+   */
+  describe('TASK-284 — resolution-batch watchdog (SIGNALR_PROTOCOL.md §7)', () => {
+    /** The documented initial duration, which the default runtime must use. */
+    const WATCHDOG_MS = DEFAULT_RESOLUTION_WATCHDOG_MS;
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function createWatchdogRuntime(options?: { resolutionWatchdogMs?: number }) {
+      const transport = new FakeSignalR();
+      const api = {
+        getBattleResult: vi.fn(async () => ({
+          battleId: 'battle-1',
+          outcome: 'victory',
+          rewards: {},
+          durationTurns: 5,
+        })),
+        startBattle: vi.fn(async () => ({
+          battleId: 'battle-2',
+          signalrHub: 'http://localhost/hubs/battle',
+          initialState: payload({ battleId: 'battle-2' }),
+        })),
+      };
+      const runtime = new GameRuntime(transport as never, api as never, options);
+      return { runtime, transport, api };
+    }
+
+    /** A joined runtime whose documented §4 push has already been delivered. */
+    async function joinedWatchdogRuntime(
+      overrides: Record<string, unknown> = {},
+      options?: { resolutionWatchdogMs?: number }
+    ) {
+      const ctx = createWatchdogRuntime(options);
+      await ctx.runtime.initialize();
+      ctx.transport.emit('BattleStateUpdated', payload(overrides));
+      return ctx;
+    }
+
+    function batch(battleId: string, serverSequence: number, events: unknown[] = []) {
+      return { battleId, serverSequence, events };
+    }
+
+    function observeBatches(runtime: GameRuntime): BattleEventsEnvelope[] {
+      const seen: BattleEventsEnvelope[] = [];
+      runtime.onBattleEvents((envelope) => seen.push(envelope));
+      return seen;
+    }
+
+    function observePublications(runtime: GameRuntime) {
+      const publications: Array<{ state: unknown; source: string | undefined }> = [];
+      runtime.onBattleState((state, metadata) => {
+        publications.push({ state, source: metadata?.source });
+      });
+      return publications;
+    }
+
+    function observeErrors(runtime: GameRuntime): string[] {
+      const details: string[] = [];
+      runtime.onRuntimeEvent((event) => {
+        if (event.type === 'runtime_error' && event.detail) {
+          details.push(event.detail);
+        }
+      });
+      return details;
+    }
+
+    /** A snapshot request that never answers, so the expiry's own publication stays observable. */
+    function holdRecovery(): () => Promise<never> {
+      return () => new Promise<never>(() => {});
+    }
+
+    /** The one documented action every scenario starts from: an accepted Swap. */
+    async function submitSwap(runtime: GameRuntime): Promise<void> {
+      await runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 });
+    }
+
+    it('1. a matching batch inside the window settles the expectation: no recovery at all', async () => {
+      const { runtime, transport } = await joinedWatchdogRuntime({
+        battleId: 'battle-1',
+        sequence: 0,
+      });
+      const seen = observeBatches(runtime);
+
+      await submitSwap(runtime);
+
+      // §3.1 item 1: the resolution's state is published before the hub call
+      // returns, so the push advances the held copy to the resolution's version.
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 1, sequence: 1 }));
+      expect(runtime.getBattleState()!.sequence).toBe(1);
+
+      // Its batch arrives inside the window: forwarded whole, exactly once.
+      const delivered = batch('battle-1', 1, [{ type: 'GemMatched' }]);
+      transport.emit('ReceiveEvents', delivered);
+
+      expect(seen).toEqual([delivered]);
+      expect(runtime.getState().sync).toBe('synchronized');
+
+      // Whatever the runtime is left waiting for afterwards, the settled
+      // expectation fires nothing: §7 asks for the snapshot only for a real gap.
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS * 4);
+      expect(transport.getBattleStateCalls).toEqual([]);
+      expect(runtime.getState().sync).toBe('synchronized');
+      expect(runtime.getState().lastError).toBeNull();
+    });
+
+    it('2. a push delivered before the acknowledgement arms it, at the DELIVERED sequence', async () => {
+      const { runtime, transport } = await joinedWatchdogRuntime({
+        battleId: 'battle-1',
+        sequence: 0,
+      });
+
+      let resolveSwap!: (value: { accepted: boolean }) => void;
+      transport.swapBehaviour = () =>
+        new Promise<{ accepted: boolean }>((resolve) => {
+          resolveSwap = resolve;
+        }) as unknown as Promise<never>;
+
+      const swapPromise = runtime.requestAction({ kind: 'Swap', fromCell: 4, toCell: 5 });
+      const submittedActionId = transport.swapCalls[0][4];
+
+      // The push carries sequence 3: two further resolutions committed before the
+      // client was told anything, so `expectedSequence + 1` (1) is NOT the
+      // resolution this action's batch belongs to (GAME_STATE.md §5.0).
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 3, sequence: 3 }));
+      expect(runtime.getBattleState()!.sequence).toBe(3);
+
+      // The delayed acknowledgement arrives afterwards: it neither re-arms nor
+      // re-keys the expectation the push armed, and it requests nothing.
+      resolveSwap({ accepted: true });
+      expect((await swapPromise).accepted).toBe(true);
+      expect(transport.getBattleStateCalls).toEqual([]);
+
+      // A batch at 1 is an older, superseded resolution: forwarded, and it
+      // settles nothing — the expectation is still waiting for the batch at 3.
+      const older = batch('battle-1', 1, [{ type: 'GemMatched' }]);
+      transport.emit('ReceiveEvents', older);
+
+      transport.getBattleStateBehaviour = holdRecovery();
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS);
+
+      // The expiry names the delivered sequence and the action identity the
+      // runtime submitted under.
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+      expect(runtime.getState().sync).toBe('unsynchronized');
+      expect(runtime.getState().lastError).toContain('sequence 3');
+      expect(runtime.getState().lastError).toContain(submittedActionId!);
+    });
+
+    it('3. a lost batch expires at the 2,500 ms default and requests the existing snapshot', async () => {
+      const { runtime, transport } = await joinedWatchdogRuntime({
+        battleId: 'battle-1',
+        sequence: 0,
+      });
+      const seen = observeBatches(runtime);
+      const details = observeErrors(runtime);
+
+      await submitSwap(runtime);
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 1, sequence: 1 }));
+
+      // One millisecond before the documented window the client still claims to
+      // be synchronized and has asked for nothing.
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS - 1);
+      expect(transport.getBattleStateCalls).toEqual([]);
+      expect(runtime.getState().sync).toBe('synchronized');
+
+      transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 1,
+        state: payload({ battleId: 'battle-1', turn: 1, sequence: 1 }),
+      };
+      await vi.advanceTimersByTimeAsync(1);
+
+      // §7: it marks itself unsynchronized, records the delivered sequence and the
+      // action identity, and asks for the item 1 snapshot — nothing else.
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+      expect(details.some((detail) => detail.includes('sequence 1'))).toBe(true);
+      expect(details.some((detail) => detail.includes('action'))).toBe(true);
+
+      // The snapshot converges the runtime through the existing §4 path, and no
+      // event is fabricated or replayed to stand in for the lost batch.
+      expect(runtime.getState().sync).toBe('synchronized');
+      expect(runtime.getBattleState()!.sequence).toBe(1);
+      expect(seen).toEqual([]);
+
+      // One expectation, one request: the watchdog does not fire again.
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS * 4);
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+    });
+
+    it('4. a batch arriving while the requested snapshot is in flight opens no second request', async () => {
+      const { runtime, transport } = await joinedWatchdogRuntime({
+        battleId: 'battle-1',
+        sequence: 0,
+      });
+      const seen = observeBatches(runtime);
+      const publications = observePublications(runtime);
+
+      await submitSwap(runtime);
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 1, sequence: 1 }));
+
+      let releaseRecovery!: (value: {
+        accepted: boolean;
+        serverSequence?: number;
+        state?: unknown;
+      }) => void;
+      transport.getBattleStateBehaviour = () =>
+        new Promise<never>((resolve) => {
+          releaseRecovery = resolve as unknown as typeof releaseRecovery;
+        });
+
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS);
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+
+      // The lost batch arrives while the snapshot is in flight. It equals the held
+      // sequence, so it is admitted and forwarded whole exactly once — and it
+      // opens no second request: §7.1 keeps one in flight per battle.
+      const delivered = batch('battle-1', 1, [{ type: 'GemMatched' }]);
+      transport.emit('ReceiveEvents', delivered);
+      expect(seen).toEqual([delivered]);
+
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS * 4);
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+
+      // The snapshot finally answers: the existing recovery path converges once.
+      releaseRecovery({
+        accepted: true,
+        serverSequence: 1,
+        state: payload({ battleId: 'battle-1', turn: 1, sequence: 1 }),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(runtime.getState().sync).toBe('synchronized');
+      expect(publications.filter((entry) => entry.source === 'recovery')).toHaveLength(1);
+      expect(seen).toEqual([delivered]);
+    });
+
+    it('5. the snapshot supersedes the pending presentation: a late batch replays nothing', async () => {
+      const { runtime, transport } = await joinedWatchdogRuntime({
+        battleId: 'battle-1',
+        sequence: 0,
+      });
+      const seen = observeBatches(runtime);
+
+      await submitSwap(runtime);
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 1, sequence: 1 }));
+
+      transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 1,
+        state: payload({ battleId: 'battle-1', turn: 1, sequence: 1 }),
+      };
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS);
+      expect(runtime.getState().sync).toBe('synchronized');
+
+      // The batch the expectation was waiting for arrives after the snapshot that
+      // covers it. The runtime still delivers it whole and exactly once by the
+      // ordinary §3 path — it neither replays it nor rolls the state back
+      // (SIGNALR_PROTOCOL.md §7 precedence, ADR-008) — and the scene's own
+      // accepted-resolution memory is what refuses a second presentation
+      // (SceneLifecycle.test.ts).
+      const late = batch('battle-1', 1, [{ type: 'GemMatched' }]);
+      transport.emit('ReceiveEvents', late);
+
+      expect(seen).toEqual([late]);
+      expect(runtime.getBattleState()!.sequence).toBe(1);
+      expect(runtime.getState().sync).toBe('synchronized');
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS * 4);
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+      expect(runtime.getState().lastError).toBeNull();
+    });
+
+    it('6. a failed recovery stays unsynchronized, publishes no state, and stays bounded', async () => {
+      const { runtime, transport } = await joinedWatchdogRuntime({
+        battleId: 'battle-1',
+        sequence: 0,
+      });
+      const publications = observePublications(runtime);
+
+      await submitSwap(runtime);
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 1, sequence: 1 }));
+
+      transport.getBattleStateBehaviour = () => Promise.reject(new Error('transport down'));
+
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS);
+      expect(transport.getBattleStateCalls.length).toBeGreaterThan(0);
+
+      // The expiry's request inherits the existing bound: MAX_RECOVERY_ATTEMPTS.
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS * 4);
+      expect(transport.getBattleStateCalls).toHaveLength(3);
+
+      // Honest and locked: unsynchronized, holding exactly the state it was
+      // delivered, with no snapshot, no fabricated state, and no recovery
+      // publication for a scene to converge on.
+      expect(runtime.getState().sync).toBe('unsynchronized');
+      expect(runtime.getState().lastError).toContain('transport down');
+      expect(runtime.getBattleState()!.battleId).toBe('battle-1');
+      expect(runtime.getBattleState()!.sequence).toBe(1);
+      expect(publications.filter((entry) => entry.source === 'recovery')).toHaveLength(0);
+    });
+
+    it('7. BATTLE_NOT_FOUND keeps its terminal path and leaves no watchdog behind', async () => {
+      const { runtime, transport, api } = await joinedWatchdogRuntime({
+        battleId: 'battle-1',
+        sequence: 0,
+      });
+      const publications = observePublications(runtime);
+
+      await submitSwap(runtime);
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 1, sequence: 1 }));
+
+      transport.getBattleStateResult = { accepted: false, reason: 'BATTLE_NOT_FOUND' };
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS);
+
+      // §7.3 unchanged: the copy is dropped, the loss is published as `ended`, and
+      // the documented result fallback is taken.
+      expect(runtime.getBattleState()).toBeNull();
+      expect(runtime.getState().sync).toBe('awaiting_battle');
+      expect(publications.at(-1)).toEqual({ state: null, source: 'ended' });
+      expect(api.getBattleResult).toHaveBeenCalledWith('battle-1');
+
+      // The battle is gone, so nothing retries and nothing recovers it again.
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS * 4);
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+    });
+
+    it('8a. dispose leaves no orphaned watchdog timer behind', async () => {
+      const { runtime, transport } = await joinedWatchdogRuntime({
+        battleId: 'battle-1',
+        sequence: 0,
+      });
+
+      await submitSwap(runtime);
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 1, sequence: 1 }));
+
+      await runtime.dispose();
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS * 4);
+
+      expect(transport.getBattleStateCalls).toEqual([]);
+    });
+
+    it('8b. the post-result battle clear leaves no orphaned watchdog timer behind', async () => {
+      const { runtime, transport } = await joinedWatchdogRuntime({
+        battleId: 'battle-1',
+        sequence: 0,
+      });
+
+      await submitSwap(runtime);
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 1, sequence: 1 }));
+
+      runtime.clearActiveBattleState();
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS * 4);
+
+      expect(runtime.getBattleState()).toBeNull();
+      expect(transport.getBattleStateCalls).toEqual([]);
+    });
+
+    it('8c. a reconnect recovery supersedes the watchdog instead of racing it', async () => {
+      const { runtime, transport } = await joinedWatchdogRuntime({
+        battleId: 'battle-1',
+        sequence: 0,
+      });
+
+      await submitSwap(runtime);
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 1, sequence: 1 }));
+
+      transport.getBattleStateResult = {
+        accepted: true,
+        serverSequence: 1,
+        state: payload({ battleId: 'battle-1', turn: 1, sequence: 1 }),
+      };
+      transport.handlers.onReconnecting?.(new Error('lost'));
+      transport.handlers.onReconnected?.('conn-2');
+      await vi.advanceTimersByTimeAsync(1);
+
+      // Exactly the reconnect's own recovery: the snapshot it delivered supersedes
+      // the expectation, so the armed timer never becomes a second request.
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+      expect(runtime.getState().sync).toBe('synchronized');
+
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS * 4);
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+    });
+
+    it('9. a watchdog armed for one battle cannot recover the battle that replaced it', async () => {
+      const { runtime, transport } = await joinedWatchdogRuntime({
+        battleId: 'battle-1',
+        sequence: 0,
+      });
+
+      await submitSwap(runtime);
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 1, sequence: 1 }));
+
+      // The battle is replaced: the transition's own push establishes battle-2.
+      await runtime.startBattle({
+        petId: 'pet-1',
+        bossId: 'boss-1',
+        cardLoadout: ['c1', 'c2', 'c3'],
+        relicLoadout: [],
+      });
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-2', sequence: 0 }));
+      expect(runtime.getBattleState()!.battleId).toBe('battle-2');
+
+      // The obsolete watchdog is inert: it may not address battle-2, and battle-1
+      // is no longer synchronized.
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS * 4);
+      expect(transport.getBattleStateCalls).toEqual([]);
+      expect(runtime.getState().sync).toBe('synchronized');
+    });
+
+    it('9b. a newer advance re-arms the ONE expectation, so only the newest resolution governs', async () => {
+      const { runtime, transport } = await joinedWatchdogRuntime({
+        battleId: 'battle-1',
+        sequence: 0,
+      });
+
+      await submitSwap(runtime);
+
+      // Two resolutions commit, each publishing its state first: the first
+      // expectation is replaced by the second, not left running alongside it.
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 1, sequence: 1 }));
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 2, sequence: 2 }));
+      expect(runtime.getBattleState()!.sequence).toBe(2);
+
+      transport.getBattleStateBehaviour = holdRecovery();
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS);
+
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+      expect(runtime.getState().lastError).toContain('sequence 2');
+      expect(runtime.getState().lastError).not.toContain('sequence 1');
+    });
+
+    it('excludes a documented no-broadcast acceptance (the §3.1 item 6 idempotent retry)', async () => {
+      const { runtime, transport } = await joinedWatchdogRuntime({
+        battleId: 'battle-1',
+        sequence: 4,
+      });
+
+      // The retry of an already-committed action answers `Accepted: true` and
+      // re-commits and re-broadcasts nothing: no state push, no `sequence`
+      // advance. It is not a desync and must not be reported as one.
+      const acknowledgement = await runtime.requestAction({ kind: 'Swap', fromCell: 6, toCell: 7 });
+      expect(acknowledgement.accepted).toBe(true);
+      expect(transport.swapCalls[0][3]).toBe(4);
+      expect(runtime.getBattleState()!.sequence).toBe(4);
+
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS * 4);
+
+      expect(transport.getBattleStateCalls).toEqual([]);
+      expect(runtime.getState().sync).toBe('synchronized');
+      expect(runtime.getState().lastError).toBeNull();
+    });
+
+    it('arms nothing for a push that advances with no action outstanding (TASK-280 push-only loss)', async () => {
+      const { runtime, transport } = await joinedWatchdogRuntime({
+        battleId: 'battle-1',
+        sequence: 0,
+      });
+      const seen = observeBatches(runtime);
+
+      // The TASK-280 shape with no submitted action: the push advances the copy
+      // and its batch is lost. Nothing the client sent is waiting on a
+      // resolution, so nothing is expected and nothing is recovered — the client
+      // holds the state those resolutions produced.
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 1, sequence: 1 }));
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 2, sequence: 2 }));
+      transport.emit('ReceiveEvents', batch('battle-1', 2, [{ type: 'GemMatched' }]));
+
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS * 4);
+
+      expect(seen.map((envelope) => envelope.serverSequence)).toEqual([2]);
+      expect(transport.getBattleStateCalls).toEqual([]);
+      expect(runtime.getState().sync).toBe('synchronized');
+      expect(runtime.getState().lastError).toBeNull();
+    });
+
+    it('arms nothing for a definitively rejected action', async () => {
+      const { runtime, transport } = await joinedWatchdogRuntime({
+        battleId: 'battle-1',
+        sequence: 0,
+      });
+
+      transport.swapResult = { accepted: false, reason: 'STALE_ACTION' };
+      const acknowledgement = await runtime.requestAction({ kind: 'Swap', fromCell: 0, toCell: 1 });
+      expect(acknowledgement.accepted).toBe(false);
+
+      // A rejected action produces no state push and no batch (§3.1 item 4), so
+      // nothing of its own is outstanding — and it says nothing about a later
+      // resolution's delivery either.
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 1, sequence: 1 }));
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS * 4);
+
+      expect(transport.getBattleStateCalls).toEqual([]);
+      expect(runtime.getState().sync).toBe('synchronized');
+    });
+
+    it('honours the configured duration instead of the 2,500 ms default', async () => {
+      const { runtime, transport } = await joinedWatchdogRuntime(
+        { battleId: 'battle-1', sequence: 0 },
+        { resolutionWatchdogMs: 100 }
+      );
+
+      await submitSwap(runtime);
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 1, sequence: 1 }));
+      transport.getBattleStateBehaviour = holdRecovery();
+
+      await vi.advanceTimersByTimeAsync(99);
+      expect(transport.getBattleStateCalls).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+    });
+
+    it('names a cast request’s own correlation id, which no Swap identity stands in for', async () => {
+      const { runtime, transport } = await joinedWatchdogRuntime({
+        battleId: 'battle-1',
+        sequence: 0,
+      });
+
+      await runtime.requestAction({ kind: 'CardCast', cardId: 'card-inferno' });
+      const clientSequence = transport.cardCastCalls[0][2];
+      expect(clientSequence).toBeTruthy();
+
+      transport.emit('BattleStateUpdated', payload({ battleId: 'battle-1', turn: 1, sequence: 1 }));
+      transport.getBattleStateBehaviour = holdRecovery();
+      await vi.advanceTimersByTimeAsync(WATCHDOG_MS);
+
+      expect(transport.getBattleStateCalls).toEqual(['battle-1']);
+      expect(runtime.getState().lastError).toContain(clientSequence!);
     });
   });
 });

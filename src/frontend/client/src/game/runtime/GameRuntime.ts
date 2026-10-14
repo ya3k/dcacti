@@ -14,6 +14,7 @@ import {
   type GameRuntimeState,
 } from '../../state/GameRuntimeState';
 import {
+  DEFAULT_RESOLUTION_WATCHDOG_MS,
   RUNTIME_ACTION_SWAP,
   RUNTIME_ACTION_CARD_CAST,
   RUNTIME_ACTION_PET_SKILL_CAST,
@@ -24,6 +25,7 @@ import {
   type BattleStateListener,
   type BattleStateMetadata,
   type BattleStateSource,
+  type GameRuntimeOptions,
   type GameRuntimePort,
   type RuntimeActionAcknowledgement,
   type RuntimeActionRequest,
@@ -77,6 +79,23 @@ let clientSequenceCounter = 0;
 const BATTLE_NOT_FOUND_REASON = 'BATTLE_NOT_FOUND';
 
 /**
+ * One armed resolution-batch expectation (`SIGNALR_PROTOCOL.md` §7, TASK-284).
+ *
+ * The three association keys are exactly the ones the approved design fixes:
+ * the battle the advance was delivered for, the identity of the action the
+ * runtime submitted against it, and **the version the delivered state push
+ * carries**. The sequence is read from the delivery and is never derived from
+ * `expectedSequence`, `held.sequence`, or any increment of either
+ * (`GAME_STATE.md` §5.0 — the client does not author `Sequence`).
+ */
+interface ResolutionBatchExpectation {
+  readonly battleId: string;
+  readonly actionIdentity: string;
+  readonly sequence: number;
+  readonly timer: ReturnType<typeof setTimeout>;
+}
+
+/**
  * `GameRuntime` — the client runtime coordination boundary.
  *
  * Responsibility (task §9): coordinate Phaser, SignalR, runtime state and
@@ -110,11 +129,13 @@ const BATTLE_NOT_FOUND_REASON = 'BATTLE_NOT_FOUND';
  *     by the `GetBattleState` snapshot request (`recoverBattleState`, §7.1),
  *     ingested by the same `receiveBattleState` path the §4 push uses. The same
  *     snapshot path serves a **detected desynchronization**, not only a
- *     reconnect: §6 item 3's skipped `serverSequence`, and an action whose
- *     acknowledgement never arrived (`markActionOutcomeUnknown`), request the
- *     same §7.1 snapshot, deduplicated to one request in flight per battle, and
- *     the bounded retry of `MAX_RECOVERY_ATTEMPTS` is what keeps a persistent
- *     failure from spinning,
+ *     reconnect: §6 item 3's skipped `serverSequence`, an action whose
+ *     acknowledgement never arrived (`markActionOutcomeUnknown`), and an accepted
+ *     action whose delivered state push was never followed by its
+ *     `ReceiveEvents` batch (the one bounded resolution-batch expectation below,
+ *     TASK-284) request the same §7.1 snapshot, deduplicated to one request in
+ *     flight per battle, and the bounded retry of `MAX_RECOVERY_ATTEMPTS` is what
+ *     keeps a persistent failure from spinning,
  *   - the client-local post-result cleanup (`clearActiveBattleState`) — dropping
  *     the synchronized copy when the player leaves a completed battle
  *     (`D-202-04 = A`, ARCHITECTURE.md §2.2.3, ADR-022): state only, no
@@ -237,6 +258,59 @@ export class GameRuntime implements GameRuntimePort {
    */
   private withheldGapSequence: number | null = null;
 
+  /**
+   * The identity of the action the runtime submitted against the synchronized
+   * battle and has not yet seen settled by a delivered resolution batch, or
+   * `null` when no such action is outstanding (`TASK-284`).
+   *
+   * It is what lets an armed expectation name **the action it belongs to**
+   * rather than a battle alone. It deliberately survives an accepted
+   * acknowledgement: `SIGNALR_PROTOCOL.md` §3.1 item 1 publishes the state before
+   * the hub call returns, so the resolution's push may legitimately arrive before
+   * the caller is told the action was accepted. It is dropped by a definitive
+   * rejection (a rejected action has no resolution and no batch — §3.1 item 4),
+   * by the admission of the batch that settles it, by a recovery snapshot, and by
+   * every battle boundary.
+   *
+   * It is a request identity, never battle state and never a gameplay value: it
+   * is the value the action was submitted with (`ADR-025` §2's retry-stable
+   * `actionId` for a Swap, the opaque per-request correlation id for a cast).
+   */
+  private pendingResolutionAction: { battleId: string; identity: string } | null = null;
+
+  /**
+   * How long the runtime waits for the `ReceiveEvents` batch of a delivered
+   * authoritative state advance before it treats that batch as lost
+   * (`SIGNALR_PROTOCOL.md` §7, TASK-284). Defaults to
+   * {@link DEFAULT_RESOLUTION_WATCHDOG_MS}.
+   *
+   * The duration is client policy (`GameRuntimeOptions`); the behaviour is the
+   * documented one, and nothing here is a second recovery mechanism.
+   */
+  private readonly resolutionWatchdogMs: number;
+
+  /**
+   * The one armed, bounded resolution-batch expectation
+   * (`SIGNALR_PROTOCOL.md` §7, TASK-284), or `null` when none is armed.
+   *
+   * ```text
+   * armed     a §4 state push that ADVANCES the held sequence, for the battle an
+   *           action was submitted against (`pendingResolutionAction`), and the
+   *           sequence it carries is the expectation's own
+   * cleared   the matching batch is admitted; a recovery snapshot covers it; the
+   *           battle is replaced, cleared, ended or disposed (clearRecoveryState)
+   * expires   publish `sync = 'unsynchronized'` with a technical detail, then
+   *           request the EXISTING §7 item 1 snapshot (recoverBattleState)
+   * ```
+   *
+   * It is at most one, it fires at most once, and every retry after it belongs to
+   * the existing bounded recovery: no second timer family, retry loop, or
+   * recovery path exists. Expiry releases no input lock, publishes no state, and
+   * determines no outcome — the scene converges on the snapshot the request
+   * delivers (`ADR-008`).
+   */
+  private resolutionExpectation: ResolutionBatchExpectation | null = null;
+
   private clearRecoveryRetry(): void {
     if (this.recoveryRetryTimer !== null) {
       clearTimeout(this.recoveryRetryTimer);
@@ -246,22 +320,237 @@ export class GameRuntime implements GameRuntimePort {
 
   /**
    * Drops every piece of recovery bookkeeping: the retry timer, the in-flight
-   * marker and the withheld gap.
+   * marker, the withheld gap, and the missing-batch expectation with the action
+   * identity it named.
    *
    * Every boundary that stops the runtime holding a battle — or that has just
-   * converged one — releases all three together, so no timer, no in-flight
-   * marker and no stale gap can outlive the battle they belong to.
+   * converged one — releases all of them together, so no timer, no in-flight
+   * marker, no stale gap, and no watchdog for a battle the runtime no longer
+   * holds can outlive the battle they belong to.
    */
   private clearRecoveryState(): void {
     this.clearRecoveryRetry();
     this.recoveryInFlightBattleId = null;
     this.withheldGapSequence = null;
+    this.clearResolutionExpectation();
+    this.pendingResolutionAction = null;
+  }
+
+  /**
+   * Cancels the armed expectation and its timer, if any (`TASK-284`).
+   *
+   * Both halves go together: a surviving timer for a cleared or replaced
+   * expectation is exactly the orphaned watchdog this must not leave behind, and
+   * {@link expireResolutionExpectation} refuses to act for an expectation that is
+   * no longer the armed one.
+   */
+  private clearResolutionExpectation(): void {
+    if (this.resolutionExpectation !== null) {
+      clearTimeout(this.resolutionExpectation.timer);
+      this.resolutionExpectation = null;
+    }
+  }
+
+  /**
+   * Arms (or re-arms) the one expectation that the delivered advance at
+   * `sequence` will be followed by its `ReceiveEvents` batch (`TASK-284`,
+   * `SIGNALR_PROTOCOL.md` §7).
+   *
+   * `battleId` and `sequence` are the delivered push's own values and
+   * `actionIdentity` is the submitted action's — none is computed here. Re-arming
+   * cancels the previous expectation, so a newer advance supersedes an older
+   * missing batch: the newer recovery snapshot covers it, and an older
+   * expectation may not open a second concurrent request.
+   */
+  private armResolutionExpectation(
+    battleId: string,
+    sequence: number,
+    actionIdentity: string
+  ): void {
+    this.clearResolutionExpectation();
+
+    const expectation: ResolutionBatchExpectation = {
+      battleId,
+      actionIdentity,
+      sequence,
+      timer: setTimeout(() => {
+        this.expireResolutionExpectation(expectation);
+      }, this.resolutionWatchdogMs),
+    };
+
+    this.resolutionExpectation = expectation;
+  }
+
+  /**
+   * The expectation's one expiry path (`TASK-284`, `SIGNALR_PROTOCOL.md` §7).
+   *
+   * It publishes the desynchronization it observed — the delivered `sequence`
+   * whose batch never arrived, and the action identity it belongs to — through
+   * the existing technical channel (`sync` plus `lastError` and the
+   * `runtime_error` event), then invokes the **existing** `recoverBattleState()`,
+   * whose one-request-in-flight rule and `MAX_RECOVERY_ATTEMPTS` bound it
+   * inherits. It releases no input lock, publishes no battle state, presents
+   * nothing, and fabricates no outcome: the snapshot the request delivers is what
+   * the scene converges on (`ADR-008`).
+   *
+   * ```text
+   * not the armed expectation            → inert: it was replaced or cleared
+   * disposed                             → inert: nothing outlives disposal
+   * no battle, or another battle         → inert: an obsolete watchdog may not
+   *                                        recover the battle that replaced it
+   * the held sequence moved past it      → inert: the newer delivered state already
+   *                                        covers that resolution (§7 precedence)
+   * otherwise                            → publish, then request the snapshot once
+   * ```
+   */
+  private expireResolutionExpectation(expectation: ResolutionBatchExpectation): void {
+    // Identity, not equality: only the expectation still armed may act, so a
+    // replaced or cancelled one can never recover anything.
+    if (this.resolutionExpectation !== expectation) {
+      return;
+    }
+
+    this.resolutionExpectation = null;
+
+    if (this.disposed) {
+      return;
+    }
+
+    const held = this.battleState;
+
+    if (held === null || held.battleId !== expectation.battleId) {
+      return;
+    }
+
+    // The expectation answers one delivered advance. A held copy that has moved
+    // past it is the newer state that already represents that resolution
+    // (`GAME_STATE.md` §5.1 item 3), so the missing batch is superseded and there
+    // is nothing to resynchronize.
+    if (held.sequence !== expectation.sequence) {
+      return;
+    }
+
+    const detail =
+      `No ReceiveEvents batch arrived for the resolution delivered as ` +
+      `${expectation.battleId} sequence ${expectation.sequence} (action ` +
+      `"${expectation.actionIdentity}") within ${this.resolutionWatchdogMs} ms: the ` +
+      'batch is treated as lost, the client is unsynchronized, and the authoritative ' +
+      'snapshot is requested instead of replaying events (SIGNALR_PROTOCOL.md §7).';
+
+    this.updateState({ sync: 'unsynchronized', lastError: detail });
+    this.emit({ type: 'runtime_error', state: this.state, detail });
+
+    // Best-effort and self-contained, exactly as `markActionOutcomeUnknown` and
+    // `withholdBatchAheadOfState` are: `recoverBattleState` reports its own
+    // failure and bounds its own retry, so this never throws into a timer and
+    // never retries on its own (the expectation fires once).
+    void this.recoverBattleState();
+  }
+
+  /**
+   * The one ingestion point's reconciliation of the missing-batch expectation
+   * (`TASK-284`, `SIGNALR_PROTOCOL.md` §7).
+   *
+   * ```text
+   * a recovery snapshot        → supersede: the expectation it answers is over
+   * a different battle         → supersede: no watchdog may outlive its battle
+   * a §4 push that advances    → arm for the DELIVERED sequence, when an action
+   *   the held sequence          was submitted against that battle and is unsettled
+   * a §4 push at the same      → leave as it is: nothing new was delivered
+   *   sequence (a duplicate)
+   * ```
+   *
+   * It stores nothing, derives no sequence, and interprets no gameplay value: it
+   * only decides whether one delivery-timing expectation is armed, superseded, or
+   * left alone.
+   */
+  private reconcileResolutionExpectation(
+    state: RuntimeBattleState,
+    source: BattleStateSource,
+    previousBattle: RuntimeBattleState | null
+  ): void {
+    const battleChanged =
+      previousBattle !== null && previousBattle.battleId !== state.battleId;
+
+    if (source === 'recovery' || battleChanged) {
+      this.clearResolutionExpectation();
+      this.pendingResolutionAction = null;
+      return;
+    }
+
+    if (source !== 'push' || previousBattle === null) {
+      return;
+    }
+
+    const pending = this.pendingResolutionAction;
+
+    if (pending === null || pending.battleId !== state.battleId) {
+      return;
+    }
+
+    if (state.sequence > previousBattle.sequence) {
+      this.armResolutionExpectation(state.battleId, state.sequence, pending.identity);
+    }
+  }
+
+  /**
+   * Settles the expectation when the batch it was waiting for is admitted, and
+   * forgets the submitted action it named (`TASK-284`).
+   *
+   * An admitted batch at or beyond the expectation's own sequence is the
+   * resolution that expectation was about (`GAME_STATE.md` §5.1 item 3), and an
+   * admitted batch at the held sequence is the matching batch of the newest
+   * delivered advance — the resolution the submitted action is waiting on. A
+   * batch below the expectation's sequence is a re-delivery or a superseded
+   * resolution and settles nothing.
+   */
+  private settleResolutionExpectation(envelope: BattleEventsEnvelope, heldSequence: number): void {
+    const expectation = this.resolutionExpectation;
+
+    if (
+      expectation !== null &&
+      expectation.battleId === envelope.battleId &&
+      envelope.serverSequence >= expectation.sequence
+    ) {
+      this.clearResolutionExpectation();
+    }
+
+    const pending = this.pendingResolutionAction;
+
+    if (
+      pending !== null &&
+      pending.battleId === envelope.battleId &&
+      envelope.serverSequence === heldSequence
+    ) {
+      this.pendingResolutionAction = null;
+    }
+  }
+
+  /**
+   * Forgets the submitted action an expectation may be armed with, for one
+   * battle (`TASK-284`).
+   *
+   * A definitive rejection settles the action as a gameplay no-op
+   * (`SIGNALR_PROTOCOL.md` §5 item 2, `MATCH3_RULES.md` §2.1.5): nothing was
+   * committed for it, so no resolution of its own is outstanding and no
+   * expectation may be armed in its name. An already-armed expectation survives,
+   * because it belongs to an advance that *was* delivered and whose batch is
+   * still expected.
+   */
+  private forgetSubmittedAction(battleId: string): void {
+    if (this.pendingResolutionAction?.battleId === battleId) {
+      this.pendingResolutionAction = null;
+    }
   }
 
   constructor(
     private readonly signalR: SignalRService = SignalRService.getInstance(),
-    private readonly api: ApiService = ApiService.getInstance()
-  ) {}
+    private readonly api: ApiService = ApiService.getInstance(),
+    options: GameRuntimeOptions = {}
+  ) {
+    this.resolutionWatchdogMs =
+      options.resolutionWatchdogMs ?? DEFAULT_RESOLUTION_WATCHDOG_MS;
+  }
 
   // ---------------------------------------------------------------------------
   // Lifecycle
@@ -752,6 +1041,13 @@ export class GameRuntime implements GameRuntimePort {
       );
       const actionId = this.actionIdFor(logicalActionKey, 'swap');
 
+      // The action is recorded before it is submitted, not after it is
+      // acknowledged: §3.1 item 1 publishes the state (and from there the
+      // resolution's batch) before the hub call returns, so the delivery an
+      // expectation is armed for can arrive while this call is still in flight
+      // (`TASK-284`, SIGNALR_PROTOCOL.md §7).
+      this.pendingResolutionAction = { battleId: submittedBattleId, identity: actionId };
+
       let acknowledgement: RuntimeActionAcknowledgement;
 
       try {
@@ -791,6 +1087,14 @@ export class GameRuntime implements GameRuntimePort {
       // the same logical action (`ADR-025` §2).
       this.unresolvedActionIds.delete(logicalActionKey);
 
+      // A definitive rejection is a settled no-op, not a resolution: it produces
+      // no state push and no batch (§3.1 item 4), so no expectation may be armed
+      // in its name. An accepted action keeps its identity recorded until the
+      // batch that settles it arrives (TASK-284).
+      if (!acknowledgement.accepted) {
+        this.forgetSubmittedAction(submittedBattleId);
+      }
+
       return acknowledgement;
     }
 
@@ -799,13 +1103,21 @@ export class GameRuntime implements GameRuntimePort {
         throw new Error('CardCast action requires a non-empty cardId.');
       }
       const submittedBattleId = battleState.battleId;
+      // The cast has no `ADR-025` action identity, so the opaque per-request
+      // correlation id it already carries is what an expectation names
+      // (TASK-284, SIGNALR_PROTOCOL.md §2 item 1, §7). It is recorded before the
+      // request is submitted, for the same §3.1 item 1 ordering reason a Swap's
+      // identity is.
+      const clientSequence = this.nextClientSequence('card_cast');
+      this.pendingResolutionAction = { battleId: submittedBattleId, identity: clientSequence };
+
       let acknowledgement: RuntimeActionAcknowledgement;
 
       try {
         acknowledgement = await this.signalR.cardCast(
           submittedBattleId,
           candidate.cardId,
-          this.nextClientSequence('card_cast')
+          clientSequence
         );
       } catch (error) {
         // As for a Swap: an unanswered request is not a refusal, so nothing is
@@ -819,18 +1131,23 @@ export class GameRuntime implements GameRuntimePort {
           `Action response for battle "${submittedBattleId}" arrived after active battle changed to "${this.battleState?.battleId ?? 'none'}".`
         );
       }
+
+      if (!acknowledgement.accepted) {
+        this.forgetSubmittedAction(submittedBattleId);
+      }
+
       return acknowledgement;
     }
 
     // candidate.kind === RUNTIME_ACTION_PET_SKILL_CAST
     const submittedBattleId = battleState.battleId;
+    const clientSequence = this.nextClientSequence('pet_skill_cast');
+    this.pendingResolutionAction = { battleId: submittedBattleId, identity: clientSequence };
+
     let acknowledgement: RuntimeActionAcknowledgement;
 
     try {
-      acknowledgement = await this.signalR.petSkillCast(
-        submittedBattleId,
-        this.nextClientSequence('pet_skill_cast')
-      );
+      acknowledgement = await this.signalR.petSkillCast(submittedBattleId, clientSequence);
     } catch (error) {
       // Same contract as the two actions above (P0.3 §5).
       this.markActionOutcomeUnknown(error);
@@ -842,6 +1159,11 @@ export class GameRuntime implements GameRuntimePort {
         `Action response for battle "${submittedBattleId}" arrived after active battle changed to "${this.battleState?.battleId ?? 'none'}".`
       );
     }
+
+    if (!acknowledgement.accepted) {
+      this.forgetSubmittedAction(submittedBattleId);
+    }
+
     return acknowledgement;
   }
 
@@ -1101,13 +1423,15 @@ export class GameRuntime implements GameRuntimePort {
   /**
    * Requests the authoritative snapshot after a reconnect **or** when the client
    * has detected that it is desynchronized — a withheld batch ahead of the
-   * synchronized state (`forwardBattleEvents`), or an action whose
-   * acknowledgement never arrived (`markActionOutcomeUnknown`) — and
-   * synchronizes the runtime from it (`SIGNALR_PROTOCOL.md` §6 item 3, §7.1–§7.3,
-   * `ADR-008`).
+   * synchronized state (`forwardBattleEvents`), an action whose acknowledgement
+   * never arrived (`markActionOutcomeUnknown`), or an accepted action whose
+   * delivered state push was never followed by its batch
+   * (`expireResolutionExpectation`, TASK-284) — and synchronizes the runtime from
+   * it (`SIGNALR_PROTOCOL.md` §6 item 3, §7.1–§7.3, `ADR-008`).
    *
    * ```text
-   * SignalR reconnect, a withheld batch, or an unanswered action
+   * SignalR reconnect, a withheld batch, an unanswered action, or an expired
+   * resolution-batch expectation
    *         ↓
    * SignalRService.getBattleState(battleId)          §7.1 — the request/response
    *         ↓                                        snapshot; no broadcast
@@ -1118,7 +1442,7 @@ export class GameRuntime implements GameRuntimePort {
    * ingestBattleState()          ← the existing §4 ingestion path
    * ```
    *
-   * **The same snapshot answers both desynchronizations.** `ADR-008` makes the
+   * **The same snapshot answers every desynchronization.** `ADR-008` makes the
    * snapshot the only resynchronization path, so a detected gap uses the request
    * the reconnect already uses rather than adding a mechanism: no second
    * ingestion path, no second state store, and no recovery-specific state model
@@ -1734,7 +2058,11 @@ export class GameRuntime implements GameRuntimePort {
 
     // Equal to, or below, the synchronized sequence: exactly what §6 item 4
     // delivers, or a re-delivery the synchronized state already represents. Both
-    // are forwarded unchanged and neither changes synchronization.
+    // are forwarded unchanged and neither changes synchronization. An admitted
+    // batch is also what settles an armed expectation for this battle
+    // (`TASK-284`, SIGNALR_PROTOCOL.md §7).
+    this.settleResolutionExpectation(envelope, held.sequence);
+
     for (const listener of this.battleListeners) {
       listener(envelope);
     }
@@ -1926,6 +2254,10 @@ export class GameRuntime implements GameRuntimePort {
       return { accepted: false, isStale };
     }
 
+    // The copy this delivery replaces decides one thing only: whether the
+    // delivered sequence is an advance of the same battle (`TASK-284`).
+    const previousBattle = this.battleState;
+
     this.battleState = state;
 
     // The transition's identity is consumed by the battle it named: once that
@@ -1942,6 +2274,12 @@ export class GameRuntime implements GameRuntimePort {
     // §7.1).
     this.clearRecoveryRetry();
     this.withheldGapSequence = null;
+
+    // And the missing-batch expectation is reconciled against what was actually
+    // delivered: a §4 push that advances the held sequence arms it, a recovery
+    // snapshot or a different battle supersedes it (`TASK-284`,
+    // SIGNALR_PROTOCOL.md §7).
+    this.reconcileResolutionExpectation(state, source, previousBattle);
 
     this.updateState({ sync: 'synchronized', lastError: null });
     this.emit({ type: 'battle_state_changed', state: this.state });

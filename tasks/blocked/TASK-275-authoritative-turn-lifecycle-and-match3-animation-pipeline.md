@@ -7,7 +7,7 @@
 ```text
 Task ID:           TASK-275
 Type:              FEATURE
-Status:            IN REVIEW — CONDITIONAL PASS
+Status:            BLOCKED
 Risk:              MEDIUM
 Priority:          HIGH
 Primary Agent:     client
@@ -274,6 +274,17 @@ API and no `this.time.*` timer was introduced.
   per-pass snapshot: STOP per `AGENTS.md` §18 (`SIGNALR_PROTOCOL.md` §8 items
   5–9). — **Not required by anything implemented here.**
 
+### Stop Condition Report — Per-Pass Gravity & Refill Protocol Blocker
+
+* **Status:** `BLOCKED`
+* **Trigger:** `AGENTS.md` §20 (Missing rule / data-contract limitation) and task-specific stop condition.
+* **Operator Decision (Binding):** Operator Decision PO-1 explicitly decides that per-pass animation remains mandatory. Settle-only presentation is NOT accepted as satisfying the requirement.
+* **Blocking Dependency:** The current authoritative protocol (`SIGNALR_PROTOCOL.md` §3.1 item 2, §3.2.12 item 1; `MATCH3_RULES.md` §4.4 item 7; `GAME_STATE.md` §3, §5.1 item 2, §5.3 item 4) does not deliver intermediate per-pass board snapshots, per-pass gravity movements, or per-pass refill/spawn contents across cascade passes. Only the Round's single final board is delivered in `BattleStateUpdated`.
+* **Prohibition on Client Simulation:** Client-side simulation of gravity, refill, or cascade resolution is strictly forbidden (`AGENTS.md` §10).
+* **Unblock Condition:** Work cannot proceed until:
+  1. An approved protocol/game-rule change is authorized and implemented (e.g., protocol research authorized under PO-3 / `TASK-278`, resolving `TASK-254` DR-1 Option B) that delivers the required intermediate per-pass cascade gravity/drop and refill/spawn information;
+  2. Per-pass gravity/drop and refill/spawn animation behavior is implemented and verified against the authoritative per-pass data.
+
 ---
 
 ## Completion Evidence
@@ -338,11 +349,22 @@ first.
 ### Verdict
 
 ```text
-CONDITIONAL PASS
+BLOCKED
 ```
 
-Safe, fully tested and non-fabricating for every phase the contract supports; the
-per-pass Gravity/Refill animation required by `TASK-275` §6.3/§6.4 is **not
-implementable** under the validated contract and is reported as the DR-1 protocol
-decision above. If the operator treats per-pass gravity/refill as a blocking
-acceptance requirement, the verdict is FAIL pending that authorized change.
+Per Operator Decision PO-1, per-pass animation remains mandatory; settle-only presentation is explicitly rejected as completion. The task is BLOCKED pending an approved protocol/rules change providing intermediate per-pass gravity and refill information, followed by full implementation and verification of the required per-pass animation.
+
+---
+
+## Lifecycle Transition — BLOCKED
+
+<!--
+  LIFECYCLE TRANSITION RECORD: IN REVIEW -> BLOCKED
+  Governed by tasks/TASK_LIFECYCLE.md §1, §3, §4 and Operator Decision PO-1.
+-->
+
+* **Transition:** `IN REVIEW` → `BLOCKED`
+* **Authorizing Basis:** Operator Decision PO-1 (per-pass animation remains mandatory; settle-only presentation rejected; task moved to `BLOCKED`).
+* **Repository Policy:** `tasks/TASK_LIFECYCLE.md` §1 (BLOCKED state definition), §3 (BLOCKED file location: `tasks/blocked/`), §4 (file move: `active/` → `blocked/`), and `tasks/README.md` §5 & §10.
+* **Destination Path:** `tasks/blocked/TASK-275-authoritative-turn-lifecycle-and-match3-animation-pipeline.md`
+* **Preservation:** Original acceptance criteria (AC-1 through AC-12) and historical implementation evidence are preserved unaltered. No requirements weakened.
