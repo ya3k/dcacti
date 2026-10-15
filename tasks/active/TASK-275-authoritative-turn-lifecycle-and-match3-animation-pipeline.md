@@ -7,7 +7,7 @@
 ```text
 Task ID:           TASK-275
 Type:              FEATURE
-Status:            BLOCKED
+Status:            IN REVIEW
 Risk:              MEDIUM
 Priority:          HIGH
 Primary Agent:     client
@@ -16,7 +16,7 @@ Workflow:          development/feature.md
 Skills:            client/phaser-battle-presentation, client/client-state-authority,
                    realtime/realtime-protocol-validation, testing/test-scenario-generation,
                    quality/implementation-review
-Dependencies:      TASK-272 (IN REVIEW), TASK-273, TASK-274 (both preserved)
+Dependencies:      TASK-272 (DONE), TASK-273 (DONE), TASK-274 (DONE), TASK-278 (DONE)
 Declared Files:    src/frontend/client/src/game/scenes/BattleScene.ts,
                    src/frontend/client/src/game/scenes/BattleEventPresenter.ts,
                    src/frontend/client/tests/SceneLifecycle.test.ts,
@@ -368,3 +368,19 @@ Per Operator Decision PO-1, per-pass animation remains mandatory; settle-only pr
 * **Repository Policy:** `tasks/TASK_LIFECYCLE.md` §1 (BLOCKED state definition), §3 (BLOCKED file location: `tasks/blocked/`), §4 (file move: `active/` → `blocked/`), and `tasks/README.md` §5 & §10.
 * **Destination Path:** `tasks/blocked/TASK-275-authoritative-turn-lifecycle-and-match3-animation-pipeline.md`
 * **Preservation:** Original acceptance criteria (AC-1 through AC-12) and historical implementation evidence are preserved unaltered. No requirements weakened.
+
+---
+
+## Lifecycle Transition — UNBLOCKED TO IN REVIEW
+
+<!--
+  LIFECYCLE TRANSITION RECORD: BLOCKED -> IN REVIEW
+  Governed by tasks/TASK_LIFECYCLE.md §1, §3, §4 and Operator Authorization (Backlog Reconciliation Execution).
+-->
+
+* **Transition:** `BLOCKED` → `IN REVIEW`
+* **Authorizing Basis:** Operator Authorization — Backlog Reconciliation Execution (2026-10-15).
+* **Blocker Resolution:** The prerequisite protocol and implementation blocker (Operator Decision PO-1: mandatory per-pass animation data) has been resolved downstream by TASK-278 via adoption of ADR-027, introducing the `CascadeStepResolved` event carrying authoritative drop moves and spawned gems, and implementing per-pass Fall and Refill animation in `BattleEventPresenter.ts` and `BattleScene.ts`.
+* **Repository Policy:** `tasks/TASK_LIFECYCLE.md` §1 (IN REVIEW state definition), §3 (active/ location), §4 (file move: `blocked/` → `active/`).
+* **Destination Path:** `tasks/active/TASK-275-authoritative-turn-lifecycle-and-match3-animation-pipeline.md`
+* **Scope & Limitation Preservation:** All original acceptance criteria (AC-1 through AC-12), remaining limitations, and test verifications are preserved. The task is returned to active WIP with `Status: IN REVIEW` for final acceptance verification; it is NOT marked DONE in this reconciliation slice.
