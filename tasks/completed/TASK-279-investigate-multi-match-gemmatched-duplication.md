@@ -7,7 +7,7 @@
 ```text
 Task ID:           TASK-279
 Type:              BUG / INVESTIGATION & FIX
-Status:            RESOLVED (Implementation & Verification Complete)
+Status:            DONE
 Risk:              LOW
 Priority:          MEDIUM
 Mode:              Defect Isolation, Minimal Fix & Verification
@@ -16,7 +16,8 @@ Production code:   src/backend/GameServer.Domain/Match3/BattleEventBuilder.cs
 Test code:         tests/backend/GameServer.Domain.Tests/BattleEventEmissionTests.cs
 Contract Refs:     docs/02-technical/GAME_EVENTS.md §1.1, §1.3, §2; docs/01-game-design/GAME_RULES.md §16
 Dependencies:      None (Independent of protocol authorization gate TASK-278)
-Declared Files:    tasks/backlog/TASK-279-investigate-multi-match-gemmatched-duplication.md
+Declared Files:    src/backend/GameServer.Domain/Match3/BattleEventBuilder.cs,
+                   tests/backend/GameServer.Domain.Tests/BattleEventEmissionTests.cs
 ```
 
 ---
@@ -200,6 +201,24 @@ Running the full backend test suite (`dotnet test src/backend/GameServer.sln`) r
 10. `BalanceBaselineMatrixTests.TASK194_AllSeventyFiveRuns_CompleteWithCompleteMetrics` (expected 0, actual 64)
 
 These 10 failures stem from earlier balance simulation tuning (TASK-194 / TASK-195) and have zero dependency on or interaction with `BattleEventBuilder.cs`.
+
+---
+
+## Completion Evidence
+
+### Historical Implementation Commit
+- **Commit:** `e33254e8057159f50012746ebf17a7d01acd6d13`
+- **Subject:** `feat: implement GameRuntime and battle protocol recovery architecture`
+- **Lifecycle Ratification:** Historical composite commit exception under `tasks/TASK_LIFECYCLE.md` §6.4. Git history preserved without rewriting.
+- **Implemented Files:**
+  - `src/backend/GameServer.Domain/Match3/BattleEventBuilder.cs`
+  - `tests/backend/GameServer.Domain.Tests/BattleEventEmissionTests.cs`
+- **Validation Evidence:**
+  - `dotnet test tests/backend/GameServer.Domain.Tests` — PASS (1629 passed, 0 failed)
+  - Regression tests: `SeveralMatchesInOnePass_ShouldEmitEachMatchedCellExactlyOnce`, `SeveralMatchesInOnePass_ShouldFollowTheDocumentedCycleOrder`, `SeveralMatchesInOnePass_ShouldEmitTheActivationSubStepOnceAfterTheMatchedSubStep`.
+- **Phase B Filing:**
+  - Filed to `tasks/completed/TASK-279-investigate-multi-match-gemmatched-duplication.md` under Operator Authorization (Backlog Reconciliation Execution).
+  - Status finalized as `DONE`.
 
 ---
 
