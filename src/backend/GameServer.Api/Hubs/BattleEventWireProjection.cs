@@ -263,7 +263,15 @@ public sealed record BattleEventWireDto(
     [property: JsonPropertyName("fromCell")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? FromCell = null,
     [property: JsonPropertyName("toCell")]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ToCell = null)
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? ToCell = null,
+    [property: JsonPropertyName("passDepth")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? PassDepth = null,
+    [property: JsonPropertyName("dropMoves")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<DropMoveWireDto>? DropMoves = null,
+    [property: JsonPropertyName("spawnedGems")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<SpawnedGemWireDto>? SpawnedGems = null)
 {
     /// <summary>
     /// The wire item for one <c>SwapStarted</c>
@@ -628,6 +636,43 @@ public sealed record BattleEventWireDto(
             // carrying each event's own value set, so the shared slot carries this
             // event's projected value.
             Source: source);
+
+    /// <summary>
+    /// The wire item for one <c>CascadeStepResolved</c>
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.28) — one detection pass's completed
+    /// Gravity and Spawn transition: its own 1-based depth, the survivors it
+    /// moved, and the Gems it spawned.
+    ///
+    /// <b>No board member and no actor member.</b> The board travels in the state
+    /// push and the recovery snapshot alone (§3.1 item 3, §3.2.12 item 1), and the
+    /// acting side is the sibling <c>SwapStarted</c>'s member (§3.2.26), which the
+    /// client already carries forward — a second spelling of either would be a
+    /// second source of truth for a fact the contract already delivers.
+    /// </summary>
+    /// <param name="passDepth">
+    /// The pass's own 1-based detection depth (§3.2.28 item 2): identical in value
+    /// to <c>MatchCreated.cascadeDepth</c> on the same pass. It is never written
+    /// under the name <c>cascadeDepth</c>, which two existing members already
+    /// carry with two different documented values (§3.2.7 item 2).
+    /// </param>
+    /// <param name="dropMoves">
+    /// The survivors the pass's Gravity relocated, or <c>null</c> to omit the
+    /// member entirely when the pass moved none. An empty array is never written:
+    /// it is normalized to the omission the contract requires (§3.2.5 item 1).
+    /// </param>
+    /// <param name="spawnedGems">
+    /// The Gems the pass's Spawn placed, or <c>null</c> to omit the member entirely
+    /// when the pass spawned none (§3.2.5 item 1, §3.2.28 item 2).
+    /// </param>
+    public static BattleEventWireDto CascadeStepResolved(
+        int passDepth,
+        IReadOnlyList<DropMoveWireDto>? dropMoves,
+        IReadOnlyList<SpawnedGemWireDto>? spawnedGems) =>
+        new(
+            Type: "CascadeStepResolved",
+            PassDepth: passDepth,
+            DropMoves: dropMoves is { Count: > 0 } ? dropMoves : null,
+            SpawnedGems: spawnedGems is { Count: > 0 } ? spawnedGems : null);
 }
 
 /// <summary>
@@ -679,6 +724,34 @@ public sealed record SpecialGemWireDto(
     [property: JsonPropertyName("type")] string Type,
     [property: JsonPropertyName("orientation")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Orientation = null);
+
+/// <summary>
+/// One <c>dropMoves</c> entry (<c>SIGNALR_PROTOCOL.md</c> §3.2.28).
+///
+/// Both members are always present: an entry exists only because a survivor moved,
+/// so neither cell is ever omitted, and both are §1.0 indices in the same column.
+/// It carries no Gem identity, order index, or distance — the cells are the whole
+/// fact, and the movement's direction is implied by which one is the source.
+/// </summary>
+/// <param name="FromCell">The §1.0 cell the survivor occupied before Gravity.</param>
+/// <param name="ToCell">The §1.0 cell it occupies after Gravity; never equal to <see cref="FromCell"/>.</param>
+public sealed record DropMoveWireDto(
+    [property: JsonPropertyName("fromCell")] int FromCell,
+    [property: JsonPropertyName("toCell")] int ToCell);
+
+/// <summary>
+/// One <c>spawnedGems</c> entry (<c>SIGNALR_PROTOCOL.md</c> §3.2.28).
+///
+/// Both members are always present. It carries <b>no</b> <c>specialGem</c>: Spawn
+/// never creates one (<c>MATCH3_RULES.md</c> §4.5 item 7), so an optional member
+/// that can never be present would be dead schema inviting a consumer to predict a
+/// value the server never draws (§3.2.28 item 4).
+/// </summary>
+/// <param name="CellIndex">The destination §1.0 cell the Gem was placed in.</param>
+/// <param name="GemType">The drawn Gem type, as a §3.2.4 contract name.</param>
+public sealed record SpawnedGemWireDto(
+    [property: JsonPropertyName("cellIndex")] int CellIndex,
+    [property: JsonPropertyName("gemType")] string GemType);
 
 /// <summary>
 /// Projects Domain <c>BattleEvent</c> values onto the <c>ReceiveEvents.events[]</c>
@@ -800,10 +873,11 @@ public static class BattleEventWireProjection
             BattleEventType.PetSkillCast => ProjectPetSkillCast(battleEvent.PetSkillCast),
             BattleEventType.RelicTriggered => ProjectRelicTriggered(battleEvent.RelicTriggered),
             BattleEventType.PowerChanged => ProjectPowerChanged(battleEvent.PowerChanged),
+            BattleEventType.CascadeStepResolved => ProjectCascadeStepResolved(battleEvent.CascadeStep),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(battleEvent),
                 battleEvent.Type,
-                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.24, §3.2.26–§3.2.27, §3.3)."),
+                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.24, §3.2.26–§3.2.28, §3.3)."),
         };
 
     /// <summary>
@@ -1024,6 +1098,54 @@ public static class BattleEventWireProjection
             // Gem is reported for the cell that held it. Absent for an ordinary Gem
             // (item 4), which omits the member rather than writing null.
             specialGem: ProjectSpecialGem(gem.ConsumedSpecialGem));
+
+    /// <summary>
+    /// Projects the <c>CascadeStepResolved</c> payload (<c>§3.2.28</c>) — the
+    /// pass's own depth, the survivors its Gravity moved, and the Gems its Spawn
+    /// placed.
+    ///
+    /// <b>It reads the step's own results and re-derives nothing.</b> The two
+    /// arrays are mapped in the order the steps produced them — Gravity's read
+    /// order and Spawn's fill order (<c>MATCH3_RULES.md</c> §4.4 item 1,
+    /// §4.5 item 2) — because that order is part of the contract
+    /// (<c>§3.2.28</c> item 3) and the projection sorts nothing
+    /// (<c>§3.2.1</c> item 3). Gem types are projected to their §3.2.4 contract
+    /// names by the same helper the Match and Gem payloads use, so the value a
+    /// consumer reads for a spawned Gem is the same vocabulary every other
+    /// <c>gemType</c> member uses.
+    /// </summary>
+    private static BattleEventWireDto ProjectCascadeStepResolved(CascadeStepResolvedEvent step)
+    {
+        var dropMoves = new DropMoveWireDto[step.DropMoves.Count];
+
+        for (var i = 0; i < step.DropMoves.Count; i++)
+        {
+            // §3.2.28 item 3: the two §1.0 cells, as Gravity reported them. The
+            // projection checks no adjacency, column, or direction — the fact is
+            // the step's, and a consumer is never asked to validate gameplay.
+            dropMoves[i] = new DropMoveWireDto(
+                step.DropMoves[i].FromCell,
+                step.DropMoves[i].ToCell);
+        }
+
+        var spawnedGems = new SpawnedGemWireDto[step.SpawnedGems.Count];
+
+        for (var i = 0; i < step.SpawnedGems.Count; i++)
+        {
+            // §3.2.28 item 2: the destination cell and the drawn type, and nothing
+            // else — a spawned Gem never carries a Special Gem (§4.5 item 7).
+            spawnedGems[i] = new SpawnedGemWireDto(
+                step.SpawnedGems[i].CellIndex,
+                GemTypes.ToContractName(step.SpawnedGems[i].GemType));
+        }
+
+        // §3.2.5 item 1: an empty array is omitted rather than written as `[]`, so
+        // the factory normalizes both cases.
+        return BattleEventWireDto.CascadeStepResolved(
+            passDepth: step.PassDepth,
+            dropMoves: dropMoves,
+            spawnedGems: spawnedGems);
+    }
 
     /// <summary>
     /// Projects the created Special Gems of a Match onto §3.2.11 entries.

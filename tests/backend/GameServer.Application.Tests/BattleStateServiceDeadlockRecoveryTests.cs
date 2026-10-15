@@ -594,6 +594,9 @@ public class BattleStateServiceDeadlockRecoveryTests
             BattleEventType.GemMatched,
             BattleEventType.GemMatched,
             BattleEventType.ComboChanged,
+            // §1.1 item 8 / §3.2.28: the Player's pass is closed by its own
+            // completed Gravity + Spawn report (ADR-027).
+            BattleEventType.CascadeStepResolved,
             BattleEventType.PassiveCharged,
             BattleEventType.PowerChanged,
             BattleEventType.SwapStarted,
@@ -603,6 +606,7 @@ public class BattleStateServiceDeadlockRecoveryTests
             BattleEventType.GemMatched,
             BattleEventType.GemMatched,
             BattleEventType.ComboChanged,
+            BattleEventType.CascadeStepResolved,
             BattleEventType.PassiveCharged,
         ];
 
@@ -629,7 +633,10 @@ public class BattleStateServiceDeadlockRecoveryTests
             var isBoardEvt = evt.Type is BattleEventType.MatchCreated
                 or BattleEventType.GemMatched
                 or BattleEventType.CascadeCreated
-                or BattleEventType.ComboChanged;
+                or BattleEventType.ComboChanged
+                // §1.1 item 8: the pass's own closing report is a board-cycle event, so
+                // it belongs to its pass's run rather than splitting it.
+                or BattleEventType.CascadeStepResolved;
 
             if (isBoardEvt)
             {

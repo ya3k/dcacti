@@ -1,6 +1,6 @@
 # Game State
 
-**Version:** 2.28 (§5.0 **added** per TASK-273 — the client-side use of `Sequence` on delivery: the batch's `serverSequence` against the `sequence` of the state the client holds, per relation (equal / below / above / no state held), and what the client must not do with it. It restates no write-back rule (§5.1's) and adds no state member. Prior 2.27 (§5.1 gains item 8 and a diagram line per ADR-026 / TASK-267: `MATCH3_RULES.md` §1.6's playable-board invariant is evaluated on the finished board of a non-terminal Round, after the step 19a pass and before the single write-back, so a regenerated board and the `RngState` it consumed are committed together under the unchanged compare-and-set, with no second write and with nothing written when regeneration cannot satisfy §1.5's bound. Prior 2.26 (§2.1, §2.4.3, §5 updated per ADR-026 / TASK-259: Player and Boss share the single 8×8 BoardState (D1, D4); BossState.SkillCharge charges exclusively from Boss POWER gem matches during the Boss turn (D2); Player POWER matches do not charge the Boss; atomic round persistence commits complete round via single Redis CAS write-back with Sequence incrementing once per round. Prior 2.25: §2.3's delivery split and §2.4's client-visible boundary
+**Version:** 2.29 (§3 gains item 5, and §5.1 item 2 and §5.3 item 4 record the same boundary, per the Operator Decision approving TASK-278 A-1(i) and A-4: a detection pass's completed Gravity and Spawn are **reported** by the `CascadeStepResolved` event (`GAME_EVENTS.md` §2, `SIGNALR_PROTOCOL.md` §3.2.28) inside the round's existing single `ReceiveEvents` batch, while every intermediate board configuration of that pass remains **Transient Resolution State** — never written to Redis mid-resolution, never in a snapshot, and never delivered as a board. **No state member, Redis key, snapshot field, `Sequence` rule, CAS rule, or gameplay rule is added or changed**: the event reports the transition, and the board stays delivered only by `BattleStateUpdated` / `GetBattleState`. Prior 2.28 (§5.0 **added** per TASK-273 — the client-side use of `Sequence` on delivery: the batch's `serverSequence` against the `sequence` of the state the client holds, per relation (equal / below / above / no state held), and what the client must not do with it. It restates no write-back rule (§5.1's) and adds no state member. Prior 2.27 (§5.1 gains item 8 and a diagram line per ADR-026 / TASK-267: `MATCH3_RULES.md` §1.6's playable-board invariant is evaluated on the finished board of a non-terminal Round, after the step 19a pass and before the single write-back, so a regenerated board and the `RngState` it consumed are committed together under the unchanged compare-and-set, with no second write and with nothing written when regeneration cannot satisfy §1.5's bound. Prior 2.26 (§2.1, §2.4.3, §5 updated per ADR-026 / TASK-259: Player and Boss share the single 8×8 BoardState (D1, D4); BossState.SkillCharge charges exclusively from Boss POWER gem matches during the Boss turn (D2); Player POWER matches do not charge the Boss; atomic round persistence commits complete round via single Redis CAS write-back with Sequence incrementing once per round. Prior 2.25: §2.3's delivery split and §2.4's client-visible boundary
 recorded for the amended projection — applying the TASK-208 Product Owner
 decisions D-208-01, D-208-02 and D-208-03. The active Pet's `HP`, `MaxHP` and
 `Power` are delivered as `petState.hp`/`maxHp`/`power`, and the Boss's canonical
@@ -2703,6 +2703,19 @@ pass-local board bookkeeping (never a field of BattleState)
    particular, nothing in it is a Special Gem field: a Special Gem exists in
    authoritative state only once it is committed into its cell entry (§2.1.8
    item 1), and a discarded collision claim exists in neither (§2.1.8 item 5).
+5. **The pass transition is reported; the board is not.** One detection pass's
+   completed Gravity and Spawn are reported by the `CascadeStepResolved` event
+   (`GAME_EVENTS.md` §2, `SIGNALR_PROTOCOL.md` §3.2.28), delivered inside the
+   round's existing single `ReceiveEvents` batch. That report changes the
+   status of nothing in this section: the intermediate board configurations of
+   the pass — the board mid-pass, the cells emptied before Spawn refills them,
+   and the board that follows before the next pass — remain **Transient
+   Resolution State**. They are never written to Redis mid-resolution
+   (`REDIS_STATE.md` §4, §5.1 item 2), never in a snapshot (§5.3 item 3), and
+   never delivered as a board. The report carries that pass's movement and spawn
+   deltas and no board, and the board is still delivered only by
+   `BattleStateUpdated` / `GetBattleState` (`SIGNALR_PROTOCOL.md` §3.1 item 3,
+   §4, §7).
 
 ---
 
@@ -2842,7 +2855,13 @@ publish (SIGNALR_PROTOCOL.md §3, §4)
    §2.1.5 item 4, §2.1.6 item 4): they exist only inside
    `BattleResolutionService` (`ARCHITECTURE.md` §4) and are never written to
    the store or published. A reader therefore never observes a Turn in
-   progress, and never observes a board that is not full (§2.1.1).
+   progress, and never observes a board that is not full (§2.1.1). **Reporting
+   is neither writing nor publishing:** the pass's completed transition may be
+   *reported* by the `CascadeStepResolved` event (§3 item 5, `GAME_EVENTS.md`
+   §2, `SIGNALR_PROTOCOL.md` §3.2.28), which travels inside the round's single
+   batch, but that event adds no store write, no intermediate `BattleState`, no
+   mid-round push, and no board, and the round is still committed by exactly one
+   compare-and-set write-back carrying the finished board.
 3. **`Sequence` describes the finished resolution.** It is written after the
    board is stable, so the board, `RngState`, Combo, and Match counts that
    accompany it are all the post-resolution values. A reader that sees
@@ -3448,4 +3467,10 @@ Removed         the source's own removal, or the battle's end: the collection
 4. **A snapshot carries the board and not the cascade history.** The client
    re-renders from the snapshot and does not replay events (ADR-008), which is
    consistent with the resolution contract because the resolution contract
-   exports its result as state, not as a replayable log.
+   exports its result as state, not as a replayable log. The per-pass transition
+   report (`CascadeStepResolved`, `GAME_EVENTS.md` §2, `SIGNALR_PROTOCOL.md`
+   §3.2.28) is an event of the resolution and is **not** snapshot content: it
+   adds no field to the snapshot, and a snapshot taken after the round carries
+   the finished board and no pass-by-pass history. A client that resynchronizes
+   from the snapshot renders the settled board, and the report never becomes a
+   second authoritative statement of board state (§3 item 5).

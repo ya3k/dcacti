@@ -963,8 +963,10 @@ public class ResourceGenerationTests
         // This stage introduces no event: GAME_EVENTS.md §3 item 7 gives PowerChanged
         // to its own owning task, and SIGNALR_PROTOCOL.md §3.2.2 item 2 closes the
         // wire event set. The events of a committed Swap are still exactly the
-        // Match-3 ones the resolution produced, plus the committed board action's own
-        // boundary pair, which the executor emits for the action itself
+        // Match-3 ones the resolution produced — including the pass's own completed
+        // Gravity + Spawn transition report (GAME_EVENTS.md §1.1 item 8,
+        // SIGNALR_PROTOCOL.md §3.2.28, ADR-027) — plus the committed board action's
+        // own boundary pair, which the executor emits for the action itself
         // (GAME_EVENTS.md §1, §2; SIGNALR_PROTOCOL.md §3.2.26–§3.2.27) — not for this
         // stage, which adds none.
         var result = SwapExecutor.Execute(
@@ -979,7 +981,8 @@ public class ResourceGenerationTests
                 or BattleEventType.MatchCreated
                 or BattleEventType.CascadeCreated
                 or BattleEventType.ComboChanged
-                or BattleEventType.GemMatched,
+                or BattleEventType.GemMatched
+                or BattleEventType.CascadeStepResolved,
             $"Unexpected event type {e.Type}: this stage adds no event."));
     }
 

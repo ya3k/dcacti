@@ -1,6 +1,6 @@
 # SignalR Protocol
 
-**Version:** 2.24 (§7 **amended** per TASK-284: an accepted action whose
+**Version:** 2.25 (§3.2.2 **extended** and **§3.2.28 added** per the Operator Decision approving TASK-278 A-1(i) and A-4 ("Approve the addition of `CascadeStepResolved` to the existing `ReceiveEvents` batch protocol"): `CascadeStepResolved` becomes the nineteenth member of the closed discriminator set and is projected by its own subsection — one item per recorded detection pass, emitted as that pass's **last** item inside the round's existing single `ReceiveEvents` batch and only after that pass's Gravity and Spawn have completed, carrying `passDepth` (always present; the pass's own 1-based depth, `1` for the pass on the committed Swap's board), `dropMoves` (omitted when empty; each entry `fromCell`/`toCell`, origin and destination in the same column) and `spawnedGems` (omitted when empty; each entry `cellIndex` and `gemType`) — with no `board`, no `actor`, no `clearedCells`, and no `specialGem` inside a `spawnedGems` entry, and with none emitted for the terminating pass that detects no Match. The prohibitions §3.1 items 2–3, §3.2.12 item 1 and §8 items 5 and 7 state are **reconciled narrowly and not weakened**: there is still no per-pass board, no per-pass message, and no partial batch, and what is added is one event *report* of a pass transition inside the same single batch. §3.2.2 also gains the tolerant-reader rule for an item whose `type` is not in the table — it is ignored, is not a desync, is not a second event, and is not evidence about the resolution — and **no version negotiation exists or is introduced**. **No hub method, argument, subscription, delivery path, state-push member, or gameplay rule is added or removed.** Prior 2.24: (§7 **amended** per TASK-284: an accepted action whose
 authoritative state push was delivered but whose `ReceiveEvents` batch never
 arrived is recorded as a third desynchronization moment — §6 item 3's comparison
 keys on a batch that *arrives* ahead of the held `sequence`, and here no batch
@@ -446,13 +446,23 @@ server                                        client
 2. **No per-step delivery.** The intermediate states of a resolution
    (`MATCH3_RULES.md` §4.1) are Transient Resolution State
    (`GAME_STATE.md` §3) and are never sent. There is no "gravity" message, no
-   per-pass message, and no partial batch.
+   per-pass message, and no partial batch. **The one addition is an event
+   *report*, not a delivery:** `CascadeStepResolved` (§3.2.28) reports a
+   detection pass's completed Gravity and Spawn as one item **inside this same
+   single batch** — it is not a per-pass message, it carries no intermediate
+   board, and it never becomes a second `ReceiveEvents` call for the round or a
+   partial batch. The pass it reports has already completed when it is emitted,
+   so no intermediate board state is delivered, then or later.
 3. **No gameplay message type is introduced.** The board and the resolution's
    resulting values travel in the state push of §4 (and §7 on resync); the
    resolution's events travel in §3. Special Gem state is part of the board
    itself (`GAME_STATE.md` §2.1) and therefore travels in that same §4 push
    with no additional member — no special-gem-specific message, method, or
-   subscription exists (§4.1 item 5, §8 items 5–6).
+   subscription exists (§4.1 item 5, §8 items 5–6). Admitting
+   `CascadeStepResolved` (§3.2.28) introduces no message type either: it is one
+   more item of the `events[]` array §3 already delivers, it adds no hub
+   method, argument, subscription, or state-push member (§3.2.2 items 5–6), and
+   the board still travels only in the §4 push and the §7 snapshot.
 4. **Rejected actions deliver nothing.** A rejected Swap produces no batch and
    no `serverSequence` change; its result is the direct return of §5 only
    (`MATCH3_RULES.md` §2.1.5 item 6, `GAME_EVENTS.md` §1.2).
@@ -522,7 +532,7 @@ discriminator member and that event's own payload members at the same level.
 
 | Member | Type | Value |
 | --- | --- | --- |
-| `type` | string | one of `SwapStarted`, `SwapResolved`, `MatchCreated`, `CascadeCreated`, `ComboChanged`, `GemMatched`, `DamageCalculated`, `DamageDealt`, `DamageTaken`, `PassiveCharged`, `PassiveTriggered`, `BossSkillCast`, `BattleWon`, `BattleLost`, `CardCast`, `PetSkillCast`, `RelicTriggered`, `PowerChanged` |
+| `type` | string | one of `SwapStarted`, `SwapResolved`, `MatchCreated`, `CascadeCreated`, `ComboChanged`, `GemMatched`, `CascadeStepResolved`, `DamageCalculated`, `DamageDealt`, `DamageTaken`, `PassiveCharged`, `PassiveTriggered`, `BossSkillCast`, `BattleWon`, `BattleLost`, `CardCast`, `PetSkillCast`, `RelicTriggered`, `PowerChanged` |
 
 1. **The property name is `type`.** The string spelling matches the event name
    `GAME_RULES.md` §16 lists and `GAME_EVENTS.md` §2 defines.
@@ -532,7 +542,7 @@ discriminator member and that event's own payload members at the same level.
    `GAME_EVENTS.md` §2 does not define** — not against events it does define:
    a name `GAME_RULES.md` §16 lists and `GAME_EVENTS.md` §2 gives a payload for
    is a valid `type` once this section tabulates its members (§3.2.20, §3.2.21,
-   §3.2.23, §3.2.24, §3.2.26, §3.2.27).
+   §3.2.23, §3.2.24, §3.2.26, §3.2.27, §3.2.28).
    No `MatchResolved`, no `SpecialGemActivated`, no `TurnChanged`, no
    `BoardChanged`, and no other name is a valid `type`: those are either state
    (`SIGNALR_PROTOCOL.md` §3.1 item 3, §8 items 5–7) or undefined
@@ -553,7 +563,9 @@ discriminator member and that event's own payload members at the same level.
    contract; renumbering the enum must not change the wire.
 4. **No numeric alias and no second discriminator exist.** `type` is the only
    member that identifies the event, and it is always present. An item without
-   a recognized `type` is malformed, not a fifth event.
+   a recognized `type` is malformed, not a fifth event — and it is **ignored**
+   by a consumer, which is item 6's rule: ignoring it makes it no desync, no
+   second event, and no evidence about the resolution.
 5. **Admitting a §2 event adds no method and no state-push member.** The
    gameplay methods remain exactly the three of §2 (§8 item 7), and the §4/§7
    delivery paths are unchanged. `RelicTriggered` and `PowerChanged` are
@@ -567,6 +579,19 @@ discriminator member and that event's own payload members at the same level.
    (§3.2.23, §3.2.24) — so this contract fixes their shape for whichever stage
    emits them (`GAME_EVENTS.md` §3 item 7's sequencing position), and no member
    is added to either by that stage.
+6. **An unrecognized `type` is ignored, and that is not a desync.** A consumer
+   that receives an item whose `type` is not in the table above **ignores it**:
+   the item is not a desync, not a second event, and not evidence about the
+   resolution. The set above is **additive** — a later revision may add one
+   `GAME_RULES.md` §16 event to it (this revision adds `CascadeStepResolved`,
+   §3.2.28) — and this tolerant-reader rule is what makes such an addition
+   compatible for a consumer built before it. It is the only mechanism:
+   **no version negotiation exists** — there is no version handshake,
+   capability member, or negotiation channel in this protocol, and none is
+   introduced by an added discriminator. Ignoring an item changes nothing else:
+   the recognized items keep their documented order, shape, and meaning
+   (`§3.2.1` item 3, `GAME_EVENTS.md` §1), no gameplay state is affected, and
+   no input is held (`§3.1` items 4–5).
 
 ### 3.2.3 Property Casing
 
@@ -878,17 +903,26 @@ specialGem
 
 1. **The events tabulated above carry exactly the members this section gives
    them** — the twelve of §3.2.6–§3.2.19 plus the four of §3.2.20, §3.2.21,
-   §3.2.23, and §3.2.24, plus the two of §3.2.26 and §3.2.27 (§3.2.22 owns their
+   §3.2.23, and §3.2.24, plus the two of §3.2.26 and §3.2.27, plus the one of
+   §3.2.28 (§3.2.22 owns their
    order and §3.2.25 owns the `effect summary` convention; neither is an event).
    No
    event carries a `battleId`, a `serverSequence`, a `turn`, a board, a `combo`,
    a `matchCount`, a timestamp, a GUID, or a generated id: the first two belong
    to the envelope (§3), and the rest are state (§3.1 item 3) or nonexistent
-   (`AGENTS.md` §11). (The prior revision's first sentence read "The seven events
+   (`AGENTS.md` §11). **The board prohibition holds for the added event too.**
+   `CascadeStepResolved` (§3.2.28) carries the reported pass's movement and
+   spawn *deltas* — `dropMoves` and `spawnedGems` — and it carries no board:
+   there is no `board` member on it, and no per-pass board is sent, then or
+   later. The intermediate board configurations of a pass remain Transient
+   Resolution State (`GAME_STATE.md` §3), and the only board on this protocol
+   is the one the state push and the snapshot carry (§3.1 item 3, §4, §7).
+   (The prior revision's first sentence read "The seven events
    carry exactly the members tabulated above". That count was already wrong
    before this revision — the discriminator table it referred to listed 12
    names — and it is now doubly wrong, because this revision adds four more.
-   It is replaced by the enumeration above, which accounts for all 16. §3.2.4
+   It is replaced by the enumeration above, which accounted for all 16 at that
+   revision; §3.2.28 adds the nineteenth. §3.2.4
    item 3's unrelated "**in any of the four events**" phrase, which described
    the scope of the enum-representation rule rather than the discriminator set,
    is widened to "in any event" in the same revision.)
@@ -1559,6 +1593,125 @@ different answers to the same question.
    `SwapStarted`'s member. A client that needs the actor reads the
    `SwapStarted` the item follows (`§3.2.26` item 6) rather than being sent a
    second copy of it that could disagree.
+
+### 3.2.28 `CascadeStepResolved`
+
+```json
+{
+    "type": "CascadeStepResolved",
+    "passDepth": 1,
+    "dropMoves": [ { "fromCell": 2, "toCell": 18 } ],
+    "spawnedGems": [ { "cellIndex": 2, "gemType": "ATK" } ]
+}
+```
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | always | `"CascadeStepResolved"` |
+| `passDepth` | int | always | the reported detection pass's own 1-based depth (`1` = the pass on the committed Swap's board, which is not a Cascade) |
+| `dropMoves` | array of object | when non-empty | the surviving Gems that changed cell during that pass's Gravity |
+| `spawnedGems` | array of object | when non-empty | the Gems that pass's Spawn placed |
+
+Each `dropMoves` entry:
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `fromCell` | int | always | the cell the Gem came from (origin, §1.0 index `0..63`) |
+| `toCell` | int | always | the cell the Gem moved to (destination, §1.0 index `0..63`) |
+
+Each `spawnedGems` entry:
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `cellIndex` | int | always | the cell the Gem was placed in (destination, §1.0 index `0..63`) |
+| `gemType` | string | always | the placed Gem's type, one of the four of §3.2.4 |
+
+1. **The payload's meaning is `GAME_EVENTS.md` §2's and is not restated here.**
+   This subsection fixes the wire shape only: which members an item carries, how
+   each is spelled, and what may not be carried (§3.2.1, `GAME_EVENTS.md` §3
+   item 1). It was added by the Operator Decision approving TASK-278 A-1(i) and
+   A-4 ("Approve the addition of `CascadeStepResolved` to the existing
+   `ReceiveEvents` batch protocol"), and it is a report of a detection pass's
+   gravity+spawn transition.
+2. **`passDepth` is always present and is an integer.** It is the reported
+   detection pass's own 1-based depth: `1` is the pass on the board the
+   committed Swap produced (which is **not** a Cascade), and `>= 2` is a pass
+   produced by Gravity+Spawn (`MATCH3_RULES.md` §4.2 items 1–2). It carries the
+   same value `MatchCreated.cascadeDepth` carries on that same pass
+   (`§3.2.6` item 4), and on a pass preceded by a `CascadeCreated` it is that
+   event's `cascadeDepth + 1` (`§3.2.7` item 1). **The member name is new on
+   purpose:** `cascadeDepth` keeps its two existing meanings — the pass's own
+   depth in `MatchCreated`, the depth index within the Swap in
+   `CascadeCreated` — and is never reused for a third one; a consumer must not
+   treat one spelling of the pass's position as another. **The two arrays are
+   the only optional members.** Each is omitted when it would be empty and is
+   never sent as `[]` or `null` (§3.2.5 item 1, `GAME_STATE.md` §0 item 4's
+   staging position applied to a wire member), and the two are omitted
+   **independently**: either may be empty on its own, so neither member's
+   presence implies the other's.
+3. **Each `dropMoves` entry is one surviving Gem that changed cell during that
+   pass's Gravity**, stated authoritatively as its origin (`fromCell`) and its
+   destination (`toCell`). Both are integers in `0..63`, `fromCell != toCell`
+   — a Gem that did not move is not reported — and both are in the same column
+   (`MATCH3_RULES.md` §4.4 items 2–3: a Gem never leaves its column). A pass
+   whose Gravity moved nothing carries no `dropMoves` (item 2). The entries run
+   column ascending `0 → 7` and, within a column, descending `fromCell`, i.e.
+   bottom-to-top, which is the read order `MATCH3_RULES.md` §4.4 item 1 fixes.
+4. **Each `spawnedGems` entry is one Gem that pass's Spawn placed**, stated
+   authoritatively as the destination cell (`cellIndex`, an integer in `0..63`)
+   and the Gem type placed there (`gemType`, a string carrying one of the four
+   types per §3.2.4 — never a Special Gem type, because Spawn never creates a
+   Special Gem, `MATCH3_RULES.md` §4.5 item 7). The entries run column
+   ascending `0 → 7` and, within a column, ascending `cellIndex`, i.e.
+   top-to-bottom, which is the fill order `MATCH3_RULES.md` §4.5 item 2 fixes.
+   Both orders are fixed and are not an implementation choice; neither is a
+   gameplay resolution order. A pass whose Spawn placed nothing carries no
+   `spawnedGems` (item 2). **The entry carries no `specialGem` member**, and the
+   event carries **no `clearedCells` member**: the pass's cleared cells already
+   travelled in that pass's `GemMatched` run (`§3.2.9`), which is one union per
+   pass (`GAME_EVENTS.md` §1.3), so a second spelling of them here would state
+   one fact twice.
+5. **It is emitted once per recorded pass, as that pass's last item.** Its
+   position is: after the pass's `MatchCreated`/`GemMatched`/`ComboChanged`
+   items and after that pass's Gravity and Spawn have completed, and before the
+   next pass's `CascadeCreated` — or before the following stage's events
+   (`GAME_EVENTS.md` §1.1 item 8). **None is emitted for the terminating pass
+   that detects no Match** (`GAME_EVENTS.md` §1.1 item 6), so a batch's last
+   recorded pass is the last `CascadeStepResolved` in it.
+6. **It carries no other member.** In particular it carries **no `board`** (a
+   per-pass board is not sent, then or later — §3.1 items 2–3, §3.2.12 item 1,
+   §8 items 5 and 7) and **no `actor`** (the acting side is the sibling
+   `SwapStarted.actor`, §3.2.26 item 2). It also carries no
+   `battleId` and no `serverSequence` (the envelope's, §3), no `turn`, no
+   `combo`, no `matchCount`, and no timestamp, GUID, or generated id
+   (§3.2.12 item 1).
+7. **It is an event inside the round's existing single atomic batch, not a
+   second delivery path.** It adds no hub method, no argument, no subscription,
+   no state-push member, and no per-pass or mid-resolution network push: the
+   round still delivers one `ReceiveEvents` call carrying one `serverSequence`
+   (§3, §3.1 item 1, `GAME_STATE.md` §5.1 item 1). The intermediate board
+   configurations of the pass it reports remain **Transient Resolution State**
+   (`GAME_STATE.md` §3): never written to Redis mid-resolution, never in a
+   snapshot, and never delivered as a board. The board is still delivered only
+   in `BattleStateUpdated` (§4) and `GetBattleState` (§7).
+8. **Client obligations are bounded by this item.** A client may use the item
+   **only to present the pass it reports**. It derives no gravity destination,
+   no spawned identity, and no board of its own from it; it computes no
+   match, Cascade, Combo, or Gravity result; and it never uses the RNG state
+   (`rngSeed`/`rngState`) — the RNG stays server-authoritative
+   (`§3.1` item 5, `GAME_RULES.md` §18, `TDD.md` §2.1). A **missing, malformed,
+   or internally inconsistent** item is **skipped**: presentation degrades to
+   the existing single settle convergence, which is the delivery the §4 push
+   already provides. Skipping it never changes gameplay state, never holds
+   input, and never weakens the §6 sequence guarantees or the §7 recovery
+   rules.
+9. **Compatibility is one additive discriminator plus the tolerant-reader
+   rule.** `CascadeStepResolved` is a member of §3.2.2's set, and a consumer
+   that does not recognize a `type` ignores that item per §3.2.2 item 6 — such
+   an item is not a desync, not a second event, and not evidence about the
+   resolution. **No version negotiation exists**, and none is introduced by
+   this event: the item's absence on a connection, or a reader's decision to
+   ignore it, falls back to the state push and the snapshot, both unchanged.
 
 ---
 
@@ -2686,7 +2839,14 @@ is the answer to the gap it opened.
 5. Any board-specific message (`BoardCreated`, `BoardGenerated`,
    `BoardUpdated`, `BoardReady`, or similar). The board is a field of the
    battle state and is delivered by the existing `BattleStateUpdated` push
-   (§4 item 11, §4.1); it has no separate transport contract.
+   (§4 item 11, §4.1); it has no separate transport contract. **A per-pass
+   board is no exception, and none exists:** the board's mid-resolution
+   configurations are never sent (`§3.1` item 2, `GAME_STATE.md` §3), and the
+   one event that reports a pass transition reports its *deltas* and carries no
+   board at all (`§3.2.28`, `§3.2.12` item 1). `CascadeStepResolved` is not a
+   board message: it is an item of §3's `events[]` array, it adds no method and
+   no subscription, and it does not deliver a board — the board still arrives
+   only in the §4 push and the §7 snapshot.
 6. Any client → server board method. The client does not ask for a board, a
    cell, or a re-roll: it joins the battle group and receives the board with
    the rest of the state (§4.1). No gameplay method is added by this stage
@@ -2701,7 +2861,12 @@ is the answer to the gap it opened.
    protocol's method list is not. Special Gem state is no exception: it is part
    of `BoardState` (`GAME_STATE.md` §2.1), so it is delivered by the existing
    §4 push and reported, when it clears cells, by the existing `GemMatched`
-   event (`GAME_EVENTS.md` §2) — not by a new message.
+   event (`GAME_EVENTS.md` §2) — not by a new message. **A per-pass transition
+   report is no exception either, and it is not a message:**
+   `CascadeStepResolved` (`§3.2.28`) is one more item of the `events[]` array
+   the existing §3 batch carries, so no `CascadeUpdated`-style message, no
+   per-pass message, and no additional subscription is introduced by it, and
+   the prohibitions this item states are unchanged in force.
 8. **An event log or replay channel.** Events are delivered once per resolution
    and are not re-delivered; a desynchronized client resynchronizes from a
    snapshot (§7, ADR-008), never by requesting missed events.

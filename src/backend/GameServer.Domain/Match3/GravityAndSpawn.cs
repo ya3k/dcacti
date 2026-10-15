@@ -16,8 +16,11 @@ using System.Diagnostics;
 /// </code>
 ///
 /// It is a pure rearrangement: it draws no RNG (§4.4 item 6), produces no Match,
-/// no Combo, and no events (§4.4 item 7), and it only relocates Gems — the board
-/// is re-examined by the next detection pass (§4.1 step 5).
+/// no Combo, and emits no event of its own (§4.4 item 7 — the pass's completed
+/// Gravity and Spawn are reported afterwards, by that pass's
+/// <c>CascadeStepResolved</c>, <c>SIGNALR_PROTOCOL.md</c> §3.2.28), and it only
+/// relocates Gems — the board is re-examined by the next detection pass (§4.1
+/// step 5).
 ///
 /// <b>Interaction with Special Gems (§4.4 item 8).</b> A Special Gem is a Gem
 /// occupying a cell and falls under exactly these rules: it is pulled down like
@@ -53,7 +56,7 @@ public static class Gravity
 
         if (emptyCells.Count == 0)
         {
-            return new GravityResult(board, []);
+            return new GravityResult(board, [], []);
         }
 
         var entries = board.ToCellArray();
@@ -63,6 +66,14 @@ public static class Gravity
         // next sub-step never has to reconstruct them, and so a caller cannot pass a
         // stale pre-gravity set to Spawn.
         var vacated = new List<int>(emptyCells.Count);
+
+        // The survivors that CHANGED cell, source → destination, in the order this
+        // step reads them: column ascending, and within a column bottom-to-top
+        // (§4.4 item 1). A survivor that keeps its cell is not a move. This is the
+        // authoritative report `SIGNALR_PROTOCOL.md` §3.2.28 delivers as
+        // `dropMoves`; it is computed here because this is the only place the
+        // pairing exists (the compaction below is positional).
+        var dropMoves = new List<DropMove>(emptyCells.Count);
 
         // §4.4 item 1: columns are processed in ascending §1.0 column order
         // (0 → 7). Both this and the bottom-up pass below are fixed orders and are
@@ -76,6 +87,12 @@ public static class Gravity
             // disagree about which cells were empty.
             var survivors = new List<Cell>(BoardState.Rows);
 
+            // The index each survivor was read from, in the same order. Gravity is
+            // positional, so the source index would otherwise be lost by compaction —
+            // and §3.2.28's `dropMoves` is exactly that lost pairing, reported rather
+            // than re-derived by a consumer.
+            var survivorIndices = new List<int>(BoardState.Rows);
+
             // §4.4 item 1: within a column, cells are resolved from the bottom up
             // (row 7 → 0).
             for (var row = BoardState.Rows - 1; row >= 0; row--)
@@ -88,6 +105,7 @@ public static class Gravity
                 }
 
                 survivors.Add(entries[readIndex]);
+                survivorIndices.Add(readIndex);
             }
 
             // §4.4 item 3: a Gem never passes another Gem. Gravity is
@@ -99,11 +117,20 @@ public static class Gravity
             {
                 var writeRow = BoardState.Rows - 1 - i;
                 var writeIndex = BoardState.ToIndex(writeRow, column);
+                var readIndex = survivorIndices[i];
 
                 // The whole entry moves — GemType and SpecialGem together, as one unit
                 // (GAME_STATE.md §2.1.5 item 1). A Special Gem that falls keeps its
                 // orientation (§4.4 item 8, §5.2 item 3).
                 entries[writeIndex] = survivors[i];
+
+                // A survivor that ends the step on the cell it started on did not
+                // move, and is not a drop move (§3.2.28 item 3). Everything else is
+                // reported, source → destination, in this loop's own read order.
+                if (readIndex != writeIndex)
+                {
+                    dropMoves.Add(new DropMove(readIndex, writeIndex));
+                }
             }
 
             // The cells above the survivors are the column's new empty cells. A
@@ -148,7 +175,7 @@ public static class Gravity
             vacated.Distinct().Count() == vacated.Count,
             "A cell may be vacated only once (MATCH3_RULES.md §4.4 item 3).");
 
-        return new GravityResult(result, vacated);
+        return new GravityResult(result, vacated, dropMoves);
     }
 }
 
@@ -172,9 +199,36 @@ public static class Gravity
 /// pre-gravity one, or it would overwrite the gems gravity just moved —
 /// including any Special Gem the same pass created (§4.1 item 2).
 /// </param>
+/// <param name="DropMoves">
+/// Every survivor that changed cell, source → destination (§3.2.28's
+/// <c>dropMoves</c>). The order is this step's own read order: columns ascending
+/// §1.0 order, and within a column bottom-to-top, so <c>FromCell</c> descends
+/// (§4.4 item 1). A survivor that keeps its cell is not a move and is absent.
+///
+/// It is a report of the step that already ran — it is not used by Spawn, by the
+/// next detection pass, or by any gameplay stage, and it changes no board value.
+/// </param>
 public readonly record struct GravityResult(
     BoardState Board,
-    IReadOnlyList<int> VacatedCells);
+    IReadOnlyList<int> VacatedCells,
+    IReadOnlyList<DropMove> DropMoves);
+
+/// <summary>
+/// One survivor's movement during one Gravity step (<c>MATCH3_RULES.md</c> §4.4,
+/// <c>SIGNALR_PROTOCOL.md</c> §3.2.28).
+///
+/// <b>It is the pairing the compaction would otherwise lose.</b> Gravity writes
+/// survivors positionally, so the source cell of a fallen Gem exists only inside
+/// one traversal; this type carries it out of that traversal as the delivered
+/// report. Both cells are §1.0 indices in the same column
+/// (§4.4 item 2 — gravity never moves a Gem between columns).
+/// </summary>
+/// <param name="FromCell">The §1.0 cell the survivor occupied before gravity.</param>
+/// <param name="ToCell">
+/// The §1.0 cell it occupies after gravity. Always a different cell: a survivor
+/// that does not move is not reported (§3.2.28 item 3).
+/// </param>
+public readonly record struct DropMove(int FromCell, int ToCell);
 
 /// <summary>
 /// Spawn (<c>MATCH3_RULES.md</c> §4.5).

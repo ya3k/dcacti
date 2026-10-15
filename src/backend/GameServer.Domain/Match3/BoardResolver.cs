@@ -64,6 +64,22 @@ namespace GameServer.Domain.Match3;
 /// not re-read the post-resolution board, where those cells no longer hold the
 /// Gems that were consumed.
 /// </param>
+/// <param name="DropMoves">
+/// The survivors this pass's Gravity relocated, source → destination, in
+/// <see cref="Gravity.Apply"/>'s own read order: columns ascending, and within a
+/// column bottom-to-top (<c>MATCH3_RULES.md</c> §4.4 item 1). This is the
+/// authoritative report <c>SIGNALR_PROTOCOL.md</c> §3.2.28 delivers as
+/// <c>dropMoves</c>; a survivor that kept its cell is absent.
+/// </param>
+/// <param name="SpawnedGems">
+/// The Gems this pass's Spawn placed, in <c>MATCH3_RULES.md</c> §4.5 item 2 fill
+/// order: columns ascending, and within a column top-to-bottom. Each entry is the
+/// destination cell and the drawn Gem type — the pass's own record of what it
+/// spawned, so no consumer re-reads the post-resolution board for it. This is the
+/// authoritative report <c>SIGNALR_PROTOCOL.md</c> §3.2.28 delivers as
+/// <c>spawnedGems</c>. A spawned Gem is always an ordinary Gem (§4.5 item 7), so
+/// no entry carries a Special Gem.
+/// </param>
 public readonly record struct PassResult(
     BoardState Board,
     RngState RngState,
@@ -73,7 +89,30 @@ public readonly record struct PassResult(
     IReadOnlyList<ActivatedSpecialGem> ActivatedSpecialGems,
     IReadOnlyList<SpecialGemClaim> CreatedSpecialGems,
     IReadOnlyList<int> ClearedCellUnion,
-    IReadOnlyList<ClearedGem> ClearedGems);
+    IReadOnlyList<ClearedGem> ClearedGems,
+    IReadOnlyList<DropMove> DropMoves,
+    IReadOnlyList<SpawnedGem> SpawnedGems);
+
+/// <summary>
+/// One Gem a pass's Spawn step placed (<c>MATCH3_RULES.md</c> §4.5,
+/// <c>SIGNALR_PROTOCOL.md</c> §3.2.28).
+///
+/// <b>It carries no Special Gem, by rule.</b> Spawn never creates one, whatever
+/// the cell held before (§4.5 item 7), so an entry that could express one would
+/// be dead schema inviting a consumer to predict a value the server never draws.
+///
+/// This is a delivery-facing report of a step that already ran: it is not used by
+/// the next detection pass and changes no board value.
+/// </summary>
+/// <param name="CellIndex">
+/// The destination §1.0 cell — always one of the cells Gravity vacated, never a
+/// cell a survivor already occupies (§4.5 item 1).
+/// </param>
+/// <param name="GemType">
+/// The Gem type the draw selected, always one of the four §1.1 types
+/// (§4.5 item 5). It is the value the pass placed on the board.
+/// </param>
+public readonly record struct SpawnedGem(int CellIndex, GemType GemType);
 
 /// <summary>
 /// One cell a pass cleared, with the Gem type it held and the match tier it
@@ -274,6 +313,17 @@ public static class BoardResolver
         var spawn = Spawn.Fill(gravity.Board, rng, new HashSet<int>(gravity.VacatedCells));
 
         // --- Reports ------------------------------------------------------
+        // §3.2.28: the pass's own report of the Gems its Spawn placed. Spawn
+        // already returns them in §4.5 item 2 order, so the report keeps the
+        // destination cell and the drawn Gem type and derives nothing — a spawned
+        // Gem is always an ordinary Gem, so there is no Special Gem to carry
+        // (§4.5 item 7).
+        var spawnedGems = new List<SpawnedGem>(spawn.CreatedCells.Count);
+
+        foreach (var (createdIndex, createdCell) in spawn.CreatedCells)
+        {
+            spawnedGems.Add(new SpawnedGem(createdIndex, createdCell.GemType));
+        }
         // GAME_EVENTS.md §1.3: within one resolved cleared union, GemMatched is
         // emitted once per cell of the union, in ascending cell index, within each
         // sub-step of the pass - the pass's matched cells first, then the
@@ -356,7 +406,9 @@ public static class BoardResolver
             activation.Activated,
             plan.CommittedClaims,
             clearedUnion,
-            clearedGems);
+            clearedGems,
+            gravity.DropMoves,
+            spawnedGems);
     }
 
     /// <summary>

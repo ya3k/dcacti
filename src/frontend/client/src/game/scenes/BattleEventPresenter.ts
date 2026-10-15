@@ -184,6 +184,51 @@ export interface PresentedPowerChanged {
   readonly source: string;
 }
 
+/**
+ * One delivered `dropMoves` entry (`SIGNALR_PROTOCOL.md` §3.2.28) — one survivor's
+ * movement during one pass's Gravity: the §1.0 cell it left and the §1.0 cell it
+ * arrived at. Both cells were delivered; neither is derived, and the entry carries
+ * no distance, direction, or Gem identity of its own.
+ */
+export interface PresentedDropMove {
+  readonly fromCell: number;
+  readonly toCell: number;
+}
+
+/**
+ * One delivered `spawnedGems` entry (`SIGNALR_PROTOCOL.md` §3.2.28) — the §1.0
+ * destination cell a pass's Spawn filled, and the Gem type the server drew for it.
+ * The type is the server's own draw (`MATCH3_RULES.md` §4.5 item 5): the client
+ * never selects, predicts, or randomizes one, and a spawned Gem never carries a
+ * Special Gem (§4.5 item 7).
+ */
+export interface PresentedSpawnedGem {
+  readonly cellIndex: number;
+  readonly gemType: string;
+}
+
+/**
+ * A detection pass's completed Gravity + Spawn transition
+ * (`SIGNALR_PROTOCOL.md` §3.2.28, `GAME_EVENTS.md` §1.1 item 8).
+ *
+ * It reports a step the server has already executed: the pass's own 1-based depth
+ * (the value `MatchCreated.cascadeDepth` carries on the same pass), the survivors
+ * its Gravity relocated, and the Gems its Spawn placed. The client presents exactly
+ * these movements and these spawns — it derives no gravity destination, no spawned
+ * identity, and no board of its own, and it never reads the RNG state
+ * (`AGENTS.md` §10, `SIGNALR_PROTOCOL.md` §3.1 item 5).
+ *
+ * A malformed or internally inconsistent item is rejected whole by
+ * `parseInBattleEvent`, so it presents nothing and the resolution converges through
+ * the single settle transition instead (§3.2.28 item 8).
+ */
+export interface PresentedCascadeStepResolved {
+  readonly type: 'CascadeStepResolved';
+  readonly passDepth: number;
+  readonly dropMoves: readonly PresentedDropMove[];
+  readonly spawnedGems: readonly PresentedSpawnedGem[];
+}
+
 export type InBattleServerEvent =
   | PresentedSwapStarted
   | PresentedSwapResolved
@@ -200,7 +245,8 @@ export type InBattleServerEvent =
   | PresentedCardCast
   | PresentedPetSkillCast
   | PresentedRelicTriggered
-  | PresentedPowerChanged;
+  | PresentedPowerChanged
+  | PresentedCascadeStepResolved;
 
 /**
  * Validates and parses a raw event object into a typed InBattleServerEvent.
@@ -249,6 +295,8 @@ export function parseInBattleEvent(raw: unknown): InBattleServerEvent | null {
       return parseRelicTriggered(raw);
     case 'PowerChanged':
       return parsePowerChanged(raw);
+    case 'CascadeStepResolved':
+      return parseCascadeStepResolved(raw);
     default:
       // Unknown event type or outcome event — ignored safely per SIGNALR_PROTOCOL.md §3.2.2
       return null;
@@ -404,6 +452,185 @@ function parseGemMatched(raw: unknown): PresentedGemMatched | null {
     cellIndex: p.cellIndex,
     gemType: p.gemType,
     ...(specialGem ? { specialGem } : {}),
+  };
+}
+
+/**
+ * The board's §1.0 index space, for validating delivered coordinates only. It is
+ * the same 8 x 8 space `GAME_STATE.md` §2.1.1 owns; the presenter reads it to
+ * reject an out-of-range index and for nothing else.
+ */
+const BOARD_CELL_COUNT = 64;
+const BOARD_COLUMNS = 8;
+
+/**
+ * The four §1.1 Gem types, spelled as the §3.2.4 contract names a delivered
+ * `gemType` carries. A type outside this set is not a Gem this contract defines,
+ * so no Gem of it is ever drawn (`AGENTS.md` §10).
+ */
+const CONTRACT_GEM_TYPES: readonly string[] = Object.freeze(['ATK', 'DEF', 'HP', 'POWER']);
+
+/** Whether a delivered value is a §1.0 cell index of this board. */
+function isBoardCell(value: unknown): value is number {
+  return (
+    typeof value === 'number' && Number.isInteger(value) && value >= 0 && value < BOARD_CELL_COUNT
+  );
+}
+
+/**
+ * Validates one delivered `dropMoves` array (`SIGNALR_PROTOCOL.md` §3.2.28).
+ *
+ * Returns the entries as delivered, an empty array when the contract omitted the
+ * member, or `null` when the payload violates one of the structural invariants the
+ * contract fixes:
+ *
+ * ```text
+ * I-4   fromCell and toCell are integers in 0..63
+ * I-5   fromCell != toCell                      a survivor that did not move is not
+ *                                               a move (§4.4 item 3)
+ * I-6   fromCell unique, toCell unique          one source and one destination each
+ * I-12  same column                             Gravity never moves a Gem between
+ *                                               columns (§4.4 item 2)
+ * ```
+ *
+ * An entry the client cannot place is never repaired by inference and never
+ * partially applied: the event is refused whole, so the pass presents nothing and
+ * the resolution converges through the single settle transition (`F-2`/`F-3`).
+ */
+function parseDropMoves(raw: unknown): PresentedDropMove[] | null {
+  if (raw === undefined || raw === null) {
+    return [];
+  }
+
+  if (!Array.isArray(raw)) {
+    return null;
+  }
+
+  const moves: PresentedDropMove[] = [];
+  const sources = new Set<number>();
+  const destinations = new Set<number>();
+
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) {
+      return null;
+    }
+
+    const fromCell = (entry as { readonly fromCell?: unknown }).fromCell;
+    const toCell = (entry as { readonly toCell?: unknown }).toCell;
+
+    if (!isBoardCell(fromCell) || !isBoardCell(toCell)) {
+      return null;
+    }
+
+    if (fromCell === toCell) {
+      return null;
+    }
+
+    if (fromCell % BOARD_COLUMNS !== toCell % BOARD_COLUMNS) {
+      return null;
+    }
+
+    if (sources.has(fromCell) || destinations.has(toCell)) {
+      return null;
+    }
+
+    sources.add(fromCell);
+    destinations.add(toCell);
+    moves.push({ fromCell, toCell });
+  }
+
+  return moves;
+}
+
+/**
+ * Validates one delivered `spawnedGems` array (`SIGNALR_PROTOCOL.md` §3.2.28).
+ *
+ * Returns the entries as delivered, an empty array when the contract omitted the
+ * member, or `null` when a structural invariant is violated: `cellIndex` must be a
+ * §1.0 cell (I-4), unique across the array (I-7), and `gemType` must be one of the
+ * four documented types (I-8). The Gem type is read as the server drew it — the
+ * client selects nothing and does not read the RNG (`§3.1` item 5).
+ */
+function parseSpawnedGems(raw: unknown): PresentedSpawnedGem[] | null {
+  if (raw === undefined || raw === null) {
+    return [];
+  }
+
+  if (!Array.isArray(raw)) {
+    return null;
+  }
+
+  const spawned: PresentedSpawnedGem[] = [];
+  const cells = new Set<number>();
+
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) {
+      return null;
+    }
+
+    const cellIndex = (entry as { readonly cellIndex?: unknown }).cellIndex;
+    const gemType = (entry as { readonly gemType?: unknown }).gemType;
+
+    if (!isBoardCell(cellIndex) || typeof gemType !== 'string') {
+      return null;
+    }
+
+    if (!CONTRACT_GEM_TYPES.includes(gemType)) {
+      return null;
+    }
+
+    if (cells.has(cellIndex)) {
+      return null;
+    }
+
+    cells.add(cellIndex);
+    spawned.push({ cellIndex, gemType });
+  }
+
+  return spawned;
+}
+
+/**
+ * Parses one delivered `CascadeStepResolved` (`SIGNALR_PROTOCOL.md` §3.2.28).
+ *
+ * The pass's 1-based depth is required and must be an integer ≥ 1. Both arrays are
+ * optional (the contract omits an empty one) and are validated member by member;
+ * the cross-member invariant `spawnedGems[].cellIndex ∩ dropMoves[].toCell = ∅`
+ * (I-16 — Spawn fills only what Gravity left empty, `MATCH3_RULES.md` §4.5 item 1)
+ * is checked here too, because a payload stating both would describe a board that
+ * cannot exist.
+ *
+ * Any violation returns `null`: the event presents nothing at all rather than a
+ * partially applied transition, and no cell, Gem type, or destination is ever
+ * invented (`AGENTS.md` §10, `SIGNALR_PROTOCOL.md` §3.2.28 item 8).
+ */
+function parseCascadeStepResolved(raw: unknown): PresentedCascadeStepResolved | null {
+  const p = raw as Partial<PresentedCascadeStepResolved>;
+
+  if (typeof p.passDepth !== 'number' || !Number.isInteger(p.passDepth) || p.passDepth < 1) {
+    return null;
+  }
+
+  const dropMoves = parseDropMoves(p.dropMoves);
+  if (dropMoves === null) {
+    return null;
+  }
+
+  const spawnedGems = parseSpawnedGems(p.spawnedGems);
+  if (spawnedGems === null) {
+    return null;
+  }
+
+  const landedCells = new Set(dropMoves.map((move) => move.toCell));
+  if (spawnedGems.some((spawn) => landedCells.has(spawn.cellIndex))) {
+    return null;
+  }
+
+  return {
+    type: 'CascadeStepResolved',
+    passDepth: p.passDepth,
+    dropMoves,
+    spawnedGems,
   };
 }
 
@@ -639,6 +866,14 @@ export function formatInBattleEvent(event: InBattleServerEvent): string {
       return `RelicTriggered: ${event.relicId}`;
     case 'PowerChanged':
       return `PowerChanged: ${event.delta >= 0 ? '+' : ''}${event.delta} -> ${event.power} (${event.source})`;
+    case 'CascadeStepResolved':
+      // The pass's own reported transition, verbatim: its depth, the survivors it
+      // moved (source → destination), and the Gems it placed (cell: type). Nothing
+      // is summarized away and nothing is computed — the developer log is a record
+      // of what the batch delivered (TASK-209 §5).
+      return `CascadeStepResolved: pass ${event.passDepth} `
+        + `drops [${event.dropMoves.map((m) => `${m.fromCell}->${m.toCell}`).join(', ')}] `
+        + `spawns [${event.spawnedGems.map((s) => `${s.cellIndex}:${s.gemType}`).join(', ')}]`;
   }
 }
 
@@ -856,6 +1091,8 @@ export type PresentationAction =
   | 'match'
   | 'combo'
   | 'cascade'
+  | 'gravity-drop'
+  | 'refill-spawn'
   | 'settle'
   | 'card-cast'
   | 'pet-skill-cast'
@@ -884,6 +1121,8 @@ export type PresentationPhaseKind =
   | 'swap'
   | 'match'
   | 'cascade'
+  | 'gravity-drop'
+  | 'refill-spawn'
   | 'cast'
   | 'relic'
   | 'boss-skill'
@@ -1078,6 +1317,20 @@ export function adaptPresentedEvent(
         action: 'cascade',
         kind: 'cascade',
         detail: `cascade depth=${event.cascadeDepth}`,
+      };
+
+    case 'CascadeStepResolved':
+      // The pass's completed Gravity + Spawn transition
+      // (SIGNALR_PROTOCOL.md §3.2.28). It is the pass's own last item, so it
+      // opens the pass's Fall step; the scene then plays the Refill step this same
+      // delivered event reports, which is why the two are separate phases of one
+      // delivered event rather than two events. The side comes from the delivered
+      // boundary that opened the cycle, exactly as every other board step's does.
+      return {
+        actor: boardActionActor ?? 'swap',
+        action: 'gravity-drop',
+        kind: 'gravity-drop',
+        detail: `gravity depth=${event.passDepth}`,
       };
 
     case 'ComboChanged':

@@ -37,6 +37,9 @@ namespace GameServer.Domain.Match3;
 ///                            index, once per cell (§1.3 items 1–2)
 ///          ComboChanged      the NEW Combo value for that Match
 ///   3. GemMatched            the pass's activation sub-step, ascending index
+///   4. CascadeStepResolved   the pass's completed Gravity + Spawn transition —
+///                            LAST, after the pass's own reports and before the
+///                            next pass's CascadeCreated (§1.1 item 8, §3.2.28)
 /// </code>
 ///
 /// <b>Nothing is mutated, drawn, or advanced.</b> The builder is a pure function
@@ -162,6 +165,23 @@ public static class BattleEventBuilder
             {
                 events.Add(BattleEvent.ForGem(gem));
             }
+
+            // §1.1 item 8 / §3.2.28: the pass's completed Gravity + Spawn
+            // transition is reported as the pass's LAST item — after every Match,
+            // Gem and Combo report of the pass and before the next pass's
+            // CascadeCreated, so the run reads as "the pass was detected, these
+            // cells were consumed, this is how the board changed".
+            //
+            // A report of the transition cannot precede the transition it reports
+            // (§4.1 steps 1–4), and the pass's own results are what is reported:
+            // the survivors Gravity relocated and the Gems Spawn placed, both as
+            // those steps produced them. Nothing is derived, no board is carried,
+            // and the pass's cleared cells already travelled in the GemMatched run
+            // above (§1.3, §3.2.28 item 4).
+            events.Add(BattleEvent.ForCascadeStepResolved(
+                pass.Matches[0].CascadeDepth,
+                pass.DropMoves,
+                pass.SpawnedGems));
         }
 
         _ = combo; // the accounted value is the run's endpoint; see the class notes.

@@ -954,6 +954,126 @@ describe('TASK-245 — the SignalR wire contract is unchanged (PD-3, PD-4)', () 
   });
 });
 
+describe('ADR-027 — the delivered per-pass Gravity + Spawn report (SIGNALR_PROTOCOL.md §3.2.28)', () => {
+  /** One well-formed item: a chained fall in one column and one refilled top cell. */
+  const WELL_FORMED = {
+    type: 'CascadeStepResolved',
+    passDepth: 2,
+    dropMoves: [
+      { fromCell: 16, toCell: 24 },
+      { fromCell: 8, toCell: 16 },
+      { fromCell: 0, toCell: 8 },
+    ],
+    spawnedGems: [{ cellIndex: 0, gemType: 'DEF' }],
+  };
+
+  it('parses the pass depth, the movements and the spawns exactly as delivered', () => {
+    expect(parseInBattleEvent(WELL_FORMED)).toEqual(WELL_FORMED);
+  });
+
+  it('reads an omitted array as empty, and an explicitly empty one the same way', () => {
+    // §3.2.28 item 2: each array is omitted when it would be empty; both spellings
+    // decode to the one statement "this step reported nothing of that kind".
+    expect(parseInBattleEvent({ type: 'CascadeStepResolved', passDepth: 1 })).toEqual({
+      type: 'CascadeStepResolved',
+      passDepth: 1,
+      dropMoves: [],
+      spawnedGems: [],
+    });
+
+    expect(
+      parseInBattleEvent({
+        type: 'CascadeStepResolved',
+        passDepth: 1,
+        dropMoves: [],
+        spawnedGems: [],
+      })
+    ).toEqual({
+      type: 'CascadeStepResolved',
+      passDepth: 1,
+      dropMoves: [],
+      spawnedGems: [],
+    });
+  });
+
+  it('refuses a malformed item whole, so no part of it is ever applied', () => {
+    const rejected: unknown[] = [
+      { type: 'CascadeStepResolved' },
+      { type: 'CascadeStepResolved', passDepth: 0 },
+      { type: 'CascadeStepResolved', passDepth: 1.5 },
+      { type: 'CascadeStepResolved', passDepth: '1' },
+      // §3.2.28 item 3: both cells are integers inside the board, differ, and share a
+      // column; one source and one destination each.
+      { type: 'CascadeStepResolved', passDepth: 1, dropMoves: [{ fromCell: 64, toCell: 8 }] },
+      { type: 'CascadeStepResolved', passDepth: 1, dropMoves: [{ fromCell: 0, toCell: 0 }] },
+      { type: 'CascadeStepResolved', passDepth: 1, dropMoves: [{ fromCell: 0, toCell: 9 }] },
+      {
+        type: 'CascadeStepResolved',
+        passDepth: 1,
+        dropMoves: [
+          { fromCell: 0, toCell: 8 },
+          { fromCell: 1, toCell: 8 },
+        ],
+      },
+      {
+        type: 'CascadeStepResolved',
+        passDepth: 1,
+        dropMoves: [
+          { fromCell: 0, toCell: 8 },
+          { fromCell: 0, toCell: 16 },
+        ],
+      },
+      { type: 'CascadeStepResolved', passDepth: 1, dropMoves: 'nope' },
+      // §3.2.28 item 4: a §1.0 destination cell each, once, and one of the four
+      // documented Gem types — never a Special Gem, never a type the contract omits.
+      { type: 'CascadeStepResolved', passDepth: 1, spawnedGems: [{ cellIndex: 0, gemType: 'FIRE' }] },
+      { type: 'CascadeStepResolved', passDepth: 1, spawnedGems: [{ cellIndex: -1, gemType: 'ATK' }] },
+      {
+        type: 'CascadeStepResolved',
+        passDepth: 1,
+        spawnedGems: [
+          { cellIndex: 0, gemType: 'ATK' },
+          { cellIndex: 0, gemType: 'DEF' },
+        ],
+      },
+      { type: 'CascadeStepResolved', passDepth: 1, spawnedGems: [{ cellIndex: 8 }] },
+      // §4.5 item 1: Spawn fills only what Gravity left empty, so a spawned Gem never
+      // lands where a survivor fell.
+      {
+        type: 'CascadeStepResolved',
+        passDepth: 1,
+        dropMoves: [{ fromCell: 0, toCell: 8 }],
+        spawnedGems: [{ cellIndex: 8, gemType: 'ATK' }],
+      },
+    ];
+
+    for (const raw of rejected) {
+      expect(parseInBattleEvent(raw), JSON.stringify(raw)).toBeNull();
+    }
+  });
+
+  it('maps the report to the pass’s Fall step, attributed to its cycle’s actor', () => {
+    const parsed = parseInBattleEvent(WELL_FORMED);
+    expect(parsed).not.toBeNull();
+
+    expect(adaptPresentedEvent(parsed!)).toEqual({
+      actor: 'swap',
+      action: 'gravity-drop',
+      kind: 'gravity-drop',
+      detail: 'gravity depth=2',
+    });
+
+    // The side is the delivered boundary's, exactly as every other board-cycle step's
+    // is (SIGNALR_PROTOCOL.md §3.2.28 item 6: the item carries no `actor` of its own).
+    expect(adaptPresentedEvent(parsed!, 'boss')?.actor).toBe('boss');
+
+    // The developer record names the delivered members verbatim and computes nothing.
+    expect(formatInBattleEvent(parsed!)).toBe(
+      'CascadeStepResolved: pass 2 drops [16->24, 8->16, 0->8] spawns [0:DEF]'
+    );
+  });
+});
+
 describe('TASK-252 — the delivered event → (actor, action, kind) adapter', () => {
   /** The presenter's own source, with its prose removed. */
   const presenterSource = readFileSync(
@@ -977,6 +1097,15 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
     { name: 'CascadeCreated', event: { type: 'CascadeCreated', cascadeDepth: 2 } },
     { name: 'ComboChanged', event: { type: 'ComboChanged', combo: 4 } },
     { name: 'GemMatched', event: { type: 'GemMatched', cellIndex: 42, gemType: 'DEF' } },
+    {
+      name: 'CascadeStepResolved',
+      event: {
+        type: 'CascadeStepResolved',
+        passDepth: 1,
+        dropMoves: [{ fromCell: 16, toCell: 24 }],
+        spawnedGems: [{ cellIndex: 0, gemType: 'DEF' }],
+      },
+    },
     { name: 'DamageCalculated', event: { type: 'DamageCalculated', base: 137, comboModifier: 2.5, elementModifier: 1.25, otherModifiers: 1.1, defense: 43, finalDamage: 99 } },
     { name: 'DamageDealt', event: { type: 'DamageDealt', source: 'player', target: 'boss', amount: 99 } },
     { name: 'DamageTaken', event: { type: 'DamageTaken', source: 'boss', target: 'player', amount: 77 } },
@@ -994,7 +1123,7 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
   /** The closed discriminator set §3.2.2 fixes. */
   const DISCRIMINATOR_SET = DELIVERED_PAYLOADS.map((payload) => payload.name);
 
-  it('keeps the closed discriminator set at exactly the eighteen documented names', () => {
+  it('keeps the closed discriminator set at exactly the nineteen documented names', () => {
     expect(DISCRIMINATOR_SET).toEqual([
       'SwapStarted',
       'SwapResolved',
@@ -1002,6 +1131,7 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       'CascadeCreated',
       'ComboChanged',
       'GemMatched',
+      'CascadeStepResolved',
       'DamageCalculated',
       'DamageDealt',
       'DamageTaken',
@@ -1016,11 +1146,12 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       'BattleLost',
     ]);
 
-    // The parser's own switch admits exactly the sixteen in-battle names — no
+    // The parser's own switch admits exactly the seventeen in-battle names — no
     // more (a phase, status or turn name would be a wire change) and no fewer.
     // `SwapStarted` and `SwapResolved` are the two ADR-026 / TASK-259 proposal
     // formalized by SIGNALR_PROTOCOL.md §3.2.26–§3.2.27, which GAME_EVENTS.md §1/§2
-    // had already defined.
+    // had already defined, and `CascadeStepResolved` is the one the Operator Decision
+    // approving TASK-278 A-1(i)/A-4 added (§3.2.28, ADR-027).
     const parsedNames = DELIVERED_PAYLOADS.filter(
       (payload) => parseInBattleEvent(payload.event) !== null
     ).map((payload) => payload.name);
@@ -1032,6 +1163,7 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       'CascadeCreated',
       'ComboChanged',
       'GemMatched',
+      'CascadeStepResolved',
       'DamageCalculated',
       'DamageDealt',
       'DamageTaken',
@@ -1080,6 +1212,7 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       CascadeCreated: { actor: 'swap', action: 'cascade', kind: 'cascade' },
       ComboChanged: { actor: 'swap', action: 'combo', kind: 'feedback' },
       GemMatched: { actor: 'swap', action: 'match', kind: 'match' },
+      CascadeStepResolved: { actor: 'swap', action: 'gravity-drop', kind: 'gravity-drop' },
       DamageDealt: { actor: 'player', action: 'damage', kind: 'damage' },
       DamageTaken: { actor: 'boss', action: 'retaliation', kind: 'retaliation' },
       PassiveCharged: { actor: 'pet', action: 'passive-charge', kind: 'feedback' },
@@ -1091,9 +1224,9 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       PowerChanged: { actor: 'power', action: 'power', kind: 'feedback' },
     });
 
-    // Fourteen of the sixteen in-battle names adapt; the other two are
+    // Fifteen of the seventeen in-battle names adapt; the other two are
     // `DamageCalculated` and `SwapResolved`, which present nothing of their own.
-    expect(steps.size).toBe(14);
+    expect(steps.size).toBe(15);
   });
 
   it('attributes a board cycle to the actor of the delivered SwapStarted that opened it', () => {
@@ -2733,7 +2866,7 @@ describe('TASK-253 — the developer Move Log row formatter (operator decision D
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
 
-  /** The sixteen non-outcome names of the closed discriminator set (§3.2.2). */
+  /** The seventeen non-outcome names of the closed discriminator set (§3.2.2). */
   const IN_BATTLE_TYPES = [
     'SwapStarted',
     'SwapResolved',
@@ -2741,6 +2874,7 @@ describe('TASK-253 — the developer Move Log row formatter (operator decision D
     'CascadeCreated',
     'ComboChanged',
     'GemMatched',
+    'CascadeStepResolved',
     'DamageCalculated',
     'DamageDealt',
     'DamageTaken',
@@ -2761,6 +2895,15 @@ describe('TASK-253 — the developer Move Log row formatter (operator decision D
     { name: 'CascadeCreated', event: { type: 'CascadeCreated', cascadeDepth: 2 } },
     { name: 'ComboChanged', event: { type: 'ComboChanged', combo: 4 } },
     { name: 'GemMatched', event: { type: 'GemMatched', cellIndex: 42, gemType: 'DEF' } },
+    {
+      name: 'CascadeStepResolved',
+      event: {
+        type: 'CascadeStepResolved',
+        passDepth: 1,
+        dropMoves: [{ fromCell: 16, toCell: 24 }],
+        spawnedGems: [{ cellIndex: 0, gemType: 'DEF' }],
+      },
+    },
     { name: 'DamageCalculated', event: { type: 'DamageCalculated', base: 137, comboModifier: 2.5, elementModifier: 1.25, otherModifiers: 1.1, defense: 43, finalDamage: 99 } },
     { name: 'DamageDealt', event: { type: 'DamageDealt', source: 'player', target: 'boss', amount: 99 } },
     { name: 'DamageTaken', event: { type: 'DamageTaken', source: 'boss', target: 'player', amount: 77 } },
@@ -2809,6 +2952,9 @@ describe('TASK-253 — the developer Move Log row formatter (operator decision D
     );
     expect(eventRow('PowerChanged')).toBe(
       '#1 seq=9 turn=4 type=PowerChanged power/power | PowerChanged: +25 -> 45 (card)'
+    );
+    expect(eventRow('CascadeStepResolved')).toBe(
+      '#1 seq=9 turn=4 type=CascadeStepResolved swap/gravity-drop | CascadeStepResolved: pass 1 drops [16->24] spawns [0:DEF]'
     );
     expect(eventRow('DamageTaken')).toBe(
       '#1 seq=9 turn=4 type=DamageTaken boss/retaliation | DamageTaken: 77 on player (from boss)'

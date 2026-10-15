@@ -31,6 +31,8 @@ import type {
   MoveLogAbortReason,
   MoveLogLifecycleState,
   MoveLogLifecycleScope,
+  PresentedDropMove,
+  PresentedSpawnedGem,
   PresentationActor,
   PresentationAction,
   PresentationPhaseKind,
@@ -544,6 +546,31 @@ const PHASE_SETTLE_MS = 60;
  * Its duration is `GEM_REFILL_MS` above.
  */
 const GEM_REFILL_ENTER = 12;
+
+/**
+ * The per-pass **Fall** step (`SIGNALR_PROTOCOL.md` §3.2.28,
+ * `GAME_EVENTS.md` §1.1 item 8): how long a gem view takes to travel from the §1.0
+ * source cell a delivered `dropMoves` entry named to the §1.0 destination cell the
+ * same entry named.
+ *
+ * **Both endpoints are delivered members.** The travel applies no compaction rule,
+ * anchors no survivor to the bottom of its column, and computes no fall distance —
+ * it presents the movement the server executed (`AGENTS.md` §10). Its duration is
+ * the `gravity-drop` phase's own hold, plus the shared settle beat.
+ */
+const GEM_FALL_MS = 200;
+
+/**
+ * The per-pass **Refill** step: how far above its delivered destination cell a
+ * spawned gem view enters from, over `GEM_REFILL_MS`.
+ *
+ * The cell and the Gem type are both delivered (`spawnedGems[].cellIndex` /
+ * `gemType`); the client selects no Gem, draws nothing from the RNG, and decides no
+ * destination (`MATCH3_RULES.md` §4.5, §7.2; `SIGNALR_PROTOCOL.md` §3.1 item 5).
+ * It is taller than `GEM_REFILL_ENTER` because a spawned Gem arrives from outside
+ * its column rather than being re-labelled in place.
+ */
+const GEM_SPAWN_ENTER = 34;
 
 /**
  * The selected-cell treatment: one persistent ring, drawn around the selected
@@ -1107,6 +1134,24 @@ export class BattleScene extends Phaser.Scene {
    * (the previous redraw did, which is exactly what left nothing to animate).
    */
   private gemViews: Array<GemView | null> = [];
+
+  /**
+   * The gem views a delivered Fall step displaced and its Refill step has not yet
+   * re-placed (`SIGNALR_PROTOCOL.md` §3.2.28).
+   *
+   * A fall lands a view on a cell whose own view the same step vacates, so exactly
+   * one view is displaced per spawned Gem. Those views are pooled here and spent by
+   * the refill step that closes the same pass, which is what keeps the board's 64
+   * cells rendered by the same persistent display objects for the whole battle —
+   * a resolution re-indexes and re-labels the views instead of destroying and
+   * recreating them.
+   *
+   * The pool is transient presentation state and never a board: a view is only ever
+   * held here between the two steps of one delivered transition, and
+   * `renderBoard` drains it (reusing what a cell still needs) so an abort,
+   * a recovery, or a teardown can leave nothing behind.
+   */
+  private refillableViews: GemView[] = [];
   /**
    * The authoritative sequence the rendered board was last converged from, or
    * `null` when no board has been rendered yet.
@@ -1381,6 +1426,9 @@ export class BattleScene extends Phaser.Scene {
     this.releaseTimeline();
     this.pendingOutcomeHandoff = null;
     this.gemViews = [];
+    // A pooled view belongs to the board that is being dropped: the next run draws
+    // its own, so the pool starts empty with the occupant map.
+    this.refillableViews = [];
     this.settledBoardSequence = null;
     this.settledBattleId = null;
     this.heldSequence = null;
@@ -1602,6 +1650,10 @@ export class BattleScene extends Phaser.Scene {
     this.pendingOutcomeHandoff = null;
     this.terminalStatement = null;
     this.gemViews = [];
+    // Teardown drops the pool with the layer that held its objects: a view a
+    // resolution left pooled is destroyed by the engine, never carried into the
+    // next scene run.
+    this.refillableViews = [];
     this.settledBoardSequence = null;
     this.settledBattleId = null;
     this.heldSequence = null;
@@ -3332,6 +3384,7 @@ export class BattleScene extends Phaser.Scene {
       // views are released rather than left showing a battle that is over. The
       // layer holds nothing but the views.
       this.gemViews = [];
+      this.refillableViews = [];
       this.boardLayer.removeAll(true);
       this.settledBoardSequence = null;
       this.settledBattleId = null;
@@ -3360,8 +3413,29 @@ export class BattleScene extends Phaser.Scene {
         continue;
       }
 
+      // A cell a delivered Fall emptied is given back the view that step pooled, so
+      // an abort, a recovery or a superseding push between a pass's two steps
+      // restores the board on the same persistent views instead of allocating a new
+      // pair (`SIGNALR_PROTOCOL.md` §3.2.28 item 3).
+      const pooled = this.refillableViews.pop();
+
+      if (pooled) {
+        this.drawGemContent(pooled, cell);
+        this.gemViews[index] = pooled;
+        continue;
+      }
+
       this.gemViews[index] = this.createGemView(cell);
     }
+
+    // A pooled view the board did not need holds nothing the delivered board
+    // reports: it is released with the layer rather than left invisible in it, so a
+    // battle's board layer never accumulates objects a resolution abandoned.
+    for (const leftover of this.refillableViews) {
+      leftover.tile.destroy();
+      leftover.label.destroy();
+    }
+    this.refillableViews = [];
 
     // The PD-8 pairing: within each column, top to bottom, each view is paired
     // with the destination cell it occupies.
@@ -3462,11 +3536,20 @@ export class BattleScene extends Phaser.Scene {
    * Places one view on its paired destination cell — the cell it occupies in the
    * rendered board, which is the cell whose delivered content it now shows.
    *
-   * With `animate`, the view enters from `GEM_REFILL_ENTER` pixels above *that
-   * same cell*: the destination is read from the board, never computed, so this
-   * is a settle into a cell rather than a gravity fall between cells.
+   * With `animate`, the view enters from `enterFrom` pixels above *that same cell*:
+   * the destination is read from the board, never computed, so this is a settle into
+   * a cell rather than a gravity fall between cells. The distance is the caller's
+   * because it names the same delivered cell for two different entrances — a
+   * re-labelled cell (`GEM_REFILL_ENTER`, the settle convergence) and a Gem a pass's
+   * `spawnedGems` placed (`GEM_SPAWN_ENTER`, the Refill step,
+   * `SIGNALR_PROTOCOL.md` §3.2.28 item 4).
    */
-  private placeGemView(view: GemView, index: number, animate: boolean): void {
+  private placeGemView(
+    view: GemView,
+    index: number,
+    animate: boolean,
+    enterFrom = GEM_REFILL_ENTER
+  ): void {
     const { x, y } = BattleScene.cellCoordinates(index);
 
     if (!animate || !this.tweens) {
@@ -3475,8 +3558,8 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
-    view.tile.setPosition(x, y - GEM_REFILL_ENTER);
-    view.label.setPosition(x, y - GEM_REFILL_ENTER);
+    view.tile.setPosition(x, y - enterFrom);
+    view.label.setPosition(x, y - enterFrom);
 
     this.tweens.add({
       targets: [view.tile, view.label],
@@ -4620,6 +4703,27 @@ export class BattleScene extends Phaser.Scene {
       if (selection !== null && event === selection.event) {
         open.callout = selection.callout;
       }
+
+      // A delivered pass transition reports two steps of the one pass — the Fall its
+      // `dropMoves` describe and the Refill its `spawnedGems` describe — so it opens
+      // two phases, in that order, and the pass is closed only when the refill has
+      // played (`SIGNALR_PROTOCOL.md` §3.2.28 item 5, `GAME_EVENTS.md` §1.1 item 8).
+      // The adapter still maps one delivered event to one step
+      // (`adaptPresentedEvent`); the timeline is what plays the transition's two
+      // halves, and the next cascade pass — whose own matches are detected on the
+      // board this refill produced — can only begin after them.
+      if (event.type === 'CascadeStepResolved') {
+        flush();
+
+        phases.push({
+          kind: 'refill-spawn',
+          actor: step.actor,
+          action: 'refill-spawn',
+          detail: `refill depth=${event.passDepth}`,
+          holdMs: BattleScene.phaseHoldMs('refill-spawn', [event]),
+          events: [event],
+        });
+      }
     }
 
     flush();
@@ -4656,23 +4760,29 @@ export class BattleScene extends Phaser.Scene {
       });
     }
 
-    // Where the board cycle ends: the one transition the wire can honestly
-    // support, because no per-pass board is ever delivered
-    // (`SIGNALR_PROTOCOL.md` §3.1 item 2). It is placed at the first damage
-    // phase, i.e. at the boundary between the board's own events and the
-    // resolution's combat stages (`GAME_EVENTS.md` §1), or at the end when this
-    // resolution dealt no damage.
+    // Where the board cycle ends: the round's single committed board, applied after
+    // all of the round's board work (`SIGNALR_PROTOCOL.md` §3.1 item 2 — no per-pass
+    // board is ever delivered). It is placed at the first damage phase, i.e. at the
+    // boundary between the board's own events and the resolution's combat stages
+    // (`GAME_EVENTS.md` §1), or after the round's last board-cycle phase when the
+    // round delivers one (`lastBoardCyclePhaseIndex`).
     //
     // It is part of the timeline exactly when this resolution delivered a board
-    // cycle — a Swap moved Gems, or a Match/Cascade was reported. That is what
-    // makes the resolution's **final** displayed board the authoritative one:
-    // whatever the timeline moved on the way, the destination cells are written
-    // from the delivered state before the combat phases play. A resolution that
-    // moved no board (a Card cast, a Boss-only response) has no board-resolution
-    // stage to present, and its held board is converged by Recovery instead
-    // (TASK-254: a stage with no delivered event is skipped, never fabricated).
+    // cycle — a Swap moved Gems, a Match/Cascade was reported, or a pass reported its
+    // own completed Gravity + Spawn transition. That is what makes the resolution's
+    // **final** displayed board the authoritative one: whatever the timeline moved on
+    // the way, the destination cells are written from the delivered state before the
+    // combat phases play. A resolution that moved no board (a Card cast, a Boss-only
+    // response) has no board-resolution stage to present, and its held board is
+    // converged by Recovery instead (TASK-254: a stage with no delivered event is
+    // skipped, never fabricated).
     const boardPresented = phases.some(
-      (phase) => phase.kind === 'swap' || phase.kind === 'match' || phase.kind === 'cascade'
+      (phase) =>
+        phase.kind === 'swap' ||
+        phase.kind === 'match' ||
+        phase.kind === 'cascade' ||
+        phase.kind === 'gravity-drop' ||
+        phase.kind === 'refill-spawn'
     );
 
     if (boardPresented) {
@@ -4772,6 +4882,12 @@ export class BattleScene extends Phaser.Scene {
         return TURN_BANNER_TOTAL_MS;
       case 'swap':
         return SWAP_TWEEN_MS;
+      case 'gravity-drop':
+        // The pass's delivered Fall travel (`GEM_FALL_MS`); the Refill step that
+        // closes the same pass is its own phase and its own hold.
+        return GEM_FALL_MS;
+      case 'refill-spawn':
+        return GEM_REFILL_MS;
       case 'settle':
         return GEM_REFILL_MS;
       case 'damage':
@@ -4838,15 +4954,18 @@ export class BattleScene extends Phaser.Scene {
    * when the round delivered none.
    *
    * The board cycle is the committed Swap and everything the board itself reported —
-   * TASK-254's `swap` / `match` / `cascade` phases, plus the floater step a delivered
-   * `ComboChanged` joins (`GAME_EVENTS.md` §1.1). It is a **presentation** grouping
-   * read from the phases' own kinds: no actor is inferred, nothing is re-sorted, and
-   * no gameplay value is derived from it.
+   * TASK-254's `swap` / `match` / `cascade` phases, each pass's delivered
+   * `gravity-drop` and `refill-spawn` steps (`SIGNALR_PROTOCOL.md` §3.2.28), plus the
+   * floater step a delivered `ComboChanged` joins (`GAME_EVENTS.md` §1.1). It is a
+   * **presentation** grouping read from the phases' own kinds: no actor is inferred,
+   * nothing is re-sorted, and no gameplay value is derived from it.
    *
    * It exists for one fact: `settle` converges the round's single committed board, and
    * under ADR-026 §2 the round's board cycle spans the Player's Swap *and* the Boss's
    * step 18a board action, whose events are delivered after the Player's combat stages
-   * (`GAME_EVENTS.md` §1).
+   * (`GAME_EVENTS.md` §1). A pass's own Fall and Refill steps belong to that cycle
+   * too: the committed board is applied after the round's last of them, never in the
+   * middle of a pass.
    */
   private static lastBoardCyclePhaseIndex(phases: readonly PresentationPhase[]): number {
     let last = -1;
@@ -4854,7 +4973,13 @@ export class BattleScene extends Phaser.Scene {
     for (let index = 0; index < phases.length; index++) {
       const kind = phases[index].kind;
 
-      if (kind === 'swap' || kind === 'match' || kind === 'cascade') {
+      if (
+        kind === 'swap' ||
+        kind === 'match' ||
+        kind === 'cascade' ||
+        kind === 'gravity-drop' ||
+        kind === 'refill-spawn'
+      ) {
         last = index;
       }
     }
@@ -4966,6 +5091,17 @@ export class BattleScene extends Phaser.Scene {
         break;
       case 'swap':
         this.playSwapPhase(phase);
+        break;
+      case 'gravity-drop':
+        // The pass's delivered Gravity: the survivors the report named travel from
+        // the cell they left to the cell they arrived at.
+        this.playGravityDrop(phase.events);
+        break;
+      case 'refill-spawn':
+        // The same pass's delivered Spawn: the Gems the report named enter the cells
+        // it named, so the pass ends on a full board and the next pass's matches are
+        // detected on the board this step produced.
+        this.playRefillSpawn(phase.events);
         break;
       case 'settle':
         if (this.currentBattleState) {
@@ -5254,6 +5390,179 @@ export class BattleScene extends Phaser.Scene {
     if (toView) {
       this.placeGemView(toView, from, false);
     }
+  }
+
+  /**
+   * Plays one pass's delivered **Fall** step: every survivor the event's
+   * `dropMoves` named travels from the §1.0 cell it came from to the §1.0 cell it
+   * arrived at (`SIGNALR_PROTOCOL.md` §3.2.28 item 3, `MATCH3_RULES.md` §4.4).
+   *
+   * **The client computes no gravity.** Both endpoints of every movement are
+   * delivered members — no column is scanned, no survivor list is rebuilt, no cell
+   * is anchored to the bottom of its column, and no distance is derived
+   * (`AGENTS.md` §10). The step presents the movement the server executed.
+   *
+   * **The occupant map is rebuilt from a snapshot taken before the step.** Every
+   * origin is vacated first and every destination is then filled, so two moves that
+   * share a cell — one move's destination is another's origin — are applied the way
+   * Gravity applied them and no view can be lost by ordering. A cell no move
+   * reached keeps the view it had.
+   *
+   * **A view the step displaces is pooled, not destroyed.** Gravity only ever falls a
+   * survivor into a cell this pass emptied, so the view that cell had is exactly the
+   * view the same pass's Refill step must re-place: it is hidden (so no cell is ever
+   * drawn twice, even if a clear was refused) and kept for `playRefillSpawn`. That is
+   * what keeps the board drawn by the same persistent views for a whole battle.
+   */
+  private playGravityDrop(events: readonly InBattleServerEvent[]): void {
+    const moves = BattleScene.deliveredDropMoves(events);
+
+    if (moves.length === 0 || !this.boardLayer) {
+      return;
+    }
+
+    const before = this.gemViews.slice();
+    const origins = new Set(moves.map((move) => move.fromCell));
+
+    for (const move of moves) {
+      // A cell that is also an origin vacates itself: its own view travels on as
+      // that move's subject rather than being displaced.
+      if (origins.has(move.toCell)) {
+        continue;
+      }
+
+      const displaced = before[move.toCell];
+      if (!displaced) {
+        continue;
+      }
+
+      displaced.cleared = true;
+      displaced.content = '';
+      displaced.tile.setVisible(false);
+      displaced.label.setVisible(false);
+      this.refillableViews.push(displaced);
+    }
+
+    for (const origin of origins) {
+      this.gemViews[origin] = null;
+    }
+
+    for (const move of moves) {
+      const view = before[move.fromCell];
+      if (!view) {
+        // The cell the report names as an origin holds no view on screen — the
+        // occupant map is already incomplete — so there is nothing to move. Nothing
+        // is invented for it: the cell converges from the delivered board at the
+        // round's single transition (`settle`).
+        continue;
+      }
+
+      this.gemViews[move.toCell] = view;
+      this.travelGemView(view, move.toCell, GEM_FALL_MS);
+    }
+  }
+
+  /**
+   * Plays one pass's delivered **Refill** step: every Gem the event's `spawnedGems`
+   * named enters the §1.0 cell it named, showing the Gem type the server drew for it
+   * (`SIGNALR_PROTOCOL.md` §3.2.28 item 4, `MATCH3_RULES.md` §4.5).
+   *
+   * The cell and the type are both delivered: the client chooses neither, draws
+   * nothing from the RNG, and never predicts a spawn (`AGENTS.md` §10,
+   * `SIGNALR_PROTOCOL.md` §3.1 item 5). Each Gem enters from above its own cell, so
+   * the pass ends on a full board and the next pass — whose matches the server
+   * detected on exactly this board — presents against the same board the client now
+   * shows.
+   */
+  private playRefillSpawn(events: readonly InBattleServerEvent[]): void {
+    const spawned = BattleScene.deliveredSpawnedGems(events);
+
+    if (spawned.length === 0 || !this.boardLayer) {
+      return;
+    }
+
+    for (const gem of spawned) {
+      const cell: RuntimeCell = { gemType: gem.gemType };
+      // Two already-drawn views can stand for this cell, and both are re-used rather
+      // than abandoned:
+      //
+      //     the view still on this cell   the pass's own clear emptied it and no move
+      //                                   took it, because nothing could fall into it —
+      //                                   a cleared cell at the top of its column. It is
+      //                                   hidden and holds no content, exactly like a
+      //                                   pooled one.
+      //     a pooled view                 the pass's Fall displaced it from a cell a
+      //                                   survivor fell into, so it is the view this
+      //                                   Refill step must re-place.
+      //
+      // Either way the cell keeps a persistent pair and the board stays on the same 64
+      // views for the whole battle (TASK-245). Only a cell the scene has neither for —
+      // a payload this board cannot account for — allocates one, and an unconsumed
+      // pooled view is released by `renderBoard`.
+      const pooled = this.gemViews[gem.cellIndex] ?? this.refillableViews.pop();
+      const view = pooled ?? this.createGemView(cell);
+
+      if (pooled) {
+        this.drawGemContent(view, cell);
+      }
+
+      this.gemViews[gem.cellIndex] = view;
+      this.placeGemView(view, gem.cellIndex, true, GEM_SPAWN_ENTER);
+    }
+  }
+
+  /**
+   * Travels one view to a §1.0 cell over `durationMs` — the Fall step's own movement.
+   *
+   * Both endpoints are delivered: the view is already drawn on the cell the report
+   * named as the origin, and the destination is the report's own `toCell`. Nothing is
+   * derived from the board. Without a tween manager (a unit harness) the view is
+   * placed immediately, so the delivered order stays observable with no clock.
+   */
+  private travelGemView(view: GemView, index: number, durationMs: number): void {
+    const { x, y } = BattleScene.cellCoordinates(index);
+
+    if (!this.tweens) {
+      view.tile.setPosition(x, y);
+      view.label.setPosition(x, y);
+      return;
+    }
+
+    this.tweens.add({
+      targets: [view.tile, view.label],
+      x,
+      y,
+      duration: durationMs,
+      ease: 'Sine.easeIn',
+    });
+  }
+
+  /** Every `dropMoves` entry the given phase's delivered events carry, in order. */
+  private static deliveredDropMoves(events: readonly InBattleServerEvent[]): PresentedDropMove[] {
+    const moves: PresentedDropMove[] = [];
+
+    for (const event of events) {
+      if (event.type === 'CascadeStepResolved') {
+        moves.push(...event.dropMoves);
+      }
+    }
+
+    return moves;
+  }
+
+  /** Every `spawnedGems` entry the given phase's delivered events carry, in order. */
+  private static deliveredSpawnedGems(
+    events: readonly InBattleServerEvent[]
+  ): PresentedSpawnedGem[] {
+    const gems: PresentedSpawnedGem[] = [];
+
+    for (const event of events) {
+      if (event.type === 'CascadeStepResolved') {
+        gems.push(...event.spawnedGems);
+      }
+    }
+
+    return gems;
   }
 
   /**

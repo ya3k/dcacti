@@ -1099,8 +1099,13 @@ for column = 0 → 7:                     (fixes the columns' new contents)
    index is introduced into the four-type value domain (§1.1): an empty cell is
    the absence of a Gem, not a fifth Gem.
 6. **Gravity draws no RNG.** It is a pure rearrangement (§7.2).
-7. **Gravity produces no Match, no Combo, and no events.** It only relocates
-   Gems; the board is re-examined by the next detection pass (§4.1 step 5).
+7. **Gravity produces no Match, no Combo, and emits no event of its own.** It only
+   relocates Gems; the board is re-examined by the next detection pass (§4.1 step
+   5). What a pass's Gravity and Spawn did is **reported after both have
+   completed**, as that pass's own closing report in the round's existing single
+   event batch (`GAME_EVENTS.md` §1.1 item 8, §2 `CascadeStepResolved`;
+   `SIGNALR_PROTOCOL.md` §3.2.28) — Gravity itself still produces and emits
+   nothing, and no event carries an intermediate board (`GAME_STATE.md` §3).
 8. **Interaction with Special Gems.** A Special Gem is a Gem occupying a cell
    and falls under exactly these rules – it is pulled down like any other Gem,
    keeps its place in the column's order, and never moves between columns. Its

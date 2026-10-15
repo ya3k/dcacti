@@ -4037,6 +4037,11 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                     // carries the Match generation's ("match") and/or the Boss Response's
                     // drain ("boss") alongside the Relic stage's ("relic").
                     "PowerChanged",
+                    // §3.2.28: each recorded detection pass's completed Gravity + Spawn
+                    // transition report, emitted as that pass's last item inside this
+                    // same batch (ADR-027). It is a report of the pass, never a second
+                    // *message*: the envelope still carries one batch per round.
+                    "CascadeStepResolved",
                 });
 
             // §3.2.2 item 4 / §3.2.5 item 5: the discriminator is always present and
@@ -4104,6 +4109,12 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                 // emits the Match stage's generation and the Boss Response's drain,
                 // so `source` here carries "match" and/or "boss".
                 "PowerChanged" => new[] { "type", "delta", "power", "source" },
+                // §3.2.28: the pass's own 1-based depth and its two step reports. The
+                // two arrays are omitted when they would be empty (§3.2.5 item 1), so a
+                // given item carries the depth and whichever of them is non-empty; no
+                // `board`, no `actor`, no `clearedCells`, and no `specialGem` inside a
+                // `spawnedGems` entry is ever present.
+                "CascadeStepResolved" => new[] { "type", "passDepth", "dropMoves", "spawnedGems" },
                 _ => throw new InvalidOperationException($"Undocumented event type on the wire: {type}."),
             };
 
@@ -4145,6 +4156,131 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         Assert.Equal(
             types.Count(t => t == "DamageCalculated"),
             types.Count(t => t == "DamageTaken"));
+    }
+
+    [Fact]
+    public async Task Swap_ReceiveEvents_ShouldCarryOneWellFormedCascadeStepResolvedPerRecordedPass()
+    {
+        // SIGNALR_PROTOCOL.md §3.2.28 / GAME_EVENTS.md §1.1 item 8 / ADR-027: one
+        // item per recorded detection pass, as that pass's last item, carrying the
+        // pass's own depth, the survivors its Gravity relocated, and the Gems its
+        // Spawn placed — and nothing else.
+        const string battleId = "battle-wire-cascade-step";
+        var payload = await SwapOnceAndReadTheBatch(battleId);
+        var events = payload.GetProperty("events").EnumerateArray().ToArray();
+
+        var steps = events
+            .Where(e => e.GetProperty("type").GetString() == "CascadeStepResolved")
+            .ToArray();
+
+        // A committed Swap always resolves at least one detection pass, so the batch
+        // always reports at least one transition.
+        Assert.NotEmpty(steps);
+
+        // Pass identification and ordering: within ONE board action the reported
+        // depths are 1-based, ascending and gapless. ADR-026 §2 makes a round hold two
+        // board actions — the Player's committed Swap and the Boss Response's own step
+        // 18a action — and each resolves its own cascade loop, so each starts at depth
+        // 1 again; a new action is delimited by its own `SwapStarted`.
+        var perActionDepths = new List<List<int>> { new() };
+
+        foreach (var e in events)
+        {
+            switch (e.GetProperty("type").GetString())
+            {
+                case "SwapStarted" when perActionDepths[^1].Count > 0:
+                    perActionDepths.Add([]);
+                    break;
+                case "CascadeStepResolved":
+                    perActionDepths[^1].Add(e.GetProperty("passDepth").GetInt32());
+                    break;
+            }
+        }
+
+        Assert.All(
+            perActionDepths.Where(actionDepths => actionDepths.Count > 0),
+            actionDepths => Assert.Equal(Enumerable.Range(1, actionDepths.Count), actionDepths));
+
+        var depths = steps.Select(s => s.GetProperty("passDepth").GetInt32()).ToArray();
+
+        // §3.2.28 item 2: the depth is the same value the pass's own MatchCreated
+        // items carry, so the highest reported depth of an action is a depth some
+        // Match of that action has.
+        var matchDepths = events
+            .Where(e => e.GetProperty("type").GetString() == "MatchCreated")
+            .Select(e => e.GetProperty("cascadeDepth").GetInt32())
+            .ToHashSet();
+
+        Assert.All(depths, d => Assert.Contains(d, matchDepths));
+
+        foreach (var step in steps)
+        {
+            var members = step.EnumerateObject().Select(p => p.Name).ToArray();
+
+            // §3.2.5 item 1: the two arrays are omitted when empty and are never sent
+            // as `[]`; the depth is always present.
+            Assert.Contains("passDepth", members);
+            Assert.DoesNotContain(members, m => m is "board" or "actor" or "clearedCells");
+
+            var landed = new HashSet<int>();
+
+            if (step.TryGetProperty("dropMoves", out var dropMoves))
+            {
+                var moves = dropMoves.EnumerateArray().ToArray();
+                Assert.NotEmpty(moves);
+
+                var sources = new HashSet<int>();
+
+                foreach (var move in moves)
+                {
+                    Assert.Equal(
+                        new[] { "fromCell", "toCell" },
+                        move.EnumerateObject().Select(p => p.Name).ToArray());
+
+                    var fromCell = move.GetProperty("fromCell").GetInt32();
+                    var toCell = move.GetProperty("toCell").GetInt32();
+
+                    // §3.2.28 item 3: a real movement inside the board, within one
+                    // column, with one source and one destination each.
+                    Assert.InRange(fromCell, 0, 63);
+                    Assert.InRange(toCell, 0, 63);
+                    Assert.NotEqual(fromCell, toCell);
+                    Assert.Equal(fromCell % 8, toCell % 8);
+                    Assert.True(sources.Add(fromCell), "a drop move's source is reported once");
+                    Assert.True(landed.Add(toCell), "a drop move's destination is reported once");
+                }
+            }
+
+            if (step.TryGetProperty("spawnedGems", out var spawnedGems))
+            {
+                var gems = spawnedGems.EnumerateArray().ToArray();
+                Assert.NotEmpty(gems);
+
+                var cells = new HashSet<int>();
+
+                foreach (var gem in gems)
+                {
+                    Assert.Equal(
+                        new[] { "cellIndex", "gemType" },
+                        gem.EnumerateObject().Select(p => p.Name).ToArray());
+
+                    var cellIndex = gem.GetProperty("cellIndex").GetInt32();
+
+                    // §3.2.28 item 4: a §1.0 destination cell and one of the four
+                    // documented Gem types; never a Special Gem, and never a cell a
+                    // survivor fell into.
+                    Assert.InRange(cellIndex, 0, 63);
+                    Assert.Contains(
+                        gem.GetProperty("gemType").GetString(),
+                        new[] { "ATK", "DEF", "HP", "POWER" });
+                    Assert.True(cells.Add(cellIndex), "a spawned cell is reported once");
+                    Assert.DoesNotContain(cellIndex, landed);
+                }
+            }
+
+            // §3.2.5: no member of the item is ever JSON null.
+            Assert.All(step.EnumerateObject(), p => Assert.NotEqual(JsonValueKind.Null, p.Value.ValueKind));
+        }
     }
 
     /// <summary>
@@ -4319,10 +4455,24 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                 e.PowerChanged.Power,
                 e.PowerChanged.Source.ToString().ToLowerInvariant()),
 
+            // §3.2.28: the pass's own 1-based depth, the survivors its Gravity
+            // relocated (source → destination, as delivered), and the Gems its Spawn
+            // placed (destination + drawn type). The expectation maps the pass's own
+            // step results, exactly as the production projection does, and writes no
+            // `board`, no `actor`, and no `clearedCells`.
+            BattleEventType.CascadeStepResolved => BattleEventWireDto.CascadeStepResolved(
+                e.CascadeStep.PassDepth,
+                e.CascadeStep.DropMoves
+                    .Select(m => new DropMoveWireDto(m.FromCell, m.ToCell))
+                    .ToArray(),
+                e.CascadeStep.SpawnedGems
+                    .Select(s => new SpawnedGemWireDto(s.CellIndex, GemTypes.ToContractName(s.GemType)))
+                    .ToArray()),
+
             _ => throw new ArgumentOutOfRangeException(
                 nameof(e),
                 e.Type,
-                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.24, §3.2.26–§3.2.27, §3.3)."),
+                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.24, §3.2.26–§3.2.28, §3.3)."),
         };
     }
 

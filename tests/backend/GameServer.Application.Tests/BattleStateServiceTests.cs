@@ -2448,14 +2448,16 @@ public class BattleStateServiceTests
     /// <summary>
     /// Whether a Battle Event belongs to a Match-3 board cycle
     /// (<c>GAME_EVENTS.md</c> §1.1) — the same reading
-    /// <see cref="RoundTestSupport.BossBoardEvents"/> delimits the Boss's cycle with.
+    /// <see cref="RoundTestSupport.BossBoardEvents"/> delimits the Boss's cycle with,
+    /// including the pass's own closing <c>CascadeStepResolved</c> (§1.1 item 8).
     /// </summary>
     private static bool IsBoardEvent(BattleEvent battleEvent) =>
         battleEvent.Type
             is BattleEventType.MatchCreated
             or BattleEventType.CascadeCreated
             or BattleEventType.GemMatched
-            or BattleEventType.ComboChanged;
+            or BattleEventType.ComboChanged
+            or BattleEventType.CascadeStepResolved;
 
     /// <summary>
     /// The board, Boss-phase resources, and stream

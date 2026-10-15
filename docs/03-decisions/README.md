@@ -1,6 +1,29 @@
 # Architecture Decision Records (ADR)
 
-**Version:** 1.18 (§7 — ADR-026 added per `TASK-259`: the shared-board gameplay and actor-relative match resolution architecture decision. Player and Boss share one 8×8 Match-3 board; both sides act by making valid swaps; matched cell type determines effect; acting side determines ownership and target; ATK damage is strictly gated on confirmed ATK matches; fallback fixed basic attacks are retired; Boss skills deal zero direct damage; Boss SkillCharge charges exclusively from Boss POWER matches; atomic round commits via single Redis CAS update. Status: Accepted. Prior 1.17: §7 — ADR-025 added per `TASK-256`: the swap action preconditions and idempotency architecture decision, superseding ADR-010. Replaces the coordinate-pair restriction with a dual state-precondition (`expectedSequence`) and action-idempotency (`actionId`) contract, restoring legitimate consecutive-turn coordinate reuse. Prior 1.16: §7 — ADR-024 added per `TASK-250`: the database-driven
+**Version:** 1.19 (§7 — ADR-027 added per `TASK-278`: the authoritative cascade
+pass transition reporting decision. The Operator Decision approving TASK-278
+A-1(i) and A-4 ("Approve the addition of `CascadeStepResolved` to the existing
+`ReceiveEvents` batch protocol") authorizes one **additive event** inside the
+round's existing single atomic batch, reporting a detection pass's completed
+Gravity and Spawn with `passDepth`, `dropMoves` (authoritative origin and
+destination per gem movement) and `spawnedGems` (authoritative destination and
+gem type per spawn), omitted when empty, emitted once per recorded pass as that
+pass's last item, and never for the terminating pass that detects no Match. The
+deltas-only choice is recorded and a **per-pass board is rejected** as redundant
+with the state push, a second authoritative source of board state, and
+prohibited by `SIGNALR_PROTOCOL.md` §3.2.12 item 1 / §8 item 5. Redis CAS, the
+single atomic round, `Sequence` semantics, existing event sequence semantics,
+turn banner behavior and snapshot recovery are **unchanged**; RNG stays
+server-authoritative; intermediate board configurations stay Transient
+Resolution State (never written to Redis mid-resolution, never in a snapshot,
+never delivered as a board); the per-pass-board/message/partial-batch
+prohibitions are **reconciled narrowly, not weakened**; client use is
+presentation-only and a missing, malformed or inconsistent item is skipped; and
+compatibility is one additive discriminator plus an explicit tolerant-reader
+rule with **no version negotiation**. The governing documents
+(`GAME_RULES.md` §16, `GAME_EVENTS.md`, `SIGNALR_PROTOCOL.md`, `GAME_STATE.md`)
+were amended first and the ADR written last as a historical record. Status:
+Accepted. `TASK-278` remains open pending review. Prior 1.18: §7 — ADR-026 added per `TASK-259`: the shared-board gameplay and actor-relative match resolution architecture decision. Player and Boss share one 8×8 Match-3 board; both sides act by making valid swaps; matched cell type determines effect; acting side determines ownership and target; ATK damage is strictly gated on confirmed ATK matches; fallback fixed basic attacks are retired; Boss skills deal zero direct damage; Boss SkillCharge charges exclusively from Boss POWER matches; atomic round commits via single Redis CAS update. Status: Accepted. Prior 1.17: §7 — ADR-025 added per `TASK-256`: the swap action preconditions and idempotency architecture decision, superseding ADR-010. Replaces the coordinate-pair restriction with a dual state-precondition (`expectedSequence`) and action-idempotency (`actionId`) contract, restoring legitimate consecutive-turn coordinate reuse. Prior 1.16: §7 — ADR-024 added per `TASK-250`: the database-driven
 boss balance configuration architecture decision. Adopts Option 1 (Domain
 Overlay) to make PostgreSQL authoritative at runtime for boss combat balance
 (`MaxHP`, `ATK`, `DEF`, `EnrageThreshold`) while preserving `BossSkillDefinition.SecondaryEffect`
@@ -240,6 +263,7 @@ technical document.
 | ADR-024 | Database-driven boss balance configuration — PostgreSQL-authoritative runtime balance for `MaxHP`, `ATK`, `DEF`, and `EnrageThreshold` via Domain Overlay; static `BossDefinitions.All` retained as seed defaults and offline test fixtures; preserves `SecondaryEffect` (Burn, Drain Power, Root) without complex JSON migrations; snapshot isolation for in-progress battles; strict fail-closed validation | Accepted |
 | ADR-025 | Swap action preconditions and idempotency — replaces the `LastCommittedSwapPair` coordinate restriction with a dual state version precondition (`expectedSequence`) and action idempotency (`actionId`) contract, superseding ADR-010. Permits legitimate consecutive-turn coordinate reuse while deterministically rejecting stale requests and deduplicating retries | Accepted |
 | ADR-026 | Shared-board gameplay and actor-relative match resolution — Player and Boss share one 8×8 board; both act via valid swaps; cell type determines effect; acting side determines target; ATK damage gated on confirmed ATK matches; fallback fixed basic attacks retired; Boss skills deal zero direct damage; Boss SkillCharge charges exclusively from Boss POWER matches; atomic round state persistence via single Redis CAS | Accepted |
+| ADR-027 | Authoritative cascade pass transition reporting — the Operator Decision approving TASK-278 A-1(i)/A-4 authorizes `CascadeStepResolved` as **one additive event item** inside the round's existing single atomic `ReceiveEvents` batch, reporting a detection pass's completed Gravity and Spawn with `passDepth` (always present; the pass's own 1-based depth), `dropMoves` (`fromCell`/`toCell` per surviving gem that changed cell; omitted when empty) and `spawnedGems` (`cellIndex`/`gemType` per spawned gem; omitted when empty), emitted once per recorded pass as that pass's last item, after that pass's Gravity and Spawn, and never for the terminating pass. Deltas-only: no `board`, no `actor`, no `clearedCells`, and no `specialGem` inside a `spawnedGems` entry — a per-pass board is rejected as redundant with the state push and prohibited by `SIGNALR_PROTOCOL.md` §3.2.12 item 1 / §8 item 5. Intermediate board configurations remain Transient Resolution State: never written to Redis mid-resolution, never in a snapshot, never delivered as a board (the board stays delivered only by `BattleStateUpdated` / `GetBattleState`). Redis CAS, the single atomic round, `Sequence` semantics, existing event sequence semantics, turn banner behavior and `ADR-008` snapshot recovery are unchanged, and RNG stays server-authoritative. The prohibitions on per-pass boards, messages and partial batches are reconciled narrowly rather than weakened; client use is presentation-only for the pass reported, and a missing, malformed or internally inconsistent item is skipped so presentation degrades to the existing settle convergence. Compatibility is one additive discriminator plus an explicit tolerant-reader rule; no version negotiation exists. The governing documents were amended first; the ADR was written last as a historical record. `TASK-278` remains open pending review | Accepted |
 
 **Partial supersession (ADR-016).** ADR-011 and ADR-012 remain in force
 except for the specific items named below, which ADR-016 supersedes. Their

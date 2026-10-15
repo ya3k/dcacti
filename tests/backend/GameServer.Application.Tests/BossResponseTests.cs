@@ -1675,12 +1675,14 @@ public class BossResponseTests
 
     /// <summary>
     /// Whether a Battle Event is part of a Match-3 board cycle
-    /// (<c>GAME_EVENTS.md</c> §1.1).
+    /// (<c>GAME_EVENTS.md</c> §1.1), including the pass's own closing
+    /// <c>CascadeStepResolved</c> (§1.1 item 8).
     /// </summary>
     private static bool IsBoardEvent(BattleEvent battleEvent) =>
         battleEvent.Type
             is BattleEventType.MatchCreated
             or BattleEventType.CascadeCreated
             or BattleEventType.GemMatched
-            or BattleEventType.ComboChanged;
+            or BattleEventType.ComboChanged
+            or BattleEventType.CascadeStepResolved;
 }

@@ -1,6 +1,6 @@
 # Game Events
 
-**Version:** 2.14 (§3 item 8 extended per ADR-026 / TASK-267: the operation that emits no Battle Event has a **second** documented case — `MATCH3_RULES.md` §1.6's commit-boundary board recovery — recorded alongside the Boss Response phase's deadlock reshuffle, as the same deterministic regeneration at a second evaluation point. **No event, payload member, ordering rule, delivery path, game rule or implementation is changed**: the item's rule is unchanged and only its example set is completed, so the closed discriminator set (`SIGNALR_PROTOCOL.md` §3.2.2) and `GAME_RULES.md` §16 remain exactly as they were (TASK-268). Prior 2.13 (§3 item 8 added per TASK-265: the `BoardReshuffled` event `ADR-026` §8 promised is recorded as **not existing** — the shared board's deadlock reshuffle is a server-internal operation of the Boss Response phase, it emits no Battle Event, and the board that follows from it reaches the client as the Round's committed board in that Round's single state push. **No event, payload member, ordering rule, delivery path, game rule or implementation is changed**: `GAME_RULES.md` §16, §2 of this document, `SIGNALR_PROTOCOL.md` §3.2.2's closed discriminator set and the code already agree that the event does not exist; only the document that promised it (`ADR-026` §8) is corrected, and this document's own §3 now records the absence and the path a future event would have to take. Prior 2.12: §1 updated per ADR-026 / TASK-259: Event ordering synchronized with shared-board round execution — damage events occur iff acting actor produced a valid ATK-gem match (D1); Boss response phase incorporates Boss board swap and cascades; Boss skill deals zero direct damage (D3); fixed basic attack fallback retired. Prior 2.11: §2 `PowerChanged` reconciled with the TASK-150 Product Owner
+**Version:** 2.15 (§1.1, §1, and §2 updated per the Operator Decision approving TASK-278 A-1(i) and A-4: `CascadeStepResolved` is defined — one additive Battle Event reporting a detection pass's completed Gravity and Spawn, with `passDepth`, `dropMoves` and `spawnedGems`, emitted as that pass's last item inside the round's existing single `ReceiveEvents` batch, and emitting nothing for the terminating pass. **No other event, payload member, ordering rule of an existing event, delivery path, or gameplay rule is changed**: the cycle's own order is unchanged and one pass-closing report is placed on it. Prior 2.14 (§3 item 8 extended per ADR-026 / TASK-267: the operation that emits no Battle Event has a **second** documented case — `MATCH3_RULES.md` §1.6's commit-boundary board recovery — recorded alongside the Boss Response phase's deadlock reshuffle, as the same deterministic regeneration at a second evaluation point. **No event, payload member, ordering rule, delivery path, game rule or implementation is changed**: the item's rule is unchanged and only its example set is completed, so the closed discriminator set (`SIGNALR_PROTOCOL.md` §3.2.2) and `GAME_RULES.md` §16 remain exactly as they were (TASK-268). Prior 2.13 (§3 item 8 added per TASK-265: the `BoardReshuffled` event `ADR-026` §8 promised is recorded as **not existing** — the shared board's deadlock reshuffle is a server-internal operation of the Boss Response phase, it emits no Battle Event, and the board that follows from it reaches the client as the Round's committed board in that Round's single state push. **No event, payload member, ordering rule, delivery path, game rule or implementation is changed**: `GAME_RULES.md` §16, §2 of this document, `SIGNALR_PROTOCOL.md` §3.2.2's closed discriminator set and the code already agree that the event does not exist; only the document that promised it (`ADR-026` §8) is corrected, and this document's own §3 now records the absence and the path a future event would have to take. Prior 2.12: §1 updated per ADR-026 / TASK-259: Event ordering synchronized with shared-board round execution — damage events occur iff acting actor produced a valid ATK-gem match (D1); Boss response phase incorporates Boss board swap and cascades; Boss skill deals zero direct damage (D3); fixed basic attack fallback retired. Prior 2.11: §2 `PowerChanged` reconciled with the TASK-150 Product Owner
 decisions D-1–D-8: the `source` value set is now the four values
 `"match"`, `"card"`, `"relic"`, and `"boss"`; the owning-stage emission rule
 replaces the stale "the `"match"` and `"card"` sources remain their own stages'"
@@ -103,6 +103,7 @@ SwapResolved
   CascadeCreated          (only if this Match came from a Cascade)
   ComboChanged
   GemMatched               (once per Gem consumed)
+  CascadeStepResolved      (once per recorded pass, last in that pass — §1.1 item 8)
 PowerChanged
 PassiveCharged             (once per Match, per PASSIVE_RULES.md §2)
 PassiveTriggered            (only when threshold crossed)
@@ -145,11 +146,15 @@ committed Swap                                  MATCH3_RULES.md §2.1.6
         ├── GemMatched          per Gem a Special Gem activation clears
         │                       (§5.5.5 item 8: not a Match — no MatchCreated)
         │
-        └── gravity + spawn     (no events: MATCH3_RULES.md §4.4 item 7)
-              └── detection pass 2 (depth 2)
-                    ├── CascadeCreated   once for the pass, first
-                    └── … the same cycle, repeated until a pass finds
-                          no Match
+        ├── gravity + spawn     (Gravity and Spawn emit nothing themselves:
+        │                        MATCH3_RULES.md §4.4 item 7, §4.5)
+        ├── CascadeStepResolved once, and last in this pass, only after that
+        │                       pass's Gravity and Spawn have completed (§2)
+        │
+        └── detection pass 2 (depth 2)
+              ├── CascadeCreated   once for the pass, first
+              └── … the same cycle, repeated until a pass finds
+                    no Match
 ```
 
 1. **`CascadeCreated` precedes the Matches of its pass.** It reports the pass
@@ -170,12 +175,21 @@ committed Swap                                  MATCH3_RULES.md §2.1.6
    before the next Match's.
 6. **A termination pass emits nothing.** The pass that finds no Match
    (`MATCH3_RULES.md` §4.3) is a detection pass with an empty match set: no
-   `MatchCreated`, no `CascadeCreated`, no `ComboChanged`
+   `MatchCreated`, no `CascadeCreated`, no `ComboChanged`, and no
+   `CascadeStepResolved` — there is no pass transition to report
    (`MATCH3_RULES.md` §3.4 item 2).
 7. **Symptoms of a wrong order.** `MatchResolved` before its `MatchCreated`,
    `CascadeCreated` after the Matches it introduces, a `ComboChanged` that
    jumps by more than 1, or a `MatchCreated` after the Swap's final Match has
    been resolved are all ordering defects.
+8. **A recorded pass is closed by its `CascadeStepResolved`.** The event is
+   emitted **once per recorded pass** and is that pass's **last** item: after
+   the pass's `MatchCreated`/`GemMatched`/`ComboChanged` items and after that
+   pass's Gravity and Spawn have completed, and therefore before the next
+   pass's `CascadeCreated` (or before the following stage's events). It reports
+   the transition that closes the pass; it opens nothing, reorders nothing, and
+   repeats no other item of the cycle. What it carries and what it deliberately
+   omits is §2's; its wire schema is `SIGNALR_PROTOCOL.md` §3.2.28.
 
 ## 1.2 Rejected Swap — No Events
 
@@ -402,6 +416,61 @@ without a `MatchCreated` (`MATCH3_RULES.md` §5.5.5 item 8).
    item 7, `MATCH3_RULES.md` §5.9.4 item 7). The trigger, the once-per-cell
    rule, the union scope, and the ascending-index enumeration of §1.3 are all
    unchanged by this member.
+
+## CascadeStepResolved
+```text
+Trigger:  One detection pass's Gravity and Spawn have completed
+          (MATCH3_RULES.md §4.4, §4.5)
+Payload:  passDepth, dropMoves[] (fromCell, toCell),
+          spawnedGems[] (cellIndex, gemType)
+```
+
+It was added to `GAME_RULES.md` §16 by the Operator Decision approving TASK-278
+A-1(i) and A-4, and it is a **report of a detection pass's gravity+spawn
+transition**.
+
+1. **It reports the pass's transition and not the board.** `passDepth` is the
+   detection pass reported; `dropMoves` are the surviving Gems that changed
+   cell during that pass's Gravity, each entry the authoritative origin and
+   destination; `spawnedGems` are the Gems that pass's Spawn placed, each entry
+   the destination cell and the Gem type placed there. The intermediate board
+   configurations themselves are Transient Resolution State (`GAME_STATE.md`
+   §3) and this event carries none of them.
+2. **`passDepth` is the pass's own 1-based depth.** `1` is the pass run on the
+   board the committed Swap produced, which is **not** a Cascade; `>= 2` is a
+   pass produced by Gravity+Spawn (`MATCH3_RULES.md` §4.2 items 1–2). It is the
+   same value `MatchCreated`'s `cascadeDepth` carries on that same pass, and on
+   a pass preceded by a `CascadeCreated` it is that event's `cascadeDepth + 1`.
+   The member name is deliberately new: `cascadeDepth` keeps its two existing
+   meanings and is never reused for a third (`SIGNALR_PROTOCOL.md` §3.2.6
+   item 4, §3.2.7 item 2).
+3. **Ordering.** Exactly one item per **recorded** pass, and it is that pass's
+   **last** item: after the pass's `MatchCreated`/`GemMatched`/`ComboChanged`
+   and after the pass's Gravity and Spawn have completed, and before the next
+   pass's `CascadeCreated` — or before the following stage's events (§1.1
+   item 8). A pass that detects no Match is the terminating pass and emits none
+   (§1.1 item 6). Within the payload, each array is in the read order of the
+   step it reports: `dropMoves` by column ascending and, within a column,
+   descending `fromCell` (bottom-to-top — `MATCH3_RULES.md` §4.4 item 1);
+   `spawnedGems` by column ascending and, within a column, ascending
+   `cellIndex` (top-to-bottom — `MATCH3_RULES.md` §4.5 item 2).
+4. **What it deliberately omits.** An empty array is omitted, never sent as
+   `[]` (`SIGNALR_PROTOCOL.md` §3.2.5) — so a pass whose Gravity moved nothing
+   carries no `dropMoves`, and a pass whose Spawn placed nothing carries no
+   `spawnedGems`. It carries no board, no `actor`, no `clearedCells`, and no
+   `specialGem` inside a `spawnedGems` entry: the pass's cleared cells are
+   already delivered by that pass's `GemMatched` run (which is one union per
+   pass), the acting side by the sibling `SwapStarted.actor`, and the board
+   only by the state push (`SIGNALR_PROTOCOL.md` §3.2.28, §4). It is not a
+   second authoritative source of board state, and the client derives no
+   gravity destination, no spawned identity, and no board of its own from it
+   (`GAME_RULES.md` §18, `SIGNALR_PROTOCOL.md` §3.2.28).
+5. **It adds no message, no method, no subscription, and no state member.** It
+   is an item of the round's existing single `ReceiveEvents` batch
+   (`SIGNALR_PROTOCOL.md` §3, §3.1), and it is emitted only after the pass it
+   reports has completed Gravity and Spawn. No per-pass board, no mid-resolution
+   push, and no second batch for one round is introduced by it
+   (`GAME_STATE.md` §3, §5.1 item 2).
 
 ## PowerChanged
 ```text

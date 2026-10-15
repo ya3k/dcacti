@@ -555,9 +555,25 @@ public class BattleEventEmissionTests
             {
                 expectedTypes.Add(BattleEventType.GemMatched);
             }
+
+            // §1.1 item 8 / §3.2.28: the pass's completed Gravity + Spawn transition
+            // is its last item, whatever number of Matches the pass held — one report
+            // per PASS, never one per Match.
+            expectedTypes.Add(BattleEventType.CascadeStepResolved);
         }
 
         Assert.Equal(expectedTypes, result.Events.Select(e => e.Type));
+
+        // One transition report per pass, at that pass's own depth: the count is the
+        // pass count, not the Match count (SIGNALR_PROTOCOL.md §3.2.28 item 5).
+        var stepReports = result.Events
+            .Where(e => e.Type == BattleEventType.CascadeStepResolved)
+            .ToArray();
+
+        Assert.Equal(result.Resolution.Passes.Count, stepReports.Length);
+        Assert.Equal(
+            result.Resolution.Passes.Select(p => p.Matches[0].CascadeDepth),
+            stepReports.Select(e => e.CascadeStep.PassDepth));
 
         // The same facts asserted without the projection above: the two Matches of the
         // first pass, in §3.2 match-set order, each keeping its own Combo increment.
@@ -835,9 +851,40 @@ public class BattleEventEmissionTests
             {
                 expectedTypes.Add(BattleEventType.GemMatched);
             }
+
+            // §1.1 item 8 / §3.2.28: the pass's completed Gravity + Spawn transition
+            // is its last item — after every Match, Gem and Combo report of the pass
+            // and before the next pass's CascadeCreated.
+            expectedTypes.Add(BattleEventType.CascadeStepResolved);
         }
 
         Assert.Equal(expectedTypes, result.Events.Select(e => e.Type));
+
+        // The depth of every reported transition is its own pass's depth: the same
+        // value the pass's MatchCreated events carry, and CascadeCreated's + 1 on
+        // every pass that has one (SIGNALR_PROTOCOL.md §3.2.28 item 2).
+        Assert.Equal(
+            result.Resolution.Passes.Select(p => p.Matches[0].CascadeDepth),
+            result.Events
+                .Where(e => e.Type == BattleEventType.CascadeStepResolved)
+                .Select(e => e.CascadeStep.PassDepth));
+
+        // And each report carries its own pass's own step results, in order.
+        Assert.Equal(
+            result.Resolution.Passes.SelectMany(p => p.DropMoves)
+                .Select(m => $"{m.FromCell}>{m.ToCell}"),
+            result.Events
+                .Where(e => e.Type == BattleEventType.CascadeStepResolved)
+                .SelectMany(e => e.CascadeStep.DropMoves)
+                .Select(m => $"{m.FromCell}>{m.ToCell}"));
+
+        Assert.Equal(
+            result.Resolution.Passes.SelectMany(p => p.SpawnedGems)
+                .Select(s => $"{s.CellIndex}:{s.GemType}"),
+            result.Events
+                .Where(e => e.Type == BattleEventType.CascadeStepResolved)
+                .SelectMany(e => e.CascadeStep.SpawnedGems)
+                .Select(s => $"{s.CellIndex}:{s.GemType}"));
     }
 
     [Fact]
@@ -878,6 +925,240 @@ public class BattleEventEmissionTests
             result.Events
                 .Where(e => e.Type == BattleEventType.GemMatched)
                 .Select(e => e.Gem.CellIndex));
+    }
+
+    // =======================================================================
+    // CascadeStepResolved — the pass's completed Gravity + Spawn report
+    // (GAME_EVENTS.md §1.1 item 8, §2; SIGNALR_PROTOCOL.md §3.2.28; ADR-027)
+    // =======================================================================
+
+    [Fact]
+    public void CascadeStepResolved_ShouldSitLastInItsOwnPass_OncePerPass()
+    {
+        // §3.2.28 item 5: exactly one report per recorded pass, and the position
+        // §1.1 item 8 fixes —
+        // the pass's LAST item, after its Match/Gem/Combo reports and immediately
+        // before the next pass's CascadeCreated. The terminating pass detects no
+        // Match, is not in `Passes`, and therefore reports nothing at all
+        // (MATCH3_RULES.md §4.3 item 4).
+        var result = SwapExecutor.Execute(CascadeBattle(), new SwapRequest(CascadeFrom, CascadeTo));
+
+        Assert.True(result.IsAccepted);
+        Assert.True(result.Resolution.Passes.Count >= 2, "the fixture must cascade, or the assertion would be vacuous");
+
+        var indices = Enumerable.Range(0, result.Events.Count)
+            .Where(i => result.Events[i].Type == BattleEventType.CascadeStepResolved)
+            .ToArray();
+
+        Assert.Equal(result.Resolution.Passes.Count, indices.Length);
+
+        // Pass identification: one report per pass, ascending, 1-based, and the same
+        // depth the pass's own MatchCreated events carry (§3.2.28 item 2).
+        Assert.Equal(
+            Enumerable.Range(1, result.Resolution.Passes.Count),
+            indices.Select(i => result.Events[i].CascadeStep.PassDepth));
+
+        Assert.Equal(
+            result.Resolution.Passes.Select(p => p.Matches[0].CascadeDepth),
+            indices.Select(i => result.Events[i].CascadeStep.PassDepth));
+
+        foreach (var index in indices)
+        {
+            // The action's boundary pair opens the list, so a report is never first —
+            // and the item before it belongs to the same pass.
+            Assert.True(index > 0, "a pass report never opens the batch");
+            Assert.True(
+                result.Events[index - 1].Type is BattleEventType.MatchCreated
+                    or BattleEventType.GemMatched
+                    or BattleEventType.ComboChanged
+                    or BattleEventType.CascadeCreated,
+                $"the item before a pass report is {result.Events[index - 1].Type}");
+
+            if (index + 1 < result.Events.Count)
+            {
+                // §1.1 item 1: the next pass opens with its own CascadeCreated, so the
+                // report can only be the item that precedes a pass boundary.
+                Assert.Equal(BattleEventType.CascadeCreated, result.Events[index + 1].Type);
+            }
+        }
+    }
+
+    [Fact]
+    public void CascadeStepResolved_ShouldReportEachPassesOwnMovesAndSpawns()
+    {
+        // The report is the pass's own step results, value for value and in order —
+        // and every coordinate it states is a §1.0 cell of this board, with the
+        // structural invariants Gravity and Spawn guarantee (§3.2.28 item 3).
+        var result = SwapExecutor.Execute(CascadeBattle(), new SwapRequest(CascadeFrom, CascadeTo));
+
+        Assert.True(result.IsAccepted);
+
+        var reports = result.Events
+            .Where(e => e.Type == BattleEventType.CascadeStepResolved)
+            .ToArray();
+
+        Assert.Equal(result.Resolution.Passes.Count, reports.Length);
+
+        for (var i = 0; i < reports.Length; i++)
+        {
+            var pass = result.Resolution.Passes[i];
+            var step = reports[i].CascadeStep;
+
+            Assert.Equal(pass.Matches[0].CascadeDepth, step.PassDepth);
+
+            Assert.Equal(
+                pass.DropMoves.Select(m => $"{m.FromCell}>{m.ToCell}"),
+                step.DropMoves.Select(m => $"{m.FromCell}>{m.ToCell}"));
+
+            Assert.Equal(
+                pass.SpawnedGems.Select(s => $"{s.CellIndex}:{s.GemType}"),
+                step.SpawnedGems.Select(s => $"{s.CellIndex}:{s.GemType}"));
+
+            foreach (var move in step.DropMoves)
+            {
+                Assert.InRange(move.FromCell, 0, BoardState.CellCount - 1);
+                Assert.InRange(move.ToCell, 0, BoardState.CellCount - 1);
+                Assert.NotEqual(move.FromCell, move.ToCell);
+
+                // §4.4 item 2: Gravity never moves a Gem between columns.
+                Assert.Equal(BoardState.ToColumn(move.FromCell), BoardState.ToColumn(move.ToCell));
+            }
+
+            Assert.Equal(
+                step.DropMoves.Count,
+                step.DropMoves.Select(m => m.ToCell).Distinct().Count());
+            Assert.Equal(
+                step.DropMoves.Count,
+                step.DropMoves.Select(m => m.FromCell).Distinct().Count());
+
+            foreach (var spawn in step.SpawnedGems)
+            {
+                Assert.InRange(spawn.CellIndex, 0, BoardState.CellCount - 1);
+
+                // §4.5 item 5 / §1.1: always one of the four documented Gem types.
+                Assert.Contains(spawn.GemType, GemTypes.All);
+            }
+
+            Assert.Equal(
+                step.SpawnedGems.Count,
+                step.SpawnedGems.Select(s => s.CellIndex).Distinct().Count());
+
+            // §4.5 item 1: Spawn fills what Gravity left empty, so no spawned Gem
+            // lands in a cell a survivor fell into.
+            Assert.Empty(step.SpawnedGems
+                .Select(s => s.CellIndex)
+                .Intersect(step.DropMoves.Select(m => m.ToCell)));
+
+            // No board: the report states the transition, never the resulting state
+            // (§3.2.12 item 1, §3.2.28 item 6).
+            Assert.DoesNotContain(
+                typeof(CascadeStepResolvedEvent)
+                    .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance),
+                p => p.Name.Contains("Board", StringComparison.Ordinal));
+        }
+    }
+
+    [Fact]
+    public void CascadeStepResolved_ShouldReconstructEveryPassBoardFromTheDeliveredBatch()
+    {
+        // §3.2.28's sufficiency, asserted end to end: the pass's delivered
+        // GemMatched run (its cleared cells) plus its delivered dropMoves and
+        // spawnedGems rebuild the board that pass published. This is the invariant
+        // the client's per-pass Fall/Refill presentation depends on (ADR-027), and it
+        // is asserted without any client-side gravity, drawn Gem identity, or board
+        // on the wire.
+        var board = TestBoard.Background().WithGems(
+            (I(5, 0), GemType.Atk),
+            (I(5, 1), GemType.Atk),
+            (I(5, 2), GemType.Atk));
+
+        var battle = BattleState.CreateWith("battle-006-reconstruction", TestSeed);
+        var rng = new Pcg32(battle.RngState.State, battle.RngState.Increment);
+        var resolution = CascadeResolver.Resolve(board, rng, swapOriginIndex: null);
+        var events = BattleEventBuilder.Build(resolution, combo: 0);
+
+        Assert.NotEmpty(resolution.Passes);
+        Assert.Equal(
+            resolution.Passes.Count,
+            events.Count(e => e.Type == BattleEventType.CascadeStepResolved));
+
+        var cells = board.ToCellArray().Select(c => (Cell?)c).ToArray();
+        var cleared = new List<int>();
+        var passIndex = 0;
+
+        foreach (var delivered in events)
+        {
+            if (delivered.Type == BattleEventType.GemMatched)
+            {
+                // The pass's cleared cells, exactly as the batch delivered them.
+                cleared.Add(delivered.Gem.CellIndex);
+                continue;
+            }
+
+            if (delivered.Type != BattleEventType.CascadeStepResolved)
+            {
+                continue;
+            }
+
+            var step = delivered.CascadeStep;
+
+            // 1. the cleared cells are emptied (§4.1 step 1).
+            foreach (var index in cleared)
+            {
+                cells[index] = null;
+            }
+
+            // 2. Gravity: every survivor the report named moves to the cell it named.
+            //    Sources are emptied first, so a cell that is one move's destination
+            //    and another move's source takes the arriving Gem (§4.4 item 3).
+            var before = (Cell?[])cells.Clone();
+
+            foreach (var move in step.DropMoves)
+            {
+                cells[move.FromCell] = null;
+            }
+
+            foreach (var move in step.DropMoves)
+            {
+                cells[move.ToCell] = before[move.FromCell];
+            }
+
+            // 3. Spawn: every Gem the report named lands on the cell it named (§4.1
+            //    step 4, §4.5 item 1).
+            foreach (var spawn in step.SpawnedGems)
+            {
+                cells[spawn.CellIndex] = Cell.Ordinary(spawn.GemType);
+            }
+
+            // 4. A cell the same pass created a Special Gem at is neither spawned nor
+            //    left empty: the creation is part of the pass's own board (§5.5.4
+            //    item 1, reserved before any activation ran).
+            foreach (var claim in resolution.Passes[passIndex].CreatedSpecialGems)
+            {
+                cells[claim.CellIndex] = Cell.WithSpecial(claim.GemType, claim.SpecialGem);
+            }
+
+            // No hole may survive a pass: the board is always full again (§4.5
+            // item 1, GAME_STATE.md §2.1.5 item 4).
+            Assert.DoesNotContain(cells, c => c is null);
+
+            // And the reconstruction is the pass's own published board, cell for cell.
+            var expected = resolution.Passes[passIndex].Board.ToCellArray();
+
+            for (var index = 0; index < expected.Length; index++)
+            {
+                Assert.True(
+                    expected[index] == cells[index],
+                    $"cell {index} of pass {passIndex + 1} was rebuilt as "
+                    + $"{cells[index]?.GemType.ToString() ?? "empty"}, but the pass published "
+                    + $"{expected[index].GemType}");
+            }
+
+            cleared.Clear();
+            passIndex++;
+        }
+
+        Assert.Equal(resolution.Passes.Count, passIndex);
     }
 
     // =======================================================================
@@ -1312,6 +1593,7 @@ public class BattleEventEmissionTests
                 "BossSkillCast",
                 "CardCast",
                 "CascadeDepth",
+                "CascadeStep",
                 "Combo",
                 "DamageCalculated",
                 "DamageDealt",
@@ -1347,6 +1629,7 @@ public class BattleEventEmissionTests
                      typeof(MatchResolution),
                      typeof(ActivatedSpecialGem),
                      typeof(SpecialGemClaim),
+                     typeof(CascadeStepResolvedEvent),
                      typeof(GameServer.Domain.Combat.DamageCalculation),
                      typeof(DamageDealtEvent),
                      typeof(DamageTakenEvent),
@@ -1776,7 +2059,11 @@ public class BattleEventEmissionTests
         // list, so this set is exactly that list. The committed board action's own
         // boundary adds the two names §16 has always carried and GAME_EVENTS.md §2
         // defines — SwapStarted and SwapResolved (SIGNALR_PROTOCOL.md
-        // §3.2.26–§3.2.27) — which this task formalized rather than invented. No
+        // §3.2.26–§3.2.27) — which this task formalized rather than invented. The
+        // per-pass Gravity + Spawn report adds the one name the operator authorized
+        // for it — CascadeStepResolved (GAME_EVENTS.md §1.1 item 8, §2;
+        // SIGNALR_PROTOCOL.md §3.2.28; ADR-027) — and the Match-3 cycle immediately
+        // above is its home. No
         // undocumented name may be added
         // (AGENTS.md §7). In particular no MatchCountChanged, SpecialGemActivated,
         // SpecialGemCreated, TurnChanged, SequenceChanged, or BoardChanged exists.
@@ -1800,6 +2087,7 @@ public class BattleEventEmissionTests
                 "BossSkillCast",
                 "CardCast",
                 "CascadeCreated",
+                "CascadeStepResolved",
                 "ComboChanged",
                 "DamageCalculated",
                 "DamageDealt",
@@ -1977,6 +2265,15 @@ public class BattleEventEmissionTests
                 $"SwapStarted actor={e.SwapStarted.Actor} "
                 + $"from={e.SwapStarted.FromCell} to={e.SwapStarted.ToCell}",
             BattleEventType.SwapResolved => $"SwapResolved committed={e.SwapResolved.Committed}",
+            // The pass's completed Gravity + Spawn transition (GAME_EVENTS.md §1.1,
+            // §2; SIGNALR_PROTOCOL.md §3.2.28). It has its own arm because the
+            // fallback arm below reads `Gem`, which it does not carry — and because
+            // two runs must be compared on the movement and spawn report too, not
+            // only on the fact that the event occurred.
+            BattleEventType.CascadeStepResolved =>
+                $"CascadeStepResolved depth={e.CascadeStep.PassDepth} "
+                + $"drops={string.Join(',', e.CascadeStep.DropMoves.Select(m => $"{m.FromCell}>{m.ToCell}"))} "
+                + $"spawns={string.Join(',', e.CascadeStep.SpawnedGems.Select(s => $"{s.CellIndex}:{s.GemType}"))}",
             _ => $"GemMatched cell={e.Gem.CellIndex} type={e.Gem.GemType} "
                  + $"special={e.Gem.ConsumedSpecialGem?.Type.ToString() ?? "none"}",
         }).ToArray();

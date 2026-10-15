@@ -309,12 +309,22 @@ internal static class RoundTestSupport
     /// Whether a Battle Event is part of a Match-3 board cycle
     /// (<c>GAME_EVENTS.md</c> §1.1).
     /// </summary>
+    /// <remarks>
+    /// <c>CascadeStepResolved</c> is a board-cycle event like the other four: it is
+    /// emitted as its own pass's <b>last</b> item
+    /// (<c>GAME_EVENTS.md</c> §1.1 item 8, <c>SIGNALR_PROTOCOL.md</c> §3.2.28), so a
+    /// pass's run stays contiguous and the round keeps its two runs — the Player
+    /// action's cycle and the Boss response phase's. Leaving it out would split every
+    /// pass at its own closing report and make <see cref="BossBoardEvents"/> answer
+    /// the Player cycle's tail.
+    /// </remarks>
     private static bool IsBoardEvent(BattleEvent battleEvent) =>
         battleEvent.Type
             is BattleEventType.MatchCreated
             or BattleEventType.CascadeCreated
             or BattleEventType.GemMatched
-            or BattleEventType.ComboChanged;
+            or BattleEventType.ComboChanged
+            or BattleEventType.CascadeStepResolved;
 
     /// <summary>
     /// Pins <paramref name="board"/> as the battle's authoritative board and

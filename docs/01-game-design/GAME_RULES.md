@@ -1,6 +1,6 @@
 # Core Game Rules
 
-**Version:** 3.6 (§17 gains the playable-board invariant statement per ADR-026 / TASK-267: the committed board of a non-terminal Round must contain at least one legal match-producing adjacent swap, evaluated on the finished board after step 18 and step 19a and before the `GAME_STATE.md` §5.1 write-back, with terminal Rounds exempt; the paragraph adds and reorders no step. Prior 3.5 (§1.3, §2, §14, §15, §17 updated per ADR-026 / TASK-259: Player and Boss share the one 8×8 Match-3 board; both sides act by making valid swaps; cell type determines effect; acting side determines ownership and target; attack damage is strictly gated on confirmed ATK-gem matches (D1); default fallback basic attacks are retired (step 18c); Boss skills deal zero direct damage (D3); Boss SkillCharge charges exclusively from Boss POWER matches (D2); Turn advances once per committed atomic round (D4). Prior 3.4: §11 and §17 — the Card-cast restriction approved by `TASK-191`
+**Version:** 3.7 (§16 gains `CascadeStepResolved` per the Operator Decision approving TASK-278 A-1(i) and A-4: the detection pass's gravity+spawn transition is reported by one additive Battle Event inside the round's existing single `ReceiveEvents` batch, emitted once per recorded pass after that pass's Gravity and Spawn have completed, with `passDepth`, `dropMoves` and `spawnedGems` and no board; the canonical event list gains one name and no other list entry, step, or gameplay value moves. Prior 3.6 (§17 gains the playable-board invariant statement per ADR-026 / TASK-267: the committed board of a non-terminal Round must contain at least one legal match-producing adjacent swap, evaluated on the finished board after step 18 and step 19a and before the `GAME_STATE.md` §5.1 write-back, with terminal Rounds exempt; the paragraph adds and reorders no step. Prior 3.5 (§1.3, §2, §14, §15, §17 updated per ADR-026 / TASK-259: Player and Boss share the one 8×8 Match-3 board; both sides act by making valid swaps; cell type determines effect; acting side determines ownership and target; attack damage is strictly gated on confirmed ATK-gem matches (D1); default fallback basic attacks are retired (step 18c); Boss skills deal zero direct damage (D3); Boss SkillCharge charges exclusively from Boss POWER matches (D2); Turn advances once per committed atomic round (D4). Prior 3.4: §11 and §17 — the Card-cast restriction approved by `TASK-191`
 Q-4 (OPTION B) is recorded: §11 gains item 4 stating that a Card cast is an
 **auxiliary action within the current Turn** — it does not increment `Turn`, does
 not resolve the board, does not independently trigger the Boss response, and is
@@ -338,7 +338,8 @@ detail and this list moves there):
 ```text
 BattleStarted, TurnStarted, TurnEnded
 SwapStarted, SwapResolved
-MatchCreated, MatchResolved, CascadeCreated, ComboChanged, GemMatched
+MatchCreated, MatchResolved, CascadeCreated, ComboChanged, GemMatched,
+CascadeStepResolved
 PowerChanged
 PassiveCharged, PassiveTriggered
 RelicTriggered
@@ -347,6 +348,16 @@ DamageCalculated, DamageDealt, DamageTaken
 BossSkillCast
 BattleWon, BattleLost
 ```
+
+`CascadeStepResolved` was added to this list by the Operator Decision approving
+TASK-278 A-1(i) and A-4 ("Approve the addition of `CascadeStepResolved` to the
+existing `ReceiveEvents` batch protocol"). It is a **report of a detection
+pass's gravity+spawn transition**: it is emitted inside the round's existing
+single `ReceiveEvents` batch, once per recorded pass and only after that pass's
+Gravity and Spawn have completed, and it carries no board. Its meaning and
+payload are owned by `GAME_EVENTS.md` §2; its wire schema by
+`SIGNALR_PROTOCOL.md` §3.2.28; the pass cycle it reports by `MATCH3_RULES.md`
+§4.
 
 Events exist to decouple gameplay systems from each other.
 

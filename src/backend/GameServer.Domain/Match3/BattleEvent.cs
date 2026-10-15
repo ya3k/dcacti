@@ -291,6 +291,86 @@ public enum BattleEventType
     /// place of the state push.
     /// </summary>
     SwapResolved = 17,
+
+    /// <summary>
+    /// One detection pass's Gravity and Spawn transition completed
+    /// (<c>GAME_EVENTS.md</c> §1.1, §2 <c>CascadeStepResolved</c>;
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.28; <c>ADR-027</c>).
+    ///
+    /// Its payload is the pass's own 1-based depth, every survivor that changed
+    /// cell (source → destination), and every Gem its Spawn placed (destination
+    /// cell + Gem type). It is emitted <b>once per recorded pass</b> — the
+    /// passes that detected a Match, which is every <c>CascadeResult.Passes</c>
+    /// entry — as that pass's <b>last</b> item: after the pass's
+    /// <see cref="MatchCreated"/> / <see cref="GemMatched"/> /
+    /// <see cref="ComboChanged"/> items and before the next pass's
+    /// <see cref="CascadeCreated"/>. The terminating pass detects no Match and is
+    /// not in <c>Passes</c>, so it emits nothing
+    /// (<c>MATCH3_RULES.md</c> §4.3 item 4).
+    ///
+    /// It is emitted only after the pass's Gravity and Spawn have run
+    /// (<c>MATCH3_RULES.md</c> §4.1 steps 3–4), so it reports a completed
+    /// transition rather than announcing one. It carries <b>no board</b>: the
+    /// board travels in the state push and the recovery snapshot alone
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.1 item 3, §3.2.12 item 1), and the pass's
+    /// cleared cells already travel in that pass's <see cref="GemMatched"/> run.
+    /// Intermediate board configurations stay Transient Resolution State
+    /// (<c>GAME_STATE.md</c> §3).
+    /// </summary>
+    CascadeStepResolved = 18,
+}
+
+/// <summary>
+/// The <c>CascadeStepResolved</c> payload — one detection pass's completed
+/// Gravity + Spawn transition (<c>GAME_EVENTS.md</c> §2;
+/// <c>SIGNALR_PROTOCOL.md</c> §3.2.28; <c>ADR-027</c>).
+///
+/// <code>
+/// CascadeStepResolved: passDepth, dropMoves[(fromCell, toCell)], spawnedGems[(cellIndex, gemType)]
+/// </code>
+///
+/// <b>Everything here is a report of a step that already ran</b>, read from the
+/// pass's own <see cref="GravityResult.DropMoves"/> and
+/// <see cref="PassResult.SpawnedGems"/>. Nothing is recomputed, no board is
+/// carried, and no gameplay stage consumes it — it exists so a presentation can
+/// move the cells the server actually moved, instead of deriving them
+/// (<c>AGENTS.md</c> §10, <c>SIGNALR_PROTOCOL.md</c> §3.1 item 5).
+///
+/// <b>The two arrays state different things and are not interchangeable.</b>
+/// <see cref="DropMoves"/> is about survivors that were already on the board;
+/// <see cref="SpawnedGems"/> is about Gems the draw placed. Their order is each
+/// step's own documented order (<c>MATCH3_RULES.md</c> §4.4 item 1,
+/// §4.5 item 2), preserved as delivered — the projection sorts nothing.
+/// </summary>
+/// <param name="PassDepth">
+/// The pass's own 1-based depth: <c>1</c> for the pass on the committed Swap's
+/// board (not a Cascade), <c>≥ 2</c> for a Cascade
+/// (<c>MATCH3_RULES.md</c> §4.2 items 1–2). It is the value
+/// <see cref="MatchResolution.CascadeDepth"/> carries for the same pass, and it
+/// is <c>CascadeCreated.cascadeDepth + 1</c> on any pass that has one. It is
+/// stated under this name and never as <c>cascadeDepth</c>, because the two
+/// existing <c>cascadeDepth</c> members carry two different documented values
+/// (<c>SIGNALR_PROTOCOL.md</c> §3.2.7 item 2).
+/// </param>
+/// <param name="DropMoves">
+/// Every survivor the pass's Gravity relocated, in that step's own read order.
+/// Empty when the pass moved nothing.
+/// </param>
+/// <param name="SpawnedGems">
+/// Every Gem the pass's Spawn placed, in that step's own fill order. Empty when
+/// the pass spawned nothing.
+/// </param>
+public readonly record struct CascadeStepResolvedEvent(
+    int PassDepth,
+    IReadOnlyList<DropMove> DropMoves,
+    IReadOnlyList<SpawnedGem> SpawnedGems)
+{
+    /// <summary>
+    /// "CascadeStepResolved (depth 2: 3 drops, 3 spawns)" — for test diagnostics
+    /// only.
+    /// </summary>
+    public override string ToString() =>
+        $"CascadeStepResolved (depth {PassDepth}: {DropMoves.Count} drops, {SpawnedGems.Count} spawns)";
 }
 
 /// <summary>
@@ -569,7 +649,8 @@ public readonly record struct BattleEvent
         RelicTriggeredEvent? relicTriggered = null,
         PowerChangedEvent? powerChanged = null,
         SwapStartedEvent? swapStarted = null,
-        SwapResolvedEvent? swapResolved = null)
+        SwapResolvedEvent? swapResolved = null,
+        CascadeStepResolvedEvent? cascadeStepResolved = null)
     {
         Type = type;
         _match = match;
@@ -590,6 +671,7 @@ public readonly record struct BattleEvent
         _powerChanged = powerChanged;
         _swapStarted = swapStarted;
         _swapResolved = swapResolved;
+        _cascadeStepResolved = cascadeStepResolved;
     }
 
     private readonly MatchResolution? _match;
@@ -610,6 +692,7 @@ public readonly record struct BattleEvent
     private readonly PowerChangedEvent? _powerChanged;
     private readonly SwapStartedEvent? _swapStarted;
     private readonly SwapResolvedEvent? _swapResolved;
+    private readonly CascadeStepResolvedEvent? _cascadeStepResolved;
 
     /// <summary>Which documented event this is.</summary>
     public BattleEventType Type { get; }
@@ -838,6 +921,20 @@ public readonly record struct BattleEvent
         _swapResolved ?? throw new InvalidOperationException(
             $"A {Type} event carries no SwapResolved payload (GAME_EVENTS.md §2). "
             + "Check Type before reading SwapResolved.");
+
+    /// <summary>
+    /// The <c>CascadeStepResolved</c> payload — one detection pass's completed
+    /// Gravity and Spawn transition: the pass's depth, the survivors it moved, and
+    /// the Gems it spawned (<c>GAME_EVENTS.md</c> §2,
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.28).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// This event is not a <see cref="BattleEventType.CascadeStepResolved"/>.
+    /// </exception>
+    public CascadeStepResolvedEvent CascadeStep =>
+        _cascadeStepResolved ?? throw new InvalidOperationException(
+            $"A {Type} event carries no CascadeStepResolved payload (GAME_EVENTS.md §2). "
+            + "Check Type before reading CascadeStep.");
 
     /// <summary>
     /// A <c>MatchCreated</c> event for one detected Match.
@@ -1180,6 +1277,38 @@ public readonly record struct BattleEvent
             null,
             new SwapResolvedEvent(committed));
 
+    /// <summary>
+    /// A <c>CascadeStepResolved</c> event reporting one detection pass's completed
+    /// Gravity and Spawn transition (<c>GAME_EVENTS.md</c> §1.1, §2;
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.28; <c>ADR-027</c>).
+    ///
+    /// <b>It is built from the pass's own results and derives nothing.</b>
+    /// <paramref name="dropMoves"/> is that pass's
+    /// <see cref="GravityResult.DropMoves"/> and <paramref name="spawnedGems"/>
+    /// its <see cref="PassResult.SpawnedGems"/>, both as the steps produced them —
+    /// so the delivered report is the executed transition, never a recomputation
+    /// of it (<c>AGENTS.md</c> §10).
+    /// </summary>
+    /// <param name="passDepth">
+    /// The pass's own 1-based detection depth, read from the pass's
+    /// <see cref="MatchResolution.CascadeDepth"/> — <c>1</c> for the committed
+    /// Swap's pass, <c>≥ 2</c> for a Cascade.
+    /// </param>
+    /// <param name="dropMoves">The survivors the pass's Gravity relocated.</param>
+    /// <param name="spawnedGems">The Gems the pass's Spawn placed.</param>
+    public static BattleEvent ForCascadeStepResolved(
+        int passDepth,
+        IReadOnlyList<DropMove> dropMoves,
+        IReadOnlyList<SpawnedGem> spawnedGems) =>
+        new(
+            BattleEventType.CascadeStepResolved,
+            null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            null,
+            null,
+            null,
+            null,
+            new CascadeStepResolvedEvent(passDepth, dropMoves, spawnedGems));
+
     /// <summary>"MatchCreated (Horizontal x3 at 25 (Atk))" — for test diagnostics only.</summary>
     public override string ToString() => Type switch
     {
@@ -1202,6 +1331,7 @@ public readonly record struct BattleEvent
         BattleEventType.PowerChanged => PowerChanged.ToString(),
         BattleEventType.SwapStarted => SwapStarted.ToString(),
         BattleEventType.SwapResolved => SwapResolved.ToString(),
+        BattleEventType.CascadeStepResolved => CascadeStep.ToString(),
         _ => Type.ToString(),
     };
 }

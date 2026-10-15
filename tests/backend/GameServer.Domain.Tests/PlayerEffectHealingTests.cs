@@ -468,9 +468,12 @@ public class PlayerEffectHealingTests
     {
         // GAME_EVENTS.md §2 has no heal event, and §3 item 7 gives any new event to
         // its own owning task. Healing is therefore a state-only change: a Swap that
-        // heals produces exactly the Match-3 events it always did, plus the committed
-        // board action's own boundary pair, which belongs to the action rather than to
-        // this stage (GAME_EVENTS.md §1, §2; SIGNALR_PROTOCOL.md §3.2.26–§3.2.27).
+        // heals produces exactly the Match-3 events it always did — including the
+        // pass's own completed Gravity + Spawn transition report
+        // (GAME_EVENTS.md §1.1 item 8, SIGNALR_PROTOCOL.md §3.2.28, ADR-027) — plus
+        // the committed board action's own boundary pair, which belongs to the action
+        // rather than to this stage (GAME_EVENTS.md §1, §2;
+        // SIGNALR_PROTOCOL.md §3.2.26–§3.2.27).
         var result = SwapExecutor.Execute(BattleWith(HpMatch3Board()), new SwapRequest(From, To));
 
         Assert.True(result.IsAccepted);
@@ -481,7 +484,8 @@ public class PlayerEffectHealingTests
                 or BattleEventType.MatchCreated
                 or BattleEventType.CascadeCreated
                 or BattleEventType.ComboChanged
-                or BattleEventType.GemMatched,
+                or BattleEventType.GemMatched
+                or BattleEventType.CascadeStepResolved,
             $"Unexpected event type {e.Type}: healing adds no event."));
     }
 
