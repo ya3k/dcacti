@@ -20,11 +20,11 @@
 ```text
 Task ID:           TASK-284
 Type:              ARCHITECTURE / GOVERNANCE & DECISION PREPARATION (readiness gate)
-Status:            BACKLOG — BLOCKED: PREREQUISITE OPERATOR AUTHORIZATION NOT PRESENT
-Verdict:           NOT READY — the authorization artifact the task's own prerequisite
-                   requires (TASK-283 Option A) does not exist in the repository, and
-                   neither does any recorded decision on the watchdog duration or retry
-                   policy. No production, protocol, ADR, or test file was changed.
+Status:            SUPERSEDED
+Superseded by:     TASK-283 (Option A authorized by Operator) and TASK-284A
+                   (Missing resolution-batch watchdog implemented under commit e33254e)
+Verdict:           SUPERSEDED — proposal Option A was formally authorized under TASK-283
+                   and implemented under TASK-284A. Zero actionable independent scope remains.
 Risk:              MEDIUM (the underlying gap is real; the blocked work is unstarted)
 Priority:          HIGH
 Mode:              Controlled Repository Workflow — readiness assessment and STOP only
@@ -36,11 +36,8 @@ Contract Refs:     docs/02-technical/SIGNALR_PROTOCOL.md §3, §3.1 (item 6), §
                    §6 items 3–5, §7, §8; docs/02-technical/GAME_STATE.md §5.0, §5.1;
                    docs/02-technical/ARCHITECTURE.md §2.2.1 (rules 1, 3, 4, 5);
                    docs/03-decisions/ADR/ADR-008; docs/03-decisions/ADR/ADR-025
-Dependencies:      TASK-283 (REQUIRED APPROVAL ARTIFACT — NOT PRESENT in the repository),
-                   TASK-273 (referenced DONE — no record file exists),
-                   TASK-274 (referenced DONE — no record file exists),
-                   TASK-280 (CLOSED; §7.3 finding 5 recommends this follow-up)
-Declared Files:    tasks/backlog/TASK-284-runtime-recovery-for-missing-accepted-action-event-batches.md
+Dependencies:      TASK-283 (APPROVED), TASK-284A (DONE), TASK-280 (CLOSED)
+Declared Files:    tasks/completed/TASK-284-runtime-recovery-for-missing-accepted-action-event-batches.md
 Verification:      §11 — focused GameRuntime suite 192/192, `git diff --check` clean,
                    no implementation run attempted (nothing to run)
 ```

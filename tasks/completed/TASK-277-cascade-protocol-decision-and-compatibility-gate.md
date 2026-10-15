@@ -7,14 +7,16 @@
 ```text
 Task ID:           TASK-277
 Type:              ARCHITECTURE / PROTOCOL DECISION + CONTRACT VALIDATION
-Status:            BACKLOG
+Status:            SUPERSEDED
+Superseded by:     TASK-278 (Decision items A-1…A-7 formally approved by Operator;
+                   ADR-027 adopted; implementation completed under commits 86fcdd0 / eaaf70d)
 Risk:              MEDIUM
 Priority:          HIGH
 Mode:              Controlled Repository Workflow — investigation / decision documentation only
 Production code:   NONE CHANGED (no source, test, doc, ADR, or task file edited except this record)
 Dependencies:      TASK-254 (DONE — DR-1 option B), TASK-273 (DONE), TASK-274 (DONE),
-                   TASK-275 (IN REVIEW — CONDITIONAL PASS), TASK-276 (BACKLOG — under review)
-Declared Files:    tasks/backlog/TASK-277-cascade-protocol-decision-and-compatibility-gate.md
+                   TASK-275 (IN REVIEW), TASK-276 (SUPERSEDED)
+Declared Files:    tasks/completed/TASK-277-cascade-protocol-decision-and-compatibility-gate.md
 Verification:      git diff --check (see §12); Domain test suite run (1623 passed)
 ```
 

@@ -7,7 +7,9 @@
 ```text
 Task ID:           TASK-276
 Type:              ARCHITECTURE / PROTOCOL PLANNING
-Status:            BACKLOG
+Status:            SUPERSEDED
+Superseded by:     TASK-278 (ADR-027 adopted; deltas-only CascadeStepResolved event and
+                   per-pass presentation implemented under commits 86fcdd0 / eaaf70d)
 Risk:              MEDIUM
 Priority:          HIGH
 Primary Agent:     architect
@@ -16,9 +18,9 @@ Workflow:          architecture/adr.md
 Skills:            realtime/realtime-protocol-validation, client/client-state-authority,
                    client/phaser-battle-presentation, dotnet/dotnet-backend-patterns,
                    testing/test-scenario-generation, quality/implementation-review
-Dependencies:      TASK-254 (DONE), TASK-272 (IN REVIEW), TASK-273 (DONE),
-                   TASK-274 (DONE), TASK-275 (IN REVIEW — CONDITIONAL PASS)
-Declared Files:    tasks/backlog/TASK-276-authoritative-cascade-snapshot-protocol-planning.md
+Dependencies:      TASK-254 (DONE), TASK-272 (DONE), TASK-273 (DONE),
+                   TASK-274 (DONE), TASK-275 (IN REVIEW)
+Declared Files:    tasks/completed/TASK-276-authoritative-cascade-snapshot-protocol-planning.md
 ```
 
 ---

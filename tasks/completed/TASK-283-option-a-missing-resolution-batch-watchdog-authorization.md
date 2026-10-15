@@ -14,7 +14,7 @@ Priority:          HIGH
 Mode:              Controlled Repository Workflow — authorization record and evidence only
 Production code:   NONE CHANGED by this record (it records the approval the implementation acts on)
 Decision owner:    Operator (D-1 … D-7, §3)
-Scope authority:   tasks/backlog/TASK-284-runtime-recovery-for-missing-accepted-action-event-batches.md
+Scope authority:   tasks/completed/TASK-284-runtime-recovery-for-missing-accepted-action-event-batches.md
                    §3.3 (constraints), §4 (Option A), §5 (decisions), §6 (§7 amendment draft),
                    §7 (test plan), §8 (documentation and verification plan)
 Implemented by:    TASK-284A — src/frontend/client/src/game/runtime/GameRuntime.ts,
@@ -24,6 +24,7 @@ Implemented by:    TASK-284A — src/frontend/client/src/game/runtime/GameRuntim
 Related records:   TASK-276, TASK-277, TASK-278, TASK-279, TASK-280, TASK-284, TASK-284A
 Recorded:          2026-10-14 — the approval and this record are one act (§1)
 Verification:      §4 (the absence evidence) and §5 (what this does and does not authorize)
+Declared Files:    tasks/completed/TASK-283-option-a-missing-resolution-batch-watchdog-authorization.md
 ```
 
 ---

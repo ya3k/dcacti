@@ -23,7 +23,7 @@ Target Component:  src/backend/GameServer.Api/Hubs/BattleHub.cs
 Contract Refs:     docs/02-technical/SIGNALR_PROTOCOL.md §3, §3.1, §4, §6, §7, §8;
                    docs/02-technical/GAME_STATE.md §5.0
 Dependencies:      None (Independent of protocol authorization gate TASK-278)
-Declared Files:    tasks/backlog/TASK-280-investigate-battlehub-state-push-projection-batch-loss.md,
+Declared Files:    tasks/completed/TASK-280-investigate-battlehub-state-push-projection-batch-loss.md,
                    tests/backend/GameServer.Api.Tests/Hubs/BattleHubPartialBroadcastTests.cs (new),
                    src/frontend/client/tests/GameRuntime.test.ts (one test added)
 Verification:      §6.8 (as recorded) and §7.2 (re-executed under TASK-282) — Api.Tests
