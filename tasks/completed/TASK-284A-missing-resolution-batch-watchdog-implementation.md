@@ -7,7 +7,7 @@
 ```text
 Task ID:           TASK-284A (the authorized implementation slice of TASK-284)
 Type:              IMPLEMENTATION — client runtime recovery trigger + protocol amendment + tests
-Status:            IMPLEMENTED — all verification green; changes are UNCOMMITTED by instruction
+Status:            DONE
 Risk:              MEDIUM (delivery-timing behaviour on the existing realtime path)
 Priority:          HIGH
 Mode:              Controlled Repository Workflow — authorized implementation (§2 of the task brief)
@@ -15,14 +15,17 @@ Authorization:     tasks/backlog/TASK-283-option-a-missing-resolution-batch-watc
                    (D-1 … D-7 approved by the operator; the readiness report is the scope authority)
 Scope authority:   tasks/backlog/TASK-284-runtime-recovery-for-missing-accepted-action-event-batches.md
                    §3.3, §4, §5, §6, §7, §8
-Baseline:          branch master, HEAD 425bebb4f6bd1e8019d06bbd92231fb3f9912be3
+Historical commit: e33254e8057159f50012746ebf17a7d01acd6d13 (under tasks/TASK_LIFECYCLE.md §6.4)
 Production code:   src/frontend/client/src/game/runtime/GameRuntime.ts,
                    src/frontend/client/src/game/runtime/GameRuntimeEvents.ts
 Protocol:          docs/02-technical/SIGNALR_PROTOCOL.md §7 (+ version header, v2.24)
 Tests:             src/frontend/client/tests/GameRuntime.test.ts (§5)
 Verification:      §5 — focused 209/209, three-file 592/592, full suite 1206/1206,
                    `npx tsc --noEmit` exit 0, `git diff --check` clean
-Git:               no commit, push, checkout, reset, stash, or cleanup was performed (§7)
+Declared Files:    src/frontend/client/src/game/runtime/GameRuntime.ts,
+                   src/frontend/client/src/game/runtime/GameRuntimeEvents.ts,
+                   docs/02-technical/SIGNALR_PROTOCOL.md,
+                   src/frontend/client/tests/GameRuntime.test.ts
 ```
 
 ---
@@ -309,7 +312,27 @@ R-6  .ai/PROJECT_STATE.md remains stale (readiness report F-5). Unchanged; out o
 
 ---
 
-## 8. Git state (left uncommitted, by instruction)
+## Completion Evidence
+
+### Historical Implementation Commit
+- **Commit:** `e33254e8057159f50012746ebf17a7d01acd6d13`
+- **Subject:** `feat: implement GameRuntime and battle protocol recovery architecture`
+- **Lifecycle Ratification:** Historical composite commit exception under `tasks/TASK_LIFECYCLE.md` §6.4. Git history preserved without rewriting.
+- **Implemented Files:**
+  - `docs/02-technical/SIGNALR_PROTOCOL.md` (§7 + version header)
+  - `src/frontend/client/src/game/runtime/GameRuntime.ts`
+  - `src/frontend/client/src/game/runtime/GameRuntimeEvents.ts`
+  - `src/frontend/client/tests/GameRuntime.test.ts`
+- **Validation Evidence:**
+  - `npx vitest run tests/GameRuntime.test.ts` — PASS (209/209 tests pass)
+  - `npx tsc --noEmit` — PASS (exit 0)
+- **Phase B Filing:**
+  - Filed to `tasks/completed/TASK-284A-missing-resolution-batch-watchdog-implementation.md` under Operator Authorization (Backlog Reconciliation Execution).
+  - Status finalized as `DONE`.
+
+---
+
+## 8. Git state (committed in e33254e, filed under Phase B)
 
 ```text
 branch  master        HEAD  425bebb4f6bd1e8019d06bbd92231fb3f9912be3
