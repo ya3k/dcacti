@@ -1075,7 +1075,7 @@ public class BattleEventEmissionTests
         var battle = BattleState.CreateWith("battle-006-reconstruction", TestSeed);
         var rng = new Pcg32(battle.RngState.State, battle.RngState.Increment);
         var resolution = CascadeResolver.Resolve(board, rng, swapOriginIndex: null);
-        var events = BattleEventBuilder.Build(resolution, combo: 0);
+        var events = BattleEventBuilder.Build(resolution, accountedCombo: resolution.TotalMatches);
 
         Assert.NotEmpty(resolution.Passes);
         Assert.Equal(
@@ -1933,6 +1933,45 @@ public class BattleEventEmissionTests
 
             state = result.State;
         }
+    }
+
+    [Fact]
+    public void AResolutionTheComboAccountingDidNotCount_ShouldEmitNoComboChanged()
+    {
+        // GAME_EVENTS.md §2: ComboChanged's payload is the NEW value of
+        // `BattleState.Combo`, and SIGNALR_PROTOCOL.md §3.2.8 item 1 fixes it as that
+        // new value and nothing else. That counter is the Player action's committed
+        // Swap's (GAME_STATE.md §2.2 — written in the round's single write-back and
+        // delivered under the `playerState` label; BOSS_RULES.md §6.2/§6.2.5 read
+        // "Player Matches" / "Player Combo"), and the Boss Response phase's own board
+        // action is resolved by this same pipeline **without** writing it
+        // (BattleStateService step 18a). A resolution that is not the one the Combo
+        // accounting counted must therefore report no Combo at all: an event carrying
+        // that cycle's own Match total would assert a Combo the battle's counter never
+        // took, and the client renders one Combo from the events and the published
+        // state together (MATCH3_RULES.md §6.6 item 3).
+        var result = SwapExecutor.Execute(BattleWith(MatchingBoard()), new SwapRequest(From, To));
+
+        Assert.True(result.IsAccepted);
+
+        var accounted = BattleEventBuilder.Build(result.Resolution, result.Resolution.TotalMatches);
+        var notAccounted = BattleEventBuilder.Build(result.Resolution, accountedCombo: null);
+
+        // Not vacuous: the same resolution does report its run when it is the one the
+        // accounting counted.
+        Assert.Contains(accounted, e => e.Type == BattleEventType.ComboChanged);
+        Assert.DoesNotContain(notAccounted, e => e.Type == BattleEventType.ComboChanged);
+
+        // Every other item is reported unchanged: the cycle's Matches, its cleared
+        // cells and its pass transitions all belong to this resolution, and only the
+        // counter the phase does not own is dropped — nothing is reordered, filtered
+        // or re-derived.
+        Assert.Equal(
+            accounted.Where(e => e.Type != BattleEventType.ComboChanged).Select(e => e.Type),
+            notAccounted.Select(e => e.Type));
+        Assert.Equal(
+            accounted.Count - result.Resolution.TotalMatches,
+            notAccounted.Count);
     }
 
     // =======================================================================

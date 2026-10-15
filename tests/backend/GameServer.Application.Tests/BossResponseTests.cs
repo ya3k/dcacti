@@ -1202,6 +1202,79 @@ public class BossResponseTests
             "the scenario must exercise a round in which the Boss cast its Skill and cleared an ATK Gem");
     }
 
+    [Fact]
+    public async Task BossResponse_ShouldReportNoComboChanged_ForItsOwnBoardCycle()
+    {
+        // GAME_EVENTS.md §2 / SIGNALR_PROTOCOL.md §3.2.8 item 1: `ComboChanged`'s
+        // payload is the NEW value of `BattleState.Combo`, and that counter is the
+        // Player action's committed Swap's (GAME_STATE.md §2.2 — written in the
+        // round's single write-back and delivered under the fixed `playerState`
+        // label; BOSS_RULES.md §6.2/§6.2.5 read "Player Matches" / "Player Combo").
+        // Step 18a resolves the Boss's own board action through the same Match-3
+        // pipeline without writing either counter, so the Boss's cycle reports its
+        // MatchCreated/GemMatched items and no Combo at all: a `ComboChanged` there
+        // would carry a value the battle's counter never held, and a client renders
+        // one Combo from the events and the published state together
+        // (MATCH3_RULES.md §6.6 item 3).
+        //
+        // The scenario walks real rounds until the Boss's own cycle actually resolved
+        // at least one Match, so the "no ComboChanged" assertion is not vacuous.
+        var repository = new InMemoryBattleStateRepository();
+        var service = new BattleStateService(repository, new FixedRngSeedSource());
+
+        var boss = BossDefinitions.HoaLong with { MaxHP = 1_000_000 };
+
+        const string battleId = "boss-response-combo-contract";
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, boss);
+
+        var petState = created.PetState with { HP = 1_000_000, MaxHP = 1_000_000 };
+
+        await RoundTestSupport.PinAsync(repository, created, created.BoardState, petState: petState);
+
+        var state = created with { PetState = petState };
+        var sawBossMatch = false;
+
+        for (var round = 0; round < 8 && !sawBossMatch; round++)
+        {
+            var pinned = RoundTestSupport.PlayerMatch(
+                GemType.Atk,
+                state.RngState,
+                state.LastCommittedSwapPair);
+
+            await RoundTestSupport.PinAsync(repository, state, pinned.Board, petState: petState);
+
+            var result = (await service.ExecuteSwapAsync(battleId, pinned.Swap))!.Value;
+
+            Assert.True(result.IsAccepted);
+
+            var bossRun = RoundTestSupport.BossBoardEvents(result);
+
+            // The Player action's own cycle is the one the accounting counted, so it
+            // does report its run — read from the round's own delivered list.
+            Assert.Contains(
+                RoundTestSupport.PlayerBoardEvents(result),
+                e => e.Type == BattleEventType.ComboChanged);
+
+            // GAME_STATE.md §2.2: `BattleState.Combo` is the Player action's
+            // swap-scoped counter; the reported run ends at the committed value.
+            Assert.Equal(
+                result.State.Combo,
+                RoundTestSupport.PlayerBoardEvents(result)
+                    .Last(e => e.Type == BattleEventType.ComboChanged).Combo);
+
+            // The Boss's own cycle reports no Combo, whatever it resolved.
+            Assert.DoesNotContain(bossRun, e => e.Type == BattleEventType.ComboChanged);
+
+            sawBossMatch |= bossRun.Any(e => e.Type == BattleEventType.MatchCreated);
+
+            state = result.State;
+        }
+
+        Assert.True(
+            sawBossMatch,
+            "the scenario must exercise a round in which the Boss's own board cycle resolved a Match");
+    }
+
     // =======================================================================
     // Turn and cooldown lifecycle — MATCH3_RULES.md §8.1, BOSS_RULES.md §6.3
     // =======================================================================

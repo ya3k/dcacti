@@ -52,6 +52,7 @@ import {
   formatGemCellLabel,
   formatInBattleEvent,
   formatMoveLogRow,
+  formatSpecialActivationSummary,
   formatSwapRejection,
   isBossEnraged,
   isPetPassiveEvent,
@@ -59,6 +60,8 @@ import {
   resolveOutcomeStatement,
   resolveSpecialGemPresentation,
   selectBatchCalloutEvent,
+  specialActivationOccurrences,
+  summarizeSpecialActivations,
 } from './BattleEventPresenter';
 
 /**
@@ -414,67 +417,125 @@ const PLAYER_PARTY = DAMAGE_PARTY_PLAYER;
 const BOSS_PARTY = DAMAGE_PARTY_BOSS;
 
 /**
- * Presentation timeline pacing, in milliseconds.
+ * The battle presentation's **timing policy** — every display duration the
+ * timeline uses, in milliseconds, in one frozen block.
  *
- * **One rule governs this whole block: a phase's hold covers the animations that
- * phase itself triggers** (TASK-246 §5). The *effect* lifetimes come first —
- * each is how long one transient animation lives — and every *phase hold* is
- * derived from them as the longest effect that phase can start, plus one
- * `PHASE_SETTLE_MS` beat. A hold can therefore never be shorter than the
- * feedback it starts, and no effect can outlive the phase that started it.
- *
- * What this replaced did not hold that relationship, which is exactly why a
- * resolution read as a jumble rather than as a sequence:
+ * **One rule governs it: a phase's hold covers the animations that phase itself
+ * triggers** (TASK-246 §5). The policy declares *effect* lifetimes (how long one
+ * transient animation lives) and one shared phase beat; every *phase hold* is
+ * then **derived** from them as the longest effect the phase can start, plus
+ * `beatMs` (`phaseHoldMs`/`phaseEffectMs`). A hold can therefore never be shorter
+ * than the feedback it starts, and no effect outlives the phase that started it —
+ * and because `advancePresentation` also waits on the animations a phase actually
+ * started (`trackPhaseAnimation`), the relationship is enforced structurally, not
+ * only by this arithmetic.
  *
  * ```text
- * before                                        after
- * swap hold      220 = its own tween       →    280   (SWAP_TWEEN_MS + settle:
- *                                                     the exchange settles first)
- * match hold     320 < 400 highlight       →    360   (MATCH_HIGHLIGHT_MS + settle)
- * cascade hold   320 < 400 highlight       →    360   (its own highlight + settle)
- * settle hold    340                       →    280   (GEM_REFILL_MS + settle)
- * damage hold    420 < 600 floater         →    460   (FLOATER_LIFE_MS + settle)
- * feedback hold  200 < 600 floater         →    460   (FLOATER_LIFE_MS + settle)
- * FLOATER_LIFE   600                       →    400   (inside its own phase)
- * callout        700 + 350 = 1050          →    420 + 240 = 660  (inside the
- *                                                     resolution that raised it)
+ * group        field              what it is                             phase
+ * swap         exchangeMs         the committed exchange tween           swap
+ *              markMs             a delivered coordinate marker           swap
+ * match        highlightMs        a MatchCreated cell flash               match/cascade
+ * gem          highlightMs        a GemMatched cell flash                 match/cascade
+ *              fallMs             one delivered Fall travel               gravity-drop
+ *              refillMs           one re-label / spawn entrance           refill-spawn/settle
+ * activation   holdMs             one Special Gem activation overlay      special-activation
+ * summary      holdMs             the turn's activation tally             summary
+ * gauge        travelMs           one HUD gauge travel                    damage/retaliation
+ * floater      lifeMs             one floating number                     damage/feedback
+ * callout      holdMs + fadeMs    the one batch callout                   boss-skill
+ * banner       enter+hold+exit    the turn banner's three beats            banner
+ * beatMs       —                  the beat every hold ends with            every phase
  * ```
  *
- * The effects were shortened where they were gratuitously long — a match flash
- * does not need 400 ms — and the holds extended only as far as the relationship
- * requires, so a typical resolution grows by well under a fifth rather than by a
- * blanket multiplier (TASK-246 §5's "correct the relationships, do not slow
- * everything down").
+ * **The readability floors are deliberate.** Boss-turn actions, special-cell
+ * activations and damage feedback each get a hold long enough to be *read*
+ * rather than merely noticed: an activation is the one moment a player must
+ * connect a cell to an effect, and a Fall/Refill that lands faster than the eye
+ * can follow is indistinguishable from the board jumping. A typical ordinary
+ * resolution still stays well inside 1.5× the holds TASK-246 §5 calibrated
+ * (the machine's own regression test pins that bound), so this is a corrected
+ * pace, not a blanket slowdown.
  *
  * These are display timings and nothing else: no gameplay value, order, or
- * outcome depends on them, and a scene without a tween manager (a unit harness)
- * plays every phase immediately in the delivered order. They exist so a
- * resolution reads as a sequence rather than one frame.
+ * outcome depends on them, they are never sent or read from the wire, and a
+ * scene without a tween manager (a unit harness) plays every phase immediately in
+ * the delivered order — which is what keeps every ordering assertion observable
+ * without a clock. They exist so a resolution reads as a sequence rather than as
+ * one frame.
  */
-const SWAP_TWEEN_MS = 220;
-const MATCH_HIGHLIGHT_MS = 300;
-const GEM_HIGHLIGHT_MS = 260;
-const GEM_REFILL_MS = 220;
-const GAUGE_TWEEN_MS = 250;
-const FLOATER_LIFE_MS = 400;
-const CALLOUT_HOLD_MS = 420;
-const CALLOUT_FADE_MS = 240;
+const PRESENTATION_TIMING = Object.freeze({
+  /** The beat a phase is held *after* the animation it triggered has finished. */
+  beatMs: 80,
+  swap: Object.freeze({ exchangeMs: 300, markMs: 300 }),
+  match: Object.freeze({ highlightMs: 400 }),
+  gem: Object.freeze({
+    highlightMs: 340,
+    fallMs: 260,
+    refillMs: 280,
+    /** How far above its destination cell a re-labelled view enters from. */
+    refillEnterPx: 12,
+    /** How far above its delivered cell a spawned Gem enters from. */
+    spawnEnterPx: 34,
+  }),
+  /**
+   * One Special Gem activation's overlay lifetime (`MATCH3_RULES.md` §5.5.5,
+   * `SIGNALR_PROTOCOL.md` §3.2.9 item 3). It is the longest hold in a board
+   * phase on purpose: the activation must be perceivable **before** the cell it
+   * names is destroyed or replaced, and it must be distinguishable from the
+   * ordinary Match flash that runs beside it.
+   */
+  activation: Object.freeze({ holdMs: 700 }),
+  /** The per-turn activation tally's own hold — read once, at the turn's end. */
+  summary: Object.freeze({ holdMs: 900 }),
+  gauge: Object.freeze({ travelMs: 260 }),
+  floater: Object.freeze({ lifeMs: 460 }),
+  callout: Object.freeze({ holdMs: 460, fadeMs: 260 }),
+  banner: Object.freeze({
+    enterMs: 180,
+    holdMs: 420,
+    exitMs: 200,
+    /** The scale the label enters from; it settles at 1 over `enterMs`. */
+    enterScale: 0.85,
+    fontSize: '26px',
+  }),
+});
 
 /**
- * The swap step's **coordinate marker** (TASK-264): how long one of the two §1.0
- * cells a delivered board action named is marked, and the colour it is marked
- * with.
+ * The policy's own fields, projected to the names the call sites read.
  *
- * The marker is the swap step's own presentation of those two cells, shown when
- * the step cannot present the exchange itself — when the contents at those cells
- * on screen are not the Gems the action exchanged. Its lifetime is deliberately
- * below the swap phase's own hold (`SWAP_TWEEN_MS` + `PHASE_SETTLE_MS`), so the
- * phase that starts it still outlasts it (TASK-246 §5), and it is drawn as a
- * translucent fill with the same colour's border so it is distinct from a
- * Match's white flash and a Gem's blue one (`spawnCellHighlight`'s other two
- * call sites).
+ * They are projections, not a second declaration: the value exists exactly once
+ * (`PRESENTATION_TIMING`), and every hold is derived from it by
+ * `phaseHoldMs`/`phaseEffectMs` rather than restated per event handler
+ * (`TASK-275` §6.6: durations centralized, not scattered).
  */
-const SWAP_MARK_MS = 260;
+const SWAP_TWEEN_MS: number = PRESENTATION_TIMING.swap.exchangeMs;
+const MATCH_HIGHLIGHT_MS: number = PRESENTATION_TIMING.match.highlightMs;
+const GEM_HIGHLIGHT_MS: number = PRESENTATION_TIMING.gem.highlightMs;
+const GEM_REFILL_MS: number = PRESENTATION_TIMING.gem.refillMs;
+const GAUGE_TWEEN_MS: number = PRESENTATION_TIMING.gauge.travelMs;
+const FLOATER_LIFE_MS: number = PRESENTATION_TIMING.floater.lifeMs;
+const CALLOUT_HOLD_MS: number = PRESENTATION_TIMING.callout.holdMs;
+const CALLOUT_FADE_MS: number = PRESENTATION_TIMING.callout.fadeMs;
+const PHASE_SETTLE_MS: number = PRESENTATION_TIMING.beatMs;
+const SPECIAL_ACTIVATION_HOLD_MS: number = PRESENTATION_TIMING.activation.holdMs;
+const TURN_SUMMARY_HOLD_MS: number = PRESENTATION_TIMING.summary.holdMs;
+const GEM_REFILL_ENTER: number = PRESENTATION_TIMING.gem.refillEnterPx;
+const GEM_FALL_MS: number = PRESENTATION_TIMING.gem.fallMs;
+const GEM_SPAWN_ENTER: number = PRESENTATION_TIMING.gem.spawnEnterPx;
+
+/**
+ * The swap step's **coordinate marker** (TASK-264): the colour and translucency
+ * one of the two §1.0 cells a delivered board action named is marked with, when
+ * the step cannot present the exchange itself — when the contents at those cells
+ * on screen are not the Gems the action exchanged.
+ *
+ * Its lifetime is `swap.markMs`, deliberately below the swap phase's own hold
+ * (`SWAP_TWEEN_MS` + `PHASE_SETTLE_MS`), so the phase that starts it still
+ * outlasts it (TASK-246 §5), and it is drawn as a translucent fill with the same
+ * colour's border so it is distinct from a Match's white flash and a Gem's blue
+ * one (`spawnCellHighlight`'s other two call sites).
+ */
+const SWAP_MARK_MS = PRESENTATION_TIMING.swap.markMs;
 const SWAP_MARK_COLOR = 0xf87171;
 const SWAP_MARK_FILL_ALPHA = 0.2;
 
@@ -506,17 +567,17 @@ const SWAP_MARK_FILL_ALPHA = 0.2;
  * with it, exactly like a Match highlight (TASK-218A's "no new HUD region, no
  * second notification system" boundary is kept).
  *
- * The three beats are declared here, together, so a phase's total hold is derived
- * from them by one expression (`phaseEffectMs`) rather than scattered through the
- * event handlers (`TASK-275` §6.6: durations centralized, not scattered).
+ * The three beats are declared in the timing policy, together, so a phase's total
+ * hold is derived from them by one expression (`phaseEffectMs`) rather than
+ * scattered through the event handlers (`TASK-275` §6.6: durations centralized,
+ * not scattered).
  */
-const TURN_BANNER_ENTER_MS = 160;
-const TURN_BANNER_HOLD_MS = 320;
-const TURN_BANNER_EXIT_MS = 160;
+const TURN_BANNER_ENTER_MS = PRESENTATION_TIMING.banner.enterMs;
+const TURN_BANNER_HOLD_MS = PRESENTATION_TIMING.banner.holdMs;
+const TURN_BANNER_EXIT_MS = PRESENTATION_TIMING.banner.exitMs;
 const TURN_BANNER_TOTAL_MS = TURN_BANNER_ENTER_MS + TURN_BANNER_HOLD_MS + TURN_BANNER_EXIT_MS;
-/** The scale the label enters from; it settles at 1 over `TURN_BANNER_ENTER_MS`. */
-const TURN_BANNER_ENTER_SCALE = 0.85;
-const TURN_BANNER_FONT_SIZE = '26px';
+const TURN_BANNER_ENTER_SCALE = PRESENTATION_TIMING.banner.enterScale;
+const TURN_BANNER_FONT_SIZE = PRESENTATION_TIMING.banner.fontSize;
 /** The label each delivered side is presented with (display text, not a wire value). */
 const TURN_BANNER_TEXT: Readonly<Record<'player' | 'boss', string>> = Object.freeze({
   player: 'PLAYER TURN',
@@ -528,49 +589,70 @@ const TURN_BANNER_COLOR: Readonly<Record<'player' | 'boss', string>> = Object.fr
 });
 
 /**
- * The beat each phase is held *after* the animation it triggered has finished.
+ * The special-cell **activation overlay** (TASK-275 §6.3): the hollow ring and the
+ * badge label one delivered activation draws at the cell it names.
  *
- * Without it a phase boundary would land exactly on the last frame of its own
- * animation, so the feedback would be replaced by the next phase rather than
- * being settled and read (TASK-246 §5).
+ * ```text
+ * ring    a hollow rectangle around the cell, in the activated Special Gem's own
+ *         stroke colour (`resolveSpecialGemPresentation`) — outlined, never
+ *         filled, so it cannot be read as the translucent filled square a Match
+ *         or a Gem flash draws
+ * badge   the effect's own badge (`[H]`, `[V]`, `[BURST]`, `[AREA]` — the label
+ *         vocabulary `formatGemCellLabel` already appends to that Special Gem's
+ *         cell), in the same colour, placed just below the cell
+ * ```
+ *
+ * The badge names the *effect*, not the cell: the cell's Gem type is already its
+ * own label and its tile colour, so repeating it would say nothing new, while the
+ * badge is the one word the board itself uses for the effect.
+ *
+ * Its lifetime is `SPECIAL_ACTIVATION_HOLD_MS` (the timing policy's `activation`
+ * entry): it is the longest hold in a board phase on purpose, because the
+ * activation must be perceivable *before* the Match/Cascade phase of the same pass
+ * destroys or replaces the cell it names.
  */
-const PHASE_SETTLE_MS = 60;
+const ACTIVATION_RING_PADDING = 10;
+const ACTIVATION_RING_STROKE = 3;
+const ACTIVATION_RING_ENTER_SCALE = 1.25;
+const ACTIVATION_BADGE_OFFSET_Y = CELL_SIZE / 2 + 4;
+const ACTIVATION_BADGE_FONT_SIZE = '12px';
 
 /**
- * The refill interpolation (PD-1 / PD-8): how far above its destination cell a
- * gem view enters from.
+ * The turn **activation summary** strip: the one line the turn ends with, e.g.
+ * `SPECIAL GEMS ACTIVATED (THIS TURN)  ATK ×11 · HP ×10`.
  *
- * The destination is always the cell the view is already paired with — its own
- * authoritative cell. Nothing here decides *which* cell a gem belongs in; the
- * offset is a cosmetic entrance for a content change, never a gravity result.
- * Its duration is `GEM_REFILL_MS` above.
+ * It sits directly below the board, in its own band, so it neither covers the board
+ * it reports on nor competes with the callout line above it. Its lifetime is
+ * `TURN_SUMMARY_HOLD_MS` (the policy's `summary` entry).
  */
-const GEM_REFILL_ENTER = 12;
-
+const TURN_SUMMARY_Y = BOARD_ORIGIN_Y + BOARD_WIDTH + 52;
+const TURN_SUMMARY_FONT_SIZE = '16px';
+const TURN_SUMMARY_COLOR = '#cbd5e1';
 /**
- * The per-pass **Fall** step (`SIGNALR_PROTOCOL.md` §3.2.28,
- * `GAME_EVENTS.md` §1.1 item 8): how long a gem view takes to travel from the §1.0
- * source cell a delivered `dropMoves` entry named to the §1.0 destination cell the
- * same entry named.
+ * The summary's own words, shown before the tally.
  *
- * **Both endpoints are delivered members.** The travel applies no compaction rule,
- * anchors no survivor to the bottom of its column, and computes no fall distance —
- * it presents the movement the server executed (`AGENTS.md` §10). Its duration is
- * the `gravity-drop` phase's own hold, plus the shared settle beat.
- */
-const GEM_FALL_MS = 200;
-
-/**
- * The per-pass **Refill** step: how far above its delivered destination cell a
- * spawned gem view enters from, over `GEM_REFILL_MS`.
+ * ```text
+ * SPECIAL GEMS ACTIVATED   one `GemMatched` carrying a `specialGem` is one
+ *                          consumed — that is, activated — Special Gem
+ *                          (SIGNALR_PROTOCOL.md §3.2.9 item 3,
+ *                          MATCH3_RULES.md §5.5.5 item 1)
+ * (THIS TURN)              the tally's scope: one committed Turn, which is one
+ *                          committed Round and one delivered batch
+ *                          (GAME_RULES.md §2, ADR-026 §2,
+ *                          SIGNALR_PROTOCOL.md §3.1), covering the Player
+ *                          action's board cycle and the Boss Response phase's
+ *                          own cycle alike
+ * ```
  *
- * The cell and the Gem type are both delivered (`spawnedGems[].cellIndex` /
- * `gemType`); the client selects no Gem, draws nothing from the RNG, and decides no
- * destination (`MATCH3_RULES.md` §4.5, §7.2; `SIGNALR_PROTOCOL.md` §3.1 item 5).
- * It is taller than `GEM_REFILL_ENTER` because a spawned Gem arrives from outside
- * its column rather than being re-labelled in place.
+ * They name the count for what it is and **never** for a Combo. A Combo is the
+ * Player action's swap-scoped Match counter, presented on the HUD line as
+ * `COMBO ×N` (`MATCH3_RULES.md` §6.1, §6.3 item 2: an activation is not a Match
+ * and increments no Combo); this line counts consumed Special Gems and is read
+ * from the batch's own activation reports, so nothing here can be mistaken for a
+ * Combo total — which is exactly why the strip says what it counts instead of
+ * standing on a bare `ACTIVATIONS`.
  */
-const GEM_SPAWN_ENTER = 34;
+const TURN_SUMMARY_LABEL = 'SPECIAL GEMS ACTIVATED (THIS TURN)';
 
 /**
  * The selected-cell treatment: one persistent ring, drawn around the selected
@@ -672,6 +754,53 @@ interface PresentationPhase {
   readonly holdMs: number;
   /** The delivered events this phase presents, in delivery order. */
   readonly events: readonly InBattleServerEvent[];
+  /**
+   * Whether this phase's **board-mutating** steps may be applied to the board the
+   * client renders.
+   *
+   * It is `true` exactly when the board cycle this phase belongs to started from
+   * the board the scene is showing, which is one question with three answers
+   * (`AGENTS.md` §10 — the client claims an exchange only where it can establish
+   * that the action was validated against the board on screen):
+   *
+   * ```text
+   * delivered `SwapStarted.actor === "player"`
+   *                        the round's first board action, validated against the
+   *                        committed board the state push delivered (ADR-026 §2)
+   * no delivered boundary at all
+   *                        the exchange is this client's own committed pair, on the
+   *                        board on screen
+   * a delivered Boss boundary whose cycle this batch's own delivered deltas replay
+   * onto the round's committed board
+   *                        the Boss's own step-18a action is resolved by the same
+   *                        Match-3 pipeline as the Player's, on the board the
+   *                        Player's cycle left (ADR-026 §2) — and once the Player's
+   *                        own cycle has been applied that *is* the board on screen,
+   *                        so the cycle is placeable (`replayBoardDeltas`)
+   * ```
+   *
+   * It is `false` for every other boundary: the Boss boundary whose cycle does not
+   * replay onto the round's committed board, which is the one case the contract
+   * cannot place — the unreported deadlock reshuffle replaced the board with one
+   * the client has never held (`ADR-026` §8, `GAME_EVENTS.md` §3 item 8) — and an
+   * `actor` word outside the contract's two values, which names no side.
+   *
+   * A cycle whose starting board the client does not hold may **not** have that
+   * cycle's clears, Fall deltas or Refill placements applied to the rendered
+   * board: those deltas are true of the server's pass board, not of the board on
+   * screen, so applying them would remove Gems the server confirmed at other
+   * cells, move views between coordinates the report never described, and leave a
+   * cell showing an asset no delivered event ever placed there.
+   *
+   * The cycle is still **reported**: its banner, its coordinate marker, its cell
+   * highlights, its activation overlays, its callout and its combat stages all
+   * play as delivered. What is withheld is the local board mutation, and the
+   * round's single `settle` phase converges the board on the round's committed
+   * authoritative board (`SIGNALR_PROTOCOL.md` §3.1 items 1–3, §3.2.28 item 8:
+   * a client may use the delivered deltas only to present the pass they report —
+   * never to author a board).
+   */
+  readonly boardBacked: boolean;
   /**
    * The batch's single player-facing callout, when the event that callout was
    * selected from is one of this phase's own delivered events.
@@ -1054,6 +1183,23 @@ export class BattleScene extends Phaser.Scene {
   private presentationTimeline: PresentationPhase[] | null = null;
   /** The next phase to play in the in-flight timeline. */
   private presentationStep = 0;
+  /**
+   * The longest animation the phase **currently playing** has started, in
+   * milliseconds — the structural half of the pacing rule.
+   *
+   * Every animation helper the phases use reports its own duration here
+   * (`trackPhaseAnimation`), and `advancePresentation` holds the phase for
+   * `max(holdMs, this)` before advancing. That is what makes "a phase cannot
+   * complete before the animations it started" a property of the machine rather
+   * than a coincidence of two constants agreeing: a Match presentation can never
+   * begin while the exchange that produced it is still on screen, whatever a
+   * future timing edit does to the declared holds.
+   *
+   * It is reset at every phase boundary and read immediately after that phase has
+   * played, so it never carries a value across phases, and it is pure
+   * presentation bookkeeping — no gameplay value is stored in it.
+   */
+  private phaseAnimationMs = 0;
   /**
    * The tween target the timeline's phase pacing runs on.
    *
@@ -2148,6 +2294,7 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
+    this.trackPhaseAnimation(GAUGE_TWEEN_MS);
     this.tweens.killTweensOf(gauge.fillState);
     this.tweens.add({
       targets: gauge.fillState,
@@ -3027,13 +3174,37 @@ export class BattleScene extends Phaser.Scene {
    * instead marked by the transient `COMBO ×N` callout, which is set from the
    * delivered `ComboChanged` event (`renderEventCallout`).
    *
+   * **The active line is the timeline's own point, not the round's end.** While a
+   * timeline plays, the Combo the player reads is the value the step being played
+   * delivered — `combo` below, the phase's own `ComboChanged` payload
+   * (`SIGNALR_PROTOCOL.md` §3.2.8: the **new** Combo value that Match produced) —
+   * so a four-Match round reads `×2` at the Match that earned it and `×4` only
+   * when the round reaches it. Presenting `currentBattleState.playerState.combo`
+   * instead would show the round's *final* value at the first Matches, which is a
+   * value the resolution had not reached yet (`MATCH3_RULES.md` §6.6 item 1: Combo
+   * reaches its final value for the Swap as the Swap resolves). Nothing is
+   * computed to do this: the number shown is the delivered one, and the committed
+   * value is still what convergence presents.
+   *
    * Both lines are timeline-owned readouts under operator decision D-2, presented
-   * by a `combo` phase (the delivered `ComboChanged` that reports the value) or by
-   * convergence at the timeline's end. The cumulative Match count has no owned
-   * event in the closed discriminator set, so convergence is its only presentation
-   * point. `hold` is what keeps a raw push from writing either of them early.
+   * by the phase holding the delivered event that owns them or by convergence at
+   * the timeline's end. The Combo line's own event is a `ComboChanged`; the
+   * cumulative Match count has no owned event in the closed discriminator set, so
+   * it is read from the committed state whenever the line is written during the
+   * timeline and is converged on that same committed value at its end. `hold` is
+   * what keeps a raw push from writing either of them early.
+   *
+   * @param state the delivered authoritative state the committed values come from.
+   * @param hold `true` when a raw push must present neither line.
+   * @param combo the delivered Combo value the step being played reports, or
+   *   `null` when the caller presents the committed state's own value — which is
+   *   what convergence, a rollback and a push that presents the board all do.
    */
-  private renderPlayerHud(state: RuntimeBattleState | null, hold = false): void {
+  private renderPlayerHud(
+    state: RuntimeBattleState | null,
+    hold = false,
+    combo: number | null = null
+  ): void {
     if (!this.comboText || !this.matchesText) {
       return;
     }
@@ -3048,10 +3219,10 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
-    const { combo, matchCount } = state.playerState;
+    const presentedCombo = combo ?? state.playerState.combo;
 
-    this.comboText.setText(combo >= 2 ? `COMBO ×${combo}` : '');
-    this.matchesText.setText(`MATCHES ${matchCount}`);
+    this.comboText.setText(presentedCombo >= 2 ? `COMBO ×${presentedCombo}` : '');
+    this.matchesText.setText(`MATCHES ${state.playerState.matchCount}`);
   }
 
   /**
@@ -3416,8 +3587,10 @@ export class BattleScene extends Phaser.Scene {
       // A cell a delivered Fall emptied is given back the view that step pooled, so
       // an abort, a recovery or a superseding push between a pass's two steps
       // restores the board on the same persistent views instead of allocating a new
-      // pair (`SIGNALR_PROTOCOL.md` §3.2.28 item 3).
-      const pooled = this.refillableViews.pop();
+      // pair (`SIGNALR_PROTOCOL.md` §3.2.28 item 3). Only a view no cell still owns
+      // is handed out (`takePooledView`), so this transition can never map two
+      // coordinates onto one sprite.
+      const pooled = this.takePooledView();
 
       if (pooled) {
         this.drawGemContent(pooled, cell);
@@ -3430,8 +3603,14 @@ export class BattleScene extends Phaser.Scene {
 
     // A pooled view the board did not need holds nothing the delivered board
     // reports: it is released with the layer rather than left invisible in it, so a
-    // battle's board layer never accumulates objects a resolution abandoned.
+    // battle's board layer never accumulates objects a resolution abandoned. A view
+    // a cell still occupies is left alone — the layer's views are the board, and the
+    // pool is not allowed to outrank the occupant map.
     for (const leftover of this.refillableViews) {
+      if (this.gemViews.includes(leftover)) {
+        continue;
+      }
+
       leftover.tile.destroy();
       leftover.label.destroy();
     }
@@ -3558,6 +3737,7 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
+    this.trackPhaseAnimation(GEM_REFILL_MS);
     view.tile.setPosition(x, y - enterFrom);
     view.label.setPosition(x, y - enterFrom);
 
@@ -4509,6 +4689,254 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
+   * The content key of every §1.0 cell as the scene currently renders it, or `null`
+   * for a cell whose view holds no content.
+   *
+   * It is the board on screen stated in the one vocabulary the board, a delivered
+   * clear and a delivered board cell all share (`gemContentKey`), so "what this
+   * cell renders" and "what the server says this cell holds" are the same kind of
+   * value and can be compared without reading a rule or a gameplay value.
+   */
+  private renderedBoardContents(): Array<string | null> {
+    return Array.from({ length: BOARD_ROWS * BOARD_COLUMNS }, (_, index) => {
+      const view = this.gemViews[index];
+
+      return view && !view.cleared && view.content !== '' ? view.content : null;
+    });
+  }
+
+  /**
+   * The content key of every §1.0 cell one **delivered board** carries, or `null`
+   * when the payload does not carry the documented 8 × 8 board.
+   *
+   * The comparison target of `replayBoardDeltas`: the committed board a round's
+   * state push delivered is the authoritative statement of where that round's
+   * board work ended (`SIGNALR_PROTOCOL.md` §3.1 items 1–3, §4; `GAME_STATE.md`
+   * §5.0 — the push precedes the batch and the batch's `serverSequence` and the
+   * pushed `sequence` are two readings of one committed value).
+   */
+  private static deliveredBoardContents(
+    board: RuntimeBoard | null
+  ): Array<string | null> | null {
+    if (!board || !Array.isArray(board.cells)) {
+      return null;
+    }
+
+    const contents: Array<string | null> = [];
+
+    for (let index = 0; index < BOARD_ROWS * BOARD_COLUMNS; index++) {
+      const cell = board.cells[index];
+
+      if (cell === undefined) {
+        return null;
+      }
+
+      contents.push(gemContentKey(cell));
+    }
+
+    return contents;
+  }
+
+  /** Whether two content boards state the same content at every §1.0 cell. */
+  private static sameBoardContents(
+    left: readonly (string | null)[],
+    right: readonly (string | null)[]
+  ): boolean {
+    return left.length === right.length && left.every((content, index) => content === right[index]);
+  }
+
+  /**
+   * Replays one delivered batch's board deltas onto the board the scene renders,
+   * in the delivered order, and reports the board they produce — or `null` when a
+   * delivered delta cannot be placed on that board.
+   *
+   * **It is a verification, not a board of its own.** Every value it writes is a
+   * member of a delivered event: the pair a `SwapStarted` names, the cells a
+   * `MatchCreated`/`GemMatched` confirms cleared and their delivered `gemType`, the
+   * Special Gem a `createdSpecialGems` claim names, the `fromCell`/`toCell` pairs a
+   * `CascadeStepResolved` reports as its pass's Gravity, and the
+   * `cellIndex`/`gemType` it reports as its pass's Spawn. It computes no match, no
+   * cascade, no gravity destination, no spawned identity and no board of its own;
+   * it reads no RNG and no gameplay value (`AGENTS.md` §10/§11,
+   * `SIGNALR_PROTOCOL.md` §3.1 item 5, §3.2.28 item 8, `ADR-027`).
+   *
+   * It exists to answer one question a board action's own boundary cannot:
+   * **is the board this cycle starts from the board on screen?** The contract
+   * delivers no statement of the board an action was validated on
+   * (`SIGNALR_PROTOCOL.md` §3.2.26 item 6), and the Boss's step-18a action is
+   * validated on the board the Player's cycle left — which the scene is showing
+   * once it has applied the Player's own cycle — *unless* the Boss AI's deadlock
+   * recovery replaced that board with a generated one, an operation that emits
+   * nothing at all (`ADR-026` §8, `GAME_EVENTS.md` §3 item 8). Replaying the
+   * batch's own deltas onto the rendered board and asking whether they land on the
+   * round's committed board decides exactly that, from delivered data alone: they
+   * do when the scene holds the cycle's starting board, and they cannot when an
+   * unreported reshuffle replaced it.
+   *
+   * ```text
+   * returns null   a delivered clear names a cell whose rendered content is not the
+   *                content the event confirms, a `dropMoves` origin holds no
+   *                content, or a pass's Spawn does not fill every cell its Gravity
+   *                left empty (MATCH3_RULES.md §4.5 item 1: the board a pass ends on
+   *                is full)
+   * returns board  the content every board delta leaves behind, in §1.0 order
+   * ```
+   *
+   * **The order is the presentation's own order** (delivered order, and within a
+   * pass: clears and creation claims, then Gravity, then Spawn — `MATCH3_RULES.md`
+   * §5.8.3, `SIGNALR_PROTOCOL.md` §3.2.28 item 5), so a verified replay is the
+   * order `presentMatchDestruction` / `playGravityDrop` / `playRefillSpawn` apply,
+   * and the clearing rule is the one `clearConfirmedCell` applies: a
+   * `MatchCreated` confirms a cell by Gem type, a `GemMatched` by its whole content
+   * key, and a cell its own pass already emptied is confirmed rather than refused.
+   */
+  private static replayBoardDeltas(
+    start: readonly (string | null)[],
+    events: readonly InBattleServerEvent[]
+  ): Array<string | null> | null {
+    const contents = start.slice();
+    const inRange = (index: number): boolean =>
+      Number.isInteger(index) && index >= 0 && index < contents.length;
+
+    // The cells the pass being replayed has emptied, and the creation claims that
+    // pass's Matches made — applied after its clears and before its Gravity, exactly
+    // as `presentMatchDestruction` applies them.
+    let emptied = new Set<number>();
+    let creations: Array<{
+      readonly cellIndex: number;
+      readonly gemType: string;
+      readonly specialGem: { readonly type: string; readonly orientation?: string };
+    }> = [];
+
+    /** Confirms and empties one cell, mirroring `clearConfirmedCell`. */
+    const clear = (cellIndex: number, key: string, typeOnly: boolean): boolean => {
+      if (!inRange(cellIndex)) {
+        return false;
+      }
+
+      const current = contents[cellIndex];
+
+      // A cell this pass's own clear already emptied (a Match's `cells` and that
+      // cell's own `GemMatched` both name it) is confirmed, and it stays in
+      // `emptied` for the creation claims below.
+      if (current === null) {
+        return true;
+      }
+
+      if (!(typeOnly ? current.startsWith(`${key}|`) : current === key)) {
+        return false;
+      }
+
+      contents[cellIndex] = null;
+      emptied.add(cellIndex);
+
+      return true;
+    };
+
+    for (const event of events) {
+      switch (event.type) {
+        case 'SwapStarted': {
+          const swap = deliveredSwapOf(event);
+
+          if (!swap || !inRange(swap.fromCell) || !inRange(swap.toCell)) {
+            return null;
+          }
+
+          const from = contents[swap.fromCell] ?? null;
+          contents[swap.fromCell] = contents[swap.toCell] ?? null;
+          contents[swap.toCell] = from;
+          break;
+        }
+
+        case 'MatchCreated': {
+          for (const cellIndex of event.cells) {
+            if (!clear(cellIndex, event.gemType, true)) {
+              return null;
+            }
+          }
+
+          for (const creation of event.createdSpecialGems ?? []) {
+            creations.push({
+              cellIndex: creation.cellIndex,
+              gemType: event.gemType,
+              specialGem: creation.specialGem,
+            });
+          }
+          break;
+        }
+
+        case 'GemMatched': {
+          if (!clear(event.cellIndex, gemContentKeyFor(event.gemType, event.specialGem), false)) {
+            return null;
+          }
+          break;
+        }
+
+        case 'CascadeStepResolved': {
+          for (const creation of creations) {
+            if (emptied.has(creation.cellIndex)) {
+              contents[creation.cellIndex] = gemContentKeyFor(
+                creation.gemType,
+                creation.specialGem
+              );
+            }
+          }
+
+          creations = [];
+
+          // Gravity moves the survivors the report names and nothing else: every
+          // origin is read from the snapshot taken before the step and vacated
+          // first, then every destination is filled, so a chain of moves applies as
+          // the one step Gravity applied (`playGravityDrop`).
+          const before = contents.slice();
+
+          for (const move of event.dropMoves) {
+            if (
+              !inRange(move.fromCell) ||
+              !inRange(move.toCell) ||
+              (before[move.fromCell] ?? null) === null
+            ) {
+              return null;
+            }
+          }
+
+          for (const move of event.dropMoves) {
+            contents[move.fromCell] = null;
+          }
+
+          for (const move of event.dropMoves) {
+            contents[move.toCell] = before[move.fromCell] ?? null;
+          }
+
+          // Spawn fills exactly the cells Gravity left empty
+          // (`MATCH3_RULES.md` §4.5 item 1), so the pass ends on a full board.
+          for (const gem of event.spawnedGems) {
+            if (!inRange(gem.cellIndex)) {
+              return null;
+            }
+
+            contents[gem.cellIndex] = gemContentKeyFor(gem.gemType);
+          }
+
+          if (contents.includes(null)) {
+            return null;
+          }
+
+          emptied = new Set<number>();
+          break;
+        }
+
+        default:
+          // Every other delivered event presents feedback, a readout or a combat
+          // stage; none of them states a board delta.
+          break;
+      }
+    }
+
+    return contents;
+  }
+
+  /**
    * Builds the ordered phases of one delivered batch, in the batch's own order.
    *
    * The grouping is a single forward pass: every event is mapped by the one
@@ -4592,6 +5020,7 @@ export class BattleScene extends Phaser.Scene {
       action: PresentationAction;
       detail: string;
       events: InBattleServerEvent[];
+      boardBacked: boolean;
       callout?: EventCallout;
     } | null = null;
 
@@ -4607,6 +5036,7 @@ export class BattleScene extends Phaser.Scene {
         detail: open.detail,
         holdMs: BattleScene.phaseHoldMs(open.kind, open.events),
         events: open.events,
+        boardBacked: open.boardBacked,
         ...(open.callout ? { callout: open.callout } : {}),
       });
       open = null;
@@ -4628,7 +5058,73 @@ export class BattleScene extends Phaser.Scene {
     // (`TASK-275` §6.6).
     let bannerSide: 'player' | 'boss' | null = null;
 
-    for (const event of presented) {
+    // The delivered board-action boundaries of this batch, in delivered order: a
+    // `SwapStarted` opens one board cycle and the batch's next one closes it
+    // (`SIGNALR_PROTOCOL.md` §3.2.26 item 3). One round carries the Player's and the
+    // Boss Response Phase's (`ADR-026` §2), and the last of them is the only cycle
+    // this client cannot place from the contract alone.
+    let lastBoundaryIndex = -1;
+
+    for (let index = 0; index < presented.length; index++) {
+      if (deliveredSwapOf(presented[index]) !== null) {
+        lastBoundaryIndex = index;
+      }
+    }
+
+    // Whether the last delivered boundary's cycle starts from the board on screen.
+    //
+    // The Player's own action is validated against the committed board the state
+    // push delivered (`ADR-026` §2), so it is placeable from the contract alone and
+    // is never questioned here — the Player Turn's presentation is unchanged. Every
+    // other boundary is placeable only when this batch's own delivered board deltas
+    // replay onto the round's committed board: the Boss's step-18a action is
+    // resolved by the same Match-3 pipeline on the board the Player's cycle left,
+    // and that is the board on screen once the Player's own cycle has been applied,
+    // so its deltas land on the committed board — unless the Boss AI's deadlock
+    // recovery replaced that board with a generated one, which emits nothing at all
+    // (`ADR-026` §8, `GAME_EVENTS.md` §3 item 8). Replaying them answers the
+    // question from delivered data alone (`replayBoardDeltas`); where they do not
+    // land, the cycle's starting board is not one this client holds.
+    const lastBoundaryActor =
+      lastBoundaryIndex >= 0
+        ? deliveredSwapOf(presented[lastBoundaryIndex])?.actor ?? null
+        : null;
+
+    let lastCyclePlaceable = false;
+
+    if (lastBoundaryActor === 'boss') {
+      const rendered = this.renderedBoardContents();
+      const committed = BattleScene.deliveredBoardContents(
+        this.currentBattleState?.board ?? null
+      );
+
+      if (committed !== null) {
+        const replayed = BattleScene.replayBoardDeltas(rendered, presented);
+
+        lastCyclePlaceable =
+          replayed !== null && BattleScene.sameBoardContents(replayed, committed);
+      }
+    }
+
+    // Whether the board cycle currently being built started from the board the
+    // scene renders (`PresentationPhase.boardBacked`). It is decided by the
+    // delivered boundary that opens the cycle and by nothing else, and it is
+    // re-decided at every boundary — one round carries the Player's cycle *and*
+    // the Boss Response Phase's (`ADR-026` §2), and the two are not the same
+    // board. A batch that delivers no boundary at all keeps the initial `true`:
+    // its exchange is this client's own committed pair, on the board on screen.
+    let cycleBoardBacked = true;
+
+    // The delivered index just past the pass whose activation phase has already
+    // been opened. A pass is the protocol's own unit for an activation run
+    // (`MATCH3_RULES.md` §5.5.5 item 6 computes the pass's clears as one union),
+    // so each recorded pass contributes at most one activation phase, opened
+    // before that pass's Match/Cascade phase plays.
+    let activationsOpenedThrough = -1;
+
+    for (let index = 0; index < presented.length; index++) {
+      const event = presented[index];
+
       boardActionActor = deliveredSwapOf(event)?.actor ?? boardActionActor;
 
       const step = adaptPresentedEvent(event, boardActionActor);
@@ -4654,6 +5150,19 @@ export class BattleScene extends Phaser.Scene {
       if (step.kind === 'swap') {
         const side = step.actor === 'player' || step.actor === 'boss' ? step.actor : null;
 
+        // The boundary also decides whether this cycle's board work may be applied
+        // to the rendered board (`PresentationPhase.boardBacked`). The Player's own
+        // committed action always may: it is validated against the committed board
+        // this scene renders, exactly as it always has been. Every other boundary
+        // may only when this batch's own delivered deltas were verified to replay
+        // onto the round's committed board (the pre-pass above) — which is what
+        // makes the Boss's ordinary cycle placeable, and what leaves a cycle whose
+        // starting board the client has never held (an unreported deadlock
+        // reshuffle) on the reported-without-board-work path.
+        cycleBoardBacked =
+          side === 'player' ||
+          (side === 'boss' && index === lastBoundaryIndex && lastCyclePlaceable);
+
         if (side === 'boss' && side !== bannerSide) {
           flush();
           bannerSide = side;
@@ -4664,20 +5173,76 @@ export class BattleScene extends Phaser.Scene {
             detail: 'banner BOSS TURN',
             holdMs: BattleScene.phaseHoldMs('banner', []),
             events: [],
+            boardBacked: cycleBoardBacked,
           });
         }
       }
+
+      // A pass's **special-cell activations** open their own phase, before the
+      // Match/Cascade phase that clears the cells they consumed. The order is the
+      // whole point: the Match/Cascade phase empties every cell the pass's
+      // delivered clears confirm — an activating cell among them — so an
+      // activation presented after it would be raised over an already-empty cell,
+      // and one presented inside it would be cut short by the next phase. Opening
+      // the activation first keeps the overlay visible *before* the destruction,
+      // replacement or next dependent effect (`MATCH3_RULES.md` §5.5.5 item 4:
+      // activation always clears its own cell).
+      //
+      // The pass is the unit, not the item: §5.5.5 item 6 reports the pass's
+      // clears as one union, so a chain's activations (`§5.5.5` item 7) all
+      // belong to one pass and are presented together, each at its own cell.
+      if (
+        (step.kind === 'match' || step.kind === 'cascade') &&
+        index > activationsOpenedThrough
+      ) {
+        const passEnd = BattleScene.passRangeEnd(presented, index);
+        // The pass's activation reports, and only those: a `GemMatched` whose
+        // `specialGem` is present is a consumed Special Gem, which is exactly what
+        // `MATCH3_RULES.md` §5.5.5 item 1 calls an activation. The Match's own
+        // `cells` and every ordinary `GemMatched` stay in the Match/Cascade phase,
+        // where the pass's clears are computed as the one union §5.5.5 item 6
+        // defines.
+        const activationEvents = presented
+          .slice(index, passEnd)
+          .filter((candidate) => candidate.type === 'GemMatched' && candidate.specialGem);
+        const activations = specialActivationOccurrences(activationEvents);
+
+        if (activations.length > 0) {
+          flush();
+          phases.push({
+            kind: 'special-activation',
+            actor: boardActionActor ?? 'swap',
+            action: 'special-activation',
+            detail: `activate ${activations
+              .map((activation) => `${activation.gemType} ${activation.specialGem.type}`)
+              .join(', ')}`,
+            holdMs: BattleScene.phaseHoldMs('special-activation', activationEvents),
+            events: activationEvents,
+            boardBacked: cycleBoardBacked,
+          });
+        }
+
+        activationsOpenedThrough = passEnd;
+      }
+
+      // A cycle the client **cannot** place presents no movement at all, so it
+      // presents no movement step either: the delivered transition report joins the
+      // phase that presents the pass it closes. A `gravity-drop` / `refill-spawn`
+      // step states that the pass's Gravity and Spawn played on the board on screen
+      // — and for such a cycle they did not (`PresentationPhase.boardBacked`).
+      const withheldMovement = step.kind === 'gravity-drop' && !cycleBoardBacked;
 
       // A CascadeCreated always opens its own phase: it *is* the pass boundary,
       // and one phase per delivered `cascadeDepth` is the contract
       // (`MATCH3_RULES.md` §4.2 item 2). Match and Gem feedback extends whichever
       // phase is showing this pass. A floater-only event joins the open phase
       // rather than splitting it. A step of the same kind extends the phase
-      // already open.
+      // already open — and so does a movement step whose movement is withheld.
       const extendsOpen =
         open !== null &&
         step.kind !== 'cascade' &&
-        (step.kind === 'feedback' ||
+        (withheldMovement ||
+          step.kind === 'feedback' ||
           open.kind === step.kind ||
           (step.kind === 'match' && open.kind === 'cascade'));
 
@@ -4687,11 +5252,12 @@ export class BattleScene extends Phaser.Scene {
 
       if (open === null) {
         open = {
-          kind: step.kind,
+          kind: withheldMovement ? 'feedback' : step.kind,
           actor: step.actor,
           action: step.action,
           detail: step.detail,
           events: [],
+          boardBacked: cycleBoardBacked,
         };
       }
 
@@ -4705,14 +5271,19 @@ export class BattleScene extends Phaser.Scene {
       }
 
       // A delivered pass transition reports two steps of the one pass — the Fall its
-      // `dropMoves` describe and the Refill its `spawnedGems` describe — so it opens
-      // two phases, in that order, and the pass is closed only when the refill has
-      // played (`SIGNALR_PROTOCOL.md` §3.2.28 item 5, `GAME_EVENTS.md` §1.1 item 8).
+      // `dropMoves` describe and the Refill its `spawnedGems` describe — so, for a
+      // cycle whose board work is presented, it opens two phases, in that order, and
+      // the pass is closed only when the refill has played
+      // (`SIGNALR_PROTOCOL.md` §3.2.28 item 5, `GAME_EVENTS.md` §1.1 item 8).
       // The adapter still maps one delivered event to one step
       // (`adaptPresentedEvent`); the timeline is what plays the transition's two
       // halves, and the next cascade pass — whose own matches are detected on the
       // board this refill produced — can only begin after them.
-      if (event.type === 'CascadeStepResolved') {
+      //
+      // For a cycle the client cannot place there is no Refill step to play: the
+      // transition's report already joined the pass's own phase above, and neither
+      // half is presented as movement.
+      if (event.type === 'CascadeStepResolved' && !withheldMovement) {
         flush();
 
         phases.push({
@@ -4722,6 +5293,7 @@ export class BattleScene extends Phaser.Scene {
           detail: `refill depth=${event.passDepth}`,
           holdMs: BattleScene.phaseHoldMs('refill-spawn', [event]),
           events: [event],
+          boardBacked: cycleBoardBacked,
         });
       }
     }
@@ -4757,6 +5329,7 @@ export class BattleScene extends Phaser.Scene {
         detail: `swap ${swapCells.from}->${swapCells.to}`,
         holdMs: BattleScene.phaseHoldMs('swap', []),
         events: [],
+        boardBacked: true,
       });
     }
 
@@ -4781,6 +5354,7 @@ export class BattleScene extends Phaser.Scene {
         phase.kind === 'swap' ||
         phase.kind === 'match' ||
         phase.kind === 'cascade' ||
+        phase.kind === 'special-activation' ||
         phase.kind === 'gravity-drop' ||
         phase.kind === 'refill-spawn'
     );
@@ -4816,6 +5390,45 @@ export class BattleScene extends Phaser.Scene {
         detail: 'settle',
         holdMs: BattleScene.phaseHoldMs('settle', []),
         events: [],
+        // The settle is *the* authoritative board write of the round
+        // (`SIGNALR_PROTOCOL.md` §3.1 items 1–3), so it is never withheld — what
+        // a cycle the client cannot place withholds is the local application of
+        // that cycle's deltas (`boardBacked`), and this phase is where the round's
+        // committed board replaces whatever the timeline left on screen.
+        boardBacked: true,
+      });
+    }
+
+    // The turn's activation summary, last — after the round's board work has
+    // converged and after every combat stage the batch delivered, so it reports a
+    // turn that has finished presenting rather than one still in flight
+    // (`GAME_RULES.md` §2: a Turn is one committed Round, and one Round is one
+    // `ReceiveEvents` batch — `SIGNALR_PROTOCOL.md` §3.1 — so this is the turn's
+    // own tally and nothing is carried between turns).
+    //
+    // It is presentation-only: the counts are the delivered `GemMatched`
+    // activations of this batch and nothing else (`summarizeSpecialActivations`),
+    // the line is drawn from them, and a turn with no activation opens no phase at
+    // all rather than a zero row. Nothing is written back, and no gameplay value is
+    // read, derived, or changed by it.
+    //
+    // The phase carries the batch's own delivered events, because the tally's
+    // identity is the *pass* an activation was reported in (`§5.8.2` item 3): the
+    // delivered `CascadeStepResolved` items are what separate two activations of one
+    // cell into two occurrences, and they are the pass's own closes
+    // (`SIGNALR_PROTOCOL.md` §3.2.28 item 5). The formatter filters to the
+    // activation reports itself; nothing else in this phase is presented.
+    const summaryLine = formatSpecialActivationSummary(summarizeSpecialActivations(presented));
+
+    if (summaryLine !== '') {
+      phases.push({
+        kind: 'summary',
+        actor: 'battle',
+        action: 'turn-summary',
+        detail: `summary ${summaryLine}`,
+        holdMs: BattleScene.phaseHoldMs('summary', []),
+        events: presented,
+        boardBacked: true,
       });
     }
 
@@ -4827,10 +5440,49 @@ export class BattleScene extends Phaser.Scene {
         detail: `outcome ${this.pendingOutcomeHandoff.outcome}`,
         holdMs: BattleScene.phaseHoldMs('outcome', []),
         events: [],
+        boardBacked: true,
       });
     }
 
     return phases;
+  }
+
+  /**
+   * The delivered index just past the detection pass that starts at `from`.
+   *
+   * The pass is `MATCH3_RULES.md` §4's own unit, and the wire closes it with its
+   * `CascadeStepResolved` (`SIGNALR_PROTOCOL.md` §3.2.28 item 5, the pass's last
+   * item). The bound is read from the delivered item order alone — a grouping of
+   * what the server sent, never a derived resolution fact:
+   *
+   * ```text
+   * CascadeStepResolved   the pass's own close: the range ends after it
+   * CascadeCreated        the next pass's first item: the range ends before it
+   * SwapStarted           a new board cycle: this pass delivered no close
+   * end of batch          the range ends with the batch
+   * ```
+   *
+   * A pass the server never closed (a truncated or malformed batch) therefore
+   * contributes only the items that were delivered for it, and the pass's own
+   * activations are read from exactly those.
+   */
+  private static passRangeEnd(
+    events: readonly InBattleServerEvent[],
+    from: number
+  ): number {
+    for (let index = from; index < events.length; index++) {
+      const type = events[index].type;
+
+      if (type === 'CascadeStepResolved') {
+        return index + 1;
+      }
+
+      if (index > from && (type === 'CascadeCreated' || type === 'SwapStarted')) {
+        return index;
+      }
+    }
+
+    return events.length;
   }
 
   /**
@@ -4882,6 +5534,15 @@ export class BattleScene extends Phaser.Scene {
         return TURN_BANNER_TOTAL_MS;
       case 'swap':
         return SWAP_TWEEN_MS;
+      case 'special-activation':
+        // One activation overlay per activated cell, all raised together inside
+        // this phase: the hold is the overlay's own lifetime, so the activation is
+        // perceivable before the Match/Cascade phase that clears its cell plays.
+        return SPECIAL_ACTIVATION_HOLD_MS;
+      case 'summary':
+        // The tally is raised at the turn's end and read once: its hold is the
+        // line's own lifetime, and no other phase shares it.
+        return TURN_SUMMARY_HOLD_MS;
       case 'gravity-drop':
         // The pass's delivered Fall travel (`GEM_FALL_MS`); the Refill step that
         // closes the same pass is its own phase and its own hold.
@@ -4977,6 +5638,7 @@ export class BattleScene extends Phaser.Scene {
         kind === 'swap' ||
         kind === 'match' ||
         kind === 'cascade' ||
+        kind === 'special-activation' ||
         kind === 'gravity-drop' ||
         kind === 'refill-spawn'
       ) {
@@ -5025,11 +5687,19 @@ export class BattleScene extends Phaser.Scene {
       );
 
       this.presentationPhaseKind = phase.kind;
+      // The phase starts its own animations; each one reports its duration as it
+      // starts (`trackPhaseAnimation`), and the phase is then held for the longer
+      // of its declared hold and what it actually started. That is the structural
+      // half of the pacing rule: a phase can never complete — and the next phase,
+      // which presents the step that depends on it, can never begin — while an
+      // animation it started is still running.
+      this.phaseAnimationMs = 0;
       this.playPresentationPhase(phase);
+      const holdMs = Math.max(phase.holdMs, this.phaseAnimationMs);
       BattleScene.appendBounded(this.presentedPhases, phase.detail);
       this.renderPhaseIndicator();
 
-      if (phase.holdMs > 0 && this.tweens) {
+      if (holdMs > 0 && this.tweens) {
         // The pacing runs on the phase clock, so an aborted timeline can cancel
         // exactly its own pacing without disturbing any feedback animation. The
         // generation it was scheduled under is captured with it: a completion
@@ -5041,7 +5711,7 @@ export class BattleScene extends Phaser.Scene {
         this.tweens.add({
           targets: this.phaseClock,
           progress: 1,
-          duration: phase.holdMs,
+          duration: holdMs,
           onComplete: () => {
             if (generation !== this.presentationGeneration) {
               return;
@@ -5092,15 +5762,31 @@ export class BattleScene extends Phaser.Scene {
       case 'swap':
         this.playSwapPhase(phase);
         break;
+      case 'special-activation':
+        // The pass's delivered activations: one overlay per activated cell, at
+        // that cell, naming the Special Gem that consumed it — raised **before**
+        // the Match/Cascade phase of the same pass clears those cells.
+        this.presentSpecialActivations(phase.events);
+        break;
       case 'gravity-drop':
         // The pass's delivered Gravity: the survivors the report named travel from
         // the cell they left to the cell they arrived at.
+        //
+        // A `gravity-drop` phase exists only for a cycle whose board work is
+        // presented (`PresentationPhase.boardBacked`): a cycle the client cannot
+        // place states no movement step at all, and its delivered pass report joins
+        // the phase presenting that pass (`buildPresentationPhases`). The round's
+        // single `settle` still converges the delivered board.
         this.playGravityDrop(phase.events);
         break;
       case 'refill-spawn':
         // The same pass's delivered Spawn: the Gems the report named enter the cells
         // it named, so the pass ends on a full board and the next pass's matches are
         // detected on the board this step produced.
+        //
+        // Like the Fall, this phase exists only where the report describes the board
+        // on screen: placing a spawned Gem at a coordinate whose surrounding Gems the
+        // client never held would draw a board neither delivered nor derived.
         this.playRefillSpawn(phase.events);
         break;
       case 'settle':
@@ -5127,6 +5813,11 @@ export class BattleScene extends Phaser.Scene {
         // its hold (TASK-254 AF-1).
         this.presentBossSkillStep(phase);
         break;
+      case 'summary':
+        // The turn's activation tally, from this batch's own delivered activation
+        // reports — the last thing the turn shows.
+        this.presentTurnSummary(phase.events);
+        break;
       case 'outcome':
         this.handOffOutcome();
         break;
@@ -5136,9 +5827,19 @@ export class BattleScene extends Phaser.Scene {
         break;
     }
 
-    this.presentPhaseReadouts(phase);
+    // The summary phase carries the batch's delivered events because the tally's
+    // own identity is the pass each activation was reported in; it presents none of
+    // them a second time — its line is the tally, and every other step of the turn
+    // was already presented by the phase that owned it.
+    if (phase.kind !== 'summary') {
+      this.presentPhaseReadouts(phase);
+    }
 
-    if (phase.events.length > 0) {
+    // The activation step draws its own overlay and nothing else: its events are
+    // the activation reports, whose ordinary cell flash belongs to the
+    // Match/Cascade phase of the same pass — one flash per delivered clear, raised
+    // once (TASK-275 §6.2's "a duplicate batch never re-runs it").
+    if (phase.kind !== 'special-activation' && phase.kind !== 'summary' && phase.events.length > 0) {
       this.presentCombatFeedback(phase.events);
     }
 
@@ -5147,7 +5848,17 @@ export class BattleScene extends Phaser.Scene {
     // here (TASK-275 §6.2). It is the same step's events and nothing else, so a
     // phase with no Match/Gem event removes nothing, and a duplicate batch never
     // re-runs it (`acceptedResolutionSequence`).
-    if (phase.kind === 'match' || phase.kind === 'cascade') {
+    //
+    // It is applied only where the pass's cells are cells of the board on screen
+    // (`boardBacked`). A cycle the client cannot place is the one case where the
+    // delivered cells name positions on a board it does not hold: the batch's own
+    // deltas were not verified to replay onto the round's committed board, so the
+    // pass is reported without a local removal and the committed board arrives at
+    // `settle`. (Removing the content found there anyway would delete the wrong Gem;
+    // refusing individual clears per cell, because the rendered content disagrees
+    // with the delivered `gemType`, is the stale-asset defect — the cell would keep
+    // an asset no delivered event placed there until that transition replaced it.)
+    if ((phase.kind === 'match' || phase.kind === 'cascade') && phase.boardBacked) {
       this.presentMatchDestruction(phase.events);
     }
   }
@@ -5192,18 +5903,29 @@ export class BattleScene extends Phaser.Scene {
    * Presents the timeline-owned readouts the phase's own delivered events own
    * (operator decision D-2).
    *
-   * A Combo change owns the Combo / Match counters, a Power change owns the Pet's
-   * Power value and gauge, and the active Pet's own Passive change owns the
-   * Passive pair and its gauge. Each is presented by the phase holding the event
-   * that reports it — the board phase between whose Matches the server emitted it,
-   * or the phase a later delivered event opened — so no readout is written by a
-   * raw push while a timeline plays, and none is presented before the step that
-   * owns it.
+   * A Combo change owns the Combo line and the cumulative Match line, a Power
+   * change owns the Pet's Power value and gauge, and the active Pet's own Passive
+   * change owns the Passive pair and its gauge. Each is presented by the phase
+   * holding the event that reports it — the board phase between whose Matches the
+   * server emitted it, or the phase a later delivered event opened — so no readout
+   * is written by a raw push while a timeline plays, and none is presented before
+   * the step that owns it.
+   *
+   * **The Combo line is the delivered event's own value.** A `ComboChanged` is
+   * presented from the value it carries (`SIGNALR_PROTOCOL.md` §3.2.8: the **new**
+   * Combo value that Match produced), which is the authoritative Combo at that
+   * point of the timeline — not the round's committed final value the state push
+   * already holds (`renderPlayerHud`). The phase's own events are walked in
+   * delivered order, so a phase carrying several Matches' Combo reports presents
+   * the last of them and a later phase presents a later value: the line progresses
+   * with the resolution (regression: a duplicate or superseded batch never reaches
+   * here, and convergence still presents the committed value).
    *
    * A Boss-owned Passive change owns no readout on this panel: the panel carries
    * `PetState`'s pair, so nothing is presented for it (`SIGNALR_PROTOCOL.md`
    * §3.2.16 item 1). Nothing is derived: no Passive is charged, no Threshold is
-   * evaluated, and no Combo or Match count is computed.
+   * evaluated, and no Combo or Match count is computed — the Combo value written is
+   * the delivered one.
    */
   private presentPhaseReadouts(phase: PresentationPhase): void {
     const state = this.currentBattleState;
@@ -5214,7 +5936,7 @@ export class BattleScene extends Phaser.Scene {
     for (const event of phase.events) {
       switch (event.type) {
         case 'ComboChanged':
-          this.renderPlayerHud(state);
+          this.renderPlayerHud(state, false, event.combo);
           break;
         case 'PowerChanged':
           this.presentPetPower(state, true);
@@ -5246,22 +5968,35 @@ export class BattleScene extends Phaser.Scene {
    * step for a batch that delivered no boundary falls back to the pair this
    * client submitted (`committedSwapCells`).
    *
-   * **A pair is only *exchanged* when those two cells' contents are the ones the
-   * action exchanged** — that is, when the coordinates name an exchange on the
-   * board this scene is showing. The displayed board is the last committed board
-   * the server delivered (`renderBoard` writes it at the round's single
-   * transition), and under `ADR-026` §2 the round's first board action is the
-   * Player's, whose action is validated against exactly that committed board. So
-   * the Player's own step (and the submitted-pair fallback that is that step's
-   * pre-extension form) exchanges the views it names, and every other delivered
-   * boundary does not: the Boss's action is validated against the board its own
-   * resolution continues from — the post-Player-cycle board, and, after a deadlock
-   * reshuffle, a board the AI generated and the client has never held
-   * (`BossAiEngine.SelectMove`, `ADR-026` §8) — and `SIGNALR_PROTOCOL.md` §3.1
-   * item 2 delivers no per-pass board, so the client can neither know those
-   * contents nor honestly move them. Moving the displayed cells there would
-   * present an exchange no authoritative state contains, and after a reshuffle a
-   * movement of Gems that had nothing to do with the Boss's action.
+   * **A pair is only *exchanged* when the cycle it opens started from the board on
+   * screen** (`PresentationPhase.boardBacked`) — that is, when the coordinates name
+   * an exchange the displayed contents really made. The boundary decides that, once,
+   * for the whole cycle it opens (`buildPresentationPhases`), and this step reads
+   * the decision rather than re-deriving it:
+   *
+   * ```text
+   * Player boundary / no boundary   exchanges — the round's first board action is
+   *                                 validated against the committed board this
+   *                                 scene renders (`ADR-026` §2), and the
+   *                                 submitted-pair fallback is that same pair
+   * Boss boundary, cycle placed     exchanges — the Boss's action is resolved on the
+   *                                 board the Player's cycle left, and that is the
+   *                                 board on screen once the Player's own cycle has
+   *                                 been applied; the batch's own deltas were
+   *                                 verified to replay onto the committed board
+   * anything else                   marks only — the cycle starts from a board the
+   *                                 client has never held (the unreported deadlock
+   *                                 reshuffle, `ADR-026` §8), or from an `actor`
+   *                                 word that names no side
+   * ```
+   *
+   * For the marked case the exchange is not claimed: the Boss's action is validated
+   * against the board its own resolution continues from, and after a deadlock
+   * reshuffle that is a board the AI generated and the client has never held
+   * (`BossAiEngine.SelectMove`, `ADR-026` §8). `SIGNALR_PROTOCOL.md` §3.1 item 2
+   * delivers no per-pass board, so without the reconciliation check the client could
+   * not know those contents and moving the displayed cells would present an exchange
+   * no authoritative state contains.
    *
    * The cell **indices** are board-independent (`MATCH3_RULES.md` §1.0), so the
    * delivered pair is still presented: the two cells are marked, and the round's
@@ -5290,13 +6025,15 @@ export class BattleScene extends Phaser.Scene {
 
     this.committedSwapCells = null;
 
-    // A boundary that names the Player is the round's first board action, validated
-    // against the committed board this scene renders; no boundary at all is this
-    // client's own committed action, which is the same board. Both are exchanges the
-    // displayed contents really made. Everything else — the Boss's action, or an
-    // `actor` word outside the contract's two values, which names no side
-    // (`SIGNALR_PROTOCOL.md` §3.2.26 item 2) — is presented as marked cells only.
-    const exchangedOnHeldBoard = delivered === null || delivered.actor === 'player';
+    // The step exchanges the views it names exactly when its cycle started from the
+    // board on screen (`PresentationPhase.boardBacked`): the Player's own committed
+    // action and the submitted-pair fallback always did and still do, and the Boss's
+    // action does whenever this batch's own deltas were verified to replay onto the
+    // round's committed board. Any other step — a cycle whose starting board the
+    // client has never held, or an `actor` word outside the contract's two values,
+    // which names no side (`SIGNALR_PROTOCOL.md` §3.2.26 item 2) — is presented as
+    // marked cells only.
+    const exchangedOnHeldBoard = phase.boardBacked;
 
     if (!exchangedOnHeldBoard) {
       this.markSwapCells(pair.from, pair.to);
@@ -5319,6 +6056,14 @@ export class BattleScene extends Phaser.Scene {
 
     const from = BattleScene.cellCoordinates(pair.from);
     const to = BattleScene.cellCoordinates(pair.to);
+
+    // The exchange is an animation of this phase: the phase cannot complete — and
+    // the Match/Cascade step detected on the exchanged board cannot begin — until
+    // it has finished (`trackPhaseAnimation`, `advancePresentation`). This is the
+    // ordering the timeline is required to have: a Match presentation is never
+    // played over a swap that is still visibly in flight, whatever the declared
+    // hold happens to be.
+    this.trackPhaseAnimation(SWAP_TWEEN_MS);
 
     this.tweens.add({
       targets: [fromView.tile, fromView.label],
@@ -5422,29 +6167,43 @@ export class BattleScene extends Phaser.Scene {
     }
 
     const before = this.gemViews.slice();
-    const origins = new Set(moves.map((move) => move.fromCell));
 
+    // The views this step's own report **claims**: each move's subject is the view
+    // its origin holds in the snapshot taken before the step. A claimed view travels
+    // with its move; every *other* view standing on a destination cell is displaced,
+    // and pooling it is what keeps the occupant map one-to-one — a displaced view
+    // left where it was would still be drawn at a coordinate no delivered event
+    // placed it at, and the arriving view would be drawn on top of it.
+    //
+    // Deciding ownership by "does a move claim this exact view" rather than by "is
+    // this cell some move's origin" is what makes the rule hold when the snapshot is
+    // already incomplete: an origin whose slot is empty claims nothing, so the view
+    // its destination still holds is pooled instead of being silently overwritten.
+    const claimed = new Set<GemView>();
     for (const move of moves) {
-      // A cell that is also an origin vacates itself: its own view travels on as
-      // that move's subject rather than being displaced.
-      if (origins.has(move.toCell)) {
-        continue;
+      const view = before[move.fromCell];
+      if (view) {
+        claimed.add(view);
       }
-
-      const displaced = before[move.toCell];
-      if (!displaced) {
-        continue;
-      }
-
-      displaced.cleared = true;
-      displaced.content = '';
-      displaced.tile.setVisible(false);
-      displaced.label.setVisible(false);
-      this.refillableViews.push(displaced);
     }
 
-    for (const origin of origins) {
-      this.gemViews[origin] = null;
+    for (const move of moves) {
+      const displaced = before[move.toCell];
+
+      if (!displaced || claimed.has(displaced)) {
+        continue;
+      }
+
+      this.poolGemView(displaced);
+    }
+
+    // Every origin is vacated *before* any destination is filled, so a chain of
+    // moves (0→8, 8→16, 16→24) applies as the one step Gravity applied and no view
+    // is lost to the order the report happens to list them in.
+    for (const move of moves) {
+      if (this.gemViews[move.fromCell] === before[move.fromCell]) {
+        this.gemViews[move.fromCell] = null;
+      }
     }
 
     for (const move of moves) {
@@ -5460,6 +6219,46 @@ export class BattleScene extends Phaser.Scene {
       this.gemViews[move.toCell] = view;
       this.travelGemView(view, move.toCell, GEM_FALL_MS);
     }
+  }
+
+  /**
+   * Empties one gem view and returns it to the displacement pool.
+   *
+   * A pooled view is hidden, holds no content, and is claimed by no cell: it exists
+   * only so the pass's own Refill step (or the round's single board transition) can
+   * re-label it and place it at the delivered cell it belongs to, which is what keeps
+   * a battle's board on the same 64 persistent views (TASK-245) while never leaving a
+   * sprite attached to a coordinate no delivered event named.
+   */
+  private poolGemView(view: GemView): void {
+    view.cleared = true;
+    view.content = '';
+    view.tile.setVisible(false);
+    view.label.setVisible(false);
+    this.refillableViews.push(view);
+  }
+
+  /**
+   * Takes one pooled view that no cell currently owns, or `null` when the pool holds
+   * none.
+   *
+   * The ownership check is the pool's contract, enforced rather than assumed: a view
+   * still referenced by a `gemViews` slot belongs to that cell, so handing it to
+   * another cell would map two coordinates onto one sprite — the exact defect that
+   * shows up as a cell drawn twice and another drawn not at all. An entry that fails
+   * the check is dropped from the pool (it is the occupied slot's view, so it is not
+   * orphaned); with the map one-to-one it is never reached.
+   */
+  private takePooledView(): GemView | null {
+    while (this.refillableViews.length > 0) {
+      const candidate = this.refillableViews.pop() as GemView;
+
+      if (!this.gemViews.includes(candidate)) {
+        return candidate;
+      }
+    }
+
+    return null;
   }
 
   /**
@@ -5499,10 +6298,15 @@ export class BattleScene extends Phaser.Scene {
       // views for the whole battle (TASK-245). Only a cell the scene has neither for —
       // a payload this board cannot account for — allocates one, and an unconsumed
       // pooled view is released by `renderBoard`.
-      const pooled = this.gemViews[gem.cellIndex] ?? this.refillableViews.pop();
+      const onCell = this.gemViews[gem.cellIndex] ?? null;
+      const pooled = onCell ?? this.takePooledView();
       const view = pooled ?? this.createGemView(cell);
 
       if (pooled) {
+        // The delivered cell's content replaces whatever the view held — a cleared
+        // cell's emptied tile, or a pooled view's — and it restores the view's
+        // visibility and drops its `cleared` flag, so a cell the pass emptied can
+        // never keep an asset no delivered event placed there (`drawGemContent`).
         this.drawGemContent(view, cell);
       }
 
@@ -5528,6 +6332,7 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
+    this.trackPhaseAnimation(durationMs);
     this.tweens.add({
       targets: [view.tile, view.label],
       x,
@@ -5911,6 +6716,11 @@ export class BattleScene extends Phaser.Scene {
     this.timelineEffects.push(label);
     this.activeTurnBanner = label;
 
+    // The banner's three beats run inside its own hold, so the phase cannot
+    // complete — and the exchange it introduces cannot begin — over a banner still
+    // on screen (TASK-275 §6.6).
+    this.trackPhaseAnimation(TURN_BANNER_TOTAL_MS);
+
     if (!this.tweens) {
       return;
     }
@@ -5945,36 +6755,348 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
+   * Records one animation the **phase currently playing** has started, so the
+   * phase cannot complete before it has finished.
+   *
+   * Every animation helper reports its own duration here as it starts — the swap
+   * exchange and its coordinate marks, a Match/Gem highlight, an activation
+   * overlay, a Fall travel, a Refill/spawn entrance, a gauge travel, a floater, the
+   * turn banner and the turn summary — and `advancePresentation` holds the phase
+   * for the longer of its declared hold and the longest animation actually
+   * started.
+   *
+   * It is the structural form of the pacing rule the timing policy states in
+   * numbers: "a Match presentation must not begin before the swap that produced it
+   * has reached its required presentation state" is then a property of the machine,
+   * not a coincidence of two constants agreeing — a future edit to one duration
+   * cannot silently cut the next phase short, because the phase waits on what it
+   * started rather than on what it declared.
+   *
+   * A non-finite or non-positive duration records nothing, and only the longest
+   * value is kept: this is a high-water mark for one phase, reset at every phase
+   * boundary.
+   */
+  private trackPhaseAnimation(durationMs: number): void {
+    if (Number.isFinite(durationMs) && durationMs > this.phaseAnimationMs) {
+      this.phaseAnimationMs = durationMs;
+    }
+  }
+
+  /**
+   * Presents one pass's delivered **special-cell activations** (TASK-275 §6.3;
+   * `MATCH3_RULES.md` §5.5.5, `SIGNALR_PROTOCOL.md` §3.2.9 item 3).
+   *
+   * ```text
+   * one occurrence    one `GemMatched` whose `specialGem` is present — the cell
+   *                   held a Special Gem and that Special Gem was consumed, which
+   *                   is what activates it (§5.5.5 item 1)
+   * one overlay       one hollow ring in the Special Gem's own stroke colour plus
+   *                   the effect's own badge (`[H]`, `[V]`, `[BURST]`, `[AREA]`)
+   *                   in that same colour, both drawn at that cell
+   * ```
+   *
+   * **It is deliberately unlike an ordinary Match.** A Match/Gem flash is a
+   * translucent filled square in white or blue (`presentCombatFeedback`); an
+   * activation is an outlined ring in the *Special Gem's own* colour — the same
+   * colour its tile stroke carries while it sits on the board
+   * (`drawGemContent`) — with the badge that gem's label already carries
+   * (`formatGemCellLabel`'s suffix, from the same presentation table). The player
+   * can therefore tell "this cell activated" from "this cell was matched", and can
+   * see *which* effect it was without a new vocabulary: both members come from the
+   * project's existing Special Gem presentation (`SPECIAL_GEM_PRESENTATIONS`).
+   *
+   * **Every activation of the pass is raised at once, at its own cell.** A chain
+   * (`§5.5.5` item 7) is a run of activations inside one pass, and each gets its
+   * own ring: no overlay overwrites another, because no two of them are the same
+   * object or the same cell. A cell that activates again in a **later** pass is a
+   * later phase with its own overlay, which is exactly the repeated activation the
+   * rules allow (§5.8.3 item 6).
+   *
+   * **Duplicate reports raise no second visual.** The occurrences are deduplicated
+   * per cell for the pass (`specialActivationOccurrences`), so a repeated item
+   * cannot stack two rings on one cell, and a replayed batch never reaches this
+   * method at all (`acceptedResolutionSequence`, `admitsBatch`).
+   *
+   * Both objects are registered as timeline-owned effects, so an abort, a
+   * supersession or a teardown destroys them with the resolution that raised them —
+   * exactly like a Match highlight — and each is destroyed by its own fade on a
+   * completed timeline. Without a tween manager (a unit harness) the ring and its
+   * label are drawn and left visible, which is what makes the phase observable
+   * without a clock.
+   */
+  private presentSpecialActivations(events: readonly InBattleServerEvent[]): void {
+    if (!this.feedbackLayer) {
+      return;
+    }
+
+    for (const activation of specialActivationOccurrences(events)) {
+      const presentation = resolveSpecialGemPresentation(activation.specialGem);
+
+      if (!presentation) {
+        // A Special Gem type this build does not render: no ring is invented for
+        // it. The activation is still counted by the turn summary, which reads the
+        // delivered `specialGem` rather than this presentation table.
+        continue;
+      }
+
+      const { x, y } = BattleScene.cellCoordinates(activation.cellIndex);
+
+      const ring = this.add
+        .rectangle(x, y, CELL_SIZE + ACTIVATION_RING_PADDING, CELL_SIZE + ACTIVATION_RING_PADDING)
+        .setStrokeStyle(ACTIVATION_RING_STROKE, presentation.strokeColor);
+      this.feedbackLayer.add(ring);
+      this.timelineEffects.push(ring);
+
+      // The effect's own badge — the one word the board itself uses for this
+      // Special Gem (`formatGemCellLabel`'s suffix, from the same presentation
+      // table) — drawn in the ring's colour, just below the cell it activated at.
+      const badge = this.add
+        .text(x, y + ACTIVATION_BADGE_OFFSET_Y, presentation.badge, {
+          fontFamily: 'system-ui, sans-serif',
+          fontSize: ACTIVATION_BADGE_FONT_SIZE,
+          color: `#${presentation.strokeColor.toString(16).padStart(6, '0')}`,
+          fontStyle: 'bold',
+        })
+        .setOrigin(0.5);
+      this.feedbackLayer.add(badge);
+      this.timelineEffects.push(badge);
+
+      this.trackPhaseAnimation(SPECIAL_ACTIVATION_HOLD_MS);
+
+      if (!this.tweens) {
+        continue;
+      }
+
+      // The ring holds its full opacity for the first half of the activation's
+      // lifetime and fades over the second, so the activation is *seen* before the
+      // cell it names is destroyed or replaced by the pass that follows.
+      ring.setScale(ACTIVATION_RING_ENTER_SCALE);
+      this.tweens.add({
+        targets: ring,
+        scale: 1,
+        duration: SPECIAL_ACTIVATION_HOLD_MS / 2,
+      });
+      this.tweens.add({
+        targets: ring,
+        alpha: 0,
+        delay: SPECIAL_ACTIVATION_HOLD_MS / 2,
+        duration: SPECIAL_ACTIVATION_HOLD_MS / 2,
+        onComplete: () => {
+          ring.destroy();
+        },
+      });
+      this.tweens.add({
+        targets: badge,
+        alpha: 0,
+        delay: SPECIAL_ACTIVATION_HOLD_MS / 2,
+        duration: SPECIAL_ACTIVATION_HOLD_MS / 2,
+        onComplete: () => {
+          badge.destroy();
+        },
+      });
+    }
+  }
+
+  /**
+   * Presents the turn's **activation summary** (`ATK ×11 · HP ×10`), from this
+   * batch's own delivered activation reports — the last thing the turn shows.
+   *
+   * ```text
+   * one activation   one `GemMatched` carrying a `specialGem` — one consumed
+   *                  Special Gem (§3.2.9 item 3, MATCH3_RULES.md §5.5.5 item 1)
+   * aggregation      by the cell type (`gemType`) of the activating cell, in the
+   *                  §1.1 order, nonzero types only
+   * scope            this batch = this Turn, both board cycles included
+   *                  (GAME_RULES.md §2, ADR-026 §2)
+   * ```
+   *
+   * The line's own words are `TURN_SUMMARY_LABEL`'s: it names the consumed Special
+   * Gems it counts and the Turn it counts them over. It is **not** a Combo and does
+   * not read like one — a Special Gem activation is not a Match and increments no
+   * Combo (`MATCH3_RULES.md` §6.3 item 2, §6.3.1), and the Combo the turn produced
+   * is the HUD's `COMBO ×N` line, presented from the delivered `ComboChanged`
+   * values. Nothing here is counted from a Match, a cleared cell, or a damage
+   * target.
+   *
+   * It is deliberately the turn's **last** presentation: `buildPresentationPhases`
+   * appends it after the round's single board transition and after every combat
+   * stage the batch delivered, so the tally reports a turn that has finished
+   * reading rather than one still playing.
+   *
+   * Nothing is invented. The counts come from the delivered events and nothing
+   * else — not from the rendered board, a damage target, an animation, a matched
+   * cell, or the number of cells an activation cleared — and the line is the
+   * formatter's own (`formatSpecialActivationSummary`). A turn with no activation
+   * opens no summary phase at all, so a zero row is never shown. The text is a
+   * transient overlay in the feedback layer, registered as a timeline-owned
+   * effect; an interrupted or superseded turn simply never reaches this method, or
+   * has the overlay cancelled with its own timeline.
+   */
+  private presentTurnSummary(events: readonly InBattleServerEvent[]): void {
+    const line = formatSpecialActivationSummary(summarizeSpecialActivations(events));
+
+    if (line === '' || !this.feedbackLayer) {
+      return;
+    }
+
+    const label = this.add
+      .text(GAME_WIDTH / 2, TURN_SUMMARY_Y, `${TURN_SUMMARY_LABEL}  ${line}`, {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: TURN_SUMMARY_FONT_SIZE,
+        color: TURN_SUMMARY_COLOR,
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5);
+    this.feedbackLayer.add(label);
+    this.timelineEffects.push(label);
+
+    this.trackPhaseAnimation(TURN_SUMMARY_HOLD_MS);
+
+    if (!this.tweens) {
+      return;
+    }
+
+    this.tweens.add({
+      targets: label,
+      alpha: 0,
+      delay: TURN_SUMMARY_HOLD_MS / 2,
+      duration: TURN_SUMMARY_HOLD_MS / 2,
+      onComplete: () => {
+        label.destroy();
+      },
+    });
+  }
+
+  /**
    * Removes the content of the cells one match/cascade step's delivered events
-   * confirm were cleared (`TASK-275` §6.2).
+   * confirm were cleared, and replaces the removal at the cells the same step's
+   * Match reports it created a Special Gem in (`TASK-275` §6.2).
    *
    * ```text
    * MatchCreated   its `cells`, each confirmed by the event's own `gemType`
    * GemMatched     its `cellIndex`, confirmed by the event's own `gemType` and,
    *                when the contract carries one, the Special Gem consumed there
+   * MatchCreated   its `createdSpecialGems`, each re-drawn at the claim's own
+   *                `cellIndex` — but only where this step's clear confirmed it
    * ```
    *
-   * Both are the **pre-removal** facts the contract defines
+   * The clears are the **pre-removal** facts the contract defines
    * (`SIGNALR_PROTOCOL.md` §3.2.6, §3.2.9 item 3): the cell and the Gem type it
    * held. Nothing else is read, no board difference is diffed, and no match is
    * detected. Every other event type removes nothing.
+   *
+   * **A creation cell is not left empty, because the pass does not leave it
+   * empty.** `MATCH3_RULES.md` §5.5.4 item 1 states that a creation "replaces the
+   * removal, not the Gem": the cell is emptied by step 1 and then receives the
+   * created Special Gem in step 2, and holds exactly one Gem before Gravity runs.
+   * Item 2 reserves that cell, so the pass's activations never clear it, and it is
+   * excluded from the empty set the pass's own `Gravity.Apply` is given: it is
+   * never one of the holes Gravity fills.
+   *
+   * **The created Gem still participates in Gravity like any other Gem.** §4.4
+   * item 8 and §5.5.4 item 4 state that a created Special Gem occupies one cell,
+   * keeps its place in its column's order, and is pulled down with that column's
+   * other survivors. The reservation above is therefore a statement about the
+   * cell's membership in the empty set — **not** a statement that the Gem there
+   * stays put. Whenever the cells below it were emptied, Gravity carries the
+   * created Gem down, and the cell it fell out of is written by the survivor above
+   * it in the same step. `dropMoves` (`SIGNALR_PROTOCOL.md` §3.2.28) may thus name
+   * the creation cell — as an **origin** when the created Gem falls out of it, as
+   * a **destination** when a survivor above it lands there, and as both when the
+   * two coincide, depending on the board's configuration.
+   *
+   * `MatchCreated.createdSpecialGems` is the delivered statement that labels the
+   * cell with the created Gem, and it is applied there *before* the same pass's
+   * Fall presents the movement its `dropMoves` report — which is what gives a Fall
+   * naming the creation cell as an origin the very view it moves. Applying the
+   * claim is presenting the pass, not repairing it.
+   *
+   * **Why it runs after every clear of the step.** The creation cell is one of the
+   * cells the Match consumed and is named by that Match's `cells` and by its own
+   * `GemMatched` report — and, when the cell previously held a Special Gem of the
+   * same kind and orientation the new claim creates, that report's key is the very
+   * key the created Gem draws. Re-labelling in a second pass means no clear of the
+   * same step can empty the Gem that replaced the removal.
+   *
+   * **It is gated on this step's own confirmed clear.** A cell whose rendered
+   * content the delivered events did not confirm is not re-labelled: a pass whose
+   * cells disagree with the board on screen changes nothing (`TASK-275` AC-5), and
+   * the round's single `settle` convergence is what presents the delivered board.
+   * Both values drawn are delivered ones — the claim's `cellIndex` and
+   * `specialGem`, and the Match's own `gemType`, which §5.5.4 item 4 states the
+   * created Gem carries because every cell of the shape shares that type
+   * (`SIGNALR_PROTOCOL.md` §3.2.6 item 5).
    */
   private presentMatchDestruction(events: readonly InBattleServerEvent[]): void {
+    // The cells this step actually emptied, so the creation claims below apply
+    // exactly where this step's own clear confirmed them and nowhere else.
+    const emptied = new Set<number>();
+
     for (const event of events) {
       if (event.type === 'MatchCreated') {
         for (const cellIndex of event.cells) {
           // The Match's `cells` are the shape's cells and share its Gem type
           // (§3.2.6 item 5), so the type is the whole confirmation available
           // here.
-          this.clearConfirmedCell(cellIndex, event.gemType, null, true);
+          if (this.clearConfirmedCell(cellIndex, event.gemType, null, true)) {
+            emptied.add(cellIndex);
+          }
         }
         continue;
       }
 
       if (event.type === 'GemMatched') {
-        this.clearConfirmedCell(event.cellIndex, event.gemType, event.specialGem ?? null, false);
+        if (
+          this.clearConfirmedCell(event.cellIndex, event.gemType, event.specialGem ?? null, false)
+        ) {
+          emptied.add(event.cellIndex);
+        }
       }
     }
+
+    for (const event of events) {
+      if (event.type !== 'MatchCreated' || !event.createdSpecialGems) {
+        continue;
+      }
+
+      for (const creation of event.createdSpecialGems) {
+        if (!emptied.has(creation.cellIndex)) {
+          continue;
+        }
+
+        this.presentCreatedSpecialGem(creation.cellIndex, event.gemType, creation.specialGem);
+      }
+    }
+  }
+
+  /**
+   * Draws one delivered Special Gem creation at the cell the Match's own claim
+   * names (`SIGNALR_PROTOCOL.md` §3.2.6 item 6, `GAME_EVENTS.md` §2
+   * `MatchCreated`, `MATCH3_RULES.md` §5.5.4 items 1–4).
+   *
+   * It is the replacement half of `presentMatchDestruction`: the view that step
+   * emptied is the view this cell keeps, so the pass stays on its persistent views
+   * (TASK-245) and nothing is allocated, destroyed, or fabricated. Every value
+   * drawn is a delivered one — the cell and the Special Gem are the claim's own
+   * members and the Gem type is the Match's own `gemType` — and the view is
+   * re-labelled in place, at the cell it already occupies, because the creation
+   * happened at that cell and Gravity has not run yet.
+   */
+  private presentCreatedSpecialGem(
+    cellIndex: number,
+    gemType: string,
+    specialGem: { readonly type: string; readonly orientation?: string }
+  ): void {
+    const view = this.gemViews[cellIndex];
+
+    if (!view) {
+      // The step's own clear emptied the view it drew, so a missing one can only be
+      // a cell this scene never had; nothing is invented for it and the round's
+      // single transition converges the board (`TASK-275` AC-6).
+      return;
+    }
+
+    this.drawGemContent(view, { gemType, specialGem });
   }
 
   /**
@@ -6135,6 +7257,8 @@ export class BattleScene extends Phaser.Scene {
     this.feedbackLayer.add(highlight);
     this.timelineEffects.push(highlight);
 
+    this.trackPhaseAnimation(duration);
+
     if (this.tweens) {
       this.tweens.add({
         targets: highlight,
@@ -6215,6 +7339,8 @@ export class BattleScene extends Phaser.Scene {
       .setOrigin(0.5);
     this.feedbackLayer.add(label);
     this.timelineEffects.push(label);
+
+    this.trackPhaseAnimation(FLOATER_LIFE_MS);
 
     if (!this.tweens) {
       return;

@@ -585,6 +585,13 @@ public class BattleStateServiceDeadlockRecoveryTests
         // F-05 / GAME_EVENTS.md §1 & §3 item 8: Assert the complete, ordered event sequence
         // for the round, verifying Player action phase, Boss response phase, and that
         // commit-boundary deadlock recovery contributes zero additional Battle Events.
+        //
+        // The Boss Response phase's own board cycle reports no `ComboChanged`: its
+        // `Combo` payload is the new value of `BattleState.Combo` (GAME_EVENTS.md §2,
+        // SIGNALR_PROTOCOL.md §3.2.8 item 1), and that counter is the Player action's
+        // swap-scoped count which step 18a does not write (GAME_STATE.md §2.2,
+        // BOSS_RULES.md §6.2.5, BattleStateService step 18a). The cycle's Match is
+        // still reported in full by its `MatchCreated` and `GemMatched` items.
         BattleEventType[] expectedEventTypes =
         [
             BattleEventType.SwapStarted,
@@ -605,7 +612,6 @@ public class BattleStateServiceDeadlockRecoveryTests
             BattleEventType.GemMatched,
             BattleEventType.GemMatched,
             BattleEventType.GemMatched,
-            BattleEventType.ComboChanged,
             BattleEventType.CascadeStepResolved,
             BattleEventType.PassiveCharged,
         ];
@@ -618,11 +624,16 @@ public class BattleStateServiceDeadlockRecoveryTests
             expectedPlayerBoardEvents.Select(e => e.Type),
             RoundTestSupport.PlayerBoardEvents(result).Select(e => e.Type));
 
-        // Verify Boss board events match exactly:
-        var expectedBossBoardEvents = BattleEventBuilder.Build(replay.BossResolution, replay.BossResolution.TotalMatches);
+        // Verify Boss board events match exactly — including that the Boss cycle's
+        // own resolution produces no `ComboChanged` (`accountedCombo: null`: this
+        // resolution's Matches are not the ones `BattleState.Combo` counts).
+        var expectedBossBoardEvents = BattleEventBuilder.Build(replay.BossResolution, accountedCombo: null);
         Assert.Equal(
             expectedBossBoardEvents.Select(e => e.Type),
             RoundTestSupport.BossBoardEvents(result).Select(e => e.Type));
+        Assert.DoesNotContain(
+            BattleEventType.ComboChanged,
+            expectedBossBoardEvents.Select(e => e.Type));
 
         // Verify that board-event runs across the whole event sequence are strictly two
         // (Player run and Boss run) and detect any unexpected appended or interleaved events.

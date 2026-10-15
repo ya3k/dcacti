@@ -1104,6 +1104,8 @@ export type PresentationAction =
   | 'retaliation'
   | 'power'
   | 'turn-banner'
+  | 'special-activation'
+  | 'turn-summary'
   | 'outcome';
 
 /**
@@ -1121,6 +1123,7 @@ export type PresentationPhaseKind =
   | 'swap'
   | 'match'
   | 'cascade'
+  | 'special-activation'
   | 'gravity-drop'
   | 'refill-spawn'
   | 'cast'
@@ -1130,6 +1133,7 @@ export type PresentationPhaseKind =
   | 'damage'
   | 'retaliation'
   | 'feedback'
+  | 'summary'
   | 'outcome';
 
 /** One delivered event's presentation step: who acted, what, and in which phase. */
@@ -2029,5 +2033,161 @@ export function parseSpecialGemBadge(renderedLabel?: string | null): string | nu
   }
   const parts = renderedLabel.split(' ');
   return parts.length > 1 ? (parts.slice(1).join(' ') || null) : null;
+}
+
+// ---------------------------------------------------------------------------
+// Special-cell activation presentation & the per-turn activation summary
+// (MATCH3_RULES.md §5.5.5, SIGNALR_PROTOCOL.md §3.2.9/§3.2.10)
+// ---------------------------------------------------------------------------
+
+/**
+ * One **delivered activation occurrence**: the cell whose Special Gem activated,
+ * the Gem type that cell carried, and the Special Gem that was consumed there.
+ *
+ * Every member is a delivered one. The occurrence exists because
+ * `SIGNALR_PROTOCOL.md` §3.2.9 item 3 states that a `GemMatched`'s `specialGem`
+ * is present exactly when the cleared cell held a Special Gem — and
+ * `MATCH3_RULES.md` §5.5.5 item 1 states that a Special Gem's effect activates
+ * when that Special Gem is **consumed**. One consumed Special Gem is one
+ * activation, and one activation is one `GemMatched` carrying its
+ * `specialGem`; that is the whole definition, and the client derives nothing
+ * beyond it.
+ */
+export interface SpecialActivationOccurrence {
+  /** The §1.0 cell the Special Gem activated from (`GemMatched.cellIndex`). */
+  readonly cellIndex: number;
+  /** That cell's Gem type (`GemMatched.gemType`) — one of the four §1.1 types. */
+  readonly gemType: string;
+  /** The Special Gem consumed there (`GemMatched.specialGem`, §3.2.10). */
+  readonly specialGem: {
+    readonly type: string;
+    readonly orientation?: string;
+  };
+}
+
+/**
+ * Every delivered activation occurrence in one **detection pass**, in delivered
+ * order, with at most one entry per cell.
+ *
+ * ```text
+ * GemMatched with a `specialGem`   one activation (§3.2.9 item 3, §5.5.5 item 1)
+ * one occurrence per cell          §5.8.2 item 3: a Special Gem activates at most
+ *                                  once per step, so a second identical report in
+ *                                  one pass is the same occurrence reported twice
+ *                                  and raises no second visual
+ * ```
+ *
+ * It reads the delivered items and nothing else: no board is inspected, no
+ * activation is inferred from a Gem type, a match, a damage number, or an
+ * animation, and no count is invented (`AGENTS.md` §10). The caller supplies one
+ * pass's events; a chain's activations are all in the pass that resolved them
+ * (`MATCH3_RULES.md` §5.5.5 item 7), so the whole chain is one pass's list.
+ */
+export function specialActivationOccurrences(
+  events: readonly InBattleServerEvent[]
+): readonly SpecialActivationOccurrence[] {
+  const occurrences: SpecialActivationOccurrence[] = [];
+  const seenCells = new Set<number>();
+
+  for (const event of events) {
+    if (event.type !== 'GemMatched' || !event.specialGem) {
+      continue;
+    }
+
+    if (seenCells.has(event.cellIndex)) {
+      continue;
+    }
+
+    seenCells.add(event.cellIndex);
+    occurrences.push({
+      cellIndex: event.cellIndex,
+      gemType: event.gemType,
+      specialGem: event.specialGem,
+    });
+  }
+
+  return occurrences;
+}
+
+/**
+ * The per-turn activation tally, aggregated by the **cell type** (`gemType`) of
+ * the cell each activation was reported at, in the §1.1 order `ATK DEF HP
+ * POWER`, with only the types that occurred.
+ *
+ * **One activation is one consumed Special Gem** — one `GemMatched` carrying a
+ * `specialGem` (`SIGNALR_PROTOCOL.md` §3.2.9 item 3, `MATCH3_RULES.md` §5.5.5
+ * item 1). It is not a damage target, an animation frame, a matched cell, or a
+ * cell an activation cleared: a `GemMatched` without a `specialGem` is an
+ * ordinary consumed Gem and counts nothing (`GAME_EVENTS.md` §2 items 1–2), and
+ * an activation that cleared nine cells is one activation, not nine
+ * (`MATCH3_RULES.md` §5.5.5 item 6 computes the report once per cleared cell,
+ * but only the activated cell's own report carries the `specialGem`).
+ *
+ * **Scope is the caller's turn.** A Turn is one committed Round
+ * (`GAME_RULES.md` §2, `ADR-026` §2) and one Round is one `ReceiveEvents` batch
+ * (`SIGNALR_PROTOCOL.md` §3.1), so the caller passes that batch's activation
+ * events and gets that turn's tally: nothing is carried across turns, and no
+ * accumulator exists to reset.
+ *
+ * **Identity is the delivered pass, not the cell.** The same cell can activate
+ * twice in one turn — in two different detection passes, after Gravity and
+ * Spawn produced a new Special Gem there — and both are counted, because each is
+ * its own occurrence. Within one pass the cell is counted once, because
+ * §5.8.2 item 3 fixes at most one activation per Special Gem per step; a
+ * duplicated item in one pass therefore cannot inflate the tally, and a
+ * replayed batch never reaches this function twice (the scene accepts one
+ * presentation per delivered resolution).
+ */
+export function summarizeSpecialActivations(
+  events: readonly InBattleServerEvent[]
+): ReadonlyArray<{ readonly gemType: string; readonly count: number }> {
+  const counts = new Map<string, number>();
+
+  // The pass the walk is currently in, advanced by the one delivered item that
+  // closes a pass (`CascadeStepResolved`, §3.2.28 item 5). It groups delivered
+  // items; it derives no gameplay value and reorders nothing.
+  let pass = 1;
+  const seen = new Set<string>();
+
+  for (const event of events) {
+    if (event.type === 'CascadeStepResolved') {
+      pass += 1;
+      continue;
+    }
+
+    if (event.type !== 'GemMatched' || !event.specialGem) {
+      continue;
+    }
+
+    const identity = `${pass}|${event.cellIndex}`;
+    if (seen.has(identity)) {
+      continue;
+    }
+
+    seen.add(identity);
+    counts.set(event.gemType, (counts.get(event.gemType) ?? 0) + 1);
+  }
+
+  return CONTRACT_GEM_TYPES.filter((gemType) => (counts.get(gemType) ?? 0) > 0).map((gemType) => ({
+    gemType,
+    count: counts.get(gemType) ?? 0,
+  }));
+}
+
+/**
+ * The player-facing line for one turn's tally, e.g. `ATK ×11 · HP ×10`.
+ *
+ * Only the types that occurred appear, in the §1.1 order, and an empty tally
+ * formats to the empty string — the scene presents no summary line for a turn
+ * with no activation rather than a zero row
+ * (`TASK-275` §6.6's "present nothing for nothing").
+ */
+export function formatSpecialActivationSummary(
+  counts: ReadonlyArray<{ readonly gemType: string; readonly count: number }>
+): string {
+  return counts
+    .filter((entry) => entry.count > 0)
+    .map((entry) => `${entry.gemType} ×${entry.count}`)
+    .join(' · ');
 }
 

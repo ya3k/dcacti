@@ -1793,10 +1793,18 @@ public sealed class BattleStateService
 
         // GAME_EVENTS.md §1.1: the Boss's own Match-3 cycle reports exactly as the
         // Player's does — the builder reads the resolution the pipeline produced and
-        // imposes no order of its own. The Boss's Matches are not the Player's, so
-        // the Combo value the reports carry is the Boss resolution's own Match total;
-        // BattleState.Combo is not written by this phase (see above).
-        events.AddRange(BattleEventBuilder.Build(bossResolution, bossResolution.TotalMatches));
+        // imposes no order of its own — **except** for the one counter the Boss
+        // cycle does not own. The Boss's Matches are not the Player's, and
+        // `BattleState.Combo` is the Player action's swap-scoped counter
+        // (GAME_STATE.md §2.2, BOSS_RULES.md §6.2.5's "Player Combo ≥ 4"), so this
+        // phase passes no accounted Combo: the cycle's Matches are reported by
+        // MatchCreated/GemMatched, and no `ComboChanged` is emitted for them,
+        // because the payload of that event is the new value of `BattleState.Combo`
+        // (GAME_EVENTS.md §2, SIGNALR_PROTOCOL.md §3.2.8 item 1) — a value this
+        // phase does not write (see the Combo/MatchCount note above). A
+        // `ComboChanged` carrying the Boss resolution's own Match total would
+        // report a Combo the battle's counter never held.
+        events.AddRange(BattleEventBuilder.Build(bossResolution, accountedCombo: null));
 
         // ADR-026 §4: cell type determines the effect and the acting side determines
         // ownership and target — for the Boss's DEF Gems the Shield is the Boss's,

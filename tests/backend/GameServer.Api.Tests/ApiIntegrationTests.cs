@@ -3835,15 +3835,25 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         // §1.1 item 5 / §1.1 item 7: ComboChanged follows the Match it reports and
         // increments by exactly 1 per Match — never jumping by more.
         //
-        // ADR-026 §2 makes the Boss's own board cycle a second Match-3 cycle inside the
-        // same committed round (step 18a), and MATCH3_RULES.md §6.1 item 2 makes Combo
-        // swap-scoped: each cycle reports its own run starting at 1, so the batch
-        // carries the Player action's run followed by the Boss's.
-        var comboRuns = SplitIntoRunsStartingAtOne(comboValues);
+        // ADR-026 §2 makes the Boss's own board cycle a second Match-3 cycle inside
+        // the same committed round (step 18a), but `BattleState.Combo` is the PLAYER
+        // action's swap-scoped counter (GAME_STATE.md §2.2, BOSS_RULES.md §6.2.5's
+        // "Player Combo ≥ 4") and step 18a writes neither it nor `MatchCount`
+        // (BattleStateService step 18a). §3.2.8's payload is the NEW value of that
+        // field, so the batch carries exactly ONE run — the Player action's — and no
+        // `ComboChanged` at all can carry the Boss cycle's own Match total, which the
+        // battle's Combo never took.
+        Assert.Equal(Enumerable.Range(1, comboValues.Length), comboValues);
 
-        Assert.All(
-            comboRuns,
-            run => Assert.Equal(Enumerable.Range(1, run.Length), run));
+        // The Boss Response phase's boundary is the round's second `SwapStarted`, and
+        // nothing after it reports a Combo (the phase's board cycle is reported by its
+        // MatchCreated/GemMatched items alone).
+        var eventTypes = payload.GetProperty("events").EnumerateArray()
+            .Select(e => e.GetProperty("type").GetString())
+            .ToArray();
+        var bossBoundary = Array.LastIndexOf(eventTypes, "SwapStarted");
+        Assert.True(bossBoundary >= 0, "the round delivers the Boss Response phase's own boundary");
+        Assert.DoesNotContain("ComboChanged", eventTypes.Skip(bossBoundary));
 
         foreach (var comboEvent in comboEvents)
         {
@@ -3851,42 +3861,12 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             Assert.Equal(new[] { "combo", "type" }, members);
         }
 
-        // The PLAYER action's run is the first one, and its last value is the
-        // authoritative Combo the write-back stored — BattleState.Combo is the Player
-        // action's swap-scoped counter (GAME_STATE.md §2.2), never the Boss cycle's.
+        // The run's last value is the authoritative Combo the write-back stored —
+        // BattleState.Combo is the Player action's swap-scoped counter
+        // (GAME_STATE.md §2.2), never the Boss cycle's.
         using var scope = _factory.Services.CreateScope();
         var held = (await scope.ServiceProvider.GetRequiredService<BattleStateService>().GetBattleAsync(battleId))!;
-        Assert.Equal(held.Combo, comboRuns[0][^1]);
-    }
-
-    /// <summary>
-    /// Splits a run of <c>ComboChanged</c> values into its per-cycle runs: each run
-    /// starts at <c>1</c> and every following value is its predecessor plus one
-    /// (<c>MATCH3_RULES.md</c> §6.1 item 2, §6.2 item 1 — Combo is swap-scoped, so each
-    /// committed cycle resets it before its first Match).
-    /// </summary>
-    private static IReadOnlyList<int[]> SplitIntoRunsStartingAtOne(IReadOnlyList<int> values)
-    {
-        var runs = new List<int[]>();
-        var current = new List<int>();
-
-        foreach (var value in values)
-        {
-            if (value == 1 && current.Count > 0)
-            {
-                runs.Add([.. current]);
-                current.Clear();
-            }
-
-            current.Add(value);
-        }
-
-        if (current.Count > 0)
-        {
-            runs.Add([.. current]);
-        }
-
-        return runs;
+        Assert.Equal(held.Combo, comboValues[^1]);
     }
 
     [Fact]

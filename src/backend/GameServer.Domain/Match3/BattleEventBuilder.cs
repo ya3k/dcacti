@@ -59,6 +59,21 @@ namespace GameServer.Domain.Match3;
 /// <c>ComboChanged</c> is produced for it (<c>MATCH3_RULES.md</c> §4.3 item 4,
 /// <c>GAME_EVENTS.md</c> §1.1 item 6).
 ///
+/// <b><c>ComboChanged</c> is produced only for the resolution the Combo
+/// accounting counted.</b> The event's payload is the <b>new</b> value of
+/// <c>BattleState.Combo</c> (<c>GAME_EVENTS.md</c> §2, <c>SIGNALR_PROTOCOL.md</c>
+/// §3.2.8 item 1), and that counter is the Player action's committed Swap's
+/// (<c>GAME_STATE.md</c> §2.2 — written in the round's single write-back for a
+/// committed Swap only; delivered under the fixed <c>playerState</c> label;
+/// <c>BOSS_RULES.md</c> §6.2/§6.2.5 read "Player Matches" / "Player Combo"). A
+/// resolution the accounting did not count therefore reports no <c>Combo</c> at
+/// all — it is described by <paramref name="accountedCombo"/> being
+/// <see langword="null"/> — so the event can never carry a value that disagrees
+/// with the state field it reports. The Boss Response phase's own board action is
+/// that case (<c>BattleStateService</c> step 18a: <c>Combo</c> and
+/// <c>MatchCount</c> stay the Player action's and that phase writes neither);
+/// the Player's committed Swap is not.
+///
 /// <b>A rejected Swap produces no events.</b> The builder is reached only after
 /// validation accepted the request, so no Match, Combo, or Cascade event can be
 /// produced for a rejection whatever its reason
@@ -75,12 +90,21 @@ public static class BattleEventBuilder
     /// <c>Passes</c> are read in order and are never re-sorted
     /// (<c>MATCH3_RULES.md</c> §3.2, §4.2).
     /// </param>
-    /// <param name="combo">
-    /// The <c>Combo</c> value the committed Swap's accounting produced — the value
-    /// the <c>ComboChanged</c> payload reports
-    /// (<c>GAME_EVENTS.md</c> §2: "Payload: New Combo value",
+    /// <param name="accountedCombo">
+    /// The <c>Combo</c> value the committed Swap's accounting produced, when this
+    /// resolution is the one it counted — the value the <c>ComboChanged</c> payload
+    /// reports (<c>GAME_EVENTS.md</c> §2: "Payload: New Combo value",
     /// <c>GAME_STATE.md</c> §2.2). It is read as the already-accounted result and
     /// is not recomputed or incremented here.
+    /// <para>
+    /// <see langword="null"/> states that this resolution's Matches are <b>not</b>
+    /// the ones <c>BattleState.Combo</c> counts — the Boss Response phase's own
+    /// board cycle (<c>GAME_STATE.md</c> §2.2, <c>BOSS_RULES.md</c> §6.2.5) — so no
+    /// <c>ComboChanged</c> is produced for it and its Matches are reported by
+    /// <c>MatchCreated</c>/<c>GemMatched</c> alone. The parameter is deliberately
+    /// not defaulted: which resolution the accounting counted is a statement each
+    /// caller must make, not one this projector may assume.
+    /// </para>
     /// </param>
     /// <returns>
     /// The events in the <c>GAME_EVENTS.md</c> §1.1 order, as one list. The order
@@ -89,7 +113,7 @@ public static class BattleEventBuilder
     /// </returns>
     public static IReadOnlyList<BattleEvent> Build(
         CascadeResolver.CascadeResult resolution,
-        int combo)
+        int? accountedCombo)
     {
         var events = new List<BattleEvent>();
 
@@ -153,7 +177,15 @@ public static class BattleEventBuilder
 
                 // §1.1 item 5: ComboChanged follows the Match it reports — after
                 // that Match's MatchCreated and before the next Match's.
-                events.Add(BattleEvent.ForCombo(comboSoFar));
+                //
+                // Only for the resolution the Combo accounting counted (the class
+                // notes): reporting this run for a cycle the accounting did not
+                // count would assert a Combo the state field never took, and the
+                // event's payload is that field's new value.
+                if (accountedCombo is not null)
+                {
+                    events.Add(BattleEvent.ForCombo(comboSoFar));
+                }
             }
 
             // §1.3 item 1 / §2: the activation sub-step of the same pass — the
@@ -184,7 +216,11 @@ public static class BattleEventBuilder
                 pass.SpawnedGems));
         }
 
-        _ = combo; // the accounted value is the run's endpoint; see the class notes.
+        // The accounted value is the run's endpoint (see the class notes): when it
+        // is present, the number of ComboChanged items above is the resolution's
+        // Match total and the last value equals this one. It is never re-derived
+        // into an event value here.
+        _ = accountedCombo;
 
         return events;
     }

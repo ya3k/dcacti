@@ -504,6 +504,11 @@ public static class SwapExecutor
             BattleEvent.ForSwapResolved(committed: true),
         };
 
+        // The accounted Combo is passed as the one resolution this battle's Combo
+        // counting counted (MATCH3_RULES.md §6.1 item 2): the committed Swap is what
+        // resets it and its Matches are what advance it, so its `ComboChanged` run
+        // reports this resolution — and only the resolutions this argument names
+        // produce that event at all (BattleEventBuilder's class notes).
         events.AddRange(BattleEventBuilder.Build(resolution, combo));
 
         // Step 7 (§8.3 steps 3–4, 8 and GAME_STATE.md §5.1): the single
