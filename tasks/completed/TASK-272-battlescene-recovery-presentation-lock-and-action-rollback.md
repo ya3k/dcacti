@@ -12,7 +12,7 @@
 ```text
 Task ID:           TASK-272
 Type:              BUG
-Status:            IN REVIEW
+Status:            DONE
 Risk:              MEDIUM
 Priority:          CRITICAL
 Primary Agent:     client
@@ -175,11 +175,10 @@ src/frontend/client/tests/ResultScene.test.ts
   - It was a broad composite batch commit combining multiple tasks (TASK-272, TASK-275, etc.) and task manifests into history in a single commit.
   - The commit body lacked the prescribed ownership metadata (`owns:`, `files:`, `shared with:`, `unowned/pre-existing:`).
   - No dedicated TASK-272 Phase A commit exists; commit `425bebb` is treated strictly as an exceptional historical composite commit under §6.4.
-- **Status & Phase B Filing Condition:**
+- **Status & Phase B Filing Record:**
   - All 12 acceptance criteria (AC-1 through AC-12) are verified and covered by the committed code and tests in `425bebb`.
-  - However, repository lifecycle policy (`tasks/TASK_LIFECYCLE.md` §6.1 Phase B, §6.4; `core/completion.md` §1) requires a dedicated Phase B commit to file the completion record in `tasks/completed/`.
-  - Under current operator instruction ("Commit/push: STRICTLY PROHIBITED"), no commit may be created in this execution.
-  - Therefore, TASK-272 is NOT marked `DONE` and is NOT moved to `tasks/completed/`. It remains in `tasks/active/` with `Status: IN REVIEW` pending an authorized Phase B filing commit slice.
+  - Under Operator Authorization (Backlog Reconciliation Execution), Phase B completion record is filed to `tasks/completed/TASK-272-battlescene-recovery-presentation-lock-and-action-rollback.md` under historical composite commit exception §6.4.
+  - Status is finalized as `DONE`.
 
 ### Changed Files
 - `src/frontend/client/src/game/runtime/GameRuntimeEvents.ts` — added `RuntimeActionOutcomeUnknownError` (the definitive-rejection vs unknown-outcome distinction).
@@ -234,10 +233,10 @@ src/frontend/client/tests/ResultScene.test.ts
 * **Prescribed Metadata Omission:** The commit body lacked the required `owns:`, `files:`, `shared with:`, and `unowned/pre-existing:` ownership disclosures mandated by §6.2 (P-3, P-4).
 * **Ratification Basis:** Operator Decision PO-2 ratified commit `425bebb` as a historical composite commit under `tasks/TASK_LIFECYCLE.md` §6.4. Git history is preserved without rewriting, amending, or resetting.
 
-### 3. Lifecycle Status & Next Steps
+### 3. Lifecycle Status & Final Filing
 
-* **Current Status:** `IN REVIEW` (in `tasks/active/`).
-* **Completion Gate Blockers:**
-  1. Commit and push are strictly prohibited in the current execution slice by operator instruction.
-  2. Under `tasks/TASK_LIFECYCLE.md` §6.1 (Phase B) and §6.4, moving a task to `tasks/completed/` and marking it `DONE` requires executing a dedicated Phase B bookkeeping commit filing the completion record.
-* **Resolution:** All 12 acceptance criteria are verified complete; the task remains in `tasks/active/` with `Status: IN REVIEW` until a dedicated Phase B filing commit is executed in a separately authorized commit slice.
+* **Final Status:** `DONE` (filed in `tasks/completed/`).
+* **Completion Gate Resolution:**
+  1. Operator authorized backlog reconciliation and Phase B filing commit.
+  2. Under `tasks/TASK_LIFECYCLE.md` §6.1 (Phase B) and §6.4, task record is moved to `tasks/completed/` documenting historical implementation composite commit `425bebb4f6bd1e8019d06bbd92231fb3f9912be3`.
+* **Resolution:** All 12 acceptance criteria verified complete; task lifecycle formally closed as `DONE`.
