@@ -1,6 +1,6 @@
 # SignalR Protocol
 
-**Version:** 2.25 (§3.2.2 **extended** and **§3.2.28 added** per the Operator Decision approving TASK-278 A-1(i) and A-4 ("Approve the addition of `CascadeStepResolved` to the existing `ReceiveEvents` batch protocol"): `CascadeStepResolved` becomes the nineteenth member of the closed discriminator set and is projected by its own subsection — one item per recorded detection pass, emitted as that pass's **last** item inside the round's existing single `ReceiveEvents` batch and only after that pass's Gravity and Spawn have completed, carrying `passDepth` (always present; the pass's own 1-based depth, `1` for the pass on the committed Swap's board), `dropMoves` (omitted when empty; each entry `fromCell`/`toCell`, origin and destination in the same column) and `spawnedGems` (omitted when empty; each entry `cellIndex` and `gemType`) — with no `board`, no `actor`, no `clearedCells`, and no `specialGem` inside a `spawnedGems` entry, and with none emitted for the terminating pass that detects no Match. The prohibitions §3.1 items 2–3, §3.2.12 item 1 and §8 items 5 and 7 state are **reconciled narrowly and not weakened**: there is still no per-pass board, no per-pass message, and no partial batch, and what is added is one event *report* of a pass transition inside the same single batch. §3.2.2 also gains the tolerant-reader rule for an item whose `type` is not in the table — it is ignored, is not a desync, is not a second event, and is not evidence about the resolution — and **no version negotiation exists or is introduced**. **No hub method, argument, subscription, delivery path, state-push member, or gameplay rule is added or removed.** Prior 2.24: (§7 **amended** per TASK-284: an accepted action whose
+**Version:** 2.26 (§3.2.4, §3.2.5, §3.2.6, §3.2.9, §3.2.10, §3.2.11, §4.1, §8 reconciled per `TASK-289` and `ADR-028`: Special Gems are retired from SignalR wire contracts following operator design decisions OD-1 through OD-7. `MatchCreated.createdSpecialGems` and `GemMatched.specialGem` payload members are retired in full. Enums `SpecialGemType` and `SpecialGemOrientation` are removed from wire contracts. Board and cell payloads deliver solely functional `gemType`. Protocol compatibility specifies no wire version negotiation; joint server/client deployment with active battle drain mandated per ADR-028 / Decision B-2. Prior 2.25: §3.2.2 **extended** and **§3.2.28 added** per the Operator Decision approving TASK-278 A-1(i) and A-4 ("Approve the addition of `CascadeStepResolved` to the existing `ReceiveEvents` batch protocol"): `CascadeStepResolved` becomes the nineteenth member of the closed discriminator set and is projected by its own subsection — one item per recorded detection pass, emitted as that pass's **last** item inside the round's existing single `ReceiveEvents` batch and only after that pass's Gravity and Spawn have completed, carrying `passDepth` (always present; the pass's own 1-based depth, `1` for the pass on the committed Swap's board), `dropMoves` (omitted when empty; each entry `fromCell`/`toCell`, origin and destination in the same column) and `spawnedGems` (omitted when empty; each entry `cellIndex` and `gemType`) — with no `board`, no `actor`, no `clearedCells`, and no `specialGem` inside a `spawnedGems` entry, and with none emitted for the terminating pass that detects no Match. The prohibitions §3.1 items 2–3, §3.2.12 item 1 and §8 items 5 and 7 state are **reconciled narrowly and not weakened**: there is still no per-pass board, no per-pass message, and no partial batch, and what is added is one event *report* of a pass transition inside the same single batch. §3.2.2 also gains the tolerant-reader rule for an item whose `type` is not in the table — it is ignored, is not a desync, is not a second event, and is not evidence about the resolution — and **no version negotiation exists or is introduced**. **No hub method, argument, subscription, delivery path, state-push member, or gameplay rule is added or removed.** Prior 2.24: (§7 **amended** per TASK-284: an accepted action whose
 authoritative state push was delivered but whose `ReceiveEvents` batch never
 arrived is recorded as a third desynchronization moment — §6 item 3's comparison
 keys on a batch that *arrives* ahead of the held `sequence`, and here no batch
@@ -236,9 +236,8 @@ GetBattleState      §7  — client requests a snapshot; reconnect resync
 `GAME_STATE.md` §2.0 stage is currently implemented, and nothing else. It does
 not change §3 or §7, and no stage adds a second state-push method (§4 item 11),
 so the Match-3 resolution stage delivers its board through this same push and
-its resolution events through §3 (§3.1). Special Gem state is a property of the
-board rather than a stage field of its own (`GAME_STATE.md` §2.1), so it is
-delivered by that same push as well — see §4.1 items 5–6. Match/Combo
+its resolution events through §3 (§3.1). Special Gems are retired from the board
+and wire contracts under ADR-028 — see §4.1 items 5–6. Match/Combo
 accounting (`GAME_STATE.md` §2.2) is a stage of its own and is delivered by
 that same push as a payload member under the fixed wire label `playerState` —
 see §4.2. `PetState` is likewise a stage field of
@@ -415,8 +414,8 @@ ReceiveEvents(battleId, serverSequence, events[])
    defined by `GAME_RULES.md` §17.
 2. `serverSequence` is `BattleState.Sequence` after this resolution
    (`GAME_STATE.md` §5) — strictly increasing, no gaps, per battle. One
-   resolved action produces exactly one such value, however many Matches,
-   Cascades, or Special Gems it contained (`MATCH3_RULES.md` §8.2).
+   resolved action produces exactly one such value, however many Matches
+   or Cascades it contained (`MATCH3_RULES.md` §8.2).
 3. Every client in the `battleId` group receives the same
    `ReceiveEvents` call (MVP is single-player-vs-Boss, so in practice this
    is the one connected client, but the group mechanism is what allows a
@@ -455,10 +454,9 @@ server                                        client
    so no intermediate board state is delivered, then or later.
 3. **No gameplay message type is introduced.** The board and the resolution's
    resulting values travel in the state push of §4 (and §7 on resync); the
-   resolution's events travel in §3. Special Gem state is part of the board
-   itself (`GAME_STATE.md` §2.1) and therefore travels in that same §4 push
-   with no additional member — no special-gem-specific message, method, or
-   subscription exists (§4.1 item 5, §8 items 5–6). Admitting
+   resolution's events travel in §3. Special Gems are retired under ADR-028;
+   the board carries pure `gemType` cells, and no special-gem message, method,
+   payload member, or subscription exists (§4.1 item 5, §8 items 5–6). Admitting
    `CascadeStepResolved` (§3.2.28) introduces no message type either: it is one
    more item of the `events[]` array §3 already delivers, it adds no hub
    method, argument, subscription, or state-push member (§3.2.2 items 5–6), and
@@ -468,7 +466,7 @@ server                                        client
    (`MATCH3_RULES.md` §2.1.5 item 6, `GAME_EVENTS.md` §1.2).
 5. **The client stays non-authoritative.** It applies the batch in order, and
    renders the board from the state it holds; it does not compute matches,
-   Cascades, Combo, Special Gems, gravity results, or spawned Gems, and never
+   Cascades, Combo, gravity results, or spawned Gems, and never
    draws from `rngSeed`/`rngState` (`§4.1 item 2`, `GAME_RULES.md` §18,
    `TDD.md` §2.1).
 6. **Persistence vs. Event Delivery Boundaries (ADR-026, D4).** Redis CAS guarantees
@@ -612,22 +610,17 @@ name, never a number.
 | Domain enum | Wire member | Allowed string values |
 | --- | --- | --- |
 | `GemType` | `gemType` | `ATK`, `DEF`, `HP`, `POWER` |
-| `SpecialGemType` | `specialGem.type` | `LineClear`, `Burst`, `Area` |
-| `SpecialGemOrientation` | `specialGem.orientation` | `Horizontal`, `Vertical` |
 
 1. **Gem types use the documented uppercase contract names.** `GemType` is the
    one enum whose documented wire/display spelling is fixed by the game design
    document (`MATCH3_RULES.md` §1.1: ATK, DEF, HP, POWER), and the existing
    board projection already carries exactly those
    (`CellPayload.gemType`). The four are the complete set.
-2. **Special Gem type and orientation use their Domain member names**, which
-   are already the documented names (`GAME_STATE.md` §2.1.4 items 1–2), and are
-   the same spellings the board projection uses for a cell's Special Gem.
-3. **No numeric enum value is ever sent for an enum member**, in any event or
-   in the nested match/special-gem objects.
+2. **Special Gem enums are retired.** `SpecialGemType` and `SpecialGemOrientation`
+   are retired from wire contracts under ADR-028 and OD-1–OD-2.
+3. **No numeric enum value is ever sent for an enum member**, in any event.
 4. **No `GemType` is ever absent or null.** A cleared cell always has one of
-   the four types, including a cell that held a Special Gem
-   (`GAME_EVENTS.md` §2 item 1, `GAME_STATE.md` §2.1.3 items 1–2).
+   the four types (`GAME_EVENTS.md` §2 item 1, `GAME_STATE.md` §2.1.3 items 1–2).
 
 ### 3.2.5 Optionality — Omitted, Never Explicit `null`
 
@@ -637,28 +630,12 @@ No member of an `events[]` item is ever sent as JSON `null`.
 1. **Choice.** This contract selects **omitted** — not explicit `null` — for
    every "not applicable" case: a non-`MatchCreated` has no `match`, a
    non-`CascadeCreated` has no `cascadeDepth`, a non-`ComboChanged` has no
-   `combo`, a non-`GemMatched` has no `gem`/`cellIndex`/`gemType`, an ordinary
-   cleared Gem has no `specialGem`, and a `Burst`/`Area` Special Gem has no
-   `orientation`.
-2. **Why omission is the choice, derived from existing convention.**
-   `GAME_STATE.md` §2.1.7 item 3 already fixes this convention for the board's
-   optional `SpecialGem` member: the representation is "**absent**, not a null
-   element, not a sentinel type, and not a default value", and it states that
-   omitting the member and writing an explicit `null` are the same statement
-   but that no third spelling exists. This section reuses that convention
-   rather than inventing a second one, so an optional member means one thing
-   everywhere in the protocol. The board projection's
-   `specialGem?: SpecialGemPayload | null` is therefore read as
-   *absent-on-the-wire*: a producer omits it, and a consumer tolerates absence.
-   **A producer must not emit `null` for any optional member of this contract.**
-3. **Absence is a statement, not a gap.** For `specialGem`, absence means "this
-   cell's occupant was an ordinary Gem and no Special Gem was consumed there"
-   (`GAME_EVENTS.md` §2 item 2). It is never an invitation to predict one.
-4. **This is not inferred from the throwing accessors.** `BattleEvent`'s
-   accessors throw to make a wrong-kind *read* a defect; they are not a wire
-   rule. The wire rule above is chosen from the documented board convention
-   (item 2) and is what the projection must produce.
-5. **The discriminator is never omitted**, and no event carries a member of an
+   `combo`, a non-`GemMatched` has no `gem`/`cellIndex`/`gemType`.
+2. **Omission convention.** A member that is not applicable is omitted from the
+   payload; consumers tolerate absence. A producer must not emit `null` for any
+   optional member of this contract. Special Gems are retired from the board and
+   event payload schemas under ADR-028.
+3. **The discriminator is never omitted**, and no event carries a member of an
    event it is not.
 
 ### 3.2.6 `MatchCreated`
@@ -680,7 +657,6 @@ No member of an `events[]` item is ever sent as JSON `null`.
 | `cells` | array of int | always | the Match's cells, ascending §1.0 index, each once |
 | `gemType` | string | always | the Match's Gem type (one of the four) |
 | `cascadeDepth` | int | always | the detection pass's depth (`1` = not a Cascade) |
-| `createdSpecialGems` | array of object | when non-empty | the Special Gems this Match created |
 
 1. **`shape` is the shape *identity*, not a serialization of `MatchShape`.**
    The two values are exactly `Straight` and `Lt`, which is the documented
@@ -697,11 +673,11 @@ No member of an `events[]` item is ever sent as JSON `null`.
 3. **The Domain's horizontal/vertical arms, arm lengths, `StartIndex`,
    `IntersectionIndex`, and `Step` are NOT wire members.** They are
    `MatchShape`/`MatchPrimitive` implementation geometry. Every fact §2
-   requires is already carried by `shape` + `cells` + `gemType` +
-   `createdSpecialGems`, and the client must not re-derive a Match from
-   geometry: the authoritative statement is the event itself
-   (`GAME_RULES.md` §18, `ARCHITECTURE.md` §2.2.1 rule 3). Exposing the arms
-   would leak Domain implementation detail and invite client-side geometry.
+   requires is already carried by `shape` + `cells` + `gemType`, and the client
+   must not re-derive a Match from geometry: the authoritative statement is the
+   event itself (`GAME_RULES.md` §18, `ARCHITECTURE.md` §2.2.1 rule 3).
+   Exposing the arms would leak Domain implementation detail and invite
+   client-side geometry.
 4. **`cascadeDepth` is the pass depth, not the `CascadeCreated` index.** It is
    the detection pass's own depth (`MATCH3_RULES.md` §4.2 items 1–2): `1` for
    the pass run on the board the committed Swap produced (which is **not** a
@@ -711,14 +687,9 @@ No member of an `events[]` item is ever sent as JSON `null`.
    (§3.2.7).
 5. **`gemType` is the Match's Gem type** — the type shared by every cell of the
    shape (`MATCH3_RULES.md` §3.3 item 2), spelled per §3.2.4.
-6. **`createdSpecialGems` carries what the resolution committed**, in the
-   creation order `MATCH3_RULES.md` §5.5.1 gives. A claim discarded by
-   collision resolution is absent, because it is "not created, not stored, not
-   activated, and not reported as created" (§5.5.4 item 3). The member is
-   omitted when the array would be empty — a Match-3 creates no Special Gem
-   (§5.1 item 1) — and a present member is never an empty array.
-7. **Each `createdSpecialGems` entry** is the transport representation defined
-   in §3.2.10.
+6. **No `createdSpecialGems` member.** Special Gems are retired from the
+   gameplay and wire contracts under ADR-028 and OD-1–OD-2. `MatchCreated`
+   emits solely shape, cells, gemType, and cascadeDepth.
 
 ### 3.2.7 `CascadeCreated`
 
@@ -747,8 +718,8 @@ No member of an `events[]` item is ever sent as JSON `null`.
 3. **It is always present and is an integer**, never a string and never
    omitted. A `CascadeCreated` with no depth would be meaningless — it reports
    the pass itself.
-4. **This event carries no other member.** No Match, no cells, no Gem type, no
-   Special Gems: those belong to the `MatchCreated` events that follow it
+4. **This event carries no other member.** No Match, no cells, and no Gem type:
+   those belong to the `MatchCreated` events that follow it
    (`GAME_EVENTS.md` §1.1 item 1).
 
 ### 3.2.8 `ComboChanged`
@@ -785,26 +756,11 @@ No member of an `events[]` item is ever sent as JSON `null`.
 }
 ```
 
-with a consumed Special Gem:
-
-```json
-{
-    "type": "GemMatched",
-    "cellIndex": 27,
-    "gemType": "HP",
-    "specialGem": {
-        "type": "LineClear",
-        "orientation": "Horizontal"
-    }
-}
-```
-
 | Member | Type | Presence | Meaning |
 | --- | --- | --- | --- |
 | `type` | string | always | `"GemMatched"` |
 | `cellIndex` | int | always | the cleared cell's §1.0 index `0..63` |
 | `gemType` | string | always | the cleared cell's Gem type |
-| `specialGem` | object | only when one was consumed | the Special Gem consumed at that cell |
 
 1. **`cellIndex` is the §1.0 cell index**, an integer in `0..63`
    (`MATCH3_RULES.md` §1.0). It is carried explicitly because this event names
@@ -812,92 +768,20 @@ with a consumed Special Gem:
    cell, in ascending index within its sub-step (`GAME_EVENTS.md` §1.3), but
    the index is stated rather than implied by position.
 2. **`gemType` is always the cell's Gem type**, one of the four §3.2.4 values,
-   and is never absent — including for a cell that held a Special Gem, whose
-   occupant is still one of the four types (`GAME_EVENTS.md` §2 item 1).
-3. **`specialGem` is present exactly when the cell that was cleared held one**,
-   and it identifies that Special Gem's type and, for a Line Clear Gem, its
-   orientation (`GAME_EVENTS.md` §2 item 2). It is read from the
-   **pre-removal** board: the cell is cleared and the Special Gem consumed by
-   the same act (`GAME_STATE.md` §2.1.8 item 2).
-4. **For an ordinary Gem the member is omitted** (§3.2.5). Its absence is the
-   statement that no Special Gem was consumed there, and it is the only
-   representation of that fact: no `null`, no `"None"` type, no empty
-   orientation.
-5. **`specialGem` is the transport representation of the consumed Special Gem,
-   not `SpecialGemClaim`.** See §3.2.10 item 1.
+   and is never absent (`GAME_EVENTS.md` §2 item 1).
+3. **No `specialGem` member.** Special Gems are retired from wire contracts
+   under ADR-028 and OD-1–OD-2. The `specialGem` payload field is retired in full
+   and is not emitted.
 
-### 3.2.10 Special Gem Representation
+### 3.2.10 Special Gem Representation (Retired — ADR-028)
 
-```text
-specialGem
-├── type            "LineClear" | "Burst" | "Area"     always present
-└── orientation     "Horizontal" | "Vertical"          present iff type is LineClear
-```
+Special Gem wire representations, types (`SpecialGemType`, `SpecialGemOrientation`),
+and payload structures are retired in full under ADR-028.
 
-1. **`SpecialGemClaim` is NEVER serialized, in any event.** It is documented as
-   **Transient Resolution State** (`GAME_STATE.md` §3, `SpecialGemClaim.cs`):
-   pass-local creation bookkeeping that "is never a `BattleState` field, is
-   never serialized or delivered, and does not survive the pass that built it".
-   Its members — `CellIndex`, `ShapeIndex`, `IntraShapeOrder`, `Source`,
-   `GemType` — are collision-ordering internals, and `ShapeIndex` /
-   `IntraShapeOrder` / `Source` in particular are the §5.5.1/§5.5.4 collision
-   keys, which `GAME_STATE.md` §2.1.6 item 4 states are **never serialized**.
-   Projecting a claim directly would expose transient resolution bookkeeping as
-   protocol, which its own contract forbids.
-2. **The transport representation is derived from the Special Gem, not from
-   the claim.** Only two facts are needed and only two are sent: the Special
-   Gem's **type**, and its **orientation** for a Line Clear Gem — exactly the
-   `SpecialGem` metadata shape `GAME_STATE.md` §2.1.4 defines and the same
-   shape the board carries for a cell (`CellPayload.specialGem`).
-3. **It carries no cell index.** For `GemMatched` the cell is the sibling
-   `cellIndex` member; for `createdSpecialGems` it is the entry's own
-   `cellIndex` (§3.2.11). A nested cell index would be a second spelling of one
-   fact, which `GAME_STATE.md` §2.1.3 item 5 avoids for the board.
-4. **It carries no `GemType`.** A created Special Gem carries the Gem type of
-   the Gem removed from that cell (`MATCH3_RULES.md` §5.5.4 item 4,
-   `GAME_STATE.md` §2.1.3 item 2). For `MatchCreated` that type is already the
-   event's own `gemType` — both arms of a shape share one Gem type
-   (`MATCH3_RULES.md` §3.3 item 2), so a per-creation copy would be a
-   redundant member that can disagree with the event's. For `GemMatched` the
-   consumed Special Gem's cell is the event's own `gemType`.
-5. **It carries no identity, id, creation order, depth, or age.** A Special
-   Gem's behaviour is a pure function of its type, its orientation, and the
-   cell it occupies (`GAME_STATE.md` §2.1.3 item 4, §2.1.4 item 4); the model
-   holds nothing else and the wire adds nothing.
-6. **Orientation is present if and only if `type` is `LineClear`**
-   (`GAME_STATE.md` §2.1.4 item 2). A `Burst` or `Area` entry omits it — it is
-   a value no rule reads. This member is therefore optional per §3.2.5, and
-   `LineClear` always carries one of the two values.
-7. **Only created or consumed Special Gems are reported this way.** No
-   `SpecialGemActivated` and no `SpecialGemCreated` event exists: activation is
-   reported through `GemMatched` and the state push, and creation inside the
-   `MatchCreated` payload (`GAME_EVENTS.md` §2 item 3, `SIGNALR_PROTOCOL.md`
-   §8 item 7, §3.1 item 3).
+### 3.2.11 `createdSpecialGems` Entry Shape (Retired — ADR-028)
 
-### 3.2.11 `createdSpecialGems` Entry Shape
-
-```json
-{
-    "cellIndex": 9,
-    "specialGem": {
-        "type": "Burst"
-    }
-}
-```
-
-| Member | Type | Presence | Meaning |
-| --- | --- | --- | --- |
-| `cellIndex` | int | always | the cell the Special Gem was created at |
-| `specialGem` | object | always | the created Special Gem (§3.2.10) |
-
-1. **`cellIndex` is always present here** — unlike in `GemMatched`, where it is
-   a sibling of the event, a creation entry is not itself an event and must
-   state its cell.
-2. **`specialGem` is always present**: a creation entry exists only because a
-   Special Gem was created.
-3. **Entries are in the §5.5.1 creation order** the resolution committed, and
-   a collision-discarded claim is absent (`MATCH3_RULES.md` §5.5.4 item 3) —
-   §3.2.6 item 6.
+The `createdSpecialGems` wire member and creation entry shape are retired in full
+under ADR-028.
 
 ### 3.2.12 No Member Outside This Schema
 
@@ -1660,14 +1544,14 @@ Each `spawnedGems` entry:
 4. **Each `spawnedGems` entry is one Gem that pass's Spawn placed**, stated
    authoritatively as the destination cell (`cellIndex`, an integer in `0..63`)
    and the Gem type placed there (`gemType`, a string carrying one of the four
-   types per §3.2.4 — never a Special Gem type, because Spawn never creates a
-   Special Gem, `MATCH3_RULES.md` §4.5 item 7). The entries run column
+   types per §3.2.4 — Spawn never creates a Special Gem, and Special Gems are
+   retired under ADR-028, `MATCH3_RULES.md` §4.5 item 7). The entries run column
    ascending `0 → 7` and, within a column, ascending `cellIndex`, i.e.
    top-to-bottom, which is the fill order `MATCH3_RULES.md` §4.5 item 2 fixes.
    Both orders are fixed and are not an implementation choice; neither is a
    gameplay resolution order. A pass whose Spawn placed nothing carries no
-   `spawnedGems` (item 2). **The entry carries no `specialGem` member**, and the
-   event carries **no `clearedCells` member**: the pass's cleared cells already
+   `spawnedGems` (item 2). **The entry carries no `specialGem` member** (Special
+   Gems are retired under ADR-028), and the event carries **no `clearedCells` member**: the pass's cleared cells already
    travelled in that pass's `GemMatched` run (`§3.2.9`), which is one union per
    pass (`GAME_EVENTS.md` §1.3), so a second spelling of them here would state
    one fact twice.
@@ -2005,26 +1889,19 @@ it does not add a delivery path, a subscription, or an event:
 4. Board generation happens server-side before the push; `BattleStateUpdated`
    reports the result and never triggers generation. If generation failed
    (`MATCH3_RULES.md` §1.5 item 3), the battle does not exist to be joined.
-5. **The board carries its Special Gem state, and needs nothing else.** When
-   the Special Gem stage is implemented, `board` carries it with no additional
-   payload member and no change to this record's field set: `GAME_STATE.md`
-   §2.1 defines `BoardState` as `Cells[64]` alone, and each cell entry holds
-   its Gem type and, optionally, the Special Gem at that cell (type, plus
-   orientation for a Line Clear Gem). There is no `PendingSpecialGems[]` and
-   no second collection to deliver, so §4 item 4 ("no other field may be added
-   to this record") is satisfied without an exception: the board is delivered
-   as the state holds it, entry for entry, in ascending cell-index order
-   (`GAME_STATE.md` §2.1.1 item 6, §2.1.7 items 1–4). `BattleStateUpdated` is
-   the only delivery path for it, and this stage adds no method, no
-   subscription, and no message (§4 item 11, §3.1 item 3, §8 item 7).
+5. **The board carries pure `GemType` cells.** Under ADR-028, Special Gems are
+   retired from the battle-state model and wire contracts. `board` carries
+   pure `gemType` cell entries (`ATK`, `DEF`, `HP`, `POWER`). There is no
+   `specialGem` payload member, no `PendingSpecialGems[]`, and no second collection
+   to deliver: the board is delivered as the state holds it, entry for entry, in
+   ascending cell-index order (`GAME_STATE.md` §2.1.1 item 6, §2.1.7).
+   `BattleStateUpdated` is the only delivery path for it, and this stage adds no
+   method, no subscription, and no message (§4 item 11, §3.1 item 3, §8 item 7).
 6. **What the client may and may not derive from it.** The client renders the
-   board it receives, including its Special Gems, and never computes one: it
-   does not create, place, move, match, activate, chain, or clear a Special
-   Gem, and it never infers a Special Gem's type or orientation from anything
-   other than the state it was sent (`GAME_STATE.md` §2.1.9 item 4,
-   `GAME_RULES.md` §18, `TDD.md` §2.1). An omitted Special Gem member on a
-   cell means that cell holds an ordinary Gem — it is not an invitation to
-   predict one (`GAME_STATE.md` §2.1.7 item 3).
+   board it receives with standard gem types, and never computes one: it does
+   not create, place, move, match, or clear gems, and never infers board outcomes
+   from anything other than the state it was sent (`GAME_STATE.md` §2.1.9 item 4,
+   `GAME_RULES.md` §18, `TDD.md` §2.1).
 
 ## 4.2 Delivering the Match / Combo Accounting Stage
 
@@ -2052,8 +1929,7 @@ an event:
    creation (`GAME_STATE.md` §2.2): `matchCount` starts at `0` and `combo`
    reads `0` only before the battle's first committed Swap
    (`MATCH3_RULES.md` §6.5 item 4). This is the opposite of the
-   absent-Special-Gem convention of `GAME_STATE.md` §2.1.7 item 3 and the
-   omitted-commit-record rule of §2.1.10: there is no "not yet occurred" state
+   omitted-commit-record rule of `GAME_STATE.md` §2.1.10: there is no "not yet occurred" state
    to represent, so absence is never used and a client must not read an
    absent member as zero.
 4. **No Combo or Match shape is carried anywhere else.** No `combo` or
@@ -2163,8 +2039,7 @@ petState
    and never a numeric enum ordinal, per §3.2.4's rule for every enum-valued
    wire member.
 7. **A default reset omits the member; it is never sent as JSON `null`.** This
-   is §3.2.5's convention applied here, and it is the same statement
-   `GAME_STATE.md` §2.1.7 item 3 makes for an absent cell `SpecialGem`: the
+   is §3.2.5's omission convention applied here: the
    absence *is* the statement "this Passive uses the default reset", and no
    `null`, `"Default"` string, or empty value stands in for it. `"Default"` is
    deliberately **not** a third permitted value of this member: it is what the
@@ -2858,10 +2733,9 @@ is the answer to the gap it opened.
    `BoardResolved`, no `CascadeUpdated`, no `SpecialGemActivated` message, and
    no additional subscription exists or may be introduced. Extending the state
    (`GAME_STATE.md` §2.0) is how new board data is delivered; extending this
-   protocol's method list is not. Special Gem state is no exception: it is part
-   of `BoardState` (`GAME_STATE.md` §2.1), so it is delivered by the existing
-   §4 push and reported, when it clears cells, by the existing `GemMatched`
-   event (`GAME_EVENTS.md` §2) — not by a new message. **A per-pass transition
+   protocol's method list is not. Special Gems are retired from `BoardState`
+   and wire contracts under ADR-028: no special-gem message, payload member,
+   or method exists. **A per-pass transition
    report is no exception either, and it is not a message:**
    `CascadeStepResolved` (`§3.2.28`) is one more item of the `events[]` array
    the existing §3 batch carries, so no `CascadeUpdated`-style message, no
@@ -2886,3 +2760,6 @@ is the answer to the gap it opened.
    projections: `bossState` is the three-member projection §4.4 item 2 fixes,
    not `BossState`, and the Pet-side projection gains the enumerated members
    §4.3 items 14 and 15 author rather than becoming `PetState` (`§4.3` item 2).
+10. **Wire protocol version negotiation.** Per `ADR-028`, no wire protocol version
+    negotiation exists. Server and client are deployed together following the
+    Decision B-2 active battle drain deployment policy.

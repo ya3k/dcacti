@@ -1,6 +1,6 @@
 # Game State
 
-**Version:** 2.29 (§3 gains item 5, and §5.1 item 2 and §5.3 item 4 record the same boundary, per the Operator Decision approving TASK-278 A-1(i) and A-4: a detection pass's completed Gravity and Spawn are **reported** by the `CascadeStepResolved` event (`GAME_EVENTS.md` §2, `SIGNALR_PROTOCOL.md` §3.2.28) inside the round's existing single `ReceiveEvents` batch, while every intermediate board configuration of that pass remains **Transient Resolution State** — never written to Redis mid-resolution, never in a snapshot, and never delivered as a board. **No state member, Redis key, snapshot field, `Sequence` rule, CAS rule, or gameplay rule is added or changed**: the event reports the transition, and the board stays delivered only by `BattleStateUpdated` / `GetBattleState`. Prior 2.28 (§5.0 **added** per TASK-273 — the client-side use of `Sequence` on delivery: the batch's `serverSequence` against the `sequence` of the state the client holds, per relation (equal / below / above / no state held), and what the client must not do with it. It restates no write-back rule (§5.1's) and adds no state member. Prior 2.27 (§5.1 gains item 8 and a diagram line per ADR-026 / TASK-267: `MATCH3_RULES.md` §1.6's playable-board invariant is evaluated on the finished board of a non-terminal Round, after the step 19a pass and before the single write-back, so a regenerated board and the `RngState` it consumed are committed together under the unchanged compare-and-set, with no second write and with nothing written when regeneration cannot satisfy §1.5's bound. Prior 2.26 (§2.1, §2.4.3, §5 updated per ADR-026 / TASK-259: Player and Boss share the single 8×8 BoardState (D1, D4); BossState.SkillCharge charges exclusively from Boss POWER gem matches during the Boss turn (D2); Player POWER matches do not charge the Boss; atomic round persistence commits complete round via single Redis CAS write-back with Sequence incrementing once per round. Prior 2.25: §2.3's delivery split and §2.4's client-visible boundary
+**Version:** 2.30 (§2.0.5, §2.1, §2.1.1–§2.1.9, §3, §5 reconciled per `TASK-289` and `ADR-028`: Special Gems are retired from the authoritative `BoardState.Cells[64]` model and technical contracts following operator design decisions OD-1 through OD-7. Board cells contain pure `GemType` state. All Special Gem types (`LineClear`, `Burst`, `Area`), metadata, orientations, activation, detonation, and transient resolution bookkeeping (`RequiredCreations[]`, `ConsumedSpecialGems[]`, `ReservedCreationCells`) are retired in full. Serialization reflects pure `GemType` cells, supported by the Decision B-2 tolerant-reader basis and battle-drain deployment policy. Unrelated state fields and lifecycle rules remain unchanged. Prior 2.29: §3 gains item 5, and §5.1 item 2 and §5.3 item 4 record the same boundary, per the Operator Decision approving TASK-278 A-1(i) and A-4: a detection pass's completed Gravity and Spawn are **reported** by the `CascadeStepResolved` event (`GAME_EVENTS.md` §2, `SIGNALR_PROTOCOL.md` §3.2.28) inside the round's existing single `ReceiveEvents` batch, while every intermediate board configuration of that pass remains **Transient Resolution State** — never written to Redis mid-resolution, never in a snapshot, and never delivered as a board. **No state member, Redis key, snapshot field, `Sequence` rule, CAS rule, or gameplay rule is added or changed**: the event reports the transition, and the board stays delivered only by `BattleStateUpdated` / `GetBattleState`. Prior 2.28 (§5.0 **added** per TASK-273 — the client-side use of `Sequence` on delivery: the batch's `serverSequence` against the `sequence` of the state the client holds, per relation (equal / below / above / no state held), and what the client must not do with it. It restates no write-back rule (§5.1's) and adds no state member. Prior 2.27 (§5.1 gains item 8 and a diagram line per ADR-026 / TASK-267: `MATCH3_RULES.md` §1.6's playable-board invariant is evaluated on the finished board of a non-terminal Round, after the step 19a pass and before the single write-back, so a regenerated board and the `RngState` it consumed are committed together under the unchanged compare-and-set, with no second write and with nothing written when regeneration cannot satisfy §1.5's bound. Prior 2.26 (§2.1, §2.4.3, §5 updated per ADR-026 / TASK-259: Player and Boss share the single 8×8 BoardState (D1, D4); BossState.SkillCharge charges exclusively from Boss POWER gem matches during the Boss turn (D2); Player POWER matches do not charge the Boss; atomic round persistence commits complete round via single Redis CAS write-back with Sequence incrementing once per round. Prior 2.25: §2.3's delivery split and §2.4's client-visible boundary
 recorded for the amended projection — applying the TASK-208 Product Owner
 decisions D-208-01, D-208-02 and D-208-03. The active Pet's `HP`, `MaxHP` and
 `Power` are delivered as `petState.hp`/`maxHp`/`power`, and the Boss's canonical
@@ -258,8 +258,8 @@ Battle State Foundation     §2.0 — the minimal technical state that can
 Board Foundation State      §2.0.5 — §2.0 plus the authoritative Match-3
                               board and the RNG state that generates it
         ↓
-   (progressively implemented: Match-3 resolution, Special Gems, Combat,
-    Pet, Boss — each added by its own owning task)
+   (progressively implemented: Match-3 resolution, Combat,
+    Pet, Boss — each added by its own owning task; Special Gems retired under ADR-028)
         ↓
 Full BattleState            §2 — the complete authoritative runtime state
                               required by the finished battle system
@@ -416,7 +416,7 @@ Foundation stage (§2.0.5.2): generating the board resolves no action.
 
 The increment rule is likewise **defined**, by board resolution:
 `MATCH3_RULES.md` §8.2 owns what a `Sequence` increment counts (one committed
-Swap; not its Matches, passes, Cascades, Special Gems, or removed cells), and
+Swap; not its Matches, passes, Cascades, or removed cells), and
 §8.3 owns the order — `Sequence` is incremented once, after the board is
 stable and before the resulting state is written or published.
 
@@ -478,9 +478,7 @@ Board Foundation State
 ├── RngState                      (§2.6)
 ├── BoardState                    (§2.1)
 │   └── Cells[64]
-│       └── entry  { GemType, SpecialGem? }   (§2.1.1; at this stage the
-│                                              Special Gem is absent in
-│                                              every entry)
+│       └── entry  { GemType }                (§2.1.1)
 └── LastCommittedSwapPair         (§2.1.10; absent at this stage — no Swap
                                    has been committed)
 ```
@@ -507,9 +505,8 @@ RngState        The PRNG state after generating the initial board (§2.6.2).
                 a single word (§2.6.2.1).
 
 BoardState      The authoritative board (§2.1). At this stage its Cells[64]
-                hold the initial board generated by §2.7, and every entry's
-                Special Gem metadata is absent (§2.1.7 item 8) — generation
-                creates no Special Gem (MATCH3_RULES.md §1.4.1, §4.5 item 7).
+                hold the initial board generated by §2.7. Generation
+                creates ordinary gems only (MATCH3_RULES.md §1.4.1, §4.5 item 7).
 
 LastCommittedSwapPair
                 The unordered pair most recently committed to the board
@@ -543,17 +540,12 @@ implemented and are no longer absent — see §2.2 — and the combat stats
 `HP`/`MaxHP`, `ATK`/`DEF`/`Crit`, and `Power` are now implemented as well
 (they belong to `PetState` §2.3 in this contract; the Domain type that
 currently holds them is an implementation mismatch recorded under ADR-011
-Implementation Impact, not a second state path).
-Special Gem *state* arrives with
-the Special Gem implementation stage (`MATCH3_RULES.md` §5); nothing about
-Special Gems is implemented here.
+Implementation Impact, not a second state path). Special Gems are retired
+from the authoritative battle-state model pursuant to OD-1, OD-2, and ADR-028.
 
 `BoardState` is **not** deferred, and has no deferred second field:
-`BoardState` is `Cells[64]` (§2.1), and the Special Gem metadata a later stage
-puts in it lives inside those cell entries rather than in a new field
-(§2.1.2). At this stage every entry's Special Gem metadata is simply absent,
-which is the representation's own statement that the board holds no Special
-Gem (§2.1.7 item 3) — no empty collection stands in for it.
+`BoardState` is `Cells[64]` (§2.1), and each entry carries only `GemType`
+(§2.1.1). There is no Special Gem metadata and no parallel collection.
 
 ### 2.0.5.4 Persistence and Ownership
 
@@ -574,16 +566,15 @@ Gem (§2.1.7 item 3) — no empty collection stands in for it.
 BoardState has exactly one field:
 
     Cells[64]    exactly 64 cell entries; each entry carries the cell's
-                 Gem type plus an optional Special Gem (§2.1.1)
+                 Gem type (§2.1.1)
 
 There is no second field.
 ```
 
 `BoardState` is one concept with one representation, built in stages (§0).
 `Cells[64]` is the whole of it: the single ordered, index-addressed collection
-that holds every cell's occupant together with that occupant's Special Gem
-state. There is no second collection of board contents, and no field of
-`BoardState` duplicates a cell.
+that holds every cell's occupant `GemType`. There is no second collection of
+board contents, and no field of `BoardState` duplicates a cell.
 
 ### 2.1.1 `Cells[64]` — the Board's Only Cell Collection
 
@@ -592,10 +583,7 @@ Cells[64]       Exactly 64 entries, row-major, one entry per cell
                 (board size, layout, and indexing: MATCH3_RULES.md §1.0)
 
 entry at index i
-├── GemType                 ATK | DEF | HP | POWER   (MATCH3_RULES.md §1.1)
-└── SpecialGem?             absent → an ordinary Gem
-                            present → a Special Gem (type; plus orientation
-                            for a Line Clear Gem — §2.1.4 item 2)
+└── GemType                 ATK | DEF | HP | POWER   (MATCH3_RULES.md §1.1)
 ```
 
 1. `Cells` is a fixed-length, row-major array of exactly **64** entries. The
@@ -613,12 +601,11 @@ entry at index i
    client receives and renders.
 4. `Cells[64]` is server-authored (`GAME_RULES.md` §18, ADR-001). The client
    never generates, fills, or repairs it.
-5. **Every entry is an occupant, and a Special Gem is an occupant.** A cell
-   holds exactly one occupant (`MATCH3_RULES.md` §1) and that occupant is
-   always one of the four Gem types (§2.1.3 item 1, §2.1.8 item 6): a Special
-   Gem adds metadata to the occupant of its cell, it does not replace the
-   occupant with a non-Gem value. `MATCH3_RULES.md` §5.5.4 item 4 owns that
-   rule.
+5. **Every entry is an occupant.** A cell holds exactly one occupant
+   (`MATCH3_RULES.md` §1) and that occupant is always one of the four Gem
+   types (§2.1.3 item 1). Special Gems are retired from the authoritative
+   model (`MATCH3_RULES.md` §1.A, ADR-028); each cell carries solely its
+   `GemType`.
 6. **The array is the board's ordering, and it is never re-enumerated.** The
    64 entries are stored in ascending §1.0 index order, in both the runtime
    state and every serialization of it (§2.1.7). No implementation may
@@ -626,305 +613,150 @@ entry at index i
    derived from `Cells` may depend on dictionary, hash, insertion, or
    allocation order (`MATCH3_RULES.md` §7.2 item 4).
 
-### 2.1.2 Special Gems Are Held in `Cells[64]`, Not in `PendingSpecialGems[]`
+### 2.1.2 Retirement of Special Gems from BoardState (ADR-028)
 
-**Resolution of the former contract gap.** Earlier revisions of this document
-carried `BoardState.PendingSpecialGems[]` as a second field of `BoardState`,
-described as "the field that records *which* of the 64 cells hold a Special
-Gem and of which type", and recorded its shape as an unresolved gap (§2.1.2
-item 5 of revision 1.2). That gap is now **closed by the decision below**: the
-collection is **removed**, and Special Gem state is carried by `Cells[64]`
-itself (§2.1.1, §2.1.3–§2.1.9).
+Under operator design decisions OD-1 and OD-2, formalized in `ADR-028`,
+Special Gems are retired from the authoritative battle-state model and
+technical contracts.
 
 ```text
 BoardState
 └── Cells[64]
     └── entry
-        ├── GemType
-        └── SpecialGem?         (type + orientation; §2.1.4)
+        └── GemType             (ATK | DEF | HP | POWER)
 ```
 
-1. **No `PendingSpecialGems[]` field exists.** `BoardState` has exactly one
-   field, `Cells[64]`. Nothing in this document, in `REDIS_STATE.md`, in
-   `SIGNALR_PROTOCOL.md`, in `GAME_EVENTS.md`, or in `MATCH3_RULES.md` defines
-   a `BoardState` field named `PendingSpecialGems`, `SpecialGems`, or any other
-   collection parallel to `Cells[64]`.
-2. **Why the old field is removed rather than filled in.** A second collection
-   keyed by cell index would be a redundant index of a subset of `Cells[64]`:
-   it would need the cell's Gem type to be kept in step with `Cells[64]` under
-   every gravity and swap, and it would make two writers of one fact
-   (`MATCH3_RULES.md` §5.5.4 item 2's activation/creation step would write
-   both). One collection cannot disagree with itself, so it is the smaller and
-   the safer representation — and it is the representation the rest of the
-   design already assumed: `MATCH3_RULES.md` §5.9.2 item 4 places the Special
-   Gem rules on `BoardState.Cells[64]`, and §5.5.4 item 4 states that a
-   created Special Gem "occupies one cell" and "participates in Gravity and
-   Spawn like any other Gem".
-3. **The word "pending" was never a state.** It described the field, not a
-   lifecycle. There is no "pending Special Gem" entity in the authoritative
-   state: between the moment a Special Gem is created and the moment it
-   activates, the state is simply a board on which that cell holds a Special
-   Gem. The word may still be used as a verb for the §4.1 step 2 **pass-local
-   creation bookkeeping** (§2.1.6 item 4) — that bookkeeping is Transient
-   Resolution State (§3), is not `BattleState`, and is never stored or
-   delivered.
-4. **The board-level rules were never blocked by this.** Creation, position,
-   movement, activation, consumption, ordering, and collision are owned by
-   `MATCH3_RULES.md` §4–§5 in full and are unchanged by this section. This
-   section defines only how the resulting board is *represented* — which is
-   what was missing.
+1. **`BoardState.Cells[64]` carries pure `GemType`.** The optional `SpecialGem`
+   metadata member is removed. Each cell entry in the 64-element array
+   represents solely its functional `GemType`.
+2. **No `PendingSpecialGems[]` or `SpecialGems` collection exists.**
+   `BoardState` has exactly one field, `Cells[64]`. Nothing in this document,
+   in `REDIS_STATE.md`, in `SIGNALR_PROTOCOL.md`, in `GAME_EVENTS.md`, or in
+   `MATCH3_RULES.md` defines any collection parallel to `Cells[64]`.
+3. **Special Gem domain types are retired.** Domain types `SpecialGem`,
+   `SpecialGemType`, `SpecialGemOrientation`, and the transient planning structure
+   `SpecialGemClaim` are retired in full from the battle-state model.
+4. **Resolution creates no Special Gems.** Matches of tier 4, tier 5, L, or T
+   do not create Special Gems (`MATCH3_RULES.md` §1.A, §5). All match tiers
+   resolve as standard confirmed matches.
 
 ### 2.1.3 Cell Occupancy
 
 ```text
 an entry of Cells[64] at rest
-├── GemType      always present, one of the four types (MATCH3_RULES.md §1.1)
-└── SpecialGem?  present or absent, independent of the Gem type
+└── GemType      always present, one of the four types (MATCH3_RULES.md §1.1)
 ```
 
-1. **A Special Gem is metadata on a cell's Gem, not a substitute for it.** The
-   cell's `GemType` is always one of the four §1.1 types, whether or not the
-   cell holds a Special Gem. The Gem type is what `MATCH3_RULES.md` §5.5.5
-   item 1 consumes when "its own colour is matched normally", and it is what
-   `GemMatched` reports (`GAME_EVENTS.md` §2) — so it must exist for a Special
-   Gem's cell exactly as for any other.
-2. **The Gem type of a created Special Gem is the Gem type of the Gem it
-   replaces.** `MATCH3_RULES.md` §5.5.4 item 1: the cell's Gem is removed by
-   §4.1 step 1 and the Special Gem is created in that same cell in §4.1
-   step 2. The cell never holds a non-Gem value: the created Special Gem
-   carries the Gem type of the Gem that was removed from that cell in this
-   pass — the Gem type that made the cell a member of the matched shape.
-3. **One Special Gem per cell, at most.** A cell holds either no Special Gem
-   or exactly one. `MATCH3_RULES.md` §5.5.4 item 3 owns this: two creations in
-   one cell resolve to the first in the §5.5.1 order, and "the cell holds one
-   Special Gem, never two", so §1's one-occupant-per-cell invariant holds at
-   every point. The representation cannot express two Special Gems in one
-   cell, which is the documented rule, not a limitation.
+1. **Pure `GemType` occupancy.** The cell's `GemType` is always one of the four
+   §1.1 functional types. Special Gems are retired; no cell holds Special Gem
+   metadata.
+2. **Functional types.** The four types (`ATK`, `DEF`, `HP`, `POWER`) are the
+   complete value domain. Gems are functional, not elemental.
+3. **One occupant per cell.** A cell holds exactly one occupant, which is
+   always its `GemType`.
 4. **Nothing else is stored per cell.** No Special Gem identity, id, sequence
    number, creation pass, cascade depth, age, armed/ready flag, remaining
-   charge, or creation order is part of the state. None of them is required by
-   any rule in `MATCH3_RULES.md` §5: a Special Gem's behavior is a pure
-   function of its type, its orientation, and the cell it currently occupies
-   (§2.1.4, `MATCH3_RULES.md` §5.5.5 item 10).
-5. **A cell index identifies the Special Gem's position, including after
-   movement.** There is no `CellIndex` field inside the Special Gem metadata:
-   the index *is* the position in `Cells[64]` (§2.1.7), so a Special Gem's
-   recorded position cannot disagree with the array it lives in — the
-   failure mode a separate `CellIndex` field would reintroduce.
+   charge, or orientation is part of the cell state.
+5. **A cell index identifies position.** The index in `Cells[64]` (0 to 63)
+   identifies the position of each cell.
 
-### 2.1.4 Special Gem Metadata and Orientation
+### 2.1.4 Retirement of Special Gem Metadata and Orientation (ADR-028)
 
-```text
-SpecialGem
-├── Type            LineClear | Burst | Area      (MATCH3_RULES.md §5.2–§5.4)
-└── Orientation?    Horizontal | Vertical          (Line Clear only)
-```
-
-1. **`Type`** is one of the three MVP types — `Line Clear Gem`
-   (`MATCH3_RULES.md` §5.2), `Burst Gem` (§5.3), `Area Gem` (§5.4). These are
-   the complete set: §5.3 item 3 defines no Match-6+ tier and introduces no
-   fourth type, and `MVP_SCOPE.md` §1 lists no other.
-2. **`Orientation` is present if and only if `Type` is `LineClear`**, and its
-   value is `Horizontal` or `Vertical` (`MATCH3_RULES.md` §5.2 item 3). This
-   is the only conditional field in the model: `Burst` and `Area` effects are
-   orientation-free (`MATCH3_RULES.md` §5.3 item 2, §5.4 item 3), so an
-   orientation on those types would be a value no rule reads. It appears in
-   the serialization only for a Line Clear Gem (§2.1.7 item 4).
-3. **Orientation belongs to the Special Gem, not to its cell.** It is fixed at
-   creation from the orientation of the straight line that created the Gem and
-   never changes (`MATCH3_RULES.md` §5.2 item 3) — including when the Gem later
-   falls, is swapped, or is displaced by gravity (§4.4 item 8). Because the
-   metadata lives in the cell entry, it travels with the Gem's `GemType` under
-   any movement: the two never move separately.
-4. **No other field.** There is no orientation value for a non-Line-Clear
-   type, no "both orientations" value, no direction, no size/radius/length
-   field, and no tier field. The three geometries are fixed by
-   `MATCH3_RULES.md` §5.2–§5.4 and are not configuration in MVP.
+1. **`SpecialGem` and `SpecialGemType` are retired.** `LineClear`, `Burst`, and
+   `Area` gem types are no longer supported gameplay entities, serialized state,
+   or network payloads.
+2. **`SpecialGemOrientation` is retired.** Horizontal and Vertical orientation
+   semantics are removed.
+3. **No orientation or geometry metadata is stored.** Cells carry solely their
+   functional `GemType`.
 
 ### 2.1.5 Gravity, Spawn, and Cell Movement
 
-1. **Gravity moves the whole entry.** `MATCH3_RULES.md` §4.4 moves the Gems
-   that survive a Match Resolution downward within their column. In this
-   representation a "Gem" is a cell entry: gravity moves the `GemType` **and**
-   its `SpecialGem` metadata together, as one unit. A Special Gem is pulled
-   down like any other Gem, keeps its place in the column's order, never
-   crosses a column boundary, and is not re-triggered by falling
-   (`MATCH3_RULES.md` §4.4 item 8). Gravity reads and writes only `Cells[64]`;
-   it has no second collection to keep in step, and it draws no RNG
-   (`MATCH3_RULES.md` §4.4 item 6).
-2. **A swap exchanges two whole entries for the same reason.**
-   `MATCH3_RULES.md` §2 item 2 exchanges two cells; the exchange carries each
-   cell's `SpecialGem` metadata with its `GemType`, so a swapped Special Gem
-   keeps its type and orientation at its new cell.
-3. **Spawn produces an entry with no Special Gem, always.**
-   `MATCH3_RULES.md` §4.5 item 7: "Spawn never creates a Special Gem." A
-   spawned entry therefore has `SpecialGem` absent, whatever the cell held
-   before — including a cell whose Special Gem was just consumed. Spawn draws
-   exactly one RNG selection per spawned cell and writes only the `GemType`
-   (§4.5 item 4).
-4. **Empty cells do not exist in this representation.** An empty cell is "the
-   absence of a Gem, not a fifth Gem" (`MATCH3_RULES.md` §4.4 item 5), and it
-   exists only inside one resolution's §4.1 steps 1–4, never in the published
-   board (§3, §5.1 item 2). It is therefore **Transient Resolution State**
-   (§3) and is not represented in `BattleState` at all — no sentinel Gem type,
-   no null cell entry, no negative index, and no "empty" variant of the
-   `Cells[64]` entry. Authoritative state holds exactly 64 Gem entries at all
-   times (§2.1.3 item 1).
-5. **Creation during a resolution is transient first, board state second.**
-   The positions a pass must fill, the reservations that protect them, and the
-   Gems removed to make room all live in the pass's local state (§2.1.6
-   item 4). The Special Gems the pass creates become part of `Cells[64]`
-   before Gravity runs (`MATCH3_RULES.md` §4.1 item 2), and are then written,
-   moved, and published as ordinary board state — there is no separate
-   promotion step, no second store, and no field to keep in step.
+1. **Gravity moves cell occupants.** `MATCH3_RULES.md` §4.4 moves surviving gems
+   downward within their column. Gravity reads and writes solely the `GemType`
+   occupants in `Cells[64]`; it has no secondary metadata to maintain and draws
+   no RNG (`MATCH3_RULES.md` §4.4 item 6).
+2. **A swap exchanges two cell occupants.** `MATCH3_RULES.md` §2 item 2
+   exchanges two cells; the exchange carries each cell's `GemType`.
+3. **Spawn produces ordinary gems only.** `MATCH3_RULES.md` §4.5 item 7:
+   "Spawn never creates a Special Gem." Spawn draws exactly one RNG selection
+   per spawned cell and writes only its `GemType` (§4.5 item 4).
+4. **Empty cells do not exist in this representation.** An empty cell exists
+   only within transient resolution pass steps, never in the published board
+   (§3, §5.1 item 2). Authoritative state holds exactly 64 `GemType` entries at
+   all times.
+5. **Cascade resolution updates `Cells[64]` directly.** Intermediate
+   configurations are transient resolution state; the committed board contains
+   64 valid `GemType` entries.
 
 ### 2.1.6 Deterministic Ordering
 
-1. **There is no ordered Special Gem collection to order.** `BoardState`
-   holds no Special Gem list, so this document defines no `CellIndex`
-   ascending order and no creation-order sort for one. Any implementation that
-   materializes such a list is building a derived projection, not a
-   representation (§2.1.9 item 3).
-2. **If a list of the board's Special Gems is ever produced, its order is
-   ascending §1.0 cell index.** The order is the cell's own index in
-   `Cells[64]` — lowest first, `0 → 63` — with no tie to break, because a cell
-   index is unique and a cell holds at most one Special Gem (§2.1.3 item 3).
-   This reuses the indexing convention every other board order already uses
-   (`MATCH3_RULES.md` §3.2 item 1, §4.4 item 1, §4.5 item 2, `GAME_EVENTS.md`
-   §1.3) and introduces no new one.
-3. **Cell-index order is not, and must never become, a gameplay resolution
-   order.** Creation order, activation order, chain order, and collision
-   winners are owned by `MATCH3_RULES.md` §3.2, §5.5.1 item 4, §5.5.4 item 3,
-   §5.5.5 items 5 and 7, and §5.8.3, and none of them is changed by this
-   section. In particular, a discarded claim is not represented in state at
-   all (`MATCH3_RULES.md` §5.5.4 item 3: it is "not created, not stored").
-4. **The pass-local creation order is transient.** The §5.5.1 / §5.5.1 item 4
-   creation and collision order is the order in which the pass's creations are
-   *computed and committed*, and it exists only inside the resolution that
-   computes it — exactly like the reservation set and the removed cells
-   (§3). It is never a field of `BattleState` and is never serialized, because
-   it has no effect on the resulting board: only the winner of a collision
-   reaches the board, and the winner is decided by that order, not recorded in
-   it.
+1. **Array order is cell index order.** `Cells[64]` is stored in ascending
+   index order `0 → 63`.
+2. **No parallel collections to sort.** No Special Gem list or secondary index
+   exists.
+3. **Cell-index order is not a gameplay resolution order.** Match detection
+   and cascade resolution proceed according to deterministic rules in
+   `MATCH3_RULES.md` §3–§4.
+4. **Pass processing is transient.** Intermediate pass states are Transient
+   Resolution State (§3) and never reach `BattleState`.
 
-### 2.1.7 Serialization and Persistence
+### 2.1.7 Serialization, Persistence, and Tolerant-Reader Basis
 
 1. **`BattleState` is serialized from `Cells[64]` with no side channel.**
-   Special Gem state is part of `BattleState` because it is part of the cells
-   (§2). A serializer that writes `BattleState` therefore writes it with no
-   additional field, no parallel array, and no second key: `REDIS_STATE.md` §2
-   item 1 ("serialized as JSON, matching the shape in this document exactly —
-   no additional Redis-only fields") is satisfied without exception.
+   Board cells serialize solely their `GemType`. No additional Redis-only or
+   special-gem fields exist.
 2. **Cells are serialized as a 64-element array in ascending index order**
-   (§2.1.1 item 6). The array position **is** the cell index
-   (`MATCH3_RULES.md` §1.0): element `i` is the entry for cell `i`. No
-   `CellIndex` field is written per element, because the position already
-   states it and a redundant index field is one more thing that can disagree
-   with the array.
-3. **A cell with no Special Gem is serialized as a cell with no Special Gem
-   member.** The representation is **absent**, not a null element, not a
-   sentinel type, and not a default value. Omitting the member and writing an
-   explicit `null` are the same statement — "this cell holds no Special Gem" —
-   and either is decodable, but no third spelling exists: no `"None"` type
-   value, no empty-string orientation, no slot marker. What must never happen
-   is that an absent Special Gem is spelled as one of the three real types.
-4. **A cell with a Special Gem serializes its type, and its orientation only
-   when its type requires it** (§2.1.4 item 2). A `Burst` or `Area` entry
-   carries no orientation member; a `LineClear` entry always carries one of
-   `Horizontal` / `Vertical`. The exact JSON member names and casing are an
-   implementation detail of the serializer (`SIGNALR_PROTOCOL.md` §8 item 1,
-   `GAME_EVENTS.md` §3 item 1); their *existence and meaning* are owned here.
-5. **Round-trip is lossless and is the serializer's contract.** Serializing a
-   `BattleState` and deserializing it must return a `BattleState` whose
-   `Cells[64]` are identical — same 64 Gem types, in the same index order, with
-   the same Special Gem type and orientation at the same cells — and whose
-   `Turn`, `Sequence`, `RngSeed`, and `RngState` are unchanged
-   (`REDIS_STATE.md` §7 items 9–10, §2.6.2 item 4). A round trip that drops a
-   `SpecialGem`, reorders cells, or renumbers an index is a defect, and it is
-   the failure this section exists to make detectable.
-6. **A snapshot taken between resolutions is complete.** §5.3 defines what a
-   snapshot contains; Special Gem state is inside `Cells[64]`, so it is carried
-   with the board, and no separate snapshot step, field, or compatibility path
-   is introduced by it (`ADR-008`).
-7. **Redis holds this and nothing else for it.** The active battle record is
-   `BattleState` under `battle:{battleId}:state` (`REDIS_STATE.md` §1–§2). No
-   separate Special Gem key, hash, set, or index exists in Redis, and the field
-   adds nothing to the record's lifecycle (`REDIS_STATE.md` §3–§4).
-8. **The initial board carries no Special Gem state at all.** Board generation
-   never creates a Special Gem (`MATCH3_RULES.md` §1.4.1, §4.5 item 7): every
-   entry of a generated board has `SpecialGem` absent, and generation is
-   therefore unaffected by this model in every respect, including its RNG
-   consumption and its determinism (§2.7).
+   (§2.1.1 item 6). The array position is the cell index.
+3. **Retired Special Gem fields.** No `specialGem` property is emitted in
+   active state serialization.
+4. **Tolerant-Reader Basis and Deployment Policy (Decision B-2 / ADR-028):**
+   - **Tolerance basis:** `BattleStateSerializer` uses default System.Text.Json
+     settings (`WriteIndented = false`, no `JsonUnmappedMemberHandling.Disallow`),
+     and `BattleStateJson` declares zero `[JsonRequired]` properties. Consequently,
+     stored Redis records carrying legacy `cell.specialGem` properties deserialize
+     safely without runtime error, ignoring the obsolete member.
+   - **Deployment policy:** Active battles must be drained before joint server
+     and client deployment. Stored Redis state is not migrated, mutated, or
+     discarded. Rollback is forward-only for boards already written without the
+     member.
+5. **Round-trip is lossless.** Serializing and deserializing `BattleState`
+   preserves all 64 `GemType` cell entries, `Turn`, `Sequence`, `RngSeed`, and
+   `RngState`.
+6. **Snapshots are complete.** A snapshot taken between resolutions carries the
+   complete 64-cell board configuration.
+7. **Redis persistence.** Active battle state is stored under
+   `battle:{battleId}:state` with no secondary keys or indexes.
+8. **Initial board carries pure `GemType` entries.** Board generation creates
+   ordinary gems only (`MATCH3_RULES.md` §1.4.1, §4.5 item 7).
 
-### 2.1.8 Activation and Removal
+### 2.1.8 Match Resolution and Removal (Special Gem Retirement)
 
-1. **Activation is not a state transition of the Special Gem entry.** A
-   Special Gem activates when it is **consumed** (`MATCH3_RULES.md` §5.5.5
-   item 1), and consumption has already removed it: the cell holding it is
-   cleared by `MATCH3_RULES.md` §4.1 step 1 (match-set consumption) or by
-   another effect's affected set (§5.5.5 item 2, item 7). There is no
-   "activated" flag, no arming step, no state in which a Special Gem is
-   present-and-spent, and no state in which it has activated but is still on
-   the board. Activation reads the entry, computes its affected set, and the
-   entry is gone.
-2. **Removal is exactly the removal of the cell's occupant.** Clearing a
-   Special Gem's cell removes the whole entry — its Gem type and its Special
-   Gem metadata together, as one act. There is no separate "remove the Special
-   Gem but keep the Gem" operation and no "remove the Gem but keep the Special
-   Gem" operation: the cell is emptied (`MATCH3_RULES.md` §4.1 step 1) and is
-   refilled by Spawn with an ordinary Gem (§2.1.5 item 3). A Special Gem's own
-   cell is always in its own affected set, so consuming it always clears it and
-   never leaves it behind (`MATCH3_RULES.md` §5.5.5 item 4).
-3. **A cell is removed once, and its Special Gem is therefore consumed once.**
-   Removal, resource generation, and the `GemMatched` report are computed over
-   the **union** of a step's cleared cells (`MATCH3_RULES.md` §5.5.5 item 6,
-   §5.8.2 item 1), and a Special Gem "activates at most once per step" even if
-   several effects name its cell (`MATCH3_RULES.md` §5.8.2 item 3). In this
-   representation that is not a special case: the cell has one occupant with at
-   most one Special Gem, so the once-per-cell rule and the
-   once-per-Special-Gem rule are the same rule.
-4. **A chain is 'cell was consumed', not a state flag on the entry.** A
-   Special Gem consumed by another effect's affected set activates in turn
-   (`MATCH3_RULES.md` §5.5.5 item 7, breadth-first, finite by consumption).
-   The chain is tracked by the resolution, not by the board: an entry that has
-   been consumed is no longer in `Cells[64]`, which is what makes a second
-   activation impossible and what makes the chain terminate.
-   `MATCH3_RULES.md` §5.8.3 item 7 forbids a depth cap; no cap, counter, or
-   chain-generation number is stored per Special Gem.
-5. **A collision loser never reaches the state.** When two creations claim one
-   cell, the later claim is discarded and "is not created, not stored, not
-   activated, and not reported as created" (`MATCH3_RULES.md` §5.5.4 item 3).
-   The representation contains only the winner, so no discarded claim is ever
-   serialized, delivered, or recoverable — and a serializer cannot accidentally
-   preserve one.
-6. **A Special Gem never enters a match set as a colour of its own.** §2.1.3
-   item 1: the cell's `GemType` is still one of the four §1.1 types, and that
-   is the value Match Detection compares. The Special Gem metadata is not a
-   fifth type and is never compared by detection (`MATCH3_RULES.md` §5.5.4
-   item 4).
+1. **Special Gem activations and detonations are retired.** Special Gems are
+   not activated, detonated, chained, or cleared as area effects (OD-2,
+   `ADR-028`).
+2. **Match-3 resolution clears confirmed matches.** When 3 or more gems match,
+   the matched cells are cleared and replaced via gravity and spawn
+   (`MATCH3_RULES.md` §4).
+3. **Resource generation.** Cleared confirmed matches contribute resources per
+   `BaseOutput(type) × unique confirmed matched gem count(type)` (OD-4, OD-7).
+   Overlapping cells are counted once per resolution accounting rules.
+4. **Attack qualification.** Attack damage qualifies only when the acting
+   actor's own resolution contains a confirmed valid ATK-gem match (OD-6,
+   `ADR-026`, `ADR-028`). Cleared-gem counts alone do not authorize an attack.
 
-### 2.1.9 What This Model Does Not Add
+### 2.1.9 Model Invariants and System Boundaries
 
-1. **No gameplay behavior.** Every rule referenced above is owned by
-   `MATCH3_RULES.md`; this section states only where the resulting values live.
-   No rule of §5.2–§5.9 is changed, narrowed, or extended, and no new Special
-   Gem behavior is introduced.
-2. **No new `BattleState` field for Special Gems.** `BoardState` is
-   `Cells[64]` (§2.1.2 item 1). The Special Gem metadata is inside the cell
-   entries, so no field was added for it and the §0 staging rule ("a field
-   added by a later stage is a field §2 already has") is satisfied by the cell
-   shape rather than by an added field. (The §2 field list does gain one member
-   in this revision — `LastCommittedSwapPair`, §2.1.10 — but from the Swap
-   stage, not from this one, and it is not Special Gem state.)
-3. **No transport DTO architecture.** `SIGNALR_PROTOCOL.md` §4 item 4 projects
-   the state one-to-one, so the board field carries the same 64 entries the
-   state does; no Special-Gem-specific message, method, or subscription is
-   introduced (`SIGNALR_PROTOCOL.md` §3.1 item 3, §8 item 7).
-4. **No client authority.** The board, including its Special Gem metadata, is
-   server-authored and server-resolved (`GAME_RULES.md` §18, `ADR-001`). The
-   client renders what it receives; it never creates, moves, matches, or
-   activates a Special Gem (§2.0.5.4 item 1, `SIGNALR_PROTOCOL.md` §4.1
-   item 2).
+1. **No new gameplay behavior.** Gameplay rules are owned by `MATCH3_RULES.md`
+   and `COMBAT_RULES.md`; this document defines only authoritative state
+   structure.
+2. **No Special Gem fields.** `BoardState` consists exclusively of `Cells[64]`
+   carrying `GemType`.
+3. **Transport projections.** SignalR and REST projections deliver cell
+   `gemType` without `specialGem` payloads.
+4. **Server-authoritative.** The board and all resolutions are server-authoritative
+   (`GAME_RULES.md` §18, `ADR-001`). The client renders what it receives; it
+   never simulates or determines board outcomes.
 
 ### 2.1.10 `LastCommittedSwap` — the Commit Record for Idempotency (`ADR-025`)
 
@@ -964,8 +796,7 @@ BattleState
     (§2.1.7 item 1). When present it carries the canonical pair, with
     `MinCellIndex < MaxCellIndex` so the serialized order is itself canonical
     and a round trip cannot reorder or re-spell it (§2.1.7 item 5). When absent
-    it is **omitted**, matching the board's absent-Special-Gem rule
-    (§2.1.7 item 3): absence is the statement "no Swap has been committed", and
+    it is **omitted**: absence is the statement "no Swap has been committed", and
     no `null` pair, sentinel index, or zero pair stands in for it. Member names
     and casing are the serializer's implementation detail (§2.1.7 item 4,
     `SIGNALR_PROTOCOL.md` §8 item 1).
@@ -980,7 +811,7 @@ BattleState
     and §2.1.4; this section states only where the value that rule reads lives,
     what shape it has, and when it is written.
 13. **No gameplay behavior.** Recording a commit records no Match, Combo, Power,
-    Passive, or Relic progression, creates no Special Gem, and consumes no
+    Passive, or Relic progression, and consumes no
     randomness. The field is written from the action the server already
     committed, and reads nothing else.
 
@@ -1028,8 +859,7 @@ owned by its own task.
 Two consequences follow, and both are deliberate rather than gaps:
 
 1. **Absence conventions do not apply to these members.** Unlike
-   `LastCommittedSwapPair` (§2.1.10 item 3) and the optional cell
-   `SpecialGem` (§2.1.7 item 3), `MatchCount` and `Combo` are defined
+   `LastCommittedSwapPair` (§2.1.10 item 3), `MatchCount` and `Combo` are defined
    from battle creation, and `Combo = 0` is a real publishable value —
    the value read before the battle's first committed Swap
    (`MATCH3_RULES.md` §6.5 item 4). Neither is nullable, neither is
@@ -1362,8 +1192,7 @@ elsewhere in state use (`BossState.BossId`, `PetState.EquippedRelics[]`,
    Pet and therefore its one Passive (`GAME_EVENTS.md` §2 `BattleStarted`
    requires a created battle with a Pet and a Boss). It is **not** an
    absent-when-unset convention and not written by the first charge: unlike
-   `LastCommittedSwapPair` (§2.1.10 item 3) and a cell's optional `SpecialGem`
-   (§2.1.7 item 3), there is no "no Passive yet" state for it to spell.
+   `LastCommittedSwapPair` (§2.1.10 item 3), there is no "no Passive yet" state for it to spell.
 4. **No gameplay behavior is introduced here.** This field records which
    Passive the tracker charges; the charge, threshold, trigger, and reset rules
    are owned by `PASSIVE_RULES.md` §2–§5 and are not restated, narrowed, or
@@ -2672,12 +2501,7 @@ ResolutionContext
 └── EventsEmitted[]             (ordered, per GAME_RULES.md §17)
 
 pass-local board bookkeeping (never a field of BattleState)
-├── ReservedCreationCells       (MATCH3_RULES.md §5.5.4 item 2)
-├── RequiredCreations[]         (the pass's Special Gem creations, in the
-│                                §5.5.1 order, before they are committed)
-├── ClearedCells                (the pass's union accumulator, §5.8.2)
-└── ConsumedSpecialGems[]       (the pass's consumed Special Gems, in the
-                                 activation and chain order of §5.8.3)
+└── ClearedCells                (the pass's union accumulator, MATCH3_RULES.md §4)
 ```
 
 `ResolutionContext` is built and discarded entirely within
@@ -2685,12 +2509,10 @@ pass-local board bookkeeping (never a field of BattleState)
 
 1. It is the only place the intermediate states of a board resolution exist:
    the board mid-pass, the cells emptied by Match Resolution before Spawn
-   refills them, the Special Gems a pass creates
-   (`MATCH3_RULES.md` §4.1), the match set of the pass in progress, the
-   reserved creation cells and the pass's creation, removal, and activation
-   order that goes with them, and the running Combo. None of those is
-   `BattleState`, and none is written to the store or published (§5.1,
-   §2.1.5 item 4, §2.1.6 item 4).
+   refills them, the match set of the pass in progress, and the running Combo.
+   None of those is `BattleState`, and none is written to the store or published
+   (§5.1, §2.1.5 item 4, §2.1.6 item 4). Special Gem creation and activation
+   mechanics are retired under ADR-028.
 2. `MatchesThisResolution[]` and the Cascade depth it records are the board
    resolution's own bookkeeping, ordered as `MATCH3_RULES.md` §3.2 and §4.2
    define. They do not create a second Match-count field: the authoritative
@@ -2699,10 +2521,8 @@ pass-local board bookkeeping (never a field of BattleState)
    taken between resolutions, never inside one (§5.1 item 2, §5.3 item 3).
 4. **The pass-local board bookkeeping is a working set, not a representation.**
    It lists what the pass is in the middle of doing to `Cells[64]`; it is not a
-   second copy of the board, and none of it survives the pass that built it. In
-   particular, nothing in it is a Special Gem field: a Special Gem exists in
-   authoritative state only once it is committed into its cell entry (§2.1.8
-   item 1), and a discarded collision claim exists in neither (§2.1.8 item 5).
+   second copy of the board, and none of it survives the pass that built it.
+   Special Gem creation and consumption bookkeeping are retired under ADR-028.
 5. **The pass transition is reported; the board is not.** One detection pass's
    completed Gravity and Spawn are reported by the `CascadeStepResolved` event
    (`GAME_EVENTS.md` §2, `SIGNALR_PROTOCOL.md` §3.2.28), delivered inside the
@@ -2845,12 +2665,11 @@ publish (SIGNALR_PROTOCOL.md §3, §4)
 ```
 
 1. **One atomic round, one `Sequence` value.** A committed round produces
-   exactly one new `Sequence` value (`Sequence = Sequence + 1`), whatever number of Matches,
-   Cascades, or Special Gems either actor produced (`MATCH3_RULES.md` §8.2, `ADR-026`).
+   exactly one new `Sequence` value (`Sequence = Sequence + 1`), whatever number of Matches
+   or Cascades either actor produced (`MATCH3_RULES.md` §8.2, `ADR-026`).
 2. **Nothing is written mid-resolution.** The board after the exchange, the
-   intermediate states of `MATCH3_RULES.md` §4.1 (remove / create / gravity /
-   spawn), intermediate Combo values, intermediate Match counts, the pass's
-   reserved creation cells and its creation order, and every cell the board
+   intermediate states of `MATCH3_RULES.md` §4.1 (remove / gravity / spawn),
+   intermediate Combo values, intermediate Match counts, and every cell the board
    has momentarily emptied are **Transient Resolution State** (§3,
    §2.1.5 item 4, §2.1.6 item 4): they exist only inside
    `BattleResolutionService` (`ARCHITECTURE.md` §4) and are never written to
@@ -3450,8 +3269,7 @@ Removed         the source's own removal, or the battle's end: the collection
 ## 5.3 Reconnect and Snapshot Compatibility
 
 1. Everything a committed Swap produces is `BattleState`:
-   `BoardState.Cells[64]` — including every Special Gem it created and every
-   Special Gem its activations consumed (§2.1.7) — `RngSeed`, `RngState`,
+   `BoardState.Cells[64]`, `RngSeed`, `RngState`,
    `Turn`, `Sequence`, and the resolution's values in `BattleState`
    (`Combo`, `MatchCount`, §2.2). No resolve result lives outside those
    fields, so no gameplay contract change is needed to snapshot a battle

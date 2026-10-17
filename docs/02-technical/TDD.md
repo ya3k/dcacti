@@ -1,6 +1,6 @@
 # Technical Design Document (TDD)
 
-**Version:** 1.6 (§4 item 2 is **synchronized** with the verified battle-end
+**Version:** 1.7 (§6 item 4 and §8 added per `TASK-289` and `ADR-028`: Special Gem creation and activation removed from PRNG consumption list. Match-3 resolution and combat test strategy and invariants updated to reflect the retired Special Gem and match-tier multiplier model: no Special Gem creation for any match tier, no match-tier multipliers, resource generation based on `BaseOutput(type) × unique confirmed matched gem count(type)`, non-double-counting of overlapping matched cells, cascade accumulation semantics, and attack qualification strictly gated on the acting actor's own confirmed valid ATK match. Production code removal remains gated behind downstream implementation tasks. Prior 1.6: §4 item 2 is **synchronized** with the verified battle-end
 persistence contract: the durable battle end is one database unit of work whose
 commit precedes the Redis clear, per `DATABASE.md` §1, "Battle-end atomicity for
 `BattleResult` and the two progression tracks". The sentence previously stated
@@ -406,10 +406,9 @@ randomization mechanism (`AGENTS.md` §11).
    column/top-to-bottom order of `MATCH3_RULES.md` §4.5. During combat damage
    resolution, each damage instance evaluated in the Damage Pipeline performs
    exactly one bounded selection for Critical Hit evaluation
-   (`COMBAT_RULES.md` §3.3). Validation, match detection, Special Gem creation
-   and activation, gravity, Combo calculation, event creation, serialization,
-   delivery, and client rendering draw nothing (`MATCH3_RULES.md` §7.2 owns the
-   board list). A rejected action draws nothing at all
+   (`COMBAT_RULES.md` §3.3). Validation, match detection, gravity,
+   Combo calculation, event creation, serialization, delivery, and client
+   rendering draw nothing (`MATCH3_RULES.md` §7.2 owns the board list). A rejected action draws nothing at all
    (`MATCH3_RULES.md` §2.1.5 item 4), so `RngState` and `Sequence` advance
    independently of each other and only the accepted actions of a battle move
    either.
@@ -426,3 +425,43 @@ randomization mechanism (`AGENTS.md` §11).
 Per `MVP_SCOPE.md` §2: no microservices, no horizontal sharding design, no
 multi-region architecture, no PvP synchronization model. This document
 covers a single-battle, single-player-vs-Boss runtime model only.
+
+---
+
+# 8. Match-3 & Combat Invariants and Test Strategy (ADR-028)
+
+Under operator design decisions OD-1 through OD-7, formalized in `ADR-028`,
+the Match-3 and combat subsystems operate under a match-only resolution model.
+Technical documentation and test strategies must uphold the following
+invariants:
+
+1. **No Special Gem Creation:**
+   Matches of any tier (Match 3, Match 4, Match 5, L, T) produce ordinary
+   confirmed matches. No Special Gem entities (`LineClear`, `Burst`, `Area`)
+   or cell metadata are created.
+2. **No Match-Tier Resource Multipliers:**
+   All match-tier multipliers are retired (fixed at identity `1.0`). Match 4
+   and Match 5 do not scale resource output above base rates.
+3. **Resource Contribution Formula:**
+   Resource generation is strictly:
+   `BaseOutput(type) × unique confirmed matched gem count(type)`.
+   Base output values remain `ATK = 10`, `DEF = 5`, `HP = 20`, `POWER = 10`.
+   Tests in `tests/backend/GameServer.Domain.Tests/ResourceGenerationTests.cs`
+   verify this formula.
+4. **Overlapping Matched Cells Counted Once:**
+   A cell shared by multiple match shapes (e.g. an L or T intersection) is
+   counted exactly once per applicable resolution accounting rule (`OD-7`).
+   Verified in `ResourceGenerationTests.OverlappingMatchCells_InLtShape_ShouldBeCountedOncePerResolutionPass`.
+5. **Cascade Resolution Accumulation:**
+   Resource and combo contributions accumulate across cascade passes according
+   to established resolution semantics (`MATCH3_RULES.md` §4).
+6. **Attack Qualification Invariant:**
+   An attack qualifies for damage execution if and only if the acting actor's
+   own resolution contains at least one confirmed valid ATK-gem match (`OD-6`,
+   `ADR-026`, `ADR-028`). Cleared-gem counts alone are reporting data and must
+   never independently authorize an attack.
+7. **Downstream Implementation Gate:**
+   Physical deletion of `SpecialGem` domain and API types, runtime DTO fields,
+   and frontend rendering logic is strictly deferred to downstream
+   implementation tasks per `ADR-028` Decision 7. Production code remains
+   untouched in this documentation task.

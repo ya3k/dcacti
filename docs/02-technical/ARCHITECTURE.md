@@ -1,6 +1,6 @@
 # Architecture
 
-**Version:** 1.13 (§2.2.1 rule 4 **amended** per TASK-273: the runtime's
+**Version:** 1.14 (§1, §3 component table, and §4.1 reconciled per `TASK-289` and `ADR-028`: Special Gems removed from Match-3 domain module description, BoardResolver responsibilities, and resolution pipeline sequencing following operator design decisions OD-1 through OD-7. Special Gem creation and activation stages retired; cascade loop executes match detection, gem removal, gravity, and spawn until stable. Runtime code changes are explicitly gated behind subsequent implementation tasks. Prior 1.13: §2.2.1 rule 4 **amended** per TASK-273: the runtime's
 batch-forwarding rule gains one narrow **delivery-integrity exception** — a
 `ReceiveEvents` batch for another battle, or one whose `serverSequence` is ahead
 of the synchronized state's `sequence`, is withheld whole and the
@@ -125,7 +125,7 @@ client source file changed.)))
 ```text
 src/
 ├── GameServer.Domain/          # Pure game logic, no framework dependencies
-│   ├── Match3/                  # Board, Swap, Match, Cascade, Special Gems
+│   ├── Match3/                  # Board, Swap, Match, Cascade (Special Gems retired per ADR-028)
 │   ├── Elements/                 # Tương Khắc resolution
 │   ├── Combat/                   # Damage pipeline, stats, status effects
 │   ├── Pets/                     # Pet, Tier/Star/Level, Passive
@@ -772,8 +772,8 @@ REST API / SignalR Hub (BattleHub)
 Component                    Owning Layer      Responsibility
 ---------------------------  ----------------  -----------------------------
 BoardResolver                  Domain            MATCH3_RULES.md — one detection
-                                                   pass: match, create,
-                                                   activate, gravity, spawn
+                                                   pass: match, remove,
+                                                   gravity, spawn (Special Gems retired per ADR-028)
 CascadeResolver                Domain            MATCH3_RULES.md §4 — the
                                                    cascade loop until stable
 MatchDetector                  Domain            MATCH3_RULES.md §3 — detect
@@ -855,8 +855,8 @@ BattleHub.Swap(...)                    thin transport (no game logic)
     ↓
 BattleStateService                     Application — sequencing only
     ├── Domain: validate the Swap                  MATCH3_RULES.md §2.1
-    ├── Domain: commit, detect, create Special Gems, activate, gravity,
-    │           spawn, repeat until stable         MATCH3_RULES.md §3–§5
+    ├── Domain: commit, detect, remove, gravity,
+    │           spawn, repeat until stable         MATCH3_RULES.md §3–§4
     ├── Domain: Combo, Match count, resources      MATCH3_RULES.md §6
     ├── state: Turn / Sequence / RngState          GAME_STATE.md §5.1
     ├── BattleStateRepository (one write-back)     REDIS_STATE.md §4
@@ -884,6 +884,11 @@ BattleHub → ReceiveEvents / state push             SIGNALR_PROTOCOL.md §3–�
    board stages produce the matches, cleared Gems, Combo, and Match count that
    the later pipeline steps consume; those consumers are owned by their own
    domains (`ARCHITECTURE.md` §3, `GAME_RULES.md` §17).
+5. **Runtime Implementation Note (ADR-028 Decision 7).** While technical
+   contracts in `docs/02-technical/` reflect the retired Special Gem model,
+   production C# runtime code in `GameServer.Domain` and `GameServer.Api`
+   preserves existing types and DTOs until subsequent implementation tasks
+   execute the code removal.
 
 ---
 

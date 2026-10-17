@@ -1,6 +1,6 @@
 # Redis State
 
-**Version:** 1.14 (§4 item 2's compare-and-set refusal is **stated exactly**: the
+**Version:** 1.15 (§6 item 1 and §7 item 10 reconciled per `TASK-289` and `ADR-028`: Special Gems are retired from Redis active battle state persistence. `BoardState.Cells[64]` persists solely pure `GemType` entries. Documents the Decision B-2 tolerance basis: `BattleStateSerializer` default System.Text.Json deserialization (`WriteIndented = false`, no `JsonUnmappedMemberHandling.Disallow`, zero `[JsonRequired]` members) safely ignores legacy `cell.specialGem` properties without runtime error. Documents the Decision B-2 deployment policy: active battles must be drained before joint server/client deployment, with no in-place Redis data mutation or migration. Distinguishes documented deployment policy from runtime migration scripts. Prior 1.14: §4 item 2's compare-and-set refusal is **stated exactly**: the
 documented retry against the fresh state is not a licence to execute an action
 against a state version the request did not name. A request that carries a state
 precondition continues only while the precondition still holds against the fresh
@@ -287,9 +287,9 @@ retried in full (`DATABASE.md` §1 items 4–5; §7 item 5 below).
 
 1. Field-by-field JSON schema — derived directly from `GAME_STATE.md` §2;
    not re-specified to avoid duplication. This applies to the board's cell
-   entries and their Special Gem metadata for the same reason: the shape is
-   owned by `GAME_STATE.md` §2.1.7, and it is not restated here as a Redis
-   schema.
+   entries (`GemType` only) for the same reason: the shape is owned by
+   `GAME_STATE.md` §2.1.7, and it is not restated here as a Redis schema.
+   Special Gems are retired under ADR-028.
 2. Redis Cluster / sharding — out of scope, no such requirement exists in
    `MVP_SCOPE.md`.
 
@@ -393,41 +393,31 @@ Full active battle state          Full BattleState (GAME_STATE.md §2)
    preserve `Turn` and `Sequence` exactly (see also §2 item 1: the JSON
    matches `GAME_STATE.md` §2 with no additional Redis-only fields) — the
    counter values are state, not derived from the board or the RNG.
-10. **Special Gem state is inside `BoardState.Cells[64]` — it adds no key, no
-    field, and no record.** `GAME_STATE.md` §2.1 defines `BoardState` as
-    `Cells[64]` alone: each cell entry holds its Gem type and, optionally, the
-    Special Gem that occupies that cell (type, and orientation for a Line
-    Clear Gem). There is no `PendingSpecialGems[]`, no `SpecialGems[]`, and no
-    parallel collection of any kind, so this document defines **no**
-    Special-Gem-specific Redis structure — no key, no hash field, no set, no
-    index, and no second record — exactly as §1 states.
+10. **Retirement of Special Gems from `BoardState.Cells[64]` (ADR-028).** Under
+    operator design decisions OD-1 and OD-2, formalized in `ADR-028`, Special
+    Gems are retired from the battle-state model and Redis active battle state
+    persistence. `GAME_STATE.md` §2.1 defines `BoardState` as `Cells[64]`
+    carrying solely functional `GemType` entries. No `PendingSpecialGems[]`,
+    `SpecialGems[]`, or Special Gem metadata is stored.
 
-    The consequences for this document are these, and nothing more:
+    The consequences for this document are these:
 
-    - **The serialized shape is unchanged in structure.** The board is written
-      as a 64-element array in ascending cell-index order, and a cell's
-      Special Gem state is part of that cell's entry (`GAME_STATE.md` §2.1.7
-      items 1–4). No additional Redis-only field is introduced by Special
-      Gems, so §2 item 1's "matches the shape in `GAME_STATE.md` §2 exactly"
-      still holds verbatim.
-    - **Round-trip losslessness now covers Special Gems.** §7 item 9's
-      round-trip obligation extends to them: a record that loses a cell's
-      Special Gem, or its orientation, or that reorders cells, does not
-      round-trip (`GAME_STATE.md` §2.1.7 item 5). This is the same
-      serialization obligation the counters already have, applied to the
-      board's own contents.
-    - **The lifecycle and concurrency rules are untouched.** Special Gem state
-      is written in the same single post-resolution write-back as the rest of
-      the board (§4 item 5), under the same `Sequence` compare-and-set (§4
-      item 2), and with no per-activation, per-cascade, or per-creation write.
-      An intermediate board — one holding a pass's reservation, a creation not
-      yet committed, or a cell momentarily emptied — is Transient Resolution
-      State and is never written here (`MATCH3_RULES.md` §4.1,
-      `GAME_STATE.md` §2.1.5 item 4).
-    - **No Second Board Representation.** A Redis value that stored the board
-      twice — once as `Cells[64]` and once as a separate Special Gem
-      collection — would be a representation this document does not define,
-      and it is the case `GAME_STATE.md` §2.1.2 item 2 declined.
+    - **Serialized cell shape.** `BoardState.Cells[64]` is stored as a
+      64-element array in ascending cell-index order, where each entry carries
+      solely `GemType` (`GAME_STATE.md` §2.1.7). No `specialGem` property is
+      written by the server.
+    - **Tolerance basis (verified under Decision B-2):**
+      `BattleStateSerializer` sets `WriteIndented = false` without
+      `JsonUnmappedMemberHandling.Disallow`, and `BattleStateJson` declares
+      zero `[JsonRequired]` properties. Consequently, stored Redis records
+      carrying legacy `cell.specialGem` properties deserialize without runtime
+      error and the obsolete member is safely ignored.
+    - **Deployment and Drain Policy (Decision B-2):**
+      Active battles must be drained prior to joint server and client
+      deployment. Stored Redis state is not mutated, discarded, or migrated.
+      Rollback is forward-only for boards already written without the member.
+    - **No Second Board Representation.** `BoardState` is `Cells[64]` alone;
+      no parallel Special Gem collection or Redis-only data structure exists.
 
     This is a **content** change to the record, not a **structure** change to
     the store, which is why §1–§4 and §7 items 1–8 required no edit for it.

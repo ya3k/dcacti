@@ -1,6 +1,6 @@
 # Game Events
 
-**Version:** 2.15 (§1.1, §1, and §2 updated per the Operator Decision approving TASK-278 A-1(i) and A-4: `CascadeStepResolved` is defined — one additive Battle Event reporting a detection pass's completed Gravity and Spawn, with `passDepth`, `dropMoves` and `spawnedGems`, emitted as that pass's last item inside the round's existing single `ReceiveEvents` batch, and emitting nothing for the terminating pass. **No other event, payload member, ordering rule of an existing event, delivery path, or gameplay rule is changed**: the cycle's own order is unchanged and one pass-closing report is placed on it. Prior 2.14 (§3 item 8 extended per ADR-026 / TASK-267: the operation that emits no Battle Event has a **second** documented case — `MATCH3_RULES.md` §1.6's commit-boundary board recovery — recorded alongside the Boss Response phase's deadlock reshuffle, as the same deterministic regeneration at a second evaluation point. **No event, payload member, ordering rule, delivery path, game rule or implementation is changed**: the item's rule is unchanged and only its example set is completed, so the closed discriminator set (`SIGNALR_PROTOCOL.md` §3.2.2) and `GAME_RULES.md` §16 remain exactly as they were (TASK-268). Prior 2.13 (§3 item 8 added per TASK-265: the `BoardReshuffled` event `ADR-026` §8 promised is recorded as **not existing** — the shared board's deadlock reshuffle is a server-internal operation of the Boss Response phase, it emits no Battle Event, and the board that follows from it reaches the client as the Round's committed board in that Round's single state push. **No event, payload member, ordering rule, delivery path, game rule or implementation is changed**: `GAME_RULES.md` §16, §2 of this document, `SIGNALR_PROTOCOL.md` §3.2.2's closed discriminator set and the code already agree that the event does not exist; only the document that promised it (`ADR-026` §8) is corrected, and this document's own §3 now records the absence and the path a future event would have to take. Prior 2.12: §1 updated per ADR-026 / TASK-259: Event ordering synchronized with shared-board round execution — damage events occur iff acting actor produced a valid ATK-gem match (D1); Boss response phase incorporates Boss board swap and cascades; Boss skill deals zero direct damage (D3); fixed basic attack fallback retired. Prior 2.11: §2 `PowerChanged` reconciled with the TASK-150 Product Owner
+**Version:** 2.16 (§1.1, §1.3, §2, §3 reconciled per `TASK-289` and `ADR-028`: Special Gems are retired from event definitions and payloads following operator design decisions OD-1 through OD-7. `MatchCreated` removes created special gems; `GemMatched` removes consumed special gems. All event definitions align with match-only resolution without Special Gem activation or detonation. Prior 2.15: §1.1, §1, and §2 updated per the Operator Decision approving TASK-278 A-1(i) and A-4: `CascadeStepResolved` is defined — one additive Battle Event reporting a detection pass's completed Gravity and Spawn, with `passDepth`, `dropMoves` and `spawnedGems`, emitted as that pass's last item inside the round's existing single `ReceiveEvents` batch, and emitting nothing for the terminating pass. **No other event, payload member, ordering rule of an existing event, delivery path, or gameplay rule is changed**: the cycle's own order is unchanged and one pass-closing report is placed on it. Prior 2.14: (§3 item 8 extended per ADR-026 / TASK-267: the operation that emits no Battle Event has a **second** documented case — `MATCH3_RULES.md` §1.6's commit-boundary board recovery — recorded alongside the Boss Response phase's deadlock reshuffle, as the same deterministic regeneration at a second evaluation point. **No event, payload member, ordering rule, delivery path, game rule or implementation is changed**: the item's rule is unchanged and only its example set is completed, so the closed discriminator set (`SIGNALR_PROTOCOL.md` §3.2.2) and `GAME_RULES.md` §16 remain exactly as they were (TASK-268). Prior 2.13 (§3 item 8 added per TASK-265: the `BoardReshuffled` event `ADR-026` §8 promised is recorded as **not existing** — the shared board's deadlock reshuffle is a server-internal operation of the Boss Response phase, it emits no Battle Event, and the board that follows from it reaches the client as the Round's committed board in that Round's single state push. **No event, payload member, ordering rule, delivery path, game rule or implementation is changed**: `GAME_RULES.md` §16, §2 of this document, `SIGNALR_PROTOCOL.md` §3.2.2's closed discriminator set and the code already agree that the event does not exist; only the document that promised it (`ADR-026` §8) is corrected, and this document's own §3 now records the absence and the path a future event would have to take. Prior 2.12: §1 updated per ADR-026 / TASK-259: Event ordering synchronized with shared-board round execution — damage events occur iff acting actor produced a valid ATK-gem match (D1); Boss response phase incorporates Boss board swap and cascades; Boss skill deals zero direct damage (D3); fixed basic attack fallback retired. Prior 2.11: §2 `PowerChanged` reconciled with the TASK-150 Product Owner
 decisions D-1–D-8: the `source` value set is now the four values
 `"match"`, `"card"`, `"relic"`, and `"boss"`; the owning-stage emission rule
 replaces the stale "the `"match"` and `"card"` sources remain their own stages'"
@@ -143,8 +143,6 @@ committed Swap                                  MATCH3_RULES.md §2.1.6
         ├── MatchResolved       when that Match's Gems are removed (§4.1)
         ├── PassiveCharged      per Match (PASSIVE_RULES.md §2)
         ├── [PowerChanged]      per resource generation
-        ├── GemMatched          per Gem a Special Gem activation clears
-        │                       (§5.5.5 item 8: not a Match — no MatchCreated)
         │
         ├── gravity + spawn     (Gravity and Spawn emit nothing themselves:
         │                        MATCH3_RULES.md §4.4 item 7, §4.5)
@@ -165,8 +163,7 @@ committed Swap                                  MATCH3_RULES.md §2.1.6
    step 1). Within a pass, both run in the pass's match-set order, so a pass's
    `MatchCreated`/`MatchResolved` pairs appear in that order.
 3. **`GemMatched` is per Gem, not per Match**, and is emitted for every Gem
-   consumed — including the Gems a Special Gem activation clears, which produce
-   `GemMatched` but no `MatchCreated` (`MATCH3_RULES.md` §5.5.5 item 8).
+   consumed by a confirmed match.
 4. **`TurnStarted`/`TurnEnded` bracket the whole resolution** — every Match and
    every Cascade of the Swap sits between them. They mark the Turn, not the
    Match cycle (`GAME_RULES.md` §2).
@@ -212,52 +209,37 @@ committed Swap                                  MATCH3_RULES.md §2.1.6
 
 **This section owns one question only:** the order of the individual
 `GemMatched` events. It does not restate the ordering of any other event, and
-it introduces no board rule — detection, Match Resolution, Special Gem
-activation and creation, Gravity, and Spawn are owned by `MATCH3_RULES.md`
-§2–§5 and are not restated here (`MATCH3_RULES.md` §5.6 is the index of those
-orders).
+it introduces no board rule — detection, Match Resolution, Gravity, and Spawn
+are owned by `MATCH3_RULES.md` §2–§4 and are not restated here. Special Gems are
+retired under ADR-028.
 
 ```text
 Within one resolved cleared union —
-that is, one detection pass's union of matched cells, plus the union of every
-activation and chain that pass performed (MATCH3_RULES.md §5.5.5 item 6,
-§5.8.2) —
+that is, one detection pass's union of confirmed matched cells (MATCH3_RULES.md §4) —
 
 GemMatched is emitted once per cell of the union,
 in ascending cell index under MATCH3_RULES.md §1.0:
 
     lowest index first:  0 → 1 → 2 → … → 63
-
-within each sub-step of the pass, in that sub-step's own order:
-
-    1. the pass's matched cells                        first
-    2. the activations of that pass, breadth-first     after
-       (MATCH3_RULES.md §5.8.3 level 3, §5.5.5 items 5, 7)
 ```
 
-1. **The scope is one pass, then one cleared union per sub-step.** A detection
-   pass reports its matched cells (`MATCH3_RULES.md` §4.1 step 1) before the
-   cells its activations clear (§4.1 step 2), because those are two *sub-steps*
-   of the pass and the cycle order is fixed (§1.1). Within each, the cells are
-   one union and are enumerated by cell index. The pass is the outer scope: a
+1. **The scope is one pass, then one cleared union.** A detection pass reports
+   its confirmed matched cells (`MATCH3_RULES.md` §4.1). Within each pass, the
+   cells are one union and are enumerated by cell index. The pass is the outer scope: a
    Cascade's next pass (`MATCH3_RULES.md` §4.2) reopens the sequence, and the
    terminating pass emits nothing at all (§1.1 item 6).
 2. **Ascending cell index is a total order.** Every cleared cell is a cell in
    `0..63` (`MATCH3_RULES.md` §1.0), no two cells share an index, and there is
-   therefore no tie to break — not for an ordinary match, not for overlapping
-   effects, not for chains, not at a board edge, and not when several sources
-   name the same cell (`MATCH3_RULES.md` §5.5.5 item 6, §5.8.2 item 2: such a
-   cell is reported **once**). The order is a property of the **cell**, not of
-   the shape, effect, or source that contributed it.
+   therefore no tie to break — not for an ordinary match, not for overlapping shapes, not at a board edge,
+   and not when several shapes name the same cell (`MATCH3_RULES.md` §3.3 item 3:
+   such a cell is reported **once**). The order is a property of the **cell**,
+   not of the shape that contributed it.
 3. **This is an event-enumeration order only.** It is **not** a gameplay
-   resolution order. It does not decide which Special Gem a collision creates,
-   which effect activates first, or which cells are cleared: those are owned by
-   `MATCH3_RULES.md` §3.2, §5.5.1, §5.5.4 item 3, §5.5.5, and §5.8.3, and none
-   of them is changed by this section. Because removal, resource generation,
-   and reporting are union-based (`MATCH3_RULES.md` §5.8.2), the *set* of
+   resolution order. Match detection and confirmed match clearing are owned by
+   `MATCH3_RULES.md` §3–§4. Special Gems are retired under ADR-028. Because removal, resource generation,
+   and reporting are union-based, the *set* of
    cleared cells, the resource total, the Match count, the Combo, the board
-   state, and the `RngState` are identical under any enumeration order
-   (`MATCH3_RULES.md` §5.8.3 item 5); only the byte order of the `GemMatched`
+   state, and the `RngState` are identical under any enumeration order; only the byte order of the `GemMatched`
    events depends on it.
 4. **It is independent of every unordered source.** The sequence depends only
    on the §1.0 indexing of the cleared cells. It must never depend on
@@ -267,16 +249,15 @@ within each sub-step of the pass, in that sub-step's own order:
    or any other unordered or external source (`MATCH3_RULES.md` §7.2 item 4,
    `AGENTS.md` §11).
 5. **It changes no payload and adds no event.** `GemMatched` keeps its payload
-   of §2 — cell position and Gem type, plus the Special Gem consumed at that
-   cell when the cleared cell held one (§2) — and its once-per-cell trigger.
+   of §2 — cell position and Gem type — and its once-per-cell trigger. Special
+   Gems are retired under ADR-028.
    This section fixes only the order in which those events appear within a
    cleared union, so the event-stream contract of §1 becomes byte-identical
    between two independent implementations that resolve the same board.
 6. **Why an explicit rule is needed.** The ordering levels that were already
-   total (match set, activation, chain breadth-first, creation, Gravity, Spawn)
-   are indexed by `MATCH3_RULES.md` §5.6 and §5.8.3. The enumeration order
-   *inside* one union was not among them: those sections fix the order in which
-   shapes and effects **contribute** cells, and §5.8.2 defines the result as a
+   total (match set, Gravity, Spawn) are defined by `MATCH3_RULES.md` §3–§4.
+   The enumeration order *inside* one union was not among them: those sections fix the order in which
+   shapes contribute cells, and define the result as a union.
    **set** whose accounting is by unique cell, without fixing the order of its
    members. Ascending cell index is the smallest rule that closes that gap, and
    it is drawn from the §1.0 indexing every other order in the resolution
@@ -350,8 +331,7 @@ Both events are omitted together for a rejected action.
 ## MatchCreated / MatchResolved
 ```text
 Trigger:  A Match is detected / its Gems are removed (MATCH3_RULES.md §3)
-Payload:  Match shape (cells), Gem type, tier (3/4/5/L-T), Special Gem
-          created (if any)
+Payload:  Match shape (cells), Gem type, tier (3/4/5/L-T)
 ```
 
 Per Match, in the detection pass's match-set order
@@ -380,42 +360,24 @@ Payload:  New Combo value
 
 The value lifecycle is owned by `MATCH3_RULES.md` §6: it resets to 0 on a
 committed Swap before the first Match, and increments by exactly 1 per Match,
-in detection order — never by more, never for a Special Gem activation, and
-never for a rejected Swap.
+in detection order — never by more, and never for a rejected Swap.
 
 ## GemMatched
 ```text
-Trigger:  Once per individual Gem consumed by a Match or a Special Gem
-          detonation (MATCH3_RULES.md §5.5)
-Payload:  Cell position, Gem type, Special Gem consumed at that cell (if any)
+Trigger:  Once per individual Gem consumed by a confirmed Match (MATCH3_RULES.md §4)
+Payload:  Cell position, Gem type
 ```
 
 Once per **cell**, over the union of the cells a step removes — a cell named by
-more than one shape or effect is reported once (`MATCH3_RULES.md` §3.3
-item 3, §5.5.5 item 6), and the union's events are emitted in ascending cell
-index (§1.3). A Gem cleared by a Special Gem activation produces `GemMatched`
-without a `MatchCreated` (`MATCH3_RULES.md` §5.5.5 item 8).
+more than one shape is reported once (`MATCH3_RULES.md` §3.3 item 3), and the
+union's events are emitted in ascending cell index (§1.3).
 
-1. **`Gem type` is always one of the four §1.1 types, including for a cell that
-   held a Special Gem.** A Special Gem adds metadata to a cell's occupant; it
-   does not replace the occupant's Gem type (`GAME_STATE.md` §2.1.3 items 1–2,
-   §2.1.8 item 6), so this payload is never a Special Gem type in place of a
-   Gem type, and it is never absent for a cleared cell.
-2. **`Special Gem consumed at that cell` is present only when the cell that was
-   cleared held a Special Gem**, and it identifies that Special Gem's type
-   (and orientation, for a Line Clear Gem) — the same shape as the cell's
-   Special Gem metadata in `GAME_STATE.md` §2.1.4. It is what lets the client
-   report and animate an activation, and it is read from the **pre-removal**
-   board: the cell is cleared and the Special Gem is consumed by the same act
-   (`GAME_STATE.md` §2.1.8 item 2). The member is omitted for an ordinary Gem,
-   and its absence is the statement that no Special Gem was consumed there
-   (`GAME_STATE.md` §2.1.7 item 3).
-3. **This adds no event and changes no ordering.** Activation is reported
-   through this existing event and the existing state push — no
-   `SpecialGemActivated` event or message exists (`SIGNALR_PROTOCOL.md` §8
-   item 7, `MATCH3_RULES.md` §5.9.4 item 7). The trigger, the once-per-cell
-   rule, the union scope, and the ascending-index enumeration of §1.3 are all
-   unchanged by this member.
+1. **`Gem type` is always one of the four §1.1 types.** Special Gems are retired
+   under ADR-028; every cell occupant is an ordinary `GemType` (`ATK`, `DEF`, `HP`,
+   `POWER`).
+2. **No `specialGem` payload.** Special Gems are retired from wire contracts and
+   event definitions under ADR-028 and OD-1–OD-2. `GemMatched` delivers solely cell
+   position and `gemType`.
 
 ## CascadeStepResolved
 ```text
@@ -743,11 +705,8 @@ Payload:  Outcome, final BattleState summary, reward summary (BattleWon
 3. Client-side handling of each event: client implementation detail, not a
    documentation concern.
 4. The board mechanics behind the Match-3 events — detection, ordering,
-   gravity, spawn, Special Gem creation and activation, Combo — owned by
-   `MATCH3_RULES.md` §2–§8. How a Special Gem is held in the board state —
-   including the type and orientation §2's `GemMatched` payload reports — is
-   owned by `GAME_STATE.md` §2.1; this document does not define a
-   representation of its own.
+   gravity, spawn, Combo — are owned by `MATCH3_RULES.md` §2–§8. Special Gems
+   are retired from technical contracts and event payloads under ADR-028.
 5. Which events are internal and which are delivered, and how they are
    batched: `SIGNALR_PROTOCOL.md` §3 owns delivery, and every event defined in
    §2 belongs to the ordered list of §1 — none is defined as presentation-only.
