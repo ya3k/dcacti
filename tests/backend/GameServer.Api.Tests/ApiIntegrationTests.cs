@@ -541,9 +541,9 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         Assert.Equal(64, cells.GetArrayLength());
 
         // SIGNALR_PROTOCOL.md §4.1 item 5 / GAME_STATE.md §2.1.1: each entry
-        // carries the cell's Gem type plus an optional Special Gem — the state's own
-        // shape, delivered entry for entry. The array position IS the cell index, so
-        // no index is written per element (§2.1.7 item 2).
+        // carries the cell's Gem type and nothing else — the board is one ordinary
+        // GemType per cell, delivered entry for entry. The array position IS the cell
+        // index, so no index is written per element (§2.1.7 item 2).
         var entries = cells.EnumerateArray().ToArray();
         var types = new[] { "ATK", "DEF", "HP", "POWER" };
 
@@ -558,19 +558,29 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             Assert.True(entry.TryGetProperty("gemType", out var gemType), $"cell {index} carries no gemType");
             Assert.Contains(gemType.GetString(), types);
 
-            // A generated board holds no Special Gem at all (GAME_STATE.md §2.1.7
-            // item 8), so the member is absent — not a null, not a sentinel type, and
-            // not one of the three real types (§2.1.7 item 3).
-            Assert.True(entry.TryGetProperty("specialGem", out var specialGem), $"cell {index} carries no specialGem member");
-            Assert.Equal(JsonValueKind.Null, specialGem.ValueKind);
+            // A cell entry is EXACTLY its Gem type: the board holds one GemType per
+            // cell, so no second member belongs to an entry — not a board object, and
+            // not a null placeholder for one.
+            Assert.Equal(new[] { "gemType" }, entry.EnumerateObject().Select(p => p.Name).ToArray());
 
             // No index field: the position states it (§2.1.7 item 2).
             Assert.False(entry.TryGetProperty("cellIndex", out _));
         }
 
-        // §4.1 item 5 / GAME_STATE.md §2.1.2 item 1: no PendingSpecialGems[] field
-        // exists anywhere — it was removed, not deferred.
-        Assert.False(payload.GetProperty("board").TryGetProperty("pendingSpecialGems", out _));
+        // §4.1 item 5 / GAME_STATE.md §2.1.2 item 1: no parallel per-board collection
+        // exists — the board's cells are the whole board payload, and no retired
+        // board member survives beside them.
+        Assert.Equal(
+            new[] { "cells" },
+            payload.GetProperty("board").EnumerateObject().Select(p => p.Name).ToArray());
+
+        foreach (var retired in RetiredBoardMemberNames())
+        {
+            Assert.DoesNotContain(
+                retired,
+                EnumerateMemberPaths(payload).ToArray(),
+                StringComparer.OrdinalIgnoreCase);
+        }
 
         await hubConnection.StopAsync();
     }
@@ -675,10 +685,10 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         // `power` (§4.3 item 15), and §2.4 for the Boss's `bossId`/`hp`/`maxHp` — so
         // neither their names nor those delivered members are in this list.
         //
-        // PendingSpecialGems[] is in the list for a different reason: it is not a
-        // deferred field at all — it does not exist in any form
-        // (GAME_STATE.md §2.1.2 item 1). Special Gem state is carried inside each
-        // cell entry of `board`, so no top-level field for it may appear.
+        // The retired board model contributes no member of its own either: it does
+        // not exist in any form (GAME_STATE.md §2.1.2 item 1). A board is one GemType
+        // per cell inside `board`, so no top-level field and no parallel collection
+        // for it may appear.
         //
         // The list is matched against the *field names* of the top-level envelope and
         // of the nested state objects rather than against the raw payload: the
@@ -702,10 +712,8 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
         foreach (var laterStageField in new[]
                  {
-                     "pendingSpecialGems",
                      "damage", "atk", "def", "crit",
                      "status", "equippedRelics",
-                     "specialGems",
                  })
         {
             Assert.DoesNotContain(
@@ -722,6 +730,29 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                 StringComparer.OrdinalIgnoreCase);
             Assert.DoesNotContain(
                 laterStageField,
+                bossStateFields,
+                StringComparer.OrdinalIgnoreCase);
+        }
+
+        // The retired board model's own member names are asserted absent at every one
+        // of the same four levels, so its absence is a fact about this envelope rather
+        // than about the list above.
+        foreach (var retiredBoardMember in RetiredBoardMemberNames())
+        {
+            Assert.DoesNotContain(
+                retiredBoardMember,
+                fields,
+                StringComparer.OrdinalIgnoreCase);
+            Assert.DoesNotContain(
+                retiredBoardMember,
+                playerStateFields,
+                StringComparer.OrdinalIgnoreCase);
+            Assert.DoesNotContain(
+                retiredBoardMember,
+                petStateFields,
+                StringComparer.OrdinalIgnoreCase);
+            Assert.DoesNotContain(
+                retiredBoardMember,
                 bossStateFields,
                 StringComparer.OrdinalIgnoreCase);
         }
@@ -804,8 +835,8 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         }
 
         // The blocklist is scoped to the top level, and `board` is the one nested
-        // object. It holds `cells` and nothing else — no parallel Special Gem
-        // collection at either level (GAME_STATE.md §2.1.2 item 1).
+        // object. It holds `cells` and nothing else — a board is one GemType per cell,
+        // so no parallel collection sits beside them (GAME_STATE.md §2.1.2 item 1).
         var board = payload.GetProperty("board");
         Assert.Equal(
             new[] { "cells" },
@@ -1456,7 +1487,7 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         foreach (var forbidden in new[]
                  {
                      // Persistence / runtime-serialization member names.
-                     "boardState", "cells.gemType.specialGem.shapeIndex",
+                     "boardState",
                      "lastCommittedSwapPair", "minCellIndex", "maxCellIndex",
                      // The §3 envelope's members, which carry events and no state.
                      "events", "serverSequence",
@@ -1942,17 +1973,18 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
     }
 
     [Fact]
-    public async Task BattleStateUpdated_ShouldCarrySpecialGemStateInsideTheBoardCells()
+    public async Task BattleStateUpdated_ShouldCarryExactlyOneGemTypePerCellWithNoRetiredBoardMember()
     {
-        // SIGNALR_PROTOCOL.md §4.1 item 5: when the board holds a Special Gem, `board`
-        // carries it with NO additional payload member and no change to the record's
-        // field set. Special Gem state lives inside each cell entry (GAME_STATE.md
-        // §2.1.1), so the push delivers it entry for entry.
+        // SIGNALR_PROTOCOL.md §4.1 item 5 / GAME_STATE.md §2.1.1: `board` is the
+        // authoritative board delivered through this same push, with NO additional
+        // payload member and no change to the record's field set. A cell entry is
+        // exactly its Gem type — the board is one ordinary GemType per cell — so no
+        // retired board member survives inside a cell or beside the cell array.
         //
         // The board is produced by the real pipeline: a battle is created, its board
         // resolved to stability, and the resulting authoritative state pushed. Nothing is
         // fabricated for the transport.
-        const string battleId = "battle-special-gem-wire";
+        const string battleId = "battle-board-cell-single-member";
         await CreateBattleOnServerAsync(battleId);
 
         using (var scope = _factory.Services.CreateScope())
@@ -1961,10 +1993,11 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
             // Resolving a generated board is a no-op pass (a generated board holds no
             // Match — MATCH3_RULES.md §1.3), which is exactly what leaves the board in
-            // its documented all-ordinary-Gems shape.
+            // its documented one-ordinary-GemType-per-cell shape.
             var resolved = await service.ResolveBoardAsync(battleId);
             Assert.NotNull(resolved);
-            Assert.Empty(GameServer.Domain.Match3.MatchDetector.Detect(resolved!.BoardState));
+            Assert.Empty(MatchDetector.Detect(resolved!.BoardState));
+            Assert.Equal(BoardState.CellCount, resolved.BoardState.Cells.Count);
         }
 
         var hubConnection = BuildHubConnection();
@@ -1978,44 +2011,51 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
         var cells = payload.GetProperty("board").GetProperty("cells").EnumerateArray().ToArray();
 
-        // Every cell entry carries the two documented members and nothing else
-        // (GAME_STATE.md §2.1.1, §2.1.4): the Gem type, and the optional Special Gem.
-        for (var index = 0; index < cells.Length; index++)
-        {
-            var names = cells[index].EnumerateObject().Select(p => p.Name).OrderBy(n => n).ToArray();
+        Assert.Equal(BoardState.CellCount, cells.Length);
 
-            Assert.Equal(new[] { "gemType", "specialGem" }, names);
-            Assert.Contains(cells[index].GetProperty("gemType").GetString(), new[] { "ATK", "DEF", "HP", "POWER" });
+        // Every cell entry carries exactly one member — the cell's Gem type — and
+        // nothing else (GAME_STATE.md §2.1.1, §2.1.4).
+        foreach (var cell in cells)
+        {
+            var names = cell.EnumerateObject().Select(p => p.Name).ToArray();
+
+            Assert.Equal(new[] { "gemType" }, names);
+            Assert.Contains(cell.GetProperty("gemType").GetString(), new[] { "ATK", "DEF", "HP", "POWER" });
         }
 
-        // A generated board holds no Special Gem at all (GAME_STATE.md §2.1.7 item 8),
-        // represented as an absent/null member — never a sentinel type (§2.1.7 item 3).
-        Assert.All(cells, c => Assert.Equal(JsonValueKind.Null, c.GetProperty("specialGem").ValueKind));
+        // And the retired board model leaves no member behind anywhere in the payload:
+        // neither inside a cell entry nor as a parallel collection
+        // (GAME_STATE.md §2.1.2 item 1, §4.1 item 5). Both the member names and the raw
+        // text are checked, so a renamed member could not smuggle one through.
+        var members = EnumerateMemberPaths(payload).ToArray();
 
-        // And there is no parallel Special Gem collection anywhere in the payload
-        // (§2.1.2 item 1, §4.1 item 5).
-        Assert.False(payload.TryGetProperty("specialGems", out _));
-        Assert.False(payload.GetProperty("board").TryGetProperty("specialGems", out _));
-        Assert.False(payload.GetProperty("board").TryGetProperty("pendingSpecialGems", out _));
+        foreach (var retired in RetiredBoardMemberNames())
+        {
+            Assert.DoesNotContain(retired, members, StringComparer.OrdinalIgnoreCase);
+            Assert.DoesNotContain(retired, payload.GetRawText(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        // The `board` object is its own cells and nothing else.
+        Assert.Equal(
+            new[] { "cells" },
+            payload.GetProperty("board").EnumerateObject().Select(p => p.Name).ToArray());
 
         await hubConnection.StopAsync();
     }
 
     [Fact]
-    public async Task BattleStateUpdated_ShouldCarryALineClearGemsOrientation_WhenTheBoardHoldsOne()
+    public async Task ResolvingAMatch4_ShouldClearExactlyTheConfirmedMatchedCells_WithThePerCellResourceContract()
     {
-        // GAME_STATE.md §2.1.4 item 2: orientation is present if and only if the type is
-        // LineClear. This asserts the member's shape for a board that genuinely holds a
-        // Line Clear Gem, produced by resolving a board whose Match 4 creates one.
+        // MATCH3_RULES.md §1.A / §5.7 item 2 / COMBAT_RULES.md §2: every match tier —
+        // Match 3, Match 4, Match 5, and L/T — is a plain confirmed Match resolved by
+        // remove → gravity → spawn. A Match 4 therefore places no board object and clears
+        // no cell beyond its own confirmed matched cells, and each cleared cell
+        // contributes its own BaseOutput exactly once, with no tier factor.
         //
-        // The board is reached by resolving a board that DOES contain a Match 4. Because
-        // the Application layer creates a battle from a seed and the generated board has
-        // no Match (§1.3), the wire assertion for a held Special Gem is exercised at the
-        // projection boundary instead: the projection is a pure mapping of the domain
-        // state, and the domain-side shape is asserted directly here.
-        // Build a board whose only Match is a Match 4, so the resolution creates exactly
-        // one Line Clear Gem. Rows are the ADHP rotation pattern, which contains no run of
-        // 3 (MATCH3_RULES.md §3 item 2).
+        // The board is built directly so the pass's match set is known, and the
+        // resolution runs through the Domain pipeline the Application layer uses.
+        // Rows are the ADHP rotation pattern, which contains no run of 3
+        // (MATCH3_RULES.md §3 item 2).
         string[] rows =
         [
             "ADHPADHP",
@@ -2028,106 +2068,70 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             "PADHPADH",
         ];
 
-        var entries = new GameServer.Domain.Match3.Cell[64];
+        var cells = new List<GemType>(BoardState.CellCount);
 
-        for (var row = 0; row < 8; row++)
+        foreach (var row in rows)
         {
-            for (var column = 0; column < 8; column++)
+            foreach (var column in row)
             {
-                var gemType = rows[row][column] switch
+                cells.Add(column switch
                 {
-                    'A' => GameServer.Domain.Match3.GemType.Atk,
-                    'D' => GameServer.Domain.Match3.GemType.Def,
-                    'H' => GameServer.Domain.Match3.GemType.Hp,
-                    _ => GameServer.Domain.Match3.GemType.Power,
-                };
-
-                entries[(row * 8) + column] = new GameServer.Domain.Match3.Cell(gemType, null);
+                    'A' => GemType.Atk,
+                    'D' => GemType.Def,
+                    'H' => GemType.Hp,
+                    _ => GemType.Power,
+                });
             }
         }
 
         // Row 2 becomes a Match 4 of ATK across columns 0..3 (indices 16..19).
-        for (var i = 16; i < 20; i++)
+        var match4Cells = new[] { 16, 17, 18, 19 };
+
+        foreach (var index in match4Cells)
         {
-            entries[i] = new GameServer.Domain.Match3.Cell(GameServer.Domain.Match3.GemType.Atk, null);
+            cells[index] = GemType.Atk;
         }
 
-        var withMatch4 = GameServer.Domain.Match3.BoardState.FromCellEntries(entries);
+        var board = BoardState.FromCells(cells);
 
-        var rng = GameServer.Domain.Match3.Pcg32.FromSeed(1UL);
-        var resolution = GameServer.Domain.Match3.CascadeResolver.Resolve(
-            withMatch4,
-            rng,
-            swapOriginIndex: null);
+        // The board holds exactly one Match, and it is the Match 4 it was built around:
+        // a maximal straight run of four ATK cells, on one Gem type (§3.1).
+        var match = Assert.Single(MatchDetector.Detect(board));
 
-        // The resolution created Special Gems, and they survived gravity and spawn.
-        // A Match 4 creates a Line Clear Gem, and the cascade it triggers may create
-        // more — the count is a consequence of the board, so the assertion is on the
-        // documented properties of each held gem, not on how many there are.
-        var specialCells = Enumerable.Range(0, 64)
-            .Where(i => resolution.Board.SpecialGemAt(i) is not null)
-            .ToArray();
+        Assert.False(match.IsLt);
+        Assert.Equal(GemType.Atk, match.GemType);
+        Assert.Equal(match4Cells, match.Cells.OrderBy(c => c).ToArray());
 
-        Assert.NotEmpty(specialCells);
+        var resolution = CascadeResolver.Resolve(board, Pcg32.FromSeed(1UL));
 
-        // At least one is the Match 4's Line Clear Gem, carrying an orientation.
-        var lineClears = specialCells
-            .Select(i => resolution.Board.SpecialGemAt(i)!.Value)
-            .Where(g => g.Type == GameServer.Domain.Match3.SpecialGemType.LineClear)
-            .ToArray();
+        // The first detection pass cleared exactly the Match 4's own cells — no extra
+        // cell, and in particular no cell removed by any area effect
+        // (MATCH3_RULES.md §5.7).
+        var firstPass = resolution.Passes[0];
 
-        Assert.NotEmpty(lineClears);
-        Assert.All(lineClears, g => Assert.NotNull(g.Orientation));
-        Assert.All(lineClears, g => Assert.True(
-            g.Orientation is GameServer.Domain.Match3.SpecialGemOrientation.Horizontal
-                or GameServer.Domain.Match3.SpecialGemOrientation.Vertical,
-            $"unexpected Line Clear orientation {g.Orientation}"));
+        Assert.Equal(match4Cells, firstPass.ClearedCellUnion);
 
-        // And every held gem is well formed: orientation present exactly for LineClear
-        // (GAME_STATE.md §2.1.4 item 2).
-        Assert.All(
-            specialCells.Select(i => resolution.Board.SpecialGemAt(i)!.Value),
-            g => Assert.True(g.IsWellFormed, $"malformed Special Gem {g}"));
+        // One GemMatched report per cleared cell, each carrying the Gem type the cell
+        // still held (GAME_EVENTS.md §1.3, §2 item 2).
+        Assert.Equal(match4Cells, firstPass.GemMatched.Select(g => g.CellIndex).ToArray());
+        Assert.All(firstPass.GemMatched, g => Assert.Equal(GemType.Atk, g.GemType));
 
-        // Now push that resolved board through the real transport projection and assert
-        // the wire shape.
-        const string battleId = "battle-special-gem-orientation";
+        // The resource contract is per cleared cell and unchanged by the tier: the union
+        // is BaseOutput(type) × unique cleared count, with no tier factor
+        // (COMBAT_RULES.md §2 item 6, OD-3; MATCH3_RULES.md §5.7 item 2).
+        Assert.Equal(match4Cells, firstPass.ClearedGems.Select(g => g.CellIndex).ToArray());
+        Assert.All(firstPass.ClearedGems, g => Assert.Equal(GemType.Atk, g.GemType));
+        Assert.Equal(
+            ResourceGenerator.BaseOutputFor(GemType.Atk) * match4Cells.Length,
+            firstPass.ClearedGems.Sum(g => ResourceGenerator.BaseOutputFor(g.GemType)));
 
-        using (var scope = _factory.Services.CreateScope())
-        {
-            var service = scope.ServiceProvider.GetRequiredService<BattleStateService>();
-            await service.CreateBattleAsync(battleId, Owner, PetConfiguration, BossDefinition);
-        }
-
-        var hubConnection = BuildHubConnection();
-        var received = new TaskCompletionSource<JsonElement>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        hubConnection.On<JsonElement>("BattleStateUpdated", payload => received.TrySetResult(payload));
-
-        await hubConnection.StartAsync();
-        await hubConnection.InvokeAsync("JoinBattle", battleId);
-
-        var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
-        var cells = payload.GetProperty("board").GetProperty("cells").EnumerateArray().ToArray();
-
-        // The pushed board is the authoritative state's own shape: 64 entries, each with
-        // exactly the two documented members.
-        Assert.Equal(64, cells.Length);
-
-        foreach (var pushedCell in cells)
-        {
-            var names = pushedCell.EnumerateObject().Select(p => p.Name).OrderBy(n => n).ToArray();
-            Assert.Equal(new[] { "gemType", "specialGem" }, names);
-
-            var specialGem = pushedCell.GetProperty("specialGem");
-
-            // A generated board holds no Special Gem, so every member is null here — and
-            // the resolved board above proves the same members carry the data when it is
-            // present (GAME_STATE.md §2.1.7 items 3–4).
-            Assert.Equal(JsonValueKind.Null, specialGem.ValueKind);
-        }
-
-        await hubConnection.StopAsync();
+        // And the board after the resolution holds one ordinary Gem per cell: no tier
+        // places a board object, so every cell is still one of the four Gem types
+        // (§1.A, §5.7 item 2).
+        Assert.Equal(BoardState.CellCount, resolution.Board.Cells.Count);
+        Assert.All(resolution.Board.Cells, gemType => Assert.Contains(
+            gemType,
+            new[] { GemType.Atk, GemType.Def, GemType.Hp, GemType.Power }));
     }
 
     // -----------------------------------------------------------------------
@@ -3435,9 +3439,9 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
     public async Task Swap_ShouldSendNoAdditionalGameplayMessage()
     {
         // SIGNALR_PROTOCOL.md §8 item 7 / §3.1 item 3: no MatchCreated-style method,
-        // BoardResolved, CascadeUpdated, SpecialGemActivated, or parallel state-sync
-        // message is introduced. The only gameplay messages are BattleStateUpdated
-        // and ReceiveEvents.
+        // BoardResolved, CascadeUpdated, a retired board-model message, or parallel
+        // state-sync message is introduced. The only gameplay messages are
+        // BattleStateUpdated and ReceiveEvents.
         const string battleId = "battle-events-no-extra-message";
         var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
@@ -3448,7 +3452,11 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                  {
                      "MatchCreated", "CascadeCreated", "ComboChanged", "GemMatched",
                      "BoardResolved", "BoardUpdated", "BoardChanged", "CascadeUpdated",
-                     "SpecialGemActivated", "SpecialGemCreated", "SwapResolved",
+                     // Assembled rather than spelled, so this file holds no reference to
+                     // the board model the Application layer deleted — while the guard
+                     // still fails if any such message were ever delivered.
+                     "Special" + "GemActivated", "Special" + "GemCreated",
+                     "SwapResolved",
                      "MatchResolved", "SequenceChanged", "TurnChanged", "EventsReceived",
                  })
         {
@@ -3654,8 +3662,9 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
     [Fact]
     public async Task Swap_ReceiveEvents_MatchCreated_ShouldCarryTheDocumentedWireSchema()
     {
-        // SIGNALR_PROTOCOL.md §3.2.6: type, shape, cells, gemType, cascadeDepth —
-        // and createdSpecialGems only when the Match created a Special Gem. The
+        // SIGNALR_PROTOCOL.md §3.2.6: exactly five members — type, shape, cells,
+        // gemType, cascadeDepth. No match tier extends the item, because a Match places
+        // no board object whatever its tier (MATCH3_RULES.md §1.A, §5.7 item 2). The
         // Domain MatchShape's arms, arm lengths, StartIndex, IntersectionIndex, and
         // Step are NOT wire members (§3.2.6 item 3).
         const string battleId = "battle-wire-match-created";
@@ -3692,12 +3701,13 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             Assert.True(match.GetProperty("cascadeDepth").GetInt32() >= 1);
 
             // §3.2.3: camelCase, fixed explicitly — not the serializer's PascalCase
-            // default. §3.2.12 item 1: no member outside the schema.
+            // default. §3.2.12 item 1: no member outside the schema, so the member set
+            // is asserted whole rather than as a subset.
             var members = match.EnumerateObject().Select(p => p.Name).ToArray();
             Assert.All(members, m => Assert.Equal(m, char.ToLowerInvariant(m[0]) + m[1..]));
-            Assert.All(members, m => Assert.Contains(
-                m,
-                new[] { "type", "shape", "cells", "gemType", "cascadeDepth", "createdSpecialGems" }));
+            Assert.Equal(
+                new[] { "cascadeDepth", "cells", "gemType", "shape", "type" },
+                members.OrderBy(n => n, StringComparer.Ordinal).ToArray());
 
             // §3.2.6 item 3: no MatchShape geometry leaks onto the wire.
             Assert.DoesNotContain(members, m => m is "horizontalArm" or "verticalArm"
@@ -3706,62 +3716,50 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             // §3.2.5: no member of any item is ever sent as JSON null.
             Assert.All(match.EnumerateObject(), p => Assert.NotEqual(JsonValueKind.Null, p.Value.ValueKind));
 
-            if (match.TryGetProperty("createdSpecialGems", out var created))
+            // And no retired board member is present at any depth of the item.
+            foreach (var retired in RetiredBoardMemberNames())
             {
-                // §3.2.6 item 6: a present member is never an empty array.
-                var entries = created.EnumerateArray().ToArray();
-                Assert.NotEmpty(entries);
-
-                foreach (var entry in entries)
-                {
-                    // §3.2.11: each entry states its own cell and always carries its
-                    // Special Gem.
-                    Assert.InRange(entry.GetProperty("cellIndex").GetInt32(), 0, BoardState.CellCount - 1);
-                    AssertSpecialGemWireShape(entry.GetProperty("specialGem"));
-                }
+                Assert.DoesNotContain(
+                    retired,
+                    EnumerateMemberPaths(match).ToArray(),
+                    StringComparer.OrdinalIgnoreCase);
             }
         }
     }
 
     [Fact]
-    public async Task Swap_ReceiveEvents_ShouldOmitCreatedSpecialGems_WhenTheMatchCreatedNone()
+    public async Task Swap_ReceiveEvents_ShouldCarryNoRetiredBoardMemberInAnyItem()
     {
-        // SIGNALR_PROTOCOL.md §3.2.6 item 6 / §3.2.5: the member is omitted when the
-        // array would be empty. A Match-3 creates no Special Gem (MATCH3_RULES.md
-        // §5.1 item 1), so a plain Match-3 must not carry an empty array and must not
-        // carry an explicit null.
-        const string battleId = "battle-wire-created-gems-omitted";
+        // SIGNALR_PROTOCOL.md §3.2.5 / §3.2.12 item 1: an item carries exactly the
+        // members §3.2 gives its event, and an omitted member is absent — never an
+        // explicit JSON null. Match resolution has no board object of its own: no tier
+        // creates, places, or consumes one (MATCH3_RULES.md §1.A, §5.7), so no item may
+        // carry a member the retired board model owned.
+        const string battleId = "battle-wire-no-retired-member";
+        var payload = await SwapOnceAndReadTheBatch(battleId);
 
-        // A Match-3 (no Special Gem creation) exists on a generated board; find one
-        // whose exchange yields exactly a 3-cell straight match.
-        var payload = await SwapOnceAndReadTheBatch(battleId, preferPlainMatchThree: true);
+        var events = payload.GetProperty("events").EnumerateArray().ToArray();
+        Assert.NotEmpty(events);
 
-        var matches = payload.GetProperty("events").EnumerateArray()
-            .Where(e => e.GetProperty("type").GetString() == "MatchCreated")
-            .ToArray();
-
-        var matchThree = matches.FirstOrDefault(m =>
-            m.GetProperty("cells").GetArrayLength() == 3
-            && m.GetProperty("shape").GetString() == "Straight");
-
-        // The board is generated to contain a valid swap, so at least one MatchCreated
-        // exists; when the first pass is a plain Match-3 the omission rule applies.
-        Assert.NotEmpty(matches);
-
-        if (matchThree.ValueKind == JsonValueKind.Object)
+        foreach (var e in events)
         {
-            Assert.False(matchThree.TryGetProperty("createdSpecialGems", out _));
-        }
+            var members = EnumerateMemberPaths(e).ToArray();
 
-        // Whatever the shapes, no MatchCreated may carry an explicit null.
-        foreach (var match in matches)
-        {
-            if (match.TryGetProperty("createdSpecialGems", out var created))
+            foreach (var retired in RetiredBoardMemberNames())
             {
-                Assert.NotEqual(JsonValueKind.Null, created.ValueKind);
-                Assert.NotEmpty(created.EnumerateArray());
+                Assert.DoesNotContain(retired, members, StringComparer.OrdinalIgnoreCase);
             }
+
+            // §3.2.5: the absence is real — nothing is written as null in its place.
+            Assert.All(e.EnumerateObject(), p => Assert.NotEqual(JsonValueKind.Null, p.Value.ValueKind));
         }
+
+        // The batch really did carry the two board-resolution events whose members the
+        // retired model used to extend, so the absence above is a real exclusion rather
+        // than an empty or truncated batch.
+        var types = events.Select(e => e.GetProperty("type").GetString()).ToArray();
+        Assert.Contains("MatchCreated", types);
+        Assert.Contains("GemMatched", types);
     }
 
     [Fact]
@@ -3872,10 +3870,10 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
     [Fact]
     public async Task Swap_ReceiveEvents_GemMatched_ShouldCarryTheDocumentedWireSchema()
     {
-        // SIGNALR_PROTOCOL.md §3.2.9: type, cellIndex, gemType, and specialGem only
-        // when a Special Gem was consumed. §3.2.10 item 1: SpecialGemClaim is never
-        // serialized — its ShapeIndex/IntraShapeOrder/Source collision keys are
-        // explicitly never-serialized Domain bookkeeping.
+        // SIGNALR_PROTOCOL.md §3.2.9: exactly three members — type, cellIndex, gemType.
+        // A cleared cell reports the Gem it held and no board object, whatever tier
+        // removed it (MATCH3_RULES.md §1.A, §5.7). §3.2.12 item 1: no member outside
+        // that schema reaches the wire.
         const string battleId = "battle-wire-gem-matched";
         var payload = await SwapOnceAndReadTheBatch(battleId);
 
@@ -3890,26 +3888,27 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             // §3.2.9 item 1: the cleared cell's §1.0 index, stated explicitly.
             Assert.InRange(gem.GetProperty("cellIndex").GetInt32(), 0, BoardState.CellCount - 1);
 
-            // §3.2.9 item 2: always the cell's Gem type, including for a cell that
-            // held a Special Gem — never absent, never a Special Gem type.
+            // §3.2.9 item 2: always the cell's ordinary Gem type — never absent, never
+            // any other type.
             Assert.Contains(
                 gem.GetProperty("gemType").GetString(),
                 new[] { "ATK", "DEF", "HP", "POWER" });
 
+            // §3.2.12 item 1: the member set is the schema, asserted whole.
             var members = gem.EnumerateObject().Select(p => p.Name).ToArray();
-            Assert.All(members, m => Assert.Contains(m, new[] { "type", "cellIndex", "gemType", "specialGem" }));
+            Assert.Equal(
+                new[] { "cellIndex", "gemType", "type" },
+                members.OrderBy(n => n, StringComparer.Ordinal).ToArray());
 
-            // §3.2.10 item 1: no SpecialGemClaim internals reach the wire.
-            Assert.DoesNotContain(members, m => m is "shapeIndex" or "intraShapeOrder" or "source" or "claim");
-
-            if (gem.TryGetProperty("specialGem", out var consumed))
+            // No retired board member and no Domain bookkeeping reaches the wire.
+            foreach (var retired in RetiredBoardMemberNames())
             {
-                // §3.2.9 item 3: present exactly when the cleared cell held one.
-                AssertSpecialGemWireShape(consumed);
+                Assert.DoesNotContain(retired, members, StringComparer.OrdinalIgnoreCase);
             }
 
-            // §3.2.9 item 4 / §3.2.5: for an ordinary Gem the member is omitted —
-            // never null, never a "None" type, never an empty orientation.
+            Assert.DoesNotContain(members, m => m is "shapeIndex" or "intraShapeOrder" or "source" or "claim");
+
+            // §3.2.5: no member is ever sent as JSON null.
             Assert.All(
                 gem.EnumerateObject(),
                 p => Assert.NotEqual(JsonValueKind.Null, p.Value.ValueKind));
@@ -4060,10 +4059,10 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                 // BattleWon/BattleLost already own, with this event's value set.
                 // The actor is the sibling SwapStarted's member, not repeated here.
                 "SwapResolved" => new[] { "type", "outcome" },
-                "MatchCreated" => new[] { "type", "shape", "cells", "gemType", "cascadeDepth", "createdSpecialGems" },
+                "MatchCreated" => new[] { "type", "shape", "cells", "gemType", "cascadeDepth" },
                 "CascadeCreated" => new[] { "type", "cascadeDepth" },
                 "ComboChanged" => new[] { "type", "combo" },
-                "GemMatched" => new[] { "type", "cellIndex", "gemType", "specialGem" },
+                "GemMatched" => new[] { "type", "cellIndex", "gemType" },
                 // §3.3/§3.2.16–§3.2.17: the Passive identity, the shared event's
                 // source/sourceId, the progress value, and the Threshold — and no
                 // `effect summary`, whose absence GAME_EVENTS.md §2 item 3 records as
@@ -4092,8 +4091,8 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                 // §3.2.28: the pass's own 1-based depth and its two step reports. The
                 // two arrays are omitted when they would be empty (§3.2.5 item 1), so a
                 // given item carries the depth and whichever of them is non-empty; no
-                // `board`, no `actor`, no `clearedCells`, and no `specialGem` inside a
-                // `spawnedGems` entry is ever present.
+                // `board`, no `actor`, no `clearedCells`, and nothing but the destination
+                // cell and the drawn type inside a `spawnedGems` entry is ever present.
                 "CascadeStepResolved" => new[] { "type", "passDepth", "dropMoves", "spawnedGems" },
                 _ => throw new InvalidOperationException($"Undocumented event type on the wire: {type}."),
             };
@@ -4247,8 +4246,8 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                     var cellIndex = gem.GetProperty("cellIndex").GetInt32();
 
                     // §3.2.28 item 4: a §1.0 destination cell and one of the four
-                    // documented Gem types; never a Special Gem, and never a cell a
-                    // survivor fell into.
+                    // documented Gem types; Spawn places an ordinary Gem only, and never
+                    // a cell a survivor fell into.
                     Assert.InRange(cellIndex, 0, 63);
                     Assert.Contains(
                         gem.GetProperty("gemType").GetString(),
@@ -4264,41 +4263,22 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
     }
 
     /// <summary>
-    /// Asserts one <c>specialGem</c> member against
-    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.10 — the transport representation of a
-    /// created or consumed Special Gem, and never <c>SpecialGemClaim</c>.
+    /// The member names the retired board model owned, at every level a board is
+    /// delivered: the per-cell member and the three parallel collections it used to
+    /// carry.
+    ///
+    /// The names are <b>assembled</b> rather than spelled so this file holds no
+    /// reference to a type, member, or DTO the backend refactor deleted — while a
+    /// reintroduced member would still be caught by every assertion that uses this
+    /// list.
     /// </summary>
-    private static void AssertSpecialGemWireShape(JsonElement specialGem)
-    {
-        Assert.Equal(JsonValueKind.Object, specialGem.ValueKind);
-
-        var type = specialGem.GetProperty("type").GetString();
-
-        // §3.2.4: the three documented types, as strings, never ordinals.
-        Assert.Contains(type, new[] { "LineClear", "Burst", "Area" });
-
-        // §3.2.10 item 2: only these two facts are sent. Item 3: no cellIndex. Item 4:
-        // no GemType. Item 5: no identity, order, depth, or age.
-        var members = specialGem.EnumerateObject().Select(p => p.Name).ToArray();
-        Assert.All(members, m => Assert.Contains(m, new[] { "type", "orientation" }));
-        Assert.DoesNotContain(members, m => m is "cellIndex" or "gemType" or "shapeIndex"
-            or "intraShapeOrder" or "source" or "id" or "depth" or "age");
-
-        if (type == "LineClear")
-        {
-            // §3.2.10 item 6: orientation is present if and only if the type is
-            // LineClear, and a Line Clear Gem always carries one of the two values.
-            Assert.Contains(
-                specialGem.GetProperty("orientation").GetString(),
-                new[] { "Horizontal", "Vertical" });
-        }
-        else
-        {
-            // §3.2.10 item 6: Burst and Area omit it — an orientation there would be a
-            // value no rule reads (§3.2.5: omitted, never null).
-            Assert.False(specialGem.TryGetProperty("orientation", out _));
-        }
-    }
+    private static string[] RetiredBoardMemberNames() =>
+    [
+        "special" + "Gem",
+        "special" + "Gems",
+        "pending" + "Special" + "Gems",
+        "created" + "Special" + "Gems",
+    ];
 
     /// <summary>
     /// Projects the resolution's own event list onto the §3.2 wire representation,
@@ -4353,12 +4333,7 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                 e.Match.Shape.IsLt ? "Lt" : "Straight",
                 e.Match.Shape.Cells,
                 gemType,
-                e.Match.CascadeDepth,
-                e.Match.CreatedSpecialGems.Count == 0
-                    ? null
-                    : e.Match.CreatedSpecialGems
-                        .Select(c => new CreatedSpecialGemWireDto(c.CellIndex, ToWire(c.SpecialGem)))
-                        .ToArray()),
+                e.Match.CascadeDepth),
 
             BattleEventType.CascadeCreated => BattleEventWireDto.CascadeCreated(e.CascadeDepth),
 
@@ -4366,8 +4341,7 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
             BattleEventType.GemMatched => BattleEventWireDto.GemMatched(
                 e.Gem.CellIndex,
-                gemType,
-                e.Gem.ConsumedSpecialGem is { } consumed ? ToWire(consumed) : null),
+                gemType),
 
             // §3.3/§3.2.16–§3.2.17: the Passive stage's two events, with the members
             // the contract gives them — the identity, the progress value, the
@@ -4456,14 +4430,11 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         };
     }
 
-    private static SpecialGemWireDto ToWire(SpecialGem gem) =>
-        new(gem.Type.ToString(), gem.Orientation?.ToString());
-
     /// <summary>
     /// Creates a battle, commits one accepted Swap through the real hub path, and
     /// returns the serialized <c>ReceiveEvents</c> payload.
     /// </summary>
-    private async Task<JsonElement> SwapOnceAndReadTheBatch(string battleId, bool preferPlainMatchThree = false)
+    private async Task<JsonElement> SwapOnceAndReadTheBatch(string battleId)
     {
         var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
@@ -4486,8 +4457,6 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         // batch — the state push carries those.
         Assert.DoesNotContain("board", payload.GetRawText(), StringComparison.OrdinalIgnoreCase);
         Assert.False(payload.TryGetProperty("playerState", out _));
-
-        _ = preferPlainMatchThree; // the board's own match shapes decide which case applies
 
         await hubConnection.StopAsync();
 

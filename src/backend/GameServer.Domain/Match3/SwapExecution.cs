@@ -337,8 +337,7 @@ public readonly record struct SwapExecutionResult
 /// <b>No second pipeline.</b> Validation is <see cref="SwapValidator"/>'s, the
 /// exchange is <see cref="BoardState.WithSwapped"/>, and the resolution is
 /// <see cref="CascadeResolver.Resolve"/> over the existing
-/// <see cref="MatchDetector"/>, <see cref="SpecialGemPlanner"/>,
-/// <see cref="SpecialGemEffects"/>, <see cref="Gravity"/>, and
+/// <see cref="MatchDetector"/>, <see cref="Gravity"/>, and
 /// <see cref="Spawn"/>. This type sequences those calls in the documented order
 /// and owns nothing that already exists; it re-implements no rule and no step.
 /// Match and Combo accounting is likewise not a second Match-3 pass: it reads
@@ -440,11 +439,9 @@ public static class SwapExecutor
             return SwapExecutionResult.Rejected(validation.Reason);
         }
 
-        // Step 3 (§2.1.6 step 4): commit the exchange. A cell entry is exchanged as
-        // a whole (§2.1.5 item 2) — GemType and its SpecialGem metadata together —
-        // so a swapped Special Gem keeps its type and orientation at its new cell.
-        // The exchange draws no RNG and creates, consumes, and activates no Special
-        // Gem: no Special Gem is activated merely because it was swapped.
+        // Step 3 (§2.1.6 step 4): commit the exchange. Each cell's GemType is
+        // exchanged with its position (§2.1.5 item 2). The exchange draws no RNG and
+        // resolves nothing: no Match is detected or created by the swap itself.
         var exchanged = state.BoardState.WithSwapped(request.From, request.To);
 
         // Step 4 (§2.1.6 step 8, §4): resolve the exchanged board until it is
@@ -453,14 +450,10 @@ public static class SwapExecutor
         // advances it (§4.5 item 4).
         var rng = new Pcg32(state.RngState.State, state.RngState.Increment);
 
-        // The swap origin is the cell the accepted Swap moved a Gem into
-        // (§5.5.3 items 1–2). Both exchanged cells are candidates; the planner
-        // resolves, per shape, which of them is a member of that shape's matched
-        // line — exactly the documented identification, and why the action's
-        // direction is never consulted (§5.5.3 item 6, §2.1.1 item 2). A cell that
-        // is not a member gives the shape no origin, and the planner falls back to
-        // the line centre (§5.5.3 items 2–3).
-        var resolution = CascadeResolver.Resolve(exchanged, rng, swapOriginIndex: null);
+        // The resolution's input is the exchanged board and the retained RNG stream
+        // only. The action's direction is never consulted (§2.1.1 item 2): detection
+        // reads the board, and the swap has already been expressed in it.
+        var resolution = CascadeResolver.Resolve(exchanged, rng);
 
         // Step 5 (§6.1 item 2, §6.2–§6.3, §8.3 step 5): the committed Swap's Match
         // and Combo accounting, computed from the resolution's own passes. Combo is
@@ -577,16 +570,13 @@ public static class SwapExecutor
     /// <c>Passes</c> in order and, within each pass, its <c>Matches</c> in order —
     /// the resolution's own deterministic ordering (<c>MATCH3_RULES.md</c> §3.2
     /// within a pass, §4.2 across passes). Nothing is re-sorted, and no ordering
-    /// is derived from a cell index, a Special Gem type, a cascade depth, or an
-    /// animation order.
+    /// is derived from a cell index, a cascade depth, or an animation order.
     ///
     /// <b>What is not counted.</b> <see cref="PassResult.ClearedCellUnion"/> (N
-    /// cleared cells are not N Matches), <see cref="PassResult.ActivatedSpecialGems"/>
-    /// (an activation, a chain activation, and the cells its effect clears are not
-    /// Matches — §5.5.5 item 8, §6.3.1), and <see cref="PassResult.CreatedSpecialGems"/>
-    /// (creation is a consequence of an already-counted Match — §6.3 item 3) are all
-    /// excluded by construction: only <see cref="PassResult.Matches"/> is read. The
-    /// terminating no-match pass is likewise not present in
+    /// cleared cells are not N Matches) and <see cref="PassResult.GemMatched"/>
+    /// (one report per cleared cell) are excluded by construction: only
+    /// <see cref="PassResult.Matches"/> is read. The terminating no-match pass is
+    /// likewise not present in
     /// <see cref="CascadeResolver.CascadeResult.Passes"/>, so it neither counts nor
     /// resets anything (§4.3 item 4, §6.4).
     ///

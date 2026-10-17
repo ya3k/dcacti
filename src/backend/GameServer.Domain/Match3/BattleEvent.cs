@@ -37,12 +37,11 @@ namespace GameServer.Domain.Match3;
 /// identity and is not itself the ordering (ordering is owned by the assembled
 /// list, see <see cref="BattleEvent"/>).
 ///
-/// <b>What is deliberately absent, and why.</b> A Special Gem activation is
-/// reported through <see cref="GemMatched"/> and the existing state push — no
-/// <c>SpecialGemActivated</c> event exists (<c>GAME_EVENTS.md</c> §2 item 3,
-/// <c>SIGNALR_PROTOCOL.md</c> §8 item 7), and a creation is reported as part of
-/// the <c>MatchCreated</c> payload (§2). No <c>MatchCountChanged</c> exists —
-/// the Match count is <c>BattleState.MatchCount</c>, state and not an event
+/// <b>What is deliberately absent, and why.</b> The discriminator set is closed at
+/// the events <c>GAME_EVENTS.md</c> §2 defines: no event exists for a rule the
+/// match-only resolution does not have (<c>SIGNALR_PROTOCOL.md</c> §8 item 7), and
+/// no <c>MatchCountChanged</c> exists — the Match count is
+/// <c>BattleState.MatchCount</c>, state and not an event
 /// (<c>GAME_STATE.md</c> §2.2, <c>GAME_EVENTS.md</c> §3 item 7). No
 /// <c>TurnChanged</c>/<c>SequenceChanged</c>/<c>BoardChanged</c> exists —
 /// <c>Turn</c>, <c>Sequence</c>, and the board are delivered as state
@@ -77,20 +76,20 @@ public enum BattleEventType
 
     /// <summary>
     /// One Gem was consumed (<c>GAME_EVENTS.md</c> §2 <c>GemMatched</c>,
-    /// <c>MATCH3_RULES.md</c> §5.5). Emitted once per cleared cell of a sub-step's
-    /// union, in ascending §1.0 cell index (<c>GAME_EVENTS.md</c> §1.3). A Gem
-    /// cleared by a Special Gem activation produces this event and
-    /// <b>no</b> <see cref="MatchCreated"/> (<c>MATCH3_RULES.md</c> §5.5.5
-    /// item 8).
+    /// <c>MATCH3_RULES.md</c> §3.3 item 3). Emitted once per cleared cell of a
+    /// pass's confirmed matched union, in ascending §1.0 cell index
+    /// (<c>GAME_EVENTS.md</c> §1.3). Every cleared cell is a matched cell, so every
+    /// <c>GemMatched</c> belongs to a Match that also produces
+    /// <see cref="MatchCreated"/>.
     /// </summary>
     GemMatched = 3,
 
     /// <summary>
     /// Passive progress increased (<c>GAME_EVENTS.md</c> §2
     /// <c>PassiveCharged</c>, <c>PASSIVE_RULES.md</c> §2 item 1, §7). Emitted
-    /// <b>once per Match</b> — every Match charges the active Pet's Passive by 1,
-    /// and a Special Gem detonation is not a Match and charges nothing (§2
-    /// item 2). It is an <b>informational</b> progress report (§6 item 1): it
+    /// <b>once per Match</b> — every Match charges the active Pet's Passive by 1
+    /// (<c>PASSIVE_RULES.md</c> §2 item 1). It is an <b>informational</b> progress
+    /// report (§6 item 1): it
     /// triggers no threshold evaluation and no reset, and §2 item 3 evaluates the
     /// Threshold once, after the Cascade's whole batch. Its payload is the
     /// <c>PassiveId</c>, the new progress value, and the Threshold.
@@ -608,10 +607,9 @@ public readonly record struct BattleLostEvent(int FinalBossHp, int FinalPlayerHp
 ///
 /// <b>The payloads are the existing Domain values, not re-derived ones.</b> The
 /// <c>MatchCreated</c> payload is the resolution's own
-/// <see cref="MatchResolution"/>, so the shape, its cells, its tier, and the
-/// Special Gems it created are the values the resolver already produced
-/// (<c>GAME_EVENTS.md</c> §2: "Match shape (cells), Gem type, tier (3/4/5/L-T),
-/// Special Gem created (if any)"). The <c>GemMatched</c> payload is the existing
+/// <see cref="MatchResolution"/>, so the shape and its cells are the values the
+/// resolver already produced (<c>GAME_EVENTS.md</c> §2: "Match shape (cells), Gem
+/// type, cascade depth"). The <c>GemMatched</c> payload is the existing
 /// <see cref="GemMatchedEvent"/>, and the two Passive payloads are the values
 /// <c>PassiveTracker</c> produced. Nothing is recomputed, re-sorted, or read from
 /// a second detection pass.
@@ -699,8 +697,7 @@ public readonly record struct BattleEvent
 
     /// <summary>
     /// The <c>MatchCreated</c> payload — the Match that was detected, carrying its
-    /// shape (cells), Gem type, tier, and the Special Gems it created
-    /// (<c>GAME_EVENTS.md</c> §2).
+    /// shape (cells), Gem type, and cascade depth (<c>GAME_EVENTS.md</c> §2).
     /// </summary>
     /// <exception cref="InvalidOperationException">
     /// This event is not a <see cref="BattleEventType.MatchCreated"/>.
@@ -736,9 +733,8 @@ public readonly record struct BattleEvent
             + "Check Type before reading Combo.");
 
     /// <summary>
-    /// The <c>GemMatched</c> payload — the consumed Gem's cell position, Gem type,
-    /// and the Special Gem consumed at that cell when it held one
-    /// (<c>GAME_EVENTS.md</c> §2).
+    /// The <c>GemMatched</c> payload — the consumed Gem's cell position and Gem
+    /// type (<c>GAME_EVENTS.md</c> §2).
     /// </summary>
     /// <exception cref="InvalidOperationException">
     /// This event is not a <see cref="BattleEventType.GemMatched"/>.

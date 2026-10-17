@@ -58,16 +58,15 @@ public class BattleStateSerializationTests
     private static readonly PetId OwnedPet = new("pet-instance-4b81e0c2");
 
     /// <summary>
-    /// A board carrying every Special Gem shape, so the round trip exercises the
-    /// conditional orientation member (<c>GAME_STATE.md</c> §2.1.4 item 2) as well
-    /// as ordinary cells.
+    /// A board carrying every functional Gem type, so the round trip exercises the
+    /// whole documented value domain (<c>MATCH3_RULES.md</c> §1.1).
     /// </summary>
     private static BoardState RepresentativeBoard() =>
-        TestBoard.Background().WithSpecial(
-            (0, SpecialGem.LineClearHorizontal()),
-            (9, SpecialGem.LineClearVertical()),
-            (27, SpecialGem.Burst()),
-            (63, SpecialGem.Area()));
+        TestBoard.Background().WithGems(
+            (0, GemType.Atk),
+            (9, GemType.Def),
+            (27, GemType.Hp),
+            (63, GemType.Power));
 
     /// <summary>
     /// A representative <c>PetState</c> with non-default combat stats, a
@@ -275,12 +274,35 @@ public class BattleStateSerializationTests
     // =======================================================================
 
     [Fact]
+    public void Deserialization_ShouldIgnoreALegacyPerCellMember()
+    {
+        // ADR-028 Decision B-2 / GAME_STATE.md §2.1.7 item 4: the serializer's settings
+        // are the default ones (no JsonUnmappedMemberHandling.Disallow, no
+        // [JsonRequired] on a cell member), so a stored record that still carries an
+        // obsolete per-cell property deserializes without error and the member is
+        // ignored. No migration and no compatibility shim is needed — or permitted — at
+        // runtime.
+        var original = RepresentativeState();
+        var json = BattleStateSerializer.Serialize(original);
+
+        // Inject the obsolete member into the first cell entry of the stored document.
+        const string legacyMember = "{\"legacyCellMetadata\":{\"type\":\"Burst\"},\"gemType\":";
+        var rewritten = json.Replace("{\"gemType\":", legacyMember, StringComparison.Ordinal);
+
+        Assert.NotEqual(json, rewritten);
+
+        var restored = BattleStateSerializer.Deserialize(rewritten);
+
+        // The board is restored from the members the model still defines, cell for cell.
+        Assert.True(original.BoardState.CellsEqual(restored.BoardState));
+    }
+
+    [Fact]
     public void RoundTrip_ShouldPreserveEveryBoardCellInOrder()
     {
         // GAME_STATE.md §2.1.7 item 5: the restored Cells[64] must be "identical —
-        // same 64 Gem types, in the same index order, with the same Special Gem type
-        // and orientation at the same cells". Checked cell by cell, so a reorder or
-        // a dropped Special Gem is caught at its own index.
+        // same 64 Gem types, in the same index order". Checked cell by cell, so a
+        // reorder or a dropped cell is caught at its own index.
         var original = RepresentativeState();
 
         var restored = BattleStateSerializer.Deserialize(BattleStateSerializer.Serialize(original));
@@ -291,34 +313,7 @@ public class BattleStateSerializationTests
         for (var index = 0; index < BoardState.CellCount; index++)
         {
             Assert.Equal(original.BoardState[index], restored.BoardState[index]);
-            Assert.Equal(original.BoardState.SpecialGemAt(index), restored.BoardState.SpecialGemAt(index));
         }
-    }
-
-    [Fact]
-    public void RoundTrip_ShouldPreserveSpecialGemTypesAndOrientations()
-    {
-        // §2.1.4 item 2: orientation is present if and only if the type is
-        // LineClear. The fixture places all four shapes, so each conditional case is
-        // asserted explicitly.
-        var restored = BattleStateSerializer.Deserialize(
-            BattleStateSerializer.Serialize(RepresentativeState()));
-
-        var horizontal = restored.BoardState.SpecialGemAt(0)!.Value;
-        Assert.Equal(SpecialGemType.LineClear, horizontal.Type);
-        Assert.Equal(SpecialGemOrientation.Horizontal, horizontal.Orientation);
-
-        var vertical = restored.BoardState.SpecialGemAt(9)!.Value;
-        Assert.Equal(SpecialGemType.LineClear, vertical.Type);
-        Assert.Equal(SpecialGemOrientation.Vertical, vertical.Orientation);
-
-        var burst = restored.BoardState.SpecialGemAt(27)!.Value;
-        Assert.Equal(SpecialGemType.Burst, burst.Type);
-        Assert.Null(burst.Orientation);
-
-        var area = restored.BoardState.SpecialGemAt(63)!.Value;
-        Assert.Equal(SpecialGemType.Area, area.Type);
-        Assert.Null(area.Orientation);
     }
 
     [Fact]
@@ -340,7 +335,7 @@ public class BattleStateSerializationTests
             .Select(cell => cell.GetProperty("gemType").GetString())
             .ToArray();
         var expected = RepresentativeBoard().Cells
-            .Select(cell => GemTypes.ToContractName(cell.GemType))
+            .Select(gemType => GemTypes.ToContractName(gemType))
             .ToArray();
         Assert.Equal(expected, written);
 
@@ -351,39 +346,30 @@ public class BattleStateSerializationTests
     }
 
     [Fact]
-    public void Serialization_ShouldOmitSpecialGemForOrdinaryCellsAndNeverSpellItAsARealType()
+    public void Serialization_ShouldWriteEachCellAsItsGemTypeOnly()
     {
-        // §2.1.7 item 3: a cell with no Special Gem is serialized as a cell with no
-        // Special Gem member — "not a null element, not a sentinel type, and not a
-        // default value". The board here carries Special Gems only at 0, 9, 27, 63.
+        // §2.1.7 item 3: a cell serializes its Gem type and nothing else. Every one of
+        // the 64 entries therefore has exactly the single member `gemType`.
         using var document = JsonDocument.Parse(
             BattleStateSerializer.Serialize(RepresentativeState()));
 
         var cells = document.RootElement.GetProperty("boardState").GetProperty("cells")
             .EnumerateArray().ToArray();
 
-        var withSpecials = new[] { 0, 9, 27, 63 };
+        Assert.Equal(BoardState.CellCount, cells.Length);
 
-        for (var index = 0; index < cells.Length; index++)
+        foreach (var cell in cells)
         {
-            Assert.True(cells[index].TryGetProperty("gemType", out _));
-
-            if (withSpecials.Contains(index))
-            {
-                Assert.True(cells[index].TryGetProperty("specialGem", out _));
-                continue;
-            }
-
-            Assert.False(cells[index].TryGetProperty("specialGem", out _));
+            var members = cell.EnumerateObject().Select(member => member.Name).ToArray();
+            Assert.Equal(["gemType"], members);
         }
     }
 
     [Fact]
     public void Serialization_ShouldNotIntroduceASecondBoardCollection()
     {
-        // §2.1.2 item 1 / §2.1.7 item 1: BoardState has exactly one field, Cells[64].
         // A serializer writes the board with "no additional field, no parallel array,
-        // and no second key" — there is no PendingSpecialGems[] and no SpecialGems[].
+        // and no second key": the board object has exactly one member, `cells`.
         using var document = JsonDocument.Parse(
             BattleStateSerializer.Serialize(RepresentativeState()));
 
@@ -392,9 +378,10 @@ public class BattleStateSerializationTests
         Assert.Single(board.EnumerateObject());
         Assert.True(board.TryGetProperty("cells", out _));
 
-        foreach (var forbidden in new[] { "specialGems", "pendingSpecialGems", "cellIndexes" })
+        // The one member is the cell array; no element carries a second key either.
+        foreach (var cell in board.GetProperty("cells").EnumerateArray())
         {
-            Assert.False(board.TryGetProperty(forbidden, out _));
+            Assert.Single(cell.EnumerateObject());
         }
     }
 
@@ -1003,9 +990,6 @@ public class BattleStateSerializationTests
 
         Assert.True(root.GetProperty("boardState").TryGetProperty("cells", out var cells));
         Assert.True(cells[0].TryGetProperty("gemType", out _));
-        Assert.True(cells[0].TryGetProperty("specialGem", out var specialGem));
-        Assert.True(specialGem.TryGetProperty("type", out _));
-        Assert.True(specialGem.TryGetProperty("orientation", out _));
 
         Assert.True(root.GetProperty("petState").TryGetProperty("maxHp", out _));
         Assert.True(root.GetProperty("petState").TryGetProperty("passiveProgress", out var progress));
@@ -1078,10 +1062,9 @@ public class BattleStateSerializationTests
         // resolution produced is preserved exactly, which is the property a recovered
         // battle depends on (ADR-008).
         var board = RepresentativeBoard()
-            .WithGems((25, GemType.Atk), (26, GemType.Atk), (27, GemType.Atk))
-            .WithSpecial((25, SpecialGem.Burst()));
+            .WithGems((25, GemType.Atk), (26, GemType.Atk), (27, GemType.Atk));
 
-        var resolution = CascadeResolver.Resolve(board, Pcg32.FromSeed(31337UL), swapOriginIndex: null);
+        var resolution = CascadeResolver.Resolve(board, Pcg32.FromSeed(31337UL));
 
         var original = RepresentativeState() with
         {

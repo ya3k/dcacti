@@ -198,27 +198,21 @@ public class SwapExecutionTests
     }
 
     // =======================================================================
-    // Successful swap — the complete Cell exchange
+    // Successful swap — the complete cell exchange
     // =======================================================================
 
     [Fact]
     public void Execute_ShouldExchangeTheTwoCompleteCells()
     {
         // §2.1.6 step 4 / GAME_STATE.md §2.1.5 item 2: a cell entry is exchanged as
-        // a whole. The task's example — Cell[12] = POWER + Burst, Cell[13] =
-        // ATK + null → after the swap Cell[12] = ATK + null, Cell[13] = POWER +
-        // Burst — asserted on the pre-resolution exchange, which is the only board
-        // the swap itself determines.
-        var board = Background().WithGems((12, GemType.Power), (13, GemType.Atk))
-            .WithSpecial((12, SpecialGem.Burst()));
+        // a whole — its GemType — asserted on the pre-resolution exchange, which is
+        // the only board the swap itself determines.
+        var board = Background().WithGems((12, GemType.Power), (13, GemType.Atk));
 
         var exchanged = board.WithSwapped(12, 13);
 
         Assert.Equal(GemType.Atk, exchanged[12]);
-        Assert.Null(exchanged.SpecialGemAt(12));
-
         Assert.Equal(GemType.Power, exchanged[13]);
-        Assert.Equal(SpecialGem.Burst(), exchanged.SpecialGemAt(13));
     }
 
     [Fact]
@@ -240,62 +234,10 @@ public class SwapExecutionTests
             expected,
             new Pcg32(
                 BattleState.CreateWith("battle-004", TestSeed).RngState.State,
-                BattleState.CreateWith("battle-004", TestSeed).RngState.Increment),
-            swapOriginIndex: null);
+                BattleState.CreateWith("battle-004", TestSeed).RngState.Increment));
 
         Assert.True(result.State.BoardState.CellsEqual(viaPrimitive.Board));
         Assert.Equal(viaPrimitive.RngState, result.State.RngState);
-    }
-
-    [Fact]
-    public void Execute_ShouldMoveASpecialGemWithItsCell()
-    {
-        // GAME_STATE.md §2.1.5 item 2 / MATCH3_RULES.md §2.1.5: the Special Gem
-        // travels with its cell, keeping its type, and is not activated merely
-        // because it was swapped.
-        var board = MatchingBoard().WithSpecial(
-            (From, SpecialGem.LineClearVertical()),
-            (To, SpecialGem.Burst()));
-
-        var exchanged = board.WithSwapped(From, To);
-
-        // Each gem arrived at the other cell, intact.
-        Assert.Equal(SpecialGem.Burst(), exchanged.SpecialGemAt(From));
-        Assert.Equal(SpecialGem.LineClearVertical(), exchanged.SpecialGemAt(To));
-
-        // And still well formed: orientation present exactly for LineClear
-        // (GAME_STATE.md §2.1.4 item 2).
-        Assert.True(exchanged.SpecialGemAt(From)!.Value.IsWellFormed);
-        Assert.True(exchanged.SpecialGemAt(To)!.Value.IsWellFormed);
-    }
-
-    [Theory]
-    [InlineData(SpecialGemType.LineClear)]
-    [InlineData(SpecialGemType.Burst)]
-    [InlineData(SpecialGemType.Area)]
-    public void Execute_ShouldPreserveEverySpecialGemTypeAndOrientationThroughASwap(
-        SpecialGemType type)
-    {
-        // §7 of the task: GemType, SpecialGem, SpecialGem.Type, and
-        // SpecialGem.Orientation all survive the swap. Every orientation of both
-        // LineClear variants is covered, plus the two orientation-free types.
-        foreach (var gem in GemsOf(type))
-        {
-            var board = MatchingBoard().WithSpecial((From, gem));
-
-            var exchanged = board.WithSwapped(From, To);
-
-            // The cell's Gem type travelled with the Special Gem's metadata, and the
-            // whole entry equality below is the complete statement of it.
-            Assert.Equal(board[From], exchanged[To]);
-            Assert.Equal(gem, exchanged.SpecialGemAt(To));
-            Assert.Null(exchanged.SpecialGemAt(From));
-
-            // The whole entry moved: equality is on the record, which is GemType +
-            // SpecialGem together (GAME_STATE.md §2.1.1).
-            Assert.Equal(board.Cells[From], exchanged.Cells[To]);
-            Assert.Equal(board.Cells[To], exchanged.Cells[From]);
-        }
     }
 
     [Fact]
@@ -303,11 +245,11 @@ public class SwapExecutionTests
     {
         // Only the two named cells change. The other 62 entries are the ones they
         // were, entry for entry.
-        var board = MatchingBoard().WithSpecial((5, SpecialGem.Area()), (60, SpecialGem.Burst()));
-        var before = board.ToCellArray();
+        var board = MatchingBoard();
+        var before = board.ToArray();
 
         var exchanged = board.WithSwapped(From, To);
-        var after = exchanged.ToCellArray();
+        var after = exchanged.ToArray();
 
         for (var i = 0; i < BoardState.CellCount; i++)
         {
@@ -321,17 +263,14 @@ public class SwapExecutionTests
     }
 
     [Fact]
-    public void Execute_ShouldNotActivateASpecialGemMerelyBySwappingIt()
+    public void Execute_ShouldRejectASwapThatMakesNoMatch()
     {
-        // The task's explicit rule: "No Special Gem is activated merely because it
-        // was swapped." Activation is a Match-consumption act (§5.5.5 item 1), so a
-        // swap that moves a Special Gem into a non-matching cell leaves it on the
-        // board rather than consuming it.
-        var board = Background().WithSpecial((I(0, 0), SpecialGem.Burst()));
-        var board2 = board.WithGems((I(0, 0), GemType.Power), (I(0, 1), GemType.Atk));
+        // A swap whose exchange produces no Match changes nothing: it is rejected
+        // with NoMatchFromSwap and no resolution runs (MATCH3_RULES.md §2.1.2 item 4,
+        // §2.1.5).
+        var board = Background().WithGems((I(0, 0), GemType.Power), (I(0, 1), GemType.Atk));
 
-        // (0,0)<->(0,1): no Match is produced, so nothing resolves at all.
-        var result = SwapExecutor.Execute(BattleWith(board2), new SwapRequest(I(0, 0), I(0, 1)));
+        var result = SwapExecutor.Execute(BattleWith(board), new SwapRequest(I(0, 0), I(0, 1)));
 
         Assert.True(result.IsRejected);
         Assert.Equal(SwapRejectionReason.NoMatchFromSwap, result.Reason);
@@ -496,7 +435,7 @@ public class SwapExecutionTests
         // BattleState and BoardState are immutable, so the state passed in cannot
         // be rebound by the call — asserted so the contract is explicit.
         var state = BattleWith(MatchingBoard());
-        var before = state.BoardState.ToCellArray();
+        var before = state.BoardState.ToArray();
 
         SwapExecutor.Execute(state, new SwapRequest(From, To));
 
@@ -504,7 +443,7 @@ public class SwapExecutionTests
         Assert.Equal(BattleState.InitialSequence, state.Sequence);
         Assert.Null(state.LastCommittedSwapPair);
 
-        var after = state.BoardState.ToCellArray();
+        var after = state.BoardState.ToArray();
         Assert.Equal(before.Length, after.Length);
         for (var i = 0; i < before.Length; i++)
         {
@@ -540,7 +479,7 @@ public class SwapExecutionTests
         // in order, so check 2 precedes check 4). (0,1) is adjacent and is kept clear
         // of the fixtures below.
         var state = BattleWith(MatchingBoard(), CommittedSwapPair.FromCells(0, 1));
-        var boardBefore = state.BoardState.ToCellArray();
+        var boardBefore = state.BoardState.ToArray();
 
         // Each request fails exactly one check.
         var rejections = new (SwapRequest Request, SwapRejectionReason Reason)[]
@@ -570,7 +509,7 @@ public class SwapExecutionTests
             Assert.Equal(TestSeed, state.RngSeed);
             Assert.Equal(new CommittedSwapPair(0, 1), state.LastCommittedSwapPair);
 
-            var boardAfter = state.BoardState.ToCellArray();
+            var boardAfter = state.BoardState.ToArray();
             Assert.Equal(boardBefore.Length, boardAfter.Length);
             for (var i = 0; i < boardBefore.Length; i++)
             {
@@ -667,7 +606,7 @@ public class SwapExecutionTests
             Background().WithGems((12, GemType.Power), (13, GemType.Atk)),
             committed);
 
-        var boardBefore = state.BoardState.ToCellArray();
+        var boardBefore = state.BoardState.ToArray();
         var turnBefore = state.Turn;
         var sequenceBefore = state.Sequence;
 
@@ -680,7 +619,7 @@ public class SwapExecutionTests
             Assert.Equal(sequenceBefore, state.Sequence);
             Assert.Equal(committed, state.LastCommittedSwapPair);
 
-            var boardAfter = state.BoardState.ToCellArray();
+            var boardAfter = state.BoardState.ToArray();
             for (var i = 0; i < boardBefore.Length; i++)
             {
                 Assert.Equal(boardBefore[i], boardAfter[i]);
@@ -798,8 +737,7 @@ public class SwapExecutionTests
 
         var expected = CascadeResolver.Resolve(
             board.WithSwapped(From, To),
-            new Pcg32(state.RngState.State, state.RngState.Increment),
-            swapOriginIndex: null);
+            new Pcg32(state.RngState.State, state.RngState.Increment));
 
         Assert.True(result.Resolution.Passes.Count > 0);
         Assert.True(result.State.BoardState.CellsEqual(expected.Board));
@@ -818,7 +756,7 @@ public class SwapExecutionTests
 
         Assert.Empty(MatchDetector.Detect(result.State.BoardState));
         Assert.Equal(BoardState.CellCount, result.State.BoardState.Cells.Count);
-        Assert.All(result.State.BoardState.Cells, c => Assert.True(GemTypes.IsValid((int)c.GemType)));
+        Assert.All(result.State.BoardState.Cells, gemType => Assert.True(GemTypes.IsValid((int)gemType)));
     }
 
     [Fact]
@@ -852,34 +790,30 @@ public class SwapExecutionTests
     }
 
     [Fact]
-    public void Execute_ShouldCarryTheSpecialGemsTheResolutionCreatedOntoTheCommittedBoard()
+    public void Execute_ShouldCarryTheResolutionsBoardOntoTheCommittedState()
     {
-        // The Special Gem the resolution creates reaches the committed board, since
-        // the commit publishes the resolution's own board (GAME_STATE.md §2.1.7
-        // item 8: generation creates none, resolution does). Row 4 holds 'A','D','A'
-        // at columns 0-2 and (3,1) the completing 'A': the swap makes a Match 3, so
-        // the fixture proves the board — not a specific gem tier — is delivered.
+        // The commit publishes the resolution's own board (GAME_STATE.md §2.1.7
+        // item 8: generation and resolution both leave ordinary Gem cells). Row 4
+        // holds 'A','D','A' at columns 0-2 and (3,1) the completing 'A': the swap
+        // makes a Match 3, so the fixture proves the resolved board — not a
+        // specific gem tier — is delivered.
         var result = SwapExecutor.Execute(BattleWith(MatchingBoard()), new SwapRequest(From, To));
 
         Assert.True(result.IsAccepted);
 
-        // Whatever Special Gems the resolution produced, each is well formed and
-        // lives in the committed board's own cell entry (§2.1.4 item 2).
-        for (var i = 0; i < BoardState.CellCount; i++)
-        {
-            if (result.State.BoardState.SpecialGemAt(i) is { } gem)
-            {
-                Assert.True(gem.IsWellFormed, $"malformed Special Gem at {i}: {gem}");
-            }
-        }
+        // The committed board is the resolution's own board and holds ordinary Gem
+        // types in every cell.
+        Assert.True(result.State.BoardState.CellsEqual(result.Resolution.Board));
+        Assert.All(result.State.BoardState.Cells, gemType => Assert.True(GemTypes.IsValid((int)gemType)));
     }
 
     [Fact]
-    public void Execute_ShouldResolveASwapThatCreatesALineClearGem()
+    public void Execute_ShouldResolveAMatchFourAsASingleConfirmedMatch()
     {
-        // A Match 4 fixture, so the resolution genuinely creates a Special Gem and
-        // the committed board carries it. Row 5 holds 'P','P','D','P' at columns
-        // 0-3 and (4,2) holds the completing 'P'.
+        // A Match 4 fixture: row 5 holds 'P','P','D','P' at columns 0-3 and (4,2)
+        // holds the completing 'P'. The pass is one Match, its cleared union is
+        // exactly the four matched cells, and the resolution adds nothing to the
+        // board (MATCH3_RULES.md §1.A, §5.7).
         var board = Background().WithGems(
             (I(5, 0), GemType.Power),
             (I(5, 1), GemType.Power),
@@ -893,21 +827,11 @@ public class SwapExecutionTests
 
         Assert.True(result.IsAccepted);
 
-        // The first pass detected the Match 4 and created exactly one Line Clear Gem
-        // (§5.2 item 1, §5.5.2).
-        var created = result.Resolution.Passes[0].CreatedSpecialGems;
-        Assert.Single(created);
-        Assert.Equal(SpecialGemType.LineClear, created[0].SpecialGem.Type);
-        Assert.NotNull(created[0].SpecialGem.Orientation);
-
-        // It survived gravity and spawn onto the committed board (§5.5.4 item 2).
-        var committedSpecials = Enumerable.Range(0, BoardState.CellCount)
-            .Where(i => result.State.BoardState.SpecialGemAt(i) is not null)
-            .ToArray();
-
-        Assert.Contains(
-            committedSpecials,
-            i => result.State.BoardState.SpecialGemAt(i)!.Value.Type == SpecialGemType.LineClear);
+        var firstPass = Assert.Single(result.Resolution.Passes);
+        var match = Assert.Single(firstPass.Matches);
+        Assert.Equal(4, match.Shape.Cells.Count);
+        Assert.Equal(match.Shape.Cells, firstPass.ClearedCellUnion);
+        Assert.All(result.State.BoardState.Cells, gemType => Assert.True(GemTypes.IsValid((int)gemType)));
     }
 
     // =======================================================================
@@ -953,8 +877,7 @@ public class SwapExecutionTests
         var replay = new Pcg32(state.RngState.State, state.RngState.Increment);
         var replayed = CascadeResolver.Resolve(
             state.BoardState.WithSwapped(From, To),
-            replay,
-            swapOriginIndex: null);
+            replay);
 
         Assert.Equal(replayed.RngState, result.State.RngState);
     }
@@ -1195,19 +1118,6 @@ public class SwapExecutionTests
             }
         }
     }
-
-    /// <summary>Every well-formed <see cref="SpecialGem"/> of one type.</summary>
-    private static IEnumerable<SpecialGem> GemsOf(SpecialGemType type) => type switch
-    {
-        SpecialGemType.LineClear =>
-        [
-            SpecialGem.LineClearHorizontal(),
-            SpecialGem.LineClearVertical(),
-        ],
-        SpecialGemType.Burst => [SpecialGem.Burst()],
-        SpecialGemType.Area => [SpecialGem.Area()],
-        _ => throw new ArgumentOutOfRangeException(nameof(type), type, "unknown Special Gem type"),
-    };
 
     // =======================================================================
     // ADR-025 — Execution with Precondition and Action Identity

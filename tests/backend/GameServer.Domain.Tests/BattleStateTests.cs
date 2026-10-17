@@ -121,10 +121,9 @@ public class BattleStateTests
         // BossState (§2.4) — PassiveProgress, StatusEffects[] — is still owned by
         // the Boss Passive and Status Effects systems.
         //
-        // PendingSpecialGems is in the list for a different reason: it is not a deferred
-        // field — the placeholder was removed and does not exist in any form
-        // (GAME_STATE.md §2.1.2 item 1). Special Gem state is carried inside each
-        // `Cells[64]` entry (§2.1.1), so no board-level collection for it may appear.
+        // The board is one field and holds only its cells: nothing may add a parallel
+        // board collection to this record or to `BoardState` (GAME_STATE.md §2.1.2
+        // item 1, §2.1.1).
         //
         // Combo and MatchCount are deliberately NOT in the list: they are the fields
         // the Match / Combo accounting stage implements, and §2.2 places them at the
@@ -166,7 +165,6 @@ public class BattleStateTests
 
         foreach (var laterStageField in new[]
                  {
-                     "PendingSpecialGems",
                      // EquippedRelics is NOT in this list any more: the Relic loadout
                      // stage (TASK-027) implements it, exactly as each earlier stage
                      // added its own field (§2.3, RELIC_RULES.md §2.2–§2.5).

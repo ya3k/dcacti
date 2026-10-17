@@ -443,10 +443,10 @@ public class Task177RelicFiringPointRuntimeTests
         // The scenario's base Crit is one point below the fixture's own deterministic
         // Crit roll: with the fixed seed every test battle here uses
         // (FixedRngSeedSource.Seed, GAME_STATE.md §2.6.2 item 4 / ADR-009) the
-        // bound-100 selection at this board and Swap yields V = 56, observed by
-        // sweeping the base stat. Base Crit 56 therefore misses (V < 56 is false) and
-        // 56 + 15 = 71 hits — so the two arms differ only by the +15 under test.
-        const int baseCrit = 56;
+        // bound-100 selection at this board and Swap yields V = 5, observed by
+        // sweeping the base stat. Base Crit 4 therefore misses (V < 4 is false) and
+        // 4 + 15 = 19 hits — so the two arms differ only by the +15 under test.
+        const int baseCrit = 4;
 
         var execution = await RunExecutionMarkBattleAsync(
             "battle-execution-mark",
@@ -1106,14 +1106,14 @@ public class Task177RelicFiringPointRuntimeTests
     {
         var rows = new[]
         {
-            "ADPADPAD",
-            "DPADPADP",
-            "PADPADPA",
-            "PAMMMPAD",
-            "MMDMMDMM",
-            "DPADPADP",
-            "PADPADPA",
-            "ADPADPAD",
+            "PAAHADPD",
+            "HPDAHHAH",
+            "HAPDPDDH",
+            "AAPDPDHA",
+            "DHAPDAAH",
+            "PPHDHDPP",
+            "ADAHDADP",
+            "AHDPPDDA",
         };
 
         return BoardFromRows(rows);

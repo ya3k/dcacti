@@ -128,8 +128,8 @@ public static class BattleStateSerializer
     /// </exception>
     /// <exception cref="ArgumentException">
     /// The document is well-formed JSON but violates a documented state invariant
-    /// — a board without exactly 64 valid cells, a malformed Special Gem, an
-    /// unknown Gem type, Element, or Special Gem name, or a commit record that is
+    /// — a board without exactly 64 valid cells, an unknown Gem type, Element, or
+    /// enum name, or a commit record that is
     /// not canonically ordered. Those are contract violations, so they are rejected
     /// rather than repaired.
     /// </exception>
@@ -215,24 +215,12 @@ public static class BattleStateSerializer
     /// <summary>
     /// Projects one cell entry (<c>GAME_STATE.md</c> §2.1.1) — a pure field copy.
     /// </summary>
-    private static CellJson ToCellJson(Cell cell) =>
+    private static CellJson ToCellJson(GemType gemType) =>
         new()
         {
-            // §2.1.3 item 1: the Gem type is always written, including for a cell
-            // holding a Special Gem. The documented contract name is used
-            // (MATCH3_RULES.md §1.1), not the enum ordinal.
-            GemType = GemTypes.ToContractName(cell.GemType),
-
-            // §2.1.7 items 3–4: an absent Special Gem leaves the member absent; a
-            // present one writes its type, and its orientation only when the type
-            // is LineClear.
-            SpecialGem = cell.SpecialGem is { } gem
-                ? new SpecialGemJson
-                {
-                    Type = gem.Type.ToString(),
-                    Orientation = gem.Orientation?.ToString(),
-                }
-                : null,
+            // §2.1.3 item 1: the Gem type is the whole entry. The documented contract
+            // name is used (MATCH3_RULES.md §1.1), not the enum ordinal.
+            GemType = GemTypes.ToContractName(gemType),
         };
 
     /// <summary>
@@ -495,11 +483,10 @@ public static class BattleStateSerializer
             dto.RngSeed,
             new RngState(dto.RngState.State, dto.RngState.Increment),
 
-            // BoardState.FromCellEntries enforces the documented board contract —
-            // exactly 64 entries, each holding one of the four Gem types, with
-            // orientation present exactly for a Line Clear Gem (§2.1.1, §2.1.4
-            // item 2) — so a malformed board is rejected here rather than admitted.
-            BoardState.FromCellEntries(dto.BoardState.Cells.Select(FromCellJson)),
+            // BoardState.FromCells enforces the documented board contract — exactly
+            // 64 entries, each holding one of the four Gem types (§2.1.1, §2.1.3
+            // item 1) — so a malformed board is rejected here rather than admitted.
+            BoardState.FromCells(dto.BoardState.Cells.Select(FromCellJson)),
 
             dto.Combo,
             dto.MatchCount,
@@ -521,19 +508,11 @@ public static class BattleStateSerializer
         };
 
     /// <summary>
-    /// Rebuilds one cell entry, parsing the documented contract names back into
-    /// their domain values.
+    /// Rebuilds one cell entry, parsing the documented contract name back into its
+    /// domain value.
     /// </summary>
-    private static Cell FromCellJson(CellJson cell) =>
-        new(
-            Enum.Parse<GemType>(cell.GemType, ignoreCase: true),
-            cell.SpecialGem is { } gem
-                ? new SpecialGem(
-                    Enum.Parse<SpecialGemType>(gem.Type, ignoreCase: true),
-                    gem.Orientation is null
-                        ? null
-                        : Enum.Parse<SpecialGemOrientation>(gem.Orientation, ignoreCase: true))
-                : null);
+    private static GemType FromCellJson(CellJson cell) =>
+        Enum.Parse<GemType>(cell.GemType, ignoreCase: true);
 
     /// <summary>
     /// Rebuilds <c>PetState</c>, including both battle-scoped loadout snapshots
@@ -918,7 +897,7 @@ public static class BattleStateSerializer
     /// rather than by setting members, so §2.3.1's documented invariants are
     /// enforced by the same code that enforces them everywhere else — the same
     /// reason this mapping rebuilds the board through
-    /// <c>BoardState.FromCellEntries</c> and the commit record through
+    /// <c>BoardState.FromCells</c> and the commit record through
     /// <c>CommittedSwapPair</c>. A malformed element is therefore rejected as the
     /// contract violation it is instead of being repaired into a state the battle
     /// never had:

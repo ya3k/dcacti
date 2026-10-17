@@ -117,16 +117,6 @@ public class BattleEventEmissionTests
         };
     }
 
-    /// <summary>
-    /// A battle whose board is <see cref="MatchingBoard"/> with a horizontal Line
-    /// Clear Gem held at <c>I(4,0)</c> — a cell the completing swap's match set
-    /// consumes (<c>MATCH3_RULES.md</c> §5.5.5 item 1), so the swap activates it and
-    /// its effect clears the rest of the row.
-    /// </summary>
-    private static BattleState BoardWithAHeldLineClearGem() =>
-        BattleWith(MatchingBoard().WithSpecial(
-            (I(4, 0), SpecialGem.LineClear(SpecialGemOrientation.Horizontal))));
-
     // =======================================================================
     // One Match — GAME_EVENTS.md §1.1, §2
     // =======================================================================
@@ -182,7 +172,7 @@ public class BattleEventEmissionTests
         Assert.True(result.IsAccepted);
 
         var gems = result.Events.Where(e => e.Type == BattleEventType.GemMatched).ToArray();
-        var expected = result.Resolution.Passes[0].MatchedCellGemMatched;
+        var expected = result.Resolution.Passes[0].GemMatched;
 
         Assert.Equal(expected.Count, gems.Length);
 
@@ -231,8 +221,7 @@ public class BattleEventEmissionTests
 
             var resolution = CascadeResolver.Resolve(
                 state.BoardState.WithSwapped(from, to),
-                Pcg32.FromSeed(state.RngState.State),
-                swapOriginIndex: null);
+                Pcg32.FromSeed(state.RngState.State));
 
             if (resolution.Passes.Count > 0 && resolution.Passes[0].Matches.Count >= 2)
             {
@@ -407,17 +396,6 @@ public class BattleEventEmissionTests
     private const int TwoMatchFrom = 25; // I(3, 1)
     private const int TwoMatchTo = 33;   // I(4, 1)
 
-    /// <summary>
-    /// The same two-Match board with a horizontal Line Clear Gem held at
-    /// <c>I(3,0)</c> — a cell the completing swap's first match set consumes
-    /// (<c>MATCH3_RULES.md</c> §5.5.5 item 1), so that pass runs an activation
-    /// sub-step as well as its matched sub-step. The pass therefore carries two
-    /// Matches, a matched run, and an activation run at once.
-    /// </summary>
-    private static BoardState TwoDisjointMatchesWithALineClearGemBoard() =>
-        TwoDisjointMatchesBoard().WithSpecial(
-            (I(3, 0), SpecialGem.LineClear(SpecialGemOrientation.Horizontal)));
-
     [Fact]
     public void SeveralMatchesInOnePass_ShouldEmitEachMatchedCellExactlyOnce()
     {
@@ -442,10 +420,9 @@ public class BattleEventEmissionTests
         var firstPass = result.Resolution.Passes[0];
 
         Assert.Equal(2, firstPass.Matches.Count);
-        Assert.Equal(6, firstPass.MatchedCellGemMatched.Count);
-        Assert.Empty(firstPass.ActivationCellGemMatched);
+        Assert.Equal(6, firstPass.GemMatched.Count);
 
-        var expectedCells = firstPass.MatchedCellGemMatched.Select(g => g.CellIndex).ToArray();
+        var expectedCells = firstPass.GemMatched.Select(g => g.CellIndex).ToArray();
 
         Assert.Equal(expectedCells.OrderBy(i => i), expectedCells);
         Assert.Equal(expectedCells.Length, expectedCells.Distinct().Count());
@@ -462,7 +439,7 @@ public class BattleEventEmissionTests
         // Swap, and no unexpected one is. The unfixed builder emitted this pass's six
         // cells once per Match — twelve GemMatched events where six are expected.
         Assert.Equal(
-            result.Resolution.Passes.Sum(p => p.MatchedCellGemMatched.Count + p.ActivationCellGemMatched.Count),
+            result.Resolution.Passes.Sum(p => p.GemMatched.Count),
             result.Events.Count(e => e.Type == BattleEventType.GemMatched));
 
         // The pass's matched run is emitted once, ascending, immediately after the
@@ -482,11 +459,10 @@ public class BattleEventEmissionTests
         Assert.Equal(BattleEventType.ComboChanged, result.Events[matchCreatedIndices[1] + 1].Type);
 
         // And no cell is reported at an unexpected place: the emitted GemMatched
-        // sequence is exactly the resolver's own per-pass reports, sub-step by
-        // sub-step.
+        // sequence is exactly the resolver's own per-pass reports.
         Assert.Equal(
             result.Resolution.Passes
-                .SelectMany(p => p.MatchedCellGemMatched.Concat(p.ActivationCellGemMatched))
+                .SelectMany(p => p.GemMatched)
                 .Select(g => g.CellIndex),
             result.Events
                 .Where(e => e.Type == BattleEventType.GemMatched)
@@ -526,34 +502,27 @@ public class BattleEventEmissionTests
                 expectedTypes.Add(BattleEventType.CascadeCreated);
             }
 
-            var matchedSubStepAdded = false;
+            var clearedUnionAdded = false;
 
             foreach (var _ in pass.Matches)
             {
                 // §1.1 item 2: MatchCreated per Match, in the pass's match-set order.
                 expectedTypes.Add(BattleEventType.MatchCreated);
 
-                // §1.3 item 1: the pass's matched sub-step is one union, emitted
+                // §1.3 item 1: the pass's cleared union is one union, emitted
                 // once — never once per Match.
-                if (!matchedSubStepAdded)
+                if (!clearedUnionAdded)
                 {
-                    for (var i = 0; i < pass.MatchedCellGemMatched.Count; i++)
+                    for (var i = 0; i < pass.GemMatched.Count; i++)
                     {
                         expectedTypes.Add(BattleEventType.GemMatched);
                     }
 
-                    matchedSubStepAdded = true;
+                    clearedUnionAdded = true;
                 }
 
                 // §1.1 item 5: ComboChanged follows the Match it reports.
                 expectedTypes.Add(BattleEventType.ComboChanged);
-            }
-
-            // §1.3 item 1: the activation sub-step of the same pass comes after the
-            // matched one.
-            for (var i = 0; i < pass.ActivationCellGemMatched.Count; i++)
-            {
-                expectedTypes.Add(BattleEventType.GemMatched);
             }
 
             // §1.1 item 8 / §3.2.28: the pass's completed Gravity + Spawn transition
@@ -612,58 +581,6 @@ public class BattleEventEmissionTests
             result.Events
                 .Where(e => e.Type == BattleEventType.MatchCreated)
                 .Select(e => e.Match.CascadeDepth));
-    }
-
-    [Fact]
-    public void SeveralMatchesInOnePass_ShouldEmitTheActivationSubStepOnceAfterTheMatchedSubStep()
-    {
-        // The same two-Match pass with a Special Gem its match set consumes
-        // (MATCH3_RULES.md §5.5.5 item 1): the pass then carries a matched run and an
-        // activation run, and §1.3's two sub-steps must each be emitted once, in
-        // order, with the activation reporting only what the matched run did not
-        // (MATCH3_RULES.md §5.8.2 item 2).
-        var result = SwapExecutor.Execute(
-            BattleWith(TwoDisjointMatchesWithALineClearGemBoard()),
-            new SwapRequest(TwoMatchFrom, TwoMatchTo));
-
-        Assert.True(result.IsAccepted);
-
-        var firstPass = result.Resolution.Passes[0];
-
-        Assert.Equal(2, firstPass.Matches.Count);
-        Assert.Single(firstPass.ActivatedSpecialGems);
-        Assert.NotEmpty(firstPass.ActivationCellGemMatched);
-
-        var matched = firstPass.MatchedCellGemMatched.Select(g => g.CellIndex).ToArray();
-        var activation = firstPass.ActivationCellGemMatched.Select(g => g.CellIndex).ToArray();
-
-        Assert.Equal(matched.OrderBy(i => i), matched);
-        Assert.Equal(activation.OrderBy(i => i), activation);
-        Assert.Empty(matched.Intersect(activation));
-
-        // The consumed Special Gem is reported once, on its own cell, carrying the
-        // Special Gem it held (GAME_EVENTS.md §2 item 2).
-        var consumed = Assert.Single(firstPass.MatchedCellGemMatched, g => g.CellIndex == I(3, 0));
-        Assert.NotNull(consumed.ConsumedSpecialGem);
-
-        // §1.3: over the whole Swap the emitted cells are the pass's matched run and
-        // then its activation run — each once. The unfixed builder repeats the
-        // matched run per Match and breaks this sequence.
-        Assert.Equal(
-            matched.Concat(activation),
-            result.Events
-                .Where(e => e.Type == BattleEventType.GemMatched)
-                .Select(e => e.Gem.CellIndex));
-
-        Assert.Equal(
-            matched.Length + activation.Length,
-            result.Events.Count(e => e.Type == BattleEventType.GemMatched));
-
-        // The activation clears no Match and no Combo (MATCH3_RULES.md §5.5.5 item 8):
-        // the pass contributes exactly one ComboChanged per Match and nothing more.
-        Assert.Equal(
-            result.Resolution.Passes.Sum(p => p.Matches.Count),
-            result.Events.Count(e => e.Type == BattleEventType.ComboChanged));
     }
 
     // =======================================================================
@@ -826,30 +743,25 @@ public class BattleEventEmissionTests
                 expectedTypes.Add(BattleEventType.CascadeCreated);
             }
 
-            var matchedSubStepAdded = false;
+            var clearedUnionAdded = false;
 
             foreach (var _ in pass.Matches)
             {
                 expectedTypes.Add(BattleEventType.MatchCreated);
 
-                // §1.3 item 1: the pass's matched cells are ONE union, emitted once —
+                // §1.3 item 1: the pass's cleared cells are ONE union, emitted once —
                 // never once per Match (see the two-Match fixtures above).
-                if (!matchedSubStepAdded)
+                if (!clearedUnionAdded)
                 {
-                    for (var i = 0; i < pass.MatchedCellGemMatched.Count; i++)
+                    for (var i = 0; i < pass.GemMatched.Count; i++)
                     {
                         expectedTypes.Add(BattleEventType.GemMatched);
                     }
 
-                    matchedSubStepAdded = true;
+                    clearedUnionAdded = true;
                 }
 
                 expectedTypes.Add(BattleEventType.ComboChanged);
-            }
-
-            for (var i = 0; i < pass.ActivationCellGemMatched.Count; i++)
-            {
-                expectedTypes.Add(BattleEventType.GemMatched);
             }
 
             // §1.1 item 8 / §3.2.28: the pass's completed Gravity + Spawn transition
@@ -916,7 +828,7 @@ public class BattleEventEmissionTests
         }
 
         var reportedCells = result.Resolution.Passes
-            .SelectMany(p => p.MatchedCellGemMatched.Concat(p.ActivationCellGemMatched))
+            .SelectMany(p => p.GemMatched)
             .Select(g => g.CellIndex)
             .ToArray();
 
@@ -1074,7 +986,7 @@ public class BattleEventEmissionTests
 
         var battle = BattleState.CreateWith("battle-006-reconstruction", TestSeed);
         var rng = new Pcg32(battle.RngState.State, battle.RngState.Increment);
-        var resolution = CascadeResolver.Resolve(board, rng, swapOriginIndex: null);
+        var resolution = CascadeResolver.Resolve(board, rng);
         var events = BattleEventBuilder.Build(resolution, accountedCombo: resolution.TotalMatches);
 
         Assert.NotEmpty(resolution.Passes);
@@ -1082,7 +994,7 @@ public class BattleEventEmissionTests
             resolution.Passes.Count,
             events.Count(e => e.Type == BattleEventType.CascadeStepResolved));
 
-        var cells = board.ToCellArray().Select(c => (Cell?)c).ToArray();
+        var cells = board.ToArray().Select(t => (GemType?)t).ToArray();
         var cleared = new List<int>();
         var passIndex = 0;
 
@@ -1111,7 +1023,7 @@ public class BattleEventEmissionTests
             // 2. Gravity: every survivor the report named moves to the cell it named.
             //    Sources are emptied first, so a cell that is one move's destination
             //    and another move's source takes the arriving Gem (§4.4 item 3).
-            var before = (Cell?[])cells.Clone();
+            var before = (GemType?[])cells.Clone();
 
             foreach (var move in step.DropMoves)
             {
@@ -1127,15 +1039,7 @@ public class BattleEventEmissionTests
             //    step 4, §4.5 item 1).
             foreach (var spawn in step.SpawnedGems)
             {
-                cells[spawn.CellIndex] = Cell.Ordinary(spawn.GemType);
-            }
-
-            // 4. A cell the same pass created a Special Gem at is neither spawned nor
-            //    left empty: the creation is part of the pass's own board (§5.5.4
-            //    item 1, reserved before any activation ran).
-            foreach (var claim in resolution.Passes[passIndex].CreatedSpecialGems)
-            {
-                cells[claim.CellIndex] = Cell.WithSpecial(claim.GemType, claim.SpecialGem);
+                cells[spawn.CellIndex] = spawn.GemType;
             }
 
             // No hole may survive a pass: the board is always full again (§4.5
@@ -1143,15 +1047,15 @@ public class BattleEventEmissionTests
             Assert.DoesNotContain(cells, c => c is null);
 
             // And the reconstruction is the pass's own published board, cell for cell.
-            var expected = resolution.Passes[passIndex].Board.ToCellArray();
+            var expected = resolution.Passes[passIndex].Board.ToArray();
 
             for (var index = 0; index < expected.Length; index++)
             {
                 Assert.True(
                     expected[index] == cells[index],
                     $"cell {index} of pass {passIndex + 1} was rebuilt as "
-                    + $"{cells[index]?.GemType.ToString() ?? "empty"}, but the pass published "
-                    + $"{expected[index].GemType}");
+                    + $"{cells[index]?.ToString() ?? "empty"}, but the pass published "
+                    + $"{expected[index]}");
             }
 
             cleared.Clear();
@@ -1162,13 +1066,13 @@ public class BattleEventEmissionTests
     }
 
     // =======================================================================
-    // Special Gems — MATCH3_RULES.md §5.5.5 item 8, GAME_EVENTS.md §2 item 3
+    // Match tiers resolve as match-only — MATCH3_RULES.md §1.A, §5.7
     // =======================================================================
 
     /// <summary>
     /// A Match 4 fixture: row 5 holds 'P','P','D','P' at columns 0-3 with the
-    /// completing 'P' at (4,2). The completing Swap makes row 5 'PPPP' — a Match 4,
-    /// which creates exactly one Line Clear Gem (<c>MATCH3_RULES.md</c> §5.2).
+    /// completing 'P' at (4,2). The completing Swap makes row 5 'PPPP' — one
+    /// confirmed Match of four cells, which resolves as any other Match.
     /// </summary>
     private static BoardState MatchFourBoard() =>
         TestBoard.Background().WithGems(
@@ -1182,97 +1086,35 @@ public class BattleEventEmissionTests
     private const int MatchFourTo = 42;   // I(5, 2)
 
     [Fact]
-    public void SpecialGemCreation_ShouldNotEmitAnAdditionalMatchCreated()
+    public void MatchFour_ShouldEmitOneMatchCreatedForTheShape_AndClearOnlyItsCells()
     {
-        // §2 MatchCreated / MATCH3_RULES.md §5.4 item 4: one shape is one Match
-        // however many Special Gems it creates — the creation is a consequence of
-        // the Match, never an additional one. §6.3 item 3: creation never increments
-        // Combo either.
+        // §2 MatchCreated / MATCH3_RULES.md §3 item 5, §5.7: one shape is one Match
+        // however many cells it spans. A Match 4 is therefore exactly one Match and
+        // one Combo increment, and the pass clears exactly the four matched cells —
+        // nothing is added to the board or cleared beyond the match set.
         var result = SwapExecutor.Execute(BattleWith(MatchFourBoard()), new SwapRequest(MatchFourFrom, MatchFourTo));
 
         Assert.True(result.IsAccepted);
 
-        var created = result.Resolution.Passes.Sum(p => p.CreatedSpecialGems.Count);
-        Assert.True(created > 0, "the fixture must create a Special Gem");
+        var firstPass = result.Resolution.Passes[0];
 
-        var matches = result.Resolution.Passes.Sum(p => p.Matches.Count);
-        Assert.Equal(matches, result.Events.Count(e => e.Type == BattleEventType.MatchCreated));
-        Assert.Equal(matches, result.Events.Count(e => e.Type == BattleEventType.ComboChanged));
-    }
-
-    [Fact]
-    public void SpecialGemActivation_ShouldNotGenerateAnUndocumentedMatchEvent()
-    {
-        // §2 item 3: "Activation is reported through this existing event and the
-        // existing state push — no SpecialGemActivated event or message exists."
-        // MATCH3_RULES.md §5.5.5 item 8: a Gem cleared by an activation produces
-        // GemMatched but no MatchCreated, and §6.3.1: no Combo change.
-        //
-        // The held Line Clear Gem at I(4,0) sits in a cell the completing swap's
-        // match set consumes, so the pass activates it and its effect clears the rest
-        // of row 4 — cells the match set did not name.
-        var result = SwapExecutor.Execute(BoardWithAHeldLineClearGem(), new SwapRequest(From, To));
-
-        Assert.True(result.IsAccepted);
-
-        // The pass activated the held Special Gem...
-        var activated = result.Resolution.Passes.Sum(p => p.ActivatedSpecialGems.Count);
-        Assert.True(activated > 0, "the fixture must activate a Special Gem");
-
-        // ...and the cells its activation cleared beyond the match set produced
-        // GemMatched events rather than Match events.
-        var activationReports = result.Resolution.Passes.Sum(p => p.ActivationCellGemMatched.Count);
-        Assert.True(activationReports > 0, "the fixture's activation must clear extra cells");
-
-        // The Match events still number exactly the Matches — the activation added
-        // none, and no undocumented event kind appeared.
-        var matches = result.Resolution.Passes.Sum(p => p.Matches.Count);
-        Assert.Equal(matches, result.Events.Count(e => e.Type == BattleEventType.MatchCreated));
-        Assert.Equal(matches, result.Events.Count(e => e.Type == BattleEventType.ComboChanged));
-
-        // The activation's cells are reported as GemMatched, once each.
-        var activationCells = result.Resolution.Passes
-            .SelectMany(p => p.ActivationCellGemMatched)
-            .Select(g => g.CellIndex)
-            .ToArray();
-
+        var match = Assert.Single(firstPass.Matches);
         Assert.Equal(
-            activationCells,
-            result.Events
-                .Where(e => e.Type == BattleEventType.GemMatched)
-                .Select(e => e.Gem.CellIndex)
-                .Where(i => activationCells.Contains(i)));
-    }
+            firstPass.Matches.Count,
+            result.Events.Count(e => e.Type == BattleEventType.MatchCreated));
+        Assert.Equal(
+            firstPass.Matches.Count,
+            result.Events.Count(e => e.Type == BattleEventType.ComboChanged));
 
-    [Fact]
-    public void GemMatched_ShouldReportTheSpecialGemConsumedAtThatCell()
-    {
-        // §2 item 2: "`Special Gem consumed at that cell` is present only when the
-        // cell that was cleared held a Special Gem … read from the pre-removal
-        // board". §2 item 1: the Gem type is still one of the four types.
-        var result = SwapExecutor.Execute(BoardWithAHeldLineClearGem(), new SwapRequest(From, To));
+        // The Match is the four-cell row run, and the pass's cleared union is exactly
+        // those cells — no extra cell was cleared as a side effect.
+        Assert.Equal(4, match.Shape.Cells.Count);
+        Assert.Equal(match.Shape.Cells, firstPass.ClearedCellUnion);
+        Assert.Equal(firstPass.ClearedCellUnion, firstPass.GemMatched.Select(g => g.CellIndex));
 
-        Assert.True(result.IsAccepted);
-
-        var consumed = result.Events
-            .Where(e => e.Type == BattleEventType.GemMatched && e.Gem.ConsumedSpecialGem is not null)
-            .ToArray();
-
-        Assert.NotEmpty(consumed);
-        Assert.Equal(I(4, 0), consumed[0].Gem.CellIndex);
-        Assert.Equal(SpecialGemType.LineClear, consumed[0].Gem.ConsumedSpecialGem!.Value.Type);
-
-        // The Gem type is always a real §1.1 type, never a Special Gem type in its
-        // place (§2 item 1).
-        Assert.All(
-            result.Events.Where(e => e.Type == BattleEventType.GemMatched),
-            e => Assert.True(GemTypes.IsValid((int)e.Gem.GemType)));
-
-        // An ordinary Gem reports no consumed Special Gem — its absence is the
-        // statement that none was consumed there.
-        Assert.Contains(
-            result.Events,
-            e => e.Type == BattleEventType.GemMatched && e.Gem.ConsumedSpecialGem is null);
+        // The resolution creates nothing: every cell of the published board is an
+        // ordinary Gem type (MATCH3_RULES.md §1.A, §4.5 item 7).
+        Assert.All(result.State.BoardState.Cells, gemType => Assert.True(GemTypes.IsValid((int)gemType)));
     }
 
     // =======================================================================
@@ -1450,8 +1292,7 @@ public class BattleEventEmissionTests
         var rng = new Pcg32(state.RngState.State, state.RngState.Increment);
         var reference = CascadeResolver.Resolve(
             state.BoardState.WithSwapped(CascadeFrom, CascadeTo),
-            rng,
-            swapOriginIndex: null);
+            rng);
 
         var result = SwapExecutor.Execute(state, new SwapRequest(CascadeFrom, CascadeTo));
 
@@ -1462,11 +1303,8 @@ public class BattleEventEmissionTests
         {
             Assert.Equal(reference.Passes[i].Matches.Count, result.Resolution.Passes[i].Matches.Count);
             Assert.Equal(
-                reference.Passes[i].MatchedCellGemMatched.Count,
-                result.Resolution.Passes[i].MatchedCellGemMatched.Count);
-            Assert.Equal(
-                reference.Passes[i].ActivationCellGemMatched.Count,
-                result.Resolution.Passes[i].ActivationCellGemMatched.Count);
+                reference.Passes[i].GemMatched.Count,
+                result.Resolution.Passes[i].GemMatched.Count);
             Assert.Equal(
                 reference.Passes[i].ClearedCellUnion,
                 result.Resolution.Passes[i].ClearedCellUnion);
@@ -1481,8 +1319,8 @@ public class BattleEventEmissionTests
     [Fact]
     public void EventSequence_ShouldBeDeterministicAcrossRepeatedIdenticalExecutions()
     {
-        // §7.1: "Given the same board state and the same Swap input, match detection,
-        // cascade resolution and special gem creation must be fully deterministic".
+        // §7.1: "Given the same board state and the same Swap input, match detection
+        // and cascade resolution must be fully deterministic".
         // The events describe that resolution, so the sequence is identical too —
         // no timestamp, GUID, random id, or unordered collection participates
         // (§7.2 item 4, AGENTS.md §11).
@@ -1627,8 +1465,6 @@ public class BattleEventEmissionTests
                      typeof(BattleEvent),
                      typeof(GemMatchedEvent),
                      typeof(MatchResolution),
-                     typeof(ActivatedSpecialGem),
-                     typeof(SpecialGemClaim),
                      typeof(CascadeStepResolvedEvent),
                      typeof(GameServer.Domain.Combat.DamageCalculation),
                      typeof(DamageDealtEvent),
@@ -1736,15 +1572,14 @@ public class BattleEventEmissionTests
     [Fact]
     public void GemMatchedCount_ShouldMatchTheResolutionsOwnReports()
     {
-        // §2 GemMatched is once per cleared cell over each sub-step's union; the
+        // §2 GemMatched is once per cleared cell over each pass's union; the
         // resolver already reported exactly those cells, so the event count is their
         // count — no cell added, none dropped.
         var result = SwapExecutor.Execute(CascadeBattle(), new SwapRequest(CascadeFrom, CascadeTo));
 
         Assert.True(result.IsAccepted);
 
-        var expected = result.Resolution.Passes
-            .Sum(p => p.MatchedCellGemMatched.Count + p.ActivationCellGemMatched.Count);
+        var expected = result.Resolution.Passes.Sum(p => p.GemMatched.Count);
 
         Assert.Equal(expected, result.Events.Count(e => e.Type == BattleEventType.GemMatched));
     }
@@ -1792,31 +1627,19 @@ public class BattleEventEmissionTests
         Assert.Equal(depths.Length, depths.Distinct().Count());
 
         // Within each pass's cleared union, no cell is reported as GemMatched twice:
-        // a cell is cleared once per step and reported once (§5.8.2 item 2,
-        // §1.3 item 2). Asserted per sub-step, because a cell matched in one pass can
-        // legitimately be cleared again by a later pass's activation.
+        // a cell is cleared once per pass and reported once (§1.3 item 2). Asserted
+        // per pass, because a cell matched in one pass can legitimately be matched
+        // again by a later pass.
         foreach (var pass in result.Resolution.Passes)
         {
             Assert.Equal(
-                pass.MatchedCellGemMatched.Count,
-                pass.MatchedCellGemMatched.Select(g => g.CellIndex).Distinct().Count());
-
-            Assert.Equal(
-                pass.ActivationCellGemMatched.Count,
-                pass.ActivationCellGemMatched.Select(g => g.CellIndex).Distinct().Count());
-
-            // The activation sub-step excludes what the matched sub-step reported
-            // (§1.3 item 1: the pass's matched cells first, then the activations).
-            Assert.Empty(
-                pass.ActivationCellGemMatched
-                    .Select(g => g.CellIndex)
-                    .Intersect(pass.MatchedCellGemMatched.Select(g => g.CellIndex)));
+                pass.GemMatched.Count,
+                pass.GemMatched.Select(g => g.CellIndex).Distinct().Count());
         }
 
-        // And within one pass the two sub-steps together report each cell once.
+        // And within one pass the cleared union reports each cell once.
         var firstPass = result.Resolution.Passes[0];
-        var firstPassCells = firstPass.MatchedCellGemMatched
-            .Concat(firstPass.ActivationCellGemMatched)
+        var firstPassCells = firstPass.GemMatched
             .Select(g => g.CellIndex)
             .ToArray();
 
@@ -2104,8 +1927,8 @@ public class BattleEventEmissionTests
         // SIGNALR_PROTOCOL.md §3.2.28; ADR-027) — and the Match-3 cycle immediately
         // above is its home. No
         // undocumented name may be added
-        // (AGENTS.md §7). In particular no MatchCountChanged, SpecialGemActivated,
-        // SpecialGemCreated, TurnChanged, SequenceChanged, or BoardChanged exists.
+        // (AGENTS.md §7). In particular no MatchCountChanged, TurnChanged,
+        // SequenceChanged, or BoardChanged exists.
         //
         // BOSS_RULES.md §7 is explicit about the three names the Boss stage did NOT
         // add: Boss Passive triggers reuse the shared PassiveCharged/PassiveTriggered
@@ -2172,8 +1995,7 @@ public class BattleEventEmissionTests
                      "IEventPublisher", "EventPublisher", "IEventStore", "EventLog",
                      "IMessageBroker", "MessageBroker", "IEventHandler", "EventSubscriber",
                      // Undocumented event names (GAME_EVENTS.md §2, GAME_RULES.md §16).
-                     "MatchCountChanged", "SpecialGemActivated", "SpecialGemCreated",
-                     "SpecialGemDestroyed", "TurnChanged", "SequenceChanged",
+                     "MatchCountChanged", "TurnChanged", "SequenceChanged",
                      "BoardChanged", "BoardResolved", "CascadeUpdated",
                  })
         {
@@ -2293,8 +2115,7 @@ public class BattleEventEmissionTests
         {
             BattleEventType.MatchCreated =>
                 $"MatchCreated depth={e.Match.CascadeDepth} start={e.Match.Shape.StartIndex} "
-                + $"type={e.Match.Shape.GemType} cells={string.Join(',', e.Match.Shape.Cells)} "
-                + $"created={string.Join(',', e.Match.CreatedSpecialGems.Select(c => c.CellIndex))}",
+                + $"type={e.Match.Shape.GemType} cells={string.Join(',', e.Match.Shape.Cells)}",
             BattleEventType.CascadeCreated => $"CascadeCreated depth={e.CascadeDepth}",
             BattleEventType.ComboChanged => $"ComboChanged combo={e.Combo}",
             // The committed board action's own boundary (GAME_EVENTS.md §2,
@@ -2313,8 +2134,7 @@ public class BattleEventEmissionTests
                 $"CascadeStepResolved depth={e.CascadeStep.PassDepth} "
                 + $"drops={string.Join(',', e.CascadeStep.DropMoves.Select(m => $"{m.FromCell}>{m.ToCell}"))} "
                 + $"spawns={string.Join(',', e.CascadeStep.SpawnedGems.Select(s => $"{s.CellIndex}:{s.GemType}"))}",
-            _ => $"GemMatched cell={e.Gem.CellIndex} type={e.Gem.GemType} "
-                 + $"special={e.Gem.ConsumedSpecialGem?.Type.ToString() ?? "none"}",
+            _ => $"GemMatched cell={e.Gem.CellIndex} type={e.Gem.GemType}",
         }).ToArray();
 
     /// <summary>
@@ -2324,7 +2144,7 @@ public class BattleEventEmissionTests
     private static string DescribeState(BattleState state) =>
         $"{state.BattleId}|{state.Turn}|{state.Sequence}|{state.RngSeed}|{state.RngState}"
         + $"|{state.Combo}|{state.MatchCount}|{state.PetState}|{state.LastCommittedSwapPair}"
-        + $"|{string.Join(',', state.BoardState.Cells.Select(c => $"{c.GemType}:{c.SpecialGem?.Type.ToString() ?? "-"}"))}";
+        + $"|{string.Join(',', state.BoardState.Cells)}";
 
     /// <summary>The index of the first event of a kind, or <c>-1</c>.</summary>
     private static int IndexOfType(IReadOnlyList<BattleEvent> events, BattleEventType type)

@@ -986,7 +986,7 @@ public class ResourceGenerationTests
         Assert.Equal(result.Resolution.Board, result.State.BoardState);
 
         // §1: at rest the board holds exactly one Gem per cell.
-        Assert.Equal(BoardState.CellCount, result.State.BoardState.ToCellArray().Length);
+        Assert.Equal(BoardState.CellCount, result.State.BoardState.ToArray().Length);
     }
 
     [Fact]

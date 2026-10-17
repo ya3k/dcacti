@@ -1,7 +1,6 @@
 using System.Text.Json;
 using GameServer.Domain.Battle;
 using GameServer.Domain.Match3;
-using GameServer.Domain.Passives;
 using Xunit;
 
 namespace GameServer.Domain.Tests;
@@ -12,9 +11,9 @@ namespace GameServer.Domain.Tests;
 ///
 /// The active battle record is <c>BattleState</c> serialized as JSON "matching the
 /// shape in this document exactly — no additional Redis-only fields"
-/// (<c>REDIS_STATE.md</c> §2 item 1). Special Gem state is part of that state
-/// because it is part of the cells, so a round trip must preserve it with no side
-/// channel and no separate key.
+/// (<c>REDIS_STATE.md</c> §2 item 1). Each board cell carries its functional
+/// <c>GemType</c> and nothing else (§2.1.1, §2.1.7 item 3), so a round trip must
+/// preserve the 64 Gem types with no side channel and no separate key.
 ///
 /// These tests exercise the shape contract at the model level — the domain types
 /// are the contract's owner, and no Redis client is involved at this stage
@@ -24,12 +23,10 @@ public class BoardStateSerializationTests
 {
     /// <summary>
     /// A JSON projection of one cell entry, mirroring the documented serialization:
-    /// the Gem type plus an optional Special Gem, with orientation written only when
-    /// the type requires it (<c>GAME_STATE.md</c> §2.1.7 item 4).
+    /// the cell's Gem type and nothing else (<c>GAME_STATE.md</c> §2.1.1, §2.1.3
+    /// item 1).
     /// </summary>
-    private sealed record CellDto(string GemType, SpecialGemDto? SpecialGem);
-
-    private sealed record SpecialGemDto(string Type, string? Orientation);
+    private sealed record CellDto(string GemType);
 
     private sealed record BoardDto(IReadOnlyList<CellDto> Cells);
 
@@ -43,11 +40,7 @@ public class BoardStateSerializationTests
     private static string Serialize(BoardState board)
     {
         var dto = new BoardDto(board.Cells
-            .Select(c => new CellDto(
-                GemTypes.ToContractName(c.GemType),
-                c.SpecialGem is { } gem
-                    ? new SpecialGemDto(gem.Type.ToString(), gem.Orientation?.ToString())
-                    : null))
+            .Select(gemType => new CellDto(GemTypes.ToContractName(gemType)))
             .ToArray());
 
         return JsonSerializer.Serialize(dto, Options);
@@ -59,31 +52,19 @@ public class BoardStateSerializationTests
         var dto = JsonSerializer.Deserialize<BoardDto>(json, Options)!;
 
         var entries = dto.Cells
-            .Select(c => new Cell(
-                Enum.Parse<GemType>(c.GemType, ignoreCase: true),
-                c.SpecialGem is null
-                    ? null
-                    : new SpecialGem(
-                        Enum.Parse<SpecialGemType>(c.SpecialGem.Type, ignoreCase: true),
-                        c.SpecialGem.Orientation is null
-                            ? null
-                            : Enum.Parse<SpecialGemOrientation>(c.SpecialGem.Orientation, ignoreCase: true))))
+            .Select(c => Enum.Parse<GemType>(c.GemType, ignoreCase: true))
             .ToArray();
 
-        return BoardState.FromCellEntries(entries);
+        return BoardState.FromCells(entries);
     }
 
-    /// <summary>A board carrying one of every Special Gem shape.</summary>
-    private static BoardState BoardWithEverySpecialGem()
-    {
-        var board = TestBoard.Background();
-
-        return board.WithSpecial(
-            (0, SpecialGem.LineClearHorizontal()),
-            (9, SpecialGem.LineClearVertical()),
-            (27, SpecialGem.Burst()),
-            (63, SpecialGem.Area()));
-    }
+    /// <summary>A board carrying one of every functional Gem type.</summary>
+    private static BoardState BoardWithEveryGemType() =>
+        TestBoard.Background().WithGems(
+            (0, GemType.Atk),
+            (9, GemType.Def),
+            (27, GemType.Hp),
+            (63, GemType.Power));
 
     [Fact]
     public void Serialization_ShouldWriteExactly64CellsInAscendingIndexOrder()
@@ -91,7 +72,7 @@ public class BoardStateSerializationTests
         // GAME_STATE.md §2.1.7 item 2: cells are serialized as a 64-element array in
         // ascending index order; the array position IS the cell index, so no CellIndex
         // field is written per element.
-        var board = BoardWithEverySpecialGem();
+        var board = BoardWithEveryGemType();
 
         using var document = JsonDocument.Parse(Serialize(board));
         var cells = document.RootElement.GetProperty("cells");
@@ -100,79 +81,47 @@ public class BoardStateSerializationTests
         Assert.Equal(BoardState.CellCount, cells.GetArrayLength());
 
         // No element carries an index of its own (§2.1.7 item 2), and every element
-        // carries at most the two documented members.
+        // carries exactly the one documented member.
         foreach (var cell in cells.EnumerateArray())
         {
             Assert.False(cell.TryGetProperty("cellIndex", out _));
 
             var names = cell.EnumerateObject().Select(p => p.Name).OrderBy(n => n).ToArray();
-            Assert.True(
-                names.SequenceEqual(["gemType"]) || names.SequenceEqual(["gemType", "specialGem"]),
-                $"unexpected cell member set: {string.Join(",", names)}");
+            Assert.Equal(["gemType"], names);
         }
     }
 
     [Fact]
-    public void Serialization_ShouldWriteOrientationOnlyForALineClearGem()
+    public void Serialization_ShouldWriteTheDocumentedContractNames()
     {
-        // GAME_STATE.md §2.1.7 item 4: "A Burst or Area entry carries no orientation
-        // member; a LineClear entry always carries one of Horizontal / Vertical."
-        var board = BoardWithEverySpecialGem();
+        // MATCH3_RULES.md §1.1: the four functional types, written by their contract
+        // names rather than enum ordinals.
+        var board = BoardWithEveryGemType();
 
         using var document = JsonDocument.Parse(Serialize(board));
         var cells = document.RootElement.GetProperty("cells").EnumerateArray().ToArray();
 
-        var lineClearH = cells[0].GetProperty("specialGem");
-        Assert.Equal("LineClear", lineClearH.GetProperty("type").GetString());
-        Assert.Equal("Horizontal", lineClearH.GetProperty("orientation").GetString());
+        Assert.Equal("ATK", cells[0].GetProperty("gemType").GetString());
+        Assert.Equal("DEF", cells[9].GetProperty("gemType").GetString());
+        Assert.Equal("HP", cells[27].GetProperty("gemType").GetString());
+        Assert.Equal("POWER", cells[63].GetProperty("gemType").GetString());
 
-        var lineClearV = cells[9].GetProperty("specialGem");
-        Assert.Equal("LineClear", lineClearV.GetProperty("type").GetString());
-        Assert.Equal("Vertical", lineClearV.GetProperty("orientation").GetString());
-
-        Assert.False(cells[27].GetProperty("specialGem").TryGetProperty("orientation", out _));
-        Assert.False(cells[63].GetProperty("specialGem").TryGetProperty("orientation", out _));
+        foreach (var cell in cells)
+        {
+            Assert.Contains(cell.GetProperty("gemType").GetString(), new[] { "ATK", "DEF", "HP", "POWER" });
+        }
     }
 
     [Fact]
-    public void Serialization_ShouldOmitTheSpecialGemMemberForAnOrdinaryGem()
+    public void Serialization_ShouldNeverWriteAValueOutsideTheFourTypes()
     {
-        // GAME_STATE.md §2.1.7 item 3: the representation is ABSENT, not a null element,
-        // not a sentinel type, and not a default value.
-        var board = TestBoard.Background();
-
-        using var document = JsonDocument.Parse(Serialize(board));
+        // MATCH3_RULES.md §1.1: the four types are the complete value domain, so no
+        // cell can serialize a value outside it.
+        using var document = JsonDocument.Parse(Serialize(TestBoard.Background()));
 
         foreach (var cell in document.RootElement.GetProperty("cells").EnumerateArray())
         {
-            Assert.False(cell.TryGetProperty("specialGem", out _));
-        }
-    }
-
-    [Fact]
-    public void Serialization_ShouldNeverSpellAnAbsentSpecialGemAsARealType()
-    {
-        // GAME_STATE.md §2.1.7 item 3: "What must never happen is that an absent
-        // Special Gem is spelled as one of the three real types."
-        var board = TestBoard.Background().WithSpecial((5, SpecialGem.Burst()));
-
-        var json = Serialize(board);
-
-        using var document = JsonDocument.Parse(json);
-        var cells = document.RootElement.GetProperty("cells").EnumerateArray().ToArray();
-
-        for (var index = 0; index < cells.Length; index++)
-        {
-            var hasMember = cells[index].TryGetProperty("specialGem", out var specialGem);
-
-            if (index == 5)
-            {
-                Assert.True(hasMember);
-                Assert.Equal("Burst", specialGem.GetProperty("type").GetString());
-                continue;
-            }
-
-            Assert.False(hasMember);
+            Assert.Contains(cell.GetProperty("gemType").GetString(), new[] { "ATK", "DEF", "HP", "POWER" });
         }
     }
 
@@ -181,9 +130,8 @@ public class BoardStateSerializationTests
     {
         // GAME_STATE.md §2.1.7 item 5: "Serializing a BattleState and deserializing it
         // must return a BattleState whose Cells[64] are identical — same 64 Gem types,
-        // in the same index order, with the same Special Gem type and orientation at the
-        // same cells."
-        var board = BoardWithEverySpecialGem();
+        // in the same index order."
+        var board = BoardWithEveryGemType();
 
         var restored = Deserialize(Serialize(board));
 
@@ -192,23 +140,7 @@ public class BoardStateSerializationTests
         for (var index = 0; index < BoardState.CellCount; index++)
         {
             Assert.Equal(board[index], restored[index]);
-            Assert.Equal(board.SpecialGemAt(index), restored.SpecialGemAt(index));
         }
-    }
-
-    [Fact]
-    public void RoundTrip_ShouldPreserveOrientation()
-    {
-        // The failure this contract exists to make detectable: a round trip that drops a
-        // SpecialGem or its orientation is a defect (§2.1.7 item 5).
-        var board = BoardWithEverySpecialGem();
-
-        var restored = Deserialize(Serialize(board));
-
-        Assert.Equal(SpecialGemOrientation.Horizontal, restored.SpecialGemAt(0)!.Value.Orientation);
-        Assert.Equal(SpecialGemOrientation.Vertical, restored.SpecialGemAt(9)!.Value.Orientation);
-        Assert.Null(restored.SpecialGemAt(27)!.Value.Orientation);
-        Assert.Null(restored.SpecialGemAt(63)!.Value.Orientation);
     }
 
     [Fact]
@@ -225,38 +157,31 @@ public class BoardStateSerializationTests
     [Fact]
     public void RoundTrip_ShouldSatisfyTheDocumentedCellContract()
     {
-        // Every entry of a round-tripped board is a valid cell: one of the four Gem
-        // types and, when present, a well-formed Special Gem (§2.1.3, §2.1.4 item 2).
-        var restored = Deserialize(Serialize(BoardWithEverySpecialGem()));
+        // Every entry of a round-tripped board is a valid cell: exactly one of the
+        // four Gem types (§2.1.1, §2.1.3 item 1).
+        var restored = Deserialize(Serialize(BoardWithEveryGemType()));
 
-        foreach (var cell in restored.Cells)
+        foreach (var gemType in restored.Cells)
         {
-            Assert.True(GemTypes.IsValid((int)cell.GemType));
-            Assert.True(cell.SpecialGem is null || cell.SpecialGem.Value.IsWellFormed);
+            Assert.True(GemTypes.IsValid((int)gemType));
         }
     }
 
     [Fact]
-    public void BoardWithSpecials_ShouldEqualItselfAfterResolutionRoundTrip()
+    public void BoardWithEveryGemType_ShouldEqualItselfAfterResolutionRoundTrip()
     {
-        // The end-to-end shape contract: a board carrying Special Gems survives a
-        // resolution and a serialization round trip with both its board and its RNG
-        // state intact (GAME_STATE.md §2.1.7 items 1, 5; §2.6.2 item 4).
+        // The end-to-end shape contract: a board survives a resolution and a
+        // serialization round trip with both its board and its RNG state intact
+        // (GAME_STATE.md §2.1.7 items 1, 5; §2.6.2 item 4).
         var board = TestBoard.Background()
-            .WithGems((25, GemType.Atk), (26, GemType.Atk), (27, GemType.Atk))
-            .WithSpecial((25, SpecialGem.Burst()));
+            .WithGems((25, GemType.Atk), (26, GemType.Atk), (27, GemType.Atk));
 
         var rng = Pcg32.FromSeed(31337UL);
-        var resolution = CascadeResolver.Resolve(board, rng, swapOriginIndex: null);
+        var resolution = CascadeResolver.Resolve(board, rng);
 
         var restoredBoard = Deserialize(Serialize(resolution.Board));
 
         Assert.True(resolution.Board.CellsEqual(restoredBoard));
-
-        // The RNG state travels as its own pair, unchanged by the board round trip
-        // (§2.6.2 item 1: the two components are never split).
-        Assert.Equal(resolution.RngState.State, resolution.RngState.State);
-        Assert.Equal(resolution.RngState.Increment, resolution.RngState.Increment);
     }
 
     [Fact]
@@ -264,7 +189,7 @@ public class BoardStateSerializationTests
     {
         // REDIS_STATE.md §2 item 1 / §7 item 10: the active battle record is BattleState
         // serialized exactly as GAME_STATE.md §2 defines it — no additional field and no
-        // separate Special Gem key. The domain record is the contract's shape.
+        // separate board key. The domain record is the contract's shape.
         var state = BattleState.CreateWith("battle-roundtrip", 987654UL);
 
         // The record carries the board and the RNG pair, so a snapshot taken between
@@ -273,14 +198,11 @@ public class BoardStateSerializationTests
         Assert.Equal(987654UL, state.RngSeed);
         Assert.Equal(BoardState.CellCount, state.BoardState.Cells.Count);
 
-        // A board carrying Special Gems can be placed in the state and read back
-        // unchanged — the representation has nothing left to decide
-        // (MATCH3_RULES.md §5.9.5).
-        var withSpecials = state with { BoardState = BoardWithEverySpecialGem() };
+        // A board placed in the state is read back unchanged: the representation has
+        // nothing left to decide.
+        var withBoard = state with { BoardState = BoardWithEveryGemType() };
 
-        Assert.Equal(
-            SpecialGemType.Area,
-            withSpecials.BoardState.SpecialGemAt(63)!.Value.Type);
+        Assert.Equal(GemType.Power, withBoard.BoardState[63]);
     }
 
     [Fact]
@@ -288,16 +210,29 @@ public class BoardStateSerializationTests
     {
         // GAME_STATE.md §2.1.7 item 1: a serializer writes the board with "no additional
         // field, no parallel array, and no second key".
-        var json = Serialize(BoardWithEverySpecialGem());
+        var json = Serialize(BoardWithEveryGemType());
 
         using var document = JsonDocument.Parse(json);
 
         Assert.Single(document.RootElement.EnumerateObject());
         Assert.True(document.RootElement.TryGetProperty("cells", out _));
+    }
 
-        foreach (var forbidden in new[] { "specialGems", "pendingSpecialGems", "cellIndexes" })
-        {
-            Assert.False(document.RootElement.TryGetProperty(forbidden, out _));
-        }
+    [Fact]
+    public void Deserialization_ShouldIgnoreAnUnknownLegacyCellMember()
+    {
+        // ADR-028 Decision B-2's tolerant-reader basis: a stored record that still
+        // carries a legacy per-cell member deserializes without error and the obsolete
+        // member is ignored — no migration and no compatibility branch is required.
+        var withLegacyMember = Enumerable.Range(0, BoardState.CellCount)
+            .Select(_ => "{\"legacyCellMetadata\":{},\"gemType\":\"ATK\"}")
+            .ToArray();
+
+        var legacyJson = $"{{\"cells\":[{string.Join(',', withLegacyMember)}]}}";
+
+        var restored = Deserialize(legacyJson);
+
+        Assert.Equal(BoardState.CellCount, restored.Cells.Count);
+        Assert.All(restored.Cells, gemType => Assert.Equal(GemType.Atk, gemType));
     }
 }

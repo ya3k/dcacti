@@ -391,7 +391,11 @@ public class VictoryDefeatTests
         BattleState? observedBefore = null;
         var state = battle.Before;
 
-        for (var round = 0; round < 12 && observed is null; round++)
+        // The window is a search over real rounds for the one whose Boss board action
+        // qualified (ADR-026 D1). Its length only bounds how long the search may run:
+        // every assertion below is made on the qualifying round itself, so a wider
+        // window finds it without weakening anything.
+        for (var round = 0; round < 40 && observed is null; round++)
         {
             var pinned = RoundTestSupport.PlayerMatch(
                 GemType.Atk,

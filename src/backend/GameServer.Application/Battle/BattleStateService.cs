@@ -666,9 +666,8 @@ public sealed class BattleStateService
     ///
     /// This is the Application-layer boundary for one board resolution: it orders
     /// the documented calls and records the result, and it implements no game rule
-    /// (<c>ARCHITECTURE.md</c> §2.1). The cascade loop, Match Detection, Special Gem
-    /// creation and activation, Gravity, and Spawn all live in Domain
-    /// (<c>ARCHITECTURE.md</c> §4.1).
+    /// (<c>ARCHITECTURE.md</c> §2.1). The cascade loop, Match Detection, Gravity,
+    /// and Spawn all live in Domain (<c>ARCHITECTURE.md</c> §4.1).
     ///
     /// The whole resolution runs against the battle's retained <c>RngState</c>
     /// (<c>GAME_STATE.md</c> §2.6.2 item 2): Spawn is the only operation that advances
@@ -686,11 +685,6 @@ public sealed class BattleStateService
     /// point for a state that has no Swap behind it.
     /// </summary>
     /// <param name="battleId">The battle whose board is resolved.</param>
-    /// <param name="swapOriginIndex">
-    /// The swap origin for the first detection pass, or <c>null</c> when the board is
-    /// not being resolved from a Swap (in which case every Match 4 / Match 5 is placed
-    /// at its line centre — <c>MATCH3_RULES.md</c> §5.5.3 item 3).
-    /// </param>
     /// <param name="cancellationToken">Cancels the store read and write.</param>
     /// <returns>
     /// The resulting authoritative state, or <c>null</c> when no record exists for
@@ -698,7 +692,6 @@ public sealed class BattleStateService
     /// </returns>
     public async Task<BattleState?> ResolveBoardAsync(
         string battleId,
-        int? swapOriginIndex = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(battleId);
@@ -716,7 +709,7 @@ public sealed class BattleStateService
         // (MATCH3_RULES.md §7.2 item 1).
         var rng = new Pcg32(state.RngState.State, state.RngState.Increment);
 
-        var resolution = CascadeResolver.Resolve(state.BoardState, rng, swapOriginIndex);
+        var resolution = CascadeResolver.Resolve(state.BoardState, rng);
 
         var resolved = state with
         {
@@ -746,7 +739,7 @@ public sealed class BattleStateService
     /// This is the Application-layer boundary for one Swap resolution: it orders
     /// the documented calls and records the result, and it implements no game rule
     /// (<c>ARCHITECTURE.md</c> §2.1, §4.1). Validation, the exchange, Match
-    /// Detection, Special Gem creation and activation, Gravity, Spawn, and the
+    /// Detection, Gravity, Spawn, and the
     /// cascade loop all live in Domain — this method delegates to
     /// <see cref="SwapExecutor.Execute"/>, which sequences them, and stores what
     /// it returns. There is no second swap pipeline here.
@@ -1360,7 +1353,7 @@ public sealed class BattleStateService
     ///
     /// It orders the documented calls and records the result, and it implements
     /// no game rule (<c>ARCHITECTURE.md</c> §2.1). Validation, the exchange,
-    /// Match Detection, Special Gem creation and activation, Gravity, Spawn, and
+    /// Match Detection, Gravity, Spawn, and
     /// the cascade loop all live in Domain — this method delegates to
     /// <see cref="SwapExecutor.Execute"/>, which sequences them. The Damage
     /// Pipeline's formula, the Passive's charge/threshold/reset rules, and the
@@ -1431,8 +1424,8 @@ public sealed class BattleStateService
         //
         // The inputs are the values the two stages already own: the progress held
         // in the authoritative PetState (GAME_STATE.md §2.3, §5.1), the
-        // resolution's own Match total (MATCH3_RULES.md §3 item 5, §5.5.5 item 8:
-        // Matches only, so a Special Gem detonation charges nothing), the
+        // resolution's own Match total (MATCH3_RULES.md §3 item 5: Matches only,
+        // so cleared cells charge nothing), the
         // Passive's identity, and its declared Reset Behavior. Nothing is
         // re-derived, and the Match count is never recomputed from the passes.
         var petState = state.PetState;
@@ -1774,8 +1767,7 @@ public sealed class BattleStateService
 
         var bossResolution = CascadeResolver.Resolve(
             bossBoard.WithSwapped(bossMove.SelectedMove.From, bossMove.SelectedMove.To),
-            new Pcg32(bossBoardRngState.State, bossBoardRngState.Increment),
-            swapOriginIndex: null);
+            new Pcg32(bossBoardRngState.State, bossBoardRngState.Increment));
 
         var bossGeneration = ResourceGenerator.Generate(bossResolution);
 

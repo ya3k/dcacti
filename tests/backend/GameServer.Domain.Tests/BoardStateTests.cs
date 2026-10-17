@@ -181,18 +181,18 @@ public class BoardStateTests
     }
 
     [Fact]
-    public void Board_ShouldCarryNoPendingSpecialGemsField()
+    public void Board_ShouldCarryExactlyOneBoardCollection()
     {
-        // GAME_STATE.md §2.1.2 item 1: the PendingSpecialGems[] placeholder was REMOVED
-        // — it is not deferred and not empty-but-present. `BoardState` has exactly one
-        // field, `Cells[64]`, and Special Gem state is carried by the cell entries.
-        //
-        // The assertion is unchanged and still meaningful: no board-level Special Gem
-        // collection may exist, whatever shape it might take.
-        var properties = typeof(BoardState).GetProperties().Select(p => p.Name).ToArray();
+        // GAME_STATE.md §2.1.2 item 1: `BoardState` has exactly one field, `Cells[64]`,
+        // and each entry is solely its Gem type. No second, parallel board collection
+        // may exist, whatever shape it might take.
+        var collectionProperties = typeof(BoardState)
+            .GetProperties()
+            .Where(p => p.GetIndexParameters().Length == 0 && p.PropertyType != typeof(GemType))
+            .Select(p => p.Name)
+            .ToArray();
 
-        Assert.DoesNotContain("PendingSpecialGems", properties);
-        Assert.DoesNotContain("SpecialGems", properties);
+        Assert.Equal(["Cells"], collectionProperties);
     }
 
     [Fact]

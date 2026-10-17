@@ -88,8 +88,7 @@ public class AttackResolutionTests
 
         return CascadeResolver.Resolve(
             board,
-            new Pcg32(battle.RngState.State, battle.RngState.Increment),
-            swapOriginIndex: null);
+            new Pcg32(battle.RngState.State, battle.RngState.Increment));
     }
 
     /// <summary>
@@ -121,10 +120,7 @@ public class AttackResolutionTests
             Board: board,
             RngState: default,
             Matches: matches,
-            MatchedCellGemMatched: [],
-            ActivationCellGemMatched: [],
-            ActivatedSpecialGems: [],
-            CreatedSpecialGems: [],
+            GemMatched: [],
             ClearedCellUnion: [.. clearedGems.Select(gem => gem.CellIndex)],
             ClearedGems: clearedGems,
             DropMoves: [],

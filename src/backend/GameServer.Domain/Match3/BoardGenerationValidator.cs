@@ -21,7 +21,6 @@ namespace GameServer.Domain.Match3;
 /// modify BattleState after initialization
 /// resolve player actions
 /// perform cascades, gravity, or spawning (§4)
-/// create Special Gems (§5)
 /// generate resources, deal damage, or affect combat
 /// </code>
 ///

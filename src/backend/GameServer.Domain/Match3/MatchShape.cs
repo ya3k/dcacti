@@ -3,13 +3,13 @@ namespace GameServer.Domain.Match3;
 /// <summary>
 /// One entry of a detection pass's match set — either a single straight
 /// primitive or an L/T shape formed by two primitives sharing exactly one cell
-/// (<c>MATCH3_RULES.md</c> §3.1 items 3–4, §5.4 item 1).
+/// (<c>MATCH3_RULES.md</c> §3.1 items 3–4).
 ///
-/// A shape is <b>one</b> Match however many cells it spans and however many
-/// Special Gems it creates (<c>MATCH3_RULES.md</c> §3 item 5, §5.4 item 4
-/// item 4). Its position in the pass's match set is the §3.2 order: horizontal
-/// shapes before vertical shapes, then ascending start-cell index — and for an
-/// L/T shape the position of its intersection cell (§3.2 item 2).
+/// A shape is <b>one</b> Match however many cells it spans
+/// (<c>MATCH3_RULES.md</c> §3 item 5, §5.7). Its position in the pass's match set
+/// is the §3.2 order: horizontal shapes before vertical shapes, then ascending
+/// start-cell index — and for an L/T shape the position of its intersection cell
+/// (§3.2 item 2).
 /// </summary>
 public sealed class MatchShape
 {
@@ -44,7 +44,7 @@ public sealed class MatchShape
 
     /// <summary>
     /// True when this shape is an L/T — two perpendicular primitives sharing
-    /// exactly one cell (<c>MATCH3_RULES.md</c> §5.4 item 1 item 2).
+    /// exactly one cell (<c>MATCH3_RULES.md</c> §3.1 item 4).
     /// </summary>
     public bool IsLt => HorizontalArm is not null && VerticalArm is not null;
 
@@ -55,9 +55,8 @@ public sealed class MatchShape
     public IReadOnlyList<int> Cells { get; }
 
     /// <summary>
-    /// The single cell shared by the two arms of an L/T — the position of the
-    /// shape's Area Gem (<c>MATCH3_RULES.md</c> §5.4 item 2, §5.5.3 item 4).
-    /// <c>null</c> for a straight shape.
+    /// The single cell shared by the two arms of an L/T — the shape's ordering
+    /// position in the §3.2 match order. <c>null</c> for a straight shape.
     /// </summary>
     public int? IntersectionIndex { get; private init; }
 
@@ -105,9 +104,9 @@ public sealed class MatchShape
 
     /// <summary>
     /// An L/T shape from two perpendicular primitives sharing exactly one cell
-    /// (<c>MATCH3_RULES.md</c> §5.4 item 1). The arms are held in their
-    /// horizontal/vertical roles so the intra-shape creation order of §5.5.1
-    /// item 4 can be applied without re-deriving them.
+    /// (<c>MATCH3_RULES.md</c> §3.1 item 4). The arms are held in their
+    /// horizontal/vertical roles so the shape's §3.2 ordering position and its
+    /// shared-cell geometry are available without re-deriving them.
     /// </summary>
     internal static MatchShape Lt(MatchPrimitive horizontal, MatchPrimitive vertical)
     {

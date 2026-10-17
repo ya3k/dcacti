@@ -36,9 +36,9 @@ public static class MatchDetector
     /// cell are one L/T shape (§3.1 item 3, §3.3 item 2). Primitives that share
     /// no cell are independent matches.
     ///
-    /// Match Detection compares the cell's <c>GemType</c> only. A Special Gem is
-    /// metadata on that occupant and is never a colour of its own, so it never
-    /// enters a match set as a fifth type (<c>GAME_STATE.md</c> §2.1.8 item 6).
+    /// Match Detection compares the cell's <c>GemType</c> only — the whole of a
+    /// cell entry — so it never admits a fifth type into the match set
+    /// (<c>GAME_STATE.md</c> §2.1.3 item 1).
     /// </summary>
     public static IReadOnlyList<MatchShape> Detect(BoardState board)
     {

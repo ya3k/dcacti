@@ -174,8 +174,8 @@ public sealed class BalanceSimulatorTests
         var a = await Simulator(seedA).RunAsync();
         var b = await Simulator(seedB).RunAsync();
 
-        var boardA = a.FinalState!.BoardState.Cells.Select(c => c.GemType).ToArray();
-        var boardB = b.FinalState!.BoardState.Cells.Select(c => c.GemType).ToArray();
+        var boardA = a.FinalState!.BoardState.Cells.ToArray();
+        var boardB = b.FinalState!.BoardState.Cells.ToArray();
 
         Assert.NotEqual(boardA, boardB);
 
@@ -183,7 +183,7 @@ public sealed class BalanceSimulatorTests
         // deterministic, not ambient.
         var aAgain = await Simulator(seedA).RunAsync();
         Assert.Equal(
-            aAgain.FinalState!.BoardState.Cells.Select(c => c.GemType),
+            aAgain.FinalState!.BoardState.Cells.ToArray(),
             boardA);
     }
 

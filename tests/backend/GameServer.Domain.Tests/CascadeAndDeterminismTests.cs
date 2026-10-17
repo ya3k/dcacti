@@ -16,8 +16,8 @@ namespace GameServer.Domain.Tests;
 public class CascadeAndDeterminismTests
 {
     /// <summary>Resolves a board to stability from a fixed seed.</summary>
-    private static CascadeResolver.CascadeResult Resolve(BoardState board, ulong seed = 2024UL, int? swapOrigin = null) =>
-        CascadeResolver.Resolve(board, Pcg32.FromSeed(seed), swapOrigin);
+    private static CascadeResolver.CascadeResult Resolve(BoardState board, ulong seed = 2024UL) =>
+        CascadeResolver.Resolve(board, Pcg32.FromSeed(seed));
 
     /// <summary>A board with one deliberate Match so the loop runs at least once.</summary>
     private static BoardState BoardWithOneMatch() =>
@@ -47,7 +47,7 @@ public class CascadeAndDeterminismTests
         var result = Resolve(BoardWithOneMatch());
 
         Assert.Equal(BoardState.CellCount, result.Board.Cells.Count);
-        Assert.All(result.Board.Cells, c => Assert.True(GemTypes.IsValid((int)c.GemType)));
+        Assert.All(result.Board.Cells, gemType => Assert.True(GemTypes.IsValid((int)gemType)));
     }
 
     [Fact]
@@ -138,8 +138,8 @@ public class CascadeAndDeterminismTests
     public void Resolution_ShouldBeDeterministic_ForTheSameBoardAndState()
     {
         // §4.6 item 1 / §7.1: given the same starting board and the same RngState, the
-        // whole loop — every pass, every removal, every created Special Gem, every
-        // fall, every spawn, and the final board and RngState — is fully determined.
+        // whole loop — every pass, every removal, every fall, every spawn, and the
+        // final board and RngState — is fully determined.
         var board = BoardWithOneMatch();
 
         var first = Resolve(board, seed: 777UL);
@@ -160,8 +160,7 @@ public class CascadeAndDeterminismTests
         var board = TestBoard.Background()
             .WithGems(
                 (25, GemType.Atk), (26, GemType.Atk), (27, GemType.Atk),
-                (40, GemType.Hp), (41, GemType.Hp), (42, GemType.Hp))
-            .WithSpecial((26, SpecialGem.Burst()));
+                (40, GemType.Hp), (41, GemType.Hp), (42, GemType.Hp));
 
         var reference = Resolve(board, seed: 31337UL);
 
@@ -193,25 +192,20 @@ public class CascadeAndDeterminismTests
     }
 
     [Fact]
-    public void Resolution_ShouldCarryTheSameEventOrderDeterministically()
+    public void Resolution_ShouldCarryTheSameGemMatchedOrderDeterministically()
     {
-        // §5.8.3 item 5: the order is mandatory because the activation sequence, the
-        // creation-collision winner, the chain breadth-first levels, and the event
-        // stream all depend on it, and replay must reproduce it exactly.
+        // GAME_EVENTS.md §1.3: the order is mandatory because the event stream depends
+        // on it, and replay must reproduce it exactly.
         var board = TestBoard.Background()
-            .WithGems((25, GemType.Atk), (26, GemType.Atk), (27, GemType.Atk))
-            .WithSpecial((25, SpecialGem.Burst()), (27, SpecialGem.Area()));
+            .WithGems((25, GemType.Atk), (26, GemType.Atk), (27, GemType.Atk));
 
-        var reference = Resolve(board).Passes[0].MatchedCellGemMatched
-            .Concat(Resolve(board).Passes[0].ActivationCellGemMatched)
+        var reference = Resolve(board).Passes[0].GemMatched
             .Select(e => e.CellIndex)
             .ToArray();
 
         for (var run = 0; run < 10; run++)
         {
-            var pass = Resolve(board).Passes[0];
-            var again = pass.MatchedCellGemMatched
-                .Concat(pass.ActivationCellGemMatched)
+            var again = Resolve(board).Passes[0].GemMatched
                 .Select(e => e.CellIndex)
                 .ToArray();
 
@@ -232,31 +226,6 @@ public class CascadeAndDeterminismTests
 
         Assert.DoesNotContain(
             detect.GetParameters(),
-            p => p.ParameterType == typeof(Pcg32) || p.ParameterType == typeof(RngState));
-    }
-
-    [Fact]
-    public void SpecialGemCreation_ShouldConsumeNoRng()
-    {
-        // §7.2 item 2: Special Gem creation, its type, order, location and collision
-        // must NOT consume RNG.
-        var plan = typeof(SpecialGemPlanner).GetMethod(nameof(SpecialGemPlanner.PlanCreations))!;
-
-        Assert.DoesNotContain(
-            plan.GetParameters(),
-            p => p.ParameterType == typeof(Pcg32) || p.ParameterType == typeof(RngState));
-    }
-
-    [Fact]
-    public void SpecialGemActivation_ShouldConsumeNoRng()
-    {
-        // §7.2 item 2: Special Gem activation and its affected set must NOT consume
-        // RNG — it is a deterministic function of the board and the gem's type and
-        // position (§5.5.5 item 10).
-        var affected = typeof(SpecialGemEffects).GetMethod(nameof(SpecialGemEffects.AffectedCells))!;
-
-        Assert.DoesNotContain(
-            affected.GetParameters(),
             p => p.ParameterType == typeof(Pcg32) || p.ParameterType == typeof(RngState));
     }
 
@@ -282,7 +251,7 @@ public class CascadeAndDeterminismTests
         // generator: for each pass, the spawned-cell count of that pass is exactly the
         // number of bounded draws the twin must make to reach the same state.
         var board = BoardWithOneMatch();
-        var reference = CascadeResolver.Resolve(board, Pcg32.FromSeed(8080UL), swapOriginIndex: null);
+        var reference = CascadeResolver.Resolve(board, Pcg32.FromSeed(8080UL));
 
         // Re-run the resolution manually, counting spawned cells and confirming the
         // generator reaches the same final state.
@@ -298,13 +267,11 @@ public class CascadeAndDeterminismTests
                 break;
             }
 
-            var pass = BoardResolver.ResolvePass(current, matchSet, rng, swapOriginIndex: null, cascadeDepth: depth);
+            var pass = BoardResolver.ResolvePass(current, matchSet, rng, depth);
 
-            // The pass's spawn count is the number of cells it refilled: the cells it
-            // cleared that gravity could not fill from survivors. It is recovered here
-            // as the difference between the cleared union and the survivors the pass
-            // reports as vacated — which is exactly what Spawn filled.
-            spawnedTotal += CountSpawnedCells(current, pass, matchSet);
+            // The pass's spawn report IS the number of cells it refilled — exactly the
+            // number of selections the pass consumed (§4.5 items 2 and 4).
+            spawnedTotal += pass.SpawnedGems.Count;
 
             current = pass.Board;
         }
@@ -312,45 +279,6 @@ public class CascadeAndDeterminismTests
         Assert.True(spawnedTotal > 0, "expected the resolution to spawn at least one gem");
         Assert.True(current.CellsEqual(reference.Board));
         Assert.Equal(reference.RngState, rng.CurrentState);
-    }
-
-    /// <summary>
-    /// The number of cells a pass's Spawn step filled: the cells that were empty after
-    /// Gravity. Recovered by replaying the pass's steps up to Gravity, which is the
-    /// same sequence <see cref="BoardResolver.ResolvePass"/> performs.
-    /// </summary>
-    private static int CountSpawnedCells(BoardState board, PassResult pass, IReadOnlyList<MatchShape> matchSet)
-    {
-        // A cell is spawned when it is empty after gravity. The pass reports the cells
-        // it cleared and the special gems it created; the spawned count is how many
-        // cells were refilled. Because every pass returns a full board, the spawned
-        // count is the number of cells whose entry was replaced by a fresh ordinary Gem
-        // — which equals the number of cells empty after gravity.
-        //
-        // The observable identity available without re-entering the resolver is: the
-        // pass's board holds exactly 64 entries, and the gems it spawned are those not
-        // accounted for as survivors. The implementation's own contract is that this
-        // equals exactly the selections consumed, which the caller asserts via the
-        // generator state. Here the count is recomputed by the same recipe the resolver
-        // uses.
-        var empties = new HashSet<int>(MatchDetector.ClearedCellUnion(matchSet));
-
-        foreach (var index in pass.ActivatedSpecialGems.Select(a => a.CellIndex))
-        {
-            // Activation-cleared cells are a subset of the cleared union already.
-            empties.Add(index);
-        }
-
-        foreach (var claim in pass.CreatedSpecialGems)
-        {
-            empties.Remove(claim.CellIndex);
-        }
-
-        var gravity = Gravity.Apply(board, empties);
-
-        _ = pass;
-
-        return gravity.VacatedCells.Count;
     }
 
     [Fact]
@@ -362,26 +290,24 @@ public class CascadeAndDeterminismTests
         var rng = Pcg32.FromSeed(5150UL);
         var before = rng.CurrentState;
 
-        var result = CascadeResolver.Resolve(stable, rng, swapOriginIndex: null);
+        var result = CascadeResolver.Resolve(stable, rng);
 
         Assert.Equal(before, result.RngState);
         Assert.Equal(before, rng.CurrentState);
     }
 
     [Fact]
-    public void RejectedStyleOperation_ShouldNotShiftTheStream()
+    public void ResolvingAStableBoardTwice_ShouldNotShiftTheStream()
     {
-        // §2.1.5 item 4's principle applied to the Special Gem surface: an operation
-        // that resolves nothing must leave the stream where it was, so a caller cannot
-        // desynchronise the battle by asking again.
+        // §2.1.5 item 4's principle: an operation that resolves nothing must leave the
+        // stream where it was, so a caller cannot desynchronise the battle by asking
+        // again.
         var board = TestBoard.Background();
-
-        // Planning twice consumes nothing.
         var rng = Pcg32.FromSeed(626UL);
         var before = rng.CurrentState;
 
-        SpecialGemPlanner.PlanCreations(MatchDetector.Detect(board), null);
-        SpecialGemPlanner.PlanCreations(MatchDetector.Detect(board), null);
+        CascadeResolver.Resolve(board, rng);
+        CascadeResolver.Resolve(board, rng);
 
         Assert.Equal(before, rng.CurrentState);
     }
@@ -394,8 +320,8 @@ public class CascadeAndDeterminismTests
     public void BoardState_ShouldHaveExactlyOneBoardCollection()
     {
         // GAME_STATE.md §2.1.2 item 1: "BoardState has exactly one field, Cells[64].
-        // Nothing ... defines a BoardState field named PendingSpecialGems, SpecialGems,
-        // or any other collection parallel to Cells[64]."
+        // Nothing ... defines a board field or any other collection parallel to
+        // Cells[64]."
         //
         // Exactly one collection property exists. The indexer (`Item`) is a projection of
         // Cells, not a second collection, so it is excluded.
@@ -424,11 +350,10 @@ public class CascadeAndDeterminismTests
     }
 
     [Fact]
-    public void BoardState_ShouldDeclareNoRemovedOrForbiddenField()
+    public void BoardState_ShouldDeclareNoForbiddenBoardField()
     {
-        // GAME_STATE.md §2.1.2 item 1, §2.1.3 item 4: no PendingSpecialGems, no
-        // SpecialGems, no CellIndex, no SpecialGemId, no CreationId, no Depth, no Age,
-        // no Armed, no ActivationCount.
+        // GAME_STATE.md §2.1.2 item 1, §2.1.3 item 4: the board holds only its cell
+        // array — no second collection and no per-cell identity, depth, age, or state.
         var memberNames = typeof(BoardState)
             .GetProperties()
             .Select(p => p.Name)
@@ -436,13 +361,12 @@ public class CascadeAndDeterminismTests
                 System.Reflection.BindingFlags.Public
                 | System.Reflection.BindingFlags.NonPublic
                 | System.Reflection.BindingFlags.Instance).Select(f => f.Name))
-            .Concat(typeof(SpecialGem).GetProperties().Select(p => p.Name))
             .ToArray();
 
         foreach (var forbidden in new[]
                  {
-                     "PendingSpecialGems", "SpecialGems", "CellIndex", "SpecialGemId",
-                     "CreationId", "Depth", "Age", "Armed", "ActivationCount",
+                     "CellsIndex", "CellIndex", "CellId", "Depth", "Age", "Armed",
+                     "ActivationCount", "SecondaryCollection",
                  })
         {
             Assert.DoesNotContain(forbidden, memberNames);
@@ -450,38 +374,14 @@ public class CascadeAndDeterminismTests
     }
 
     [Fact]
-    public void SpecialGem_ShouldCarryOnlyTypeAndOrientation()
+    public void GemType_ShouldBeExactlyTheFourFunctionalTypes()
     {
-        // GAME_STATE.md §2.1.4 item 4: "No other field. There is no orientation value
-        // for a non-Line-Clear type, no 'both orientations' value, no direction, no
-        // size/radius/length field, and no tier field."
-        var properties = typeof(SpecialGem).GetProperties().Select(p => p.Name).OrderBy(n => n).ToArray();
-
-        Assert.Equal(new[] { "IsWellFormed", "Orientation", "Type" }, properties);
-    }
-
-    [Fact]
-    public void Cell_ShouldCarryExactlyAGemTypeAndAnOptionalSpecialGem()
-    {
-        // GAME_STATE.md §2.1.1: each entry carries the cell's Gem type plus an optional
-        // Special Gem, and nothing else.
-        var properties = typeof(Cell).GetProperties().Select(p => p.Name).OrderBy(n => n).ToArray();
-
+        // MATCH3_RULES.md §1.1: the four functional types are the complete value
+        // domain — there is no fifth type.
+        Assert.Equal(4, Enum.GetNames<GemType>().Length);
         Assert.Equal(
-            new[] { "GemType", "HasSpecialGem", "SpecialGem", "SpecialGemTypeOrNull" },
-            properties);
-    }
-
-    [Fact]
-    public void Cell_ShouldRepresentAnAbsentSpecialGemAsNull()
-    {
-        // GAME_STATE.md §2.1.7 item 3: the representation is ABSENT, not a sentinel
-        // type and not a slot marker.
-        var cell = Cell.Ordinary(GemType.Atk);
-
-        Assert.Null(cell.SpecialGem);
-        Assert.False(cell.HasSpecialGem);
-        Assert.Null(cell.SpecialGemTypeOrNull);
+            new[] { GemType.Atk, GemType.Def, GemType.Hp, GemType.Power },
+            Enum.GetValues<GemType>());
     }
 
     [Fact]
@@ -489,22 +389,16 @@ public class CascadeAndDeterminismTests
     {
         // GAME_STATE.md §2.1.7 item 5: serializing and deserializing must return a
         // board whose Cells[64] are identical — same 64 Gem types, in the same index
-        // order, with the same Special Gem type and orientation at the same cells.
-        var board = TestBoard.Background()
-            .WithSpecial(
-                (0, SpecialGem.LineClearHorizontal()),
-                (7, SpecialGem.LineClearVertical()),
-                (27, SpecialGem.Burst()),
-                (63, SpecialGem.Area()));
+        // order.
+        var board = TestBoard.Background();
 
-        var restored = BoardState.FromCellEntries(board.ToCellArray());
+        var restored = BoardState.FromCells(board.ToArray());
 
         Assert.True(board.CellsEqual(restored));
 
         for (var i = 0; i < BoardState.CellCount; i++)
         {
             Assert.Equal(board[i], restored[i]);
-            Assert.Equal(board.SpecialGemAt(i), restored.SpecialGemAt(i));
         }
     }
 
@@ -519,7 +413,7 @@ public class CascadeAndDeterminismTests
         for (var i = 0; i < BoardState.CellCount; i++)
         {
             Assert.Equal(gems[i], board[i]);
-            Assert.Equal(gems[i], board.Cells[i].GemType);
+            Assert.Equal(gems[i], board.Cells[i]);
         }
     }
 
@@ -529,56 +423,51 @@ public class CascadeAndDeterminismTests
         // GAME_STATE.md §2.1.1 item 6: the 64 entries are stored in ascending §1.0
         // index order in both the runtime state and every serialization of it.
         var board = TestBoard.Background();
-        var serialized = board.ToCellArray();
+        var serialized = board.ToArray();
 
         Assert.Equal(BoardState.CellCount, serialized.Length);
 
         for (var i = 0; i < BoardState.CellCount; i++)
         {
-            Assert.Equal(board[i], serialized[i].GemType);
+            Assert.Equal(board[i], serialized[i]);
         }
     }
 
     [Fact]
-    public void GeneratedBoard_ShouldCarryNoSpecialGem()
+    public void GeneratedBoard_ShouldCarryOnlyOrdinaryGemTypes()
     {
-        // GAME_STATE.md §2.1.7 item 8: board generation never creates a Special Gem, so
-        // every entry of a generated board has SpecialGem absent.
+        // GAME_STATE.md §2.1.7 item 8: generation places ordinary Gems only, so every
+        // entry of a generated board is one of the four functional types.
         for (ulong seed = 0; seed < 16; seed++)
         {
             var board = BoardGenerator.Generate(seed).Board!;
 
-            Assert.All(board.Cells, c => Assert.Null(c.SpecialGem));
-            Assert.DoesNotContain(Enumerable.Range(0, BoardState.CellCount), i => board.SpecialGemAt(i) is not null);
+            Assert.All(board.Cells, gemType => Assert.True(GemTypes.IsValid((int)gemType)));
         }
     }
 
     [Fact]
-    public void BoardState_ShouldRejectAMalformedSpecialGem()
+    public void BoardState_ShouldRejectAnInvalidCellValue()
     {
-        // GAME_STATE.md §2.1.4 item 2: orientation is present if and only if the type is
-        // LineClear. A representation that violates it is a contract violation, not a
-        // value the model can hold.
-        var cells = new Cell[BoardState.CellCount];
-        for (var i = 0; i < cells.Length; i++)
-        {
-            cells[i] = Cell.Ordinary(GemType.Atk);
-        }
+        // MATCH3_RULES.md §1.1: a cell value outside the four functional types is a
+        // contract violation, not a value the model can hold.
+        var values = Enumerable.Repeat((int)GemType.Atk, BoardState.CellCount).ToArray();
+        values[5] = 4;
 
-        cells[5] = new Cell(GemType.Atk, new SpecialGem(SpecialGemType.Burst, SpecialGemOrientation.Horizontal));
-        Assert.Throws<ArgumentException>(() => BoardState.FromCellEntries(cells));
+        Assert.Throws<ArgumentException>(() => BoardState.FromValues(values));
 
-        cells[5] = new Cell(GemType.Atk, new SpecialGem(SpecialGemType.LineClear, null));
-        Assert.Throws<ArgumentException>(() => BoardState.FromCellEntries(cells));
+        var gems = Enumerable.Repeat(GemType.Atk, BoardState.CellCount).ToArray();
+        gems[5] = (GemType)4;
+
+        Assert.Throws<ArgumentException>(() => BoardState.FromCells(gems));
     }
 
     [Fact]
     public void BattleState_ShouldStillCarryTheBoardAndRngState()
     {
         // GAME_STATE.md §2.6.2 item 4 / §7.1 item 3: RngState is part of BattleState, so
-        // a battle restored from a snapshot continues the stream exactly. The Special Gem
-        // stage added no BattleState field.
-        var state = BattleState.CreateWith("battle-special-gem", 4242UL);
+        // a battle restored from a snapshot continues the stream exactly.
+        var state = BattleState.CreateWith("battle-board-model", 4242UL);
 
         Assert.Equal(0, state.Turn);
         Assert.Equal(0, state.Sequence);
@@ -586,17 +475,8 @@ public class CascadeAndDeterminismTests
         Assert.NotNull(state.BoardState);
         Assert.Equal(BoardState.CellCount, state.BoardState.Cells.Count);
 
-        // The record gained no field for Special Gems: they live inside Cells[64], so the
-        // shape this task touches is unchanged. (LastCommittedSwapPair is the Swap
-        // stage's field, documented in GAME_STATE.md §2.1.10; Combo and MatchCount are
-        // the Match / Combo accounting values, documented as root members in §2.2 with
-        // no nested PlayerState node; PetState is the combat-stat / Pet / Passive
-        // stage's field, documented in §2.3; BossState is the
-        // Boss stage's field, documented in §2.4; PlayerId is the Battle
-        // Identity member documented in §2.8; and CardCastsUsedThisTurn is the
-        // Card stage's per-Turn cast allowance (CARD_RULES.md §3 item 6,
-        // ADR-021) — none of them is
-        // Special Gem state and none was added here.)
+        // The record's field set is the documented one: the board is one field and
+        // there is no second board or cell representation.
         var properties = typeof(BattleState)
             .GetProperties()
             .Where(p => p.GetIndexParameters().Length == 0)
@@ -612,28 +492,5 @@ public class CascadeAndDeterminismTests
                 "RngState", "Sequence", "Turn",
             },
             properties);
-    }
-
-    [Fact]
-    public void SpecialGem_ShouldNotBeAGemType()
-    {
-        // MATCH3_RULES.md §1.1 / §5.5.4 item 4: the four Gem types are the complete set
-        // — there is no fifth Gem type, and a Special Gem type is not a Gem type.
-        Assert.Equal(4, Enum.GetNames<GemType>().Length);
-        Assert.Equal(3, Enum.GetNames<SpecialGemType>().Length);
-
-        Assert.DoesNotContain("LineClear", Enum.GetNames<GemType>());
-        Assert.DoesNotContain("Burst", Enum.GetNames<GemType>());
-        Assert.DoesNotContain("Area", Enum.GetNames<GemType>());
-    }
-
-    [Fact]
-    public void SpecialGemTypes_ShouldBeExactlyTheThreeDocumented()
-    {
-        // GAME_STATE.md §2.1.4 item 1 / MATCH3_RULES.md §5.3 item 3: LineClear, Burst,
-        // Area — the complete set, with no Match-6+ tier and no fourth type.
-        Assert.Equal(
-            new[] { SpecialGemType.LineClear, SpecialGemType.Burst, SpecialGemType.Area },
-            Enum.GetValues<SpecialGemType>());
     }
 }

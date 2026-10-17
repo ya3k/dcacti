@@ -429,26 +429,20 @@ public class SwapValidationTests
     }
 
     // =======================================================================
-    // §9 / §2.1.5 / GAME_STATE.md §2.1.5 — Special Gem cells
+    // §2.1.5 / GAME_STATE.md §2.1.5 — every cell participates normally
     // =======================================================================
 
     [Fact]
-    public void Validate_ShouldAcceptASwapInvolvingASpecialGemCell()
+    public void Validate_ShouldAcceptASwapBetweenOrdinaryCells()
     {
-        // §9 of the task and MATCH3_RULES.md §2: a Special Gem is part of its
-        // Cell and is a movable board entry. No special swap behavior is defined
-        // by the authoritative rules, so a cell carrying a Special Gem
-        // participates in the normal adjacency and match checks exactly like an
-        // ordinary one.
+        // MATCH3_RULES.md §2: a cell is its Gem type and participates in the normal
+        // adjacency and match checks. No cell carries any special swap behavior.
         var board = TestBoard.Background()
             .WithGems(
                 (I(4, 0), GemType.Atk),
                 (I(4, 1), GemType.Def),
                 (I(4, 2), GemType.Atk),
-                (I(3, 1), GemType.Atk))
-            .WithSpecial(
-                (I(3, 1), SpecialGem.Burst()),
-                (I(4, 1), SpecialGem.Area()));
+                (I(3, 1), GemType.Atk));
 
         var result = Validate(board, I(3, 1), I(4, 1));
 
@@ -456,43 +450,23 @@ public class SwapValidationTests
     }
 
     [Fact]
-    public void Validate_ShouldNotAlterSpecialGemStateOnTheBoard()
+    public void Validate_ShouldNotAlterTheBoard()
     {
-        // Validation "must not destroy or activate them, must not consume them,
-        // must not alter them" (task §9). The board's 64 entries — including the
-        // Special Gem type and orientation at each cell — are identical before
-        // and after, for an accepted request.
+        // Validation changes nothing: the board's 64 entries are identical before
+        // and after, for an accepted request (MATCH3_RULES.md §2.1.5).
         var board = TestBoard.Background()
             .WithGems(
                 (I(4, 0), GemType.Atk),
                 (I(4, 1), GemType.Def),
                 (I(4, 2), GemType.Atk),
-                (I(3, 1), GemType.Atk))
-            .WithSpecial(
-                (I(3, 1), SpecialGem.LineClearVertical()),
-                (I(4, 1), SpecialGem.Burst()),
-                (I(0, 5), SpecialGem.Area()));
+                (I(3, 1), GemType.Atk));
 
-        var before = board.ToCellArray();
+        var before = board.ToArray();
 
         var result = Validate(board, I(3, 1), I(4, 1));
         Assert.True(result.IsAccepted);
 
-        var after = board.ToCellArray();
-
-        Assert.Equal(before.Length, after.Length);
-        for (var i = 0; i < before.Length; i++)
-        {
-            Assert.Equal(before[i], after[i]);
-        }
-
-        // The Special Gems are still on the cells they started on.
-        Assert.Equal(SpecialGemType.LineClear, board.SpecialGemAt(I(3, 1))?.Type);
-        Assert.Equal(
-            SpecialGemOrientation.Vertical,
-            board.SpecialGemAt(I(3, 1))?.Orientation);
-        Assert.Equal(SpecialGemType.Burst, board.SpecialGemAt(I(4, 1))?.Type);
-        Assert.Equal(SpecialGemType.Area, board.SpecialGemAt(I(0, 5))?.Type);
+        AssertBoardUnchanged(before, board);
     }
 
     // =======================================================================
@@ -507,7 +481,7 @@ public class SwapValidationTests
         // pre-action state, and the 64 cells hold exactly the values they held
         // before the action arrived."
         var board = Background();
-        var before = board.ToCellArray();
+        var before = board.ToArray();
 
         var result = Validate(board, I(0, 0), I(0, 1));
         Assert.True(result.IsRejected);
@@ -527,7 +501,7 @@ public class SwapValidationTests
             (I(4, 2), GemType.Atk),
             (I(3, 1), GemType.Atk));
 
-        var before = board.ToCellArray();
+        var before = board.ToArray();
 
         var result = Validate(board, I(3, 1), I(4, 1));
         Assert.True(result.IsAccepted);
@@ -544,10 +518,9 @@ public class SwapValidationTests
             (I(4, 0), GemType.Atk),
             (I(4, 1), GemType.Def),
             (I(4, 2), GemType.Atk),
-            (I(3, 1), GemType.Atk))
-            .WithSpecial((I(4, 1), SpecialGem.Burst()));
+            (I(3, 1), GemType.Atk));
 
-        var before = board.ToCellArray();
+        var before = board.ToArray();
         var acceptedCount = 0;
 
         for (var from = 0; from < BoardState.CellCount; from++)
@@ -624,7 +597,7 @@ public class SwapValidationTests
         var turnBefore = battle.Turn;
         var sequenceBefore = battle.Sequence;
         var rngBefore = battle.RngState;
-        var boardBefore = battle.BoardState.ToCellArray();
+        var boardBefore = battle.BoardState.ToArray();
 
         var result = Validate(battle.BoardState, 12, 13);
 
@@ -658,7 +631,7 @@ public class SwapValidationTests
             (I(3, 1), GemType.Atk));
 
         var expected = Validate(board, I(3, 1), I(4, 1));
-        var before = board.ToCellArray();
+        var before = board.ToArray();
 
         for (var i = 0; i < 20; i++)
         {
@@ -678,7 +651,7 @@ public class SwapValidationTests
         // yields the same result and the same reason on repeated validation, and
         // leaves the board identical.
         var board = TestBoard.Background();
-        var before = board.ToCellArray();
+        var before = board.ToArray();
 
         for (var from = 0; from < BoardState.CellCount; from++)
         {
@@ -805,14 +778,12 @@ public class SwapValidationTests
         SwapValidator.Validate(board, lastCommittedSwapPair: null, from, to);
 
     /// <summary>
-    /// Asserts the board's 64 entries are identical, entry by entry — Gem type,
-    /// Special Gem type, and orientation (<c>GAME_STATE.md</c> §2.1.7 item 5).
-    /// Compares whole entries rather than only Gem types, because a Special Gem
-    /// must be preserved exactly (task §9).
+    /// Asserts the board's 64 entries are identical, entry by entry — same Gem
+    /// types in the same index order (<c>GAME_STATE.md</c> §2.1.7 item 5).
     /// </summary>
-    private static void AssertBoardUnchanged(Cell[] before, BoardState board)
+    private static void AssertBoardUnchanged(GemType[] before, BoardState board)
     {
-        var after = board.ToCellArray();
+        var after = board.ToArray();
 
         Assert.Equal(before.Length, after.Length);
 

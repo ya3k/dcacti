@@ -107,11 +107,10 @@ namespace GameServer.Domain.Battle;
 /// <c>MatchCount</c> are flat for the opposite reason: §2.2 makes this root
 /// their only owner, so there is no nested node for them to duplicate.
 ///
-/// <c>BoardState</c> carries Special Gem state inside its <c>Cells[64]</c>
-/// entries (<c>GAME_STATE.md</c> §2.1.1, §2.1.4). No field was added to this
-/// type for it: the former <c>BoardState.PendingSpecialGems[]</c> placeholder
-/// does not exist in any form (§2.1.2 item 1), and Special Gem state travels
-/// with the board because it travels with the cells.
+/// <c>BoardState</c> carries every cell's Gem type inside its <c>Cells[64]</c>
+/// entries (<c>GAME_STATE.md</c> §2.1.1). No field was added to this type for the
+/// board: there is no parallel board collection anywhere (§2.1.2 item 1), and the
+/// board travels as one field because it travels as the cells.
 ///
 /// This type is deliberately minimal and framework-independent
 /// (<c>ARCHITECTURE.md</c> §2.1): it references no ASP.NET Core, SignalR,
@@ -211,8 +210,7 @@ namespace GameServer.Domain.Battle;
 /// and it does not accumulate over a battle (§6.1 item 4). Its next reset is the
 /// next committed Swap — nothing else resets it, and the terminating pass that
 /// detects no Match is not a Match and does not reset it (§6.4). A rejected Swap
-/// neither resets nor changes it (§6.1 item 3, §6.5 item 2), Special Gem
-/// activation, chaining, and creation never change it (§6.3.1), and no cleared
+/// neither resets nor changes it (§6.1 item 3, §6.5 item 2), and no cleared
 /// cell and no cascade depth is ever converted into it (§6.2 item 2).
 ///
 /// It is written in the same single post-resolution write-back as
@@ -238,9 +236,9 @@ namespace GameServer.Domain.Battle;
 /// count separately, because each distinct detected shape is one Match however
 /// many cells it spans (<c>MATCH3_RULES.md</c> §3 item 5, §6.2 item 3).
 ///
-/// It counts <b>Matches only</b>: a Special Gem activation, chain, or the N
-/// cells one clears are not Matches and never increment it
-/// (<c>MATCH3_RULES.md</c> §5.5.5 item 8, §6.3.1), and it is not a cleared-cell
+/// It counts <b>Matches only</b>: N cleared cells are not N Matches and never
+/// increment it, because each distinct detected shape is one Match
+/// (<c>MATCH3_RULES.md</c> §3 item 5), and it is not a cleared-cell
 /// total. It is independent of <c>Turn</c> and of <c>Sequence</c>: one committed
 /// Swap advances <c>Turn</c> and <c>Sequence</c> by exactly 1 each whatever its
 /// Match count is (<c>MATCH3_RULES.md</c> §8.1, §8.2). A rejected Swap does not

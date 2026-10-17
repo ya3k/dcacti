@@ -263,20 +263,18 @@ public class MatchDetectorTests
     }
 
     [Fact]
-    public void Detect_ShouldIgnoreSpecialGemMetadata()
+    public void Detect_ShouldCompareOnlyTheCellsGemTypes()
     {
-        // GAME_STATE.md §2.1.8 item 6: a Special Gem never enters a match set as a
-        // colour of its own — detection compares the cell's GemType, which is still
-        // one of the four §1.1 types.
-        var plain = TestBoard.Background().WithGems((25, GemType.Atk), (26, GemType.Atk), (27, GemType.Atk));
-        var decorated = plain.WithSpecial((26, SpecialGem.Burst()));
+        // GAME_STATE.md §2.1.3 item 1: detection compares the cell's GemType, which
+        // is the whole of a cell entry. A run of three equal types is one match
+        // shape and nothing else participates in the comparison.
+        var board = TestBoard.Background().WithGems((25, GemType.Atk), (26, GemType.Atk), (27, GemType.Atk));
 
-        var plainSet = MatchDetector.Detect(plain);
-        var decoratedSet = MatchDetector.Detect(decorated);
+        var matchSet = MatchDetector.Detect(board);
 
-        Assert.Equal(
-            plainSet.Select(s => (s.StartIndex, s.Cells.Count)),
-            decoratedSet.Select(s => (s.StartIndex, s.Cells.Count)));
+        var shape = Assert.Single(matchSet);
+        Assert.Equal(GemType.Atk, shape.GemType);
+        Assert.Equal([25, 26, 27], shape.Cells);
     }
 
     // -----------------------------------------------------------------------

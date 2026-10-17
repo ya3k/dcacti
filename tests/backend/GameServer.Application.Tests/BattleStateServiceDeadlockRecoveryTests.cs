@@ -71,8 +71,12 @@ public class BattleStateServiceDeadlockRecoveryTests
     /// A fixture with no deadlock at any point: the Player cascade leaves a playable
     /// board, the Boss does not reshuffle, and the finished board is playable — the
     /// "no unnecessary reshuffle" scenario (§1.6.2 item 3).
+    ///
+    /// The stream is fixed because the fixture search resolves its cascade against it:
+    /// the seed is the one the deterministic search found for a cascade that clears one
+    /// Gem type and leaves a playable board at every point of the Round.
     /// </summary>
-    private const ulong PlayableRoundSeed = 1UL;
+    private const ulong PlayableRoundSeed = 4UL;
 
     /// <summary>
     /// A fixture whose Boss's board action clears an ATK Gem and whose cascades
@@ -696,7 +700,7 @@ public class BattleStateServiceDeadlockRecoveryTests
         var baseBoard = baseState.BoardState;
 
         // Distinct instance with identical cells:
-        var clonedBoard = BoardState.FromCells(baseBoard.Cells.Select(c => c.GemType));
+        var clonedBoard = BoardState.FromCells(baseBoard.Cells);
         Assert.NotSame(baseBoard, clonedBoard);
         Assert.True(baseBoard.CellsEqual(clonedBoard));
 
@@ -710,7 +714,7 @@ public class BattleStateServiceDeadlockRecoveryTests
         AssertStateStructurallyEqual(stateA, stateB);
 
         // Mutated cell in distinct instance is detected:
-        var modifiedTypes = baseBoard.Cells.Select(c => c.GemType).ToArray();
+        var modifiedTypes = baseBoard.Cells.ToArray();
         modifiedTypes[0] = modifiedTypes[0] == GemType.Atk ? GemType.Def : GemType.Atk;
         var modifiedBoard = BoardState.FromCells(modifiedTypes);
         var stateModified = baseState with { BoardState = modifiedBoard };
@@ -840,8 +844,7 @@ public class BattleStateServiceDeadlockRecoveryTests
 
         var bossResolution = CascadeResolver.Resolve(
             bossMove.Board.WithSwapped(bossMove.SelectedMove.From, bossMove.SelectedMove.To),
-            new Pcg32(bossRngState.State, bossRngState.Increment),
-            swapOriginIndex: null);
+            new Pcg32(bossRngState.State, bossRngState.Increment));
 
         return new PreCommitReplay(player, bossMove, bossResolution, bossResolution.Board, bossResolution.RngState);
     }

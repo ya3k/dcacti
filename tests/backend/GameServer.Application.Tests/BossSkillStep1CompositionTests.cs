@@ -811,8 +811,7 @@ public class BossSkillStep1CompositionTests
 
         var resolution = CascadeResolver.Resolve(
             move.Board.WithSwapped(move.SelectedMove.From, move.SelectedMove.To),
-            new Pcg32(resolveState.State, resolveState.Increment),
-            swapOriginIndex: null);
+            new Pcg32(resolveState.State, resolveState.Increment));
 
         return ResourceGenerator.Generate(resolution);
     }

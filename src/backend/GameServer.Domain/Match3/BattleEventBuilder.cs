@@ -16,8 +16,7 @@ namespace GameServer.Domain.Match3;
 /// └── PassResult                                 and the authoritative order
 ///     ├── Matches[]                 → MatchCreated, per Match, in the pass's
 ///     │                               §3.2 match-set order
-///     ├── MatchedCellGemMatched[]   → GemMatched, the pass's matched sub-step
-///     ├── ActivationCellGemMatched[]→ GemMatched, the pass's activation sub-step
+///     ├── GemMatched[]              → GemMatched, the pass's matched cells
 ///     ─── Matches[0].CascadeDepth   → CascadeCreated, once per Cascade pass,
 ///                                      before that pass's Matches
 /// </code>
@@ -36,8 +35,7 @@ namespace GameServer.Domain.Match3;
 ///                            cells are ONE union for the pass, ascending §1.0
 ///                            index, once per cell (§1.3 items 1–2)
 ///          ComboChanged      the NEW Combo value for that Match
-///   3. GemMatched            the pass's activation sub-step, ascending index
-///   4. CascadeStepResolved   the pass's completed Gravity + Spawn transition —
+///   3. CascadeStepResolved   the pass's completed Gravity + Spawn transition —
 ///                            LAST, after the pass's own reports and before the
 ///                            next pass's CascadeCreated (§1.1 item 8, §3.2.28)
 /// </code>
@@ -141,14 +139,14 @@ public static class BattleEventBuilder
                 events.Add(BattleEvent.ForCascade(pass.Matches[0].CascadeDepth - 1));
             }
 
-            // §1.3 items 1–2: the matched sub-step is ONE union for the pass — the
-            // pass's matched cells, ascending §1.0 index, each cell once — and it is
-            // not a per-Match list. It is therefore reported once per pass: with the
-            // MatchCreated that opens the pass's match sequence, which is the position
-            // §1.1's cycle fixes for it. Emitting it once per Match would report every
-            // matched cell of a pass with M ≥ 2 Matches M times, which §1.3 item 2's
-            // "reported once" and item 7's "repeats a cell" forbid.
-            var matchedSubStepReported = false;
+            // §1.3 items 1–2: the pass's cleared union is ONE union for the pass —
+            // the pass's matched cells, ascending §1.0 index, each cell once — and it
+            // is not a per-Match list. It is therefore reported once per pass: with
+            // the MatchCreated that opens the pass's match sequence, which is the
+            // position §1.1's cycle fixes for it. Emitting it once per Match would
+            // report every matched cell of a pass with M ≥ 2 Matches M times, which
+            // §1.3 item 2's "reported once" and item 7's "repeats a cell" forbid.
+            var clearedUnionReported = false;
 
             foreach (var match in pass.Matches)
             {
@@ -157,20 +155,19 @@ public static class BattleEventBuilder
                 // a pass's events appear in that order.
                 events.Add(BattleEvent.ForMatch(match));
 
-                // §2 GemMatched / §1.3: the matched sub-step's consumed Gems, once
-                // per cell, ascending §1.0 index — the enumeration the resolver
-                // already applied. Reported with the first MatchCreated of the pass
-                // it belongs to, so the GemMatched run reads as the pass's own
-                // matched sub-step and then, for this pass, the activation
-                // sub-step's.
-                if (!matchedSubStepReported)
+                // §2 GemMatched / §1.3: the pass's consumed Gems, once per cell,
+                // ascending §1.0 index — the enumeration the resolver already
+                // applied. Reported with the first MatchCreated of the pass it
+                // belongs to, so the GemMatched run reads as the pass's own cleared
+                // union.
+                if (!clearedUnionReported)
                 {
-                    foreach (var gem in pass.MatchedCellGemMatched)
+                    foreach (var gem in pass.GemMatched)
                     {
                         events.Add(BattleEvent.ForGem(gem));
                     }
 
-                    matchedSubStepReported = true;
+                    clearedUnionReported = true;
                 }
 
                 comboSoFar++;
@@ -186,16 +183,6 @@ public static class BattleEventBuilder
                 {
                     events.Add(BattleEvent.ForCombo(comboSoFar));
                 }
-            }
-
-            // §1.3 item 1 / §2: the activation sub-step of the same pass — the
-            // cells this pass's activations and chains cleared, once per cell,
-            // ascending §1.0 index. They produce GemMatched and, by §5.5.5 item 8
-            // and §6.3.1, no MatchCreated and no ComboChanged: an activation is not
-            // a Match.
-            foreach (var gem in pass.ActivationCellGemMatched)
-            {
-                events.Add(BattleEvent.ForGem(gem));
             }
 
             // §1.1 item 8 / §3.2.28: the pass's completed Gravity + Spawn

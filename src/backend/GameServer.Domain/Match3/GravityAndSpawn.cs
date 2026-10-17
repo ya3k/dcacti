@@ -22,14 +22,9 @@ using System.Diagnostics;
 /// relocates Gems — the board is re-examined by the next detection pass (§4.1
 /// step 5).
 ///
-/// <b>Interaction with Special Gems (§4.4 item 8).</b> A Special Gem is a Gem
-/// occupying a cell and falls under exactly these rules: it is pulled down like
-/// any other Gem, keeps its place in the column's order, and never moves between
-/// columns. Its effect is not re-triggered by falling. In the <c>Cells[64]</c>
-/// representation a "Gem" is a whole cell entry, so gravity moves the
-/// <c>GemType</c> <b>and</b> its <c>SpecialGem</c> metadata together as one unit
-/// (<c>GAME_STATE.md</c> §2.1.5 item 1): a Line Clear Gem keeps its orientation
-/// through gravity (<c>MATCH3_RULES.md</c> §5.2 item 3).
+/// In the <c>Cells[64]</c> representation a cell entry is its <c>GemType</c>, so
+/// gravity moves that value with its position and maintains no secondary metadata
+/// (<c>GAME_STATE.md</c> §2.1.5 item 1).
 /// </summary>
 public static class Gravity
 {
@@ -38,16 +33,15 @@ public static class Gravity
     /// lowest cells.
     /// </summary>
     /// <param name="board">
-    /// The board after §4.1 step 2 — its matched and activation-cleared cells
-    /// still hold their pre-removal entries; they are vacated here.
+    /// The board after §4.1 step 1 — its matched cells still hold their
+    /// pre-removal entries; they are vacated here.
     /// </param>
     /// <param name="emptyCells">
-    /// The cells §4.1 step 1 and the pass's activations emptied. An empty cell is
-    /// "the absence of a Gem, not a fifth Gem": no marker Gem type, sentinel
-    /// value, or negative index is introduced into the four-type value domain
-    /// (<c>MATCH3_RULES.md</c> §4.4 item 5). It exists only inside one resolution's
-    /// §4.1 steps 1–4 and never in the published board
-    /// (<c>GAME_STATE.md</c> §2.1.5 item 4).
+    /// The cells §4.1 step 1 emptied. An empty cell is "the absence of a Gem, not
+    /// a fifth Gem": no marker Gem type, sentinel value, or negative index is
+    /// introduced into the four-type value domain (<c>MATCH3_RULES.md</c> §4.4
+    /// item 5). It exists only inside one resolution's §4.1 steps 1–4 and never in
+    /// the published board (<c>GAME_STATE.md</c> §2.1.5 item 4).
     /// </param>
     public static GravityResult Apply(BoardState board, IReadOnlySet<int> emptyCells)
     {
@@ -59,7 +53,7 @@ public static class Gravity
             return new GravityResult(board, [], []);
         }
 
-        var entries = board.ToCellArray();
+        var entries = board.ToArray();
 
         // The cells that are empty AFTER gravity — the topmost cells of each column,
         // which are exactly the cells Spawn must fill (§4.5 item 1). Reported so the
@@ -85,7 +79,7 @@ public static class Gravity
             // occupying the lowest cells"). Collected first so the compaction and the
             // vacated-cell marking are both driven by one traversal and can never
             // disagree about which cells were empty.
-            var survivors = new List<Cell>(BoardState.Rows);
+            var survivors = new List<GemType>(BoardState.Rows);
 
             // The index each survivor was read from, in the same order. Gravity is
             // positional, so the source index would otherwise be lost by compaction —
@@ -119,9 +113,6 @@ public static class Gravity
                 var writeIndex = BoardState.ToIndex(writeRow, column);
                 var readIndex = survivorIndices[i];
 
-                // The whole entry moves — GemType and SpecialGem together, as one unit
-                // (GAME_STATE.md §2.1.5 item 1). A Special Gem that falls keeps its
-                // orientation (§4.4 item 8, §5.2 item 3).
                 entries[writeIndex] = survivors[i];
 
                 // A survivor that ends the step on the cell it started on did not
@@ -134,9 +125,9 @@ public static class Gravity
             }
 
             // The cells above the survivors are the column's new empty cells. A
-            // BoardState always holds 64 entries, so they carry an ordinary
-            // placeholder that Spawn overwrites in the same pass: no placeholder is
-            // ever observable in a published board (§4.1 step 4, §4.5 item 1,
+            // BoardState always holds 64 entries, so they carry their previous value
+            // as a placeholder that Spawn overwrites in the same pass: no placeholder
+            // is ever observable in a published board (§4.1 step 4, §4.5 item 1,
             // GAME_STATE.md §2.1.5 item 4).
             //
             // Only cells that are genuinely empty are marked and reported. A cell the
@@ -154,12 +145,11 @@ public static class Gravity
             for (var row = BoardState.Rows - 1 - survivorCount; row >= 0; row--)
             {
                 var index = BoardState.ToIndex(row, column);
-                entries[index] = Cell.Ordinary(entries[index].GemType);
                 vacated.Add(index);
             }
         }
 
-        var result = BoardState.FromCellEntries(entries);
+        var result = BoardState.FromCells(entries);
 
         // The placeholders above are only sound while Spawn overwrites exactly the
         // reported cells. Assert the pairing that makes them sound, so a future change
@@ -196,8 +186,7 @@ public static class Gravity
 /// exactly the cells Spawn must fill (§4.5 item 1). They are a subset of the cells
 /// that were empty before gravity: a gem that fell has moved into a cell that was
 /// empty, so that cell is no longer empty. Spawn must use <b>this</b> set, not the
-/// pre-gravity one, or it would overwrite the gems gravity just moved —
-/// including any Special Gem the same pass created (§4.1 item 2).
+/// pre-gravity one, or it would overwrite the gems gravity just moved.
 /// </param>
 /// <param name="DropMoves">
 /// Every survivor that changed cell, source → destination (§3.2.28's
@@ -259,8 +248,7 @@ public static class Spawn
     /// The empty-cell set is required rather than inferred: Spawn must fill
     /// <b>exactly</b> the cells Gravity left empty (§4.5 item 1), and a caller that
     /// cannot name them cannot honour that rule. A "fill everything" overload would
-    /// silently overwrite cells that still hold a Gem — including the Special Gems
-    /// the same pass just created — so none is offered.
+    /// silently overwrite cells that still hold a Gem, so none is offered.
     /// </summary>
     /// <param name="board">The board after Gravity.</param>
     /// <param name="rng">
@@ -281,8 +269,8 @@ public static class Spawn
         ArgumentNullException.ThrowIfNull(rng);
         ArgumentNullException.ThrowIfNull(emptyCells);
 
-        var entries = board.ToCellArray();
-        var created = new List<(int Index, Cell Cell)>();
+        var entries = board.ToArray();
+        var created = new List<(int Index, GemType GemType)>();
         var spawned = 0;
 
         // §4.5 item 2: column order is ascending §1.0 column order (0 → 7), and
@@ -312,17 +300,14 @@ public static class Spawn
                 var gemType = GemTypes.All[(int)selection];
 
                 // §4.5 item 7: a spawned Gem is an ordinary Gem of one of the four
-                // types. Spawn NEVER creates a Special Gem, whatever the cell held
-                // before — including a cell whose Special Gem was just consumed.
-                var cell = Cell.Ordinary(gemType);
-
-                entries[index] = cell;
-                created.Add((index, cell));
+                // types. Spawn places nothing else, whatever the cell held before.
+                entries[index] = gemType;
+                created.Add((index, gemType));
                 spawned++;
             }
         }
 
-        return new SpawnResult(BoardState.FromCellEntries(entries), created, spawned);
+        return new SpawnResult(BoardState.FromCells(entries), created, spawned);
     }
 }
 
@@ -337,5 +322,5 @@ public static class Spawn
 /// </param>
 public readonly record struct SpawnResult(
     BoardState Board,
-    IReadOnlyList<(int Index, Cell Cell)> CreatedCells,
+    IReadOnlyList<(int Index, GemType GemType)> CreatedCells,
     int SpawnedCount);

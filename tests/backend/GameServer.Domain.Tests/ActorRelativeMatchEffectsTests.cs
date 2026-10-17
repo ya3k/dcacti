@@ -220,7 +220,7 @@ public class ActorRelativeMatchEffectsTests
         var board = TestBoard.Background().WithGems(
             (0, GemType.Power), (1, GemType.Power), (2, GemType.Power),
             (16, GemType.Power), (17, GemType.Power), (18, GemType.Power));
-        var resolution = CascadeResolver.Resolve(board, Pcg32.FromSeed(1), null);
+        var resolution = CascadeResolver.Resolve(board, Pcg32.FromSeed(1));
 
         // When: Actor match effects applied for Boss
         var (updatedPet, updatedBoss) = ResourceGenerator.ApplyActorMatchEffects(

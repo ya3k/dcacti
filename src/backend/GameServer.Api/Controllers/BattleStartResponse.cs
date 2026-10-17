@@ -109,28 +109,14 @@ public record BattleStartBoard(IReadOnlyList<BattleStartCell> Cells);
 
 /// <summary>
 /// One board cell (<c>GAME_STATE.md</c> §2.1.1) — its Gem type as the documented
-/// contract name, plus the Special Gem occupying it when there is one.
+/// contract name, and nothing else.
 /// </summary>
 /// <param name="GemType">
 /// The cell's Gem type contract name (<c>MATCH3_RULES.md</c> §1.1) — always
-/// present, including under a Special Gem.
+/// present, and the whole of the cell entry (<c>GAME_STATE.md</c> §2.1.1,
+/// §2.1.3 item 1).
 /// </param>
-/// <param name="SpecialGem">
-/// The Special Gem at this cell, or <c>null</c> for an ordinary Gem — absence is
-/// the documented representation of "no Special Gem"
-/// (<c>GAME_STATE.md</c> §2.1.7 item 3).
-/// </param>
-public record BattleStartCell(string GemType, BattleStartSpecialGem? SpecialGem);
-
-/// <summary>
-/// A Special Gem's metadata (<c>GAME_STATE.md</c> §2.1.4).
-/// </summary>
-/// <param name="Type"><c>LineClear</c>, <c>Burst</c>, or <c>Area</c>.</param>
-/// <param name="Orientation">
-/// <c>Horizontal</c> or <c>Vertical</c>, present only for a <c>LineClear</c> gem
-/// (<c>GAME_STATE.md</c> §2.1.4 item 2).
-/// </param>
-public record BattleStartSpecialGem(string Type, string? Orientation);
+public record BattleStartCell(string GemType);
 
 /// <summary>
 /// The created Pet state summary (<c>GAME_STATE.md</c> §2.3).

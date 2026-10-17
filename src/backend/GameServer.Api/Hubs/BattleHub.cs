@@ -427,8 +427,8 @@ public record BossStatePayload(
 /// <c>current = 0</c> is a real publishable value (it is what a battle begins with
 /// and what the <c>Default</c> reset writes), so absence is never used for it and
 /// a client must not read an absent member as zero (§4.3 item 4). It is the
-/// opposite of the absent-Special-Gem convention (<c>GAME_STATE.md</c> §2.1.7
-/// item 3), exactly as §4.2 item 3 states for <c>combo</c>/<c>matchCount</c>.
+/// opposite of the absent-optional-member convention (<c>GAME_STATE.md</c>
+/// §2.3.1 item 7), exactly as §4.2 item 3 states for <c>combo</c>/<c>matchCount</c>.
 /// </summary>
 /// <param name="Threshold">
 /// The Passive's own Threshold (<c>PASSIVE_RULES.md</c> §1) — the same value
@@ -499,16 +499,13 @@ public record RngStatePayload(ulong State, ulong Increment);
 /// not receive a partial board and does not request cells individually
 /// (§4.1 item 3).
 ///
-/// Each entry carries the cell's Gem type plus, optionally, the Special Gem at
-/// that cell — the same shape the state holds, delivered entry for entry with no
-/// additional payload member (<c>SIGNALR_PROTOCOL.md</c> §4.1 item 5,
-/// <c>GAME_STATE.md</c> §2.1.7 items 1–4). There is no <c>PendingSpecialGems[]</c>
-/// and no second collection to deliver (§2.1.2 item 1).
+/// Each entry carries solely the cell's Gem type — the same shape the state
+/// holds, delivered entry for entry with no additional payload member
+/// (<c>SIGNALR_PROTOCOL.md</c> §4.1 item 5, <c>GAME_STATE.md</c> §2.1.7
+/// items 1–4). There is no parallel board collection to deliver (§2.1.2 item 1).
 ///
-/// The client renders this and derives nothing: it never creates, places, moves,
-/// matches, activates, chains, or clears a Special Gem, and never infers a
-/// Special Gem's type or orientation from anything but the state it was sent
-/// (<c>SIGNALR_PROTOCOL.md</c> §4.1 item 6, <c>GAME_RULES.md</c> §18).
+/// The client renders this and derives nothing: it never simulates or resolves
+/// the board (<c>SIGNALR_PROTOCOL.md</c> §4.1 item 6, <c>GAME_RULES.md</c> §18).
 /// </summary>
 /// <param name="Cells">
 /// One cell entry per cell, in ascending §1.0 index order. The array position
@@ -523,34 +520,11 @@ public record BoardPayload(IReadOnlyList<CellPayload> Cells);
 /// </summary>
 /// <param name="GemType">
 /// The cell's Gem type, as the documented contract name (<c>ATK</c>, <c>DEF</c>,
-/// <c>HP</c>, <c>POWER</c> — <c>MATCH3_RULES.md</c> §1.1). It is always present,
-/// including for a cell that holds a Special Gem: a Special Gem adds metadata to
-/// a cell's occupant and does not replace its Gem type
-/// (<c>GAME_STATE.md</c> §2.1.3 items 1–2).
+/// <c>HP</c>, <c>POWER</c> — <c>MATCH3_RULES.md</c> §1.1). It is always present
+/// and is the whole of the entry: no cell carries metadata alongside its Gem type
+/// (<c>GAME_STATE.md</c> §2.1.1, §2.1.3 item 1).
 /// </param>
-/// <param name="SpecialGem">
-/// The Special Gem at this cell, or <c>null</c> for an ordinary Gem. Absence is
-/// the documented representation of "this cell holds no Special Gem" — not a
-/// null-element sentinel and not one of the three real types
-/// (<c>GAME_STATE.md</c> §2.1.7 item 3).
-/// </param>
-public record CellPayload(string GemType, SpecialGemPayload? SpecialGem);
-
-/// <summary>
-/// The wire projection of <c>SpecialGem</c> metadata
-/// (<c>GAME_STATE.md</c> §2.1.4).
-/// </summary>
-/// <param name="Type">
-/// <c>LineClear</c>, <c>Burst</c>, or <c>Area</c> — the three MVP types
-/// (<c>GAME_STATE.md</c> §2.1.4 item 1, <c>MATCH3_RULES.md</c> §5.2–§5.4).
-/// </param>
-/// <param name="Orientation">
-/// <c>Horizontal</c> or <c>Vertical</c>, present <b>if and only if</b>
-/// <paramref name="Type"/> is <c>LineClear</c> (<c>GAME_STATE.md</c> §2.1.4
-/// item 2). A <c>Burst</c> or <c>Area</c> entry carries no orientation member,
-/// because an orientation on those types would be a value no rule reads.
-/// </param>
-public record SpecialGemPayload(string Type, string? Orientation);
+public record CellPayload(string GemType);
 
 /// <summary>
 /// The direct invocation result of a <c>Swap</c> request
@@ -713,7 +687,7 @@ public record GetBattleStateResponse(
 /// <param name="ServerSequence">
 /// <c>BattleState.Sequence</c> after this resolution (<c>§3.2</c>,
 /// <c>GAME_STATE.md</c> §5) — strictly increasing with no gaps, one value per
-/// resolved action however many Matches, Cascades, or Special Gems it contained.
+/// resolved action however many Matches or Cascades it contained.
 /// It is read from the committed state, not calculated here, and it is not the
 /// client's opaque correlation value.
 /// </param>
@@ -1421,10 +1395,10 @@ public class BattleHub : Hub
             // together on the wire (GAME_STATE.md §2.6.2 item 1).
             new RngStatePayload(state.RngState.State, state.RngState.Increment),
             // Exactly the 64 cell entries, row-major (GAME_STATE.md §2.1.1,
-            // MATCH3_RULES.md §1.0), each carrying its Gem type and its optional
-            // Special Gem — the state's own shape, delivered entry for entry
-            // (SIGNALR_PROTOCOL.md §4.1 item 5). No separate Special Gem collection
-            // is projected, because none exists (§2.1.2 item 1).
+            // MATCH3_RULES.md §1.0), each carrying its Gem type — the state's own
+            // shape, delivered entry for entry (SIGNALR_PROTOCOL.md §4.1 item 5).
+            // No separate collection is projected, because none exists
+            // (§2.1.2 item 1).
             new BoardPayload(state.BoardState.Cells.Select(ToCellPayload).ToArray()),
             // GAME_STATE.md §2.2 / SIGNALR_PROTOCOL.md §4.2: the two implemented
             // Match/Combo values, projected one-to-one from their documented owner —
@@ -1568,22 +1542,12 @@ public class BattleHub : Hub
     /// Projects one cell entry onto the §4 wire shape — a pure field mapping.
     ///
     /// The Gem type is rendered as its documented contract name
-    /// (<c>MATCH3_RULES.md</c> §1.1) and the Special Gem, when present, as its type
-    /// and — for a Line Clear Gem only — its orientation
-    /// (<c>GAME_STATE.md</c> §2.1.4 item 2). Nothing is derived, validated, or
-    /// computed here.
+    /// (<c>MATCH3_RULES.md</c> §1.1), which is the whole cell entry
+    /// (<c>GAME_STATE.md</c> §2.1.1). Nothing is derived, validated, or computed
+    /// here.
     /// </summary>
-    private static CellPayload ToCellPayload(Cell cell) =>
-        new(GemTypes.ToContractName(cell.GemType), ToSpecialGemPayload(cell.SpecialGem));
-
-    /// <summary>
-    /// Projects a cell's optional Special Gem, or <c>null</c> when the cell holds an
-    /// ordinary Gem (<c>GAME_STATE.md</c> §2.1.7 item 3).
-    /// </summary>
-    private static SpecialGemPayload? ToSpecialGemPayload(SpecialGem? specialGem) =>
-        specialGem is not { } gem
-            ? null
-            : new SpecialGemPayload(gem.Type.ToString(), gem.Orientation?.ToString());
+    private static CellPayload ToCellPayload(GemType gemType) =>
+        new(GemTypes.ToContractName(gemType));
 
     /// <summary>
     /// Bootstrap-era connectivity probe retained from the integration smoke

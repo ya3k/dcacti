@@ -265,12 +265,12 @@ public class BattleStateServiceTests
     }
 
     [Fact]
-    public async Task ResolveBoard_ShouldNotWriteAnyBattleEventOrAddAMessage()
+    public void ResolveBoard_ShouldNotWriteAnyBattleEventOrAddAMessage()
     {
         // GAME_EVENTS.md §1 / SIGNALR_PROTOCOL.md §8 item 7: this boundary returns state
-        // and emits nothing. The service exposes no event surface at all — no
-        // SpecialGemActivated, SpecialGemCreated, or SpecialGemDestroyed event, message,
-        // or method may exist.
+        // and emits nothing. The service exposes no event surface at all — no method that
+        // emits, publishes, or raises a Battle Event, and no board-event handler a caller
+        // could attach to.
         var surface = typeof(BattleStateService)
             .GetMethods()
             .Select(m => m.Name)
@@ -278,7 +278,7 @@ public class BattleStateServiceTests
 
         foreach (var forbidden in new[]
                  {
-                     "SpecialGemActivated", "SpecialGemCreated", "SpecialGemDestroyed",
+                     "MatchCreated", "CascadeCreated", "GemMatched", "CascadeStepResolved",
                      "EmitEvent", "PublishEvent", "RaiseEvent", "OnGemMatched",
                  })
         {
@@ -2361,8 +2361,7 @@ public class BattleStateServiceTests
 
         var bossResolution = CascadeResolver.Resolve(
             bossMove.Board.WithSwapped(bossMove.SelectedMove.From, bossMove.SelectedMove.To),
-            new Pcg32(bossMove.RngState.State, bossMove.RngState.Increment),
-            swapOriginIndex: null);
+            new Pcg32(bossMove.RngState.State, bossMove.RngState.Increment));
 
         var bossGeneration = ResourceGenerator.Generate(bossResolution);
 

@@ -73,17 +73,15 @@ namespace GameServer.Domain.Passives;
 /// <see cref="PassiveResetBehavior.Partial"/> are precisely the behaviors whose
 /// surviving progress can make it happen sooner.
 ///
-/// <b>Special Gem detonations are not Matches, and this type does not decide
-/// that.</b> §2 item 2 excludes them "consistent with them not counting toward
-/// Combo/Match count either", and the board pipeline already enforces exactly
-/// that: <c>MATCH3_RULES.md</c> §5.5.5 item 8 gives a Gem cleared by an
-/// activation a <c>GemMatched</c> report and no Match, and
+/// <b>Cleared cells are not Matches, and this type does not decide that.</b> The
+/// board pipeline already enforces exactly that: one detected shape is one Match
+/// however many cells it clears (<c>MATCH3_RULES.md</c> §3 item 5), and
 /// <c>CascadeResolver.CascadeResult.TotalMatches</c> counts Matches only. The
-/// caller therefore supplies Matches, and a detonation is never among them — the
-/// tracker has no activation input by which one could be counted, and it
-/// introduces no filter, flag, or heuristic to guess at one. Feeding it an
-/// activation's cleared cells as if each were a Match would be the caller's
-/// defect, not a case this type can detect (<c>GAME_EVENTS.md</c> §2 item 3).
+/// caller therefore supplies a Match count, and a cleared cell is never among
+/// them — the tracker has no cleared-cell input by which one could be counted,
+/// and it introduces no filter, flag, or heuristic to guess at one. Feeding it
+/// cleared cells as if each were a Match would be the caller's defect, not a case
+/// this type can detect (<c>GAME_EVENTS.md</c> §2 item 3).
 ///
 /// <b>Threshold = 1 is not a special case.</b> §1 defines a Threshold as "e.g.
 /// 'every 5 Matches'" — a count of Matches — and nothing bounds it below. At
@@ -121,15 +119,15 @@ public static class PassiveTracker
     /// How many Matches the Cascade produced, in detection order
     /// (<c>PASSIVE_RULES.md</c> §5: "If a single Swap's Cascade chain produces N
     /// matches in one resolution"). This is a count of <b>Matches</b>, never of
-    /// cleared cells and never of Special Gem activations (§2 item 2). A Cascade
+    /// cleared cells (<c>PASSIVE_RULES.md</c> §2 item 1). A Cascade
     /// that produced none — an empty run, which a committed Swap cannot produce —
     /// charges nothing and cannot trigger.
     ///
     /// The tracker is given the occurrence count rather than the Match values
     /// because charging depends on <b>how many</b> Matches happened and on
     /// <b>nothing about them</b>: §2 item 1 is "+1 per Match" with no
-    /// dependence on the Match's shape, Gem type, cell, size, tier, cascade
-    /// depth, or created Special Gems (<c>MATCH3_RULES.md</c> §3 item 5). No
+    /// dependence on the Match's shape, Gem type, cell, size, tier, or cascade
+    /// depth (<c>MATCH3_RULES.md</c> §3 item 5). No
     /// field of a <c>MatchResolution</c> is read, so accepting the values would
     /// add an input the rule never consults and would misstate the tracker's
     /// dependency as the caller's Match model rather than its Match count.

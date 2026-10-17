@@ -48,13 +48,8 @@ internal static class BattleStateJsonNames
     // BoardState (GAME_STATE.md §2.1) — Cells[64] is the whole of it.
     public const string BoardCells = "cells";
 
-    // A cell entry (GAME_STATE.md §2.1.1).
+    // A cell entry (GAME_STATE.md §2.1.1) — the cell's Gem type and nothing else.
     public const string CellGemType = "gemType";
-    public const string CellSpecialGem = "specialGem";
-
-    // SpecialGem metadata (GAME_STATE.md §2.1.4).
-    public const string SpecialGemType = "type";
-    public const string SpecialGemOrientation = "orientation";
 
     // PetState (GAME_STATE.md §2.3).
     public const string PetId = "petId";
@@ -291,7 +286,7 @@ internal sealed record RngStateJson
 
 /// <summary>
 /// <c>BoardState</c> (<c>GAME_STATE.md</c> §2.1) — <c>Cells[64]</c> and nothing
-/// else. There is no second field and no parallel Special Gem collection
+/// else. There is no second field and no parallel board collection
 /// (§2.1.2 item 1).
 /// </summary>
 internal sealed record BoardStateJson
@@ -307,16 +302,15 @@ internal sealed record BoardStateJson
 
 /// <summary>
 /// One <c>Cells[64]</c> entry (<c>GAME_STATE.md</c> §2.1.1) — the cell's Gem type
-/// plus its optional Special Gem.
+/// and nothing else.
 /// </summary>
 internal sealed record CellJson
 {
     /// <summary>
     /// The cell's Gem type by its documented contract name — <c>ATK</c>,
     /// <c>DEF</c>, <c>HP</c>, <c>POWER</c> (<c>MATCH3_RULES.md</c> §1.1). It is
-    /// always present, including for a cell holding a Special Gem, because a
-    /// Special Gem is metadata on the occupant and not a substitute for its Gem
-    /// type (§2.1.3 items 1–2).
+    /// always present and is the whole entry: a cell carries solely its Gem type
+    /// (<c>GAME_STATE.md</c> §2.1.1, §2.1.3 item 1).
     ///
     /// The contract name is written rather than the enum ordinal: the ordinal is
     /// an implementation detail no document fixes, and a stored record must not
@@ -324,41 +318,6 @@ internal sealed record CellJson
     /// </summary>
     [JsonPropertyName(BattleStateJsonNames.CellGemType)]
     public required string GemType { get; init; }
-
-    /// <summary>
-    /// The cell's Special Gem, or <c>null</c> for an ordinary Gem. The null
-    /// condition omits the member, which is the documented "absent" representation
-    /// — "not a null element, not a sentinel type, and not a default value"
-    /// (§2.1.7 item 3).
-    /// </summary>
-    [JsonPropertyName(BattleStateJsonNames.CellSpecialGem)]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public SpecialGemJson? SpecialGem { get; init; }
-}
-
-/// <summary>
-/// <c>SpecialGem</c> metadata (<c>GAME_STATE.md</c> §2.1.4) — the type, and the
-/// orientation only when the type requires it.
-/// </summary>
-internal sealed record SpecialGemJson
-{
-    /// <summary>
-    /// <c>LineClear</c>, <c>Burst</c>, or <c>Area</c> — the three MVP types
-    /// (§2.1.4 item 1). There is no fourth type and no <c>None</c> value; an
-    /// ordinary Gem is an absent member, never a type (§2.1.7 item 3).
-    /// </summary>
-    [JsonPropertyName(BattleStateJsonNames.SpecialGemType)]
-    public required string Type { get; init; }
-
-    /// <summary>
-    /// <c>Horizontal</c> or <c>Vertical</c>, present <b>if and only if</b> the type
-    /// is <c>LineClear</c> (§2.1.4 item 2). A <c>Burst</c> or <c>Area</c> entry
-    /// carries no orientation member, because an orientation on those types would
-    /// be a value no rule reads.
-    /// </summary>
-    [JsonPropertyName(BattleStateJsonNames.SpecialGemOrientation)]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public string? Orientation { get; init; }
 }
 
 /// <summary>
@@ -861,8 +820,7 @@ internal sealed record BossStateJson
 /// <b>Absence is spelled by omission, never by <c>null</c> or a sentinel.</b>
 /// §2.3.1 item 7 requires an inapplicable member to be <b>absent</b> — "never
 /// <c>null</c>, never a sentinel string" — following the absent-member convention
-/// of §2.1.7 item 3 that <see cref="CellJson.SpecialGem"/> and
-/// <see cref="PetStateJson.PassiveResetOverride"/> already follow. The three
+/// <see cref="PetStateJson.PassiveResetOverride"/> already follows. The three
 /// optional members are therefore nullable and are omitted when they do not
 /// apply. §2.3.2 item 5 makes materializing an absent optional member as
 /// <c>null</c> an explicit <b>defect</b>, which is what these conditions prevent.

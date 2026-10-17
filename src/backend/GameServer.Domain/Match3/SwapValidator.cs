@@ -12,8 +12,8 @@ using GameServer.Domain.Battle;
 /// It answers exactly one question: <i>"is this requested swap legal on the
 /// current authoritative board?"</i> It decides; it does not act. No exchange is
 /// committed, no Turn begins, no <c>Sequence</c> advances, no board is resolved,
-/// no Special Gem is created or activated, and no Turn/Combo/Power/Passive/Relic
-/// progression occurs (<c>MATCH3_RULES.md</c> §2.1.5).
+/// and no Turn/Combo/Power/Passive/Relic progression occurs
+/// (<c>MATCH3_RULES.md</c> §2.1.5).
 ///
 /// <b>Distinct from the Board Generation Validator</b> (<c>MATCH3_RULES.md</c>
 /// §1.4.2). <see cref="BoardGenerationValidator"/> enforces the two

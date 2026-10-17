@@ -445,12 +445,15 @@ public class AtomicRoundOrchestrationTests
 
         for (var round = 0; round < 24; round++)
         {
-            var pinned = RoundTestSupport.PlayerMatch(
+            // The fixture's stream is chosen per round (RoundTestSupport.PinnedForStream):
+            // it is fixture state, not an asserted value, and keeps the pinned Player
+            // Swap's cascade a single-Gem-type one.
+            var (rngState, pinned) = RoundTestSupport.PinnedForStream(
                 GemType.Def,
                 state.RngState,
                 state.LastCommittedSwapPair);
 
-            await RoundTestSupport.PinAsync(repository, state, pinned.Board);
+            await RoundTestSupport.PinAsync(repository, state with { RngState = rngState }, pinned.Board);
 
             var previousCharge = state.BossState.SkillCharge;
             var result = (await service.ExecuteSwapAsync(battleId, pinned.Swap))!.Value;
@@ -486,13 +489,16 @@ public class AtomicRoundOrchestrationTests
         const string clampedBattleId = "round-boss-power-clamp";
         var clampedCreated = await clampedService.CreateBattleAsync(clampedBattleId, Owner, Pet, clamped);
 
-        var clampedPinned = RoundTestSupport.PlayerMatch(GemType.Def, clampedCreated.RngState, clampedCreated.LastCommittedSwapPair);
+        var (clampedRngState, clampedPinned) = RoundTestSupport.PinnedForStream(
+            GemType.Def,
+            clampedCreated.RngState,
+            clampedCreated.LastCommittedSwapPair);
 
         // A running cooldown keeps the Skill from firing, so the clamped charge is
         // what the round leaves observable rather than a reset 0.
         await RoundTestSupport.PinAsync(
             clampedRepository,
-            clampedCreated,
+            clampedCreated with { RngState = clampedRngState },
             clampedPinned.Board,
             bossState: clampedCreated.BossState with { SkillCharge = 1, SkillCooldown = 2 });
 

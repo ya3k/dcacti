@@ -107,30 +107,17 @@ internal static class TestBoard
     /// </summary>
     internal static BoardState Checkerboard() => Background();
 
-    /// <summary>Replaces cells on an existing board, keeping cell entries otherwise.</summary>
+    /// <summary>Replaces cells on an existing board, keeping the rest of the board.</summary>
     internal static BoardState WithGems(this BoardState board, params (int Index, GemType Type)[] changes)
     {
-        var entries = board.ToCellArray();
+        var cells = board.ToArray();
 
         foreach (var (index, type) in changes)
         {
-            entries[index] = new Cell(type, entries[index].SpecialGem);
+            cells[index] = type;
         }
 
-        return BoardState.FromCellEntries(entries);
-    }
-
-    /// <summary>Places Special Gems on an existing board at the given cells.</summary>
-    internal static BoardState WithSpecial(this BoardState board, params (int Index, SpecialGem Gem)[] gems)
-    {
-        var entries = board.ToCellArray();
-
-        foreach (var (index, gem) in gems)
-        {
-            entries[index] = new Cell(entries[index].GemType, gem);
-        }
-
-        return BoardState.FromCellEntries(entries);
+        return BoardState.FromCells(cells);
     }
 
     private static GemType ToGem(char c) => char.ToUpperInvariant(c) switch

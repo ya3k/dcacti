@@ -635,14 +635,17 @@ public class BossResponseTests
         // per-round accounting assertion below runs on every round regardless.
         for (var round = 0; round < 24; round++)
         {
-            var pinned = RoundTestSupport.PlayerMatch(
+            // The fixture's stream is chosen per round (RoundTestSupport.PinnedForStream):
+            // it is fixture state, not an asserted value, and keeps the pinned Player
+            // Swap's cascade a single-Gem-type one.
+            var (rngState, pinned) = RoundTestSupport.PinnedForStream(
                 GemType.Power,
                 state.RngState,
                 state.LastCommittedSwapPair);
 
             Assert.True(pinned.Resources.ClearedGemCounts.Power > 0);
 
-            await RoundTestSupport.PinAsync(repository, state, pinned.Board);
+            await RoundTestSupport.PinAsync(repository, state with { RngState = rngState }, pinned.Board);
 
             var previousCharge = state.BossState.SkillCharge;
             var result = (await service.ExecuteSwapAsync(battleId, pinned.Swap))!.Value;
@@ -1137,7 +1140,11 @@ public class BossResponseTests
 
         var observed = false;
 
-        for (var round = 0; round < 8 && !observed; round++)
+        // The window is a search over real rounds for the one whose Boss board action
+        // also qualified (ADR-026 D1). Its length only bounds how long the search may
+        // run: the assertions below are made on the qualifying round itself, so a
+        // wider window finds it without weakening anything.
+        for (var round = 0; round < 40 && !observed; round++)
         {
             var pinned = RoundTestSupport.PlayerMatch(
                 GemType.Atk,

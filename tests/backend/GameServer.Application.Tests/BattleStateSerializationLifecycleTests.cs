@@ -219,12 +219,13 @@ public class BattleStateSerializationLifecycleTests
     }
 
     [Fact]
-    public async Task CreatedBattle_ShouldRoundTripItsGeneratedBoardAndSpecialGems()
+    public async Task CreatedBattle_ShouldRoundTripEveryCellOfAChangedBoard()
     {
-        // The board the lifecycle generated is restored cell for cell, with every
-        // Special Gem's type and orientation at the same index (GAME_STATE.md §2.1.7
-        // item 5). A freshly generated board holds no Special Gem, so one is placed
-        // to exercise the conditional member on real lifecycle state.
+        // The board the lifecycle generated is restored cell for cell, and so is any
+        // other arrangement the authoritative model can hold: each cell is exactly one
+        // Gem type, and the serializer restores it at its own index (GAME_STATE.md
+        // §2.1.7 item 5). The board is derived through the public board API only, so
+        // the assertion does not depend on what this seed happens to generate.
         var service = SeededService();
 
         var created = await service.CreateBattleAsync(
@@ -233,22 +234,25 @@ public class BattleStateSerializationLifecycleTests
             RepresentativePetConfiguration(),
             BossDefinitions.HoaLong);
 
-        // The generated board's entries are rebuilt with two Special Gems placed,
-        // through the public board API only (BoardState.Cells[64] carries the cell's
-        // Gem type and its Special Gem together — GAME_STATE.md §2.1.5 item 1).
-        var entries = created.BoardState.ToCellArray();
-        entries[3] = new Cell(entries[3].GemType, SpecialGem.LineClearVertical());
-        entries[44] = new Cell(entries[44].GemType, SpecialGem.Burst());
+        // A deterministic arrangement that differs from the generated one at every
+        // cell: each cell takes the next of the four documented Gem types
+        // (MATCH3_RULES.md §1.1).
+        var changed = created.BoardState.Cells
+            .Select(NextDocumentedGemType)
+            .ToArray();
 
-        var withSpecials = created with { BoardState = BoardState.FromCellEntries(entries) };
+        var withChangedBoard = created with { BoardState = BoardState.FromCells(changed) };
 
-        var restored = BattleStateSerializer.Deserialize(BattleStateSerializer.Serialize(withSpecials));
+        var restored = BattleStateSerializer.Deserialize(BattleStateSerializer.Serialize(withChangedBoard));
 
-        Assert.True(withSpecials.BoardState.CellsEqual(restored.BoardState));
-        Assert.Equal(SpecialGemType.LineClear, restored.BoardState.SpecialGemAt(3)!.Value.Type);
-        Assert.Equal(SpecialGemOrientation.Vertical, restored.BoardState.SpecialGemAt(3)!.Value.Orientation);
-        Assert.Equal(SpecialGemType.Burst, restored.BoardState.SpecialGemAt(44)!.Value.Type);
-        Assert.Null(restored.BoardState.SpecialGemAt(44)!.Value.Orientation);
+        Assert.True(withChangedBoard.BoardState.CellsEqual(restored.BoardState));
+
+        // Cell for cell, at the same §1.0 index: the assertion the round trip of a
+        // non-generated board exists to make.
+        for (var index = 0; index < BoardState.CellCount; index++)
+        {
+            Assert.Equal(withChangedBoard.BoardState[index], restored.BoardState[index]);
+        }
     }
 
     [Fact]
@@ -558,4 +562,16 @@ public class BattleStateSerializationLifecycleTests
         throw new InvalidOperationException(
             "The fixture board accepted no adjacent Swap; the scenario cannot exercise the resolution path.");
     }
+
+    /// <summary>
+    /// The next of the four documented Gem types (<c>MATCH3_RULES.md</c> §1.1),
+    /// cycling <c>ATK → DEF → HP → POWER → ATK</c>.
+    /// </summary>
+    private static GemType NextDocumentedGemType(GemType gemType) => gemType switch
+    {
+        GemType.Atk => GemType.Def,
+        GemType.Def => GemType.Hp,
+        GemType.Hp => GemType.Power,
+        _ => GemType.Atk,
+    };
 }

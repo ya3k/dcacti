@@ -73,7 +73,60 @@ internal static class RoundTestSupport
     public static PinnedPlayerRound PlayerMatch(
         GemType matchType,
         RngState rngState,
+        CommittedSwapPair? excluded = null) =>
+        TryPlayerMatch(matchType, rngState, excluded)
+        ?? throw new InvalidOperationException(
+            $"ADR-026 fixture for '{matchType}' could not be constructed. This is a test-fixture "
+            + "defect: the board builder no longer produces a single-type Match opportunity.");
+
+    /// <summary>
+    /// The fixture for a played round, together with the RNG stream the battle must be
+    /// holding for it to hold: the first candidate stream, in a fixed deterministic
+    /// order, that satisfies <see cref="PlayerMatch"/>'s preconditions.
+    ///
+    /// <b>Why a stream is chosen rather than assumed.</b> The strict fixture only
+    /// accepts a stream whose cascades clear one Gem type, so a scenario that plays
+    /// several rounds from one evolving stream may reach a round whose stream admits
+    /// no such arrangement. The scenario then re-pins the stream — the
+    /// <c>RngState</c> is <b>fixture state</b> (<c>GAME_STATE.md</c> §2.6.2), never an
+    /// asserted value, and no gameplay rule is derived from it (<c>ADR-009</c>): the
+    /// scenario decides which stream to play and then asserts the documented
+    /// contracts on that round.
+    /// </summary>
+    /// <param name="matchType">The Gem type the fixture's Swap must clear.</param>
+    /// <param name="starting">
+    /// The stream the scenario would otherwise continue — the search starts there, so a
+    /// scenario whose own stream already satisfies the fixture keeps it.
+    /// </param>
+    /// <param name="excluded">A pair the fixture must not return (<c>MATCH3_RULES.md</c> §2.1.4 item 2).</param>
+    /// <exception cref="InvalidOperationException">
+    /// No candidate stream satisfies the fixture. It is a fixture defect, never a
+    /// production failure.
+    /// </exception>
+    public static (RngState RngState, PinnedPlayerRound Pinned) PinnedForStream(
+        GemType matchType,
+        RngState starting,
         CommittedSwapPair? excluded = null)
+    {
+        for (ulong offset = 0; offset < 256; offset++)
+        {
+            var candidate = new RngState(starting.State + offset, starting.Increment);
+
+            if (TryPlayerMatch(matchType, candidate, excluded) is { } pinned)
+            {
+                return (candidate, pinned);
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"ADR-026 fixture for '{matchType}' could not be constructed against any of the 256 "
+            + "candidate streams. This is a test-fixture defect, never a production failure.");
+    }
+
+    private static PinnedPlayerRound? TryPlayerMatch(
+        GemType matchType,
+        RngState rngState,
+        CommittedSwapPair? excluded)
     {
         for (var row = 0; row + 1 < BoardState.Rows; row++)
         {
@@ -99,8 +152,7 @@ internal static class RoundTestSupport
 
                 var resolution = CascadeResolver.Resolve(
                     board.WithSwapped(from, to),
-                    new Pcg32(rngState.State, rngState.Increment),
-                    swapOriginIndex: null);
+                    new Pcg32(rngState.State, rngState.Increment));
 
                 if (resolution.Passes.Count == 0)
                 {
@@ -134,9 +186,7 @@ internal static class RoundTestSupport
             }
         }
 
-        throw new InvalidOperationException(
-            $"ADR-026 fixture for '{matchType}' could not be constructed. This is a test-fixture "
-            + "defect: the board builder no longer produces a single-type Match opportunity.");
+        return null;
     }
 
     /// <summary>

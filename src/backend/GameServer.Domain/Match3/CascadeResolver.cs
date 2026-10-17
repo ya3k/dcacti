@@ -5,9 +5,9 @@ namespace GameServer.Domain.Match3;
 ///
 /// <code>
 /// Detection pass 1   (board after the committed Swap)     → depth 1
-///         ↓  remove / activate+create / gravity / spawn
+///         ↓  remove / gravity / spawn
 /// Detection pass 2   (board after pass 1's Gravity+Spawn)  → depth 2, a Cascade
-///         ↓  remove / activate+create / gravity / spawn
+///         ↓  remove / gravity / spawn
 /// Detection pass 3   → depth 3, a Cascade
 ///         ↓
 ///       … until a pass detects no Match
@@ -50,9 +50,8 @@ public static class CascadeResolver
     /// </param>
     /// <param name="TotalMatches">
     /// The number of Matches detected across every pass. Each shape counts once
-    /// however many cells it spans and however many Special Gems it creates
-    /// (§3 item 5, §5.4 item 4 item 4). Gems cleared by a Special Gem activation
-    /// are not Matches and are not counted here (§5.5.5 item 8).
+    /// however many cells it spans and whatever tier it is
+    /// (§3 item 5, §5.7).
     /// </param>
     public readonly record struct CascadeResult(
         BoardState Board,
@@ -73,14 +72,7 @@ public static class CascadeResolver
     /// The authoritative generator. Spawn is the only operation that advances it
     /// (§4.5 item 4, §7.2 item 1).
     /// </param>
-    /// <param name="swapOriginIndex">
-    /// The cell the committed Swap moved a Gem into, when that cell's Gem is a
-    /// member of a matched line — the "swap origin" of
-    /// <c>MATCH3_RULES.md</c> §5.5.3 item 1. It applies to the <b>first pass
-    /// only</b>: every later pass is a Cascade and has no swap origin, so its Match
-    /// 4 / Match 5 Special Gems are placed at their line centre (§5.5.3 item 3).
-    /// </param>
-    public static CascadeResult Resolve(BoardState board, Pcg32 rng, int? swapOriginIndex)
+    public static CascadeResult Resolve(BoardState board, Pcg32 rng)
     {
         ArgumentNullException.ThrowIfNull(board);
         ArgumentNullException.ThrowIfNull(rng);
@@ -106,14 +98,7 @@ public static class CascadeResolver
                 break;
             }
 
-            // §5.5.3 item 3: only the Swap's first pass has a swap origin. A Cascade
-            // match has none, so its gem is placed at the line centre.
-            var pass = BoardResolver.ResolvePass(
-                currentBoard,
-                matchSet,
-                rng,
-                depth == 1 ? swapOriginIndex : null,
-                depth);
+            var pass = BoardResolver.ResolvePass(currentBoard, matchSet, rng, depth);
 
             passes.Add(pass);
             totalMatches += matchSet.Count;

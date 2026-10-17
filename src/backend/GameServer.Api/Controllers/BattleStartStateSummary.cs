@@ -132,13 +132,8 @@ internal static class BattleStartStateSummary
 
     /// <summary>
     /// Projects one cell entry — the Gem type as its documented contract name
-    /// and, when present, the Special Gem at that cell
-    /// (<c>GAME_STATE.md</c> §2.1.7 items 1–4, <c>MATCH3_RULES.md</c> §1.1).
+    /// (<c>GAME_STATE.md</c> §2.1.1, §2.1.3 item 1, <c>MATCH3_RULES.md</c> §1.1).
     /// </summary>
-    private static BattleStartCell ToCell(Cell cell) =>
-        new(
-            GemType: GemTypes.ToContractName(cell.GemType),
-            SpecialGem: cell.SpecialGem is not { } gem
-                ? null
-                : new BattleStartSpecialGem(gem.Type.ToString(), gem.Orientation?.ToString()));
+    private static BattleStartCell ToCell(GemType gemType) =>
+        new(GemType: GemTypes.ToContractName(gemType));
 }

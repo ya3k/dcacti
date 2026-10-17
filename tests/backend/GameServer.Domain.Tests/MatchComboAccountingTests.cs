@@ -604,21 +604,18 @@ public class MatchComboAccountingTests
     }
 
     // =======================================================================
-    // Special Gem exclusion — MATCH3_RULES.md §6.3.1
+    // Match-only accounting — MATCH3_RULES.md §3, §6
     // =======================================================================
 
     [Fact]
-    public void SpecialGemActivationAndChain_ShouldNotIncrementMatchCountOrCombo()
+    public void MatchFourResolution_ShouldCountMatches_NotClearedCells()
     {
-        // MATCH3_RULES.md §6.3.1: a Special Gem activation, a chain activation, the
-        // creation of a Special Gem, and the N cells one clears are all excluded.
+        // MATCH3_RULES.md §3 item 5 / §6.3 item 1: one detected shape is one Match
+        // however many cells it spans. A Match 4 is therefore exactly one Match and one
+        // Combo increment — never four.
         //
-        // A Match 4 fixture (row 5 holds 'P','P','D','P' at columns 0-3 with the
-        // completing 'P' at (4,2)) creates exactly one Line Clear Gem, and a Match 5
-        // fixture creates an Area Gem — both are creations, not Matches. The
-        // assertion is the identity: the accounted total equals the number of
-        // MatchResolution objects, and equals Resolution.TotalMatches, whatever the
-        // resolution did with Special Gems and cleared cells.
+        // A Match 4 fixture: row 5 holds 'P','P','D','P' at columns 0-3 with the
+        // completing 'P' at (4,2).
         var board = TestBoard.Background().WithGems(
             (I(5, 0), GemType.Power),
             (I(5, 1), GemType.Power),
@@ -632,48 +629,17 @@ public class MatchComboAccountingTests
 
         Assert.True(result.IsAccepted);
 
-        // The pass created a Special Gem — creation is a consequence of a Match, and
-        // it is never a second Match (§5.4 item 4, §6.3 item 3).
-        var created = result.Resolution.Passes.Sum(pass => pass.CreatedSpecialGems.Count);
-        Assert.True(created > 0, "the fixture must create a Special Gem");
-
-        // Accounting counts Matches only: the created gems, the activated gems, and
-        // the cells the activation cleared all contributed nothing.
         var matchCount = result.Resolution.Passes.Sum(pass => pass.Matches.Count);
-        var activated = result.Resolution.Passes.Sum(pass => pass.ActivatedSpecialGems.Count);
         var clearedCells = result.Resolution.Passes.Sum(pass => pass.ClearedCellUnion.Count);
 
+        Assert.Equal(1, matchCount);
+        Assert.Equal(4, clearedCells);
         Assert.Equal(matchCount, result.State.MatchCount);
         Assert.Equal(matchCount, result.State.Combo);
 
-        // The identity that proves the wrong derivations are absent: a pass that
-        // activated gems and cleared cells still reported only its Matches.
+        // The identity that proves the wrong derivation is absent: a pass that cleared
+        // four cells still reported only its one Match.
         Assert.NotEqual(clearedCells, result.State.MatchCount);
-
-        // Activated or not, the excluded collections never reached the counters.
-        _ = activated;
-    }
-
-    [Fact]
-    public void SpecialGemActivationOnTheBoard_ShouldStillCountOnlyMatches()
-    {
-        // A board that already holds a Special Gem: this Swap both completes a Match
-        // and consumes the held gem. The activation clears cells; the accounting
-        // counts the Match.
-        var board = MatchingBoard().WithSpecial((I(4, 2), SpecialGem.Burst()));
-
-        var state = BattleWith(board, (Combo: 0, MatchCount: 0));
-
-        var result = SwapExecutor.Execute(state, new SwapRequest(From, To));
-
-        Assert.True(result.IsAccepted);
-
-        var matches = result.Resolution.Passes.Sum(pass => pass.Matches.Count);
-        var activated = result.Resolution.Passes.Sum(pass => pass.ActivatedSpecialGems.Count);
-
-        Assert.True(activated > 0, "the fixture must activate the held Special Gem");
-        Assert.Equal(matches, result.State.Combo);
-        Assert.Equal(matches, result.State.MatchCount);
     }
 
     // =======================================================================
@@ -691,7 +657,7 @@ public class MatchComboAccountingTests
         {
             LastCommittedSwapPair = CommittedSwapPair.FromCells(0, 1),
         };
-        var boardBefore = state.BoardState.ToCellArray();
+        var boardBefore = state.BoardState.ToArray();
 
         var rejections = new (SwapRequest Request, SwapRejectionReason Reason)[]
         {
@@ -723,7 +689,7 @@ public class MatchComboAccountingTests
             Assert.Equal(BattleState.CreateWith("battle-005", TestSeed).RngState, state.RngState);
             Assert.Equal(new CommittedSwapPair(0, 1), state.LastCommittedSwapPair);
 
-            var boardAfter = state.BoardState.ToCellArray();
+            var boardAfter = state.BoardState.ToArray();
             Assert.Equal(boardBefore.Length, boardAfter.Length);
             for (var i = 0; i < boardBefore.Length; i++)
             {
@@ -907,8 +873,7 @@ public class MatchComboAccountingTests
                      "IEventPublisher", "EventPublisher", "IEventStore", "EventLog",
                      "IMessageBroker", "MessageBroker",
                      // Undocumented event names (GAME_EVENTS.md §2, GAME_RULES.md §16).
-                     "MatchCountChanged", "SpecialGemActivated", "SpecialGemCreated",
-                     "SpecialGemDestroyed", "TurnChanged", "SequenceChanged",
+                     "MatchCountChanged", "TurnChanged", "SequenceChanged",
                      "BoardChanged", "BoardUpdated",
                  })
         {
@@ -936,8 +901,7 @@ public class MatchComboAccountingTests
             var rng = new Pcg32(state.RngState.State, state.RngState.Increment);
             var resolution = CascadeResolver.Resolve(
                 state.BoardState.WithSwapped(from, to),
-                rng,
-                swapOriginIndex: null);
+                rng);
 
             if (resolution.TotalMatches == 1)
             {

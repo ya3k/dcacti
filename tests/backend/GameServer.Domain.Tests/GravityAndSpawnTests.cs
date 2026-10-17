@@ -178,66 +178,21 @@ public class GravityAndSpawnTests
     }
 
     [Fact]
-    public void Gravity_ShouldMoveTheWholeCellEntry_TypeAndSpecialGemTogether()
+    public void Gravity_ShouldMoveTheWholeCellValueAsOneUnit()
     {
-        // §4.4 item 8 / GAME_STATE.md §2.1.5 item 1: a Special Gem is pulled down like
-        // any other Gem — gravity moves the GemType AND its SpecialGem metadata
-        // together, as one unit.
+        // GAME_STATE.md §2.1.5 item 1: a cell entry is its GemType, and gravity relocates
+        // that value with its position — there is no secondary metadata to move.
         //
-        // Given a Special Gem at row 3 of its column and a hole BELOW it, so it falls.
+        // Given a hole BELOW a cell, so that cell's Gem falls into it.
         var cellIndex = BoardState.ToIndex(3, 2);
         var holeBelow = BoardState.ToIndex(4, 2);
-        var board = Board().WithSpecial((cellIndex, SpecialGem.LineClearVertical()));
+        var board = Board();
 
         var result = Gravity.Apply(board, Empties(holeBelow));
 
-        // The gem fell into the hole, carrying its type and metadata.
-        var landed = result.Board.SpecialGemAt(holeBelow);
-        Assert.NotNull(landed);
-        Assert.Equal(SpecialGemType.LineClear, landed!.Value.Type);
-
-        // The Gem type travelled with it: the cell now holds exactly what the gem's
-        // original cell held.
+        // The Gem travelled with its position: the destination holds exactly what the
+        // source held.
         Assert.Equal(board[cellIndex], result.Board[holeBelow]);
-    }
-
-    [Fact]
-    public void Gravity_ShouldNotChangeASpecialGemsOrientation()
-    {
-        // §4.4 item 8 / §5.2 item 3: "a Line Clear Gem that falls keeps its
-        // orientation". The orientation is a property of the created Special Gem, not
-        // of its cell.
-        var cellIndex = BoardState.ToIndex(3, 2);
-        var holeBelow = BoardState.ToIndex(4, 2);
-
-        foreach (var orientation in new[] { SpecialGemOrientation.Horizontal, SpecialGemOrientation.Vertical })
-        {
-            var board = Board().WithSpecial((cellIndex, SpecialGem.LineClear(orientation)));
-
-            var result = Gravity.Apply(board, Empties(holeBelow));
-
-            var fell = result.Board.SpecialGemAt(holeBelow);
-
-            Assert.NotNull(fell);
-            Assert.Equal(SpecialGemType.LineClear, fell!.Value.Type);
-            Assert.Equal(orientation, fell.Value.Orientation);
-        }
-    }
-
-    [Fact]
-    public void Gravity_ShouldNotActivateASpecialGemByFalling()
-    {
-        // §4.4 item 8: "Its effect is not re-triggered by falling; activation happens
-        // only as §5.5.5 defines." Gravity is a pure rearrangement that returns a
-        // board — it has no activation output at all.
-        var cellIndex = BoardState.ToIndex(3, 2);
-        var holeBelow = BoardState.ToIndex(4, 2);
-        var board = Board().WithSpecial((cellIndex, SpecialGem.Burst()));
-
-        var result = Gravity.Apply(board, Empties(holeBelow));
-
-        // The gem moved into the hole and is still present, un-activated.
-        Assert.NotNull(result.Board.SpecialGemAt(holeBelow));
     }
 
     [Fact]
@@ -377,7 +332,7 @@ public class GravityAndSpawnTests
             .Select(_ => GemTypes.All[(int)replay.NextBounded(GemTypes.Count)])
             .ToArray();
 
-        Assert.Equal(expected, spawn.CreatedCells.Select(c => c.Cell.GemType));
+        Assert.Equal(expected, spawn.CreatedCells.Select(c => c.GemType));
         Assert.Equal(replay.CurrentState, rng.CurrentState);
         Assert.NotEqual(before, rng.CurrentState);
     }
@@ -398,19 +353,17 @@ public class GravityAndSpawnTests
     }
 
     [Fact]
-    public void Spawn_ShouldNeverCreateASpecialGem()
+    public void Spawn_ShouldAlwaysCreateAnOrdinaryGem()
     {
-        // §4.5 item 7: "Spawn never creates a Special Gem." A spawned entry always has
-        // SpecialGem absent, whatever the cell held before — including a cell whose
-        // Special Gem was just consumed (GAME_STATE.md §2.1.5 item 3).
-        var board = Board().WithSpecial((0, SpecialGem.Burst()));
+        // §4.5 item 7: a spawned Gem is an ordinary Gem of one of the four types,
+        // whatever the cell held before (GAME_STATE.md §2.1.5 item 3).
+        var board = Board();
 
         var gravity = Gravity.Apply(board, Empties(0));
         var spawn = Spawn.Fill(gravity.Board, Pcg32.FromSeed(7UL), new HashSet<int>(gravity.VacatedCells));
 
         Assert.NotEmpty(spawn.CreatedCells);
-        Assert.All(spawn.CreatedCells, c => Assert.Null(c.Cell.SpecialGem));
-        Assert.All(spawn.CreatedCells, c => Assert.True(c.Cell.SpecialGem is null));
+        Assert.All(spawn.CreatedCells, c => Assert.True(GemTypes.IsValid((int)c.GemType)));
     }
 
     [Fact]
@@ -422,7 +375,7 @@ public class GravityAndSpawnTests
         var gravity = Gravity.Apply(board, Empties(0, 1, 2, 3, 4, 5, 6, 7));
         var spawn = Spawn.Fill(gravity.Board, Pcg32.FromSeed(99UL), new HashSet<int>(gravity.VacatedCells));
 
-        Assert.All(spawn.CreatedCells, c => Assert.True(GemTypes.IsValid((int)c.Cell.GemType)));
+        Assert.All(spawn.CreatedCells, c => Assert.True(GemTypes.IsValid((int)c.GemType)));
     }
 
     [Fact]
@@ -444,44 +397,46 @@ public class GravityAndSpawnTests
     public void Spawn_ShouldNeverFillACellThatStillHoldsAGem()
     {
         // The composite invariant that the pre/post-gravity distinction protects: a
-        // cell that still holds a survivor — including a Special Gem — is never
-        // overwritten by Spawn (§4.5 item 1).
+        // cell that still holds a survivor is never overwritten by Spawn (§4.5 item 1).
         //
-        // Given an Area Gem at the bottom of its column with a hole ABOVE it: nothing
-        // falls into the gem's cell, and Spawn must not overwrite it either.
+        // Given a Gem at the bottom of its column with a hole ABOVE it: nothing falls
+        // into the gem's cell, and Spawn must not overwrite it either.
         var gemCell = BoardState.ToIndex(7, 2);
         var holeAbove = BoardState.ToIndex(6, 2);
-        var board = Board().WithSpecial((gemCell, SpecialGem.Area()));
+        var board = Board();
 
         var gravity = Gravity.Apply(board, Empties(holeAbove));
         var spawn = Spawn.Fill(gravity.Board, Pcg32.FromSeed(5UL), new HashSet<int>(gravity.VacatedCells));
 
-        // The Area Gem stayed at the bottom and survived the spawn untouched.
-        var gem = spawn.Board.SpecialGemAt(gemCell);
-        Assert.NotNull(gem);
-        Assert.Equal(SpecialGemType.Area, gem!.Value.Type);
+        // The Gem stayed at the bottom and survived the spawn untouched.
+        Assert.Equal(board[gemCell], spawn.Board[gemCell]);
     }
 
     [Fact]
-    public void Pass_ShouldNotOverwriteAFallenSpecialGemDuringSpawn()
+    public void Pass_ShouldNotOverwriteAFallenGemDuringSpawn()
     {
-        // The defect this ordering exists to prevent: a Special Gem that fell into a
-        // cell that was empty BEFORE gravity must not then be overwritten by Spawn
-        // filling that stale set. Spawn fills the cells empty AFTER gravity, so the
-        // gem survives into the resolved board.
-        var gemCell = BoardState.ToIndex(2, 2);
-        var board = Board()
-            .WithGems((20, GemType.Def), (21, GemType.Def), (22, GemType.Def), (23, GemType.Def))
-            .WithSpecial((gemCell, SpecialGem.Burst()));
+        // The defect this ordering exists to prevent: a Gem that fell into a cell that
+        // was empty BEFORE gravity must not then be overwritten by Spawn filling that
+        // stale set. Spawn fills the cells empty AFTER gravity, so the pass's board is
+        // exactly remove → Gravity → Spawn with Gravity's own vacated set.
+        var board = Board().WithGems((20, GemType.Def), (21, GemType.Def), (22, GemType.Def));
+        var matchSet = MatchDetector.Detect(board);
+        var rng = Pcg32.FromSeed(11UL);
 
-        var result = BoardResolver.ResolvePass(
-            board,
-            MatchDetector.Detect(board),
+        var result = BoardResolver.ResolvePass(board, matchSet, rng, cascadeDepth: 1);
+
+        var emptiesAfterRemoval = new HashSet<int>(MatchDetector.ClearedCellUnion(matchSet));
+        var gravity = Gravity.Apply(board, emptiesAfterRemoval);
+        var manualSpawn = Spawn.Fill(
+            gravity.Board,
             Pcg32.FromSeed(11UL),
-            swapOriginIndex: null,
-            cascadeDepth: 1);
+            new HashSet<int>(gravity.VacatedCells));
 
-        Assert.Contains(result.Board.Cells, c => c.HasSpecialGem);
+        // At least one Gem fell into a cell that was empty before Gravity — otherwise
+        // the scenario would not exercise the ordering at all.
+        Assert.NotEmpty(gravity.DropMoves);
+
+        Assert.True(result.Board.CellsEqual(manualSpawn.Board));
     }
 
     [Fact]

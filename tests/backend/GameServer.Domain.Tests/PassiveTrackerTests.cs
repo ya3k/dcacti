@@ -698,20 +698,15 @@ public class PassiveTrackerTests
     }
 
     // =======================================================================
-    // Special Gem detonations are not Matches — PASSIVE_RULES.md §2 item 2
+    // Cleared cells are not Matches — PASSIVE_RULES.md §2 item 1
     // =======================================================================
 
     [Fact]
-    public void SpecialGemDetonation_ShouldNotChargeBecauseItIsNotAMatch()
+    public void Charging_ShouldCountEveryMatchOnce_AndNothingElse()
     {
-        // §2 item 2: "Special Gem detonations (MATCH3_RULES.md §5.5) do NOT count
-        // as a Match for Passive progress, consistent with them not counting
-        // toward Combo/Match count either."
-        //
-        // The exclusion is enforced upstream where Matches are counted, not here.
-        // This test asserts it from the tracker's side: the only quantity that
-        // charges it is the Match count, so a Cascade that produced M Matches
-        // charges exactly M times — never once per cleared cell.
+        // §2 item 1: one increment per Match. This test asserts it from the tracker's
+        // side: the only quantity that charges it is the Match count, so a Cascade that
+        // produced M Matches charges exactly M times — never once per cleared cell.
         var result = Charge(threshold: 5, matches: 3);
 
         Assert.Equal(3, result.Charges.Count);
@@ -724,42 +719,33 @@ public class PassiveTrackerTests
     }
 
     [Fact]
-    public void SpecialGemDetonation_ShouldBeExcludedByTheBoardPipelinesOwnMatchCount()
+    public void MatchFourResolution_ShouldChargeOnItsMatches_NotItsClearedCells()
     {
-        // The upstream half of §2 item 2, asserted so the exclusion has a tested
-        // owner rather than resting on this type's silence: a board whose
-        // completing Swap activates a held Special Gem clears cells beyond its
-        // match set, and the resolution reports those cells as GemMatched while
-        // its Match count and the activation count remain different things.
-        //
-        // (The tracker's input is exactly the Match count this asserts on.)
+        // The upstream half of the distinction, asserted so it has a tested owner: one
+        // detected shape is one Match however many cells it clears, so the resolution's
+        // Match total and its cleared-cell total are different numbers and the tracker
+        // is charged on the Match total (MATCH3_RULES.md §3 item 5).
         var state = BattleState.CreateWith("battle-009", Seed) with
         {
             BoardState = TestBoard.Background().WithGems(
-                (I(4, 0), GemType.Atk),
-                (I(4, 1), GemType.Def),
-                (I(4, 2), GemType.Atk),
-                (I(3, 1), GemType.Atk))
-                .WithSpecial((I(4, 0), SpecialGem.LineClear(SpecialGemOrientation.Horizontal))),
+                (I(5, 0), GemType.Power),
+                (I(5, 1), GemType.Power),
+                (I(5, 2), GemType.Def),
+                (I(5, 3), GemType.Power),
+                (I(4, 2), GemType.Power)),
         };
 
-        var swap = SwapExecutor.Execute(state, new SwapRequest(From, To));
+        var swap = SwapExecutor.Execute(state, new SwapRequest(I(4, 2), I(5, 2)));
 
         Assert.True(swap.IsAccepted);
 
-        // The pass activated the held Special Gem and cleared extra cells...
-        var activationCells = swap.Resolution.Passes.Sum(p => p.ActivationCellGemMatched.Count);
-        Assert.True(activationCells > 0, "the fixture's activation must clear extra cells");
-        Assert.True(swap.Resolution.Passes.Sum(p => p.ActivatedSpecialGems.Count) > 0);
-
-        // ...and those cells are not Matches: the resolution's Match total is its
-        // match sets' total, independent of the cleared cells.
+        // The resolution's Match total is its match sets' total, independent of the
+        // cleared cells.
         var matchTotal = swap.Resolution.Passes.Sum(p => p.Matches.Count);
         Assert.Equal(matchTotal, swap.Resolution.TotalMatches);
 
-        // Charging on the Match total — the §2 item 2-correct input — is therefore
-        // charging on Matches only. Charging on the cleared cells would be a
-        // different, larger number, which is the defect §2 item 2 rules out.
+        // Charging on the Match total is charging on Matches only. Charging on the
+        // cleared cells would be a different, larger number.
         var clearedCells = swap.Resolution.Passes.Sum(p => p.ClearedCellUnion.Count);
         Assert.True(
             clearedCells > matchTotal,

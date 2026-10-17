@@ -180,8 +180,8 @@ internal static class BalancePolicies
     private static int LongestRunAfterExchanging(BattleState state, int from, int to)
     {
         var cells = state.BoardState.Cells;
-        var fromGem = cells[from].GemType;
-        var toGem = cells[to].GemType;
+        var fromGem = cells[from];
+        var toGem = cells[to];
 
         var best = 0;
 
@@ -222,7 +222,7 @@ internal static class BalancePolicies
     /// <c>(row, column)</c> stepping by <c>(dRow, dColumn)</c>.
     /// </summary>
     private static int CountDirection(
-        IReadOnlyList<Cell> cells,
+        IReadOnlyList<GemType> cells,
         int row,
         int column,
         int dRow,
@@ -240,7 +240,7 @@ internal static class BalancePolicies
 
             // The cell being exchanged away is treated as unknown, so it neither
             // extends nor breaks the run being measured.
-            if (index != origin && cells[index].GemType != gem)
+            if (index != origin && cells[index] != gem)
             {
                 break;
             }

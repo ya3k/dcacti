@@ -42,12 +42,11 @@ public class BoardGeneratorTests
 
         Assert.Equal(64, result.Board!.Cells.Count);
 
-        foreach (var cell in result.Board.Cells)
+        foreach (var gemType in result.Board.Cells)
         {
-            // A generated cell is an ordinary Gem with no Special Gem
+            // A generated cell holds exactly one of the four functional Gem types
             // (GAME_STATE.md §2.1.7 item 8, MATCH3_RULES.md §4.5 item 7).
-            Assert.True(GemTypes.IsValid((int)cell.GemType));
-            Assert.Null(cell.SpecialGem);
+            Assert.True(GemTypes.IsValid((int)gemType));
         }
     }
 
