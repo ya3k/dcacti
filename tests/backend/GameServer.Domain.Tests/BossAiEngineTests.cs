@@ -71,7 +71,7 @@ public class BossAiEngineTests
     // =======================================================================
 
     [Fact]
-    public void Scoring_ShouldRewardHigherTierAndHigherWeightMatches()
+    public void Scoring_ShouldBeWeightTimesCellsCountAcrossMatchShapes()
     {
         // Custom weights: ATK = 10, DEF = 5, HP = 20, POWER = 10
         var weights = new BossMoveScoringWeights(AtkWeight: 10, DefWeight: 5, HpWeight: 20, PowerWeight: 10);
@@ -99,7 +99,8 @@ public class BossAiEngineTests
         Assert.Single(matchesHp);
         var scoreHp = BossAiEngine.CalculateMoveScore(matchesHp, weights);
 
-        // ATK Match 3 = 10 * 1 * 3 = 30; HP Match 3 = 20 * 1 * 3 = 60
+        // ADR-028 item 6 / B-1: score = weight × cells.Count, with no match-tier
+        // factor. ATK Match 3 = 10 × 3 = 30; HP Match 3 = 20 × 3 = 60.
         Assert.Equal(30, scoreAtk);
         Assert.Equal(60, scoreHp);
         Assert.True(scoreHp > scoreAtk);
@@ -111,15 +112,52 @@ public class BossAiEngineTests
         Assert.Single(matchesAtk4);
         var scoreAtk4 = BossAiEngine.CalculateMoveScore(matchesAtk4, weights);
 
-        // ATK Match 4: (10 * 6 * 4) / 4 = 60
-        Assert.Equal(60, scoreAtk4);
+        // B-1: an ATK Match 4 scores 10 × 4 = 40 — count-only, with no tier scaling.
+        Assert.Equal(40, scoreAtk4);
         Assert.True(scoreAtk4 > scoreAtk);
+    }
+
+    [Fact]
+    public void CalculateMoveScore_ShouldBeWeightTimesCellsForMatch5AndLtShapes()
+    {
+        // ADR-028 item 6 / B-1: score = weight × match.Cells.Count, with no
+        // match-tier factor. A Match 5 is worth five cells and an L/T is worth its
+        // six unique cells — never a tier multiple.
+        var weights = BossMoveScoringWeights.Default;
+
+        // Match 5 of ATK: row 4, columns 0–4, broken at column 5.
+        var match5Board = TestBoard.Background().WithGems(
+            (I(4, 0), GemType.Atk),
+            (I(4, 1), GemType.Atk),
+            (I(4, 2), GemType.Atk),
+            (I(4, 3), GemType.Atk),
+            (I(4, 4), GemType.Atk),
+            (I(4, 5), GemType.Def));
+        var match5 = Assert.Single(MatchDetector.Detect(match5Board));
+        Assert.Equal(5, match5.Cells.Count);
+        Assert.Equal(weights.AtkWeight * 5, BossAiEngine.CalculateMoveScore([match5], weights));
+
+        // L/T of ATK: horizontal 4 (row 4, columns 0–3) crossed by vertical 3
+        // (column 2, rows 3–5) — 4 + 3 − 1 = 6 unique cells, scored once each.
+        var ltBoard = TestBoard.Background().WithGems(
+            (I(4, 0), GemType.Atk),
+            (I(4, 1), GemType.Atk),
+            (I(4, 2), GemType.Atk),
+            (I(4, 3), GemType.Atk),
+            (I(3, 2), GemType.Atk),
+            (I(5, 2), GemType.Atk),
+            (I(4, 4), GemType.Def),
+            (I(2, 2), GemType.Def),
+            (I(6, 2), GemType.Def));
+        var lt = Assert.Single(MatchDetector.Detect(ltBoard));
+        Assert.True(lt.IsLt);
+        Assert.Equal(6, lt.Cells.Count);
+        Assert.Equal(weights.AtkWeight * 6, BossAiEngine.CalculateMoveScore([lt], weights));
     }
 
     // =======================================================================
     // 4. Stable Tie-Breaking
     // =======================================================================
-
     [Fact]
     public void SelectMove_WhenScoresAreEqual_ShouldBreakTieByLowestCellIndex()
     {

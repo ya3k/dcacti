@@ -395,32 +395,43 @@ public class Task172BossPassiveRuntimeTests
         // does on a Combo-3 Turn.
         var (service, repository) = NewHarness();
 
-        var belowFour = await BossBasicAttackDamageAtComboAsync(repository, service, maxCombo: 3);
-        var atFour = await BossBasicAttackDamageAtComboAsync(repository, service, minCombo: 4);
+        var belowFour = await BossBasicAttackSampleAtComboAsync(repository, service, maxCombo: 3);
+        var atFour = await BossBasicAttackSampleAtComboAsync(repository, service, minCombo: 4);
 
-        Assert.True(belowFour > 0, "the below-threshold Turn must have produced a Boss attack");
-        Assert.True(atFour > 0, "the at-threshold Turn must have produced a Boss attack");
+        Assert.True(belowFour.Damage > 0, "the below-threshold Turn must have produced a Boss attack");
+        Assert.True(atFour.Damage > 0, "the at-threshold Turn must have produced a Boss attack");
 
         // §5.5.1 / §5.5.4: the modifier raises the derived Step-1 input, and the
         // stored base stat is unchanged either way.
         var boss = BossDefinitions.KimLoiVuong;
 
         Assert.Equal(140, boss.ATK);
-        Assert.Equal(168, StatusEffectLifecycle.EffectiveBossAttack(
-            boss.ATK,
-            [
-                StatusEffect.TurnBased(
-                    KimLoiVuongPassiveId,
-                    StatusEffectType.BuffDebuff,
-                    StatusEffectSource.Boss,
-                    magnitude: 20,
-                    duration: 1,
-                    targetStat: "ATK"),
-            ]));
 
-        Assert.True(
-            atFour > belowFour,
-            $"a Combo ≥ 4 Turn must land the Rage-modified attack: below={belowFour}, at={atFour}");
+        var rage = StatusEffect.TurnBased(
+            KimLoiVuongPassiveId,
+            StatusEffectType.BuffDebuff,
+            StatusEffectSource.Boss,
+            magnitude: 20,
+            duration: 1,
+            targetStat: "ATK");
+
+        // COMBAT_RULES.md §3.4 item 1 keeps the ATK-Gem pool a separate Step-1
+        // contribution that no ATK modifier scales, so the ATK term each Turn composed
+        // is its settled Base less that Turn's own pool. A Combo-3 Turn has no Rage
+        // instance and composes the stored 140; a Combo-≥4 Turn composes the derived
+        // 168. Comparing the ATK terms, rather than two raw damages on two different
+        // boards, is what isolates the modifier from the pool the Boss happened to
+        // generate that Turn — the pool itself differs per board and is not a
+        // statement about the Passive.
+        var belowAtkTerm = belowFour.Calculation.Base - belowFour.AtkGemPool;
+        var atFourAtkTerm = atFour.Calculation.Base - atFour.AtkGemPool;
+
+        Assert.Equal(boss.ATK, belowAtkTerm);
+        Assert.Equal(
+            StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, [rage]),
+            atFourAtkTerm);
+        Assert.Equal(168, atFourAtkTerm);
+        Assert.Equal(28, atFourAtkTerm - belowAtkTerm);
     }
 
     [Fact]
@@ -616,8 +627,29 @@ public class Task172BossPassiveRuntimeTests
             .Sum(e => e.DamageDealt.Amount);
 
     /// <summary>
-    /// Drives one committed Swap and returns the Boss's Basic Attack damage for that
-    /// Turn, for the first board whose resolution lands in the requested Combo band.
+    /// One Basic Attack the Boss's response phase landed: its damage instance and the
+    /// ATK-Gem pool that instance's Step 1 composed with.
+    /// </summary>
+    /// <param name="Damage">The Boss's Final Damage for the Turn.</param>
+    /// <param name="Calculation">
+    /// That instance's own <c>DamageCalculated</c> report — its Step-1 <c>Base</c> and
+    /// the pipeline's modifier factors (<c>COMBAT_RULES.md</c> §3).
+    /// </param>
+    /// <param name="AtkGemPool">
+    /// The ATK-Gem damage the Boss's own board action generated, under
+    /// <c>COMBAT_RULES.md</c> §2 item 6's `BaseOutput × unique cleared count`: 10 per
+    /// ATK Gem the action cleared. Read from the Boss phase's own <c>GemMatched</c>
+    /// reports (one per cleared cell per pass), so it is the value the round itself
+    /// reported rather than a re-derivation from the board.
+    /// </param>
+    private readonly record struct BossBasicAttackSample(
+        int Damage,
+        DamageCalculation Calculation,
+        int AtkGemPool);
+
+    /// <summary>
+    /// Drives one committed Swap and returns the Boss's Basic Attack for that Turn, for
+    /// the first board whose resolution lands in the requested Combo band.
     ///
     /// The board is the existing MVP Boss Passive suite's fixed shape, whose pairs
     /// resolve to a spread of Combos (1 through 9) — so the Combo is genuine Match-3
@@ -629,7 +661,7 @@ public class Task172BossPassiveRuntimeTests
     /// the assertion reads the Basic Attack fallback (step 18c); a Turn that did cast
     /// is skipped so the two bands compare like with like.
     /// </summary>
-    private static async Task<int> BossBasicAttackDamageAtComboAsync(
+    private static async Task<BossBasicAttackSample> BossBasicAttackSampleAtComboAsync(
         InMemoryBattleStateRepository repository,
         BattleStateService service,
         int? minCombo = null,
@@ -688,7 +720,23 @@ public class Task172BossPassiveRuntimeTests
 
             if (damage > 0)
             {
-                return damage;
+                // GAME_EVENTS.md §1: the instance is reported by one contiguous
+                // DamageCalculated → DamageDealt → DamageTaken triple, so the boss
+                // attack's calculation is the event immediately preceding its
+                // DamageDealt.
+                var dealtIndex = result.Value.Events
+                    .Select((battleEvent, index) => (battleEvent, index))
+                    .Single(t => t.battleEvent.Type == BattleEventType.DamageDealt
+                                 && t.battleEvent.DamageDealt.Source == DamageParty.Boss)
+                    .index;
+
+                var calculation = result.Value.Events[dealtIndex - 1].DamageCalculated;
+
+                var atkGemPool = RoundTestSupport.BossBoardEvents(result.Value)
+                    .Count(e => e.Type == BattleEventType.GemMatched && e.Gem.GemType == GemType.Atk)
+                    * ResourceGenerator.AtkGemBaseDamage;
+
+                return new BossBasicAttackSample(damage, calculation, atkGemPool);
             }
         }
 

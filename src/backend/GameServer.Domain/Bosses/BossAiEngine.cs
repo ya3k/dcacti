@@ -145,8 +145,14 @@ public static class BossAiEngine
     }
 
     /// <summary>
-    /// Calculates the deterministic score of a move based on its immediate first-pass matches.
-    /// Score = sum of (weight * tierNumerator / tierDenominator * cellsCount) across all matches.
+    /// Calculates the deterministic score of a move from its immediate first-pass
+    /// matches: <c>score = weight × match.Cells.Count</c> summed across the
+    /// matches (ADR-028 item 6, reconciliation decision B-1).
+    ///
+    /// <b>Count-only, with no match-tier factor.</b> The retired match-tier
+    /// multipliers (OD-3) no longer scale a candidate's score, so a Match 4 is
+    /// worth its four cells and a Match 5 its five — not a tier multiple. The
+    /// weight stays the Gem type's base output (<c>COMBAT_RULES.md</c> §2).
     /// </summary>
     public static int CalculateMoveScore(
         IReadOnlyList<MatchShape> matches,
@@ -157,16 +163,10 @@ public static class BossAiEngine
         for (var i = 0; i < matches.Count; i++)
         {
             var match = matches[i];
-            var tier = match.IsLt
-                ? MatchTier.Lt
-                : MatchTierMultipliers.ForStraightRun((match.HorizontalArm ?? match.VerticalArm)!.Length);
-
-            var numerator = MatchTierMultipliers.NumeratorFor(tier);
-            var denominator = MatchTierMultipliers.Denominator;
             var weight = weights.WeightFor(match.GemType);
 
-            // Grounded in COMBAT_RULES.md §2: base rate * tier multiplier * cells count.
-            var matchScore = (weight * numerator * match.Cells.Count) / denominator;
+            // ADR-028 item 6 / B-1: weight × cells count. No tier multiplier.
+            var matchScore = weight * match.Cells.Count;
             totalScore += matchScore;
         }
 

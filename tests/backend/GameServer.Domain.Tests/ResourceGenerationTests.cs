@@ -16,14 +16,14 @@ namespace GameServer.Domain.Tests;
 /// Test
 /// </code>
 ///
-/// Every expected value below is derived from <c>COMBAT_RULES.md</c> §2's table
-/// and its multiplier table, never from the implementation:
+/// Every expected value below is derived from <c>COMBAT_RULES.md</c> §2 and §2
+/// item 6, never from the implementation:
 ///
 /// <code>
-/// ATK Gem    +10 Base Damage      Match 3   → 1.0×
-/// DEF Gem    +5  Defense pool     Match 4   → 1.5×
-/// HP Gem     +20 Heal pool        Match 5   → 2.0×
-/// POWER Gem  +10 Power            L/T       → 1.25×
+/// ATK Gem    +10 Base Damage      Match 3, Match 4, Match 5, L/T
+/// DEF Gem    +5  Defense pool     → all contribute BaseOutput × unique cells
+/// HP Gem     +20 Heal pool        (no match-tier multiplier, OD-3/OD-4)
+/// POWER Gem  +10 Power
 /// </code>
 ///
 /// Boards are written through <see cref="TestBoard"/>, so a scenario reads as the
@@ -32,8 +32,8 @@ namespace GameServer.Domain.Tests;
 ///
 /// <b>Fixtures declare every cell of the region they study.</b> The background
 /// board is match-free, but a run that grows past the cells a fixture names would
-/// silently change the tier — so each scenario states the whole row(s) its Match
-/// occupies, and the swap is chosen so the run's length is exactly the tier under
+/// silently change the shape — so each scenario states the whole row(s) its Match
+/// occupies, and the swap is chosen so the run's length is exactly the shape under
 /// test.
 /// </summary>
 public class ResourceGenerationTests
@@ -67,8 +67,8 @@ public class ResourceGenerationTests
     /// swapping the completing Gem above the gap with the gap cell.
     ///
     /// Built from explicit rows like <see cref="Match3Board"/>, so the run is
-    /// exactly <paramref name="length"/> long and the tier under test is the tier
-    /// applied. The completing Gem sits at row 3, directly above the gap at row 4.
+    /// exactly <paramref name="length"/> long and every cell is counted once. The
+    /// completing Gem sits at row 3, directly above the gap at row 4.
     /// </summary>
     private static BoardState RunBoard(GemType type, int length, out int from, out int to)
     {
@@ -109,7 +109,7 @@ public class ResourceGenerationTests
     /// so the run's length is exactly three whatever <paramref name="type"/> is.
     /// Patching the shared background would let a run merge with the background Gem
     /// beside it and silently become a Match 4 — a fixture defect that would look
-    /// like a multiplier bug.
+    /// like a rate bug.
     ///
     /// <code>
     /// row 3   P A X H P A D H     the completing Gem at column 2
@@ -156,7 +156,7 @@ public class ResourceGenerationTests
         }
 
         // Every column beyond the run must break it, or the run would be longer than
-        // the tier under test.
+        // the shape under test.
         for (var column = length; column < 8; column++)
         {
             if (cells[column] == runType)
@@ -184,19 +184,21 @@ public class ResourceGenerationTests
     private static int To => 34;   // I(4, 2) — the gap
 
     // =======================================================================
-    // 1–4. Per-Gem base rates — one Gem type at a time, Match-3 tier
+    // 1–4. Per-Gem base rates — one Gem type at a time, Match-3
     //
     // Each scenario asserts the Swap's FIRST pass, which is the pass the committed
-    // Swap produced and is fully determined by the fixture: its size, its tier, and
-    // its Gem type are all chosen by the test. A later pass is a Cascade whose board
+    // Swap produced and is fully determined by the fixture: its size and its Gem
+    // type are all chosen by the test. A later pass is a Cascade whose board
     // depends on the Gems Spawn draws, so a Swap-level total cannot isolate a single
     // Gem type's rate — the cascade-accumulation property has its own tests below.
     // =======================================================================
 
     /// <summary>
     /// The resource a resolution's <b>first</b> pass generated, computed from that
-    /// pass's own cleared Gems. This is the deterministic part of a Swap: pass 1 runs
-    /// on the board the committed Swap produced (<c>MATCH3_RULES.md</c> §4.2 item 1).
+    /// pass's own cleared cells under `COMBAT_RULES.md` §2 item 6:
+    /// `BaseOutput(type) × unique cleared count(type)`, with no match-tier factor.
+    /// This is the deterministic part of a Swap: pass 1 runs on the board the
+    /// committed Swap produced (<c>MATCH3_RULES.md</c> §4.2 item 1).
     /// </summary>
     private static ResourceGeneration FirstPassResources(CascadeResolver.CascadeResult resolution)
     {
@@ -209,9 +211,7 @@ public class ResourceGenerationTests
 
         foreach (var gem in pass.ClearedGems)
         {
-            var generated = (ResourceGenerator.BaseOutputFor(gem.GemType)
-                             * MatchTierMultipliers.NumeratorFor(gem.Tier))
-                            / MatchTierMultipliers.Denominator;
+            var generated = ResourceGenerator.BaseOutputFor(gem.GemType);
 
             switch (gem.GemType)
             {
@@ -228,10 +228,10 @@ public class ResourceGenerationTests
     }
 
     [Fact]
-    public void Generate_ShouldProduceBaseDamageFromAtkGemsAtMatchTier()
+    public void Generate_ShouldProduceBaseDamageFromAtkGems()
     {
-        // COMBAT_RULES.md §2 / MATCH3_RULES.md §5.1: a Match 3 of three ATK Gems
-        // generates 3 × 10 × 1.0× = 30 Base Damage, and nothing in the other pools.
+        // COMBAT_RULES.md §2 / §2 item 6: a Match 3 of three ATK Gems generates
+        // 3 × 10 = 30 Base Damage, and nothing in the other pools.
         var result = SwapExecutor.Execute(BattleWith(Match3Board(GemType.Atk)), new SwapRequest(From, To));
 
         Assert.True(result.IsAccepted);
@@ -243,16 +243,20 @@ public class ResourceGenerationTests
         Assert.Equal(0, first.Power);
         Assert.Equal(3, first.ClearedGemCounts.Atk);
 
+        // Reporting and contribution agree: pool = BaseOutput × count (§2 item 6).
+        Assert.Equal(
+            first.ClearedGemCounts.Atk * ResourceGenerator.AtkGemBaseDamage,
+            first.BaseDamagePool);
+
         // The Swap's total is at least its first pass — the first pass always
         // generates, and later passes add (§5.7 item 7).
         Assert.True(result.Resources.BaseDamagePool >= 30);
     }
 
     [Fact]
-    public void Generate_ShouldProduceDefenseFromDefGemsAtMatchTier()
+    public void Generate_ShouldProduceDefenseFromDefGems()
     {
-        // §2: DEF Gem → +5 Defense pool. Three DEF Gems at the Match-3 tier:
-        // 3 × 5 × 1.0× = 15.
+        // §2: DEF Gem → +5 Defense pool. Three DEF Gems: 3 × 5 = 15.
         var result = SwapExecutor.Execute(BattleWith(Match3Board(GemType.Def)), new SwapRequest(From, To));
 
         Assert.True(result.IsAccepted);
@@ -263,13 +267,15 @@ public class ResourceGenerationTests
         Assert.Equal(0, first.HealPool);
         Assert.Equal(0, first.Power);
         Assert.Equal(3, first.ClearedGemCounts.Def);
+        Assert.Equal(
+            first.ClearedGemCounts.Def * ResourceGenerator.DefGemBaseDefense,
+            first.DefensePool);
     }
 
     [Fact]
-    public void Generate_ShouldProduceHealFromHpGemsAtMatchTier()
+    public void Generate_ShouldProduceHealFromHpGems()
     {
-        // §2: HP Gem → +20 Heal pool. Three HP Gems at the Match-3 tier:
-        // 3 × 20 × 1.0× = 60.
+        // §2: HP Gem → +20 Heal pool. Three HP Gems: 3 × 20 = 60.
         var result = SwapExecutor.Execute(BattleWith(Match3Board(GemType.Hp)), new SwapRequest(From, To));
 
         Assert.True(result.IsAccepted);
@@ -280,13 +286,16 @@ public class ResourceGenerationTests
         Assert.Equal(0, first.DefensePool);
         Assert.Equal(0, first.Power);
         Assert.Equal(3, first.ClearedGemCounts.Hp);
+        Assert.Equal(
+            first.ClearedGemCounts.Hp * ResourceGenerator.HpGemBaseHeal,
+            first.HealPool);
     }
 
     [Fact]
-    public void Generate_ShouldProducePowerFromPowerGemsAtMatchTier()
+    public void Generate_ShouldProducePowerFromPowerGems()
     {
-        // §2: POWER Gem → +10 Power. Three POWER Gems at the Match-3 tier:
-        // 3 × 10 × 1.0× = 30, and Power is the one pool that reaches the state.
+        // §2: POWER Gem → +10 Power. Three POWER Gems: 3 × 10 = 30, and Power is
+        // the one pool that reaches the state.
         var result = SwapExecutor.Execute(BattleWith(Match3Board(GemType.Power)), new SwapRequest(From, To));
 
         Assert.True(result.IsAccepted);
@@ -296,6 +305,9 @@ public class ResourceGenerationTests
         Assert.Equal(0, first.BaseDamagePool);
         Assert.Equal(0, first.DefensePool);
         Assert.Equal(0, first.HealPool);
+        Assert.Equal(
+            first.ClearedGemCounts.Power * ResourceGenerator.PowerGemBasePower,
+            first.Power);
 
         // GAME_RULES.md §12 / GAME_STATE.md §2.3 (COMBAT_RULES.md §1.1): Power is a
         // PetState member — the active Pet's — and it is persistent, and it equals
@@ -305,101 +317,126 @@ public class ResourceGenerationTests
         Assert.Equal(result.Resources.Power, afterPower.Power);
     }
 
+    [Fact]
+    public void BaseOutput_ShouldCarryTheDocumentedRates()
+    {
+        // COMBAT_RULES.md §2's table — the rates OD-3 retires nothing from: the
+        // match-tier multiplier is gone, the per-Gem base outputs are unchanged.
+        Assert.Equal(10, ResourceGenerator.AtkGemBaseDamage);
+        Assert.Equal(5, ResourceGenerator.DefGemBaseDefense);
+        Assert.Equal(20, ResourceGenerator.HpGemBaseHeal);
+        Assert.Equal(10, ResourceGenerator.PowerGemBasePower);
+
+        Assert.Equal(10, ResourceGenerator.BaseOutputFor(GemType.Atk));
+        Assert.Equal(5, ResourceGenerator.BaseOutputFor(GemType.Def));
+        Assert.Equal(20, ResourceGenerator.BaseOutputFor(GemType.Hp));
+        Assert.Equal(10, ResourceGenerator.BaseOutputFor(GemType.Power));
+    }
+
     // =======================================================================
-    // 5. Match-tier multipliers
+    // 5. Match 4 / Match 5 / L-T contribute at the same per-Gem BaseOutput
     // =======================================================================
 
     [Fact]
-    public void MatchTierMultipliers_ShouldCarryTheDocumentedNumerators()
+    public void Generate_ShouldUseThePerGemBaseOutputForAMatch4()
     {
-        // COMBAT_RULES.md §2's multiplier table, read as exact rationals over 4.
-        // The L/T rate is 1.25× — lower than Match 4's 1.5× — which §2 owns and
-        // MATCH3_RULES.md §5.4 item 3 relies on.
-        Assert.Equal(4, MatchTierMultipliers.NumeratorFor(MatchTier.Match3)); // 1.00×
-        Assert.Equal(6, MatchTierMultipliers.NumeratorFor(MatchTier.Match4)); // 1.50×
-        Assert.Equal(8, MatchTierMultipliers.NumeratorFor(MatchTier.Match5)); // 2.00×
-        Assert.Equal(5, MatchTierMultipliers.NumeratorFor(MatchTier.Lt));     // 1.25×
-    }
-
-    [Fact]
-    public void MatchTierMultipliers_ShouldPlaceMatch6AndAboveAtTheMatch5Tier()
-    {
-        // MATCH3_RULES.md §5.3 item 3 / COMBAT_RULES.md §2 item 4: a run of 6 or
-        // more is a Match 5 and there is no separate tier.
-        Assert.Equal(MatchTier.Match3, MatchTierMultipliers.ForStraightRun(3));
-        Assert.Equal(MatchTier.Match4, MatchTierMultipliers.ForStraightRun(4));
-        Assert.Equal(MatchTier.Match5, MatchTierMultipliers.ForStraightRun(5));
-        Assert.Equal(MatchTier.Match5, MatchTierMultipliers.ForStraightRun(6));
-        Assert.Equal(MatchTier.Match5, MatchTierMultipliers.ForStraightRun(8));
-    }
-
-    [Fact]
-    public void MatchTierMultipliers_ShouldRejectARunShorterThanAMatch()
-    {
-        // MATCH3_RULES.md §3 item 2: the minimum match length is 3, so a run of 2
-        // is not a Match and has no tier.
-        Assert.Throws<ArgumentOutOfRangeException>(() => MatchTierMultipliers.ForStraightRun(2));
-    }
-
-    [Fact]
-    public void Generate_ShouldApplyTheMatch4MultiplierToAMatch4()
-    {
-        // COMBAT_RULES.md §2: Match 4 → 1.5×. Four ATK Gems generate
-        // 4 × 10 × 1.5 = 60 Base Damage.
+        // COMBAT_RULES.md §2 item 6 / OD-3: there is no match-tier multiplier.
+        // Four ATK Gems generate 4 × 10 = 40 Base Damage — not a tier-multiplied
+        // result.
         var board = RunBoard(GemType.Atk, length: 4, out var from, out var to);
 
         var result = SwapExecutor.Execute(BattleWith(board), new SwapRequest(from, to));
 
         Assert.True(result.IsAccepted);
         Assert.Equal(4, result.Resources.ClearedGemCounts.Atk);
-        Assert.Equal(60, result.Resources.BaseDamagePool);
+        Assert.Equal(40, result.Resources.BaseDamagePool);
     }
 
     [Fact]
-    public void Generate_ShouldApplyTheMatch5MultiplierToAMatch5()
+    public void Generate_ShouldUseThePerGemBaseOutputForAMatch5()
     {
-        // COMBAT_RULES.md §2: Match 5 → 2.0×. Five ATK Gems generate
-        // 5 × 10 × 2.0 = 100 Base Damage.
+        // COMBAT_RULES.md §2 item 6 / OD-3: five ATK Gems generate 5 × 10 = 50 Base
+        // Damage — not a tier-multiplied result.
         var board = RunBoard(GemType.Atk, length: 5, out var from, out var to);
 
         var result = SwapExecutor.Execute(BattleWith(board), new SwapRequest(from, to));
 
         Assert.True(result.IsAccepted);
         Assert.Equal(5, result.Resources.ClearedGemCounts.Atk);
-        Assert.Equal(100, result.Resources.BaseDamagePool);
+        Assert.Equal(50, result.Resources.BaseDamagePool);
     }
 
     [Fact]
-    public void Generate_ShouldUseTheMatch5RateForARunOfSixOrMore()
+    public void Generate_ShouldCountARunOfSixAsSixCells()
     {
-        // MATCH3_RULES.md §5.3 item 3 / COMBAT_RULES.md §2 item 4: a run of 6+ is a
-        // Match 5 at 2.0× — not a sixth multiplier. Six ATK Gems generate
-        // 6 × 10 × 2.0 = 120.
+        // MATCH3_RULES.md §5.7 item 6: a run of 6+ is one longer Match, not a sixth
+        // rate. Six ATK Gems generate 6 × 10 = 60 — one contribution per cell.
         var board = RunBoard(GemType.Atk, length: 6, out var from, out var to);
 
         var result = SwapExecutor.Execute(BattleWith(board), new SwapRequest(from, to));
 
         Assert.True(result.IsAccepted);
         Assert.Equal(6, result.Resources.ClearedGemCounts.Atk);
-        Assert.Equal(120, result.Resources.BaseDamagePool);
+        Assert.Equal(60, result.Resources.BaseDamagePool);
     }
 
-    [Fact]
-    public void Generate_ShouldApplyTheLtMultiplierOncePerConsumedCell()
+    [Theory]
+    [InlineData(GemType.Atk, 4, 40)]
+    [InlineData(GemType.Def, 4, 20)]
+    [InlineData(GemType.Hp, 4, 80)]
+    [InlineData(GemType.Power, 4, 40)]
+    [InlineData(GemType.Atk, 5, 50)]
+    [InlineData(GemType.Def, 5, 25)]
+    [InlineData(GemType.Hp, 5, 100)]
+    [InlineData(GemType.Power, 5, 50)]
+    public void Generate_ShouldUseThePerGemBaseOutputForEveryGemTypeAtMatch4AndMatch5(
+        GemType type,
+        int length,
+        int expectedPool)
     {
-        // COMBAT_RULES.md §2: L/T → 1.25×, applied once per consumed cell over the
-        // union of the shape's cells (MATCH3_RULES.md §5.4 item 6).
+        // COMBAT_RULES.md §2 item 6: Match 4 and Match 5 contribute
+        // `BaseOutput(type) × cells` for every Gem type — 4 × BaseOutput and
+        // 5 × BaseOutput respectively — with no tier factor and no other pool
+        // affected.
+        var board = RunBoard(type, length, out var from, out var to);
+
+        var result = SwapExecutor.Execute(BattleWith(board), new SwapRequest(from, to));
+
+        Assert.True(result.IsAccepted);
+
+        // The first pass is the Match this fixture builds, so its counts and pools are
+        // fully determined by the test; later cascade passes add whatever they add.
+        var first = FirstPassResources(result.Resolution);
+        Assert.Equal(length, first.ClearedGemCounts.For(type));
+        Assert.Equal(length, first.ClearedGemCounts.Total);
+        Assert.Equal(expectedPool, PoolFor(first, type));
+        Assert.Equal(length * ResourceGenerator.BaseOutputFor(type), expectedPool);
+
+        // And the Swap's total never generates less than that first pass.
+        Assert.True(PoolFor(result.Resources, type) >= expectedPool);
+    }
+
+    /// <summary>The pool one Gem type feeds, read from a generation result.</summary>
+    private static int PoolFor(ResourceGeneration generation, GemType type) => type switch
+    {
+        GemType.Atk => generation.BaseDamagePool,
+        GemType.Def => generation.DefensePool,
+        GemType.Hp => generation.HealPool,
+        GemType.Power => generation.Power,
+        _ => throw new ArgumentOutOfRangeException(nameof(type), type, "Not a documented Gem type."),
+    };
+
+    [Fact]
+    public void Generate_ShouldApplyThePerGemRateOncePerConsumedCellOfAnLt()
+    {
+        // COMBAT_RULES.md §2 item 6 / MATCH3_RULES.md §3.3 item 3 / OD-7: an L/T
+        // contributes BaseOutput once per UNIQUE cell, not once per arm and not twice
+        // for the shared intersection cell.
         //
         // The fixture forms a T: a horizontal run of four ATK on row 4 (columns
         // 0–3) crossing a vertical run of three ATK in column 2 (rows 3–5). The
-        // union is 4 + 3 − 1 shared = 6 cells, each at 10 × 1.25.
+        // union is 4 + 3 − 1 shared = 6 cells, each contributing 10.
         //
-        // §2 applies the rate "per Gem consumed in that match", so the per-Gem
-        // value is what is summed: (10 × 5) / 4 = 12 per Gem, and 6 × 12 = 72.
-        // The L/T rate is applied ONCE per cell — not once per arm and not twice
-        // for the shared cell (MATCH3_RULES.md §5.4 item 6: "an arm's higher
-        // classification does not apply a second, higher multiplier to the cells
-        // it shares with the L/T pattern").
         // Patched onto the verified match-free background. The T's arms:
         //   horizontal arm  row 4, columns 0–3  (four ATK; the gap is column 3)
         //   vertical arm    column 2, rows 3–5  (three ATK; (4,2) is the intersection)
@@ -428,21 +465,15 @@ public class ResourceGenerationTests
         Assert.True(result.IsAccepted);
 
         // The L/T is the first pass's single shape, so its own contribution is read
-        // from that pass: 6 cells at 10 × 1.25 each.
+        // from that pass: 6 unique cells at 10 each.
         var first = FirstPassResources(result.Resolution);
         Assert.Equal(6, first.ClearedGemCounts.Atk);
+        Assert.Equal(60, first.BaseDamagePool);
 
-        // §2 applies the rate per Gem consumed, and each Gem yields
-        // (10 × 5) / 4 = 12 (the documented multiplier is 1.25×, so a Gem contributes
-        // 12.5 and the integer result of applying the rate to that Gem is 12).
-        // 6 × 12 = 72.
-        Assert.Equal(72, first.BaseDamagePool);
-
-        // §5.4 item 6: the multiplier is applied ONCE per consumed cell. Applying it
-        // per arm, or twice for the shared (4,2) cell, would count more than 6 cells'
-        // worth and exceed 72.
+        // Counted ONCE per consumed cell: applying the contribution per arm, or
+        // twice for the shared (4,2) cell, would count more than 6 cells' worth.
         Assert.Equal(
-            6 * (ResourceGenerator.AtkGemBaseDamage * 5 / MatchTierMultipliers.Denominator),
+            6 * ResourceGenerator.AtkGemBaseDamage,
             first.BaseDamagePool);
     }
 
@@ -458,7 +489,8 @@ public class ResourceGenerationTests
         // from both: 3 ATK Gems → 30 Base Damage, 3 DEF Gems → 15 Defense pool.
         //
         // The ATK Match is made by the swap; the DEF Match sits untouched, so both are
-        // present in the first (depth 1) pass and both are at the Match-3 tier.
+        // present in the first (depth 1) pass and both contribute at the same per-Gem
+        // BaseOutput.
         //
         // Patched onto the verified match-free background, and every cell that could
         // join either run is declared: the ATK run's neighbours on its own row and the
@@ -480,27 +512,34 @@ public class ResourceGenerationTests
 
         Assert.True(result.IsAccepted);
 
-        // Both Matches are depth 1, so both are at the Match-3 tier, and both are in
-        // the first pass's cleared union: 3 ATK Gems → 30 Base Damage, 3 DEF Gems →
-        // 15 Defense pool.
+        // Both Matches are depth 1 and both are in the first pass's cleared union:
+        // 3 ATK Gems → 30 Base Damage, 3 DEF Gems → 15 Defense pool.
         var first = FirstPassResources(result.Resolution);
         Assert.Equal(3, first.ClearedGemCounts.Atk);
         Assert.Equal(3, first.ClearedGemCounts.Def);
         Assert.Equal(30, first.BaseDamagePool);
         Assert.Equal(15, first.DefensePool);
+
+        // Reporting and contribution agree for both pools (§2 item 6).
+        Assert.Equal(
+            first.ClearedGemCounts.Atk * ResourceGenerator.AtkGemBaseDamage,
+            first.BaseDamagePool);
+        Assert.Equal(
+            first.ClearedGemCounts.Def * ResourceGenerator.DefGemBaseDefense,
+            first.DefensePool);
     }
 
     [Fact]
     public void Generate_ShouldAccumulateAcrossCascadesInOneSwap()
     {
         // MATCH3_RULES.md §5.7 item 7: every Match detected in a Cascade pass
-        // generates at its own tier, and the Swap's total is the sum. No "cascade
-        // bonus" multiplier exists.
+        // contributes at the same per-Gem BaseOutput, and the Swap's total is the sum.
+        // No "cascade bonus" and no cross-pass multiplier exists.
         //
         // The equivalence that makes accumulation checkable without depending on
         // which gems a spawn happens to draw: generating over a resolution equals
         // generating pass by pass over that resolution's own passes and summing, at
-        // each pass's own tiers.
+        // each pass's per-Gem rate.
         var result = SwapExecutor.Execute(
             BattleWith(Match3Board(GemType.Atk)),
             new SwapRequest(From, To));
@@ -517,9 +556,7 @@ public class ResourceGenerationTests
         {
             foreach (var gem in pass.ClearedGems)
             {
-                var numerator = MatchTierMultipliers.NumeratorFor(gem.Tier);
-                var generated = (ResourceGenerator.BaseOutputFor(gem.GemType) * numerator)
-                    / MatchTierMultipliers.Denominator;
+                var generated = ResourceGenerator.BaseOutputFor(gem.GemType);
 
                 switch (gem.GemType)
                 {
@@ -560,8 +597,7 @@ public class ResourceGenerationTests
         var firstPass = result.Resolution.Passes[0];
         var firstPassTotal = firstPass.ClearedGems
             .Where(g => g.GemType == GemType.Atk)
-            .Sum(g => (ResourceGenerator.AtkGemBaseDamage * MatchTierMultipliers.NumeratorFor(g.Tier))
-                      / MatchTierMultipliers.Denominator);
+            .Sum(g => ResourceGenerator.AtkGemBaseDamage);
 
         Assert.True(
             result.Resources.BaseDamagePool >= firstPassTotal,
@@ -846,8 +882,8 @@ public class ResourceGenerationTests
     public void ResourceGeneration_ShouldBeDeterministicForTheSameResolution()
     {
         // MATCH3_RULES.md §7.2: generation consumes no RNG and is a pure function of
-        // the cleared cells and their tiers. The same state and Swap therefore
-        // always produce the same pools.
+        // the cleared cells. The same state and Swap therefore always produce the
+        // same pools.
         var battle = BattleWith(Match3Board(GemType.Atk));
 
         var first = SwapExecutor.Execute(battle, new SwapRequest(From, To));
@@ -889,11 +925,7 @@ public class ResourceGenerationTests
         Assert.True(result.IsAccepted);
 
         var pass = Assert.Single(result.Resolution.Passes);
-        Assert.All(pass.ClearedGems, gem =>
-        {
-            Assert.Equal(GemType.Hp, gem.GemType);
-            Assert.Equal(MatchTier.Match3, gem.Tier);
-        });
+        Assert.All(pass.ClearedGems, gem => Assert.Equal(GemType.Hp, gem.GemType));
 
         // The cleared cells are the union, each once, ascending index (§5.8.2 item 5).
         var indexes = pass.ClearedGems.Select(g => g.CellIndex).ToArray();
@@ -1051,9 +1083,50 @@ public class ResourceGenerationTests
         Assert.True(result.IsAccepted);
 
         var pass1 = result.Resolution.Passes[0];
-        // 6 unique cells in the union of the T-shape
+        // 6 unique cells in the union of the T-shape, and the pool is 6 × 5 — the
+        // shared intersection cell contributes exactly once.
         Assert.Equal(6, pass1.ClearedGems.Count(g => g.GemType == GemType.Def));
-        Assert.Equal(6, FirstPassResources(result.Resolution).ClearedGemCounts.Def);
+        var first = FirstPassResources(result.Resolution);
+        Assert.Equal(6, first.ClearedGemCounts.Def);
+        Assert.Equal(6 * ResourceGenerator.DefGemBaseDefense, first.DefensePool);
+    }
+
+    [Fact]
+    public void RejectedSwap_ThatCreatesNoMatch_ShouldGenerateNothing()
+    {
+        // MATCH3_RULES.md §2.1.5 item 5 / §4.3 item 4: an action that produces no
+        // confirmed Match is not accepted, writes nothing, and generates nothing —
+        // an unconfirmed Match never contributes resources. The swap below exchanges
+        // two adjacent background cells without forming any Match.
+        var result = SwapExecutor.Execute(
+            BattleWith(TestBoard.Background()),
+            new SwapRequest(I(0, 0), I(0, 1)));
+
+        Assert.True(result.IsRejected);
+        Assert.Throws<InvalidOperationException>(() => result.Resources);
+    }
+
+    [Fact]
+    public void ReportingCounts_ShouldMatchTheGeneratedPoolsAcrossTheWholeSwap()
+    {
+        // COMBAT_RULES.md §2 item 6: `pool(t) = BaseOutput(t) × count(t)` for the
+        // resolution's whole contribution — the reporting counts and the pools are
+        // two views of the same accumulation, so they agree pass by pass and in
+        // total, however deep the cascade runs.
+        var result = SwapExecutor.Execute(
+            BattleWith(Match3Board(GemType.Atk)),
+            new SwapRequest(From, To));
+
+        Assert.True(result.IsAccepted);
+
+        var totals = result.Resources.ClearedGemCounts;
+        Assert.Equal(totals.Atk * ResourceGenerator.AtkGemBaseDamage, result.Resources.BaseDamagePool);
+        Assert.Equal(totals.Def * ResourceGenerator.DefGemBaseDefense, result.Resources.DefensePool);
+        Assert.Equal(totals.Hp * ResourceGenerator.HpGemBaseHeal, result.Resources.HealPool);
+        Assert.Equal(totals.Power * ResourceGenerator.PowerGemBasePower, result.Resources.Power);
+
+        // And the totals are the sum of the passes' own contributions.
+        Assert.Equal(result.Resolution.Passes.Sum(p => p.ClearedGems.Count), totals.Total);
     }
 
     [Fact]

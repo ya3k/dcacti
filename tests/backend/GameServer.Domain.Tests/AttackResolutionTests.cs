@@ -233,8 +233,8 @@ public class AttackResolutionTests
             matches: ResolutionWithSingleMatchOf(GemType.Def).Passes[0].Matches,
             clearedGems:
             [
-                new ClearedGem(I(4, 0), GemType.Atk, MatchTier.Base),
-                new ClearedGem(I(4, 1), GemType.Atk, MatchTier.Base),
+                new ClearedGem(I(4, 0), GemType.Atk),
+                new ClearedGem(I(4, 1), GemType.Atk),
             ]);
 
         // Precondition: the reporting count really is positive — the value is derived

@@ -392,7 +392,13 @@ public class BossPassiveEffectsTests
         var bossDmg = result.Value.Events
             .Where(e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Boss)
             .Sum(e => e.DamageDealt.Amount);
-        Assert.Equal(500 + expectedHeal - bossDmg, result.Value.State.PetState.HP);
+
+        // COMBAT_RULES.md §4 items 2–3: the DEF Gems this same action cleared applied a
+        // Shield to the Pet before the Boss's instance landed, so only the excess over
+        // that Shield reduces HP. The reported Boss damage is the post-mitigation amount.
+        var netBossDamage = Math.Max(0, bossDmg - result.Value.Resources.DefensePool);
+
+        Assert.Equal(500 + expectedHeal - netBossDamage, result.Value.State.PetState.HP);
     }
 
     [Fact]
@@ -472,11 +478,16 @@ public class BossPassiveEffectsTests
             .Where(e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Boss)
             .Sum(e => e.DamageDealt.Amount);
 
+        // COMBAT_RULES.md §4 items 2–3: the DEF Gems this same action cleared applied a
+        // Shield to the Pet before the Boss's instance landed, so only the excess over
+        // that Shield reduces HP.
+        var netBossDamage3 = Math.Max(0, bossDmg3 - turn3Result.Value.Resources.DefensePool);
+
         // COMBAT_RULES.md §4 item 1: healing restores HP up to Max HP and the overheal is
-        // discarded, so the settled value is the heal less the Boss's instance, bounded by
-        // the 1000 pinned here.
+        // discarded, so the settled value is the heal less the Boss's unabsorbed instance,
+        // bounded by the 1000 pinned here.
         Assert.Equal(
-            Math.Min(500 + expectedTurn3Heal - bossDmg3, 1000),
+            Math.Min(500 + expectedTurn3Heal - netBossDamage3, 1000),
             turn3Result.Value.State.PetState.HP);
 
         // After Step 19a, boss-thuy-ma-heal is expired and removed. The assertion is
@@ -507,8 +518,14 @@ public class BossPassiveEffectsTests
         var bossDmg4 = turn4Result.Value.Events
             .Where(e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Boss)
             .Sum(e => e.DamageDealt.Amount);
+
+        // COMBAT_RULES.md §4 items 2–3: the DEF Gems this action cleared applied a
+        // Shield to the Pet before the Boss's instance landed, so only the excess over
+        // that Shield reduces HP.
+        var netBossDamage4 = Math.Max(0, bossDmg4 - turn4Result.Value.Resources.DefensePool);
+
         Assert.Equal(
-            Math.Min(500 + turn4Result.Value.Resources.HealPool - bossDmg4, 1000),
+            Math.Min(500 + turn4Result.Value.Resources.HealPool - netBossDamage4, 1000),
             turn4Result.Value.State.PetState.HP);
     }
 

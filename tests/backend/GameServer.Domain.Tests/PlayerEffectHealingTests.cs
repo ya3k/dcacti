@@ -326,8 +326,8 @@ public class PlayerEffectHealingTests
         // generate a HealPool (COMBAT_RULES.md §2), and that pool is what the
         // player-effects step applies to HP (§4 item 1).
         //
-        // Three HP Gems at the Match-3 tier generate 3 × 20 × 1.0× = 60 into the
-        // pool, so a player starting 200 below full ends at HP + 60.
+        // Three HP Gems generate 3 × 20 = 60 into the pool, so a player starting 200
+        // below full ends at HP + 60.
         var pet = DefaultPet() with { HP = 800, MaxHP = 1000 };
 
         var result = SwapExecutor.Execute(BattleWith(HpMatch3Board(), pet), new SwapRequest(From, To));
@@ -335,24 +335,20 @@ public class PlayerEffectHealingTests
         Assert.True(result.IsAccepted);
 
         // The first pass is the Match the fixture builds, so the pool is fully
-        // determined by the test: 3 HP Gems at the Match-3 tier.
+        // determined by the test: 3 HP Gems at the per-Gem BaseOutput (COMBAT_RULES.md
+        // §2 item 6 — no match-tier multiplier).
         var firstPassHeal = result.Resolution.Passes[0].ClearedGems
             .Where(g => g.GemType == GemType.Hp)
-            .Sum(g => (ResourceGenerator.HpGemBaseHeal * MatchTierMultipliers.NumeratorFor(g.Tier))
-                      / MatchTierMultipliers.Denominator);
+            .Sum(_ => ResourceGenerator.HpGemBaseHeal);
 
         Assert.Equal(60, firstPassHeal);
 
         // The first pass is a Match 3 of HP Gems and nothing else: three cells, one
-        // shape, the base tier. A fixture that had merged with a neighbour would be a
-        // Match 4 and generate 4 × 20 × 1.5 = 120 instead.
+        // shape. A fixture that had merged with a neighbour would be a Match 4 and
+        // generate 4 × 20 = 80 instead.
         var firstPass = result.Resolution.Passes[0];
         Assert.Equal(3, firstPass.ClearedGems.Count);
-        Assert.All(firstPass.ClearedGems, gem =>
-        {
-            Assert.Equal(GemType.Hp, gem.GemType);
-            Assert.Equal(MatchTier.Match3, gem.Tier);
-        });
+        Assert.All(firstPass.ClearedGems, gem => Assert.Equal(GemType.Hp, gem.GemType));
         Assert.Equal(3, result.Resources.ClearedGemCounts.Hp);
 
         // The Swap's total pool is what the state applied — the pool accumulates
@@ -552,13 +548,13 @@ public class PlayerEffectHealingTests
         Assert.Equal(result.Resources.HealPool, result.State.PetState.HP);
 
         // And the pool the result reports is the sum over every pass's cleared HP
-        // Gems — the accumulation happens in generation, and healing reads the
-        // accumulated total.
+        // Gems — each contributing its per-Gem BaseOutput once, with no match-tier
+        // factor (COMBAT_RULES.md §2 item 6). The accumulation happens in generation,
+        // and healing reads the accumulated total.
         var expected = result.Resolution.Passes
             .SelectMany(p => p.ClearedGems)
             .Where(g => g.GemType == GemType.Hp)
-            .Sum(g => (ResourceGenerator.HpGemBaseHeal * MatchTierMultipliers.NumeratorFor(g.Tier))
-                      / MatchTierMultipliers.Denominator);
+            .Sum(_ => ResourceGenerator.HpGemBaseHeal);
 
         Assert.Equal(expected, result.Resources.HealPool);
     }

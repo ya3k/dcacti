@@ -627,7 +627,13 @@ public class BossResponseTests
 
         var sawBossPowerGroups = false;
 
-        for (var round = 0; round < 16; round++)
+        // ADR-028 / B-1 replaced the tier-weighted scoring with
+        // `weight × match.Cells.Count`, so the Boss's deterministic move selection now
+        // favours the higher-weighted Gem types by cell count alone. The observation
+        // window is therefore widened from the pre-B-1 16 rounds to 24: the first
+        // Boss POWER match group on this pinned sequence appears at round 17, and the
+        // per-round accounting assertion below runs on every round regardless.
+        for (var round = 0; round < 24; round++)
         {
             var pinned = RoundTestSupport.PlayerMatch(
                 GemType.Power,
@@ -1630,14 +1636,14 @@ public class BossResponseTests
     /// The <c>BaseDamagePool</c> the Boss's own board action generated from ATK Gems,
     /// read from that action's own committed events and from the rates
     /// <c>COMBAT_RULES.md</c> §2 owns: each ATK Gem a Match consumed generates
-    /// <c>10 × that shape's tier</c>, and an ATK Gem a Special Gem activation cleared
-    /// generates at the Match-3 base rate because an activation is not a Match (§2
-    /// items 1–2). It is the pool <c>COMBAT_RULES.md</c> §3.4 step 1 adds to
-    /// <c>EffectiveBossATK</c>.
+    /// <c>10</c> — <c>BaseOutput × unique matched count</c>, with no match-tier
+    /// multiplier (§2 item 6, OD-3). It is the pool <c>COMBAT_RULES.md</c> §3.4 step 1
+    /// adds to <c>EffectiveBossATK</c>.
     ///
-    /// The walk is per pass, because generation is per cleared cell and not per cell
-    /// index (<c>MATCH3_RULES.md</c> §5.8.2 item 5): a cell cleared by pass 1 holds a
-    /// different Gem by pass 2 and generates again then, at that pass's tier.
+    /// The walk is per pass, because generation is counted per pass over that pass's
+    /// unique cleared cells and accumulated (<c>MATCH3_RULES.md</c> §5.7 item 7): a
+    /// cell cleared by pass 1 holds a different Gem by pass 2 and generates again
+    /// then.
     /// </summary>
     private static int BossAtkGemPool(SwapExecutionResult result)
     {
@@ -1657,27 +1663,21 @@ public class BossResponseTests
                 case BattleEventType.MatchCreated:
                     var shape = boardEvent.Match.Shape;
 
-                    var tier = shape.IsLt
-                        ? MatchTier.Lt
-                        : MatchTierMultipliers.ForStraightRun((shape.HorizontalArm ?? shape.VerticalArm)!.Length);
-                    var numerator = MatchTierMultipliers.NumeratorFor(tier);
-
                     foreach (var cell in shape.Cells)
                     {
                         matchedInPass.Add(cell);
 
                         if (shape.GemType == GemType.Atk)
                         {
-                            pool += (ResourceGenerator.AtkGemBaseDamage * numerator)
-                                / MatchTierMultipliers.Denominator;
+                            // COMBAT_RULES.md §2 item 6: BaseOutput per unique cell.
+                            pool += ResourceGenerator.AtkGemBaseDamage;
                         }
                     }
 
                     break;
 
                 case BattleEventType.GemMatched:
-                    // A cell the pass's Matches did not consume is an activation's, and
-                    // generates at the base rate (§2 item 1).
+                    // A cell the pass's Matches did not consume is an activation's.
                     if (boardEvent.Gem.GemType == GemType.Atk
                         && !matchedInPass.Contains(boardEvent.Gem.CellIndex))
                     {
