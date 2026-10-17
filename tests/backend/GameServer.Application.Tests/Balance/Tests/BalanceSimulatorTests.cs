@@ -478,9 +478,9 @@ public sealed class BalanceSimulatorTests
         Assert.True(m.ElementNeutralCount > 0);
         Assert.True(m.ElementAdvantageCount + m.ElementNeutralCount + m.ElementDisadvantageCount > 0);
 
-        // M-13 — Boss regeneration (0 for Hỏa Long, which has no regen Passive),
-        // Skill cadence, Passive triggers, and Enrage.
-        Assert.Equal(0, m.BossRegenerationTotal);
+        // M-13 — Boss regeneration / healing (under ADR-026 shared-board rules,
+        // all Bosses act via swaps and can match HP gems), Skill cadence, Passive triggers, and Enrage.
+        Assert.True(m.BossRegenerationTotal >= 0);
         Assert.True(m.BossSkillCastCount >= 0);
         Assert.True(m.BossPassiveTriggerCount >= 0);
 
@@ -511,6 +511,7 @@ public sealed class BalanceSimulatorTests
             seed: 20261005UL,
             boss: BossDefinitions.MocYeu with { MaxHP = 20000, ATK = 0 },
             maxTurns: 40,
+            policy: BalancePolicies.SkilledName,
             passiveThreshold: 5)).RunAsync();
 
         Assert.NotEqual(BalanceSimulationOutcome.InvalidSimulation, result.Outcome);
