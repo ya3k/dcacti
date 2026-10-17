@@ -1,6 +1,6 @@
 # Core Game Rules
 
-**Version:** 3.7 (§16 gains `CascadeStepResolved` per the Operator Decision approving TASK-278 A-1(i) and A-4: the detection pass's gravity+spawn transition is reported by one additive Battle Event inside the round's existing single `ReceiveEvents` batch, emitted once per recorded pass after that pass's Gravity and Spawn have completed, with `passDepth`, `dropMoves` and `spawnedGems` and no board; the canonical event list gains one name and no other list entry, step, or gameplay value moves. Prior 3.6 (§17 gains the playable-board invariant statement per ADR-026 / TASK-267: the committed board of a non-terminal Round must contain at least one legal match-producing adjacent swap, evaluated on the finished board after step 18 and step 19a and before the `GAME_STATE.md` §5.1 write-back, with terminal Rounds exempt; the paragraph adds and reorders no step. Prior 3.5 (§1.3, §2, §14, §15, §17 updated per ADR-026 / TASK-259: Player and Boss share the one 8×8 Match-3 board; both sides act by making valid swaps; cell type determines effect; acting side determines ownership and target; attack damage is strictly gated on confirmed ATK-gem matches (D1); default fallback basic attacks are retired (step 18c); Boss skills deal zero direct damage (D3); Boss SkillCharge charges exclusively from Boss POWER matches (D2); Turn advances once per committed atomic round (D4). Prior 3.4: §11 and §17 — the Card-cast restriction approved by `TASK-191`
+**Version:** 3.8 (§3 item 4, §6, §7, §12, §14, §17 step 15, step 18d reconciled per TASK-287 under operator decisions OD-1–OD-7: Special Gems are removed entirely from gameplay — Match-4, Match-5, and L/T patterns are valid matches that create no board objects and gain no special resource multipliers; §7 Special Gem Rules is retired; match-tier multipliers are retired with resource formulas governed by `COMBAT_RULES.md` §2 and `MATCH3_RULES.md` §5.7; attack eligibility across Player and Boss is gated strictly on a confirmed valid ATK-gem match on the acting entity's own resolution, retiring `ClearedGemCounts.Atk` as an eligibility predicate. Prior 3.7: (§16 gains `CascadeStepResolved` per the Operator Decision approving TASK-278 A-1(i) and A-4: the detection pass's gravity+spawn transition is reported by one additive Battle Event inside the round's existing single `ReceiveEvents` batch, emitted once per recorded pass after that pass's Gravity and Spawn have completed, with `passDepth`, `dropMoves` and `spawnedGems` and no board; the canonical event list gains one name and no other list entry, step, or gameplay value moves. Prior 3.6 (§17 gains the playable-board invariant statement per ADR-026 / TASK-267: the committed board of a non-terminal Round must contain at least one legal match-producing adjacent swap, evaluated on the finished board after step 18 and step 19a and before the `GAME_STATE.md` §5.1 write-back, with terminal Rounds exempt; the paragraph adds and reorders no step. Prior 3.5 (§1.3, §2, §14, §15, §17 updated per ADR-026 / TASK-259: Player and Boss share the one 8×8 Match-3 board; both sides act by making valid swaps; cell type determines effect; acting side determines ownership and target; attack damage is strictly gated on confirmed ATK-gem matches (D1); default fallback basic attacks are retired (step 18c); Boss skills deal zero direct damage (D3); Boss SkillCharge charges exclusively from Boss POWER matches (D2); Turn advances once per committed atomic round (D4). Prior 3.4: §11 and §17 — the Card-cast restriction approved by `TASK-191`
 Q-4 (OPTION B) is recorded: §11 gains item 4 stating that a Card cast is an
 **auxiliary action within the current Turn** — it does not increment `Turn`, does
 not resolve the board, does not independently trigger the Boss response, and is
@@ -95,10 +95,11 @@ Result: 1 Turn, 3 Matches, Combo 3
 2. Each individual Match is counted, including Matches created by Cascades.
 3. Match count is independent from Turn count and can charge Passives and
    Relics.
-4. Match 4 / Match 5 / L-T patterns have enhanced effects and may generate
-   Special Gems.
+4. Match 4, Match 5, and L/T patterns are valid matches, detected and counted as
+   single Matches carrying no additional board object and no special resource
+   multiplier.
 
-Exact board size, detection algorithm, and Special Gem behavior: see
+Exact board size, detection algorithm, and match-resolution semantics: see
 `MATCH3_RULES.md`.
 
 ---
@@ -145,17 +146,16 @@ This table is canonical here. Other documents must reference it, not copy it.
 MVP has four functional Gem types: `ATK`, `DEF`, `HP`, `POWER`. Gems are not
 elemental — Element belongs to Pets, Bosses, Skills and Effects (§8).
 
-Exact per-Gem resource formulas and match-tier multipliers: see
-`COMBAT_RULES.md` and `MATCH3_RULES.md`.
+Exact per-Gem resource formulas: see `COMBAT_RULES.md` and `MATCH3_RULES.md`.
 
 ---
 
-# 7. Special Gem Rules
+# 7. Special Gem Rules (Retired)
 
-Match 4, Match 5, and L/T patterns each produce a distinct Special Gem with
-an area-clear effect. Exact Special Gem types and behavior are defined in
-`MATCH3_RULES.md` (this document intentionally defers full definition
-there).
+Special Gems do not exist in gameplay (OD-1, OD-2). Match 4, Match 5, and L/T
+patterns are valid matches that clear only their own matched cells and create no
+board objects, area-clear effects, or detonations. See `MATCH3_RULES.md` §5 for
+historical retirement details.
 
 ---
 
@@ -255,9 +255,9 @@ Range: 0–100
 ```
 
 Power is the active Pet's battle resource (range 0–100). It is generated
-by POWER Gem matches, Special Matches, Relics, and other defined effects,
-and is spent to cast Cards/Pet Skills. Power must never exceed the
-configured maximum unless an explicit future mechanic allows it.
+by POWER Gem matches, Relics, and other defined effects, and is spent to
+cast Cards/Pet Skills. Power must never exceed the configured maximum
+unless an explicit future mechanic allows it.
 
 Power remains an integer-valued resource: a Card's cost is the integer
 `EffectiveCardCost` its owning rule composes, so spending Power never
@@ -298,13 +298,14 @@ Base Damage → Combo Modifier → Element Modifier → Other Modifiers
   → Defense → Final Damage
 ```
 
-Damage may be calculated and applied only when the acting side produces a valid
-ATK-gem match (`ClearedGemCounts.Atk > 0`). Only after confirming an ATK match
-may the combat formula use the acting side's ATK stat. If zero ATK gems are
-matched, no attack occurs, the Damage Pipeline does not execute, and applicable
-attack modifiers (e.g. NextAttack modifiers) are preserved unconsumed. No
-client-provided damage value is authoritative. Exact mathematical formulas: see
-`COMBAT_RULES.md`.
+Damage may be calculated and applied if and only if the acting side's own
+resolution contains at least one confirmed valid ATK-gem match (OD-6, ADR-026 D1).
+Cleared-gem counts are reporting-only and do not serve as an eligibility predicate.
+Only after confirming an ATK match may the combat formula use the acting side's
+ATK stat. If no valid ATK-gem match is confirmed, no attack occurs, the Damage
+Pipeline does not execute, zero attack damage is dealt, and applicable attack
+modifiers (e.g. NextAttack modifiers) are preserved unconsumed. No client-provided
+damage value is authoritative. Exact mathematical formulas: see `COMBAT_RULES.md`.
 
 ---
 
@@ -383,7 +384,7 @@ may expand individual steps but must not reorder them):
 12. Generate Resources
 13. Update Power
 14. Resolve Player Effects
-15. Calculate Damage          (gated on confirmed ATK match; if ClearedGemCounts.Atk == 0, steps 15–17 do not run)
+15. Calculate Damage          (gated on confirmed valid ATK match; if no valid ATK match is confirmed, steps 15–17 do not run)
 16. Apply Element Modifier
 17. Apply Final Damage
 18. Resolve Boss Response
@@ -446,16 +447,17 @@ Step 18 ("Resolve Boss Response") expands to the Boss response phase on the shar
      (modifying board, resources, or combat modifiers; ADR-026, D3) and emit
      BossSkillCast. Reset SkillCharge to 0, set SkillCooldown to the
      Boss's cooldown value.
-18d. Boss Attack — if and only if the Boss's swap produced a confirmed ATK-gem
-     match (ClearedGemCounts.Atk > 0), the Boss's ATK stat applies and damage is
-     calculated through the Damage Pipeline (COMBAT_RULES.md §3) to the active
-     Pet. Emit DamageCalculated, DamageDealt (source=boss, target=player),
-     DamageTaken (source=boss, target=player). If zero ATK gems were matched,
-     zero attack damage is dealt. The legacy fallback basic attack (Base Damage =
-     Boss.ATK independently of the board) is RETIRED (ADR-026, D1). The
-     `target=player` wire label denotes the player's side (the active
-     Pet) — it is a fixed protocol label, not a separate Player HP pool
-     (SIGNALR_PROTOCOL.md §3.2).
+18d. Boss Attack — if and only if the Boss's swap produced at least one confirmed
+     valid ATK-gem match in the Boss's own resolution (OD-6, ADR-026 D1), the Boss's
+     ATK stat applies and damage is calculated through the Damage Pipeline
+     (COMBAT_RULES.md §3) to the active Pet. Cleared-gem accounting is
+     reporting-only and is never the eligibility predicate. Emit DamageCalculated,
+     DamageDealt (source=boss, target=player), DamageTaken (source=boss,
+     target=player). If no valid ATK-gem match was confirmed, zero attack damage
+     is dealt. The legacy fallback basic attack (Base Damage = Boss.ATK
+     independently of the board) is RETIRED (ADR-026, D1). The `target=player`
+     wire label denotes the player's side (the active Pet) — it is a fixed
+     protocol label, not a separate Player HP pool (SIGNALR_PROTOCOL.md §3.2).
 ```
 
 Step 19 ("End Turn") expands to:

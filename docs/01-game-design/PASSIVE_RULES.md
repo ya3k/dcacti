@@ -1,6 +1,6 @@
 # Passive Rules
 
-**Version:** 1.4 (§4 gains the **Boss Passive** clause per TASK-173, applying the
+**Version:** 1.5 (§2 item 2 reconciled per TASK-287 under operator decisions OD-1/OD-2: Special Gem detonations and secondary clearing events do not exist in gameplay; passive charging is driven strictly by confirmed valid matches. Prior 1.4: (§4 gains the **Boss Passive** clause per TASK-173, applying the
 recorded Product Owner decision (Option B): for a Boss Passive, the non-default
 `Persistent` reset behavior (storage token `Persistent`, Domain
 `PassiveResetBehavior.NoReset`) governs **firing eligibility** — the Passive is
@@ -55,9 +55,9 @@ Visibility        (progress must be shown to the player where practical)
 1. Every Match increases the active Pet's Passive progress by 1, regardless of
    whether it came from a direct Swap-match or a Cascade match
    (MATCH3_RULES.md §3–§4).
-2. Special Gem detonations (MATCH3_RULES.md §5.5) do NOT count as a Match for
-   Passive progress, consistent with them not counting toward Combo/Match
-   count either.
+2. Passive progress is driven strictly by confirmed valid Matches (Match 3,
+   Match 4, Match 5, L/T). Special Gem detonations and secondary clearing
+   mechanics do not exist in gameplay (OD-1, OD-2; see `MATCH3_RULES.md` §5).
 3. Progress accumulates across all Matches within a single Cascade resolution.
    After all Matches in the Cascade have been counted, the Threshold is
    evaluated once. If progress ≥ Threshold, the Passive becomes **Ready** and

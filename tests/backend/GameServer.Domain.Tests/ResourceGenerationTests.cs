@@ -1004,4 +1004,80 @@ public class ResourceGenerationTests
         var withState = result.WithState(result.State);
         Assert.Equal(result.Resources, withState.Resources);
     }
+
+    // =======================================================================
+    // Reconciled Match-Based Resource Contribution Tests (COMBAT_RULES.md §2 item 6, OD-1..OD-7)
+    // =======================================================================
+
+    [Fact]
+    public void Match_WhenClearingDefGemsOnly_ShouldHaveZeroBaseDamageAndZeroAtkCount()
+    {
+        // COMBAT_RULES.md §2 item 6 / OD-6 / ADR-026 D1:
+        // When a match clears DEF and HP gems but 0 ATK gems,
+        // BaseDamagePool is 0 and ClearedGemCounts.Atk is 0 (preserving attack gating).
+        var board = TestBoard.Background()
+            .WithGems(
+                (I(2, 1), GemType.Def),
+                (I(1, 2), GemType.Def), // swaps to (2, 2)
+                (I(2, 3), GemType.Def),
+                (I(2, 2), GemType.Hp)); // swaps to (1, 2)
+
+        var result = SwapExecutor.Execute(BattleWith(board), new SwapRequest(I(1, 2), I(2, 2)));
+        Assert.True(result.IsAccepted);
+
+        var firstPass = FirstPassResources(result.Resolution);
+        Assert.Equal(0, firstPass.BaseDamagePool);
+        Assert.Equal(0, firstPass.ClearedGemCounts.Atk);
+        Assert.Equal(3, firstPass.ClearedGemCounts.Def);
+    }
+
+    [Fact]
+    public void OverlappingMatchCells_InLtShape_ShouldBeCountedOncePerResolutionPass()
+    {
+        // MATCH3_RULES.md §3.3 item 3, §5.7 item 2, §5.7 item 8 / OD-7:
+        // A cell shared by two intersecting match shapes (e.g. L/T) is counted once.
+        // Fixture forms a T-shape of DEF gems: 4 horizontal + 3 vertical = 6 unique cells.
+        var board = TestBoard.Background()
+            .WithGems(
+                (I(4, 0), GemType.Def),
+                (I(4, 1), GemType.Def),
+                (I(4, 2), GemType.Def),
+                (I(3, 3), GemType.Def), // swaps into (4, 3)
+                (I(4, 3), GemType.Hp),  // gap cell
+                (I(3, 2), GemType.Def),
+                (I(5, 2), GemType.Def));
+
+        var result = SwapExecutor.Execute(BattleWith(board), new SwapRequest(I(3, 3), I(4, 3)));
+        Assert.True(result.IsAccepted);
+
+        var pass1 = result.Resolution.Passes[0];
+        // 6 unique cells in the union of the T-shape
+        Assert.Equal(6, pass1.ClearedGems.Count(g => g.GemType == GemType.Def));
+        Assert.Equal(6, FirstPassResources(result.Resolution).ClearedGemCounts.Def);
+    }
+
+    [Fact]
+    public void ConfirmedMatch_DoesNotAdvanceMatchCountOrCombo_BeyondDetectedMatches()
+    {
+        // MATCH3_RULES.md §6.2, §6.3 / OD-1, OD-2:
+        // Matches are counted strictly by detected valid matches; non-match events do not increment Combo.
+        var board = TestBoard.Background()
+            .WithGems(
+                (I(2, 1), GemType.Def),
+                (I(1, 2), GemType.Def),
+                (I(2, 3), GemType.Def),
+                (I(2, 2), GemType.Hp));
+
+        var result = SwapExecutor.Execute(BattleWith(board), new SwapRequest(I(1, 2), I(2, 2)));
+        Assert.True(result.IsAccepted);
+
+        // Pass 1 has exactly 1 match
+        Assert.Single(result.Resolution.Passes[0].Matches);
+        Assert.Equal(1, result.Resolution.Passes[0].Matches[0].CascadeDepth);
+
+        // Combo and MatchCount equal the total confirmed detected matches across all passes, no more
+        var totalDetectedMatches = result.Resolution.Passes.Sum(p => p.Matches.Count);
+        Assert.Equal(totalDetectedMatches, result.State.Combo);
+        Assert.Equal(totalDetectedMatches, result.State.MatchCount);
+    }
 }

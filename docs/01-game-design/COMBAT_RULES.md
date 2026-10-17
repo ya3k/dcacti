@@ -1,6 +1,6 @@
 # Combat Rules
 
-**Version:** 2.6 (§2, §3, §3.4, §4 updated per ADR-026 / TASK-259: ATK-gem match gating on damage (D1); DEF gem matches generate temporary Shield for acting actor; HP gem matches heal acting actor; Boss POWER gem matches generate Boss SkillCharge (D2); Boss basic attack fallback retired; Boss skills deal zero direct damage (D3); Heal resolution expanded to Boss HP. Prior 2.5: §3.3 item 8 and §5.2 item 4 extended per **TASK-178** — the
+**Version:** 2.9 (§2 match-tier multiplier table, tier-scope paragraph, and items 1–4 retired per TASK-287 under operator decisions OD-1–OD-7; §2 preamble, §3, and §3.4 attack-gating predicates reconciled from `ClearedGemCounts.Atk > 0` to confirmed valid ATK-gem matches; §2 item 6 preserved per TASK-286. **Interim join notice retained:** This document is shared with TASK-286 and finalized under the joint group commit protocol (`TASK_LIFECYCLE.md` §6.1 item 5); neither slice may be committed alone. Prior 2.8: (§2 item 6 **REWRITTEN** per TASK-286 under the final operator decisions OD-1–OD-7: Special Gems are removed entirely from gameplay — no creation, activation, chain activation, or area-of-effect clearing — and **all match-tier resource multipliers are removed**; base resource contribution is the number of uniquely matched gems per GemType multiplied by the approved BaseOutput, accumulated per cascade pass with every unique cell counted once; attack qualification is a confirmed valid ATK-gem match on the acting actor's own resolution and is explicitly independent of cleared-gem reporting; actor ownership, Combo / Element / Crit / ATK modifiers, Shield, Heal clamp, and Power/SkillCharge bounds are preserved unchanged. **This item's slice alone does not make §2 self-consistent:** the match-tier table, its items 1–4, and the `ClearedGemCounts.Atk > 0` gate wording in the §2 preamble are retired by TASK-287 in the **same join group commit** (`TASK_LIFECYCLE.md` §6.1 item 5); neither slice may be committed alone. Prior 2.7: §2 item 6 updated per TASK-286: Special Gem Combat Contribution Contract reconciled with operator-confirmed match-based gameplay model (D1–D4) and Decision A calculation order; obsolete detonation-only clear mechanics and former Gate A decision A2 retired; attack execution requires a confirmed valid ATK-gem match (D2, aligned with ADR-026 D1); Special Gems contribute as ordinary matchable gems with creation-associated contribution value (e.g., Match-4 Special Gem contributes ×2, D3); match size distinguished from per-gem contribution value, match tier multiplier, and final resource total (D4); resource calculation order formalized per Decision A (per-gem calculation first, then sum results: contribution_i = trunc(contributionValue_i × baseOutput × matchTierMultiplier), totalContribution = Σ contribution_i); former Gate B detonation-overlap scenario retired; actor ownership per ADR-026 D4; creation independence preserved. Prior 2.6: §2, §3, §3.4, §4 updated per ADR-026 / TASK-259: ATK-gem match gating on damage (D1); DEF gem matches generate temporary Shield for acting actor; HP gem matches heal acting actor; Boss POWER gem matches generate Boss SkillCharge (D2); Boss basic attack fallback retired; Boss skills deal zero direct damage (D3); Heal resolution expanded to Boss HP. Prior 2.5: §3.3 item 8 and §5.2 item 4 extended per **TASK-178** — the
 canonicalization of the Product Owner-approved runtime decisions **Q-1 = A** and
 **Q-4 = C**. §3.3 item 8, which is the canonical owner of the `NextAttack`
 lifetime and the qualifying-attack consumption boundary, now states explicitly
@@ -272,51 +272,21 @@ BOSS_RULES.md §1) used by Boss mechanics; see BOSS_RULES.md.
 Baseline generation per consumed Gem (MVP defaults, all configuration):
 
 ```text
-Gem Type   Base Output (per Gem, Match-3 tier)   Actor-Relative Output (ADR-026)
---------   -----------------------------------   -------------------------------------------------
-ATK Gem    +10 Base Damage                       BaseDamagePool for acting actor (ATK-match gated)
-DEF Gem    +5 Defense pool                       Temporary Shield for acting actor (§4)
-HP Gem     +20 Heal pool                         Heal pool for acting actor (clamped to MaxHP, §4)
-POWER Gem  +10 Power / SkillCharge               Player: +Power for Pet; Boss: +SkillCharge for Boss (D2)
-```
-
-Match tier multipliers (applied to the above base output, per Gem consumed in
-that match):
-
-```text
-Match 3   → 1.0×
-Match 4   → 1.5×  (+ Special Gem, see MATCH3_RULES.md §5.2)
-Match 5   → 2.0×  (+ Special Gem, see MATCH3_RULES.md §5.3)
-L/T       → 1.25× (+ Special Gem, see MATCH3_RULES.md §5.4)
+Gem Type   Base Output (per uniquely matched Gem)   Actor-Relative Output (ADR-026)
+--------   --------------------------------------   -------------------------------------------------
+ATK Gem    +10 Base Damage                          BaseDamagePool for acting actor (ATK-match gated)
+DEF Gem    +5 Defense pool                          Temporary Shield for acting actor (§4)
+HP Gem     +20 Heal pool                            Heal pool for acting actor (clamped to MaxHP, §4)
+POWER Gem  +10 Power / SkillCharge                  Player: +Power for Pet; Boss: +SkillCharge for Boss (D2)
 ```
 
 **Actor-relative resource handling (ADR-026):**
 The type of cells matched determines the effect; the acting side determines ownership and target:
-- **ATK Gems:** Generates `BaseDamagePool`. Attack damage may be calculated and applied only when the acting side produces a valid ATK-gem match (`ClearedGemCounts.Atk > 0`, ADR-026, D1). If zero ATK gems are matched, no attack occurs and the Damage Pipeline does not execute.
+- **ATK Gems:** Generates `BaseDamagePool`. Attack damage may be calculated and applied if and only if the acting side's own resolution contains at least one confirmed valid ATK-gem match (OD-6, ADR-026 D1). Cleared-gem accounting is reporting-only and is never the eligibility predicate. If no valid ATK-gem match is confirmed, no attack occurs, the Damage Pipeline does not execute, and zero damage is dealt.
 - **DEF Gems:** Generates temporary Shield for the acting actor (`PetState.ActiveStatusEffects` for Player; `BossState.ActiveStatusEffects` for Boss) using `StatusEffectType.Shield` (§4).
 - **HP Gems:** Generates Heal pool restoring HP to the acting actor (Pet HP for Player; Boss HP for Boss), passing through Heal Resolution (§4 item 7) and clamped to MaxHP (§4 item 1).
 - **POWER Gems:** Generates Power for the active Pet (range 0–100) during the Player turn, or increments `BossState.SkillCharge` during the Boss turn (D2). Player POWER matches never charge the Boss. Whether `SkillCharge` is measured in match counts (+1 per match) or gem energy units (+10 per gem) and whether it clamps at `ChargeRequirement` remain balance tuning parameters.
 
-**Scope of the tier multiplier — matched Gems only.** The table above applies to
-the Gems **consumed by a Match**, at the tier of the shape they formed. It is
-the sole source of truth for match-tier output, and it is the rate every other
-document references.
-
-1. **Special Gem activation clears are not a Match** and have **no match
-   tier**: the cells a Special Gem's effect clears generate at the **Match-3
-   base rate** (`1.0×`) above, because the effect is an explosion, not a match
-   (`MATCH3_RULES.md` §5.5.5 item 8, `PASSIVE_RULES.md` §2.2).
-2. **A Special Gem's creating Match still applies its own tier** to its own
-   consumed Gems (`1.5×` / `2.0×` / `1.25×`), once each
-   (`MATCH3_RULES.md` §5.5.4 item 5). The tier belongs to the shape, not to the
-   Special Gem, so it is never applied a second time when that Special Gem
-   later activates.
-3. **Which cells generate, and how often**, is owned by `MATCH3_RULES.md`
-   §5.7 and §5.8.2 (once per unique cleared cell, over the union). This
-   document owns only the **rates**.
-4. **Match 6+ has no multiplier of its own.** A run of 6 or more is a Match 5
-   (`MATCH3_RULES.md` §5.3 item 3) and uses the Match-5 rate above. No sixth
-   row exists in this table.
 5. **The HP Gem heal pool is a healing source.** The HP Gem's generated output
    is a Heal pool: `GAME_RULES.md` §17 step 12 generates it and step 14
    applies it to the acting actor's HP. When it is
@@ -324,11 +294,59 @@ document references.
    receives the applicable Heal modifiers and the item-1 overheal clamp. This item states
    only where the pool is **consumed**; the pool's rate is the table above and
    is not restated elsewhere.
+6. **Match-Based Resource Contribution and Attack Qualification (Server-Authoritative).**
+   Reconciled per TASK-286 with the final operator decisions **OD-1…OD-7**. This item owns the
+   *combat-side* rules only — how the documented rates are applied, and what qualifies an attack.
+   Which cells a Match consumes, and how a shared or overlapping cell is counted once, are owned by
+   `MATCH3_RULES.md` §3.3 and §5.7; this item does not restate them.
+   - **No Special Gems (OD-1, OD-2):** There are no Special Gems in gameplay. No Match creates a
+     board object; no creation, activation, chain activation, area-of-effect, explosion, or
+     detonation mechanic exists; and no cell is ever cleared except as a member of a detected Match.
+     `MATCH3_RULES.md` §5 is retired in full.
+   - **No match-tier multipliers (OD-3):** There is no Match 3 / Match 4 / Match 5 / L-T resource
+     multiplier. The former multiplier table, the "scope of the tier multiplier" paragraph, and
+     §2 items 1–4 that scoped it are retired. Their removal is owned by TASK-287 in the **same
+     join group commit** as this item (`TASK_LIFECYCLE.md` §6.1 item 5); until that slice lands,
+     this document is not self-consistent and must not be committed alone.
+   - **Resource contribution (OD-4, OD-5, OD-7):** For one actor's committed action,
+     $$pool(t) = BaseOutput(t) \times count(t)$$
+     where $count(t)$ is the number of **unique** matched cells of Gem type $t$ across **every**
+     detection pass of that resolution — each cell counted once however many shapes name it — and
+     $BaseOutput(t)$ is this document's approved per-Gem output in the table above
+     (ATK = 10, DEF = 5, HP = 20, POWER = 10). Each newly confirmed cascade Match contributes again
+     under the same rule: passes accumulate, and no "cascade bonus" multiplier exists. The four
+     pools are computed independently per Gem type and are never summed across types.
+   - **No truncation is exercised (OD-3):** $BaseOutput$ and $count$ are integers and the former
+     multiplier is now identity, so $pool(t)$ is an exact integer product. The project's
+     established integer-conversion convention is unchanged and still governs any future arithmetic,
+     but this stage performs **no division**, rounds nothing, and has no reachable precision,
+     rounding, or overflow case. A multiplier must not be reintroduced to "exercise" it.
+   - **Attack qualification (OD-6):** An attack is calculated and applied **if and only if the
+     acting actor's own resolution contains at least one confirmed valid ATK-gem match** — at least
+     one detected Match whose Gem type is ATK. Neither the ATK pool's value nor a count of cleared
+     ATK cells may qualify an attack on its own: cleared-gem accounting is a **reporting** quantity
+     and is never the eligibility predicate. If no ATK Match was detected, no attack occurs, the
+     Damage Pipeline does not run, zero damage is dealt, no damage events are emitted, and all
+     `NextAttack` / `NextQualifyingAttack` modifiers are preserved (§3.3 item 8). The rule is
+     identical for the Player path and the Boss path (`ADR-026` D1).
+   - **Actor ownership and preserved modifiers (OD-5):** The acting side owns every pool it
+     generates (`ADR-026` item 4). The Combo Modifier (§3 step 2), Element Modifier (§3 step 3),
+     Crit (§3.3), ATK modifiers (§5.4–§5.6), Shield application and absorption (§4 items 2–3), the
+     Heal clamp and overheal discard (§4 item 1), and the Power 0–100 / `SkillCharge` bounds remain
+     exactly as their own sections own them. None of them depended on a match tier.
+   - **Superseded content:** This item previously defined a Special Gem combat contribution
+     contract — per-gem contribution values (×1 ordinary, ×2 Match-4 Special Gem), a Decision-A
+     per-gem truncation order, Match-tier multipliers, and a Gate-B overlap-precedence ruling. All
+     of it is **obsolete and retired** by OD-1–OD-7: with no Special Gems there is no creation rule
+     from which a per-gem value could be derived, and with no multiplier the per-gem calculation
+     collapses to $BaseOutput \times count$. This is a simplification of the same algebra, not a
+     reversal of the calculation-order principle it recorded.
+
 
 These are default balance values owned by this document. They are
 configuration, not hardcoded constants, and are not required to match any
 flavor example elsewhere (GDD.md intentionally contains no exact numbers —
-this document is the sole source of truth for match-tier resource output).
+this document is the sole source of truth for resource generation rates).
 
 ---
 
@@ -347,21 +365,22 @@ Full conceptual pipeline (expands GAME_RULES.md §14):
 6. → Final Damage        (minimum 0; cannot reduce HP-restoring effects negative)
 ```
 
-**Order of operations (ADR-026, D1):**
+**Order of operations (ADR-026, D1, OD-6):**
 ```text
-1. Confirm valid ATK match (ClearedGemCounts.Atk > 0)
+1. Confirm valid ATK match (confirmed valid ATK-gem match on acting actor's own resolution)
 2. Derive match-based inputs (BaseDamagePool)
 3. Apply acting actor's effective ATK stat (EffectivePetATK or EffectiveBossATK)
 4. Calculate damage through steps 1–6
 5. Apply damage to target Shield/HP
 ```
 
-If zero ATK gems are matched (`ClearedGemCounts.Atk == 0`):
+If no valid ATK-gem match is confirmed:
 - The Damage Pipeline does **not** execute.
 - The acting actor's ATK stat is **not** used.
 - Zero attack damage is dealt.
 - No `DamageCalculated`, `DamageDealt`, or `DamageTaken` events are emitted.
 - Applicable `NextAttack` modifiers are **preserved unconsumed** (§3.3 item 8).
+- Cleared-gem accounting (`ClearedGemCounts.Atk`) is reporting-only and is never the eligibility predicate.
 
 ## 3.1 Order Is Fixed
 
@@ -580,14 +599,14 @@ separate Player entity (`ELEMENT_RULES.md` §5).
 
 Under the shared-board contract (ADR-026, D1, D3):
 
-1. **Boss Attacks Require ATK Matches:** The legacy fallback basic attack (`Base Damage = Boss.ATK` independently of the board) is **RETIRED**. A Boss attack occurs if and only if the Boss's swap produces a confirmed ATK-gem match (`ClearedGemCounts.Atk > 0`). When confirmed:
+1. **Boss Attacks Require ATK Matches:** The legacy fallback basic attack (`Base Damage = Boss.ATK` independently of the board) is **RETIRED**. A Boss attack occurs if and only if the Boss's swap produces at least one confirmed valid ATK-gem match on the Boss's own resolution (OD-6, ADR-026 D1). Cleared-gem accounting (`ClearedGemCounts.Atk`) is reporting-only and is never the eligibility predicate. When confirmed:
   - Step 1 — Base Damage = EffectiveBossATK + BaseDamagePool
   - Step 2 — Combo Modifier = 1 (Boss attacks are not part of a Combo chain)
   - Step 3 — Element Modifier = Boss.Element vs. the active Pet's Element (ELEMENT_RULES.md §2, §5 — the defender is the Pet, not the Player)
   - Step 4 — Other Modifiers = 1.0 (or applicable Boss combat modifiers)
   - Step 5 — Defense Mitigation = Defender DEF (COMBAT_RULES.md §3.2)
   - Step 6 — Final Damage applied to active Pet HP (PetState.HP)
-  If zero ATK gems are matched, zero attack damage is dealt.
+  If no valid ATK-gem match is confirmed, zero attack damage is dealt.
 
 2. **Boss Skills Deal Zero Direct Damage:** Direct damage from Boss skills is prohibited by default (D3). Boss skills configure `BaseDamage = 0` and modify the board, resources, or combat modifiers (BOSS_RULES.md §6.3).
 
@@ -1812,7 +1831,7 @@ PetState.ATKModifiers[]   ≠   PetState.StatusEffects[]
 Range, generation triggers, and spend/reject rules are defined in
 GAME_RULES.md §12 (range/cap invariant) and CARD_RULES.md §3 (cast
 validation and rejection). This document owns only the numeric generation
-rates per Gem/match-tier (§2 above) — it does not restate the cap or cast
+rates per Gem (§2 above) — it does not restate the cap or cast
 validation flow to avoid duplicating those two owning documents.
 
 ---
