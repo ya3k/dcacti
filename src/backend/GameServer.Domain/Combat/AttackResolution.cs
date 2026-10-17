@@ -5,10 +5,95 @@ using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
 
 /// <summary>
+/// The confirmed ATK-match qualification evidence for one attack instance
+/// (<c>COMBAT_RULES.md</c> §2 item 6, §3; <c>ADR-026</c> D1; OD-6).
+///
+/// <code>
+/// acting actor's own CascadeResult
+///     └── Passes[i].Matches[j].Shape.GemType == GemType.Atk   →  HasConfirmedAtkMatch
+/// </code>
+///
+/// <b>It is derived from match-resolution evidence, never from accounting.</b>
+/// The predicate is "at least one detected Match whose Gem type is ATK in the
+/// acting actor's OWN resolution" — the same
+/// <see cref="CascadeResolver.CascadeResult.Passes"/> the cascade loop already
+/// produced, read for its confirmed Matches. It is <b>not</b> derived from
+/// <see cref="ResourceGeneration.ClearedGemCounts"/>, from a cleared-cell total,
+/// from the ATK damage pool, from a Combo value, or from a Battle Event: those
+/// are reporting quantities (<c>COMBAT_RULES.md</c> §2 item 6 "Attack
+/// qualification (OD-6)"), and a positive cleared ATK count neither proves nor
+/// is required for a confirmed ATK Match.
+///
+/// <b>It carries the evidence and no gameplay value.</b> Only the boolean
+/// qualification travels; the Damage Pipeline's inputs remain the separate
+/// values its own steps read (<c>COMBAT_RULES.md</c> §3.1), so passing this
+/// value can decide the branch and cannot perturb the calculation.
+///
+/// <b>It is per-resolution, so it cannot leak across resolutions or actors.</b>
+/// It is derived at the call site from the one resolution the acting actor just
+/// produced (<c>BattleStateService</c> supplies the Player's and the Boss's own
+/// resolutions separately), it is not stored in <c>BattleState</c>,
+/// <see cref="PetState"/>, or <see cref="BossState"/>, and it is not serialized.
+/// An earlier resolution's qualification is therefore never available to
+/// authorize a later attack, and one actor's resolution is never read to
+/// qualify another actor's attack (<c>ADR-026</c> item 4).
+/// </summary>
+/// <param name="HasConfirmedAtkMatch">
+/// True iff the acting actor's own resolution contains at least one confirmed
+/// valid ATK-gem match. False means no attack may occur.
+/// </param>
+public readonly record struct AttackQualification(bool HasConfirmedAtkMatch)
+{
+    /// <summary>
+    /// The absence of qualifying evidence — no confirmed ATK-gem match. It is the
+    /// value of a resolution that produced none, and the value a caller must
+    /// supply when it has no resolution evidence to offer.
+    /// </summary>
+    public static AttackQualification None => new(HasConfirmedAtkMatch: false);
+
+    /// <summary>
+    /// Reads the qualification evidence out of one actor's committed resolution.
+    ///
+    /// <b>No detection is performed.</b> The confirmed Matches are the ones the
+    /// cascade loop already recorded (<see cref="CascadeResolver.CascadeResult"/>,
+    /// <c>MATCH3_RULES.md</c> §4.3); this method walks them once in their own
+    /// order and answers whether any of them is an ATK Match. It reads no board,
+    /// re-resolves nothing, sorts nothing, and derives nothing from a cascade
+    /// depth, a cleared-cell count, or a Battle Event. A resolution with no passes
+    /// — and the default value of the struct — qualifies nothing.
+    /// </summary>
+    /// <param name="resolution">
+    /// The acting actor's own committed cascade resolution — the Player's for the
+    /// Player attack, the Boss's for the Boss attack.
+    /// </param>
+    public static AttackQualification FromResolution(CascadeResolver.CascadeResult resolution)
+    {
+        if (resolution.Passes is null)
+        {
+            return None;
+        }
+
+        foreach (var pass in resolution.Passes)
+        {
+            foreach (var match in pass.Matches)
+            {
+                if (match.Shape.GemType == GemType.Atk)
+                {
+                    return new AttackQualification(HasConfirmedAtkMatch: true);
+                }
+            }
+        }
+
+        return None;
+    }
+}
+
+/// <summary>
 /// The result of resolving an ATK-gated attack instance (<c>ADR-026</c> D1, Scope A).
 /// </summary>
 /// <param name="IsQualifyingAttack">
-/// True iff the acting side produced at least one valid ATK match (<c>ClearedGemCounts.Atk > 0</c>).
+/// True iff the acting actor's own resolution contains a confirmed valid ATK-gem
+/// match (<see cref="AttackQualification"/>).
 /// When false, no damage is calculated or dealt, and attack-triggered modifiers are preserved.
 /// </param>
 /// <param name="DamageResult">
@@ -32,7 +117,8 @@ public readonly record struct AttackResolutionResult(
     IReadOnlyList<BattleEvent> Events)
 {
     /// <summary>
-    /// Creates a non-qualifying attack result when zero ATK gems were matched (<c>ClearedGemCounts.Atk == 0</c>).
+    /// Creates a non-qualifying attack result when the acting actor's own resolution
+    /// contains no confirmed valid ATK-gem match (<see cref="AttackQualification"/>).
     /// </summary>
     public static AttackResolutionResult NonQualifying(int defenderHp, int defenderShieldPool, RngState rngState) =>
         new(
@@ -46,16 +132,22 @@ public readonly record struct AttackResolutionResult(
 }
 
 /// <summary>
-/// ATK-Gated Attack Resolution (<c>ADR-026</c> D1, <c>COMBAT_RULES.md</c> §3, <c>GAME_RULES.md</c> §17).
+/// ATK-Gated Attack Resolution (<c>ADR-026</c> D1, <c>COMBAT_RULES.md</c> §2 item 6
+/// and §3, <c>GAME_RULES.md</c> §17).
 ///
 /// <code>
-/// ClearedGemCounts.Atk > 0  →  Qualifying Attack  →  DamagePipeline.Calculate  →  Consume Modifiers
-/// ClearedGemCounts.Atk == 0 →  No Attack          →  Zero Damage               →  Preserve Modifiers
+/// confirmed valid ATK match     →  Qualifying Attack  →  DamagePipeline.Calculate  →  Consume Modifiers
+/// no confirmed valid ATK match  →  No Attack          →  Zero Damage               →  Preserve Modifiers
 /// </code>
 ///
-/// <b>Gating Rule:</b> Attack damage is calculated and applied only when the acting side produces
-/// a valid ATK match (<c>ClearedGemCounts.Atk > 0</c>). Zero ATK matches deal zero damage, emit zero
-/// damage events, and preserve all <c>NextAttack</c> and <c>NextQualifyingAttack</c> modifiers.
+/// <b>Gating Rule (OD-6).</b> Attack damage is calculated and applied only when the
+/// acting actor's own resolution contains at least one confirmed valid ATK-gem
+/// match, as carried by <see cref="AttackQualification"/>. The predicate is
+/// authoritative match-resolution evidence: a confirmed ATK Match, not a cleared
+/// ATK-gem count, not the ATK damage pool, and not another actor's resolution. With
+/// no such match the Damage Pipeline does not run, zero damage is dealt, zero damage
+/// events are emitted, and all <c>NextAttack</c> / <c>NextQualifyingAttack</c>
+/// modifiers are preserved (<c>COMBAT_RULES.md</c> §3, §3.3 item 8).
 ///
 /// <b>Zero Damage vs Non-Qualifying:</b> If an ATK match qualifies but mitigation or Shield absorption
 /// reduces final damage to zero, the attack is still a <b>qualifying attack</b>: damage events are
@@ -69,7 +161,7 @@ public static class AttackResolution
     public static AttackResolutionResult ResolvePlayerAttack(
         PetState petState,
         BossState bossState,
-        ClearedGemCounts clearedGems,
+        AttackQualification qualification,
         int baseDamagePool,
         int combo,
         RngState rngState,
@@ -78,7 +170,7 @@ public static class AttackResolution
     {
         var defenderShieldPool = StatusEffectLifecycle.ShieldPool(bossState.ActiveStatusEffects);
 
-        if (clearedGems.Atk == 0)
+        if (!qualification.HasConfirmedAtkMatch)
         {
             return AttackResolutionResult.NonQualifying(bossState.HP, defenderShieldPool, rngState);
         }
@@ -129,7 +221,7 @@ public static class AttackResolution
     public static AttackResolutionResult ResolveBossAttack(
         BossState bossState,
         PetState petState,
-        ClearedGemCounts clearedGems,
+        AttackQualification qualification,
         int baseDamagePool,
         int combo,
         RngState rngState,
@@ -138,7 +230,7 @@ public static class AttackResolution
     {
         var defenderShieldPool = StatusEffectLifecycle.ShieldPool(petState.ActiveStatusEffects);
 
-        if (clearedGems.Atk == 0)
+        if (!qualification.HasConfirmedAtkMatch)
         {
             return AttackResolutionResult.NonQualifying(petState.HP, defenderShieldPool, rngState);
         }
@@ -235,7 +327,7 @@ public static class AttackResolution
     public static (PetState Pet, BossState Boss, AttackResolutionResult Result) ResolveAndApplyPlayerAttack(
         PetState petState,
         BossState bossState,
-        ClearedGemCounts clearedGems,
+        AttackQualification qualification,
         int baseDamagePool,
         int combo,
         RngState rngState,
@@ -245,7 +337,7 @@ public static class AttackResolution
         var result = ResolvePlayerAttack(
             petState,
             bossState,
-            clearedGems,
+            qualification,
             baseDamagePool,
             combo,
             rngState,
@@ -277,7 +369,7 @@ public static class AttackResolution
     public static (BossState Boss, PetState Pet, AttackResolutionResult Result) ResolveAndApplyBossAttack(
         BossState bossState,
         PetState petState,
-        ClearedGemCounts clearedGems,
+        AttackQualification qualification,
         int baseDamagePool,
         int combo,
         RngState rngState,
@@ -287,7 +379,7 @@ public static class AttackResolution
         var result = ResolveBossAttack(
             bossState,
             petState,
-            clearedGems,
+            qualification,
             baseDamagePool,
             combo,
             rngState,

@@ -1596,11 +1596,15 @@ public sealed class BattleStateService
         // ===================================================================
         // Steps 15–17 (ADR-026 D1): Player → Boss damage, ATK-gated
         // ===================================================================
-        // ADR-026 D1 / COMBAT_RULES.md §3: damage is calculated and applied ONLY
-        // when the acting side produced a confirmed ATK-gem match
-        // (ClearedGemCounts.Atk > 0). AttackResolution owns that gate, the Damage
-        // Pipeline's formula, the defender's Shield absorption, and the
-        // qualifying-attack consumption boundary; this boundary orders the call,
+        // ADR-026 D1 / COMBAT_RULES.md §2 item 6, §3 (OD-6): damage is calculated
+        // and applied ONLY when the acting side's own resolution contains at least
+        // one confirmed valid ATK-gem match. The qualification is READ from this
+        // Swap's own cascade resolution (`result.Resolution`) — its confirmed
+        // Matches, which the cascade loop already produced — and never from the
+        // cleared-gem counts, the ATK damage pool, or a Combo value: those are
+        // reporting quantities (COMBAT_RULES.md §2 item 6). AttackResolution owns the
+        // gate, the Damage Pipeline's formula, the defender's Shield absorption, and
+        // the qualifying-attack consumption boundary; this boundary orders the call,
         // supplies the values the earlier stages already produced, and writes back
         // what Domain returned. It decides no step of the formula and computes no
         // gameplay value (ARCHITECTURE.md §2.1).
@@ -1624,16 +1628,17 @@ public sealed class BattleStateService
         //   - step 4's crit     — PetState.Crit (COMBAT_RULES.md §3.3)
         //   - step 5's DEF      — BossState.DEF (GAME_STATE.md §2.4)
         //
-        // A Swap that cleared no ATK Gem is NOT a qualifying attack: the pipeline
-        // does not run, the Pet's ATK stat is not consumed, zero damage is dealt,
-        // and no DamageCalculated/DamageDealt/DamageTaken is emitted. The Pet's
+        // A Swap whose resolution contains no confirmed ATK-gem match is NOT a
+        // qualifying attack: the pipeline does not run, the Pet's ATK stat is not
+        // consumed, zero damage is dealt, and no
+        // DamageCalculated/DamageDealt/DamageTaken is emitted. The Pet's
         // NextAttack modifiers are preserved unconsumed — the consumption
         // boundary is the qualifying attack, not the Turn (ADR-026 D1,
         // COMBAT_RULES.md §3.3 item 8).
         var playerAttack = AttackResolution.ResolveAndApplyPlayerAttack(
             resolved.PetState,
             bossState,
-            result.Resources.ClearedGemCounts,
+            AttackQualification.FromResolution(result.Resolution),
             baseDamagePool: result.Resources.BaseDamagePool,
             combo: resolved.Combo,
             rngState: resolved.RngState,
@@ -2275,12 +2280,14 @@ public sealed class BattleStateService
         // ===================================================================
         // The legacy fallback basic attack (Base Damage = Boss.ATK independently of the
         // board) is RETIRED (ADR-026 §5). A Boss deals attack damage if and only if its
-        // own swap produced a confirmed ATK-gem match (ClearedGemCounts.Atk > 0), and
-        // the instance is resolved through the same ATK-gated AttackResolution the
-        // Player's is — the Boss's Step 1 is EffectiveBossATK plus the ATK-Gem
-        // BaseDamagePool the Boss's own cleared ATK Gems generated (COMBAT_RULES.md
-        // §3.4), the Skill's authored BaseDamage is 0 by D3, and Step 2's Combo
-        // Modifier is 1 because Boss attacks are not part of a Combo chain.
+        // own swap's resolution contains a confirmed ATK-gem match — the qualification
+        // is read from `bossResolution`, the Boss's own cascade result, and never from
+        // its cleared-gem counts (COMBAT_RULES.md §2 item 6, OD-6) — and the instance
+        // is resolved through the same ATK-gated AttackResolution the Player's is — the
+        // Boss's Step 1 is EffectiveBossATK plus the ATK-Gem BaseDamagePool the Boss's
+        // own cleared ATK Gems generated (COMBAT_RULES.md §3.4), the Skill's authored
+        // BaseDamage is 0 by D3, and Step 2's Combo Modifier is 1 because Boss attacks
+        // are not part of a Combo chain.
         //
         // EffectiveBossATK is derived within that one pipeline execution from
         // BossState.ATK and the Boss's own TargetStat="ATK" BuffDebuff instances —
@@ -2291,12 +2298,12 @@ public sealed class BattleStateService
         // The defender side is the player's (§3.4: Source = Boss, Target = Player): the
         // defending Element is the ACTIVE PET's, and the defending DEF, HP, and Shield
         // pool are the Pet's too (GAME_STATE.md §2.3, ADR-011 item 5). A round in which
-        // the Boss matched no ATK Gem produces no damage instance, no ATK-stat
-        // consumption, and no damage events.
+        // the Boss's own resolution contains no confirmed ATK-gem match produces no
+        // damage instance, no ATK-stat consumption, and no damage events.
         var bossAttack = AttackResolution.ResolveAndApplyBossAttack(
             bossState,
             resolved.PetState,
-            bossGeneration.ClearedGemCounts,
+            AttackQualification.FromResolution(bossResolution),
             baseDamagePool: bossGeneration.BaseDamagePool,
             combo: 1,
             rngState: resolved.RngState,
@@ -2316,8 +2323,9 @@ public sealed class BattleStateService
         // RELIC_RULES.md §3: OnDamageTaken "fires when the active Pet takes
         // damage". The instance above is the round's Boss→Pet damage instance and the
         // Pet's post-damage HP has just been written, so this is the documented firing
-        // point when — and only when — that instance exists. A round in which the Boss
-        // matched no ATK Gem resolves no damage instance at all (ADR-026 D1), so the
+        // point when — and only when — that instance exists. A round whose Boss
+        // resolution contains no confirmed ATK-gem match resolves no damage instance at
+        // all (ADR-026 D1, COMBAT_RULES.md §2 item 6), so the
         // Trigger is not reached: the Pet took no damage.
         //
         // It is the existing damage-taken report, not a second damage-resolution path:

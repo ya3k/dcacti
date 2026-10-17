@@ -215,11 +215,11 @@ public class BossSkillContractTests
         var effectiveAtk = StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, boss.ActiveStatusEffects);
         Assert.Equal(210, effectiveAtk);
 
-        // Case 1: Non-qualifying turn (0 ATK matches) -> modifier preserved
+        // Case 1: Non-qualifying turn (no confirmed ATK Match) -> modifier preserved
         var nonQualifyingResult = AttackResolution.ResolveBossAttack(
             boss,
             new PetState(new Pets.PetId("pet"), 1000, 1000, 100, 50, 0, 0, Element.Hoa, new Passives.PassiveId("p"), Passives.PassiveProgress.AtStart(5)),
-            new ClearedGemCounts(0, 3, 0, 0),
+            AttackQualification.None,
             baseDamagePool: 0,
             combo: 1,
             rngState: default);
@@ -227,11 +227,11 @@ public class BossSkillContractTests
         var bossAfterNonQualifying = AttackResolution.ConsumeBossNextAttackModifiers(boss, nonQualifyingResult.IsQualifyingAttack);
         Assert.Single(bossAfterNonQualifying.ActiveStatusEffects);
 
-        // Case 2: Qualifying turn (3 ATK matches) -> modifier consumed
+        // Case 2: Qualifying turn (a confirmed ATK Match) -> modifier consumed
         var qualifyingResult = AttackResolution.ResolveBossAttack(
             boss,
             new PetState(new Pets.PetId("pet"), 1000, 1000, 100, 50, 0, 0, Element.Hoa, new Passives.PassiveId("p"), Passives.PassiveProgress.AtStart(5)),
-            new ClearedGemCounts(3, 0, 0, 0),
+            new AttackQualification(HasConfirmedAtkMatch: true),
             baseDamagePool: 30,
             combo: 1,
             rngState: default);

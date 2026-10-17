@@ -111,8 +111,9 @@ public class AtomicRoundOrchestrationTests
     [InlineData(GemType.Power)]
     public async Task PlayerNonAtkMatch_ShouldDealNoDamageAndPreserveNextAttackModifiers(GemType matchType)
     {
-        // ADR-026 D1 / COMBAT_RULES.md §3: with zero cleared ATK Gems the Damage
-        // Pipeline does not execute for the acting side — no player-sourced
+        // COMBAT_RULES.md §2 item 6 "Attack qualification (OD-6)" / ADR-026 D1: the
+        // acting actor's own resolution contains no confirmed ATK-gem match, so the
+        // Damage Pipeline does not execute for the acting side — no player-sourced
         // DamageCalculated/DamageDealt/DamageTaken is emitted, the Boss's HP is
         // untouched by the Player, and an attack modifier that would have been
         // consumed by a qualifying attack is preserved unconsumed (§3.3 item 8).
@@ -157,6 +158,147 @@ public class AtomicRoundOrchestrationTests
         Assert.Contains(result.State.PetState.ATKModifiers, m => m.SourceIdentity == "round-test-next-attack");
     }
 
+    [Fact]
+    public async Task NonAtkSwap_ShouldKeepClearedGemReportingAndItsResourceEffects()
+    {
+        // COMBAT_RULES.md §2 item 6 / OD-6: cleared-gem accounting is a REPORTING
+        // quantity. It is produced for every committed resolution whether or not an
+        // attack qualifies, so removing it from the authorization path must not change
+        // what it reports, nor the non-damage resources the same resolution generates.
+        var repository = new InMemoryBattleStateRepository();
+        var service = new BattleStateService(repository, new FixedRngSeedSource());
+
+        const string battleId = "round-player-non-atk-accounting";
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, BossDefinitions.HoaLong);
+
+        var pinned = RoundTestSupport.PlayerMatch(GemType.Def, created.RngState, created.LastCommittedSwapPair);
+
+        await RoundTestSupport.PinAsync(repository, created, pinned.Board);
+
+        var result = (await service.ExecuteSwapAsync(battleId, pinned.Swap))!.Value;
+        Assert.True(result.IsAccepted);
+
+        // Reporting: the Swap's own cleared cells are counted and carried unchanged on
+        // the committed result — the same accounting the pipeline produced, and no
+        // ATK cell among them.
+        Assert.Equal(pinned.Resources.ClearedGemCounts, result.Resources.ClearedGemCounts);
+        Assert.True(result.Resources.ClearedGemCounts.Def > 0);
+        Assert.Equal(result.Resources.ClearedGemCounts.Total, result.Resources.ClearedGemCounts.Def);
+        Assert.Equal(0, result.Resources.ClearedGemCounts.Atk);
+
+        // Resource accounting: the DEF Gems still generate the Defense pool the §2
+        // table's rate assigns them, and no ATK pool is generated.
+        Assert.True(result.Resources.DefensePool > 0);
+        Assert.Equal(0, result.Resources.BaseDamagePool);
+
+        // ...and none of that authorizes an attack for the acting actor.
+        Assert.DoesNotContain(
+            result.Events,
+            e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Player);
+    }
+
+    [Fact]
+    public async Task PlayerDamageInstances_ShouldExistExactlyWhenThePlayersOwnResolutionConfirmedAnAtkMatch()
+    {
+        // COMBAT_RULES.md §2 item 6 / OD-6 / ADR-026 item 4: the acting actor's OWN
+        // resolution decides, and only the resolution being resolved decides.
+        //
+        // The expectation each round is read from the committed round's own Player
+        // resolution (`SwapExecutionResult.Resolution`) — the authoritative evidence the
+        // runtime consumes. It is never read from a cleared-gem count, and never from
+        // the Boss's resolution: this round's Boss board action resolves its own Match-3
+        // cycle on the same shared board, so a round can carry an ATK Match on one side
+        // and not the other.
+        //
+        // The Player's Match type alternates across rounds, which is exactly the
+        // carry-over the invariant forbids: a round whose own resolution confirmed an
+        // ATK Match deals one Player instance, and a later round that confirmed none
+        // inherits nothing from it.
+        var repository = new InMemoryBattleStateRepository();
+        var service = new BattleStateService(repository, new FixedRngSeedSource());
+
+        var boss = BossDefinitions.HoaLong with
+        {
+            // Neither side can end the battle inside the observation window, and the
+            // Skill never fires — the round's only Player-sourced damage is the
+            // ATK-gated instance under test.
+            MaxHP = 100_000,
+            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 100_000 },
+        };
+
+        const string battleId = "round-player-own-atk-match";
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, boss);
+
+        var durablePet = created.PetState with { HP = 100_000, MaxHP = 100_000 };
+        await RoundTestSupport.PinAsync(repository, created, created.BoardState, petState: durablePet);
+
+        var state = created with { PetState = durablePet };
+
+        var matchTypes = new[]
+        {
+            GemType.Atk, GemType.Def, GemType.Atk, GemType.Power, GemType.Atk, GemType.Hp,
+        };
+
+        var sawQualifiedRound = false;
+        var sawNonQualifiedRound = false;
+        var sawBossOnlyAtkMatchRound = false;
+
+        foreach (var matchType in matchTypes)
+        {
+            var pinned = RoundTestSupport.PlayerMatch(matchType, state.RngState, state.LastCommittedSwapPair);
+            await RoundTestSupport.PinAsync(repository, state, pinned.Board);
+
+            var result = (await service.ExecuteSwapAsync(battleId, pinned.Swap))!.Value;
+            Assert.True(result.IsAccepted);
+
+            // The authority for this round's Player attack: the Player's own committed
+            // resolution and the confirmed Matches it contains.
+            var ownAtkMatch = result.Resolution.Passes
+                .SelectMany(pass => pass.Matches)
+                .Any(match => match.Shape.GemType == GemType.Atk);
+
+            var playerInstances = result.Events.Count(
+                e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Player);
+
+            // Exactly one instance when the Player's own resolution confirmed an ATK
+            // Match, none when it did not.
+            Assert.Equal(ownAtkMatch ? 1 : 0, playerInstances);
+
+            // The Boss's own cycle is observed from the delivered Match reports only so
+            // the actor-isolation branch below can be shown to have occurred; it is
+            // never used as an authorization input, and nothing above reads it.
+            var bossHadAtkMatch = RoundTestSupport.BossBoardEvents(result)
+                .Any(e => e.Type == BattleEventType.MatchCreated && e.Match.Shape.GemType == GemType.Atk);
+
+            if (ownAtkMatch)
+            {
+                sawQualifiedRound = true;
+            }
+            else
+            {
+                sawNonQualifiedRound = true;
+
+                // Actor isolation: the Boss's ATK Match in this same round authorizes
+                // nothing on the Player's side (asserted by the equality above).
+                sawBossOnlyAtkMatchRound |= bossHadAtkMatch;
+            }
+
+            state = result.State;
+
+            if (state.BossState.HP <= 0 || state.PetState.HP <= 0)
+            {
+                break;
+            }
+        }
+
+        Assert.True(sawQualifiedRound, "the scenario must include a round whose own resolution confirmed an ATK Match");
+        Assert.True(sawNonQualifiedRound, "the scenario must include a round whose own resolution confirmed none");
+        Assert.True(
+            sawBossOnlyAtkMatchRound,
+            "the scenario must include a round where only the Boss's resolution confirmed an ATK Match, "
+            + "so the actor-isolation branch is exercised rather than vacuous");
+    }
+
     // =======================================================================
     // 2. Boss ATK match damages the Pet; a Boss non-ATK match does not
     //    (ADR-026 D1, GAME_RULES.md §17 step 18d)
@@ -166,9 +308,9 @@ public class AtomicRoundOrchestrationTests
     public async Task BossBoardAction_ShouldDamageThePet_ExactlyWhenItClearedAnAtkGem()
     {
         // GAME_RULES.md §17 step 18d / ADR-026 D1: the Boss deals attack damage iff
-        // its own swap produced a confirmed ATK-Gem match. The legacy fallback basic
-        // attack is retired, so a round in which the Boss cleared no ATK Gem
-        // produces no Boss-sourced damage instance at all.
+        // its own swap's resolution contains a confirmed ATK-Gem match. The legacy
+        // fallback basic attack is retired, so a round whose Boss resolution confirmed
+        // none produces no Boss-sourced damage instance at all.
         //
         // The property is asserted over several rounds: whichever branch the Boss's
         // deterministic move selection lands on, the equivalence must hold.
