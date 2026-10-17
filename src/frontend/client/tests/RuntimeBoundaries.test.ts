@@ -784,6 +784,57 @@ describe('Frontend architectural boundaries', () => {
     });
   });
 
+  describe('the retired special-cell contract is absent from active client code', () => {
+    /**
+     * The retired identifiers, assembled from fragments so no retired symbol is
+     * itself live in this file: the assertion is a negative contract that guards
+     * reintroduction (ADR-028, `GAME_STATE.md` §2.1.2/§2.1.4,
+     * `SIGNALR_PROTOCOL.md` §3.2.10/§3.2.11).
+     */
+    const RETIRED = [
+      ['Special', 'Gem'].join(''), // the cell metadata type and its derivations
+      ['created', 'Special', 'Gems'].join(''), // the retired MatchCreated member
+      ['special', 'Gem'].join(''), // the retired per-cell wire member
+    ];
+
+    it('no active frontend source file names a retired member', () => {
+      // `src/` is the active client: every file there either models the delivered
+      // wire, transports it, or renders it. A retired member has no producer on the
+      // server (TASK-292), so a reader that still names one is dead code at best.
+      const sourceFiles = walk(SRC);
+
+      for (const file of sourceFiles) {
+        const code = stripComments(readFileSync(file, 'utf8'));
+
+        for (const retired of RETIRED) {
+          expect(code, `${file} must not reference "${retired}"`).not.toContain(retired);
+        }
+      }
+    });
+
+    it('every cell model declares exactly one member, the delivered Gem type', () => {
+      // GAME_STATE.md §2.1.3 items 1–4 / §2.1.2 item 2: a cell entry's whole stored
+      // content is its Gem type. Each projection of it — the SignalR push, the REST
+      // battle-start summary and the runtime's synchronized copy — therefore declares
+      // one member and no second one.
+      const cellModels: Array<[string, string]> = [
+        [join('services', 'realtime', 'SignalRService.ts'), 'CellPayload'],
+        [join('services', 'api', 'BattleModels.ts'), 'BattleStartCell'],
+        [join('game', 'runtime', 'GameRuntimeEvents.ts'), 'RuntimeCell'],
+      ];
+
+      for (const [file, interfaceName] of cellModels) {
+        const code = stripComments(readSource(file));
+        const declaration = new RegExp(`export interface ${interfaceName} \\{([^}]*)\\}`).exec(code);
+
+        expect(declaration, `${file} must declare ${interfaceName}`).not.toBeNull();
+        expect(
+          [...(declaration?.[1] ?? '').matchAll(/readonly\s+(\w+)\s*:/g)].map((match) => match[1])
+        ).toEqual(['gemType']);
+      }
+    });
+  });
+
   describe('the frontend stays on the approved stack', () => {
     it('adds no unauthorized state or game libraries', () => {
       const pkg = JSON.parse(

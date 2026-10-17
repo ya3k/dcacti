@@ -39,7 +39,6 @@ import {
   type RuntimePetState,
   type RuntimePlayerState,
   type RuntimeRngState,
-  type RuntimeSpecialGem,
   type RuntimeStatusEffect,
 } from './GameRuntimeEvents';
 
@@ -2743,10 +2742,9 @@ export class GameRuntime implements GameRuntimePort {
    * delivered member, not a board rule.
    *
    * A cell is an object because that is what the protocol delivers: §4.1 item 5
-   * states the board carries each cell's Gem type and, optionally, the Special
-   * Gem at that cell. Absence of `specialGem` is the documented spelling of
-   * "ordinary Gem" (`GAME_STATE.md` §2.1.7 item 3), so it is kept absent rather
-   * than materialized.
+   * states the board carries pure `GemType` cell entries. Nothing else is read
+   * from a cell, because nothing else is stored per cell (`GAME_STATE.md` §2.1.3
+   * item 4, §2.1.2 items 1–2).
    */
   private readBoard(value: unknown): RuntimeBoard | null {
     if (typeof value !== 'object' || value === null) {
@@ -2775,65 +2773,23 @@ export class GameRuntime implements GameRuntimePort {
   /**
    * Reads one delivered board cell (`SIGNALR_PROTOCOL.md` §4.1 item 5).
    *
-   * `gemType` is required and must be a non-empty string — it is always present
-   * on the wire, including for a cell holding a Special Gem
-   * (`GAME_STATE.md` §2.1.3 items 1–2). `specialGem` is optional, and its
-   * absence is the documented statement that the cell holds an ordinary Gem
-   * (§2.1.7 item 3); when it is present, its `type` is required and its
-   * `orientation` is read only if it actually arrived, because orientation is
-   * present if and only if the type is `LineClear` (§2.1.4 item 2).
+   * `gemType` is required and must be a non-empty string — it is the cell's whole
+   * delivered content and is always present (`GAME_STATE.md` §2.1.3 items 1–4).
+   * No other member is read, and none is repaired: a cell that carries no Gem
+   * type is malformed rather than defaulted.
    */
   private readCell(value: unknown): RuntimeCell | null {
     if (typeof value !== 'object' || value === null) {
       return null;
     }
 
-    const candidate = value as { gemType?: unknown; specialGem?: unknown };
+    const candidate = value as { gemType?: unknown };
 
     if (typeof candidate.gemType !== 'string' || candidate.gemType.length === 0) {
       return null;
     }
 
-    if (candidate.specialGem === undefined || candidate.specialGem === null) {
-      return { gemType: candidate.gemType };
-    }
-
-    const specialGem = this.readSpecialGem(candidate.specialGem);
-    if (specialGem === null) {
-      return null;
-    }
-
-    return { gemType: candidate.gemType, specialGem };
-  }
-
-  /**
-   * Reads a cell's optional Special Gem metadata (`GAME_STATE.md` §2.1.4).
-   *
-   * Nothing is derived or repaired: the type is read as sent, and the
-   * orientation is stored only when it arrived, so a `Burst`/`Area` entry stays
-   * without one rather than gaining an invented value no rule reads
-   * (`SIGNALR_PROTOCOL.md` §3.2.10 item 6).
-   */
-  private readSpecialGem(value: unknown): RuntimeSpecialGem | null {
-    if (typeof value !== 'object' || value === null) {
-      return null;
-    }
-
-    const candidate = value as { type?: unknown; orientation?: unknown };
-
-    if (typeof candidate.type !== 'string' || candidate.type.length === 0) {
-      return null;
-    }
-
-    if (candidate.orientation === undefined || candidate.orientation === null) {
-      return { type: candidate.type };
-    }
-
-    if (typeof candidate.orientation !== 'string' || candidate.orientation.length === 0) {
-      return null;
-    }
-
-    return { type: candidate.type, orientation: candidate.orientation };
+    return { gemType: candidate.gemType };
   }
 
   private describeError(error: unknown): string | null {

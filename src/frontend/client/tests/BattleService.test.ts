@@ -46,11 +46,11 @@ const START_REQUEST: BattleStartRequest = {
 
 /**
  * One §2.1.1 cell entry: a Gem type (`MATCH3_RULES.md` §1.1's four functional
- * types) and, when present, the Special Gem occupying the cell.
+ * types), which is a cell's whole stored content under ADR-028
+ * (`GAME_STATE.md` §2.1.3 items 1–4).
  */
 interface CellFixture {
   gemType: string;
-  specialGem?: { type: string; orientation?: string | null } | null;
 }
 
 /**
@@ -58,23 +58,16 @@ interface CellFixture {
  * `Cells[64]`, row-major, one entry per cell. The array position **is** the
  * cell index, so no index member is written per element (§2.1.7 item 2).
  *
- * Cell 63 carries a `LineClear` Special Gem (with its required orientation,
- * §2.1.4 item 2) and cell 62 a `Burst` Special Gem (orientation-free, same
- * item), so the fixtures exercise both the present and the absent case rather
- * than only the ordinary-Gem path. Every other cell is an ordinary Gem with no
- * Special Gem member.
+ * Every entry is one of the four §1.1 functional types and carries nothing else:
+ * §2.1.2 retires the per-cell Special Gem member, so there is no second member to
+ * exercise.
  */
 function boardCells(): CellFixture[] {
   const gemTypes = ['ATK', 'DEF', 'HP', 'POWER'];
 
-  return Array.from({ length: 64 }, (_, index) => {
-    const cell: CellFixture = { gemType: gemTypes[index % gemTypes.length] };
-
-    if (index === 63) cell.specialGem = { type: 'LineClear', orientation: 'Horizontal' };
-    if (index === 62) cell.specialGem = { type: 'Burst' };
-
-    return cell;
-  });
+  return Array.from({ length: 64 }, (_, index) => ({
+    gemType: gemTypes[index % gemTypes.length],
+  }));
 }
 
 /**
@@ -412,7 +405,7 @@ describe('ApiService.startBattle (API_CONTRACTS.md §3)', () => {
     expect(initialState.rngState.increment).toBe(1442695040888963407);
   });
 
-  it('should deserialize all 64 board cells in index order with Special Gem metadata', async () => {
+  it('should deserialize all 64 board cells in index order as ordinary Gem types', async () => {
     establishSession();
     respondWith(startResponseFixture());
 
@@ -428,31 +421,34 @@ describe('ApiService.startBattle (API_CONTRACTS.md §3)', () => {
     expect(cells[3]).toEqual({ gemType: 'POWER' });
     expect(cells[4]).toEqual({ gemType: 'ATK' });
 
-    // §2.1.3 item 1: a cell's gemType is present whether or not the cell holds
-    // a Special Gem — the Special Gem is metadata on the Gem, not a substitute
-    // for it.
+    // §2.1.3 items 1–4 / §2.1.2 item 2: a cell entry's `gemType` is its whole
+    // stored content. Nothing else is stored per cell, so every delivered entry
+    // carries exactly one member and no second one is invented.
+    for (const cell of cells) {
+      expect(Object.keys(cell)).toEqual(['gemType']);
+    }
     expect(cells[63].gemType).toBe('POWER');
-    expect(cells[63].specialGem).toEqual({ type: 'LineClear', orientation: 'Horizontal' });
     expect(cells[62].gemType).toBe('HP');
-    expect(cells[62].specialGem).toEqual({ type: 'Burst' });
   });
 
-  it('should read an absent Special Gem as absence rather than as an ordinary type', async () => {
+  it('should read the current ordinary cell contract and ignore a retired per-cell member', async () => {
     establishSession();
-    respondWith(startResponseFixture());
+
+    // ADR-028 §4: a reader follows tolerant-reader principles and ignores a
+    // retired per-cell member. The response body is plain JSON, so the cell is
+    // still read as its delivered `gemType` — nothing throws, and no value is
+    // derived from the retired member.
+    const fixture = startResponseFixture();
+    const body = fixture as unknown as {
+      initialState: { board: { cells: Array<Record<string, unknown>> } };
+    };
+    body.initialState.board.cells[0] = { gemType: 'ATK', retiredCellMember: { type: 'Retired' } };
+    respondWith(fixture);
 
     const { initialState } = await ApiService.getInstance().startBattle(START_REQUEST);
-    const ordinary = initialState.board.cells[0];
 
-    // §2.1.7 item 3: absence and an explicit `null` are the same statement —
-    // "this cell holds no Special Gem" — and no third spelling exists. What
-    // must never happen is an absent Special Gem being spelled as one of the
-    // three real types, so the absent member is read as absent/null and is
-    // never the string `LineClear`, `Burst`, or `Area`.
-    expect(ordinary.specialGem ?? null).toBeNull();
-    expect(ordinary.specialGem).not.toBe('LineClear');
-    expect(ordinary.specialGem).not.toBe('Burst');
-    expect(ordinary.specialGem).not.toBe('Area');
+    expect(initialState.board.cells[0].gemType).toBe('ATK');
+    expect(initialState.board.cells).toHaveLength(64);
   });
 
   it('should deserialize petState with the combat stats, passive, and loadouts', async () => {

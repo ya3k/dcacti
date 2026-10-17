@@ -254,10 +254,9 @@ const GEM_NAMES = ['ATK', 'DEF', 'HP', 'POWER'];
 /**
  * A server-shaped board: exactly 64 delivered cells.
  *
- * Each entry is the protocol's `CellPayload` — the cell's Gem type plus the
- * optional Special Gem at that cell (`GAME_STATE.md` §2.1.1,
- * `SIGNALR_PROTOCOL.md` §4.1 item 5), so a fixture is a bare Gem-name string
- * only if the wire shape were, which it is not.
+ * Each entry is the protocol's `CellPayload` — the cell's Gem type and nothing
+ * else (`GAME_STATE.md` §2.1.3 items 1–4, `SIGNALR_PROTOCOL.md` §4.1 item 5) —
+ * so a cell is an object carrying one member, never a bare Gem-name string.
  */
 function serverCells(): Array<{ gemType: string }> {
   return Array.from({ length: 64 }, (_, index) => ({
@@ -770,11 +769,10 @@ describe('GameRuntime', () => {
     });
 
     it('accepts the delivered cell shape, where each cell carries its Gem type', async () => {
-      // SIGNALR_PROTOCOL.md §4.1 item 5: the board "carries its Special Gem
-      // state, and needs nothing else" — each cell entry holds its Gem type and,
-      // optionally, the Special Gem at that cell. A reader that required bare
-      // Gem-name strings would reject every real server payload, which is exactly
-      // how the board failed to render before TASK-182.
+      // SIGNALR_PROTOCOL.md §4.1 item 5: the board carries pure `GemType` cell
+      // entries. A reader that required bare Gem-name strings would reject every
+      // real server payload, which is exactly how the board failed to render
+      // before TASK-182.
       const { runtime, transport } = createRuntime();
       await runtime.initialize();
 
@@ -790,31 +788,24 @@ describe('GameRuntime', () => {
       );
     });
 
-    it('keeps an absent Special Gem absent instead of materializing one', async () => {
-      // GAME_STATE.md §2.1.7 item 3: an omitted Special Gem member is the
-      // documented statement that the cell holds an ordinary Gem. It is not a
-      // null sentinel and not an invitation to predict one, so the reader must
-      // not write a placeholder value in its place.
+    it('keeps a delivered cell to its Gem type and models no retired member', async () => {
+      // GAME_STATE.md §2.1.3 items 1–4: a cell's whole stored content is its Gem
+      // type, so the synchronized copy carries exactly one member. ADR-028 §4
+      // makes the reader tolerant of a retired per-cell member — it is ignored
+      // rather than modelled, and no placeholder is written in its place.
       const { runtime, transport } = createRuntime();
       await runtime.initialize();
 
       const cells = serverCells().map((cell, index) =>
-        index === 5 ? { gemType: cell.gemType, specialGem: { type: 'Burst' } } : cell
+        index === 5 ? { gemType: cell.gemType, retiredCellMember: { type: 'Retired' } } : cell
       );
 
       transport.emit('BattleStateUpdated', payload({ board: { cells } }));
 
       const board = runtime.getBattleState()!.board;
-      expect(board.cells[5].specialGem).toEqual({ type: 'Burst' });
-      expect('specialGem' in board.cells[5]).toBe(true);
-
-      // Every other cell keeps the member absent rather than set to undefined,
-      // null, or a placeholder type.
-      const others = board.cells.filter((_, index) => index !== 5);
-      expect(others.every((cell) => !('specialGem' in cell) || cell.specialGem === undefined)).toBe(
-        true
-      );
-      expect(others.some((cell) => (cell.specialGem as unknown) === null)).toBe(false);
+      expect(board.cells[5]).toEqual({ gemType: 'DEF' });
+      expect(Object.keys(board.cells[5])).toEqual(['gemType']);
+      expect(board.cells.every((cell) => Object.keys(cell).length === 1)).toBe(true);
     });
 
     it('rejects a cell that carries no Gem type rather than defaulting one', async () => {

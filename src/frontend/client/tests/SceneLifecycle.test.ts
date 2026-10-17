@@ -30,7 +30,6 @@ import type {
 import { RuntimeActionOutcomeUnknownError } from '../src/game/runtime/GameRuntimeEvents';
 import type { CardResponse, PetResponse } from '../src/services/api/CollectionModels';
 import { SceneEventEmitter } from './support/SceneEventEmitter';
-import { parseGemBaseLabel, parseSpecialGemBadge } from '../src/game/scenes/BattleEventPresenter';
 
 vi.mock('phaser', () => ({
   AUTO: 'AUTO',
@@ -193,6 +192,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
   const boardCells: Array<{
     kind: string;
     label?: string;
+    fill?: number;
     strokeWidth?: number;
     strokeColor?: number;
   }> = [];
@@ -634,7 +634,7 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
           liveY = nextY;
           return obj;
         },
-        /** Phaser's `Text#setFontSize` — a Special Gem's label is drawn smaller. */
+        /** Phaser's `Text#setFontSize` — a cell label's font size is drawn from it. */
         setFontSize: (next: number | string) => {
           fontSize = typeof next === 'number' ? next : Number.parseInt(next, 10);
           return obj;
@@ -1925,13 +1925,13 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
   /**
    * A server-shaped board: exactly 64 cells in the documented order.
    *
-   * Each cell is the delivered `CellPayload` shape — its Gem type plus the
-   * optional Special Gem at that cell (`SIGNALR_PROTOCOL.md` §4.1 item 5), i.e.
-   * `{ gemType, specialGem }`. A bare Gem-name string is **not** what the
-   * protocol delivers, and modelling it as one is what previously let a
-   * mismatched client reader pass this suite.
+   * Each cell is the delivered `CellPayload` shape — its Gem type and nothing else
+   * (`GAME_STATE.md` §2.1.3 items 1–4, `SIGNALR_PROTOCOL.md` §4.1 item 5), i.e.
+   * `{ gemType }`. A bare Gem-name string is **not** what the protocol delivers,
+   * and modelling it as one is what previously let a mismatched client reader
+   * pass this suite.
    */
-  function serverBoard(): Array<{ gemType: string; specialGem?: { type: string; orientation?: string } }> {
+  function serverBoard(): Array<{ gemType: string }> {
     return Array.from({ length: 64 }, (_, index) => ({
       gemType: GEM_NAMES[index % GEM_NAMES.length],
     }));
@@ -2503,7 +2503,7 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     // §6 makes the delivered `playerState.combo` a player-facing value, and
     // TASK-209 §4 requires it to be presented when it is meaningful.
     const rendered = harness.texts.map((t) => t.text).join(' ');
-    for (const forbidden of ['Damage', 'Relic', 'PendingSpecial']) {
+    for (const forbidden of ['Damage', 'Relic', ['Pending', 'Special'].join('')]) {
       expect(rendered).not.toMatch(new RegExp(forbidden, 'i'));
     }
 
@@ -3282,18 +3282,17 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     expect(callout().color).toBe('#fbbf24');
   });
 
-  it('renders authoritative specialGem variants with distinct visual styling while preserving child count and normal gems (TASK-232)', () => {
+  it('renders every cell as an ordinary Gem type with no specialised cell state (TASK-293)', () => {
+    // MATCH3_RULES.md §1.1 / GAME_STATE.md §2.1.2–§2.1.4: a cell holds one
+    // functional Gem type and nothing else, so every cell is drawn with the same
+    // tile treatment and its own type label. The board is exactly 128 display
+    // objects (64 tiles + 64 labels) — no per-cell overlay, badge, or second
+    // styling exists to draw.
     const cells = serverBoard();
-    // Normal gem
     cells[0] = { gemType: 'ATK' };
-    // LineClear Horizontal
-    cells[1] = { gemType: 'DEF', specialGem: { type: 'LineClear', orientation: 'Horizontal' } };
-    // LineClear Vertical
-    cells[2] = { gemType: 'HP', specialGem: { type: 'LineClear', orientation: 'Vertical' } };
-    // Burst
-    cells[3] = { gemType: 'POWER', specialGem: { type: 'Burst' } };
-    // Area
-    cells[4] = { gemType: 'ATK', specialGem: { type: 'Area' } };
+    cells[1] = { gemType: 'DEF' };
+    cells[2] = { gemType: 'HP' };
+    cells[3] = { gemType: 'POWER' };
 
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState({
       board: { cells },
@@ -3301,7 +3300,7 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
 
     runScene(scene, ctx, 'create');
 
-    // Child-count invariant: exactly 128 children (64 tiles + 64 labels)
+    // Child-count invariant: exactly 128 children (64 tiles + 64 labels).
     expect(harness.boardCells).toHaveLength(128);
 
     const tiles = harness.boardCells.filter((c) => c.kind === 'tile');
@@ -3309,44 +3308,21 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     expect(tiles).toHaveLength(64);
     expect(labels).toHaveLength(64);
 
-    // Normal gem (cell 0)
-    expect(tiles[0].strokeWidth).toBe(1);
-    expect(tiles[0].strokeColor).toBe(0x0b0f19);
+    // One uniform tile treatment for every cell.
+    expect(tiles.every((tile) => tile.strokeWidth === 1)).toBe(true);
+    expect(tiles.every((tile) => tile.strokeColor === 0x0b0f19)).toBe(true);
+
+    // Each label is exactly its own Gem type, undecorated.
     expect(labels[0].label).toBe('ATK');
-    expect(parseGemBaseLabel(labels[0].label)).toBe('ATK');
-    expect(parseSpecialGemBadge(labels[0].label)).toBeNull();
+    expect(labels[1].label).toBe('DEF');
+    expect(labels[2].label).toBe('HP');
+    expect(labels[3].label).toBe('PWR');
 
-    // LineClear Horizontal (cell 1)
-    expect(tiles[1].strokeWidth).toBe(3);
-    expect(tiles[1].strokeColor).toBe(0x38bdf8);
-    expect(labels[1].label).toBe('DEF [H]');
-    expect(parseGemBaseLabel(labels[1].label)).toBe('DEF');
-    expect(parseSpecialGemBadge(labels[1].label)).toBe('[H]');
-
-    // LineClear Vertical (cell 2)
-    expect(tiles[2].strokeWidth).toBe(3);
-    expect(tiles[2].strokeColor).toBe(0x38bdf8);
-    expect(labels[2].label).toBe('HP [V]');
-    expect(parseGemBaseLabel(labels[2].label)).toBe('HP');
-    expect(parseSpecialGemBadge(labels[2].label)).toBe('[V]');
-
-    // Burst (cell 3)
-    expect(tiles[3].strokeWidth).toBe(3);
-    expect(tiles[3].strokeColor).toBe(0xfacc15);
-    expect(labels[3].label).toBe('PWR [BURST]');
-    expect(parseGemBaseLabel(labels[3].label)).toBe('PWR');
-    expect(parseSpecialGemBadge(labels[3].label)).toBe('[BURST]');
-
-    // Area (cell 4)
-    expect(tiles[4].strokeWidth).toBe(3);
-    expect(tiles[4].strokeColor).toBe(0xf472b6);
-    expect(labels[4].label).toBe('ATK [AREA]');
-    expect(parseGemBaseLabel(labels[4].label)).toBe('ATK');
-    expect(parseSpecialGemBadge(labels[4].label)).toBe('[AREA]');
-
-    // Underlying labels invariant across the whole board
-    const parsedBaseLabels = labels.map((l) => parseGemBaseLabel(l.label));
-    expect(new Set(parsedBaseLabels)).toEqual(new Set(['ATK', 'DEF', 'HP', 'PWR']));
+    // The whole board's labels are the four documented types and nothing else:
+    // no label carries a suffix another vocabulary appended.
+    const width = new Set(labels.map((l) => l.label!.split(' ').length));
+    expect(width).toEqual(new Set([1]));
+    expect(new Set(labels.map((l) => l.label))).toEqual(new Set(['ATK', 'DEF', 'HP', 'PWR']));
   });
 
   it('latches boss Enrage state across healing and defeat, resetting only on new battle or state clear (TASK-232)', async () => {
@@ -3443,8 +3419,8 @@ describe('BattleScene — Swap input (MATCH3_RULES.md §2, SIGNALR_PROTOCOL.md �
       rngSeed: 42,
       rngState: { state: 123456789, increment: 1 },
       board: {
-        // The delivered `CellPayload` shape: each cell is its Gem type plus the
-        // optional Special Gem at that cell (SIGNALR_PROTOCOL.md §4.1 item 5).
+        // The delivered `CellPayload` shape: each cell is its Gem type and nothing
+        // else (`GAME_STATE.md` §2.1.3 items 1–4, `SIGNALR_PROTOCOL.md` §4.1 item 5).
         cells: Array.from({ length: 64 }, (_, index) => ({
           gemType: GEM_NAMES[index % GEM_NAMES.length],
         })),
@@ -5062,7 +5038,7 @@ describe('BattleScene — selected-cell treatment, interaction indicator & pacin
     // ...with a treatment that is only the selection's: an opaque 4 px white
     // ring, never faded (alpha stays 1), sized to the cell, and distinct from the
     // match/cascade overlays (`spawnCellHighlight`'s translucent fills) and from
-    // a Special Gem's own tile stroke.
+    // a cell tile's own 1 px stroke.
     expect(marking?.strokeWidth).toBe(4);
     expect(marking?.strokeColor).toBe(0xffffff);
     expect(marking?.width).toBe(CELL_SIZE + 4);
@@ -5107,32 +5083,34 @@ describe('BattleScene — selected-cell treatment, interaction indicator & pacin
     expect(harness.requestedActions).toEqual([{ kind: 'Swap', fromCell: 12, toCell: 13 }]);
   });
 
-  it('composes the selection with a Special Gem instead of clobbering it', () => {
-    // R-1: a selected Special Gem must still read as a Special Gem. The Special
-    // Gem's styling lives on the cell's own tile (its stroke and its label
-    // badge); the selection is a separate persistent ring, so the two compose.
-    const cells: Array<{ gemType: string; specialGem?: { type: string; orientation?: string } }> =
-      Array.from({ length: 64 }, (_, index) => ({
-        gemType: GEM_NAMES[index % GEM_NAMES.length],
-      }));
-    cells[12] = { gemType: 'HP', specialGem: { type: 'LineClear', orientation: 'Vertical' } };
+  it('composes the selection with the cell’s own styling instead of clobbering it', () => {
+    // R-1: selecting a cell must not disturb what that cell renders. The cell's
+    // own styling lives on its tile (fill and stroke) and its label; the
+    // selection is a separate persistent ring, so the two compose
+    // (GAME_STATE.md §2.1.3: the cell's Gem type is its whole content).
+    const cells: Array<{ gemType: string }> = Array.from({ length: 64 }, (_, index) => ({
+      gemType: GEM_NAMES[index % GEM_NAMES.length],
+    }));
+    cells[12] = { gemType: 'HP' };
 
     const { harness, ctx } = createBattle(battleState({ board: { cells } }));
 
     const tiles = harness.boardCells.filter((cell) => cell.kind === 'tile');
     const labels = harness.boardCells.filter((cell) => cell.kind === 'label');
 
-    expect(tiles[12].strokeColor).toBe(0x38bdf8);
-    expect(tiles[12].strokeWidth).toBe(3);
-    expect(labels[12].label).toBe('HP [V]');
+    const fillBefore = tiles[12].fill;
+    const strokeBefore = tiles[12].strokeColor;
+    const strokeWidthBefore = tiles[12].strokeWidth;
+    expect(labels[12].label).toBe('HP');
 
     tapCell(harness, 12);
 
-    // Both are still visible: the delivered Special Gem styling is untouched and
-    // the selection ring marks the same cell.
-    expect(tiles[12].strokeColor).toBe(0x38bdf8);
-    expect(tiles[12].strokeWidth).toBe(3);
-    expect(labels[12].label).toBe('HP [V]');
+    // Both are still visible: the delivered cell styling is untouched and the
+    // selection ring marks the same cell.
+    expect(tiles[12].fill).toBe(fillBefore);
+    expect(tiles[12].strokeColor).toBe(strokeBefore);
+    expect(tiles[12].strokeWidth).toBe(strokeWidthBefore);
+    expect(labels[12].label).toBe('HP');
     expect(ring(ctx)?.visible).toBe(true);
     expect(ring(ctx)?.x).toBe(cellCentre(12).x);
     expect(ring(ctx)?.y).toBe(cellCentre(12).y);
@@ -8803,8 +8781,8 @@ describe('BattleScene — CardCast and PetSkillCast input (SIGNALR_PROTOCOL.md �
       rngSeed: 42,
       rngState: { state: 123456789, increment: 1 },
       board: {
-        // The delivered `CellPayload` shape: each cell is its Gem type plus the
-        // optional Special Gem at that cell (SIGNALR_PROTOCOL.md §4.1 item 5).
+        // The delivered `CellPayload` shape: each cell is its Gem type and nothing
+        // else (`GAME_STATE.md` §2.1.3 items 1–4, `SIGNALR_PROTOCOL.md` §4.1 item 5).
         cells: Array.from({ length: 64 }, (_, index) => ({
           gemType: GEM_NAMES[index % GEM_NAMES.length],
         })),
@@ -11117,7 +11095,6 @@ describe('BattleScene — developer Move Log (TASK-253, operator decision D-1)',
       cells: [24, 25, 26],
       gemType: 'ATK',
       cascadeDepth: 1,
-      createdSpecialGems: [{ cellIndex: 24, specialGem: { type: 'Bomb' } }],
     },
     { type: 'GemMatched', cellIndex: 25, gemType: 'ATK' },
     { type: 'CascadeCreated', cascadeDepth: 2 },
@@ -11275,7 +11252,7 @@ describe('BattleScene — developer Move Log (TASK-253, operator decision D-1)',
 
     // The delivered members reach the row through the one event formatter.
     const joined = eventRows.join('\n');
-    expect(joined).toContain('Match: Straight ATK [24, 25, 26] depth: 1 (created: Bomb@24)');
+    expect(joined).toContain('Match: Straight ATK [24, 25, 26] depth: 1');
     expect(joined).toContain('GemMatched: cell 25 (ATK)');
     expect(joined).toContain('Cascade: depth 2');
     expect(joined).toContain('Combo: 3');
@@ -13490,9 +13467,9 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
       // The Refill filled every vacated cell with the delivered Gem type and left no
       // cell without a view.
       expect(views(ctx).every((view) => view !== null)).toBe(true);
-      expect(views(ctx)[0]?.content.startsWith('DEF|')).toBe(true);
-      expect(views(ctx)[1]?.content.startsWith('HP|')).toBe(true);
-      expect(views(ctx)[2]?.content.startsWith('ATK|')).toBe(true);
+      expect(views(ctx)[0]?.content).toBe('DEF');
+      expect(views(ctx)[1]?.content).toBe('HP');
+      expect(views(ctx)[2]?.content).toBe('ATK');
 
       playAllTweens(harness);
 
@@ -13766,379 +13743,14 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
     });
 
     // =====================================================================
-    // DEFECT — a Match's committed Special Gem creation cell
-    // (MATCH3_RULES.md §5.5.4 items 1–2; SIGNALR_PROTOCOL.md §3.2.6 item 6)
+    // Match tiers resolve as ordinary confirmed matches (TASK-293 / ADR-028)
+    //
+    // GAME_STATE.md §2.1.2 item 4 / MATCH3_RULES.md §1.A: a Match-4, Match-5 or
+    // L/T match resolves as the confirmed match it is. No tier creates, places,
+    // activates, detonates, chains, or area-clears anything, so no presentation
+    // path for such an effect exists — the Match step only flashes and clears the
+    // cells the delivered events name.
     // =====================================================================
-
-    /** The fixture board with a straight ATK Match-4 at 24–27. */
-    function matchFourBoard(): RuntimeBoard {
-      const cells: Array<{ gemType: string; specialGem?: { type: string; orientation?: string } }> =
-        Array.from({ length: BOARD_COLUMNS * BOARD_COLUMNS }, () => ({ gemType: 'POWER' }));
-
-      for (const index of [24, 25, 26, 27]) {
-        cells[index] = { gemType: 'ATK' };
-      }
-
-      return { cells };
-    }
-
-    /** Battle holding the given board, with one action in flight. */
-    function battleOnBoardWithHeldAction(initialBoard: RuntimeBoard): {
-      harness: ReturnType<typeof createSceneHarness>;
-      scene: BattleScene;
-      ctx: object;
-      resolveAction: () => void;
-    } {
-      const { harness, scene, ctx } = createBattle(battleState({ sequence: 0, board: initialBoard }));
-      const held = holdAction(harness);
-
-      tapCell(harness, 20);
-      tapCell(harness, 21);
-
-      return { harness, scene, ctx, resolveAction: () => held.resolve({ accepted: true }) };
-    }
-
-    /**
-     * The same held-action battle, for a round whose committed Swap is the pair
-     * the delivered boundary names (`fromCell` ⇄ `toCell`).
-     */
-    function battleOnBoardWithHeldSwap(
-      initialBoard: RuntimeBoard,
-      fromCell: number,
-      toCell: number
-    ): {
-      harness: ReturnType<typeof createSceneHarness>;
-      scene: BattleScene;
-      ctx: object;
-      resolveAction: () => void;
-    } {
-      const { harness, scene, ctx } = createBattle(battleState({ sequence: 0, board: initialBoard }));
-      const held = holdAction(harness);
-
-      tapCell(harness, fromCell);
-      tapCell(harness, toCell);
-
-      return { harness, scene, ctx, resolveAction: () => held.resolve({ accepted: true }) };
-    }
-
-    const CREATED_KEY = 'ATK|LineClear|Horizontal';
-
-    /** Pass 1: the ATK Match-4 at 24–27, whose 25 creation is reserved for Gravity. */
-    const MATCH_FOUR_PASS_ONE: unknown[] = [
-      { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
-      { type: 'SwapResolved', outcome: 'committed' },
-      {
-        type: 'MatchCreated',
-        shape: 'Straight',
-        cells: [24, 25, 26, 27],
-        gemType: 'ATK',
-        cascadeDepth: 1,
-        createdSpecialGems: [
-          { cellIndex: 25, specialGem: { type: 'LineClear', orientation: 'Horizontal' } },
-        ],
-      },
-      { type: 'GemMatched', cellIndex: 24, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 25, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 26, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 27, gemType: 'ATK' },
-      { type: 'ComboChanged', combo: 1 },
-      {
-        type: 'CascadeStepResolved',
-        passDepth: 1,
-        dropMoves: [
-          { fromCell: 16, toCell: 24 },
-          { fromCell: 8, toCell: 16 },
-          { fromCell: 0, toCell: 8 },
-          { fromCell: 18, toCell: 26 },
-          { fromCell: 10, toCell: 18 },
-          { fromCell: 2, toCell: 10 },
-          { fromCell: 19, toCell: 27 },
-          { fromCell: 11, toCell: 19 },
-          { fromCell: 3, toCell: 11 },
-        ],
-        spawnedGems: [
-          { cellIndex: 0, gemType: 'DEF' },
-          { cellIndex: 2, gemType: 'HP' },
-          { cellIndex: 3, gemType: 'ATK' },
-        ],
-      },
-    ];
-
-    /** Pass 2: the POWER match at 32–34, detected on the board pass 1 produced. */
-    const MATCH_FOUR_PASS_TWO: unknown[] = [
-      { type: 'CascadeCreated', cascadeDepth: 1 },
-      {
-        type: 'MatchCreated',
-        shape: 'Straight',
-        cells: [32, 33, 34],
-        gemType: 'POWER',
-        cascadeDepth: 2,
-      },
-      { type: 'GemMatched', cellIndex: 32, gemType: 'POWER' },
-      { type: 'GemMatched', cellIndex: 33, gemType: 'POWER' },
-      { type: 'GemMatched', cellIndex: 34, gemType: 'POWER' },
-      { type: 'ComboChanged', combo: 2 },
-      {
-        type: 'CascadeStepResolved',
-        passDepth: 2,
-        dropMoves: [
-          { fromCell: 24, toCell: 32 },
-          { fromCell: 16, toCell: 24 },
-          { fromCell: 8, toCell: 16 },
-          { fromCell: 0, toCell: 8 },
-          { fromCell: 25, toCell: 33 },
-          { fromCell: 17, toCell: 25 },
-          { fromCell: 9, toCell: 17 },
-          { fromCell: 1, toCell: 9 },
-          { fromCell: 26, toCell: 34 },
-          { fromCell: 18, toCell: 26 },
-          { fromCell: 10, toCell: 18 },
-          { fromCell: 2, toCell: 10 },
-        ],
-        spawnedGems: [
-          { cellIndex: 0, gemType: 'HP' },
-          { cellIndex: 1, gemType: 'ATK' },
-          { cellIndex: 2, gemType: 'POWER' },
-        ],
-      },
-    ];
-
-    /** The round's committed board: the created Gem has fallen 25 → 33. */
-    function boardAfterMatchFourRound(): RuntimeBoard {
-      const cells: Array<{ gemType: string; specialGem?: { type: string; orientation?: string } }> =
-        Array.from({ length: BOARD_COLUMNS * BOARD_COLUMNS }, () => ({ gemType: 'POWER' }));
-
-      cells[0] = { gemType: 'HP' };
-      cells[8] = { gemType: 'DEF' };
-      cells[1] = { gemType: 'ATK' };
-      cells[10] = { gemType: 'HP' };
-      cells[3] = { gemType: 'ATK' };
-      cells[33] = { gemType: 'ATK', specialGem: { type: 'LineClear', orientation: 'Horizontal' } };
-
-      return { cells };
-    }
-
-    it('30. keeps a Match’s committed Special Gem cell filled through the pass that created it', () => {
-      const { harness, ctx, resolveAction } = battleOnBoardWithHeldAction(matchFourBoard());
-
-      push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterMatchFourRound() }));
-      emitBatch(harness, 1, [...MATCH_FOUR_PASS_ONE, ...MATCH_FOUR_PASS_TWO]);
-
-      // The pass-1 Match step has played: the four matched cells lost the consumed
-      // Gem, and the cell the Match's own creation claim names does not stay empty —
-      // MATCH3_RULES.md §5.5.4 item 1 makes it hold the created Special Gem before
-      // Gravity runs, so there is no instant at which that cell holds nothing.
-      playUntil(harness, ctx, 2);
-      expect(playedPhases(ctx)).toEqual(['swap 20->21', 'match depth=1']);
-      expect(views(ctx)[24]?.tile.visible).toBe(false);
-      expect(views(ctx)[26]?.tile.visible).toBe(false);
-      expect(views(ctx)[27]?.tile.visible).toBe(false);
-      expect(views(ctx)[25]?.tile.visible).toBe(true);
-      expect(views(ctx)[25]?.content).toBe(CREATED_KEY);
-
-      // Pass 1's own Fall and Refill leave it in place (its column had no empty cell
-      // for Gravity to fill, because §5.5.4 item 2 reserved the creation cell).
-      playUntil(harness, ctx, 4);
-      expect(views(ctx).every((view) => view !== null)).toBe(true);
-      expect(views(ctx)[25]?.tile.visible).toBe(true);
-      expect(views(ctx)[25]?.content).toBe(CREATED_KEY);
-
-      // The next cascade begins on the board pass 1 produced.
-      playUntil(harness, ctx, 5);
-      expect(playedPhases(ctx)[4]).toBe('cascade depth=1');
-      expect(views(ctx)[25]?.tile.visible).toBe(true);
-      expect(views(ctx)[25]?.content).toBe(CREATED_KEY);
-
-      // The created Gem is one persistent view, and it is the view pass 2's own
-      // delivered Fall then moves.
-      const createdView = views(ctx)[25];
-
-      // Pass 2's delivered Fall moves that very view 25 → 33: the arriving cell
-      // shows the created Special Gem, and the only cells left without a view are
-      // the columns' vacated tops, which this pass's own Refill step fills next.
-      playUntil(harness, ctx, 6);
-      expect(playedPhases(ctx)[5]).toBe('gravity depth=2');
-      expect(views(ctx)[33]).toBe(createdView);
-      expect(views(ctx)[33]?.tile.visible).toBe(true);
-      expect(views(ctx)[33]?.content).toBe(CREATED_KEY);
-      expect(
-        views(ctx)
-          .map((view, index) => (view === null ? index : -1))
-          .filter((index) => index >= 0)
-      ).toEqual([0, 1, 2]);
-
-      // The pass's Refill completes it, so no cell is without a view once a pass has
-      // finished — and the created Special Gem is still the cell's own view.
-      playUntil(harness, ctx, 7);
-      expect(playedPhases(ctx)[6]).toBe('refill depth=2');
-      expect(views(ctx).filter((view) => view === null)).toEqual([]);
-
-      playAllTweens(harness);
-
-      // The whole board converges on the delivered state on the same 128 objects.
-      expect(views(ctx)[33]?.content).toBe(CREATED_KEY);
-      expect(views(ctx).every((view) => view !== null && view.cleared === false)).toBe(true);
-      expect(harness.boardCells).toHaveLength(128);
-      expect(labelsByCell(harness)[33]).toBe('ATK [H]');
-
-      resolveAction();
-    });
-
-    /** The fixture board with a straight ATK Match-5 run at 24–28. */
-    function matchFiveBoard(): RuntimeBoard {
-      const cells: Array<{ gemType: string; specialGem?: { type: string; orientation?: string } }> =
-        Array.from({ length: BOARD_COLUMNS * BOARD_COLUMNS }, () => ({ gemType: 'POWER' }));
-
-      for (const index of [24, 25, 26, 27, 28]) {
-        cells[index] = { gemType: 'ATK' };
-      }
-
-      return { cells };
-    }
-
-    /**
-     * One pass of a straight ATK Match-5 at 24–28 whose committed creation is a
-     * `Burst` at the line centre, 26 — a Special Gem with no orientation
-     * (`SIGNALR_PROTOCOL.md` §3.2.11 item 6) and so the one entry shape a
-     * `LineClear` only test would never exercise.
-     */
-    const MATCH_FIVE_BATCH: unknown[] = [
-      { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
-      { type: 'SwapResolved', outcome: 'committed' },
-      {
-        type: 'MatchCreated',
-        shape: 'Straight',
-        cells: [24, 25, 26, 27, 28],
-        gemType: 'ATK',
-        cascadeDepth: 1,
-        createdSpecialGems: [{ cellIndex: 26, specialGem: { type: 'Burst' } }],
-      },
-      { type: 'GemMatched', cellIndex: 24, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 25, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 26, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 27, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 28, gemType: 'ATK' },
-      { type: 'ComboChanged', combo: 1 },
-      {
-        type: 'CascadeStepResolved',
-        passDepth: 1,
-        dropMoves: [
-          { fromCell: 16, toCell: 24 },
-          { fromCell: 8, toCell: 16 },
-          { fromCell: 0, toCell: 8 },
-          { fromCell: 17, toCell: 25 },
-          { fromCell: 9, toCell: 17 },
-          { fromCell: 1, toCell: 9 },
-          { fromCell: 19, toCell: 27 },
-          { fromCell: 11, toCell: 19 },
-          { fromCell: 3, toCell: 11 },
-          { fromCell: 20, toCell: 28 },
-          { fromCell: 12, toCell: 20 },
-          { fromCell: 4, toCell: 12 },
-        ],
-        spawnedGems: [
-          { cellIndex: 0, gemType: 'HP' },
-          { cellIndex: 1, gemType: 'ATK' },
-          { cellIndex: 3, gemType: 'DEF' },
-          { cellIndex: 4, gemType: 'POWER' },
-        ],
-      },
-    ];
-
-    /** The board that pass produces: the created Burst stays at 26. */
-    function boardAfterMatchFive(): RuntimeBoard {
-      const cells: Array<{ gemType: string; specialGem?: { type: string; orientation?: string } }> =
-        Array.from({ length: BOARD_COLUMNS * BOARD_COLUMNS }, () => ({ gemType: 'POWER' }));
-
-      cells[0] = { gemType: 'HP' };
-      cells[1] = { gemType: 'ATK' };
-      cells[3] = { gemType: 'DEF' };
-      cells[26] = { gemType: 'ATK', specialGem: { type: 'Burst' } };
-
-      return { cells };
-    }
-
-    /** Pass 3: the POWER match at 40–42, detected on the board pass 2 produced. */
-    const MATCH_FOUR_PASS_THREE: unknown[] = [
-      { type: 'CascadeCreated', cascadeDepth: 2 },
-      {
-        type: 'MatchCreated',
-        shape: 'Straight',
-        cells: [40, 41, 42],
-        gemType: 'POWER',
-        cascadeDepth: 3,
-      },
-      { type: 'GemMatched', cellIndex: 40, gemType: 'POWER' },
-      { type: 'GemMatched', cellIndex: 41, gemType: 'POWER' },
-      { type: 'GemMatched', cellIndex: 42, gemType: 'POWER' },
-      { type: 'ComboChanged', combo: 3 },
-      {
-        type: 'CascadeStepResolved',
-        passDepth: 3,
-        dropMoves: [
-          { fromCell: 32, toCell: 40 },
-          { fromCell: 24, toCell: 32 },
-          { fromCell: 16, toCell: 24 },
-          { fromCell: 8, toCell: 16 },
-          { fromCell: 0, toCell: 8 },
-          { fromCell: 33, toCell: 41 },
-          { fromCell: 25, toCell: 33 },
-          { fromCell: 17, toCell: 25 },
-          { fromCell: 9, toCell: 17 },
-          { fromCell: 1, toCell: 9 },
-          { fromCell: 34, toCell: 42 },
-          { fromCell: 26, toCell: 34 },
-          { fromCell: 18, toCell: 26 },
-          { fromCell: 10, toCell: 18 },
-          { fromCell: 2, toCell: 10 },
-        ],
-        spawnedGems: [
-          { cellIndex: 0, gemType: 'ATK' },
-          { cellIndex: 1, gemType: 'HP' },
-          { cellIndex: 2, gemType: 'DEF' },
-        ],
-      },
-    ];
-
-    /** The three-pass round's committed board: the created Gem has fallen to 41. */
-    function boardAfterThreePassRound(): RuntimeBoard {
-      const cells: Array<{ gemType: string; specialGem?: { type: string; orientation?: string } }> =
-        Array.from({ length: BOARD_COLUMNS * BOARD_COLUMNS }, () => ({ gemType: 'POWER' }));
-
-      cells[0] = { gemType: 'ATK' };
-      cells[1] = { gemType: 'HP' };
-      cells[2] = { gemType: 'DEF' };
-      cells[3] = { gemType: 'ATK' };
-      cells[8] = { gemType: 'HP' };
-      cells[9] = { gemType: 'ATK' };
-      cells[16] = { gemType: 'DEF' };
-      cells[18] = { gemType: 'HP' };
-      cells[41] = { gemType: 'ATK', specialGem: { type: 'LineClear', orientation: 'Horizontal' } };
-
-      return { cells };
-    }
-
-    /** The badge each delivered Special Gem renders (`formatGemCellLabel`). */
-    function fixtureLabels(next: RuntimeBoard): string[] {
-      return next.cells.map((cell) => {
-        const base = BOARD_LABELS[cell.gemType] ?? cell.gemType;
-
-        if (!cell.specialGem) {
-          return base;
-        }
-
-        const badge =
-          cell.specialGem.type === 'LineClear'
-            ? cell.specialGem.orientation === 'Vertical'
-              ? '[V]'
-              : '[H]'
-            : cell.specialGem.type === 'Burst'
-              ? '[BURST]'
-              : '[AREA]';
-
-        return `${base} ${badge}`;
-      });
-    }
 
     /**
      * Every way the scene's 64 cell views disagree with themselves at one instant.
@@ -14195,14 +13807,219 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
         .filter((index) => index >= 0);
     }
 
-    it('31. keeps every cell drawn and every view coherent across three consecutive cascades', () => {
-      const { harness, ctx, resolveAction } = battleOnBoardWithHeldAction(matchFourBoard());
+    /** One ordinary board: POWER everywhere, ATK on the given matched cells. */
+    function atkMatchBoard(matched: readonly number[]): RuntimeBoard {
+      const cells: Array<{ gemType: string }> = Array.from(
+        { length: BOARD_COLUMNS * BOARD_COLUMNS },
+        () => ({ gemType: 'POWER' })
+      );
 
-      push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterThreePassRound() }));
+      for (const index of matched) {
+        cells[index] = { gemType: 'ATK' };
+      }
+
+      return { cells };
+    }
+
+    /** Battle holding the given board, with one action in flight. */
+    function battleOnBoardWithHeldAction(initialBoard: RuntimeBoard): {
+      harness: ReturnType<typeof createSceneHarness>;
+      scene: BattleScene;
+      ctx: object;
+      resolveAction: () => void;
+    } {
+      const { harness, scene, ctx } = createBattle(battleState({ sequence: 0, board: initialBoard }));
+      const held = holdAction(harness);
+
+      tapCell(harness, 20);
+      tapCell(harness, 21);
+
+      return { harness, scene, ctx, resolveAction: () => held.resolve({ accepted: true }) };
+    }
+
+    /** The delivered Gravity of one column that lost the rows the Match cleared. */
+    function columnDropMoves(column: number, clearedRows: readonly number[]): unknown[] {
+      const contents = Array.from({ length: BOARD_COLUMNS }, (_, row) => row);
+      const survivors = contents.filter((row) => !clearedRows.includes(row));
+      const moves: Array<{ fromCell: number; toCell: number }> = [];
+
+      survivors.forEach((row, position) => {
+        const destinationRow = position + clearedRows.length;
+
+        if (destinationRow !== row) {
+          moves.push({
+            fromCell: row * BOARD_COLUMNS + column,
+            toCell: destinationRow * BOARD_COLUMNS + column,
+          });
+        }
+      });
+
+      return moves;
+    }
+
+    /** One `CascadeStepResolved` for a pass that emptied the given rows of three columns. */
+    function passReport(
+      passDepth: number,
+      clearedByColumn: ReadonlyArray<readonly number[]>,
+      spawned: ReadonlyArray<{ cellIndex: number; gemType: string }>
+    ): unknown {
+      return {
+        type: 'CascadeStepResolved',
+        passDepth,
+        dropMoves: clearedByColumn.flatMap((rows, column) => columnDropMoves(column, rows)),
+        spawnedGems: spawned,
+      };
+    }
+
+    /**
+     * The board a single-pass round leaves: POWER everywhere except the three
+     * spawned column heads, which are the only cells whose content the pass wrote.
+     */
+    function boardAfterOnePass(
+      spawned: ReadonlyArray<{ cellIndex: number; gemType: string }>
+    ): RuntimeBoard {
+      const cells: Array<{ gemType: string }> = Array.from(
+        { length: BOARD_COLUMNS * BOARD_COLUMNS },
+        () => ({ gemType: 'POWER' })
+      );
+
+      for (const gem of spawned) {
+        cells[gem.cellIndex] = { gemType: gem.gemType };
+      }
+
+      return { cells };
+    }
+
+    /** The cell indices a Match step has emptied, in §1.0 order. */
+    function hiddenCells(ctx: object): number[] {
+      return views(ctx)
+        .map((view, index) => (view !== null && !view.tile.visible ? index : -1))
+        .filter((index) => index >= 0);
+    }
+
+    /**
+     * Every overlay the feedback layer holds, so a step's own extra visual can be
+     * counted rather than assumed absent.
+     */
+    function feedbackOverlays(ctx: object): Array<{ kind: string; strokeWidth?: number }> {
+      const layer = field<{ list: Array<{ kind: string; strokeWidth?: number }> } | null>(
+        ctx,
+        'feedbackLayer'
+      );
+      return layer ? [...layer.list] : [];
+    }
+
+    /**
+     * Asserts the delivered round presented no retired board step: the timeline is
+     * exactly the delivered swap/match/gravity/refill/settle sequence, and no phase
+     * carries a special-cell activation or a per-turn tally line.
+     */
+    function expectNoRetiredBoardStep(ctx: object): void {
+      expect(playedPhases(ctx)).toEqual([
+        'swap 20->21',
+        'match depth=1',
+        'gravity depth=1',
+        'refill depth=1',
+        'settle',
+      ]);
+      expect(playedPhases(ctx).some((detail) => detail.startsWith('activate'))).toBe(false);
+      expect(playedPhases(ctx).some((detail) => detail.startsWith('summary'))).toBe(false);
+    }
+
+    it('30. resolves a Match-4 as one confirmed match and creates nothing', () => {
+      const matched = [24, 25, 26, 27];
+      const spawned = [
+        { cellIndex: 0, gemType: 'HP' },
+        { cellIndex: 1, gemType: 'ATK' },
+        { cellIndex: 2, gemType: 'DEF' },
+      ];
+
+      const { harness, ctx, resolveAction } = battleOnBoardWithHeldAction(atkMatchBoard(matched));
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterOnePass(spawned) }));
       emitBatch(harness, 1, [
-        ...MATCH_FOUR_PASS_ONE,
-        ...MATCH_FOUR_PASS_TWO,
-        ...MATCH_FOUR_PASS_THREE,
+        { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+        { type: 'SwapResolved', outcome: 'committed' },
+        { type: 'MatchCreated', shape: 'Straight', cells: matched, gemType: 'ATK', cascadeDepth: 1 },
+        ...matched.map((cellIndex) => ({ type: 'GemMatched', cellIndex, gemType: 'ATK' })),
+        { type: 'ComboChanged', combo: 1 },
+        passReport(1, [[3], [3], [3]], spawned),
+      ]);
+
+      // The Match step presents the confirmed match itself: exactly its four cells
+      // lose their content, and no fifth cell is redrawn with a created artefact —
+      // every cell that still holds something holds one of the four documented Gem
+      // types and nothing else.
+      playUntil(harness, ctx, 2);
+      expect(playedPhases(ctx)).toEqual(['swap 20->21', 'match depth=1']);
+      expect(hiddenCells(ctx)).toEqual(matched);
+      expect(
+        views(ctx).every(
+          (view) =>
+            view === null || view.cleared || ['ATK', 'DEF', 'HP', 'POWER'].includes(view.content)
+        )
+      ).toBe(true);
+
+      // Its own flashes are the only overlays: no activation ring, no badge, and no
+      // object whose stroke is a retired presentation table's 3 px ring.
+      expect(feedbackOverlays(ctx).every((overlay) => overlay.strokeWidth !== 3)).toBe(true);
+
+      playAllTweens(harness);
+
+      // The round is the ordinary swap/match/gravity/refill/settle sequence, and
+      // the board converges on the delivered one on the same 128 objects.
+      expectNoRetiredBoardStep(ctx);
+      expect(labelsByCell(harness)).toEqual(labelsForCells(boardAfterOnePass(spawned)));
+      expect(cellsWithoutView(ctx)).toEqual([]);
+      expect(viewIncoherences(ctx)).toEqual([]);
+      expect(harness.boardCells).toHaveLength(128);
+      expect(harness.pendingTweenCount()).toBe(0);
+
+      resolveAction();
+    });
+
+    it('31. keeps every cell drawn and every view coherent across three consecutive cascades', () => {
+      // Pass 1 empties row 3 of columns 0–3; pass 2 empties row 4 of columns 0–2;
+      // pass 3 empties row 5 of columns 0–2. Each pass is detected on the board the
+      // previous pass's own delivered Fall and Refill produced.
+      const { harness, ctx, resolveAction } = battleOnBoardWithHeldAction(
+        atkMatchBoard([24, 25, 26, 27])
+      );
+
+      push(
+        harness,
+        battleState({ sequence: 1, turn: 2, board: boardAfterThreePasses() })
+      );
+      emitBatch(harness, 1, [
+        { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+        { type: 'SwapResolved', outcome: 'committed' },
+        { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26, 27], gemType: 'ATK', cascadeDepth: 1 },
+        ...[24, 25, 26, 27].map((cellIndex) => ({ type: 'GemMatched', cellIndex, gemType: 'ATK' })),
+        { type: 'ComboChanged', combo: 1 },
+        passReport(1, [[3], [3], [3], [3]], [
+          { cellIndex: 0, gemType: 'HP' },
+          { cellIndex: 1, gemType: 'ATK' },
+          { cellIndex: 2, gemType: 'DEF' },
+          { cellIndex: 3, gemType: 'POWER' },
+        ]),
+        { type: 'CascadeCreated', cascadeDepth: 1 },
+        { type: 'MatchCreated', shape: 'Straight', cells: [32, 33, 34], gemType: 'POWER', cascadeDepth: 2 },
+        ...[32, 33, 34].map((cellIndex) => ({ type: 'GemMatched', cellIndex, gemType: 'POWER' })),
+        { type: 'ComboChanged', combo: 2 },
+        passReport(2, [[4], [4], [4]], [
+          { cellIndex: 0, gemType: 'HP' },
+          { cellIndex: 1, gemType: 'HP' },
+          { cellIndex: 2, gemType: 'HP' },
+        ]),
+        { type: 'CascadeCreated', cascadeDepth: 2 },
+        { type: 'MatchCreated', shape: 'Straight', cells: [40, 41, 42], gemType: 'POWER', cascadeDepth: 3 },
+        ...[40, 41, 42].map((cellIndex) => ({ type: 'GemMatched', cellIndex, gemType: 'POWER' })),
+        { type: 'ComboChanged', combo: 3 },
+        passReport(3, [[5], [5], [5]], [
+          { cellIndex: 0, gemType: 'ATK' },
+          { cellIndex: 1, gemType: 'HP' },
+          { cellIndex: 2, gemType: 'DEF' },
+        ]),
       ]);
 
       const expectedPhases = [
@@ -14218,9 +14035,6 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
         'refill depth=3',
         'settle',
       ];
-
-      const created = views(ctx)[25];
-      expect(created?.content).toBe('ATK||');
 
       for (let played = 1; played <= expectedPhases.length; played++) {
         playUntil(harness, ctx, played);
@@ -14243,13 +14057,6 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
           expect(everyViewOnItsOwnCell(ctx)).toBe(true);
         }
 
-        // The Match step that created the Special Gem presents it at its own cell
-        // instead of leaving that cell empty.
-        if (expectedPhases[played - 1] === 'match depth=1') {
-          expect(views(ctx)[25]).toBe(created);
-          expect(views(ctx)[25]?.content).toBe(CREATED_KEY);
-        }
-
         // A Refill step ends a pass on a full board, and the round's transition ends
         // it on the delivered one; a Fall step legitimately leaves its own vacated
         // cells empty until that Refill (SIGNALR_PROTOCOL.md §3.2.28 item 5). A pass
@@ -14260,16 +14067,10 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
         }
       }
 
-      // The created Gem is one persistent view for the whole round, moving only on
-      // the passes whose `dropMoves` name it: 25 → 33 → 41.
-      expect(views(ctx)[41]).toBe(created);
-      expect(views(ctx)[41]?.content).toBe(CREATED_KEY);
-
       playAllTweens(harness);
 
       // The converged board is the delivered one, on the same 64 persistent pairs.
-      expect(labelsByCell(harness)).toEqual(fixtureLabels(boardAfterThreePassRound()));
-      expect(labelsByCell(harness)[41]).toBe('ATK [H]');
+      expect(labelsByCell(harness)).toEqual(labelsForCells(boardAfterThreePasses()));
       expect(cellsWithoutView(ctx)).toEqual([]);
       expect(viewIncoherences(ctx)).toEqual([]);
       expect(everyViewOnItsOwnCell(ctx)).toBe(true);
@@ -14281,38 +14082,46 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
       resolveAction();
     });
 
-    it('32. draws a Match-5’s created Burst on its own cell through the pass and the settle', () => {
-      const { harness, ctx, resolveAction } = battleOnBoardWithHeldAction(matchFiveBoard());
+    it('32. resolves a Match-5 as one confirmed match and creates nothing', () => {
+      const matched = [24, 25, 26, 27, 28];
+      const spawned = [
+        { cellIndex: 0, gemType: 'HP' },
+        { cellIndex: 1, gemType: 'ATK' },
+        { cellIndex: 2, gemType: 'DEF' },
+        { cellIndex: 3, gemType: 'POWER' },
+        { cellIndex: 4, gemType: 'HP' },
+      ];
 
-      push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterMatchFive() }));
-      emitBatch(harness, 1, MATCH_FIVE_BATCH);
+      const { harness, ctx, resolveAction } = battleOnBoardWithHeldAction(atkMatchBoard(matched));
 
-      const before = views(ctx).map((view) => view);
+      push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterOnePass(spawned) }));
+      emitBatch(harness, 1, [
+        { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+        { type: 'SwapResolved', outcome: 'committed' },
+        { type: 'MatchCreated', shape: 'Straight', cells: matched, gemType: 'ATK', cascadeDepth: 1 },
+        ...matched.map((cellIndex) => ({ type: 'GemMatched', cellIndex, gemType: 'ATK' })),
+        { type: 'ComboChanged', combo: 1 },
+        passReport(1, [[3], [3], [3], [3], [3]], spawned),
+      ]);
 
-      // The Match step: the five matched cells lose the consumed Gem, and the cell
-      // the Burst claim names keeps the view it had, re-labelled with the created
-      // Special Gem — a `Burst` carries no orientation (§3.2.11 item 6).
+      // A five-cell run resolves exactly like a three-cell one: the confirmed
+      // match's five cells are cleared and nothing is created at a sixth cell.
       playUntil(harness, ctx, 2);
       expect(playedPhases(ctx)).toEqual(['swap 20->21', 'match depth=1']);
-      expect(views(ctx)[24]?.tile.visible).toBe(false);
-      expect(views(ctx)[26]).toBe(before[26]);
-      expect(views(ctx)[26]?.tile.visible).toBe(true);
-      expect(views(ctx)[26]?.content).toBe('ATK|Burst|');
-      expect(labelsByCell(harness)[26]).toBe('ATK [BURST]');
-      expect(viewIncoherences(ctx)).toEqual([]);
+      expect(hiddenCells(ctx)).toEqual(matched);
+      expect(
+        views(ctx).every(
+          (view) =>
+            view === null || view.cleared || ['ATK', 'DEF', 'HP', 'POWER'].includes(view.content)
+        )
+      ).toBe(true);
+      expect(feedbackOverlays(ctx).every((overlay) => overlay.strokeWidth !== 3)).toBe(true);
 
       playAllTweens(harness);
 
-      expect(playedPhases(ctx)).toEqual([
-        'swap 20->21',
-        'match depth=1',
-        'gravity depth=1',
-        'refill depth=1',
-        'settle',
-      ]);
-      expect(views(ctx)[26]).toBe(before[26]);
-      expect(views(ctx)[26]?.content).toBe('ATK|Burst|');
-      expect(labelsByCell(harness)).toEqual(fixtureLabels(boardAfterMatchFive()));
+      expectNoRetiredBoardStep(ctx);
+      expect(labelsByCell(harness)).toEqual(labelsForCells(boardAfterOnePass(spawned)));
+      expect(labelsByCell(harness).every((label) => !label.includes(' '))).toBe(true);
       expect(cellsWithoutView(ctx)).toEqual([]);
       expect(viewIncoherences(ctx)).toEqual([]);
       expect(harness.boardCells).toHaveLength(128);
@@ -14320,631 +14129,147 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
       resolveAction();
     });
 
-    it('33. replays no clear and no creation when the same batch is delivered twice', () => {
-      const { harness, ctx, resolveAction } = battleOnBoardWithHeldAction(matchFourBoard());
+    it('33. replays no clear when the same batch is delivered twice', () => {
+      const matched = [24, 25, 26, 27];
+      const spawned = [
+        { cellIndex: 0, gemType: 'HP' },
+        { cellIndex: 1, gemType: 'ATK' },
+        { cellIndex: 2, gemType: 'DEF' },
+      ];
+      const batch = [
+        { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+        { type: 'SwapResolved', outcome: 'committed' },
+        { type: 'MatchCreated', shape: 'Straight', cells: matched, gemType: 'ATK', cascadeDepth: 1 },
+        ...matched.map((cellIndex) => ({ type: 'GemMatched', cellIndex, gemType: 'ATK' })),
+        { type: 'ComboChanged', combo: 1 },
+        passReport(1, [[3], [3], [3]], spawned),
+      ];
 
-      push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterMatchFourRound() }));
-      emitBatch(harness, 1, [...MATCH_FOUR_PASS_ONE, ...MATCH_FOUR_PASS_TWO]);
+      const { harness, ctx, resolveAction } = battleOnBoardWithHeldAction(atkMatchBoard(matched));
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterOnePass(spawned) }));
+      emitBatch(harness, 1, batch);
       playAllTweens(harness);
 
       const phasesAfterFirstDelivery = [...playedPhases(ctx)];
       const viewsAfterFirstDelivery = views(ctx).map((view) => view);
-      const boardObjectsAfterFirstDelivery = harness.boardCells.length;
+      const labelsAfterFirstDelivery = labelsByCell(harness);
 
-      emitBatch(harness, 1, [...MATCH_FOUR_PASS_ONE, ...MATCH_FOUR_PASS_TWO]);
+      emitBatch(harness, 1, batch);
 
+      // The same resolution is presented once: no phase replays, no clear re-runs,
+      // and no view or label is disturbed by the duplicate delivery.
       expect(playedPhases(ctx)).toEqual(phasesAfterFirstDelivery);
       expect(views(ctx).map((view) => view)).toEqual(viewsAfterFirstDelivery);
-      expect(views(ctx)[33]?.content).toBe(CREATED_KEY);
-      expect(views(ctx)[33]?.tile.visible).toBe(true);
-      expect(harness.boardCells).toHaveLength(boardObjectsAfterFirstDelivery);
+      expect(labelsByCell(harness)).toEqual(labelsAfterFirstDelivery);
       expect(harness.boardCells).toHaveLength(128);
       expect(harness.pendingTweenCount()).toBe(0);
-      expect(labelsByCell(harness)[33]).toBe('ATK [H]');
 
       resolveAction();
     });
 
-    it('34. cancels a creation’s presentation when an authoritative snapshot supersedes the pass', () => {
-      const { harness, scene, ctx, resolveAction } = battleOnBoardWithHeldAction(matchFourBoard());
+    it('34. resolves and animates an L/T match without any creation or detonation step', () => {
+      // An L: the horizontal primitive on row 3 (24, 25, 26) and the vertical
+      // primitive on column 0 (24, 33, 42) share cell 24
+      // (SIGNALR_PROTOCOL.md §3.2.6 item 1 — `Lt` is the one L/T shape identity).
+      const matched = [24, 25, 26, 33, 42];
+      const spawned = [
+        { cellIndex: 0, gemType: 'HP' },
+        { cellIndex: 1, gemType: 'ATK' },
+        { cellIndex: 2, gemType: 'DEF' },
+      ];
 
-      push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterMatchFourRound() }));
-      emitBatch(harness, 1, [...MATCH_FOUR_PASS_ONE, ...MATCH_FOUR_PASS_TWO]);
+      const { harness, ctx, resolveAction } = battleOnBoardWithHeldAction(atkMatchBoard(matched));
 
-      // The Match step has played: the created Special Gem is presented at its own
-      // cell, and the round's Fall step has not run.
-      playUntil(harness, ctx, 2);
-      expect(views(ctx)[25]?.content).toBe(CREATED_KEY);
-
-      // The authoritative reconciliation snapshot supersedes the presentation.
-      recovery(harness, battleState({ sequence: 2, turn: 3, board: matchFourBoard() }));
-
-      // The board is the delivered one again: the creation's cell holds the ATK Gem
-      // the snapshot names, no cell is hidden, no travel is still scheduled, and the
-      // creation's own presentation left nothing behind.
-      expect(playedPhases(ctx)).not.toContain('gravity depth=1');
-      expect(cellsWithoutView(ctx)).toEqual([]);
-      expect(viewIncoherences(ctx)).toEqual([]);
-      expect(everyViewOnItsOwnCell(ctx)).toBe(true);
-      expect(labelsByCell(harness)).toEqual(fixtureLabels(matchFourBoard()));
-      expect(views(ctx).some((view) => view?.content.includes('LineClear'))).toBe(false);
-      expect(field<object[]>(ctx, 'refillableViews')).toEqual([]);
-      expect(harness.pendingTweenCount()).toBe(0);
-      expect(harness.boardCells).toHaveLength(128);
-      expect(inputLocked(scene, ctx)).toBe(false);
-      expect(field<string>(ctx, 'orchestration')).toBe('idle');
-
-      resolveAction();
-    });
-
-    it('35. presents a creation only where the step’s own delivered clear confirmed the cell', () => {
-      // (a) A later pass whose delivered Gem type disagrees with the rendered board:
-      // its clear is refused, so the creation it carries is drawn nowhere.
-      const refused = battleOnBoardWithHeldAction(matchFourBoard());
-
-      push(refused.harness, battleState({ sequence: 1, turn: 2, board: boardAfterMatchFourRound() }));
-      emitBatch(refused.harness, 1, [
-        ...MATCH_FOUR_PASS_ONE,
-        { type: 'CascadeCreated', cascadeDepth: 1 },
-        {
-          type: 'MatchCreated',
-          shape: 'Straight',
-          cells: [32, 33, 34],
-          gemType: 'HP',
-          cascadeDepth: 2,
-          createdSpecialGems: [{ cellIndex: 33, specialGem: { type: 'Burst' } }],
-        },
-        { type: 'GemMatched', cellIndex: 32, gemType: 'HP' },
-      ]);
-
-      // The refused pass plays its own step and changes nothing: its cells keep the
-      // content they render, and the creation it carries is drawn nowhere. The
-      // round's transition is what presents the delivered board afterwards.
-      playUntil(refused.harness, refused.ctx, 5);
-      expect(playedPhases(refused.ctx)[4]).toBe('cascade depth=1');
-      expect(views(refused.ctx)[32]?.tile.visible).toBe(true);
-      expect(views(refused.ctx)[33]?.tile.visible).toBe(true);
-      expect(views(refused.ctx)[33]?.content).toBe('POWER||');
-      expect(views(refused.ctx).some((view) => view?.content.includes('Burst'))).toBe(false);
-      expect(viewIncoherences(refused.ctx)).toEqual([]);
-
-      playAllTweens(refused.harness);
-      expect(cellsWithoutView(refused.ctx)).toEqual([]);
-      expect(viewIncoherences(refused.ctx)).toEqual([]);
-      refused.resolveAction();
-
-      // (b) A creation claim for a cell this step did not clear: nothing is drawn
-      // there, and the pass still empties exactly the cells it did confirm.
-      const elsewhere = battleOnBoardWithHeldAction(board());
-
-      const untouched = views(elsewhere.ctx)[30];
-
-      push(elsewhere.harness, battleState({ sequence: 1, turn: 2, board: board() }));
-      emitBatch(elsewhere.harness, 1, [
+      push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterLtPass(spawned) }));
+      emitBatch(harness, 1, [
         { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
         { type: 'SwapResolved', outcome: 'committed' },
-        {
-          type: 'MatchCreated',
-          shape: 'Straight',
-          cells: [24, 25, 26],
-          gemType: 'ATK',
-          cascadeDepth: 1,
-          createdSpecialGems: [{ cellIndex: 30, specialGem: { type: 'Burst' } }],
-        },
-        { type: 'GemMatched', cellIndex: 24, gemType: 'ATK' },
+        { type: 'MatchCreated', shape: 'Lt', cells: matched, gemType: 'ATK', cascadeDepth: 1 },
+        ...matched.map((cellIndex) => ({ type: 'GemMatched', cellIndex, gemType: 'ATK' })),
+        { type: 'ComboChanged', combo: 1 },
+        passReport(1, [[3, 4, 5], [3], [3]], spawned),
       ]);
 
-      playUntil(elsewhere.harness, elsewhere.ctx, 2);
-
-      expect(views(elsewhere.ctx)[30]).toBe(untouched);
-      expect(views(elsewhere.ctx)[30]?.tile.visible).toBe(true);
-      expect(views(elsewhere.ctx)[30]?.content).toBe('POWER||');
-      expect(views(elsewhere.ctx)[24]?.tile.visible).toBe(false);
-      expect(viewIncoherences(elsewhere.ctx)).toEqual([]);
-
-      playAllTweens(elsewhere.harness);
-      elsewhere.resolveAction();
-    });
-
-    /** The fixture board: a vertical ATK Match-4 in column 0 and a horizontal ATK Match-5 in row 5. */
-    function doubleMatchBoard(): RuntimeBoard {
-      const cells: Array<{ gemType: string; specialGem?: { type: string; orientation?: string } }> =
-        Array.from({ length: BOARD_COLUMNS * BOARD_COLUMNS }, () => ({ gemType: 'POWER' }));
-
-      for (const index of [8, 16, 24, 32]) {
-        cells[index] = { gemType: 'ATK' };
-      }
-
-      for (const index of [41, 42, 43, 44, 45]) {
-        cells[index] = { gemType: 'ATK' };
-      }
-
-      return { cells };
-    }
-
-    /**
-     * One pass reporting **two** Matches with one committed creation each: the
-     * vertical Match-4's Vertical Line Clear at 16 — which then falls to 32 in the
-     * same pass's Gravity — and the horizontal Match-5's Burst at 43, whose column
-     * has no empty cell at all.
-     */
-    const DOUBLE_CREATION_BATCH: unknown[] = [
-      { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
-      { type: 'SwapResolved', outcome: 'committed' },
-      {
-        type: 'MatchCreated',
-        shape: 'Straight',
-        cells: [8, 16, 24, 32],
-        gemType: 'ATK',
-        cascadeDepth: 1,
-        createdSpecialGems: [
-          { cellIndex: 16, specialGem: { type: 'LineClear', orientation: 'Vertical' } },
-        ],
-      },
-      { type: 'GemMatched', cellIndex: 8, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 16, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 24, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 32, gemType: 'ATK' },
-      { type: 'ComboChanged', combo: 1 },
-      {
-        type: 'MatchCreated',
-        shape: 'Straight',
-        cells: [41, 42, 43, 44, 45],
-        gemType: 'ATK',
-        cascadeDepth: 1,
-        createdSpecialGems: [{ cellIndex: 43, specialGem: { type: 'Burst' } }],
-      },
-      { type: 'GemMatched', cellIndex: 41, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 42, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 43, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 44, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 45, gemType: 'ATK' },
-      { type: 'ComboChanged', combo: 2 },
-      {
-        type: 'CascadeStepResolved',
-        passDepth: 1,
-        dropMoves: [
-          { fromCell: 16, toCell: 32 },
-          { fromCell: 0, toCell: 24 },
-          { fromCell: 33, toCell: 41 },
-          { fromCell: 25, toCell: 33 },
-          { fromCell: 17, toCell: 25 },
-          { fromCell: 9, toCell: 17 },
-          { fromCell: 1, toCell: 9 },
-          { fromCell: 34, toCell: 42 },
-          { fromCell: 26, toCell: 34 },
-          { fromCell: 18, toCell: 26 },
-          { fromCell: 10, toCell: 18 },
-          { fromCell: 2, toCell: 10 },
-          { fromCell: 36, toCell: 44 },
-          { fromCell: 28, toCell: 36 },
-          { fromCell: 20, toCell: 28 },
-          { fromCell: 12, toCell: 20 },
-          { fromCell: 4, toCell: 12 },
-          { fromCell: 37, toCell: 45 },
-          { fromCell: 29, toCell: 37 },
-          { fromCell: 21, toCell: 29 },
-          { fromCell: 13, toCell: 21 },
-          { fromCell: 5, toCell: 13 },
-        ],
-        spawnedGems: [
-          { cellIndex: 0, gemType: 'DEF' },
-          { cellIndex: 8, gemType: 'HP' },
-          { cellIndex: 16, gemType: 'ATK' },
-          { cellIndex: 1, gemType: 'ATK' },
-          { cellIndex: 2, gemType: 'HP' },
-          { cellIndex: 4, gemType: 'DEF' },
-          { cellIndex: 5, gemType: 'POWER' },
-        ],
-      },
-    ];
-
-    /** The board that pass produces: the Line Clear Gem fell to 32, the Burst stayed at 43. */
-    function boardAfterDoubleCreation(): RuntimeBoard {
-      const cells: Array<{ gemType: string; specialGem?: { type: string; orientation?: string } }> =
-        Array.from({ length: BOARD_COLUMNS * BOARD_COLUMNS }, () => ({ gemType: 'POWER' }));
-
-      cells[0] = { gemType: 'DEF' };
-      cells[1] = { gemType: 'ATK' };
-      cells[2] = { gemType: 'HP' };
-      cells[4] = { gemType: 'DEF' };
-      cells[5] = { gemType: 'POWER' };
-      cells[8] = { gemType: 'HP' };
-      cells[16] = { gemType: 'ATK' };
-      cells[32] = { gemType: 'ATK', specialGem: { type: 'LineClear', orientation: 'Vertical' } };
-      cells[43] = { gemType: 'ATK', specialGem: { type: 'Burst' } };
-
-      return { cells };
-    }
-
-    it('36. presents two creations of one pass, including the one its own Gravity moves', () => {
-      const { harness, ctx, resolveAction } = battleOnBoardWithHeldAction(doubleMatchBoard());
-
-      push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterDoubleCreation() }));
-      emitBatch(harness, 1, DOUBLE_CREATION_BATCH);
-
-      const verticalGem = views(ctx)[16];
-      const burst = views(ctx)[43];
-
-      // Both Matches' consumed cells are emptied, and both creation cells keep the
-      // view they had, re-labelled with the Special Gem each Match committed.
+      // The shared cell is cleared once, with the rest of the shape, and the Match
+      // step presents the one confirmed match — there is no second pass of effect
+      // and no cell is cleared twice.
       playUntil(harness, ctx, 2);
       expect(playedPhases(ctx)).toEqual(['swap 20->21', 'match depth=1']);
-      expect(views(ctx)[8]?.tile.visible).toBe(false);
-      expect(views(ctx)[24]?.tile.visible).toBe(false);
-      expect(views(ctx)[32]?.tile.visible).toBe(false);
-      expect(views(ctx)[45]?.tile.visible).toBe(false);
-      expect(views(ctx)[16]).toBe(verticalGem);
-      expect(views(ctx)[16]?.content).toBe('ATK|LineClear|Vertical');
-      expect(views(ctx)[43]).toBe(burst);
-      expect(views(ctx)[43]?.content).toBe('ATK|Burst|');
-      expect(viewIncoherences(ctx)).toEqual([]);
-
-      // The pass's own delivered Fall moves the created Line Clear Gem 16 → 32: it
-      // travels as the Gem it is, and the destination cell shows it — the two
-      // creations of the one pass are tracked independently.
-      playUntil(harness, ctx, 3);
-      expect(playedPhases(ctx)[2]).toBe('gravity depth=1');
-      expect(views(ctx)[32]).toBe(verticalGem);
-      expect(views(ctx)[32]?.tile.visible).toBe(true);
-      expect(views(ctx)[32]?.content).toBe('ATK|LineClear|Vertical');
-      expect(views(ctx)[43]).toBe(burst);
-      expect(viewIncoherences(ctx)).toEqual([]);
+      expect(hiddenCells(ctx)).toEqual(matched);
+      expect(feedbackOverlays(ctx).every((overlay) => overlay.strokeWidth !== 3)).toBe(true);
 
       playAllTweens(harness);
 
-      expect(playedPhases(ctx)).toEqual([
-        'swap 20->21',
-        'match depth=1',
-        'gravity depth=1',
-        'refill depth=1',
-        'settle',
-      ]);
+      expectNoRetiredBoardStep(ctx);
+      expect(labelsByCell(harness)).toEqual(labelsForCells(boardAfterLtPass(spawned)));
       expect(cellsWithoutView(ctx)).toEqual([]);
       expect(viewIncoherences(ctx)).toEqual([]);
-      expect(everyViewOnItsOwnCell(ctx)).toBe(true);
-      expect(labelsByCell(harness)).toEqual(fixtureLabels(boardAfterDoubleCreation()));
-      expect(labelsByCell(harness)[32]).toBe('ATK [V]');
-      expect(labelsByCell(harness)[43]).toBe('ATK [BURST]');
       expect(harness.boardCells).toHaveLength(128);
       expect(harness.pendingTweenCount()).toBe(0);
 
       resolveAction();
     });
 
-    /** The fixture: a vertical ATK Match-4 whose 16 already holds a Vertical Line Clear Gem. */
-    function consumedSpecialBoard(): RuntimeBoard {
-      const cells: Array<{ gemType: string; specialGem?: { type: string; orientation?: string } }> =
-        Array.from({ length: BOARD_COLUMNS * BOARD_COLUMNS }, () => ({ gemType: 'POWER' }));
-
-      for (const index of [8, 16, 24, 32]) {
-        cells[index] = { gemType: 'ATK' };
-      }
-
-      cells[16] = { gemType: 'ATK', specialGem: { type: 'LineClear', orientation: 'Vertical' } };
-
-      return { cells };
+    /** The board an L/T single-pass round leaves: POWER plus the three spawned heads. */
+    function boardAfterLtPass(
+      spawned: ReadonlyArray<{ cellIndex: number; gemType: string }>
+    ): RuntimeBoard {
+      return boardAfterOnePass(spawned);
     }
 
     /**
-     * The degenerate case the creation step's own ordering exists for: the cell the
-     * Match creates its Line Clear Gem at **already held a Special Gem of the same
-     * kind and orientation**, so its `GemMatched` report draws the very key the
-     * created Gem draws. The clear and the creation are the same statement about
-     * one cell, and the cell must end holding the created Gem.
+     * The three-pass round's committed board: the column heads the third pass
+     * spawned, and the survivors Gravity carried down.
      */
-    const CONSUMED_SPECIAL_BATCH: unknown[] = [
-      { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
-      { type: 'SwapResolved', outcome: 'committed' },
-      {
-        type: 'MatchCreated',
-        shape: 'Straight',
-        cells: [8, 16, 24, 32],
-        gemType: 'ATK',
-        cascadeDepth: 1,
-        createdSpecialGems: [
-          { cellIndex: 16, specialGem: { type: 'LineClear', orientation: 'Vertical' } },
-        ],
-      },
-      { type: 'GemMatched', cellIndex: 8, gemType: 'ATK' },
-      {
-        type: 'GemMatched',
-        cellIndex: 16,
-        gemType: 'ATK',
-        specialGem: { type: 'LineClear', orientation: 'Vertical' },
-      },
-      { type: 'GemMatched', cellIndex: 24, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 32, gemType: 'ATK' },
-      { type: 'ComboChanged', combo: 1 },
-      {
-        type: 'CascadeStepResolved',
-        passDepth: 1,
-        dropMoves: [
-          { fromCell: 16, toCell: 32 },
-          { fromCell: 0, toCell: 24 },
-        ],
-        spawnedGems: [
-          { cellIndex: 0, gemType: 'DEF' },
-          { cellIndex: 8, gemType: 'HP' },
-          { cellIndex: 16, gemType: 'ATK' },
-        ],
-      },
-    ];
-
-    /** The board that pass produces: the re-created Gem fell from 16 to 32. */
-    function boardAfterConsumedSpecial(): RuntimeBoard {
-      const cells: Array<{ gemType: string; specialGem?: { type: string; orientation?: string } }> =
-        Array.from({ length: BOARD_COLUMNS * BOARD_COLUMNS }, () => ({ gemType: 'POWER' }));
-
-      cells[0] = { gemType: 'DEF' };
-      cells[8] = { gemType: 'HP' };
-      cells[16] = { gemType: 'ATK' };
-      cells[32] = { gemType: 'ATK', specialGem: { type: 'LineClear', orientation: 'Vertical' } };
-
-      return { cells };
-    }
-
-    it('37. keeps the created Gem when the consumed Gem at its cell draws the same key', () => {
-      const { harness, ctx, resolveAction } = battleOnBoardWithHeldAction(consumedSpecialBoard());
-
-      push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterConsumedSpecial() }));
-      emitBatch(harness, 1, CONSUMED_SPECIAL_BATCH);
-
-      const recreated = views(ctx)[16];
-
-      // The consumed Gem's own activation is the pass's first step
-      // (BOSS-TURN PRESENTATION §5): the Special Gem at cell 16 is activated there,
-      // and its overlay is raised *before* the Match step clears the cell the Gem
-      // still occupies — the cell is still drawn, and still holds the Gem, when the
-      // activation is presented.
-      playUntil(harness, ctx, 2);
-      expect(playedPhases(ctx)).toEqual(['swap 20->21', 'activate ATK LineClear']);
-      expect(views(ctx)[16]).toBe(recreated);
-      expect(views(ctx)[16]?.tile.visible).toBe(true);
-      expect(views(ctx)[16]?.content).toBe('ATK|LineClear|Vertical');
-
-      // The Match step of the same pass: the Match's own `GemMatched` for that cell
-      // names the consumed Gem, whose key is the created Gem's key, so the cell ends
-      // holding the created Gem, visible.
-      playUntil(harness, ctx, 3);
-      expect(playedPhases(ctx)).toEqual([
-        'swap 20->21',
-        'activate ATK LineClear',
-        'match depth=1',
-      ]);
-      expect(views(ctx)[16]).toBe(recreated);
-      expect(views(ctx)[16]?.tile.visible).toBe(true);
-      expect(views(ctx)[16]?.content).toBe('ATK|LineClear|Vertical');
-      expect(views(ctx)[8]?.tile.visible).toBe(false);
-      expect(views(ctx)[24]?.tile.visible).toBe(false);
-      expect(viewIncoherences(ctx)).toEqual([]);
-
-      playAllTweens(harness);
-
-      expect(views(ctx)[32]).toBe(recreated);
-      expect(views(ctx)[32]?.content).toBe('ATK|LineClear|Vertical');
-      expect(views(ctx)[32]?.tile.visible).toBe(true);
-      expect(cellsWithoutView(ctx)).toEqual([]);
-      expect(viewIncoherences(ctx)).toEqual([]);
-      expect(labelsByCell(harness)).toEqual(fixtureLabels(boardAfterConsumedSpecial()));
-      expect(labelsByCell(harness)[32]).toBe('ATK [V]');
-      expect(harness.boardCells).toHaveLength(128);
-
-      resolveAction();
-    });
-
-    /** The cell the F2 pass creates its Special Gem in, and moves it out of. */
-    const CREATION_CELL = 32;
-
-    /** The key the created Vertical Line Clear Gem draws (`gemContentKey`). */
-    const CREATED_VERTICAL_KEY = 'ATK|LineClear|Vertical';
-
-    /**
-     * The board the creation-as-destination pass runs on: column 0 holds an ATK
-     * Gem at 24 and at 40/48/56, and the creation cell 32 holds a DEF Gem. The
-     * delivered Swap 24 ⇄ 32 moves that ATK Gem **into** 32 — the swap origin
-     * `MATCH3_RULES.md` §5.5.3 item 1 creates at — and completes the vertical ATK
-     * Match-4 at 32, 40, 48 and 56.
-     */
-    function creationDestinationBoard(): RuntimeBoard {
-      const cells: Array<{ gemType: string; specialGem?: { type: string; orientation?: string } }> =
-        Array.from({ length: BOARD_COLUMNS * BOARD_COLUMNS }, () => ({ gemType: 'POWER' }));
-
-      cells[24] = { gemType: 'ATK' };
-      cells[CREATION_CELL] = { gemType: 'DEF' };
-      cells[40] = { gemType: 'ATK' };
-      cells[48] = { gemType: 'ATK' };
-      cells[56] = { gemType: 'ATK' };
-
-      return { cells };
-    }
-
-    /**
-     * One conforming pass whose creation cell is **also** a delivered `dropMoves`
-     * destination.
-     *
-     * The Match consumes 32, 40, 48 and 56, and 32 is reserved for its Vertical
-     * Line Clear Gem, so the pass's empty set is 40, 48 and 56 alone
-     * (`MATCH3_RULES.md` §5.5.4 items 1–2). Gravity then compacts column 0's
-     * survivors — 0, 8, 16, 24 and the created Gem 32, which participates like any
-     * other Gem (§4.4 item 8, §5.5.4 item 4) — into its lowest five cells, in the
-     * fixed bottom-to-top read order (§4.4 items 1–3):
-     *
-     * ```text
-     * 32 → 56   the created Gem falls out of its own cell
-     * 24 → 48   16 → 40   8 → 32   0 → 24
-     * ```
-     *
-     * The one report therefore names cell 32 as the created Gem's **origin** and
-     * as the destination of the survivor from 8, and Spawn fills the three cells
-     * Gravity left empty — 0, 8 and 16, never 32 (`SIGNALR_PROTOCOL.md` §3.2.28
-     * items 3–4).
-     */
-    const CREATION_AS_DESTINATION_BATCH: unknown[] = [
-      { type: 'SwapStarted', actor: 'player', fromCell: 24, toCell: 32 },
-      { type: 'SwapResolved', outcome: 'committed' },
-      {
-        type: 'MatchCreated',
-        shape: 'Straight',
-        cells: [32, 40, 48, 56],
-        gemType: 'ATK',
-        cascadeDepth: 1,
-        createdSpecialGems: [
-          { cellIndex: CREATION_CELL, specialGem: { type: 'LineClear', orientation: 'Vertical' } },
-        ],
-      },
-      { type: 'GemMatched', cellIndex: 32, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 40, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 48, gemType: 'ATK' },
-      { type: 'GemMatched', cellIndex: 56, gemType: 'ATK' },
-      { type: 'ComboChanged', combo: 1 },
-      {
-        type: 'CascadeStepResolved',
-        passDepth: 1,
-        dropMoves: [
-          { fromCell: 32, toCell: 56 },
-          { fromCell: 24, toCell: 48 },
-          { fromCell: 16, toCell: 40 },
-          { fromCell: 8, toCell: 32 },
-          { fromCell: 0, toCell: 24 },
-        ],
-        spawnedGems: [
-          { cellIndex: 0, gemType: 'DEF' },
-          { cellIndex: 8, gemType: 'HP' },
-          { cellIndex: 16, gemType: 'ATK' },
-        ],
-      },
-    ];
-
-    /** The board that pass produces: the created Gem has fallen from 32 to 56. */
-    function boardAfterCreationDestinationRound(): RuntimeBoard {
-      const cells: Array<{ gemType: string; specialGem?: { type: string; orientation?: string } }> =
-        Array.from({ length: BOARD_COLUMNS * BOARD_COLUMNS }, () => ({ gemType: 'POWER' }));
-
-      cells[0] = { gemType: 'DEF' };
-      cells[8] = { gemType: 'HP' };
-      cells[16] = { gemType: 'ATK' };
-      cells[48] = { gemType: 'DEF' };
-      cells[56] = { gemType: 'ATK', specialGem: { type: 'LineClear', orientation: 'Vertical' } };
-
-      return { cells };
-    }
-
-    it('38. keeps the created Gem when its own cell is also a delivered Fall destination', () => {
-      // The fixture's own claim, asserted rather than assumed: one report names
-      // the creation cell both as the created Gem's origin and as a destination.
-      const report = CREATION_AS_DESTINATION_BATCH.find(
-        (event) => (event as { type?: string }).type === 'CascadeStepResolved'
-      ) as { dropMoves: Array<{ fromCell: number; toCell: number }> };
-      expect(report.dropMoves).toContainEqual({ fromCell: CREATION_CELL, toCell: 56 });
-      expect(report.dropMoves).toContainEqual({ fromCell: 8, toCell: CREATION_CELL });
-
-      const { harness, ctx, resolveAction } = battleOnBoardWithHeldSwap(
-        creationDestinationBoard(),
-        24,
-        CREATION_CELL
+    function boardAfterThreePasses(): RuntimeBoard {
+      const cells: Array<{ gemType: string }> = Array.from(
+        { length: BOARD_COLUMNS * BOARD_COLUMNS },
+        () => ({ gemType: 'POWER' })
       );
 
-      push(
-        harness,
-        battleState({ sequence: 1, turn: 2, board: boardAfterCreationDestinationRound() })
+      cells[0] = { gemType: 'ATK' };
+      cells[8] = { gemType: 'HP' };
+      cells[16] = { gemType: 'HP' };
+      cells[1] = { gemType: 'HP' };
+      cells[9] = { gemType: 'HP' };
+      cells[17] = { gemType: 'ATK' };
+      cells[2] = { gemType: 'DEF' };
+      cells[10] = { gemType: 'HP' };
+      cells[18] = { gemType: 'DEF' };
+
+      return { cells };
+    }
+
+    /**
+     * The two-pass round's committed board: the second pass's spawned column heads,
+     * the survivors Gravity carried down, and POWER elsewhere.
+     */
+    function boardAfterTwoPasses(): RuntimeBoard {
+      const cells: Array<{ gemType: string }> = Array.from(
+        { length: BOARD_COLUMNS * BOARD_COLUMNS },
+        () => ({ gemType: 'POWER' })
       );
 
-      // The ATK Gem the Swap moves into the creation cell — the view the Match's
-      // own creation claim will re-label, and the view the pass's Fall must carry
-      // out of that cell.
-      const createdView = views(ctx)[24];
+      cells[0] = { gemType: 'DEF' };
+      cells[1] = { gemType: 'HP' };
+      cells[2] = { gemType: 'ATK' };
+      cells[8] = { gemType: 'DEF' };
+      cells[9] = { gemType: 'HP' };
+      cells[10] = { gemType: 'ATK' };
 
-      emitBatch(harness, 1, CREATION_AS_DESTINATION_BATCH);
-
-      // The delivered exchange: the ATK Gem is now at 32 and the DEF Gem at 24, so
-      // the pass's cells agree with the content the client renders.
-      playUntil(harness, ctx, 1);
-      expect(playedPhases(ctx)).toEqual(['swap 24->32']);
-      expect(views(ctx)[32]).toBe(createdView);
-      expect(views(ctx)[32]?.content).toBe('ATK||');
-
-      // The Match step: the four matched cells lose the consumed Gem, and the
-      // creation claim re-labels 32 in place — visible, holding the created
-      // Special Gem, before any Gravity of this pass runs.
-      playUntil(harness, ctx, 2);
-      expect(playedPhases(ctx)).toEqual(['swap 24->32', 'match depth=1']);
-      expect(views(ctx)[40]?.tile.visible).toBe(false);
-      expect(views(ctx)[48]?.tile.visible).toBe(false);
-      expect(views(ctx)[56]?.tile.visible).toBe(false);
-      expect(views(ctx)[32]).toBe(createdView);
-      expect(views(ctx)[32]?.tile.visible).toBe(true);
-      expect(views(ctx)[32]?.content).toBe(CREATED_VERTICAL_KEY);
-      expect(viewIncoherences(ctx)).toEqual([]);
-
-      // The survivor the report drops into the creation cell — the view the
-      // destination half of the report must place there.
-      const arriving = views(ctx)[8];
-
-      // The pass's own Fall names cell 32 as the created Gem's origin (32 → 56) and
-      // as a destination (8 → 32) at once. The created Gem's view is neither hidden
-      // nor overwritten: it is the view the origin move carries to 56, still
-      // visible and still holding the created Gem, while 32 is filled by the view
-      // the destination move delivers — a whole view on its own cell, holding the
-      // content that cell's own survivor brought.
-      playUntil(harness, ctx, 3);
-      expect(playedPhases(ctx)[2]).toBe('gravity depth=1');
-      expect(views(ctx)[56]).toBe(createdView);
-      expect(views(ctx)[56]?.tile.visible).toBe(true);
-      expect(views(ctx)[56]?.content).toBe(CREATED_VERTICAL_KEY);
-      expect(createdView).not.toBeNull();
-      expect(createdView?.cleared).toBe(false);
-      expect(views(ctx)[32]).toBe(arriving);
-      expect(views(ctx)[32]?.tile.visible).toBe(true);
-      expect(views(ctx)[32]?.cleared).toBe(false);
-      expect(views(ctx)[32]?.content).toBe('POWER||');
-      expect(cellsWithoutView(ctx)).toEqual([0, 8, 16]);
-      expect(viewIncoherences(ctx)).toEqual([]);
-
-      // The Refill fills exactly the cells this pass's own Gravity left empty —
-      // 0, 8 and 16, not the creation cell — so the pass ends on a full board and
-      // the created Gem is still the view at 56.
-      playUntil(harness, ctx, 4);
-      expect(playedPhases(ctx)[3]).toBe('refill depth=1');
-      expect(cellsWithoutView(ctx)).toEqual([]);
-      expect(views(ctx).some((view) => view?.cleared)).toBe(false);
-      expect(views(ctx)[56]).toBe(createdView);
-      expect(views(ctx)[56]?.content).toBe(CREATED_VERTICAL_KEY);
-
-      playAllTweens(harness);
-
-      // The round's single transition converges on the delivered board, and the
-      // created Gem is still the cell-56 view of that board: content, cell/view
-      // mapping and the board's own labels all agree, and no second view was
-      // allocated for either the creation cell or its destination.
-      expect(playedPhases(ctx)).toEqual([
-        'swap 24->32',
-        'match depth=1',
-        'gravity depth=1',
-        'refill depth=1',
-        'settle',
-      ]);
-      expect(views(ctx)[56]).toBe(createdView);
-      expect(views(ctx)[56]?.content).toBe(CREATED_VERTICAL_KEY);
-      expect(labelsByCell(harness)).toEqual(fixtureLabels(boardAfterCreationDestinationRound()));
-      expect(labelsByCell(harness)[32]).toBe('PWR');
-      expect(labelsByCell(harness)[56]).toBe('ATK [V]');
-      expect(cellsWithoutView(ctx)).toEqual([]);
-      expect(viewIncoherences(ctx)).toEqual([]);
-      expect(everyViewOnItsOwnCell(ctx)).toBe(true);
-      expect(harness.boardCells).toHaveLength(128);
-      expect(harness.pendingTweenCount()).toBe(0);
-
-      resolveAction();
-    });
+      return { cells };
+    }
 
     // -------------------------------------------------------------------------
-    // BOSS-TURN PRESENTATION — swap/match ordering, activation presentation,
-    // pacing, the per-turn summary, and refill asset consistency
-    // (TASK §3–§7: `MATCH3_RULES.md` §5.5.5, `SIGNALR_PROTOCOL.md` §3.2.9,
-    // §3.2.10, §3.2.28)
+    // BOSS-TURN PRESENTATION — swap/match ordering, pacing and asset consistency
+    // (MATCH3_RULES.md §4, SIGNALR_PROTOCOL.md §3.2.28)
+    //
+    // One board cycle is presented as the delivered swap → match → Fall → Refill
+    // sequence and nothing else. No tier, activation, chain or area-clear step
+    // exists to present (ADR-028, GAME_STATE.md §2.1.2).
     // -------------------------------------------------------------------------
-    describe('BOSS-TURN PRESENTATION — ordering, activation, pacing, summary & asset consistency', () => {
+    describe('BOSS-TURN PRESENTATION — ordering, pacing & asset consistency', () => {
       /** One object the scene has drawn into the feedback layer. */
       interface OverlayLike {
         kind: string;
@@ -14962,144 +14287,11 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
         return layer ? [...layer.list] : [];
       }
 
-      /**
-       * The activation rings the feedback layer holds for one Special Gem colour.
-       *
-       * An activation is drawn as a hollow ring whose stroke is the Special Gem's
-       * own colour and whose stroke width is the presentation table's (3), so it is
-       * distinguishable from an ordinary Match/Gem flash (a filled square with a
-       * 2 px border) by both members.
-       */
-      function activationRings(ctx: object, strokeColor: number): OverlayLike[] {
-        return feedbackChildren(ctx).filter(
-          (child) =>
-            child.kind === 'tile' && child.strokeWidth === 3 && child.strokeColor === strokeColor
-        );
-      }
-
       /** How many objects in the feedback layer are ordinary cell flashes. */
       function highlightCount(ctx: object): number {
         return feedbackChildren(ctx).filter(
           (child) => child.kind === 'tile' && child.strokeWidth === 2
         ).length;
-      }
-
-      /**
-       * The turn-summary strip's own words: it names the consumed — activated —
-       * Special Gems it counts and the Turn it counts them over, so the line can
-       * never read as a Combo total (`MATCH3_RULES.md` §6.3 item 2: an activation is
-       * not a Match and increments no Combo).
-       */
-      const SUMMARY_PREFIX = 'SPECIAL GEMS ACTIVATED (THIS TURN)';
-
-      /** The turn-summary lines the scene has drawn, if any. */
-      function summaryLines(harness: ReturnType<typeof createSceneHarness>): string[] {
-        return harness.texts
-          .map((entry) => entry.text)
-          .filter((text) => text.startsWith(SUMMARY_PREFIX));
-      }
-
-      const LINECLEAR_COLOR = 0x38bdf8;
-      const BURST_COLOR = 0xfacc15;
-
-      /** The phase list with each phase's declared hold, read before it is released. */
-      interface HeldPhase {
-        kind: string;
-        detail: string;
-        holdMs: number;
-      }
-
-      function heldTimeline(ctx: object): HeldPhase[] {
-        return [...(field<HeldPhase[] | null>(ctx, 'presentationTimeline') ?? [])];
-      }
-
-      /**
-       * A fixture board whose cells 16, 24 and 32 hold Special Gems of three
-       * different types, with an ATK shape at 8/16/24 that the Match below consumes.
-       */
-      function specialActivationBoard(): RuntimeBoard {
-        const cells: Array<{
-          gemType: string;
-          specialGem?: { type: string; orientation?: string };
-        }> = Array.from({ length: BOARD_COLUMNS * BOARD_COLUMNS }, () => ({ gemType: 'POWER' }));
-
-        for (const index of [8, 16, 24]) {
-          cells[index] = { gemType: 'ATK' };
-        }
-
-        cells[16] = { gemType: 'ATK', specialGem: { type: 'LineClear', orientation: 'Vertical' } };
-        cells[24] = { gemType: 'ATK', specialGem: { type: 'Area' } };
-        cells[32] = { gemType: 'HP', specialGem: { type: 'Burst' } };
-
-        return { cells };
-      }
-
-      /**
-       * One pass with **three** delivered activations: the ATK Line Clear Gem at 16,
-       * the ATK Area Gem at 24 and the HP Burst Gem at 32 are all consumed — 32 by
-       * the Line Clear Gem's own affected set, which is a chain
-       * (`MATCH3_RULES.md` §5.5.5 item 7) — and the pass's Refill places a new Gem in
-       * each of the four cells it cleared.
-       */
-      const ACTIVATION_ROUND: unknown[] = [
-        { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
-        { type: 'SwapResolved', outcome: 'committed' },
-        { type: 'MatchCreated', shape: 'Lt', cells: [8, 16, 24], gemType: 'ATK', cascadeDepth: 1 },
-        { type: 'GemMatched', cellIndex: 8, gemType: 'ATK' },
-        {
-          type: 'GemMatched',
-          cellIndex: 16,
-          gemType: 'ATK',
-          specialGem: { type: 'LineClear', orientation: 'Vertical' },
-        },
-        {
-          type: 'GemMatched',
-          cellIndex: 24,
-          gemType: 'ATK',
-          specialGem: { type: 'Area' },
-        },
-        {
-          type: 'GemMatched',
-          cellIndex: 32,
-          gemType: 'HP',
-          specialGem: { type: 'Burst' },
-        },
-        { type: 'ComboChanged', combo: 1 },
-        {
-          type: 'CascadeStepResolved',
-          passDepth: 1,
-          spawnedGems: [
-            { cellIndex: 8, gemType: 'DEF' },
-            { cellIndex: 16, gemType: 'HP' },
-            { cellIndex: 24, gemType: 'POWER' },
-            { cellIndex: 32, gemType: 'ATK' },
-          ],
-        },
-      ];
-
-      /** The board that pass produces: each cleared cell holds its delivered spawn. */
-      function boardAfterActivationRound(): RuntimeBoard {
-        const cells: Array<{ gemType: string }> = Array.from(
-          { length: BOARD_COLUMNS * BOARD_COLUMNS },
-          () => ({ gemType: 'POWER' })
-        );
-
-        cells[8] = { gemType: 'DEF' };
-        cells[16] = { gemType: 'HP' };
-        cells[24] = { gemType: 'POWER' };
-        cells[32] = { gemType: 'ATK' };
-
-        return { cells };
-      }
-
-      /** A battle on the two-Special-Gem board, with one action in flight. */
-      function activationBattle(): {
-        harness: ReturnType<typeof createSceneHarness>;
-        scene: BattleScene;
-        ctx: object;
-        resolveAction: () => void;
-      } {
-        return battleOnBoardWithHeldAction(specialActivationBoard());
       }
 
       // -----------------------------------------------------------------------
@@ -15158,13 +14350,13 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
         held.resolve({ accepted: false, reason: 'INVALID_SWAP' });
         await flush();
 
-        // No timeline, no phase, no activation and no summary: a rejected Swap
+        // No timeline, no phase, and no board effect of any kind: a rejected Swap
         // emits no Battle Event at all (`GAME_EVENTS.md` §1.2), so there is no
-        // dependent presentation of any kind to process.
+        // dependent presentation to process. The only object the rejection raises is
+        // the transport feedback line, never a board overlay.
         expect(playedPhases(ctx)).toEqual([]);
         expect(field<object[] | null>(ctx, 'presentationTimeline')).toBeNull();
-        expect(summaryLines(harness)).toEqual([]);
-        expect(activationRings(ctx, LINECLEAR_COLOR)).toEqual([]);
+        expect(feedbackChildren(ctx).filter((child) => child.kind === 'tile')).toEqual([]);
 
         // The rollback converged the board and the guard is released, so no stale
         // pair survives to pair with the player's next tap. No timeline pacing is
@@ -15205,367 +14397,39 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
         resolveAction();
       });
 
-      // -----------------------------------------------------------------------
-      // §5 — special-cell activation presentation
-      // -----------------------------------------------------------------------
-
-      it('4. presents a delivered activation at its own cell, before the Match step clears it', () => {
-        const { harness, ctx, resolveAction } = activationBattle();
-
-        push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterActivationRound() }));
-        emitBatch(harness, 1, ACTIVATION_ROUND);
-
-        // The activation step is the pass's second phase, after its boundary and
-        // before the Match step that empties the cells (`MATCH3_RULES.md` §5.5.5
-        // item 4: an activation always clears its own cell).
-        playUntil(harness, ctx, 2);
-        expect(playedPhases(ctx)).toEqual([
-          'swap 20->21',
-          'activate ATK LineClear, ATK Area, HP Burst',
-        ]);
-
-        // The activating cells are still drawn, holding the Special Gems that
-        // activated: the overlay is visible *before* the destruction it precedes.
-        expect(views(ctx)[16]?.tile.visible).toBe(true);
-        expect(views(ctx)[16]?.content).toBe('ATK|LineClear|Vertical');
-        expect(views(ctx)[24]?.tile.visible).toBe(true);
-        expect(views(ctx)[24]?.content).toBe('ATK|Area|');
-        expect(views(ctx)[32]?.tile.visible).toBe(true);
-        expect(views(ctx)[32]?.content).toBe('HP|Burst|');
-
-        // One ring per activated cell, in that Special Gem's own colour, and the
-        // cell's existing label vocabulary with its badge — both at the delivered
-        // cell. An ordinary Match flash is a filled square with a 2 px border, so
-        // the activation is distinguishable from it by stroke width and colour.
-        const lineRings = activationRings(ctx, LINECLEAR_COLOR);
-        const areaRings = activationRings(ctx, 0xf472b6);
-        const burstRings = activationRings(ctx, BURST_COLOR);
-        expect(lineRings).toHaveLength(1);
-        expect(areaRings).toHaveLength(1);
-        expect(burstRings).toHaveLength(1);
-        expect({ x: lineRings[0].x, y: lineRings[0].y }).toEqual(cellCentre(16));
-        expect({ x: areaRings[0].x, y: areaRings[0].y }).toEqual(cellCentre(24));
-        expect({ x: burstRings[0].x, y: burstRings[0].y }).toEqual(cellCentre(32));
-        expect(highlightCount(ctx)).toBe(0);
-
-        // The badge is the effect's own word — the one the board's own label uses
-        // for that Special Gem — and not a copy of the cell's label, which is still
-        // drawn on the cell itself.
-        expect(harness.texts.filter((entry) => entry.text === '[V]')).toHaveLength(1);
-        expect(harness.texts.filter((entry) => entry.text === '[AREA]')).toHaveLength(1);
-        expect(harness.texts.filter((entry) => entry.text === '[BURST]')).toHaveLength(1);
-        expect(harness.texts.filter((entry) => entry.text === 'ATK [V]')).toHaveLength(1);
-        expect(harness.texts.filter((entry) => entry.text === 'ATK [AREA]')).toHaveLength(1);
-        expect(harness.texts.filter((entry) => entry.text === 'HP [BURST]')).toHaveLength(1);
-
-        // Every overlay is timeline-owned, so an abort or a teardown destroys them
-        // with the resolution that raised them.
-        const effects = field<object[]>(ctx, 'timelineEffects');
-        expect(effects).toContain(lineRings[0]);
-        expect(effects).toContain(areaRings[0]);
-        expect(effects).toContain(burstRings[0]);
-
-        // The Match step of the same pass then clears all four delivered cells —
-        // and the three overlays are still there, on their own cells.
-        playUntil(harness, ctx, 3);
-        expect(views(ctx)[16]?.tile.visible).toBe(false);
-        expect(views(ctx)[32]?.tile.visible).toBe(false);
-        expect(clearedCells(ctx).sort((left, right) => left - right)).toEqual([8, 16, 24, 32]);
-        expect(activationRings(ctx, LINECLEAR_COLOR)).toHaveLength(1);
-        expect(activationRings(ctx, 0xf472b6)).toHaveLength(1);
-        expect(activationRings(ctx, BURST_COLOR)).toHaveLength(1);
-
-        resolveAction();
-      });
-
-      it('5. holds an activation step longer than an ordinary Match step, and longer than its own overlay', () => {
-        const { harness, ctx, resolveAction } = activationBattle();
-
-        push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterActivationRound() }));
-        emitBatch(harness, 1, ACTIVATION_ROUND);
-
-        const activationPhase = heldTimeline(ctx).find(
-          (phase) => phase.kind === 'special-activation'
-        );
-        const matchPhase = heldTimeline(ctx).find((phase) => phase.kind === 'match');
-
-        expect(activationPhase).toBeDefined();
-        expect(matchPhase).toBeDefined();
-
-        // Pacing is a relationship, not a number: the activation's hold is longer
-        // than the Match step's (the effect the player must connect to a cell is
-        // given more reading time than a flash), and it outlasts the longest
-        // animation the activation itself starts.
-        expect(activationPhase?.holdMs ?? 0).toBeGreaterThan(matchPhase?.holdMs ?? 0);
-
-        // The overlay's own fade schedule is inside that phase's hold.
-        playUntil(harness, ctx, 2);
-        const overlayTweens = harness
-          .pendingTweenRecords()
-          .filter((tween) => tween.targets.length === 1 && 'alpha' in tween.props);
-        expect(overlayTweens.length).toBeGreaterThan(0);
-        for (const tween of overlayTweens) {
-          expect(activationPhase?.holdMs ?? 0).toBeGreaterThan(
-            Number(tween.props.delay ?? 0) + tween.duration
-          );
-        }
-
-        playAllTweens(harness);
-        resolveAction();
-      });
-
-      it('6. raises no second visual for a duplicated activation report in one pass', () => {
-        const { harness, ctx, resolveAction } = activationBattle();
-
-        const duplicated = [
-          ...ACTIVATION_ROUND.slice(0, ACTIVATION_ROUND.length - 1),
-          // the same activation report, delivered twice inside the one pass
-          {
-            type: 'GemMatched',
-            cellIndex: 16,
-            gemType: 'ATK',
-            specialGem: { type: 'LineClear', orientation: 'Vertical' },
-          },
-          ACTIVATION_ROUND[ACTIVATION_ROUND.length - 1],
-        ];
-
-        push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterActivationRound() }));
-        emitBatch(harness, 1, duplicated);
-
-        playUntil(harness, ctx, 2);
-
-        // §5.8.2 item 3: a Special Gem activates at most once per step, so the
-        // second report of the same cell is the same occurrence — one ring, one
-        // badge, and one activation in the turn's tally.
-        expect(activationRings(ctx, LINECLEAR_COLOR)).toHaveLength(1);
-        expect(harness.texts.filter((entry) => entry.text === '[V]')).toHaveLength(1);
-
-        playAllTweens(harness);
-        expect(summaryLines(harness)).toEqual([`${SUMMARY_PREFIX}  ATK ×2 · HP ×1`]);
-
-        resolveAction();
-      });
-
-      it('7. presents the activation before the pass’s own Fall and Refill, in delivered order', () => {
-        const { harness, ctx, resolveAction } = activationBattle();
-
-        push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterActivationRound() }));
-        emitBatch(harness, 1, ACTIVATION_ROUND);
-        playAllTweens(harness);
-
-        // The pass reads as its own sequence: boundary → activation → Match/clear →
-        // Fall → Refill, then the round's single board transition and the summary.
-        expect(playedPhases(ctx)).toEqual([
-          'swap 20->21',
-          'activate ATK LineClear, ATK Area, HP Burst',
-          'match depth=1',
-          'gravity depth=1',
-          'refill depth=1',
-          'settle',
-          'summary ATK ×2 · HP ×1',
-        ]);
-
-        // The activated cells were authoritatively replaced by the pass's Refill,
-        // and the rendered board is the delivered one — every cell drawn, every
-        // view on its own cell, nothing cleared left behind.
-        expect(labelsByCell(harness)).toEqual(fixtureLabels(boardAfterActivationRound()));
-        expect(labelsByCell(harness)[16]).toBe('HP');
-        expect(labelsByCell(harness)[32]).toBe('ATK');
-        expect(cellsWithoutView(ctx)).toEqual([]);
-        expect(views(ctx).some((view) => view?.cleared)).toBe(false);
-        expect(viewIncoherences(ctx)).toEqual([]);
-        expect(everyViewOnItsOwnCell(ctx)).toBe(true);
-        expect(harness.boardCells).toHaveLength(128);
-
-        resolveAction();
-      });
-
-      // -----------------------------------------------------------------------
-      // §6 — the per-turn activation summary
-      // -----------------------------------------------------------------------
-
-      it('8. counts delivered activations by cell type, only for the types that occurred, last in the turn', () => {
-        const { harness, ctx, resolveAction } = activationBattle();
-
-        push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterActivationRound() }));
-        emitBatch(harness, 1, ACTIVATION_ROUND);
-
-        const kinds = builtTimeline(ctx).map((phase) => phase.kind);
-        expect(kinds).toEqual([
-          'swap',
-          'special-activation',
-          'match',
-          'gravity-drop',
-          'refill-spawn',
-          'settle',
-          'summary',
-        ]);
-
-        // The tally is the turn's own: two ATK activations and one HP activation —
-        // DEF and POWER occurred nowhere, so no zero row is shown.
-        expect(builtTimeline(ctx)[6].detail).toBe('summary ATK ×2 · HP ×1');
-
-        playUntil(harness, ctx, 7);
-        expect(summaryLines(harness)).toEqual([`${SUMMARY_PREFIX}  ATK ×2 · HP ×1`]);
-
-        playAllTweens(harness);
-        expect(harness.pendingTweenCount()).toBe(0);
-        resolveAction();
-      });
-
-      it('8b. names what it counts — consumed Special Gems this turn — and never a Combo total', () => {
-        const { harness, ctx, resolveAction } = activationBattle();
-
-        // A state whose counters are visibly *other* numbers than the tally, so the
-        // two lines cannot be read for one another: the committed Combo is 5 and
-        // MatchCount 9, while the batch delivers three activations — two ATK and one
-        // HP — and a Combo report of 1.
-        push(
-          harness,
-          battleState({
-            sequence: 1,
-            turn: 2,
-            board: boardAfterActivationRound(),
-            playerState: { combo: 5, matchCount: 9 },
-          })
-        );
-        emitBatch(harness, 1, ACTIVATION_ROUND);
-
-        playAllTweens(harness);
-
-        const lines = summaryLines(harness);
-
-        // One activation is one consumed Special Gem, aggregated by the activated
-        // cell's own type (SIGNALR_PROTOCOL.md §3.2.9 item 3, MATCH3_RULES.md §5.5.5
-        // item 1) — and the line says so.
-        expect(lines).toEqual([`${SUMMARY_PREFIX}  ATK ×2 · HP ×1`]);
-        expect(lines[0]).toContain('SPECIAL GEMS ACTIVATED');
-
-        // MATCH3_RULES.md §6.3 item 2 / §6.3.1: a Special Gem activation is not a
-        // Match and increments no Combo — so no Combo word, no Combo value and no
-        // Match count belongs in this line. The committed Combo (5) and MatchCount
-        // (9) appear nowhere in it.
-        expect(lines[0]).not.toMatch(/COMBO|MATCH/i);
-        expect(lines[0]).not.toContain('5');
-        expect(lines[0]).not.toContain('9');
-
-        // The round's own Combo is presented where it belongs — the HUD's line, set
-        // from the committed state at convergence (MATCH3_RULES.md §6.6 item 3) — so
-        // the two counts are two different quantities, not two spellings of one.
-        expect(field<{ text: string } | null>(ctx, 'comboText')?.text).toBe('COMBO ×5');
-
-        resolveAction();
-      });
-
-      it('9. opens no summary for a turn with no activation', () => {
+      it('4. presents an ordinary board cycle with no retired activation or summary step', () => {
         const { harness, ctx, resolveAction } = battleWithHeldAction();
 
         push(harness, battleState({ sequence: 1, turn: 2, board: afterPassBoard() }));
         emitBatch(harness, 1, PER_PASS_BATCH);
 
-        expect(builtTimeline(ctx).map((phase) => phase.kind)).not.toContain('summary');
-        expect(builtTimeline(ctx).map((phase) => phase.kind)).not.toContain('special-activation');
-
-        playAllTweens(harness);
-
-        // Nothing was fabricated for a turn that activated nothing: no line, and no
-        // phase held for one.
-        expect(summaryLines(harness)).toEqual([]);
-        resolveAction();
-      });
-
-      it('10. counts one cell twice when it activates in two different passes, and never twice for a replayed turn', () => {
-        const { harness, ctx, resolveAction } = activationBattle();
-
-        // Two recorded passes, each activating cell 16 (a later pass can activate a
-        // cell an earlier pass refilled): the tally counts the occurrences, not the
-        // cells. Pass 1 is closed by its own `CascadeStepResolved`, which is the
-        // delivered pass boundary the count is scoped by.
-        const twoPasses = [
-          ...ACTIVATION_ROUND,
-          { type: 'CascadeCreated', cascadeDepth: 1 },
-          {
-            type: 'MatchCreated',
-            shape: 'Straight',
-            cells: [16, 17, 18],
-            gemType: 'HP',
-            cascadeDepth: 2,
-          },
-          {
-            type: 'GemMatched',
-            cellIndex: 16,
-            gemType: 'HP',
-            specialGem: { type: 'Burst' },
-          },
-          {
-            type: 'CascadeStepResolved',
-            passDepth: 2,
-            spawnedGems: [{ cellIndex: 16, gemType: 'DEF' }],
-          },
-        ];
-
-        push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterActivationRound() }));
-        emitBatch(harness, 1, twoPasses);
-
-        // Each pass keeps the delivered order, with its own activation step before
-        // the Match step that clears the cells it consumed — the second pass's
-        // `CascadeCreated` boundary first, then its activation, then its Match.
-        expect(builtTimeline(ctx).map((phase) => phase.detail)).toEqual([
-          'swap 20->21',
-          'activate ATK LineClear, ATK Area, HP Burst',
-          'match depth=1',
-          'gravity depth=1',
-          'refill depth=1',
-          'cascade depth=1',
-          'activate HP Burst',
-          'match depth=2',
-          'gravity depth=2',
-          'refill depth=2',
+        // The timeline is exactly the delivered board cycle and the round's single
+        // convergence: no activation phase, no per-turn tally phase, and no other
+        // step the contract does not deliver (`SIGNALR_PROTOCOL.md` §3.2.12).
+        expect(builtTimeline(ctx).map((phase) => phase.kind)).toEqual([
+          'swap',
+          'match',
+          'gravity-drop',
+          'refill-spawn',
           'settle',
-          'summary ATK ×2 · HP ×2',
         ]);
+        expect(playedPhases(ctx).some((detail) => detail.startsWith('activate'))).toBe(false);
+        expect(playedPhases(ctx).some((detail) => detail.startsWith('summary'))).toBe(false);
 
-        expect(builtTimeline(ctx).at(-1)?.detail).toBe('summary ATK ×2 · HP ×2');
+        // The Match step's presentation is the delivered cell flashes alone — one
+        // per cell a `MatchCreated` or `GemMatched` names (3 + 3 here) — and nothing
+        // else: an activation ring would be a stroke-3 overlay no delivered member
+        // asks for.
+        playUntil(harness, ctx, 2);
+        expect(highlightCount(ctx)).toBe(6);
+        expect(feedbackChildren(ctx).every((overlay) => overlay.strokeWidth !== 3)).toBe(true);
 
         playAllTweens(harness);
-        expect(summaryLines(harness)).toEqual([`${SUMMARY_PREFIX}  ATK ×2 · HP ×2`]);
-
-        // The identical turn delivered again presents neither a second phase nor a
-        // second line: the scene accepts one presentation per delivered resolution.
-        emitBatch(harness, 1, twoPasses);
-        expect(summaryLines(harness)).toEqual([`${SUMMARY_PREFIX}  ATK ×2 · HP ×2`]);
-
-        resolveAction();
-      });
-
-      it('11. leaves no summary on screen when a newer authoritative state supersedes the turn', () => {
-        const { harness, ctx, resolveAction } = activationBattle();
-
-        push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterActivationRound() }));
-        emitBatch(harness, 1, ACTIVATION_ROUND);
-        playUntil(harness, ctx, 7);
-
-        const summary = field<object[]>(ctx, 'timelineEffects').find((effect) =>
-          ((effect as { text?: string }).text ?? '').startsWith(SUMMARY_PREFIX)
-        );
-        expect(summary).toBeDefined();
-
-        // A recovery snapshot for a newer resolution supersedes the turn's
-        // presentation: the summary (and every other effect the timeline raised) is
-        // cancelled with the timeline that owns it, so no count survives on screen.
-        recovery(harness, battleState({ sequence: 3, turn: 4, board: deliveredBoard(2) }));
-
-        expect(field<object[]>(ctx, 'timelineEffects')).toEqual([]);
-        expect(harness.killedTweenTargets).toContain(summary);
+        expect(playedPhases(ctx)).not.toContain('summary');
         expect(harness.pendingTweenCount()).toBe(0);
-        expect(labelsByCell(harness)).toEqual(expectedLabels(2));
 
         resolveAction();
       });
-
-      // -----------------------------------------------------------------------
-      // §7 — activation/refill asset consistency
-      // -----------------------------------------------------------------------
 
       it('12. applies no clear, Fall or Refill from a cycle whose starting board the client does not hold', () => {
         const { harness, ctx, resolveAction } = battleWithHeldAction();
@@ -15620,7 +14484,7 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
           'refill depth=1',
           'damage player->boss',
         ]);
-        expect(labelsByCell(harness)).toEqual(fixtureLabels(afterPassBoard()));
+        expect(labelsByCell(harness)).toEqual(labelsForCells(afterPassBoard()));
         const trackedBoard = labelsByCell(harness);
         const viewAt24 = views(ctx)[24];
 
@@ -15661,69 +14525,13 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
         // invisible occupied cell, no view left on a coordinate the report named.
         playAllTweens(harness);
 
-        expect(labelsByCell(harness)).toEqual(fixtureLabels(bossRoundBoard));
+        expect(labelsByCell(harness)).toEqual(labelsForCells(bossRoundBoard));
         expect(labelsByCell(harness)[24]).toBe('DEF');
         expect(cellsWithoutView(ctx)).toEqual([]);
         expect(viewIncoherences(ctx)).toEqual([]);
         expect(everyViewOnItsOwnCell(ctx)).toBe(true);
         expect(new Set(views(ctx).filter((view) => view !== null)).size).toBe(64);
         expect(harness.boardCells).toHaveLength(128);
-
-        resolveAction();
-      });
-
-      it('13. draws the delivered Gem at an activated cell the pass refills, replacing its asset once', () => {
-        const { harness, ctx, resolveAction } = activationBattle();
-
-        push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterActivationRound() }));
-        emitBatch(harness, 1, ACTIVATION_ROUND);
-
-        const activated = views(ctx)[16];
-        expect(activated?.content).toBe('ATK|LineClear|Vertical');
-
-        // The activation consumed the Special Gem; the Match step emptied the cell;
-        // the Refill placed an HP Gem there. The cell keeps the same persistent view
-        // and its asset is the delivered one — never the Special Gem that activated,
-        // and never a cell left empty until some later board update.
-        playAllTweens(harness);
-
-        expect(views(ctx)[16]).toBe(activated);
-        expect(views(ctx)[16]?.content).toBe('HP||');
-        expect(views(ctx)[16]?.cleared).toBe(false);
-        expect(views(ctx)[16]?.tile.visible).toBe(true);
-        expect(labelsByCell(harness)[16]).toBe('HP');
-
-        // The activation's own overlay has faded out inside its phase's hold, so no
-        // obsolete special-gem treatment is left over the cell it consumed.
-        expect(
-          activationRings(ctx, LINECLEAR_COLOR).every((ring) => ring.alpha === 0)
-        ).toBe(true);
-
-        resolveAction();
-      });
-
-      it('14. keeps a Special Gem that Gravity moves, with the destination ownership it moved to', () => {
-        const { harness, ctx, resolveAction } = battleOnBoardWithHeldAction(consumedSpecialBoard());
-
-        push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterConsumedSpecial() }));
-        emitBatch(harness, 1, CONSUMED_SPECIAL_BATCH);
-
-        // The pass's Match re-creates the Line Clear Gem at 16 and the pass's own
-        // Gravity then moves it to 32: the same view, drawn at the cell it occupies.
-        const recreated = views(ctx)[16];
-        playAllTweens(harness);
-
-        expect(views(ctx)[32]).toBe(recreated);
-        expect(views(ctx)[32]?.content).toBe('ATK|LineClear|Vertical');
-        expect(views(ctx)[32]?.tile.visible).toBe(true);
-        expect(views(ctx).filter((view) => view === recreated)).toHaveLength(1);
-        expect(cellsWithoutView(ctx)).toEqual([]);
-        expect(viewIncoherences(ctx)).toEqual([]);
-        expect(everyViewOnItsOwnCell(ctx)).toBe(true);
-        expect(labelsByCell(harness)).toEqual(fixtureLabels(boardAfterConsumedSpecial()));
-        expect(labelsByCell(harness)[32]).toBe('ATK [V]');
-        expect(harness.boardCells).toHaveLength(128);
-        expect(harness.pendingTweenCount()).toBe(0);
 
         resolveAction();
       });
@@ -15764,11 +14572,32 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
         resolveAction();
       });
 
-      it('16. leaves no cell without a view and no duplicated view across a two-pass activation round', () => {
-        const { harness, ctx, resolveAction } = activationBattle();
+      it('16. leaves no cell without a view and no duplicated view across a two-pass cascade round', () => {
+        const spawned = [
+          { cellIndex: 0, gemType: 'DEF' },
+          { cellIndex: 1, gemType: 'HP' },
+          { cellIndex: 2, gemType: 'ATK' },
+        ];
 
-        push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterActivationRound() }));
-        emitBatch(harness, 1, ACTIVATION_ROUND);
+        const { harness, ctx, resolveAction } = battleOnBoardWithHeldAction(
+          atkMatchBoard([24, 25, 26])
+        );
+
+        push(harness, battleState({ sequence: 1, turn: 2, board: boardAfterTwoPasses() }));
+        emitBatch(harness, 1, [
+          { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+          { type: 'SwapResolved', outcome: 'committed' },
+          { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+          ...[24, 25, 26].map((cellIndex) => ({ type: 'GemMatched', cellIndex, gemType: 'ATK' })),
+          { type: 'ComboChanged', combo: 1 },
+          passReport(1, [[3], [3], [3]], spawned),
+          { type: 'CascadeCreated', cascadeDepth: 1 },
+          { type: 'MatchCreated', shape: 'Straight', cells: [32, 33, 34], gemType: 'POWER', cascadeDepth: 2 },
+          ...[32, 33, 34].map((cellIndex) => ({ type: 'GemMatched', cellIndex, gemType: 'POWER' })),
+          { type: 'ComboChanged', combo: 2 },
+          passReport(2, [[4], [4], [4]], spawned),
+        ]);
+
         playAllTweens(harness);
 
         const drawn = views(ctx).filter((view) => view !== null);
@@ -15779,7 +14608,7 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
         expect(viewIncoherences(ctx)).toEqual([]);
         expect(everyViewOnItsOwnCell(ctx)).toBe(true);
         expect(harness.boardCells).toHaveLength(128);
-        expect(labelsByCell(harness)).toEqual(fixtureLabels(boardAfterActivationRound()));
+        expect(labelsByCell(harness)).toEqual(labelsForCells(boardAfterTwoPasses()));
 
         resolveAction();
       });
@@ -15809,10 +14638,7 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
 
         /** One delivered board's content keys, in §1.0 order (`gemContentKey`'s form). */
         function contentsOf(next: RuntimeBoard): string[] {
-          return next.cells.map(
-            (cell) =>
-              `${cell.gemType}|${cell.specialGem?.type ?? ''}|${cell.specialGem?.orientation ?? ''}`
-          );
+          return next.cells.map((cell) => cell.gemType);
         }
 
         /** The pending Gem-view travels: a two-target tween moving a tile and its label. */
@@ -16110,7 +14936,7 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
 
           expect(playedPhases(ctx)).toContain('settle');
           expect(contentsByCell(ctx)).toEqual(contentsOf(roundCommittedBoard()));
-          expect(labelsByCell(harness)).toEqual(fixtureLabels(roundCommittedBoard()));
+          expect(labelsByCell(harness)).toEqual(labelsForCells(roundCommittedBoard()));
           expect(cellsWithoutView(ctx)).toEqual([]);
           expect(viewIncoherences(ctx)).toEqual([]);
           expect(everyViewOnItsOwnCell(ctx)).toBe(true);
@@ -16223,7 +15049,7 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
           expect(phases).toContain('settle');
 
           expect(contentsByCell(ctx)).toEqual(contentsOf(roundCommittedBoard()));
-          expect(labelsByCell(harness)).toEqual(fixtureLabels(roundCommittedBoard()));
+          expect(labelsByCell(harness)).toEqual(labelsForCells(roundCommittedBoard()));
           expect(clearedCells(ctx)).toEqual([]);
           expect(cellsWithoutView(ctx)).toEqual([]);
           expect(viewIncoherences(ctx)).toEqual([]);

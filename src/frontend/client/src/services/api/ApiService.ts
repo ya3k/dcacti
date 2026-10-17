@@ -137,7 +137,6 @@ export type {
   BattleStartRequest,
   BattleStartResponse,
   BattleStartRngState,
-  BattleStartSpecialGem,
   Element,
   RewardSummaryResponse,
 } from './BattleModels';

@@ -529,16 +529,15 @@ export interface RngStatePayload {
  * `index = row * 8 + column` (`MATCH3_RULES.md` §1.0). The client does not
  * receive a partial board and does not request cells individually (§4.1 item 3).
  *
- * Each entry carries the cell's Gem type plus, optionally, the Special Gem at
- * that cell — the same shape the state holds, delivered entry for entry with no
- * additional payload member (`SIGNALR_PROTOCOL.md` §4.1 item 5,
- * `GAME_STATE.md` §2.1.7 items 1–4). There is no `PendingSpecialGems[]` and no
- * second collection (§2.1.2 item 1).
+ * Each entry carries the cell's Gem type and nothing else — the same shape the
+ * state holds, delivered entry for entry with no additional payload member
+ * (`SIGNALR_PROTOCOL.md` §4.1 item 5, `GAME_STATE.md` §2.1.7 items 1–4). There
+ * is no second collection and no per-cell metadata (§2.1.2 items 1–2).
  *
  * The client renders this and derives nothing: it never creates, places, moves,
- * matches, activates, chains, or clears a Special Gem, and it never infers a
- * Special Gem's type or orientation from anything but the state it was sent
- * (`SIGNALR_PROTOCOL.md` §4.1 item 6, `GAME_RULES.md` §18, ADR-001).
+ * matches, or clears a Gem, and it never infers a cell's value from anything
+ * other than the state it was sent (`SIGNALR_PROTOCOL.md` §4.1 item 6,
+ * `GAME_RULES.md` §18, ADR-001).
  */
 export interface BoardPayload {
   /**
@@ -551,39 +550,19 @@ export interface BoardPayload {
 
 /**
  * The wire projection of one `Cells[64]` entry (`GAME_STATE.md` §2.1.1).
+ *
+ * One entry carries exactly one member: the cell's Gem type. Every cell holds
+ * exactly one occupant and that occupant is always one of the four functional
+ * types (`GAME_STATE.md` §2.1.3 items 1–4), so §2.1.3 item 4's "nothing else is
+ * stored per cell" is what the shape states.
  */
 export interface CellPayload {
   /**
    * The cell's Gem type, as the documented contract name (`ATK`, `DEF`, `HP`,
-   * `POWER` — `MATCH3_RULES.md` §1.1). Always present, including for a cell that
-   * holds a Special Gem: a Special Gem adds metadata to a cell's occupant and
-   * does not replace its Gem type (`GAME_STATE.md` §2.1.3 items 1–2).
+   * `POWER` — `MATCH3_RULES.md` §1.1). Always present (`GAME_STATE.md` §2.1.3
+   * items 1–2).
    */
   readonly gemType: string;
-  /**
-   * The Special Gem at this cell, or `null`/absent for an ordinary Gem. Absence
-   * is the documented representation of "this cell holds no Special Gem" — it is
-   * not an invitation to predict one (`GAME_STATE.md` §2.1.7 item 3,
-   * `SIGNALR_PROTOCOL.md` §4.1 item 6).
-   */
-  readonly specialGem?: SpecialGemPayload | null;
-}
-
-/**
- * The wire projection of `SpecialGem` metadata (`GAME_STATE.md` §2.1.4).
- */
-export interface SpecialGemPayload {
-  /**
-   * `LineClear`, `Burst`, or `Area` — the three MVP types
-   * (`GAME_STATE.md` §2.1.4 item 1, `MATCH3_RULES.md` §5.2–§5.4). The client
-   * treats this as an opaque label for rendering.
-   */
-  readonly type: string;
-  /**
-   * `Horizontal` or `Vertical`, present if and only if `type` is `LineClear`
-   * (`GAME_STATE.md` §2.1.4 item 2). A `Burst` or `Area` entry carries none.
-   */
-  readonly orientation?: string | null;
 }
 
 /**

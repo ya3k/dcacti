@@ -161,7 +161,7 @@ export interface BattleStartResponse {
  * ├── sequence
  * ├── rngSeed
  * ├── rngState: { state, increment }
- * ├── board:    { cells: [ { gemType, specialGem } ] }
+ * ├── board:    { cells: [ { gemType } ] }
  * ├── combo
  * ├── matchCount
  * ├── petState
@@ -243,9 +243,9 @@ export interface BattleStartBoard {
 /**
  * One board cell entry (`GAME_STATE.md` §2.1.1).
  *
- * A cell's `gemType` is **always** present, including under a Special Gem: a
- * Special Gem is metadata on the cell's Gem, not a substitute for it
- * (§2.1.3 item 1), and the Gem type is what Match Detection compares.
+ * A cell's `gemType` is the cell's whole stored content: each cell holds exactly
+ * one occupant and that occupant is always one of the four functional types
+ * (§2.1.3 items 1–4). It is what Match Detection compares.
  */
 export interface BattleStartCell {
   /**
@@ -254,40 +254,6 @@ export interface BattleStartCell {
    * functional, not elemental: a Gem type is not an `Element` (§2.1.1 item 2).
    */
   readonly gemType: string;
-  /**
-   * The Special Gem occupying this cell, or `null`/absent for an ordinary Gem
-   * (`GAME_STATE.md` §2.1.7 item 3). Absence is the representation of "no
-   * Special Gem" — never a sentinel type, and never one of the three real
-   * types standing in for it.
-   *
-   * It is typed as nullable rather than optional because §2.1.7 item 3 states
-   * that omitting the member and writing an explicit `null` are the same
-   * statement, so a reader must handle both spellings.
-   */
-  readonly specialGem?: BattleStartSpecialGem | null;
-}
-
-/**
- * A Special Gem's metadata (`GAME_STATE.md` §2.1.4).
- *
- * ```text
- * SpecialGem
- * ├── type            LineClear | Burst | Area   (MATCH3_RULES.md §5.2–§5.4)
- * └── orientation     Horizontal | Vertical       (Line Clear only)
- * ```
- *
- * `orientation` is present **if and only if** `type` is `LineClear`
- * (§2.1.4 item 2): `Burst` and `Area` are orientation-free, so an orientation
- * on those types would be a value no rule reads. Both members are typed
- * `string` rather than as locally re-listed unions for the same reason §5.1's
- * `tier` is — the permitted values are owned by `MATCH3_RULES.md` §5.2–§5.4,
- * and a second copy here could drift from it.
- */
-export interface BattleStartSpecialGem {
-  /** `LineClear`, `Burst`, or `Area` (`GAME_STATE.md` §2.1.4 item 1). */
-  readonly type: string;
-  /** `Horizontal` or `Vertical`, for a `LineClear` gem only (§2.1.4 item 2). */
-  readonly orientation?: string | null;
 }
 
 /**

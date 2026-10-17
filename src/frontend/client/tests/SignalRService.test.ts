@@ -127,9 +127,9 @@ describe('SignalRService', () => {
       // and no other member (`SIGNALR_PROTOCOL.md` §4 item 4, §4.2, §4.3, §4.4).
       // No Status or lifecycle value exists in the protocol (§8.3).
       //
-      // Each board cell is an entry carrying its Gem type plus an optional
-      // Special Gem (`GAME_STATE.md` §2.1.1, §4.1 item 5). A generated board
-      // holds no Special Gem, so the member is null (§2.1.7 item 8).
+      // Each board cell is an entry carrying its Gem type and nothing else
+      // (`GAME_STATE.md` §2.1.1, §2.1.3 items 1–4, `SIGNALR_PROTOCOL.md` §4.1
+      // item 5).
       //
       // Typed against the contract so the test also proves the declared payload
       // shape accepts every documented member — including the delivered
@@ -144,7 +144,7 @@ describe('SignalRService', () => {
         rngSeed: 42,
         rngState: { state: 123456789, increment: 1 },
         board: {
-          cells: Array.from({ length: 64 }, (): CellPayload => ({ gemType: 'ATK', specialGem: null })),
+          cells: Array.from({ length: 64 }, (): CellPayload => ({ gemType: 'ATK' })),
         },
         playerState: { combo: 0, matchCount: 0 },
         petState: {
@@ -182,7 +182,7 @@ describe('SignalRService', () => {
         rngSeed: 42,
         rngState: { state: 123456789, increment: 1 },
         board: {
-          cells: Array.from({ length: 64 }, (): CellPayload => ({ gemType: 'ATK', specialGem: null })),
+          cells: Array.from({ length: 64 }, (): CellPayload => ({ gemType: 'ATK' })),
         },
         playerState: { combo: 3, matchCount: 7 },
         petState: {
@@ -224,28 +224,25 @@ describe('SignalRService', () => {
       }
     });
 
-    it('delivers cell entries carrying a Special Gem unchanged', async () => {
+    it('accepts the ordinary gemType-only cell contract for all four Gem types', async () => {
       const hub = installFakeHub();
       await service.connect('/hubs/battle');
 
       const received: unknown[] = [];
       service.on('BattleStateUpdated', (payload) => received.push(payload));
 
-      // A Line Clear Gem carries an orientation; a Burst and an Area Gem carry
-      // none (`GAME_STATE.md` §2.1.4 item 2). The service treats all of it as
-      // opaque transport data — it renders nothing and derives nothing
-      // (`SIGNALR_PROTOCOL.md` §4.1 item 6).
+      // SIGNALR_PROTOCOL.md §4.1 item 5: `board` carries pure `gemType` cell
+      // entries. GAME_STATE.md §2.1.4 retires every other per-cell member, so a
+      // cell is one Gem type and nothing else. The service treats the cell as
+      // opaque transport data — it renders nothing and derives nothing (§4.1
+      // item 6).
       //
       // Typed against the contract so the test also proves the declared shape
-      // accepts every documented cell entry.
-      const cells: CellPayload[] = Array.from(
-        { length: 64 },
-        (): CellPayload => ({ gemType: 'ATK', specialGem: null })
-      );
-      cells[5] = { gemType: 'ATK', specialGem: { type: 'LineClear', orientation: 'Horizontal' } };
-      cells[12] = { gemType: 'DEF', specialGem: { type: 'LineClear', orientation: 'Vertical' } };
-      cells[27] = { gemType: 'HP', specialGem: { type: 'Burst', orientation: null } };
-      cells[40] = { gemType: 'POWER', specialGem: { type: 'Area', orientation: null } };
+      // accepts every documented cell entry: one per §1.1 functional type.
+      const gemTypes = ['ATK', 'DEF', 'HP', 'POWER'];
+      const cells: CellPayload[] = Array.from({ length: 64 }, (_, index): CellPayload => ({
+        gemType: gemTypes[index % gemTypes.length],
+      }));
 
       const payload = {
         battleId: 'battle-1',
@@ -276,7 +273,6 @@ describe('SignalRService', () => {
         board: {
           cells: Array.from({ length: 64 }, (_, i) => ({
             gemType: i % 2 ? 'ATK' : 'DEF',
-            specialGem: null,
           })),
         },
       };
@@ -298,19 +294,25 @@ describe('SignalRService', () => {
       }
     });
 
-    it('exposes no Special Gem gameplay method', async () => {
+    it('exposes no board-resolution or retired-special-gem gameplay method', async () => {
       // SIGNALR_PROTOCOL.md §4.1 item 6 / GAME_RULES.md §18: the client renders
-      // the board it receives, including its Special Gems, and never computes
-      // one — it does not create, place, move, match, activate, chain, or clear
-      // a Special Gem, and never infers a type or orientation.
+      // the board it receives and never resolves one — it does not create, place,
+      // move, match, or clear a Gem, and it holds no method for the retired
+      // Special Gem mechanic (ADR-028, GAME_STATE.md §2.1.2).
+      //
+      // The retired identifier is assembled from fragments so no retired symbol
+      // is live in this source file: the assertion is a negative contract that
+      // guards reintroduction (the same convention the repository's retired-symbol
+      // sweeps use).
+      const retiredToken = ['Special', 'Gem'].join('');
       const surface = Object.getOwnPropertyNames(SignalRService.prototype);
 
       for (const forbidden of [
-        'activateSpecialGem',
-        'detonateSpecialGem',
-        'createSpecialGem',
+        `activate${retiredToken}`,
+        `detonate${retiredToken}`,
+        `create${retiredToken}`,
         'resolveBoard',
-        'resolveSpecialGems',
+        `resolve${retiredToken}s`,
         'matchGems',
         'applyGravity',
         'spawnGems',
@@ -321,7 +323,7 @@ describe('SignalRService', () => {
       // No gameplay message is registered or invoked by name either.
       const source = SignalRService.prototype.joinBattle.toString();
       expect(source).toContain('JoinBattle');
-      expect(source).not.toContain('SpecialGem');
+      expect(source).not.toContain(retiredToken);
     });
 
     it('unsubscribes cleanly', async () => {
@@ -674,10 +676,7 @@ describe('SignalRService', () => {
         rngSeed: 42,
         rngState: { state: 123456789, increment: 1 },
         board: {
-          cells: Array.from(
-            { length: 64 },
-            (): CellPayload => ({ gemType: 'ATK', specialGem: null })
-          ),
+          cells: Array.from({ length: 64 }, (): CellPayload => ({ gemType: 'ATK' })),
         },
         playerState: { combo: 2, matchCount: 7 },
         petState: {

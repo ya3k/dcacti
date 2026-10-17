@@ -73,13 +73,6 @@ export interface PresentedMatchCreated {
   readonly cells: readonly number[];
   readonly gemType: string;
   readonly cascadeDepth: number;
-  readonly createdSpecialGems?: ReadonlyArray<{
-    readonly cellIndex: number;
-    readonly specialGem: {
-      readonly type: string;
-      readonly orientation?: string;
-    };
-  }>;
 }
 
 export interface PresentedCascadeCreated {
@@ -96,10 +89,6 @@ export interface PresentedGemMatched {
   readonly type: 'GemMatched';
   readonly cellIndex: number;
   readonly gemType: string;
-  readonly specialGem?: {
-    readonly type: string;
-    readonly orientation?: string;
-  };
 }
 
 export interface PresentedDamageCalculated {
@@ -199,8 +188,8 @@ export interface PresentedDropMove {
  * One delivered `spawnedGems` entry (`SIGNALR_PROTOCOL.md` §3.2.28) — the §1.0
  * destination cell a pass's Spawn filled, and the Gem type the server drew for it.
  * The type is the server's own draw (`MATCH3_RULES.md` §4.5 item 5): the client
- * never selects, predicts, or randomizes one, and a spawned Gem never carries a
- * Special Gem (§4.5 item 7).
+ * never selects, predicts, or randomizes one, and a spawned Gem is always an
+ * ordinary Gem (`GAME_STATE.md` §2.1.5 item 3).
  */
 export interface PresentedSpawnedGem {
   readonly cellIndex: number;
@@ -366,42 +355,12 @@ function parseMatchCreated(raw: unknown): PresentedMatchCreated | null {
     return null;
   }
 
-  let createdSpecialGems: PresentedMatchCreated['createdSpecialGems'];
-  if (Array.isArray(p.createdSpecialGems)) {
-    const validGems: Array<{
-      cellIndex: number;
-      specialGem: { type: string; orientation?: string };
-    }> = [];
-    for (const entry of p.createdSpecialGems) {
-      if (
-        typeof entry === 'object' &&
-        entry !== null &&
-        typeof entry.cellIndex === 'number' &&
-        typeof entry.specialGem === 'object' &&
-        entry.specialGem !== null &&
-        typeof entry.specialGem.type === 'string'
-      ) {
-        validGems.push({
-          cellIndex: entry.cellIndex,
-          specialGem: {
-            type: entry.specialGem.type,
-            ...(typeof entry.specialGem.orientation === 'string'
-              ? { orientation: entry.specialGem.orientation }
-              : {}),
-          },
-        });
-      }
-    }
-    createdSpecialGems = validGems;
-  }
-
   return {
     type: 'MatchCreated',
     shape: p.shape,
     cells: p.cells,
     gemType: p.gemType,
     cascadeDepth: p.cascadeDepth,
-    ...(createdSpecialGems ? { createdSpecialGems } : {}),
   };
 }
 
@@ -433,25 +392,10 @@ function parseGemMatched(raw: unknown): PresentedGemMatched | null {
     return null;
   }
 
-  let specialGem: PresentedGemMatched['specialGem'];
-  if (
-    typeof p.specialGem === 'object' &&
-    p.specialGem !== null &&
-    typeof p.specialGem.type === 'string'
-  ) {
-    specialGem = {
-      type: p.specialGem.type,
-      ...(typeof p.specialGem.orientation === 'string'
-        ? { orientation: p.specialGem.orientation }
-        : {}),
-    };
-  }
-
   return {
     type: 'GemMatched',
     cellIndex: p.cellIndex,
     gemType: p.gemType,
-    ...(specialGem ? { specialGem } : {}),
   };
 }
 
@@ -824,24 +768,10 @@ export function formatInBattleEvent(event: InBattleServerEvent): string {
       return `SwapStarted: ${event.actor} ${event.fromCell}->${event.toCell}`;
     case 'SwapResolved':
       return `SwapResolved: ${event.outcome}`;
-    case 'MatchCreated': {
-      const specialGemsDesc =
-        event.createdSpecialGems && event.createdSpecialGems.length > 0
-          ? ` (created: ${event.createdSpecialGems
-              .map(
-                (g) =>
-                  `${g.specialGem.type}${g.specialGem.orientation ? `[${g.specialGem.orientation}]` : ''}@${g.cellIndex}`
-              )
-              .join(', ')})`
-          : '';
-      return `Match: ${event.shape} ${event.gemType} [${event.cells.join(', ')}] depth: ${event.cascadeDepth}${specialGemsDesc}`;
-    }
-    case 'GemMatched': {
-      const specialDesc = event.specialGem
-        ? ` [Special: ${event.specialGem.type}${event.specialGem.orientation ? ` ${event.specialGem.orientation}` : ''}]`
-        : '';
-      return `GemMatched: cell ${event.cellIndex} (${event.gemType})${specialDesc}`;
-    }
+    case 'MatchCreated':
+      return `Match: ${event.shape} ${event.gemType} [${event.cells.join(', ')}] depth: ${event.cascadeDepth}`;
+    case 'GemMatched':
+      return `GemMatched: cell ${event.cellIndex} (${event.gemType})`;
     case 'CascadeCreated':
       return `Cascade: depth ${event.cascadeDepth}`;
     case 'ComboChanged':
@@ -1104,8 +1034,6 @@ export type PresentationAction =
   | 'retaliation'
   | 'power'
   | 'turn-banner'
-  | 'special-activation'
-  | 'turn-summary'
   | 'outcome';
 
 /**
@@ -1123,7 +1051,6 @@ export type PresentationPhaseKind =
   | 'swap'
   | 'match'
   | 'cascade'
-  | 'special-activation'
   | 'gravity-drop'
   | 'refill-spawn'
   | 'cast'
@@ -1133,7 +1060,6 @@ export type PresentationPhaseKind =
   | 'damage'
   | 'retaliation'
   | 'feedback'
-  | 'summary'
   | 'outcome';
 
 /** One delivered event's presentation step: who acted, what, and in which phase. */
@@ -1908,286 +1834,3 @@ export function selectBatchCalloutEvent(
 
   return selected;
 }
-
-// ---------------------------------------------------------------------------
-// Authoritative Special Gem presentation (MATCH3_RULES.md §5, GAME_STATE.md §2.1.4)
-// ---------------------------------------------------------------------------
-
-/**
- * Visual differentiation configuration for authoritative Special Gems
- * (MATCH3_RULES.md §5, GAME_STATE.md §2.1.4, SIGNALR_PROTOCOL.md §3.2.10).
- */
-export type SpecialGemVisualVariant = 'LineClearHorizontal' | 'LineClearVertical' | 'Burst' | 'Area';
-
-export interface SpecialGemPresentationConfig {
-  readonly variant: SpecialGemVisualVariant;
-  readonly type: string;
-  readonly orientation?: string;
-  readonly badge: string;
-  readonly strokeColor: number;
-  readonly strokeWidth: number;
-  readonly description: string;
-}
-
-export const SPECIAL_GEM_PRESENTATIONS: Readonly<Record<SpecialGemVisualVariant, SpecialGemPresentationConfig>> = Object.freeze({
-  LineClearHorizontal: Object.freeze({
-    variant: 'LineClearHorizontal',
-    type: 'LineClear',
-    orientation: 'Horizontal',
-    badge: '[H]',
-    strokeColor: 0x38bdf8, // Sky blue
-    strokeWidth: 3,
-    description: 'Horizontal Line Clear',
-  }),
-  LineClearVertical: Object.freeze({
-    variant: 'LineClearVertical',
-    type: 'LineClear',
-    orientation: 'Vertical',
-    badge: '[V]',
-    strokeColor: 0x38bdf8, // Sky blue
-    strokeWidth: 3,
-    description: 'Vertical Line Clear',
-  }),
-  Burst: Object.freeze({
-    variant: 'Burst',
-    type: 'Burst',
-    badge: '[BURST]',
-    strokeColor: 0xfacc15, // Golden yellow
-    strokeWidth: 3,
-    description: 'Burst (3x3 Square)',
-  }),
-  Area: Object.freeze({
-    variant: 'Area',
-    type: 'Area',
-    badge: '[AREA]',
-    strokeColor: 0xf472b6, // Vibrant pink
-    strokeWidth: 3,
-    description: 'Area (Cross/Plus)',
-  }),
-});
-
-/**
- * Resolves the visual presentation config for an authoritative SpecialGem metadata object
- * (SIGNALR_PROTOCOL.md §3.2.10, GAME_STATE.md §2.1.4).
- * Returns null for ordinary gems or unrecognized special gem metadata.
- */
-export function resolveSpecialGemPresentation(
-  specialGem?: { readonly type?: string | null; readonly orientation?: string | null } | null
-): SpecialGemPresentationConfig | null {
-  if (!specialGem || typeof specialGem !== 'object' || !specialGem.type) {
-    return null;
-  }
-
-  const type = specialGem.type;
-  if (type === 'LineClear') {
-    if (specialGem.orientation === 'Vertical') {
-      return SPECIAL_GEM_PRESENTATIONS.LineClearVertical;
-    }
-    return SPECIAL_GEM_PRESENTATIONS.LineClearHorizontal;
-  }
-
-  if (type === 'Burst') {
-    return SPECIAL_GEM_PRESENTATIONS.Burst;
-  }
-
-  if (type === 'Area') {
-    return SPECIAL_GEM_PRESENTATIONS.Area;
-  }
-
-  return null;
-}
-
-/**
- * Formats a gem cell label, appending the special gem badge if a special gem is present.
- * For normal gems, returns baseLabel unmodified.
- */
-export function formatGemCellLabel(
-  baseLabel: string,
-  specialGem?: { readonly type?: string | null; readonly orientation?: string | null } | null
-): string {
-  const spec = resolveSpecialGemPresentation(specialGem);
-  if (!spec) {
-    return baseLabel;
-  }
-  return `${baseLabel} ${spec.badge}`;
-}
-
-/**
- * Extracts the underlying base gem label (e.g. 'ATK', 'DEF', 'HP', 'PWR')
- * from a potentially decorated cell label ('ATK [H]' -> 'ATK').
- */
-export function parseGemBaseLabel(renderedLabel?: string | null): string {
-  if (!renderedLabel) {
-    return '';
-  }
-  return renderedLabel.split(' ')[0] ?? renderedLabel;
-}
-
-/**
- * Extracts the special gem badge (e.g. '[H]', '[V]', '[BURST]', '[AREA]')
- * from a cell label, or null if it is an ordinary gem.
- */
-export function parseSpecialGemBadge(renderedLabel?: string | null): string | null {
-  if (!renderedLabel) {
-    return null;
-  }
-  const parts = renderedLabel.split(' ');
-  return parts.length > 1 ? (parts.slice(1).join(' ') || null) : null;
-}
-
-// ---------------------------------------------------------------------------
-// Special-cell activation presentation & the per-turn activation summary
-// (MATCH3_RULES.md §5.5.5, SIGNALR_PROTOCOL.md §3.2.9/§3.2.10)
-// ---------------------------------------------------------------------------
-
-/**
- * One **delivered activation occurrence**: the cell whose Special Gem activated,
- * the Gem type that cell carried, and the Special Gem that was consumed there.
- *
- * Every member is a delivered one. The occurrence exists because
- * `SIGNALR_PROTOCOL.md` §3.2.9 item 3 states that a `GemMatched`'s `specialGem`
- * is present exactly when the cleared cell held a Special Gem — and
- * `MATCH3_RULES.md` §5.5.5 item 1 states that a Special Gem's effect activates
- * when that Special Gem is **consumed**. One consumed Special Gem is one
- * activation, and one activation is one `GemMatched` carrying its
- * `specialGem`; that is the whole definition, and the client derives nothing
- * beyond it.
- */
-export interface SpecialActivationOccurrence {
-  /** The §1.0 cell the Special Gem activated from (`GemMatched.cellIndex`). */
-  readonly cellIndex: number;
-  /** That cell's Gem type (`GemMatched.gemType`) — one of the four §1.1 types. */
-  readonly gemType: string;
-  /** The Special Gem consumed there (`GemMatched.specialGem`, §3.2.10). */
-  readonly specialGem: {
-    readonly type: string;
-    readonly orientation?: string;
-  };
-}
-
-/**
- * Every delivered activation occurrence in one **detection pass**, in delivered
- * order, with at most one entry per cell.
- *
- * ```text
- * GemMatched with a `specialGem`   one activation (§3.2.9 item 3, §5.5.5 item 1)
- * one occurrence per cell          §5.8.2 item 3: a Special Gem activates at most
- *                                  once per step, so a second identical report in
- *                                  one pass is the same occurrence reported twice
- *                                  and raises no second visual
- * ```
- *
- * It reads the delivered items and nothing else: no board is inspected, no
- * activation is inferred from a Gem type, a match, a damage number, or an
- * animation, and no count is invented (`AGENTS.md` §10). The caller supplies one
- * pass's events; a chain's activations are all in the pass that resolved them
- * (`MATCH3_RULES.md` §5.5.5 item 7), so the whole chain is one pass's list.
- */
-export function specialActivationOccurrences(
-  events: readonly InBattleServerEvent[]
-): readonly SpecialActivationOccurrence[] {
-  const occurrences: SpecialActivationOccurrence[] = [];
-  const seenCells = new Set<number>();
-
-  for (const event of events) {
-    if (event.type !== 'GemMatched' || !event.specialGem) {
-      continue;
-    }
-
-    if (seenCells.has(event.cellIndex)) {
-      continue;
-    }
-
-    seenCells.add(event.cellIndex);
-    occurrences.push({
-      cellIndex: event.cellIndex,
-      gemType: event.gemType,
-      specialGem: event.specialGem,
-    });
-  }
-
-  return occurrences;
-}
-
-/**
- * The per-turn activation tally, aggregated by the **cell type** (`gemType`) of
- * the cell each activation was reported at, in the §1.1 order `ATK DEF HP
- * POWER`, with only the types that occurred.
- *
- * **One activation is one consumed Special Gem** — one `GemMatched` carrying a
- * `specialGem` (`SIGNALR_PROTOCOL.md` §3.2.9 item 3, `MATCH3_RULES.md` §5.5.5
- * item 1). It is not a damage target, an animation frame, a matched cell, or a
- * cell an activation cleared: a `GemMatched` without a `specialGem` is an
- * ordinary consumed Gem and counts nothing (`GAME_EVENTS.md` §2 items 1–2), and
- * an activation that cleared nine cells is one activation, not nine
- * (`MATCH3_RULES.md` §5.5.5 item 6 computes the report once per cleared cell,
- * but only the activated cell's own report carries the `specialGem`).
- *
- * **Scope is the caller's turn.** A Turn is one committed Round
- * (`GAME_RULES.md` §2, `ADR-026` §2) and one Round is one `ReceiveEvents` batch
- * (`SIGNALR_PROTOCOL.md` §3.1), so the caller passes that batch's activation
- * events and gets that turn's tally: nothing is carried across turns, and no
- * accumulator exists to reset.
- *
- * **Identity is the delivered pass, not the cell.** The same cell can activate
- * twice in one turn — in two different detection passes, after Gravity and
- * Spawn produced a new Special Gem there — and both are counted, because each is
- * its own occurrence. Within one pass the cell is counted once, because
- * §5.8.2 item 3 fixes at most one activation per Special Gem per step; a
- * duplicated item in one pass therefore cannot inflate the tally, and a
- * replayed batch never reaches this function twice (the scene accepts one
- * presentation per delivered resolution).
- */
-export function summarizeSpecialActivations(
-  events: readonly InBattleServerEvent[]
-): ReadonlyArray<{ readonly gemType: string; readonly count: number }> {
-  const counts = new Map<string, number>();
-
-  // The pass the walk is currently in, advanced by the one delivered item that
-  // closes a pass (`CascadeStepResolved`, §3.2.28 item 5). It groups delivered
-  // items; it derives no gameplay value and reorders nothing.
-  let pass = 1;
-  const seen = new Set<string>();
-
-  for (const event of events) {
-    if (event.type === 'CascadeStepResolved') {
-      pass += 1;
-      continue;
-    }
-
-    if (event.type !== 'GemMatched' || !event.specialGem) {
-      continue;
-    }
-
-    const identity = `${pass}|${event.cellIndex}`;
-    if (seen.has(identity)) {
-      continue;
-    }
-
-    seen.add(identity);
-    counts.set(event.gemType, (counts.get(event.gemType) ?? 0) + 1);
-  }
-
-  return CONTRACT_GEM_TYPES.filter((gemType) => (counts.get(gemType) ?? 0) > 0).map((gemType) => ({
-    gemType,
-    count: counts.get(gemType) ?? 0,
-  }));
-}
-
-/**
- * The player-facing line for one turn's tally, e.g. `ATK ×11 · HP ×10`.
- *
- * Only the types that occurred appear, in the §1.1 order, and an empty tally
- * formats to the empty string — the scene presents no summary line for a turn
- * with no activation rather than a zero row
- * (`TASK-275` §6.6's "present nothing for nothing").
- */
-export function formatSpecialActivationSummary(
-  counts: ReadonlyArray<{ readonly gemType: string; readonly count: number }>
-): string {
-  return counts
-    .filter((entry) => entry.count > 0)
-    .map((entry) => `${entry.gemType} ×${entry.count}`)
-    .join(' · ');
-}
-

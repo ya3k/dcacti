@@ -24,11 +24,6 @@ import {
   formatSwapRejection,
   CARD_CAST_REJECTION_MESSAGES,
   formatCardCastRejection,
-  SPECIAL_GEM_PRESENTATIONS,
-  resolveSpecialGemPresentation,
-  formatGemCellLabel,
-  parseGemBaseLabel,
-  parseSpecialGemBadge,
   CALLOUT_BOSS_COLOR,
   INTERACTION_BOSS_ATTACK,
   INTERACTION_RESOLVING,
@@ -533,7 +528,6 @@ describe('TASK-088 — BattleEventPresenter parser & formatter', () => {
       cells: [7, 15, 23, 24],
       gemType: 'POWER',
       cascadeDepth: 4,
-      createdSpecialGems: [{ cellIndex: 23, specialGem: { type: 'Burst' } }],
     };
 
     const parsed = parseInBattleEvent(raw);
@@ -544,7 +538,33 @@ describe('TASK-088 — BattleEventPresenter parser & formatter', () => {
     expect(formatted).toContain('POWER');
     expect(formatted).toContain('7, 15, 23, 24');
     expect(formatted).toContain('depth: 4');
-    expect(formatted).toContain('Burst@23');
+    expect(formatted).toBe('Match: Lt POWER [7, 15, 23, 24] depth: 4');
+  });
+
+  it('parses a MatchCreated carrying a retired per-cell member as the ordinary shape', () => {
+    // SIGNALR_PROTOCOL.md §3.2.6 item 6 / §3.2.11 / ADR-028: `createdSpecialGems`
+    // is retired from the wire, so a Match event neither requires it nor projects
+    // it. A tolerant reader accepts the delivered ordinary members and ignores the
+    // retired one — a match resolves and is presented as the confirmed match it
+    // is, with no creation presentation derived from it.
+    const parsed = parseInBattleEvent({
+      type: 'MatchCreated',
+      shape: 'Straight',
+      cells: [7, 15, 23, 31],
+      gemType: 'ATK',
+      cascadeDepth: 1,
+      retiredCreationMember: [{ cellIndex: 15 }],
+    });
+
+    expect(parsed).toEqual({
+      type: 'MatchCreated',
+      shape: 'Straight',
+      cells: [7, 15, 23, 31],
+      gemType: 'ATK',
+      cascadeDepth: 1,
+    });
+    expect(Object.keys(parsed!)).toEqual(['type', 'shape', 'cells', 'gemType', 'cascadeDepth']);
+    expect(formatInBattleEvent(parsed!)).toBe('Match: Straight ATK [7, 15, 23, 31] depth: 1');
   });
 
   it('parses and formats CascadeCreated with verbatim cascadeDepth', () => {
@@ -569,7 +589,7 @@ describe('TASK-088 — BattleEventPresenter parser & formatter', () => {
     expect(formatInBattleEvent(parsed!)).toBe('Combo: 19');
   });
 
-  it('parses and formats GemMatched without specialGem', () => {
+  it('parses and formats GemMatched with its two delivered members', () => {
     const raw: PresentedGemMatched = {
       type: 'GemMatched',
       cellIndex: 42,
@@ -581,20 +601,21 @@ describe('TASK-088 — BattleEventPresenter parser & formatter', () => {
     expect(formatInBattleEvent(parsed!)).toBe('GemMatched: cell 42 (DEF)');
   });
 
-  it('parses and formats GemMatched with LineClear specialGem and orientation', () => {
-    const raw: PresentedGemMatched = {
+  it('parses a GemMatched carrying a retired per-cell member as the ordinary shape', () => {
+    // SIGNALR_PROTOCOL.md §3.2.9 item 3 / §3.2.10 / ADR-028: `specialGem` is
+    // retired from the wire, so an ordinary matched-cell report is the whole
+    // event. A tolerant reader ignores the retired member and the presenter
+    // therefore raises no activation/consumption presentation for it.
+    const parsed = parseInBattleEvent({
       type: 'GemMatched',
       cellIndex: 19,
       gemType: 'ATK',
-      specialGem: {
-        type: 'LineClear',
-        orientation: 'Vertical',
-      },
-    };
+      retiredCellMember: { type: 'Retired' },
+    });
 
-    const parsed = parseInBattleEvent(raw);
-    expect(parsed).toEqual(raw);
-    expect(formatInBattleEvent(parsed!)).toBe('GemMatched: cell 19 (ATK) [Special: LineClear Vertical]');
+    expect(parsed).toEqual({ type: 'GemMatched', cellIndex: 19, gemType: 'ATK' });
+    expect(Object.keys(parsed!)).toEqual(['type', 'cellIndex', 'gemType']);
+    expect(formatInBattleEvent(parsed!)).toBe('GemMatched: cell 19 (ATK)');
   });
 
   it('parses and formats DamageCalculated with all 6 pipeline members verbatim', () => {
@@ -945,7 +966,7 @@ describe('TASK-245 — the SignalR wire contract is unchanged (PD-3, PD-4)', () 
       'BoardUpdated',
       'BoardCreated',
       'CascadeUpdated',
-      'SpecialGemActivated',
+      'GemActivated',
       'StatusEffectUpdated',
       'BossHpChanged',
     ]) {
@@ -1858,28 +1879,17 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
         cells: [7, 15, 23, 24],
         gemType: 'POWER',
         cascadeDepth: 4,
-        createdSpecialGems: [{ cellIndex: 23, specialGem: { type: 'Burst' } }],
       },
-      expectedTokens: ['Lt', 'POWER', '7, 15, 23, 24', 'depth: 4', 'Burst@23'],
+      expectedTokens: ['Lt', 'POWER', '7, 15, 23, 24', 'depth: 4'],
     },
     {
-      name: 'GemMatched without specialGem',
+      name: 'GemMatched',
       event: {
         type: 'GemMatched',
         cellIndex: 42,
         gemType: 'DEF',
       },
       expectedTokens: ['cell 42', 'DEF'],
-    },
-    {
-      name: 'GemMatched with specialGem',
-      event: {
-        type: 'GemMatched',
-        cellIndex: 19,
-        gemType: 'ATK',
-        specialGem: { type: 'LineClear', orientation: 'Vertical' },
-      },
-      expectedTokens: ['cell 19', 'ATK', 'LineClear', 'Vertical'],
     },
     {
       name: 'CascadeCreated',
@@ -2664,77 +2674,6 @@ describe('TASK-218B — the Relic trigger callout reaches the player (SIGNALR_PR
       expect(isBossEnraged('boss-hoa-long', 0, 5000, true)).toBe(true); // defeated
       expect(isBossEnraged('boss-thuy-ma', 0, 5000, true)).toBe(true);
       expect(isBossEnraged('boss-kim-loi-vuong', 2800, 2800, true)).toBe(true);
-    });
-
-    it('resolves visual presentations for all four authoritative specialGem variants', () => {
-      // LineClear Horizontal
-      const lcH = resolveSpecialGemPresentation({ type: 'LineClear', orientation: 'Horizontal' });
-      expect(lcH).toEqual(SPECIAL_GEM_PRESENTATIONS.LineClearHorizontal);
-      expect(lcH?.badge).toBe('[H]');
-      expect(lcH?.strokeWidth).toBe(3);
-      expect(lcH?.strokeColor).toBe(0x38bdf8);
-
-      // LineClear Vertical
-      const lcV = resolveSpecialGemPresentation({ type: 'LineClear', orientation: 'Vertical' });
-      expect(lcV).toEqual(SPECIAL_GEM_PRESENTATIONS.LineClearVertical);
-      expect(lcV?.badge).toBe('[V]');
-      expect(lcV?.strokeWidth).toBe(3);
-      expect(lcV?.strokeColor).toBe(0x38bdf8);
-
-      // LineClear default (orientation missing/omitted) falls back safely to Horizontal
-      const lcDef = resolveSpecialGemPresentation({ type: 'LineClear' });
-      expect(lcDef).toEqual(SPECIAL_GEM_PRESENTATIONS.LineClearHorizontal);
-
-      // Burst (3x3 area)
-      const burst = resolveSpecialGemPresentation({ type: 'Burst' });
-      expect(burst).toEqual(SPECIAL_GEM_PRESENTATIONS.Burst);
-      expect(burst?.badge).toBe('[BURST]');
-      expect(burst?.strokeWidth).toBe(3);
-      expect(burst?.strokeColor).toBe(0xfacc15);
-
-      // Area (cross/plus)
-      const area = resolveSpecialGemPresentation({ type: 'Area' });
-      expect(area).toEqual(SPECIAL_GEM_PRESENTATIONS.Area);
-      expect(area?.badge).toBe('[AREA]');
-      expect(area?.strokeWidth).toBe(3);
-      expect(area?.strokeColor).toBe(0xf472b6);
-
-      // Ordinary gems & unrecognized
-      expect(resolveSpecialGemPresentation(null)).toBeNull();
-      expect(resolveSpecialGemPresentation(undefined)).toBeNull();
-      expect(resolveSpecialGemPresentation({ type: 'Unknown' })).toBeNull();
-    });
-
-    it('formats cell labels preserving base types and parsing badges', () => {
-      // Normal gems: unchanged
-      expect(formatGemCellLabel('ATK', null)).toBe('ATK');
-      expect(formatGemCellLabel('DEF', undefined)).toBe('DEF');
-      expect(formatGemCellLabel('HP')).toBe('HP');
-      expect(formatGemCellLabel('PWR', null)).toBe('PWR');
-
-      // Special gem variants
-      expect(formatGemCellLabel('ATK', { type: 'LineClear', orientation: 'Horizontal' })).toBe('ATK [H]');
-      expect(formatGemCellLabel('DEF', { type: 'LineClear', orientation: 'Vertical' })).toBe('DEF [V]');
-      expect(formatGemCellLabel('HP', { type: 'Burst' })).toBe('HP [BURST]');
-      expect(formatGemCellLabel('PWR', { type: 'Area' })).toBe('PWR [AREA]');
-
-      // Base label parsing
-      expect(parseGemBaseLabel('ATK')).toBe('ATK');
-      expect(parseGemBaseLabel('ATK [H]')).toBe('ATK');
-      expect(parseGemBaseLabel('DEF [V]')).toBe('DEF');
-      expect(parseGemBaseLabel('HP [BURST]')).toBe('HP');
-      expect(parseGemBaseLabel('PWR [AREA]')).toBe('PWR');
-      expect(parseGemBaseLabel('')).toBe('');
-      expect(parseGemBaseLabel(null)).toBe('');
-
-      // Badge parsing
-      expect(parseSpecialGemBadge('ATK')).toBeNull();
-      expect(parseSpecialGemBadge('ATK [H]')).toBe('[H]');
-      expect(parseSpecialGemBadge('DEF [V]')).toBe('[V]');
-      expect(parseSpecialGemBadge('HP [BURST]')).toBe('[BURST]');
-      expect(parseSpecialGemBadge('PWR [AREA]')).toBe('[AREA]');
-      expect(parseSpecialGemBadge('')).toBeNull();
-      expect(parseSpecialGemBadge(null)).toBeNull();
     });
   });
 });
