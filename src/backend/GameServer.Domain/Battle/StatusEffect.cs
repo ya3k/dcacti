@@ -5,7 +5,8 @@ namespace GameServer.Domain.Battle;
 ///
 /// <code>
 /// StatusEffect
-/// ├── Id               identity ("Burn" | "Root" | "Shield" | "Stun")   item 1
+/// ├── Id               identity ("Burn" | "Root" | "Shield" | "Stun" |
+/// │                       "DefenseBuff")                                 item 1
 /// ├── Type             "DoT" | "BuffDebuff" | "Shield" | "State"        item 3
 /// ├── Source           "player" | "boss"                                item 7
 /// ├── Magnitude        the applied value; NOT interpreted here          item 2

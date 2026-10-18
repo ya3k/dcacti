@@ -175,6 +175,10 @@ public static class AttackResolution
             return AttackResolutionResult.NonQualifying(bossState.HP, defenderShieldPool, rngState);
         }
 
+        // COMBAT_RULES.md §3.2 / §5.5.6: step 5's mitigation input is the Boss's
+        // EFFECTIVE DEF — the stored base plus every active TargetStat = "DEF"
+        // BuffDebuff contribution (TASK-299). The stored stat is read, never
+        // written.
         var attackInputs = new DamagePipeline.DamageInputs(
             Attack: StatusEffectLifecycle.EffectiveAttack(
                 petState.ATK,
@@ -184,7 +188,9 @@ public static class AttackResolution
             Combo: combo,
             AttackerElement: petState.Element,
             DefenderElement: bossState.Element,
-            DefenderDefense: bossState.DEF,
+            DefenderDefense: StatusEffectLifecycle.EffectiveBossDefense(
+                bossState.DEF,
+                bossState.ActiveStatusEffects),
             DefenderHp: bossState.HP,
             Source: DamageParty.Player,
             Target: DamageParty.Boss,
@@ -235,6 +241,11 @@ public static class AttackResolution
             return AttackResolutionResult.NonQualifying(petState.HP, defenderShieldPool, rngState);
         }
 
+        // COMBAT_RULES.md §3.2 / §5.4.6: step 5's mitigation input is the Pet's
+        // EFFECTIVE DEF — the stored base plus every active TargetStat = "DEF"
+        // BuffDebuff contribution (TASK-299). The Player's DEF-Gem buff is applied
+        // at the same Round's step 12/14, before this Boss attack, and is what
+        // makes it "one-turn defense".
         var attackInputs = new DamagePipeline.DamageInputs(
             Attack: StatusEffectLifecycle.EffectiveBossAttack(
                 bossState.ATK,
@@ -243,7 +254,9 @@ public static class AttackResolution
             Combo: combo,
             AttackerElement: bossState.Element,
             DefenderElement: petState.Element,
-            DefenderDefense: petState.DEF,
+            DefenderDefense: StatusEffectLifecycle.EffectivePetDefense(
+                petState.DEF,
+                petState.ActiveStatusEffects),
             DefenderHp: petState.HP,
             Source: DamageParty.Boss,
             Target: DamageParty.Player,

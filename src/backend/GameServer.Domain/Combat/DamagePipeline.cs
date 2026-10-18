@@ -47,7 +47,10 @@ namespace GameServer.Domain.Combat;
 /// the <i>defending target's</i> DEF, not the attacker's generated pool, and no
 /// documented rule places the DEF pool in this pipeline. <c>PetState.DEF</c>
 /// is likewise not read directly — a caller supplying it does so as the
-/// defender's DEF, which is what §3.2 asks for.
+/// defender's DEF, which is what §3.2 asks for. The value the caller supplies is
+/// the defender's <b>effective</b> DEF (<c>COMBAT_RULES.md</c> §5.4.6 for the Pet,
+/// §5.5.6 for the Boss — the stored base plus any active DEF-Gem buff), composed
+/// by the caller; this type reads no Status Effect collection and no stat itself.
 ///
 /// <b>One damage instance per committed Swap, in each direction.</b>
 /// <c>GAME_RULES.md</c> §17 places steps 15–17 once (Player→Boss) and step 18b/18c

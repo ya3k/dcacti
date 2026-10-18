@@ -1,6 +1,6 @@
 # Combat Rules
 
-**Version:** 2.9 (§2 match-tier multiplier table, tier-scope paragraph, and items 1–4 retired per TASK-287 under operator decisions OD-1–OD-7; §2 preamble, §3, and §3.4 attack-gating predicates reconciled from `ClearedGemCounts.Atk > 0` to confirmed valid ATK-gem matches; §2 item 6 preserved per TASK-286. **Interim join notice retained:** This document is shared with TASK-286 and finalized under the joint group commit protocol (`TASK_LIFECYCLE.md` §6.1 item 5); neither slice may be committed alone. Prior 2.8: (§2 item 6 **REWRITTEN** per TASK-286 under the final operator decisions OD-1–OD-7: Special Gems are removed entirely from gameplay — no creation, activation, chain activation, or area-of-effect clearing — and **all match-tier resource multipliers are removed**; base resource contribution is the number of uniquely matched gems per GemType multiplied by the approved BaseOutput, accumulated per cascade pass with every unique cell counted once; attack qualification is a confirmed valid ATK-gem match on the acting actor's own resolution and is explicitly independent of cleared-gem reporting; actor ownership, Combo / Element / Crit / ATK modifiers, Shield, Heal clamp, and Power/SkillCharge bounds are preserved unchanged. **This item's slice alone does not make §2 self-consistent:** the match-tier table, its items 1–4, and the `ClearedGemCounts.Atk > 0` gate wording in the §2 preamble are retired by TASK-287 in the **same join group commit** (`TASK_LIFECYCLE.md` §6.1 item 5); neither slice may be committed alone. Prior 2.7: §2 item 6 updated per TASK-286: Special Gem Combat Contribution Contract reconciled with operator-confirmed match-based gameplay model (D1–D4) and Decision A calculation order; obsolete detonation-only clear mechanics and former Gate A decision A2 retired; attack execution requires a confirmed valid ATK-gem match (D2, aligned with ADR-026 D1); Special Gems contribute as ordinary matchable gems with creation-associated contribution value (e.g., Match-4 Special Gem contributes ×2, D3); match size distinguished from per-gem contribution value, match tier multiplier, and final resource total (D4); resource calculation order formalized per Decision A (per-gem calculation first, then sum results: contribution_i = trunc(contributionValue_i × baseOutput × matchTierMultiplier), totalContribution = Σ contribution_i); former Gate B detonation-overlap scenario retired; actor ownership per ADR-026 D4; creation independence preserved. Prior 2.6: §2, §3, §3.4, §4 updated per ADR-026 / TASK-259: ATK-gem match gating on damage (D1); DEF gem matches generate temporary Shield for acting actor; HP gem matches heal acting actor; Boss POWER gem matches generate Boss SkillCharge (D2); Boss basic attack fallback retired; Boss skills deal zero direct damage (D3); Heal resolution expanded to Boss HP. Prior 2.5: §3.3 item 8 and §5.2 item 4 extended per **TASK-178** — the
+**Version:** 3.0 (§2's DEF-Gem row and actor-relative DEF bullet, §3.2's `DEF` input, §4 item 3's Shield-source clause, §4 item 1's dead-target-heal prohibition, §5.1's MVP Status Effect list, and new §5.4.6/§5.5.6 updated per **TASK-299** under the operator's approved gameplay decision: a confirmed **DEF-Gem match now grants a temporary `TargetStat = "DEF"` stat buff that raises the acting actor's effective DEF through the opponent's next attack** and expires at the §5.3 Turn boundary — the DEF-Gem-to-Shield conversion is **retired** and DEF Gems create no Shield; HP, POWER, and ATK behavior, the DEF Gem's +5 per-Gem base output, and every card/relic/Boss Shield are unchanged. Prior 2.9: §2 match-tier multiplier table, tier-scope paragraph, and items 1–4 retired per TASK-287 under operator decisions OD-1–OD-7; §2 preamble, §3, and §3.4 attack-gating predicates reconciled from `ClearedGemCounts.Atk > 0` to confirmed valid ATK-gem matches; §2 item 6 preserved per TASK-286. **Interim join notice retained:** This document is shared with TASK-286 and finalized under the joint group commit protocol (`TASK_LIFECYCLE.md` §6.1 item 5); neither slice may be committed alone. Prior 2.8: (§2 item 6 **REWRITTEN** per TASK-286 under the final operator decisions OD-1–OD-7: Special Gems are removed entirely from gameplay — no creation, activation, chain activation, or area-of-effect clearing — and **all match-tier resource multipliers are removed**; base resource contribution is the number of uniquely matched gems per GemType multiplied by the approved BaseOutput, accumulated per cascade pass with every unique cell counted once; attack qualification is a confirmed valid ATK-gem match on the acting actor's own resolution and is explicitly independent of cleared-gem reporting; actor ownership, Combo / Element / Crit / ATK modifiers, Shield, Heal clamp, and Power/SkillCharge bounds are preserved unchanged. **This item's slice alone does not make §2 self-consistent:** the match-tier table, its items 1–4, and the `ClearedGemCounts.Atk > 0` gate wording in the §2 preamble are retired by TASK-287 in the **same join group commit** (`TASK_LIFECYCLE.md` §6.1 item 5); neither slice may be committed alone. Prior 2.7: §2 item 6 updated per TASK-286: Special Gem Combat Contribution Contract reconciled with operator-confirmed match-based gameplay model (D1–D4) and Decision A calculation order; obsolete detonation-only clear mechanics and former Gate A decision A2 retired; attack execution requires a confirmed valid ATK-gem match (D2, aligned with ADR-026 D1); Special Gems contribute as ordinary matchable gems with creation-associated contribution value (e.g., Match-4 Special Gem contributes ×2, D3); match size distinguished from per-gem contribution value, match tier multiplier, and final resource total (D4); resource calculation order formalized per Decision A (per-gem calculation first, then sum results: contribution_i = trunc(contributionValue_i × baseOutput × matchTierMultiplier), totalContribution = Σ contribution_i); former Gate B detonation-overlap scenario retired; actor ownership per ADR-026 D4; creation independence preserved. Prior 2.6: §2, §3, §3.4, §4 updated per ADR-026 / TASK-259: ATK-gem match gating on damage (D1); DEF gem matches generate temporary Shield for acting actor; HP gem matches heal acting actor; Boss POWER gem matches generate Boss SkillCharge (D2); Boss basic attack fallback retired; Boss skills deal zero direct damage (D3); Heal resolution expanded to Boss HP. Prior 2.5: §3.3 item 8 and §5.2 item 4 extended per **TASK-178** — the
 canonicalization of the Product Owner-approved runtime decisions **Q-1 = A** and
 **Q-4 = C**. §3.3 item 8, which is the canonical owner of the `NextAttack`
 lifetime and the qualifying-attack consumption boundary, now states explicitly
@@ -275,7 +275,7 @@ Baseline generation per consumed Gem (MVP defaults, all configuration):
 Gem Type   Base Output (per uniquely matched Gem)   Actor-Relative Output (ADR-026)
 --------   --------------------------------------   -------------------------------------------------
 ATK Gem    +10 Base Damage                          BaseDamagePool for acting actor (ATK-match gated)
-DEF Gem    +5 Defense pool                          Temporary Shield for acting actor (§4)
+DEF Gem    +5 DEF buff                               Temporary DEF increase for acting actor, active through the opponent's next attack (§5.4.6, §5.5.6)
 HP Gem     +20 Heal pool                            Heal pool for acting actor (clamped to MaxHP, §4)
 POWER Gem  +10 Power / SkillCharge                  Player: +Power for Pet; Boss: +SkillCharge for Boss (D2)
 ```
@@ -283,7 +283,7 @@ POWER Gem  +10 Power / SkillCharge                  Player: +Power for Pet; Boss
 **Actor-relative resource handling (ADR-026):**
 The type of cells matched determines the effect; the acting side determines ownership and target:
 - **ATK Gems:** Generates `BaseDamagePool`. Attack damage may be calculated and applied if and only if the acting side's own resolution contains at least one confirmed valid ATK-gem match (OD-6, ADR-026 D1). Cleared-gem accounting is reporting-only and is never the eligibility predicate. If no valid ATK-gem match is confirmed, no attack occurs, the Damage Pipeline does not execute, and zero damage is dealt.
-- **DEF Gems:** Generates temporary Shield for the acting actor (`PetState.ActiveStatusEffects` for Player; `BossState.ActiveStatusEffects` for Boss) using `StatusEffectType.Shield` (§4).
+- **DEF Gems:** Grants the acting actor a temporary **`TargetStat = "DEF"` stat buff** (`PetState.ActiveStatusEffects` for Player; `BossState.ActiveStatusEffects` for Boss), increasing that actor's **effective DEF** — the value §3.2's mitigation step reads — through the opponent's next attack and expiring at the §5.3 Turn boundary (§5.4.6 for the Pet, §5.5.6 for the Boss). The instance is a `BuffDebuff`, **not** a `Shield`: it creates no absorption pool and absorbs no damage. **DEF Gems no longer create Shield effects** (TASK-299); a Shield still comes only from the effects that §4 items 2–5 own.
 - **HP Gems:** Generates Heal pool restoring HP to the acting actor (Pet HP for Player; Boss HP for Boss), passing through Heal Resolution (§4 item 7) and clamped to MaxHP (§4 item 1).
 - **POWER Gems:** Generates Power for the active Pet (range 0–100) during the Player turn, or increments `BossState.SkillCharge` during the Boss turn (D2). Player POWER matches never charge the Boss. Whether `SkillCharge` is measured in match counts (+1 per match) or gem energy units (+10 per gem) and whether it clamps at `ChargeRequirement` remain balance tuning parameters.
 
@@ -404,6 +404,19 @@ incoming damage. MVP default: `K = 100` (configuration).
 player→Boss damage, the active Pet's `DEF` (in `PetState`) for
 Boss→player damage — the defender is always the active Pet, never a
 separate Player entity (`ELEMENT_RULES.md` §5).
+
+**The mitigation step reads the defender's *effective* DEF, and the stored stat
+is the base.** When the defender holds one or more active `TargetStat = "DEF"`
+`BuffDebuff` instances, the `DEF` this step prices is the composed effective
+value — the stored base stat plus every applicable instance's contribution —
+and the stored `DEF` itself is never written. The composition is owned by
+**§5.4.6** for the Pet and **§5.5.6** for the Boss and is referenced, not
+restated, here. With no active `DEF` modifier the effective value equals the
+stored stat, so this paragraph changes nothing for a battle without one. Every
+damage instance against a buffed defender reads the same value — the Boss Attack
+(§3.4), a Card's Damage effect, and a damage-over-time tick (§5.2 item 3) — and
+the reported `defense` member of `DamageCalculated` remains the pipeline's own
+post-mitigation value (§3 step 5), not the stat.
 
 ## 3.3 Critical Hits
 
@@ -704,6 +717,14 @@ Turn countdown (§5.3.2).
 
 1. Heal effects restore HP up to Max HP; overheal is discarded unless a Relic
    explicitly grants overheal/temp-HP.
+   **A healing source never restores a target whose HP is already 0 or lower.**
+   `GAME_RULES.md` §1.4 makes 0 HP terminal — the battle ends when either the
+   Boss or the active Pet reaches 0 HP — so a dead Pet or a dead Boss is no
+   longer a valid healing target: ordinary healing applies to a living target
+   only, and a heal resolved against a dead one leaves its HP unchanged. This is
+   a guard on the Heal Resolution step (item 7), not a second revival mechanic;
+   no MVP card, Relic, Passive, Boss Skill, or Gem may revive a dead entity, and
+   none authors an exception.
 2. Shield effects grant an absorption pool that reduces incoming damage before
    HP is affected. The pool is consumed **before HP** on any Final Damage
    applied to that target; because at most one Shield is active per entity
@@ -717,12 +738,15 @@ Turn countdown (§5.3.2).
    created: **at most one Shield is active per entity**, identified by the
    Status Effect identity `"Shield"` (`GAME_STATE.md` §2.3.1 item 1, item 6) —
    so two different Shield sources (e.g. the Shield Basic Card and a
-   Shield-granting Passive or DEF-gem match) applying to the same entity refresh one another
+   Shield-granting Passive) applying to the same entity refresh one another
    rather than forming a second pool. Under the shared-board contract (ADR-026),
-   Shield applies to the acting actor: Player DEF matches grant Shield to the Pet,
-   while Boss DEF matches and Boss skills (such as Sơn Thạch Vệ Earthquake, D6)
-   grant Shield to the Boss (`BossState.ActiveStatusEffects`), using this identical
-   trigger-based absorption and refresh mechanism. This is `§5.2 item 2`'s refresh default
+   Shield applies to the acting actor: a Player-granted Shield (e.g. a Shield
+   Card) applies to the Pet, while Boss skills (such as Sơn Thạch Vệ Earthquake,
+   D6) grant Shield to the Boss (`BossState.ActiveStatusEffects`), using this identical
+   trigger-based absorption and refresh mechanism. **DEF Gems grant no Shield**
+   (TASK-299): a DEF-Gem match grants the temporary DEF stat buff §2 and
+   §5.4.6/§5.5.6 own, and it neither creates nor refreshes a Shield instance, so
+   the two mechanisms never substitute for each other. This is `§5.2 item 2`'s refresh default
    applied to Shield, and the refresh is the same "set, not an increment"
    operation `GAME_STATE.md` §5.1.1 item 1 defines for every Status Effect. The
    carve-out is preserved: a **Relic** may explicitly specify otherwise. **No
@@ -825,6 +849,13 @@ Turn countdown (§5.3.2).
      directly up to `BossState.MaxHP`, applying item 1's clamp (overheal discarded),
      without modifying MaxHP or Shield. This does not alter the Pet-scoped modifier
      resolution above.
+   - **A dead target is not healed.** Item 1's terminal-HP prohibition precedes
+     the clamp: when the target's HP is already `0` or lower the Final Heal
+     Amount is not applied at all and the stored HP stays exactly where it is.
+     This performs no arithmetic and authors no revival path — a dead Pet or a
+     dead Boss has no HP-restoring route back into the battle
+     (`GAME_RULES.md` §1.4). It applies on both targets this step covers (Pet
+     HP, and Boss HP for the Boss's own HP-Gem pool).
    - **It does not modify MaxHP, and it does not affect Shield.** A Heal
      modifier changes the Heal amount only; MaxHP is untouched (§1.2) and
      Shield keeps its own §4 rules (items 2–5).
@@ -851,6 +882,11 @@ Shield    absorption pool, see §4; refresh-not-stack, removed at 0
 Buff/Debuff  temporary stat modification (ATK/DEF/Crit/etc.), with duration
           measured in Turns unless stated otherwise; how a `Magnitude`
           reaches the stat its `TargetStat` names is owned by §5.4
+DefenseBuff  the DEF-Gem-granted `BuffDebuff` with `TargetStat = "DEF"`
+          (TASK-299): a temporary effective-DEF increase for the acting actor,
+          Turn-based, refresh-not-stack; its composition, application, and its
+          Turn boundary are owned by §5.4.6 (Pet) / §5.5.6 (Boss). It is a
+          Buff/Debuff instance and NOT a Shield — see §4 item 3
 ```
 
 ## 5.2 Status Rules
@@ -1209,10 +1245,16 @@ Does NOT        change §3.1's six-step order, §3.4's Boss-side value, or
 A `BuffDebuff` whose `TargetStat` names a stat for which this document defines
 no consumption rule is **not** silently treated as an ATK modifier: this
 section defines the `"ATK"` case only, and any other stat would require its own
-recorded decision before it could be implemented.
+recorded decision before it could be implemented. **`"DEF"` is the one other
+`TargetStat` this document now defines** — §5.4.6 here and its Boss-side
+counterpart §5.5.6, authored by TASK-299 — and it is a separate rule: a `DEF`
+instance modifies no ATK and an `ATK` instance modifies no DEF.
 
-This section defines the `"ATK"` case only because that is the only
-`TargetStat`-consumed case in MVP content. Thủy Ma's healing reduction
+This section defines the `"ATK"` case only because, before TASK-299, that was
+the only `TargetStat`-consumed case in MVP content. TASK-299 authors the `"DEF"`
+case in §5.4.6/§5.5.6 for the DEF-Gem buff; those two sections are the only
+other `TargetStat` cases and neither widens this section.
+Thủy Ma's healing reduction
 (`BOSS_RULES.md` §6.2.2) is held in the Boss's `StatusEffects[]` and read by
 the Pet-side Heal Resolution step's authorized cross-entity read (§4 item 7),
 which selects the instance by its Status Effect `Id`, not by `TargetStat`. It
@@ -1225,6 +1267,161 @@ This section adds no Battle Event (`GAME_RULES.md` §16), no Status Effect
 database column. The Step-1 value it produces already reaches the client as
 `DamageCalculated.base` (`SIGNALR_PROTOCOL.md` §3.2.13) — a value change, not
 a member-set change.
+
+### 5.4.6 `TargetStat = "DEF"` — the DEF Modifier Rule (Pet Side; the DEF-Gem Buff)
+
+This subsection is the **canonical owner** of how a Turn-based `BuffDebuff`
+Status Effect instance whose `TargetStat` is `"DEF"` reaches the **effective
+DEF** the mitigation step reads, of that buff's application by a DEF-Gem match,
+of its stacking/refresh behavior, and of its Turn boundary. It is authored by
+TASK-299 under the operator's approved gameplay decision: **a confirmed DEF-Gem
+match grants a temporary DEF stat buff, not a Shield pool.** The Boss-side
+composition is §5.5.6; the application, stacking, and window statements below
+are shared by both actors and are not restated there. This subsection does not
+restate `§5.3`'s duration mechanics, `§5.2`'s stacking default, or
+`GAME_STATE.md` §2.3.1's instance schema; it references them.
+
+```text
+1. Consumption point
+   Damage Pipeline step 5 (Defense Mitigation) — the `DefenderDefense` input the
+   call receives when the PET is the defending target: a Boss → Pet attack
+   (§3.4), a Card's Damage effect, or a damage-over-time tick against the Pet
+   (§5.2 item 3). Every such instance reads the same composed value (§3.2).
+
+2. The composition — flat, additive DEF points
+
+   EffectivePetDEF = PetState.DEF
+                   + Σ (int) Magnitude of every applicable instance
+
+   Each applicable instance contributes its whole `Magnitude` as flat Defense
+   points, with its own sign; the contributions are summed once and the sum is
+   added to the stored base once. There is no percentage, no per-instance
+   truncation, and no cap.
+
+3. Which instances are applicable
+   Type = "BuffDebuff" AND TargetStat = "DEF". Selection reads those two
+   members, never `Id`. A Shield (Type = "Shield") is not a DEF modifier, and an
+   `TargetStat = "ATK"` instance modifies no DEF (§5.4.1).
+
+4. No DEF range is authored
+   Like ATK (§5.6.1 item 5), `DEF` has no documented valid range in §1.1, so
+   this rule authors no clamp and no ceiling. The composed value is bounded only
+   by the mitigation formula's own domain — §3.2 requires K + DEF > 0.
+
+5. Rounding
+   Every term is an integer (`Magnitude` is the stored applied value, and the
+   DEF-Gem contribution below is an integer product, §2 item 6), so the sum is
+   exact: no division, no truncation, no rounding, and no dependence on
+   floating-point representation or on instance order (`TDD.md` §6).
+
+6. Evaluation timing
+   Composed when the damage instance is constructed, from the committed
+   `StatusEffects[]` state at that moment; not evaluated eagerly, not cached
+   across resolutions, and not stored (§5.4.4).
+```
+
+**Application — one instance per committed DEF-Gem resolution.**
+`§2` gives the DEF Gem a `+5` base output. For one committed action of the
+acting actor, `DefensePool = 5 × count(DEF)` over the unique DEF cells of every
+detection pass (`§2`), and that one action applies **one** `"DefenseBuff"`
+instance to **that actor's own** `StatusEffects[]` (the Pet's for a Player
+action, the Boss's for a Boss action — `ADR-026` item 4). Its `Magnitude` is the
+action's whole `DefensePool`, its `Source` is the acting side, its `Type` is
+`"BuffDebuff"`, and its `TargetStat` is `"DEF"`. An action that generates no DEF
+(`DefensePool = 0`) applies nothing — an absent instance is how "no buff is
+active" is spelled (`GAME_STATE.md` §2.3.1 item 8).
+
+**Stacking and refresh — one explicit rule; nothing accumulates.**
+`§5.2 item 2`'s MVP default applies unchanged: **refresh, do not stack.**
+`GAME_STATE.md` §2.3.1 item 6 allows at most one instance per effect identity, so
+a later DEF-Gem resolution **refreshes** the active `"DefenseBuff"` instance —
+`Magnitude` is **set to the new action's `DefensePool`**, `RemainingTurns` is
+reset to the duration below — and the magnitudes are **never summed**, neither
+across actions nor within one action. Multiple DEF matches inside one action are
+already summed into that action's single `DefensePool` before application, so
+they produce one instance and never a multiplicative or per-match accumulation.
+No uncapped stacking rule exists and none may be introduced.
+
+**Duration and expiry — the DEF-buff window (canonical).**
+A DEF buff covers **exactly one opponent attack phase**: it is active while the
+opponent's next attack resolves and is consumed and removed at the step 19a
+boundary that ends the Turn in which that attack phase occurred. Because one
+atomic Round runs the Player's action phase and then the Boss response phase
+(`ADR-026` item 2, `GAME_RULES.md` §17), the *same* gameplay window is one Turn
+for the Pet's buff and two Turns for the Boss's:
+
+```text
+Pet DEF buff (applied by the Player's DEF Gem match)
+  Turn N  step 12/14  applied               RemainingTurns = 1
+  Turn N  step 18     Boss attacks the Pet — EffectivePetDEF includes the buff
+  Turn N  step 19a    1 → 0, removed        expires at the end of Turn N
+  Turn N+1            inactive              the next Boss attack is unreduced
+
+Boss DEF buff (applied by the Boss's DEF Gem match)
+  Turn N    step 18a  applied               RemainingTurns = 2
+  Turn N    step 19a  2 → 1, still active
+  Turn N+1  step 15   the Player attacks the Boss — EffectiveBossDEF includes
+                      the buff (§5.5.6)
+  Turn N+1  step 19a  1 → 0, removed        expires at the end of Turn N+1
+  Turn N+2            inactive              the next Player attack is unreduced
+```
+
+- **The two duration values are the only asymmetry, and it is structural.** The
+  Player acts before the Boss inside one Round, so the Player's buff is applied
+  *before* the opponent's attack phase of its own Turn, while the Boss's buff is
+  applied *after* the Player's attack phase of its Turn. Duration `1` and
+  duration `2` therefore express the identical rule — "through the opponent's
+  next attack" — and neither value authorizes a second covered attack phase:
+  the Pet's buff never survives into Turn N+1, and the Boss's buff is gone
+  before the Player's Turn N+2 attack.
+- **An opponent that does not attack consumes nothing extra.** If the opponent
+  produces no confirmed ATK-gem match in that window, no damage instance reads
+  the buff; it still expires at the same step 19a boundary and **does not leak
+  into a later Turn**. It is not carried waiting for a future attack.
+- **Non-retroactivity.** A buff applied at a later step of a Turn cannot change
+  that Turn's already-resolved damage: the Boss's buff is applied at step 18a,
+  after the Player's step-15 attack of the same Turn, and the step-19a
+  damage-over-time tick is the only damage instance it can still price in that
+  Turn.
+- **Expiry is the existing lifecycle, not a second timer.** The countdown, the
+  once-per-Turn decrement at step 19a, the removal at `0`, and the
+  refresh-resets-duration behavior are all `§5.3`'s (DR1–DR6) and
+  `GAME_STATE.md` §5.1.1's; this subsection only states which duration value the
+  application uses.
+
+**The DEF buff is not a Shield, and DEF Gems create no Shield.**
+The buff creates no absorption pool, absorbs no damage, and is never selected by
+`§4`'s Shield rules; conversely a Shield instance is not read by this rule. The
+old DEF-Gem-to-Shield conversion is **retired** (TASK-299). Shields from cards,
+Relics, Passives, and Boss skills keep their existing behavior and rules
+unchanged (`§4` items 2–5).
+
+**The base stat is never overwritten.** `PetState.DEF` holds the stored base
+value and is **never written** by this rule; there is no "restore" step and no
+configured-default reset (the rule `§5.4.4` records for ATK, applied to DEF).
+`EffectivePetDEF` is a value used within one pipeline execution: it is not
+persisted, not a `BattleState` member, and not a second representation of the
+stat (`GAME_STATE.md` §0 item 5, §2.3).
+
+**No new state, event, or protocol member.** The buff is carried by the existing
+`StatusEffects[]` instance (`GAME_STATE.md` §2.3.1), so this rule adds no
+`PetState`/`BattleState` member, no Status Effect `Type`, no Battle Event
+(`GAME_RULES.md` §16), no SignalR member, no Redis key, and no database column.
+The changed mitigation result reaches the client inside the existing
+`DamageCalculated` breakdown (`SIGNALR_PROTOCOL.md` §3.2.13) — the reduced
+`defense` / `finalDamage` values are the presentation of the buff.
+**What the client can and cannot show is bounded by the existing projection.**
+The active Pet's instances are delivered through the already-defined
+`petState.statusEffects[]` projection (`SIGNALR_PROTOCOL.md` §4.3 item 14), which
+would carry this instance as an ordinary `BuffDebuff` with its `id`, `magnitude`,
+`targetStat`, and `remainingTurns`; **the Pet's own buff is nonetheless never
+observable in a committed state**, because §5.4.6's whole window (step 12/14 →
+step 19a) lies inside one Round and the state push happens after that Round's
+`19a` pass. The Boss's buff does survive a commit (duration 2), but the Boss's
+`StatusEffects[]` is not a delivered member (`SIGNALR_PROTOCOL.md` §4.4 item 3).
+Neither limitation is a new protocol member's justification: delivering a
+shorter-lived effect, or the Boss's collection, would be a protocol change owned
+by its own task and is not authored here.
 
 ## 5.5 Boss Stat Modifiers (`BuffDebuff` Consumption — Boss Side)
 
@@ -1441,6 +1638,71 @@ side.
 
 ---
 
+
+### 5.5.6 `TargetStat = "DEF"` — the Boss DEF Modifier Rule (Boss Side)
+
+This subsection is the **canonical owner** of how a Turn-based `BuffDebuff`
+Status Effect instance held in the **Boss's** `StatusEffects[]` whose
+`TargetStat` is `"DEF"` reaches the Boss's **effective DEF** — the `DEF` value
+`§3.2`'s mitigation step reads when the Boss is the defending target. It is the
+Boss-side counterpart of `§5.4.6` and **references** that subsection for the
+application, stacking/refresh, and Turn-window statements rather than restating
+them; the two differ only in which collection they read and in the stored stat
+they compose. Authored by TASK-299 (the DEF-Gem buff).
+
+```text
+1. Consumption point
+   Damage Pipeline step 5 (Defense Mitigation) — the `DefenderDefense` input the
+   call receives when the BOSS is the defending target: a Player → Boss attack
+   (§3.4 / §17 step 15), a Card's Damage effect, or a damage-over-time tick
+   against the Boss (§5.2 item 3). Every such instance reads the same composed
+   value.
+
+2. The composition — flat, additive DEF points
+
+   EffectiveBossDEF = BossState.DEF
+                    + Σ (int) Magnitude of every applicable instance
+
+   The instance set, the per-instance contribution, the absence of a cap, the
+   integer arithmetic, and the evaluation timing are §5.4.6 items 2–6's, read
+   against `BossState` (§2.4 / §2.4.1 — the same element shape and lifecycle as
+   the Pet's collection). Selection is by Type = "BuffDebuff" AND
+   TargetStat = "DEF", never by `Id`.
+
+3. The Boss DEF buff's Turn window is §5.4.6's, with the Boss-side duration
+
+   The buff is applied by the Boss's own DEF-Gem match at step 18a and uses the
+   Boss row of §5.4.6's window table: `RemainingTurns = 2`, active through the
+   Player's step-15 attack of the following Turn, consumed and removed at that
+   Turn's step 19a. That is the same "exactly one opponent attack phase" rule
+   the Pet side states; only the Turn count differs, for the structural reason
+   §5.4.6 records. It never reaches the Player's attack in Turn N+2 and does not
+   leak when the Player produces no confirmed ATK-gem match in Turn N+1.
+
+4. The base stat is never overwritten
+   `BossState.DEF` holds the stored base value and is **never written** by this
+   rule; there is no "restore" step and no configured-default reset (§5.5.4's
+   rule, applied to DEF). `EffectiveBossDEF` is a value used within one pipeline
+   execution and is not persisted, not a `BossState`/`BattleState` member, and
+   not a second representation of the stat (GAME_STATE.md §0 item 5, §2.4).
+```
+
+**The DEF buff is not a Shield.** A Boss DEF-Gem match grants this stat buff and
+creates no `Shield` instance; the Boss's existing Shields (e.g. Sơn Thạch Vệ
+Earthquake, D6) keep their trigger-based absorption behavior and are untouched
+(§4 items 2–5, ADR-026 item 6). The retired DEF-Gem-to-Shield conversion is
+TASK-299's; it is not reinstated on the Boss side.
+
+**No new state, event, or protocol member.** This subsection adds no
+`BossState` member, no Status Effect `Type`, no `TargetStat` value (the `"DEF"`
+value is §5.4.6's), no Battle Event, no SignalR member, no Redis key, and no
+database column. The changed mitigation result reaches the client inside
+`DamageCalculated` (`SIGNALR_PROTOCOL.md` §3.2.13). The Boss's own
+`StatusEffects[]` is not a delivered member (`SIGNALR_PROTOCOL.md` §4.4 item 3),
+so the Boss-side buff's presentation is bounded by that existing contract; the
+value change in the delivered damage breakdown is not.
+
+---
 
 ## 5.6 Effective Pet ATK — Unified Pet ATK Modifier Composition
 

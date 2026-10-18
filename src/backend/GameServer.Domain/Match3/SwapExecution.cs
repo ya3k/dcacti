@@ -148,13 +148,17 @@ public readonly record struct SwapExecutionResult
     /// <b>The transient half is carried here and nowhere else.</b> Base Damage
     /// Pool, Defense Pool, and Heal Pool are Transient Resolution State
     /// (<c>GAME_STATE.md</c> §3): the downstream resolution steps of this same
-    /// Swap (15–17) consume them from this value, and they are not written into
-    /// <c>PetState</c> or <c>BattleState</c>, not persisted, and not delivered
-    /// on the wire. The Heal Pool is one of them even though its effect
-    /// <b>has been applied</b>: it is <i>consumed</i> by step 14
+    /// Swap (15–17) consume them from this value, and none of them is written
+    /// into a new <c>PetState</c>/<c>BattleState</c> member, persisted as a pool,
+    /// or delivered on the wire. The Heal Pool is one of them even though its
+    /// effect <b>has been applied</b>: it is <i>consumed</i> by step 14
     /// (<see cref="ResourceGenerator.ApplyHeal"/>, which wrote the resulting
     /// <c>PetState.HP</c>) and is still <b>not stored</b> anywhere — reading it
-    /// does not make it state.
+    /// does not make it state. The Defense Pool is consumed the same way by
+    /// <see cref="ResourceGenerator.ApplyDefenseBuff"/> at step 12: it becomes the
+    /// <c>Magnitude</c> of the existing <c>StatusEffects[]</c> <c>"DefenseBuff"</c>
+    /// instance (<c>COMBAT_RULES.md</c> §5.4.6), which is an instance of the
+    /// already-documented collection, not a new pool member.
     /// </summary>
     /// <exception cref="InvalidOperationException">
     /// The Swap was rejected. A rejected action generates nothing and writes
@@ -325,8 +329,11 @@ public readonly record struct SwapExecutionResult
 /// </code>
 ///
 /// <b>The §17 steps this type owns.</b> The board stages (steps 1–9), the
-/// resource generation of step 12 in its two persistent halves — Power
-/// (<see cref="ResourceGenerator.ApplyPower"/>) and player-effect healing
+/// resource generation of step 12 in its three persistent halves — Power
+/// (<see cref="ResourceGenerator.ApplyPower"/>), the DEF-Gem buff
+/// (<see cref="ResourceGenerator.ApplyDefenseBuff"/>, <c>COMBAT_RULES.md</c>
+/// §5.4.6, carried by the existing <c>StatusEffects[]</c> instance) and
+/// player-effect healing
 /// (<see cref="ResourceGenerator.ApplyHeal"/>, step 14) — and the single
 /// write-back. Steps 13 and 14 are state writes that land on the same
 /// <c>PetState</c> the resolution's write-back carries, so they are applied here
@@ -462,11 +469,13 @@ public static class SwapExecutor
         // cumulative total forward.
         var (combo, matchCount) = AccountMatches(state.MatchCount, resolution);
 
-        // Step 6 (GAME_RULES.md §17 step 12, COMBAT_RULES.md §2, ADR-026): Generate
-        // Resources & Apply actor-relative DEF and HP match effects.
+        // Step 6 (GAME_RULES.md §17 step 12, COMBAT_RULES.md §2, §5.4.6, ADR-026):
+        // Generate Resources & Apply the actor-relative DEF buff and HP heal. The
+        // Player's DEF Gems grant the PET the temporary "DefenseBuff" instance
+        // (TASK-299) — never a Shield — and the HP Gems heal the Pet.
         var generation = ResourceGenerator.Generate(resolution);
         var petState = ResourceGenerator.ApplyHeal(state.PetState, generation, state.BossState.ActiveStatusEffects);
-        petState = ResourceGenerator.ApplyShield(petState, generation);
+        petState = ResourceGenerator.ApplyDefenseBuff(petState, generation);
 
         // Step 7 (GAME_EVENTS.md §1, §1.1, §2): the ordered Battle Events that
         // describe the resolution just performed. They are produced from

@@ -274,7 +274,14 @@ public static class CardCastExecutor
                             Combo: 1,
                             AttackerElement: state.PetState.Element,
                             DefenderElement: bossState.Element,
-                            DefenderDefense: bossState.DEF,
+                            // COMBAT_RULES.md §3.2 / §5.5.6: the mitigation input is
+                            // the Boss's EFFECTIVE DEF (TASK-299), so an active
+                            // Boss DEF-Gem buff reduces this Card's damage too — it
+                            // is a damage instance against the Boss in the buff's
+                            // covered window.
+                            DefenderDefense: StatusEffectLifecycle.EffectiveBossDefense(
+                                bossState.DEF,
+                                bossState.ActiveStatusEffects),
                             DefenderHp: bossState.HP,
                             Source: DamageParty.Player,
                             Target: DamageParty.Boss,

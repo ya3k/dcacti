@@ -907,6 +907,134 @@ public static class StatusEffectLifecycle
     }
 
     /// <summary>
+    /// The effective Pet DEF a damage instance against the Pet consumes — the
+    /// stored base <c>PetState.DEF</c> plus every applicable
+    /// <c>TargetStat = "DEF"</c> <c>BuffDebuff</c> contribution
+    /// (<c>COMBAT_RULES.md</c> §5.4.6).
+    ///
+    /// <b>This is §3.2's <c>DEF</c>, not a second representation of DEF.</b>
+    /// §3.2 makes the mitigation step read the <i>defending target's</i> DEF, and
+    /// §5.4.6 makes that value the composed effective one when a DEF modifier is
+    /// active: <c>EffectivePetDEF = PetState.DEF + Σ (int) Magnitude</c> over the
+    /// applicable instances. The stored stat is read and never written — §5.4.4's
+    /// non-destructive rule, applied to DEF — so no "restore" step exists and no
+    /// <c>EffectiveDEF</c> member is added to any state type
+    /// (<c>GAME_STATE.md</c> §0 item 5, §2.3). With no applicable instance the
+    /// returned value is exactly <paramref name="defense"/>.
+    ///
+    /// <b>The contribution is flat and additive, and the arithmetic is integral.</b>
+    /// §5.4.6 items 2–5 make each applicable instance contribute its whole
+    /// <c>Magnitude</c> as flat Defense points and fix the sum as exact integer
+    /// arithmetic — no percentage, no per-instance truncation, no cap, and no
+    /// dependence on floating-point representation or on instance order. Unlike
+    /// the ATK carriers, no Relic-sourced DEF modifier collection exists in MVP
+    /// (<c>GAME_STATE.md</c> §2.3.7 is ATK's), so the instances are the whole
+    /// input set.
+    ///
+    /// <b>Selection is by <c>Type</c> and <c>TargetStat</c>, never by <c>Id</c></b>
+    /// (§5.4.6 item 3). A <c>Shield</c> is not a DEF modifier and an
+    /// <c>ATK</c> instance modifies no DEF; conversely a DEF instance creates no
+    /// absorption pool.
+    /// </summary>
+    /// <param name="defense">
+    /// The stored base value (<c>PetState.DEF</c>). It is read and never written.
+    /// </param>
+    /// <param name="effects">
+    /// The <b>Pet's</b> active instances (<c>GAME_STATE.md</c> §2.3.1), always a
+    /// collection and never <c>null</c> (§2.3.2 item 1).
+    /// </param>
+    /// <returns>
+    /// The mitigation step's <c>DefenderDefense</c> input: the stored value when
+    /// no applicable DEF modifier is active, otherwise the stored value plus every
+    /// applicable magnitude.
+    /// </returns>
+    /// <exception cref="ArgumentNullException"><paramref name="effects"/> is <c>null</c>.</exception>
+    public static int EffectivePetDefense(
+        int defense,
+        IReadOnlyList<StatusEffect> effects) =>
+        ComposeDefense(defense, effects);
+
+    /// <summary>
+    /// The effective Boss DEF a damage instance against the Boss consumes — the
+    /// Boss-side counterpart of <see cref="EffectivePetDefense"/>, reading the
+    /// <b>Boss's</b> collection (<c>COMBAT_RULES.md</c> §5.5.6).
+    ///
+    /// <b>It differs from the Pet-side method only in the collection it is
+    /// given.</b> §5.5.6 references §5.4.6's composition and selection statements
+    /// rather than restating them, and <c>GAME_STATE.md</c> §2.3.1 gives both
+    /// entities "identical element shape and identical lifecycle" — so the two
+    /// consumers share one arithmetic and one selector. The caller supplies
+    /// <c>BossState.DEF</c> and the Boss's own <c>StatusEffects[]</c>, and
+    /// <c>BossState.DEF</c> is never written (§5.5.4).
+    /// </summary>
+    /// <param name="defense">
+    /// The stored base value (<c>BossState.DEF</c>). It is read and never written.
+    /// </param>
+    /// <param name="effects">
+    /// The <b>Boss's</b> active instances (<c>GAME_STATE.md</c> §2.4.1), never
+    /// <c>null</c>.
+    /// </param>
+    /// <returns>The mitigation step's <c>DefenderDefense</c> input for the Boss.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="effects"/> is <c>null</c>.</exception>
+    public static int EffectiveBossDefense(
+        int defense,
+        IReadOnlyList<StatusEffect> effects) =>
+        ComposeDefense(defense, effects);
+
+    /// <summary>
+    /// The one DEF composition both entities use (<c>COMBAT_RULES.md</c> §5.4.6
+    /// items 2–5, referenced by §5.5.6).
+    ///
+    /// <b>One signed sum, applied once.</b> Each applicable instance adds its whole
+    /// <c>Magnitude</c> (cast to <c>int</c>, carrying its own sign) to the stored
+    /// base. There is no per-instance rounding, no percentage, and no cap. The
+    /// <c>Id</c>-ordinal order is <c>GAME_STATE.md</c> §5.1.1 item 6's collection
+    /// convention; the sum is order-independent, and iterating deterministically
+    /// keeps the evaluation reproducible rather than dependent on array position
+    /// (§2.3.1 item 10, <c>TDD.md</c> §6).
+    /// </summary>
+    private static int ComposeDefense(int defense, IReadOnlyList<StatusEffect> effects)
+    {
+        ArgumentNullException.ThrowIfNull(effects);
+
+        var effective = defense;
+
+        foreach (var effect in effects
+            .Where(IsDefStatModifier)
+            .OrderBy(effect => effect.Id, StringComparer.Ordinal))
+        {
+            effective += (int)effect.Magnitude;
+        }
+
+        return effective;
+    }
+
+    /// <summary>
+    /// Whether an instance is one of the DEF modifiers
+    /// <see cref="EffectivePetDefense"/> / <see cref="EffectiveBossDefense"/>
+    /// consume — a <c>BuffDebuff</c> whose <see cref="StatusEffect.TargetStat"/> is
+    /// <c>"DEF"</c> (<c>COMBAT_RULES.md</c> §5.4.6 item 3).
+    ///
+    /// <b>Identity is deliberately not consulted.</b> §5.4.6 makes the
+    /// <c>"DefenseBuff"</c> instance the MVP <i>instance</i> of the rule rather
+    /// than the rule's identity, so dispatching on <c>Id</c> would encode a
+    /// second, undocumented definition of which effects modify DEF — the same
+    /// discipline <see cref="IsAtkBuffDebuff"/> applies to ATK. The
+    /// <see cref="StatusEffect.Type"/> check is required as well: a non-
+    /// <c>BuffDebuff</c> carries no <c>TargetStat</c> by construction
+    /// (<c>GAME_STATE.md</c> §2.3.1 item 7).
+    /// </summary>
+    private static bool IsDefStatModifier(StatusEffect effect) =>
+        effect.Type == StatusEffectType.BuffDebuff
+        && string.Equals(effect.TargetStat, DefenseStat, StringComparison.Ordinal);
+
+    /// <summary>
+    /// The <c>TargetStat</c> value naming the DEF stat (<c>COMBAT_RULES.md</c>
+    /// §5.4.6 item 3). It is the member's contract value, not an effect identity.
+    /// </summary>
+    public const string DefenseStat = "DEF";
+
+    /// <summary>
     /// Whether an instance is one of the ATK modifiers
     /// <see cref="EffectiveAttack"/> consumes — a Turn-based
     /// <see cref="StatusEffectType.BuffDebuff"/> whose
@@ -1018,4 +1146,18 @@ public static class StatusEffectLifecycle
     /// rather than form a second pool).
     /// </summary>
     private const string ShieldId = "Shield";
+
+    /// <summary>
+    /// The DEF-Gem buff's Status Effect identity — the <c>"DefenseBuff"</c>
+    /// <c>BuffDebuff</c> with <c>TargetStat = "DEF"</c>
+    /// (<c>COMBAT_RULES.md</c> §5.4.6, §5.5.6).
+    ///
+    /// <b>It is an identity, not the rule.</b> <c>GAME_STATE.md</c> §2.3.1 item 1
+    /// makes <c>Id</c> the instance's name and the collection's uniqueness key, so
+    /// this value is what makes a later DEF-Gem match refresh the active instance
+    /// rather than append a second one (item 6). The composition that consumes it
+    /// selects on <see cref="StatusEffect.TargetStat"/>, never on this identity
+    /// (<c>COMBAT_RULES.md</c> §5.4.6 item 3).
+    /// </summary>
+    public const string DefenseBuffId = "DefenseBuff";
 }

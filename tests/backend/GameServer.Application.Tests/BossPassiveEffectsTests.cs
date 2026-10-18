@@ -393,10 +393,13 @@ public class BossPassiveEffectsTests
             .Where(e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Boss)
             .Sum(e => e.DamageDealt.Amount);
 
-        // COMBAT_RULES.md §4 items 2–3: the DEF Gems this same action cleared applied a
-        // Shield to the Pet before the Boss's instance landed, so only the excess over
-        // that Shield reduces HP. The reported Boss damage is the post-mitigation amount.
-        var netBossDamage = Math.Max(0, bossDmg - result.Value.Resources.DefensePool);
+        // COMBAT_RULES.md §4 items 2–3 / §5.4.6 (TASK-299): the DEF Gems this same
+        // action cleared grant the Pet a temporary DEF *buff* (raising the effective
+        // DEF the Boss's instance is mitigated by), not a Shield absorption pool —
+        // so nothing is absorbed and the reported Boss damage is the whole HP
+        // reduction. The Pet's effective DEF is already pinned to 1000, so the buff
+        // only makes the mitigation slightly stronger.
+        var netBossDamage = bossDmg;
 
         Assert.Equal(500 + expectedHeal - netBossDamage, result.Value.State.PetState.HP);
     }
@@ -478,10 +481,11 @@ public class BossPassiveEffectsTests
             .Where(e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Boss)
             .Sum(e => e.DamageDealt.Amount);
 
-        // COMBAT_RULES.md §4 items 2–3: the DEF Gems this same action cleared applied a
-        // Shield to the Pet before the Boss's instance landed, so only the excess over
-        // that Shield reduces HP.
-        var netBossDamage3 = Math.Max(0, bossDmg3 - turn3Result.Value.Resources.DefensePool);
+        // COMBAT_RULES.md §4 items 2–3 / §5.4.6 (TASK-299): the DEF Gems this same
+        // action cleared grant the Pet a temporary DEF buff, not a Shield absorption
+        // pool, so nothing is absorbed and the reported Boss damage is the whole HP
+        // reduction.
+        var netBossDamage3 = bossDmg3;
 
         // COMBAT_RULES.md §4 item 1: healing restores HP up to Max HP and the overheal is
         // discarded, so the settled value is the heal less the Boss's unabsorbed instance,
@@ -519,10 +523,10 @@ public class BossPassiveEffectsTests
             .Where(e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Boss)
             .Sum(e => e.DamageDealt.Amount);
 
-        // COMBAT_RULES.md §4 items 2–3: the DEF Gems this action cleared applied a
-        // Shield to the Pet before the Boss's instance landed, so only the excess over
-        // that Shield reduces HP.
-        var netBossDamage4 = Math.Max(0, bossDmg4 - turn4Result.Value.Resources.DefensePool);
+        // COMBAT_RULES.md §4 items 2–3 / §5.4.6 (TASK-299): the DEF Gems this action
+        // cleared grant the Pet a temporary DEF buff, not a Shield absorption pool, so
+        // nothing is absorbed and the reported Boss damage is the whole HP reduction.
+        var netBossDamage4 = bossDmg4;
 
         Assert.Equal(
             Math.Min(500 + turn4Result.Value.Resources.HealPool - netBossDamage4, 1000),

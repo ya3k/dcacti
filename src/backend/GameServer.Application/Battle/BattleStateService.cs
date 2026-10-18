@@ -1804,8 +1804,9 @@ public sealed class BattleStateService
         events.AddRange(BattleEventBuilder.Build(bossResolution, accountedCombo: null));
 
         // ADR-026 §4: cell type determines the effect and the acting side determines
-        // ownership and target — for the Boss's DEF Gems the Shield is the Boss's,
-        // for its HP Gems the heal is the Boss's, and its POWER Gems (and only its
+        // ownership and target — for the Boss's DEF Gems the temporary DEF buff is the
+        // Boss's (COMBAT_RULES.md §5.5.6, TASK-299), for its HP Gems the heal is the
+        // Boss's, and its POWER Gems (and only its
         // POWER Gems) charge BossState.SkillCharge, +1 per match group and clamped to
         // the Skill's ChargeRequirement (D2, T1, T2). The Player's POWER matches never
         // reach this call. ResourceGenerator owns every one of those rules; this
@@ -2405,7 +2406,13 @@ public sealed class BattleStateService
                         Combo: 1,
                         AttackerElement: Element.Hoa,
                         DefenderElement: bossState.Element,
-                        DefenderDefense: bossState.DEF,
+                        // COMBAT_RULES.md §3.2 / §5.5.6 (TASK-299): step 5 reads the
+                        // defender's EFFECTIVE DEF, so an active Boss DEF-Gem buff
+                        // prices this tick too. The stored BossState.DEF is never
+                        // written.
+                        DefenderDefense: StatusEffectLifecycle.EffectiveBossDefense(
+                            bossState.DEF,
+                            bossState.ActiveStatusEffects),
                         DefenderHp: bossState.HP,
                         Source: DamageParty.Player,
                         Target: DamageParty.Boss,
@@ -2469,7 +2476,13 @@ public sealed class BattleStateService
                         Combo: 1,
                         AttackerElement: Element.Hoa,
                         DefenderElement: resolved.PetState.Element,
-                        DefenderDefense: resolved.PetState.DEF,
+                        // COMBAT_RULES.md §3.2 / §5.4.6 (TASK-299): step 5 reads the
+                        // defender's EFFECTIVE DEF, so the Pet's active DEF-Gem buff
+                        // prices this tick too. The stored PetState.DEF is never
+                        // written.
+                        DefenderDefense: StatusEffectLifecycle.EffectivePetDefense(
+                            resolved.PetState.DEF,
+                            resolved.PetState.ActiveStatusEffects),
                         DefenderHp: resolved.PetState.HP,
                         Source: DamageParty.Boss,
                         Target: DamageParty.Player,

@@ -536,8 +536,10 @@ public class PlayerEffectHealingTests
         // Stated as the equality the resolution makes checkable without depending on
         // which Gems a spawn draws: the HP the committed Swap leaves is the starting
         // HP plus the Swap's whole HealPool, clamped — the pool the result reports,
-        // applied exactly once.
-        var pet = DefaultPet() with { HP = 0, MaxHP = 100_000 };
+        // applied exactly once. The starting HP is 1 (not 0): COMBAT_RULES.md §4
+        // item 1's dead-target guard makes a Pet at 0 HP unhealable, so a living
+        // fixture is required for the pool to be applied at all.
+        var pet = DefaultPet() with { HP = 1, MaxHP = 100_000 };
 
         var result = SwapExecutor.Execute(BattleWith(HpMatch3Board(), pet), new SwapRequest(From, To));
 
@@ -545,7 +547,7 @@ public class PlayerEffectHealingTests
 
         // The 100000 ceiling cannot bind for a single Swap's cascade, so the pool is
         // applied in full and no part of it is discarded.
-        Assert.Equal(result.Resources.HealPool, result.State.PetState.HP);
+        Assert.Equal(1 + result.Resources.HealPool, result.State.PetState.HP);
 
         // And the pool the result reports is the sum over every pass's cleared HP
         // Gems — each contributing its per-Gem BaseOutput once, with no match-tier
@@ -581,5 +583,68 @@ public class PlayerEffectHealingTests
 
         Assert.Equal(50, afterBoth.Power);
         Assert.Equal(600, afterBoth.HP);
+    }
+
+    // =======================================================================
+    // Dead-target guard — COMBAT_RULES.md §4 item 1 / item 7, GAME_RULES.md §1.4
+    // =======================================================================
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    public void ApplyPetHeal_WhenThePetIsDead_ShouldLeaveHpUnchanged(int deadHp)
+    {
+        // GAME_RULES.md §1.4 makes 0 HP terminal, so an ordinary healing source
+        // does not restore a dead Pet (COMBAT_RULES.md §4 item 1 / item 7).
+        var deadPet = DefaultPet() with { HP = deadHp, MaxHP = 1000 };
+
+        var updated = ResourceGenerator.ApplyHeal(deadPet, HealOnly(500));
+
+        Assert.Equal(deadHp, updated.HP);
+    }
+
+    [Fact]
+    public void ApplyPetHeal_WhenThePetIsAtOneHp_ShouldStillHeal()
+    {
+        // The guard is `HP <= 0` only: a living Pet at 1 HP is healed normally, so
+        // the guard cannot be mistaken for "no healing below some threshold".
+        var pet = DefaultPet() with { HP = 1, MaxHP = 1000 };
+
+        var updated = ResourceGenerator.ApplyHeal(pet, HealOnly(100));
+
+        Assert.Equal(101, updated.HP);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void ApplyBossHeal_WhenTheBossIsDead_ShouldLeaveHpUnchanged(int deadHp)
+    {
+        // The Boss-side counterpart: a Boss killed by the Player's attack is never
+        // revived by its own HP-Gem pool (BOSS_RULES.md §5 item 4's terminal check
+        // precedes the Boss Response).
+        var boss = BattleState.CreateWith("battle-019", TestSeed).BossState with
+        {
+            HP = deadHp,
+            MaxHP = 5000,
+        };
+
+        var updated = ResourceGenerator.ApplyBossHeal(boss, rawHeal: 500);
+
+        Assert.Equal(deadHp, updated.HP);
+    }
+
+    [Fact]
+    public void ApplyBossHeal_WhenTheBossIsAtOneHp_ShouldStillHeal()
+    {
+        var boss = BattleState.CreateWith("battle-019", TestSeed).BossState with
+        {
+            HP = 1,
+            MaxHP = 5000,
+        };
+
+        var updated = ResourceGenerator.ApplyBossHeal(boss, rawHeal: 100);
+
+        Assert.Equal(101, updated.HP);
     }
 }

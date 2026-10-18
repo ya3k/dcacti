@@ -157,12 +157,59 @@ Round commit boundary while the Boss's pre-move recovery is retained. This is th
 in-place-amendment treatment the `TASK-265` amendment received, for the same reason: an
 ADR may explain a decision, but it may not own a rule the domain document owns.
 
+## Amendment — DEF Gems Grant a DEF Stat Buff, Not a Shield (TASK-299)
+
+Decision item 4's **`DEF` Gems** bullet said a DEF match "Generates temporary
+Shield absorption pool on the acting actor … using `StatusEffectType.Shield`."
+That conversion is **retired** by the operator's approved gameplay decision for
+`TASK-299`: a DEF match now grants a temporary **DEF stat buff** instead. The
+actorship, the actor-relative ownership, the `+5` per-Gem base output, and the
+"cell type determines the effect, acting side determines ownership and target"
+principle are unchanged; only the effect's *kind* changes.
+
+**Corrected rule (Decision item 4, DEF bullet, as amended).** A confirmed DEF-Gem
+match grants the **acting actor** (the Pet for a Player action, the Boss for a
+Boss action) a Turn-based `BuffDebuff` instance with `TargetStat = "DEF"` — the
+`"DefenseBuff"` identity — whose `Magnitude` is that action's generated
+`DefensePool` and which raises that actor's **effective DEF** for the opponent's
+next attack. It creates **no** Shield, no absorption pool, and no
+`StatusEffectType.Shield` instance. The buff is refresh-not-stack, its base stat
+is never overwritten, and it expires at the documented Turn boundary (one
+`RemainingTurns` for the Pet's buff, two for the Boss's, because the Player acts
+before the Boss inside one atomic Round — the same single "opponent's next attack
+phase" window expressed for each side).
+
+**Rule ownership.** The rule itself is owned by `COMBAT_RULES.md` — §2's DEF-Gem
+output row and actor-relative bullet, §3.2's effective-DEF statement, and the new
+§5.4.6 (Pet side, including the application/stacking/Turn-window statements) and
+§5.5.6 (Boss side). This ADR records only *why* the representation is the
+existing `StatusEffects[]` stat-modifier path rather than a Shield: the state
+model already carries `TargetStat`-consumed `BuffDebuff` instances with a Turn
+countdown and a refresh-not-stack default (`GAME_STATE.md` §2.3.1), so the change
+introduces no new state member, no new Status Effect `Type`, no new collection,
+and no new protocol member. `GAME_RULES.md` §17 step 18a's resource list is
+reconciled to match.
+
+**Why the record is amended in place and no ADR is created or superseded.** No
+architectural decision is reversed: shared board, actor-relative resolution, the
+atomic Round, the `StatusEffects[]` representation, and the authoritative model
+are all unchanged, so `.ai/workflow/architecture/adr-change.md` §3's superseding
+path does not apply. The amendment instead makes this record stop contradicting
+the owning domain rule, which is what `docs/03-decisions/README.md` §3 requires of
+an ADR — the same in-place-amendment treatment the `TASK-265` and `TASK-267`
+amendments to this same record, and `ADR-018`'s Decision 12 amendment, received.
+The unchanged items remain item 1 (shared board), item 2 (Turn/atomic Round),
+item 3 (ATK gating), item 5 (no default fixed-damage attacks), item 6 (Boss skill
+contract), item 7 (persistence/event boundaries), and item 8 (deterministic Boss
+AI); the DEF bullet of item 4 is the only corrected text, and the HP, POWER, and
+ATK bullets of item 4 are untouched.
+
 ## Related Documents
 
 - `docs/00-overview/MVP_SCOPE.md` §1
 - `docs/01-game-design/GAME_RULES.md` §1.3, §2, §14, §15, §17
 - `docs/01-game-design/MATCH3_RULES.md` §1.4, §1.6, §2, §8
-- `docs/01-game-design/COMBAT_RULES.md` §2, §3, §4
+- `docs/01-game-design/COMBAT_RULES.md` §2, §3, §4, §5
 - `docs/01-game-design/BOSS_RULES.md` §3, §4, §6
 - `docs/02-technical/GAME_STATE.md` §2.1, §2.4, §5
 - `docs/02-technical/GAME_EVENTS.md` §1, §2, §3 item 8

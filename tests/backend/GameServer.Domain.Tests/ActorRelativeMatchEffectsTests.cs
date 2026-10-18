@@ -8,7 +8,8 @@ using GameServer.Domain.Match3;
 using Xunit;
 
 /// <summary>
-/// Tests for actor-relative match effects (DEF Shield, HP Heal, POWER) (<c>ADR-026</c> Scope B, Scope E).
+/// Tests for actor-relative match effects (DEF stat buff, HP Heal, POWER)
+/// (<c>ADR-026</c> Scope B, Scope E; <c>COMBAT_RULES.md</c> §5.4.6, §5.5.6).
 /// </summary>
 public class ActorRelativeMatchEffectsTests
 {
@@ -34,73 +35,94 @@ public class ActorRelativeMatchEffectsTests
         };
 
     // =======================================================================
-    // 1. DEF Match -> Temporary Shield
+    // 1. DEF Match -> Temporary DEF stat buff (COMBAT_RULES.md §5.4.6 / §5.5.6)
     // =======================================================================
 
     [Fact]
-    public void ApplyShield_PlayerDefMatch_ShouldGrantShieldToPet()
+    public void ApplyDefenseBuff_PlayerDefMatch_ShouldGrantDefBuffToPet()
     {
-        // Given: Pet with no shield and 50 DefensePool
+        // Given: Pet with no status effect and 50 DefensePool
         var pet = CreatePet();
         Assert.Empty(pet.ActiveStatusEffects);
 
-        // When: DEF match shield is applied
-        var updated = ResourceGenerator.ApplyShield(pet, defensePool: 50);
+        // When: the DEF buff is applied
+        var updated = ResourceGenerator.ApplyDefenseBuff(pet, defensePool: 50);
 
-        // Then: Pet gains Shield of magnitude 50 with ShieldDepleted trigger
-        var shield = Assert.Single(updated.ActiveStatusEffects);
-        Assert.Equal("Shield", shield.Id);
-        Assert.Equal(StatusEffectType.Shield, shield.Type);
-        Assert.Equal(StatusEffectSource.Player, shield.Source);
-        Assert.Equal(50, shield.Magnitude);
-        Assert.Equal(StatusEffect.ShieldDepletedCondition, shield.ExpiryCondition);
+        // Then: the Pet gains ONE Turn-based "DefenseBuff" BuffDebuff with
+        // TargetStat "DEF", magnitude 50, sourced from the Player, and
+        // COMBAT_RULES.md §5.4.6's Pet duration of 1 Turn.
+        var buff = Assert.Single(updated.ActiveStatusEffects);
+        Assert.Equal(StatusEffectLifecycle.DefenseBuffId, buff.Id);
+        Assert.Equal(StatusEffectType.BuffDebuff, buff.Type);
+        Assert.Equal(StatusEffectSource.Player, buff.Source);
+        Assert.Equal(50, buff.Magnitude);
+        Assert.Equal(StatusEffectLifecycle.DefenseStat, buff.TargetStat);
+        Assert.Equal(ResourceGenerator.PlayerDefBuffDurationTurns, buff.RemainingTurns);
+        Assert.Null(buff.ExpiryCondition);
     }
 
     [Fact]
-    public void ApplyShield_BossDefMatch_ShouldGrantShieldToBoss()
+    public void ApplyDefenseBuff_PlayerDefMatch_ShouldNotCreateShield()
     {
-        // Given: Boss with no shield and 75 DefensePool
+        // COMBAT_RULES.md §4 item 3 / TASK-299: DEF Gems grant no Shield.
+        var updated = ResourceGenerator.ApplyDefenseBuff(CreatePet(), defensePool: 50);
+
+        Assert.DoesNotContain(updated.ActiveStatusEffects, e => e.Type == StatusEffectType.Shield);
+        Assert.Equal(0, StatusEffectLifecycle.ShieldPool(updated.ActiveStatusEffects));
+    }
+
+    [Fact]
+    public void ApplyDefenseBuff_BossDefMatch_ShouldGrantDefBuffToBoss()
+    {
+        // Given: Boss with no status effect and 75 DefensePool
         var boss = CreateBoss();
         Assert.Empty(boss.ActiveStatusEffects);
 
-        // When: Boss DEF match shield is applied
-        var updated = ResourceGenerator.ApplyShield(boss, defensePool: 75);
+        // When: the Boss DEF buff is applied
+        var updated = ResourceGenerator.ApplyDefenseBuff(boss, defensePool: 75);
 
-        // Then: Boss gains Shield of magnitude 75 with ShieldDepleted trigger
-        var shield = Assert.Single(updated.ActiveStatusEffects);
-        Assert.Equal("Shield", shield.Id);
-        Assert.Equal(StatusEffectType.Shield, shield.Type);
-        Assert.Equal(StatusEffectSource.Boss, shield.Source);
-        Assert.Equal(75, shield.Magnitude);
-        Assert.Equal(StatusEffect.ShieldDepletedCondition, shield.ExpiryCondition);
+        // Then: the Boss gains the DEF buff sourced from the Boss, with
+        // COMBAT_RULES.md §5.4.6's Boss duration of 2 Turns (it must survive its
+        // own Turn's step 19a to cover the next Turn's Player attack).
+        var buff = Assert.Single(updated.ActiveStatusEffects);
+        Assert.Equal(StatusEffectLifecycle.DefenseBuffId, buff.Id);
+        Assert.Equal(StatusEffectType.BuffDebuff, buff.Type);
+        Assert.Equal(StatusEffectSource.Boss, buff.Source);
+        Assert.Equal(75, buff.Magnitude);
+        Assert.Equal(StatusEffectLifecycle.DefenseStat, buff.TargetStat);
+        Assert.Equal(ResourceGenerator.BossDefBuffDurationTurns, buff.RemainingTurns);
+        Assert.DoesNotContain(updated.ActiveStatusEffects, e => e.Type == StatusEffectType.Shield);
     }
 
     [Fact]
-    public void ApplyShield_WhenZeroDefensePool_ShouldNotAddShield()
+    public void ApplyDefenseBuff_WhenZeroDefensePool_ShouldNotAddBuff()
     {
         var pet = CreatePet();
         var boss = CreateBoss();
 
-        var updatedPet = ResourceGenerator.ApplyShield(pet, defensePool: 0);
-        var updatedBoss = ResourceGenerator.ApplyShield(boss, defensePool: 0);
+        var updatedPet = ResourceGenerator.ApplyDefenseBuff(pet, defensePool: 0);
+        var updatedBoss = ResourceGenerator.ApplyDefenseBuff(boss, defensePool: 0);
 
         Assert.Empty(updatedPet.ActiveStatusEffects);
         Assert.Empty(updatedBoss.ActiveStatusEffects);
     }
 
     [Fact]
-    public void ApplyShield_WhenShieldAlreadyActive_ShouldRefreshInPlace()
+    public void ApplyDefenseBuff_WhenBuffAlreadyActive_ShouldRefreshWithoutStacking()
     {
-        // Given: Pet with existing Shield of 30
-        var pet = ResourceGenerator.ApplyShield(CreatePet(), 30);
-        Assert.Equal(30, pet.ActiveStatusEffects[0].Magnitude);
+        // Given: Pet with an active DEF buff of 30
+        var pet = ResourceGenerator.ApplyDefenseBuff(CreatePet(), 30);
+        Assert.Equal(30, Assert.Single(pet.ActiveStatusEffects).Magnitude);
 
-        // When: New DEF match yields 60 shield
-        var updated = ResourceGenerator.ApplyShield(pet, 60);
+        // When: a later DEF match yields 60
+        var updated = ResourceGenerator.ApplyDefenseBuff(pet, 60);
 
-        // Then: Shield is refreshed in place with new magnitude, at most one element
-        var shield = Assert.Single(updated.ActiveStatusEffects);
-        Assert.Equal(60, shield.Magnitude);
+        // Then: COMBAT_RULES.md §5.4.6's refresh-not-stack rule (§5.2 item 2):
+        // exactly one instance, its magnitude SET to 60 — never 30 + 60 — and its
+        // duration reset to the applied duration.
+        var buff = Assert.Single(updated.ActiveStatusEffects);
+        Assert.Equal(60, buff.Magnitude);
+        Assert.Equal(ResourceGenerator.PlayerDefBuffDurationTurns, buff.RemainingTurns);
     }
 
     // =======================================================================

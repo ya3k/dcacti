@@ -890,6 +890,7 @@ public class BossResponseTests
         await RoundTestSupport.PinAsync(repository, created, created.BoardState, petState: petState);
 
         DamageCalculation? bossDamage = null;
+        var roundDefensePool = 0;
 
         for (var round = 0; round < 8 && bossDamage is null; round++)
         {
@@ -909,6 +910,7 @@ public class BossResponseTests
                 bossDamage = Assert.Single(
                     result.Events,
                     e => e.Type == BattleEventType.DamageCalculated).DamageCalculated;
+                roundDefensePool = result.Resources.DefensePool;
             }
 
             state = result.State;
@@ -923,12 +925,18 @@ public class BossResponseTests
         // §3.4 step 4: Other Modifiers = 1.0 for a Boss attack (its Crit input is 0).
         Assert.Equal(DamagePipeline.NoOtherModifiers, bossDamage.Value.OtherModifiers);
 
-        // §3.2 / §3.4 step 5: the mitigation factor is K / (K + the active Pet's DEF),
-        // applied to the instance's own pre-defense damage.
+        // §3.2 / §3.4 step 5: the mitigation factor is K / (K + the active Pet's
+        // EFFECTIVE DEF), applied to the instance's own pre-defense damage.
+        // COMBAT_RULES.md §5.4.6 (TASK-299): the round's Player DEF-Gem match grants a
+        // one-Turn DEF buff whose magnitude is that action's generated DefensePool, so
+        // the DEF this Boss instance is mitigated by is the stored base plus this
+        // round's pool (the round's own report of it — a HP round generates none).
+        var effectivePetDefense = created.PetState.DEF + roundDefensePool;
+
         var expectedDefense = bossDamage.Value.Base
             * ElementModifiers.Default.For(expectedMatchup)
             * (DamagePipeline.DefenseMitigationConstant
-                / (double)(DamagePipeline.DefenseMitigationConstant + created.PetState.DEF));
+                / (double)(DamagePipeline.DefenseMitigationConstant + effectivePetDefense));
 
         Assert.Equal(expectedDefense, bossDamage.Value.Defense, precision: 9);
 
