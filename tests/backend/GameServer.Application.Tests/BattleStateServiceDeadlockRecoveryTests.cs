@@ -608,6 +608,9 @@ public class BattleStateServiceDeadlockRecoveryTests
             // §1.1 item 8 / §3.2.28: the Player's pass is closed by its own
             // completed Gravity + Spawn report (ADR-027).
             BattleEventType.CascadeStepResolved,
+            // §1.1 item 9 / §3.2.29: the Player's board cycle is closed by its own
+            // matched-Gem summary, before the following stage's events.
+            BattleEventType.MatchedGemSummary,
             BattleEventType.PassiveCharged,
             BattleEventType.PowerChanged,
             BattleEventType.SwapStarted,
@@ -617,6 +620,8 @@ public class BattleStateServiceDeadlockRecoveryTests
             BattleEventType.GemMatched,
             BattleEventType.GemMatched,
             BattleEventType.CascadeStepResolved,
+            // ...and the Boss Response phase's cycle closes with its own summary.
+            BattleEventType.MatchedGemSummary,
             BattleEventType.PassiveCharged,
         ];
 

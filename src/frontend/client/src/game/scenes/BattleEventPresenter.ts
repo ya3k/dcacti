@@ -1,8 +1,8 @@
 /**
  * BattleEventPresenter — Scene-local interpretation and formatting of in-battle server events.
  *
- * Implements interpretation for the sixteen non-outcome event types of the closed wire discriminator
- * (SIGNALR_PROTOCOL.md §3.2.2, §3.2.6–§3.2.27, GAME_EVENTS.md §2):
+ * Implements interpretation for the eighteen non-outcome event types of the closed wire discriminator
+ * (SIGNALR_PROTOCOL.md §3.2.2, §3.2.6–§3.2.29, GAME_EVENTS.md §2):
  *
  *   1. SwapStarted
  *   2. SwapResolved
@@ -20,6 +20,8 @@
  *  14. PetSkillCast
  *  15. RelicTriggered
  *  16. PowerChanged
+ *  17. CascadeStepResolved
+ *  18. MatchedGemSummary
  *
  * Server-authoritative boundary (GAME_RULES.md §18, AGENTS.md §10):
  * - Presents only delivered members verbatim.
@@ -218,6 +220,37 @@ export interface PresentedCascadeStepResolved {
   readonly spawnedGems: readonly PresentedSpawnedGem[];
 }
 
+/**
+ * One delivered `gems` entry of a `MatchedGemSummary` (`SIGNALR_PROTOCOL.md`
+ * §3.2.29) — one Gem type the reported board cycle matched, and how many Gems of
+ * it that cycle matched. Both members were delivered; neither is derived, and the
+ * entry exists only for a type with a count of at least one.
+ */
+export interface PresentedMatchedGemCount {
+  readonly gemType: string;
+  readonly count: number;
+}
+
+/**
+ * One committed board action's matched-Gem counts for its whole board cycle
+ * (`SIGNALR_PROTOCOL.md` §3.2.29, `GAME_EVENTS.md` §1.1 item 9, §2).
+ *
+ * It reports a cycle's aggregate — every cascade pass of that one action, one per
+ * unique cleared cell — as the server already accounted it, so the client
+ * **sums nothing**: it presents the counts the item carries, for the Gem types it
+ * names, and omits a type the item omits. The counts are not damage, healing, DEF
+ * buff magnitude, Power, or Boss SkillCharge, and no HUD value is computed from
+ * them (`§3.2.29` item 8, `AGENTS.md` §10).
+ *
+ * The reported cycle is attributed exactly as every other board-cycle event is:
+ * to the `SwapStarted.actor` that opened it, never to a side member on this item
+ * (it carries none — `§3.2.29` item 6).
+ */
+export interface PresentedMatchedGemSummary {
+  readonly type: 'MatchedGemSummary';
+  readonly gems: readonly PresentedMatchedGemCount[];
+}
+
 export type InBattleServerEvent =
   | PresentedSwapStarted
   | PresentedSwapResolved
@@ -235,7 +268,8 @@ export type InBattleServerEvent =
   | PresentedPetSkillCast
   | PresentedRelicTriggered
   | PresentedPowerChanged
-  | PresentedCascadeStepResolved;
+  | PresentedCascadeStepResolved
+  | PresentedMatchedGemSummary;
 
 /**
  * Validates and parses a raw event object into a typed InBattleServerEvent.
@@ -286,6 +320,8 @@ export function parseInBattleEvent(raw: unknown): InBattleServerEvent | null {
       return parsePowerChanged(raw);
     case 'CascadeStepResolved':
       return parseCascadeStepResolved(raw);
+    case 'MatchedGemSummary':
+      return parseMatchedGemSummary(raw);
     default:
       // Unknown event type or outcome event — ignored safely per SIGNALR_PROTOCOL.md §3.2.2
       return null;
@@ -578,6 +614,77 @@ function parseCascadeStepResolved(raw: unknown): PresentedCascadeStepResolved | 
   };
 }
 
+/**
+ * Parses one delivered `MatchedGemSummary` (`SIGNALR_PROTOCOL.md` §3.2.29).
+ *
+ * Returns the entries as delivered — an empty array when the contract omitted the
+ * member, which is the "reported, but no Gem type to show" case — or `null` when
+ * the payload violates the structural invariants the contract fixes:
+ *
+ * ```text
+ * I-17  gemType is one of the four §3.2.4 contract names
+ * I-18  count is an integer >= 1                 a zero-count type is absent, never
+ *                                                 present as 0 (§3.2.29 item 3)
+ * I-19  gemType unique across the array          one entry per type
+ * I-20  entries in the fixed ATK, DEF, HP, POWER order (§3.2.29 item 4)
+ * ```
+ *
+ * A violation returns `null`, so the item is skipped whole (`§3.2.29` item 8): no
+ * count is invented, no type is added, and no value is re-derived from the cycle's
+ * other events (`AGENTS.md` §10).
+ */
+function parseMatchedGemSummary(raw: unknown): PresentedMatchedGemSummary | null {
+  const p = raw as Partial<PresentedMatchedGemSummary>;
+
+  // §3.2.5: an omitted member is the contract's "not applicable" form, and here it
+  // is the "reported, but no Gem type to show" case. An explicit `null` is never
+  // written by a conforming producer, so it is a malformed item.
+  if (p.gems === undefined) {
+    return { type: 'MatchedGemSummary', gems: [] };
+  }
+
+  if (!Array.isArray(p.gems)) {
+    return null;
+  }
+
+  const gems: PresentedMatchedGemCount[] = [];
+  let previousRank = -1;
+
+  for (const entry of p.gems) {
+    if (typeof entry !== 'object' || entry === null) {
+      return null;
+    }
+
+    const gemType = (entry as { readonly gemType?: unknown }).gemType;
+    const count = (entry as { readonly count?: unknown }).count;
+
+    if (typeof gemType !== 'string' || !CONTRACT_GEM_TYPES.includes(gemType)) {
+      return null;
+    }
+
+    if (typeof count !== 'number' || !Number.isInteger(count) || count < 1) {
+      return null;
+    }
+
+    // §3.2.29 item 3: one entry per type, so a repeated type is malformed.
+    if (gems.some((existing) => existing.gemType === gemType)) {
+      return null;
+    }
+
+    // §3.2.29 item 4: the entries run in the fixed Gem-type order, so an entry
+    // that moves backwards is not the contract's array.
+    const rank = CONTRACT_GEM_TYPES.indexOf(gemType);
+    if (rank <= previousRank) {
+      return null;
+    }
+
+    previousRank = rank;
+    gems.push({ gemType, count });
+  }
+
+  return { type: 'MatchedGemSummary', gems };
+}
+
 function parseDamageCalculated(raw: unknown): PresentedDamageCalculated | null {
   const p = raw as Partial<PresentedDamageCalculated>;
   if (
@@ -804,6 +911,12 @@ export function formatInBattleEvent(event: InBattleServerEvent): string {
       return `CascadeStepResolved: pass ${event.passDepth} `
         + `drops [${event.dropMoves.map((m) => `${m.fromCell}->${m.toCell}`).join(', ')}] `
         + `spawns [${event.spawnedGems.map((s) => `${s.cellIndex}:${s.gemType}`).join(', ')}]`;
+    case 'MatchedGemSummary':
+      // The cycle's delivered counts, verbatim and in delivered order: one
+      // `type xN` entry per Gem type the item named. Nothing is summed and no type
+      // the item omitted is added — the developer log records the item
+      // (TASK-209 §5, SIGNALR_PROTOCOL.md §3.2.29).
+      return `MatchedGemSummary: ${event.gems.map((gem) => `${gem.gemType} x${gem.count}`).join(', ')}`;
   }
 }
 
@@ -1023,6 +1136,7 @@ export type PresentationAction =
   | 'cascade'
   | 'gravity-drop'
   | 'refill-spawn'
+  | 'gem-summary'
   | 'settle'
   | 'card-cast'
   | 'pet-skill-cast'
@@ -1053,6 +1167,7 @@ export type PresentationPhaseKind =
   | 'cascade'
   | 'gravity-drop'
   | 'refill-spawn'
+  | 'gem-summary'
   | 'cast'
   | 'relic'
   | 'boss-skill'
@@ -1344,6 +1459,27 @@ export function adaptPresentedEvent(
       // The six pipeline factors are developer detail; the resulting number
       // reaches the player as the damage floater and as the HP readout.
       return null;
+
+    case 'MatchedGemSummary':
+      // The cycle's matched-Gem counts (`SIGNALR_PROTOCOL.md` §3.2.29): one step
+      // of its own, closing the board cycle it reports. Its side is the delivered
+      // boundary's — the `SwapStarted` that opened the cycle — exactly as every
+      // other board-cycle step's is, and no party is claimed when the batch
+      // delivered no boundary.
+      //
+      // An item that reports no Gem type presents nothing of its own: there is no
+      // count to show, so it opens no step and joins no readout (`§3.2.29` item
+      // 8 — a missing or malformed item is skipped).
+      if (event.gems.length === 0) {
+        return null;
+      }
+
+      return {
+        actor: boardActionActor ?? 'swap',
+        action: 'gem-summary',
+        kind: 'gem-summary',
+        detail: 'gem summary',
+      };
   }
 }
 

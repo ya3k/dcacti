@@ -1,6 +1,14 @@
 # Core Game Rules
 
-**Version:** 3.9 (§17 step 18a's actor-relative resource list reconciled with **TASK-299**: a DEF-Gem match generates a temporary **DEF stat buff** for the acting actor (`COMBAT_RULES.md` §2, §5.4.6, §5.5.6), not a Shield; the order of §17 is unchanged — no step is added, removed, or reordered, and HP/POWER/ATK behavior is untouched. Prior 3.8: §3 item 4, §6, §7, §12, §14, §17 step 15, step 18d reconciled per TASK-287 under operator decisions OD-1–OD-7: Special Gems are removed entirely from gameplay — Match-4, Match-5, and L/T patterns are valid matches that create no board objects and gain no special resource multipliers; §7 Special Gem Rules is retired; match-tier multipliers are retired with resource formulas governed by `COMBAT_RULES.md` §2 and `MATCH3_RULES.md` §5.7; attack eligibility across Player and Boss is gated strictly on a confirmed valid ATK-gem match on the acting entity's own resolution, retiring `ClearedGemCounts.Atk` as an eligibility predicate. Prior 3.7: (§16 gains `CascadeStepResolved` per the Operator Decision approving TASK-278 A-1(i) and A-4: the detection pass's gravity+spawn transition is reported by one additive Battle Event inside the round's existing single `ReceiveEvents` batch, emitted once per recorded pass after that pass's Gravity and Spawn have completed, with `passDepth`, `dropMoves` and `spawnedGems` and no board; the canonical event list gains one name and no other list entry, step, or gameplay value moves. Prior 3.6 (§17 gains the playable-board invariant statement per ADR-026 / TASK-267: the committed board of a non-terminal Round must contain at least one legal match-producing adjacent swap, evaluated on the finished board after step 18 and step 19a and before the `GAME_STATE.md` §5.1 write-back, with terminal Rounds exempt; the paragraph adds and reorders no step. Prior 3.5 (§1.3, §2, §14, §15, §17 updated per ADR-026 / TASK-259: Player and Boss share the one 8×8 Match-3 board; both sides act by making valid swaps; cell type determines effect; acting side determines ownership and target; attack damage is strictly gated on confirmed ATK-gem matches (D1); default fallback basic attacks are retired (step 18c); Boss skills deal zero direct damage (D3); Boss SkillCharge charges exclusively from Boss POWER matches (D2); Turn advances once per committed atomic round (D4). Prior 3.4: §11 and §17 — the Card-cast restriction approved by `TASK-191`
+**Version:** 3.10 (§16's canonical event list gains `MatchedGemSummary` — one
+additive, presentation-only Battle Event that reports, once per committed board
+action, how many Gems of each Gem type that action's board cycle matched. It is
+emitted after the cycle's whole cascade resolution and adds no step, no ordering
+change, and no gameplay value; its meaning and payload are owned by
+`GAME_EVENTS.md` §2 and its wire schema by `SIGNALR_PROTOCOL.md` §3.2.29. It is
+reporting of the matched-Gem accounting `COMBAT_RULES.md` §2 item 6 already
+defines, and it feeds no pool, no damage, no heal, no DEF buff, no Power gain, and
+no Boss SkillCharge. Prior 3.9: (§17 step 18a's actor-relative resource list reconciled with **TASK-299**: a DEF-Gem match generates a temporary **DEF stat buff** for the acting actor (`COMBAT_RULES.md` §2, §5.4.6, §5.5.6), not a Shield; the order of §17 is unchanged — no step is added, removed, or reordered, and HP/POWER/ATK behavior is untouched. Prior 3.8: §3 item 4, §6, §7, §12, §14, §17 step 15, step 18d reconciled per TASK-287 under operator decisions OD-1–OD-7: Special Gems are removed entirely from gameplay — Match-4, Match-5, and L/T patterns are valid matches that create no board objects and gain no special resource multipliers; §7 Special Gem Rules is retired; match-tier multipliers are retired with resource formulas governed by `COMBAT_RULES.md` §2 and `MATCH3_RULES.md` §5.7; attack eligibility across Player and Boss is gated strictly on a confirmed valid ATK-gem match on the acting entity's own resolution, retiring `ClearedGemCounts.Atk` as an eligibility predicate. Prior 3.7: (§16 gains `CascadeStepResolved` per the Operator Decision approving TASK-278 A-1(i) and A-4: the detection pass's gravity+spawn transition is reported by one additive Battle Event inside the round's existing single `ReceiveEvents` batch, emitted once per recorded pass after that pass's Gravity and Spawn have completed, with `passDepth`, `dropMoves` and `spawnedGems` and no board; the canonical event list gains one name and no other list entry, step, or gameplay value moves. Prior 3.6 (§17 gains the playable-board invariant statement per ADR-026 / TASK-267: the committed board of a non-terminal Round must contain at least one legal match-producing adjacent swap, evaluated on the finished board after step 18 and step 19a and before the `GAME_STATE.md` §5.1 write-back, with terminal Rounds exempt; the paragraph adds and reorders no step. Prior 3.5 (§1.3, §2, §14, §15, §17 updated per ADR-026 / TASK-259: Player and Boss share the one 8×8 Match-3 board; both sides act by making valid swaps; cell type determines effect; acting side determines ownership and target; attack damage is strictly gated on confirmed ATK-gem matches (D1); default fallback basic attacks are retired (step 18c); Boss skills deal zero direct damage (D3); Boss SkillCharge charges exclusively from Boss POWER matches (D2); Turn advances once per committed atomic round (D4). Prior 3.4: §11 and §17 — the Card-cast restriction approved by `TASK-191`
 Q-4 (OPTION B) is recorded: §11 gains item 4 stating that a Card cast is an
 **auxiliary action within the current Turn** — it does not increment `Turn`, does
 not resolve the board, does not independently trigger the Boss response, and is
@@ -340,7 +348,7 @@ detail and this list moves there):
 BattleStarted, TurnStarted, TurnEnded
 SwapStarted, SwapResolved
 MatchCreated, MatchResolved, CascadeCreated, ComboChanged, GemMatched,
-CascadeStepResolved
+CascadeStepResolved, MatchedGemSummary
 PowerChanged
 PassiveCharged, PassiveTriggered
 RelicTriggered
@@ -349,6 +357,18 @@ DamageCalculated, DamageDealt, DamageTaken
 BossSkillCast
 BattleWon, BattleLost
 ```
+
+`MatchedGemSummary` is the canonical name of the one **per-board-cycle matched-Gem
+report**: how many Gems of each Gem type the acting side matched across every
+cascade pass of that cycle, counted once per cleared cell. It is emitted once per
+committed board action — the Player's committed Swap and the Boss Response
+Phase's board action — after that cycle's whole cascade resolution and inside the
+round's existing single `ReceiveEvents` batch. It reports the accounting that
+already exists (`COMBAT_RULES.md` §2 item 6; `MATCH3_RULES.md` §5.7, §5.8.2) and
+creates no value of its own: it is not damage, healing, DEF buff magnitude, Power
+gain, or Boss SkillCharge. Its meaning and payload are owned by `GAME_EVENTS.md`
+§2; its wire schema by `SIGNALR_PROTOCOL.md` §3.2.29; the cascade cycle it closes
+by `MATCH3_RULES.md` §4.
 
 `CascadeStepResolved` was added to this list by the Operator Decision approving
 TASK-278 A-1(i) and A-4 ("Approve the addition of `CascadeStepResolved` to the

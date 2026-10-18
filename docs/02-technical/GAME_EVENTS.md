@@ -1,6 +1,13 @@
 # Game Events
 
-**Version:** 2.16 (§1.1, §1.3, §2, §3 reconciled per `TASK-289` and `ADR-028`: Special Gems are retired from event definitions and payloads following operator design decisions OD-1 through OD-7. `MatchCreated` removes created special gems; `GemMatched` removes consumed special gems. All event definitions align with match-only resolution without Special Gem activation or detonation. Prior 2.15: §1.1, §1, and §2 updated per the Operator Decision approving TASK-278 A-1(i) and A-4: `CascadeStepResolved` is defined — one additive Battle Event reporting a detection pass's completed Gravity and Spawn, with `passDepth`, `dropMoves` and `spawnedGems`, emitted as that pass's last item inside the round's existing single `ReceiveEvents` batch, and emitting nothing for the terminating pass. **No other event, payload member, ordering rule of an existing event, delivery path, or gameplay rule is changed**: the cycle's own order is unchanged and one pass-closing report is placed on it. Prior 2.14: (§3 item 8 extended per ADR-026 / TASK-267: the operation that emits no Battle Event has a **second** documented case — `MATCH3_RULES.md` §1.6's commit-boundary board recovery — recorded alongside the Boss Response phase's deadlock reshuffle, as the same deterministic regeneration at a second evaluation point. **No event, payload member, ordering rule, delivery path, game rule or implementation is changed**: the item's rule is unchanged and only its example set is completed, so the closed discriminator set (`SIGNALR_PROTOCOL.md` §3.2.2) and `GAME_RULES.md` §16 remain exactly as they were (TASK-268). Prior 2.13 (§3 item 8 added per TASK-265: the `BoardReshuffled` event `ADR-026` §8 promised is recorded as **not existing** — the shared board's deadlock reshuffle is a server-internal operation of the Boss Response phase, it emits no Battle Event, and the board that follows from it reaches the client as the Round's committed board in that Round's single state push. **No event, payload member, ordering rule, delivery path, game rule or implementation is changed**: `GAME_RULES.md` §16, §2 of this document, `SIGNALR_PROTOCOL.md` §3.2.2's closed discriminator set and the code already agree that the event does not exist; only the document that promised it (`ADR-026` §8) is corrected, and this document's own §3 now records the absence and the path a future event would have to take. Prior 2.12: §1 updated per ADR-026 / TASK-259: Event ordering synchronized with shared-board round execution — damage events occur iff acting actor produced a valid ATK-gem match (D1); Boss response phase incorporates Boss board swap and cascades; Boss skill deals zero direct damage (D3); fixed basic attack fallback retired. Prior 2.11: §2 `PowerChanged` reconciled with the TASK-150 Product Owner
+**Version:** 2.17 (§1, §1.1, §2 extended: `MatchedGemSummary` is defined — one
+additive Battle Event reporting, once per committed board action, how many Gems of
+each Gem type that action's board cycle matched across all of its cascade passes,
+emitted as the cycle's last item after its whole cascade resolution. It reports
+the existing matched-Gem accounting (`COMBAT_RULES.md` §2 item 6,
+`MATCH3_RULES.md` §5.7, §5.8.2) and carries no damage, healing, DEF buff, Power,
+or Boss SkillCharge value. **No other event, payload member, ordering rule,
+delivery path, or gameplay rule is changed.** Prior 2.16: (§1.1, §1.3, §2, §3 reconciled per `TASK-289` and `ADR-028`: Special Gems are retired from event definitions and payloads following operator design decisions OD-1 through OD-7. `MatchCreated` removes created special gems; `GemMatched` removes consumed special gems. All event definitions align with match-only resolution without Special Gem activation or detonation. Prior 2.15: §1.1, §1, and §2 updated per the Operator Decision approving TASK-278 A-1(i) and A-4: `CascadeStepResolved` is defined — one additive Battle Event reporting a detection pass's completed Gravity and Spawn, with `passDepth`, `dropMoves` and `spawnedGems`, emitted as that pass's last item inside the round's existing single `ReceiveEvents` batch, and emitting nothing for the terminating pass. **No other event, payload member, ordering rule of an existing event, delivery path, or gameplay rule is changed**: the cycle's own order is unchanged and one pass-closing report is placed on it. Prior 2.14: (§3 item 8 extended per ADR-026 / TASK-267: the operation that emits no Battle Event has a **second** documented case — `MATCH3_RULES.md` §1.6's commit-boundary board recovery — recorded alongside the Boss Response phase's deadlock reshuffle, as the same deterministic regeneration at a second evaluation point. **No event, payload member, ordering rule, delivery path, game rule or implementation is changed**: the item's rule is unchanged and only its example set is completed, so the closed discriminator set (`SIGNALR_PROTOCOL.md` §3.2.2) and `GAME_RULES.md` §16 remain exactly as they were (TASK-268). Prior 2.13 (§3 item 8 added per TASK-265: the `BoardReshuffled` event `ADR-026` §8 promised is recorded as **not existing** — the shared board's deadlock reshuffle is a server-internal operation of the Boss Response phase, it emits no Battle Event, and the board that follows from it reaches the client as the Round's committed board in that Round's single state push. **No event, payload member, ordering rule, delivery path, game rule or implementation is changed**: `GAME_RULES.md` §16, §2 of this document, `SIGNALR_PROTOCOL.md` §3.2.2's closed discriminator set and the code already agree that the event does not exist; only the document that promised it (`ADR-026` §8) is corrected, and this document's own §3 now records the absence and the path a future event would have to take. Prior 2.12: §1 updated per ADR-026 / TASK-259: Event ordering synchronized with shared-board round execution — damage events occur iff acting actor produced a valid ATK-gem match (D1); Boss response phase incorporates Boss board swap and cascades; Boss skill deals zero direct damage (D3); fixed basic attack fallback retired. Prior 2.11: §2 `PowerChanged` reconciled with the TASK-150 Product Owner
 decisions D-1–D-8: the `source` value set is now the four values
 `"match"`, `"card"`, `"relic"`, and `"boss"`; the owning-stage emission rule
 replaces the stale "the `"match"` and `"card"` sources remain their own stages'"
@@ -104,6 +111,7 @@ SwapResolved
   ComboChanged
   GemMatched               (once per Gem consumed)
   CascadeStepResolved      (once per recorded pass, last in that pass — §1.1 item 8)
+MatchedGemSummary          (once per board cycle, after its whole cascade — §2)
 PowerChanged
 PassiveCharged             (once per Match, per PASSIVE_RULES.md §2)
 PassiveTriggered            (only when threshold crossed)
@@ -117,6 +125,7 @@ DamageTaken                     (player→boss, only iff valid ATK match produce
   SwapStarted                          (Boss move on shared board, actor="boss")
   SwapResolved                         (Boss swap resolved)
   [Boss Match / Cascade cycle: MatchCreated, GemMatched, etc.]
+  MatchedGemSummary                    (once, after the Boss cycle's whole cascade)
   PassiveCharged / PassiveTriggered   (Boss Passive, source="boss")
   BossSkillCast                        (only when Skill fires; zero direct damage, D3)
   DamageCalculated                     (boss→player, only iff Boss produced valid ATK match; D1)
@@ -187,6 +196,18 @@ committed Swap                                  MATCH3_RULES.md §2.1.6
    the transition that closes the pass; it opens nothing, reorders nothing, and
    repeats no other item of the cycle. What it carries and what it deliberately
    omits is §2's; its wire schema is `SIGNALR_PROTOCOL.md` §3.2.28.
+9. **A board cycle is closed by its `MatchedGemSummary`.** The event is emitted
+   **once per committed board action** — never once per pass, per Match, or per
+   `CascadeCreated` — and it is that cycle's **last** item: after the cycle's
+   last recorded pass's `CascadeStepResolved`, and therefore before the
+   following stage's events (the Player cycle's step 10–17 items, the Boss
+   Response's step 18b–18d items). It aggregates every pass of that one cycle
+   and nothing else, so two cycles in one round (the Player's and the Boss
+   Response Phase's, `ADR-026` §2) produce two summaries whose counts are never
+   combined. It reports counts only — not damage, healing, DEF buff magnitude,
+   Power, or Boss SkillCharge — and it is the only event that reports a
+   per-cycle matched-Gem total. What it carries is §2's; its wire schema is
+   `SIGNALR_PROTOCOL.md` §3.2.29.
 
 ## 1.2 Rejected Swap — No Events
 
@@ -433,6 +454,69 @@ transition**.
    reports has completed Gravity and Spawn. No per-pass board, no mid-resolution
    push, and no second batch for one round is introduced by it
    (`GAME_STATE.md` §3, §5.1 item 2).
+
+## MatchedGemSummary
+```text
+Trigger:  One committed board action's whole cascade resolution has completed
+          (MATCH3_RULES.md §4.3 — the board is stable and the action's passes are final)
+Payload:  gems[] (gemType, count) — one entry per Gem type the cycle matched,
+          in the fixed order ATK, DEF, HP, POWER (MATCH3_RULES.md §1.1)
+```
+
+It is the report of **how many Gems of each type one actor's board cycle
+matched**. It is the smallest event that exposes, for presentation, the
+per-cycle matched-Gem total the resource stage already computes
+(`COMBAT_RULES.md` §2 item 6; `MATCH3_RULES.md` §5.7, §5.8.2) — not a second
+accounting of its own, and not a combat report.
+
+1. **It aggregates exactly one board cycle.** A board cycle is one committed
+   board action's Match-3 resolution: the Player's committed Swap
+   (`GAME_RULES.md` §17 steps 2–8) or the Boss Response Phase's own step-18a
+   board action (`§17` step 18a, `ADR-026` §2). The counts are the sum over
+   **every pass of that cycle**, with the cycle's matching described by
+   `MATCH3_RULES.md` §4.2 and §5.7 item 7 (a Cascade accumulates), and each
+   cleared cell counted once (`MATCH3_RULES.md` §3.3 item 3, §5.7 item 2): a
+   cell named by two shapes of one pass is one cell, and a later pass's new
+   cells add. It therefore equals that action's own cleared-Gem accounting and
+   no wider total.
+2. **It is emitted once per cycle, and closes it.** Exactly one item per
+   committed board action, and it is that cycle's **last** item: after the
+   cycle's last recorded pass's `CascadeStepResolved` and before the following
+   stage's events (`§1.1` item 9). It is **never** emitted per pass, per Match,
+   or per `CascadeCreated`, and a rejected action emits none at all — the
+   rejection emits nothing (`§1.2`, `MATCH3_RULES.md` §2.1.5 item 6) and has no
+   cycle to close.
+3. **Two cycles, two summaries, never one combined total.** A round carries the
+   Player's cycle and the Boss Response Phase's (`ADR-026` §2), and each emits
+   its own item with only its own side's counts (`§1.1` item 9). Nothing here
+   sums across actors, and the event carries no side member: the acting side is
+   the delivered `SwapStarted.actor` that opens the cycle it closes, exactly as
+   for the cycle's other board events (`§1.1` item 3, `SIGNALR_PROTOCOL.md`
+   §3.2.26 item 2). **The counts are not mixed, and a round in which the Boss
+   never takes its board action emits only the Player's.**
+4. **Zero-count Gem types are absent, not zero.** An entry exists only for a Gem
+   type the cycle actually matched, and every `count` is therefore `>= 1`. The
+   payload's member set and the empty case are the wire owner's
+   (`SIGNALR_PROTOCOL.md` §3.2.5, §3.2.29 item 2).
+5. **The values are read, not re-derived.** `count(type)` is the number of
+   unique matched cells of that type the cycle cleared, and the four entries are
+   the same four counts the action's resource generation was computed from
+   (`COMBAT_RULES.md` §2 item 6) — read and reported, never re-counted from the
+   board, a state snapshot, or a client-side match rule (`GAME_RULES.md` §18,
+   `AGENTS.md` §10). The member order is the fixed display/read order of
+   `MATCH3_RULES.md` §1.1 and is not an implementation choice.
+6. **It reports counts only.** It carries no damage, healing, DEF buff
+   magnitude, Power delta or resulting Power, Boss SkillCharge, Combo, Match
+   count, board, or actor. Those are separate gameplay effects with their own
+   events or state (`§2` `DamageCalculated`/`DamageDealt`/`DamageTaken`,
+   `PowerChanged`; `GAME_STATE.md` §2.4.3 for SkillCharge) and are not
+   substitutes for a matched-Gem count; presenting them from this event would
+   report a value it does not carry.
+7. **It is presentation input, not gameplay input.** No stage consumes it, it
+   changes no state and no counter, and it is not a second source of any
+   authoritative value (`§3` item 6, `SIGNALR_PROTOCOL.md` §3.2.29 item 6). It
+   adds no message, no method, no subscription, and no state member: it is an
+   item of the round's existing single `ReceiveEvents` batch (`§3` item 5).
 
 ## PowerChanged
 ```text

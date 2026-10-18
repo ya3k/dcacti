@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { BattleScene, BATTLE_ORCHESTRATION_LEGAL_TRANSITIONS } from '../src/game/scenes/BattleScene';
+import { gemMatchSummaryBannerMs } from '../src/game/presentation/GemMatchSummaryBanner';
 import {
   adaptPresentedEvent,
   resolveBossSkillDisplayName,
@@ -735,6 +736,16 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
       let size: { width: number; height: number } | null = null;
       let interactive = false;
       let explicitHitArea: { x: number; y: number; width: number; height: number } | null = null;
+      /**
+       * Phaser's `GameObject` transform state, as a container carries it.
+       *
+       * A transient panel — the Gem-match summary — animates the container it owns
+       * (its own enter/exit beats), so the mock models what Phaser exposes on a
+       * `Container`: the same `setAlpha` / `setScale` a `Text` and a `Rectangle`
+       * already carry here.
+       */
+      let alpha = 1;
+      let scale = 1;
 
       /** Handlers per Phaser event name; Phaser emits to every listener. */
       const inputHandlers = new Map<
@@ -796,6 +807,28 @@ function createSceneHarness(options: SceneHarnessOptions = {}) {
         setSize: (width: number, height: number) => {
           size = { width, height };
           return obj;
+        },
+        /** Phaser's `GameObject#setAlpha`, for a panel's own enter/exit beats. */
+        setAlpha: (next: number) => {
+          alpha = next;
+          return obj;
+        },
+        get alpha() {
+          return alpha;
+        },
+        set alpha(next: number) {
+          alpha = next;
+        },
+        /** Phaser's `GameObject#setScale`. */
+        setScale: (next: number) => {
+          scale = next;
+          return obj;
+        },
+        get scale() {
+          return scale;
+        },
+        set scale(next: number) {
+          scale = next;
         },
         /** The declared extent, or `null` when `setSize` was never called. */
         get width() {
@@ -15109,6 +15142,291 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
           resolveAction();
         });
       });
+    });
+  });
+
+  describe('MatchedGemSummary — one gem-count summary per board cycle (SIGNALR_PROTOCOL.md §3.2.29)', () => {
+    /** The banner's own lifetime, as the component declares it. */
+    const PANEL_MS = gemMatchSummaryBannerMs();
+
+    /** The phase-clock beat a phase is held after its animation. */
+    const BEAT_MS = 80;
+
+    /** One delivered summary item for the Player's cycle. */
+    const PLAYER_SUMMARY = {
+      type: 'MatchedGemSummary',
+      gems: [
+        { gemType: 'ATK', count: 3 },
+        { gemType: 'HP', count: 2 },
+      ],
+    };
+
+    /** One delivered summary item for the Boss Response phase's cycle. */
+    const BOSS_SUMMARY = {
+      type: 'MatchedGemSummary',
+      gems: [{ gemType: 'DEF', count: 1 }],
+    };
+
+    /**
+     * A round with both actors' board cycles, each closed by its own summary —
+     * delivered in the contract's own order
+     * (`GAME_EVENTS.md` §1.1 item 9, `SIGNALR_PROTOCOL.md` §3.2.29 item 5).
+     */
+    const SUMMARY_BOTH_TURNS: unknown[] = [
+      { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+      { type: 'SwapResolved', outcome: 'committed' },
+      { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      PLAYER_SUMMARY,
+      { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+      { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
+      { type: 'SwapStarted', actor: 'boss', fromCell: 27, toCell: 28 },
+      { type: 'SwapResolved', outcome: 'committed' },
+      { type: 'MatchCreated', shape: 'Straight', cells: [32, 33, 34], gemType: 'DEF', cascadeDepth: 1 },
+      BOSS_SUMMARY,
+      { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
+      { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
+    ];
+
+    /** The timeline the scene built, read before it is released. */
+    interface SummaryPhaseLike {
+      kind: string;
+      detail: string;
+      actor: string | null;
+      holdMs: number;
+      events: unknown[];
+    }
+
+    function builtPhases(ctx: object): SummaryPhaseLike[] {
+      return [...(field<SummaryPhaseLike[] | null>(ctx, 'presentationTimeline') ?? [])];
+    }
+
+    /** How many times one line has been created on screen. */
+    function textCount(
+      harness: ReturnType<typeof createSceneHarness>,
+      text: string
+    ): number {
+      return harness.texts.filter((entry) => entry.text === text).length;
+    }
+
+    /** Which lines are on screen, as the player reads them. */
+    function renderedLines(harness: ReturnType<typeof createSceneHarness>): string[] {
+      return harness.texts.map((entry) => entry.text);
+    }
+
+    it('1. plays exactly one summary panel per board cycle, after that cycle’s cascade', () => {
+      const { harness, scene, ctx } = createBattle();
+
+      push(harness, battleState({ sequence: 1, turn: 2 }));
+      emitBatch(harness, 1, SUMMARY_BOTH_TURNS);
+
+      playUntil(harness, ctx, 500);
+
+      // One panel per actor, each read from the delivered item: the Player's cycle
+      // closes before the Boss's boundary, and the Boss's closes after its own.
+      expect(playedPhases(ctx)).toEqual([
+        'swap 20->21',
+        'match depth=1',
+        'gem summary',
+        'damage player->boss',
+        'banner BOSS TURN',
+        'swap 27->28',
+        'match depth=1',
+        'gem summary',
+        'settle',
+        'retaliation boss->player',
+      ]);
+
+      const phases = playedPhases(ctx);
+      expect(phases.indexOf('gem summary')).toBeGreaterThan(phases.indexOf('match depth=1'));
+      expect(phases.lastIndexOf('gem summary')).toBeGreaterThan(
+        phases.indexOf('banner BOSS TURN')
+      );
+
+      // Two panels on screen and no third: exactly one per delivered item.
+      expect(textCount(harness, 'PLAYER GEMS MATCHED')).toBe(1);
+      expect(textCount(harness, 'BOSS GEMS MATCHED')).toBe(1);
+
+      // The counts are the delivered ones, and a type the item omitted has no chip.
+      const lines = renderedLines(harness);
+      expect(lines).toContain('×3');
+      expect(lines).toContain('×2');
+      expect(lines).toContain('×1');
+      expect(lines).not.toContain('×0');
+      // The Player's item named no DEF and the Boss's named no ATK: each panel draws
+      // only its own item's chips (`SIGNALR_PROTOCOL.md` §3.2.29 item 3), and the
+      // counts are never combined (item 5).
+      expect(lines).not.toContain('×5');
+      expect(lines).not.toContain('×4');
+
+      // The timeline finished: the guard is released.
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(harness.pendingTweenCount()).toBe(0);
+    });
+
+    it('2. holds the summary phase for the panel’s own beats and keeps input locked until it completes', () => {
+      const { harness, scene, ctx } = createBattle();
+
+      push(harness, battleState({ sequence: 1, turn: 2 }));
+      emitBatch(harness, 1, SUMMARY_BOTH_TURNS);
+
+      // The summary phase's own hold is derived from the component's lifetime, never
+      // from a literal beside it.
+      const summaryPhases = builtPhases(ctx).filter((phase) => phase.kind === 'gem-summary');
+      expect(summaryPhases).toHaveLength(2);
+      expect(summaryPhases[0].holdMs).toBe(PANEL_MS + BEAT_MS);
+
+      // Play up to and including the Player's summary phase: it is on screen, and
+      // the resolution still holds input while it is.
+      playUntil(harness, ctx, 3);
+      expect(playedPhases(ctx)[2]).toBe('gem summary');
+      expect(textCount(harness, 'PLAYER GEMS MATCHED')).toBe(1);
+      expect(inputLocked(scene, ctx)).toBe(true);
+
+      // The next phase begins only once the summary phase's pacing has completed.
+      playUntil(harness, ctx, 4);
+      expect(playedPhases(ctx)[3]).toBe('damage player->boss');
+
+      playUntil(harness, ctx, 500);
+      expect(inputLocked(scene, ctx)).toBe(false);
+    });
+
+    it('3. presents no panel for a cycle whose delivered boundary named no side', () => {
+      const { harness, ctx } = createBattle();
+
+      push(harness, battleState({ sequence: 1, turn: 2 }));
+      emitBatch(harness, 1, [
+        { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+        PLAYER_SUMMARY,
+      ]);
+
+      playUntil(harness, ctx, 500);
+
+      // The step still exists — the item is delivered — but no title is invented for
+      // a cycle whose side the batch never named (`AGENTS.md` §10).
+      expect(playedPhases(ctx)).toContain('gem summary');
+      expect(textCount(harness, 'PLAYER GEMS MATCHED')).toBe(0);
+      expect(textCount(harness, 'BOSS GEMS MATCHED')).toBe(0);
+    });
+
+    it('4. presents no summary phase for an item that names no Gem type', () => {
+      const { harness, ctx } = createBattle();
+
+      push(harness, battleState({ sequence: 1, turn: 2 }));
+      emitBatch(harness, 1, [
+        { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+        { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+        { type: 'MatchedGemSummary' },
+      ]);
+
+      playUntil(harness, ctx, 500);
+
+      expect(playedPhases(ctx)).not.toContain('gem summary');
+      expect(textCount(harness, 'PLAYER GEMS MATCHED')).toBe(0);
+    });
+
+    it('5. presents no second summary for a duplicate or older batch', () => {
+      const { harness, ctx } = createBattle();
+
+      push(harness, battleState({ sequence: 1, turn: 2 }));
+      emitBatch(harness, 1, SUMMARY_BOTH_TURNS);
+      playUntil(harness, ctx, 500);
+
+      const played = playedPhases(ctx).length;
+
+      // The same resolution, delivered again: already presented, so no phase, no
+      // panel, and no second count.
+      emitBatch(harness, 1, SUMMARY_BOTH_TURNS);
+      playUntil(harness, ctx, 500);
+
+      expect(playedPhases(ctx)).toHaveLength(played);
+      expect(textCount(harness, 'PLAYER GEMS MATCHED')).toBe(1);
+    });
+
+    it('6. presents no summary for a stale (ahead) or superseded (behind) batch', () => {
+      // A batch delivered without its matching push (`emitUnmatchedBattleEvents` is
+      // the harness's raw path): the held state does not represent it, so the scene
+      // refuses it whole — no timeline, no phase, no panel.
+      const ahead = createBattle();
+      push(ahead.harness, battleState({ sequence: 1, turn: 2 }));
+      ahead.harness.emitUnmatchedBattleEvents({
+        battleId: BATTLE_ID,
+        serverSequence: 2,
+        events: SUMMARY_BOTH_TURNS,
+      } as never);
+      playUntil(ahead.harness, ahead.ctx, 500);
+      expect(playedPhases(ahead.ctx)).toEqual([]);
+      expect(textCount(ahead.harness, 'PLAYER GEMS MATCHED')).toBe(0);
+
+      const behind = createBattle();
+      push(behind.harness, battleState({ sequence: 2, turn: 3 }));
+      behind.harness.emitUnmatchedBattleEvents({
+        battleId: BATTLE_ID,
+        serverSequence: 1,
+        events: SUMMARY_BOTH_TURNS,
+      } as never);
+      playUntil(behind.harness, behind.ctx, 500);
+      expect(playedPhases(behind.ctx)).toEqual([]);
+      expect(textCount(behind.harness, 'PLAYER GEMS MATCHED')).toBe(0);
+    });
+
+    it('7. presents no summary for a batch a recovery snapshot already superseded', () => {
+      const { harness, ctx } = createBattle();
+
+      push(harness, battleState({ sequence: 1, turn: 2 }));
+
+      // The snapshot adopts the newer sequence, so the delayed batch describes a
+      // resolution the state already contains: it is refused rather than replayed
+      // (`ADR-008`, `SIGNALR_PROTOCOL.md` §7).
+      recovery(harness, battleState({ sequence: 2, turn: 3 }));
+      emitBatch(harness, 1, SUMMARY_BOTH_TURNS);
+      playUntil(harness, ctx, 500);
+
+      expect(playedPhases(ctx)).toEqual([]);
+      expect(textCount(harness, 'PLAYER GEMS MATCHED')).toBe(0);
+    });
+
+    it('8. leaves no panel and no lock behind when a newer state supersedes a playing summary', () => {
+      const { harness, scene, ctx } = createBattle();
+
+      push(harness, battleState({ sequence: 1, turn: 2 }));
+      emitBatch(harness, 1, SUMMARY_BOTH_TURNS);
+
+      // Play into the Player's summary panel: it is on screen and the timeline owns it.
+      playUntil(harness, ctx, 3);
+      expect(textCount(harness, 'PLAYER GEMS MATCHED')).toBe(1);
+      expect(field<unknown>(ctx, 'activeGemMatchSummary')).not.toBeNull();
+
+      // A newer authoritative state supersedes the resolution.
+      recovery(harness, battleState({ sequence: 2, turn: 3, board: deliveredBoard(2) }));
+
+      expect(field<unknown>(ctx, 'activeGemMatchSummary')).toBeNull();
+      expect(field<unknown[]>(ctx, 'timelineEffects')).toEqual([]);
+      expect(harness.pendingTweenCount()).toBe(0);
+      expect(inputLocked(scene, ctx)).toBe(false);
+      expect(labelsByCell(harness)).toEqual(expectedLabels(2));
+    });
+
+    it('9. presents only the Player’s summary when the Boss cycle never runs', () => {
+      const { harness, ctx } = createBattle();
+
+      push(harness, battleState({ sequence: 1, turn: 2 }));
+      emitBatch(harness, 1, [
+        { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+        { type: 'SwapResolved', outcome: 'committed' },
+        { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+        { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+        { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
+        PLAYER_SUMMARY,
+        { type: 'BattleWon', outcome: 'victory', finalBossHp: 0, finalPlayerHp: 850 },
+      ]);
+
+      playUntil(harness, ctx, 500);
+
+      const phases = playedPhases(ctx);
+      expect(phases.filter((phase) => phase === 'gem summary')).toHaveLength(1);
+      expect(phases[phases.length - 1]).toBe('outcome victory');
+      expect(textCount(harness, 'PLAYER GEMS MATCHED')).toBe(1);
+      expect(textCount(harness, 'BOSS GEMS MATCHED')).toBe(0);
     });
   });
 

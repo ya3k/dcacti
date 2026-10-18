@@ -5,6 +5,10 @@ import { readPreservedLoadout } from '../state/PreservedLoadout';
 import { MVP_BOSSES } from './LobbyScene';
 import type { GameRuntime } from '../runtime/GameRuntime';
 import type { GameRuntimeState } from '../../state/GameRuntimeState';
+import {
+  GemMatchSummaryBanner,
+  gemMatchSummaryBannerMs,
+} from '../presentation/GemMatchSummaryBanner';
 import type {
   BattleEventsEnvelope,
   BattleStateMetadata,
@@ -1365,6 +1369,17 @@ export class BattleScene extends Phaser.Scene {
    */
   private activeTurnBanner: Phaser.GameObjects.Text | null = null;
   /**
+   * Currently active Gem-match summary panel, tracked so an aborted timeline can
+   * destroy it and so a second one can never stack on the first
+   * (`GemMatchSummaryBanner`).
+   *
+   * It is a **separate** presentation from the turn banner: a different component,
+   * a different phase, and a different position, so the two never share an object,
+   * a field, or a hold (`playTurnBanner` cannot destroy it, and it cannot replace a
+   * banner).
+   */
+  private activeGemMatchSummary: GemMatchSummaryBanner | null = null;
+  /**
    * Every transient effect the in-flight timeline has started and not yet had
    * released: board highlights and floating numbers.
    *
@@ -1520,6 +1535,7 @@ export class BattleScene extends Phaser.Scene {
       this.activeTurnBanner.destroy();
       this.activeTurnBanner = null;
     }
+    this.clearActiveGemMatchSummary();
     // The developer Move Log belongs to the battle that just ended: its rows, its
     // row counter and its recorded sequence start empty for this run. The panel's
     // own objects are drawn by `drawRuntimeShell` below.
@@ -1739,6 +1755,7 @@ export class BattleScene extends Phaser.Scene {
       this.activeTurnBanner.destroy();
       this.activeTurnBanner = null;
     }
+    this.clearActiveGemMatchSummary();
     // The developer Move Log: the engine has already destroyed the panel's
     // container and every text object in it with the display list, so the
     // references are dropped and the buffer is cleared — a scene that is shut down
@@ -2538,6 +2555,7 @@ export class BattleScene extends Phaser.Scene {
       this.activeTurnBanner.destroy();
       this.activeTurnBanner = null;
     }
+    this.clearActiveGemMatchSummary();
   }
 
   /**
@@ -5277,6 +5295,16 @@ export class BattleScene extends Phaser.Scene {
         // hold, so the next phase cannot begin over a banner still on screen
         // (TASK-275 §6.6).
         return TURN_BANNER_TOTAL_MS;
+      case 'gem-summary':
+        // The summary panel's own three beats, or a readout that joined its phase
+        // (`PowerChanged` and a Pet Passive change are `feedback` steps, so a
+        // summary phase that receives one must outlast that readout too). The
+        // panel's total is the floor; the delivered events' own effects can only
+        // lengthen the hold.
+        return Math.max(
+          gemMatchSummaryBannerMs(),
+          BattleScene.phasePresentationEffectMs(events, 0)
+        );
       case 'swap':
         return SWAP_TWEEN_MS;
       case 'gravity-drop':
@@ -5363,6 +5391,11 @@ export class BattleScene extends Phaser.Scene {
    * (`GAME_EVENTS.md` §1). A pass's own Fall and Refill steps belong to that cycle
    * too: the committed board is applied after the round's last of them, never in the
    * middle of a pass.
+   *
+   * A cycle's `gem-summary` step belongs to it as well: it is the cycle's own closing
+   * step (`SIGNALR_PROTOCOL.md` §3.2.29 item 5), so the settle is placed after it —
+   * the board convergence never lands between a cycle's cascade resolution and the
+   * summary that reports it.
    */
   private static lastBoardCyclePhaseIndex(phases: readonly PresentationPhase[]): number {
     let last = -1;
@@ -5375,7 +5408,8 @@ export class BattleScene extends Phaser.Scene {
         kind === 'match' ||
         kind === 'cascade' ||
         kind === 'gravity-drop' ||
-        kind === 'refill-spawn'
+        kind === 'refill-spawn' ||
+        kind === 'gem-summary'
       ) {
         last = index;
       }
@@ -5518,6 +5552,12 @@ export class BattleScene extends Phaser.Scene {
         // client never held would draw a board neither delivered nor derived.
         this.playRefillSpawn(phase.events);
         break;
+      case 'gem-summary':
+        // The cycle's own closing step: the counts the server reported for the
+        // actor whose board cycle this phase closes (`SIGNALR_PROTOCOL.md`
+        // §3.2.29). It presents nothing else and computes nothing.
+        this.presentGemMatchSummary(phase);
+        break;
       case 'settle':
         if (this.currentBattleState) {
           this.renderBoard(this.currentBattleState.board, true);
@@ -5575,6 +5615,85 @@ export class BattleScene extends Phaser.Scene {
     if ((phase.kind === 'match' || phase.kind === 'cascade') && phase.boardBacked) {
       this.presentMatchDestruction(phase.events);
     }
+  }
+
+  /**
+   * Presents one delivered `MatchedGemSummary` — the counts the actor's own board
+   * cycle matched (`SIGNALR_PROTOCOL.md` §3.2.29, `GAME_EVENTS.md` §1.1 item 9).
+   *
+   * **One reusable component for both actors.** The panel, its chips, its palette,
+   * and its beats come from `GemMatchSummaryBanner`; only the title line and the
+   * accent colour differ, and both come from the side the delivered boundary
+   * named (`TURN_BANNER_COLOR` is the scene's one side-colour vocabulary). No
+   * second rendering exists for the Player and none for the Boss.
+   *
+   * **Nothing is derived from the counts.** The chips are the item's own entries,
+   * in the item's own order; a Gem type it did not name has no chip, and no count,
+   * total, damage, heal, DEF buff, Power, or SkillCharge value is computed from
+   * them (`§3.2.29` item 8, `AGENTS.md` §10).
+   *
+   * **It is positioned away from the turn banner and held for its own beats.** The
+   * banner sits on the board's centre; this panel sits two rows of cells lower, and
+   * the phase that plays it is held for the panel's whole lifetime
+   * (`trackPhaseAnimation`), so neither presentation can begin over the other and
+   * input stays locked until it has finished (`isInputLocked`).
+   */
+  private presentGemMatchSummary(phase: PresentationPhase): void {
+    if (!this.feedbackLayer) {
+      return;
+    }
+
+    const summary = phase.events.find((event) => event.type === 'MatchedGemSummary');
+    if (!summary || summary.gems.length === 0) {
+      return;
+    }
+
+    // The side is the delivered boundary's, exactly as it is for the rest of the
+    // cycle's steps. No side is guessed for a batch that delivered no boundary.
+    const actor =
+      phase.actor === 'player' || phase.actor === 'boss' ? phase.actor : null;
+
+    if (actor === null) {
+      return;
+    }
+
+    // One panel at a time, exactly like the turn banner: a second one replaces the
+    // first rather than stacking on it.
+    if (this.activeGemMatchSummary) {
+      this.activeGemMatchSummary.destroy();
+      this.activeGemMatchSummary = null;
+    }
+
+    // The board's centre belongs to the turn banner (cells 27/28's midpoint); the
+    // summary sits two cells lower, so the two presentations never share a
+    // position. Both are display positions and nothing else.
+    const centre = BattleScene.cellCoordinates(27);
+    const below = BattleScene.cellCoordinates(43);
+    const x = (centre.x + below.x) / 2;
+    const y = (centre.y + below.y) / 2;
+
+    const banner = GemMatchSummaryBanner.present({
+      scene: this,
+      layer: this.feedbackLayer,
+      x,
+      y,
+      actor,
+      gems: summary.gems,
+      palette: GEM_PRESENTATION,
+      accentColor: TURN_BANNER_COLOR[actor],
+      tweens: this.tweens,
+    });
+
+    if (!banner) {
+      return;
+    }
+
+    this.activeGemMatchSummary = banner;
+    // The structural half of the pacing rule: the phase cannot complete before the
+    // panel's beats have finished, whatever its declared hold says. The panel is a
+    // timeline-owned effect, cancelled with its timeline by `cancelTimelineEffects`
+    // — the same lifecycle the turn banner has, and separately tracked for it.
+    this.trackPhaseAnimation(banner.totalMs);
   }
 
   /**
@@ -6203,6 +6322,27 @@ export class BattleScene extends Phaser.Scene {
       this.activeTurnBanner.destroy();
       this.activeTurnBanner = null;
     }
+    // The Gem-match summary panel is the second timeline-owned banner: the same
+    // release, on its own reference, so an aborted resolution leaves neither panel
+    // on screen nor a tween running against it.
+    this.clearActiveGemMatchSummary();
+  }
+
+  /**
+   * Destroys the Gem-match summary panel this scene is showing, if any.
+   *
+   * It is the panel's one release point: an aborted or superseded timeline, a
+   * battle replaced on screen, and teardown all drop the panel through it, so no
+   * abandoned summary can survive the resolution that started it (the same
+   * lifecycle the turn banner label has, on its own reference).
+   */
+  private clearActiveGemMatchSummary(): void {
+    if (!this.activeGemMatchSummary) {
+      return;
+    }
+
+    this.activeGemMatchSummary.destroy();
+    this.activeGemMatchSummary = null;
   }
 
   /**

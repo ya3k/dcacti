@@ -1438,6 +1438,7 @@ public class BattleEventEmissionTests
                 "DamageTaken",
                 "Gem",
                 "Match",
+                "MatchedGemSummary",
                 "PassiveCharged",
                 "PassiveTriggered",
                 "PetSkillCast",
@@ -1466,6 +1467,8 @@ public class BattleEventEmissionTests
                      typeof(GemMatchedEvent),
                      typeof(MatchResolution),
                      typeof(CascadeStepResolvedEvent),
+                     typeof(MatchedGemSummaryEvent),
+                     typeof(MatchedGemCount),
                      typeof(GameServer.Domain.Combat.DamageCalculation),
                      typeof(DamageDealtEvent),
                      typeof(DamageTakenEvent),
@@ -1925,7 +1928,10 @@ public class BattleEventEmissionTests
         // per-pass Gravity + Spawn report adds the one name the operator authorized
         // for it — CascadeStepResolved (GAME_EVENTS.md §1.1 item 8, §2;
         // SIGNALR_PROTOCOL.md §3.2.28; ADR-027) — and the Match-3 cycle immediately
-        // above is its home. No
+        // above is its home. The per-board-cycle matched-Gem report adds the one name
+        // GAME_RULES.md §16 gained for it — MatchedGemSummary (GAME_EVENTS.md §1.1
+        // item 9, §2; SIGNALR_PROTOCOL.md §3.2.29) — and the same cycle is its home.
+        // No
         // undocumented name may be added
         // (AGENTS.md §7). In particular no MatchCountChanged, TurnChanged,
         // SequenceChanged, or BoardChanged exists.
@@ -1956,6 +1962,7 @@ public class BattleEventEmissionTests
                 "DamageTaken",
                 "GemMatched",
                 "MatchCreated",
+                "MatchedGemSummary",
                 "PassiveCharged",
                 "PassiveTriggered",
                 "PetSkillCast",

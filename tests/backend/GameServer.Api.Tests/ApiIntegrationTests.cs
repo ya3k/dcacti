@@ -4021,6 +4021,11 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                     // same batch (ADR-027). It is a report of the pass, never a second
                     // *message*: the envelope still carries one batch per round.
                     "CascadeStepResolved",
+                    // §3.2.29: the per-board-cycle matched-Gem report, emitted once per
+                    // committed board action as that cycle's last item in this same
+                    // batch — the Player's and the Boss Response phase's are two
+                    // separate items, and it too is a report, never a second *message*.
+                    "MatchedGemSummary",
                 });
 
             // §3.2.2 item 4 / §3.2.5 item 5: the discriminator is always present and
@@ -4094,6 +4099,10 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                 // `board`, no `actor`, no `clearedCells`, and nothing but the destination
                 // cell and the drawn type inside a `spawnedGems` entry is ever present.
                 "CascadeStepResolved" => new[] { "type", "passDepth", "dropMoves", "spawnedGems" },
+                // §3.2.29: the cycle's per-Gem-type counts. The array is omitted when it
+                // would be empty (§3.2.5 item 1); no `actor`, no board, no cleared
+                // cells, and nothing but the type and its count inside a `gems` entry.
+                "MatchedGemSummary" => new[] { "type", "gems" },
                 _ => throw new InvalidOperationException($"Undocumented event type on the wire: {type}."),
             };
 
@@ -4423,10 +4432,21 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                     .Select(s => new SpawnedGemWireDto(s.CellIndex, GemTypes.ToContractName(s.GemType)))
                     .ToArray()),
 
+            // §3.2.29: the cycle's matched-Gem counts per Gem type, in the payload's
+            // own order and with the types it did not match absent. The expectation
+            // maps the payload's own entries, exactly as the production projection
+            // does, and writes no `actor`, no board, and no combat value.
+            BattleEventType.MatchedGemSummary => BattleEventWireDto.MatchedGemSummary(
+                e.MatchedGemSummary.Gems
+                    .Select(g => new MatchedGemWireDto(
+                        GemTypes.ToContractName(g.GemType),
+                        g.Count))
+                    .ToArray()),
+
             _ => throw new ArgumentOutOfRangeException(
                 nameof(e),
                 e.Type,
-                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.24, §3.2.26–§3.2.28, §3.3)."),
+                "Not one of the documented Battle Event types (SIGNALR_PROTOCOL.md §3.2.2, §3.2.13–§3.2.24, §3.2.26–§3.2.29, §3.3)."),
         };
     }
 

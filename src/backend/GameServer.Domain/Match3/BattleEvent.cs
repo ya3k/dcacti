@@ -317,6 +317,31 @@ public enum BattleEventType
     /// (<c>GAME_STATE.md</c> §3).
     /// </summary>
     CascadeStepResolved = 18,
+
+    /// <summary>
+    /// One committed board action's matched-Gem counts for its whole board cycle
+    /// (<c>GAME_EVENTS.md</c> §1.1 item 9, §2 <c>MatchedGemSummary</c>;
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.29).
+    ///
+    /// Its payload is the cycle's matched-Gem count per Gem type — the same counts
+    /// the action's resource generation was computed from
+    /// (<c>COMBAT_RULES.md</c> §2 item 6, <c>MATCH3_RULES.md</c> §5.7, §5.8.2) —
+    /// with a type the cycle did not match absent rather than zero. It is emitted
+    /// <b>once per committed board action</b> — the Player's committed Swap and
+    /// the Boss Response Phase's step-18a board action
+    /// (<c>GAME_RULES.md</c> §17 step 18a, <c>ADR-026</c> §2) — as that cycle's
+    /// <b>last</b> item: after the cycle's last recorded pass's
+    /// <see cref="CascadeStepResolved"/> and before the following stage's events.
+    /// Never emitted per pass, per Match, or per Cascade, and never for a rejected
+    /// action (it emits nothing at all).
+    ///
+    /// It carries <b>counts only</b>. Damage, healing, DEF buff magnitude, Power,
+    /// Boss SkillCharge, the board, and the actor are all elsewhere — the actor is
+    /// the sibling <see cref="SwapStarted"/>, exactly as for every other
+    /// board-cycle event — and none of them is a substitute for a matched-Gem
+    /// count (<c>GAME_EVENTS.md</c> §2).
+    /// </summary>
+    MatchedGemSummary = 19,
 }
 
 /// <summary>
@@ -370,6 +395,63 @@ public readonly record struct CascadeStepResolvedEvent(
     /// </summary>
     public override string ToString() =>
         $"CascadeStepResolved (depth {PassDepth}: {DropMoves.Count} drops, {SpawnedGems.Count} spawns)";
+}
+
+/// <summary>
+/// One entry of a <c>MatchedGemSummary</c>: how many Gems of one type one board
+/// cycle matched (<c>GAME_EVENTS.md</c> §2; <c>SIGNALR_PROTOCOL.md</c> §3.2.29).
+///
+/// It exists only for a type the cycle <b>did</b> match, so <see cref="Count"/> is
+/// always <c>&gt;= 1</c>; a type the cycle did not match has no entry at all
+/// rather than a zero one (<c>GAME_EVENTS.md</c> §2 item 4).
+/// </summary>
+/// <param name="GemType">The Gem type, one of the four of <c>MATCH3_RULES.md</c> §1.1.</param>
+/// <param name="Count">The number of unique cleared cells of that type, <c>&gt;= 1</c>.</param>
+public readonly record struct MatchedGemCount(GemType GemType, int Count)
+{
+    /// <summary>"ATK x5" — for test diagnostics only.</summary>
+    public override string ToString() => $"{GemType} x{Count}";
+}
+
+/// <summary>
+/// The <c>MatchedGemSummary</c> payload — one committed board action's matched-Gem
+/// counts for its whole board cycle (<c>GAME_EVENTS.md</c> §1.1 item 9, §2;
+/// <c>SIGNALR_PROTOCOL.md</c> §3.2.29).
+///
+/// <code>
+/// MatchedGemSummary: gems[(gemType, count)]   — types the cycle did not match absent
+/// </code>
+///
+/// <b>Everything here is a report of the action's own cleared-Gem accounting.</b>
+/// The entries are the four counts
+/// <see cref="ResourceGeneration.ClearedGemCounts"/> already aggregated over the
+/// cycle's every cascade pass, filtered to the types with a non-zero count and
+/// read in the fixed Gem-type order of <c>MATCH3_RULES.md</c> §1.1. Nothing is
+/// re-counted, no board is read, and no gameplay stage consumes the value — it
+/// exists so a presentation can show the counts a client would otherwise have to
+/// re-derive (<c>AGENTS.md</c> §10, <c>SIGNALR_PROTOCOL.md</c> §3.2.29 item 8).
+///
+/// <b>It is not a combat report.</b> No damage, healing, DEF buff magnitude,
+/// Power, or Boss SkillCharge member exists on it, because those are separate
+/// gameplay effects with their own events or state and are not substitutes for a
+/// matched-Gem count (<c>GAME_EVENTS.md</c> §2 item 6).
+/// </summary>
+/// <param name="Gems">
+/// One entry per Gem type the cycle matched, in the fixed order ATK, DEF, HP,
+/// POWER. Empty only for a cycle that cleared nothing — unreachable for a
+/// committed action, which is match-producing by validation
+/// (<c>MATCH3_RULES.md</c> §2.1.2 item 4), and an empty list is the wire
+/// projection's omission (<c>SIGNALR_PROTOCOL.md</c> §3.2.5, §3.2.29 item 2).
+/// </param>
+public readonly record struct MatchedGemSummaryEvent(IReadOnlyList<MatchedGemCount> Gems)
+{
+    /// <summary>
+    /// "MatchedGemSummary (ATK x5, HP x2)" — for test diagnostics only.
+    /// </summary>
+    public override string ToString() =>
+        Gems.Count == 0
+            ? "MatchedGemSummary (none)"
+            : $"MatchedGemSummary ({string.Join(", ", Gems)})";
 }
 
 /// <summary>
@@ -593,7 +675,9 @@ public readonly record struct BattleLostEvent(int FinalBossHp, int FinalPlayerHp
 /// ├── BattleWon          the BattleWon payload, when Type is BattleWon
 /// ├── BattleLost         the BattleLost payload, when Type is BattleLost
 /// ├── SwapStarted        the SwapStarted payload, when Type is SwapStarted
-/// └── SwapResolved       the SwapResolved payload, when Type is SwapResolved
+/// ├── SwapResolved       the SwapResolved payload, when Type is SwapResolved
+/// └── MatchedGemSummary  the MatchedGemSummary payload, when Type is
+///                        MatchedGemSummary   (GAME_EVENTS.md §2)
 /// </code>
 ///
 /// <b>This is an output, never state.</b> Emitting, holding, or reading an event
@@ -648,7 +732,8 @@ public readonly record struct BattleEvent
         PowerChangedEvent? powerChanged = null,
         SwapStartedEvent? swapStarted = null,
         SwapResolvedEvent? swapResolved = null,
-        CascadeStepResolvedEvent? cascadeStepResolved = null)
+        CascadeStepResolvedEvent? cascadeStepResolved = null,
+        MatchedGemSummaryEvent? matchedGemSummary = null)
     {
         Type = type;
         _match = match;
@@ -670,6 +755,7 @@ public readonly record struct BattleEvent
         _swapStarted = swapStarted;
         _swapResolved = swapResolved;
         _cascadeStepResolved = cascadeStepResolved;
+        _matchedGemSummary = matchedGemSummary;
     }
 
     private readonly MatchResolution? _match;
@@ -691,6 +777,7 @@ public readonly record struct BattleEvent
     private readonly SwapStartedEvent? _swapStarted;
     private readonly SwapResolvedEvent? _swapResolved;
     private readonly CascadeStepResolvedEvent? _cascadeStepResolved;
+    private readonly MatchedGemSummaryEvent? _matchedGemSummary;
 
     /// <summary>Which documented event this is.</summary>
     public BattleEventType Type { get; }
@@ -931,6 +1018,20 @@ public readonly record struct BattleEvent
         _cascadeStepResolved ?? throw new InvalidOperationException(
             $"A {Type} event carries no CascadeStepResolved payload (GAME_EVENTS.md §2). "
             + "Check Type before reading CascadeStep.");
+
+    /// <summary>
+    /// The <c>MatchedGemSummary</c> payload — one committed board action's
+    /// matched-Gem counts for its whole board cycle, one entry per matched Gem
+    /// type and no entry for a type it did not match (<c>GAME_EVENTS.md</c> §2,
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.29).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// This event is not a <see cref="BattleEventType.MatchedGemSummary"/>.
+    /// </exception>
+    public MatchedGemSummaryEvent MatchedGemSummary =>
+        _matchedGemSummary ?? throw new InvalidOperationException(
+            $"A {Type} event carries no MatchedGemSummary payload (GAME_EVENTS.md §2). "
+            + "Check Type before reading MatchedGemSummary.");
 
     /// <summary>
     /// A <c>MatchCreated</c> event for one detected Match.
@@ -1305,6 +1406,70 @@ public readonly record struct BattleEvent
             null,
             new CascadeStepResolvedEvent(passDepth, dropMoves, spawnedGems));
 
+    /// <summary>
+    /// A <c>MatchedGemSummary</c> event closing one committed board action's board
+    /// cycle with that cycle's matched-Gem counts
+    /// (<c>GAME_EVENTS.md</c> §1.1 item 9, §2; <c>SIGNALR_PROTOCOL.md</c> §3.2.29).
+    ///
+    /// <b>It is built from the counts the resource stage already aggregated and
+    /// derives nothing.</b> <paramref name="clearedGemCounts"/> is the action's own
+    /// <see cref="ResourceGeneration.ClearedGemCounts"/> — the sum over the
+    /// cycle's every cascade pass, one per unique cleared cell
+    /// (<c>MATCH3_RULES.md</c> §5.7 item 7, §3.3 item 3) — so this factory filters
+    /// it to the types the cycle matched and reads them in the fixed Gem-type order
+    /// of <c>MATCH3_RULES.md</c> §1.1. It re-counts no cell, reads no board, and
+    /// computes no gameplay value: the counts are reported, never produced here
+    /// (<c>AGENTS.md</c> §10).
+    ///
+    /// Public because the two cycle closers live on opposite sides of a layer
+    /// boundary, exactly like <see cref="ForSwapStarted"/>: the Player's committed
+    /// Swap is closed by the Application-layer pipeline step that owns the
+    /// <c>GAME_RULES.md</c> §17 sequence around the Domain <c>SwapExecutor</c>, and
+    /// the Boss Response phase's board action is closed by the same pipeline step at
+    /// §17 step 18a. Each hands in its own cycle's counts unchanged.
+    /// </summary>
+    /// <param name="clearedGemCounts">
+    /// The committed action's matched-Gem count per type, over the union of its
+    /// every pass's cleared cells — the accounting its resource generation was
+    /// computed from (<c>COMBAT_RULES.md</c> §2 item 6).
+    /// </param>
+    public static BattleEvent ForMatchedGemSummary(ClearedGemCounts clearedGemCounts)
+    {
+        // The four possible entries, in the fixed order MATCH3_RULES.md §1.1 gives
+        // the Gem types. A type the cycle did not match contributes no entry
+        // (GAME_EVENTS.md §2 item 4), which is why the zero check is the filter and
+        // not a value written into the payload.
+        var gems = new List<MatchedGemCount>(4);
+
+        AddIfMatched(gems, GemType.Atk, clearedGemCounts.Atk);
+        AddIfMatched(gems, GemType.Def, clearedGemCounts.Def);
+        AddIfMatched(gems, GemType.Hp, clearedGemCounts.Hp);
+        AddIfMatched(gems, GemType.Power, clearedGemCounts.Power);
+
+        return new(
+            BattleEventType.MatchedGemSummary,
+            null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            new MatchedGemSummaryEvent(gems));
+    }
+
+    /// <summary>
+    /// Appends one <see cref="MatchedGemCount"/> for a type the cycle matched, and
+    /// nothing for a type with a zero count
+    /// (<c>GAME_EVENTS.md</c> §2 item 4: a zero-count type is absent, not zero).
+    /// </summary>
+    private static void AddIfMatched(List<MatchedGemCount> gems, GemType gemType, int count)
+    {
+        if (count > 0)
+        {
+            gems.Add(new MatchedGemCount(gemType, count));
+        }
+    }
+
     /// <summary>"MatchCreated (Horizontal x3 at 25 (Atk))" — for test diagnostics only.</summary>
     public override string ToString() => Type switch
     {
@@ -1328,6 +1493,7 @@ public readonly record struct BattleEvent
         BattleEventType.SwapStarted => SwapStarted.ToString(),
         BattleEventType.SwapResolved => SwapResolved.ToString(),
         BattleEventType.CascadeStepResolved => CascadeStep.ToString(),
+        BattleEventType.MatchedGemSummary => MatchedGemSummary.ToString(),
         _ => Type.ToString(),
     };
 }

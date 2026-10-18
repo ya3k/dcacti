@@ -123,10 +123,100 @@ internal static class RoundTestSupport
             + "candidate streams. This is a test-fixture defect, never a production failure.");
     }
 
+    /// <summary>
+    /// A board + stream whose committed Player Swap resolves in <b>at least two
+    /// detection passes</b> — a Swap whose first pass's Gravity and Spawn produce a
+    /// Cascade (<c>MATCH3_RULES.md</c> §4.2) — so a scenario can assert how a
+    /// multi-pass cycle is aggregated.
+    /// </summary>
+    /// <param name="matchType">The Gem type the fixture's Swap must clear.</param>
+    /// <param name="starting">
+    /// The stream the search starts from. The Board's own Matches are fixed; whether
+    /// the Spawn after the first pass completes a second Match depends on the
+    /// stream, so the search re-pins the stream rather than assuming one
+    /// (<c>GAME_STATE.md</c> §2.6.2 — the stream is fixture state, never an asserted
+    /// value).
+    /// </param>
+    /// <param name="excluded">A pair the fixture must not return.</param>
+    public static (RngState RngState, PinnedPlayerRound Pinned) PlayerCascadeMatch(
+        GemType matchType,
+        RngState starting,
+        CommittedSwapPair? excluded = null)
+    {
+        for (ulong offset = 0; offset < 256; offset++)
+        {
+            var candidate = new RngState(starting.State + offset, starting.Increment);
+
+            if (TryPlayerMatch(
+                    matchType,
+                    candidate,
+                    excluded,
+                    (_, resolution) => resolution.Passes.Count >= 2) is { } pinned)
+            {
+                return (candidate, pinned);
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"The multi-pass cascade fixture for '{matchType}' could not be constructed against any "
+            + "of the 256 candidate streams. This is a test-fixture defect, never a production "
+            + "failure.");
+    }
+
+    /// <summary>
+    /// A board + stream whose committed Player Swap clears the requested Gem type
+    /// <b>and at least one other type</b>, so a scenario can assert that one cycle's
+    /// summary reports several Gem types at once.
+    /// </summary>
+    /// <param name="matchType">
+    /// A Gem type the fixture's Swap must clear. The cascade clears at least one
+    /// other type as well, which is what makes the summary multi-entry.
+    /// </param>
+    /// <param name="starting">The stream the search starts from.</param>
+    /// <param name="excluded">A pair the fixture must not return.</param>
+    public static (RngState RngState, PinnedPlayerRound Pinned) PlayerMultiTypeMatch(
+        GemType matchType,
+        RngState starting,
+        CommittedSwapPair? excluded = null)
+    {
+        for (ulong offset = 0; offset < 256; offset++)
+        {
+            var candidate = new RngState(starting.State + offset, starting.Increment);
+
+            if (TryPlayerMatch(
+                    matchType,
+                    candidate,
+                    excluded,
+                    (generation, _) =>
+                        generation.ClearedGemCounts.Total
+                        > generation.ClearedGemCounts.For(matchType)) is { } pinned)
+            {
+                return (candidate, pinned);
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"The multi-type fixture for '{matchType}' could not be constructed against any of the "
+            + "256 candidate streams. This is a test-fixture defect, never a production failure.");
+    }
+
+    /// <summary>
+    /// The fixture search shared by every public fixture above.
+    /// </summary>
+    /// <param name="matchType">The Gem type the fixture's Swap must clear.</param>
+    /// <param name="rngState">The stream the cascade is resolved against.</param>
+    /// <param name="excluded">A pair the fixture must not return.</param>
+    /// <param name="accept">
+    /// An additional acceptance predicate for a fixture that needs more than the
+    /// default preconditions. When it is supplied, the default "clears only
+    /// <paramref name="matchType"/>" precondition is replaced by it — the caller
+    /// states what it needs instead of inheriting a constraint it does not want.
+    /// </param>
     private static PinnedPlayerRound? TryPlayerMatch(
         GemType matchType,
         RngState rngState,
-        CommittedSwapPair? excluded)
+        CommittedSwapPair? excluded,
+        Func<ResourceGeneration, CascadeResolver.CascadeResult, bool>? accept = null)
     {
         for (var row = 0; row + 1 < BoardState.Rows; row++)
         {
@@ -170,14 +260,21 @@ internal static class RoundTestSupport
                     continue;
                 }
 
-                if (matchType != GemType.Atk && cleared.Atk != 0)
+                if (accept is null)
                 {
-                    continue;
-                }
+                    if (matchType != GemType.Atk && cleared.Atk != 0)
+                    {
+                        continue;
+                    }
 
-                // Only the requested type is cleared, so an assertion about "the
-                // Swap's Gems" is an assertion about one Gem type.
-                if (cleared.Total != cleared.For(matchType))
+                    // Only the requested type is cleared, so an assertion about "the
+                    // Swap's Gems" is an assertion about one Gem type.
+                    if (cleared.Total != cleared.For(matchType))
+                    {
+                        continue;
+                    }
+                }
+                else if (!accept(resources, resolution))
                 {
                     continue;
                 }

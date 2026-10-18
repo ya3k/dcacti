@@ -32,6 +32,12 @@ import {
   MOVE_LOG_TITLE,
   formatMoveLogRow,
 } from '../src/game/scenes/BattleEventPresenter';
+import {
+  GEM_MATCH_SUMMARY_TIMING,
+  gemMatchSummaryBannerMs,
+  gemMatchSummaryChips,
+  gemMatchSummaryTitle,
+} from '../src/game/presentation/GemMatchSummaryBanner';
 import type {
   PresentedSwapStarted,
   PresentedSwapResolved,
@@ -1127,6 +1133,16 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
         spawnedGems: [{ cellIndex: 0, gemType: 'DEF' }],
       },
     },
+    {
+      name: 'MatchedGemSummary',
+      event: {
+        type: 'MatchedGemSummary',
+        gems: [
+          { gemType: 'ATK', count: 5 },
+          { gemType: 'POWER', count: 2 },
+        ],
+      },
+    },
     { name: 'DamageCalculated', event: { type: 'DamageCalculated', base: 137, comboModifier: 2.5, elementModifier: 1.25, otherModifiers: 1.1, defense: 43, finalDamage: 99 } },
     { name: 'DamageDealt', event: { type: 'DamageDealt', source: 'player', target: 'boss', amount: 99 } },
     { name: 'DamageTaken', event: { type: 'DamageTaken', source: 'boss', target: 'player', amount: 77 } },
@@ -1144,7 +1160,7 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
   /** The closed discriminator set §3.2.2 fixes. */
   const DISCRIMINATOR_SET = DELIVERED_PAYLOADS.map((payload) => payload.name);
 
-  it('keeps the closed discriminator set at exactly the nineteen documented names', () => {
+  it('keeps the closed discriminator set at exactly the twenty documented names', () => {
     expect(DISCRIMINATOR_SET).toEqual([
       'SwapStarted',
       'SwapResolved',
@@ -1153,6 +1169,7 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       'ComboChanged',
       'GemMatched',
       'CascadeStepResolved',
+      'MatchedGemSummary',
       'DamageCalculated',
       'DamageDealt',
       'DamageTaken',
@@ -1167,12 +1184,13 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       'BattleLost',
     ]);
 
-    // The parser's own switch admits exactly the seventeen in-battle names — no
+    // The parser's own switch admits exactly the eighteen in-battle names — no
     // more (a phase, status or turn name would be a wire change) and no fewer.
     // `SwapStarted` and `SwapResolved` are the two ADR-026 / TASK-259 proposal
     // formalized by SIGNALR_PROTOCOL.md §3.2.26–§3.2.27, which GAME_EVENTS.md §1/§2
-    // had already defined, and `CascadeStepResolved` is the one the Operator Decision
-    // approving TASK-278 A-1(i)/A-4 added (§3.2.28, ADR-027).
+    // had already defined, `CascadeStepResolved` is the one the Operator Decision
+    // approving TASK-278 A-1(i)/A-4 added (§3.2.28, ADR-027), and
+    // `MatchedGemSummary` is the per-board-cycle matched-Gem report §3.2.29 defines.
     const parsedNames = DELIVERED_PAYLOADS.filter(
       (payload) => parseInBattleEvent(payload.event) !== null
     ).map((payload) => payload.name);
@@ -1185,6 +1203,7 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       'ComboChanged',
       'GemMatched',
       'CascadeStepResolved',
+      'MatchedGemSummary',
       'DamageCalculated',
       'DamageDealt',
       'DamageTaken',
@@ -1234,6 +1253,7 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       ComboChanged: { actor: 'swap', action: 'combo', kind: 'feedback' },
       GemMatched: { actor: 'swap', action: 'match', kind: 'match' },
       CascadeStepResolved: { actor: 'swap', action: 'gravity-drop', kind: 'gravity-drop' },
+      MatchedGemSummary: { actor: 'swap', action: 'gem-summary', kind: 'gem-summary' },
       DamageDealt: { actor: 'player', action: 'damage', kind: 'damage' },
       DamageTaken: { actor: 'boss', action: 'retaliation', kind: 'retaliation' },
       PassiveCharged: { actor: 'pet', action: 'passive-charge', kind: 'feedback' },
@@ -1245,9 +1265,9 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       PowerChanged: { actor: 'power', action: 'power', kind: 'feedback' },
     });
 
-    // Fifteen of the seventeen in-battle names adapt; the other two are
+    // Sixteen of the eighteen in-battle names adapt; the other two are
     // `DamageCalculated` and `SwapResolved`, which present nothing of their own.
-    expect(steps.size).toBe(15);
+    expect(steps.size).toBe(16);
   });
 
   it('attributes a board cycle to the actor of the delivered SwapStarted that opened it', () => {
@@ -2805,7 +2825,7 @@ describe('TASK-253 — the developer Move Log row formatter (operator decision D
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
 
-  /** The seventeen non-outcome names of the closed discriminator set (§3.2.2). */
+  /** The eighteen non-outcome names of the closed discriminator set (§3.2.2). */
   const IN_BATTLE_TYPES = [
     'SwapStarted',
     'SwapResolved',
@@ -2814,6 +2834,7 @@ describe('TASK-253 — the developer Move Log row formatter (operator decision D
     'ComboChanged',
     'GemMatched',
     'CascadeStepResolved',
+    'MatchedGemSummary',
     'DamageCalculated',
     'DamageDealt',
     'DamageTaken',
@@ -2841,6 +2862,16 @@ describe('TASK-253 — the developer Move Log row formatter (operator decision D
         passDepth: 1,
         dropMoves: [{ fromCell: 16, toCell: 24 }],
         spawnedGems: [{ cellIndex: 0, gemType: 'DEF' }],
+      },
+    },
+    {
+      name: 'MatchedGemSummary',
+      event: {
+        type: 'MatchedGemSummary',
+        gems: [
+          { gemType: 'DEF', count: 4 },
+          { gemType: 'HP', count: 1 },
+        ],
       },
     },
     { name: 'DamageCalculated', event: { type: 'DamageCalculated', base: 137, comboModifier: 2.5, elementModifier: 1.25, otherModifiers: 1.1, defense: 43, finalDamage: 99 } },
@@ -2894,6 +2925,9 @@ describe('TASK-253 — the developer Move Log row formatter (operator decision D
     );
     expect(eventRow('CascadeStepResolved')).toBe(
       '#1 seq=9 turn=4 type=CascadeStepResolved swap/gravity-drop | CascadeStepResolved: pass 1 drops [16->24] spawns [0:DEF]'
+    );
+    expect(eventRow('MatchedGemSummary')).toBe(
+      '#1 seq=9 turn=4 type=MatchedGemSummary swap/gem-summary | MatchedGemSummary: DEF x4, HP x1'
     );
     expect(eventRow('DamageTaken')).toBe(
       '#1 seq=9 turn=4 type=DamageTaken boss/retaliation | DamageTaken: 77 on player (from boss)'
@@ -3019,6 +3053,195 @@ describe('TASK-253 — the developer Move Log row formatter (operator decision D
 
   it('declares the panel\'s caption, which names no wire member', () => {
     expect(MOVE_LOG_TITLE).toBe('MOVE LOG');
+  });
+});
+
+describe('MatchedGemSummary — the delivered per-cycle gem counts (SIGNALR_PROTOCOL.md §3.2.29)', () => {
+  /** One delivered item, as the projection writes it (§3.2.29's example shape). */
+  const DELIVERED_SUMMARY = {
+    type: 'MatchedGemSummary',
+    gems: [
+      { gemType: 'ATK', count: 5 },
+      { gemType: 'HP', count: 2 },
+    ],
+  };
+
+  /** The board's Gem palette, as the scene supplies it to the component. */
+  const PALETTE = {
+    ATK: { color: 0xef4444, label: 'ATK' },
+    DEF: { color: 0x3b82f6, label: 'DEF' },
+    HP: { color: 0x22c55e, label: 'HP' },
+    POWER: { color: 0xa855f7, label: 'PWR' },
+  };
+
+  // =======================================================================
+  // Parser
+  // =======================================================================
+
+  it('parses the delivered entries as sent, in delivered order', () => {
+    const parsed = parseInBattleEvent(DELIVERED_SUMMARY);
+
+    expect(parsed).toEqual({
+      type: 'MatchedGemSummary',
+      gems: [
+        { gemType: 'ATK', count: 5 },
+        { gemType: 'HP', count: 2 },
+      ],
+    });
+  });
+
+  it('reads an omitted `gems` member as "reported, no type to show"', () => {
+    // §3.2.29 item 2: the member is omitted only when the cycle matched no Gem
+    // type, and an empty array is never written. The parser accepts the omission
+    // without inventing a count.
+    expect(parseInBattleEvent({ type: 'MatchedGemSummary' })).toEqual({
+      type: 'MatchedGemSummary',
+      gems: [],
+    });
+  });
+
+  it('rejects a malformed item whole rather than repairing or partially applying it', () => {
+    // §3.2.29 items 3–4: an entry is one of the four types with an integer count of
+    // at least one, once per type, in the fixed order. Every violation below is a
+    // malformed item, and a malformed item presents nothing (§3.2.29 item 8).
+    const malformed: readonly unknown[] = [
+      { type: 'MatchedGemSummary', gems: 'ATK' },
+      { type: 'MatchedGemSummary', gems: null },
+      { type: 'MatchedGemSummary', gems: [{ gemType: 'ATK', count: 0 }] },
+      { type: 'MatchedGemSummary', gems: [{ gemType: 'ATK', count: -1 }] },
+      { type: 'MatchedGemSummary', gems: [{ gemType: 'ATK', count: 1.5 }] },
+      { type: 'MatchedGemSummary', gems: [{ gemType: 'ATK' }] },
+      { type: 'MatchedGemSummary', gems: [{ gemType: 'GOLD', count: 2 }] },
+      { type: 'MatchedGemSummary', gems: [{ count: 2 }] },
+      {
+        type: 'MatchedGemSummary',
+        gems: [
+          { gemType: 'ATK', count: 1 },
+          { gemType: 'ATK', count: 2 },
+        ],
+      },
+      {
+        type: 'MatchedGemSummary',
+        gems: [
+          { gemType: 'HP', count: 1 },
+          { gemType: 'ATK', count: 2 },
+        ],
+      },
+      { type: 'MatchedGemSummary', gems: [null] },
+    ];
+
+    for (const item of malformed) {
+      expect(parseInBattleEvent(item), JSON.stringify(item)).toBeNull();
+    }
+  });
+
+  // =======================================================================
+  // Adapter
+  // =======================================================================
+
+  it('opens one step of its own, attributed to the cycle’s delivered actor', () => {
+    const parsed = parseInBattleEvent(DELIVERED_SUMMARY);
+
+    expect(adaptPresentedEvent(parsed!, 'player')).toEqual({
+      actor: 'player',
+      action: 'gem-summary',
+      kind: 'gem-summary',
+      detail: 'gem summary',
+    });
+
+    expect(adaptPresentedEvent(parsed!, 'boss')?.actor).toBe('boss');
+
+    // No boundary context: the side-free answer, exactly as every other board-cycle
+    // event gives it. The side is the delivered `SwapStarted.actor`, never a member
+    // on this item (§3.2.29 item 6).
+    expect(adaptPresentedEvent(parsed!)?.actor).toBe('swap');
+  });
+
+  it('presents nothing for an item that names no Gem type', () => {
+    const parsed = parseInBattleEvent({ type: 'MatchedGemSummary' });
+
+    expect(parsed).not.toBeNull();
+    expect(adaptPresentedEvent(parsed!)).toBeNull();
+    expect(adaptPresentedEvent(parsed!, 'player')).toBeNull();
+  });
+
+  it('maps no other delivered event into the summary step', () => {
+    // The step is the scene's presentation of THIS item and of nothing else: a
+    // summary can never be opened by a Match, a pass report, or a turn boundary.
+    for (const event of [
+      { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+      { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+      { type: 'GemMatched', cellIndex: 24, gemType: 'ATK' },
+      {
+        type: 'CascadeStepResolved',
+        passDepth: 1,
+        dropMoves: [{ fromCell: 16, toCell: 24 }],
+      },
+      { type: 'ComboChanged', combo: 2 },
+      { type: 'PowerChanged', delta: 25, power: 45, source: 'match' },
+    ]) {
+      const parsed = parseInBattleEvent(event);
+      expect(parsed, JSON.stringify(event)).not.toBeNull();
+      expect(adaptPresentedEvent(parsed!)?.kind, JSON.stringify(event)).not.toBe('gem-summary');
+    }
+  });
+
+  // =======================================================================
+  // Diagnostics
+  // =======================================================================
+
+  it('formats the delivered counts verbatim, adding and deriving nothing', () => {
+    const parsed = parseInBattleEvent(DELIVERED_SUMMARY);
+
+    expect(formatInBattleEvent(parsed!)).toBe('MatchedGemSummary: ATK x5, HP x2');
+  });
+
+  // =======================================================================
+  // The reusable banner component's pure helpers
+  // =======================================================================
+
+  it('draws one chip per delivered type, using the board’s own palette', () => {
+    const chips = gemMatchSummaryChips(DELIVERED_SUMMARY.gems, PALETTE);
+
+    expect(chips).toEqual([
+      { gemType: 'ATK', label: 'ATK', color: 0xef4444, count: 5 },
+      { gemType: 'HP', label: 'HP', color: 0x22c55e, count: 2 },
+    ]);
+  });
+
+  it('draws no chip for a count that is not positive, and never fabricates a type', () => {
+    const chips = gemMatchSummaryChips(
+      [
+        { gemType: 'ATK', count: 0 },
+        { gemType: 'DEF', count: -2 },
+        { gemType: 'HP', count: 1.5 },
+        { gemType: 'POWER', count: 3 },
+      ],
+      PALETTE
+    );
+
+    expect(chips).toEqual([{ gemType: 'POWER', label: 'PWR', color: 0xa855f7, count: 3 }]);
+
+    // A type the palette does not carry is drawn as the board's own inert
+    // placeholder — never guessed at, never substituted.
+    expect(gemMatchSummaryChips([{ gemType: 'GOLD', count: 2 }], PALETTE)).toEqual([
+      { gemType: 'GOLD', label: '?', color: 0x475569, count: 2 },
+    ]);
+  });
+
+  it('labels the panel with the actor’s own title, and none for a side the contract does not define', () => {
+    expect(gemMatchSummaryTitle('player')).toBe('PLAYER GEMS MATCHED');
+    expect(gemMatchSummaryTitle('boss')).toBe('BOSS GEMS MATCHED');
+    expect(gemMatchSummaryTitle(null)).toBeNull();
+  });
+
+  it('derives one banner lifetime from its three beats', () => {
+    expect(gemMatchSummaryBannerMs()).toBe(
+      GEM_MATCH_SUMMARY_TIMING.enterMs +
+        GEM_MATCH_SUMMARY_TIMING.holdMs +
+        GEM_MATCH_SUMMARY_TIMING.exitMs
+    );
+    expect(gemMatchSummaryBannerMs()).toBeGreaterThan(0);
   });
 });
 

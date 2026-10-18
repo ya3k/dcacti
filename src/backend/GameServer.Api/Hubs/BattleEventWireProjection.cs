@@ -19,7 +19,8 @@ namespace GameServer.Api.Hubs;
 /// <c>GemMatched</c> / <c>PassiveCharged</c> / <c>PassiveTriggered</c> /
 /// <c>DamageCalculated</c> / <c>DamageDealt</c> / <c>DamageTaken</c> /
 /// <c>BossSkillCast</c> / <c>BattleWon</c> / <c>BattleLost</c> / <c>CardCast</c> /
-/// <c>PetSkillCast</c> / <c>RelicTriggered</c> / <c>PowerChanged</c> — never
+/// <c>PetSkillCast</c> / <c>RelicTriggered</c> / <c>PowerChanged</c> /
+/// <c>MatchedGemSummary</c> — never
 /// the Domain enum's ordinal, which is a Domain identity and not part of the
 /// wire contract (<c>§3.2.2</c> item 3). The first two are the committed board
 /// action's own boundary pair (<c>§3.2.26–§3.2.27</c>); the next four are the board
@@ -256,7 +257,10 @@ public sealed record BattleEventWireDto(
     IReadOnlyList<DropMoveWireDto>? DropMoves = null,
     [property: JsonPropertyName("spawnedGems")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    IReadOnlyList<SpawnedGemWireDto>? SpawnedGems = null)
+    IReadOnlyList<SpawnedGemWireDto>? SpawnedGems = null,
+    [property: JsonPropertyName("gems")]
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<MatchedGemWireDto>? Gems = null)
 {
     /// <summary>
     /// The wire item for one <c>SwapStarted</c>
@@ -642,6 +646,29 @@ public sealed record BattleEventWireDto(
             PassDepth: passDepth,
             DropMoves: dropMoves is { Count: > 0 } ? dropMoves : null,
             SpawnedGems: spawnedGems is { Count: > 0 } ? spawnedGems : null);
+
+    /// <summary>
+    /// The wire item for one <c>MatchedGemSummary</c>
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.29) — one committed board action's
+    /// matched-Gem counts for its whole board cycle.
+    ///
+    /// <b>No actor member and no board member.</b> The acting side is the sibling
+    /// <c>SwapStarted</c>'s member (§3.2.26 item 2), which the client already
+    /// carries forward for every item of the cycle, and the board travels in the
+    /// state push and the snapshot alone (§3.1 item 3). The item also carries no
+    /// damage, healing, DEF buff, Power, or SkillCharge value: it reports counts
+    /// only (<c>GAME_EVENTS.md</c> §2 item 6).
+    /// </summary>
+    /// <param name="gems">
+    /// One entry per Gem type the cycle matched, in the fixed order ATK, DEF, HP,
+    /// POWER, or <c>null</c> to omit the member entirely when the cycle matched no
+    /// Gem type. An empty array is never written: it is normalized to the omission
+    /// the contract requires (§3.2.5 item 1, §3.2.29 item 2).
+    /// </param>
+    public static BattleEventWireDto MatchedGemSummary(IReadOnlyList<MatchedGemWireDto>? gems) =>
+        new(
+            Type: "MatchedGemSummary",
+            Gems: gems is { Count: > 0 } ? gems : null);
 }
 
 /// <summary>
@@ -671,6 +698,21 @@ public sealed record DropMoveWireDto(
 public sealed record SpawnedGemWireDto(
     [property: JsonPropertyName("cellIndex")] int CellIndex,
     [property: JsonPropertyName("gemType")] string GemType);
+
+/// <summary>
+/// One <c>gems</c> entry (<c>SIGNALR_PROTOCOL.md</c> §3.2.29).
+///
+/// Both members are always present. The entry exists only for a Gem type the
+/// reported board cycle actually matched, so <see cref="Count"/> is never zero and
+/// a type the cycle did not match has no entry at all — absence is the
+/// not-applicable value, and a real zero is therefore not a member value of this
+/// event (<c>§3.2.5</c> item 1, <c>§3.2.29</c> item 3).
+/// </summary>
+/// <param name="GemType">The Gem type, as a §3.2.4 contract name.</param>
+/// <param name="Count">The number of Gems of that type the cycle matched, <c>&gt;= 1</c>.</param>
+public sealed record MatchedGemWireDto(
+    [property: JsonPropertyName("gemType")] string GemType,
+    [property: JsonPropertyName("count")] int Count);
 
 /// <summary>
 /// Projects Domain <c>BattleEvent</c> values onto the <c>ReceiveEvents.events[]</c>
@@ -793,6 +835,7 @@ public static class BattleEventWireProjection
             BattleEventType.RelicTriggered => ProjectRelicTriggered(battleEvent.RelicTriggered),
             BattleEventType.PowerChanged => ProjectPowerChanged(battleEvent.PowerChanged),
             BattleEventType.CascadeStepResolved => ProjectCascadeStepResolved(battleEvent.CascadeStep),
+            BattleEventType.MatchedGemSummary => ProjectMatchedGemSummary(battleEvent.MatchedGemSummary),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(battleEvent),
                 battleEvent.Type,
@@ -1054,5 +1097,36 @@ public static class BattleEventWireProjection
             passDepth: step.PassDepth,
             dropMoves: dropMoves,
             spawnedGems: spawnedGems);
+    }
+
+    /// <summary>
+    /// Projects the <c>MatchedGemSummary</c> payload (<c>§3.2.29</c>) — one
+    /// committed board action's matched-Gem counts per Gem type, with the types it
+    /// did not match absent.
+    ///
+    /// <b>It maps the entries in the order the payload holds them and re-derives
+    /// nothing.</b> The payload's entries are already filtered to the matched types
+    /// and already in the fixed <c>MATCH3_RULES.md</c> §1.1 order
+    /// (<c>GAME_EVENTS.md</c> §2 item 4), so the projection sorts nothing, adds no
+    /// zero entry, and supplies no count of its own (<c>§3.2.1</c> item 3,
+    /// <c>§3.2.29</c> item 3). Gem types are projected to their §3.2.4 contract
+    /// names by the same helper every other <c>gemType</c> member uses.
+    /// </summary>
+    private static BattleEventWireDto ProjectMatchedGemSummary(MatchedGemSummaryEvent summary)
+    {
+        var gems = new MatchedGemWireDto[summary.Gems.Count];
+
+        for (var i = 0; i < summary.Gems.Count; i++)
+        {
+            // §3.2.29 items 3–4: the entry exists only for a matched type, and the
+            // pair is the registered type name plus the cycle's own count.
+            gems[i] = new MatchedGemWireDto(
+                GemTypes.ToContractName(summary.Gems[i].GemType),
+                summary.Gems[i].Count);
+        }
+
+        // §3.2.5 item 1 / §3.2.29 item 2: an empty array is omitted rather than
+        // written as `[]`, so the factory normalizes that case.
+        return BattleEventWireDto.MatchedGemSummary(gems);
     }
 }

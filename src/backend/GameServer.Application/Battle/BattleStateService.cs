@@ -1463,11 +1463,25 @@ public sealed class BattleStateService
             + charged.Charges.Count
             + charged.Triggers.Count
             + 2   // the Boss board action's SwapStarted/SwapResolved pair
+            + 2   // the Player cycle's and the Boss cycle's MatchedGemSummary
             + 3   // Player→Boss damage
             + 8   // Boss Passive charges + trigger (bounded by the Match total) + Boss response
             + 1); // outcome
 
         events.AddRange(result.Events);
+
+        // GAME_EVENTS.md §1.1 item 9, §2 / SIGNALR_PROTOCOL.md §3.2.29: the
+        // Player's board cycle is closed by its MatchedGemSummary, exactly once and
+        // as that cycle's last item — after the cycle's last recorded pass's
+        // CascadeStepResolved (the tail of `result.Events`) and before step 10's
+        // Passive reports below. The counts are the cycle's own cleared-Gem
+        // accounting, read from the value the resource stage already generated:
+        // every cascade pass of this committed Swap, one per unique cleared cell
+        // (COMBAT_RULES.md §2 item 6, MATCH3_RULES.md §5.7, §5.8.2). Nothing is
+        // re-counted here, and the event reports counts only — no damage, heal, DEF
+        // buff, Power, or SkillCharge value is taken from it or put on it.
+        events.Add(BattleEvent.ForMatchedGemSummary(result.Resources.ClearedGemCounts));
+
         events.AddRange(charged.Charges.Select(BattleEvent.ForPassiveCharged));
         events.AddRange(charged.Triggers.Select(BattleEvent.ForPassiveTriggered));
 
@@ -1802,6 +1816,19 @@ public sealed class BattleStateService
         // `ComboChanged` carrying the Boss resolution's own Match total would
         // report a Combo the battle's counter never held.
         events.AddRange(BattleEventBuilder.Build(bossResolution, accountedCombo: null));
+
+        // GAME_EVENTS.md §1.1 item 9, §2 / SIGNALR_PROTOCOL.md §3.2.29: the Boss
+        // Response phase's board cycle is closed by its own MatchedGemSummary, once
+        // and as that cycle's last item — after the cycle's last recorded pass's
+        // CascadeStepResolved and before the step-18b/18c/18d events below. It is a
+        // SEPARATE item from the Player's, carrying only the Boss's counts: the
+        // counts of the two cycles are never combined, and ADR-026 §4's
+        // actor-relative ownership means the Boss's cleared cells are the Boss's
+        // (the same `bossGeneration` the step-18a effects were applied from). This
+        // point is unreachable when the Player's attack ended the battle — that
+        // path returns at the Boss HP terminal check above — so a victory before
+        // the Boss cycle emits no Boss summary.
+        events.Add(BattleEvent.ForMatchedGemSummary(bossGeneration.ClearedGemCounts));
 
         // ADR-026 §4: cell type determines the effect and the acting side determines
         // ownership and target — for the Boss's DEF Gems the temporary DEF buff is the
