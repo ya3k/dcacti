@@ -377,17 +377,18 @@ public sealed class BattleHubReconnectRecoveryTests : IClassFixture<ApiIntegrati
         Assert.Equal(JsonValueKind.Array, statusEffects.ValueKind);
         Assert.Empty(statusEffects.EnumerateArray());
 
-        // §4.4: the snapshot carries the same three-member Boss projection the push
-        // does — the canonical technical Identity plus the live HP pair — so a
+        // §4.4: the snapshot carries the same four-member Boss projection the push
+        // does — the canonical technical Identity, the live HP pair, and live Power — so a
         // recovered client re-renders the Boss from either path with one model
-        // (§7.1, ADR-008, §4.4 item 10).
+        // (§7.1, ADR-008, §4.4 items 10, 12).
         var bossState = state.GetProperty("bossState");
         Assert.Equal(
-            new[] { "bossId", "hp", "maxHp" },
+            new[] { "bossId", "hp", "maxHp", "power" },
             bossState.EnumerateObject()
                 .Select(p => p.Name)
                 .OrderBy(n => n, StringComparer.Ordinal));
         Assert.Equal("boss-hoa-long", bossState.GetProperty("bossId").GetString());
+        Assert.Equal(0, bossState.GetProperty("power").GetInt32());
 
         // §4.1: `board` is exactly the 64-cell authoritative board.
         Assert.Equal(64, state.GetProperty("board").GetProperty("cells").GetArrayLength());

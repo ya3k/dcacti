@@ -26,11 +26,16 @@ import type {
   BattleStateMetadata,
   RuntimeBattleState,
   RuntimeBoard,
+  RuntimeBossState,
   RuntimeEventListener,
 } from '../src/game/runtime/GameRuntimeEvents';
 import { RuntimeActionOutcomeUnknownError } from '../src/game/runtime/GameRuntimeEvents';
 import type { CardResponse, PetResponse } from '../src/services/api/CollectionModels';
 import { SceneEventEmitter } from './support/SceneEventEmitter';
+
+type TestBattleStateOverrides = Partial<Omit<RuntimeBattleState, 'bossState'>> & {
+  bossState?: Partial<RuntimeBossState>;
+};
 
 vi.mock('phaser', () => ({
   AUTO: 'AUTO',
@@ -1970,7 +1975,8 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     }));
   }
 
-  function serverState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+  function serverState(overrides: TestBattleStateOverrides = {}): RuntimeBattleState {
+    const { bossState: bossOverride, ...restOverrides } = overrides;
     return {
       battleId: 'battle-1',
       turn: 0,
@@ -1996,10 +2002,15 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
         statusEffects: [],
       },
-      // SIGNALR_PROTOCOL.md §4.4: the two-member Boss HP projection. Both members
-      // are always present and neither is nullable (§4.4 item 4).
-      bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
-      ...overrides,
+      ...restOverrides,
+      // SIGNALR_PROTOCOL.md §4.4: the four-member Boss projection (ADR-029).
+      bossState: {
+        bossId: 'boss-hoa-long',
+        hp: 5000,
+        maxHp: 5000,
+        power: 0,
+        ...(bossOverride ?? {}),
+      },
     };
   }
 
@@ -2036,6 +2047,21 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     for (const diagnostic of ['BattleId:', 'Turn:', 'Sequence:', 'RngSeed:', 'SignalR:', 'Sync:']) {
       expect(rendered).not.toContain(diagnostic);
     }
+  });
+
+  it('renders the Boss Power readout and updates when Boss Power changes', () => {
+    // SIGNALR_PROTOCOL.md §4.4 item 12 / ADR-029: Boss Power is HUD-visible,
+    // integer 0–100, presented from the authoritative server state.
+    const { harness, scene, ctx } = createBattle(
+      INITIAL_RUNTIME_STATE,
+      true,
+      serverState({ bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000, power: 40 } })
+    );
+
+    runScene(scene, ctx, 'create');
+
+    const rendered = harness.texts.map((t) => t.text).join('\n');
+    expect(rendered).toContain('40 / 100');
   });
 
   it('renders the delivered initial values verbatim', () => {
@@ -3444,7 +3470,8 @@ describe('BattleScene — Swap input (MATCH3_RULES.md §2, SIGNALR_PROTOCOL.md �
   /** The four documented Gem contract names (MATCH3_RULES.md §1.1). */
   const GEM_NAMES = ['ATK', 'DEF', 'HP', 'POWER'];
 
-  function serverState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+  function serverState(overrides: TestBattleStateOverrides = {}): RuntimeBattleState {
+    const { bossState: bossOverride, ...restOverrides } = overrides;
     return {
       battleId: 'battle-1',
       turn: 0,
@@ -3468,8 +3495,14 @@ describe('BattleScene — Swap input (MATCH3_RULES.md §2, SIGNALR_PROTOCOL.md �
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
         statusEffects: [],
       },
-      bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
-      ...overrides,
+      ...restOverrides,
+      bossState: {
+        bossId: 'boss-hoa-long',
+        hp: 5000,
+        maxHp: 5000,
+        power: 0,
+        ...(bossOverride ?? {}),
+      },
     };
   }
 
@@ -4036,7 +4069,8 @@ describe('BattleScene — cascade presentation timeline (TASK-245, GAME_EVENTS.m
     return labels;
   }
 
-  function battleState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+  function battleState(overrides: TestBattleStateOverrides = {}): RuntimeBattleState {
+    const { bossState: bossOverride, ...restOverrides } = overrides;
     return {
       battleId: 'battle-245',
       turn: 1,
@@ -4054,8 +4088,14 @@ describe('BattleScene — cascade presentation timeline (TASK-245, GAME_EVENTS.m
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
         statusEffects: [],
       },
-      bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
-      ...overrides,
+      ...restOverrides,
+      bossState: {
+        bossId: 'boss-hoa-long',
+        hp: 5000,
+        maxHp: 5000,
+        power: 0,
+        ...(bossOverride ?? {}),
+      },
     };
   }
 
@@ -4938,7 +4978,8 @@ describe('BattleScene — selected-cell treatment, interaction indicator & pacin
     };
   }
 
-  function battleState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+  function battleState(overrides: TestBattleStateOverrides = {}): RuntimeBattleState {
+    const { bossState: bossOverride, ...restOverrides } = overrides;
     return {
       battleId: 'battle-246',
       turn: 1,
@@ -4956,8 +4997,14 @@ describe('BattleScene — selected-cell treatment, interaction indicator & pacin
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
         statusEffects: [],
       },
-      bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
-      ...overrides,
+      ...restOverrides,
+      bossState: {
+        bossId: 'boss-hoa-long',
+        hp: 5000,
+        maxHp: 5000,
+        power: 0,
+        ...(bossOverride ?? {}),
+      },
     };
   }
 
@@ -5037,13 +5084,14 @@ describe('BattleScene — selected-cell treatment, interaction indicator & pacin
   ];
 
   /** The delivered state that resolution commits: a moved board and two moved HP pairs. */
-  function resolvedState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+  function resolvedState(overrides: TestBattleStateOverrides = {}): RuntimeBattleState {
+    const { bossState: bossOverride, ...restOverrides } = overrides;
     return battleState({
       sequence: 1,
       board: deliveredBoard(1),
-      bossState: { bossId: 'boss-hoa-long', hp: 1250, maxHp: 5000 },
+      bossState: { bossId: 'boss-hoa-long', hp: 1250, maxHp: 5000, power: 0, ...(bossOverride ?? {}) },
       petState: { ...battleState().petState, hp: 640 },
-      ...overrides,
+      ...restOverrides,
     });
   }
 
@@ -5704,7 +5752,8 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
     };
   }
 
-  function battleState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+  function battleState(overrides: TestBattleStateOverrides = {}): RuntimeBattleState {
+    const { bossState: bossOverride, ...restOverrides } = overrides;
     return {
       battleId: 'battle-252',
       turn: 1,
@@ -5722,8 +5771,14 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
         statusEffects: [],
       },
-      bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
-      ...overrides,
+      ...restOverrides,
+      bossState: {
+        bossId: 'boss-hoa-long',
+        hp: 5000,
+        maxHp: 5000,
+        power: 0,
+        ...(bossOverride ?? {}),
+      },
     };
   }
 
@@ -5804,7 +5859,8 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
    * (BOSS_RULES.md §6.1) — so every timeline-owned readout (D-2) has a new value
    * to present.
    */
-  function resolvedState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+  function resolvedState(overrides: TestBattleStateOverrides = {}): RuntimeBattleState {
+    const { bossState: bossOverride, ...restOverrides } = overrides;
     return battleState({
       sequence: 1,
       board: deliveredBoard(1),
@@ -5818,8 +5874,8 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
           { id: 'Burn', type: 'DoT', source: 'boss', magnitude: 25, remainingTurns: 2 },
         ],
       },
-      bossState: { bossId: 'boss-hoa-long', hp: 1250, maxHp: 5000 },
-      ...overrides,
+      bossState: { bossId: 'boss-hoa-long', hp: 1250, maxHp: 5000, power: 0, ...(bossOverride ?? {}) },
+      ...restOverrides,
     });
   }
 
@@ -8806,7 +8862,8 @@ describe('BattleScene — CardCast and PetSkillCast input (SIGNALR_PROTOCOL.md �
   const GEM_NAMES = ['ATK', 'DEF', 'HP', 'POWER'];
 
 
-  function serverState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+  function serverState(overrides: TestBattleStateOverrides = {}): RuntimeBattleState {
+    const { bossState: bossOverride, ...restOverrides } = overrides;
     return {
       battleId: 'battle-1',
       turn: 0,
@@ -8830,8 +8887,14 @@ describe('BattleScene — CardCast and PetSkillCast input (SIGNALR_PROTOCOL.md �
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
         statusEffects: [],
       },
-      bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
-      ...overrides,
+      ...restOverrides,
+      bossState: {
+        bossId: 'boss-hoa-long',
+        hp: 5000,
+        maxHp: 5000,
+        power: 0,
+        ...(bossOverride ?? {}),
+      },
     };
   }
 
@@ -10050,7 +10113,7 @@ describe('Post-result lifecycle — Result → Lobby / MainMenu (TASK-203, ADR-0
       },
       // The battle is over: the Boss is at 0 HP and the outcome has been
       // delivered (SIGNALR_PROTOCOL.md §3.2.19, §4.4).
-      bossState: { bossId: 'boss-hoa-long', hp: 0, maxHp: 5000 },
+      bossState: { bossId: 'boss-hoa-long', hp: 0, maxHp: 5000, power: 0 },
     };
   }
 
@@ -10238,7 +10301,7 @@ describe('Phaser scene teardown — the TASK-203 regression (TASK-204)', () => {
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
         statusEffects: [],
       },
-      bossState: { bossId: 'boss-hoa-long', hp: bossHp, maxHp: 5000 },
+      bossState: { bossId: 'boss-hoa-long', hp: bossHp, maxHp: 5000, power: 0 },
     };
   }
 
@@ -11059,7 +11122,8 @@ describe('BattleScene — developer Move Log (TASK-253, operator decision D-1)',
     };
   }
 
-  function battleState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+  function battleState(overrides: TestBattleStateOverrides = {}): RuntimeBattleState {
+    const { bossState: bossOverride, ...restOverrides } = overrides;
     return {
       battleId: 'battle-253',
       turn: 4,
@@ -11077,8 +11141,14 @@ describe('BattleScene — developer Move Log (TASK-253, operator decision D-1)',
         equippedCards: ['card-heal'],
         statusEffects: [],
       },
-      bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
-      ...overrides,
+      ...restOverrides,
+      bossState: {
+        bossId: 'boss-hoa-long',
+        hp: 5000,
+        maxHp: 5000,
+        power: 0,
+        ...(bossOverride ?? {}),
+      },
     };
   }
 
@@ -11674,7 +11744,8 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
   }
 
   /** One delivered authoritative state, shaped exactly as the §4 push is. */
-  function battleState(overrides: Partial<RuntimeBattleState> = {}): RuntimeBattleState {
+  function battleState(overrides: TestBattleStateOverrides = {}): RuntimeBattleState {
+    const { bossState: bossOverride, ...restOverrides } = overrides;
     return {
       battleId: BATTLE_ID,
       turn: 1,
@@ -11692,8 +11763,14 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
         equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
         statusEffects: [],
       },
-      bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
-      ...overrides,
+      ...restOverrides,
+      bossState: {
+        bossId: 'boss-hoa-long',
+        hp: 5000,
+        maxHp: 5000,
+        power: 0,
+        ...(bossOverride ?? {}),
+      },
     };
   }
 

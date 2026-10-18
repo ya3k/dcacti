@@ -175,6 +175,7 @@ public record BattleStartPetState(
 /// <param name="ATK">Attack power (<c>BOSS_RULES.md</c> §6.1).</param>
 /// <param name="DEF">Defense (<c>BOSS_RULES.md</c> §6.1).</param>
 /// <param name="State">The Boss's state kind — <c>Idle</c> at creation (§2.4.1).</param>
+/// <param name="Power">Card/Skill resource, 0–100 — <c>0</c> at creation (<c>GAME_STATE.md</c> §2.4.3, <c>ADR-029</c>).</param>
 public record BattleStartBossState(
     string BossId,
     string Element,
@@ -182,4 +183,5 @@ public record BattleStartBossState(
     int MaxHP,
     int ATK,
     int DEF,
-    string State);
+    string State,
+    int Power);

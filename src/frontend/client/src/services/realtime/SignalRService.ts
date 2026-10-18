@@ -464,6 +464,8 @@ export interface BossStatePayload {
   readonly hp: number;
   /** The Boss's maximum HP (`GAME_STATE.md` §2.4), reported independently. */
   readonly maxHp: number;
+  /** The Boss's live Power (`GAME_STATE.md` §2.4.3, `SIGNALR_PROTOCOL.md` §4.4 item 12, `ADR-029`). Integer 0–100. */
+  readonly power: number;
 }
 
 /**

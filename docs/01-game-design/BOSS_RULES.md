@@ -310,10 +310,12 @@ all referenced, not restated.
    `SkillCharge` member (§6.3) and `Power` coexist during the migration; no
    resolution writes one from the other, and no conversion arithmetic is
    authorised (`ADR-029`).
-7. **Unresolved.** Whether the shared per-Gem output yields the intended Boss
-   ability cadence — and therefore whether any Boss-specific generation value or
-   per-ability cost tuning must be authored — is an **UNRESOLVED** balance value
-   recorded in `ADR-029`. This section authors no rate and no cost.
+7. **U-1 resolved (Option A approved under ADR-029 / TASK-304).** The Boss
+   generates Power using the shared per-Gem rate table owned by `COMBAT_RULES.md`
+   §2 (`+10 Power per uniquely matched POWER cell`, `BaseOutput(POWER) × unique matched count`,
+   clamped to `[0, 100]`, actor-relative). Whether the shared output requires future
+   cadence re-tuning alongside per-ability costs (U-2) remains an **UNRESOLVED** balance
+   decision recorded in `ADR-029`. This section authors no rate and no cost.
 
 ## 4.2 Boss Card Capability (MVP minimum, ADR-029)
 
@@ -862,7 +864,7 @@ Sơn Thạch Vệ  Earthquake      5 matches*    0        0          Temporary B
 Kim Lôi Vương Thunder Strike  5 matches*    0        0          Buff next qualifying Boss ATK match (ADR-026, D7; Option 3A)
 ```
 
-*\* Charge Requirement is the **transitional** gate, charged solely by POWER gems matched by the Boss during the Boss's board action (D2). Under ADR-029 the target form spends the Boss's `Power` (§4.1) instead, and the charge requirement, its unit metric and its overflow clamp policy are retired with `SkillCharge` (ADR-026 Unresolved Balance Choices #1–#2). The Boss's **Power** economy is not subject to that legacy question; whether it needs any Boss-specific generation value or per-ability cost tuning remains an UNRESOLVED balance decision recorded in ADR-029. The cooldown column above is retained unchanged by ADR-029 and applies to the ability after migration.*
+*\* Charge Requirement is the **transitional** gate, charged solely by POWER gems matched by the Boss during the Boss's board action (D2). Under ADR-029 the target form spends the Boss's `Power` (§4.1) instead, and the charge requirement, its unit metric and its overflow clamp policy are retired with `SkillCharge` (ADR-026 Unresolved Balance Choices #1–#2). The Boss's **Power** economy is not subject to that legacy question; the grant basis U-1 is resolved under ADR-029 / TASK-304 adopting the shared per-Gem output unchanged, while whether it needs future cadence re-tuning alongside per-ability cost tuning (U-2) remains an UNRESOLVED balance decision recorded in ADR-029. The cooldown column above is retained unchanged by ADR-029 and applies to the ability after migration.*
 
 These are **MVP base configuration** — not universal balance invariants. The
 project owner approved these values. They are configuration defaults used at

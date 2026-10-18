@@ -295,9 +295,9 @@ function payload(overrides: Record<string, unknown> = {}): Record<string, unknow
       equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
       statusEffects: [],
     },
-    // SIGNALR_PROTOCOL.md §4.4: the two-member Boss HP projection. Both members
-    // are always present and neither is nullable (§4.4 item 4).
-    bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
+    // SIGNALR_PROTOCOL.md §4.4: the four-member Boss projection. All members
+    // are always present and none is nullable (§4.4 items 4, 12, ADR-029).
+    bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000, power: 0 },
     ...overrides,
   };
 }
@@ -1126,6 +1126,7 @@ describe('GameRuntime', () => {
             passiveProgress: { threshold: 3, current: 1 },
             skillCharge: 2,
             skillCooldown: 0,
+            power: 0,
             statusEffects: [],
           },
         })
@@ -1159,10 +1160,10 @@ describe('GameRuntime', () => {
         expect(petState).not.toHaveProperty(undocumented);
       }
 
-      // §4.4 items 2–3 and item 10: `bossState` is a three-member projection, not
+      // §4.4 items 2–3, 10, 12: `bossState` is a four-member projection, not
       // `BossState`. Every other §2.4 member — including the Boss's own
       // `StatusEffects[]` — is dropped rather than modelled.
-      expect(Object.keys(state.bossState).sort()).toEqual(['bossId', 'hp', 'maxHp'].sort());
+      expect(Object.keys(state.bossState).sort()).toEqual(['bossId', 'hp', 'maxHp', 'power'].sort());
 
       for (const hiddenBossMember of [
         'element',
@@ -1356,13 +1357,14 @@ describe('GameRuntime', () => {
 
       transport.emit(
         'BattleStateUpdated',
-        payload({ bossState: { bossId: 'boss-kim-loi-vuong', hp: 4200, maxHp: 5000 } })
+        payload({ bossState: { bossId: 'boss-kim-loi-vuong', hp: 4200, maxHp: 5000, power: 30 } })
       );
 
       expect(runtime.getBattleState()!.bossState).toEqual({
         bossId: 'boss-kim-loi-vuong',
         hp: 4200,
         maxHp: 5000,
+        power: 30,
       });
     });
 
@@ -1374,36 +1376,40 @@ describe('GameRuntime', () => {
 
       transport.emit(
         'BattleStateUpdated',
-        payload({ bossState: { bossId: 'boss-hoa-long', hp: 0, maxHp: 5000 } })
+        payload({ bossState: { bossId: 'boss-hoa-long', hp: 0, maxHp: 5000, power: 10 } })
       );
 
       const state = runtime.getBattleState()!;
       expect(state.bossState.hp).toBe(0);
-      // The other two members are unaffected by a zero HP: nothing is dropped and
-      // nothing is inferred from it (§4.4 items 4–5, 10).
+      // The other members are unaffected by a zero HP: nothing is dropped and
+      // nothing is inferred from it (§4.4 items 4–5, 10, 12).
       expect(state.bossState.maxHp).toBe(5000);
       expect(state.bossState.bossId).toBe('boss-hoa-long');
+      expect(state.bossState.power).toBe(10);
     });
 
     it('rejects a payload missing a bossState member rather than defaulting it', async () => {
-      // §4.4 item 4: all three members are always present and none is optional —
-      // the Boss exists from battle creation at full health with its identity
-      // fixed, so there is no absent case, a client must not read an absent `hp` as
-      // zero, and it must not supply an identity it was not sent (§4.4 item 10).
+      // §4.4 items 4, 12: all four members are always present and none is optional —
+      // the Boss exists from battle creation at full health with its identity and
+      // power fixed, so there is no absent case, a client must not read an absent `hp`
+      // or `power` as zero, and it must not supply an identity it was not sent (§4.4 item 10).
       const malformed = [
         // No `bossState` at all.
         { bossState: undefined },
         // No `hp`.
-        { bossState: { bossId: 'boss-hoa-long', maxHp: 5000 } },
+        { bossState: { bossId: 'boss-hoa-long', maxHp: 5000, power: 0 } },
         // No `maxHp`.
-        { bossState: { bossId: 'boss-hoa-long', hp: 4200 } },
+        { bossState: { bossId: 'boss-hoa-long', hp: 4200, power: 0 } },
+        // No `power`.
+        { bossState: { bossId: 'boss-hoa-long', hp: 4200, maxHp: 5000 } },
         // No `bossId` — the identity is never reconstructed client-side.
-        { bossState: { hp: 4200, maxHp: 5000 } },
+        { bossState: { hp: 4200, maxHp: 5000, power: 0 } },
         // An empty identity is not an identity.
-        { bossState: { bossId: '', hp: 4200, maxHp: 5000 } },
+        { bossState: { bossId: '', hp: 4200, maxHp: 5000, power: 0 } },
         // Ill-typed members.
-        { bossState: { bossId: 'boss-hoa-long', hp: '4200', maxHp: 5000 } },
-        { bossState: { bossId: 'boss-hoa-long', hp: 4200, maxHp: null } },
+        { bossState: { bossId: 'boss-hoa-long', hp: '4200', maxHp: 5000, power: 0 } },
+        { bossState: { bossId: 'boss-hoa-long', hp: 4200, maxHp: null, power: 0 } },
+        { bossState: { bossId: 'boss-hoa-long', hp: 4200, maxHp: 5000, power: '10' } },
         // The empty array is not the absent case, but a non-number is still not a
         // Boss HP value, and no identity can be read from it.
         { bossState: [] },
@@ -1800,7 +1806,7 @@ describe('GameRuntime', () => {
       const recovered = payload({
         turn: 7,
         sequence: 8,
-        bossState: { bossId: 'boss-hoa-long', hp: 3100, maxHp: 5000 },
+        bossState: { bossId: 'boss-hoa-long', hp: 3100, maxHp: 5000, power: 40 },
         petState: {
           hp: 1000,
           maxHp: 1000,
@@ -1830,9 +1836,9 @@ describe('GameRuntime', () => {
       ]);
 
       // The recovered Boss projection is the delivered one — the canonical
-      // Identity plus the HP pair — not re-derived from the stale copy the runtime
-      // held before the reconnect, and not read off any event (§4.4 item 10).
-      expect(state.bossState).toEqual({ bossId: 'boss-hoa-long', hp: 3100, maxHp: 5000 });
+      // Identity, HP pair, and live Power — not re-derived from the stale copy
+      // the runtime held before the reconnect, and not read off any event (§4.4 items 10, 12).
+      expect(state.bossState).toEqual({ bossId: 'boss-hoa-long', hp: 3100, maxHp: 5000, power: 40 });
 
       // The three live Pet combat values are the delivered ones, so a resynchronizing
       // client re-renders the current HP and Power with no event replay

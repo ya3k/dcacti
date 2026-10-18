@@ -493,15 +493,15 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         Assert.Equal(JsonValueKind.Array, statusEffects.ValueKind);
         Assert.Empty(statusEffects.EnumerateArray());
 
-        // §4.4: `bossState` is the three-member Boss projection — `bossId`, `hp` and
-        // `maxHp` and nothing else. All three are always present and none is
+        // §4.4: `bossState` is the four-member Boss projection — `bossId`, `hp`,
+        // `maxHp`, and `power` (ADR-029). All four are always present and none is
         // nullable: the Boss exists from battle creation at full health
-        // (GAME_STATE.md §2.4.1), so `hp` equals `maxHp` here and is delivered as a
-        // real value rather than by absence, and the identity is the canonical
-        // technical Identity the battle was created against (BOSS_RULES.md §6.4).
+        // (GAME_STATE.md §2.4.1), so `hp` equals `maxHp` here, `power` starts at 0,
+        // and the identity is the canonical technical Identity the battle was created
+        // against (BOSS_RULES.md §6.4).
         var bossState = payload.GetProperty("bossState");
         Assert.Equal(
-            new[] { "bossId", "hp", "maxHp" },
+            new[] { "bossId", "hp", "maxHp", "power" },
             bossState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
         Assert.Equal(JsonValueKind.String, bossState.GetProperty("bossId").ValueKind);
@@ -509,9 +509,12 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
         var bossHp = bossState.GetProperty("hp");
         var bossMaxHp = bossState.GetProperty("maxHp");
+        var bossPower = bossState.GetProperty("power");
         Assert.Equal(JsonValueKind.Number, bossHp.ValueKind);
         Assert.Equal(JsonValueKind.Number, bossMaxHp.ValueKind);
+        Assert.Equal(JsonValueKind.Number, bossPower.ValueKind);
         Assert.Equal(bossMaxHp.GetInt32(), bossHp.GetInt32());
+        Assert.Equal(0, bossPower.GetInt32());
 
         await hubConnection.StopAsync();
     }
@@ -791,11 +794,12 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             new[] { "combo", "matchCount" },
             playerStateFields.OrderBy(n => n, StringComparer.Ordinal));
 
-        // §4.4 items 2 and 4: `bossState` carries exactly the three documented Boss
-        // members, and all three are always present — the Boss exists from battle
-        // creation at full health, so none is nullable and none is omitted.
+        // §4.4 items 2, 4, 12: `bossState` carries exactly the four documented Boss
+        // members (including power, ADR-029), and all four are always present — the
+        // Boss exists from battle creation at full health, so none is nullable and
+        // none is omitted.
         Assert.Equal(
-            new[] { "bossId", "hp", "maxHp" },
+            new[] { "bossId", "hp", "maxHp", "power" },
             bossStateFields.OrderBy(n => n, StringComparer.Ordinal));
 
         // `petState` carries exactly the members §4.3 fixes: the Passive identity, its
@@ -1215,10 +1219,10 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         Assert.True(payload.TryGetProperty("bossState", out var bossState));
         Assert.Equal(JsonValueKind.Object, bossState.ValueKind);
 
-        // §4.4 item 2: exactly these three members, and no fourth.
+        // §4.4 item 2, 12: exactly these four members, and no fifth.
         var members = bossState.EnumerateObject().Select(p => p.Name).ToArray();
         Assert.Equal(
-            new[] { "bossId", "hp", "maxHp" },
+            new[] { "bossId", "hp", "maxHp", "power" },
             members.OrderBy(n => n, StringComparer.Ordinal));
 
         // §4.4 item 10 / TASK-208 D-208-03: `bossId` is the canonical technical
@@ -1250,14 +1254,17 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         // not inferred.
         var hp = bossState.GetProperty("hp");
         var maxHp = bossState.GetProperty("maxHp");
+        var power = bossState.GetProperty("power");
         Assert.Equal(JsonValueKind.Number, hp.ValueKind);
         Assert.Equal(JsonValueKind.Number, maxHp.ValueKind);
+        Assert.Equal(JsonValueKind.Number, power.ValueKind);
         Assert.True(hp.GetInt32() > 0, "the Boss begins a battle at full health (GAME_STATE.md §2.4.1)");
         Assert.Equal(hp.GetInt32(), maxHp.GetInt32());
+        Assert.Equal(0, power.GetInt32());
 
         // §4.4 item 6: there is no "Boss unavailable" or terminal variant of this
         // object, so no third spelling of the Boss's HP travels beside it.
-        Assert.Equal(3, members.Length);
+        Assert.Equal(4, members.Length);
 
         await hubConnection.StopAsync();
     }
@@ -1367,7 +1374,7 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                 new[] { "equippedCards", "hp", "maxHp", "passiveId", "passiveProgress", "power", "statusEffects" },
                 petState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
             Assert.Equal(
-                new[] { "bossId", "hp", "maxHp" },
+                new[] { "bossId", "hp", "maxHp", "power" },
                 path.GetProperty("bossState").EnumerateObject()
                     .Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
         }
@@ -1380,6 +1387,7 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             join.GetProperty("petState").GetProperty("maxHp").GetInt32(),
             join.GetProperty("petState").GetProperty("hp").GetInt32());
         Assert.Equal(0, join.GetProperty("petState").GetProperty("power").GetInt32());
+        Assert.Equal(0, join.GetProperty("bossState").GetProperty("power").GetInt32());
 
         foreach (var member in new[] { "hp", "maxHp", "power" })
         {
@@ -1391,6 +1399,9 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         Assert.Equal(
             update.GetProperty("bossState").GetProperty("hp").GetInt32(),
             snapshotState.GetProperty("bossState").GetProperty("hp").GetInt32());
+        Assert.Equal(
+            update.GetProperty("bossState").GetProperty("power").GetInt32(),
+            snapshotState.GetProperty("bossState").GetProperty("power").GetInt32());
         Assert.Equal(
             update.GetProperty("bossState").GetProperty("bossId").GetString(),
             snapshotState.GetProperty("bossState").GetProperty("bossId").GetString());
@@ -2329,14 +2340,13 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             },
             payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
-        // ---- 4. `bossState` is the three-member projection, not the combat pool ---
-        // SIGNALR_PROTOCOL.md §4.4 item 2: the Boss's canonical Identity and its live
-        // HP arrive as `bossId`/`hp`/`maxHp` and nothing else, so no other Boss combat
-        // stat leaks in and the object is not `BossState`.
+        // ---- 4. `bossState` is the four-member projection, not the combat pool ---
+        // SIGNALR_PROTOCOL.md §4.4 items 2 and 12: the Boss's canonical Identity,
+        // live HP, and live Power arrive as `bossId`/`hp`/`maxHp`/`power` and nothing else.
         var bossState = payload.GetProperty("bossState");
 
         Assert.Equal(
-            new[] { "bossId", "hp", "maxHp" },
+            new[] { "bossId", "hp", "maxHp", "power" },
             bossState.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
         foreach (var hiddenBossMember in new[]

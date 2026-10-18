@@ -221,6 +221,15 @@ namespace GameServer.Domain.Battle;
 /// <c>PassiveCharged</c>/<c>PassiveTriggered</c> is emitted from match progress.
 /// This type holds the marker and applies no meaning to it.
 /// </param>
+/// <param name="Power">
+/// The Boss's own Power resource (<c>GAME_STATE.md</c> §2.4, §2.4.3; <c>BOSS_RULES.md</c> §4.1; <c>ADR-029</c>).
+///
+/// It starts at <c>0</c> at battle creation — creation is not a resolution and
+/// generates no resource — and is an integer clamped to the range 0–100.
+/// Power is generated from POWER Gems matched in the Boss's own board match action
+/// and spent on Boss Cards. Clamping to 0–100 belongs to the write site that owns it
+/// (<see cref="ResourceGenerator.ApplyBossPower"/>).
+/// </param>
 /// <param name="SkillCharge">
 /// The matches charged toward the Boss Skill's charge requirement
 /// (<c>GAME_STATE.md</c> §2.4, §2.4.3; <c>BOSS_RULES.md</c> §6.3).
@@ -251,6 +260,7 @@ public readonly record struct BossState(
     BossStateKind State,
     PassiveId PassiveId,
     PassiveProgress PassiveProgress,
+    int Power,
     int SkillCharge,
     int SkillCooldown)
 {
@@ -317,6 +327,7 @@ public readonly record struct BossState(
         && State == other.State
         && PassiveId == other.PassiveId
         && PassiveProgress.Equals(other.PassiveProgress)
+        && Power == other.Power
         && SkillCharge == other.SkillCharge
         && SkillCooldown == other.SkillCooldown
         && StatusEffectsEqual(other);
@@ -333,6 +344,7 @@ public readonly record struct BossState(
         hash.Add(State);
         hash.Add(PassiveId);
         hash.Add(PassiveProgress);
+        hash.Add(Power);
         hash.Add(SkillCharge);
         hash.Add(SkillCooldown);
         return hash.ToHashCode();
@@ -443,6 +455,7 @@ public readonly record struct BossState(
             InitialState,
             passiveId,
             PassiveProgress.AtStart(passiveThreshold),
+            Power: 0,
             SkillCharge: 0,
             SkillCooldown: 0)
         {

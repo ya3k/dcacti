@@ -411,6 +411,48 @@ public static class ResourceGenerator
         ApplyPower(previous, generation.Power);
 
     /// <summary>
+    /// Writes generated Power into the Boss's persistent state, clamped to
+    /// the documented 0–100 range (<c>COMBAT_RULES.md</c> §2, <c>BOSS_RULES.md</c> §4.1, <c>ADR-029</c>).
+    ///
+    /// <code>
+    /// new Power = clamp(previous Power + generated Power, 0, 100)
+    /// </code>
+    ///
+    /// The Boss-side counterpart of <see cref="ApplyPower(Battle.PetState, int)"/>:
+    /// same rate table (+10 Power per uniquely matched POWER cell, U-1 Option A),
+    /// same 0–100 clamp, but writing <see cref="Battle.BossState.Power"/> rather than
+    /// <see cref="Battle.PetState.Power"/>.
+    /// </summary>
+    /// <param name="previous">The Boss's state before this match generation.</param>
+    /// <param name="powerDelta">The generated Power amount.</param>
+    /// <returns>
+    /// <paramref name="previous"/> with its <c>Power</c> incremented by the generated
+    /// amount and clamped to 0–100.
+    /// </returns>
+    public static Battle.BossState ApplyBossPower(
+        Battle.BossState previous,
+        int powerDelta)
+    {
+        var updated = previous.Power + powerDelta;
+
+        if (updated > MaxPower)
+        {
+            updated = MaxPower;
+        }
+        else if (updated < MinPower)
+        {
+            updated = MinPower;
+        }
+
+        return previous with { Power = updated };
+    }
+
+    public static Battle.BossState ApplyBossPower(
+        Battle.BossState previous,
+        ResourceGeneration generation) =>
+        ApplyBossPower(previous, generation.Power);
+
+    /// <summary>
     /// Resolves the player effects of one committed Swap: applies the HealPool the
     /// original HP Gems generated to the active Pet's persistent HP
     /// (<c>GAME_RULES.md</c> §17 step 14, <c>COMBAT_RULES.md</c> §4 item 1).
@@ -683,6 +725,7 @@ public static class ResourceGenerator
         {
             var updatedBoss = ApplyBossHeal(bossState, generation);
             updatedBoss = ApplyDefenseBuff(updatedBoss, generation);
+            updatedBoss = ApplyBossPower(updatedBoss, generation);
             updatedBoss = ApplyBossSkillCharge(updatedBoss, resolution, bossSkillChargeRequirement);
             return (petState, updatedBoss);
         }

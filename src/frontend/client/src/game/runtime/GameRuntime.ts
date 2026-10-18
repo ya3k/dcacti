@@ -2682,11 +2682,20 @@ export class GameRuntime implements GameRuntimePort {
       return null;
     }
 
-    if (typeof candidate.hp !== 'number' || typeof candidate.maxHp !== 'number') {
+    if (
+      typeof candidate.hp !== 'number' ||
+      typeof candidate.maxHp !== 'number' ||
+      typeof candidate.power !== 'number'
+    ) {
       return null;
     }
 
-    return { bossId: candidate.bossId, hp: candidate.hp, maxHp: candidate.maxHp };
+    return {
+      bossId: candidate.bossId,
+      hp: candidate.hp,
+      maxHp: candidate.maxHp,
+      power: candidate.power,
+    };
   }
 
   /**

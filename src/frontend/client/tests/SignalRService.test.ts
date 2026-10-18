@@ -156,7 +156,7 @@ describe('SignalRService', () => {
           equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
           statusEffects: [],
         },
-        bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000 },
+        bossState: { bossId: 'boss-hoa-long', hp: 5000, maxHp: 5000, power: 0 },
       };
       hub.handlers.get('BattleStateUpdated')?.(payload);
 
@@ -195,7 +195,7 @@ describe('SignalRService', () => {
           equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
           statusEffects: [],
         },
-        bossState: { bossId: 'boss-hoa-long', hp: 4200, maxHp: 5000 },
+        bossState: { bossId: 'boss-hoa-long', hp: 4200, maxHp: 5000, power: 0 },
       };
       hub.handlers.get('BattleStateUpdated')?.(payload);
 
@@ -688,7 +688,7 @@ describe('SignalRService', () => {
           equippedCards: ['card-heal', 'card-shield', 'card-power-charge', 'card-inferno'],
           statusEffects: [],
         },
-        bossState: { bossId: 'boss-hoa-long', hp: 3800, maxHp: 5000 },
+        bossState: { bossId: 'boss-hoa-long', hp: 3800, maxHp: 5000, power: 0 },
       };
     }
 

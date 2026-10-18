@@ -127,6 +127,7 @@ public class BattleStateSerializationTests
             State: BossStateKind.Enraged,
             PassiveId: new PassiveId("boss-thuy-ma-heal"),
             PassiveProgress: new PassiveProgress(Threshold: 5, Current: 4),
+            Power: 45,
             SkillCharge: 3,
             SkillCooldown: 2);
 
@@ -601,8 +602,42 @@ public class BattleStateSerializationTests
         Assert.Equal(new PassiveId("boss-thuy-ma-heal"), boss.PassiveId);
         Assert.Equal(5, boss.PassiveProgress.Threshold);
         Assert.Equal(4, boss.PassiveProgress.Current);
+        Assert.Equal(45, boss.Power);
         Assert.Equal(3, boss.SkillCharge);
         Assert.Equal(2, boss.SkillCooldown);
+    }
+
+    [Fact]
+    public void Deserialize_WhenBossPowerIsAbsent_ShouldDefaultToZero()
+    {
+        // REDIS_STATE.md §2.1 item 3 / ADR-029:
+        // A legacy persisted battle state written before the Power member existed
+        // must deserialize gracefully with Power = 0 (the documented initial value).
+        var json = BattleStateSerializer.Serialize(RepresentativeState());
+
+        var node = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+        var bossObj = node["bossState"]!.AsObject();
+        Assert.True(bossObj.Remove("power"));
+
+        var restored = BattleStateSerializer.Deserialize(node.ToJsonString());
+        Assert.Equal(0, restored.BossState.Power);
+        Assert.Equal(new BossId("boss-thuy-ma"), restored.BossState.BossId);
+        Assert.Equal(3117, restored.BossState.HP);
+        Assert.Equal(3, restored.BossState.SkillCharge);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(10)]
+    [InlineData(50)]
+    [InlineData(100)]
+    public void RoundTrip_ShouldPreserveBossPower(int power)
+    {
+        var state = RepresentativeState();
+        var custom = state with { BossState = state.BossState with { Power = power } };
+
+        var restored = BattleStateSerializer.Deserialize(BattleStateSerializer.Serialize(custom));
+        Assert.Equal(power, restored.BossState.Power);
     }
 
     [Fact]

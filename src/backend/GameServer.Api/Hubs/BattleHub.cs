@@ -417,7 +417,8 @@ public record StatusEffectPayload(
 public record BossStatePayload(
     [property: JsonPropertyName("bossId")] string BossId,
     [property: JsonPropertyName("hp")] int Hp,
-    [property: JsonPropertyName("maxHp")] int MaxHp);
+    [property: JsonPropertyName("maxHp")] int MaxHp,
+    [property: JsonPropertyName("power")] int Power);
 
 /// <summary>
 /// The wire projection of <c>GAME_STATE.md</c> §2.3's <c>PassiveProgress</c>
@@ -1418,19 +1419,20 @@ public class BattleHub : Hub
             // collection (§4.3 item 14: only the ACTIVE Pet's instances travel, and
             // the array is always present, empty when none is active).
             ToPetStatePayload(state.PetState),
-            // GAME_STATE.md §2.4 / SIGNALR_PROTOCOL.md §4.4: the three-member Boss
+            // GAME_STATE.md §2.4 / SIGNALR_PROTOCOL.md §4.4: the four-member Boss
             // projection, read from BossState — the Boss's canonical technical
-            // Identity and its live health, and nothing else. The rest of §2.4
+            // Identity, its live health, and its live Power (ADR-029). The rest of §2.4
             // (Element, ATK/DEF, State, Passive, Skill charge/cooldown, and the
             // Boss's own StatusEffects[]) stays server-side (§4.4 item 3), so no
-            // member beyond bossId/hp/maxHp is read here. All three are always
+            // member beyond bossId/hp/maxHp/power is read here. All four are always
             // present and none is clamped or derived from another: a terminal
             // `hp = 0` is published as 0, and the identity is read as sent
-            // (§4.4 items 4–5, 10).
+            // (§4.4 items 4–5, 10, 12).
             new BossStatePayload(
                 state.BossState.BossId.Value,
                 state.BossState.HP,
-                state.BossState.MaxHP));
+                state.BossState.MaxHP,
+                state.BossState.Power));
 
     /// <summary>
     /// Projects the authoritative <c>PetState</c> onto the §4.3 <c>petState</c>

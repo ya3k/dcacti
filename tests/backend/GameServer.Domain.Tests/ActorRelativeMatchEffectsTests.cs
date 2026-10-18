@@ -26,12 +26,13 @@ public class ActorRelativeMatchEffectsTests
             PassiveId: new Passives.PassiveId("test-passive"),
             PassiveProgress: Passives.PassiveProgress.AtStart(5));
 
-    private static BossState CreateBoss(int hp = 4000, int maxHp = 5000, int skillCharge = 0) =>
+    private static BossState CreateBoss(int hp = 4000, int maxHp = 5000, int skillCharge = 0, int power = 0) =>
         BossDefinitions.HoaLong.ToInitialState() with
         {
             HP = hp,
             MaxHP = maxHp,
             SkillCharge = skillCharge,
+            Power = power,
         };
 
     // =======================================================================
@@ -220,17 +221,18 @@ public class ActorRelativeMatchEffectsTests
             resolution: default,
             bossSkillChargeRequirement: 5);
 
-        // Then: Pet Power increases (20 + 30 = 50); Boss SkillCharge is UNCHANGED (1)
+        // Then: Pet Power increases (20 + 30 = 50); Boss SkillCharge is UNCHANGED (1); Boss Power is UNCHANGED (0)
         Assert.Equal(50, updatedPet.Power);
         Assert.Equal(1, updatedBoss.SkillCharge);
+        Assert.Equal(0, updatedBoss.Power);
     }
 
     [Fact]
-    public void ApplyActorMatchEffects_BossTurn_ShouldOnlyChargeBossSkillCharge()
+    public void ApplyActorMatchEffects_BossTurn_ShouldOnlyChargeBossSkillChargeAndBossPower()
     {
-        // Given: Boss turn with 2 POWER match groups
+        // Given: Boss turn with 2 POWER match groups (6 unique POWER cells)
         var pet = CreatePet(power: 40);
-        var boss = CreateBoss(skillCharge: 2);
+        var boss = CreateBoss(skillCharge: 2, power: 10);
         var generation = new ResourceGeneration(
             BaseDamagePool: 0,
             DefensePool: 0,
@@ -253,9 +255,67 @@ public class ActorRelativeMatchEffectsTests
             resolution,
             bossSkillChargeRequirement: 5);
 
-        // Then: Pet Power is UNCHANGED (40); Boss SkillCharge increments by +2 (2 + 2 = 4)
+        // Then: Pet Power is UNCHANGED (40); Boss SkillCharge increments by +2 (2 + 2 = 4); Boss Power increments by +60 (10 + 60 = 70)
         Assert.Equal(40, updatedPet.Power);
         Assert.Equal(4, updatedBoss.SkillCharge);
+        Assert.Equal(70, updatedBoss.Power);
+    }
+
+    [Fact]
+    public void ApplyBossPower_SinglePowerCell_ShouldGrant10Power()
+    {
+        var boss = CreateBoss(power: 0);
+        var updated = ResourceGenerator.ApplyBossPower(boss, powerDelta: 10);
+        Assert.Equal(10, updated.Power);
+    }
+
+    [Fact]
+    public void ApplyBossPower_MultiplePowerCells_ShouldGrant10PowerEach()
+    {
+        var boss = CreateBoss(power: 20);
+        var updated = ResourceGenerator.ApplyBossPower(boss, powerDelta: 30);
+        Assert.Equal(50, updated.Power);
+    }
+
+    [Fact]
+    public void ApplyBossPower_ShouldClampAt100()
+    {
+        var boss = CreateBoss(power: 85);
+        var updated = ResourceGenerator.ApplyBossPower(boss, powerDelta: 30);
+        Assert.Equal(100, updated.Power);
+    }
+
+    [Fact]
+    public void ApplyBossPower_ShouldNotDropBelow0()
+    {
+        var boss = CreateBoss(power: 10);
+        var updated = ResourceGenerator.ApplyBossPower(boss, powerDelta: -25);
+        Assert.Equal(0, updated.Power);
+    }
+
+    [Fact]
+    public void ApplyActorMatchEffects_BossTurn_NonPowerMatch_ShouldNotGrantPower()
+    {
+        var pet = CreatePet(power: 50);
+        var boss = CreateBoss(power: 20, skillCharge: 0);
+        var generation = new ResourceGeneration(
+            BaseDamagePool: 30,
+            DefensePool: 15,
+            HealPool: 20,
+            Power: 0,
+            ClearedGemCounts: new ClearedGemCounts(3, 3, 1, 0));
+
+        var (updatedPet, updatedBoss) = ResourceGenerator.ApplyActorMatchEffects(
+            DamageParty.Boss,
+            pet,
+            boss,
+            generation,
+            resolution: default,
+            bossSkillChargeRequirement: 5);
+
+        Assert.Equal(50, updatedPet.Power);
+        Assert.Equal(20, updatedBoss.Power);
+        Assert.Equal(0, updatedBoss.SkillCharge);
     }
 
     [Fact]

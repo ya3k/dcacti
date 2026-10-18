@@ -209,7 +209,7 @@ public class BossStateTests
             new[]
             {
                 "ATK", "BossId", "DEF", "Element", "HP", "MaxHP", "PassiveId",
-                "PassiveProgress", "SkillCharge", "SkillCooldown", "State",
+                "PassiveProgress", "Power", "SkillCharge", "SkillCooldown", "State",
             },
             dataMembers);
 
@@ -228,7 +228,7 @@ public class BossStateTests
             new[]
             {
                 "ATK", "ActiveStatusEffects", "BossId", "DEF", "Element", "HP", "IsIdle",
-                "MaxHP", "PassiveId", "PassiveProgress", "SkillCharge", "SkillCooldown",
+                "MaxHP", "PassiveId", "PassiveProgress", "Power", "SkillCharge", "SkillCooldown",
                 "State",
             },
             declared);
@@ -919,5 +919,64 @@ public class BossStateTests
         Assert.Equal(4, pet.PassiveProgress.Threshold);
         Assert.Equal(0, pet.PassiveProgress.Current);
         Assert.Equal(PassiveResetBehavior.NoReset, pet.ResetBehavior);
+    }
+
+    [Fact]
+    public void BossState_Initial_ShouldSetPowerToZero()
+    {
+        // GAME_STATE.md §2.4.3 / BOSS_RULES.md §4.1 / ADR-029:
+        // BossState.Power initializes to 0 at battle creation.
+        var boss = BossState.Initial(
+            new BossId("boss-hoa-long"),
+            Element.Hoa,
+            maxHp: 5000,
+            atk: 100,
+            def: 50,
+            passiveId: new PassiveId("boss-hoa-long-rage"),
+            passiveThreshold: 5);
+
+        Assert.Equal(0, boss.Power);
+    }
+
+    [Fact]
+    public void BossState_Equality_ShouldDifferentiateByPower()
+    {
+        // BossState equals and hash code must consider Power.
+        var bossA = BossState.Initial(
+            new BossId("boss-hoa-long"),
+            Element.Hoa,
+            maxHp: 5000,
+            atk: 100,
+            def: 50,
+            passiveId: new PassiveId("boss-hoa-long-rage"),
+            passiveThreshold: 5);
+
+        var bossB = bossA with { Power = 30 };
+
+        Assert.NotEqual(bossA, bossB);
+        Assert.NotEqual(bossA.GetHashCode(), bossB.GetHashCode());
+
+        var bossC = bossB with { Power = 0 };
+        Assert.Equal(bossA, bossC);
+        Assert.Equal(bossA.GetHashCode(), bossC.GetHashCode());
+    }
+
+    [Fact]
+    public void BossState_WithExpression_ShouldSupportPowerMutation()
+    {
+        var boss = BossState.Initial(
+            new BossId("boss-hoa-long"),
+            Element.Hoa,
+            maxHp: 5000,
+            atk: 100,
+            def: 50,
+            passiveId: new PassiveId("boss-hoa-long-rage"),
+            passiveThreshold: 5);
+
+        var updated = boss with { Power = 70 };
+        Assert.Equal(70, updated.Power);
+        Assert.Equal(boss.BossId, updated.BossId);
+        Assert.Equal(boss.HP, updated.HP);
+        Assert.Equal(boss.MaxHP, updated.MaxHP);
     }
 }

@@ -128,7 +128,8 @@ internal static class BattleStartStateSummary
             MaxHP: bossState.MaxHP,
             ATK: bossState.ATK,
             DEF: bossState.DEF,
-            State: bossState.State.ToString());
+            State: bossState.State.ToString(),
+            Power: bossState.Power);
 
     /// <summary>
     /// Projects one cell entry — the Gem type as its documented contract name

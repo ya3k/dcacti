@@ -148,6 +148,7 @@ internal static class BattleStateJsonNames
     public const string BossStateKind = "state";
     public const string BossPassiveId = "passiveId";
     public const string BossPassiveProgress = "passiveProgress";
+    public const string BossPower = "power";
     public const string BossSkillCharge = "skillCharge";
     public const string BossSkillCooldown = "skillCooldown";
 
@@ -780,6 +781,13 @@ internal sealed record BossStateJson
 
     [JsonPropertyName(BattleStateJsonNames.BossPassiveProgress)]
     public required PassiveProgressJson PassiveProgress { get; init; }
+
+    /// <summary>
+    /// The Boss's live Power resource, integer 0–100 (<c>GAME_STATE.md</c> §2.4.3, <c>ADR-029</c>).
+    /// Defaults to 0 when absent for backward compatibility with pre-deploy records (<c>REDIS_STATE.md</c> §2.1 item 3).
+    /// </summary>
+    [JsonPropertyName(BattleStateJsonNames.BossPower)]
+    public int Power { get; init; }
 
     /// <summary>
     /// Matches charged toward the Skill's requirement (§2.4.3).

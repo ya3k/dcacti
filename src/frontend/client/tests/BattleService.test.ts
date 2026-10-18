@@ -119,6 +119,7 @@ function initialStateFixture() {
       atk: 60,
       def: 30,
       state: 'Idle',
+      power: 0,
     },
   };
 }
@@ -502,8 +503,9 @@ describe('ApiService.startBattle (API_CONTRACTS.md §3)', () => {
     expect(bossState.def).toBe(30);
 
     // §2.4.1 / §2.4.5: the Boss starts in its Initial State, and no MVP Boss
-    // applies Stunned.
+    // applies Stunned. Power starts at 0 (GAME_STATE.md §2.4.3, ADR-029).
     expect(bossState.state).toBe('Idle');
+    expect(bossState.power).toBe(0);
   });
 
   it('should accept every canonical Element wire value on both element members', async () => {

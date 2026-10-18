@@ -314,7 +314,7 @@ repository.
 
 | # | Unresolved value | Blocks | Notes |
 |---|---|---|---|
-| U-1 | **The Boss's Power grant basis.** Whether the Boss receives the shared per-Gem output unchanged (which would make its economy much faster than the legacy `+1 per match group`), or whether a Boss-specific generation value must be authored. | Slice 1 | The audit's `+10 per Gem` conversion proposal is **not** adopted; the value must be decided explicitly. |
+| U-1 | **The Boss's Power grant basis.** (Resolved under TASK-304: Option A approved). The Boss receives the shared Player Power per-Gem output unchanged: `+10 Power per uniquely matched POWER cell` (`BaseOutput(POWER) × unique matched count`, clamped to `[0, 100]`, actor-relative attribution). | Resolved (Slice 1 unblocked) | Decided explicitly under TASK-304 (Option A). Future ability cadence and per-ability cost tuning (U-2) remain open. |
 | U-2 | **Per-ability Power costs.** The `PowerCost` of each Boss Card, and whether any legacy `ChargeRequirement` re-tuning is required to preserve cadence. | Slice 4 (Slice 2 may build the shared machinery without them) | No cost value is authored anywhere by this decision. |
 | U-3 | **The Boss Card cast-priority score** (its authored form and its values) and the resulting cast/board action cadence, including the pacing effect of a cast phase producing no Boss attack (§2.7 item 19). | Slice 3 | The policy's *structure* is decided; its weights are not. |
 | U-4 | **The outstanding ability magnitudes** that `ADR-026`'s Unresolved Balance Choices #3–#4 and `BOSS_RULES.md` §6.3.1 items 1/4/5 already record as unresolved — Shield points for `earthquake`, buff percentages and durations for `flame-burst` and `thunder-strike`, and the compounding behavior of `flame-burst` with `boss-hoa-long-rage`. | Slice 4 | Explicitly **not** resolved or narrowed here. |
@@ -331,9 +331,9 @@ unresolved values it depends on to be approved first (§3).
 
 ```text
 SLICE 1 — Boss Power foundation
-  Boss Power generation (grant basis U-1 approved first), 0–100 clamping, state
-  serialization, Redis round trip, state projection (bossState.power), HUD
-  visibility, and reconnect recovery.
+  Boss Power generation (grant basis U-1 resolved under Option A: +10 Power per
+  uniquely matched POWER cell), 0–100 clamping, state serialization, Redis round
+  trip, state projection (bossState.power), HUD visibility, and reconnect recovery.
   Inspect-first requirement: the existing ResourceGenerator and actor-relative
   effect behaviour were inspected before this scope was estimated (§1.2) — the
   Boss branch currently charges SkillCharge +1 per match group clamped at
@@ -455,9 +455,9 @@ policy's cast candidate needs Power); Slice 5 last, only on demonstrated parity.
   measured.
 - **Balance risk is concentrated and deferred.** A shared per-Gem rate makes the
   Boss's economy much faster than `+1 per match group`, and a cast phase forgoes
-  the Boss's attack. Both are balance questions this record refuses to answer
-  (§3, U-1/U-3), which means Slice 1 and Slice 3 cannot complete without explicit
-  operator decisions.
+  the Boss's attack. U-1 was resolved under TASK-304 (Option A) approving the shared
+  rate for Slice 1, while future cadence tuning and U-3 remain balance questions
+  requiring operator decisions before Slice 3 can complete.
 - **The Boss's cast is a new presentation surface.** A new event needs frontend
   presentation, and the ability's identity is now reported by two event shapes
   during the migration window (legacy and Card), which consumers must handle

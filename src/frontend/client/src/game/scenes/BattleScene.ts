@@ -152,6 +152,15 @@ const BOSS_BAR_HEIGHT = 16;
 const BOSS_HP_TEXT_X = BOSS_BAR_X + BOSS_BAR_WIDTH + HUD_VALUE_GAP;
 const BOSS_HP_TEXT_Y = BOSS_BAR_Y;
 
+/** The Boss Power gauge and its authoritative `power / 100` readout (ADR-029). */
+const BOSS_POWER_LABEL_Y = HUD_TOP + 60;
+const BOSS_POWER_BAR_X = HUD_LEFT + 60;
+const BOSS_POWER_BAR_Y = HUD_TOP + 62;
+const BOSS_POWER_BAR_WIDTH = 140;
+const BOSS_POWER_BAR_HEIGHT = 12;
+const BOSS_POWER_TEXT_X = BOSS_POWER_BAR_X + BOSS_POWER_BAR_WIDTH + HUD_VALUE_GAP;
+const BOSS_POWER_TEXT_Y = HUD_TOP + 59;
+
 /** The connection line: centered in the boss band, clear of the Boss panel. */
 const CONNECTION_Y = HUD_TOP + 12;
 
@@ -987,6 +996,10 @@ export class BattleScene extends Phaser.Scene {
    * the authoritative values are also drawn as text beside it.
    */
   private bossHpGauge: HudGauge | null = null;
+  /** The Boss's authoritative Power (SIGNALR_PROTOCOL.md §4.4 item 12, ADR-029). */
+  private bossPowerText: Phaser.GameObjects.Text | null = null;
+  /** The Boss's Power gauge — the delivered value drawn against the documented 0–100 range. */
+  private bossPowerGauge: HudGauge | null = null;
   /**
    * The active Pet's name, resolved from the client loadout/catalog.
    *
@@ -1681,6 +1694,8 @@ export class BattleScene extends Phaser.Scene {
     this.currentBattleId = null;
     this.bossHpText = null;
     this.bossHpGauge = null;
+    this.bossPowerText = null;
+    this.bossPowerGauge = null;
     this.petNameText = null;
     this.petHpText = null;
     this.petHpGauge = null;
@@ -1851,6 +1866,30 @@ export class BattleScene extends Phaser.Scene {
         fontFamily: 'system-ui, sans-serif',
         fontSize: '16px',
         color: '#fca5a5',
+      })
+      .setOrigin(0, 0);
+
+    this.add
+      .text(HUD_LEFT, BOSS_POWER_LABEL_Y, 'POWER', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '12px',
+        color: '#94a3b8',
+      })
+      .setOrigin(0, 0);
+
+    this.bossPowerGauge = this.createGauge(
+      BOSS_POWER_BAR_X,
+      BOSS_POWER_BAR_Y,
+      BOSS_POWER_BAR_WIDTH,
+      BOSS_POWER_BAR_HEIGHT,
+      POWER_GAUGE_COLOR
+    );
+
+    this.bossPowerText = this.add
+      .text(BOSS_POWER_TEXT_X, BOSS_POWER_TEXT_Y, '', {
+        fontFamily: 'system-ui, sans-serif',
+        fontSize: '15px',
+        color: '#c4b5fd',
       })
       .setOrigin(0, 0);
 
@@ -2864,6 +2903,18 @@ export class BattleScene extends Phaser.Scene {
     this.updateGauge(this.bossHpGauge, state.bossState.hp, state.bossState.maxHp, animate);
   }
 
+  /**
+   * Presents the Boss's delivered Power as text and as its gauge (ADR-029).
+   *
+   * The `0–100` range is the documented invariant of `GAME_RULES.md` §12, shown
+   * as a static scale around the delivered value. No `maxPower` exists on the
+   * wire and none is invented; no cost or affordability is derived from the value.
+   */
+  private presentBossPower(state: RuntimeBattleState, animate = false): void {
+    this.bossPowerText?.setText(`${state.bossState.power} / ${POWER_RANGE_MAX}`);
+    this.updateGauge(this.bossPowerGauge, state.bossState.power, POWER_RANGE_MAX, animate);
+  }
+
   /** Presents the active Pet's delivered `hp / maxHp` — the readout and its gauge. */
   private presentPetHp(state: RuntimeBattleState, animate = true): void {
     this.petHpText?.setText(`${state.petState.hp} / ${state.petState.maxHp}`);
@@ -2908,7 +2959,9 @@ export class BattleScene extends Phaser.Scene {
       this.currentBattleId = null;
       this.bossNameText.setText('');
       this.bossHpText.setText('');
+      this.bossPowerText?.setText('');
       this.updateGauge(this.bossHpGauge, 0, 0);
+      this.updateGauge(this.bossPowerGauge, 0, POWER_RANGE_MAX);
       return;
     }
 
@@ -2928,6 +2981,7 @@ export class BattleScene extends Phaser.Scene {
 
     this.presentBossEnrage(state);
     this.presentBossHp(state);
+    this.presentBossPower(state);
   }
 
   /** The Boss's display name with the currently presented Enrage label. */
@@ -6429,6 +6483,7 @@ export class BattleScene extends Phaser.Scene {
     this.renderBoard(state.board, false);
     this.presentBossEnrage(state);
     this.presentBossHp(state, false);
+    this.presentBossPower(state, false);
     this.presentPetHp(state, false);
     this.renderPlayerHud(state);
     this.presentPetPower(state, false);

@@ -396,6 +396,7 @@ public static class BattleStateSerializer
             State = bossState.State.ToString(),
             PassiveId = bossState.PassiveId.Value,
             PassiveProgress = ToPassiveProgressJson(bossState.PassiveProgress),
+            Power = bossState.Power,
             SkillCharge = bossState.SkillCharge,
             SkillCooldown = bossState.SkillCooldown,
 
@@ -797,6 +798,7 @@ public static class BattleStateSerializer
             Enum.Parse<BossStateKind>(dto.State, ignoreCase: true),
             new PassiveId(dto.PassiveId),
             FromPassiveProgressJson(dto.PassiveProgress),
+            dto.Power,
             dto.SkillCharge,
             dto.SkillCooldown)
         {

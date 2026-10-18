@@ -2353,10 +2353,12 @@ BossState
    `PetState.Power`; the two are separate 0–100 resources with separate owners.
 7. **Relics do not reach it.** No Relic reads, writes, or modifies
    `BossState.Power`; Relics are Player-only (`ADR-029`).
-8. **Unresolved.** Whether the shared per-Gem output yields the intended Boss
-   ability cadence — and therefore whether any Boss-specific generation value or
-   per-ability cost tuning must be authored — is an unresolved balance value
-   recorded in `ADR-029`. No numeric value is owned by this subsection.
+8. **U-1 resolved (Option A approved under ADR-029 / TASK-304).** The Boss
+   generates Power from its own board match action at the shared rate owned by
+   `COMBAT_RULES.md` §2 (+10 Power per uniquely matched POWER cell, clamped to
+   `[0, 100]`, actor-relative attribution). Whether future cadence re-tuning
+   alongside per-ability costs (U-2) is required remains an unresolved balance
+   decision recorded in `ADR-029`. No numeric value is owned by this subsection.
 
 **`SkillCharge` — transitional only.** `SkillCharge` tracks progress toward the
 legacy Boss Skill's charge requirement, and until `ADR-029`'s Slice 4 parity gate

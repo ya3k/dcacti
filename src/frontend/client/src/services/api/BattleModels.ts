@@ -394,6 +394,8 @@ export interface BattleStartBossState {
    * vocabulary here would be a second copy that could drift.
    */
   readonly state: string;
+  /** The Boss's live Power resource, integer 0–100 (`GAME_STATE.md` §2.4.3, `ADR-029`). `0` at creation. */
+  readonly power: number;
 }
 
 /**
