@@ -516,11 +516,20 @@ internal static class BalanceControlledExperimentMatrix
         return JsonSerializer.Serialize(payload, JsonOptions);
     }
 
-    public static string WriteArtifact(string json)
+    /// <summary>
+    /// The canonical, pinned historical experiment archive location in the repository.
+    /// This file is protected and must NEVER be overwritten by test execution.
+    /// </summary>
+    public static string CanonicalArtifactPath() =>
+        Path.Combine(RepositoryRoot(), "tasks", "artifacts", ArtifactFileName);
+
+    public static string WriteArtifact(string json, string? destinationPath = null)
     {
         ArgumentNullException.ThrowIfNull(json);
 
-        var path = ArtifactPath();
+        var path = destinationPath ?? ArtifactPath();
+        ProtectedArtifactGuard.EnsureNotProtected(path);
+
         var directory = Path.GetDirectoryName(path);
 
         if (!string.IsNullOrEmpty(directory))
@@ -537,7 +546,7 @@ internal static class BalanceControlledExperimentMatrix
         var configured = Environment.GetEnvironmentVariable(ArtifactPathVariable);
 
         return string.IsNullOrWhiteSpace(configured)
-            ? Path.Combine(RepositoryRoot(), "tasks", "artifacts", ArtifactFileName)
+            ? Path.Combine(AppContext.BaseDirectory, "artifacts", ArtifactFileName)
             : Path.GetFullPath(configured);
     }
 

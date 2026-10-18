@@ -56,6 +56,7 @@ const FRONTEND_URL = process.argv[2] || process.env.URL_UNDER_TEST || 'http://lo
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:5000';
 const DEBUG_PORT = Number(process.env.DEBUG_PORT) || 9289;
 const OUT_DIR = 'smoke-shots';
+let activeCdp = null;
 
 /** Standard candidate paths for Edge / Chrome on Windows / Linux */
 const BROWSER_CANDIDATES = [
@@ -221,7 +222,18 @@ async function evaluate(cdp, expression) {
 async function ensurePageVisible(cdp) {
   try {
     await cdp.send('Page.bringToFront');
-    await evaluate(cdp, `(() => { if (typeof window.focus === 'function') window.focus(); return document.visibilityState; })()`);
+    await evaluate(cdp, `(() => {
+      if (typeof window.focus === 'function') window.focus();
+      if (window.__game) {
+        window.__game.hasFocus = true;
+        if (window.__game.isPaused) window.__game.resume();
+        if (window.__game.loop) {
+          if (!window.__game.loop.running) window.__game.loop.wake();
+          if (window.__game.loop.hasBlur) window.__game.loop.focus();
+        }
+      }
+      return document.visibilityState;
+    })()`);
   } catch {
     /* non-fatal if connection drops during navigation */
   }
@@ -242,6 +254,9 @@ async function waitForCondition(predicateFn, description, timeoutMs = 15000, int
       if (res) return res;
     } catch {
       /* continue polling */
+    }
+    if (activeCdp) {
+      await ensurePageVisible(activeCdp);
     }
     await delay(intervalMs);
   }
@@ -355,6 +370,7 @@ const FEEDBACK_PROBE = `
   if (layer && layer.list) {
     for (const o of layer.list) {
       if (o.type !== 'Text') continue;
+      if (o === s.activeTurnBanner || o.text === 'YOUR TURN' || o.text === 'BOSS TURN') continue;
       if (!o.__smokeFloaterId) {
         window.__smokeFloaterSeq = (window.__smokeFloaterSeq || 0) + 1;
         o.__smokeFloaterId = window.__smokeFloaterSeq;
@@ -483,6 +499,9 @@ async function pollFeedback(cdp, timeoutMs) {
   const start = Date.now();
 
   while (Date.now() - start < timeoutMs) {
+    if (activeCdp) {
+      await ensurePageVisible(activeCdp);
+    }
     try {
       const sample = await evaluate(cdp, FEEDBACK_PROBE);
       if (sample) {
@@ -567,9 +586,12 @@ function buildFeedbackInjection(serverSequence) {
   return `
 (() => {
   const s = window.__game.scene.getScene('BattleScene');
+  const seq = ${serverSequence};
+  const bId = (s.currentBattleState && s.currentBattleState.battleId) || 'task-210-feedback-probe';
+  s.renderBattleState({ ...(s.currentBattleState || {}), battleId: bId, sequence: seq }, { source: 'push' });
   s.handleBattleEvents({
-    battleId: 'task-210-feedback-probe',
-    serverSequence: ${serverSequence},
+    battleId: bId,
+    serverSequence: seq,
     events: [
       { type: 'MatchCreated', shape: 'Straight', cells: [0, 1, 2], gemType: 'ATK', cascadeDepth: 0 },
       { type: 'ComboChanged', combo: 4 },
@@ -837,9 +859,11 @@ const BATTLE_SNAPSHOT = `
       battleState: runtime.battleStateListeners ? runtime.battleStateListeners.size : null,
     } : null,
     boardChildCount: s.boardLayer && s.boardLayer.list ? s.boardLayer.list.length : 0,
-    boardLabels: s.boardLayer && s.boardLayer.list
-      ? s.boardLayer.list.filter((o) => o.type === 'Text').map((o) => o.text)
-      : [],
+    boardLabels: s.gemViews && Array.isArray(s.gemViews) && s.gemViews.length === 64
+      ? s.gemViews.map((v) => (v && !v.cleared && v.content ? v.content : ''))
+      : (s.boardLayer && s.boardLayer.list
+          ? s.boardLayer.list.filter((o) => o.type === 'Text').map((o) => o.text)
+          : []),
     boardText: s.boardMessageText && typeof s.boardMessageText.text === 'string' ? s.boardMessageText.text : '',
     swapText: s.swapText && typeof s.swapText.text === 'string' ? s.swapText.text : '',
     castText: s.castText && typeof s.castText.text === 'string' ? s.castText.text : '',
@@ -1151,19 +1175,15 @@ function findMatchingSwaps(labels, size = BOARD_SIZE) {
   // Normalize labels to base gem types (e.g. 'ATK [H]' -> 'ATK') to preserve matching-swap detection
   // across cells holding authoritative Special Gems (MATCH3_RULES.md §5, TASK-232).
   const grid = labels.map((l) => (typeof l === 'string' ? l.split(' ')[0] : l));
-  const hasMatch = () => {
-    for (let r = 0; r < size; r++) {
-      for (let c = 0; c < size - 2; c++) {
-        const v = grid[r * size + c];
-        if (v && v === grid[r * size + c + 1] && v === grid[r * size + c + 2]) return true;
-      }
-    }
-    for (let c = 0; c < size; c++) {
-      for (let r = 0; r < size - 2; r++) {
-        const v = grid[r * size + c];
-        if (v && v === grid[(r + 1) * size + c] && v === grid[(r + 2) * size + c]) return true;
-      }
-    }
+  const formsMatchAt = (r, c) => {
+    const v = grid[r * size + c];
+    if (!v) return false;
+    if (c >= 2 && grid[r * size + c - 1] === v && grid[r * size + c - 2] === v) return true;
+    if (c >= 1 && c < size - 1 && grid[r * size + c - 1] === v && grid[r * size + c + 1] === v) return true;
+    if (c < size - 2 && grid[r * size + c + 1] === v && grid[r * size + c + 2] === v) return true;
+    if (r >= 2 && grid[(r - 1) * size + c] === v && grid[(r - 2) * size + c] === v) return true;
+    if (r >= 1 && r < size - 1 && grid[(r - 1) * size + c] === v && grid[(r + 1) * size + c] === v) return true;
+    if (r < size - 2 && grid[(r + 1) * size + c] === v && grid[(r + 2) * size + c] === v) return true;
     return false;
   };
 
@@ -1178,7 +1198,7 @@ function findMatchingSwaps(labels, size = BOARD_SIZE) {
         const b = grid[j];
         grid[i] = b;
         grid[j] = a;
-        if (hasMatch()) candidates.push([i, j]);
+        if (formsMatchAt(r, c) || formsMatchAt(r2, c2)) candidates.push([i, j]);
         grid[i] = a;
         grid[j] = b;
       }
@@ -1215,6 +1235,9 @@ export async function runSmokeTest(runNumber = 1) {
     '--no-first-run',
     '--no-default-browser-check',
     '--disable-gpu',
+    '--disable-background-timer-throttling',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
     '--hide-scrollbars',
     '--window-size=1280,720',
     `--user-data-dir=${profileDir}`,
@@ -1236,6 +1259,7 @@ export async function runSmokeTest(runNumber = 1) {
     // Open target page
     const page = await (await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/new?about:blank`, { method: 'PUT' })).json();
     cdp = await Cdp.connect(page.webSocketDebuggerUrl);
+    activeCdp = cdp;
 
     // Listeners for errors & HTTP traffic
     const uncaughtExceptions = [];
@@ -2594,6 +2618,7 @@ export async function runSmokeTest(runNumber = 1) {
     if (matchingSwaps.length > 0) {
       const [first, second] = matchingSwaps[0];
       await realClick(cdp, cellCentre(first));
+      await delay(50);
       await realClick(cdp, cellCentre(second));
 
       // Wait for swap acknowledgement or board update
@@ -2629,12 +2654,34 @@ export async function runSmokeTest(runNumber = 1) {
     //      movement, one selective callout) can be asserted rather than raced.
     console.log('\n--- Phase 5c: Combat feedback (callout, damage & Power floaters) ---');
 
-    // The callout holds for about a second and a floater lives 600 ms, so the
-    // resolution's own feedback is sampled right away rather than waited on.
+    // Sample the resolution's feedback until the sequential timeline completes
+    // (TASK-275/278/285 cascade passes + boss turn can take several seconds)
     const presentedBeforeSwap = battle.presentedEvents.length;
-    const realFeedback = await pollFeedback(cdp, 2500);
+    const callouts = new Set();
+    let calloutBounds = null;
+    const feedbackStart = Date.now();
+    let afterSwap = await evaluate(cdp, BATTLE_SNAPSHOT);
+
+    while (Date.now() - feedbackStart < 25000) {
+      if (activeCdp) await ensurePageVisible(activeCdp);
+      const sample = await evaluate(cdp, FEEDBACK_PROBE);
+      if (sample && sample.callout) {
+        callouts.add(sample.callout);
+        calloutBounds = sample.calloutBounds ?? calloutBounds;
+      }
+      afterSwap = await evaluate(cdp, BATTLE_SNAPSHOT);
+      if (
+        afterSwap.presentedEvents.length > presentedBeforeSwap &&
+        afterSwap.inputLocked === false &&
+        callouts.size > 0
+      ) {
+        break;
+      }
+      await delay(80);
+    }
+
+    const realFeedback = { callouts: [...callouts], calloutBounds, floaters: [] };
     await captureScreenshot(cdp, `run${runNumber}-07-battle-post-swap`);
-    const afterSwap = await evaluate(cdp, BATTLE_SNAPSHOT);
 
     // The resolution that the server accepted must have said something: when the
     // presented-event log grew, the player was told what happened. A rejected
@@ -2733,7 +2780,7 @@ export async function runSmokeTest(runNumber = 1) {
     // Second pass, for the measurements.
     const seqPass2 = allocateProbeSequence(seqPass1);
     await evaluate(cdp, buildFeedbackInjection(seqPass2));
-    const injectedFeedback = await pollFeedback(cdp, 2500);
+    const injectedFeedback = await pollFeedback(cdp, 5000);
     const afterInjection = await evaluate(cdp, BATTLE_SNAPSHOT);
 
     // One callout for the whole batch, and it is the most important thing in it.
@@ -2865,7 +2912,7 @@ export async function runSmokeTest(runNumber = 1) {
         return snap.inputLocked === false;
       },
       'Timeline settled before sequence ordering regression check',
-      6000
+      8000
     );
     await drainFeedback(cdp, 5000);
 
@@ -2874,8 +2921,10 @@ export async function runSmokeTest(runNumber = 1) {
       cdp,
       `(() => {
         const s = window.__game.scene.getScene('BattleScene');
+        const bId = (s.currentBattleState && s.currentBattleState.battleId) || 'task-247-supersession-probe';
+        s.renderBattleState({ ...(s.currentBattleState || {}), battleId: bId, sequence: ${seqBase} }, { source: 'push' });
         s.handleBattleEvents({
-          battleId: 'task-247-supersession-probe',
+          battleId: bId,
           serverSequence: ${seqBase},
           events: [
             { type: 'MatchCreated', shape: 'Straight', cells: [0, 1, 2], gemType: 'ATK', cascadeDepth: 0 },
@@ -2892,8 +2941,9 @@ export async function runSmokeTest(runNumber = 1) {
       cdp,
       `(() => {
         const s = window.__game.scene.getScene('BattleScene');
+        const bId = (s.currentBattleState && s.currentBattleState.battleId) || 'task-247-supersession-probe';
         s.handleBattleEvents({
-          battleId: 'task-247-supersession-probe',
+          battleId: bId,
           serverSequence: ${seqBase - 1},
           events: [
             { type: 'ComboChanged', combo: 99 },
@@ -2913,8 +2963,10 @@ export async function runSmokeTest(runNumber = 1) {
       cdp,
       `(() => {
         const s = window.__game.scene.getScene('BattleScene');
+        const bId = (s.currentBattleState && s.currentBattleState.battleId) || 'task-247-supersession-probe';
+        s.renderBattleState({ ...(s.currentBattleState || {}), battleId: bId, sequence: ${seqFresh} }, { source: 'push' });
         s.handleBattleEvents({
-          battleId: 'task-247-supersession-probe',
+          battleId: bId,
           serverSequence: ${seqFresh},
           events: [
             { type: 'MatchCreated', shape: 'Straight', cells: [0, 1, 2], gemType: 'ATK', cascadeDepth: 0 },
@@ -2947,7 +2999,7 @@ export async function runSmokeTest(runNumber = 1) {
         return snap.inputLocked === false;
       },
       'Timeline settled after sequence ordering regression check',
-      6000
+      8000
     );
     await drainFeedback(cdp, 5000);
 
@@ -2985,8 +3037,10 @@ export async function runSmokeTest(runNumber = 1) {
         cdp,
         `(() => {
           const s = window.__game.scene.getScene('BattleScene');
+          const bId = (s.currentBattleState && s.currentBattleState.battleId) || 'task-218b-relic-probe';
+          s.renderBattleState({ ...(s.currentBattleState || {}), battleId: bId, sequence: ${relicSeq} }, { source: 'push' });
           s.handleBattleEvents({
-            battleId: 'task-218b-relic-probe',
+            battleId: bId,
             serverSequence: ${relicSeq},
             events: [{ type: 'RelicTriggered', relicId: ${JSON.stringify(relic.relicId)} }],
           });
@@ -3056,8 +3110,10 @@ export async function runSmokeTest(runNumber = 1) {
         // (which would make a RELIC-prefix check vacuous).
         if (s.calloutText) s.calloutText.setText('MATCH');
         const before = s.calloutText ? s.calloutText.text : null;
+        const bId = (s.currentBattleState && s.currentBattleState.battleId) || 'task-218b-relic-probe';
+        s.renderBattleState({ ...(s.currentBattleState || {}), battleId: bId, sequence: ${unownedSeq} }, { source: 'push' });
         s.handleBattleEvents({
-          battleId: 'task-218b-relic-probe',
+          battleId: bId,
           serverSequence: ${unownedSeq},
           events: [
             { type: 'RelicTriggered', relicId: unowned },
@@ -3633,9 +3689,11 @@ export async function runSmokeTest(runNumber = 1) {
     await ensurePageVisible(cdp);
     await evaluate(cdp, `(() => {
       const s = window.__game.scene.getScene('BattleScene');
+      const seq = ${allocateProbeSequence()};
+      s.renderBattleState({ ...(s.currentBattleState || {}), battleId: ${JSON.stringify(battleId)}, sequence: seq }, { source: 'push' });
       s.handleBattleEvents({
         battleId: ${JSON.stringify(battleId)},
-        serverSequence: ${allocateProbeSequence()},
+        serverSequence: seq,
         events: [{
           type: 'BattleWon',
           outcome: 'victory',
@@ -4174,9 +4232,11 @@ export async function runSmokeTest(runNumber = 1) {
     await ensurePageVisible(cdp);
     await evaluate(cdp, `(() => {
       const s = window.__game.scene.getScene('BattleScene');
+      const seq = ${allocateProbeSequence()};
+      s.renderBattleState({ ...(s.currentBattleState || {}), battleId: ${JSON.stringify(battle2.battleId)}, sequence: seq }, { source: 'push' });
       s.handleBattleEvents({
         battleId: ${JSON.stringify(battle2.battleId)},
-        serverSequence: ${allocateProbeSequence()},
+        serverSequence: seq,
         events: [{
           type: 'BattleLost',
           outcome: 'defeat',
@@ -4334,11 +4394,21 @@ export async function runSmokeTest(runNumber = 1) {
           continue;
         }
 
+        if (battle.inputLocked) {
+          await delay(200);
+          continue;
+        }
+
         const boardKey = JSON.stringify(battle.boardLabels);
         if (boardKey !== lastBoardKey) {
           lastBoardKey = boardKey;
           rejectedPairs = new Set();
         }
+
+        await evaluate(cdp, `(() => {
+          const s = window.__game.scene.getScene('BattleScene');
+          if (s && typeof s.clearSelection === 'function') s.clearSelection();
+        })()`);
 
         const candidates = findMatchingSwaps(battle.boardLabels).filter(
           ([from, to]) => !rejectedPairs.has(pairKey(from, to))
@@ -4347,6 +4417,7 @@ export async function runSmokeTest(runNumber = 1) {
         const beforeFeedback = lastFeedback;
 
         await realClick(cdp, cellCentreOf(battle, from));
+        await delay(50);
         await realClick(cdp, cellCentreOf(battle, to));
         swaps += 1;
 
@@ -4355,11 +4426,14 @@ export async function runSmokeTest(runNumber = 1) {
             async () => {
               if ((await evaluate(cdp, ACTIVE_SCENE)) !== 'BattleScene') return true;
               const current = await evaluate(cdp, BATTLE_SNAPSHOT);
-              if (JSON.stringify(current.boardLabels) !== boardKey) return true;
-              return Boolean(current.swapText) && current.swapText !== beforeFeedback;
+              if (current.swapText && current.swapText.includes('rejected')) return true;
+              return (
+                JSON.stringify(current.boardLabels) !== boardKey &&
+                current.inputLocked === false
+              );
             },
-            'Swap acknowledgement or committed board',
-            6000,
+            'Swap resolution and animation completion',
+            8000,
             120
           );
         } catch {
@@ -4489,9 +4563,11 @@ export async function runSmokeTest(runNumber = 1) {
         connectionId: runtime && runtime.signalR ? runtime.signalR.getConnectionId() : null,
         sync: runtime && runtime.getState ? runtime.getState().sync : null,
         sequence: state ? state.sequence : null,
-        boardLabels: s && s.boardLayer && s.boardLayer.list
-          ? s.boardLayer.list.filter((o) => o.type === 'Text').map((o) => o.text)
-          : [],
+        boardLabels: s && s.gemViews && Array.isArray(s.gemViews) && s.gemViews.length === 64
+          ? s.gemViews.map((v) => (v && !v.cleared && v.content ? v.content : ''))
+          : (s && s.boardLayer && s.boardLayer.list
+              ? s.boardLayer.list.filter((o) => o.type === 'Text').map((o) => o.text)
+              : []),
         joins: probe ? probe.joins.slice() : [],
         deliveries: probe ? probe.deliveries.slice() : [],
       };

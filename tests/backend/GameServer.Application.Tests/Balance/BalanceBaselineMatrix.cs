@@ -251,14 +251,24 @@ internal static class BalanceBaselineMatrix
     }
 
     /// <summary>
-    /// Writes the artifact to <see cref="ArtifactPath"/>, creating the directory
-    /// when the archival location does not exist yet.
+    /// The canonical, pinned historical baseline artifact location in the repository.
+    /// This file is protected and must NEVER be overwritten by test execution.
     /// </summary>
-    public static string WriteArtifact(string json)
+    public static string CanonicalArtifactPath() =>
+        Path.Combine(RepositoryRoot(), "tasks", "artifacts", ArtifactFileName);
+
+    /// <summary>
+    /// Writes the artifact to <paramref name="destinationPath"/> or <see cref="ArtifactPath"/>,
+    /// creating the directory when it does not exist yet. Fails clearly if the target
+    /// path resolves to a protected historical artifact.
+    /// </summary>
+    public static string WriteArtifact(string json, string? destinationPath = null)
     {
         ArgumentNullException.ThrowIfNull(json);
 
-        var path = ArtifactPath();
+        var path = destinationPath ?? ArtifactPath();
+        ProtectedArtifactGuard.EnsureNotProtected(path);
+
         var directory = Path.GetDirectoryName(path);
 
         if (!string.IsNullOrEmpty(directory))
@@ -272,16 +282,17 @@ internal static class BalanceBaselineMatrix
     }
 
     /// <summary>
-    /// The artifact's archival location: <c>tasks/artifacts/…</c> under the
-    /// repository root, or the path named by
-    /// <see cref="ArtifactPathVariable"/> when a caller redirects the write.
+    /// The artifact's output location for verification runs: an isolated test output
+    /// directory under <see cref="AppContext.BaseDirectory"/> by default, or the path
+    /// named by <see cref="ArtifactPathVariable"/> when a caller explicitly redirects it.
+    /// Pinned historical paths are protected and will be rejected by <see cref="WriteArtifact"/>.
     /// </summary>
     public static string ArtifactPath()
     {
         var configured = Environment.GetEnvironmentVariable(ArtifactPathVariable);
 
         return string.IsNullOrWhiteSpace(configured)
-            ? Path.Combine(RepositoryRoot(), "tasks", "artifacts", ArtifactFileName)
+            ? Path.Combine(AppContext.BaseDirectory, "artifacts", ArtifactFileName)
             : Path.GetFullPath(configured);
     }
 

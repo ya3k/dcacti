@@ -6228,6 +6228,7 @@ export class BattleScene extends Phaser.Scene {
     this.presentationSequence = null;
     this.presentationBattleId = null;
     this.presentationPhaseKind = null;
+    this.timelineEffects = [];
     this.onTimelineEnded();
     this.cancelTimelineCallout();
     this.clearSelection();

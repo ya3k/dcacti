@@ -23,21 +23,23 @@ internal static class BalancePolicies
     public const string PassiveName = "passive";
     public const string AverageName = "average";
     public const string SkilledName = "skilled";
+    public const string LegacySkilledName = "skilled-v1";
 
     /// <summary>
-    /// Resolves a policy by its documented name — the three approved values, and
-    /// nothing else.
+    /// Resolves a policy by its documented name — the approved values, and
+    /// historical benchmark qualifiers.
     /// </summary>
-    /// <exception cref="ArgumentOutOfRangeException">The name is not one of the three approved policies.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The name is not one of the approved policies.</exception>
     public static BalancePlayerPolicy ByName(string name) => name switch
     {
         PassiveName => Passive,
         AverageName => Average,
         SkilledName => Skilled,
+        LegacySkilledName or "legacy-skilled" => LegacySkilled,
         _ => throw new ArgumentOutOfRangeException(
             nameof(name),
             name,
-            $"TASK-193 §3.2 defines exactly three policies: {PassiveName}, {AverageName}, {SkilledName}."),
+            $"TASK-193 §3.2 defines policies: {PassiveName}, {AverageName}, {SkilledName} (and historical benchmark {LegacySkilledName})."),
     };
 
     /// <summary>
@@ -68,25 +70,105 @@ internal static class BalancePolicies
         ProposeCast: static (state, context, _) => FirstAffordableCard(state, context));
 
     /// <summary>
-    /// <b>Skilled</b> — competent play: prefers the highest-value Swap the policy
-    /// can identify, and casts the most valuable affordable Card, including the
-    /// Pet Signature Skill.
-    ///
-    /// The Swap preference scores each legal cell-pair by its <b>match length</b>
-    /// (the longest run the exchange would complete) and takes the highest,
-    /// breaking ties by lowest cell-pair index. Match length is chosen because it
-    /// is the one board property the documented rules tie directly to output: a
-    /// longer match produces a higher Match Tier and more resources
-    /// (<c>COMBAT_RULES.md</c> §2). The score is a <i>selection heuristic</i>, not
-    /// a predicted outcome — the policy never computes the damage the match will
-    /// deal. Card preference is the highest authored <c>PowerCost</c> affordable,
-    /// which spends the resource on the strongest defined effect rather than the
-    /// cheapest.
+    /// <b>Legacy Skilled (Benchmark v1)</b> — pre-correction heuristic that assumed
+    /// the retired match-tier multiplier (Match 5 > Match 4 > Match 3). Preserved
+    /// strictly for historical comparison against the TASK-296 candidate baseline.
     /// </summary>
-    public static readonly BalancePlayerPolicy Skilled = new(
+    public static readonly BalancePlayerPolicy LegacySkilled = new(
         SkilledName,
         ProposeSwap: static (state, _, attempted) => HighestMatchLengthSwap(state, attempted),
         ProposeCast: static (state, context, _) => MostExpensiveAffordableCard(state, context));
+
+    /// <summary>
+    /// <b>Skilled (Benchmark v2)</b> — competent play under match-only rules
+    /// (OD-3, OD-4, OD-7, ADR-028): prefers the Swap that completes the greatest
+    /// count of unique confirmed matched gems across all valid immediate matches,
+    /// and casts the most valuable affordable Card, including the Pet Signature Skill.
+    ///
+    /// The Swap preference scores each legal cell-pair by its <b>unique confirmed matched gem count</b>
+    /// across all valid matches (length &gt;= 3) formed by the exchange. This aligns with
+    /// <c>COMBAT_RULES.md</c> §2 and OD-3/OD-7, where match-tier multipliers and Special Gems
+    /// are retired, making resource output strictly linear with confirmed matched gem count.
+    /// Ties are broken deterministically by lowest cell-pair index.
+    /// </summary>
+    public static readonly BalancePlayerPolicy Skilled = new(
+        SkilledName,
+        ProposeSwap: static (state, _, attempted) => HighestMatchedCellCountSwap(state, attempted),
+        ProposeCast: static (state, context, _) => MostExpensiveAffordableCard(state, context));
+
+    /// <summary>
+    /// Evaluates candidate adjacent swaps and scores each by the count of
+    /// <b>unique confirmed matched gems</b> across all immediate first-pass matches
+    /// the exchange forms (<c>MATCH3_RULES.md</c> §3, <c>COMBAT_RULES.md</c> §2,
+    /// OD-3, OD-4, OD-7, ADR-028).
+    ///
+    /// <b>Count-only, with no match-tier multiplier.</b> The retired match-tier
+    /// multipliers (OD-3) and Special Gems (OD-1, OD-2) no longer grant disproportionate
+    /// weight to linear run length alone. A double-3 match (6 unique gems) yields more
+    /// resources than a single-4 match (4 unique gems) under match-only rules, so the
+    /// heuristic prefers the swap that clears the greatest total unique cells.
+    /// Ties are broken by lowest cell-pair index.
+    /// </summary>
+    internal static SwapRequest? HighestMatchedCellCountSwap(
+        BattleState state,
+        IReadOnlySet<int> attempted)
+    {
+        SwapRequest? best = null;
+        var bestScore = 0; // Valid matches must have score >= 3; non-matches score 0.
+
+        var board = state.BoardState;
+
+        for (var from = 0; from < BoardState.CellCount; from++)
+        {
+            for (var to = from + 1; to < BoardState.CellCount; to++)
+            {
+                if (!IsAdjacent(from, to)
+                    || attempted.Contains(BalancePlayerPolicy.PairKey(from, to)))
+                {
+                    continue;
+                }
+
+                var score = MatchedCellCountAfterExchanging(board, from, to);
+
+                // Strictly greater keeps the FIRST pair on a tie, which is the
+                // documented lowest-index tie-break.
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    best = new SwapRequest(from, to);
+                }
+            }
+        }
+
+        // If no legal match exists or all have been attempted, fallback to first untried adjacent swap
+        return best ?? FirstUntriedSwapInCellOrder(attempted);
+    }
+
+    /// <summary>
+    /// Calculates the number of unique cells in all valid matches (length &gt;= 3)
+    /// formed on the board if <paramref name="from"/> and <paramref name="to"/> are swapped.
+    /// </summary>
+    internal static int MatchedCellCountAfterExchanging(BoardState board, int from, int to)
+    {
+        var exchanged = board.WithSwapped(from, to);
+        var matches = MatchDetector.Detect(exchanged);
+        if (matches.Count == 0)
+        {
+            return 0;
+        }
+
+        var uniqueCells = new HashSet<int>();
+        for (var i = 0; i < matches.Count; i++)
+        {
+            var matchCells = matches[i].Cells;
+            for (var j = 0; j < matchCells.Count; j++)
+            {
+                uniqueCells.Add(matchCells[j]);
+            }
+        }
+
+        return uniqueCells.Count;
+    }
 
     /// <summary>
     /// The first untried cell pair in ascending <c>(from, to)</c> index order that
@@ -119,7 +201,7 @@ internal static class BalancePolicies
     /// (<c>MATCH3_RULES.md</c> §1.0): two cells are adjacent when they share a row
     /// and differ by one column, or share a column and differ by one row.
     /// </summary>
-    private static bool IsAdjacent(int from, int to)
+    internal static bool IsAdjacent(int from, int to)
     {
         var fromRow = from / BoardState.Columns;
         var fromColumn = from % BoardState.Columns;

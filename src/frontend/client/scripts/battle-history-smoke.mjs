@@ -407,11 +407,15 @@ const BATTLE_SNAPSHOT = `
     active: true,
     battleId: runtime && runtime.getBattleState ? (runtime.getBattleState() || {}).battleId || null : null,
     outcomeHandled: s.outcomeHandled === true,
-    bossHpText: typeof s.battleText === 'object' && s.battleText ? s.battleText.text : null,
+    inputLocked: typeof s.isInputLocked === 'function' ? s.isInputLocked() : false,
+    bossHpText: s.bossHpText ? s.bossHpText.text : null,
+    petHpText: s.petHpText ? s.petHpText.text : null,
     boardChildCount: s.boardLayer && s.boardLayer.list ? s.boardLayer.list.length : 0,
-    boardLabels: s.boardLayer && s.boardLayer.list
-      ? s.boardLayer.list.filter((o) => o.type === 'Text').map((o) => o.text)
-      : [],
+    boardLabels: s.gemViews && Array.isArray(s.gemViews) && s.gemViews.length === 64
+      ? s.gemViews.map((v) => (v && !v.cleared && v.content ? v.content : ''))
+      : (s.boardLayer && s.boardLayer.list
+          ? s.boardLayer.list.filter((o) => o.type === 'Text').map((o) => o.text)
+          : []),
     swapText: s.swapText && typeof s.swapText.text === 'string' ? s.swapText.text : '',
     viewport: { left: rect.left, top: rect.top, scaleX: rect.width / gameWidth, scaleY: rect.height / gameHeight },
   };
@@ -517,20 +521,16 @@ const LOOP_STATE = `
  */
 function findMatchingSwaps(labels, size = BOARD_SIZE) {
   if (!Array.isArray(labels) || labels.length !== size * size) return [];
-  const grid = labels.slice();
-  const hasMatch = () => {
-    for (let r = 0; r < size; r++) {
-      for (let c = 0; c < size - 2; c++) {
-        const v = grid[r * size + c];
-        if (v && v === grid[r * size + c + 1] && v === grid[r * size + c + 2]) return true;
-      }
-    }
-    for (let c = 0; c < size; c++) {
-      for (let r = 0; r < size - 2; r++) {
-        const v = grid[r * size + c];
-        if (v && v === grid[(r + 1) * size + c] && v === grid[(r + 2) * size + c]) return true;
-      }
-    }
+  const grid = labels.map((l) => (typeof l === 'string' ? l.split(' ')[0] : l));
+  const formsMatchAt = (r, c) => {
+    const v = grid[r * size + c];
+    if (!v) return false;
+    if (c >= 2 && grid[r * size + c - 1] === v && grid[r * size + c - 2] === v) return true;
+    if (c >= 1 && c < size - 1 && grid[r * size + c - 1] === v && grid[r * size + c + 1] === v) return true;
+    if (c < size - 2 && grid[r * size + c + 1] === v && grid[r * size + c + 2] === v) return true;
+    if (r >= 2 && grid[(r - 1) * size + c] === v && grid[(r - 2) * size + c] === v) return true;
+    if (r >= 1 && r < size - 1 && grid[(r - 1) * size + c] === v && grid[(r + 1) * size + c] === v) return true;
+    if (r < size - 2 && grid[(r + 1) * size + c] === v && grid[(r + 2) * size + c] === v) return true;
     return false;
   };
 
@@ -545,7 +545,7 @@ function findMatchingSwaps(labels, size = BOARD_SIZE) {
         const b = grid[j];
         grid[i] = b;
         grid[j] = a;
-        if (hasMatch()) candidates.push([i, j]);
+        if (formsMatchAt(r, c) || formsMatchAt(r2, c2)) candidates.push([i, j]);
         grid[i] = a;
         grid[j] = b;
       }
@@ -605,19 +605,34 @@ async function driveBattleToTerminal(cdp, maxSwaps = MAX_SWAPS_PER_BATTLE) {
       continue;
     }
 
+    if (battle.inputLocked) {
+      await delay(200);
+      continue;
+    }
+
     const boardKey = JSON.stringify(battle.boardLabels);
     if (boardKey !== lastBoardKey) {
       lastBoardKey = boardKey;
       rejectedPairs = new Set();
     }
 
-    const candidates = findMatchingSwaps(battle.boardLabels).filter(
+    await evaluate(cdp, `(() => {
+      const s = window.__game.scene.getScene('BattleScene');
+      if (s && typeof s.clearSelection === 'function') s.clearSelection();
+    })()`);
+
+    let candidates = findMatchingSwaps(battle.boardLabels).filter(
       ([from, to]) => !rejectedPairs.has(pairKey(from, to))
     );
+    if (candidates.length === 0 && rejectedPairs.size > 0) {
+      rejectedPairs.clear();
+      candidates = findMatchingSwaps(battle.boardLabels);
+    }
     const [from, to] = candidates.length > 0 ? candidates[0] : [0, 1];
     const beforeFeedback = lastFeedback;
 
     await realClick(cdp, cellCentre(battle, from));
+    await delay(50);
     await realClick(cdp, cellCentre(battle, to));
     swaps += 1;
 
@@ -629,20 +644,25 @@ async function driveBattleToTerminal(cdp, maxSwaps = MAX_SWAPS_PER_BATTLE) {
         async () => {
           if ((await evaluate(cdp, ACTIVE_SCENE)) !== 'BattleScene') return true;
           const current = await evaluate(cdp, BATTLE_SNAPSHOT);
-          if (JSON.stringify(current.boardLabels) !== boardKey) return true;
-          return Boolean(current.swapText) && current.swapText !== beforeFeedback;
+          if (current.swapText && current.swapText.includes('rejected')) return true;
+          return (
+            JSON.stringify(current.boardLabels) !== boardKey &&
+            current.inputLocked === false
+          );
         },
-        'Swap acknowledgement or committed board',
-        6000,
+        'Swap resolution and animation completion',
+        8000,
         120
       );
     } catch {
-      /* no acknowledgement: treat the pair as rejected and move on */
+      /* no acknowledgement or animation timeout: treat the pair as rejected and move on */
     }
 
     const after = await evaluate(cdp, BATTLE_SNAPSHOT);
     if (JSON.stringify(after.boardLabels) === boardKey) {
       rejectedPairs.add(pairKey(from, to));
+    } else {
+      rejectedPairs.clear();
     }
     lastFeedback = after.swapText;
 
@@ -652,7 +672,7 @@ async function driveBattleToTerminal(cdp, maxSwaps = MAX_SWAPS_PER_BATTLE) {
       console.log(
         `    [swap ${swaps}] candidate ${from}->${to} candidates=${candidates.length} ` +
           `committed=${committed} swapText="${after.swapText}" loop=${JSON.stringify(loop)}\n` +
-          `      ${String(after.bossHpText).split('\n').join(' | ')}`
+          `      Boss: ${after.bossHpText} | Pet: ${after.petHpText}`
       );
     }
   }
@@ -749,6 +769,9 @@ export async function runBattleHistorySmokeTest(runNumber = 1) {
       '--no-first-run',
       '--no-default-browser-check',
       '--disable-gpu',
+      '--disable-background-timer-throttling',
+      '--disable-backgrounding-occluded-windows',
+      '--disable-renderer-backgrounding',
       '--hide-scrollbars',
       '--window-size=1280,720',
       `--user-data-dir=${profileDir}`,

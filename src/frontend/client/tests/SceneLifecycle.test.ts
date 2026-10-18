@@ -13366,6 +13366,22 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
       resolveAction();
     });
 
+    it('23. drops timelineEffects array on normal timeline completion', () => {
+      const { harness, ctx, resolveAction } = battleWithHeldAction();
+
+      push(harness, battleState({ sequence: 1, turn: 2, board: board() }));
+      emitBatch(harness, 1, BOTH_TURNS_BATCH);
+
+      // Play all tweens of the full round presentation to completion.
+      playAllTweens(harness);
+
+      // On a completed timeline, timelineEffects must be cleared so references to destroyed
+      // visual effects do not accumulate across turns (TASK-275 finding 1).
+      expect(field<object[]>(ctx, 'timelineEffects')).toEqual([]);
+
+      resolveAction();
+    });
+
     // =====================================================================
     // ADR-027 — the delivered per-pass Gravity + Spawn report
     // (GAME_EVENTS.md §1.1 item 8, §2; SIGNALR_PROTOCOL.md §3.2.28)

@@ -39,10 +39,10 @@ public sealed class BalanceEvidenceMeasurementCorrectionTests
     [Fact]
     public async Task TASK195_M03_RetainsCardCastDamageAcrossRejectedSwapProposals()
     {
-        // Run boss-hoa-long x skilled x seed 20261001:
-        // In TASK-194, this run had 6 rejected swaps and lost 80 damage (recorded 733 vs 813 HP lost).
+        // Run boss-hoa-long x skilled-v1 x seed 20261001:
+        // In TASK-194/TASK-195, this run used the legacy match-length heuristic which had 6 rejected swaps and lost 80 damage.
         var hoaLong = BossDefinitions.All.First(b => b.BossId.Value == "boss-hoa-long");
-        var result = await BalanceBaselineMatrix.RunAsync(hoaLong, BalancePolicies.SkilledName, 20261001UL);
+        var result = await BalanceBaselineMatrix.RunAsync(hoaLong, BalancePolicies.LegacySkilledName, 20261001UL);
 
         Assert.True(result.Metrics.RejectedSwaps > 0, "must exercise rejected swap path");
         Assert.True(result.Metrics.CastsTotal > 0, "must exercise card cast path");
@@ -84,7 +84,7 @@ public sealed class BalanceEvidenceMeasurementCorrectionTests
         foreach (var (bossId, seed) in affectedCells)
         {
             var boss = BossDefinitions.All.First(b => b.BossId.Value == bossId);
-            var run = await BalanceBaselineMatrix.RunAsync(boss, BalancePolicies.SkilledName, seed);
+            var run = await BalanceBaselineMatrix.RunAsync(boss, BalancePolicies.LegacySkilledName, seed);
             var loss = boss.MaxHP - run.Metrics.BossHpMin;
 
             Assert.True(
@@ -143,7 +143,7 @@ public sealed class BalanceEvidenceMeasurementCorrectionTests
     public async Task TASK195_PerTurnSeries_ReconcilesTerminalCardCastWithoutPhantomTurn()
     {
         var kimLoiVuong = BossDefinitions.All.First(b => b.BossId.Value == "boss-kim-loi-vuong");
-        var result = await BalanceBaselineMatrix.RunAsync(kimLoiVuong, BalancePolicies.SkilledName, 20261002UL);
+        var result = await BalanceBaselineMatrix.RunAsync(kimLoiVuong, BalancePolicies.LegacySkilledName, 20261002UL);
 
         Assert.Equal(BalanceSimulationOutcome.Victory, result.Outcome);
         Assert.StartsWith("Card cast resolved", result.OutcomeDetail, StringComparison.Ordinal);
@@ -393,7 +393,10 @@ public sealed class BalanceEvidenceMeasurementCorrectionTests
         var results = new List<BalanceSimulationResult>(75);
         foreach (var (boss, policyName, seed) in cells)
         {
-            results.Add(await BalanceBaselineMatrix.RunAsync(boss, policyName, seed));
+            var effectivePolicy = policyName == BalancePolicies.SkilledName
+                ? BalancePolicies.LegacySkilledName
+                : policyName;
+            results.Add(await BalanceBaselineMatrix.RunAsync(boss, effectivePolicy, seed));
         }
 
         // 2. Confirm all 75 complete and InvalidSimulation == 0:

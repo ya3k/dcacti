@@ -1,6 +1,7 @@
 using GameServer.Application.Battle;
 using GameServer.Domain.Battle;
 using GameServer.Domain.Bosses;
+using GameServer.Domain.Combat;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
@@ -242,6 +243,45 @@ public class BattleResultTerminalFlowTests
         Assert.Equal(BattleOutcome.Defeat, BattleOutcomes.FromContractValue("defeat"));
         Assert.Equal("defeat", BattleOutcomes.ToContractValue(row.Outcome));
         Assert.Equal(1, harness.Store.DeleteCount);
+    }
+
+    [Fact]
+    public async Task CommittedSwap_DefeatWithActiveBurnOnBoss_ShouldNotTickBurnOnBossOrEmitBattleWon()
+    {
+        // When the Pet dies to a lethal Boss attack, the battle is terminal (Defeat).
+        // Step 19a DoT on Boss must not execute post-terminal damage on Boss or emit BattleWon.
+        var harness = Harness.Create(BossDefinitions.HoaLong);
+        var battleId = "terminal-flow-defeat-dot-guard";
+
+        var created = await harness.Battles.CreateBattleAsync(
+            battleId,
+            Owner,
+            Pet,
+            LethalBoss() with { MaxHP = 1 });
+
+        var burnEffect = StatusEffect.TurnBased("burn-1", StatusEffectType.DoT, StatusEffectSource.Player, 50, 2);
+        var createdWithBurn = created with
+        {
+            BossState = created.BossState with
+            {
+                HP = 1,
+                ActiveStatusEffects = [burnEffect],
+            },
+        };
+        await harness.Store.TryUpdateAsync(createdWithBurn, created.Sequence);
+
+        var result = await RunUntilTheBossInstanceLandsAsync(harness, battleId, createdWithBurn);
+
+        Assert.True(result.IsAccepted);
+        var terminalEvent = Assert.Single(
+            result.Events,
+            e => e.Type is BattleEventType.BattleWon or BattleEventType.BattleLost);
+        Assert.Equal(BattleEventType.BattleLost, terminalEvent.Type);
+
+        // Assert that the Boss did not take Burn damage after the Pet's death.
+        Assert.DoesNotContain(
+            result.Events,
+            e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Player);
     }
 
     [Fact]

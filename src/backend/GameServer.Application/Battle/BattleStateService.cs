@@ -2383,8 +2383,8 @@ public sealed class BattleStateService
         // Damage-over-time ticks traverse the Damage Pipeline (COMBAT_RULES.md §3,
         // §5.2 item 3) using Fire element, Combo = 1, Crit evaluated, before duration
         // is decremented.
-        // 1. Tick DoTs on Boss (if Boss is still alive)
-        if (bossState.HP > 0)
+        // 1. Tick DoTs on Boss (if Boss is still alive and Pet did not die)
+        if (bossState.HP > 0 && resolved.PetState.HP > 0)
         {
             var bossDots = bossState.ActiveStatusEffects
                 .Where(e => e.Type == StatusEffectType.DoT)
