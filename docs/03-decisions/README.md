@@ -1,6 +1,25 @@
 # Architecture Decision Records (ADR)
 
-**Version:** 1.21 (§7 — **ADR-026 amended in place per `TASK-299`**: the DEF-Gem bullet of Decision item 4 is corrected so a confirmed DEF-Gem match grants the acting actor a temporary `TargetStat = "DEF"` `BuffDebuff` (the `"DefenseBuff"` identity) that raises its **effective DEF** through the opponent's next attack instead of converting the generated `DefensePool` into a `Shield` absorption pool. No new ADR was created and no decision is reversed: shared board, actor-relative ownership and target resolution, the `+5` per-Gem output, the atomic Round, the existing `StatusEffects[]` representation, and the HP/POWER/ATK bullets are unchanged, so `adr-change.md` §3's superseding path does not apply and the record receives the same in-place-amendment treatment as its own `TASK-265`/`TASK-267` amendments. Rule ownership stays with `COMBAT_RULES.md` (§2, §3.2, new §5.4.6/§5.5.6) and `GAME_RULES.md` §17; ADR-026 remains **Accepted**. Prior 1.20: §7 — ADR-028 added per `TASK-288`: retirement of Special Gems and match-tier multipliers from battle-state model and realtime contracts. Following operator design decisions OD-1 through OD-7 and reconciliation decision B-1 (finalized under TASK-286/TASK-287), Special Gems and match-tier resource multipliers are retired from the battle-state model (`BoardState.Cells[64]` carries pure `GemType`), SignalR contracts (`createdSpecialGems` and `CellPayload.specialGem` retired), and Redis persistence (tolerant-reader deserialization basis per B-2, draining battles prior to joint deployment). Runtime code changes are strictly gated behind subsequent technical documentation and implementation tasks. Status: Accepted. Prior 1.19: §7 — ADR-027 added per `TASK-278`: the authoritative cascade
+**Version:** 1.22 (§7 — **ADR-029 added** per `TASK-303`, applying the explicit
+Product Owner decision that the Boss behaves as a genuine opponent using the same
+resource and cast principles as the Player. ADR-029 records: introduction of
+`BossState.Power` (integer 0–100) into MVP, which **supersedes `TASK-258` §2 D2**
+and partially supersedes `ADR-026` Decision item 4's POWER bullet and its
+Unresolved Balance Choices #1–#2; the one shared actor-relative
+resource-generation and cost-validation rule with actor-specific effects
+preserved; preserved `PetState`/`BossState` separation with shared cast
+contracts, validation and effect services; Relics remaining Player-only; the
+`Boss Card` category with the minimum MVP capability (one authored Boss Card per
+Boss); encounter mechanics staying passive/trigger-based; the explicit
+deterministic one-action-per-response-phase policy with its eligibility,
+ordering, cooldown and tie-break rules; the dedicated `BossCardCast` Boss action
+event with the Player `CardCast` wire contract preserved; the Boss Power
+projection and reconnect contract (`bossState.power`); the four-slice staged
+migration with the `SkillCharge` removal gate; and six explicitly unresolved
+balance values. **`ADR-026` remains Accepted** and receives the same
+in-place-amendment treatment as its `TASK-265`/`TASK-267`/`TASK-299` amendments —
+its POWER bullet is corrected, not silently rewritten, and its historical content
+is preserved. No other ADR changes status. Prior 1.21: (§7 — **ADR-026 amended in place per `TASK-299`**: the DEF-Gem bullet of Decision item 4 is corrected so a confirmed DEF-Gem match grants the acting actor a temporary `TargetStat = "DEF"` `BuffDebuff` (the `"DefenseBuff"` identity) that raises its **effective DEF** through the opponent's next attack instead of converting the generated `DefensePool` into a `Shield` absorption pool. No new ADR was created and no decision is reversed: shared board, actor-relative ownership and target resolution, the `+5` per-Gem output, the atomic Round, the existing `StatusEffects[]` representation, and the HP/POWER/ATK bullets are unchanged, so `adr-change.md` §3's superseding path does not apply and the record receives the same in-place-amendment treatment as its own `TASK-265`/`TASK-267` amendments. Rule ownership stays with `COMBAT_RULES.md` (§2, §3.2, new §5.4.6/§5.5.6) and `GAME_RULES.md` §17; ADR-026 remains **Accepted**. Prior 1.20: §7 — ADR-028 added per `TASK-288`: retirement of Special Gems and match-tier multipliers from battle-state model and realtime contracts. Following operator design decisions OD-1 through OD-7 and reconciliation decision B-1 (finalized under TASK-286/TASK-287), Special Gems and match-tier resource multipliers are retired from the battle-state model (`BoardState.Cells[64]` carries pure `GemType`), SignalR contracts (`createdSpecialGems` and `CellPayload.specialGem` retired), and Redis persistence (tolerant-reader deserialization basis per B-2, draining battles prior to joint deployment). Runtime code changes are strictly gated behind subsequent technical documentation and implementation tasks. Status: Accepted. Prior 1.19: §7 — ADR-027 added per `TASK-278`: the authoritative cascade
 pass transition reporting decision. The Operator Decision approving TASK-278
 A-1(i) and A-4 ("Approve the addition of `CascadeStepResolved` to the existing
 `ReceiveEvents` batch protocol") authorizes one **additive event** inside the
@@ -262,9 +281,10 @@ technical document.
 | ADR-023 | Backend Discord identity seam resolution — formally retire the dormant backend Discord identity dependency injection seam (`IDiscordIdentityResolver`), resolver implementations, configuration options, and contract definitions, aligning backend architecture 100% with ADR-020 D1; records that physical deletion of runtime C# files and test stubs is deferred to downstream implementation work | Accepted |
 | ADR-024 | Database-driven boss balance configuration — PostgreSQL-authoritative runtime balance for `MaxHP`, `ATK`, `DEF`, and `EnrageThreshold` via Domain Overlay; static `BossDefinitions.All` retained as seed defaults and offline test fixtures; preserves `SecondaryEffect` (Burn, Drain Power, Root) without complex JSON migrations; snapshot isolation for in-progress battles; strict fail-closed validation | Accepted |
 | ADR-025 | Swap action preconditions and idempotency — replaces the `LastCommittedSwapPair` coordinate restriction with a dual state version precondition (`expectedSequence`) and action idempotency (`actionId`) contract, superseding ADR-010. Permits legitimate consecutive-turn coordinate reuse while deterministically rejecting stale requests and deduplicating retries | Accepted |
-| ADR-026 | Shared-board gameplay and actor-relative match resolution — Player and Boss share one 8×8 board; both act via valid swaps; cell type determines effect; acting side determines target; ATK damage gated on confirmed ATK matches; fallback fixed basic attacks retired; Boss skills deal zero direct damage; Boss SkillCharge charges exclusively from Boss POWER matches; atomic round state persistence via single Redis CAS | Accepted |
+| ADR-026 | Shared-board gameplay and actor-relative match resolution — Player and Boss share one 8×8 board; both act via valid swaps; cell type determines effect; acting side determines target; ATK damage gated on confirmed ATK matches; fallback fixed basic attacks retired; Boss skills deal zero direct damage; Boss SkillCharge charges exclusively from Boss POWER matches; atomic round state persistence via single Redis CAS | Accepted (Decision item 4's POWER bullet and Unresolved Balance Choices #1–#2 partially superseded by ADR-029) |
 | ADR-027 | Authoritative cascade pass transition reporting — the Operator Decision approving TASK-278 A-1(i)/A-4 authorizes `CascadeStepResolved` as **one additive event item** inside the round's existing single atomic `ReceiveEvents` batch, reporting a detection pass's completed Gravity and Spawn with `passDepth` (always present; the pass's own 1-based depth), `dropMoves` (`fromCell`/`toCell` per surviving gem that changed cell; omitted when empty) and `spawnedGems` (`cellIndex`/`gemType` per spawned gem; omitted when empty), emitted once per recorded pass as that pass's last item, after that pass's Gravity and Spawn, and never for the terminating pass. Deltas-only: no `board`, no `actor`, no `clearedCells`, and no `specialGem` inside a `spawnedGems` entry — a per-pass board is rejected as redundant with the state push and prohibited by `SIGNALR_PROTOCOL.md` §3.2.12 item 1 / §8 item 5. Intermediate board configurations remain Transient Resolution State: never written to Redis mid-resolution, never in a snapshot, never delivered as a board (the board stays delivered only by `BattleStateUpdated` / `GetBattleState`). Redis CAS, the single atomic round, `Sequence` semantics, existing event sequence semantics, turn banner behavior and `ADR-008` snapshot recovery are unchanged, and RNG stays server-authoritative. The prohibitions on per-pass boards, messages and partial batches are reconciled narrowly rather than weakened; client use is presentation-only for the pass reported, and a missing, malformed or internally inconsistent item is skipped so presentation degrades to the existing settle convergence. Compatibility is one additive discriminator plus an explicit tolerant-reader rule; no version negotiation exists. The governing documents were amended first; the ADR was written last as a historical record. `TASK-278` remains open pending review | Accepted |
 | ADR-028 | Retirement of Special Gems and match-tier multipliers from battle-state model and realtime contracts — formalizes the retirement of Special Gems from `BoardState.Cells[64]`, `MatchCreated.createdSpecialGems`, `CellPayload.specialGem`, and Redis active battle state persistence. Establishes tolerant-reader basis under Decision B-2 (default System.Text.Json deserialization safely ignores legacy properties without migration), mandates active battle drain prior to joint deployment, and gates production runtime code modifications behind technical documentation reconciliation | Accepted |
+| ADR-029 | Boss as a genuine opponent — Boss Power, Boss Cards, and the response-phase action policy. Introduces `BossState.Power` (integer 0–100) into MVP, **superseding TASK-258 §2 D2** and partially superseding ADR-026's POWER bullet and `SkillCharge` balance questions; makes the POWER-Gem output actor-relative to one shared generation rule and shares the cast contract, validation and effect services while keeping `PetState`/`BossState` separate and Relics Player-only; adds the `Boss Card` category with the minimum MVP capability (one authored Boss Card per Boss) and keeps Enrage / HP-threshold regeneration / combo passives as passive mechanics; fixes the deterministic one-action-per-response-phase policy (eligibility, ordering, cooldown handling, tie-break: a cast must strictly out-score the board action); adds the dedicated `BossCardCast` event while preserving the Player `CardCast` payload; delivers `bossState.power` through the existing push and reconnect snapshot; and records a four-slice staged migration whose `SkillCharge` removal is gated on demonstrated parity plus six explicitly unresolved balance values. Runtime implementation is gated behind the slices; this record authors no numeric balance value | Accepted |
 
 **Partial supersession (ADR-016).** ADR-011 and ADR-012 remain in force
 except for the specific items named below, which ADR-016 supersedes. Their
@@ -308,6 +328,47 @@ Everything else in ADR-011 and ADR-012 — the Player/Pet role model, the
 "no `PlayerState`" decision, collection-ownership vs. battle-scoped equip,
 `PlayerUnlockedCard`, the fixed wire labels, and the rest of ADR-012's
 scope closure — is **unaffected** and remains Accepted.
+
+**Partial supersession (ADR-029).** `ADR-026` remains Accepted. The only parts of
+it that `ADR-029` supersedes are named below; its historical content is preserved
+unmodified and nothing else in the record changes:
+
+```text
+ADR-026 Decision item 4, POWER bullet
+                      "Generates Power for the active Pet (range 0–100) during
+                      Player turn, or increments BossState.SkillCharge during
+                      Boss turn" — superseded. The Boss generates and spends
+                      BossState.Power (integer 0–100) by the same
+                      actor-relative rule (BOSS_RULES.md §4.1,
+                      COMBAT_RULES.md §2, GAME_RULES.md §12/§15).
+                      The item's ATK, DEF and HP bullets, the +5 per-Gem
+                      DEF output and the actor-relative ownership and target
+                      resolution remain in force.
+
+ADR-026 Unresolved Balance Choices #1–#2
+                      The SkillCharge unit metric and its overflow/clamp
+                      policy — closed by RETIRING the member rather than by
+                      answering them, and gated by ADR-029 §2.9's parity gate.
+                      The Boss's Power economy has its own unresolved values
+                      (ADR-029 §3, U-1/U-2/U-3) and they are NOT derived from
+                      these questions. Items #3 and #4 remain open as written.
+
+TASK-258 §2 D2        "Retain BossState.SkillCharge as the single Boss ability
+                      resource. Do not introduce BossState.Power." — SUPERSEDED
+                      in full by ADR-029. The preserved clause is that the Boss
+                      is charged only by its own POWER matches and never by the
+                      Player's; "specific charge units and threshold values
+                      remain balance-tuning decisions" carries forward as
+                      ADR-029 §3's unresolved items. TASK-258 is a completed,
+                      immutable record and is not edited.
+```
+
+`ADR-021` (one Card cast per committed Turn) is unchanged: the allowance remains
+the Player's and a Boss Card cast neither reads nor spends it. `ADR-024`
+(database-driven boss balance configuration) is unchanged: the ability's effect
+carrier moves from the Skill definition to the Boss Card definition at ADR-029
+Slice 4 without changing the Domain Overlay, the PostgreSQL authority, the static
+baseline or the fail-closed validation, and no persistence change is authorized.
 
 ---
 

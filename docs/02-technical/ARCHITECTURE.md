@@ -1,6 +1,15 @@
 # Architecture
 
-**Version:** 1.14 (§1, §3 component table, and §4.1 reconciled per `TASK-289` and `ADR-028`: Special Gems removed from Match-3 domain module description, BoardResolver responsibilities, and resolution pipeline sequencing following operator design decisions OD-1 through OD-7. Special Gem creation and activation stages retired; cascade loop executes match detection, gem removal, gravity, and spawn until stable. Runtime code changes are explicitly gated behind subsequent implementation tasks. Prior 1.13: §2.2.1 rule 4 **amended** per TASK-273: the runtime's
+**Version:** 1.15 (§3's component table and §2.2.2's Boss-response parenthetical
+updated per **ADR-029 / TASK-303**: the Boss is a genuine opponent using the same
+cast principles as the Player, so the component boundary records (a) the **shared
+cast contract** owned by `CARD_RULES.md` §3 and implemented by
+`CardCastExecutor` for the Player, (b) the Boss's **response-phase action
+selection** as a Boss-module responsibility, and (c) the Boss's move enumeration
+and scoring that the board action uses. **No layer moves, no dependency
+direction changes, no module is merged, and no new infrastructure is
+introduced**; runtime components are staged behind `ADR-029`'s Slices 2–3, and
+this revision documents the boundary they must land on. Prior 1.14: (§1, §3 component table, and §4.1 reconciled per `TASK-289` and `ADR-028`: Special Gems removed from Match-3 domain module description, BoardResolver responsibilities, and resolution pipeline sequencing following operator design decisions OD-1 through OD-7. Special Gem creation and activation stages retired; cascade loop executes match detection, gem removal, gravity, and spawn until stable. Runtime code changes are explicitly gated behind subsequent implementation tasks. Prior 1.13: §2.2.1 rule 4 **amended** per TASK-273: the runtime's
 batch-forwarding rule gains one narrow **delivery-integrity exception** — a
 `ReceiveEvents` batch for another battle, or one whose `serverSequence` is ahead
 of the synchronized state's `sequence`, is withheld whole and the
@@ -428,7 +437,9 @@ The client → server gameplay method `Swap` (`SIGNALR_PROTOCOL.md` §2) is
 implemented end-to-end: `BattleScene` requests it through `GameRuntime`, and the
 server resolves it through the full `GAME_RULES.md` §17 pipeline — board
 resolution, Passive charge, the Combat Damage Pipeline, Boss Response (Enrage,
-Boss Passive, Boss Skill or Basic Attack), the terminal Victory/Defeat check, and
+Boss Passive, the Boss's one selected action — a board match action or a Boss
+Card cast, `BOSS_RULES.md` §4.3 / `ADR-029` — and the ATK-gated Boss attack), the
+terminal Victory/Defeat check, and
 the End Turn step 19a Status Effect tick — committing one write-back
 (`GAME_STATE.md` §5.1) and pushing the resulting ordered Battle Events. The
 other client → server gameplay methods (`CardCast`, `PetSkillCast` —
@@ -785,8 +796,20 @@ PassiveTracker                 Domain            PASSIVE_RULES.md — charge,
                                                    threshold, trigger, reset
 RelicResolver                  Domain            RELIC_RULES.md — GAME_RULES.md
                                                    §17 step 11 (Trigger Relics)
-CardCastExecutor               Domain            CARD_RULES.md §2–§4 — executes
-                                                   a Card or Pet Skill cast
+CardCastExecutor               Domain            CARD_RULES.md §2–§4 — the shared
+                                                   cast contract, executed for the
+                                                   Player's Card / Pet Skill cast;
+                                                   a Boss Card cast resolves through
+                                                   the same contract (ADR-029)
+BossActionPolicy               Domain            BOSS_RULES.md §4.3 — the Boss
+                                                   response phase's one-action
+                                                   selection (board match action vs
+                                                   Boss Card cast); deterministic,
+                                                   zero unseeded PRNG (ADR-029)
+BossAiEngine                   Domain            ADR-026 item 8 — legal-move
+                                                   enumeration, deterministic
+                                                   board-action scoring and
+                                                   deadlock-safe move selection
 BossState                      Domain            GAME_STATE.md §2.4 — the Boss's
                                                    battle state
 BossDefinitions                Domain            BOSS_RULES.md §6 — canonical baseline

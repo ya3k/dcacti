@@ -1,6 +1,14 @@
 # Redis State
 
-**Version:** 1.15 (§6 item 1 and §7 item 10 reconciled per `TASK-289` and `ADR-028`: Special Gems are retired from Redis active battle state persistence. `BoardState.Cells[64]` persists solely pure `GemType` entries. Documents the Decision B-2 tolerance basis: `BattleStateSerializer` default System.Text.Json deserialization (`WriteIndented = false`, no `JsonUnmappedMemberHandling.Disallow`, zero `[JsonRequired]` members) safely ignores legacy `cell.specialGem` properties without runtime error. Documents the Decision B-2 deployment policy: active battles must be drained before joint server/client deployment, with no in-place Redis data mutation or migration. Distinguishes documented deployment policy from runtime migration scripts. Prior 1.14: §4 item 2's compare-and-set refusal is **stated exactly**: the
+**Version:** 1.16 (§2 extended per **ADR-029 / TASK-303**: `BossState.Power` is
+an ordinary serialized member of the `battle:{battleId}:state` record — no new
+key, no Redis-only field, no lifecycle or compare-and-set change — and an active
+battle record written before the member existed deserializes it to `0`, the
+documented initial value, so **no migration, no rewrite and no data loss**
+occurs and no drain is required for this addition. The transitional
+`SkillCharge` member coexists with it for the documented migration window
+(`BOSS_RULES.md` §4.4). **No other serialization, key, TTL, recovery or
+concurrency rule changes**, and no gameplay value is authored. Prior 1.15: (§6 item 1 and §7 item 10 reconciled per `TASK-289` and `ADR-028`: Special Gems are retired from Redis active battle state persistence. `BoardState.Cells[64]` persists solely pure `GemType` entries. Documents the Decision B-2 tolerance basis: `BattleStateSerializer` default System.Text.Json deserialization (`WriteIndented = false`, no `JsonUnmappedMemberHandling.Disallow`, zero `[JsonRequired]` members) safely ignores legacy `cell.specialGem` properties without runtime error. Documents the Decision B-2 deployment policy: active battles must be drained before joint server/client deployment, with no in-place Redis data mutation or migration. Distinguishes documented deployment policy from runtime migration scripts. Prior 1.14: §4 item 2's compare-and-set refusal is **stated exactly**: the
 documented retry against the fresh state is not a licence to execute an action
 against a state version the request did not name. A request that carries a state
 precondition continues only while the precondition still holds against the fresh
@@ -186,6 +194,46 @@ Item 1's "matches the shape in `GAME_STATE.md` §2 exactly" therefore remains
 verbatim and complete: this section adds no `BattleState` member, removes
 none, and renames none. It states only that the record's Element *spelling*
 is unbound — a statement about encoding, not about shape.
+
+## 2.1 `BossState.Power` — Added Member, Tolerant Reader, No Migration (ADR-029)
+
+`BossState.Power` (`GAME_STATE.md` §2.4, §2.4.3; `BOSS_RULES.md` §4.1) is an
+ordinary member of the serialized record. It is the Boss's own integer 0–100
+resource, and it is written and read exactly like `BossState.HP`: no Redis-only
+field, no key, no second record, and no new serialization mechanism.
+
+1. **The record's shape is `GAME_STATE.md` §2's**, so adding the member changes
+   the shape only by the one documented member — §2 item 1 above keeps its full
+   force, and no Redis-only field is introduced by this addition.
+2. **Round-trip losslessness is unchanged.** Item 1 and §7 item 9's obligation
+   (the serializer must return an equal `BattleState`, member for member:
+   `GAME_STATE.md` §2.1.7 item 5) now includes `Power`, which is an integer and
+   therefore round trips exactly.
+3. **A record written before the member existed reads as the documented initial
+   value.** An in-flight `battle:{battleId}:state` written by a build that had no
+   `Power` member deserializes with `Power = 0` — the documented initial value at
+   battle creation (`GAME_STATE.md` §2.4.3) — because an absent JSON integer
+   member takes the type's default under the tolerant-reader basis Decision B-2
+   established (default `System.Text.Json` deserialization; no
+   `JsonUnmappedMemberHandling.Disallow`, no `[JsonRequired]` member for it).
+   `0` is a real, valid state ("the Boss has no Power banked"), never an
+   "invalid" or "unknown" marker, so no reader may treat it as a degraded record
+   or as evidence of a different battle.
+4. **No migration, no rewrite, no drain.** This addition is not a retirement: the
+   transitional `SkillCharge`/`SkillCooldown` members are retained
+   (`BOSS_RULES.md` §4.4), so a battle carried across the deployment continues on
+   the documented path for the abilities not yet migrated. Nothing in the stored
+   record is mutated, re-serialized offline, or discarded. The Decision B-2
+   battle-drain policy remains in force as this document's general deployment
+   policy; it is not required *by* this addition, and no battle is invalidated by
+   it.
+5. **`Power` is never `SkillCharge` in storage either.** The two are separate
+   members with separate meanings; no reader derives one from the other, and no
+   migration converts the stored `SkillCharge` into `Power` (`ADR-029`: no
+   conversion is authorised).
+6. **The delivered projection does not change storage.** `SIGNALR_PROTOCOL.md`
+   §4.4's `bossState.power` reads this member; it adds no Redis key and no
+   Redis-only field (`SIGNALR_PROTOCOL.md` §4.4 item 9, item 12).
 
 ---
 

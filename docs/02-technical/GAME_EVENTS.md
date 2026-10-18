@@ -1,6 +1,16 @@
 # Game Events
 
-**Version:** 2.17 (§1, §1.1, §2 extended: `MatchedGemSummary` is defined — one
+**Version:** 2.18 (§1, §1.1 and §2 extended per **ADR-029 / TASK-303**: the
+`BossCardCast` event is defined — the dedicated Boss action event reporting that
+the Boss chose and resolved a Boss Card cast in its response phase, carrying the
+Boss Card identity and the Boss identity — and §1's Boss Response block records
+the Boss's **one-action-per-response-phase** policy (a board match action or a
+Boss Card cast, never both). `CardCast`/`PetSkillCast` are confirmed as the
+Player's events with their payloads unchanged, and `BossSkillCast` is recorded as
+the transitional legacy path's event. **No other event, payload member, ordering
+rule of an existing event, delivery path, or gameplay rule is changed**, and no
+numeric balance value is authored. Runtime implementation is staged behind
+`ADR-029`'s Slice 3. Prior 2.17: (§1, §1.1, §2 extended: `MatchedGemSummary` is defined — one
 additive Battle Event reporting, once per committed board action, how many Gems of
 each Gem type that action's board cycle matched across all of its cascade passes,
 emitted as the cycle's last item after its whole cascade resolution. It reports
@@ -121,13 +131,18 @@ PetSkillCast                    (only when the cast Card is the Signature Skill)
 DamageCalculated                (player→boss damage, only iff valid ATK match produced; D1)
 DamageDealt                     (player→boss, only iff valid ATK match produced)
 DamageTaken                     (player→boss, only iff valid ATK match produced)
-  [Boss Response Phase — GAME_RULES.md §17 step 18, ADR-026:]
+  [Boss Response Phase — GAME_RULES.md §17 step 18, ADR-026, ADR-029:]
+  [the Boss selects exactly ONE action this phase (BOSS_RULES.md §4.3):]
+    -- if the selected action is a board match action:
   SwapStarted                          (Boss move on shared board, actor="boss")
   SwapResolved                         (Boss swap resolved)
   [Boss Match / Cascade cycle: MatchCreated, GemMatched, etc.]
   MatchedGemSummary                    (once, after the Boss cycle's whole cascade)
-  PassiveCharged / PassiveTriggered   (Boss Passive, source="boss")
-  BossSkillCast                        (only when Skill fires; zero direct damage, D3)
+    -- if the selected action is a Boss Card cast: no Boss board cycle happens
+  PassiveCharged / PassiveTriggered   (Boss Passive, source="boss"; evaluated
+                                       whichever action was selected)
+  BossCardCast                        (only when a Boss Card cast resolves; ADR-029)
+  BossSkillCast                       (only on the transitional legacy path; BOSS_RULES.md §4.4)
   DamageCalculated                     (boss→player, only iff Boss produced valid ATK match; D1)
   DamageDealt                          (boss→player, source="boss", target="player")
   DamageTaken                          (boss→player, source="boss", target="player")
@@ -679,7 +694,7 @@ Payload:  RelicId, effect summary, deterministic order index for this event
 
 ## CardCast / PetSkillCast
 ```text
-Trigger:  A Card cast is validated and applied (CARD_RULES.md §3, §6)
+Trigger:  A Player Card cast is validated and applied (CARD_RULES.md §3, §6)
 Payload:  CardId, Power cost paid, effect summary
           PetSkillCast additionally confirms it was the active Pet's
           Signature Skill
@@ -715,6 +730,12 @@ Payload:  CardId, Power cost paid, effect summary
    `GAME_RULES.md` §17 step 14 (`CARD_RULES.md` §6), and
    `SIGNALR_PROTOCOL.md` §3.2.22 owns the ordering statement on the wire; a
    Basic Card cast emits `CardCast` alone (`CARD_RULES.md` §6).
+6. **These are the Player's events, and a Boss cast is never either of them.**
+   A Boss Card cast emits the dedicated `BossCardCast` below — at
+   `GAME_RULES.md` §17 step 18c, inside the Boss response phase — and never a
+   `CardCast` or a `PetSkillCast`. No actor/source member is added to either
+   payload to distinguish them: the discriminator is the distinction
+   (`CARD_RULES.md` §6, `ADR-029`).
 
 ## DamageCalculated / DamageDealt / DamageTaken
 ```text
@@ -727,8 +748,9 @@ Payload:  DamageCalculated: Base, Combo Modifier, Element Modifier, Other
 
 ## BossSkillCast
 ```text
-Trigger:  Boss's own Skill timing rule fires (BOSS_RULES.md §4)
-          Charge ≥ Requirement AND Cooldown = 0 (GAME_STATE.md §2.4.3)
+Trigger:  The Boss's TRANSITIONAL Skill timing rule fires
+          (BOSS_RULES.md §4, §4.4) — Charge ≥ Requirement AND Cooldown = 0
+          (GAME_STATE.md §2.4.3)
 Payload:  SkillId, SourceId (BossId), effect summary
 ```
 
@@ -740,6 +762,46 @@ The Skill's damage (if any) is reported by separate `DamageCalculated`/
 `DamageDealt`/`DamageTaken` events in the same batch, with
 `source = "boss"` and `target = "player"` (a fixed wire label meaning the
 player's side / active Pet — ADR-011).
+
+**`BossSkillCast` is the transitional path's event.** It is emitted by the
+pre-migration Boss ability form only, and it is retired together with
+`BossState.SkillCharge` when `ADR-029`'s Slice 4 parity gate is met
+(`BOSS_RULES.md` §4.4). No new feature, consumer, or balance value may be built
+on it.
+
+## BossCardCast
+```text
+Trigger:  The Boss resolves a Boss Card cast (BOSS_RULES.md §4.2–§4.3,
+          GAME_RULES.md §17 step 18c) — ADR-029
+Payload:  CardId, SourceId (BossId), effect summary
+```
+
+1. **It is the dedicated Boss action event.** A `BossCardCast` reports that the
+   Boss selected a Boss Card cast as its one action for the response phase and
+   that the cast resolved. It is emitted after the cost is deducted from
+   `BossState.Power` and the effect applied, in the order `CARD_RULES.md` §3
+   fixes (`ADR-029`). It is never emitted for a board match action — that action
+   is reported by `SwapStarted`/`SwapResolved` and the board cycle's own events.
+2. **`CardId` is the Boss Card's definition identity.** It is the ability
+   identity `BOSS_RULES.md` §6.4 records for that Boss (e.g. `"flame-burst"`),
+   reused as the Boss Card's `CardDefinitionId`; it is a reported identity, not a
+   re-derived one (`GAME_STATE.md` §0 item 5, `CARD_RULES.md` §1.1 item 3).
+3. **`SourceId` identifies the Boss.** It is the Boss's canonical technical
+   Identity (`BossState.BossId`, `BOSS_RULES.md` §6.4), never a display name —
+   the same convention `BossSkillCast.sourceId` and
+   `PassiveCharged`/`PassiveTriggered.sourceId` already use with
+   `source = "boss"`.
+4. **The effect's consequences are carried by their own events and by state.**
+   Damage (none in MVP — every MVP ability has `BaseDamage = 0`, `ADR-026` D3),
+   applied Status Effects, and the resulting Boss Power and cooldown are reported
+   by the events their own owners define and by the state push
+   (`GAME_STATE.md` §2.4, `SIGNALR_PROTOCOL.md` §4). This event reports the cast
+   and its identity, not a second copy of the effect.
+5. **The action selection itself emits nothing.** There is no
+   `BossActionSelected` event; which action the Boss took is reported by the
+   events of that action (`BOSS_RULES.md` §7).
+6. **`effect summary` is omitted**, on the same basis as `CardCast`'s
+   (`SIGNALR_PROTOCOL.md` §3.2.25).
 
 ## BattleWon / BattleLost
 ```text

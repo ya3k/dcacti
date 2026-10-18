@@ -1,6 +1,6 @@
 # ADR-026: Shared-Board Gameplay and Actor-Relative Match Resolution
 
-**Status:** Accepted
+**Status:** Accepted (Decision item 4's POWER bullet, and "Unresolved Balance Choices" #1–#2, partially superseded by ADR-029)
 **Date:** 2026-10-11
 **Deciders:** Product Owner, Systems Designer, Backend Architecture, Client Architecture
 **Consulted:** AGENTS.md, GDD.md, GAME_RULES.md, MATCH3_RULES.md, COMBAT_RULES.md, BOSS_RULES.md, GAME_STATE.md, SIGNALR_PROTOCOL.md
@@ -70,6 +70,14 @@ To resolve these deficiencies, the Product Owner approved the following authorit
    - **The reshuffle emits no Battle Event, and none is promised.** No `BoardReshuffled` event, discriminator, or payload member exists — the canonical event-name list (`GAME_RULES.md` §16), the event semantics (`GAME_EVENTS.md` §2) and the closed wire discriminator set (`SIGNALR_PROTOCOL.md` §3.2.2) contain none, and no code path emits one. The reshuffle becomes authoritative only through the Round's single `BattleState` write-back — the committed board is the board that follows from the reshuffled one — and it reaches the client as the Round's committed board in the state push (`GAME_STATE.md` §5.1, `SIGNALR_PROTOCOL.md` §3.1 items 1–3 and §4). The client therefore cannot identify the reshuffle operation from the delivered stream — an accepted limitation of the contract, recorded by the event list's owner at `GAME_EVENTS.md` §3 item 8, not a missing event.
 
 ## Unresolved Balance Choices (Explicitly Preserved)
+
+> **Status note (TASK-303 / ADR-029).** Items 1 and 2 below are **partially
+> superseded**, not answered: `BossState.SkillCharge` is retired rather than
+> re-metricized, so its unit-metric and clamp questions close by retirement
+> (gated by ADR-029 §2.9's parity gate). The Boss's **Power** economy has its own
+> open values instead (ADR-029 §3, U-1/U-2/U-3), and items 3 and 4 remain open
+> exactly as written. Item 4's POWER bullet is also partially superseded — see the
+> `TASK-303`/`ADR-029` amendment at the end of this record.
 
 The following parameters are non-blocking balance tuning decisions and are explicitly preserved as unresolved pending implementation tuning:
 1. **`SkillCharge` Unit Metric:** Whether `SkillCharge` counts *POWER matches* (+1 per match, preserving thresholds 4–6) or *POWER gem units* (+10 per gem, requiring threshold re-scaling to 30–60).
@@ -204,6 +212,54 @@ contract), item 7 (persistence/event boundaries), and item 8 (deterministic Boss
 AI); the DEF bullet of item 4 is the only corrected text, and the HP, POWER, and
 ATK bullets of item 4 are untouched.
 
+## Amendment — The Boss Spends Power, Not SkillCharge; the Ability Becomes a Boss Card (TASK-303 / ADR-029)
+
+Decision item 4's **`POWER` Gems** bullet said a POWER match "Generates Power for
+the active Pet (range 0–100) during Player turn, or increments
+`BossState.SkillCharge` during Boss turn." The Boss half of that bullet is
+**superseded** by the Product Owner decision recorded in `ADR-029`: the Boss now
+generates and spends **`BossState.Power`** (integer 0–100) through the same
+actor-relative generation rule, and its abilities are **Boss Cards** paid from
+that Power. This explicitly reverses `TASK-258` §2 **D2**, which had forbidden
+`BossState.Power` and is transcribed in this item.
+
+**Corrected rule (Decision item 4, POWER bullet, as amended).** A confirmed
+POWER-Gem match generates **Power for the acting actor** — `PetState.Power` for
+the active Pet, `BossState.Power` for the Boss — through the one actor-relative
+generation rule `COMBAT_RULES.md` §2 owns. Player POWER matches never generate
+Boss Power, and the Boss's Power comes only from its own board match action. The
+legacy `SkillCharge` output is **transitional only** and is retired once
+`ADR-029`'s parity gate is met. The Pet's `Power` range, the actor-relative
+ownership of the other three Gem types, and every ATK-gating and damage rule are
+unchanged.
+
+**Rule ownership.** The rules are owned by `GAME_RULES.md` §12/§15/§17 step 18,
+`BOSS_RULES.md` §4.1–§4.4 and §6.3, `CARD_RULES.md` §1.1/§3 item 9, and
+`COMBAT_RULES.md` §2; the state member by `GAME_STATE.md` §2.4/§2.4.3. This ADR
+records only *why* the Boss gained a resource of its own and why the migration is
+staged.
+
+**What this amendment relies on and leaves alone.** Decision item 8 (deterministic
+Boss AI, no unseeded PRNG) is the board-action score `ADR-029` §2.7 reuses and is
+unchanged. Items 1, 2, 3, 5, 6, 7 and 8 are untouched. The `DEF` amendment
+(`TASK-299`) and the deadlock amendments (`TASK-265`, `TASK-267`) above are
+unaffected.
+
+**Why the record is amended in place and no ADR is superseded.** The decision
+being reversed is `TASK-258` §2 D2 — a **task** decision, not this ADR — and what
+this ADR loses is one bullet of one item plus the two `SkillCharge` questions,
+not its architecture: the shared board, actor-relative ownership and target
+resolution, the atomic Round, ATK gating, the Boss non-damage contract, the
+persistence/event boundaries, and deterministic Boss AI all stand. So
+`.ai/workflow/architecture/adr-change.md` §3's full-supersession path does not
+apply to the record as a whole, and this is the same in-place-amendment treatment
+the `TASK-265`, `TASK-267` and `TASK-299` amendments to this same record
+received. `ADR-029` carries the new decision; this record stops contradicting the
+owning documents, which is what `docs/03-decisions/README.md` §3 requires of an
+ADR.
+
+---
+
 ## Related Documents
 
 - `docs/00-overview/MVP_SCOPE.md` §1
@@ -218,3 +274,4 @@ ATK bullets of item 4 are untouched.
 - `docs/03-decisions/ADR/ADR-008-battle-recovery.md`
 - `docs/03-decisions/ADR/ADR-025-swap-action-preconditions-and-idempotency.md`
 - `tasks/completed/TASK-258-shared-board-gameplay-contract-audit-and-design.md`
+- `docs/03-decisions/ADR/ADR-029-boss-as-player-opponent-boss-power-and-action-policy.md`

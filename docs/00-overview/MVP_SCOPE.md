@@ -1,6 +1,6 @@
 # MVP Scope
 
-**Version:** 1.7 (§1 Match-3, Bosses, and Combat updated per ADR-026 / TASK-259: Player and Boss share the one 8×8 Match-3 board; both act via valid swaps; matched cell type determines effect; acting side determines ownership and target; attack damage is strictly gated on confirmed ATK matches; fallback fixed basic attacks are retired; Boss skills deal zero direct damage; Boss SkillCharge charges exclusively from Boss POWER matches. Prior 1.6: §1/§3 updated per TASK-213 — the MVP content set is owned by a
+**Version:** 1.8 (§1 Cards, Relics, Bosses and §3 FUTURE updated per **ADR-029 / TASK-303**, applying the explicit Product Owner decision: the Boss behaves as a genuine opponent using the same resource and cast principles as the Player, so **`BossState.Power` (integer, 0–100)** and the **minimum Boss Card capability** move from FUTURE into MVP, Relics remain **Player-only**, and the **fifth Gem type stays outside MVP**. This is a FUTURE→IN move made through the `GAME_RULES.md` §20 Rule Change process on that recorded approval; the authoritative rules are owned by `GAME_RULES.md` §12/§15/§17, `BOSS_RULES.md` §4, `CARD_RULES.md` §1/§3 and `COMBAT_RULES.md` §2 and are referenced, not restated, here. Prior 1.7: (§1 Match-3, Bosses, and Combat updated per ADR-026 / TASK-259: Player and Boss share the one 8×8 Match-3 board; both act via valid swaps; matched cell type determines effect; acting side determines ownership and target; attack damage is strictly gated on confirmed ATK matches; fallback fixed basic attacks are retired; Boss skills deal zero direct damage; Boss SkillCharge charges exclusively from Boss POWER matches. Prior 1.6: §1/§3 updated per TASK-213 — the MVP content set is owned by a
 newly created Player's deterministic starter grant, MVP has no post-creation
 acquisition system, and per-Pet Passive effect application, Pet Star progression
 and post-creation content acquisition are explicitly FUTURE; no other IN/OUT
@@ -72,6 +72,10 @@ Deferred to FUTURE by the TASK-213 decision: per-Pet Passive effect
 ```text
 3 Basic Cards (Heal, Shield, Power Charge)
 5 Pet Skill Cards (one per Pet)
+Boss Card capability — the minimum required set: exactly one authored Boss Card
+  per Boss, carrying that Boss's MVP ability (CARD_RULES.md §1, BOSS_RULES.md
+  §4.2). No Boss loadout, no Boss Card collection, and no ownership row
+  (ADR-029 / TASK-303; FUTURE→IN)
 ```
 
 ## Relics
@@ -79,12 +83,16 @@ Deferred to FUTURE by the TASK-213 decision: per-Pet Passive effect
 ~10 Relics
 Trigger system (OnMatch, OnCombo, OnHpBelow, etc.)
 3–5 equipped Relics per battle
+Player-only: a Relic never reads or writes BossState, never triggers on a Boss
+  Card cast, and never modifies a Boss Card's cost (ADR-029)
 ```
 
 ## Bosses
 ```text
 5 Bosses
 Element, Passive, Skill per Boss (skills modify board, resources, or modifiers with zero direct damage; ADR-026)
+Boss Power — BossState.Power, integer 0–100, generated from the Boss's own POWER-Gem matches and spent on its own Boss Card (BOSS_RULES.md §4.1; ADR-029 / TASK-303; FUTURE→IN)
+Boss response action policy — exactly one action per response phase, either a board match action or a Boss Card cast, chosen by a deterministic documented policy (BOSS_RULES.md §4.3; ADR-029)
 ```
 
 ## Combat
@@ -174,6 +182,18 @@ Per-Pet Passive effect application (TASK-213; magnitudes are unauthored —
   PASSIVE_RULES.md §8)
 Pet Star progression (TASK-213; no star-up cost or curve is authored —
   PET_RULES.md §4 item 3)
+```
+
+The following item is recorded here **explicitly to keep it outside MVP**, and
+it is *not* an acknowledged future direction with any designed content:
+
+```text
+Fifth Gem type — NOT AUTHORIZED. There is no rule, no design, no content value,
+  no protocol member and no scaffold for a fifth Gem type, and none may be
+  created by any task. It stays outside MVP until migration Slices 1–4 of
+  ADR-029 are stable, and it then requires its own task plus its own
+  MVP_SCOPE.md / MATCH3_RULES.md / COMBAT_RULES.md Rule Change
+  (GAME_RULES.md §20). ADR-029 / TASK-303.
 ```
 
 Nothing in this list may be implemented, partially implemented, or

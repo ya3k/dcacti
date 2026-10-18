@@ -1,6 +1,17 @@
 # SignalR Protocol
 
-**Version:** 2.27 (§3.2.2 extended and **§3.2.29 added**: `MatchedGemSummary`
+**Version:** 2.28 (§3.2.2, **§3.2.30 added**, and §4.4 extended per **ADR-029 /
+TASK-303**, applying the explicit Product Owner decision that the Boss is a
+genuine opponent using the same cast principles as the Player: `BossCardCast`
+becomes the twenty-first member of the closed discriminator set — a dedicated
+Boss action event carrying `cardId` and `sourceId` — and §4.4's `bossState`
+projection gains the always-present `power` member, so the Boss's own 0–100
+resource is HUD-visible and survives reconnect exactly like its HP. **The Player
+`CardCast` payload is untouched**: it still carries `type` + `cardId` only, gains
+no actor/source/cost member, and is never used to report a Boss cast. No other
+event, member, optionality rule, casing rule, delivery path, method,
+subscription, or persistence contract is changed. Runtime implementation is
+staged behind `ADR-029`'s Slices 1 and 3. Prior 2.27: (§3.2.2 extended and **§3.2.29 added**: `MatchedGemSummary`
 becomes the twentieth member of the closed discriminator set and is projected by
 its own subsection — one item per committed board action, emitted as that board
 cycle's **last** item after its whole cascade resolution and before the following
@@ -544,7 +555,7 @@ discriminator member and that event's own payload members at the same level.
 
 | Member | Type | Value |
 | --- | --- | --- |
-| `type` | string | one of `SwapStarted`, `SwapResolved`, `MatchCreated`, `CascadeCreated`, `ComboChanged`, `GemMatched`, `CascadeStepResolved`, `MatchedGemSummary`, `DamageCalculated`, `DamageDealt`, `DamageTaken`, `PassiveCharged`, `PassiveTriggered`, `BossSkillCast`, `BattleWon`, `BattleLost`, `CardCast`, `PetSkillCast`, `RelicTriggered`, `PowerChanged` |
+| `type` | string | one of `SwapStarted`, `SwapResolved`, `MatchCreated`, `CascadeCreated`, `ComboChanged`, `GemMatched`, `CascadeStepResolved`, `MatchedGemSummary`, `DamageCalculated`, `DamageDealt`, `DamageTaken`, `PassiveCharged`, `PassiveTriggered`, `BossSkillCast`, `BossCardCast`, `BattleWon`, `BattleLost`, `CardCast`, `PetSkillCast`, `RelicTriggered`, `PowerChanged` |
 
 1. **The property name is `type`.** The string spelling matches the event name
    `GAME_RULES.md` §16 lists and `GAME_EVENTS.md` §2 defines.
@@ -554,7 +565,7 @@ discriminator member and that event's own payload members at the same level.
    `GAME_EVENTS.md` §2 does not define** — not against events it does define:
    a name `GAME_RULES.md` §16 lists and `GAME_EVENTS.md` §2 gives a payload for
    is a valid `type` once this section tabulates its members (§3.2.20, §3.2.21,
-   §3.2.23, §3.2.24, §3.2.26, §3.2.27, §3.2.28, §3.2.29).
+   §3.2.23, §3.2.24, §3.2.26, §3.2.27, §3.2.28, §3.2.29, §3.2.30).
    No `MatchResolved`, no `SpecialGemActivated`, no `TurnChanged`, no
    `BoardChanged`, and no other name is a valid `type`: those are either state
    (`SIGNALR_PROTOCOL.md` §3.1 item 3, §8 items 5–7) or undefined
@@ -1709,6 +1720,63 @@ Each `gems` entry:
    resolution. **No version negotiation exists**, and none is introduced: an
    older server simply never sends the item, and an older consumer ignores it.
 
+### 3.2.30 `BossCardCast`
+
+```json
+{
+    "type": "BossCardCast",
+    "cardId": "flame-burst",
+    "sourceId": "boss-hoa-long"
+}
+```
+
+| Member | Type | Presence | Meaning |
+| --- | --- | --- | --- |
+| `type` | string | always | `"BossCardCast"` |
+| `cardId` | string | always | the cast Boss Card's definition identity |
+| `sourceId` | string | always | the Boss's canonical technical Identity (`BossState.BossId` — `BOSS_RULES.md` §6.4; never a display name) |
+
+1. **It is the dedicated Boss action event.** It reports that the Boss selected
+   and resolved a **Boss Card cast** as its one action for the response phase
+   (`BOSS_RULES.md` §4.2–§4.3, `GAME_RULES.md` §17 step 18c; `ADR-029`). Its
+   meaning and payload are `GAME_EVENTS.md` §2's; this subsection owns only the
+   wire schema.
+2. **`cardId` is the Boss Card's definition identity**, and it is the ability
+   identity `BOSS_RULES.md` §6.4 records for that Boss (e.g. `"flame-burst"`)
+   reused as the Boss Card's `CardDefinitionId` (`CARD_RULES.md` §1.1 item 3).
+   It is a reported identity, never a re-derived one, and there is no second
+   identifier for the same ability (`GAME_STATE.md` §0 item 5).
+3. **`sourceId` identifies the Boss** — the canonical technical Identity
+   (`BossState.BossId`, e.g. `"boss-hoa-long"`), never a display name, matching
+   `BossSkillCast.sourceId` (§3.2.18 item 2) and
+   `PassiveCharged`/`PassiveTriggered` with `source = "boss"` (§3.2.16).
+4. **The event carries no cost, no Power value, no cooldown, and no other
+   member.** The cost actually paid is a Card-side runtime value
+   (`CARD_RULES.md` §3.6) and is not a wire member — the same A-2C ruling
+   `CardCast` follows (§3.2.20 item 2) — and the authoritative record of the
+   resulting Boss `Power` and cooldown is the §4.4 `bossState` projection and
+   the §4 state push. A client must not derive the Boss's spent cost, remaining
+   Power, or cooldown from this event (`GAME_RULES.md` §18, `ADR-001`).
+5. **`effect summary` is omitted**, per §3.2.25.
+6. **It is emitted only for a Boss Card cast**, in the response phase, as one
+   item of the round's existing single `ReceiveEvents` batch (§3.1 item 1). It
+   emits nothing for a board match action — that action is reported by
+   `SwapStarted`/`SwapResolved` (§3.2.26–§3.2.27) and the board cycle's own
+   events — and the Boss's action *selection* has no event of its own
+   (`GAME_EVENTS.md` §2, `BOSS_RULES.md` §7).
+7. **It is never a `CardCast`.** Player `CardCast` (§3.2.20) keeps exactly its
+   `type` + `cardId` payload, gains no actor/source/cost member, and is never
+   used for a Boss cast; the discriminator is the only distinction a consumer
+   needs (`CARD_RULES.md` §6, `GAME_RULES.md` §16).
+8. **`BossSkillCast` remains the transitional path's event.** It reports the
+   pre-migration ability form until `ADR-029`'s Slice 4 parity gate is met
+   (`BOSS_RULES.md` §4.4); the two are never emitted for the same ability
+   resolution, because a Boss carries only one form of an ability at a time.
+9. **Compatibility is the tolerant-reader rule and nothing else.** The name is
+   in §3.2.2's set; a consumer built before it ignores the item (§3.2.2 item 6)
+   — not a desync and not evidence about the resolution. **No version
+   negotiation exists**, and none is introduced.
+
 ---
 
 # 4. Initial State Delivery (`BattleStateUpdated`)
@@ -1958,7 +2026,9 @@ action: it reports state (§4 item 6).
     among the §2.3 members not delivered — this *is* that task, so item 2's
     surviving exclusion list is re-worded there rather than contradicted here.
     The same carrier delivers the Boss's canonical Identity under `bossState`
-    (§4.4 item 10); the two widenings are one amendment and neither adds a
+    (§4.4 item 11) and, under a **separate** Product Owner authorization
+    (`TASK-303` / `ADR-029`), the Boss's own Power (§4.4 item 12); the widenings
+    are independent amendments and none adds a
     top-level member.
 
     The state projection is the **reconstruction-safe carrier** for these
@@ -2392,19 +2462,23 @@ push — it does not add a delivery path, a subscription, or an event:
 ```text
 bossState
 ├── bossId                      the Boss's canonical technical Identity  always present
-│                               (BOSS_RULES.md §6.4, e.g. `"boss-hoa-long"`) (§4.4 item 10)
+│                               (BOSS_RULES.md §6.4, e.g. `"boss-hoa-long"`) (§4.4 item 11)
 │                               — never a display name
 ├── hp                          the Boss's current HP      always present
-└── maxHp                       the Boss's MaxHP            always present
+├── maxHp                       the Boss's MaxHP            always present
+└── power                       the Boss's own Power, integer 0–100     always present
+                                (BossState.Power — GAME_STATE.md §2.4,
+                                 BOSS_RULES.md §4.1; ADR-029) (§4.4 item 12)
 ```
 
 1. The client receives `bossState` together with `battleId`, `turn`, `sequence`,
    `board`, `rngSeed`, `rngState`, `playerState`, and `petState` in the single
    `BattleStateUpdated` push. It is delivered on join (§4.1 trigger) and on
    every committed Swap's resolved-state push (§2.1, §5).
-2. **`bossState` carries exactly three members, and it is a projection, not
-   `BossState`.** The record is `bossId`, `hp` and `maxHp` and nothing else.
-   The three are a **narrowed projection** of `GAME_STATE.md` §2.4's
+2. **`bossState` carries exactly four members, and it is a projection, not
+   `BossState`.** The record is `bossId`, `hp`, `maxHp` and `power` and nothing
+   else.
+   The four are a **narrowed projection** of `GAME_STATE.md` §2.4's
    authoritative
    `BossState`, in the same sense §4.2 item 2 and §4.3 item 2 use for their own
    objects — and, as those sections state, referring to the state field as a
@@ -2417,23 +2491,32 @@ bossState
    member of it may be added to `bossState` without a protocol change owned by
    its own task. In particular **Boss `StatusEffects[]` is not delivered**: the
    `TASK-160` **D-2A** ruling authorized Boss live health only, the canonical
-   Identity is a separate authorization (item 10, `TASK-208` **D-208-03**), and
-   §4 item 17 records the same boundary from the Pet side. `BossState` is
-   therefore still not a wire member — `bossState` is a three-member projection
+   Identity is a separate authorization (item 11, `TASK-208` **D-208-03**), and
+   the Boss **Power** is a third, separate authorization (item 12, `TASK-303` /
+   `ADR-029`) — each was decided on its own and none widens another.
+   **`SkillCharge` and `SkillCooldown` remain undelivered**, and the delivered
+   `power` is the Boss's Power, not `SkillCharge`: the two are never conflated on
+   the wire, and a consumer must not reconstruct one from the other. §4 item 17
+   records the same boundary from the Pet side. `BossState` is
+   therefore still not a wire member — `bossState` is a four-member projection
    *of* it, which is the opposite of exposing it.
-4. **All three members are always present, and none is optional.** `BossId`,
-   `HP` and `MaxHP` are defined from battle creation (`GAME_STATE.md` §2.4: a
-   battle always has its one Boss, at full health in its Initial State), so
+4. **All four members are always present, and none is optional.** `BossId`,
+   `HP`, `MaxHP` and `Power` are defined from battle creation (`GAME_STATE.md`
+   §2.4: a
+   battle always has its one Boss, at full health in its Initial State, with no
+   Power banked), so
    there is
    no absent or "Boss not yet available" case for any member: none is
    nullable, none is omitted, and `hp = 0` is a real published value — the
-   terminal value of a won battle — that is sent as `0`. This is the
+   terminal value of a won battle — that is sent as `0`. `power = 0` is likewise
+   a real published value ("the Boss has no Power banked"), not an absent
+   member. This is the
    always-present convention §4.2 item 3 and §4.3 item 4 state for their own
    members, not §3.2.5's omitted-when-not-applicable one. A client must not
-   read an absent `hp` as zero.
-5. **Types.** `hp` and `maxHp` are integers, read from `BossState.HP` and
-   `BossState.MaxHP` (`GAME_STATE.md` §2.4) and reported unchanged: the
-   projection applies no
+   read an absent `hp` or `power` as zero.
+5. **Types.** `hp`, `maxHp` and `power` are integers, read from `BossState.HP`,
+   `BossState.MaxHP` and `BossState.Power` (`GAME_STATE.md` §2.4, §2.4.3) and
+   reported unchanged: the projection applies no
    unit, scale, clamp, or rounding, and it never re-derives one member from the
    other. `bossId` is a **string**, read from `BossState.BossId`
    (`GAME_STATE.md` §2.4, `BOSS_RULES.md` §6.4) and reported unchanged. The wire
@@ -2455,28 +2538,31 @@ bossState
    re-derive `hp`/`maxHp` from
    `DamageCalculated`/`DamageDealt`/`DamageTaken`
    or from `finalBossHp` (`GAME_RULES.md` §18, `ADR-001`). `bossId` is the Boss
-   identity and nothing more (item 10): the client does not author it, does not
+   identity and nothing more (item 11): the client does not author it, does not
    reconstruct it from an event `sourceId` or from its own record of the battle
    it asked for, and reads it as sent. This is
    authoritative Boss state made renderable, not client-side Boss logic.
 8. **No new message, method, or subscription is introduced.** There is no
-   `BossStateUpdated`, `BossHpChanged`, `BossHpUpdated`, `BossIdentityChanged`,
+   `BossStateUpdated`, `BossHpChanged`, `BossHpUpdated`, `BossPowerChanged`,
+   `BossIdentityChanged`,
    or similar delivery: this is a state push, not an event (§4 item 6), and the
    values travel
    exactly as the board and the counters do. `BattleStateUpdated` remains the
    only state-push method (§4 item 11). Any requirement for client-visible Boss
    state was a separate future protocol decision; that requirement was made, and
    it is answered for the Boss's health and canonical Identity by this section
-   (items 4–5 and item 10) and declined for Boss Status Effects by item 3 above —
-   the decisions authorized `hp`/`maxHp` (`TASK-160` **D-2A**) and `bossId`
-   (`TASK-208` **D-208-03**), and the rest of `BossState` remains undelivered.
+   (items 4–5 and item 11) and for the Boss's Power by item 12, and declined for
+   Boss Status Effects by item 3 above —
+   the decisions authorized `hp`/`maxHp` (`TASK-160` **D-2A**), `bossId`
+   (`TASK-208` **D-208-03**) and `power` (`TASK-303` / `ADR-029`), and the rest
+   of `BossState` remains undelivered.
 9. **Persistence is not extended by this section.** `bossState` is delivered
    from whatever `BattleState` the server holds. `BossState` is already part of
    that state and already serializes with it under the existing round-trip
    obligation (`REDIS_STATE.md` §2 item 1, §7 item 9); this section defines a
    payload member and no storage contract, adds no Redis key and no Redis-only
    field, and changes no lifecycle, TTL, or compare-and-set rule.
-10. **`bossId` is the Boss's canonical technical Identity — an identity, never
+11. **`bossId` is the Boss's canonical technical Identity — an identity, never
     presentation content.** The value is `BossState.BossId` (`GAME_STATE.md`
     §2.4), which `BOSS_RULES.md` §6.4 fixes as the stable machine-readable
     game-level Boss ID (`"boss-hoa-long"`, `"boss-thuy-ma"`, `"boss-moc-yeu"`,
@@ -2521,6 +2607,36 @@ bossState
       §2's three, no event to §3, and no subscription, and it changes no storage
       contract: the identity is already part of `BossState` and already
       serializes with it (`REDIS_STATE.md` §2 item 1, §7 item 9).
+
+12. **`power` is the Boss's own Power — HUD-visible, and delivered on the same
+    push and the same reconnect snapshot as its HP.** The value is
+    `BossState.Power` (`GAME_STATE.md` §2.4, §2.4.3), the Boss's integer 0–100
+    resource (`BOSS_RULES.md` §4.1). This is the Product Owner decision recorded
+    by **TASK-303** and formalized by **`ADR-029`**, which makes the Boss a
+    genuine opponent using the same resource and cast principles as the Player
+    and therefore requires the Boss's Power to be visible on the battle HUD.
+
+    - **It is a state member, not an event.** `power` rides the existing
+      `BattleStateUpdated` push and therefore the existing §7 reconnect
+      snapshot: there is **no** `BossPowerChanged` event, no new hub method, no
+      subscription, and no second delivery path. A client rebuilds the Boss's
+      Power from the snapshot after a reconnect exactly as it rebuilds its HP
+      (`ADR-008` — snapshot resynchronization, no event replay), and the same
+      tolerant-reader rules apply (§7, §8 item 8).
+    - **Always present, never optional, never derived.** It is included in
+      every push for every battle from creation onward; `power = 0` is a real
+      published value, not an absent member (item 4). The client must not compute
+      the Boss's Power from `BossCardCast` items, from any delta, from a Card
+      definition, or from the Pet's Power (`GAME_RULES.md` §18, `ADR-001`).
+    - **It is not `SkillCharge`, and it does not deliver the charge.** The
+      transitional `SkillCharge`/`SkillCooldown` members stay server-side
+      (item 3). The two are separate values for the whole of the documented
+      migration (`BOSS_RULES.md` §4.4), and no consumer may treat `power` as a
+      renamed charge.
+    - **No persistence change.** `Power` is already part of `BossState` and
+      serializes with it under the existing round-trip obligation
+      (`REDIS_STATE.md` §2 item 1, §7 item 9); this section adds no Redis key and
+      no Redis-only field (item 9).
 
 ---
 
@@ -2756,7 +2872,8 @@ the record's own members (§4 item 4), `playerState` (§4.2 item 2), `petState`
 (§4.3 item 2 — `passiveId`, `passiveProgress` and the conditional
 `passiveResetOverride`, `equippedCards`, `statusEffects[]` (§4.3 item 14), and
 the combat-stat triple `hp`/`maxHp`/`power` (§4.3 item 15)), and `bossState`
-(§4.4 item 2 — `bossId` (§4.4 item 10), `hp` and `maxHp`). §7 therefore defines
+(§4.4 item 2 — `bossId` (§4.4 item 11), `hp`, `maxHp` and `power`
+(§4.4 item 12)). §7 therefore defines
 no member set of its own.
 
 For those members, the three delivery moments carry the **same** values from the
@@ -2872,7 +2989,7 @@ is the answer to the gap it opened.
    remain exactly the three of §0/§3/§4/§7 — extending the state is how new data
    is delivered, and extending this protocol's method list is not
    (`§4` item 11). Nor is a Boss member the exception that reopens the narrow
-   projections: `bossState` is the three-member projection §4.4 item 2 fixes,
+   projections: `bossState` is the four-member projection §4.4 item 2 fixes,
    not `BossState`, and the Pet-side projection gains the enumerated members
    §4.3 items 14 and 15 author rather than becoming `PetState` (`§4.3` item 2).
 10. **Wire protocol version negotiation.** Per `ADR-028`, no wire protocol version

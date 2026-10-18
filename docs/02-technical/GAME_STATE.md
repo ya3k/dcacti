@@ -1,6 +1,19 @@
 # Game State
 
-**Version:** 2.31 (§2.3 and §2.3.1 item 2 reconciled per `TASK-299`: the DEF-Gem buff is carried by the existing `StatusEffects[]` `BuffDebuff` instance — identity `"DefenseBuff"`, `TargetStat = "DEF"`, Turn-based — so **no member, `Type`, collection, wire member, Redis key, or database column changes**: the active Pet's instances reach the client through the already-delivered `petState.statusEffects[]` projection, and the changed mitigation result reaches it inside the existing `DamageCalculated` breakdown. The `"DEF"` `TargetStat`'s meaning is owned by `COMBAT_RULES.md` §5.4.6 (Pet) / §5.5.6 (Boss) and is referenced, not restated. Prior 2.30: §2.0.5, §2.1, §2.1.1–§2.1.9, §3, §5 reconciled per `TASK-289` and `ADR-028`: Special Gems are retired from the authoritative `BoardState.Cells[64]` model and technical contracts following operator design decisions OD-1 through OD-7. Board cells contain pure `GemType` state. All Special Gem types (`LineClear`, `Burst`, `Area`), metadata, orientations, activation, detonation, and transient resolution bookkeeping (`RequiredCreations[]`, `ConsumedSpecialGems[]`, `ReservedCreationCells`) are retired in full. Serialization reflects pure `GemType` cells, supported by the Decision B-2 tolerant-reader basis and battle-drain deployment policy. Unrelated state fields and lifecycle rules remain unchanged. Prior 2.29: §3 gains item 5, and §5.1 item 2 and §5.3 item 4 record the same boundary, per the Operator Decision approving TASK-278 A-1(i) and A-4: a detection pass's completed Gravity and Spawn are **reported** by the `CascadeStepResolved` event (`GAME_EVENTS.md` §2, `SIGNALR_PROTOCOL.md` §3.2.28) inside the round's existing single `ReceiveEvents` batch, while every intermediate board configuration of that pass remains **Transient Resolution State** — never written to Redis mid-resolution, never in a snapshot, and never delivered as a board. **No state member, Redis key, snapshot field, `Sequence` rule, CAS rule, or gameplay rule is added or changed**: the event reports the transition, and the board stays delivered only by `BattleStateUpdated` / `GetBattleState`. Prior 2.28 (§5.0 **added** per TASK-273 — the client-side use of `Sequence` on delivery: the batch's `serverSequence` against the `sequence` of the state the client holds, per relation (equal / below / above / no state held), and what the client must not do with it. It restates no write-back rule (§5.1's) and adds no state member. Prior 2.27 (§5.1 gains item 8 and a diagram line per ADR-026 / TASK-267: `MATCH3_RULES.md` §1.6's playable-board invariant is evaluated on the finished board of a non-terminal Round, after the step 19a pass and before the single write-back, so a regenerated board and the `RngState` it consumed are committed together under the unchanged compare-and-set, with no second write and with nothing written when regeneration cannot satisfy §1.5's bound. Prior 2.26 (§2.1, §2.4.3, §5 updated per ADR-026 / TASK-259: Player and Boss share the single 8×8 BoardState (D1, D4); BossState.SkillCharge charges exclusively from Boss POWER gem matches during the Boss turn (D2); Player POWER matches do not charge the Boss; atomic round persistence commits complete round via single Redis CAS write-back with Sequence incrementing once per round. Prior 2.25: §2.3's delivery split and §2.4's client-visible boundary
+**Version:** 2.32 (§2.2.2, §2.4, §2.4.1, §2.4.3 and §5.1 updated per **ADR-029 /
+TASK-303**, applying the explicit Product Owner decision that the Boss uses the
+same resource and cast principles as the Player: **`BossState.Power` is added to
+§2.4's tree** as the Boss's own integer 0–100 resource, **§2.4.3** becomes the
+canonical owner of the Boss's Power, its transitional `SkillCharge` relationship
+and its cooldown counter, **§2.4.1** records the staged implementation and the
+fourth client-visible member, and **§2.2.2** records that the Player cast
+allowance neither bounds nor is spent by a Boss Card cast. **No other member is
+added, removed, or retyped**; the single write-back, `Sequence`/`Turn`
+semantics, serialization obligations and every existing lifecycle rule are
+unchanged. Runtime implementation is staged behind `ADR-029`'s Slices 1–4, so
+§2.4.1 records `Power` as a documented §2.4 member whose runtime implementation
+belongs to Slice 1 — absent from the runtime is *not yet implemented*, never
+*not required* (§0 item 4). Prior 2.31: (§2.3 and §2.3.1 item 2 reconciled per `TASK-299`: the DEF-Gem buff is carried by the existing `StatusEffects[]` `BuffDebuff` instance — identity `"DefenseBuff"`, `TargetStat = "DEF"`, Turn-based — so **no member, `Type`, collection, wire member, Redis key, or database column changes**: the active Pet's instances reach the client through the already-delivered `petState.statusEffects[]` projection, and the changed mitigation result reaches it inside the existing `DamageCalculated` breakdown. The `"DEF"` `TargetStat`'s meaning is owned by `COMBAT_RULES.md` §5.4.6 (Pet) / §5.5.6 (Boss) and is referenced, not restated. Prior 2.30: §2.0.5, §2.1, §2.1.1–§2.1.9, §3, §5 reconciled per `TASK-289` and `ADR-028`: Special Gems are retired from the authoritative `BoardState.Cells[64]` model and technical contracts following operator design decisions OD-1 through OD-7. Board cells contain pure `GemType` state. All Special Gem types (`LineClear`, `Burst`, `Area`), metadata, orientations, activation, detonation, and transient resolution bookkeeping (`RequiredCreations[]`, `ConsumedSpecialGems[]`, `ReservedCreationCells`) are retired in full. Serialization reflects pure `GemType` cells, supported by the Decision B-2 tolerant-reader basis and battle-drain deployment policy. Unrelated state fields and lifecycle rules remain unchanged. Prior 2.29: §3 gains item 5, and §5.1 item 2 and §5.3 item 4 record the same boundary, per the Operator Decision approving TASK-278 A-1(i) and A-4: a detection pass's completed Gravity and Spawn are **reported** by the `CascadeStepResolved` event (`GAME_EVENTS.md` §2, `SIGNALR_PROTOCOL.md` §3.2.28) inside the round's existing single `ReceiveEvents` batch, while every intermediate board configuration of that pass remains **Transient Resolution State** — never written to Redis mid-resolution, never in a snapshot, and never delivered as a board. **No state member, Redis key, snapshot field, `Sequence` rule, CAS rule, or gameplay rule is added or changed**: the event reports the transition, and the board stays delivered only by `BattleStateUpdated` / `GetBattleState`. Prior 2.28 (§5.0 **added** per TASK-273 — the client-side use of `Sequence` on delivery: the batch's `serverSequence` against the `sequence` of the state the client holds, per relation (equal / below / above / no state held), and what the client must not do with it. It restates no write-back rule (§5.1's) and adds no state member. Prior 2.27 (§5.1 gains item 8 and a diagram line per ADR-026 / TASK-267: `MATCH3_RULES.md` §1.6's playable-board invariant is evaluated on the finished board of a non-terminal Round, after the step 19a pass and before the single write-back, so a regenerated board and the `RngState` it consumed are committed together under the unchanged compare-and-set, with no second write and with nothing written when regeneration cannot satisfy §1.5's bound. Prior 2.26 (§2.1, §2.4.3, §5 updated per ADR-026 / TASK-259: Player and Boss share the single 8×8 BoardState (D1, D4); BossState.SkillCharge charges exclusively from Boss POWER gem matches during the Boss turn (D2); Player POWER matches do not charge the Boss; atomic round persistence commits complete round via single Redis CAS write-back with Sequence incrementing once per round. Prior 2.25: §2.3's delivery split and §2.4's client-visible boundary
 recorded for the amended projection — applying the TASK-208 Product Owner
 decisions D-208-01, D-208-02 and D-208-03. The active Pet's `HP`, `MaxHP` and
 `Power` are delivered as `petState.hp`/`maxHp`/`power`, and the Boss's canonical
@@ -925,6 +938,13 @@ BattleState
    client under any `SIGNALR_PROTOCOL.md` payload: the client learns the
    outcome from the cast acknowledgement (§5 of that document), which is
    the rejection/acceptance feedback for the request, not state.
+7. **The allowance is the Player's; a Boss Card cast neither reads nor writes
+   it.** `CARD_RULES.md` §3 item 9 and `BOSS_RULES.md` §4.3 fix the Boss's cast
+   cadence: it is bounded by the Boss's own `Power` (`BossState.Power`, §2.4)
+   and its cooldown, never by this member. A Boss Card cast therefore leaves
+   `CardCastsUsedThisTurn` unchanged, and no resolution derives one value from
+   the other. This clarifies an existing member's scope; it adds no member and
+   changes no behavior of the Player's allowance (`ADR-029`).
 
 ## 2.3 PetState
 
@@ -2166,10 +2186,14 @@ BossState
 │                                 events, GAME_EVENTS.md §2)
 ├── PassiveProgress              (current count vs. threshold,
 │                                 BOSS_RULES.md §3, PASSIVE_RULES.md §2)
-├── SkillCharge                  (current charge vs. skill charge requirement,
-│                                 BOSS_RULES.md §4)
-├── SkillCooldown                (turns remaining before Skill can fire,
-│                                 BOSS_RULES.md §4)
+├── Power                        (the Boss's own resource, integer 0–100 —
+│                                 BOSS_RULES.md §4.1, ADR-029; §2.4.3 below)
+├── SkillCharge                  (TRANSITIONAL ONLY — current charge vs. skill
+│                                 charge requirement, BOSS_RULES.md §4.4;
+│                                 retired once ADR-029's Slice 4 parity gate
+│                                 is met)
+├── SkillCooldown                (turns remaining before the boss ability can
+│                                 fire/cast — BOSS_RULES.md §4.3, §6.3)
 └── StatusEffects[]              (active Status Effect instances on the Boss —
                                  same element schema and lifecycle as
                                  `PetState.StatusEffects[]`, §2.3.1, §5.1.1)
@@ -2198,7 +2222,20 @@ Implement now:
   PassiveId, PassiveProgress, SkillCharge, SkillCooldown,
   StatusEffects[] — contract-defined by §2.3.1 and §5.1.1;
   implemented (TASK-095/TASK-096)
+
+Documented by §2.4, runtime implementation staged (ADR-029 Slice 1):
+  Power — the Boss's own integer 0–100 resource (§2.4.3). It is a required
+  §2.4 member from this revision onward; its absence from the runtime is
+  "not yet implemented", never "not required" (§0 item 4). Slice 1 owns its
+  generation, clamping, serialization, Redis round trip, projection, HUD
+  delivery and reconnect recovery; the transitional SkillCharge path above
+  remains in force until ADR-029's Slice 4 parity gate is met.
 ```
+
+`Power` is the Boss's own resource and is **not** a second spelling of
+`SkillCharge`: the two coexist only for the duration of the documented
+migration, no resolution writes one from the other, and `SkillCharge` is
+retired when `ADR-029`'s removal gate is met (`BOSS_RULES.md` §4.4, §6.3).
 
 `StatusEffects[]` is the same collection contract as `PetState`'s (§2.3.1):
 identical element schema, identical lifecycle (§5.1.1), and the same
@@ -2223,27 +2260,32 @@ two existing collections in one authoritative `BattleState` — this section add
 **no** member, value, type, or collection, and no second representation of the
 instance (§0 item 5, §2.3.3).
 
-**Three `BossState` members are client-visible, and no others are.** TASK-160's
+**Four `BossState` members are client-visible, and no others are.** TASK-160's
 Product Owner decision **D-2A** authorized the Boss's live health for MVP;
 `SIGNALR_PROTOCOL.md` §4.4 delivers it as the push's `bossState` member,
-carrying **exactly** `HP` and `MaxHP`. TASK-208's Product Owner decision
-**D-208-03** separately authorized the Boss's canonical technical Identity
-(`BOSS_RULES.md` §6.4), delivered as that member's `bossId` — an identity only,
+carrying `HP` and `MaxHP`. TASK-208's Product Owner decision **D-208-03**
+separately authorized the Boss's canonical technical Identity (`BOSS_RULES.md`
+§6.4), delivered as that member's `bossId` — an identity only,
 never a display name and never `BossDefinitionId`, so no presentation content
 (the display name, an Element label, a portrait, or an asset key) is carried by
-it. `bossState` is a **narrowed projection**
+it. TASK-303's Product Owner decision, formalized by `ADR-029`, authorizes the
+Boss's live **`Power`** (§2.4.3), delivered as that member's `power` so the
+Boss's resource is HUD-visible alongside the Pet's. `bossState` is a **narrowed
+projection**
 of this section's state, not the tree itself: `Element`,
 `ATK`, `DEF`, `State`, `PassiveId`, `PassiveProgress`, `SkillCharge`,
 `SkillCooldown`, and `StatusEffects[]` remain server-side and are **not**
 delivered, exactly as §2.3.1's membership/delivery split states for the Pet's
 collection. Referring to `BossState` as a whole does not widen that member set.
+Delivered `power` is the Boss's Power and is **not** `SkillCharge`; the two are
+never conflated on the wire.
 The member names, types, presence, and client-boundary rules are owned by
-`SIGNALR_PROTOCOL.md` §4.4 (items 2–5 and item 10) and referenced, not
+`SIGNALR_PROTOCOL.md` §4.4 (items 2–5 and item 11) and referenced, not
 restated, here; `BOSS_RULES.md`
 §6.2.6 records the gameplay-visibility constraint this boundary satisfies.
 Delivering anything further from this tree is a protocol change owned by its own
 task, and this contract adds no Redis key, no Redis-only field, and no second
-storage representation for the three delivered members.
+storage representation for the four delivered members.
 
 ### 2.4.2 Boss Passive
 
@@ -2270,27 +2312,80 @@ dispatch-level evaluation of the declared behavior and not a value of this tree 
 a fired marker, and a `StatusEffects[]` element records the applied effect's own
 lifetime and never the fact that the Passive fired.
 
-### 2.4.3 Boss Skill Charge and Cooldown
+### 2.4.3 Boss Power, Skill Charge, and Cooldown
 
-`SkillCharge` tracks progress toward the Boss Skill's charge requirement.
-Under ADR-026 (D2), it increments exclusively from POWER gems matched by the
-Boss during the Boss's turn (player matches never charge the Boss). When
-`SkillCharge ≥ SkillChargeRequirement` (defined per Boss in BOSS_RULES.md §6)
-AND `SkillCooldown = 0`, the Skill is eligible to fire.
+This subsection is the canonical owner of the Boss's **`Power`** member's shape
+and write points, of the **transitional** `SkillCharge` member's relationship to
+it, and of the Boss ability's **cooldown** counter. The gameplay rules those
+members serve are `BOSS_RULES.md` §4.1 (Power), §4.3 (action policy and cooldown
+handling), §4.4 (migration and the `SkillCharge` removal gate) and §6.3 (the
+authored cooldown values); they are referenced, not restated. `ADR-029` records
+why the Boss gained a resource of its own.
 
-`SkillCooldown` tracks turns remaining before the Skill can fire again.
-It starts at the Boss's cooldown value after each Skill use, decrements by 1
-at each Turn increment (`MATCH3_RULES.md` §8.1 — one committed Round begins
-exactly one Turn; the stored Turn advances once in that resolution's single
-write-back, `GAME_STATE.md` §5.1), and blocks Skill use
-while `> 0`.
+```text
+BossState
+├── Power            (int; 0 at battle creation; range 0–100, clamped)
+├── SkillCharge      (int; 0 at battle creation; TRANSITIONAL — retired with
+│                      ADR-029's Slice 4 parity gate)
+└── SkillCooldown    (int; 0 at battle creation; the Boss ability's cooldown)
+```
 
-The Skill fires when BOTH conditions are met:
-1. `SkillCharge ≥ SkillChargeRequirement`
-2. `SkillCooldown = 0`
+**`Power` — the Boss's own resource.**
 
-After the Skill fires: `SkillCharge` resets to 0, `SkillCooldown` resets to
-the Boss's cooldown value.
+1. **Shape.** Integer, range `0`–`100` inclusive, clamped at both ends, not
+   nullable, with no omitted form and no second spelling. `0` is a real value
+   ("the Boss has no Power banked"), never an "absent" marker (§2.3.1 item 8's
+   convention applied to an integer).
+2. **Initial value.** `0` at battle creation — creation is not a resolution and
+   generates no resource (§2.0.5.2 item 1, `MATCH3_RULES.md` §8.1 item 4).
+3. **Generation.** Written only by the Boss's own board match action's
+   generation step, from POWER Gems it matched (`COMBAT_RULES.md` §2); the
+   rate is that document's and is not restated here. A response phase in which
+   the Boss selects a Boss Card cast generates no Boss Power
+   (`BOSS_RULES.md` §4.3 item 4).
+4. **Spend.** Deducted by a Boss Card cast, by exactly the cast's
+   `EffectiveCardCost` (`CARD_RULES.md` §3, §3.6), in the same single
+   write-back that resolves the cast.
+5. **Clamp.** Applied at the single point the persistent value is written, in
+   the same shape `PetState.Power` is written (`GAME_RULES.md` §12): a gain the
+   cap absorbs is visible as a smaller delta, and the pool is never negative.
+6. **Isolation.** It is not derived from, converted to, or shared with
+   `PetState.Power`; the two are separate 0–100 resources with separate owners.
+7. **Relics do not reach it.** No Relic reads, writes, or modifies
+   `BossState.Power`; Relics are Player-only (`ADR-029`).
+8. **Unresolved.** Whether the shared per-Gem output yields the intended Boss
+   ability cadence — and therefore whether any Boss-specific generation value or
+   per-ability cost tuning must be authored — is an unresolved balance value
+   recorded in `ADR-029`. No numeric value is owned by this subsection.
+
+**`SkillCharge` — transitional only.** `SkillCharge` tracks progress toward the
+legacy Boss Skill's charge requirement, and until `ADR-029`'s Slice 4 parity gate
+is met it remains the runtime gate for any ability not yet migrated. It is
+charged exclusively from POWER Gems matched in the Boss's own board match action
+(player matches never charge the Boss); when `SkillCharge ≥
+SkillChargeRequirement` (per Boss, `BOSS_RULES.md` §6) AND `SkillCooldown = 0`,
+the legacy Skill is eligible, and after it fires `SkillCharge` resets to `0` and
+`SkillCooldown` is set to the Boss's cooldown value. **No new work may build on
+this member** (`BOSS_RULES.md` §4.4 item 1), no resolution converts it into
+`Power` or back, and it is removed — with its charge requirement, its unit
+metric and its clamp question — when the parity gate is met.
+
+**`SkillCooldown` — the Boss ability's cooldown counter.** The member name is
+retained after migration; it tracks turns remaining before the Boss's ability
+may be used again, for the transitional Skill form and the Boss Card form alike.
+
+1. It starts at `0` (no ability has been used).
+2. It decrements by exactly `1` when the committed Round's write-back advances
+   `Turn` by `1` (`MATCH3_RULES.md` §8.1 — one committed Round begins exactly
+   one Turn; the stored `Turn` advances once in that resolution's single
+   write-back, §5.1).
+3. While `> 0` the cast is unavailable — it is a hard eligibility gate, not a
+   scoring input (`BOSS_RULES.md` §4.3 step 1, item 3).
+4. It is set to the ability's authored cooldown value in the same single
+   write-back as a successful cast (or legacy Skill fire). The authored values
+   are `BOSS_RULES.md` §6.3's and are unchanged by `ADR-029`.
+5. It keeps decrementing during response phases in which the Boss selects a
+   board match action.
 
 ### 2.4.4 Enrage
 
@@ -2646,8 +2741,14 @@ validate Player action                    (MATCH3_RULES.md §2.1.2, ADR-025)
     ↓
 execute Boss response                     (GAME_RULES.md §17 step 18, ADR-026)
     ├── Boss dead (Terminal Check 1) → Boss phase skipped, BattleWon emitted
-    └── Boss alive → Boss AI selects swap, board cascades resolved,
-                     Skill evaluated & cast, ATK damage applied, Terminal Check 2
+    └── Boss alive → Boss selects exactly one action under its documented
+                     policy (BOSS_RULES.md §4.3, ADR-029): a board match action
+                     (cascades resolved, actor-relative resources generated,
+                     including BossState.Power) or a Boss Card cast (cost
+                     deducted from BossState.Power, effect resolved, cooldown
+                     set); Passive evaluated; ATK damage applied iff a confirmed
+                     ATK match came from the Boss's board action;
+                     Terminal Check 2
     ↓
 end round step 19a status effect ticks    (§5.1.1, COMBAT_RULES.md §5.3)
     ↓
@@ -2722,6 +2823,13 @@ publish (SIGNALR_PROTOCOL.md §3, §4)
    regeneration cannot satisfy §1.5's bound, nothing is written at all: the
    compare-and-set is never reached, so the stored board and `RngState` remain
    the pre-round ones (`MATCH3_RULES.md` §1.6.3 item 4).
+9. **`BossState.Power` and `SkillCooldown` are written by that same single
+   write-back.** They are ordinary `BossState` members (§2.4, §2.4.3), so a
+   round's Boss-Phase Power gain and/or cast deduction and its cooldown change
+   are carried in the one post-resolution write-back above — never as a separate
+   step, a separate `Sequence`, or a second persistence path. A Boss Card cast
+   commits exactly like any other resolution: one write-back, one event batch
+   (`SIGNALR_PROTOCOL.md` §3–§4, `ADR-029`).
 
 ### 5.1.1 `StatusEffects[]` Lifecycle (Apply, Consume, Expire)
 

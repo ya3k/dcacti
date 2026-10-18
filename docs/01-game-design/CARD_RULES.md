@@ -1,6 +1,19 @@
 # Card Rules
 
-**Version:** 1.10 (§3 item 8 added per the Product Owner "Option A" decision: a
+**Version:** 1.11 (§1 and §3 item 9 added, §6 extended — per **ADR-029 /
+TASK-303**, applying the explicit Product Owner decision that the Boss uses the
+same cast principles as the Player: **§1 gains the `Boss Card` category** (the
+minimum capability: exactly one authored Boss Card per Boss, no loadout, no
+collection, no ownership row), and **§3 item 9** records the actor-relative
+scope of the shared cast contract — the validation order, the
+`EffectiveCardCost` composition and the effect-resolution semantics are shared,
+while §3's Player-only constraints (the one-per-committed-Turn allowance, the
+Relic trigger and the Relic cost modifiers) never bound a Boss Card cast. §6
+gains the dedicated `BossCardCast` event; `CardCast`'s payload is unchanged.
+**No Card cost, effect, magnitude, column, category rule or item 1–8 rule is
+changed**, no numeric balance value is authored, and every Boss Card cost is
+UNRESOLVED and recorded in `ADR-029`. Runtime implementation is staged behind
+`ADR-029`'s Slices 1–4. Prior 1.10: (§3 item 8 added per the Product Owner "Option A" decision: a
 Card cast or a Pet Skill cast that reaches the server against a battle that has already
 ended (`GAME_RULES.md` §1.4) is rejected at the action boundary under the established
 `STALE_ACTION` code, before §3 item 2's validation runs — no Power spent, no state value
@@ -80,10 +93,12 @@ GAME_RULES.md.
 ```text
 Basic Card       shared across all Pets
 Pet Skill Card    tied to the active Pet's Signature Skill (exactly one per Pet)
+Boss Card         the Boss's own Card — exactly one per Boss in MVP (ADR-029)
 ```
 
 A battle loadout always contains exactly 3 Basic Cards + 1 Pet Skill Card
-(GDD §3), for 4 total Cards available to cast.
+(GDD §3), for 4 total Cards available to cast. **The loadout is the Player's**:
+a Boss Card is never part of it and never appears in `PetState.EquippedCards[]`.
 
 **Ownership vs. loadout.** The Player owns the Card *collection*
 (unlock rows in `DATABASE.md` §2 — `PlayerUnlockedCard`, ADR-012). The
@@ -127,6 +142,37 @@ For each CardDefinitionId in cardLoadout:
    because the database column is required and non-nullable; it is
    never read for the submitted Basic loadout (item 4), so it
    introduces no additional gameplay behavior.
+
+## 1.1 Boss Card (ADR-029)
+
+`Boss Card` is the third Card category and the Boss's own Card. Its rules are
+owned by `BOSS_RULES.md` §4.2 (capability, cost carrier, actor-relative effect,
+and the mechanics that are deliberately **not** Cards) and are referenced, not
+restated, here. This subsection fixes only the category-level contract:
+
+1. **Minimum MVP capability.** Each of the five MVP Bosses carries exactly one
+   authored Boss Card, which carries that Boss's MVP ability
+   (`BOSS_RULES.md` §6.3, §4.4). No Boss Card collection, no Boss loadout, no
+   equip step, no acquisition, and no `PlayerUnlockedCard` ownership row exists
+   for it.
+2. **It is a Card, not a Passive and not a Boss Skill.** A Boss Card is an
+   actively selected Boss action, resolved through the cast contract in §3
+   item 9. Encounter mechanics (Enrage, HP-threshold regeneration, HP-threshold
+   or Combo-threshold passives) are passive or trigger-based and are never
+   modelled as Boss Cards (`BOSS_RULES.md` §5, §6.2; `ADR-029`).
+3. **Exactly one representation of its identity.** A Boss Card's
+   `CardDefinitionId` is the ability identity already recorded in
+   `BOSS_RULES.md` §6.4's `SkillId` column for that Boss (e.g. `"flame-burst"`).
+   No second identifier is introduced for the same ability, so the identity the
+   transitional `BossSkillCast.skillId` reports and the identity
+   `BossCardCast.cardId` reports are the same string for the same Boss ability.
+4. **The Player's constraints do not apply to it.** §3 item 6's one-cast
+   allowance, §3 item 4's Relic-trigger step, §3.6's Relic cost modifiers, this
+   section's `LoadoutCopyLimit` and the whole ownership/loadout model above are
+   Player-side rules; §3 item 9 states the actor-relative split.
+5. **No persistence contract is added here.** Whether and how a Boss Card is
+   provisioned is a separate future task; this category adds no database column,
+   table, migration, or row type, and `DATABASE.md` is unchanged by it.
 
 ---
 
@@ -248,6 +294,46 @@ Rules:
    `PetSkillCast` acknowledgement (`SIGNALR_PROTOCOL.md` §5), as the code
    `STALE_ACTION`. No new code, message, event, rejection vocabulary, or response
    shape is introduced, and a live battle's rejection reasons are unchanged.
+
+9. **Actor-relative scope of this section (ADR-029).** Items 1–8 above are the
+   **Player's** cast contract. The *shared* cast contract — the validation
+   order, the `EffectiveCardCost` composition (§3.6), and the effect-resolution
+   semantics — is shared by both actors; a Boss Card cast resolves through the
+   same rules with the actor-relative substitutions below. What is **not**
+   shared is every rule that exists only for the Player:
+
+   ```text
+   Shared (both actors)                       Player-only (item references)
+   ─────────────────────────────────────     ─────────────────────────────────
+   validation order                           one cast per committed Turn (item 6)
+   EffectiveCardCost composition (§3.6)       Relic trigger step (item 4)
+   effect resolution and deduction order      Relic CardCost modifiers (§3.6)
+   cost-deduct → effect → event               loadout / ownership model (§1)
+   ```
+
+   * **Resource carrier.** A Boss Card's cost is validated against and deducted
+     from `BossState.Power`, not `PetState.Power`; eligibility and deduction read
+     the Boss's own value (`GAME_RULES.md` §12, `GAME_STATE.md` §2.4).
+   * **Modifier set.** A Boss Card composes its cost with an **empty** modifier
+     set — `TotalReduction = 0` — because `PetState.CardCostModifiers[]` is the
+     Pet-state carrier of a Relic effect and Relics are Player-only. The formula,
+     the truncation rule, and item 7's single-calculation point are unchanged;
+     `EffectiveCardCost` therefore equals the authored `PowerCost` for a Boss
+     Card.
+   * **Allowance.** Item 6's one-cast-per-committed-Turn allowance is the
+     Player's and is neither read nor spent by a Boss Card cast; the Boss's cast
+     cadence is bounded by its own Power, its cooldown and its action policy
+     (`BOSS_RULES.md` §4.3).
+   * **Relics.** Item 4's downstream Relic trigger does not run for a Boss Card
+     cast: Relics are Player-only (`ADR-029`).
+   * **Event.** A resolved Boss Card cast emits the dedicated `BossCardCast`
+     event, never `CardCast`; the Player's `CardCast` payload is unchanged (§6).
+   * **Timing.** A Boss Card cast is selected and resolved inside
+     `GAME_RULES.md` §17 step 18 (18a selection, 18c resolution), not as the
+     auxiliary between-Swap action item 5 describes.
+   * **Balance.** Every Boss Card's `PowerCost` and every cost re-tuning are
+     **UNRESOLVED** balance values recorded in `ADR-029`; this section authors
+     no numeric value.
 
 **"Card Cost" in items 2 and 4 is the Effective Card Cost**, defined in §3.6 —
 not the authored `CardDefinition.PowerCost` on its own. §3.6 owns that value's
@@ -530,11 +616,22 @@ that collection (`AGENTS.md` §12, `GAME_STATE.md` §5.1.3).
 # 6. Events
 
 ```text
-CardCast        emitted for every successful Basic Card or Pet Skill Card cast
-PetSkillCast    emitted specifically when the cast Card is the active Pet's
-                 Signature Skill (in addition to CardCast)
+CardCast        emitted for every successful Player Basic Card or Player
+                 Pet Skill Card cast
+PetSkillCast    emitted specifically when the Player's cast Card is the active
+                 Pet's Signature Skill (in addition to CardCast)
+BossCardCast    emitted when the Boss resolves a Boss Card cast (ADR-029)
 ```
 
-Both are part of the Battle Event Model (GAME_RULES.md §16) and fire at the
-point shown in the Event Resolution Rules (GAME_RULES.md §17, step 14
-"Resolve Player Effects").
+`CardCast` and `PetSkillCast` are part of the Battle Event Model (GAME_RULES.md
+§16) and fire at the point shown in the Event Resolution Rules (GAME_RULES.md
+§17, step 14 "Resolve Player Effects"). They are the **Player's** events: a Boss
+Card cast is reported by the dedicated `BossCardCast` (`GAME_RULES.md` §16,
+`GAME_EVENTS.md` §2, `SIGNALR_PROTOCOL.md` §3.2.30) and never as a `CardCast`,
+so `CardCast`'s existing payload is unchanged by the Boss Card category.
+
+A `BossCardCast` fires at `GAME_RULES.md` §17 step 18c — the Boss response
+phase's cast step — after the cost is deducted from `BossState.Power` and the
+effect applied, in the same order item 4 above fixes for the Player. The
+Boss Skill's transitional `BossSkillCast` event remains in force until
+`ADR-029`'s Slice 4 migration and its parity gate.
