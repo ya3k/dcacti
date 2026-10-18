@@ -132,10 +132,18 @@ public class PetStateEquippedCardsTests
     [Fact]
     public void CardCategory_ShouldBeTheDocumentedClosedSet()
     {
-        // CARD_RULES.md §1 / DATABASE.md §3: exactly Basic and PetSkill. No
-        // third category exists in MVP.
+        // CARD_RULES.md §1 (v1.11 / ADR-029 / TASK-303) documents exactly three
+        // categories: Basic, PetSkill and Boss Card. §1.1 owns the third one, and
+        // §1.1 items 1 and 5 make it Domain-only — no persisted CardDefinition row,
+        // no loadout slot, no ownership row and no collection visibility — while
+        // DATABASE.md §3's stored set for a provisioned row stays {Basic, PetSkill}
+        // until a separate provisioning task defines the Boss Card carrier.
+        //
+        // This file's subject is PetState.EquippedCards[]: the Boss Card never
+        // appears in it (§1.1 item 4), so the loadout member's own contract is
+        // unchanged by the third category.
         var members = Enum.GetNames<CardCategory>().OrderBy(n => n, StringComparer.Ordinal).ToArray();
 
-        Assert.Equal(new[] { "Basic", "PetSkill" }, members);
+        Assert.Equal(new[] { "Basic", "BossCard", "PetSkill" }, members);
     }
 }

@@ -12,20 +12,44 @@ public enum CardCastRejectionReason
     None = 0,
 
     /// <summary>
-    /// The requested Card is not in the active Pet's equipped cards for this battle
-    /// (<c>CARD_RULES.md</c> §3 item 2).
+    /// The requested Card is not in the active Pet's equipped cards for this
+    /// battle (<c>CARD_RULES.md</c> §3 item 2).
+    ///
+    /// <b>It is the Player's check only.</b> There is no Boss loadout and no
+    /// ownership row for a Boss Card (<c>BOSS_RULES.md</c> §4.2 items 1, 8), so a
+    /// Boss-actor cast performs no loadout lookup and this reason is never
+    /// produced for one; a Boss cast that is not the Boss's own
+    /// <see cref="CardCategory.BossCard"/> definition reports
+    /// <see cref="InvalidCard"/> instead (<c>CARD_RULES.md</c> §3 item 9).
     /// </summary>
     CardNotInLoadout = 1,
 
     /// <summary>
-    /// The active Pet's current Power is less than the Card's PowerCost
-    /// (<c>CARD_RULES.md</c> §3 item 2).
+    /// The acting side's current Power is less than the Card's
+    /// <c>EffectiveCardCost</c> (<c>CARD_RULES.md</c> §3 item 2, §3.6).
+    ///
+    /// <b>It is reported for both actors, against the acting side's own
+    /// resource.</b> A Player cast compares <c>PetState.Power</c>; a Boss-actor
+    /// cast compares <c>BossState.Power</c> (<c>BOSS_RULES.md</c> §4.2 item 3,
+    /// <c>GAME_STATE.md</c> §2.4.3 item 4). The two resources are separate and
+    /// neither is read on the other's behalf (<c>BOSS_RULES.md</c> §4.1 item 5,
+    /// <c>ADR-029</c> §2.1). The cost compared is the composed
+    /// <c>EffectiveCardCost</c> in both cases — with the Player's active modifier
+    /// set and, for the Boss, an empty one (<c>CARD_RULES.md</c> §3 item 9).
     /// </summary>
     InsufficientPower = 2,
 
     /// <summary>
-    /// The Card definition is invalid, unknown, or not a Basic Card
-    /// (<c>CARD_RULES.md</c> §1, §3).
+    /// The Card definition is invalid, unknown, or not a category the acting side
+    /// may cast (<c>CARD_RULES.md</c> §1, §1.1, §3).
+    ///
+    /// <b>It carries the actor/category gate for both actors.</b> A Player-actor
+    /// cast accepts only <see cref="CardCategory.Basic"/> and
+    /// <see cref="CardCategory.PetSkill"/> (§1, §3, §4); a Boss-actor cast accepts
+    /// only the Boss's own <see cref="CardCategory.BossCard"/> (§1.1, §3 item 9,
+    /// <c>BOSS_RULES.md</c> §4.2 items 2 and 8). Each side therefore rejects the
+    /// other's categories with this reason, and no rejection reason is added for
+    /// the Boss side: the wire vocabulary is unchanged.
     /// </summary>
     InvalidCard = 3,
 
@@ -38,6 +62,12 @@ public enum CardCastRejectionReason
     /// restored when the next committed Match-3 Turn begins. A rejected cast
     /// never consumes the allowance, so this reason is only produced by a cast
     /// the Turn would otherwise have accepted.
+    ///
+    /// <b>It is the Player's allowance only.</b> §3 item 9 keeps item 6's
+    /// allowance out of the shared contract: a Boss-actor cast neither reads nor
+    /// spends it, so this reason is never produced for one. The Boss's cast
+    /// cadence is bounded by its own Power, its cooldown and its action policy
+    /// (<c>CARD_RULES.md</c> §1.1 item 4, <c>BOSS_RULES.md</c> §4.3).
     /// </summary>
     CardCastAlreadyUsedThisTurn = 4,
 

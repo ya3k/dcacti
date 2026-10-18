@@ -8,7 +8,7 @@ namespace GameServer.Domain.Cards;
 /// CardDefinition
 /// ├── CardDefinitionId   (PK)
 /// ├── Name
-/// ├── Category           (Basic | PetSkill)
+/// ├── Category           (Basic | PetSkill | BossCard)
 /// ├── PowerCost
 /// ├── EffectDefinition   (structured ARRAY — CardEffectDefinitions)
 /// └── LoadoutCopyLimit   (required — no default)
@@ -75,12 +75,22 @@ public class CardDefinition
 
     /// <summary>
     /// The Card's category (<c>DATABASE.md</c> §1: <c>Category</c>; §3
-    /// constrains it to <c>{Basic, PetSkill}</c>).
+    /// constrains a provisioned row to <c>{Basic, PetSkill}</c>).
     ///
     /// Only <see cref="CardCategory.Basic"/> may satisfy a submitted
     /// <c>cardLoadout</c> entry; the <see cref="CardCategory.PetSkill"/> Card
     /// is the active Pet's derived Signature Skill
     /// (<c>CARD_RULES.md</c> §1, §4; <c>API_CONTRACTS.md</c> §3 step 3).
+    ///
+    /// <b><see cref="CardCategory.BossCard"/> is Domain-only.</b>
+    /// <c>CARD_RULES.md</c> §1.1 owns the third category and adds no persistence
+    /// contract for it: §1.1 item 5 leaves the Boss Card's provisioning carrier
+    /// deliberately undefined, so a persisted <c>CardDefinition</c> row still
+    /// carries only <c>Basic</c> or <c>PetSkill</c> and no row is provisioned with
+    /// this value yet. The value exists at this layer because the cast contract
+    /// must be able to name the Boss's own Card category
+    /// (<see cref="CardCastExecutor"/> with <see cref="CardCastActor.Boss"/>,
+    /// <c>CARD_RULES.md</c> §3 item 9).
     /// </summary>
     public CardCategory Category { get; init; }
 
