@@ -7,7 +7,7 @@
 ```text
 Task ID:           TASK-275
 Type:              FEATURE
-Status:            IN REVIEW
+Status:            DONE
 Risk:              MEDIUM
 Priority:          HIGH
 Primary Agent:     client
@@ -289,6 +289,25 @@ API and no `this.time.*` timer was introduced.
 
 ## Completion Evidence
 
+### Commit
+- Implementation slice (Phase A): `425bebb4f6bd1e8019d06bbd92231fb3f9912be3` (Historical batch commit accepted per Operator Decision 1)
+- Subject: `feat: implement authoritative turn lifecycle, battle recovery, and match-3 animation pipeline`
+- Owns: `TASK-275` (historical batch commit; see Historical Workflow Deviations below)
+- Files:
+  - `src/frontend/client/src/game/scenes/BattleScene.ts`
+  - `src/frontend/client/src/game/scenes/BattleEventPresenter.ts`
+  - `src/frontend/client/tests/SceneLifecycle.test.ts`
+  - `src/frontend/client/tests/BattleEventPresentation.test.ts`
+- Shared with: Historical batch commit (committed jointly with TASK-272, TASK-274, etc.)
+- Unowned / pre-existing: Historical batch commit (see Historical Workflow Deviations below)
+- Phase B completion record: `tasks/completed/TASK-275-authoritative-turn-lifecycle-and-match3-animation-pipeline.md`
+
+### Historical Workflow Deviations (Operator Decision 1)
+1. **Pre-Adoption / Historical Batch Commit (P-2, P-5):** Commit `425bebb4f6bd1e8019d06bbd92231fb3f9912be3` was executed prior to repository formalization of the two-stage commit protocol (TASK-230). It staged 19 files in a single batch, including backend code, technical documentation, and multiple task manifests (`TASK-272`, `TASK-274`), far exceeding the 4 declared frontend implementation files.
+2. **Staging of Active Task Record (P-5):** The task record `tasks/active/TASK-275-...` was staged directly in the historical implementation commit rather than in a separate Phase B completion filing commit.
+3. **Commit Attribution (P-4):** The historical commit message carried no task ID and no structured `owns: TASK-275` attribution or unowned/pre-existing disclosures in its commit body.
+4. **Historical Blocker and Downstream Resolution:** The task was previously moved to `BLOCKED` under Operator Decision PO-1 due to intermediate cascade per-pass protocol limitations (`SIGNALR_PROTOCOL.md` / `GAME_STATE.md`). The protocol blocker was subsequently resolved downstream by TASK-278 via adoption of ADR-027 (`CascadeStepResolved`), delivering per-pass drop moves and spawned gems. Per Operator Decisions 1 and 3, historical commit `425bebb4f6bd1e8019d06bbd92231fb3f9912be3` is accepted as implementation evidence, workflow deviations are explicitly recorded, and Phase B completion filing is authorized.
+
 ### Changed Files
 | File | Change |
 | --- | --- |
@@ -349,10 +368,10 @@ first.
 ### Verdict
 
 ```text
-BLOCKED
+DONE
 ```
 
-Per Operator Decision PO-1, per-pass animation remains mandatory; settle-only presentation is explicitly rejected as completion. The task is BLOCKED pending an approved protocol/rules change providing intermediate per-pass gravity and refill information, followed by full implementation and verification of the required per-pass animation.
+Implementation evidence in historical commit `425bebb4f6bd1e8019d06bbd92231fb3f9912be3` accepted and Phase B completion filing authorized under Operator Decisions 1 and 3. Historical workflow deviations are formally recorded above.
 
 ---
 
@@ -384,3 +403,18 @@ Per Operator Decision PO-1, per-pass animation remains mandatory; settle-only pr
 * **Repository Policy:** `tasks/TASK_LIFECYCLE.md` §1 (IN REVIEW state definition), §3 (active/ location), §4 (file move: `blocked/` → `active/`).
 * **Destination Path:** `tasks/active/TASK-275-authoritative-turn-lifecycle-and-match3-animation-pipeline.md`
 * **Scope & Limitation Preservation:** All original acceptance criteria (AC-1 through AC-12), remaining limitations, and test verifications are preserved. The task is returned to active WIP with `Status: IN REVIEW` for final acceptance verification; it is NOT marked DONE in this reconciliation slice.
+
+---
+
+## Lifecycle Transition — DONE (Phase B Filing)
+
+<!--
+  LIFECYCLE TRANSITION RECORD: IN REVIEW -> DONE
+  Governed by tasks/TASK_LIFECYCLE.md §1, §3, §4, §6.1, §6.4 and Operator Decisions 1 & 3.
+-->
+
+* **Transition:** `IN REVIEW` → `DONE`
+* **Authorizing Basis:** Operator Decisions 1 & 3 (Accept historical commit `425bebb4f6bd1e8019d06bbd92231fb3f9912be3` as implementation evidence with explicitly recorded historical task-ownership and two-stage-commit workflow deviations; authorize Phase B completion filing under current repository lifecycle rules).
+* **Repository Policy:** `tasks/TASK_LIFECYCLE.md` §1 (DONE state definition), §3 (completed/ location), §4 (file move: `active/` → `completed/`), §6.1 (Phase B completion record filing commit), §6.4 (interruption recovery protocol).
+* **Destination Path:** `tasks/completed/TASK-275-authoritative-turn-lifecycle-and-match3-animation-pipeline.md`
+* **Scope & History Preservation:** Original acceptance criteria (AC-1 through AC-12), implementation evidence, test verifications, and historical blocker reports are preserved.
