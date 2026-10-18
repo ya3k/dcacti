@@ -7,7 +7,7 @@
 ```text
 Task ID:           TASK-285 (next sequential ID: TASK-284A is the highest on disk)
 Type:              FIX / PRESENTATION
-Status:            IN REVIEW
+Status:            DONE
 Risk:              MEDIUM
 Priority:          HIGH
 Primary Agent:     client
@@ -140,15 +140,15 @@ activation/refill.
       contract alone, and a Boss boundary is now placeable when it reconciles, so
       the Boss's ordinary cycle applies its clears, Fall and Refill through the same
       shared pipeline the Player's uses.
-- [x] **AC-5** Every delivered activation is presented at its own cell with its
+- [x] **AC-5 (SUPERSEDED by ADR-028 and TASK-293)** Every delivered activation is presented at its own cell with its
       Special Gem type, before that cell is destroyed/replaced, for single,
-      multiple, chained and cross-pass activations.
-- [x] **AC-6** An activation step is held longer than an ordinary Match step and
-      longer than its own overlay; the overlay is abort-safe.
-- [x] **AC-7** The tally counts one activation per delivered consumed Special Gem,
+      multiple, chained and cross-pass activations. *(Historical implementation evidence in commit `038248be041cd42a7ed82be2b12bba009cbe5935`; subsequently retired and superseded under ADR-028 and TASK-293 with the complete retirement of Special Gems from game design and client presentation).*
+- [x] **AC-6 (SUPERSEDED by ADR-028 and TASK-293)** An activation step is held longer than an ordinary Match step and
+      longer than its own overlay; the overlay is abort-safe. *(Historical implementation evidence in commit `038248be041cd42a7ed82be2b12bba009cbe5935`; subsequently retired and superseded under ADR-028 and TASK-293).*
+- [x] **AC-7 (SUPERSEDED by ADR-028 and TASK-293)** The tally counts one activation per delivered consumed Special Gem,
       aggregated by cell type, nonzero types only, scoped to one turn, shown
       last; no summary for a turn with none; duplicate events and replayed
-      batches never double count.
+      batches never double count. *(Historical implementation evidence in commit `038248be041cd42a7ed82be2b12bba009cbe5935`; subsequently retired and superseded under ADR-028 and TASK-293).*
 - [x] **AC-8** Every activated/refilled cell renders the delivered cell's asset
       as part of that replacement; no cleared view is left behind, no cell is
       left without a view and no view object is mapped to two cells.
@@ -240,11 +240,10 @@ not counted      damage targets, animation frames, matched cells, cells an
 ## Verdict
 
 ```text
-IN REVIEW
+DONE
 ```
 
-Implementation and verification are complete for the scoped presentation
-changes; the protocol gap above is recorded, not implemented.
+Implementation evidence in historical commit `038248be041cd42a7ed82be2b12bba009cbe5935` accepted and Phase B completion filing authorized under Operator Decisions 2 and 3. Historical workflow deviations are formally recorded below, and AC-5, AC-6, and AC-7 are formally marked as superseded by ADR-028 and TASK-293.
 
 ---
 
@@ -364,4 +363,41 @@ lastCyclePlaceable = true                       6 fail (18 + the pre-existing TA
   follow-up, not implemented here.
 - The reshuffle case still cannot be *animated* — by construction the client does not
   hold that board — and the client still cannot say why (§Residual risks item 1).
+
+---
+
+## Completion Evidence
+
+### Commit
+- Implementation slice (Phase A): `038248be041cd42a7ed82be2b12bba009cbe5935` (Historical batch commit accepted per Operator Decision 2)
+- Subject: `feat: add boss-turn presentation, special activation, and refilling consistency improvements`
+- Owns: `TASK-285` (historical batch commit; see Historical Workflow Deviations below)
+- Files:
+  - `src/frontend/client/src/game/scenes/BattleScene.ts`
+  - `src/frontend/client/src/game/scenes/BattleEventPresenter.ts`
+  - `src/frontend/client/tests/SceneLifecycle.test.ts`
+- Shared with: Historical batch commit (committed jointly with backend changes and balance artifacts)
+- Unowned / pre-existing: Historical batch commit (see Historical Workflow Deviations below)
+- Phase B completion record: `tasks/completed/TASK-285-boss-turn-presentation-activation-summary-refill-consistency.md`
+
+### Historical Workflow Deviations & Supersessions (Operator Decision 2)
+1. **Historical Batch Commit (P-2, P-5):** Commit `038248be041cd42a7ed82be2b12bba009cbe5935` bundled 12 files across multiple domains (including backend services, domain events, integration tests, and the 8.3M-line balance matrix artifact `TASK-197-controlled-balance-experiments.json`), exceeding the 3 declared frontend implementation files.
+2. **Staging of Active Task Record (P-5):** The task record `tasks/active/TASK-285-...` was staged directly in the historical implementation commit rather than in a dedicated Phase B completion filing commit.
+3. **Commit Attribution (P-4):** The historical commit message carried no task ID and no structured `owns: TASK-285` attribution or disclosures in its commit body.
+4. **Superseded Criteria (AC-5, AC-6, AC-7):** Special Gem presentation, overlays, activation hold timing, and the per-turn activation tally implemented in `038248be041cd42a7ed82be2b12bba009cbe5935` were formally superseded and retired by ADR-028 and TASK-293 upon complete elimination of Special Gems from game design and client presentation. The core surviving presentation architecture (unified board-presentation pipeline, structural phase barrier, board-backed cycle placeability, and view-pooling consistency) remains active in the repository.
+
+---
+
+## Lifecycle Transition — DONE (Phase B Filing)
+
+<!--
+  LIFECYCLE TRANSITION RECORD: IN REVIEW -> DONE
+  Governed by tasks/TASK_LIFECYCLE.md §1, §3, §4, §6.1, §6.4 and Operator Decisions 2 & 3.
+-->
+
+* **Transition:** `IN REVIEW` → `DONE`
+* **Authorizing Basis:** Operator Decisions 2 & 3 (Accept historical commit `038248be041cd42a7ed82be2b12bba009cbe5935` as implementation evidence with explicitly recorded historical workflow deviations; formally mark AC-5, AC-6, and AC-7 as superseded by ADR-028 and TASK-293; authorize Phase B completion filing under current repository lifecycle rules).
+* **Repository Policy:** `tasks/TASK_LIFECYCLE.md` §1 (DONE state definition), §3 (completed/ location), §4 (file move: `active/` → `completed/`), §6.1 (Phase B completion record filing commit), §6.4 (interruption recovery protocol).
+* **Destination Path:** `tasks/completed/TASK-285-boss-turn-presentation-activation-summary-refill-consistency.md`
+* **Scope & History Preservation:** Original acceptance criteria (with supersession annotations on AC-5, AC-6, AC-7), implementation notes, and test records are preserved.
 
