@@ -1428,6 +1428,7 @@ public class BattleEventEmissionTests
             [
                 "BattleLost",
                 "BattleWon",
+                "BossCardCast",
                 "BossSkillCast",
                 "CardCast",
                 "CascadeDepth",
@@ -1525,6 +1526,28 @@ public class BattleEventEmissionTests
                 .ToArray();
 
             Assert.Equal(["SkillId", "SourceId"], names);
+
+            Assert.DoesNotContain(names, n =>
+                n.Contains("Time", StringComparison.Ordinal)
+                || n.Contains("Guid", StringComparison.Ordinal)
+                || n.Contains("Hash", StringComparison.Ordinal));
+        }
+
+        // The Boss Card form's payload is the same two documented identities under the
+        // names SIGNALR_PROTOCOL.md §3.2.30 fixes — cardId and sourceId — and nothing
+        // else: no cost, Power value, cooldown, or effect summary, because the Boss
+        // Power/cooldown it produces are authoritative state in the bossState
+        // projection (GAME_EVENTS.md §2, §4.4 item 12), and a Boss Power spend emits
+        // no PowerChanged.
+        foreach (var type in new[] { typeof(BossCardCastEvent) })
+        {
+            var names = type
+                .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+                .Select(p => p.Name)
+                .OrderBy(n => n, StringComparer.Ordinal)
+                .ToArray();
+
+            Assert.Equal(["CardId", "SourceId"], names);
 
             Assert.DoesNotContain(names, n =>
                 n.Contains("Time", StringComparison.Ordinal)
@@ -1902,6 +1925,148 @@ public class BattleEventEmissionTests
     }
 
     // =======================================================================
+    // BossCardCast — the Boss Card action's own event (GAME_EVENTS.md §2;
+    // BOSS_RULES.md §4.2 item 6, §7; SIGNALR_PROTOCOL.md §3.2.30; ADR-029 §2.8)
+    // =======================================================================
+
+    // The two approved identities of the Slice 3 fixture: the Boss Card definition
+    // identity (the ability SkillId, CARD_RULES.md §1.1 item 3) and the Boss's
+    // canonical technical Identity (BossState.BossId) — never a display name.
+    private const string BossCardId = "earthquake";
+    private const string BossSourceId = "boss-son-thach-ve";
+
+    [Fact]
+    public void BossCardCast_ShouldEmitTheDocumentedTypeAndOrdinal()
+    {
+        // GAME_EVENTS.md §2 names the event BossCardCast, and the enum's value is its
+        // stable identity. It is member 20 — the next free ordinal after
+        // MatchedGemSummary (19) when the Boss Card action was added (TASK-308).
+        Assert.Equal(20, (int)BattleEventType.BossCardCast);
+
+        var cardCast = BattleEvent.ForBossCardCast(BossCardId, BossSourceId);
+
+        Assert.Equal(BattleEventType.BossCardCast, cardCast.Type);
+        Assert.Equal(20, (int)cardCast.Type);
+
+        // It is its own event kind: not the Player CardCast and not the legacy
+        // BossSkillCast (GAME_EVENTS.md §2; SIGNALR_PROTOCOL.md §3.2.30).
+        Assert.NotEqual(BattleEventType.CardCast, cardCast.Type);
+        Assert.NotEqual(BattleEventType.BossSkillCast, cardCast.Type);
+    }
+
+    [Fact]
+    public void BossCardCast_ShouldCarryExactlyTheTwoIdentitiesPassed()
+    {
+        // SIGNALR_PROTOCOL.md §3.2.30: cardId is the Boss Card definition identity
+        // (the ability SkillId) and sourceId is the Boss's canonical technical
+        // Identity BossState.BossId. Both are the caller's values, reported
+        // unchanged — "earthquake" and "boss-son-thach-ve".
+        var eventValue = BattleEvent.ForBossCardCast(BossCardId, BossSourceId);
+
+        var payload = eventValue.BossCardCast;
+
+        Assert.Equal(BossCardId, payload.CardId);
+        Assert.Equal(BossSourceId, payload.SourceId);
+        Assert.Equal(new BossCardCastEvent(BossCardId, BossSourceId), payload);
+
+        // One identity, one spelling: the value the Boss Card event reports as
+        // cardId is the same string the legacy BossSkillCast reports as skillId for
+        // the same ability (SIGNALR_PROTOCOL.md §3.2.30 item 1; BOSS_RULES.md §6.4).
+        Assert.Equal(
+            BattleEvent.ForBossSkillCast(BossCardId, BossSourceId).BossSkillCast.SkillId,
+            payload.CardId);
+    }
+
+    [Fact]
+    public void BossCardCast_ShouldDescribeBothIdentitiesInToString()
+    {
+        // The diagnostic rendering names the event and both identities, so a failed
+        // assertion run identifies the card and the Boss without extra inspection.
+        var text = BattleEvent.ForBossCardCast(BossCardId, BossSourceId).ToString();
+
+        Assert.Contains("BossCardCast", text, StringComparison.Ordinal);
+        Assert.Contains(BossCardId, text, StringComparison.Ordinal);
+        Assert.Contains(BossSourceId, text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BossCardCast_ShouldCarryNoCostPowerCooldownOrEffectMember()
+    {
+        // SIGNALR_PROTOCOL.md §3.2.30 item 2 / §4.4 item 12: the payload has the two
+        // identities only. The Boss Power spend and the resulting Power/cooldown are
+        // authoritative state in the bossState projection; a Boss Power spend emits
+        // no PowerChanged (GAME_EVENTS.md §2). The factory therefore derives
+        // nothing — no cost, Power value, cooldown, or effect summary.
+        var payloadProperties = typeof(BossCardCastEvent)
+            .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+            .Select(p => p.Name)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToArray();
+
+        Assert.Equal(["CardId", "SourceId"], payloadProperties);
+
+        foreach (var forbidden in new[]
+                 {
+                     "Cost", "Power", "Cooldown", "Effect", "Magnitude", "Amount",
+                     "Damage", "Shield", "Duration", "Turn",
+                 })
+        {
+            Assert.DoesNotContain(payloadProperties, n => n.Contains(forbidden, StringComparison.Ordinal));
+        }
+
+        // And the event populates no other payload: only BossCardCast reads, and
+        // every accessor belonging to a different event kind throws.
+        var eventValue = BattleEvent.ForBossCardCast(BossCardId, BossSourceId);
+
+        Assert.Throws<InvalidOperationException>(() => eventValue.Match);
+        Assert.Throws<InvalidOperationException>(() => eventValue.CascadeDepth);
+        Assert.Throws<InvalidOperationException>(() => eventValue.Combo);
+        Assert.Throws<InvalidOperationException>(() => eventValue.Gem);
+        Assert.Throws<InvalidOperationException>(() => eventValue.PassiveCharged);
+        Assert.Throws<InvalidOperationException>(() => eventValue.PassiveTriggered);
+        Assert.Throws<InvalidOperationException>(() => eventValue.DamageCalculated);
+        Assert.Throws<InvalidOperationException>(() => eventValue.DamageDealt);
+        Assert.Throws<InvalidOperationException>(() => eventValue.DamageTaken);
+        Assert.Throws<InvalidOperationException>(() => eventValue.BossSkillCast);
+        Assert.Throws<InvalidOperationException>(() => eventValue.BattleWon);
+        Assert.Throws<InvalidOperationException>(() => eventValue.BattleLost);
+        Assert.Throws<InvalidOperationException>(() => eventValue.CardCast);
+        Assert.Throws<InvalidOperationException>(() => eventValue.PetSkillCast);
+        Assert.Throws<InvalidOperationException>(() => eventValue.RelicTriggered);
+        Assert.Throws<InvalidOperationException>(() => eventValue.PowerChanged);
+        Assert.Throws<InvalidOperationException>(() => eventValue.SwapStarted);
+        Assert.Throws<InvalidOperationException>(() => eventValue.SwapResolved);
+        Assert.Throws<InvalidOperationException>(() => eventValue.CascadeStep);
+        Assert.Throws<InvalidOperationException>(() => eventValue.MatchedGemSummary);
+
+        Assert.Equal(BossCardId, eventValue.BossCardCast.CardId);
+        Assert.Equal(BossSourceId, eventValue.BossCardCast.SourceId);
+    }
+
+    [Fact]
+    public void BossCardCast_ShouldBeReadableOnlyOnItsOwnEvent()
+    {
+        // The payload accessors throw rather than returning a plausible default, so a
+        // wrong-kind read is a defect and never a silent empty cast — the same
+        // contract BoundaryPayloads_ShouldBeReadableOnlyOnTheirOwnEvent pins for the
+        // board boundary.
+        var skillCast = BattleEvent.ForBossSkillCast("flame-burst", "boss-hoa-long");
+        var playerCardCast = BattleEvent.CreateCardCast("card-x", powerCost: 5);
+        var swapStarted = BattleEvent.ForSwapStarted(DamageParty.Player, 25, 33);
+
+        Assert.Throws<InvalidOperationException>(() => skillCast.BossCardCast);
+        Assert.Throws<InvalidOperationException>(() => playerCardCast.BossCardCast);
+        Assert.Throws<InvalidOperationException>(() => swapStarted.BossCardCast);
+
+        // The Player CardCast payload and the Boss Card payload are different
+        // contracts: reading CardCast on a Boss Card event throws too, so the Boss
+        // cast is never mistaken for a Player cast (SIGNALR_PROTOCOL.md §3.2.30).
+        var bossCardCast = BattleEvent.ForBossCardCast(BossCardId, BossSourceId);
+
+        Assert.Throws<InvalidOperationException>(() => bossCardCast.CardCast);
+    }
+
+    // =======================================================================
     // Boundary — no second pipeline, no undocumented event, no event infrastructure
     // =======================================================================
 
@@ -1931,7 +2096,11 @@ public class BattleEventEmissionTests
         // above is its home. The per-board-cycle matched-Gem report adds the one name
         // GAME_RULES.md §16 gained for it — MatchedGemSummary (GAME_EVENTS.md §1.1
         // item 9, §2; SIGNALR_PROTOCOL.md §3.2.29) — and the same cycle is its home.
-        // No
+        // The Boss Card action completes the Boss Response's two-form surface with the
+        // one name GAME_EVENTS.md §2 and SIGNALR_PROTOCOL.md §3.2.30 already define —
+        // BossCardCast (TASK-308, ADR-029 Slice 3) — the counterpart of BossSkillCast
+        // for a migrated Boss; it replaces none of the names above and adds no second
+        // Boss event. No
         // undocumented name may be added
         // (AGENTS.md §7). In particular no MatchCountChanged, TurnChanged,
         // SequenceChanged, or BoardChanged exists.
@@ -1952,6 +2121,7 @@ public class BattleEventEmissionTests
             [
                 "BattleLost",
                 "BattleWon",
+                "BossCardCast",
                 "BossSkillCast",
                 "CardCast",
                 "CascadeCreated",

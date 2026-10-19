@@ -21,17 +21,19 @@ namespace GameServer.Infrastructure.Postgres.Configurations;
 /// ├── ATK                (int, NOT NULL, >= 0)
 /// ├── DEF                (int, NOT NULL, >= 0)
 /// ├── EnrageThreshold    (double precision, NOT NULL, (0, 1))
+/// ├── CastPriorityScore  (int, NULL, NULL OR >= 0)
 /// ├── PassiveDefinition  (jsonb, NOT NULL)
 /// └── SkillDefinition    (jsonb, NOT NULL)
 /// </code>
 ///
-/// <b>The field set is <c>DATABASE.md</c> §1's</b> (<c>ADR-024</c> §2.2). The
-/// row stores the static content — the persistence key, the canonical Identity,
-/// the Element, and the two JSON configuration objects — alongside the four
-/// runtime combat-balance columns <c>MaxHP</c>, <c>ATK</c>, <c>DEF</c>, and
-/// <c>EnrageThreshold</c>, which are authoritative at battle creation and
-/// overlaid onto the structural Domain baseline. No display-name column exists
-/// on this table (§1 note item 1).
+/// <b>The field set is <c>DATABASE.md</c> §1's</b> (<c>ADR-024</c> §2.2, as
+/// amended in place by TASK-308). The row stores the static content — the
+/// persistence key, the canonical Identity, the Element, and the two JSON
+/// configuration objects — alongside the five Domain-Overlay values
+/// <c>MaxHP</c>, <c>ATK</c>, <c>DEF</c>, <c>EnrageThreshold</c>, and the
+/// nullable <c>CastPriorityScore</c>, which are authoritative at battle
+/// creation and overlaid onto the structural Domain baseline. No display-name
+/// column exists on this table (§1 note item 1).
 ///
 /// <b>The Skill's secondary effect stays on the Domain type.</b> §1 note item 4
 /// fixes the stored <c>SkillDefinition</c> document to its four members, so
@@ -136,11 +138,27 @@ public sealed class BossDefinitionConfiguration : IEntityTypeConfiguration<BossD
         builder.Property(definition => definition.EnrageThreshold)
             .IsRequired();
 
+        // DATABASE.md §1/§3, ADR-024 §2.2 as amended by TASK-308 (OD-3a): the
+        // FIFTH Domain-Overlay value. It is nullable by contract — `NULL` is the
+        // documented "no cast-priority score authored" marker, legal only while the
+        // Boss has no Boss Card — so no default and no store-generated value is
+        // configured here either (ADR-024 §2.5's no-transitional-default rule is
+        // applied to it identically). The closed "a Boss Card form requires a
+        // non-null value" rule is a content/creation-time rule owned by the
+        // Application layer, not a database constraint: §1/§3 permit NULL on the
+        // column.
+        builder.Property(definition => definition.CastPriorityScore)
+            .IsRequired(false);
+
         // DATABASE.md §3 and ADR-024 §2.4/§2.5: the four documented range
         // invariants, enforced by the database so a corrupt balance row cannot be
         // written at all. The runtime overlay validates the same ranges before it
         // uses a value (BossDefinitionLookup), so a row that predates the
         // constraint still fails closed rather than being applied.
+        //
+        // The fifth overlay value's constraint (TASK-308 / OD-3a) is the
+        // nullable-range form DATABASE.md §1/§3 fixes exactly:
+        // `CastPriorityScore IS NULL OR CastPriorityScore >= 0`.
         builder.ToTable(table =>
         {
             table.HasCheckConstraint(
@@ -158,6 +176,10 @@ public sealed class BossDefinitionConfiguration : IEntityTypeConfiguration<BossD
             table.HasCheckConstraint(
                 "CK_BossDefinition_EnrageThreshold_Range",
                 "\"EnrageThreshold\" > 0.0 AND \"EnrageThreshold\" < 1.0");
+
+            table.HasCheckConstraint(
+                "CK_BossDefinition_CastPriorityScore_NonNegative",
+                "\"CastPriorityScore\" IS NULL OR \"CastPriorityScore\" >= 0");
         });
 
         // DATABASE.md §1 note item 3 / §3: PassiveDefinition — jsonb, NOT NULL.

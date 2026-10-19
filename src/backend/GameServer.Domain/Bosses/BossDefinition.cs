@@ -223,6 +223,24 @@ public sealed record class BossDefinition(
     public double EnrageThreshold { get; init; } = BossRules.BaseEnrageThreshold;
 
     /// <summary>
+    /// The Boss's authored deterministic cast-priority score for its Boss Card
+    /// (<c>BOSS_RULES.md</c> §4.3 step 4 and item 5; <c>ADR-029</c> §2.7 item 20
+    /// as amended by TASK-308), or <c>null</c> when none is authored.
+    ///
+    /// <b><c>null</c> is an explicit "not authored" marker, not a default.</b>
+    /// It is legal only while the Boss has no Boss Card; a Boss whose provisioned
+    /// Boss Card is present requires a non-null, non-negative value, otherwise
+    /// the content is invalid and battle creation fails closed
+    /// (<c>ADR-024</c> §2.4 as amended; `BOSS_RULES.md` §4.4 item 6).
+    ///
+    /// It is the fifth Domain-Overlay value: PostgreSQL is authoritative for it
+    /// at battle creation (<c>DATABASE.md</c> §1/§3; <c>ADR-024</c> §2.2 as
+    /// amended). The static initializer is the canonical baseline used for
+    /// migration seeding and offline tests, never a runtime fallback.
+    /// </summary>
+    public int? CastPriorityScore { get; init; }
+
+    /// <summary>
     /// The Boss's one Passive identity (<c>BOSS_RULES.md</c> §3, §6.4;
     /// <c>GAME_STATE.md</c> §2.4.2) — the value <c>PassiveCharged</c>/
     /// <c>PassiveTriggered</c> report as <c>passiveId</c> when

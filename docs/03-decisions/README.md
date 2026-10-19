@@ -1,6 +1,20 @@
 # Architecture Decision Records (ADR)
 
-**Version:** 1.22 (§7 — **ADR-029 added** per `TASK-303`, applying the explicit
+**Version:** 1.23 (§7 — **ADR-024 and ADR-029 amended in place** per `TASK-308`
+(`ADR-029` Slice 3), following the same in-place-amendment treatment their own
+prior amendments received: **ADR-024**'s Domain Overlay extends from four to five
+values, the fifth being the nullable `BossDefinition.CastPriorityScore` (`NULL` =
+not authored, legal only for a Boss with no Boss Card; otherwise an integer
+`>= 0`, with `CHECK (CastPriorityScore IS NULL OR CastPriorityScore >= 0)`), while
+PostgreSQL authority, the static baseline, structural preservation and the
+fail-closed/no-fallback validation are unchanged; **ADR-029**'s §2.5 item 15
+"persistence is out of scope" clause is superseded — the definition/provisioning
+prerequisite is folded into Slice 3 with one insert-only content migration plus
+the score schema migration — and §4's Slice 3 exit criteria are reconciled to
+require the provisioned Boss Card, the deterministic one-action policy, the
+atomic round integration, the `BossCardCast` wire event and client presentation.
+No new ADR is created, no other decision is reversed, and both records remain
+**Accepted**. Decision source: TASK-308 / ADR-029 Slice 3. Prior 1.22: (§7 — **ADR-029 added** per `TASK-303`, applying the explicit
 Product Owner decision that the Boss behaves as a genuine opponent using the same
 resource and cast principles as the Player. ADR-029 records: introduction of
 `BossState.Power` (integer 0–100) into MVP, which **supersedes `TASK-258` §2 D2**
@@ -279,12 +293,12 @@ technical document.
 | ADR-021 | One Card cast per committed Match-3 Turn — a player may successfully cast at most one Card during each committed Match-3 Turn; the restriction is a cast-count constraint, **not** Turn consumption, so a Card cast still consumes no Turn, does not resolve the Match-3 board, and does not independently trigger the Boss response; the Match-3 Turn remains the authoritative unit of combat progression and the Boss response is reached only through a committed Swap. Option A (cast consumes a Turn and triggers the Boss response) and Option C (keep unlimited free casts, change only Power Charge's cost) are rejected. Records `TASK-191` §6 Q-4 = OPTION B and unblocks B-02 for implementation | Accepted |
 | ADR-022 | Post-result preserved-loadout carrier — the loadout used in the battle that just ended is held as a second documented key in Phaser's game-wide registry behind the `game/state/PreservedLoadout.ts` accessor; owned by the client game-presentation layer (not `GameRuntime`), alive for the running game instance, written only on a successful battle start, and read only on the approved `ResultScene` → `PLAY AGAIN` entry, with `LobbyScene` remaining the editing surface. Records that the preserved loadout, active battle state, and battle result data are three distinct concepts, that the `D-202-04 = A` cleanup never clears the preserved loadout, and that the post-result exit clears active battle state through the dedicated client-local `clearActiveBattleState()` port capability (no disconnect, no wire message) rather than `SIGNALR_PROTOCOL.md` §7.3's `BATTLE_NOT_FOUND` path. Discharges the carrier requirement `ARCHITECTURE.md` §2.2.3 recorded without a mechanism per `TASK-202` `D-202-03 = D` | Accepted |
 | ADR-023 | Backend Discord identity seam resolution — formally retire the dormant backend Discord identity dependency injection seam (`IDiscordIdentityResolver`), resolver implementations, configuration options, and contract definitions, aligning backend architecture 100% with ADR-020 D1; records that physical deletion of runtime C# files and test stubs is deferred to downstream implementation work | Accepted |
-| ADR-024 | Database-driven boss balance configuration — PostgreSQL-authoritative runtime balance for `MaxHP`, `ATK`, `DEF`, and `EnrageThreshold` via Domain Overlay; static `BossDefinitions.All` retained as seed defaults and offline test fixtures; preserves `SecondaryEffect` (Burn, Drain Power, Root) without complex JSON migrations; snapshot isolation for in-progress battles; strict fail-closed validation | Accepted |
+| ADR-024 | Database-driven boss balance configuration — PostgreSQL-authoritative runtime balance for `MaxHP`, `ATK`, `DEF`, and `EnrageThreshold` via Domain Overlay; static `BossDefinitions.All` retained as seed defaults and offline test fixtures; preserves `SecondaryEffect` (Burn, Drain Power, Root) without complex JSON migrations; snapshot isolation for in-progress battles; strict fail-closed validation. **Amended in place (TASK-308)** — the Domain Overlay extends from four to five values: the fifth, the nullable `BossDefinition.CastPriorityScore` (`NULL` = not authored, legal only for a Boss with no Boss Card; otherwise `>= 0`; `CHECK (CastPriorityScore IS NULL OR CastPriorityScore >= 0)`), is loaded and validated fail-closed by the same overlay; the four original columns, PostgreSQL authority, static baseline, snapshot isolation and the no-fallback discipline are unchanged | Accepted (amended) |
 | ADR-025 | Swap action preconditions and idempotency — replaces the `LastCommittedSwapPair` coordinate restriction with a dual state version precondition (`expectedSequence`) and action idempotency (`actionId`) contract, superseding ADR-010. Permits legitimate consecutive-turn coordinate reuse while deterministically rejecting stale requests and deduplicating retries | Accepted |
 | ADR-026 | Shared-board gameplay and actor-relative match resolution — Player and Boss share one 8×8 board; both act via valid swaps; cell type determines effect; acting side determines target; ATK damage gated on confirmed ATK matches; fallback fixed basic attacks retired; Boss skills deal zero direct damage; Boss SkillCharge charges exclusively from Boss POWER matches; atomic round state persistence via single Redis CAS | Accepted (Decision item 4's POWER bullet and Unresolved Balance Choices #1–#2 partially superseded by ADR-029) |
 | ADR-027 | Authoritative cascade pass transition reporting — the Operator Decision approving TASK-278 A-1(i)/A-4 authorizes `CascadeStepResolved` as **one additive event item** inside the round's existing single atomic `ReceiveEvents` batch, reporting a detection pass's completed Gravity and Spawn with `passDepth` (always present; the pass's own 1-based depth), `dropMoves` (`fromCell`/`toCell` per surviving gem that changed cell; omitted when empty) and `spawnedGems` (`cellIndex`/`gemType` per spawned gem; omitted when empty), emitted once per recorded pass as that pass's last item, after that pass's Gravity and Spawn, and never for the terminating pass. Deltas-only: no `board`, no `actor`, no `clearedCells`, and no `specialGem` inside a `spawnedGems` entry — a per-pass board is rejected as redundant with the state push and prohibited by `SIGNALR_PROTOCOL.md` §3.2.12 item 1 / §8 item 5. Intermediate board configurations remain Transient Resolution State: never written to Redis mid-resolution, never in a snapshot, never delivered as a board (the board stays delivered only by `BattleStateUpdated` / `GetBattleState`). Redis CAS, the single atomic round, `Sequence` semantics, existing event sequence semantics, turn banner behavior and `ADR-008` snapshot recovery are unchanged, and RNG stays server-authoritative. The prohibitions on per-pass boards, messages and partial batches are reconciled narrowly rather than weakened; client use is presentation-only for the pass reported, and a missing, malformed or internally inconsistent item is skipped so presentation degrades to the existing settle convergence. Compatibility is one additive discriminator plus an explicit tolerant-reader rule; no version negotiation exists. The governing documents were amended first; the ADR was written last as a historical record. `TASK-278` remains open pending review | Accepted |
 | ADR-028 | Retirement of Special Gems and match-tier multipliers from battle-state model and realtime contracts — formalizes the retirement of Special Gems from `BoardState.Cells[64]`, `MatchCreated.createdSpecialGems`, `CellPayload.specialGem`, and Redis active battle state persistence. Establishes tolerant-reader basis under Decision B-2 (default System.Text.Json deserialization safely ignores legacy properties without migration), mandates active battle drain prior to joint deployment, and gates production runtime code modifications behind technical documentation reconciliation | Accepted |
-| ADR-029 | Boss as a genuine opponent — Boss Power, Boss Cards, and the response-phase action policy. Introduces `BossState.Power` (integer 0–100) into MVP, **superseding TASK-258 §2 D2** and partially superseding ADR-026's POWER bullet and `SkillCharge` balance questions; makes the POWER-Gem output actor-relative to one shared generation rule and shares the cast contract, validation and effect services while keeping `PetState`/`BossState` separate and Relics Player-only; adds the `Boss Card` category with the minimum MVP capability (one authored Boss Card per Boss) and keeps Enrage / HP-threshold regeneration / combo passives as passive mechanics; fixes the deterministic one-action-per-response-phase policy (eligibility, ordering, cooldown handling, tie-break: a cast must strictly out-score the board action); adds the dedicated `BossCardCast` event while preserving the Player `CardCast` payload; delivers `bossState.power` through the existing push and reconnect snapshot; and records a four-slice staged migration whose `SkillCharge` removal is gated on demonstrated parity plus six explicitly unresolved balance values. Runtime implementation is gated behind the slices; this record authors no numeric balance value | Accepted |
+| ADR-029 | Boss as a genuine opponent — Boss Power, Boss Cards, and the response-phase action policy. Introduces `BossState.Power` (integer 0–100) into MVP, **superseding TASK-258 §2 D2** and partially superseding ADR-026's POWER bullet and `SkillCharge` balance questions; makes the POWER-Gem output actor-relative to one shared generation rule and shares the cast contract, validation and effect services while keeping `PetState`/`BossState` separate and Relics Player-only; adds the `Boss Card` category with the minimum MVP capability (one authored Boss Card per Boss) and keeps Enrage / HP-threshold regeneration / combo passives as passive mechanics; fixes the deterministic one-action-per-response-phase policy (eligibility, ordering, cooldown handling, tie-break: a cast must strictly out-score the board action); adds the dedicated `BossCardCast` event while preserving the Player `CardCast` payload; delivers `bossState.power` through the existing push and reconnect snapshot; and records a four-slice staged migration whose `SkillCharge` removal is gated on demonstrated parity plus six explicitly unresolved balance values. Runtime implementation is gated behind the slices; this record authors no numeric balance value. **Amended in place (TASK-308)** — §2.5 item 15's persistence-out-of-scope clause is superseded (one insert-only `CardDefinition` row of category `BossCard` plus the nullable `BossDefinition.CastPriorityScore` overlay are Slice 3 work, with no separate provisioning task), and §4's Slice 3 exit criteria are reconciled to require the real provisioned card resolved at battle creation, the deterministic one-action policy, the atomic round integration, exactly one `BossCardCast` on the wire and client presentation (`earthquake` is the first migrated ability); §2.7 item 20 and §3's U-2/U-3/U-4 record the approved carrier and initial values. No other decision is reversed | Accepted (amended) |
 
 **Partial supersession (ADR-016).** ADR-011 and ADR-012 remain in force
 except for the specific items named below, which ADR-016 supersedes. Their
@@ -363,12 +377,53 @@ TASK-258 §2 D2        "Retain BossState.SkillCharge as the single Boss ability
                       immutable record and is not edited.
 ```
 
+**In-place amendments (ADR-024 and ADR-029; `TASK-308` / `ADR-029` Slice 3).**
+Both records remain **Accepted**. Their historical content is preserved
+unmodified and the corrected clauses are named below — the same
+in-place-amendment treatment `ADR-026` received in `TASK-265`/`TASK-267`/
+`TASK-299`. No new ADR was created and no decision is reversed:
+
+```text
+ADR-024 §2.2/§2.4/§2.5
+                    The Domain Overlay extends from four values to five.
+                    The fifth, CastPriorityScore, is a NULLABLE int column on
+                    BossDefinition: NULL = "no cast-priority score authored"
+                    (legal only while the Boss has no Boss Card), otherwise
+                    >= 0, with CHECK (CastPriorityScore IS NULL OR
+                    CastPriorityScore >= 0). The overlay loads and validates it
+                    fail-closed; no default, no fallback weight and no
+                    board-only degradation is substituted. The four original
+                    columns, PostgreSQL authority, structural preservation, the
+                    static Domain baseline and the no-fallback discipline are
+                    unchanged.
+
+ADR-029 §2.5 item 15
+                    "Persistence is out of this decision's scope" —
+                    superseded. The definition/content provisioning prerequisite
+                    is folded into Slice 3: one insert-only CardDefinition row
+                    of category BossCard (DATABASE.md §1, §5 item 4), no new
+                    table and no Player ownership, loadout, collection or API
+                    surface. No separate provisioning task exists.
+
+ADR-029 §4          Slice 3 exit criteria — reconciled. Slice 3 is one
+                    consolidated task (TASK-308) and requires the real
+                    provisioned Boss Card to resolve at battle creation, the
+                    deterministic one-action policy, the atomic round
+                    integration (cost, Boss-self Shield, cooldown, board/attack
+                    suppression, one write-back), exactly one BossCardCast on
+                    the wire inside the round's single ordered batch, and client
+                    presentation. The Slice 4/5 gates are unchanged.
+```
+
 `ADR-021` (one Card cast per committed Turn) is unchanged: the allowance remains
 the Player's and a Boss Card cast neither reads nor spends it. `ADR-024`
-(database-driven boss balance configuration) is unchanged: the ability's effect
-carrier moves from the Skill definition to the Boss Card definition at ADR-029
-Slice 4 without changing the Domain Overlay, the PostgreSQL authority, the static
-baseline or the fail-closed validation, and no persistence change is authorized.
+(database-driven boss balance configuration) is **amended in place** (above): its
+Domain Overlay now carries five values, the fifth nullable `CastPriorityScore`,
+while the PostgreSQL authority, the static baseline, the Domain Overlay model and
+the fail-closed validation remain in force. Each ability's effect carrier moves
+from the Skill definition to the Boss Card definition with that ability's own
+migration — `earthquake` in `ADR-029` Slice 3 (`TASK-308`), the remaining four in
+Slice 4.
 
 ---
 

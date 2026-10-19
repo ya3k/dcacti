@@ -215,16 +215,43 @@ public sealed class BattleStateService
     }
 
     /// <summary>
-    /// The Boss definition a battle is fought against (<c>GAME_STATE.md</c> §2.4,
-    /// <c>BOSS_RULES.md</c> §6).
+    /// The Boss content a battle is fought against (<c>GAME_STATE.md</c> §2.4,
+    /// <c>BOSS_RULES.md</c> §6): the Boss definition and, when the Boss ability is
+    /// migrated, its provisioned Boss Card (<c>ADR-029</c> §2.5 as amended by
+    /// TASK-308).
     ///
-    /// It is the documented <see cref="BossDefinition"/> itself — identity,
-    /// Element, and base stats — rather than a second copy of it: the definition
-    /// already is the configuration this layer needs, and restating its members
-    /// here would be the duplicate representation <c>GAME_STATE.md</c> §0 item 5
-    /// forbids. The MVP definitions are <see cref="BossDefinitions"/>.
+    /// The definition is the documented <see cref="BossDefinition"/> itself —
+    /// identity, Element, and base stats — rather than a second copy of it: the
+    /// definition already is the configuration this layer needs, and restating its
+    /// members here would be the duplicate representation <c>GAME_STATE.md</c>
+    /// §0 item 5 forbids. The MVP definitions are <see cref="BossDefinitions"/>.
     /// </summary>
-    private readonly record struct BossConfiguration(BossDefinition Definition)
+    /// <param name="Definition">
+    /// The Boss definition the battle is fought against — the same value
+    /// <see cref="GetBossDefinition"/> reports and the one battle creation
+    /// received.
+    /// </param>
+    /// <param name="BossCard">
+    /// The Boss's provisioned Boss Card definition, or <c>null</c> when the Boss
+    /// has none. <b>Presence is the active-form signal</b>
+    /// (<c>BOSS_RULES.md</c> §4.4; <c>ADR-029</c> §2.5 as amended by TASK-308):
+    /// a provisioned <see cref="CardDefinition"/> whose
+    /// <see cref="CardDefinition.CardDefinitionId"/> equals the Boss ability's
+    /// <see cref="BossDefinition.SkillId"/> and whose
+    /// <see cref="CardDefinition.Category"/> is
+    /// <see cref="CardCategory.BossCard"/> means the ability resolves as a Boss
+    /// Card cast; its absence means the transitional <c>BossSkill</c> form.
+    ///
+    /// <b>It is resolved exactly once, at battle creation.</b> It is a content
+    /// input cached beside the Boss definition and never re-read, so a turn
+    /// resolution performs no content lookup and a CAS retry observes the same
+    /// frozen content (<c>REDIS_STATE.md</c> §4 item 6; <c>TDD.md</c> §4 item 3).
+    /// It is not battle state: no <c>BattleState</c> member, Redis field, or wire
+    /// member carries it (<c>GAME_STATE.md</c> §2.4/§2.4.3).
+    /// </param>
+    private readonly record struct BossConfiguration(
+        BossDefinition Definition,
+        CardDefinition? BossCard)
     {
         /// <summary>
         /// The <c>BossState</c> this configuration initializes a battle's
@@ -498,6 +525,17 @@ public sealed class BattleStateService
         // otherwise the server's own entropy produces it (items 1–2).
         var battleSeed = seed ?? new BattleSeed(_seedSource.CreateSeed());
 
+        // ADR-029 §2.5 (as amended by TASK-308) / BOSS_RULES.md §4.4: the Boss
+        // ability's active form is provisioned-content presence, and it is resolved
+        // exactly ONCE here, at battle creation, before the state exists. The
+        // resolved Boss Card is cached with the Boss definition as the battle's
+        // content input; no turn resolution re-reads it, so a CAS retry observes
+        // the same frozen content (REDIS_STATE.md §4 item 6). A provisioned row
+        // that is present but invalid fails creation closed — there is no fallback
+        // to the legacy Skill form (AGENTS.md §7, ADR-024 §2.4).
+        var bossCard = await ResolveBossCardAsync(bossDefinition, cancellationToken)
+            .ConfigureAwait(false);
+
         // §2.3 / §2.4: the battle's PetState is built from the caller's Pet
         // configuration — carrying the selected owned Pet instance identity and
         // progress at the start of its first charge — and its
@@ -505,7 +543,7 @@ public sealed class BattleStateService
         // Initial State, carrying the Passive identity §2.4.2 sets at creation.
         // Neither is absent, neither is defaulted with an invented value, and
         // neither is created lazily on the first Swap.
-        var bossConfiguration = new BossConfiguration(bossDefinition);
+        var bossConfiguration = new BossConfiguration(bossDefinition, bossCard);
 
         // §2.8 item 2: the owner identity is recorded at creation from the
         // caller's authenticated context — the same Player the ownership check
@@ -586,6 +624,99 @@ public sealed class BattleStateService
         _bossConfiguration.TryGetValue(battleId, out var configuration)
             ? configuration.Definition
             : null;
+
+    /// <summary>
+    /// Resolves the Boss ability's provisioned Boss Card, or <c>null</c> when the
+    /// ability is not migrated and therefore keeps the transitional
+    /// <c>BossSkill</c> form (<c>BOSS_RULES.md</c> §4.4; <c>ADR-029</c> §2.5 as
+    /// amended by TASK-308).
+    ///
+    /// <b>Identity is the lookup key.</b> The Card's identity is the ability's
+    /// <see cref="BossDefinition.SkillId"/> (<c>CARD_RULES.md</c> §1.1 item 3;
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.30), so the id-only content read the
+    /// existing <see cref="ICardDefinitionLookup"/> already offers is the whole
+    /// resolution — no new repository, column, table, or query shape is
+    /// introduced (<c>ARCHITECTURE.md</c> §5).
+    ///
+    /// <b>Presence is the form signal, and an absent lookup is the absent form.</b>
+    /// A composition with no Card content read (the optional dependency is
+    /// <c>null</c>) can resolve no Boss Card, which is exactly the transitional
+    /// position; a lookup that returns <c>null</c> likewise means no provisioned
+    /// row exists for this ability. Neither is an error and neither falls back to
+    /// an invented value.
+    ///
+    /// <b>Present content is validated fail-closed.</b> A provisioned row for the
+    /// ability's identity must be a <see cref="CardCategory.BossCard"/>, the Boss
+    /// definition must carry a non-null, non-negative
+    /// <see cref="BossDefinition.CastPriorityScore"/>, and the authored
+    /// <see cref="CardDefinition.PowerCost"/> must be non-negative. Anything else
+    /// is invalid definition data — the battle is not created, and the legacy
+    /// form is never substituted for it (<c>ADR-024</c> §2.4; <c>BOSS_RULES.md</c>
+    /// §4.3 item 5; <c>AGENTS.md</c> §7).
+    /// </summary>
+    /// <param name="bossDefinition">
+    /// The resolved Boss content the battle would be fought against. Its
+    /// <see cref="BossDefinition.SkillId"/> is the Boss Card identity.
+    /// </param>
+    /// <param name="cancellationToken">Cancels the content read.</param>
+    /// <returns>
+    /// The resolved Boss Card, or <c>null</c> for the transitional
+    /// <c>BossSkill</c> form.
+    /// </returns>
+    /// <exception cref="InvalidOperationException">
+    /// A provisioned Boss Card is present for this ability but its content or the
+    /// Boss's authored cast-priority score is invalid. The creation fails closed.
+    /// </exception>
+    private async Task<CardDefinition?> ResolveBossCardAsync(
+        BossDefinition bossDefinition,
+        CancellationToken cancellationToken)
+    {
+        if (_cardDefinitions is null)
+        {
+            return null;
+        }
+
+        var card = await _cardDefinitions
+            .GetDefinitionAsync(bossDefinition.SkillId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (card is null)
+        {
+            return null;
+        }
+
+        if (card.Category != CardCategory.BossCard)
+        {
+            throw new InvalidOperationException(
+                $"The provisioned CardDefinition '{card.CardDefinitionId}' resolved for Boss "
+                + $"ability '{bossDefinition.SkillId}' is category '{card.Category}', not "
+                + "'BossCard'. A provisioned Boss Card must carry Category = BossCard "
+                + "(CARD_RULES.md §1.1 item 3; BOSS_RULES.md §4.2 item 2). The battle "
+                + "creation fails closed rather than falling back to the legacy Skill form.");
+        }
+
+        if (bossDefinition.CastPriorityScore is not >= 0)
+        {
+            throw new InvalidOperationException(
+                $"Boss '{bossDefinition.BossId.Value}' has the provisioned Boss Card "
+                + $"'{card.CardDefinitionId}' but an invalid CastPriorityScore "
+                + $"({bossDefinition.CastPriorityScore?.ToString() ?? "NULL"}). A migrated "
+                + "Boss requires a non-null, non-negative authored cast-priority score "
+                + "(BOSS_RULES.md §4.3 item 5; ADR-024 §2.4). The battle creation fails "
+                + "closed rather than selecting a default or falling back to another form.");
+        }
+
+        if (card.PowerCost < 0)
+        {
+            throw new InvalidOperationException(
+                $"The provisioned Boss Card '{card.CardDefinitionId}' carries an invalid "
+                + $"PowerCost ({card.PowerCost}); the authored cost must be non-negative "
+                + "(CARD_RULES.md §3.6 item 4; BOSS_RULES.md §4.2 item 3). The battle "
+                + "creation fails closed on invalid definition data.");
+        }
+
+        return card;
+    }
 
     /// <summary>
     /// Returns the authoritative state for a battle, or <c>null</c> when no
@@ -1689,7 +1820,8 @@ public sealed class BattleStateService
         // Enraged the Boss stays Enraged — §5 item 4 states "no timer, no duration
         // field" — so an already-Enraged Boss does not transition (or re-announce
         // anything) a second time.
-        var bossDefinition = _bossConfiguration[battleId].Definition;
+        var bossConfiguration = _bossConfiguration[battleId];
+        var bossDefinition = bossConfiguration.Definition;
 
         if (bossState.State != BossStateKind.Enraged
             && bossState.HP < bossState.MaxHP * bossDefinition.EnrageThreshold)
@@ -1773,87 +1905,156 @@ public sealed class BattleStateService
             resolved.BoardState,
             new Pcg32(bossBoardRngState.State, bossBoardRngState.Increment));
 
-        // §8: a deadlock (zero legal swaps) is recovered by the engine's own bounded
-        // deterministic reshuffle, which is the only case in which the board and the
-        // stream move here; otherwise the board and the retained state are unchanged.
-        var bossBoard = bossMove.Board;
-        bossBoardRngState = bossMove.Reshuffled ? bossMove.RngState : bossBoardRngState;
+        // ADR-029 §2.7 / BOSS_RULES.md §4.3 (TASK-308): exactly ONE action is
+        // selected for the response phase, before any of its work runs. The policy
+        // is a pure Domain function of the committed state and the frozen content
+        // inputs — it consumes no PRNG, reads no clock and no client input, and its
+        // candidate enumeration, board score and recovery board remain
+        // BossAiEngine's (ADR-026 §8).
+        //
+        //   board available = the post-recovery enumeration found a legal swap
+        //   cast available  = the Boss has its provisioned Boss Card, its
+        //                     post-decrement Power covers the composed cost, and
+        //                     its post-decrement cooldown is 0
+        //   selection       = the only available action; otherwise the higher
+        //                     score, where the cast must STRICTLY out-score the
+        //                     board (a tie is the board's)
+        //
+        // An unmigrated Boss has no Boss Card, so its cast is never available and
+        // the policy reduces to today's board action (BOSS_RULES.md §4.4 item 6).
+        var bossCard = bossConfiguration.BossCard;
 
-        var bossResolution = CascadeResolver.Resolve(
-            bossBoard.WithSwapped(bossMove.SelectedMove.From, bossMove.SelectedMove.To),
-            new Pcg32(bossBoardRngState.State, bossBoardRngState.Increment));
+        var boardActionAvailable = bossMove.LegalCandidatesCount > 0;
+        var castAvailable = false;
 
-        var bossGeneration = ResourceGenerator.Generate(bossResolution);
-
-        // GAME_EVENTS.md §1/§1.1, MATCH3_RULES.md §2.1.6 steps 3 and 7,
-        // SIGNALR_PROTOCOL.md §3.2.26–§3.2.27: the Boss's own board action opens
-        // with its own boundary pair, exactly as the Player's does. The actor is
-        // the Boss side, and the coordinates are the deterministic AI's selected
-        // pair — the two cells the step-18a action accepted on this board — placed
-        // before the cycle they resolved, which is the order §1 fixes. They are
-        // reported, not re-derived: the swap below is applied to the very pair the
-        // event names, so the delivered coordinates and the resolved exchange
-        // cannot disagree. The outcome is `committed` because a board action that
-        // reached this point is committed; a rejected action never gets here and
-        // emits nothing at all (§2.1.5 item 6).
-        events.Add(BattleEvent.ForSwapStarted(
-            DamageParty.Boss,
-            bossMove.SelectedMove.From,
-            bossMove.SelectedMove.To));
-        events.Add(BattleEvent.ForSwapResolved(committed: true));
-
-        // GAME_EVENTS.md §1.1: the Boss's own Match-3 cycle reports exactly as the
-        // Player's does — the builder reads the resolution the pipeline produced and
-        // imposes no order of its own — **except** for the one counter the Boss
-        // cycle does not own. The Boss's Matches are not the Player's, and
-        // `BattleState.Combo` is the Player action's swap-scoped counter
-        // (GAME_STATE.md §2.2, BOSS_RULES.md §6.2.5's "Player Combo ≥ 4"), so this
-        // phase passes no accounted Combo: the cycle's Matches are reported by
-        // MatchCreated/GemMatched, and no `ComboChanged` is emitted for them,
-        // because the payload of that event is the new value of `BattleState.Combo`
-        // (GAME_EVENTS.md §2, SIGNALR_PROTOCOL.md §3.2.8 item 1) — a value this
-        // phase does not write (see the Combo/MatchCount note above). A
-        // `ComboChanged` carrying the Boss resolution's own Match total would
-        // report a Combo the battle's counter never held.
-        events.AddRange(BattleEventBuilder.Build(bossResolution, accountedCombo: null));
-
-        // GAME_EVENTS.md §1.1 item 9, §2 / SIGNALR_PROTOCOL.md §3.2.29: the Boss
-        // Response phase's board cycle is closed by its own MatchedGemSummary, once
-        // and as that cycle's last item — after the cycle's last recorded pass's
-        // CascadeStepResolved and before the step-18b/18c/18d events below. It is a
-        // SEPARATE item from the Player's, carrying only the Boss's counts: the
-        // counts of the two cycles are never combined, and ADR-026 §4's
-        // actor-relative ownership means the Boss's cleared cells are the Boss's
-        // (the same `bossGeneration` the step-18a effects were applied from). This
-        // point is unreachable when the Player's attack ended the battle — that
-        // path returns at the Boss HP terminal check above — so a victory before
-        // the Boss cycle emits no Boss summary.
-        events.Add(BattleEvent.ForMatchedGemSummary(bossGeneration.ClearedGemCounts));
-
-        // ADR-026 §4: cell type determines the effect and the acting side determines
-        // ownership and target — for the Boss's DEF Gems the temporary DEF buff is the
-        // Boss's (COMBAT_RULES.md §5.5.6, TASK-299), for its HP Gems the heal is the
-        // Boss's, and its POWER Gems (and only its
-        // POWER Gems) charge BossState.SkillCharge, +1 per match group and clamped to
-        // the Skill's ChargeRequirement (D2, T1, T2). The Player's POWER matches never
-        // reach this call. ResourceGenerator owns every one of those rules; this
-        // boundary only orders the call and writes back what it returned.
-        var bossMatchEffects = ResourceGenerator.ApplyActorMatchEffects(
-            DamageParty.Boss,
-            resolved.PetState,
-            bossState,
-            bossGeneration,
-            bossResolution,
-            bossDefinition.SkillChargeRequirement);
-
-        resolved = resolved with
+        if (bossCard is not null)
         {
-            BoardState = bossResolution.Board,
-            PetState = bossMatchEffects.Pet,
-            RngState = bossResolution.RngState,
-        };
+            // CARD_RULES.md §3 item 9 / §3.6: the Boss actor composes the cost with
+            // an EMPTY modifier set (Relics are Player-only), so the composed value
+            // equals the authored PowerCost. It is computed once here and is the
+            // same value the executor validates and deducts (§3.6 item 7).
+            var effectiveCardCost = EffectiveCardCost.Compose(
+                bossCard.PowerCost,
+                Array.Empty<CardCostModifier>());
 
-        bossState = bossMatchEffects.Boss;
+            castAvailable = bossState.Power >= effectiveCardCost
+                && bossState.SkillCooldown == 0;
+        }
+
+        var bossAction = BossActionPolicy.Select(
+            boardActionAvailable,
+            castAvailable,
+            bossMove.Score,
+            bossDefinition.CastPriorityScore);
+
+        var bossBoardActionSelected = bossAction.Action == BossActionKind.BoardAction;
+        var bossCastSelected = bossAction.Action == BossActionKind.BossCardCast;
+
+        // ADR-026 §8 / BOSS_RULES.md §4.3 item 4: a cast-selected phase may still
+        // carry the pre-selection deadlock reshuffle and its seeded RNG
+        // consumption. The recovered board and the stream it reached are carried
+        // into the round's single write-back; the reshuffle emits no event and
+        // resolves no board cycle.
+        if (bossCastSelected && bossMove.Reshuffled)
+        {
+            resolved = resolved with
+            {
+                BoardState = bossMove.Board,
+                RngState = bossMove.RngState,
+            };
+        }
+
+        // The board action's own resolution values, assigned only on the
+        // board-selected path below and read only by that path's step 18d. A
+        // cast-selected or neither-action phase resolves no board cycle
+        // (BOSS_RULES.md §4.3 item 4), so these stay absent and are never read.
+        var bossResolution = default(CascadeResolver.CascadeResult);
+        var bossGeneration = default(ResourceGeneration);
+
+        if (bossBoardActionSelected)
+        {
+            // §8: a deadlock (zero legal swaps) is recovered by the engine's own bounded
+            // deterministic reshuffle, which is the only case in which the board and the
+            // stream move here; otherwise the board and the retained state are unchanged.
+            var bossBoard = bossMove.Board;
+            bossBoardRngState = bossMove.Reshuffled ? bossMove.RngState : bossBoardRngState;
+
+            bossResolution = CascadeResolver.Resolve(
+                bossBoard.WithSwapped(bossMove.SelectedMove.From, bossMove.SelectedMove.To),
+                new Pcg32(bossBoardRngState.State, bossBoardRngState.Increment));
+
+            bossGeneration = ResourceGenerator.Generate(bossResolution);
+
+            // GAME_EVENTS.md §1/§1.1, MATCH3_RULES.md §2.1.6 steps 3 and 7,
+            // SIGNALR_PROTOCOL.md §3.2.26–§3.2.27: the Boss's own board action opens
+            // with its own boundary pair, exactly as the Player's does. The actor is
+            // the Boss side, and the coordinates are the deterministic AI's selected
+            // pair — the two cells the step-18a action accepted on this board — placed
+            // before the cycle they resolved, which is the order §1 fixes. They are
+            // reported, not re-derived: the swap below is applied to the very pair the
+            // event names, so the delivered coordinates and the resolved exchange
+            // cannot disagree. The outcome is `committed` because a board action that
+            // reached this point is committed; a rejected action never gets here and
+            // emits nothing at all (§2.1.5 item 6).
+            events.Add(BattleEvent.ForSwapStarted(
+                DamageParty.Boss,
+                bossMove.SelectedMove.From,
+                bossMove.SelectedMove.To));
+            events.Add(BattleEvent.ForSwapResolved(committed: true));
+
+            // GAME_EVENTS.md §1.1: the Boss's own Match-3 cycle reports exactly as the
+            // Player's does — the builder reads the resolution the pipeline produced and
+            // imposes no order of its own — **except** for the one counter the Boss
+            // cycle does not own. The Boss's Matches are not the Player's, and
+            // `BattleState.Combo` is the Player action's swap-scoped counter
+            // (GAME_STATE.md §2.2, BOSS_RULES.md §6.2.5's "Player Combo ≥ 4"), so this
+            // phase passes no accounted Combo: the cycle's Matches are reported by
+            // MatchCreated/GemMatched, and no `ComboChanged` is emitted for them,
+            // because the payload of that event is the new value of `BattleState.Combo`
+            // (GAME_EVENTS.md §2, SIGNALR_PROTOCOL.md §3.2.8 item 1) — a value this
+            // phase does not write (see the Combo/MatchCount note above). A
+            // `ComboChanged` carrying the Boss resolution's own Match total would
+            // report a Combo the battle's counter never held.
+            events.AddRange(BattleEventBuilder.Build(bossResolution, accountedCombo: null));
+
+            // GAME_EVENTS.md §1.1 item 9, §2 / SIGNALR_PROTOCOL.md §3.2.29: the Boss
+            // Response phase's board cycle is closed by its own MatchedGemSummary, once
+            // and as that cycle's last item — after the cycle's last recorded pass's
+            // CascadeStepResolved and before the step-18b/18c/18d events below. It is a
+            // SEPARATE item from the Player's, carrying only the Boss's counts: the
+            // counts of the two cycles are never combined, and ADR-026 §4's
+            // actor-relative ownership means the Boss's cleared cells are the Boss's
+            // (the same `bossGeneration` the step-18a effects were applied from). This
+            // point is unreachable when the Player's attack ended the battle — that
+            // path returns at the Boss HP terminal check above — so a victory before
+            // the Boss cycle emits no Boss summary.
+            events.Add(BattleEvent.ForMatchedGemSummary(bossGeneration.ClearedGemCounts));
+
+            // ADR-026 §4: cell type determines the effect and the acting side determines
+            // ownership and target — for the Boss's DEF Gems the temporary DEF buff is the
+            // Boss's (COMBAT_RULES.md §5.5.6, TASK-299), for its HP Gems the heal is the
+            // Boss's, and its POWER Gems (and only its
+            // POWER Gems) charge BossState.SkillCharge, +1 per match group and clamped to
+            // the Skill's ChargeRequirement (D2, T1, T2). The Player's POWER matches never
+            // reach this call. ResourceGenerator owns every one of those rules; this
+            // boundary only orders the call and writes back what it returned.
+            var bossMatchEffects = ResourceGenerator.ApplyActorMatchEffects(
+                DamageParty.Boss,
+                resolved.PetState,
+                bossState,
+                bossGeneration,
+                bossResolution,
+                bossDefinition.SkillChargeRequirement);
+
+            resolved = resolved with
+            {
+                BoardState = bossResolution.Board,
+                PetState = bossMatchEffects.Pet,
+                RngState = bossResolution.RngState,
+            };
+
+            bossState = bossMatchEffects.Boss;
+        }
 
         // ===================================================================
         // Step 9b: Boss Passive — GAME_RULES.md §17 step 18b
@@ -2072,8 +2273,17 @@ public sealed class BattleStateService
         }
 
         // ===================================================================
-        // Step 10: Boss Skill — GAME_RULES.md §17 step 18c
+        // Step 10: Boss action resolution — GAME_RULES.md §17 steps 18c–18d
         // ===================================================================
+        // Step 18c is where the action step 18a selected resolves
+        // (BOSS_RULES.md §4.3; ADR-029 §2.7). Exactly ONE form is active per
+        // ability (BOSS_RULES.md §4.4; ADR-029 §2.5 as amended by TASK-308), so the
+        // legacy Skill gate below runs only for the transitional BossSkill form: a
+        // migrated Boss never reads SkillCharge as a gate and never emits
+        // BossSkillCast for the same ability resolution. Its SkillCharge stays
+        // inert — written only by the transitional generator on a board-selected
+        // phase, never read (TASK-307 §2.2 C-7).
+        //
         // GAME_STATE.md §2.4.3 / BOSS_RULES.md §6.3: the Skill is eligible on BOTH
         // documented conditions — SkillCharge has reached the ChargeRequirement AND
         // SkillCooldown is 0. The charge itself is the Boss's own POWER matches',
@@ -2084,7 +2294,8 @@ public sealed class BattleStateService
         // A Boss skill deals NO direct damage (ADR-026 D3): it modifies the boss's
         // own combat modifiers, the Pet's Power, or the Pet's combat modifiers, and
         // the only damage a Boss deals is the ATK-match-gated instance at §18d below.
-        var skillFires = bossState.SkillCharge >= bossDefinition.SkillChargeRequirement
+        var skillFires = bossCard is null
+            && bossState.SkillCharge >= bossDefinition.SkillChargeRequirement
             && bossState.SkillCooldown == 0;
 
         if (skillFires)
@@ -2277,9 +2488,16 @@ public sealed class BattleStateService
 
             // BOSS_RULES.md §6.3 / GAME_STATE.md §2.4.3: "After the Skill fires:
             // SkillCharge resets to 0, SkillCooldown resets to the Boss's cooldown
-            // value." The next committed round's post-Player-phase decrement performs
-            // the first cooldown tick, so a freshly-cast Skill blocks the following
-            // SkillCooldownTurns rounds.
+            // value."
+            //
+            // Cooldown ordering is the documented decrement → check → set sequence
+            // (GAME_STATE.md §2.4.3, BOSS_RULES.md §6.3): each committed Round's
+            // step 3 decrements the stored value by exactly 1, the gate above then
+            // reads it, and a successful cast sets the authored value in this same
+            // write-back. An authored N therefore blocks the N−1 subsequent rounds
+            // whose post-decrement value is still > 0; the Nth round is eligible
+            // again, and N = 0 is eligible every round. The value set here is the
+            // authored one — the next Round's step-3 decrement is its first tick.
             //
             // The reset discards the charge the Boss's POWER matches accumulated: the
             // cast consumes it. It does not touch PassiveProgress — §2.4.3 makes the
@@ -2290,10 +2508,74 @@ public sealed class BattleStateService
                 SkillCooldown = bossDefinition.SkillCooldownTurns,
             };
         }
+        else if (bossCastSelected)
+        {
+            // -------------------------------------------------------------------
+            // Step 10c: Boss Card cast — GAME_RULES.md §17 step 18c, ADR-029 §2.7
+            //           (TASK-308)
+            // -------------------------------------------------------------------
+            // The cast was selected at 18a because the Boss has its provisioned Boss
+            // Card, its post-decrement Power covers the composed cost, and its
+            // post-decrement cooldown is 0 (BOSS_RULES.md §4.3). It resolves through
+            // the shared cast contract's Boss actor, which owns the category check,
+            // the empty-modifier cost composition, the Power sufficiency check, the
+            // representability gate, the deduction, and the actor-relative effect
+            // resolution (CARD_RULES.md §3 item 9). The executor stays policy-free and
+            // writes no cooldown; the phase owner applies the authored cooldown below
+            // in the same single write-back (TASK-307 §3.5.6).
+            //
+            // TASK-307 §3.5.5: the 18c re-check is a fail-closed invariant, not a
+            // second selection. Only step 18b ran between selection and execution, and
+            // no MVP Passive can change the Boss's Power, cooldown or Boss Card, so on
+            // valid data the cast cannot be rejected. If it is, the round fails closed
+            // rather than silently resolving a board action or dropping the cast —
+            // either would violate "exactly one action", the event/state contract and
+            // the CAS-retry determinism guarantee (GAME_RULES.md §17 step 18).
+            var bossCastState = resolved with { BossState = bossState };
 
-        // When the Skill did not fire, the charge simply carries what step 18a
-        // accumulated — the case BOSS_RULES.md §6.3 describes, where the Skill becomes
-        // eligible on a later round.
+            var cast = CardCastExecutor.Execute(bossCastState, bossCard!, CardCastActor.Boss);
+
+            if (cast.IsRejected)
+            {
+                throw new InvalidOperationException(
+                    $"Boss '{bossState.BossId.Value}' selected its Boss Card "
+                    + $"'{bossCard!.CardDefinitionId}' at step 18a, but the 18c cast was "
+                    + $"rejected as '{cast.Reason}'. Exactly one action must resolve per "
+                    + "response phase (BOSS_RULES.md §4.3; GAME_RULES.md §17 step 18), so "
+                    + "the round fails closed rather than performing a board action or "
+                    + "dropping the cast.");
+            }
+
+            // BOSS_RULES.md §4.3 item 3 / §6.3: a successful cast sets the authored
+            // cooldown in the SAME single write-back the executor's committed state
+            // already is. Nothing decrements it here — step 3 already decremented this
+            // committed Round's stored value exactly once, and it is never decremented
+            // twice.
+            var castBossState = cast.State.BossState with
+            {
+                SkillCooldown = bossDefinition.SkillCooldownTurns,
+            };
+
+            resolved = cast.State with { BossState = castBossState };
+            bossState = castBossState;
+
+            // SIGNALR_PROTOCOL.md §3.2.30 / GAME_EVENTS.md §2: exactly ONE
+            // BossCardCast, emitted at 18c after the 18b Passive events and inside the
+            // round's single ordered batch. `cardId` is the Boss Card definition
+            // identity (equal to the ability SkillId) and `sourceId` is the canonical
+            // technical Identity BossState.BossId — no cost, Power, cooldown, or effect
+            // summary is carried. The Power spend emits no PowerChanged (C-6); the
+            // resulting Boss Power and cooldown reach the client only through the
+            // `bossState` projection.
+            events.Add(BattleEvent.ForBossCardCast(
+                bossCard!.CardDefinitionId,
+                bossState.BossId.Value));
+        }
+
+        // When the legacy Skill did not fire (and no action was selected), the charge
+        // simply carries what step 18a accumulated — the case BOSS_RULES.md §6.3
+        // describes, where the Skill becomes eligible on a later round. A migrated
+        // Boss's SkillCharge is inert and is never read as a gate.
 
         // ===================================================================
         // Step 11: Boss → Pet damage — GAME_RULES.md §17 step 18d, ADR-026 D1
@@ -2320,45 +2602,53 @@ public sealed class BattleStateService
         // pool are the Pet's too (GAME_STATE.md §2.3, ADR-011 item 5). A round in which
         // the Boss's own resolution contains no confirmed ATK-gem match produces no
         // damage instance, no ATK-stat consumption, and no damage events.
-        var bossAttack = AttackResolution.ResolveAndApplyBossAttack(
-            bossState,
-            resolved.PetState,
-            AttackQualification.FromResolution(bossResolution),
-            baseDamagePool: bossGeneration.BaseDamagePool,
-            combo: 1,
-            rngState: resolved.RngState,
-            comboModifiers: ComboModifiers.Default,
-            elementModifiers: ElementModifiers.Default);
-
-        bossState = bossAttack.Boss;
-
-        resolved = resolved with
+        // ADR-029 §2.7 / BOSS_RULES.md §4.3 item 4: a cast-selected phase suppresses
+        // the attack entirely — the Boss forgoes its board action and therefore its
+        // §18d ATK-gated damage instance. A neither-action phase likewise deals no
+        // damage. Only the board-selected action runs this step, which is why the
+        // values it reads are the board branch's own (assigned above).
+        if (bossBoardActionSelected)
         {
-            PetState = bossAttack.Pet,
-            RngState = bossAttack.Result.RngState,
-        };
+            var bossAttack = AttackResolution.ResolveAndApplyBossAttack(
+                bossState,
+                resolved.PetState,
+                AttackQualification.FromResolution(bossResolution),
+                baseDamagePool: bossGeneration.BaseDamagePool,
+                combo: 1,
+                rngState: resolved.RngState,
+                comboModifiers: ComboModifiers.Default,
+                elementModifiers: ElementModifiers.Default);
 
-        events.AddRange(bossAttack.Result.Events);
+            bossState = bossAttack.Boss;
 
-        // RELIC_RULES.md §3: OnDamageTaken "fires when the active Pet takes
-        // damage". The instance above is the round's Boss→Pet damage instance and the
-        // Pet's post-damage HP has just been written, so this is the documented firing
-        // point when — and only when — that instance exists. A round whose Boss
-        // resolution contains no confirmed ATK-gem match resolves no damage instance at
-        // all (ADR-026 D1, COMBAT_RULES.md §2 item 6), so the
-        // Trigger is not reached: the Pet took no damage.
-        //
-        // It is the existing damage-taken report, not a second damage-resolution path:
-        // nothing here re-runs the pipeline, re-derives the damage, or re-applies HP.
-        if (bossAttack.Result.IsQualifyingAttack)
-        {
-            resolved = ApplyRelicFiringPoint(
-                battleId,
-                resolved,
-                RelicFiringPoint.DamageTaken,
-                matchCount: 0,
-                combo: 0,
-                events);
+            resolved = resolved with
+            {
+                PetState = bossAttack.Pet,
+                RngState = bossAttack.Result.RngState,
+            };
+
+            events.AddRange(bossAttack.Result.Events);
+
+            // RELIC_RULES.md §3: OnDamageTaken "fires when the active Pet takes
+            // damage". The instance above is the round's Boss→Pet damage instance and the
+            // Pet's post-damage HP has just been written, so this is the documented firing
+            // point when — and only when — that instance exists. A round whose Boss
+            // resolution contains no confirmed ATK-gem match resolves no damage instance at
+            // all (ADR-026 D1, COMBAT_RULES.md §2 item 6), so the
+            // Trigger is not reached: the Pet took no damage.
+            //
+            // It is the existing damage-taken report, not a second damage-resolution path:
+            // nothing here re-runs the pipeline, re-derives the damage, or re-applies HP.
+            if (bossAttack.Result.IsQualifyingAttack)
+            {
+                resolved = ApplyRelicFiringPoint(
+                    battleId,
+                    resolved,
+                    RelicFiringPoint.DamageTaken,
+                    matchCount: 0,
+                    combo: 0,
+                    events);
+            }
         }
 
         // ===================================================================

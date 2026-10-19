@@ -1,6 +1,15 @@
 # Architecture
 
-**Version:** 1.15 (§3's component table and §2.2.2's Boss-response parenthetical
+**Version:** 1.16 (§3's persistence-boundary row **synchronized with the
+implemented content reads** per **TASK-308 / ADR-029 Slice 3**: the row now names
+the Card definition read and the Boss Card resolution point — the Boss Card is
+resolved once, at battle creation, through the existing id-only
+`ICardDefinitionLookup` (`CardRepository` behind the Application
+`ScopedCardDefinitionLookup` boundary) and cached with the Boss content input;
+`DATABASE.md` §1 owns the persisted contract. **No component, abstraction, layer,
+dependency direction, endpoint, wire member, state model, Redis key, database
+column, or gameplay rule is added**, and the already-named `BossActionPolicy`
+component is unchanged. Decision source: TASK-308 / ADR-029 Slice 3. Prior 1.15: (§3's component table and §2.2.2's Boss-response parenthetical
 updated per **ADR-029 / TASK-303**: the Boss is a genuine opponent using the same
 cast principles as the Player, so the component boundary records (a) the **shared
 cast contract** owned by `CARD_RULES.md` §3 and implemented by
@@ -824,8 +833,16 @@ BattleResultService               Application       DATABASE.md (the battle-end
                                                     unit of work: §4 item 4)
 Persistence boundaries (Postgres) Infrastructure    DATABASE.md
   PlayerRepository / PetRepository /
-  BattleResultRepository / BossDefinitionLookup
-  (battle-end FK & proposed battle-start balance overlay)
+  BattleResultRepository / BossDefinitionLookup /
+  CardRepository (Application boundary
+  ScopedCardDefinitionLookup / ICardDefinitionLookup)
+  (battle-end FK & battle-start balance overlay;
+   Card definitions are read by id through
+   ICardDefinitionLookup — the Boss Card is
+   resolved once at battle creation by
+   CardDefinitionId == BossDefinition.SkillId and
+   cached with the Boss content input, never
+   re-read per Round or per CAS attempt)
 BattleEndTransaction (Postgres)   Infrastructure    DATABASE.md §1 — the one
                                                     transaction the battle-end
                                                     writes commit in

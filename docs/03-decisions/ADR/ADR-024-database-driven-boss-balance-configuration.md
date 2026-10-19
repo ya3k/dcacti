@@ -2,6 +2,13 @@
 
 **Status:** Accepted
 **Date:** 2026-10-11
+**Amended:** 2026-10-19 (TASK-308 / ADR-029 Slice 3) — the Domain Overlay is
+extended from four to five values by the approved nullable
+`CastPriorityScore` column (`INTEGER NULL`,
+`CHECK (CastPriorityScore IS NULL OR CastPriorityScore >= 0)`). The
+PostgreSQL-authority, structural-preservation, fail-closed and no-fallback
+semantics of this decision are unchanged; §2.2, §2.4 and §2.5 record the
+extension.
 
 ---
 
@@ -48,11 +55,18 @@ The architecture adopts **Option 1 — Domain Overlay**:
 
 ### 2.2 Domain Overlay Hydration Mechanism
 To decouple combat balance while preserving complex Domain mechanics without risk of nullifying secondary effects:
-1. The PostgreSQL `BossDefinition` table is extended with four balance columns:
+1. The PostgreSQL `BossDefinition` table is extended with the four balance
+   columns below and, per TASK-308, the fifth overlay value — the nullable
+   cast-priority score:
    - `MaxHP` (`INTEGER NOT NULL`)
    - `ATK` (`INTEGER NOT NULL`)
    - `DEF` (`INTEGER NOT NULL`)
    - `EnrageThreshold` (`DOUBLE PRECISION NOT NULL`)
+   - `CastPriorityScore` (`INTEGER NULL`,
+     `CHECK (CastPriorityScore IS NULL OR CastPriorityScore >= 0)`) — `NULL`
+     means "no cast-priority score authored" and is legal only while the Boss
+     has no Boss Card; a Boss Card form requires a non-null value
+     (`BOSS_RULES.md` §4.3 item 5, §4.4 item 6)
 2. `IBossDefinitionLookup` (Application layer) is extended with runtime lookup:
    ```csharp
    Task<BossDefinition?> GetDefinitionByIdentityAsync(
@@ -69,7 +83,8 @@ To decouple combat balance while preserving complex Domain mechanics without ris
        MaxHP = dbRow.MaxHP,
        ATK = dbRow.ATK,
        DEF = dbRow.DEF,
-       EnrageThreshold = dbRow.EnrageThreshold
+       EnrageThreshold = dbRow.EnrageThreshold,
+       CastPriorityScore = dbRow.CastPriorityScore
    };
    ```
 4. **Structural Preservation:** `SecondaryEffect` (Burn, Drain Power, Root), `Element`, `PassiveDefinition`, and `SkillDefinition` mechanical typings remain intact from the Domain definition, completely eliminating the nullification hazard without requiring complex polymorphic JSON storage in PostgreSQL for MVP.
@@ -92,6 +107,11 @@ When overlaying values from PostgreSQL, strict domain range invariants are enfor
 - `ATK >= 0`
 - `DEF >= 0`
 - `0.0 < EnrageThreshold < 1.0`
+- `CastPriorityScore IS NULL OR CastPriorityScore >= 0` (TASK-308). `NULL` is
+  the explicit "not authored" marker and is valid only for a Boss with no Boss
+  Card; a Boss whose provisioned Boss Card is present must carry a non-null,
+  non-negative score, otherwise battle creation fails closed. No default, no
+  fallback weight and no board-only degradation is substituted.
 Any row violating these ranges throws an `InvalidOperationException` and bubbles up through ASP.NET Core's pipeline as HTTP 500 Internal Server Error, failing battle creation closed without masking database corruption as a client request error.
 
 ### 2.5 Migration, Versioning, and Rollback
@@ -124,6 +144,15 @@ Any row violating these ranges throws an `InvalidOperationException` and bubbles
   3. **Row Preservation:** Existing `BossDefinition` rows must NOT be deleted. Existing `BattleResult` records hold foreign key references (`BattleResult.BossDefinitionId FK`), so dropping rows would violate FK constraints. Reversion cleanly restores `BossDefinition` to its pre-migration 5-column structure without row loss.
 - **Subsequent Balance Adjustments:**
   Future balance modifications are executed via dedicated data-only EF Core migrations using `migrationBuilder.UpdateData` targeting exact canonical primary keys, preserving auditability and Git history.
+- **Fifth overlay value (TASK-308, ADR-029 Slice 3):** the nullable
+  `CastPriorityScore` column is added by its own migration with
+  `nullable: true` (no transitional default is needed because `NULL` is the
+  meaningful "not authored" value), followed by
+  `CHECK (CastPriorityScore IS NULL OR CastPriorityScore >= 0)`, and a data-only
+  `UpdateData` setting `earthquake`'s approved score (`16`). The rollback drops
+  the check constraint and then the column; no row is deleted and no
+  `BattleResult` foreign key is touched. The same fail-closed overlay and
+  no-fallback discipline applies to the fifth value.
 - Dynamic runtime admin dashboards or live in-memory configuration reloaders are explicitly excluded from MVP scope (`MVP_SCOPE.md` §1).
 
 ---

@@ -35,10 +35,10 @@ namespace GameServer.Infrastructure.Tests;
 /// reason recorded rather than failing the suite.
 ///
 /// What is verified is the documented contract only: the canonical rows with
-/// their exact documented values (13 from TASK-085 plus TASK-168's 4), the
-/// content that is still deferred absent, the repository lookups resolving every
-/// canonical id, the <c>SignatureSkillCardId</c> foreign key resolving, and no
-/// <c>PassiveDefinition</c> table existing.
+/// their exact documented values (13 from TASK-085, TASK-168's 4, and TASK-308's
+/// one Boss Card), the content that is still deferred absent, the repository
+/// lookups resolving every canonical id, the <c>SignatureSkillCardId</c> foreign
+/// key resolving, and no <c>PassiveDefinition</c> table existing.
 /// </summary>
 public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
 {
@@ -97,12 +97,14 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
             .Options);
 
     /// <summary>
-    /// The exact canonical ids the two provisioning migrations hold:
-    /// <c>CAT</c> — the thirteen rows of TASK-085
-    /// (<c>20260929152651_ProvisionPetCardRelicContentDefinitions</c>), and the
-    /// four rows TASK-168 adds
-    /// (<c>20261004055006_ProvisionThanhXaAndSonHungSignatureSkills</c>)
-    /// (<c>DATABASE.md</c> §1 value forms; TASK-082 decision B).
+    /// The exact canonical ids the provisioning migrations hold: the thirteen rows
+    /// of TASK-085 (<c>20260929152651_ProvisionPetCardRelicContentDefinitions</c>),
+    /// the four rows TASK-168 adds
+    /// (<c>20261004055006_ProvisionThanhXaAndSonHungSignatureSkills</c>), and — from
+    /// TASK-308 — the one Boss Card row <c>earthquake</c>
+    /// (<c>20261019125446_ProvisionBossCardContent</c>) (<c>DATABASE.md</c> §1 value
+    /// forms; TASK-082 decision B; <c>CARD_RULES.md</c> §1.1 item 3's approved
+    /// exception, under which a Boss Card's id is the ability <c>SkillId</c>).
     ///
     /// The reads below are scoped to this closed set rather than to a
     /// <c>card-</c>/<c>pet-</c>/<c>relic-</c> prefix, because the shared
@@ -116,6 +118,7 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
         "card-heal", "card-shield", "card-power-charge",
         "card-inferno", "card-tidal-barrier", "card-iron-fang",
         "card-venomous-bloom", "card-earthshaker",
+        "earthquake",
     ];
 
     private static readonly string[] CanonicalPetIds =
@@ -173,25 +176,30 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
     }
 
     // -----------------------------------------------------------------------
-    // Row set — exactly 8 / 5 / 10 canonical rows
+    // Row set — exactly 9 / 5 / 10 canonical rows
     //
-    // 6+3 (TASK-085) plus 2+2 (TASK-168) = 8 Cards and 5 Pets. The Relic set is
-    // the complete canonical MVP set of TEN: the four TASK-085 provisioned rows
-    // plus the six TASK-184 provisions (RELIC_RULES.md §6, §8.5).
+    // 6+3 (TASK-085) plus 2+2 (TASK-168) plus 1 (TASK-308's Boss Card) = 9 Cards
+    // and 5 Pets. The Relic set is the complete canonical MVP set of TEN: the four
+    // TASK-085 provisioned rows plus the six TASK-184 provisions (RELIC_RULES.md
+    // §6, §8.5).
     // -----------------------------------------------------------------------
 
     [Fact]
-    public async Task Postgres_ShouldHoldExactlyEightCanonicalCardDefinitions()
+    public async Task Postgres_ShouldHoldExactlyNineCanonicalCardDefinitions()
     {
         var cards = await ReadCardsAsync();
         if (cards is null) return; // no live PostgreSQL / schema
 
+        // DATABASE.md §5 item 4 / §1: the complete provisioned CardDefinition set is
+        // NINE — the eight Player Cards plus TASK-308's one Boss Card. The Boss Card
+        // sorts last because its id is the ability identity `earthquake`
+        // (CARD_RULES.md §1.1 item 3's exception), not a `card-` key.
         Assert.Equal(
             new[]
             {
                 "card-earthshaker", "card-heal", "card-inferno", "card-iron-fang",
                 "card-power-charge", "card-shield", "card-tidal-barrier",
-                "card-venomous-bloom",
+                "card-venomous-bloom", "earthquake",
             },
             cards.Select(card => card.CardDefinitionId).ToArray());
     }
@@ -242,13 +250,15 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
         if (cards is null || pets is null || relics is null) return;
 
         // TASK-085: 6 + 3 + 4 = 13. TASK-168 adds 2 Cards + 2 Pets, so 8 + 5 = 13
-        // for those two tables; TASK-184 adds the six remaining Relic rows, bringing
-        // the Relic table to the canonical ten. Each read returns exactly one row per
-        // canonical id, so a missing row and a duplicated row both fail here.
-        Assert.Equal(8, cards.Count);
+        // for those two tables; TASK-308 adds the one Boss Card, bringing the Card
+        // table to 9 and those three tables to 24; TASK-184 adds the six remaining
+        // Relic rows, bringing the Relic table to the canonical ten. Each read
+        // returns exactly one row per canonical id, so a missing row and a
+        // duplicated row both fail here.
+        Assert.Equal(9, cards.Count);
         Assert.Equal(5, pets.Count);
         Assert.Equal(10, relics.Count);
-        Assert.Equal(23, cards.Count + pets.Count + relics.Count);
+        Assert.Equal(24, cards.Count + pets.Count + relics.Count);
 
         // TASK-184 contributed exactly the six Relics its task owns and re-encoded
         // none of the four that already existed (AGENTS.md §16).
@@ -288,6 +298,45 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
             """
             SELECT COUNT(*) FROM "__EFMigrationsHistory"
             WHERE "MigrationId" LIKE '%_ProvisionThanhXaAndSonHungSignatureSkills'
+            """);
+
+        var applied = (long)(await command.ExecuteScalarAsync())!;
+
+        Assert.Equal(1, applied);
+    }
+
+    [Fact]
+    public async Task Postgres_ShouldRecordExactlyOneBossCardContentProvisioningMigration()
+    {
+        if (!_available) return;
+
+        // CARD_RULES.md §1.1 item 5 / DATABASE.md §5 item 4: the Boss Card is
+        // provisioned by its OWN insert-only content migration, recorded once by
+        // `dotnet ef database update`. A second matching row would mean a duplicate
+        // data apply rode along.
+        await using var command = _dataSource!.CreateCommand(
+            """
+            SELECT COUNT(*) FROM "__EFMigrationsHistory"
+            WHERE "MigrationId" LIKE '%_ProvisionBossCardContent'
+            """);
+
+        var applied = (long)(await command.ExecuteScalarAsync())!;
+
+        Assert.Equal(1, applied);
+    }
+
+    [Fact]
+    public async Task Postgres_ShouldRecordExactlyOneBossCastPriorityScoreMigration()
+    {
+        if (!_available) return;
+
+        // TASK-308's schema migration for the fifth overlay value is applied exactly
+        // once, so the nullable column and its check constraint cannot have been
+        // created twice or by a second, unexpected schema migration.
+        await using var command = _dataSource!.CreateCommand(
+            """
+            SELECT COUNT(*) FROM "__EFMigrationsHistory"
+            WHERE "MigrationId" LIKE '%_AddBossCastPriorityScore'
             """);
 
         var applied = (long)(await command.ExecuteScalarAsync())!;
@@ -350,15 +399,16 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
 
         // CARD_RULES.md §2 (Basic) and §4.1 (Pet Skill): name, cost, and effect
         // value verbatim; §1 item 5 fixes LoadoutCopyLimit = 1 for every
-        // CardDefinition defined by the document. The last two rows are TASK-168's
-        // (CARD_RULES.md §4.1, TASK-167).
+        // CardDefinition defined by the document. The last three rows are TASK-168's
+        // two (CARD_RULES.md §4.1, TASK-167) and TASK-308's Boss Card
+        // (CARD_RULES.md §1.1, BOSS_RULES.md §4.4 item 5).
         //
         // TASK-109 migrated EffectDefinition from prose to the structured
         // contract (DATABASE.md §1), so this test asserts identity/cost/category
-        // here and delegates the EFFECT assertion to
+        // here and delegates the Player Cards' EFFECT assertions to
         // CardEffectDefinitionMigrationTests, which owns the per-row structured
-        // expectations. Asserting the effect shape twice would give the same
-        // fact two owners (GAME_STATE.md §0 item 5).
+        // expectations. The Boss Card's effect is asserted here directly — it is
+        // TASK-308's provisioned content and has no other owner.
         var expected = new (string Id, string Name, CardCategory Category, int PowerCost)[]
         {
             ("card-heal", "Heal", CardCategory.Basic, 20),
@@ -369,6 +419,7 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
             ("card-iron-fang", "Iron Fang", CardCategory.PetSkill, 100),
             ("card-venomous-bloom", "Venomous Bloom", CardCategory.PetSkill, 80),
             ("card-earthshaker", "Earthshaker", CardCategory.PetSkill, 100),
+            ("earthquake", "Earthquake", CardCategory.BossCard, 30),
         };
 
         Assert.Equal(expected.Length, cards.Count);
@@ -384,10 +435,31 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
         }
 
         // Three Basic and five PetSkill — one Skill Card per MVP Pet
-        // (CARD_RULES.md §4 item 1; MVP_SCOPE.md §1 "5 Pet Skill Cards"), and no
-        // third category.
+        // (CARD_RULES.md §4 item 1; MVP_SCOPE.md §1 "5 Pet Skill Cards") — plus the
+        // one Boss Card, and no fourth category.
         Assert.Equal(3, cards.Count(card => card.Category == CardCategory.Basic));
         Assert.Equal(5, cards.Count(card => card.Category == CardCategory.PetSkill));
+        Assert.Equal(1, cards.Count(card => card.Category == CardCategory.BossCard));
+
+        // TASK-308 §1 (OD-2b) / BOSS_RULES.md §6.3.1 item 4: the Boss Card's stored
+        // effect is exactly the authored `Shield` / `Flat` / `150`, in DATABASE.md
+        // §1's one-element ARRAY shape, byte-for-byte the payload the Domain writer
+        // produces. `jsonb` normalizes the stored text's member order and spacing,
+        // so the round-tripped writer output is the contract-level comparison.
+        var bossCard = Assert.Single(
+            cards, card => card.CardDefinitionId == "earthquake");
+
+        Assert.Equal(
+            "[{\"effectType\":\"Shield\",\"valueType\":\"Flat\",\"value\":150}]",
+            bossCard.EffectDefinition.ToPersistedPayload());
+
+        Assert.Equal(1, bossCard.EffectDefinition.Count);
+
+        var shield = bossCard.EffectDefinition[0];
+
+        Assert.Equal(CardEffectType.Shield, shield.EffectType);
+        Assert.Equal(CardEffectValueType.Flat, shield.ValueType);
+        Assert.Equal(150, shield.Value);
     }
 
     [Fact]
@@ -632,6 +704,7 @@ public class PetCardRelicDefinitionPostgresProvisioningTests : IAsyncLifetime
                      "card-heal", "card-shield", "card-power-charge",
                      "card-inferno", "card-tidal-barrier", "card-iron-fang",
                      "card-venomous-bloom", "card-earthshaker",
+                     "earthquake",
                  })
         {
             var definition = await repository.GetDefinitionAsync(id);

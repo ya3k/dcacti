@@ -16,15 +16,16 @@ namespace GameServer.Infrastructure.Postgres.Repositories;
 /// model</b>: the lookup is a query on the existing persistence boundary." This
 /// type is exactly those queries.
 ///
-/// <b>The battle-start lookup is the Domain Overlay</b> (<c>ADR-024</c> §2.2).
-/// PostgreSQL is authoritative at battle creation for the four balance values
-/// <c>MaxHP</c>, <c>ATK</c>, <c>DEF</c>, and <c>EnrageThreshold</c>; the
+/// <b>The battle-start lookup is the Domain Overlay</b> (<c>ADR-024</c> §2.2,
+/// as amended in place by TASK-308). PostgreSQL is authoritative at battle
+/// creation for the five overlay values <c>MaxHP</c>, <c>ATK</c>, <c>DEF</c>,
+/// <c>EnrageThreshold</c>, and the nullable <c>CastPriorityScore</c>; the
 /// structural definition — Identity, Element, Passive, Skill, and the Skill's
 /// <c>SecondaryEffect</c> (<c>BOSS_RULES.md</c> §6.3.1) — is read from the
 /// canonical Domain baseline <c>BossDefinitions.All</c>, so no non-persisted
 /// mechanics member can be nulled by materializing a row. The two sources are
 /// never merged ambiguously: every structural member comes from the baseline and
-/// only the four balance members come from the row.
+/// only the five overlay members come from the row.
 ///
 /// <b>The battle-end lookup returns a key, not a definition.</b> That path needs
 /// the row's persistence key for the foreign key, and the battle's combat values
@@ -108,19 +109,20 @@ public sealed class BossDefinitionLookup : IBossDefinitionLookup
 
         var identity = new BossId(bossIdentity);
 
-        // ADR-024 §2.2 item 3 / §2.3: only the four runtime balance values are
-        // read from the row. Projecting them keeps the structural definition on
-        // the Domain baseline, so the Skill's non-persisted SecondaryEffect
+        // ADR-024 §2.2 item 3 / §2.3: only the five overlay values are read from
+        // the row. Projecting them keeps the structural definition on the Domain
+        // baseline, so the Skill's non-persisted SecondaryEffect
         // (BOSS_RULES.md §6.3.1) is taken from the baseline and can never be
         // nulled by a round-trip through the stored document.
         var balance = await _dbContext.BossDefinitions
             .AsNoTracking()
             .Where(definition => definition.BossId == identity)
-            .Select(definition => new BossBalanceValues(
+            .Select(definition => new BossOverlayValues(
                 definition.MaxHP,
                 definition.ATK,
                 definition.DEF,
-                definition.EnrageThreshold))
+                definition.EnrageThreshold,
+                definition.CastPriorityScore))
             .FirstOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
 
@@ -138,7 +140,7 @@ public sealed class BossDefinitionLookup : IBossDefinitionLookup
 
         // ADR-024 §2.4: the documented range invariants are enforced before any
         // value is used. A corrupt row fails closed rather than driving combat
-        // math.
+        // math or the cast-priority selection.
         ValidateBalance(bossIdentity, balance);
 
         return structuralBaseline with
@@ -147,6 +149,7 @@ public sealed class BossDefinitionLookup : IBossDefinitionLookup
             ATK = balance.ATK,
             DEF = balance.DEF,
             EnrageThreshold = balance.EnrageThreshold,
+            CastPriorityScore = balance.CastPriorityScore,
         };
     }
 
@@ -172,13 +175,16 @@ public sealed class BossDefinitionLookup : IBossDefinitionLookup
     }
 
     /// <summary>
-    /// Enforces <c>ADR-024</c> §2.4's range invariants on a row's balance values:
-    /// <c>MaxHP &gt; 0</c>, <c>ATK &gt;= 0</c>, <c>DEF &gt;= 0</c>, and
-    /// <c>0.0 &lt; EnrageThreshold &lt; 1.0</c>. The same four invariants are the
-    /// database check constraints (<c>BossDefinitionConfiguration</c>), so a row
-    /// written before a constraint existed can still never be applied.
+    /// Enforces <c>ADR-024</c> §2.4's range invariants on a row's overlay values:
+    /// <c>MaxHP &gt; 0</c>, <c>ATK &gt;= 0</c>, <c>DEF &gt;= 0</c>,
+    /// <c>0.0 &lt; EnrageThreshold &lt; 1.0</c>, and — the fifth value added by
+    /// the in-place TASK-308 amendment — <c>CastPriorityScore</c> is either
+    /// <c>null</c> (the documented "not authored" marker) or <c>&gt;= 0</c>. The
+    /// same five invariants are the database check constraints
+    /// (<c>BossDefinitionConfiguration</c>), so a row written before a constraint
+    /// existed can still never be applied.
     /// </summary>
-    private static void ValidateBalance(string bossIdentity, BossBalanceValues balance)
+    private static void ValidateBalance(string bossIdentity, BossOverlayValues balance)
     {
         if (balance.MaxHP <= 0)
         {
@@ -208,6 +214,22 @@ public sealed class BossDefinitionLookup : IBossDefinitionLookup
                 balance.EnrageThreshold,
                 "0.0 < EnrageThreshold < 1.0");
         }
+
+        // DATABASE.md §1/§3 (TASK-308 / OD-3a): NULL is the explicit "no
+        // cast-priority score authored" marker and is legal at this layer — a Boss
+        // without a Boss Card legitimately carries no score. Only a present,
+        // negative value is corrupt definition data, and it fails closed here just
+        // like the other four overlay values. The stricter "a Boss Card form requires a
+        // score" rule is a content-presence rule owned by battle creation, which
+        // sees the provisioned Card and the score together.
+        if (balance.CastPriorityScore is < 0)
+        {
+            throw InvalidBalance(
+                bossIdentity,
+                "CastPriorityScore",
+                balance.CastPriorityScore.Value,
+                "CastPriorityScore IS NULL OR CastPriorityScore >= 0");
+        }
     }
 
     /// <summary>
@@ -227,14 +249,17 @@ public sealed class BossDefinitionLookup : IBossDefinitionLookup
             + "(ADR-024). Boss creation fails closed rather than applying a corrupt value.");
 
     /// <summary>
-    /// The four runtime balance values of one <c>BossDefinition</c> row
-    /// (<c>DATABASE.md</c> §1, <c>ADR-024</c> §2.2) — the projection
-    /// <see cref="GetDefinitionByIdentityAsync"/> reads, and nothing else from the
-    /// row.
+    /// The five Domain-Overlay values of one <c>BossDefinition</c> row
+    /// (<c>DATABASE.md</c> §1, <c>ADR-024</c> §2.2 as amended by TASK-308) — the
+    /// projection <see cref="GetDefinitionByIdentityAsync"/> reads, and nothing
+    /// else from the row. <see cref="CastPriorityScore"/> is the nullable fifth
+    /// value: <c>null</c> is the documented "not authored" marker, not a missing
+    /// read.
     /// </summary>
-    private sealed record BossBalanceValues(
+    private sealed record BossOverlayValues(
         int MaxHP,
         int ATK,
         int DEF,
-        double EnrageThreshold);
+        double EnrageThreshold,
+        int? CastPriorityScore);
 }

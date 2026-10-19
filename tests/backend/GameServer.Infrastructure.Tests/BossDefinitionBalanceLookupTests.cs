@@ -14,18 +14,22 @@ namespace GameServer.Infrastructure.Tests;
 /// <code>
 /// Identity (client-submitted)
 ///         ↓  BossDefinitions.All            the structural baseline
-///         ↓  BossDefinition row, by Identity  the four runtime balance values
+///         ↓  BossDefinition row, by Identity  the five overlay values
 ///         ↓
-/// BossDefinition with the row's balance and the baseline's mechanics
+/// BossDefinition with the row's overlay and the baseline's mechanics
 /// </code>
 ///
 /// What is verified is the documented contract: PostgreSQL is authoritative for
-/// the four balance values; the structural definition — Identity, Element,
-/// Passive, Skill, and the Skill's <c>SecondaryEffect</c> — is the Domain
-/// baseline's and survives the overlay intact; an Identity outside the
+/// the five overlay values — <c>MaxHP</c>, <c>ATK</c>, <c>DEF</c>,
+/// <c>EnrageThreshold</c>, and the nullable <c>CastPriorityScore</c> (the fifth,
+/// added in place by TASK-308 / OD-3a) — the structural definition — Identity,
+/// Element, Passive, Skill, and the Skill's <c>SecondaryEffect</c> — is the
+/// Domain baseline's and survives the overlay intact; an Identity outside the
 /// content-defined MVP set is the client-visible miss; an absent or out-of-range
 /// provisioned row fails closed with an exception rather than being answered from
-/// the static baseline; and the battle-end key lookup is unchanged.
+/// the static baseline; a <c>CastPriorityScore</c> of <c>null</c> is the
+/// documented "not authored" value and is overlaid as such, while a negative
+/// value fails closed; and the battle-end key lookup is unchanged.
 ///
 /// These tests run on the InMemory provider because the overlay is provider
 /// independent: the same <see cref="BossDefinitionLookup"/> code path executes
@@ -40,13 +44,14 @@ public class BossDefinitionBalanceLookupTests
     // -----------------------------------------------------------------------
 
     [Fact]
-    public async Task GetDefinitionByIdentityAsync_ShouldOverlayTheRowsFourBalanceValues()
+    public async Task GetDefinitionByIdentityAsync_ShouldOverlayTheRowsFiveOverlayValues()
     {
-        // ADR-024 §2.2 item 3: the returned definition is the Domain baseline with
-        // the row's MaxHP, ATK, DEF, and EnrageThreshold applied. Every overlaid
-        // value differs from the baseline's, so an implementation that returned
-        // the baseline (the forbidden silent fallback) fails.
-        const string store = nameof(GetDefinitionByIdentityAsync_ShouldOverlayTheRowsFourBalanceValues);
+        // ADR-024 §2.2 item 3 (as amended by TASK-308): the returned definition is
+        // the Domain baseline with the row's MaxHP, ATK, DEF, EnrageThreshold, and
+        // CastPriorityScore applied. Every overlaid value differs from the
+        // baseline's, so an implementation that returned the baseline (the
+        // forbidden silent fallback) fails.
+        const string store = nameof(GetDefinitionByIdentityAsync_ShouldOverlayTheRowsFiveOverlayValues);
 
         await using (var context = CreateContext(store))
         {
@@ -57,6 +62,9 @@ public class BossDefinitionBalanceLookupTests
                     ATK = 222,
                     DEF = 33,
                     EnrageThreshold = 0.42,
+                    // Hỏa Long's baseline score is null (no Boss Card yet); the
+                    // row's authored value is what the overlay must return.
+                    CastPriorityScore = 21,
                 });
 
             await context.SaveChangesAsync();
@@ -73,12 +81,14 @@ public class BossDefinitionBalanceLookupTests
             Assert.Equal(222, overlaid.ATK);
             Assert.Equal(33, overlaid.DEF);
             Assert.Equal(0.42, overlaid.EnrageThreshold, precision: 9);
+            Assert.Equal(21, overlaid.CastPriorityScore);
 
-            // The baseline is NOT the answer for any of the four.
+            // The baseline is NOT the answer for any of the five.
             Assert.NotEqual(BossDefinitions.HoaLong.MaxHP, overlaid.MaxHP);
             Assert.NotEqual(BossDefinitions.HoaLong.ATK, overlaid.ATK);
             Assert.NotEqual(BossDefinitions.HoaLong.DEF, overlaid.DEF);
             Assert.NotEqual(BossDefinitions.HoaLong.EnrageThreshold, overlaid.EnrageThreshold);
+            Assert.NotEqual(BossDefinitions.HoaLong.CastPriorityScore, overlaid.CastPriorityScore);
         }
     }
 
@@ -112,6 +122,14 @@ public class BossDefinitionBalanceLookupTests
                 Assert.Equal(baseline.ATK, resolved.ATK);
                 Assert.Equal(baseline.DEF, resolved.DEF);
                 Assert.Equal(baseline.EnrageThreshold, resolved.EnrageThreshold);
+
+                // The fifth overlay value (TASK-308): only Sơn Thạch Vệ's baseline
+                // is authored (16); the other four are NULL, and a NULL row is
+                // overlaid as NULL rather than answered from anything else.
+                Assert.Equal(baseline.CastPriorityScore, resolved.CastPriorityScore);
+                Assert.Equal(
+                    baseline.BossId.Value == "boss-son-thach-ve" ? (int?)16 : null,
+                    resolved.CastPriorityScore);
             }
         }
     }
@@ -197,6 +215,10 @@ public class BossDefinitionBalanceLookupTests
                 Assert.Equal(baseline.SkillChargeRequirement, resolved.SkillChargeRequirement);
                 Assert.Equal(baseline.SkillCooldownTurns, resolved.SkillCooldownTurns);
                 Assert.Equal(baseline.SkillDefinition.SecondaryEffect, resolved.SkillDefinition.SecondaryEffect);
+
+                // The fifth overlay value is overlaid (the row here holds the
+                // canonical value) and is never re-derived by the overlay.
+                Assert.Equal(baseline.CastPriorityScore, resolved.CastPriorityScore);
 
                 // The Initial State the definition produces carries the row's
                 // balance (GAME_STATE.md §2.4, BOSS_RULES.md §6.1).
@@ -299,13 +321,21 @@ public class BossDefinitionBalanceLookupTests
                 definition.MaxHP,
                 definition.ATK,
                 definition.DEF,
-                definition.EnrageThreshold))
+                definition.EnrageThreshold,
+                definition.CastPriorityScore))
             .ToArray();
 
         await using (var context = CreateContext(store))
         {
             context.BossDefinitions.Add(
-                BossDefinitions.HoaLong with { MaxHP = 7, ATK = 7, DEF = 7, EnrageThreshold = 0.7 });
+                BossDefinitions.HoaLong with
+                {
+                    MaxHP = 7,
+                    ATK = 7,
+                    DEF = 7,
+                    EnrageThreshold = 0.7,
+                    CastPriorityScore = 7,
+                });
 
             await context.SaveChangesAsync();
         }
@@ -316,6 +346,7 @@ public class BossDefinitionBalanceLookupTests
                 .GetDefinitionByIdentityAsync("boss-hoa-long");
 
             Assert.Equal(7, overlaid!.MaxHP);
+            Assert.Equal(7, overlaid.CastPriorityScore);
         }
 
         var after = BossDefinitions.All
@@ -324,11 +355,14 @@ public class BossDefinitionBalanceLookupTests
                 definition.MaxHP,
                 definition.ATK,
                 definition.DEF,
-                definition.EnrageThreshold))
+                definition.EnrageThreshold,
+                definition.CastPriorityScore))
             .ToArray();
 
         Assert.Equal(before, after);
         Assert.Equal(5000, BossDefinitions.HoaLong.MaxHP);
+        Assert.Null(BossDefinitions.HoaLong.CastPriorityScore);
+        Assert.Equal(16, BossDefinitions.SonThachVe.CastPriorityScore);
     }
 
     // -----------------------------------------------------------------------
@@ -548,6 +582,114 @@ public class BossDefinitionBalanceLookupTests
     }
 
     [Fact]
+    public async Task GetDefinitionByIdentityAsync_ShouldOverlayANullCastPriorityScoreAsNotAuthored()
+    {
+        // DATABASE.md §1/§3 (TASK-308 / OD-3a): NULL is the explicit "no
+        // cast-priority score authored" marker and is a legal overlay result. The
+        // row is authoritative here too: Sơn Thạch Vệ's Domain baseline carries 16,
+        // so a lookup that fell back to the baseline would answer 16 instead of the
+        // row's documented NULL. The stricter "a present Boss Card requires a
+        // score" rule is enforced by battle creation, which sees the Card and the
+        // score together — not by this overlay.
+        const string store =
+            nameof(GetDefinitionByIdentityAsync_ShouldOverlayANullCastPriorityScoreAsNotAuthored);
+
+        await using (var context = CreateContext(store))
+        {
+            context.BossDefinitions.Add(
+                BossDefinitions.SonThachVe with { CastPriorityScore = null });
+
+            await context.SaveChangesAsync();
+        }
+
+        Assert.Equal(16, BossDefinitions.SonThachVe.CastPriorityScore);
+
+        await using (var context = CreateContext(store))
+        {
+            var resolved = await CreateLookup(context)
+                .GetDefinitionByIdentityAsync("boss-son-thach-ve");
+
+            Assert.NotNull(resolved);
+            Assert.Null(resolved!.CastPriorityScore);
+
+            // Everything else is still the row's canonical overlay.
+            Assert.Equal(3000, resolved.MaxHP);
+            Assert.Equal(120, resolved.ATK);
+        }
+    }
+
+    [Theory]
+    // ADR-024 §2.4 as amended by TASK-308: the score's nullable range invariant.
+    // NULL is documented as "not authored" and never a failure at this layer.
+    [InlineData(null)]
+    [InlineData(0)]
+    [InlineData(16)]
+    [InlineData(int.MaxValue)]
+    public async Task GetDefinitionByIdentityAsync_ShouldAcceptANullableCastPriorityScoreInRange(
+        int? castPriorityScore)
+    {
+        // DATABASE.md §3: `CastPriorityScore IS NULL OR CastPriorityScore >= 0` —
+        // the absent form and the inclusive lower bound are both legal, and a large
+        // present value is bounded by no upper limit.
+        const string store =
+            nameof(GetDefinitionByIdentityAsync_ShouldAcceptANullableCastPriorityScoreInRange);
+
+        await using (var context = CreateContext(store))
+        {
+            context.BossDefinitions.Add(
+                BossDefinitions.SonThachVe with { CastPriorityScore = castPriorityScore });
+
+            await context.SaveChangesAsync();
+        }
+
+        await using (var context = CreateContext(store))
+        {
+            var resolved = await CreateLookup(context)
+                .GetDefinitionByIdentityAsync("boss-son-thach-ve");
+
+            Assert.NotNull(resolved);
+            Assert.Equal(castPriorityScore, resolved!.CastPriorityScore);
+        }
+    }
+
+    [Theory]
+    // ADR-024 §2.4 / DATABASE.md §3 (TASK-308 / OD-3a): a present, negative score
+    // is corrupt definition data and fails closed. int.MinValue is included so the
+    // boundary of the CLR type is covered, not just -1.
+    [InlineData(-1)]
+    [InlineData(int.MinValue)]
+    public async Task GetDefinitionByIdentityAsync_ShouldFailClosedOnANegativeCastPriorityScore(
+        int castPriorityScore)
+    {
+        // The same fail-closed shape as the four balance values: an
+        // InvalidOperationException naming the Boss, the column, the stored value,
+        // and the violated invariant. NULL is NOT this case — only a real negative.
+        const string store =
+            nameof(GetDefinitionByIdentityAsync_ShouldFailClosedOnANegativeCastPriorityScore);
+
+        await using (var context = CreateContext(store))
+        {
+            context.BossDefinitions.Add(
+                BossDefinitions.SonThachVe with { CastPriorityScore = castPriorityScore });
+
+            await context.SaveChangesAsync();
+        }
+
+        await using (var context = CreateContext(store))
+        {
+            var thrown = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                CreateLookup(context).GetDefinitionByIdentityAsync("boss-son-thach-ve"));
+
+            Assert.Contains("CastPriorityScore", thrown.Message, StringComparison.Ordinal);
+            Assert.Contains("boss-son-thach-ve", thrown.Message, StringComparison.Ordinal);
+            Assert.Contains(
+                castPriorityScore.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                thrown.Message,
+                StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public async Task GetDefinitionByIdentityAsync_ShouldReadTheRowByTheCanonicalIdentity()
     {
         // DATABASE.md §1 note item 2 / §3: the lookup is by Identity alone, which
@@ -578,6 +720,10 @@ public class BossDefinitionBalanceLookupTests
             Assert.Equal(120, resolved.ATK);
             Assert.Equal(0, resolved.DEF);
             Assert.Equal(0.50, resolved.EnrageThreshold, precision: 9);
+
+            // BOSS_RULES.md §4.3 item 5 / TASK-308 OD-3b: the authored initial
+            // cast-priority score for its provisioned Boss Card.
+            Assert.Equal(16, resolved.CastPriorityScore);
         }
     }
 

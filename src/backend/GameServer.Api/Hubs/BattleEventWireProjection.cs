@@ -18,7 +18,7 @@ namespace GameServer.Api.Hubs;
 /// <c>CascadeCreated</c> / <c>ComboChanged</c> /
 /// <c>GemMatched</c> / <c>PassiveCharged</c> / <c>PassiveTriggered</c> /
 /// <c>DamageCalculated</c> / <c>DamageDealt</c> / <c>DamageTaken</c> /
-/// <c>BossSkillCast</c> / <c>BattleWon</c> / <c>BattleLost</c> / <c>CardCast</c> /
+/// <c>BossSkillCast</c> / <c>BossCardCast</c> / <c>BattleWon</c> / <c>BattleLost</c> / <c>CardCast</c> /
 /// <c>PetSkillCast</c> / <c>RelicTriggered</c> / <c>PowerChanged</c> /
 /// <c>MatchedGemSummary</c> — never
 /// the Domain enum's ordinal, which is a Domain identity and not part of the
@@ -27,9 +27,11 @@ namespace GameServer.Api.Hubs;
 /// resolution's events (<c>§3.2.6–§3.2.9</c>); the next two are the Passive
 /// stage's (<c>§3.3</c>, the shared Pet/Boss events; <c>§3.2.16–§3.2.17</c>);
 /// the three after them are the Damage Pipeline's (<c>§3.2.13–§3.2.15</c>); the
-/// next three are the Boss Response's and the outcome's (<c>§3.2.18–§3.2.19</c>);
-/// the two after those are the cast stages' (<c>§3.2.20–§3.2.21</c>); and the
-/// last two are the Relic stage's and the Power stage's (<c>§3.2.23–§3.2.24</c>).
+/// next two are the Boss Response's own cast forms
+/// (<c>§3.2.18</c>, <c>§3.2.30</c>) and the one after them is the outcome's
+/// (<c>§3.2.19</c>); the two after those are the Player cast stages'
+/// (<c>§3.2.20–§3.2.21</c>); and the last two are the Relic stage's and the Power
+/// stage's (<c>§3.2.23–§3.2.24</c>).
 /// All travel in this same <c>events[]</c> array on the same path (<c>§3.1</c>,
 /// <c>§4.3</c> item 10).
 ///
@@ -156,11 +158,13 @@ namespace GameServer.Api.Hubs;
 /// <c>DamageDealt</c> and <c>DamageTaken</c> (<c>§3.2.14</c>, <c>§3.2.15</c>): the Final Damage amount.
 /// </param>
 /// <param name="SourceId">
-/// <c>PassiveCharged</c>, <c>PassiveTriggered</c>, and <c>BossSkillCast</c>
-/// (<c>§3.2.16</c> item 2, <c>§3.2.17</c>, <c>§3.2.18</c>): the identity of the
-/// owning entity — <c>PetState.PetId</c> or <c>BossState.BossId</c>. It is the
-/// same fact — "which entity owns this event" — and the same wire name on all
-/// three events, so it is one member, and it is always present on each of them.
+/// <c>PassiveCharged</c>, <c>PassiveTriggered</c>, <c>BossSkillCast</c>, and
+/// <c>BossCardCast</c>
+/// (<c>§3.2.16</c> item 2, <c>§3.2.17</c>, <c>§3.2.18</c>, <c>§3.2.30</c>): the
+/// identity of the owning entity — <c>PetState.PetId</c> or
+/// <c>BossState.BossId</c>. It is the same fact — "which entity owns this event"
+/// — and the same wire name on all four events, so it is one member, and it is
+/// always present on each of them.
 /// For a Boss it is the canonical technical Identity <c>BossState.BossId</c>
 /// (e.g. <c>"boss-hoa-long"</c>), never a display name
 /// (<c>BOSS_RULES.md</c> §6.4). The damage events have no such member, so no
@@ -169,6 +173,12 @@ namespace GameServer.Api.Hubs;
 /// <param name="SkillId">
 /// <c>BossSkillCast</c> only (<c>§3.2.18</c>): the Boss Skill's identity
 /// (<c>BOSS_RULES.md</c> §4, §6.4).
+/// </param>
+/// <param name="CardId">
+/// <c>CardCast</c>, <c>PetSkillCast</c>, and <c>BossCardCast</c> (<c>§3.2.20</c>,
+/// <c>§3.2.21</c>, <c>§3.2.30</c>): the cast Card definition's identity. For a
+/// <c>BossCardCast</c> it is the Boss Card identity, which equals the ability
+/// <c>SkillId</c> (<c>CARD_RULES.md</c> §1.1 item 3).
 /// </param>
 /// <param name="Outcome">
 /// <c>BattleWon</c> and <c>BattleLost</c> only (<c>§3.2.19</c>): <c>"victory"</c>
@@ -444,6 +454,35 @@ public sealed record BattleEventWireDto(
         new(
             Type: "BossSkillCast",
             SkillId: skillId,
+            SourceId: sourceId);
+
+    /// <summary>
+    /// The wire item for one <c>BossCardCast</c>
+    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.30) — the Boss Card's identity and the
+    /// Boss's identity, and nothing else.
+    ///
+    /// <b>No cost, Power, cooldown, or effect summary is carried.</b> §3.2.30 fixes
+    /// the payload to the same two identity members <c>BossSkillCast</c> carries;
+    /// the resulting Boss Power and cooldown are authoritative in the
+    /// <c>bossState</c> projection (<c>§4.4</c> item 12), and the cast's effect is
+    /// settled state rather than a wire member (<c>GAME_EVENTS.md</c> §2). The
+    /// Boss Power a cast spends emits no <c>PowerChanged</c> (TASK-307 §2.2 C-6).
+    /// </summary>
+    /// <param name="cardId">
+    /// The Boss Card definition's identity (<c>CARD_RULES.md</c> §1.1 item 3;
+    /// <c>BOSS_RULES.md</c> §4.2) — the same string the transitional
+    /// <c>BossSkillCast.skillId</c> reports for the same ability, reported rather
+    /// than re-derived (<c>§3.2.30</c>).
+    /// </param>
+    /// <param name="sourceId">
+    /// The Boss's identity — the canonical technical Identity
+    /// <c>BossState.BossId</c> (e.g. <c>"boss-son-thach-ve"</c>), never a display
+    /// name (<c>BOSS_RULES.md</c> §6.4).
+    /// </param>
+    public static BattleEventWireDto BossCardCast(string cardId, string sourceId) =>
+        new(
+            Type: "BossCardCast",
+            CardId: cardId,
             SourceId: sourceId);
 
     /// <summary>
@@ -828,6 +867,7 @@ public static class BattleEventWireProjection
             BattleEventType.DamageDealt => ProjectDamageDealt(battleEvent.DamageDealt),
             BattleEventType.DamageTaken => ProjectDamageTaken(battleEvent.DamageTaken),
             BattleEventType.BossSkillCast => ProjectBossSkillCast(battleEvent.BossSkillCast),
+            BattleEventType.BossCardCast => ProjectBossCardCast(battleEvent.BossCardCast),
             BattleEventType.BattleWon => ProjectBattleWon(battleEvent.BattleWon),
             BattleEventType.BattleLost => ProjectBattleLost(battleEvent.BattleLost),
             BattleEventType.CardCast => ProjectCardCast(battleEvent.CardCast),
@@ -962,6 +1002,19 @@ public static class BattleEventWireProjection
             // the Skill's damage to the damage events that follow it in this batch.
             skillId: skill.SkillId,
             sourceId: skill.SourceId);
+
+    /// <summary>
+    /// Projects the <c>BossCardCast</c> payload (<c>SIGNALR_PROTOCOL.md</c>
+    /// §3.2.30) — the Boss Card's identity and the Boss's identity.
+    /// </summary>
+    private static BattleEventWireDto ProjectBossCardCast(BossCardCastEvent cast) =>
+        BattleEventWireDto.BossCardCast(
+            // §3.2.30: both members are identities the resolution read off the Boss
+            // Card definition and BossState. Neither is re-derived here, and no
+            // cost/Power/cooldown/effect detail is added — those reach the client
+            // through the authoritative state projection, never this event.
+            cardId: cast.CardId,
+            sourceId: cast.SourceId);
 
     /// <summary>
     /// Projects the <c>BattleWon</c> payload (<c>SIGNALR_PROTOCOL.md</c> §3.2.19).

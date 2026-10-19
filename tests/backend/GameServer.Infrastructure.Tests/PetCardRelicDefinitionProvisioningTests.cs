@@ -403,6 +403,15 @@ public class PetCardRelicDefinitionProvisioningTests
         // never by this one — so this historical row set stays exactly six.
         Assert.DoesNotContain("card-venomous-bloom", operations);
         Assert.DoesNotContain("card-earthshaker", operations);
+
+        // TASK-308's Boss Card (`earthquake`, category BossCard) is likewise
+        // supplied by its OWN insert-only content migration
+        // (20261019125446_ProvisionBossCardContent), never by this historical
+        // TASK-085 migration. Completed migrations are historical records, so this
+        // one must never be retro-edited to carry the ninth Card row.
+        Assert.DoesNotContain("earthquake", operations);
+        Assert.DoesNotContain("Earthquake", operations);
+        Assert.DoesNotContain("\"BossCard\"", operations);
     }
 
     // -----------------------------------------------------------------------

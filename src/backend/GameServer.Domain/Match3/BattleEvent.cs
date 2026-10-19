@@ -342,6 +342,23 @@ public enum BattleEventType
     /// count (<c>GAME_EVENTS.md</c> §2).
     /// </summary>
     MatchedGemSummary = 19,
+
+    /// <summary>
+    /// A Boss Card resolved (<c>GAME_EVENTS.md</c> §2 <c>BossCardCast</c>,
+    /// <c>BOSS_RULES.md</c> §4.2 item 6, §7; <c>SIGNALR_PROTOCOL.md</c> §3.2.30;
+    /// <c>ADR-029</c> §2.8 item 21).
+    ///
+    /// Its payload is the Boss Card definition's identity and the Boss's
+    /// identity. It is emitted <b>only</b> when a Boss Card cast is the action
+    /// the response-phase policy selected and the shared cast contract resolved
+    /// it (<c>BOSS_RULES.md</c> §4.3 item 2) — never for a board action, never
+    /// for a Player <c>CardCast</c>, and never concurrently with
+    /// <see cref="BossSkillCast"/> for the same ability resolution. It reports
+    /// no cost, no Power value and no effect summary: the resulting Boss
+    /// Power/cooldown are authoritative state delivered by the <c>bossState</c>
+    /// projection (<c>SIGNALR_PROTOCOL.md</c> §4.4 item 12, §3.2.30).
+    /// </summary>
+    BossCardCast = 20,
 }
 
 /// <summary>
@@ -573,6 +590,50 @@ public readonly record struct BossSkillCastEvent(string SkillId, string SourceId
 }
 
 /// <summary>
+/// The <c>BossCardCast</c> payload — the Boss Card that resolved
+/// (<c>GAME_EVENTS.md</c> §2, <c>BOSS_RULES.md</c> §4.2 item 6, §7;
+/// <c>SIGNALR_PROTOCOL.md</c> §3.2.30; <c>ADR-029</c> §2.8 item 21).
+///
+/// <code>
+/// BossCardCast: cardId, sourceId   (SIGNALR_PROTOCOL.md §3.2.30)
+/// </code>
+///
+/// <b>Both members are identities, and neither is re-derived.</b> <c>CardId</c>
+/// is the Boss Card definition's identity — the ability <c>SkillId</c>
+/// (<c>CARD_RULES.md</c> §1.1 item 3; <c>BOSS_RULES.md</c> §6.4), e.g.
+/// <c>"earthquake"</c> — which is the same string the transitional
+/// <see cref="BossSkillCastEvent.SkillId"/> reports for the same ability.
+/// <c>SourceId</c> is the Boss's canonical technical Identity
+/// <c>BossState.BossId</c> (e.g. <c>"boss-son-thach-ve"</c>), never a display
+/// name.
+///
+/// <b>It carries no effect detail and no cost.</b> The Boss Card's Power spend
+/// and the resulting Power/cooldown are authoritative state delivered by the
+/// <c>bossState</c> projection (<c>GAME_EVENTS.md</c> §2,
+/// <c>SIGNALR_PROTOCOL.md</c> §3.2.30, §4.4 item 12). A Boss Power spend emits
+/// no <c>PowerChanged</c>, whose <c>power</c> member is the Pet's Power
+/// (<c>GAME_EVENTS.md</c> §2).
+///
+/// <b>Domain value, not a wire type</b> (<c>GAME_EVENTS.md</c> §3 item 1): the
+/// transport layer owns serialization, exactly as for the other payloads here.
+/// </summary>
+/// <param name="CardId">
+/// The Boss Card definition's identity (<c>CARD_RULES.md</c> §1.1 item 3,
+/// <c>BOSS_RULES.md</c> §6.4) — the ability <c>SkillId</c>, reported rather
+/// than recomputed.
+/// </param>
+/// <param name="SourceId">
+/// The Boss's identity (<c>BOSS_RULES.md</c> §6.4,
+/// <c>SIGNALR_PROTOCOL.md</c> §3.2.30) — the canonical technical Identity
+/// <c>BossState.BossId</c>, never a display name.
+/// </param>
+public readonly record struct BossCardCastEvent(string CardId, string SourceId)
+{
+    /// <summary>"BossCardCast (boss-son-thach-ve → earthquake)" — for test diagnostics only.</summary>
+    public override string ToString() => $"BossCardCast ({SourceId} -> {CardId})";
+}
+
+/// <summary>
 /// The <c>BattleWon</c> payload — the battle ended with the Boss defeated
 /// (<c>GAME_EVENTS.md</c> §2, <c>GAME_RULES.md</c> §1.4, <c>BOSS_RULES.md</c> §7;
 /// <c>SIGNALR_PROTOCOL.md</c> §3.2.19).
@@ -733,7 +794,8 @@ public readonly record struct BattleEvent
         SwapStartedEvent? swapStarted = null,
         SwapResolvedEvent? swapResolved = null,
         CascadeStepResolvedEvent? cascadeStepResolved = null,
-        MatchedGemSummaryEvent? matchedGemSummary = null)
+        MatchedGemSummaryEvent? matchedGemSummary = null,
+        BossCardCastEvent? bossCardCast = null)
     {
         Type = type;
         _match = match;
@@ -756,6 +818,7 @@ public readonly record struct BattleEvent
         _swapResolved = swapResolved;
         _cascadeStepResolved = cascadeStepResolved;
         _matchedGemSummary = matchedGemSummary;
+        _bossCardCast = bossCardCast;
     }
 
     private readonly MatchResolution? _match;
@@ -778,6 +841,7 @@ public readonly record struct BattleEvent
     private readonly SwapResolvedEvent? _swapResolved;
     private readonly CascadeStepResolvedEvent? _cascadeStepResolved;
     private readonly MatchedGemSummaryEvent? _matchedGemSummary;
+    private readonly BossCardCastEvent? _bossCardCast;
 
     /// <summary>Which documented event this is.</summary>
     public BattleEventType Type { get; }
@@ -1034,6 +1098,19 @@ public readonly record struct BattleEvent
             + "Check Type before reading MatchedGemSummary.");
 
     /// <summary>
+    /// The <c>BossCardCast</c> payload — the Boss Card definition's identity and
+    /// the Boss's identity (<c>GAME_EVENTS.md</c> §2,
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.30).
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// This event is not a <see cref="BattleEventType.BossCardCast"/>.
+    /// </exception>
+    public BossCardCastEvent BossCardCast =>
+        _bossCardCast ?? throw new InvalidOperationException(
+            $"A {Type} event carries no BossCardCast payload (GAME_EVENTS.md §2). "
+            + "Check Type before reading BossCardCast.");
+
+    /// <summary>
     /// A <c>MatchCreated</c> event for one detected Match.
     /// </summary>
     /// <param name="match">
@@ -1184,6 +1261,34 @@ public readonly record struct BattleEvent
             null,
             null,
             null);
+
+    /// <summary>
+    /// A <c>BossCardCast</c> event for one resolved Boss Card cast
+    /// (<c>GAME_EVENTS.md</c> §2, <c>BOSS_RULES.md</c> §4.2 item 6, §7;
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.30).
+    ///
+    /// Public for the same reason as <see cref="ForBossSkillCast"/>: the Boss
+    /// Response is the Application-layer step that owns <c>GAME_RULES.md</c>
+    /// §17 step 18c, and it hands the assembled list back through
+    /// <see cref="SwapExecutionResult.WithEvents"/>. Both members are identities
+    /// carried unchanged from the Boss Card definition and the Boss state —
+    /// neither is derived here, and no cost, Power value, cooldown or effect
+    /// summary is added (<c>SIGNALR_PROTOCOL.md</c> §3.2.30).
+    /// </summary>
+    /// <param name="cardId">
+    /// The Boss Card definition's identity — the ability <c>SkillId</c>
+    /// (<c>CARD_RULES.md</c> §1.1 item 3; <c>BOSS_RULES.md</c> §6.4).
+    /// </param>
+    /// <param name="sourceId">
+    /// The Boss's identity — the canonical technical Identity
+    /// <c>BossState.BossId</c>, never a display name
+    /// (<c>BOSS_RULES.md</c> §6.4, <c>SIGNALR_PROTOCOL.md</c> §3.2.30).
+    /// </param>
+    public static BattleEvent ForBossCardCast(string cardId, string sourceId) =>
+        new(
+            BattleEventType.BossCardCast,
+            null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            bossCardCast: new BossCardCastEvent(cardId, sourceId));
 
     /// <summary>
     /// A <c>BattleWon</c> event for the Boss HP terminal check
@@ -1494,6 +1599,7 @@ public readonly record struct BattleEvent
         BattleEventType.SwapResolved => SwapResolved.ToString(),
         BattleEventType.CascadeStepResolved => CascadeStep.ToString(),
         BattleEventType.MatchedGemSummary => MatchedGemSummary.ToString(),
+        BattleEventType.BossCardCast => BossCardCast.ToString(),
         _ => Type.ToString(),
     };
 }

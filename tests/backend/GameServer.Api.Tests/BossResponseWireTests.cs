@@ -390,6 +390,93 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
                 && e.GetProperty("source").GetString() == "boss") <= 1);
     }
 
+    // =======================================================================
+    // BossCardCast — SIGNALR_PROTOCOL.md §3.2.30 (TASK-308)
+    // =======================================================================
+
+    [Fact]
+    public async Task ReceiveEvents_BossCardCast_ShouldCarryCardIdAndSourceIdOnly()
+    {
+        // §3.2.30 fixes the wire item to the discriminator and the two identities:
+        // `cardId` is the Boss Card definition identity (equal to the ability
+        // SkillId) and `sourceId` is the Boss's canonical technical Identity
+        // (BOSS_RULES.md §6.4). No cost, Power, cooldown, or effect summary is a
+        // wire member (GAME_EVENTS.md §2; ADR-029 §2.11).
+        //
+        // The provisioned `earthquake` Boss Card is real content in the host's
+        // store, so battle creation resolves the migrated form from content
+        // presence (OD-1c). The cast is forced by the test definition's
+        // cast-priority override so the scenario does not depend on the authored
+        // score beating the board's own score on this generated board; the
+        // authored 16/board-score boundary is Domain-tested elsewhere.
+        TestProvisionedContent.Seed(_factory.Services);
+
+        const string battleId = "wire-boss-card-cast";
+
+        var boss = BossDefinitions.SonThachVe with
+        {
+            CastPriorityScore = int.MaxValue,
+
+            // The cast round must not end the battle: the Boss survives and deals
+            // no damage, so the round under test is an ordinary committed round.
+            MaxHP = 1_000_000,
+            ATK = 0,
+        };
+
+        var created = await CreateBattleWithStateAsync(battleId, boss);
+
+        // Pin the Boss content the documented cast gate reads: Power covers the
+        // card's cost and the decremented cooldown is 0 (BOSS_RULES.md §4.3).
+        await PinBossStateAsync(
+            battleId,
+            created.BossState with { Power = 50, SkillCooldown = 0 });
+
+        var payload = await SwapOnceAndReadTheBatch(
+            battleId,
+            FindMatchProducingPair(created.BoardState));
+
+        var events = payload.GetProperty("events").EnumerateArray().ToArray();
+
+        var casts = events
+            .Where(e => e.GetProperty("type").GetString() == "BossCardCast")
+            .ToArray();
+
+        Assert.Single(casts);
+
+        Assert.Equal("earthquake", casts[0].GetProperty("cardId").GetString());
+        Assert.Equal("boss-son-thach-ve", casts[0].GetProperty("sourceId").GetString());
+
+        // §3.2.30: exactly the discriminator and its two identity members.
+        Assert.Equal(
+            new[] { "cardId", "sourceId", "type" },
+            casts[0].EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        // A cast-selected phase performs no Boss board action and no Boss attack:
+        // no Boss boundary pair, no Boss-sourced damage, and the only
+        // MatchedGemSummary is the Player cycle's (GAME_RULES.md §17 step 18;
+        // ADR-029 §2.7; TASK-307 §3.5.3).
+        Assert.DoesNotContain(
+            events,
+            e => e.GetProperty("type").GetString() == "SwapStarted"
+                && e.GetProperty("actor").GetString() == "boss");
+        Assert.DoesNotContain(
+            events,
+            e => e.GetProperty("type").GetString() == "DamageDealt"
+                && e.GetProperty("source").GetString() == "boss");
+        Assert.Single(events, e => e.GetProperty("type").GetString() == "MatchedGemSummary");
+
+        // The Boss Power spend emits no PowerChanged (TASK-307 §2.2 C-6); the
+        // resulting Power/cooldown are in the authoritative `bossState` projection.
+        Assert.DoesNotContain(
+            events,
+            e => e.GetProperty("type").GetString() == "PowerChanged"
+                && e.GetProperty("source").GetString() == "boss");
+
+        // The one form per ability rule: the legacy Skill event never accompanies
+        // the Card event for the same ability (BOSS_RULES.md §4.4; TASK-308 §3.6).
+        Assert.DoesNotContain(events, e => e.GetProperty("type").GetString() == "BossSkillCast");
+    }
+
     [Fact]
     public async Task ReceiveEvents_BossDamage_ShouldReportBossToPlayer()
     {

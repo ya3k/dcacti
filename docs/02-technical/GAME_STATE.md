@@ -1,6 +1,16 @@
 # Game State
 
-**Version:** 2.32 (§2.2.2, §2.4, §2.4.1, §2.4.3 and §5.1 updated per **ADR-029 /
+**Version:** 2.33 (§2.4 and §2.4.3 **clarified** per **TASK-308 / ADR-029
+Slice 3** without changing the state model: the Boss Card definition, its active
+form and its cast-priority score are battle-start **content inputs** resolved
+exactly once at creation and cached with the Boss content input — they are **not**
+`BattleState`/`BossState` members, so no Redis key, snapshot field, `Sequence`
+rule or wire member changes — and §2.4.3 states the documented cooldown reading
+explicitly (an authored `N` blocks `N−1` subsequent Rounds, the `N`th is eligible
+again). Value ownership stays with `BOSS_RULES.md` §4.3–§4.4 and `CARD_RULES.md`
+§1.1 and is referenced, not restated. **No member is added, removed, or
+retyped**, and no lifecycle, serialization, write-back or existing rule moves.
+Decision source: TASK-308 / ADR-029 Slice 3. Prior 2.32: (§2.2.2, §2.4, §2.4.1, §2.4.3 and §5.1 updated per **ADR-029 /
 TASK-303**, applying the explicit Product Owner decision that the Boss uses the
 same resource and cast principles as the Player: **`BossState.Power` is added to
 §2.4's tree** as the Boss's own integer 0–100 resource, **§2.4.3** becomes the
@@ -2214,6 +2224,22 @@ record, so it is a definition-side identity (contrast `PetState.PetId`,
 which is an instance identity — §2.3, ADR-014). No second identity field
 and no display-name member is added to `BossState`.
 
+**The Boss Card definition, its active form and its cast-priority score are
+battle-start CONTENT INPUTS — not `BattleState`/`BossState` members.** Which of
+the two ability forms a Boss uses, and the score a Boss Card cast is compared by,
+are resolved exactly once when the battle is created, from the provisioned
+content, and cached beside the Boss definition for that battle (`DATABASE.md`
+§1/§3, `ARCHITECTURE.md` §3); the rules those inputs serve are owned by
+`BOSS_RULES.md` §4.3–§4.4 and `ADR-029` and are referenced, not restated. None of
+the three is a member of the tree above: no `BossState` or `BattleState` member,
+Redis key, snapshot field, or wire member carries the definition, the form, or
+the score, and the client observes only their consequences (the `BossCardCast`
+event and the existing `bossState` members — `GAME_EVENTS.md` §2,
+`SIGNALR_PROTOCOL.md` §4.4). The form is therefore never stored, inferred from
+`SkillCharge`/`SkillCooldown`, or re-derived per Round or per CAS attempt, and
+content that is missing or invalid fails battle creation closed rather than
+falling back to the legacy Skill form.
+
 ### 2.4.1 Staged BossState Fields
 
 ```text
@@ -2388,6 +2414,12 @@ may be used again, for the transitional Skill form and the Boss Card form alike.
    are `BOSS_RULES.md` §6.3's and are unchanged by `ADR-029`.
 5. It keeps decrementing during response phases in which the Boss selects a
    board match action.
+6. With that order, an authored value `N` blocks the ability for the next
+   `N−1` Rounds and the `N`th Round is eligible again; `N = 0` is eligible in
+   every Round. The reading follows from this member's documented order
+   (decrement → hard gate → set on a successful cast), which `BOSS_RULES.md`
+   §4.3 and `ADR-029` own — it is not a separate countdown, and no other step
+   writes the member.
 
 ### 2.4.4 Enrage
 

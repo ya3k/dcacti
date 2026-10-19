@@ -108,6 +108,9 @@ namespace GameServer.Infrastructure.Postgres.Migrations
                         .HasColumnType("character varying(64)")
                         .HasColumnName("Identity");
 
+                    b.Property<int?>("CastPriorityScore")
+                        .HasColumnType("integer");
+
                     b.Property<int>("DEF")
                         .HasColumnType("integer");
 
@@ -137,6 +140,8 @@ namespace GameServer.Infrastructure.Postgres.Migrations
                     b.ToTable("BossDefinition", null, t =>
                         {
                             t.HasCheckConstraint("CK_BossDefinition_ATK_NonNegative", "\"ATK\" >= 0");
+
+                            t.HasCheckConstraint("CK_BossDefinition_CastPriorityScore_NonNegative", "\"CastPriorityScore\" IS NULL OR \"CastPriorityScore\" >= 0");
 
                             t.HasCheckConstraint("CK_BossDefinition_DEF_NonNegative", "\"DEF\" >= 0");
 

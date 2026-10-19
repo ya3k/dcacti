@@ -275,11 +275,13 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
         if (rows is null) return;
 
         // DATABASE.md §1 note item 1: the display name is presentation content
-        // and is never a column — only the nine documented columns exist (the five
-        // structural/configuration columns plus the four runtime balance columns
-        // ADR-024 added), so no display-name text can be stored anywhere in the
-        // row. This asserts the applied table's column set and that the stored
-        // Identity values are the canonical technical IDs, never display names.
+        // and is never a column — only the ten documented columns exist (the five
+        // structural/configuration columns plus the five Domain-Overlay columns
+        // ADR-024 added, the fifth — `CastPriorityScore`, nullable — by the
+        // TASK-308 in-place amendment), so no display-name text can be stored
+        // anywhere in the row. This asserts the applied table's column set and that
+        // the stored Identity values are the canonical technical IDs, never display
+        // names.
         await using var context = CreateContext();
 
         var entity = context.Model.FindEntityType(typeof(BossDefinition))!;
@@ -289,6 +291,7 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
             {
                 "ATK",
                 "BossDefinitionId",
+                "CastPriorityScore",
                 "DEF",
                 "Element",
                 "EnrageThreshold",
@@ -358,14 +361,128 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Postgres_ShouldCarryTheFourBalanceRangeConstraints()
+    public async Task Postgres_ShouldHoldTheApprovedCastPriorityScorePerRow()
+    {
+        var rows = await ReadProvisionedRowsAsync();
+        if (rows is null) return;
+
+        // DATABASE.md §1/§3 (TASK-308 / OD-3a/OD-3b) against the applied schema:
+        // exactly one row carries an authored score — Sơn Thạch Vệ's approved 16,
+        // the Boss whose Boss Card is provisioned in Slice 3 — and the other four
+        // hold the documented NULL "not authored" marker. The four NULL rows are
+        // spell-checked individually so a migration that populated the wrong row,
+        // or guessed a score for an unmigrated Boss, fails here rather than
+        // silently shifting the cast-priority balance.
+        var byId = rows.ToDictionary(r => r.BossDefinitionId, StringComparer.Ordinal);
+
+        Assert.Equal(16, byId["boss-def-son-thach-ve"].CastPriorityScore);
+
+        foreach (var id in new[]
+                 {
+                     "boss-def-hoa-long", "boss-def-thuy-ma", "boss-def-moc-yeu",
+                     "boss-def-kim-loi-vuong",
+                 })
+        {
+            Assert.Null(byId[id].CastPriorityScore);
+        }
+
+        // The applied value equals the authoritative Domain baseline's, so the
+        // schema migration and the Domain definition cannot drift.
+        foreach (var definition in BossDefinitions.All)
+        {
+            Assert.Equal(
+                definition.CastPriorityScore,
+                byId[definition.BossDefinitionId].CastPriorityScore);
+        }
+    }
+
+    [Fact]
+    public async Task Postgres_ShouldRejectANegativeCastPriorityScoreAndKeepTheRowUnchanged()
     {
         if (!_available || !_schemaApplied) return;
 
-        // DATABASE.md §3 / ADR-024 §2.4: the four range invariants are enforced by
-        // the database, with the ADR's exact constraint names. This reads the
-        // applied catalog, so a migration that declared the constraints but did
-        // not create them is caught.
+        // DATABASE.md §3 / ADR-024 §2.4 as amended by TASK-308: the database refuses
+        // a negative score outright, naming the constraint. The statement is
+        // rejected, so the canonical row keeps its NULL value and nothing has to be
+        // restored.
+        await using var command = _dataSource!.CreateCommand(
+            "UPDATE \"BossDefinition\" SET \"CastPriorityScore\" = -1 "
+            + "WHERE \"BossDefinitionId\" = 'boss-def-hoa-long'");
+
+        var thrown = await Assert.ThrowsAsync<PostgresException>(
+            () => command.ExecuteNonQueryAsync());
+
+        Assert.Equal("23514", thrown.SqlState);
+        Assert.Contains(
+            "CK_BossDefinition_CastPriorityScore_NonNegative",
+            thrown.Message,
+            StringComparison.Ordinal);
+
+        await using var verify = CreateContext();
+
+        var row = await verify.BossDefinitions
+            .AsNoTracking()
+            .SingleAsync(d => d.BossDefinitionId == "boss-def-hoa-long");
+
+        Assert.Null(row.CastPriorityScore);
+    }
+
+    [Fact]
+    public async Task Postgres_ShouldAcceptACanonicalCastPriorityScoreOfZeroAndRestoreNull()
+    {
+        if (!_available || !_schemaApplied) return;
+
+        // The inclusive lower bound of the nullable range invariant: 0 is a legal
+        // authored score (the board action's documented win threshold is above it,
+        // which is selection's concern, not the schema's). A probe on an existing
+        // canonical row then resets it to NULL, so the shared database is left in
+        // its documented state.
+        try
+        {
+            await using (var command = _dataSource!.CreateCommand(
+                "UPDATE \"BossDefinition\" SET \"CastPriorityScore\" = 0 "
+                + "WHERE \"BossDefinitionId\" = 'boss-def-kim-loi-vuong'"))
+            {
+                await command.ExecuteNonQueryAsync();
+            }
+
+            await using (var context = CreateContext())
+            {
+                var row = await context.BossDefinitions
+                    .AsNoTracking()
+                    .SingleAsync(d => d.BossDefinitionId == "boss-def-kim-loi-vuong");
+
+                Assert.Equal(0, row.CastPriorityScore);
+            }
+        }
+        finally
+        {
+            await using var restore = _dataSource!.CreateCommand(
+                "UPDATE \"BossDefinition\" SET \"CastPriorityScore\" = NULL "
+                + "WHERE \"BossDefinitionId\" = 'boss-def-kim-loi-vuong'");
+
+            await restore.ExecuteNonQueryAsync();
+        }
+
+        await using var verify = CreateContext();
+
+        var restored = await verify.BossDefinitions
+            .AsNoTracking()
+            .SingleAsync(d => d.BossDefinitionId == "boss-def-kim-loi-vuong");
+
+        Assert.Null(restored.CastPriorityScore);
+    }
+
+    [Fact]
+    public async Task Postgres_ShouldCarryTheFiveOverlayRangeConstraints()
+    {
+        if (!_available || !_schemaApplied) return;
+
+        // DATABASE.md §3 / ADR-024 §2.4 as amended by TASK-308: the five overlay
+        // invariants are enforced by the database, with the ADR's exact constraint
+        // names. This reads the applied catalog, so a migration that declared a
+        // constraint but did not create it is caught. The fifth is the nullable
+        // range form `CastPriorityScore IS NULL OR CastPriorityScore >= 0`.
         await using var command = _dataSource!.CreateCommand(
             "SELECT con.conname "
             + "FROM pg_constraint con JOIN pg_class rel ON rel.oid = con.conrelid "
@@ -386,6 +503,7 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
             new[]
             {
                 "CK_BossDefinition_ATK_NonNegative",
+                "CK_BossDefinition_CastPriorityScore_NonNegative",
                 "CK_BossDefinition_DEF_NonNegative",
                 "CK_BossDefinition_EnrageThreshold_Range",
                 "CK_BossDefinition_MaxHP_Positive",
@@ -394,19 +512,22 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Postgres_ShouldHaveNoDefaultValueOnTheFourBalanceColumns()
+    public async Task Postgres_ShouldHaveNoDefaultValueOnTheFiveOverlayColumns()
     {
         if (!_available || !_schemaApplied) return;
 
         // ADR-024 §2.5 / Fail-Closed Design: The transitional defaults (1, 0, 0, 0.5)
-        // were dropped in Phase 4 of migration 20261011042819_AddBossBalanceConfiguration.
-        // This test directly inspects information_schema.columns to prove that
-        // none of the four balance columns retain a default expression in the catalog.
+        // were dropped in Phase 4 of migration 20261011042819_AddBossBalanceConfiguration,
+        // and the fifth overlay column (TASK-308's `CastPriorityScore`) was added
+        // nullable with no default at all. This test directly inspects
+        // information_schema.columns to prove that none of the five overlay columns
+        // retains a default expression in the catalog — so an insert that omits a
+        // value can never silently inherit one.
         await using var command = _dataSource!.CreateCommand(
             "SELECT column_name, column_default "
             + "FROM information_schema.columns "
             + "WHERE table_name = 'BossDefinition' "
-            + "  AND column_name IN ('MaxHP', 'ATK', 'DEF', 'EnrageThreshold') "
+            + "  AND column_name IN ('MaxHP', 'ATK', 'DEF', 'EnrageThreshold', 'CastPriorityScore') "
             + "ORDER BY column_name");
 
         var defaults = new Dictionary<string, string?>(StringComparer.Ordinal);
@@ -421,11 +542,12 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
             }
         }
 
-        Assert.Equal(4, defaults.Count);
+        Assert.Equal(5, defaults.Count);
         Assert.Null(defaults["MaxHP"]);
         Assert.Null(defaults["ATK"]);
         Assert.Null(defaults["DEF"]);
         Assert.Null(defaults["EnrageThreshold"]);
+        Assert.Null(defaults["CastPriorityScore"]);
     }
 
     [Fact]
@@ -466,10 +588,11 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
     {
         if (!_available || !_schemaApplied) return;
 
-        // ADR-024 §2.4: the database refuses a corrupt balance value outright, so
-        // a bad row cannot be written at all. Each documented invariant is violated
-        // on its own, including both EnrageThreshold boundaries (0.0 and 1.0 are
-        // exclusive).
+        // ADR-024 §2.4 as amended by TASK-308: the database refuses a corrupt
+        // overlay value outright, so a bad row cannot be written at all. Each
+        // documented invariant is violated on its own, including both
+        // EnrageThreshold boundaries (0.0 and 1.0 are exclusive) and the fifth
+        // value's negative case (NULL stays legal — it is asserted elsewhere).
         var invalid = new (string Name, BossDefinition Row)[]
         {
             ("maxhp-zero", Probe("maxhp-zero", maxHp: 0)),
@@ -479,6 +602,10 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
             ("enrage-zero", Probe("enrage-zero", enrage: 0.0)),
             ("enrage-one", Probe("enrage-one", enrage: 1.0)),
             ("enrage-above-one", Probe("enrage-above-one", enrage: 1.5)),
+            ("cast-priority-negative", Probe("cast-priority-negative", castPriorityScore: -1)),
+            (
+                "cast-priority-int-min",
+                Probe("cast-priority-int-min", castPriorityScore: int.MinValue)),
         };
 
         foreach (var (name, row) in invalid)
@@ -502,12 +629,13 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
     {
         if (!_available || !_schemaApplied) return;
 
-        // The mirror of the rejection test: the constraints bound the range but do
-        // not forbid values at its edge (MaxHP = 1, ATK = 0, DEF = 0,
-        // EnrageThreshold just inside the open interval). A probe row proves the
+        // The mirror of the rejection test: the constraints bound the ranges but
+        // do not forbid values at their edges (MaxHP = 1, ATK = 0, DEF = 0,
+        // EnrageThreshold just inside the open interval, CastPriorityScore = 0 —
+        // the nullable range's inclusive lower bound). A probe row proves the
         // schema is usable and is then removed, so the canonical five are
         // untouched and no probe row is left behind.
-        var probe = Probe("legal", maxHp: 1, atk: 0, def: 0, enrage: 0.999);
+        var probe = Probe("legal", maxHp: 1, atk: 0, def: 0, enrage: 0.999, castPriorityScore: 0);
 
         try
         {
@@ -527,6 +655,7 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
                 Assert.Equal(0, stored.ATK);
                 Assert.Equal(0, stored.DEF);
                 Assert.Equal(0.999, stored.EnrageThreshold, precision: 9);
+                Assert.Equal(0, stored.CastPriorityScore);
             }
         }
         finally
@@ -579,6 +708,10 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
             Assert.Equal(baseline.DEF, resolved.DEF);
             Assert.Equal(baseline.EnrageThreshold, resolved.EnrageThreshold);
 
+            // TASK-308's fifth overlay value: Sơn Thạch Vệ's authored 16 is read
+            // back through the real provider, and the other four remain NULL.
+            Assert.Equal(baseline.CastPriorityScore, resolved.CastPriorityScore);
+
             // BOSS_RULES.md §6.3.1: the secondary effects are not stored, so this
             // asserts the overlay preserved them from the Domain baseline rather
             // than reading them back.
@@ -595,11 +728,73 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
         Assert.Equal(100, hoaLong.ATK);
         Assert.Equal(50, hoaLong.DEF);
         Assert.Equal(0.30, hoaLong.EnrageThreshold, precision: 9);
+        Assert.Null(hoaLong.CastPriorityScore);
         Assert.NotNull(hoaLong.SkillDefinition.SecondaryEffect);
+
+        // BOSS_RULES.md §4.3 item 5 / TASK-308 OD-3b: the one migrated Boss's
+        // authored cast-priority score reaches the hydrated definition.
+        var sonThachVe = await lookup.GetDefinitionByIdentityAsync("boss-son-thach-ve");
+
+        Assert.NotNull(sonThachVe);
+        Assert.Equal(16, sonThachVe!.CastPriorityScore);
 
         // ADR-024 §2.1 item 1 against the live database: an identity outside the
         // content-defined MVP set is the client miss, not an exception.
         Assert.Null(await lookup.GetDefinitionByIdentityAsync("boss-not-a-real-boss"));
+    }
+
+    [Fact]
+    public async Task Postgres_LookupShouldReadTheStoredCastPriorityScoreNotTheBaseline()
+    {
+        if (!_available || !_schemaApplied) return;
+
+        // TASK-308's fifth overlay value is read from the row, exactly like the
+        // four balance values. Hỏa Long's baseline score is NULL, so a temporary
+        // stored 21 proves the projection reads the column rather than the
+        // baseline. The row is reset to its canonical NULL in the finally block, so
+        // the shared development database is left as it was.
+        const string identity = "boss-hoa-long";
+        const string key = "boss-def-hoa-long";
+
+        var baseline = BossDefinitions.All.Single(d => d.BossId.Value == identity);
+
+        Assert.Null(baseline.CastPriorityScore);
+
+        try
+        {
+            await using (var mutate = _dataSource!.CreateCommand(
+                "UPDATE \"BossDefinition\" SET \"CastPriorityScore\" = 21 "
+                + "WHERE \"BossDefinitionId\" = 'boss-def-hoa-long'"))
+            {
+                await mutate.ExecuteNonQueryAsync();
+            }
+
+            await using (var context = CreateContext())
+            {
+                var resolved = await new BossDefinitionLookup(context)
+                    .GetDefinitionByIdentityAsync(identity);
+
+                Assert.NotNull(resolved);
+                Assert.Equal(21, resolved!.CastPriorityScore);
+                Assert.NotEqual(baseline.CastPriorityScore, resolved.CastPriorityScore);
+            }
+        }
+        finally
+        {
+            await using var restore = _dataSource!.CreateCommand(
+                "UPDATE \"BossDefinition\" SET \"CastPriorityScore\" = NULL "
+                + "WHERE \"BossDefinitionId\" = 'boss-def-hoa-long'");
+
+            await restore.ExecuteNonQueryAsync();
+        }
+
+        await using var verify = CreateContext();
+
+        var restored = await verify.BossDefinitions
+            .AsNoTracking()
+            .SingleAsync(d => d.BossDefinitionId == key);
+
+        Assert.Null(restored.CastPriorityScore);
     }
 
     [Fact]
@@ -746,7 +941,8 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
         int maxHp = 100,
         int atk = 1,
         int def = 1,
-        double enrage = 0.5) =>
+        double enrage = 0.5,
+        int? castPriorityScore = null) =>
         new(
             BossDefinitionId: $"boss-def-t251-{suffix}",
             BossId: new BossId($"boss-t251-{suffix}"),
@@ -758,5 +954,6 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
             ATK = atk,
             DEF = def,
             EnrageThreshold = enrage,
+            CastPriorityScore = castPriorityScore,
         };
 }

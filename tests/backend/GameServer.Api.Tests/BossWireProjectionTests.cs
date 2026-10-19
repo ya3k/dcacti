@@ -199,6 +199,86 @@ public class BossWireProjectionTests
     }
 
     // =======================================================================
+    // BossCardCast — SIGNALR_PROTOCOL.md §3.2.30 (TASK-308)
+    // =======================================================================
+
+    [Fact]
+    public void BossCardCast_ShouldCarryCardIdAndSourceId()
+    {
+        // §3.2.30: exactly two members plus the discriminator — the Boss Card's
+        // identity (equal to the ability SkillId, CARD_RULES.md §1.1 item 3) and
+        // the Boss's canonical technical Identity (BOSS_RULES.md §6.4).
+        var wire = Serialize(BattleEvent.ForBossCardCast("earthquake", "boss-son-thach-ve"));
+
+        Assert.Equal("BossCardCast", wire.GetProperty("type").GetString());
+        Assert.Equal("earthquake", wire.GetProperty("cardId").GetString());
+        Assert.Equal("boss-son-thach-ve", wire.GetProperty("sourceId").GetString());
+
+        Assert.Equal(["cardId", "sourceId", "type"], Members(wire));
+    }
+
+    [Fact]
+    public void BossCardCast_ShouldCarryNoCostPowerCooldownOrEffectDetail()
+    {
+        // §3.2.30 fixes the payload to the two identity members. The spend, the
+        // resulting Power/cooldown, and the effect are authoritative state (the
+        // `bossState` projection), never members of this event; and no `source`
+        // member exists, which belongs to the damage and Passive events.
+        var wire = Serialize(BattleEvent.ForBossCardCast("earthquake", "boss-son-thach-ve"));
+        var members = Members(wire);
+
+        Assert.DoesNotContain(
+            members,
+            m => m is "skillId" or "amount" or "finalDamage" or "effect" or "effectSummary"
+                or "element" or "source" or "target" or "power" or "cost" or "cooldown"
+                or "delta" or "shield");
+
+        Assert.DoesNotContain("null", wire.GetRawText(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BossCardCast_ShouldCarryTheDefinitionsIdentities()
+    {
+        // The Card identity is the ability's SkillId and the source identity is the
+        // Boss's canonical technical Identity (BOSS_RULES.md §6.4): the two strings
+        // SIGNALR_PROTOCOL.md §3.2.30 says must equal BossSkillCast's for the same
+        // ability.
+        var definition = BossDefinitions.SonThachVe;
+
+        Assert.Equal("earthquake", definition.SkillId);
+
+        var wire = Serialize(BattleEvent.ForBossCardCast(definition.SkillId, definition.BossId.Value));
+
+        Assert.Equal("earthquake", wire.GetProperty("cardId").GetString());
+        Assert.Equal("boss-son-thach-ve", wire.GetProperty("sourceId").GetString());
+    }
+
+    [Fact]
+    public void Projection_WithBossCardCast_ShouldRemainOneToOneAndOrderPreserving()
+    {
+        // §3.2.1 item 3 / §3.2.12 item 4: N Domain events produce N wire items in
+        // the same order. The new Boss Card event is not an exception, and it does
+        // not displace or merge with the legacy Boss Skill event.
+        var events = new[]
+        {
+            BattleEvent.ForPassiveCharged(
+                new PassiveChargedEvent(
+                    new PassiveId("son-thach-ve-enrage"), 1, 5,
+                    PassiveEventSource.Boss, "boss-son-thach-ve")),
+            BattleEvent.ForBossCardCast("earthquake", "boss-son-thach-ve"),
+            BattleEvent.ForBossSkillCast("flame-burst", "boss-hoa-long"),
+        };
+
+        var wire = BattleEventWireProjection.Project(events);
+
+        Assert.Equal(events.Length, wire.Count);
+
+        Assert.Equal(
+            ["PassiveCharged", "BossCardCast", "BossSkillCast"],
+            wire.Select(w => w.Type));
+    }
+
+    // =======================================================================
     // BattleWon / BattleLost — §3.2.19
     // =======================================================================
 

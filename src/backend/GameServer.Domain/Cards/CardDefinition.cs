@@ -82,13 +82,14 @@ public class CardDefinition
     /// is the active Pet's derived Signature Skill
     /// (<c>CARD_RULES.md</c> §1, §4; <c>API_CONTRACTS.md</c> §3 step 3).
     ///
-    /// <b><see cref="CardCategory.BossCard"/> is Domain-only.</b>
-    /// <c>CARD_RULES.md</c> §1.1 owns the third category and adds no persistence
-    /// contract for it: §1.1 item 5 leaves the Boss Card's provisioning carrier
-    /// deliberately undefined, so a persisted <c>CardDefinition</c> row still
-    /// carries only <c>Basic</c> or <c>PetSkill</c> and no row is provisioned with
-    /// this value yet. The value exists at this layer because the cast contract
-    /// must be able to name the Boss's own Card category
+    /// <b><see cref="CardCategory.BossCard"/> is a provisioned content category
+    /// (TASK-308).</b> <c>CARD_RULES.md</c> §1.1 owns the third category: item 3
+    /// fixes a Boss Card's identity as the ability <c>SkillId</c> (the approved
+    /// `DATABASE.md` value-form exception), and item 5 records the insert-only
+    /// provisioning contract. Exactly one <c>BossCard</c> row is provisioned for
+    /// the initial <c>earthquake</c> Boss Card; no Player row carries the
+    /// category, and the value exists at this layer because the cast contract
+    /// must name the Boss's own Card category
     /// (<see cref="CardCastExecutor"/> with <see cref="CardCastActor.Boss"/>,
     /// <c>CARD_RULES.md</c> §3 item 9).
     /// </summary>

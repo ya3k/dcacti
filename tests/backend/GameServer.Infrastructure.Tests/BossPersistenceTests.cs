@@ -1,5 +1,6 @@
 using System.Text.Json;
 using GameServer.Domain.Bosses;
+using GameServer.Domain.Cards;
 using GameServer.Domain.Elements;
 using GameServer.Domain.Passives;
 using GameServer.Infrastructure.Postgres;
@@ -12,24 +13,28 @@ namespace GameServer.Infrastructure.Tests;
 
 /// <summary>
 /// <c>BossDefinition</c> persistence — <c>DATABASE.md</c> §1, §3 (TASK-044),
-/// plus the migration-source contract of both provisioning migrations
-/// (TASK-053 and TASK-172).
+/// plus the migration-source contract of the provisioning, balance, and
+/// TASK-308 migrations.
 ///
-/// What is verified is the documented contract: the nine persisted columns and
+/// What is verified is the documented contract: the ten persisted columns and
 /// their exact PK/constraint semantics, the caller-supplied (never generated)
 /// persistence key distinct from the canonical Identity, the two NOT NULL JSON
 /// documents and their fixed member lists — including <c>threshold: null</c> for
-/// a non-match-charged Passive rather than the <c>0</c> sentinel — the four
-/// runtime balance columns with their range check constraints
-/// (<c>ADR-024</c>), and the provisioning contract's separation of concerns: the
+/// a non-match-charged Passive rather than the <c>0</c> sentinel — the five
+/// Domain-Overlay columns with their check constraints (<c>ADR-024</c>, whose
+/// fifth value the nullable <c>CastPriorityScore</c> is by the TASK-308 in-place
+/// amendment), and the provisioning contract's separation of concerns: the
 /// model still seeds nothing (no <c>HasData</c>/<c>GetSeedData()</c>) while the
 /// migrations own the canonical rows as migration-level <c>InsertData</c>
 /// (<c>DATABASE.md</c> §1 note item 5).
 ///
-/// The two provisioning migrations are asserted independently, because each owns
-/// its own row set: <c>ProvisionBossDefinitions</c> (TASK-053) owns the three
-/// Bosses content-defined then, and <c>ProvisionTwoRemainingMvpBosses</c>
-/// (TASK-172) adds the two TASK-172 authored. Neither may touch the other's rows.
+/// The provisioning migrations are asserted independently, because each owns its
+/// own row set: <c>ProvisionBossDefinitions</c> (TASK-053) owns the three Bosses
+/// content-defined then, <c>ProvisionTwoRemainingMvpBosses</c> (TASK-172) adds
+/// the two TASK-172 authored, and neither may touch the other's rows. The two
+/// TASK-308 migrations are asserted the same way: <c>AddBossCastPriorityScore</c>
+/// owns the fifth overlay column and its one populated value, and
+/// <c>ProvisionBossCardContent</c> owns the one Boss Card row.
 ///
 /// Nothing here exercises Boss gameplay: no Skill fires, no Passive triggers,
 /// and no combat stat is read. The type under test is persistence only.
@@ -78,10 +83,10 @@ public class BossPersistenceTests
     public void BossDefinition_ShouldCarryExactlyTheDocumentedPersistedFields()
     {
         // DATABASE.md §1 defines BossDefinition as BossDefinitionId (PK),
-        // Identity, Element, PassiveDefinition, and SkillDefinition. The set is
-        // closed: the combat-definition values MaxHP/ATK/DEF/EnrageThreshold are
-        // explicitly NOT stored (§1 note item 1), and no display-name member
-        // exists (§1 note item 1).
+        // Identity, Element, PassiveDefinition, and SkillDefinition, plus the five
+        // Domain-Overlay columns MaxHP/ATK/DEF/EnrageThreshold/CastPriorityScore
+        // (ADR-024, fifth value added in place by TASK-308). The set is closed: no
+        // display-name member exists (§1 note item 1).
         var fields = typeof(BossDefinition)
             .GetProperties()
             .Select(p => p.Name)
@@ -94,6 +99,7 @@ public class BossPersistenceTests
                 "ATK",
                 "BossDefinitionId",
                 "BossId",
+                "CastPriorityScore",
                 "DEF",
                 "Element",
                 "EnrageThreshold",
@@ -148,14 +154,15 @@ public class BossPersistenceTests
     }
 
     [Fact]
-    public void Model_ShouldStoreExactlyTheNineDocumentedColumns()
+    public void Model_ShouldStoreExactlyTheTenDocumentedColumns()
     {
-        // DATABASE.md §1's BossDefinition block lists nine entries: the five
-        // structural/configuration columns plus the four runtime balance columns
-        // ADR-024 added. The model must hold those and nothing else — in
-        // particular no display-name column, and no second representation of the
-        // balance values.
-        var model = CreateDesignTimeModel(nameof(Model_ShouldStoreExactlyTheNineDocumentedColumns));
+        // DATABASE.md §1's BossDefinition block lists ten entries: the five
+        // structural/configuration columns plus the five Domain-Overlay columns
+        // ADR-024 added — the fifth, the nullable CastPriorityScore, by the
+        // TASK-308 in-place amendment. The model must hold those and nothing else —
+        // in particular no display-name column, and no second representation of any
+        // overlay value.
+        var model = CreateDesignTimeModel(nameof(Model_ShouldStoreExactlyTheTenDocumentedColumns));
 
         var entity = model.FindEntityType(typeof(BossDefinition))!;
 
@@ -169,6 +176,7 @@ public class BossPersistenceTests
             {
                 "ATK",
                 "BossDefinitionId",
+                "CastPriorityScore",
                 "DEF",
                 "Element",
                 "EnrageThreshold",
@@ -237,14 +245,49 @@ public class BossPersistenceTests
     }
 
     [Fact]
-    public void Model_ShouldEnforceTheFourDocumentedBalanceRangeConstraints()
+    public void Model_ShouldPersistTheCastPriorityScoreAsTheNullableFifthOverlayValue()
     {
-        // DATABASE.md §3 and ADR-024 §2.4/§2.5: the four range invariants are
-        // database check constraints. The names and expressions are the ADR's,
-        // and each is asserted against the model rather than only against the
-        // migration, so the model and the applied schema cannot drift.
+        // DATABASE.md §1/§3 and ADR-024 §2.2 as amended in place by TASK-308
+        // (OD-3a): CastPriorityScore is the fifth Domain-Overlay column and the
+        // only nullable one. The CLR type is int? — not int with a sentinel —
+        // because NULL is the documented "no cast-priority score authored" marker
+        // and must not be confusable with a real 0 score.
         var model = CreateDesignTimeModel(
-            nameof(Model_ShouldEnforceTheFourDocumentedBalanceRangeConstraints));
+            nameof(Model_ShouldPersistTheCastPriorityScoreAsTheNullableFifthOverlayValue));
+
+        var entity = model.FindEntityType(typeof(BossDefinition))!;
+        var property = entity.GetProperties()
+            .Single(p => p.GetColumnName() == "CastPriorityScore");
+
+        Assert.Equal(typeof(int?), property.ClrType);
+        Assert.True(property.IsNullable);
+
+        // ADR-024 §2.5's no-default rule applies identically to the fifth value: no
+        // configured default, so an insert that omits it stays NULL rather than
+        // silently taking a score. The assertion reads the annotation (rather than
+        // GetDefaultValue(), which returns null for a nullable CLR type whether or
+        // not a default was configured) so it cannot pass vacuously.
+        Assert.Empty(
+            property.GetAnnotations()
+                .Where(annotation => annotation.Name.EndsWith(
+                    "DefaultValue", StringComparison.Ordinal))
+                .Select(annotation => annotation.Name)
+                .ToArray());
+
+        Assert.Null(property.GetDefaultValueSql());
+    }
+
+    [Fact]
+    public void Model_ShouldEnforceTheFiveDocumentedOverlayRangeConstraints()
+    {
+        // DATABASE.md §3 and ADR-024 §2.4/§2.5 as amended by TASK-308: the five
+        // overlay invariants are database check constraints. The names and
+        // expressions are the ADR's, and each is asserted against the model rather
+        // than only against the migration, so the model and the applied schema
+        // cannot drift. The fifth is the nullable range form
+        // `CastPriorityScore IS NULL OR CastPriorityScore >= 0`.
+        var model = CreateDesignTimeModel(
+            nameof(Model_ShouldEnforceTheFiveDocumentedOverlayRangeConstraints));
 
         var entity = model.FindEntityType(typeof(BossDefinition))!;
 
@@ -255,6 +298,7 @@ public class BossPersistenceTests
             new[]
             {
                 "CK_BossDefinition_ATK_NonNegative",
+                "CK_BossDefinition_CastPriorityScore_NonNegative",
                 "CK_BossDefinition_DEF_NonNegative",
                 "CK_BossDefinition_EnrageThreshold_Range",
                 "CK_BossDefinition_MaxHP_Positive",
@@ -267,6 +311,9 @@ public class BossPersistenceTests
         Assert.Equal(
             "\"EnrageThreshold\" > 0.0 AND \"EnrageThreshold\" < 1.0",
             constraints["CK_BossDefinition_EnrageThreshold_Range"]);
+        Assert.Equal(
+            "\"CastPriorityScore\" IS NULL OR \"CastPriorityScore\" >= 0",
+            constraints["CK_BossDefinition_CastPriorityScore_NonNegative"]);
     }
 
     [Fact]
@@ -1582,6 +1629,265 @@ public class BossPersistenceTests
         // drops, four column drops — and nothing else.
         Assert.Equal(40, CountOccurrences(migration, "migrationBuilder."));
         Assert.Equal(40, CountOccurrences(migration, "table: \"BossDefinition\""));
+    }
+
+    // -----------------------------------------------------------------------
+    // TASK-308 migration sources — DATABASE.md §1/§3, §5 item 4; ADR-024 as
+    // amended; ADR-029 / CARD_RULES.md §1.1
+    //
+    // The two TASK-308 migrations are asserted against their own sources, the same
+    // convention the balance migration above and the two provisioning migrations
+    // use. The applied end state is verified against a live database by
+    // BossDefinitionPostgresProvisioningTests and
+    // PetCardRelicDefinitionPostgresProvisioningTests, which skip when none is
+    // reachable.
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// The TASK-308 schema migration (OD-3a): add the nullable fifth overlay column,
+    /// populate the one approved score, then activate its nullable-range constraint.
+    /// </summary>
+    private const string CastPriorityScoreMigration = "AddBossCastPriorityScore";
+
+    /// <summary>
+    /// The TASK-308 content migration (OD-2a/OD-2b/OD-3b; <c>CARD_RULES.md</c>
+    /// §1.1 item 5): insert the one Boss Card row, insert-only and mirrored.
+    /// </summary>
+    private const string BossCardProvisioningMigration = "ProvisionBossCardContent";
+
+    /// <summary>
+    /// The one nullable overlay column TASK-308 adds and its exact SQL type
+    /// (<c>DATABASE.md</c> §1/§3).
+    /// </summary>
+    private const string AddCastPriorityScoreColumnPattern =
+        @"migrationBuilder\.AddColumn<(?<clrType>[^>]+)>\(\s*name: ""(?<name>[^""]+)"",\s*table: ""BossDefinition"",\s*type: ""(?<sqlType>[^""]+)"",\s*nullable: (?<nullable>true|false)\)";
+
+    [Fact]
+    public void CastPriorityScoreMigration_ShouldAddTheNullableColumnWithoutADefault()
+    {
+        // DATABASE.md §1/§3 and ADR-024 §2.2/§2.5 as amended in place by TASK-308:
+        // ONE column is added, `CastPriorityScore`, typed `int?` / `integer`, and it
+        // is nullable. No default is declared — NULL is the documented "not
+        // authored" marker and must stay NULL on an insert that omits it, so no
+        // transitional default may be introduced the way the four older balance
+        // columns needed one.
+        var migration = ReadMigrationOperations(CastPriorityScoreMigration);
+
+        var added = System.Text.RegularExpressions.Regex.Matches(
+            migration, AddCastPriorityScoreColumnPattern);
+
+        var column = Assert.Single(added);
+
+        Assert.Equal("int", column.Groups["clrType"].Value);
+        Assert.Equal("CastPriorityScore", column.Groups["name"].Value);
+        Assert.Equal("integer", column.Groups["sqlType"].Value);
+        Assert.Equal("true", column.Groups["nullable"].Value);
+
+        Assert.DoesNotContain("defaultValue", migration);
+        Assert.DoesNotContain("HasDefaultValue", migration);
+
+        // Exactly one AddColumn, one row update, one constraint add, and their two
+        // reversible operations — nothing else.
+        Assert.Equal(1, CountOccurrences(migration, "migrationBuilder.AddColumn"));
+        Assert.Equal(1, CountOccurrences(migration, "migrationBuilder.UpdateData("));
+        Assert.Equal(1, CountOccurrences(migration, "migrationBuilder.AddCheckConstraint("));
+        Assert.Equal(1, CountOccurrences(migration, "migrationBuilder.DropCheckConstraint("));
+        Assert.Equal(1, CountOccurrences(migration, "migrationBuilder.DropColumn("));
+
+        // No row is inserted, deleted, or model-seeded by this migration
+        // (DATABASE.md §1 note item 5, §5 item 4).
+        foreach (var forbidden in new[]
+                 {
+                     "migrationBuilder.InsertData(", "migrationBuilder.DeleteData(",
+                     "migrationBuilder.CreateTable(", "migrationBuilder.DropTable(",
+                     "HasData",
+                 })
+        {
+            Assert.DoesNotContain(forbidden, migration);
+        }
+    }
+
+    [Fact]
+    public void CastPriorityScoreMigration_ShouldPopulateOnlyTheApprovedScoreAndActivateTheConstraint()
+    {
+        // BOSS_RULES.md §4.3 item 5 / §4.4 item 5 and TASK-308 §1 (OD-3b): the one
+        // approved score is `earthquake.CastPriorityScore = 16` on Sơn Thạch Vệ's
+        // row. The other four Bosses keep NULL — no score is written for them, so no
+        // unmigrated ability receives a guessed value (ADR-029 Slice 4 owns those).
+        var migration = ReadMigrationOperations(CastPriorityScoreMigration);
+
+        var updates = System.Text.RegularExpressions.Regex.Matches(migration, UpdateDataPattern);
+
+        var update = Assert.Single(updates);
+
+        Assert.Equal("boss-def-son-thach-ve", update.Groups["key"].Value);
+        Assert.Equal("CastPriorityScore", update.Groups["column"].Value);
+        Assert.Equal(16, int.Parse(update.Groups["value"].Value.Trim()));
+
+        // The row this migration owns is the one migrated Boss's, exactly once. Every
+        // boss-def-* literal is a canonical row, and only that one appears.
+        Assert.Equal(
+            new[] { "boss-def-son-thach-ve" },
+            BossDefinitionIdLiterals(migration));
+
+        // DATABASE.md §3's exact nullable-range expression, and the order ADR-024
+        // §2.5 requires: the row satisfies the constraint before it is activated.
+        var constraints = System.Text.RegularExpressions.Regex.Matches(
+            migration, AddCheckConstraintPattern);
+
+        var constraint = Assert.Single(constraints);
+
+        Assert.Equal(
+            "CK_BossDefinition_CastPriorityScore_NonNegative",
+            constraint.Groups["name"].Value);
+        Assert.Equal(
+            "\"CastPriorityScore\" IS NULL OR \"CastPriorityScore\" >= 0",
+            constraint.Groups["sql"].Value.Replace("\\\"", "\"", StringComparison.Ordinal));
+
+        var firstUpdate = migration.IndexOf(
+            "migrationBuilder.UpdateData(", StringComparison.Ordinal);
+        var firstConstraint = migration.IndexOf(
+            "migrationBuilder.AddCheckConstraint(", StringComparison.Ordinal);
+        var columnAdd = migration.IndexOf(
+            "migrationBuilder.AddColumn", StringComparison.Ordinal);
+
+        Assert.True(columnAdd >= 0 && firstUpdate > columnAdd);
+        Assert.True(firstConstraint > firstUpdate);
+    }
+
+    [Fact]
+    public void CastPriorityScoreMigration_ShouldRollBackWithoutDeletingRows()
+    {
+        // ADR-024 §2.5 "Safe Rollback Behavior": Down drops the constraint and then
+        // the column, restoring the pre-migration nine-column structure. It must NOT
+        // delete a row — the BattleResult foreign key references this table — and it
+        // must touch no structural column, index, or key.
+        var migration = ReadMigrationOperations(CastPriorityScoreMigration);
+
+        var droppedConstraints = System.Text.RegularExpressions.Regex.Matches(
+            migration, DropCheckConstraintPattern);
+
+        Assert.Equal(
+            "CK_BossDefinition_CastPriorityScore_NonNegative",
+            Assert.Single(droppedConstraints).Groups["name"].Value);
+
+        var droppedColumns = System.Text.RegularExpressions.Regex.Matches(
+            migration, DropColumnPattern);
+
+        Assert.Equal("CastPriorityScore", Assert.Single(droppedColumns).Groups["name"].Value);
+
+        var constraintDrop = migration.IndexOf(
+            "migrationBuilder.DropCheckConstraint(", StringComparison.Ordinal);
+        var columnDrop = migration.IndexOf(
+            "migrationBuilder.DropColumn(", StringComparison.Ordinal);
+
+        Assert.True(constraintDrop >= 0 && columnDrop > constraintDrop);
+
+        foreach (var forbidden in new[]
+                 {
+                     "migrationBuilder.DeleteData(", "migrationBuilder.InsertData(",
+                     "migrationBuilder.DropTable(", "migrationBuilder.CreateTable(",
+                     "migrationBuilder.DropIndex(", "migrationBuilder.CreateIndex(",
+                     "migrationBuilder.DropForeignKey(", "migrationBuilder.AddForeignKey(",
+                     "migrationBuilder.RenameColumn(",
+                     "\"Identity\"", "\"Element\"", "\"PassiveDefinition\"", "\"SkillDefinition\"",
+                 })
+        {
+            Assert.DoesNotContain(forbidden, migration);
+        }
+    }
+
+    [Fact]
+    public void BossCardProvisioningMigration_ShouldInsertOnlyTheOneBossCardRow()
+    {
+        // CARD_RULES.md §1.1 items 3 and 5 / DATABASE.md §1/§3/§5 item 4: exactly one
+        // CardDefinition row is provisioned — the Boss Card — under the approved
+        // ability-identity key. Its identity is `earthquake` (the ability SkillId),
+        // NOT a `card-<kebab>` Player value form, and the display name is
+        // `Earthquake`. Category BossCard encodes as 2, PowerCost is the approved 30,
+        // and LoadoutCopyLimit is the required-but-never-read 1.
+        var migration = ReadMigrationOperations(BossCardProvisioningMigration);
+
+        Assert.Equal(1, CountOccurrences(migration, "migrationBuilder.InsertData("));
+        Assert.Equal(1, CountOccurrences(migration, "migrationBuilder.DeleteData("));
+        Assert.Equal(2, CountOccurrences(migration, "migrationBuilder."));
+        Assert.Equal(2, CountOccurrences(migration, "table: \"CardDefinition\""));
+
+        // The approved effect payload, produced by the Domain writer itself so the
+        // migration and the strict reader cannot drift: `Shield` / `Flat` / `150`
+        // (BOSS_RULES.md §6.3.1 item 4; TASK-308 §1 OD-2b), in DATABASE.md §1's
+        // one-element ARRAY shape.
+        var expectedEffect = CardEffectDefinitions
+            .Create(CardEffectDefinition.Create(
+                CardEffectType.Shield,
+                CardEffectValueType.Flat,
+                150))
+            .ToPersistedPayload();
+
+        Assert.Equal(
+            "[{\"effectType\":\"Shield\",\"valueType\":\"Flat\",\"value\":150}]",
+            expectedEffect);
+
+        Assert.Equal(2, (int)CardCategory.BossCard);
+
+        // The exact inserted row and column order, mirroring the existing
+        // provisioning migrations' convention
+        // (ProvisionPetCardRelicContentDefinitions / ProvisionThanhXaAndSonHungSignatureSkills).
+        Assert.Contains(
+            "columns: new[] { \"CardDefinitionId\", \"Name\", \"Category\", \"PowerCost\", \"LoadoutCopyLimit\", \"EffectDefinition\" }",
+            migration);
+
+        Assert.Contains(
+            $"values: new object[] {{ \"earthquake\", \"Earthquake\", "
+            + $"{(int)CardCategory.BossCard}, 30, 1, \"{PassAsCSharpStringLiteral(expectedEffect)}\" }}",
+            migration);
+
+        // The Down mirror is keyed by the same primary key and removes nothing else.
+        Assert.Contains(
+            "keyColumn: \"CardDefinitionId\"",
+            migration);
+        Assert.Contains("keyValue: \"earthquake\"", migration);
+
+        // No schema operation: the column, table, primary key, and constraints all
+        // already exist. No model seed either.
+        foreach (var schemaOperation in new[]
+                 {
+                     "CreateTable", "DropTable", "AddColumn", "DropColumn",
+                     "AlterColumn", "CreateIndex", "DropIndex", "AddForeignKey",
+                     "DropForeignKey", "AddPrimaryKey", "DropPrimaryKey",
+                     "CreateSequence", "DropSequence", "RenameColumn",
+                     "RenameTable", "AddCheckConstraint", "DropCheckConstraint",
+                     "migrationBuilder.Sql(", "HasData",
+                 })
+        {
+            Assert.DoesNotContain(schemaOperation, migration);
+        }
+    }
+
+    [Fact]
+    public void BossCardProvisioningMigration_ShouldTouchNoPlayerSurface()
+    {
+        // CARD_RULES.md §1.1 items 1, 4, 5 and BOSS_RULES.md §4.2 items 1, 8: the
+        // Boss Card is unowned and invisible to the Player. Provisioning it creates
+        // no PlayerUnlockedCard row, no loadout slot, no collection projection, and
+        // no API surface — so the migration names none of those tables and writes no
+        // Player-side identity.
+        var migration = ReadMigrationOperations(BossCardProvisioningMigration);
+
+        foreach (var forbidden in new[]
+                 {
+                     "PlayerUnlockedCard", "PetDefinition", "RelicDefinition",
+                     "PlayerId", "DisplayName",
+                 })
+        {
+            Assert.DoesNotContain(forbidden, migration, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // The one inserted key is the ability identity — never a `card-` Player value
+        // form. Exactly one CardDefinition key literal appears, twice (Up value and
+        // Down key).
+        Assert.Equal(2, CountOccurrences(migration, "\"earthquake\""));
+        Assert.DoesNotContain("\"card-", migration);
     }
 
     /// <summary>

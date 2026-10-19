@@ -1,6 +1,23 @@
 # Database
 
-**Version:** 1.39 (§1, §1 note items 1–2, §3, and §5 item 4 **synchronized with
+**Version:** 1.40 (§1's `CardDefinition` and `BossDefinition` blocks, §3's
+constraints, §5 item 4, and §1 note item 8 **synchronized with the approved
+TASK-308 / ADR-029 Slice 3 content contract**: `CardDefinition.Category` gains
+`BossCard` for the one provisioned Boss Card (`earthquake`), whose
+`CardDefinitionId` is the ability `SkillId` — the documented value-form exception
+to `card-<kebab>` — and whose `LoadoutCopyLimit = 1` is persisted but never read;
+the same task's insert-only content migration makes the provisioned
+`CardDefinition` set 9 rows. `BossDefinition` gains the nullable
+`CastPriorityScore` overlay value (int, `NULL` = not authored, otherwise `>= 0`,
+with `CHECK (CastPriorityScore IS NULL OR CastPriorityScore >= 0)`), reconciling
+this block's ADR-024 "proposed" wording with the **implemented** five-value
+overlay (`MaxHP`, `ATK`, `DEF`, `EnrageThreshold`, `CastPriorityScore`), which the
+overlay loads and validates fail-closed. **No other table, column, constraint,
+index, schema shape, historical migration record, gameplay value, or
+provisioning rule changes**; the initial content values are the operator-approved
+TASK-308 §1 values and are transcribed from their owners (`CARD_RULES.md` §1.1,
+`BOSS_RULES.md` §6.3/§6.3.1) rather than authored here. Decision source:
+TASK-308 / ADR-029 Slice 3 / ADR-024 in-place amendment. Prior 1.39: (§1, §1 note items 1–2, §3, and §5 item 4 **synchronized with
 proposed ADR-024** per TASK-250: database-driven boss balance configuration
 proposing the Domain Overlay model. The proposed schema extends `BossDefinition`
 with runtime balance columns `MaxHP` (int), `ATK` (int), `DEF` (int), and
@@ -414,28 +431,51 @@ CardDefinition                    (static content — MVP scope target
 │                                  `MVP_SCOPE.md` §1; only content-defined
 │                                  rows may be provisioned, §5 item 4; the
 │                                  defined rows are the 3 Basic Cards
-│                                  (`CARD_RULES.md` §2) and the 5 Pet Skill
+│                                  (`CARD_RULES.md` §2), the 5 Pet Skill
 │                                  Cards (`CARD_RULES.md` §4.1) — the three
 │                                  authored first (TASK-110) plus Venomous
 │                                  Bloom / `card-venomous-bloom` and
 │                                  Earthshaker / `card-earthshaker`
 │                                  (TASK-166 decisions, authored by TASK-167,
-│                                  provisioned by TASK-168) — TASK-082
-│                                  decision A / R1-1)
+│                                  provisioned by TASK-168) — and, from
+│                                  TASK-308, the one Boss Card (`earthquake`,
+│                                  category `BossCard`; `CARD_RULES.md` §1.1)
+│                                  — TASK-082 decision A / R1-1. The
+│                                  provisioned set is therefore 9 rows: the 8
+│                                  Player Cards above plus that one Boss Card.)
 ├── CardDefinitionId (PK)         (value form `card-<ascii-kebab-case-name>`,
 │                                  e.g. "card-heal" — ASCII kebab-case of the
 │                                  Card's documented name (TASK-082 decision
 │                                  B / R2-9); content-supplied, never
-│                                  database-generated)
+│                                  database-generated. **Exception — a
+│                                  `BossCard` row (TASK-308 / ADR-029):** its
+│                                  value is the ability `SkillId`, e.g.
+│                                  "earthquake", not `card-<kebab>`; the
+│                                  identity is the ability's, so
+│                                  `BossCardCast.cardId` equals
+│                                  `BossSkillCast.skillId` for the same
+│                                  ability (`CARD_RULES.md` §1.1 item 3). The
+│                                  exception is confined to `BossCard` rows;
+│                                  see §3.)
 ├── Name
-├── Category                       ("Basic" | "PetSkill")
+├── Category                       ("Basic" | "PetSkill" | "BossCard" —
+│                                  `BossCard` added by TASK-308 / ADR-029;
+│                                  stored as the integer ordinal, with no
+│                                  database CHECK — the set is a documented
+│                                  content constraint, not a DB constraint; §3)
 ├── PowerCost
 ├── LoadoutCopyLimit               (required — max occurrences of this
 │                                  CardDefinition in one submitted 3-card
 │                                  Basic loadout; `CARD_RULES.md` §1; explicit
 │                                  value required, no default; concrete MVP
 │                                  values are owned by `CARD_RULES.md` §1
-│                                  (TASK-082 decision C / R1-5 / R2-6))
+│                                  (TASK-082 decision C / R1-5 / R2-6). For a
+│                                  `BossCard` row the value is `1` and is
+│                                  persisted only because the column is
+│                                  required and non-nullable; it is **never
+│                                  read** for that row — a Boss Card has no
+│                                  Player loadout (TASK-308; `CARD_RULES.md`
+│                                  §1.1 item 5))
 └── EffectDefinition               (JSON ARRAY, NOT NULL — the Card's
                                    STRUCTURED effect rules, one element per
                                    effect: which domain effect the Card
@@ -519,7 +559,12 @@ Relic                                (a player's OWNED instance, if Relics
 BossDefinition                       (static content & runtime balance — MVP
  │                                    scope target: 5 Bosses, MVP_SCOPE.md §1;
  │                                    content-defined: 5, BOSS_RULES.md §6;
- │                                    ADR-024 proposes database-driven balance)
+ │                                    ADR-024's Domain Overlay is IMPLEMENTED —
+ │                                    PostgreSQL supplies the runtime balance
+ │                                    values at battle creation (five values
+ │                                    after the TASK-308 in-place amendment; see
+ │                                    §1 "Persistence contract for
+ │                                    `BossDefinition`")
 ├── BossDefinitionId (PK)             (independent stable persistence key —
  │                                     content/Domain supplied, never
  │                                     database-generated; distinct from
@@ -534,16 +579,29 @@ BossDefinition                       (static content & runtime balance — MVP
  │                                     name; no display-name column exists
  │                                     on this table)
 ├── Element
-├── MaxHP                             (int, NOT NULL, proposed under ADR-024 —
- │                                     runtime authoritative combat balance;
- │                                     canonical baseline in BossDefinitions)
-├── ATK                               (int, NOT NULL, proposed under ADR-024 —
- │                                     runtime authoritative combat balance)
-├── DEF                               (int, NOT NULL, proposed under ADR-024 —
- │                                     runtime authoritative combat balance)
-├── EnrageThreshold                   (double precision, NOT NULL, proposed
- │                                     under ADR-024 — runtime enrage trigger
- │                                     ratio, strict comparison HP < MaxHP * threshold)
+├── MaxHP                             (int, NOT NULL, ADR-024 overlay
+ │                                     (implemented) — runtime authoritative
+ │                                     combat balance; canonical baseline in
+ │                                     BossDefinitions)
+├── ATK                               (int, NOT NULL, ADR-024 overlay
+ │                                     (implemented) — runtime authoritative
+ │                                     combat balance)
+├── DEF                               (int, NOT NULL, ADR-024 overlay
+ │                                     (implemented) — runtime authoritative
+ │                                     combat balance)
+├── EnrageThreshold                   (double precision, NOT NULL, ADR-024
+ │                                     overlay (implemented) — runtime enrage
+ │                                     trigger ratio, strict comparison
+ │                                     HP < MaxHP * threshold)
+├── CastPriorityScore                 (int, NULLABLE — the fifth ADR-024 overlay
+ │                                     value (in-place amendment, TASK-308):
+ │                                     `NULL` = "no cast-priority score
+ │                                     authored", legal only while the Boss has
+ │                                     no Boss Card; otherwise an integer
+ │                                     `>= 0`; `CHECK (CastPriorityScore IS
+ │                                     NULL OR CastPriorityScore >= 0)`; the
+ │                                     overlay loads and validates it
+ │                                     fail-closed (§3))
 ├── PassiveDefinition                (JSON, NOT NULL — member list:
  │                                    TASK-045; BOSS_RULES.md §6,
  │                                    PASSIVE_RULES.md §4)
@@ -722,20 +780,24 @@ extended by TASK-111 D-1/D-2/D-3/D-4/D-5)
    - TASK-082 itself is not modified, re-opened, or re-statused
      (`TASK_LIFECYCLE.md` §3 — completed tasks are immutable).
 8. **The provisioned rows are encoded in this shape.** (TASK-111 **D-6**;
-   encoded by TASK-112; extended by TASK-168) **All eight** content-defined
-   `CardDefinition` rows now hold the array shape above — the three §2 Basic
-   Cards, the three §4.1 Pet Skill rows authored at the time of the encoding,
-   and the two §4.1 Pet Skill rows added since (Venomous Bloom /
+   encoded by TASK-112; extended by TASK-168 and TASK-308) **All nine**
+   content-defined `CardDefinition` rows now hold the array shape above — the
+   three §2 Basic Cards, the three §4.1 Pet Skill rows authored at the time of
+   the encoding, the two §4.1 Pet Skill rows added since (Venomous Bloom /
    `card-venomous-bloom` and Earthshaker / `card-earthshaker`, TASK-166
-   decisions applied by TASK-167). The three §2 Basic Card rows are
+   decisions applied by TASK-167), and the one `BossCard` row TASK-308
+   provisions (`earthquake`, whose `Shield` effect is authored by
+   `CARD_RULES.md` §1.1 / `BOSS_RULES.md` §6.3.1 item 4). The three §2 Basic
+   Card rows are
    **contract-compatible** with the shape — their single effect is the array's
    single element, stored as a one-element array (D-1b) — and the §4.1 Pet
    Skill rows store **one element per effect** §4.1 states (two each for
    Inferno, Tidal Barrier, and Venomous Bloom; one for Iron Fang and
    Earthshaker), with every magnitude transcribed from `CARD_RULES.md`
    §2/§4.1 and no value computed or invented (§5 item 4 rule (b)). The two
-   TASK-168 rows were written **directly in that ARRAY shape** at provisioning
-   time — no further encoding migration exists or is needed for them. Under
+   TASK-168 rows and the TASK-308 Boss Card row were written **directly in that
+   ARRAY shape** at provisioning time — no further encoding migration exists or
+   is needed for them. Under
    **D-6b** the three `Undetermined` markers are **retired**: §4.1
    now authors every Pet Skill magnitude (TASK-110), so **no provisioned content
    row remains in that state** — the member itself stays valid for an effect
@@ -871,14 +933,20 @@ D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
      condition is inserted for it. The column set, the `Relic` ownership table,
      and every other table are unchanged by those migrations.
 
-**Persistence contract for `BossDefinition`.** (TASK-045, updated per proposed ADR-024 / TASK-250)
+**Persistence contract for `BossDefinition`.** (TASK-045; ADR-024's Domain
+Overlay is implemented, and its in-place TASK-308 amendment adds the fifth
+value)
 
-1. **Persistent record vs combat-stat source (Proposed ADR-024).** Historically,
-   combat stats (`MaxHP`, `ATK`, `DEF`, `EnrageThreshold`) were non-persisted
-   Domain configuration. Under proposed **ADR-024** (Domain Overlay model),
-   **PostgreSQL becomes authoritative at runtime** for these four combat balance
-   values. The row persists `BossDefinitionId`, `Identity`, `Element`, `MaxHP`,
-   `ATK`, `DEF`, `EnrageThreshold`, `PassiveDefinition`, and `SkillDefinition`.
+1. **Persistent record vs combat-stat source (ADR-024, implemented).**
+   Historically, combat stats (`MaxHP`, `ATK`, `DEF`, `EnrageThreshold`) were
+   non-persisted Domain configuration. Under **ADR-024** (Domain Overlay model,
+   implemented by migration `20261011042819_AddBossBalanceConfiguration`),
+   **PostgreSQL is authoritative at runtime** for these four combat balance
+   values and — from the TASK-308 in-place amendment — for the fifth overlay
+   value, the nullable **`CastPriorityScore`**. The row persists
+   `BossDefinitionId`, `Identity`, `Element`, `MaxHP`, `ATK`, `DEF`,
+   `EnrageThreshold`, `CastPriorityScore`, `PassiveDefinition`, and
+   `SkillDefinition`.
    `Identity` holds the Boss's canonical technical ID (`BOSS_RULES.md` §6.4, e.g.
    `boss-hoa-long`) — it is **not** the display name, and it is **not**
    `BossDefinitionId`: the three are never collapsed (TASK-046). The display name
@@ -894,8 +962,16 @@ D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
    creation (fail-closed semantics). At battle creation, the server snapshots the
    database-overlaid definition into `BossState` (`GAME_STATE.md` §2.4) and in-memory
    battle configuration; after battle creation, the BattleState/Redis contract
-   governs (`REDIS_STATE.md`, ADR-005). All C# code and EF Core migration
-   implementation is deferred to TASK-251.
+   governs (`REDIS_STATE.md`, ADR-005). The overlay loads and validates
+   `CastPriorityScore` fail-closed under the same no-fallback rule: `NULL` is the
+   explicit "not authored" marker (legal only for a Boss with no Boss Card), a
+   non-null value must be `>= 0`, and a Boss whose provisioned Boss Card is
+   present but whose score is `NULL` or negative fails battle creation
+   (`ADR-024` §2.2 item 3 — no default, no fallback weight, no board-only
+   degradation). The four balance columns, their check constraints and the
+   provisioned values were implemented by
+   `20261011042819_AddBossBalanceConfiguration`; the fifth value and its
+   constraint are added by the TASK-308 schema migration.
 2. **`BossDefinitionId` is a caller/content-supplied stable key.** (TASK-049)
    It is the row's primary key and is **independent**: distinct from
    `Identity` and from the display name, and never derived from either at
@@ -934,10 +1010,11 @@ D1/D2/D3/D5/D9; the Relic counterpart of the Card contract above)
      for the other.
    - **Resolution mechanisms and resolver owner (TASK-051, updated ADR-024).**
      Two lookups exist across the battle lifecycle:
-     1. **Battle Start (proposed under ADR-024 / TASK-251):** `BattleStartService`
+     1. **Battle Start (ADR-024 overlay, implemented):** `BattleStartService`
         calls `IBossDefinitionLookup.GetDefinitionByIdentityAsync(bossIdentity)`.
         The Infrastructure implementation queries PostgreSQL for `MaxHP`, `ATK`,
-        `DEF`, and `EnrageThreshold`, overlays them onto the static Domain baseline
+        `DEF`, `EnrageThreshold`, and (TASK-308) the nullable
+        `CastPriorityScore`, overlays them onto the static Domain baseline
         from `BossDefinitions.All`, and returns the populated `BossDefinition`.
         If the client requests an unknown `bossId`, resolution returns `null`
         and battle start fails closed with `BattleStartOutcome.BossNotFound`
@@ -1524,7 +1601,18 @@ Pet.Level             derived from this Pet instance's own Pet.XP    (PET_RULES.
 Pet.Level          ∈ [1, 50]                                       (PET_RULES.md §5.5)
 Pet.Level             = min(floor(Pet.XP / 100) + 1, 50)           (PET_RULES.md §5.4)
 Pet.Level             = 1 for a newly created PlayerPet             (PET_RULES.md §5.2)
-CardDefinition.Category  ∈ {Basic, PetSkill}                        (CARD_RULES.md §1)
+CardDefinition.Category  ∈ {Basic, PetSkill, BossCard}            (CARD_RULES.md §1, §1.1:
+                                                                    `BossCard` added by TASK-308 /
+                                                                    ADR-029; stored as the integer
+                                                                    ordinal — the set is a documented
+                                                                    content constraint, NOT a DB CHECK)
+CardDefinition.CardDefinitionId    `card-<ascii-kebab-case-name>` for every Player Card (§1);      (§1; CARD_RULES.md §1.1
+                                   a `BossCard` row's value is the ability `SkillId` — e.g.          item 3 owns the exception —
+                                   `earthquake` — NOT `card-<kebab>`; the exception is confined       TASK-308 / ADR-029)
+                                   to `BossCard` rows and never changes a Player Card's identity
+CardDefinition.LoadoutCopyLimit    int, required, no default (§1); for a `BossCard` row it is      (§1; CARD_RULES.md §1.1
+                                   `1`, persisted but NEVER READ — a Boss Card has no Player          item 5 — TASK-308)
+                                   loadout, so the value is not a max-occurrences limit
 CardDefinition.EffectDefinition     jsonb, NOT NULL — an ARRAY of effect       (§1 "Card EffectDefinition
   objects, one per effect                contract"; TASK-108 D-1/D-2,
                                           TASK-109; ARRAY shape + vocabulary
@@ -1619,10 +1707,23 @@ BossDefinition.BossDefinitionId     NOT NULL, UNIQUE, caller/content-supplied (i
                                                                       from the display name — §1 note item 2, TASK-049)
 BossDefinition.PassiveDefinition  NOT NULL                           (every Boss has one Passive — BOSS_RULES.md §1)
 BossDefinition.SkillDefinition    NOT NULL                           (every Boss has one Skill — BOSS_RULES.md §1)
-BossDefinition.MaxHP             NOT NULL, > 0                      (proposed under ADR-024: runtime Boss MaxHP)
-BossDefinition.ATK               NOT NULL, >= 0                     (proposed under ADR-024: runtime Boss ATK)
-BossDefinition.DEF               NOT NULL, >= 0                     (proposed under ADR-024: runtime Boss DEF)
-BossDefinition.EnrageThreshold   NOT NULL, 0.0 < x < 1.0            (proposed under ADR-024: runtime Boss enrage fraction)
+BossDefinition.MaxHP             NOT NULL, > 0                      (ADR-024 overlay, implemented:
+                                                                      runtime Boss MaxHP)
+BossDefinition.ATK               NOT NULL, >= 0                     (ADR-024 overlay, implemented:
+                                                                      runtime Boss ATK)
+BossDefinition.DEF               NOT NULL, >= 0                     (ADR-024 overlay, implemented:
+                                                                      runtime Boss DEF)
+BossDefinition.EnrageThreshold   NOT NULL, 0.0 < x < 1.0            (ADR-024 overlay, implemented:
+                                                                      runtime Boss enrage fraction)
+BossDefinition.CastPriorityScore NULL, CHECK (CastPriorityScore     (fifth ADR-024 overlay value —
+                                   IS NULL OR CastPriorityScore         TASK-308 in-place amendment;
+                                   >= 0) — NULL = "not authored",       §1 `BossDefinition` block and
+                                   legal only while the Boss has no     §1 persistence contract item 1:
+                                   Boss Card; otherwise >= 0. The       the overlay loads and validates
+                                   score is loaded by the same          it fail-closed, and a Boss Card
+                                   Domain-Overlay path as the four      form with NULL/negative content
+                                   balance values.                      fails battle creation — no
+                                                                        default, no fallback weight)
 BossDefinition.Identity           NOT NULL, UNIQUE                   (canonical technical Boss ID — BOSS_RULES.md
                                                                       §6.4; the unique target of the FK lookup in §1)
 BossDefinition.PassiveDefinition.resetBehavior ∈ {Default, Partial, Persistent}   (PASSIVE_RULES.md §4)
@@ -1714,7 +1815,15 @@ when a real query pattern requires them (anti-overengineering,
    `pet-thanh-xa`, `pet-son-hung`, in migration
    `20261004055006_ProvisionThanhXaAndSonHungSignatureSkills`), so the
    currently provisioned content-defined set is **`PetDefinition` (5),
-   `CardDefinition` (8), and `RelicDefinition` (10)**. The four `RelicDefinition`
+   `CardDefinition` (9), and `RelicDefinition` (10)**. The ninth
+   `CardDefinition` row is the one Boss Card (`earthquake`, category
+   `BossCard`, `CardDefinitionId` = the ability `SkillId`) provisioned by a
+   further, same-mechanism **insert-only** content migration (TASK-308) with a
+   mirrored `Down`; it follows rules (a) and (b) — its values are transcribed
+   from `CARD_RULES.md` §1.1 / `BOSS_RULES.md` §6.3/§6.3.1 rather than authored
+   here — and it creates no `PlayerUnlockedCard` row, loadout slot, collection
+   projection or API exposure (`CARD_RULES.md` §1.1 item 5; §1's
+   `CardDefinition` block and §3). The four `RelicDefinition`
    rows were subsequently **re-encoded into the
    structured shape** `RELIC_RULES.md` §8 defines (TASK-132, migration
    `20261003074309_StructureRelicDefinitionStructuredColumns`) — a
@@ -1738,16 +1847,20 @@ when a real query pattern requires them (anti-overengineering,
    MVP rows (`boss-def-son-thach-ve`, `boss-def-kim-loi-vuong`); all five
    canonical rows are provisioned and every `BattleResult` write's FK target
    exists wherever the migrations have been applied (TASK-051 decision A3).
-   Under proposed **ADR-024 / TASK-251**, a schema migration will add the four
-   runtime balance columns (`MaxHP`, `ATK`, `DEF`, `EnrageThreshold`) with safe
-   transitional default values, immediately update all five provisioned rows with canonical baseline
-   values from `BOSS_RULES.md` §6.1 (including Hỏa Long `5000 / 100 / 50 / 0.30`) within
-   the same migration step before check constraints are activated,
-   apply check constraints (`MaxHP > 0`, `ATK >= 0`, `DEF >= 0`,
-   `0.0 < EnrageThreshold < 1.0`), and drop the four transitional defaults
-   via `ALTER COLUMN ... DROP DEFAULT` so subsequent direct inserts cannot
-   inherit them and fail closed on omission. Transitional defaults are never relied upon by
-   runtime lookups. Safe `Down()` rollback drops constraints and
-   columns while preserving the five provisioned rows intact for `BattleResult` FK
-   integrity. Subsequent balance adjustments are applied via data migrations
-   using `migrationBuilder.UpdateData`.
+   **ADR-024's Domain Overlay is implemented** by migration
+   `20261011042819_AddBossBalanceConfiguration`, which added the four runtime
+   balance columns (`MaxHP`, `ATK`, `DEF`, `EnrageThreshold`) with safe
+   transitional default values, updated all five provisioned rows with canonical
+   baseline values from `BOSS_RULES.md` §6.1 within the same migration step
+   before check constraints were activated, applied check constraints
+   (`MaxHP > 0`, `ATK >= 0`, `DEF >= 0`, `0.0 < EnrageThreshold < 1.0`), and
+   dropped the four transitional defaults via `ALTER COLUMN ... DROP DEFAULT` so
+   subsequent direct inserts cannot inherit them and fail closed on omission.
+   Transitional defaults are never relied upon by runtime lookups. Safe `Down()`
+   rollback drops constraints and columns while preserving the five provisioned
+   rows intact for `BattleResult` FK integrity. Subsequent balance adjustments
+   are applied via data migrations using `migrationBuilder.UpdateData`. The
+   **in-place TASK-308 amendment** extends the overlay to the fifth value, the
+   nullable `CastPriorityScore` column and its check constraint (§1, §3); it is
+   added by TASK-308's own schema migration, whose `Down` drops the constraint
+   and then the column without deleting a row.

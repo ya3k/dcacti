@@ -1,6 +1,14 @@
 # Card Rules
 
-**Version:** 1.11 (§1 and §3 item 9 added, §6 extended — per **ADR-029 /
+**Version:** 1.12 (§1.1 items 3 and 5 amended per **TASK-308 / ADR-029
+Slice 3**, recording the operator-approved Boss Card provisioning contract: a
+Boss Card is provisioned as one `CardDefinition` row of category `BossCard`
+whose `CardDefinitionId` is the ability `SkillId` — the approved exception to
+`DATABASE.md` §1/§3's `card-<kebab>` value form for `BossCard` rows only — with
+`LoadoutCopyLimit = 1` persisted but never read, no `PlayerUnlockedCard` /
+loadout / collection / API surface, and one insert-only data migration. No Card
+cost, Player Card identity, effect or item 1–4 rule changes; the initial
+`earthquake` content is owned by `BOSS_RULES.md` §6.3/§6.3.1. Prior 1.11: (§1 and §3 item 9 added, §6 extended — per **ADR-029 /
 TASK-303**, applying the explicit Product Owner decision that the Boss uses the
 same cast principles as the Player: **§1 gains the `Boss Card` category** (the
 minimum capability: exactly one authored Boss Card per Boss, no loadout, no
@@ -166,13 +174,24 @@ restated, here. This subsection fixes only the category-level contract:
    No second identifier is introduced for the same ability, so the identity the
    transitional `BossSkillCast.skillId` reports and the identity
    `BossCardCast.cardId` reports are the same string for the same Boss ability.
+   This is the approved exception to `DATABASE.md` §1/§3's
+   `card-<ascii-kebab-case-name>` value form: it applies to `BossCard` rows
+   only and never changes a Player Card's existing identity.
 4. **The Player's constraints do not apply to it.** §3 item 6's one-cast
    allowance, §3 item 4's Relic-trigger step, §3.6's Relic cost modifiers, this
    section's `LoadoutCopyLimit` and the whole ownership/loadout model above are
    Player-side rules; §3 item 9 states the actor-relative split.
-5. **No persistence contract is added here.** Whether and how a Boss Card is
-   provisioned is a separate future task; this category adds no database column,
-   table, migration, or row type, and `DATABASE.md` is unchanged by it.
+5. **Persistence contract (approved provisioning).** A Boss Card is persisted
+   as exactly one `CardDefinition` row of category `BossCard`
+   (`DATABASE.md` §1, §5 item 4), inserted by an insert-only content migration
+   whose values are transcribed from the owning documents; there is no runtime
+   provisioning, no seed runner, no new table and no second content source. Its
+   `CardDefinitionId` is item 3's ability `SkillId`, and its
+   `LoadoutCopyLimit` is `1` — persisted only because the column is required and
+   non-nullable, and never read for a `BossCard` row. A Boss Card has no
+   `PlayerUnlockedCard` row, no loadout slot, no collection projection and no
+   API exposure (`BOSS_RULES.md` §4.2 items 1 and 8), so it is never visible to
+   or castable by the Player.
 
 ---
 

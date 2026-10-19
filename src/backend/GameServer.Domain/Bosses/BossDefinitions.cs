@@ -293,6 +293,12 @@ public static class BossDefinitions
         ATK = 120,
         DEF = 0,
         EnrageThreshold = 0.50,
+
+        // BOSS_RULES.md §4.3 item 5 / TASK-308: the approved initial
+        // cast-priority score for the one migrated Boss Card (`earthquake`).
+        // The other four Bosses leave the nullable value absent (NULL) until
+        // their own Slice 4 migration.
+        CastPriorityScore = 16,
     };
 
     /// <summary>

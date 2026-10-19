@@ -2,6 +2,14 @@
 
 **Status:** Accepted
 **Date:** 2026-10-18
+**Amended:** 2026-10-19 (TASK-308 / Slice 3) — the operator approved the initial
+Boss Card content and the remaining Slice 3 decisions: the nullable
+`BossDefinition.CastPriorityScore` carrier (ADR-024's overlay extends from four
+to five values), `earthquake`'s `PowerCost = 30`, `Shield 150 Flat` and
+`CastPriorityScore = 16`, the provisioned-content active-form rule, and folding
+the definition/provisioning prerequisite into Slice 3. §2.5 item 15, §2.7
+item 20, §3 (U-2/U-3/U-4) and §4 (Slice 3) are amended in place; the decision
+itself, its staging and the Slice 4/5 gates are unchanged.
 **Deciders:** Product Owner (operator), Systems Designer, Backend Architecture, Client Architecture
 **Consulted:** AGENTS.md, docs/AGENTS.md, MVP_SCOPE.md, GDD.md, GAME_RULES.md, BOSS_RULES.md, CARD_RULES.md, COMBAT_RULES.md, GAME_STATE.md, GAME_EVENTS.md, SIGNALR_PROTOCOL.md, REDIS_STATE.md, ARCHITECTURE.md, ADR-001, ADR-008, ADR-021, ADR-024, ADR-026, ADR-028
 **Supersedes:** `TASK-258` §2 **D2** (the decision that forbade `BossState.Power`), and the `POWER` bullet of `ADR-026` Decision item 4 / its Unresolved Balance Choices #1–#2 (partially — see the Supersession Record below)
@@ -195,9 +203,14 @@ record.
     `CardDefinitionId` is the ability identity already recorded in
     `BOSS_RULES.md` §6.4's `SkillId` column, so no second identifier exists for
     the same ability.
-15. **Persistence is out of this decision's scope.** No database column, table,
-    migration or provisioning is authored; provisioning Boss Cards is a separate
-    future task.
+15. **Persistence and provisioning are authorized within Slice 3 (TASK-308;
+    amended).** A Boss Card is the one `CardDefinition` row of category
+    `BossCard` (`CARD_RULES.md` §1.1 items 3 and 5), provisioned by an
+    insert-only data migration (`DATABASE.md` §1, §5 item 4), with no new table
+    and no Player ownership, loadout, collection or API surface. Definition,
+    content provisioning, the nullable `CastPriorityScore` overlay (ADR-024
+    §2.2, as amended) and the `BossCardCast` event are Slice 3's work items;
+    no separate provisioning task exists.
 
 ### 2.6 Encounter mechanics stay passive
 
@@ -241,10 +254,14 @@ record.
     in the Boss's own resolution, `ADR-026` D1). That is a deliberate consequence
     of the one-action policy, and its pacing effect is an unresolved balance item
     (§3, U-3).
-20. **The cast-priority score's authored form and values are unresolved.** The
-    gates, ordering, tie-break and determinism are decided; the Boss-specific
-    selection weights are content/balance values (§3, U-3), and Slice 3 may not be
-    implemented before they are approved.
+20. **The cast-priority score's carrier and initial value are approved
+    (TASK-308; amended).** The score is the nullable
+    `BossDefinition.CastPriorityScore` overlay value (`NULL` = not authored,
+    otherwise an integer `>= 0`); a Boss with a Boss Card requires a non-null
+    value or battle creation fails closed (`BOSS_RULES.md` §4.3 item 5). The
+    approved initial value is `earthquake = 16`; the other four Bosses stay
+    `NULL` until Slice 4. The gates, ordering, tie-break and determinism above
+    remain decided and unchanged.
 
 ### 2.8 A dedicated Boss action event; the Player `CardCast` contract is preserved
 
@@ -315,9 +332,9 @@ repository.
 | # | Unresolved value | Blocks | Notes |
 |---|---|---|---|
 | U-1 | **The Boss's Power grant basis.** (Resolved under TASK-304: Option A approved). The Boss receives the shared Player Power per-Gem output unchanged: `+10 Power per uniquely matched POWER cell` (`BaseOutput(POWER) × unique matched count`, clamped to `[0, 100]`, actor-relative attribution). | Resolved (Slice 1 unblocked) | Decided explicitly under TASK-304 (Option A). Future ability cadence and per-ability cost tuning (U-2) remain open. |
-| U-2 | **Per-ability Power costs.** The `PowerCost` of each Boss Card, and whether any legacy `ChargeRequirement` re-tuning is required to preserve cadence. | Slice 4 (Slice 2 may build the shared machinery without them) | No cost value is authored anywhere by this decision. |
-| U-3 | **The Boss Card cast-priority score** (its authored form and its values) and the resulting cast/board action cadence, including the pacing effect of a cast phase producing no Boss attack (§2.7 item 19). | Slice 3 | The policy's *structure* is decided; its weights are not. |
-| U-4 | **The outstanding ability magnitudes** that `ADR-026`'s Unresolved Balance Choices #3–#4 and `BOSS_RULES.md` §6.3.1 items 1/4/5 already record as unresolved — Shield points for `earthquake`, buff percentages and durations for `flame-burst` and `thunder-strike`, and the compounding behavior of `flame-burst` with `boss-hoa-long-rage`. | Slice 4 | Explicitly **not** resolved or narrowed here. |
+| U-2 | **Per-ability Power costs.** The `PowerCost` of each Boss Card, and whether any legacy `ChargeRequirement` re-tuning is required to preserve cadence. | Slice 4 (the initial card's approved cost, `earthquake = 30`, unblocks Slice 3) | TASK-308 authors `earthquake = 30`; the other four costs remain open and no re-tuning is authorized. |
+| U-3 | **The Boss Card cast-priority score** (its authored form and its values) and the resulting cast/board action cadence, including the pacing effect of a cast phase producing no Boss attack (§2.7 item 19). | Slice 3 | The structure is decided; TASK-308 approves the nullable carrier and `earthquake = 16`, leaving the other four Bosses open. |
+| U-4 | **The outstanding ability magnitudes** that `ADR-026`'s Unresolved Balance Choices #3–#4 and `BOSS_RULES.md` §6.3.1 items 1/4/5 already record as unresolved — Shield points for `earthquake`, buff percentages and durations for `flame-burst` and `thunder-strike`, and the compounding behavior of `flame-burst` with `boss-hoa-long-rage`. | Slice 4 | TASK-308 approves `earthquake`'s Shield as `150 Flat`; the other magnitudes and the compounding question remain open. |
 | U-5 | **Whether the migrated abilities keep their current cooldowns.** The values are carried over unchanged by this decision (`BOSS_RULES.md` §6.3); any re-tuning is a balance decision that is not made here. | Slice 4 | The cooldown *handling* rule is decided; the values are only carried over. |
 | U-6 | **The retirement of `SkillCharge`'s own unit-metric and clamp questions.** They are closed by retirement rather than answered, and the retirement is gated by §2.9's parity gate. | Slice 5 (removal) | `ADR-026` Unresolved Balance Choices #1–#2 are reformulated, not resolved, by this record. |
 
@@ -349,13 +366,25 @@ SLICE 2 — Shared cast contracts and effects
   unchanged and covered by regression tests; a Boss cast can be validated and
   resolved against BossState.Power with the same machinery.
 
-SLICE 3 — Deterministic Boss AI action policy
-  The one-action policy (BOSS_RULES.md §4.3): eligibility, deterministic
-  selection, cooldown handling, board-action ordering, tie-break, and the
-  dedicated Boss event's presentation (BossCardCast).
-  Exit: the Boss takes exactly one action per response phase, deterministically;
-  a cast phase produces no Boss board resolution and no Boss attack; both action
-  kinds are presented from their own events.
+SLICE 3 — Boss Card end to end: definition/provisioning, policy, event
+  One consolidated task (TASK-308); there is no separate provisioning slice.
+  Work: the approved documentation/ADR amendments; the one provisioned
+  earthquake Boss Card row (PowerCost 30, Shield 150 Flat) and the nullable
+  CastPriorityScore overlay (earthquake = 16); the active-form resolution
+  (content presence, once per battle, fail closed, no legacy fallback); the
+  one-action policy (BOSS_RULES.md §4.3: eligibility, deterministic selection,
+  cooldown handling, board-action ordering, tie-break); the atomic round
+  integration (cost, Boss-self Shield, cooldown, suppression of the board
+  resolution/attack, one write-back, CAS-retry determinism); and the dedicated
+  BossCardCast event's wire projection and client presentation.
+  Exit: the real provisioned card resolves at battle creation; the Boss takes
+  exactly one action per response phase deterministically (board-only /
+  cast-only / both / tie / neither); a cast phase produces no Boss board
+  resolution, no Boss resource generation and no Boss attack, deducts Power
+  exactly once, applies the Shield, sets the cooldown and emits exactly one
+  BossCardCast inside the round's single ordered batch; the client presents the
+  cast; Player CardCast/PetSkillCast contracts are byte-identical; unmigrated
+  Bosses' behavior and suites are unchanged.
 
 SLICE 4 — Ability migration
   Migrate Earthquake, then Flame Burst, then Root, then Drain Power; migrate
@@ -495,14 +524,15 @@ PARTIALLY SUPERSEDED by this ADR (in-place amendment recorded in ADR-026)
     (item 8 in particular is the board-action score §2.7 uses). No other ADR-026
     item is affected.
 
+AMENDED (in place) by TASK-308 / Slice 3
+  ADR-024 — the Domain Overlay extends from four to five values with the
+    nullable CastPriorityScore column; PostgreSQL authority, the static
+    baseline, structural preservation and the fail-closed/no-fallback validation
+    are unchanged.
+
 UNAFFECTED
   ADR-021 (one Card cast per committed Turn) — remains the Player's allowance and
     is neither read nor spent by a Boss Card cast (CARD_RULES.md §3 item 9).
-  ADR-024 (database-driven boss balance configuration) — unchanged: the ability's
-    effect carrier moves from the Skill definition to the Boss Card definition at
-    Slice 4, and the Domain Overlay / PostgreSQL authority, the static baseline
-    and the fail-closed validation are untouched. No persistence change is
-    authorized here.
   ADR-026 items 1, 2, 3, 5, 6, 7, 8 — unchanged.
   ADR-028 (Special Gem retirement) — unchanged; this record follows its
     documentation-first, runtime-gated pattern.

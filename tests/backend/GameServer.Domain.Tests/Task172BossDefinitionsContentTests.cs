@@ -322,4 +322,43 @@ public class Task172BossDefinitionsContentTests
             Assert.Equal(documented[boss.BossId.Value], effect!.Value.Kind);
         }
     }
+
+    // =======================================================================
+    // Cast-priority score — BOSS_RULES.md §4.3 item 5, §4.4 item 5 (TASK-308)
+    // =======================================================================
+
+    [Fact]
+    public void SonThachVe_ShouldCarryTheApprovedCastPriorityScore()
+    {
+        // BOSS_RULES.md §4.3 item 5 / §4.4 item 5 and TASK-308 §1 (OD-3b): the
+        // approved initial cast-priority score for the one migrated Boss Card
+        // (`earthquake`) is 16. It is content, not a formula — the value is not
+        // derived from the board weights or from another Boss.
+        Assert.Equal(16, BossDefinitions.SonThachVe.CastPriorityScore);
+
+        // DATABASE.md §1/§3 (OD-3a): the carrier is nullable — `NULL` is the
+        // explicit "no cast-priority score authored" marker, distinct from a real
+        // 0 score.
+        Assert.Equal(typeof(int?), typeof(BossDefinition).GetProperty(
+            nameof(BossDefinition.CastPriorityScore))!.PropertyType);
+    }
+
+    [Fact]
+    public void TheOtherFourBosses_ShouldLeaveTheCastPriorityScoreUnauthored()
+    {
+        // ADR-029 §3 / BOSS_RULES.md §4.4 item 5: only Sơn Thạch Vệ's ability is
+        // migrated in Slice 3. The other four abilities stay on the transitional
+        // BossSkill path and their Power costs, magnitudes, and cast-priority scores
+        // remain unresolved until Slice 4 — so each carries NULL, and no guessed
+        // score is seeded for an unmigrated ability.
+        foreach (var boss in BossDefinitions.All)
+        {
+            if (boss.BossId.Value == "boss-son-thach-ve")
+            {
+                continue;
+            }
+
+            Assert.Null(boss.CastPriorityScore);
+        }
+    }
 }

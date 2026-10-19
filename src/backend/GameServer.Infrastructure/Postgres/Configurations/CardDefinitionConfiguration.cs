@@ -62,7 +62,8 @@ public sealed class CardDefinitionConfiguration : IEntityTypeConfiguration<CardD
             .HasMaxLength(64)
             .IsRequired();
 
-        // DATABASE.md §1/§3: Category ∈ {Basic, PetSkill} (CARD_RULES.md §1).
+        // DATABASE.md §1/§3: Category ∈ {Basic, PetSkill, BossCard}
+        // (CARD_RULES.md §1, §1.1; BossCard added by TASK-308 / ADR-029).
         // Stored as the enum's numeric value via the same conversion pattern as
         // PetDefinition.Element; the closed category set lives in the Domain
         // enum, not in a database CHECK. No default is declared: an unset value

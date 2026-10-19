@@ -1,6 +1,17 @@
 # Boss Rules
 
-**Version:** 2.14 (§1, §3.3, §4 (new §4.1–§4.4), §5, §6.2.6, §6.3, and §7
+**Version:** 2.15 (§4.3 step 4 and item 5, §4.4 new item 6, §6.3, §6.3.1
+item 4, and the §6 closing note amended per **TASK-308 / ADR-029 Slice 3**,
+applying the operator-approved initial Boss Card content: `earthquake` is
+provisioned as a `CardDefinition` of category `BossCard` with `PowerCost = 30`,
+a self-targeted `150 Flat` Shield (now an authored magnitude), and
+`CastPriorityScore = 16`; the score carrier is the nullable
+`BossDefinition.CastPriorityScore` (NULL = not authored, otherwise an integer
+>= 0); and the active-form rule is recorded — form = provisioned Boss Card
+presence, resolved once at battle creation, fail closed, no legacy fallback,
+with only Sơn Thạch Vệ enabled initially. The other four abilities' costs,
+magnitudes and scores remain UNRESOLVED until Slice 4. No existing event, step,
+or unrelated balance value changes. Prior 2.14: (§1, §3.3, §4 (new §4.1–§4.4), §5, §6.2.6, §6.3, and §7
 updated per **ADR-029 / TASK-303**, applying the explicit Product Owner decision
 that the Boss behaves as a genuine opponent using the same resource and cast
 principles as the Player: the Boss gains its own **`BossState.Power`** (integer,
@@ -381,7 +392,9 @@ Selection (deterministic, pure)
          the immediate-first-pass legal swaps (unchanged; count-only per
          COMBAT_RULES.md §2 item 6)
        Boss Card cast = the Boss definition's authored deterministic
-         cast-priority score for its Boss Card
+         cast-priority score for its Boss Card, carried by the nullable
+         CastPriorityScore overlay value (NULL = not authored, otherwise an
+         integer >= 0; a Boss Card's presence requires a non-null value)
   5. the higher score wins
         ↓
 Tie-break (fixed; not a tuning parameter)
@@ -416,11 +429,21 @@ Tie-break (fixed; not a tuning parameter)
    (`ADR-026` D1). This is a deliberate, documented consequence of the
    one-action policy, not a defect; its effect on encounter pacing is one of
    `ADR-029`'s **unresolved** balance items.
-5. **UNRESOLVED.** The authored form and MVP values of the Boss Card's
-   cast-priority score (step 4) are Boss content and are **UNRESOLVED**; they
-   are recorded in `ADR-029` and must be approved before `ADR-029` Slice 3 may
-   be implemented. The *structure* above — gates, ordering, tie-break,
-   determinism — is decided and is not open.
+5. **Authored cast-priority score (approved initial content).** The score is
+   the Boss definition's authored `CastPriorityScore` — the nullable integer
+   overlay value of `DATABASE.md` §1/§3 and `ADR-024` §2.2 (as amended by
+   TASK-308): `NULL` means "no cast-priority score authored" and is legal only
+   while the Boss has no Boss Card; otherwise it is an integer `>= 0`. The
+   score is content, not a formula: `earthquake`'s approved initial value is
+   `16`, and the other four Bosses stay `NULL` until their own migration
+   (`ADR-029` Slice 4). Because a `BossCard` form requires a score, a migrated
+   Boss whose value is `NULL` or negative is invalid definition data and
+   battle creation fails closed (`ADR-024` §2.2 item 3; no default, no
+   fallback weight, no board-only degradation). The board action's documented
+   minimum score is `15` (3 cells × the DEF weight `5`) and ties go to the
+   board, so an authored score in `0..15` always yields the board action while
+   `16` or greater can win. The *structure* above — gates, ordering,
+   tie-break, determinism — is decided and is not open.
 
 ## 4.4 Staged Migration of the Boss Ability (ADR-029)
 
@@ -452,9 +475,23 @@ Transitional path: BossState.SkillCharge + §6.3's charge/cooldown gate, and the
    closest old/new comparison.
 4. **No encounter mechanic is turned into a Card by this migration**
    (§4.2 item 7).
-5. **This subsection authors no balance value.** Each migrated ability needs an
-   authored Power cost, and its cooldown and any re-tuned magnitude remain
-   `ADR-029`'s unresolved balance items.
+5. **Authored content for the migrated ability.** The initial Boss Card's
+   approved Power cost is `earthquake = 30` and its Shield magnitude is
+   `150 Flat` (§6.3.1 item 4); the other four abilities' Power costs, any
+   re-tuned magnitudes and their cast-priority scores remain `ADR-029` §3's
+   unresolved balance items until each ability's own Slice 4 migration.
+6. **One active form per ability, resolved from content presence.** An ability
+   has exactly one active form: `BossCard` iff a provisioned `CardDefinition`
+   row exists with `Category = BossCard` and `CardDefinitionId` = that Boss's
+   `SkillId`; `BossSkill` (the documented transitional path) otherwise. The
+   form is resolved exactly once at battle creation from the same
+   content-input path that supplies the Boss definition, is cached with it, is
+   never re-derived per round, is never stored in `BattleState`/Redis, and is
+   never inferred from `SkillCharge` or `SkillCooldown`. There is no fallback:
+   if a provisioned Boss Card or the score its form requires is present but
+   invalid, battle creation fails closed. Only Sơn Thạch Vệ
+   (`boss-son-thach-ve`, `earthquake`) is migrated in Slice 3; the other four
+   abilities keep the legacy form and their existing behavior unchanged.
 
 ---
 
@@ -824,7 +861,9 @@ magnitudes, and it is also the canonical owner of each Boss ability's
 **cooldown value** in Turns — which the Boss Card form (§4.2) carries over
 unchanged. The **target** form replaces the charge requirement with a Power cost
 paid from `BossState.Power` (§4.1); each migrated ability's Power cost is
-**UNRESOLVED** and is not authored here. Until §4.4's removal gate is met, the
+authored with that ability's migration — the initial Boss Card's approved value
+is `earthquake = 30` (§6.3.1 item 4) — while the other four remain
+**UNRESOLVED** until Slice 4. Until §4.4's removal gate is met, the
 charge/cooldown gate below remains the runtime path for any ability not yet
 migrated, and no new work may build on it.
 
@@ -897,7 +936,7 @@ promoted by this revision.
 4. **Earthquake (Sơn Thạch Vệ):**
    - **Base Damage:** 0 (D3, direct damage removed).
    - **Secondary Effect (Boss Shield, Option 2A, D6):** Grants a temporary Shield to the Boss on `BossState.ActiveStatusEffects`. Absorbs incoming player attack damage before Boss HP via `DamagePipeline` (`COMBAT_RULES.md` §4).
-   - **Magnitude:** Non-blocking balance tuning parameter.
+   - **Magnitude:** `150 Flat`, an approved authored initial value (TASK-308). The Boss Card form carries the same authored effect; the Shield is self-targeted, trigger-based and expires at `ShieldDepleted` (`COMBAT_RULES.md` §4).
    - **Board Effect:** None.
 5. **Thunder Strike (Kim Lôi Vương):**
    - **Base Damage:** 0 (D3, direct damage removed).
@@ -911,9 +950,14 @@ an explicit trigger category from §3.2, a Skill with an explicit timing rule an
 effect, and its §6.1 base stats and §6.4 identities recorded above. Every Boss's
 Passive trigger category is distinct from the others' (§3.2): Match Count (Hỏa
 Long, Mộc Yêu), Battle Start (Thủy Ma), Boss HP (Sơn Thạch Vệ), and Combo
-(Kim Lôi Vương). No Boss-specific value remains to be authored — the definitions
-in §6, §6.1–§6.4 are the contract a downstream provisioning task transcribes
-(`DATABASE.md` §1 note item 5).
+(Kim Lôi Vương). Every Boss's identity, Element, base stats, Passive and Skill
+timing content is complete. The abilities' effect magnitudes and Boss Card
+Power costs/cast-priority scores are authored with each ability's migration: the
+initial Boss Card (`earthquake`) records `PowerCost = 30`, `Shield 150 Flat` and
+`CastPriorityScore = 16`, while the remaining four abilities' magnitudes, costs
+and scores remain UNRESOLVED until Slice 4. The definitions in §6, §6.1–§6.4
+are the contract a downstream provisioning task transcribes (`DATABASE.md` §1
+note item 5).
 
 ### 6.4 Identity Contract (BossId, PassiveId, SkillId)
 

@@ -7,7 +7,14 @@ using GameServer.Api.Hubs;
 using GameServer.Application.Battle;
 using GameServer.Application.Runtime;
 using GameServer.Domain.Battle;
+using GameServer.Domain.Bosses;
+using GameServer.Domain.Cards;
+using GameServer.Domain.Combat;
 using GameServer.Domain.Match3;
+using GameServer.Domain.Passives;
+using GameServer.Domain.Pets;
+using GameServer.Domain.Players;
+using GameServer.Domain.Relics;
 using GameServer.Infrastructure.Postgres;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -4597,5 +4604,350 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
         throw new InvalidOperationException(
             "A generated board has at least one valid Swap (MATCH3_RULES.md §1.4).");
+    }
+
+    /// <summary>
+    /// The first adjacent pair of <paramref name="board"/> whose exchange produces
+    /// a §3 Match (<c>MATCH3_RULES.md</c> §1.4).
+    /// </summary>
+    private static SwapRequest FindMatchProducingPair(BoardState board)
+    {
+        for (var index = 0; index < BoardState.CellCount; index++)
+        {
+            var right = BoardState.ToColumn(index) + 1 < BoardState.Columns ? index + 1 : -1;
+            var down = index + BoardState.Width < BoardState.CellCount ? index + BoardState.Width : -1;
+
+            foreach (var to in new[] { right, down })
+            {
+                if (to < 0)
+                {
+                    continue;
+                }
+
+                if (MatchDetector.Detect(board.WithSwapped(index, to)).Count > 0)
+                {
+                    return new SwapRequest(index, to);
+                }
+            }
+        }
+
+        throw new InvalidOperationException(
+            "A generated board has at least one valid Swap (MATCH3_RULES.md §1.4).");
+    }
+
+    // =======================================================================
+    // TASK-308 — the migrated Boss Card resolves on the production battle-start
+    // path (POST /api/battle/start → real lookups → real creation pipeline)
+    // =======================================================================
+
+    [Fact]
+    public async Task BattleStart_AgainstTheMigratedBoss_ShouldResolveTheProvisionedBossCardAtCreation()
+    {
+        // TASK-308 production path: the endpoint resolves the Boss through the
+        // provisioned BossDefinition row and the Boss's active form through the real
+        // Card content read. A valid provisioned `earthquake` row creates the
+        // migrated form — and a migrated form never runs the legacy Skill gate,
+        // which is how the resolved form is observable in a committed round.
+        using var factory = new ApiIntegrationFactory();
+        var client = factory.CreateClient();
+
+        var (playerId, petInstanceId, cardLoadout, relicLoadout) =
+            await SeedBattleStartPlayerAsync(factory);
+
+        var response = await PostStartAsync(
+            client,
+            playerId,
+            petInstanceId,
+            "boss-son-thach-ve",
+            cardLoadout,
+            relicLoadout);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+        var battleId = body.GetProperty("battleId").GetString()!;
+        var bossState = body.GetProperty("initialState").GetProperty("bossState");
+
+        // The provisioned Domain-overlay row's values reach the created state.
+        Assert.Equal("boss-son-thach-ve", bossState.GetProperty("bossId").GetString());
+        Assert.Equal(3000, bossState.GetProperty("maxHP").GetInt32());
+        Assert.Equal(120, bossState.GetProperty("atk").GetInt32());
+        Assert.Equal(0, bossState.GetProperty("def").GetInt32());
+
+        using var scope = factory.Services.CreateScope();
+        var battles = scope.ServiceProvider.GetRequiredService<BattleStateService>();
+        var repository = scope.ServiceProvider.GetRequiredService<IBattleStateRepository>();
+
+        // The migrated form is observable: hold the legacy Skill's own
+        // eligibility conditions true (charge at the requirement, cooldown 0) and
+        // make the Boss Card unaffordable so the board action is selected. A
+        // legacy-form Boss would emit BossSkillCast; a migrated one must not.
+        var created = (await battles.GetBattleAsync(battleId))!;
+        var pinned = created.BossState with
+        {
+            Power = 0,
+            SkillCharge = BossDefinitions.SonThachVe.SkillChargeRequirement,
+            SkillCooldown = 0,
+        };
+
+        Assert.True(await repository.TryUpdateAsync(created with { BossState = pinned }, created.Sequence));
+
+        var current = (await battles.GetBattleAsync(battleId))!;
+        var pair = FindMatchProducingPair(current.BoardState);
+        var round = await battles.ExecuteSwapAsync(battleId, pair);
+
+        Assert.NotNull(round);
+        Assert.True(round.Value.IsAccepted);
+        Assert.DoesNotContain(round.Value.Events, e => e.Type == BattleEventType.BossSkillCast);
+        Assert.DoesNotContain(round.Value.Events, e => e.Type == BattleEventType.BossCardCast);
+        Assert.Contains(
+            round.Value.Events,
+            e => e.Type == BattleEventType.SwapStarted && e.SwapStarted.Actor == DamageParty.Boss);
+    }
+
+    [Fact]
+    public async Task BattleStart_WithAProvisionedBossCardOfTheWrongCategory_ShouldFailAsAServerSideError()
+    {
+        // Present-but-invalid Boss Card content fails the creation closed
+        // (TASK-308 §1, OD-1c). The failure is definition-data integrity, never the
+        // client's 400 BOSS_NOT_FOUND/INVALID_LOADOUT outcome.
+        using var factory = new ApiIntegrationFactory();
+        var client = factory.CreateClient();
+
+        var (playerId, petInstanceId, cardLoadout, relicLoadout) =
+            await SeedBattleStartPlayerAsync(factory);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<GameDbContext>();
+            var card = await context.CardDefinitions
+                .SingleAsync(definition => definition.CardDefinitionId == "earthquake");
+
+            context.CardDefinitions.Remove(card);
+            context.CardDefinitions.Add(new CardDefinition
+            {
+                CardDefinitionId = "earthquake",
+                Name = "Earthquake",
+                Category = CardCategory.Basic,
+                PowerCost = 30,
+                EffectDefinition = CardEffectDefinitions.Create(
+                    CardEffectDefinition.Create(CardEffectType.Shield, CardEffectValueType.Flat, 150)),
+                LoadoutCopyLimit = 1,
+            });
+
+            await context.SaveChangesAsync();
+        }
+
+        var attempt = await PostStartCapturingFailureAsync(
+            client,
+            playerId,
+            petInstanceId,
+            "boss-son-thach-ve",
+            cardLoadout,
+            relicLoadout);
+
+        AssertServerSideFailure(attempt);
+    }
+
+    [Fact]
+    public async Task BattleStart_WithAProvisionedBossCardButNoCastPriorityScore_ShouldFailAsAServerSideError()
+    {
+        // A migrated Boss with a NULL authored score is invalid definition data
+        // (BOSS_RULES.md §4.3 item 5; ADR-024 §2.4). It fails creation rather than
+        // degrading to another action form.
+        using var factory = new ApiIntegrationFactory();
+        var client = factory.CreateClient();
+
+        var (playerId, petInstanceId, cardLoadout, relicLoadout) =
+            await SeedBattleStartPlayerAsync(factory);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var context = scope.ServiceProvider.GetRequiredService<GameDbContext>();
+            var row = await context.BossDefinitions
+                .SingleAsync(definition => definition.BossDefinitionId == "boss-def-son-thach-ve");
+
+            context.BossDefinitions.Remove(row);
+            context.BossDefinitions.Add(BossDefinitions.SonThachVe with { CastPriorityScore = null });
+
+            await context.SaveChangesAsync();
+        }
+
+        var attempt = await PostStartCapturingFailureAsync(
+            client,
+            playerId,
+            petInstanceId,
+            "boss-son-thach-ve",
+            cardLoadout,
+            relicLoadout);
+
+        AssertServerSideFailure(attempt);
+    }
+
+    /// <summary>
+    /// Seeds one Player with an owned Pet instance, the three Basic Card unlocks
+    /// its loadout submits, the derived Signature Skill Card's unlock, and three
+    /// owned Relic instances — the documented <c>POST /api/battle/start</c> inputs,
+    /// using the provisioned content the host already holds.
+    /// </summary>
+    private static async Task<(string PlayerId, string PetInstanceId, string[] CardLoadout, string[] RelicLoadout)>
+        SeedBattleStartPlayerAsync(ApiIntegrationFactory factory)
+    {
+        using var scope = factory.Services.CreateScope();
+        var context = scope.ServiceProvider.GetRequiredService<GameDbContext>();
+
+        var playerId = $"player_{Guid.NewGuid():N}";
+        var petInstanceId = $"pet_instance_{Guid.NewGuid():N}";
+        string[] cardLoadout = ["card-heal", "card-shield", "card-power-charge"];
+        string[] relicLoadout =
+        [
+            $"relic_{Guid.NewGuid():N}",
+            $"relic_{Guid.NewGuid():N}",
+            $"relic_{Guid.NewGuid():N}",
+        ];
+
+        context.Players.Add(new Player
+        {
+            PlayerId = playerId,
+            AccountId = Guid.NewGuid(),
+            Level = Player.InitialLevel,
+            CreatedAt = DateTimeOffset.UtcNow,
+        });
+
+        // The provisioned Pet definition whose Signature Skill is a provisioned
+        // PetSkill Card (TestProvisionedContent.SeedPets supplies both).
+        context.Pets.Add(new Pet
+        {
+            PetInstanceId = petInstanceId,
+            PlayerId = playerId,
+            PetDefinitionId = "pet-thanh-xa",
+            Tier = PetTier.Common,
+            Star = 1,
+            Level = 1,
+            AcquiredAt = DateTimeOffset.UtcNow,
+        });
+
+        foreach (var cardId in cardLoadout.Append("card-venomous-bloom"))
+        {
+            context.PlayerUnlockedCards.Add(new PlayerUnlockedCard
+            {
+                PlayerId = playerId,
+                CardDefinitionId = cardId,
+            });
+        }
+
+        foreach (var relicInstanceId in relicLoadout)
+        {
+            context.Relics.Add(new Relic
+            {
+                RelicInstanceId = relicInstanceId,
+                PlayerId = playerId,
+                RelicDefinitionId = "relic-berserker-core",
+                AcquiredAt = DateTimeOffset.UtcNow,
+            });
+        }
+
+        await context.SaveChangesAsync();
+
+        return (playerId, petInstanceId, cardLoadout, relicLoadout);
+    }
+
+    /// <summary>
+    /// Posts a battle-start request carrying a real session for
+    /// <paramref name="playerId"/> and returns the successful response.
+    /// </summary>
+    private static async Task<HttpResponseMessage> PostStartAsync(
+        HttpClient client,
+        string playerId,
+        string petId,
+        string bossId,
+        string[] cardLoadout,
+        string[] relicLoadout)
+    {
+        var message = new HttpRequestMessage(HttpMethod.Post, "/api/battle/start")
+        {
+            Content = JsonContent.Create(new { petId, bossId, cardLoadout, relicLoadout }),
+        };
+
+        message.Headers.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue(
+                "Bearer",
+                TestApplicationSession.Mint(playerId));
+
+        return await client.SendAsync(message);
+    }
+
+    /// <summary>
+    /// The outcome of a battle-start request that may fail server-side: the
+    /// response status and error code when one was rendered, or the in-process
+    /// exception the test host surfaced (the same dual shape the endpoint's other
+    /// server-failure tests account for).
+    /// </summary>
+    private sealed record StartAttempt(
+        HttpStatusCode? Status,
+        string? ErrorCode,
+        Exception? Thrown);
+
+    private static async Task<StartAttempt> PostStartCapturingFailureAsync(
+        HttpClient client,
+        string playerId,
+        string petId,
+        string bossId,
+        string[] cardLoadout,
+        string[] relicLoadout)
+    {
+        try
+        {
+            var response = await PostStartAsync(
+                client,
+                playerId,
+                petId,
+                bossId,
+                cardLoadout,
+                relicLoadout);
+
+            if (response.Content.Headers.ContentLength is null or 0)
+            {
+                return new StartAttempt(response.StatusCode, null, null);
+            }
+
+            try
+            {
+                var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+
+                return body.TryGetProperty("error", out var error)
+                    ? new StartAttempt(response.StatusCode, error.GetString(), null)
+                    : new StartAttempt(response.StatusCode, null, null);
+            }
+            catch (JsonException)
+            {
+                return new StartAttempt(response.StatusCode, null, null);
+            }
+        }
+        catch (Exception thrown)
+        {
+            return new StartAttempt(null, null, thrown);
+        }
+    }
+
+    /// <summary>
+    /// Asserts a Boss Card content failure was reported as a server-side failure
+    /// and not as one of the endpoint's documented client rejections.
+    /// </summary>
+    private static void AssertServerSideFailure(StartAttempt attempt)
+    {
+        Assert.NotEqual(HttpStatusCode.BadRequest, attempt.Status);
+        Assert.Null(attempt.ErrorCode);
+
+        if (attempt.Status is { } status)
+        {
+            Assert.Equal(HttpStatusCode.InternalServerError, status);
+            return;
+        }
+
+        Assert.NotNull(attempt.Thrown);
+        Assert.True(
+            attempt.Thrown is InvalidOperationException or AggregateException,
+            $"Unexpected failure type {attempt.Thrown!.GetType().Name}: {attempt.Thrown.Message}");
     }
 }

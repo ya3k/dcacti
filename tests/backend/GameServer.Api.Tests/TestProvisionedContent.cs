@@ -41,15 +41,16 @@ internal static class TestProvisionedContent
         ["pet-xich-lang", "pet-bach-ho", "pet-huyen-quy", "pet-thanh-xa", "pet-son-hung"];
 
     /// <summary>
-    /// The eight Card definitions the provisioning migrations created — the
-    /// three Basic Cards (<c>CARD_RULES.md</c> §2) and the five Pet Skill Cards
-    /// (§4.1, one per Pet).
+    /// The nine Card definitions the provisioning migrations created — the three
+    /// Basic Cards (<c>CARD_RULES.md</c> §2), the five Pet Skill Cards (§4.1, one
+    /// per Pet), and the one Boss Card (§1.1; <c>earthquake</c>, TASK-308).
     /// </summary>
     internal static readonly string[] ProvisionedCardDefinitionIds =
     [
         "card-heal", "card-shield", "card-power-charge",
         "card-inferno", "card-tidal-barrier", "card-iron-fang",
         "card-venomous-bloom", "card-earthshaker",
+        "earthquake",
     ];
 
     /// <summary>
@@ -215,6 +216,19 @@ internal static class TestProvisionedContent
                 40,
                 CardEffectDefinitions.Create(
                     CardEffectDefinition.Create(CardEffectType.Damage, CardEffectValueType.Flat, 140))),
+
+            // TASK-308: the one provisioned Boss Card (CARD_RULES.md §1.1;
+            // BOSS_RULES.md §4.2/§6.3.1; values approved in TASK-308 §1). Its
+            // CardDefinitionId is the Boss ability SkillId — the documented
+            // identity exception — and it has no PlayerUnlockedCard row, so it
+            // never appears in a collection or loadout.
+            (
+                "earthquake",
+                "Earthquake",
+                CardCategory.BossCard,
+                30,
+                CardEffectDefinitions.Create(
+                    CardEffectDefinition.Create(CardEffectType.Shield, CardEffectValueType.Flat, 150))),
         };
 
         foreach (var (id, name, category, powerCost, effects) in cards)

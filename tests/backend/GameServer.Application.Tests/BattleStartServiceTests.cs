@@ -85,6 +85,66 @@ public class BattleStartServiceTests
     }
 
     [Fact]
+    public async Task Start_WithTheProvisionedEarthquakeBossCard_ShouldResolveTheMigratedForm()
+    {
+        // TASK-308 / OD-1c: battle start resolves the Boss active form from
+        // provisioned-content presence. The Boss Card is read ONCE, by the ability
+        // SkillId, and cached with the Boss content input.
+        var harness = new Harness();
+        harness.CardDefinitions.Definitions["earthquake"] = EarthquakeBossCard();
+
+        var result = await harness.StartAsync(
+            cardLoadout: [BasicA, BasicB, BasicC],
+            relicLoadout: ["relic_1", "relic_2", "relic_3"],
+            bossId: "boss-son-thach-ve");
+
+        Assert.True(result.Succeeded);
+
+        // Creation completed with the migrated form configured and the content was
+        // resolved exactly once at creation, keyed by SkillId.
+        Assert.Equal(["earthquake"], harness.CardDefinitions.Reads);
+        Assert.Equal(1, harness.ActiveStateStore.RecordCount);
+    }
+
+    [Fact]
+    public async Task Start_WithAProvisionedBossCardOfTheWrongCategory_ShouldFailClosed()
+    {
+        // Present-but-invalid content must fail the creation rather than falling
+        // back to the legacy Skill form (TASK-308 §1, OD-1c; AGENTS.md §7).
+        var harness = new Harness();
+        harness.CardDefinitions.Definitions["earthquake"] =
+            EarthquakeBossCard(category: CardCategory.Basic);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            harness.StartAsync(
+                cardLoadout: [BasicA, BasicB, BasicC],
+                relicLoadout: ["relic_1", "relic_2", "relic_3"],
+                bossId: "boss-son-thach-ve"));
+
+        // A rejected creation writes no battle state.
+        Assert.Equal(0, harness.ActiveStateStore.RecordCount);
+    }
+
+    [Fact]
+    public async Task Start_WithAProvisionedBossCardButNoCastPriorityScore_ShouldFailClosed()
+    {
+        // The nullable score is an explicit "not authored" marker, legal only
+        // while the Boss has no Boss Card (BOSS_RULES.md §4.3 item 5).
+        var harness = new Harness();
+        harness.CardDefinitions.Definitions["earthquake"] = EarthquakeBossCard();
+        harness.BossLookup = ScriptedBossDefinitionLookup.Resolving(
+            BossDefinitions.SonThachVe with { CastPriorityScore = null });
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            harness.StartAsync(
+                cardLoadout: [BasicA, BasicB, BasicC],
+                relicLoadout: ["relic_1", "relic_2", "relic_3"],
+                bossId: "boss-son-thach-ve"));
+
+        Assert.Equal(0, harness.ActiveStateStore.RecordCount);
+    }
+
+    [Fact]
     public async Task Start_ShouldSnapshotExactlyFourEquippedCards_IncludingTheDerivedSignatureSkill()
     {
         // CARD_RULES.md §1 / API_CONTRACTS.md §3: the snapshot is the 3 submitted
@@ -1026,6 +1086,29 @@ public class BattleStartServiceTests
     }
 
     // -----------------------------------------------------------------------
+    // TASK-308 fixtures
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// The provisioned <c>earthquake</c> Boss Card definition
+    /// (TASK-308 §1; <c>CARD_RULES.md</c> §1.1): identity = the ability
+    /// <c>SkillId</c>, <c>BossCard</c> category, <c>PowerCost 30</c>, one
+    /// <c>Shield</c>/<c>Flat</c>/<c>150</c> effect, <c>LoadoutCopyLimit 1</c>.
+    /// </summary>
+    private static CardDefinition EarthquakeBossCard(
+        CardCategory category = CardCategory.BossCard) =>
+        new()
+        {
+            CardDefinitionId = "earthquake",
+            Name = "Earthquake",
+            Category = category,
+            PowerCost = 30,
+            EffectDefinition = CardEffectDefinitions.Create(
+                CardEffectDefinition.Create(CardEffectType.Shield, CardEffectValueType.Flat, 150)),
+            LoadoutCopyLimit = 1,
+        };
+
+    // -----------------------------------------------------------------------
     // Harness
     // -----------------------------------------------------------------------
 
@@ -1046,7 +1129,17 @@ public class BattleStartServiceTests
             // and the real BattleStateService pipeline while removing the
             // infrastructure dependency.
             ActiveStateStore = new InMemoryBattleStateRepository();
-            Battles = new BattleStateService(ActiveStateStore, new FixedRngSeedSource());
+
+            // The Boss Card content read the creation path uses to resolve the
+            // active form (TASK-308). Empty by default, so every existing
+            // scenario keeps the transitional BossSkill form; a test seeds the
+            // provisioned `earthquake` definition to exercise the migrated form.
+            CardDefinitions = new FakeBossCardDefinitionLookup();
+
+            Battles = new BattleStateService(
+                ActiveStateStore,
+                new FixedRngSeedSource(),
+                cardDefinitions: CardDefinitions);
             Pets = new FakePetRepository(this);
             Cards = new FakeCardRepository(this);
             Relics = new FakeRelicRepository(this);
@@ -1061,6 +1154,15 @@ public class BattleStartServiceTests
         }
 
         public BattleStateService Battles { get; }
+
+        /// <summary>
+        /// The Boss Card content read (<c>CARD_RULES.md</c> §1.1;
+        /// <c>BOSS_RULES.md</c> §4.2; <c>DATABASE.md</c> §1). Battle creation
+        /// resolves the Boss's active form through it exactly once (TASK-308), so
+        /// an empty map is the transitional form and a seeded
+        /// <c>earthquake</c> row is the migrated form.
+        /// </summary>
+        internal FakeBossCardDefinitionLookup CardDefinitions { get; }
 
         /// <summary>
         /// The store the orchestrator's battles are persisted to, so a test can
@@ -1466,5 +1568,31 @@ public class BattleStartServiceTests
             Condition = TestRelicEffects.Condition,
             EffectDefinition = TestRelicEffects.Effect,
         };
+    }
+
+    /// <summary>
+    /// The Boss Card content read the creation path uses to resolve a Boss
+    /// ability's active form (TASK-308; <c>CARD_RULES.md</c> §1.1,
+    /// <c>BOSS_RULES.md</c> §4.2). It records every requested identity so a test
+    /// can assert the creation-time resolution happened exactly once and was
+    /// keyed by the ability <c>SkillId</c>. An empty map is the transitional
+    /// form; a seeded entry is the migrated form.
+    /// </summary>
+    private sealed class FakeBossCardDefinitionLookup : ICardDefinitionLookup
+    {
+        internal Dictionary<string, CardDefinition> Definitions { get; } = new(StringComparer.Ordinal);
+
+        internal List<string> Reads { get; } = [];
+
+        public Task<CardDefinition?> GetDefinitionAsync(
+            string cardDefinitionId,
+            CancellationToken cancellationToken = default)
+        {
+            Reads.Add(cardDefinitionId);
+
+            Definitions.TryGetValue(cardDefinitionId, out var definition);
+
+            return Task.FromResult(definition);
+        }
     }
 }
