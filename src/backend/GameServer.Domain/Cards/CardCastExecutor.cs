@@ -30,9 +30,13 @@ namespace GameServer.Domain.Cards;
 /// spends the Turn's allowance, and emits <c>CardCast</c>/<c>PetSkillCast</c>/
 /// <c>PowerChanged</c>/damage/outcome events. The Boss cast is resolved inside the
 /// round's Boss response phase, so it advances no <c>Sequence</c>, spends no
-/// allowance, and emits no event: its result is the state the round's single
+/// allowance, and emits no cast event: its result is the state the round's single
 /// write-back carries (<c>GAME_STATE.md</c> §5.1 item 9, <c>CARD_RULES.md</c> §3
-/// item 9, <c>ADR-029</c>).
+/// item 9, <c>ADR-029</c>). Its one event-producing effect is
+/// <see cref="CardEffectType.PowerDrain"/>, whose authoritative
+/// <c>PowerChanged</c> (<c>GAME_EVENTS.md</c> §2) is returned to the caller and
+/// carried into the round's ordered batch; the Boss's own Power spend never emits
+/// one.
 /// </summary>
 public static class CardCastExecutor
 {
@@ -78,7 +82,9 @@ public static class CardCastExecutor
     /// category gate, the <c>PetState.CardCostModifiers[]</c> cost composition,
     /// <c>PetState.Power</c> sufficiency, the committed Turn's one-cast allowance,
     /// deduction from <c>PetState.Power</c>, actor-relative effect resolution, and
-    /// the cast's own events, allowance spend and <c>Sequence</c> advance.
+    /// the cast's own events, allowance spend and <c>Sequence</c> advance. It also
+    /// refuses the four Boss-only effect identities before any state change — see
+    /// <see cref="RequireNoBossOnlyEffectsForPlayerCast"/>.
     ///
     /// <b><see cref="CardCastActor.Boss"/></b> runs the same contract against the
     /// Boss's own state (<c>BOSS_RULES.md</c> §4.2, §4.1): the definition must be
@@ -87,7 +93,11 @@ public static class CardCastExecutor
     /// <c>BossState.Power</c> and deducted from it, and effects resolve with the
     /// Boss's own state as <i>self</i> and the active Pet as <i>opponent</i>. It
     /// reads and writes no Player loadout, allowance, Relic or Pet cost modifier,
-    /// emits no event, and advances no <c>Sequence</c>.
+    /// emits no cast event, and advances no <c>Sequence</c>. The only events it
+    /// produces are the authoritative <c>PowerChanged</c> reports its
+    /// <see cref="CardEffectType.PowerDrain"/> effect performs on
+    /// <c>PetState.Power</c> (<c>GAME_EVENTS.md</c> §2), returned for the round's
+    /// ordered batch.
     ///
     /// <b>A rejected cast of either actor changes nothing</b> (<c>CARD_RULES.md</c>
     /// §3 item 3): the returned result carries no state and no events, the input
@@ -159,6 +169,22 @@ public static class CardCastExecutor
         {
             return CardCastExecutionResult.Rejected(CardCastRejectionReason.InvalidCard);
         }
+
+        // 2b. Refuse the four Boss-only effect identities BEFORE any cost
+        //     composition, Power check, deduction, allowance spend, Sequence
+        //     advance, or effect resolution. TASK-309 decision D-1 adds
+        //     AtkBuff | PowerDrain | AtkDebuff | NextAtkBuff as Boss-only
+        //     identities: CARD_RULES.md §3 item 9's actor-relative split gives the
+        //     Player's cast the six Player identities (Heal | Shield | Power |
+        //     Damage | Burn | Crit), and BOSS_RULES.md §4.2 item 4 / §6.3.1 items
+        //     1–3 and 5 own the four Boss effects as Boss Card effects only. A
+        //     definition carrying one is therefore not representable for this
+        //     actor at all — a content/contract error, not a transient gameplay
+        //     state — so it throws rather than being converted into a rejection
+        //     reason or resolved with a guessed value. The guard is placed before
+        //     the deduction, so a refusal writes nothing and spends no Power
+        //     (CARD_RULES.md §3 item 3).
+        RequireNoBossOnlyEffectsForPlayerCast(cardDefinition);
 
         var effectiveCost = EffectiveCardCost.Compose(cardDefinition.PowerCost, state.PetState.CardCostModifiers);
 
@@ -549,6 +575,63 @@ public static class CardCastExecutor
     }
 
     /// <summary>
+    /// Refuses the four Boss-only effect identities for a Player cast
+    /// (<c>TASK-309</c> decision D-1; <c>CARD_RULES.md</c> §3 item 9,
+    /// <c>BOSS_RULES.md</c> §4.2 item 4, §6.3.1 items 1–3 and 5).
+    ///
+    /// <b>Why this is a throw rather than a rejection.</b> A definition carrying
+    /// <see cref="CardEffectType.AtkBuff"/>, <see cref="CardEffectType.PowerDrain"/>,
+    /// <see cref="CardEffectType.AtkDebuff"/>, or
+    /// <see cref="CardEffectType.NextAtkBuff"/> is not a Card the Player's contract
+    /// can represent at all — the four identities are the Boss Card's authored
+    /// effects, not a transient gameplay state — so it is a content/contract error.
+    /// Converting it into a <see cref="CardCastRejectionReason"/> would add a wire
+    /// vocabulary value for a condition that never arises with valid content, and
+    /// resolving it would apply a Boss-only rule to the Player. It is therefore
+    /// rejected the same way the Boss branch rejects a definition it cannot
+    /// represent.
+    ///
+    /// <b>It runs before any state change.</b> The guard is called after the
+    /// Player's loadout and category gates (so those keep their documented
+    /// rejection order) and before the <c>EffectiveCardCost</c> composition, the
+    /// Power sufficiency check, the deduction, the allowance spend, the
+    /// <c>Sequence</c> advance, and every effect resolution — so a refused
+    /// definition spends no Power, consumes no allowance, advances no
+    /// <c>Sequence</c>, and writes no state (<c>CARD_RULES.md</c> §3 item 3).
+    /// </summary>
+    /// <param name="cardDefinition">The Card definition being cast by the Player.</param>
+    /// <exception cref="InvalidOperationException">
+    /// The definition carries one of the four Boss-only effect identities.
+    /// </exception>
+    private static void RequireNoBossOnlyEffectsForPlayerCast(CardDefinition cardDefinition)
+    {
+        for (var i = 0; i < cardDefinition.EffectDefinition.Count; i++)
+        {
+            var effectType = cardDefinition.EffectDefinition[i].EffectType;
+
+            if (effectType is not (
+                CardEffectType.AtkBuff
+                or CardEffectType.PowerDrain
+                or CardEffectType.AtkDebuff
+                or CardEffectType.NextAtkBuff))
+            {
+                continue;
+            }
+
+            throw new InvalidOperationException(
+                $"A Player Card cast cannot resolve the Boss-only {effectType} effect. "
+                + "TASK-309 decision D-1 adds AtkBuff | PowerDrain | AtkDebuff | "
+                + "NextAtkBuff as Boss Card effect identities only (BOSS_RULES.md §6.3.1 "
+                + "items 1–3 and 5), while CARD_RULES.md §3 item 9 gives the Player's cast "
+                + "the six Player identities Heal | Shield | Power | Damage | Burn | Crit. "
+                + "The Boss-only effects are not representable for a Player cast, and this "
+                + "refusal runs before the cost composition, deduction and effect "
+                + "resolution, so no state is written and no Power is spent "
+                + "(CARD_RULES.md §3 item 3).");
+        }
+    }
+
+    /// <summary>
     /// The Boss branch of the shared cast contract — a Boss Card cast
     /// (<c>BOSS_RULES.md</c> §4.1, §4.2; <c>CARD_RULES.md</c> §1.1, §3 item 9).
     ///
@@ -573,11 +656,19 @@ public static class CardCastExecutor
     /// <c>CardCost</c> modifier (§3.6's modifiers are the Pet-state carrier of a
     /// Relic effect and Relics are Player-only, <c>ADR-029</c> §2.4 item 11),
     /// advances no <c>Sequence</c> (<c>GAME_STATE.md</c> §5.1 item 9 — the round's
-    /// single write-back owns it), writes neither <c>SkillCharge</c> nor
+    /// single write-back owns it), and writes neither <c>SkillCharge</c> nor
     /// <c>SkillCooldown</c> (<c>BOSS_RULES.md</c> §4.3 item 3 is the policy's
-    /// concern, <c>ADR-029</c> Slice 3), and emits no event at all: the
+    /// concern, <c>ADR-029</c> Slice 3). It emits no cast event: the
     /// <c>BossCardCast</c> event is Slice 3's, and <c>CardCast</c>/<c>PetSkillCast</c>
-    /// are the Player's (<c>GAME_EVENTS.md</c> §2, <c>CARD_RULES.md</c> §6).
+    /// are the Player's (<c>GAME_EVENTS.md</c> §2, <c>CARD_RULES.md</c> §6). Its
+    /// <b>only</b> events are the authoritative <c>PowerChanged</c> reports a
+    /// <see cref="CardEffectType.PowerDrain"/> effect performs on
+    /// <c>PetState.Power</c> (<c>GAME_EVENTS.md</c> §2 item 4,
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.24): the Power mutation's own write site
+    /// emits it, and the Application phase carries it into the round's ordered
+    /// batch. A Boss Power spend or grant emits none — that value is delivered by
+    /// the <c>bossState.power</c> projection (<c>SIGNALR_PROTOCOL.md</c> §4.4 item
+    /// 12, <c>ADR-029</c> §2.11).
     /// </summary>
     private static CardCastExecutionResult ExecuteBossCast(
         BattleState state,
@@ -635,6 +726,14 @@ public static class CardCastExecutor
         // The active Pet is only written by opponent effects; it starts as the
         // committed state's own value and is otherwise carried across unchanged.
         var petState = state.PetState;
+
+        // The events this cast produces. Only the opponent PowerDrain effect writes
+        // PetState.Power and therefore emits the authoritative PowerChanged
+        // (GAME_EVENTS.md §2 item 4, SIGNALR_PROTOCOL.md §3.2.24); every other
+        // supported Boss effect is a state write delivered by the state projection
+        // (bossState.power / the status projections, ADR-029). An empty list is the
+        // documented "this cast emitted nothing" value.
+        var events = new List<BattleEvent>();
 
         // 6. Resolve effects relative to the caster and the opponent
         //    (BOSS_RULES.md §4.2 item 4, ADR-026 item 4 unchanged): an effect a Boss
@@ -747,6 +846,137 @@ public static class CardCastExecutor
                     break;
                 }
 
+                case CardEffectType.AtkBuff:
+                {
+                    // SELF effect (TASK-309 D-1; BOSS_RULES.md §6.3.1 item 1's Flame
+                    // Burst): the Boss gains a Turn-based ATK BuffDebuff on its OWN
+                    // ActiveStatusEffects[]. COMBAT_RULES.md §5.5.1 composes the ATK
+                    // modifier with its stored sign, so the positive authored magnitude
+                    // IS the buff — no direction flag is introduced and no value is
+                    // negated here. The identity is the Card definition's own id, so a
+                    // re-cast refreshes this instance in place
+                    // (GAME_STATE.md §2.3.1 item 6; StatusEffectLifecycle.Apply).
+                    var magnitude = effect.ValueType switch
+                    {
+                        CardEffectValueType.PercentagePoints => value,
+                        _ => throw new InvalidOperationException($"Unsupported valueType {effect.ValueType} for AtkBuff effect."),
+                    };
+                    var duration = effect.Duration ?? throw new InvalidOperationException(
+                        "An AtkBuff effect element is missing its required duration; DATABASE.md §1 item 6 rejects a missing required extra member rather than defaulting it.");
+                    var atkBuff = StatusEffect.TurnBased(
+                        cardDefinition.CardDefinitionId,
+                        StatusEffectType.BuffDebuff,
+                        StatusEffectSource.Boss,
+                        magnitude,
+                        duration,
+                        EffectivePetATK.AttackStat);
+                    bossState = bossState with
+                    {
+                        ActiveStatusEffects = StatusEffectLifecycle.Apply(
+                            bossState.ActiveStatusEffects,
+                            atkBuff),
+                    };
+                    break;
+                }
+
+                case CardEffectType.AtkDebuff:
+                {
+                    // OPPONENT effect (TASK-309 D-1; BOSS_RULES.md §6.3.1 item 3's
+                    // Root): the active Pet gains a Turn-based ATK BuffDebuff on ITS
+                    // ActiveStatusEffects[], with the Boss as the source
+                    // (GAME_STATE.md §2.3.1 item 7). The stored magnitude is the applied
+                    // magnitude — positive 30 — and the Pet-side rule maps a reduction
+                    // to -|Magnitude| (COMBAT_RULES.md §5.6.6 item 2,
+                    // EffectivePetATK.BuffDebuffAtkContribution), so the sign is NOT
+                    // encoded here and the Boss-side convention is not borrowed.
+                    var magnitude = effect.ValueType switch
+                    {
+                        CardEffectValueType.PercentagePoints => value,
+                        _ => throw new InvalidOperationException($"Unsupported valueType {effect.ValueType} for AtkDebuff effect."),
+                    };
+                    var duration = effect.Duration ?? throw new InvalidOperationException(
+                        "An AtkDebuff effect element is missing its required duration; DATABASE.md §1 item 6 rejects a missing required extra member rather than defaulting it.");
+                    var atkDebuff = StatusEffect.TurnBased(
+                        cardDefinition.CardDefinitionId,
+                        StatusEffectType.BuffDebuff,
+                        StatusEffectSource.Boss,
+                        magnitude,
+                        duration,
+                        EffectivePetATK.AttackStat);
+                    petState = petState with
+                    {
+                        ActiveStatusEffects = StatusEffectLifecycle.Apply(
+                            petState.ActiveStatusEffects,
+                            atkDebuff),
+                    };
+                    break;
+                }
+
+                case CardEffectType.PowerDrain:
+                {
+                    // OPPONENT effect (TASK-309 D-1; BOSS_RULES.md §6.3.1 item 2's
+                    // Drain Power): an INSTANT flat reduction of the active Pet's
+                    // Power, floored at 0 per GAME_RULES.md §12. It creates no
+                    // StatusEffect instance (item 2: "Duration: None") and transfers
+                    // nothing to the Boss (§4.1 items 4–5 make the two Power pools
+                    // separate), so BossState.Power is untouched by the effect.
+                    var drainAmount = effect.ValueType switch
+                    {
+                        CardEffectValueType.Flat => value,
+                        _ => throw new InvalidOperationException($"Unsupported valueType {effect.ValueType} for PowerDrain effect."),
+                    };
+                    var powerBefore = petState.Power;
+                    var powerAfter = Math.Max(0, powerBefore - drainAmount);
+                    var delta = powerAfter - powerBefore;
+
+                    if (delta < 0)
+                    {
+                        // One authoritative mutation, one event (GAME_EVENTS.md §2
+                        // item 4): the Delta is the CLAMPED signed change actually
+                        // applied, and Power is the resulting value. A drain the floor
+                        // absorbs emits the smaller change it produced; a drain that
+                        // changes nothing emits no event at all. Its source is the Boss
+                        // stage that owns the mutation (PowerChangeSource.Boss).
+                        petState = petState with { Power = powerAfter };
+                        events.Add(BattleEvent.ForPowerChanged(new PowerChangedEvent(
+                            PowerChangeSource.Boss,
+                            delta,
+                            powerAfter)));
+                    }
+                    break;
+                }
+
+                case CardEffectType.NextAtkBuff:
+                {
+                    // SELF effect (TASK-309 D-1; BOSS_RULES.md §6.3.1 item 5's
+                    // Thunder Strike): a trigger-based ATK BuffDebuff on the Boss's
+                    // own ActiveStatusEffects[] whose expiry is the documented
+                    // NextQualifyingAttack condition (GAME_STATE.md §2.3.1 item 3,
+                    // §5.1.1 item 7). It carries no RemainingTurns — the scope member
+                    // is the storage carrier of that lifetime (DATABASE.md §3) — and
+                    // ApplyTriggerBased refreshes it in place by identity instead of
+                    // stacking (item 6, COMBAT_RULES.md §5.2 item 2).
+                    var magnitude = effect.ValueType switch
+                    {
+                        CardEffectValueType.PercentagePoints => value,
+                        _ => throw new InvalidOperationException($"Unsupported valueType {effect.ValueType} for NextAtkBuff effect."),
+                    };
+                    var nextAtkBuff = StatusEffect.TriggerBased(
+                        cardDefinition.CardDefinitionId,
+                        StatusEffectType.BuffDebuff,
+                        StatusEffectSource.Boss,
+                        magnitude,
+                        StatusEffect.NextQualifyingAttackCondition,
+                        EffectivePetATK.AttackStat);
+                    bossState = bossState with
+                    {
+                        ActiveStatusEffects = StatusEffectLifecycle.ApplyTriggerBased(
+                            bossState.ActiveStatusEffects,
+                            nextAtkBuff),
+                    };
+                    break;
+                }
+
                 default:
                     // Unreachable: RequireRepresentableBossEffects rejects every effect
                     // this branch cannot resolve, and the CardEffectType set is closed.
@@ -769,9 +999,13 @@ public static class CardCastExecutor
             BossState = bossState,
         };
 
-        // No events: see this method's summary. The empty collection is the
-        // documented "this cast emitted nothing" value, not a placeholder.
-        return CardCastExecutionResult.Committed(committedState, Array.Empty<BattleEvent>());
+        // The cast emits one event only: the authoritative PowerChanged a PowerDrain
+        // effect performs on PetState.Power (see the collection above). The Boss's own
+        // Power spend emits none (GAME_EVENTS.md §2, SIGNALR_PROTOCOL.md §3.2.24), the
+        // Boss's status-effect writes are delivered by the state projection
+        // (ADR-029 §2.11), and BossCardCast is Slice 3's Application-phase event, not
+        // this branch's (CARD_RULES.md §3 item 9).
+        return CardCastExecutionResult.Committed(committedState, events);
     }
 
     /// <summary>
@@ -780,12 +1014,18 @@ public static class CardCastExecutor
     ///
     /// <b>The Boss actor's supported set is the closed one this contract can
     /// supply inputs for:</b> the self effects <see cref="CardEffectType.Heal"/>,
-    /// <see cref="CardEffectType.Shield"/> and <see cref="CardEffectType.Power"/>
-    /// (inputs: <c>BossState.HP</c>/<c>MaxHP</c>, <c>BossState.ActiveStatusEffects</c>,
-    /// <c>BossState.Power</c>) and the opponent effect
-    /// <see cref="CardEffectType.Burn"/> (inputs: the active Pet's
-    /// <c>ActiveStatusEffects</c>, and the Boss as the instance's
-    /// <see cref="StatusEffectSource"/>).
+    /// <see cref="CardEffectType.Shield"/>, <see cref="CardEffectType.Power"/>,
+    /// <see cref="CardEffectType.AtkBuff"/> and
+    /// <see cref="CardEffectType.NextAtkBuff"/> (inputs:
+    /// <c>BossState.HP</c>/<c>MaxHP</c>, <c>BossState.ActiveStatusEffects</c>,
+    /// <c>BossState.Power</c>) and the opponent effects
+    /// <see cref="CardEffectType.Burn"/>, <see cref="CardEffectType.PowerDrain"/>
+    /// and <see cref="CardEffectType.AtkDebuff"/> (inputs: the active Pet's
+    /// <c>ActiveStatusEffects</c>/<c>Power</c>, and the Boss as the instance's
+    /// <see cref="StatusEffectSource"/>). <c>TASK-309</c> decision D-1 adds the
+    /// four Boss-only identities, so this gate is where they become representable
+    /// for the Boss actor — and only for it
+    /// (<c>BOSS_RULES.md</c> §4.2 item 4, §6.3.1 items 1–3 and 5).
     ///
     /// <b><see cref="CardEffectType.Damage"/> and <see cref="CardEffectType.Crit"/>
     /// are refused explicitly instead of being given a derived value.</b>
@@ -823,6 +1063,10 @@ public static class CardCastExecutor
                 case CardEffectType.Shield:
                 case CardEffectType.Power:
                 case CardEffectType.Burn:
+                case CardEffectType.AtkBuff:
+                case CardEffectType.PowerDrain:
+                case CardEffectType.AtkDebuff:
+                case CardEffectType.NextAtkBuff:
                     break;
 
                 case CardEffectType.Damage:
@@ -835,8 +1079,9 @@ public static class CardCastExecutor
                         + "member exists (GAME_STATE.md §2.4). Deriving a value here would "
                         + "author a gameplay rule and a magnitude no document states "
                         + "(AGENTS.md §7). The supported Boss-actor effects are Heal, "
-                        + "Shield and Power (self) and Burn (opponent) "
-                        + "(CARD_RULES.md §3 item 9).");
+                        + "Shield, Power, AtkBuff and NextAtkBuff (self), and Burn, "
+                        + "PowerDrain and AtkDebuff (opponent) (CARD_RULES.md §3 item 9, "
+                        + "TASK-309 D-1).");
 
                 default:
                     throw new InvalidOperationException(

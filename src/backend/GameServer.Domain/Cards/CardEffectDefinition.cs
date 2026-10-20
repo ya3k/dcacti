@@ -19,8 +19,8 @@ namespace GameServer.Domain.Cards;
 ///               ├── EffectType    which domain effect applies     (D-1)
 ///               ├── ValueType     how the value is interpreted    (D-3)
 ///               ├── Value         the effect value                (D-2)
-///               ├── Duration      Burn only: Turns the effect lasts
-///               └── Scope         Crit only: "NextAttack"
+///               ├── Duration      Burn / AtkBuff / AtkDebuff only: Turns it lasts
+///               └── Scope         Crit / NextAtkBuff only: "NextAttack"
 /// </code>
 ///
 /// <b>Why this type exists.</b> TASK-108's decision D-1 requires effect
@@ -39,11 +39,13 @@ namespace GameServer.Domain.Cards;
 /// anywhere: the element is the same object in every case.
 ///
 /// <b>The extra members are present iff their effect requires them</b>
-/// (<c>DATABASE.md</c> §3). <see cref="Duration"/> exists only on a
-/// <see cref="CardEffectType.Burn"/> element and <see cref="Scope"/> only on a
-/// <see cref="CardEffectType.Crit"/> element; neither is a general-purpose field,
-/// and neither is defaulted. <c>DATABASE.md</c> §1 item 1 states the rule for
-/// both: "No further extra member is defined, and none may be added without a
+/// (<c>DATABASE.md</c> §1 item 1/§3, as extended by TASK-309 decision D-1).
+/// <see cref="Duration"/> exists only on a <see cref="CardEffectType.Burn"/>,
+/// <see cref="CardEffectType.AtkBuff"/>, or <see cref="CardEffectType.AtkDebuff"/>
+/// element, and <see cref="Scope"/> only on a <see cref="CardEffectType.Crit"/> or
+/// <see cref="CardEffectType.NextAtkBuff"/> element; neither is a general-purpose
+/// field, and neither is defaulted. <c>DATABASE.md</c> §1 item 1 states the rule
+/// for both: "No further extra member is defined, and none may be added without a
 /// recorded owner decision."
 ///
 /// <b>It is data, and it executes nothing.</b> The type names an effect and
@@ -51,9 +53,10 @@ namespace GameServer.Domain.Cards;
 /// castability, roll Crit, tick Burn, or spend Power. The domain write sites
 /// that own the rules — the Heal clamp (<c>COMBAT_RULES.md</c> §4 item 1), the
 /// Shield contract (§4, TASK-105), the Power range (<c>GAME_RULES.md</c> §12),
-/// and the Damage Pipeline's Crit and Burn rules (§3.3, §5) — are reached only
-/// by a resolver, which is a separate, unimplemented concern this type
-/// deliberately does not introduce (<c>CARD_RULES.md</c> §3). There is no
+/// the Damage Pipeline's Crit and Burn rules (§3.3, §5), and the Boss-only
+/// effects' status/Power writes (<c>BOSS_RULES.md</c> §6.3.1;
+/// <c>GAME_STATE.md</c> §2.3.1) — are reached only by the shared resolver,
+/// <see cref="CardCastExecutor"/> (<c>CARD_RULES.md</c> §3 item 9). There is no
 /// handler, no registry, no dispatch, no RNG, and no plugin lookup here: D-1/D-3
 /// require a data shape and its validation, nothing more
 /// (<c>ARCHITECTURE.md</c> §5, <c>AGENTS.md</c> §9).
@@ -148,45 +151,51 @@ public readonly record struct CardEffectDefinition
     public int? Value { get; }
 
     /// <summary>
-    /// <b>Burn only</b> — the number of Turns the effect lasts
-    /// (<c>DATABASE.md</c> §1 item 1, §3; TASK-111 D-3). On a
-    /// <see cref="CardEffectType.Burn"/> element, <see cref="Value"/> is the
-    /// damage per tick and this member is the duration, in the authoritative
-    /// Turn / End-Turn-tick unit owned by <c>GAME_RULES.md</c> §17 step 19a and
-    /// <c>COMBAT_RULES.md</c> §5.2.
+    /// <b>Burn / AtkBuff / AtkDebuff only</b> — the number of Turns the effect
+    /// lasts (<c>DATABASE.md</c> §1 item 1, §3; TASK-111 D-3, extended by
+    /// TASK-309 D-1). On a <see cref="CardEffectType.Burn"/> element,
+    /// <see cref="Value"/> is the damage per tick and this member is the
+    /// duration, in the authoritative Turn / End-Turn-tick unit owned by
+    /// <c>GAME_RULES.md</c> §17 step 19a and <c>COMBAT_RULES.md</c> §5.2. On an
+    /// <see cref="CardEffectType.AtkBuff"/> or <see cref="CardEffectType.AtkDebuff"/>
+    /// element, <see cref="Value"/> is the ATK modifier in percentage points and
+    /// this member is the buff/debuff lifetime in Turns
+    /// (<c>BOSS_RULES.md</c> §6.3.1 items 1 and 3; <c>COMBAT_RULES.md</c> §5.3).
     ///
-    /// <b>It is present iff <see cref="EffectType"/> is
-    /// <see cref="CardEffectType.Burn"/>.</b> §3 states the condition in both
-    /// directions: the member exists only on a <c>Burn</c> element, and a
-    /// <c>Burn</c> element must carry it — a missing required extra member is one
-    /// of §1 item 6's loud-rejection cases. Any other effect carrying it is
-    /// rejected rather than ignored, because the contract defines no meaning for a
-    /// duration anywhere else.
+    /// <b>It is present iff <see cref="EffectType"/> is one of those three.</b>
+    /// §3 states the condition in both directions: the member exists only on an
+    /// element of one of those effects, and such an element must carry it — a
+    /// missing required extra member is one of §1 item 6's loud-rejection cases.
+    /// Any other effect carrying it is rejected rather than ignored, because the
+    /// contract defines no meaning for a duration anywhere else.
     ///
     /// <b>Storing it schedules nothing.</b> It records a duration the owning
-    /// documents already state; no Burn instance is created and no tick is
-    /// performed.
+    /// documents already state; no Burn instance is created, no tick is
+    /// performed, and no status effect is applied.
     /// </summary>
     [JsonPropertyName("duration")]
     public int? Duration { get; }
 
     /// <summary>
-    /// <b>Crit only</b> — which damage instances the Crit increase applies to
-    /// (<c>DATABASE.md</c> §1 item 1, §3; TASK-111 D-3). The defined value is
+    /// <b>Crit / NextAtkBuff only</b> — which damage instances the ATK or Crit
+    /// modifier applies to (<c>DATABASE.md</c> §1 item 1, §3; TASK-111 D-3,
+    /// extended by TASK-309 D-1). The defined value is
     /// <see cref="NextAttackScope"/>.
     ///
     /// <b>It is present iff <see cref="EffectType"/> is
-    /// <see cref="CardEffectType.Crit"/>.</b> §3 states the condition in both
-    /// directions: the member exists only on a <c>Crit</c> element, and a
-    /// <c>Crit</c> element must carry it — a missing required extra member is one
-    /// of §1 item 6's loud-rejection cases. Any other effect carrying it is
-    /// rejected rather than ignored.
+    /// <see cref="CardEffectType.Crit"/> or
+    /// <see cref="CardEffectType.NextAtkBuff"/>.</b> §3 states the condition in
+    /// both directions: the member exists only on an element of one of those
+    /// effects, and such an element must carry it — a missing required extra
+    /// member is one of §1 item 6's loud-rejection cases. Any other effect
+    /// carrying it is rejected rather than ignored.
     ///
     /// <b>Its rule is already authored.</b> <c>CARD_RULES.md</c> §4.1 states the
     /// Crit increase applies "for the next attack only", and
-    /// <c>PASSIVE_RULES.md</c> §7 uses the same scope for Bạch Hổ's Passive;
-    /// this member only stores that rule. It performs no Crit roll and touches no
-    /// crit-chance formula.
+    /// <c>BOSS_RULES.md</c> §6.3.1 item 5 authors Thunder Strike's
+    /// <c>NextQualifyingAttack</c> lifetime; <c>PASSIVE_RULES.md</c> §7 uses the
+    /// same scope for Bạch Hổ's Passive. This member only stores that rule. It
+    /// performs no Crit roll, evaluates no trigger, and touches no formula.
     /// </summary>
     [JsonPropertyName("scope")]
     public string? Scope { get; }
@@ -236,9 +245,14 @@ public readonly record struct CardEffectDefinition
     /// <exception cref="ArgumentException">
     /// <paramref name="effectType"/> is <see cref="CardEffectType.Burn"/> or
     /// <see cref="CardEffectType.Crit"/>, whose elements must carry the extra
-    /// member §3 requires. Use <see cref="Burn"/> or <see cref="Crit"/> instead:
-    /// a Burn without its duration, or a Crit without its scope, would be the
-    /// missing-required-extra-member case §1 item 6 rejects.
+    /// member §3 requires, or one of the four Boss-only effects, whose fixed
+    /// interpretation and shape TASK-309 D-1 defines. Use
+    /// <see cref="Burn"/>, <see cref="Crit"/>, <see cref="AtkBuff"/>,
+    /// <see cref="PowerDrain"/>, <see cref="AtkDebuff"/>, or
+    /// <see cref="NextAtkBuff"/> instead: a Burn without its duration, a Crit
+    /// without its scope, or a Boss-only effect built through the plain-value path
+    /// would be the missing-required-extra-member / wrong-interpretation case
+    /// §1 item 6 rejects.
     /// </exception>
     public static CardEffectDefinition Create(
         CardEffectType effectType,
@@ -248,6 +262,7 @@ public readonly record struct CardEffectDefinition
         RequireDefinedEffectType(effectType);
         RequireInterpretingValueType(valueType);
         RequireNoRequiredExtraMember(effectType, nameof(valueType));
+        RequireDedicatedBossOnlyFactory(effectType, nameof(effectType));
         RequirePositiveValue(value);
 
         return new CardEffectDefinition(effectType, valueType, value, null, null);
@@ -354,6 +369,170 @@ public readonly record struct CardEffectDefinition
     }
 
     /// <summary>
+    /// Builds a <b>Boss-only</b> <see cref="CardEffectType.AtkBuff"/> element — a
+    /// temporary self ATK buff with its authored magnitude and duration
+    /// (<c>BOSS_RULES.md</c> §6.3.1 item 1's Flame Burst; <c>DATABASE.md</c> §1
+    /// item 1/§3 as extended by TASK-309 D-1).
+    /// </summary>
+    /// <param name="value">
+    /// The ATK increase in <b>percentage points</b>, positive, transcribed from the
+    /// approved Boss Card content (TASK-309 §1 B-2: <c>50</c> for `flame-burst`).
+    /// The interpretation is fixed to
+    /// <see cref="CardEffectValueType.PercentagePoints"/> because that is the unit
+    /// <c>COMBAT_RULES.md</c> §5.5.1 composes, and the positive magnitude is the
+    /// buff's direction.
+    /// </param>
+    /// <param name="duration">
+    /// The number of Turns the buff lasts, positive, transcribed from the approved
+    /// content (TASK-309 §1 B-2: <c>3</c> for `flame-burst`). It is required and
+    /// never defaulted: an <c>AtkBuff</c> element without its duration is a missing
+    /// required extra member, which <c>DATABASE.md</c> §1 item 6 rejects.
+    /// </param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="value"/> or <paramref name="duration"/> is not positive.
+    /// </exception>
+    public static CardEffectDefinition AtkBuff(int value, int duration) =>
+        TimedBossAtkModifier(
+            CardEffectType.AtkBuff,
+            value,
+            duration,
+            "an AtkBuff (BOSS_RULES.md §6.3.1 item 1's Flame Burst)");
+
+    /// <summary>
+    /// Builds a <b>Boss-only</b> <see cref="CardEffectType.AtkDebuff"/> element — a
+    /// temporary ATK debuff on the active Pet, with its authored magnitude and
+    /// duration (<c>BOSS_RULES.md</c> §6.3.1 item 3's Root; <c>DATABASE.md</c> §1
+    /// item 1/§3 as extended by TASK-309 D-1).
+    /// </summary>
+    /// <param name="value">
+    /// The ATK reduction in <b>percentage points</b>, positive, transcribed from the
+    /// approved Boss Card content (TASK-309 §1 B-3: <c>30</c> for `root`). The
+    /// interpretation is fixed to
+    /// <see cref="CardEffectValueType.PercentagePoints"/>; the stored magnitude is
+    /// the applied magnitude, and <c>COMBAT_RULES.md</c> §5.6.6 item 2 /
+    /// <c>EffectivePetATK</c> map a reduction to <c>-|Magnitude|</c>, so the
+    /// element stores <c>30</c>, never <c>-30</c>.
+    /// </param>
+    /// <param name="duration">
+    /// The number of Turns the debuff lasts, positive, transcribed from the
+    /// approved content (TASK-309 §1 B-3: <c>3</c> for `root`). It is required and
+    /// never defaulted: an <c>AtkDebuff</c> element without its duration is a
+    /// missing required extra member, which <c>DATABASE.md</c> §1 item 6 rejects.
+    /// </param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="value"/> or <paramref name="duration"/> is not positive.
+    /// </exception>
+    public static CardEffectDefinition AtkDebuff(int value, int duration) =>
+        TimedBossAtkModifier(
+            CardEffectType.AtkDebuff,
+            value,
+            duration,
+            "an AtkDebuff (BOSS_RULES.md §6.3.1 item 3's Root)");
+
+    /// <summary>
+    /// Builds a <b>Boss-only</b> <see cref="CardEffectType.NextAtkBuff"/> element —
+    /// a self ATK buff that expires on the Boss's next qualifying attack
+    /// (<c>BOSS_RULES.md</c> §6.3.1 item 5's Thunder Strike; <c>DATABASE.md</c> §1
+    /// item 1/§3 as extended by TASK-309 D-1).
+    /// </summary>
+    /// <param name="value">
+    /// The ATK increase in <b>percentage points</b>, positive, transcribed from the
+    /// approved Boss Card content (TASK-309 §1: <c>50</c> for `thunder-strike`).
+    /// The interpretation is fixed to
+    /// <see cref="CardEffectValueType.PercentagePoints"/>.
+    /// </param>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="value"/> is not positive.
+    /// </exception>
+    public static CardEffectDefinition NextAtkBuff(int value)
+    {
+        RequirePositiveValue(value);
+
+        // The one scope value DATABASE.md §3 defines stores BOSS_RULES.md §6.3.1
+        // item 5's "next qualifying attack" lifetime. It is fixed here rather than
+        // taken as a parameter, so the lifetime cannot be silently changed at a
+        // call site, and no second scope token is introduced (AGENTS.md §7).
+        return new CardEffectDefinition(
+            CardEffectType.NextAtkBuff,
+            CardEffectValueType.PercentagePoints,
+            value,
+            duration: null,
+            scope: NextAttackScope);
+    }
+
+    /// <summary>
+    /// Builds a <b>Boss-only</b> <see cref="CardEffectType.PowerDrain"/> element —
+    /// an instant flat reduction of the active Pet's Power
+    /// (<c>BOSS_RULES.md</c> §6.3.1 item 2's Drain Power; <c>DATABASE.md</c> §1
+    /// item 1/§3 as extended by TASK-309 D-1).
+    /// </summary>
+    /// <param name="value">
+    /// The flat Power amount, positive, transcribed from the approved Boss Card
+    /// content (TASK-309 §1: <c>20</c> for `drain-power`). The interpretation is
+    /// fixed to <see cref="CardEffectValueType.Flat"/> because
+    /// <c>BOSS_RULES.md</c> §6.3.1 item 2 makes the drain "flat Power reduction
+    /// (not a percentage)".
+    /// </param>
+    /// <remarks>
+    /// The element carries <b>no</b> <c>duration</c> and <b>no</b> <c>scope</c>:
+    /// §6.3.1 item 2 records "Duration: None", because the drain is an instant stat
+    /// reduction rather than a persistent status effect.
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="value"/> is not positive.
+    /// </exception>
+    public static CardEffectDefinition PowerDrain(int value)
+    {
+        RequirePositiveValue(value);
+
+        return new CardEffectDefinition(
+            CardEffectType.PowerDrain,
+            CardEffectValueType.Flat,
+            value,
+            duration: null,
+            scope: null);
+    }
+
+    /// <summary>
+    /// Builds one of the two Turn-based Boss-only ATK modifiers
+    /// (<see cref="CardEffectType.AtkBuff"/> / <see cref="CardEffectType.AtkDebuff"/>)
+    /// — the shape <c>BOSS_RULES.md</c> §6.3.1 items 1 and 3 give Flame Burst and
+    /// Root: a positive percentage-point magnitude plus the Turns it lasts
+    /// (<c>DATABASE.md</c> §1 item 1/§3, TASK-309 D-1).
+    /// </summary>
+    private static CardEffectDefinition TimedBossAtkModifier(
+        CardEffectType effectType,
+        int value,
+        int duration,
+        string describedAs)
+    {
+        // An undefined member cannot reach a factory that names the identity itself,
+        // but the guard keeps the same "defined member only" contract the other
+        // factories state rather than assuming the caller's value.
+        RequireDefinedEffectType(effectType);
+        RequirePositiveValue(value);
+
+        if (duration <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(duration),
+                duration,
+                $"A {effectType} duration must be positive: DATABASE.md §3 (extended by "
+                + "TASK-309 D-1) states the bound as 'int, > 0, present iff effectType = "
+                + $"AtkBuff | AtkDebuff', and {describedAs} authors its duration in whole "
+                + "Turns. An unset duration is not a duration no document authors "
+                + "(AGENTS.md §7).");
+        }
+
+        return new CardEffectDefinition(
+            effectType,
+            CardEffectValueType.PercentagePoints,
+            value,
+            duration,
+            scope: null);
+    }
+
+    /// <summary>
     /// Builds an effect element whose owning document states the effect but
     /// <b>no magnitude</b>.
     ///
@@ -371,6 +550,16 @@ public readonly record struct CardEffectDefinition
     /// magnitude is therefore rejected here rather than stored with a missing
     /// required member. Use <see cref="Burn"/> or <see cref="Crit"/> once the
     /// owning document authors the parameters.
+    ///
+    /// <b>The four Boss-only effects are rejected here too.</b> TASK-309 D-1 fixes
+    /// each one's interpretation and shape — <see cref="CardEffectType.AtkBuff"/>
+    /// and <see cref="CardEffectType.AtkDebuff"/> carry a duration,
+    /// <see cref="CardEffectType.NextAtkBuff"/> carries the scope, and
+    /// <see cref="CardEffectType.PowerDrain"/> is always
+    /// <see cref="CardEffectValueType.Flat"/> with no extra member — so none of
+    /// them has an undetermined-magnitude form. Build them through
+    /// <see cref="AtkBuff"/>, <see cref="AtkDebuff"/>, <see cref="NextAtkBuff"/>,
+    /// and <see cref="PowerDrain"/>.
     /// </summary>
     /// <param name="effectType">
     /// Which domain effect applies, from the closed <see cref="CardEffectType"/>
@@ -382,12 +571,14 @@ public readonly record struct CardEffectDefinition
     /// <exception cref="ArgumentException">
     /// <paramref name="effectType"/> is <see cref="CardEffectType.Burn"/> or
     /// <see cref="CardEffectType.Crit"/>, whose elements must always carry
-    /// <c>duration</c> / <c>scope</c>.
+    /// <c>duration</c> / <c>scope</c>, or one of the four Boss-only effects, whose
+    /// fixed shape has no undetermined-magnitude representation.
     /// </exception>
     public static CardEffectDefinition Undetermined(CardEffectType effectType)
     {
         RequireDefinedEffectType(effectType);
         RequireNoRequiredExtraMember(effectType, nameof(effectType));
+        RequireDedicatedBossOnlyFactory(effectType, nameof(effectType));
 
         return new CardEffectDefinition(
             effectType,
@@ -420,6 +611,10 @@ public readonly record struct CardEffectDefinition
     /// { "effectType": "Shield", "valueType": "PercentMaxHp", "value": 20 }
     /// { "effectType": "Burn", "valueType": "Flat", "value": 50, "duration": 2 }
     /// { "effectType": "Crit", "valueType": "PercentagePoints", "value": 10, "scope": "NextAttack" }
+    /// { "effectType": "AtkBuff", "valueType": "PercentagePoints", "value": 50, "duration": 3 }
+    /// { "effectType": "PowerDrain", "valueType": "Flat", "value": 20 }
+    /// { "effectType": "AtkDebuff", "valueType": "PercentagePoints", "value": 30, "duration": 3 }
+    /// { "effectType": "NextAtkBuff", "valueType": "PercentagePoints", "value": 50, "scope": "NextAttack" }
     /// </code>
     ///
     /// <b>The member names are the storage contract.</b> <c>effectType</c>,
@@ -445,10 +640,17 @@ public readonly record struct CardEffectDefinition
     /// </exception>
     /// <exception cref="ArgumentException">
     /// The element's extra members do not satisfy §3's present-iff condition —
-    /// a <see cref="CardEffectType.Burn"/> without a positive
-    /// <see cref="Duration"/>, a <see cref="CardEffectType.Crit"/> without
+    /// a <see cref="CardEffectType.Burn"/>,
+    /// <see cref="CardEffectType.AtkBuff"/>, or
+    /// <see cref="CardEffectType.AtkDebuff"/> without a positive
+    /// <see cref="Duration"/>, a <see cref="CardEffectType.Crit"/> or
+    /// <see cref="CardEffectType.NextAtkBuff"/> without
     /// <see cref="NextAttackScope"/>, or a <c>duration</c>/<c>scope</c> on an
-    /// effect that defines none.
+    /// effect that defines none. A Boss-only element whose interpretation is not
+    /// the one TASK-309 D-1 fixes
+    /// (<see cref="CardEffectValueType.PercentagePoints"/> for AtkBuff/AtkDebuff/
+    /// NextAtkBuff, <see cref="CardEffectValueType.Flat"/> for PowerDrain) is
+    /// rejected on the same basis.
     /// </exception>
     public string ToPersistedPayload()
     {
@@ -495,6 +697,18 @@ public readonly record struct CardEffectDefinition
             CardEffectType.Crit => string.Create(
                 CultureInfo.InvariantCulture,
                 $$"""{"effectType":"{{EffectType}}","valueType":"{{ValueType}}","value":{{Value}},"scope":"{{RequireScopeForCrit()}}"}"""),
+
+            CardEffectType.AtkBuff or CardEffectType.AtkDebuff => string.Create(
+                CultureInfo.InvariantCulture,
+                $$"""{"effectType":"{{EffectType}}","valueType":"{{ValueType}}","value":{{Value}},"duration":{{RequireDurationForTimedBossAtkModifier()}}}"""),
+
+            CardEffectType.NextAtkBuff => string.Create(
+                CultureInfo.InvariantCulture,
+                $$"""{"effectType":"{{EffectType}}","valueType":"{{ValueType}}","value":{{Value}},"scope":"{{RequireScopeForNextAtkBuff()}}"}"""),
+
+            CardEffectType.PowerDrain => string.Create(
+                CultureInfo.InvariantCulture,
+                $$"""{"effectType":"{{EffectType}}","valueType":"{{RequireFlatForPowerDrain()}}","value":{{Value}}}"""),
 
             _ => string.Create(
                 CultureInfo.InvariantCulture,
@@ -671,14 +885,20 @@ public readonly record struct CardEffectDefinition
                 nameof(payload));
         }
 
-        // §3's present-iff conditions. The pattern match is total over the closed
-        // enum: Burn requires `duration` and may not carry `scope`; Crit requires
-        // `scope` and may not carry `duration`; every other identity carries
-        // neither and is rejected if it does.
+        // §3's present-iff conditions, as extended by TASK-309 D-1. The pattern
+        // match is total over the closed enum: Burn and the two Turn-based Boss ATK
+        // modifiers require `duration` and may not carry `scope`; Crit and
+        // NextAtkBuff require `scope` and may not carry `duration`; PowerDrain
+        // carries neither and is flat; every other identity carries neither and is
+        // rejected if it does.
         return effectType switch
         {
             CardEffectType.Burn => ParseBurn(document, valueType, payload),
             CardEffectType.Crit => ParseCrit(document, valueType, payload),
+            CardEffectType.AtkBuff or CardEffectType.AtkDebuff =>
+                ParseTimedBossAtkModifier(effectType, document, valueType, payload),
+            CardEffectType.NextAtkBuff => ParseNextAtkBuff(document, valueType, payload),
+            CardEffectType.PowerDrain => ParsePowerDrain(document, valueType, payload),
             _ => ParsePlain(document, effectType, valueType, payload),
         };
     }
@@ -701,8 +921,9 @@ public readonly record struct CardEffectDefinition
         {
             throw new ArgumentException(
                 "The stored Burn effect element carries a scope member. DATABASE.md §1 "
-                + "defines `scope` on a Crit element only, and §1 item 6 rejects a "
-                + "malformed effect rather than ignoring what it does not define.",
+                + "defines `scope` on a Crit or NextAtkBuff element only, and §1 item 6 "
+                + "rejects a malformed effect rather than ignoring what it does not "
+                + "define.",
                 nameof(payload));
         }
 
@@ -733,8 +954,9 @@ public readonly record struct CardEffectDefinition
         {
             throw new ArgumentException(
                 "The stored Crit effect element carries a duration member. DATABASE.md §1 "
-                + "defines `duration` on a Burn element only, and §1 item 6 rejects a "
-                + "malformed effect rather than ignoring what it does not define.",
+                + "defines `duration` on a Burn/AtkBuff/AtkDebuff element only, and §1 "
+                + "item 6 rejects a malformed effect rather than ignoring what it does "
+                + "not define.",
                 nameof(payload));
         }
 
@@ -756,6 +978,167 @@ public readonly record struct CardEffectDefinition
         return Crit(document.Value!.Value, document.Scope!);
     }
 
+    /// <summary>
+    /// Parses a stored <see cref="CardEffectType.AtkBuff"/> or
+    /// <see cref="CardEffectType.AtkDebuff"/> element — the authored
+    /// percentage-point magnitude plus its required duration, with no scope
+    /// (<c>BOSS_RULES.md</c> §6.3.1 items 1 and 3; <c>DATABASE.md</c> §1 item 1/§3
+    /// as extended by TASK-309 D-1).
+    /// </summary>
+    private static CardEffectDefinition ParseTimedBossAtkModifier(
+        CardEffectType effectType,
+        StoredEffectDocument document,
+        CardEffectValueType valueType,
+        string payload)
+    {
+        if (document.Duration is null)
+        {
+            throw new ArgumentException(
+                $"The stored {effectType} effect element has no duration member; "
+                + "DATABASE.md §3 (extended by TASK-309 D-1) requires it ('int, > 0, "
+                + "present iff effectType = AtkBuff | AtkDebuff'), and §1 item 6 rejects "
+                + "a missing required extra member rather than defaulting it.",
+                nameof(payload));
+        }
+
+        if (document.Scope is not null)
+        {
+            throw new ArgumentException(
+                $"The stored {effectType} effect element carries a scope member. "
+                + "DATABASE.md §1 defines `scope` on a Crit or NextAtkBuff element only, "
+                + "and §1 item 6 rejects a malformed effect rather than ignoring what it "
+                + "does not define.",
+                nameof(payload));
+        }
+
+        // The ATK modifier is a percentage-point quantity on both entities
+        // (COMBAT_RULES.md §5.5.1, §5.6.6 item 2), so any other interpretation
+        // would misstate the unit.
+        if (valueType != CardEffectValueType.PercentagePoints)
+        {
+            throw new ArgumentException(
+                $"The stored {effectType} effect element names the value interpretation "
+                + $"'{valueType}'. BOSS_RULES.md §6.3.1 states an ATK modifier in "
+                + "percentage points, which DATABASE.md §1 item 1 carries as "
+                + $"{nameof(CardEffectValueType.PercentagePoints)}; another "
+                + "interpretation would misstate the magnitude rather than describe it.",
+                nameof(payload));
+        }
+
+        return TimedBossAtkModifier(
+            effectType,
+            document.Value!.Value,
+            document.Duration.Value,
+            effectType == CardEffectType.AtkBuff
+                ? "an AtkBuff (BOSS_RULES.md §6.3.1 item 1's Flame Burst)"
+                : "an AtkDebuff (BOSS_RULES.md §6.3.1 item 3's Root)");
+    }
+
+    /// <summary>
+    /// Parses a stored <see cref="CardEffectType.NextAtkBuff"/> element — the
+    /// authored percentage-point magnitude plus the required
+    /// <see cref="NextAttackScope"/> scope, with no duration
+    /// (<c>BOSS_RULES.md</c> §6.3.1 item 5; <c>DATABASE.md</c> §1 item 1/§3 as
+    /// extended by TASK-309 D-1).
+    /// </summary>
+    private static CardEffectDefinition ParseNextAtkBuff(
+        StoredEffectDocument document,
+        CardEffectValueType valueType,
+        string payload)
+    {
+        if (string.IsNullOrWhiteSpace(document.Scope))
+        {
+            throw new ArgumentException(
+                "The stored NextAtkBuff effect element has no scope member; DATABASE.md "
+                + "§3 (extended by TASK-309 D-1) requires it ('scope string = "
+                + "\"NextAttack\", present iff effectType = Crit | NextAtkBuff'), and §1 "
+                + "item 6 rejects a missing required extra member rather than defaulting "
+                + "it.",
+                nameof(payload));
+        }
+
+        // DATABASE.md §3 defines exactly one scope value. An unrecognized token is
+        // rejected rather than normalized to NextAttack: the persistence contract
+        // fixes the lifetime, and silently rewriting a different token would accept
+        // definition data no document authors (AGENTS.md §7).
+        if (!string.Equals(document.Scope, NextAttackScope, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"The stored NextAtkBuff effect element names scope '{document.Scope}'. "
+                + $"DATABASE.md §3 defines '{NextAttackScope}' as the only scope value, and "
+                + "BOSS_RULES.md §6.3.1 item 5 authors that next-qualifying-attack "
+                + "lifetime; no other scope token is defined and none may be invented "
+                + "(AGENTS.md §7).",
+                nameof(payload));
+        }
+
+        if (document.Duration is not null)
+        {
+            throw new ArgumentException(
+                "The stored NextAtkBuff effect element carries a duration member. Its "
+                + "lifetime is the trigger-based NextQualifyingAttack condition "
+                + "(GAME_STATE.md §2.3.1 item 3, §5.1.1 item 7), and DATABASE.md §3 "
+                + "defines `duration` on a Burn/AtkBuff/AtkDebuff element only.",
+                nameof(payload));
+        }
+
+        if (valueType != CardEffectValueType.PercentagePoints)
+        {
+            throw new ArgumentException(
+                $"The stored NextAtkBuff effect element names the value interpretation "
+                + $"'{valueType}'. BOSS_RULES.md §6.3.1 item 5 states the ATK modifier in "
+                + "percentage points, which DATABASE.md §1 item 1 carries as "
+                + $"{nameof(CardEffectValueType.PercentagePoints)}; another "
+                + "interpretation would misstate the magnitude rather than describe it.",
+                nameof(payload));
+        }
+
+        return NextAtkBuff(document.Value!.Value);
+    }
+
+    /// <summary>
+    /// Parses a stored <see cref="CardEffectType.PowerDrain"/> element — a flat
+    /// magnitude with neither extra member (<c>BOSS_RULES.md</c> §6.3.1 item 2;
+    /// <c>DATABASE.md</c> §1 item 1/§3 as extended by TASK-309 D-1).
+    /// </summary>
+    private static CardEffectDefinition ParsePowerDrain(
+        StoredEffectDocument document,
+        CardEffectValueType valueType,
+        string payload)
+    {
+        if (document.Duration is not null)
+        {
+            throw new ArgumentException(
+                "The stored PowerDrain effect element carries a duration member. "
+                + "BOSS_RULES.md §6.3.1 item 2 states 'Duration: None', and DATABASE.md "
+                + "§3 defines `duration` on a Burn/AtkBuff/AtkDebuff element only.",
+                nameof(payload));
+        }
+
+        if (document.Scope is not null)
+        {
+            throw new ArgumentException(
+                "The stored PowerDrain effect element carries a scope member. "
+                + "DATABASE.md §3 defines `scope` on a Crit or NextAtkBuff element only, "
+                + "and §1 item 6 rejects a malformed effect rather than ignoring what it "
+                + "does not define.",
+                nameof(payload));
+        }
+
+        if (valueType != CardEffectValueType.Flat)
+        {
+            throw new ArgumentException(
+                $"The stored PowerDrain effect element names the value interpretation "
+                + $"'{valueType}'. BOSS_RULES.md §6.3.1 item 2 makes the drain a flat "
+                + "Power reduction, which DATABASE.md §1 item 1 carries as "
+                + $"{nameof(CardEffectValueType.Flat)}; another interpretation would "
+                + "misstate the magnitude rather than describe it.",
+                nameof(payload));
+        }
+
+        return PowerDrain(document.Value!.Value);
+    }
+
     private static CardEffectDefinition ParsePlain(
         StoredEffectDocument document,
         CardEffectType effectType,
@@ -766,9 +1149,10 @@ public readonly record struct CardEffectDefinition
         {
             throw new ArgumentException(
                 $"The stored {effectType} effect element carries a duration member. "
-                + "DATABASE.md §3 defines `duration` on a Burn element only "
-                + "('present iff effectType = Burn'), and §1 item 6 rejects a malformed "
-                + "effect rather than ignoring what the contract does not define.",
+                + "DATABASE.md §3 defines `duration` on a Burn/AtkBuff/AtkDebuff element "
+                + "only ('present iff effectType = Burn | AtkBuff | AtkDebuff'), and §1 "
+                + "item 6 rejects a malformed effect rather than ignoring what the "
+                + "contract does not define.",
                 nameof(payload));
         }
 
@@ -776,9 +1160,10 @@ public readonly record struct CardEffectDefinition
         {
             throw new ArgumentException(
                 $"The stored {effectType} effect element carries a scope member. "
-                + "DATABASE.md §3 defines `scope` on a Crit element only "
-                + "('present iff effectType = Crit'), and §1 item 6 rejects a malformed "
-                + "effect rather than ignoring what the contract does not define.",
+                + "DATABASE.md §3 defines `scope` on a Crit or NextAtkBuff element only "
+                + "('present iff effectType = Crit | NextAtkBuff'), and §1 item 6 rejects "
+                + "a malformed effect rather than ignoring what the contract does not "
+                + "define.",
                 nameof(payload));
         }
 
@@ -793,8 +1178,9 @@ public readonly record struct CardEffectDefinition
     ///
     /// The interpretation is not free-floating: it exists because
     /// <c>CARD_RULES.md</c> §4.1 states the Crit increase in percentage points
-    /// (TASK-111 D-3), so pairing it with any other effect would assert a unit no
-    /// document authors for that effect.
+    /// (TASK-111 D-3) and <c>BOSS_RULES.md</c> §6.3.1 states the Boss-only ATK
+    /// modifiers in percentage points (TASK-309 D-1), so pairing it with any other
+    /// effect would assert a unit no document authors for that effect.
     /// </summary>
     private static void RequireNotPercentagePoints(
         CardEffectValueType valueType,
@@ -805,10 +1191,11 @@ public readonly record struct CardEffectDefinition
         {
             throw new ArgumentException(
                 $"The stored {effectType} effect element names the value interpretation "
-                + $"'{nameof(CardEffectValueType.PercentagePoints)}'. CARD_RULES.md §4.1 "
-                + "states a percentage-point quantity for the Crit increase only, so the "
-                + "interpretation is rejected here rather than applied to an effect whose "
-                + "owning document states no percentage points (AGENTS.md §7).",
+                + $"'{nameof(CardEffectValueType.PercentagePoints)}'. Percentage points are "
+                + "authored for the Crit increase (CARD_RULES.md §4.1) and the Boss-only "
+                + "ATK modifiers (BOSS_RULES.md §6.3.1), so the interpretation is rejected "
+                + "here rather than applied to an effect whose owning document states no "
+                + "percentage points (AGENTS.md §7).",
                 nameof(payload));
         }
     }
@@ -849,8 +1236,10 @@ public readonly record struct CardEffectDefinition
                 nameof(effectType),
                 effectType,
                 "The effect identity must be a CardEffectType member; DATABASE.md §1 item 1 "
-                + "closes the set at Heal | Shield | Power | Damage | Burn | Crit, and an "
-                + "undefined value must not become a silent no-op (AGENTS.md §7).");
+                + "closes the set at Heal | Shield | Power | Damage | Burn | Crit plus the "
+                + "four Boss-only identities TASK-309 D-1 adds (AtkBuff | PowerDrain | "
+                + "AtkDebuff | NextAtkBuff), and an undefined value must not become a "
+                + "silent no-op (AGENTS.md §7).");
         }
     }
 
@@ -918,6 +1307,47 @@ public readonly record struct CardEffectDefinition
         }
     }
 
+    /// <summary>
+    /// Requires that a Boss-only effect is not built through the plain-value or
+    /// undetermined paths.
+    ///
+    /// TASK-309 decision D-1 fixes each Boss-only effect's interpretation and
+    /// element shape, so every one of them has exactly one representation, built
+    /// by its own factory: <see cref="AtkBuff"/> and <see cref="AtkDebuff"/> fix
+    /// <see cref="CardEffectValueType.PercentagePoints"/> plus a required
+    /// duration, <see cref="NextAtkBuff"/> fixes
+    /// <see cref="CardEffectValueType.PercentagePoints"/> plus the
+    /// <see cref="NextAttackScope"/> scope, and <see cref="PowerDrain"/> fixes
+    /// <see cref="CardEffectValueType.Flat"/> with no extra member. Admitting any
+    /// of them through <see cref="Create"/> or <see cref="Undetermined"/> would
+    /// let the caller choose a shape or unit the approved contract does not define
+    /// (<c>AGENTS.md</c> §7), so the call is rejected rather than normalized.
+    /// </summary>
+    private static void RequireDedicatedBossOnlyFactory(
+        CardEffectType effectType,
+        string parameterName)
+    {
+        if (effectType is not (
+            CardEffectType.AtkBuff
+            or CardEffectType.PowerDrain
+            or CardEffectType.AtkDebuff
+            or CardEffectType.NextAtkBuff))
+        {
+            return;
+        }
+
+        throw new ArgumentException(
+            $"An effect of type {effectType} is a Boss-only effect whose interpretation "
+            + "and shape TASK-309 decision D-1 fixes (DATABASE.md §1 item 1/§3 as "
+            + $"extended by that decision), so it must be built with "
+            + $"CardEffectDefinition.{effectType}: AtkBuff/AtkDebuff take a "
+            + "percentage-point value and a required duration, NextAtkBuff takes a "
+            + "percentage-point value and the NextAttack scope, and PowerDrain takes a "
+            + "flat value with no duration or scope. Another shape or unit is "
+            + "definition data no document authors (AGENTS.md §7).",
+            parameterName);
+    }
+
     private static void RequirePositiveValue(int value)
     {
         if (value <= 0)
@@ -951,8 +1381,8 @@ public readonly record struct CardEffectDefinition
         if (Scope is not null)
         {
             throw new ArgumentException(
-                "A Burn effect element must not carry a scope member; DATABASE.md §1 "
-                + "defines `scope` on a Crit element only.",
+                "A Burn effect element must not carry a scope member; DATABASE.md §3 "
+                + "defines `scope` on a Crit or NextAtkBuff element only.",
                 nameof(Scope));
         }
 
@@ -980,7 +1410,7 @@ public readonly record struct CardEffectDefinition
         {
             throw new ArgumentException(
                 "A Crit effect element must not carry a duration member; DATABASE.md §1 "
-                + "defines `duration` on a Burn element only.",
+                + "defines `duration` on a Burn/AtkBuff/AtkDebuff element only.",
                 nameof(Duration));
         }
 
@@ -998,6 +1428,131 @@ public readonly record struct CardEffectDefinition
     }
 
     /// <summary>
+    /// §3's Boss-only Turn-based ATK-modifier condition, enforced on the write path
+    /// as well as the read: an <see cref="CardEffectType.AtkBuff"/> or
+    /// <see cref="CardEffectType.AtkDebuff"/> element is written only with a
+    /// positive duration, no scope, and the percentage-point interpretation
+    /// (<c>DATABASE.md</c> §1 item 1/§3 as extended by TASK-309 D-1;
+    /// <c>BOSS_RULES.md</c> §6.3.1 items 1 and 3).
+    /// </summary>
+    private int RequireDurationForTimedBossAtkModifier()
+    {
+        if (Duration is not > 0)
+        {
+            throw new ArgumentException(
+                $"An {EffectType} effect element must carry a positive duration member "
+                + "(DATABASE.md §3, extended by TASK-309 D-1: 'int, > 0, present iff "
+                + "effectType = AtkBuff | AtkDebuff'). It is required and never "
+                + "defaulted; a missing required extra member is rejected rather than "
+                + "written (DATABASE.md §1 item 6).",
+                nameof(Duration));
+        }
+
+        if (Scope is not null)
+        {
+            throw new ArgumentException(
+                $"An {EffectType} effect element must not carry a scope member. "
+                + "DATABASE.md §3 defines `scope` on a Crit or NextAtkBuff element "
+                + "only, and §1 item 6 rejects a malformed effect rather than ignoring "
+                + "what the contract does not define.",
+                nameof(Scope));
+        }
+
+        if (ValueType != CardEffectValueType.PercentagePoints)
+        {
+            throw new ArgumentException(
+                $"An {EffectType} effect element must use the "
+                + $"{nameof(CardEffectValueType.PercentagePoints)} interpretation: "
+                + "COMBAT_RULES.md §5.5.1 (Boss) and §5.6.6 item 2 (Pet) compose ATK "
+                + "modifiers as percentage points. Any other interpretation would "
+                + "misstate the magnitude's unit.",
+                nameof(ValueType));
+        }
+
+        return Duration.Value;
+    }
+
+    /// <summary>
+    /// §3's <see cref="CardEffectType.NextAtkBuff"/> condition, enforced on the
+    /// write path as well as the read: the element is written only with the defined
+    /// scope, no duration, and the percentage-point interpretation
+    /// (<c>DATABASE.md</c> §1 item 1/§3 as extended by TASK-309 D-1;
+    /// <c>BOSS_RULES.md</c> §6.3.1 item 5).
+    /// </summary>
+    private string RequireScopeForNextAtkBuff()
+    {
+        if (!string.Equals(Scope, NextAttackScope, StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                $"A NextAtkBuff effect element must carry scope '{NextAttackScope}' "
+                + "(DATABASE.md §3: 'scope string = \"NextAttack\", present iff effectType "
+                + "= Crit | NextAtkBuff'). No other scope token is defined, and none may "
+                + "be invented (AGENTS.md §7).",
+                nameof(Scope));
+        }
+
+        if (Duration is not null)
+        {
+            throw new ArgumentException(
+                "A NextAtkBuff effect element must not carry a duration member. Its "
+                + "lifetime is the trigger-based NextQualifyingAttack condition "
+                + "(GAME_STATE.md §2.3.1 item 3, §5.1.1 item 7), and DATABASE.md §3 "
+                + "defines `duration` on a Burn/AtkBuff/AtkDebuff element only.",
+                nameof(Duration));
+        }
+
+        if (ValueType != CardEffectValueType.PercentagePoints)
+        {
+            throw new ArgumentException(
+                "A NextAtkBuff effect element must use the "
+                + $"{nameof(CardEffectValueType.PercentagePoints)} interpretation: "
+                + "COMBAT_RULES.md §5.5.1 composes Boss ATK modifiers as percentage "
+                + "points. Any other interpretation would misstate the unit.",
+                nameof(ValueType));
+        }
+
+        return NextAttackScope;
+    }
+
+    /// <summary>
+    /// §3's <see cref="CardEffectType.PowerDrain"/> condition, enforced on the write
+    /// path as well as the read: the element is written only with the flat
+    /// interpretation and no extra member (<c>DATABASE.md</c> §1 item 1/§3 as
+    /// extended by TASK-309 D-1; <c>BOSS_RULES.md</c> §6.3.1 item 2).
+    /// </summary>
+    private CardEffectValueType RequireFlatForPowerDrain()
+    {
+        if (ValueType != CardEffectValueType.Flat)
+        {
+            throw new ArgumentException(
+                "A PowerDrain effect element must use the "
+                + $"{nameof(CardEffectValueType.Flat)} interpretation: BOSS_RULES.md "
+                + "§6.3.1 item 2 makes the drain a flat Power reduction, not a "
+                + "percentage. Another interpretation would misstate the magnitude.",
+                nameof(ValueType));
+        }
+
+        if (Duration is not null)
+        {
+            throw new ArgumentException(
+                "A PowerDrain effect element must not carry a duration member: "
+                + "BOSS_RULES.md §6.3.1 item 2 states 'Duration: None' (an instant stat "
+                + "reduction, not a persistent status effect).",
+                nameof(Duration));
+        }
+
+        if (Scope is not null)
+        {
+            throw new ArgumentException(
+                "A PowerDrain effect element must not carry a scope member: DATABASE.md "
+                + "§3 defines `scope` on a Crit or NextAtkBuff element only.",
+                nameof(Scope));
+        }
+
+        return CardEffectValueType.Flat;
+    }
+
+    /// <summary>
     /// Requires that a written undetermined element carries no extra member:
     /// <see cref="Duration"/> and <see cref="Scope"/> are meaningless without the
     /// magnitude and effect they qualify.
@@ -1008,8 +1563,8 @@ public readonly record struct CardEffectDefinition
         {
             throw new ArgumentException(
                 "An undetermined effect element must carry no duration member; "
-                + "DATABASE.md §1 defines `duration` on a Burn element, which also states "
-                + "its per-tick magnitude.",
+                + "DATABASE.md §1 defines `duration` on a Burn/AtkBuff/AtkDebuff "
+                + "element, which also states its magnitude.",
                 nameof(Duration));
         }
 
@@ -1017,7 +1572,7 @@ public readonly record struct CardEffectDefinition
         {
             throw new ArgumentException(
                 "An undetermined effect element must carry no scope member; DATABASE.md §1 "
-                + "defines `scope` on a Crit element.",
+                + "defines `scope` on a Crit or NextAtkBuff element.",
                 nameof(Scope));
         }
     }

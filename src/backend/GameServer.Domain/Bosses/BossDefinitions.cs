@@ -61,6 +61,16 @@ namespace GameServer.Domain.Bosses;
 /// is persisted; the combat stats remain Domain-only (<c>DATABASE.md</c> §1 note
 /// item 1).
 ///
+/// <b>The nullable <c>CastPriorityScore</c> overlay is authored here.</b>
+/// <c>BOSS_RULES.md</c> §4.3 item 5 (TASK-308, TASK-309 B-1) fixes the approved
+/// initial values, and the accompanying provisioned-content migrations persist
+/// the same values per row: <c>16</c> for Sơn Thạch Vệ (<c>earthquake</c>) and
+/// <c>85</c> for Hỏa Long (<c>flame-burst</c>), Thủy Ma (<c>drain-power</c>),
+/// Mộc Yêu (<c>root</c>), and Kim Lôi Vương (<c>thunder-strike</c>). Each is a
+/// starting value to monitor, not a globally optimal score, and none authorizes
+/// an in-battle cast-rate guarantee. <c>null</c> would mean "not authored"; no
+/// MVP Boss is left absent after Slice 4.
+///
 /// <b>The Passive mechanics are configuration; their effects are not
 /// implemented here.</b> §6.2–§6.3 give each Boss a Passive trigger and a Skill
 /// timing, and this type carries those values so the resolution can charge,
@@ -78,6 +88,16 @@ namespace GameServer.Domain.Bosses;
 /// declare no secondary effect (§6.3.1 items 4–5), so their
 /// <see cref="BossSkillDefinition.SecondaryEffect"/> is absent — an explicit
 /// declaration of "None", not an omission. Nothing here applies an effect.
+///
+/// <b>The legacy <c>BossSkill</c> values are historical and unchanged.</b>
+/// TASK-309/ADR-029 Slice 4 migrates the four remaining abilities to the
+/// <c>BossCard</c> form through provisioned content, but the transitional
+/// <c>BossSkillDefinition</c> declarations below keep their historical
+/// <c>SecondaryEffect</c> magnitudes and durations (e.g. <c>flame-burst</c> /
+/// <c>root</c> duration 2) until Slice 5 retires that form. The approved
+/// <c>BossCard</c> durations (3 Turns) live in the provisioned
+/// <c>CardDefinition</c> effects, not here — the documented, intentional
+/// divergence.
 ///
 /// <b><c>PassiveThreshold</c> is <c>null</c> for every non-match-charged
 /// Passive.</b> §6.2 gives Thủy Ma the <b>Battle Start</b> trigger, Sơn Thạch Vệ
@@ -145,6 +165,12 @@ public static class BossDefinitions
         ATK = 100,
         DEF = 50,
         EnrageThreshold = 0.30,
+
+        // BOSS_RULES.md §4.3 item 5 / TASK-309 B-1: the approved initial
+        // cast-priority score for the migrated `flame-burst` Boss Card. It is a
+        // starting value to monitor, not a globally optimal score, and it
+        // authorizes no in-battle cast-rate guarantee.
+        CastPriorityScore = 85,
     };
 
     /// <summary>
@@ -191,6 +217,12 @@ public static class BossDefinitions
         ATK = 100,
         DEF = 50,
         EnrageThreshold = 0.30,
+
+        // BOSS_RULES.md §4.3 item 5 / TASK-309 B-1: the approved initial
+        // cast-priority score for the migrated `drain-power` Boss Card. A
+        // starting value to monitor — not globally optimal, no cast-rate
+        // guarantee.
+        CastPriorityScore = 85,
     };
 
     /// <summary>
@@ -242,6 +274,11 @@ public static class BossDefinitions
         ATK = 100,
         DEF = 50,
         EnrageThreshold = 0.30,
+
+        // BOSS_RULES.md §4.3 item 5 / TASK-309 B-1: the approved initial
+        // cast-priority score for the migrated `root` Boss Card. A starting
+        // value to monitor — not globally optimal, no cast-rate guarantee.
+        CastPriorityScore = 85,
     };
 
     /// <summary>
@@ -295,9 +332,10 @@ public static class BossDefinitions
         EnrageThreshold = 0.50,
 
         // BOSS_RULES.md §4.3 item 5 / TASK-308: the approved initial
-        // cast-priority score for the one migrated Boss Card (`earthquake`).
-        // The other four Bosses leave the nullable value absent (NULL) until
-        // their own Slice 4 migration.
+        // cast-priority score for the one Boss Card migrated by that slice
+        // (`earthquake`). TASK-309 B-1 sets the same overlay value (`85`) on the
+        // other four Bosses' rows through their own Slice 4 migrations; this
+        // Boss's approved score is unchanged at 16.
         CastPriorityScore = 16,
     };
 
@@ -348,6 +386,12 @@ public static class BossDefinitions
         ATK = 140,
         DEF = 0,
         EnrageThreshold = 0.75,
+
+        // BOSS_RULES.md §4.3 item 5 / TASK-309 B-1: the approved initial
+        // cast-priority score for the migrated `thunder-strike` Boss Card. A
+        // starting value to monitor — not globally optimal, no cast-rate
+        // guarantee.
+        CastPriorityScore = 85,
     };
 
     /// <summary>

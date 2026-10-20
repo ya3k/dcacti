@@ -12,11 +12,13 @@ namespace GameServer.Domain.Tests;
 /// non-semantic element ordering that the serializer nevertheless preserves, the
 /// strict loud rejection of every malformed form — including the superseded
 /// TASK-109 single-object shape, for which no compatibility reader exists — and
-/// the round trip for all six provisioned content rows.
+/// the round trip for all six Player provisioned content rows plus the four
+/// TASK-309 Boss-only rows.
 ///
 /// <b>No test here applies an effect.</b> No Card is cast, no Crit is rolled, no
 /// Burn is ticked, and no magnitude is used for anything: the values are the ones
-/// <c>CARD_RULES.md</c> §2/§4.1 states, asserted as stored data.
+/// <c>CARD_RULES.md</c> §2/§4.1 and <c>BOSS_RULES.md</c> §6.3.1 state, asserted as
+/// stored data.
 /// </summary>
 public class CardEffectDefinitionsTests
 {
@@ -628,5 +630,93 @@ public class CardEffectDefinitionsTests
         Assert.Equal(6, counts.Length);
         Assert.Equal(3, counts.Count(count => count == 1));
         Assert.Equal(3, counts.Count(count => count == 2));
+    }
+
+    // -----------------------------------------------------------------------
+    // Round trips — the four TASK-309 Boss-only Boss Card rows
+    // -----------------------------------------------------------------------
+
+    /// <summary>
+    /// The four TASK-309 Boss-only `BossCard` effect arrays, <b>byte-for-byte the
+    /// literals the four data-only migrations embed</b> (TASK-309 §1 approved
+    /// values: flame-burst AtkBuff 50/3, root AtkDebuff 30/3, drain-power
+    /// PowerDrain 20 flat, thunder-strike NextAtkBuff 50 scope NextAttack). They
+    /// are the storage contract of `DATABASE.md` §1 item 1/§3 as extended by
+    /// TASK-309 decision D-1.
+    /// </summary>
+    public static TheoryData<string, string, CardEffectDefinitions> BossOnlyEffectRows => new()
+    {
+        {
+            "flame-burst",
+            """[{"effectType":"AtkBuff","valueType":"PercentagePoints","value":50,"duration":3}]""",
+            CardEffectDefinitions.Create(CardEffectDefinition.AtkBuff(50, 3))
+        },
+        {
+            "root",
+            """[{"effectType":"AtkDebuff","valueType":"PercentagePoints","value":30,"duration":3}]""",
+            CardEffectDefinitions.Create(CardEffectDefinition.AtkDebuff(30, 3))
+        },
+        {
+            "drain-power",
+            """[{"effectType":"PowerDrain","valueType":"Flat","value":20}]""",
+            CardEffectDefinitions.Create(CardEffectDefinition.PowerDrain(20))
+        },
+        {
+            "thunder-strike",
+            """[{"effectType":"NextAtkBuff","valueType":"PercentagePoints","value":50,"scope":"NextAttack"}]""",
+            CardEffectDefinitions.Create(CardEffectDefinition.NextAtkBuff(50))
+        },
+    };
+
+    [Theory]
+    [MemberData(nameof(BossOnlyEffectRows))]
+    public void RoundTrip_ShouldPreserveEveryBossOnlyEffectRow(
+        string ability,
+        string persistedPayload,
+        CardEffectDefinitions effects)
+    {
+        // The exact literal the migrations embed must be what the writer emits and
+        // what the strict reader accepts: writer and reader agree byte-for-byte, so
+        // a provisioned row reads back equal and re-serializes to the same bytes.
+        Assert.NotEmpty(ability);
+
+        Assert.Equal(persistedPayload, effects.ToPersistedPayload());
+
+        var reloaded = CardEffectDefinitions.FromPersistedPayload(persistedPayload);
+
+        Assert.Equal(effects, reloaded);
+        Assert.Equal(1, reloaded.Count);
+        Assert.Equal(persistedPayload, reloaded.ToPersistedPayload());
+    }
+
+    [Theory]
+    [MemberData(nameof(BossOnlyEffectRows))]
+    public void BossOnlyEffectRows_ShouldCarryOnlyTheBossOnlyIdentity(
+        string ability,
+        string persistedPayload,
+        CardEffectDefinitions effects)
+    {
+        // The four rows are the Boss-only vocabulary TASK-309 D-1 adds. No Player
+        // identity may appear in one — a Boss effect stored under a Player identity
+        // would make the Player resolver apply it — and every element carries a
+        // magnitude (the approved values are authored content, not an open gap).
+        Assert.NotEmpty(ability);
+        Assert.NotEmpty(persistedPayload);
+
+        for (var index = 0; index < effects.Count; index++)
+        {
+            Assert.Contains(
+                effects[index].EffectType,
+                new[]
+                {
+                    CardEffectType.AtkBuff,
+                    CardEffectType.AtkDebuff,
+                    CardEffectType.PowerDrain,
+                    CardEffectType.NextAtkBuff,
+                });
+
+            Assert.True(effects[index].HasValue);
+            Assert.NotEqual(CardEffectValueType.Undetermined, effects[index].ValueType);
+        }
     }
 }

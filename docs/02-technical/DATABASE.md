@@ -1,6 +1,24 @@
 # Database
 
-**Version:** 1.40 (§1's `CardDefinition` and `BossDefinition` blocks, §3's
+**Version:** 1.41 (§1's `CardDefinition` block, §1 "Card `EffectDefinition`
+contract" items 1/6/8, §3's constraints, and §5 item 4 **synchronized with the
+approved TASK-309 / ADR-029 Slice 4 content contract**: the `effectType` closed
+set gains the four **Boss-only** identities `AtkBuff` | `PowerDrain` |
+`AtkDebuff` | `NextAtkBuff` (TASK-309 D-1), the `duration` extra member is
+extended from `Burn` to `AtkBuff`/`AtkDebuff` (positive Turns; required on all
+three) and the `scope` extra member from `Crit` to `NextAtkBuff` (required; the
+only value remains `NextAttack`; `Crit` unchanged) — no new member name is
+introduced; the four further `BossCard` rows (`flame-burst`, `root`,
+`drain-power`, `thunder-strike`, each `CardDefinitionId` = the ability `SkillId`,
+`LoadoutCopyLimit = 1`) make the provisioned `CardDefinition` set 13 rows (8
+Player Cards + 5 Boss Cards), and the `BossDefinition.CastPriorityScore` values
+are `16` for `boss-def-son-thach-ve` and `85` for the other four rows. Player
+Card casts may not use the four Boss-only effects, unknown values fail closed,
+and `PowerDrain` transfers no Power to the Boss. **No other table, column,
+constraint, index, schema shape, migration record, gameplay value, or
+provisioning rule changes**; every content value is transcribed from its owners
+(`BOSS_RULES.md` §4.3/§6.3/§6.3.1, `ADR-029` §3) rather than authored here.
+Decision source: TASK-309 / ADR-029 Slice 4. Prior 1.40: (§1's `CardDefinition` and `BossDefinition` blocks, §3's
 constraints, §5 item 4, and §1 note item 8 **synchronized with the approved
 TASK-308 / ADR-029 Slice 3 content contract**: `CardDefinition.Category` gains
 `BossCard` for the one provisioned Boss Card (`earthquake`), whose
@@ -437,20 +455,25 @@ CardDefinition                    (static content — MVP scope target
 │                                  Bloom / `card-venomous-bloom` and
 │                                  Earthshaker / `card-earthshaker`
 │                                  (TASK-166 decisions, authored by TASK-167,
-│                                  provisioned by TASK-168) — and, from
-│                                  TASK-308, the one Boss Card (`earthquake`,
-│                                  category `BossCard`; `CARD_RULES.md` §1.1)
-│                                  — TASK-082 decision A / R1-1. The
-│                                  provisioned set is therefore 9 rows: the 8
-│                                  Player Cards above plus that one Boss Card.)
+│                                  provisioned by TASK-168) — and the five
+│                                  Boss Cards (`CARD_RULES.md` §1.1; category
+│                                  `BossCard`): `earthquake` from TASK-308,
+│                                  plus `flame-burst`, `root`, `drain-power` and
+│                                  `thunder-strike` from TASK-309 — TASK-082
+│                                  decision A / R1-1. The provisioned set is
+│                                  therefore 13 rows: the 8 Player Cards above
+│                                  plus those five Boss Cards.)
 ├── CardDefinitionId (PK)         (value form `card-<ascii-kebab-case-name>`,
 │                                  e.g. "card-heal" — ASCII kebab-case of the
 │                                  Card's documented name (TASK-082 decision
 │                                  B / R2-9); content-supplied, never
-│                                  database-generated. **Exception — a
-│                                  `BossCard` row (TASK-308 / ADR-029):** its
+│                                  database-generated. **Exception — every
+│                                  `BossCard` row (TASK-308, TASK-309;
+│                                  ADR-029):** its
 │                                  value is the ability `SkillId`, e.g.
-│                                  "earthquake", not `card-<kebab>`; the
+│                                  "earthquake", "flame-burst", "root",
+│                                  "drain-power", "thunder-strike", not
+│                                  `card-<kebab>`; the
 │                                  identity is the ability's, so
 │                                  `BossCardCast.cardId` equals
 │                                  `BossSkillCast.skillId` for the same
@@ -474,8 +497,8 @@ CardDefinition                    (static content — MVP scope target
 │                                  persisted only because the column is
 │                                  required and non-nullable; it is **never
 │                                  read** for that row — a Boss Card has no
-│                                  Player loadout (TASK-308; `CARD_RULES.md`
-│                                  §1.1 item 5))
+│                                  Player loadout (TASK-308, TASK-309;
+│                                  `CARD_RULES.md` §1.1 item 5))
 └── EffectDefinition               (JSON ARRAY, NOT NULL — the Card's
                                    STRUCTURED effect rules, one element per
                                    effect: which domain effect the Card
@@ -499,8 +522,12 @@ CardDefinition                    (static content — MVP scope target
                                    Crit, `valueType` gains PercentagePoints,
                                    `Burn`/`Crit` carry `duration`/`scope`
                                    beside `value`, and element order is not
-                                   semantic. See "Card EffectDefinition
-                                   contract" below.)
+                                   semantic. TASK-309 D-1 adds the four
+                                   Boss-only `effectType` identities
+                                   AtkBuff/PowerDrain/AtkDebuff/NextAtkBuff
+                                   and extends `duration`/`scope` to them
+                                   (same member names). See "Card
+                                   EffectDefinition contract" below.)
 
 PlayerUnlockedCard               (Player owns Card unlocks — ADR-012;
 │                                  MVP Cards have no Tier/Star/Level, so an
@@ -651,14 +678,27 @@ extended by TASK-111 D-1/D-2/D-3/D-4/D-5)
    **D-3** — see item 3).
 
    - `effectType` (string) — which domain effect the Card applies. The closed
-     set is `Heal` | `Shield` | `Power` | `Damage` | `Burn` | `Crit`.
+     set is `Heal` | `Shield` | `Power` | `Damage` | `Burn` | `Crit` |
+     `AtkBuff` | `PowerDrain` | `AtkDebuff` | `NextAtkBuff`.
      `Heal`, `Shield`, and `Power` are the three effects `CARD_RULES.md` §2
      documents; `Damage`, `Burn`, and `Crit` are the three the Product Owner
      named for the §4.1 Pet Skill Cards (TASK-111 **D-2**, which also confirms
-     the first three remain). No other identity is defined. It is the effect
-     identity carrier (TASK-108 **D-1**), so the runtime must never derive the
-     effect from parsed prose, from the Card's `Name`, from `CardDefinitionId`
-     mapping, or from hardcoded card-specific logic.
+     the first three remain). `AtkBuff` | `PowerDrain` | `AtkDebuff` |
+     `NextAtkBuff` are the four **Boss-only** identities added by TASK-309
+     **D-1**: `AtkBuff` is a Boss self ATK buff (authored magnitude and
+     duration); `PowerDrain` is an active-Pet Power reduction (flat and
+     instant — it transfers no Power to the Boss and grants the Boss none);
+     `AtkDebuff` is an active-Pet ATK debuff (authored magnitude and duration);
+     and `NextAtkBuff` is a Boss next-qualifying-attack ATK buff
+     (trigger-based). They are **provisioned only on a `BossCard` row**, and
+     **a Player Card cast may not use any of the four** — the shared cast
+     executor rejects them fail-closed at the cast boundary. Reading a stored
+     effect validates its shape, not the Card category, so the cast boundary is
+     where the Boss-only rule is enforced. No other identity is defined. It is
+     the
+     effect identity carrier (TASK-108 **D-1**), so the runtime must never derive
+     the effect from parsed prose, from the Card's `Name`, from
+     `CardDefinitionId` mapping, or from hardcoded card-specific logic.
      `Damage` is a member **distinct from `Power`** (TASK-111 **D-4**): `Power`
      continues to denote Power Charge (`CARD_RULES.md` §2), while `Damage`
      carries a damage-dealing effect's base value — the input to
@@ -683,24 +723,41 @@ extended by TASK-111 D-1/D-2/D-3/D-4/D-5)
      `0` and never `null`, so an unauthored magnitude cannot be read as a number.
    - **Per-effect extra members** (TASK-111 **D-3**) — present only for effects
      that require a parameter `value` alone cannot carry:
-     - `duration` (int) — on a `Burn` element: the number of Turns the effect
-       lasts, in the authoritative Turn / End-Turn-tick unit
-       (`GAME_RULES.md` §17 step 19a, `COMBAT_RULES.md` §5.2). `value` on a
-       `Burn` element is the **damage per tick**. Example:
+     - `duration` (int) — on a `Burn`, `AtkBuff`, or `AtkDebuff` element: the
+       number of Turns the effect lasts, in the authoritative Turn /
+       End-Turn-tick unit (`GAME_RULES.md` §17 step 19a, `COMBAT_RULES.md`
+       §5.2). It is **required** on all three and must be a positive number of
+       Turns. `value` on a `Burn` element is the **damage per tick**; on an
+       `AtkBuff`/`AtkDebuff` element it is the effect's authored magnitude.
+       Example:
 
        ```json
        [ { "effectType": "Burn", "valueType": "Flat", "value": 50,
            "duration": 2 } ]
        ```
 
-     - `scope` (string) — on a `Crit` element: which damage instances the
-       increase applies to. The defined value is `NextAttack`. `value` on a
-       `Crit` element is the **increase in percentage points**. Example:
+       TASK-111 **D-3** defined this member for `Burn`; TASK-309 **D-1** extends
+       it to the Boss-only `AtkBuff`/`AtkDebuff` identities and adds no new
+       member name. `BOSS_RULES.md` §6.3.1 owns those effects' authored
+       magnitudes and durations.
+
+     - `scope` (string) — on a `Crit` or `NextAtkBuff` element: which damage
+       instances the increase applies to. The defined value is `NextAttack`,
+       the only value in both cases. It is **required** on a `NextAtkBuff`
+       element; a `NextAtkBuff` element without it is rejected (item 6), and
+       `Crit`'s usage is unchanged. `value` on a `Crit` element is the
+       **increase in percentage points**; on a `NextAtkBuff` element it is the
+       authored ATK-buff magnitude. Example:
 
        ```json
        [ { "effectType": "Crit", "valueType": "PercentagePoints", "value": 10,
            "scope": "NextAttack" } ]
        ```
+
+       TASK-111 **D-3** defined this member for `Crit`; TASK-309 **D-1** extends
+       it to the Boss-only `NextAtkBuff` identity and adds no new member name.
+       `NextAtkBuff`'s lifetime is the existing trigger-based
+       next-qualifying-attack condition `BOSS_RULES.md` §6.3.1 item 5 records.
 
      `duration` and `scope` are **storage members for rules the owning domain
      documents already state**; they author no gameplay. Burn's tick schedule
@@ -712,7 +769,13 @@ extended by TASK-111 D-1/D-2/D-3/D-4/D-5)
      by `GAME_STATE.md` §2.3.4 (`ADR-017`). `CARD_RULES.md` §4.1 owns Iron
      Fang's own Crit `value` (+10 percentage points) and `PASSIVE_RULES.md`
      §7/§8 owns Bạch Hổ's Passive contribution; both use the same scope and
-     both reference the composition rule rather than restating it. Note that
+     both reference the composition rule rather than restating it. The four
+     Boss-only identities add no new storage member: `AtkBuff`/`AtkDebuff`'s
+     magnitudes and durations are `BOSS_RULES.md` §6.3.1's (the Boss Card
+     category is `CARD_RULES.md` §1.1's) and are consumed by the existing
+     Turn-based lifecycle `COMBAT_RULES.md` §5.3 owns, while `NextAtkBuff` uses
+     the existing trigger-based next-qualifying-attack condition whose
+     lifetime and consumption `BOSS_RULES.md` §6.3.1 item 5 records. Note that
      `scope` remains a **storage** member and is unchanged by that ownership:
      this contract still defines exactly one scope value, `NextAttack`, and
      the runtime meaning behind it now lives in the document named above. No
@@ -747,11 +810,14 @@ extended by TASK-111 D-1/D-2/D-3/D-4/D-5)
 6. **A stored value that is not a well-formed structured effect is rejected
    loudly.** There is no fallback magnitude, no default, no prose fallback,
    and no silent no-op for an unrecognized `effectType`, an unrecognized
-   `valueType`, a missing `value`, or a missing required extra member (`duration`
-   on `Burn`, `scope` on `Crit`) — the same "explicit value required, no
-   default" standard `LoadoutCopyLimit` carries below. A malformed or truncated
-   value therefore surfaces as a failure at the read, not as a Card that quietly
-   does nothing.
+   `valueType`, a missing `value`, or a missing required extra member
+   (`duration` on `Burn`, `AtkBuff`, or `AtkDebuff`; `scope` on `Crit` or
+   `NextAtkBuff`) — the same "explicit value required, no default" standard
+   `LoadoutCopyLimit` carries below. The Boss-only identities are rejected
+   under the same fail-closed rule when a Player Card cast uses any of them: an
+   unknown or not-permitted value never defaults and never silently no-ops. A
+   malformed or truncated value therefore surfaces as a failure at the read, not
+   as a Card that quietly does nothing.
 7. **THIS SUPERSEDES TASK-082 DECISION R2-7 FOR `CardDefinition` ONLY.**
    R2-7 (DONE, immutable) required `EffectDefinition` to be the owning domain
    document's **verbatim rule text**, and explicitly forbade "an
@@ -780,14 +846,18 @@ extended by TASK-111 D-1/D-2/D-3/D-4/D-5)
    - TASK-082 itself is not modified, re-opened, or re-statused
      (`TASK_LIFECYCLE.md` §3 — completed tasks are immutable).
 8. **The provisioned rows are encoded in this shape.** (TASK-111 **D-6**;
-   encoded by TASK-112; extended by TASK-168 and TASK-308) **All nine**
-   content-defined `CardDefinition` rows now hold the array shape above — the
-   three §2 Basic Cards, the three §4.1 Pet Skill rows authored at the time of
-   the encoding, the two §4.1 Pet Skill rows added since (Venomous Bloom /
-   `card-venomous-bloom` and Earthshaker / `card-earthshaker`, TASK-166
-   decisions applied by TASK-167), and the one `BossCard` row TASK-308
-   provisions (`earthquake`, whose `Shield` effect is authored by
-   `CARD_RULES.md` §1.1 / `BOSS_RULES.md` §6.3.1 item 4). The three §2 Basic
+   encoded by TASK-112; extended by TASK-168, TASK-308 and TASK-309) **All
+   thirteen** content-defined `CardDefinition` rows now hold the array shape
+   above — the three §2 Basic Cards, the three §4.1 Pet Skill rows authored at
+   the time of the encoding, the two §4.1 Pet Skill rows added since (Venomous
+   Bloom / `card-venomous-bloom` and Earthshaker / `card-earthshaker`, TASK-166
+   decisions applied by TASK-167), and the five `BossCard` rows: `earthquake`
+   (TASK-308, whose `Shield` effect is authored by `CARD_RULES.md` §1.1 /
+   `BOSS_RULES.md` §6.3.1 item 4) and TASK-309's `flame-burst`, `root`,
+   `drain-power` and `thunder-strike`, whose effects are the Boss-only
+   `AtkBuff`/`AtkDebuff`/`PowerDrain`/`NextAtkBuff` identities defined above
+   with the magnitudes, durations and Power costs `BOSS_RULES.md` §6.3.1
+   records. The three §2 Basic
    Card rows are
    **contract-compatible** with the shape — their single effect is the array's
    single element, stored as a one-element array (D-1b) — and the §4.1 Pet
@@ -795,7 +865,8 @@ extended by TASK-111 D-1/D-2/D-3/D-4/D-5)
    Inferno, Tidal Barrier, and Venomous Bloom; one for Iron Fang and
    Earthshaker), with every magnitude transcribed from `CARD_RULES.md`
    §2/§4.1 and no value computed or invented (§5 item 4 rule (b)). The two
-   TASK-168 rows and the TASK-308 Boss Card row were written **directly in that
+   TASK-168 rows and the five `BossCard` rows (TASK-308's `earthquake` and the
+   four TASK-309 rows) were written **directly in that
    ARRAY shape** at provisioning time — no further encoding migration exists or
    is needed for them. Under
    **D-6b** the three `Undetermined` markers are **retired**: §4.1
@@ -1608,11 +1679,13 @@ CardDefinition.Category  ∈ {Basic, PetSkill, BossCard}            (CARD_RULES.
                                                                     content constraint, NOT a DB CHECK)
 CardDefinition.CardDefinitionId    `card-<ascii-kebab-case-name>` for every Player Card (§1);      (§1; CARD_RULES.md §1.1
                                    a `BossCard` row's value is the ability `SkillId` — e.g.          item 3 owns the exception —
-                                   `earthquake` — NOT `card-<kebab>`; the exception is confined       TASK-308 / ADR-029)
-                                   to `BossCard` rows and never changes a Player Card's identity
+                                   `earthquake`, `flame-burst`, `root`, `drain-power`,                TASK-308, TASK-309 / ADR-029)
+                                   `thunder-strike` — NOT `card-<kebab>`; the exception is
+                                   confined to `BossCard` rows and never changes a Player Card's
+                                   identity
 CardDefinition.LoadoutCopyLimit    int, required, no default (§1); for a `BossCard` row it is      (§1; CARD_RULES.md §1.1
-                                   `1`, persisted but NEVER READ — a Boss Card has no Player          item 5 — TASK-308)
-                                   loadout, so the value is not a max-occurrences limit
+                                   `1`, persisted but NEVER READ — a Boss Card has no Player          item 5 — TASK-308,
+                                   loadout, so the value is not a max-occurrences limit               TASK-309)
 CardDefinition.EffectDefinition     jsonb, NOT NULL — an ARRAY of effect       (§1 "Card EffectDefinition
   objects, one per effect                contract"; TASK-108 D-1/D-2,
                                           TASK-109; ARRAY shape + vocabulary
@@ -1620,12 +1693,22 @@ CardDefinition.EffectDefinition     jsonb, NOT NULL — an ARRAY of effect      
                                           supersedes TASK-082 R2-7 for THIS
                                           member only)
 CardDefinition.EffectDefinition.effectType ∈ {Heal, Shield, Power, Damage,   (§1; CARD_RULES.md §2 for the
-  Burn, Crit}                            first three, §4.1 for the last three
-                                          — D-2 named all six; the §4.1 Pet
-                                          Skill set is since five Cards, which
-                                          adds no member — `Damage` is
-                                          distinct from `Power`, which
-                                          denotes Power Charge — D-4)
+  Burn, Crit, AtkBuff, PowerDrain, AtkDebuff, NextAtkBuff}                  first three, §4.1 for the
+                                                                             next three — D-2 named all six;
+                                                                             the §4.1 Pet Skill set is since
+                                                                             five Cards, which adds no member;
+                                                                             the four Boss-only identities
+                                                                             added by TASK-309 D-1 (AtkBuff,
+                                                                             PowerDrain, AtkDebuff,
+                                                                             NextAtkBuff) are provisioned only
+                                                                             on a `BossCard` row; a Player
+                                                                             Card cast may not use them and is
+                                                                             rejected fail-closed at the cast
+                                                                             boundary (the definition read
+                                                                             validates shape, not category);
+                                                                             `Damage` is
+                                                                             distinct from `Power`, which
+                                                                             denotes Power Charge — D-4)
 CardDefinition.EffectDefinition.valueType ∈ {Flat, PercentMaxHp,              (§1; §2's two interpretations,
   PercentagePoints, Undetermined}        plus §4.1's Crit percentage-point
                                           unit — D-3; plus the
@@ -1636,22 +1719,35 @@ CardDefinition.EffectDefinition.value  int, > 0, present iff                 (§
                                           §2/§4.1 through valueType — NOT
                                           the Card's Cost; absent, never 0,
                                           when Undetermined)
-CardDefinition.EffectDefinition.duration  int, > 0, present iff             (§1 item 1; ONLY on a `Burn`
-  effectType = Burn                       element — the effect's duration in
-                                          Turns; `value` is damage per tick;
-                                          the tick schedule and unit are
-                                          owned by GAME_RULES.md §17 step 19a
-                                          and COMBAT_RULES.md §5.2 — D-3)
-CardDefinition.EffectDefinition.scope  string = "NextAttack", present iff    (§1 item 1; ONLY on a `Crit`
-  effectType = Crit                       element — which damage instances the
-                                          increase applies to; the rule is
-                                          owned by CARD_RULES.md §4.1 — D-3)
+CardDefinition.EffectDefinition.duration  int, > 0, required              (§1 item 1; on a `Burn`,
+  on a `Burn`, `AtkBuff` or `AtkDebuff`   AtkBuff or AtkDebuff element —
+  element                                  the effect's duration in Turns;
+                                           `value` is damage per tick on Burn
+                                           and the authored magnitude on
+                                           AtkBuff/AtkDebuff; the tick schedule
+                                           and unit are owned by GAME_RULES.md
+                                           §17 step 19a and COMBAT_RULES.md
+                                           §5.2 — D-3; TASK-309 D-1 extends the
+                                           member to AtkBuff/AtkDebuff, no new
+                                           member name)
+CardDefinition.EffectDefinition.scope  string = "NextAttack", required on    (§1 item 1; on a `Crit` or
+  a `Crit` or `NextAtkBuff` element       `NextAtkBuff` element — which damage
+                                          instances the increase applies to;
+                                          the only value is NextAttack; `Crit`'s
+                                          usage is unchanged; the rule is owned
+                                          by CARD_RULES.md §4.1 / BOSS_RULES.md
+                                          §6.3.1 item 5 — D-3; TASK-309 D-1 adds
+                                          the NextAtkBuff case, no new member
+                                          name)
 CardDefinition.EffectDefinition     REJECTED, never defaulted, when  (§1 item 6; no fallback
   not a well-formed structured rule   the stored value is malformed   magnitude, no prose fallback,
                                                                       no silent no-op, and no
                                                                       missing required extra
                                                                       member (`duration` on Burn,
-                                                                      `scope` on Crit))
+                                                                      AtkBuff or AtkDebuff; `scope`
+                                                                      on Crit or NextAtkBuff); a
+                                                                      Boss-only identity on a Player
+                                                                      Card cast is rejected too)
 CardDefinition.EffectDefinition     element ORDER is NOT semantic       (§1 item 3 — D-5; a storage
   ordering                                                             statement only; authors no
                                                                        resolution step or priority)
@@ -1722,8 +1818,12 @@ BossDefinition.CastPriorityScore NULL, CHECK (CastPriorityScore     (fifth ADR-0
                                    Boss Card; otherwise >= 0. The       the overlay loads and validates
                                    score is loaded by the same          it fail-closed, and a Boss Card
                                    Domain-Overlay path as the four      form with NULL/negative content
-                                   balance values.                      fails battle creation — no
-                                                                        default, no fallback weight)
+                                   balance values. Authored values:     fails battle creation — no
+                                   `16` for `boss-def-son-thach-ve`     default, no fallback weight)
+                                   (TASK-308) and `85` for
+                                   `boss-def-hoa-long`,
+                                   `boss-def-thuy-ma`, `boss-def-moc-yeu`
+                                   and `boss-def-kim-loi-vuong` (TASK-309)
 BossDefinition.Identity           NOT NULL, UNIQUE                   (canonical technical Boss ID — BOSS_RULES.md
                                                                       §6.4; the unique target of the FK lookup in §1)
 BossDefinition.PassiveDefinition.resetBehavior ∈ {Default, Partial, Persistent}   (PASSIVE_RULES.md §4)
@@ -1815,7 +1915,7 @@ when a real query pattern requires them (anti-overengineering,
    `pet-thanh-xa`, `pet-son-hung`, in migration
    `20261004055006_ProvisionThanhXaAndSonHungSignatureSkills`), so the
    currently provisioned content-defined set is **`PetDefinition` (5),
-   `CardDefinition` (9), and `RelicDefinition` (10)**. The ninth
+   `CardDefinition` (13), and `RelicDefinition` (10)**. The ninth
    `CardDefinition` row is the one Boss Card (`earthquake`, category
    `BossCard`, `CardDefinitionId` = the ability `SkillId`) provisioned by a
    further, same-mechanism **insert-only** content migration (TASK-308) with a
@@ -1823,7 +1923,17 @@ when a real query pattern requires them (anti-overengineering,
    from `CARD_RULES.md` §1.1 / `BOSS_RULES.md` §6.3/§6.3.1 rather than authored
    here — and it creates no `PlayerUnlockedCard` row, loadout slot, collection
    projection or API exposure (`CARD_RULES.md` §1.1 item 5; §1's
-   `CardDefinition` block and §3). The four `RelicDefinition`
+   `CardDefinition` block and §3). **Four further `BossCard` rows are now
+   provisioned by TASK-309** — `flame-burst`, `root`, `drain-power` and
+   `thunder-strike`, in that mandated order, one insert-only, same-mechanism,
+   data-only migration each with a mirrored `Down` — bringing the provisioned
+   `CardDefinition` set to **13 rows** (the 8 Player Cards plus the 5 Boss
+   Cards). Each follows rules (a) and (b): its identity is the ability
+   `SkillId` (`BOSS_RULES.md` §6.4), its `LoadoutCopyLimit` is `1` (persisted,
+   never read), and its values are transcribed from `BOSS_RULES.md`
+   §4.3/§6.3/§6.3.1 and `ADR-029` §3 rather than authored here. Like the
+   TASK-308 row, none creates a `PlayerUnlockedCard` row, loadout slot,
+   collection projection or API exposure. The four `RelicDefinition`
    rows were subsequently **re-encoded into the
    structured shape** `RELIC_RULES.md` §8 defines (TASK-132, migration
    `20261003074309_StructureRelicDefinitionStructuredColumns`) — a

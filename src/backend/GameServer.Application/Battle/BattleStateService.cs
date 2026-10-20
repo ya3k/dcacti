@@ -2559,6 +2559,24 @@ public sealed class BattleStateService
             resolved = cast.State with { BossState = castBossState };
             bossState = castBossState;
 
+            // TASK-309 W5 / D-1 / GAME_EVENTS.md §2 (as amended by TASK-309):
+            // carry the cast's own authoritative effect reports into the round's
+            // SINGLE ordered batch, BEFORE the BossCardCast item. The Boss branch of
+            // the shared cast contract (CARD_RULES.md §3 item 9) emits no cast event
+            // and, since ADR-029, no PowerChanged for the Boss's own Power spend —
+            // that value is a state projection. Its ONE event-producing effect is
+            // PowerDrain, whose PetState.Power mutation is reported by the existing
+            // authoritative PowerChanged with source = Boss; the mutation's own write
+            // site produces it and this phase orders it into the batch rather than
+            // re-deriving it. A cast with no PowerDrain contributes nothing here, so
+            // the batch still carries exactly one BossCardCast and no invented event.
+            //
+            // The events are added from the accepted cast result only: a rejected
+            // cast never reaches this point (the fail-closed invariant above throws),
+            // and a rejected result carries no events by contract, so nothing can be
+            // appended on a non-committed cast.
+            events.AddRange(cast.Events);
+
             // SIGNALR_PROTOCOL.md §3.2.30 / GAME_EVENTS.md §2: exactly ONE
             // BossCardCast, emitted at 18c after the 18b Passive events and inside the
             // round's single ordered batch. `cardId` is the Boss Card definition

@@ -344,21 +344,31 @@ public class Task172BossDefinitionsContentTests
     }
 
     [Fact]
-    public void TheOtherFourBosses_ShouldLeaveTheCastPriorityScoreUnauthored()
+    public void TheOtherFourBosses_ShouldCarryTheApprovedCastPriorityScore()
     {
-        // ADR-029 §3 / BOSS_RULES.md §4.4 item 5: only Sơn Thạch Vệ's ability is
-        // migrated in Slice 3. The other four abilities stay on the transitional
-        // BossSkill path and their Power costs, magnitudes, and cast-priority scores
-        // remain unresolved until Slice 4 — so each carries NULL, and no guessed
-        // score is seeded for an unmigrated ability.
+        // BOSS_RULES.md §4.3 item 5 / TASK-309 §1 (B-1): ADR-029 Slice 4 migrates
+        // the four remaining abilities to their Boss Card form, and each of those
+        // Bosses carries the approved initial cast-priority score 85 — a starting
+        // value to monitor, not a globally optimal score, and no in-battle
+        // cast-rate guarantee. Sơn Thạch Vệ keeps its Slice 3 value 16, so all five
+        // MVP Bosses now carry an authored score and none is left NULL.
         foreach (var boss in BossDefinitions.All)
         {
             if (boss.BossId.Value == "boss-son-thach-ve")
             {
+                Assert.Equal(16, boss.CastPriorityScore);
                 continue;
             }
 
-            Assert.Null(boss.CastPriorityScore);
+            Assert.Equal(85, boss.CastPriorityScore);
         }
+
+        // Each Boss's approved value is stated per identity so a migration or a
+        // definition that swapped two rows cannot pass unnoticed.
+        Assert.Equal(85, BossDefinitions.HoaLong.CastPriorityScore);      // flame-burst 40
+        Assert.Equal(85, BossDefinitions.ThuyMa.CastPriorityScore);       // drain-power 25
+        Assert.Equal(85, BossDefinitions.MocYeu.CastPriorityScore);       // root 35
+        Assert.Equal(85, BossDefinitions.KimLoiVuong.CastPriorityScore);  // thunder-strike 40
+        Assert.Equal(16, BossDefinitions.SonThachVe.CastPriorityScore);   // earthquake 30 (Slice 3)
     }
 }

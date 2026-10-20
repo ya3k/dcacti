@@ -556,6 +556,64 @@ public class CardEffectDefinitionPersistenceTests
     }
 
     [Fact]
+    public async Task AppliedRows_ShouldReadTheFourSlice4BossCardsThroughTheArrayContract()
+    {
+        // TASK-309 Slice 4 / DATABASE.md §1 / BOSS_RULES.md §6.3.1 items 1–3 and 5:
+        // the four newly provisioned Boss Cards are stored as one-element arrays of
+        // the new Boss-only effect identities, each carrying exactly the extra
+        // member its identity requires — `duration` on AtkBuff/AtkDebuff and
+        // `scope` on NextAtkBuff, and neither on PowerDrain. Reading them through
+        // the same strict reader is what proves the applied `jsonb` values are
+        // parseable by the production contract rather than accepted only by the
+        // migration that wrote them.
+        await using var dataSource = await TryConnectAsync();
+        if (dataSource is null) return; // no live PostgreSQL / jsonb column
+
+        await using var command = dataSource.CreateCommand(
+            """
+            SELECT "CardDefinitionId", "EffectDefinition"::text
+            FROM "CardDefinition"
+            WHERE "CardDefinitionId" IN (
+              'flame-burst', 'root', 'drain-power', 'thunder-strike')
+            ORDER BY "CardDefinitionId"
+            """);
+
+        var stored = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        await using (var reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                stored[reader.GetString(0)] = reader.GetString(1);
+            }
+        }
+
+        Assert.Equal(4, stored.Count);
+
+        var expected = new (string Id, CardEffectDefinitions Effects)[]
+        {
+            // BOSS_RULES.md §6.3.1 item 1 / TASK-309 §1 B-2: +50% Boss ATK, 3 Turns.
+            ("flame-burst", Single(CardEffectDefinition.AtkBuff(50, 3))),
+            // BOSS_RULES.md §6.3.1 item 3 / TASK-309 §1 B-3: -30% Pet ATK, 3 Turns.
+            ("root", Single(CardEffectDefinition.AtkDebuff(30, 3))),
+            // BOSS_RULES.md §6.3.1 item 2 / TASK-309 §1 D-1: -20 flat Pet Power.
+            ("drain-power", Single(CardEffectDefinition.PowerDrain(20))),
+            // BOSS_RULES.md §6.3.1 item 5 / TASK-309 §1 D-1: next qualifying attack.
+            ("thunder-strike", Single(CardEffectDefinition.NextAtkBuff(50))),
+        };
+
+        foreach (var (id, effects) in expected)
+        {
+            Assert.True(stored.ContainsKey(id), $"The provisioned row '{id}' must exist.");
+
+            var domain = CardEffectDefinitions.FromPersistedPayload(stored[id]);
+
+            Assert.Equal(effects, domain);
+            Assert.Equal(effects.ToPersistedPayload(), domain.ToPersistedPayload());
+        }
+    }
+
+    [Fact]
     public async Task AppliedRows_ShouldHoldNoUndeterminedContentMagnitude()
     {
         // TASK-112 retires the three `Undetermined` markers: CARD_RULES.md §4.1 now

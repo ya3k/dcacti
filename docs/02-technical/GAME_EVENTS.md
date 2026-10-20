@@ -1,6 +1,16 @@
 # Game Events
 
-**Version:** 2.18 (§1, §1.1 and §2 extended per **ADR-029 / TASK-303**: the
+**Version:** 2.19 (§2 `PowerChanged` extended per **ADR-029 / TASK-309**, applying
+the operator-approved Slice 4 behavior: a Boss Card cast's `PowerDrain` effect
+emits the existing authoritative `PowerChanged` for the **active Pet's** Power,
+inside the round's single ordered batch and before that cast's `BossCardCast`,
+while the Boss's own Power spend mutates `BossState.Power` and therefore emits
+**no** `PowerChanged`; no new discriminator, no new payload member, and no Player
+`CardCast`/`PetSkillCast` contract change. `BossCardCast` remains the only Boss
+cast event, and the `drain-power` ability's transitional legacy `BossSkill` path
+keeps its existing event behavior until Slice 5 retirement. **No other event,
+payload member, ordering rule of an existing event, delivery path, or gameplay
+rule is changed.** Prior 2.18: (§1, §1.1 and §2 extended per **ADR-029 / TASK-303**: the
 `BossCardCast` event is defined — the dedicated Boss action event reporting that
 the Boss chose and resolved a Boss Card cast in its response phase, carrying the
 Boss Card identity and the Boss identity — and §1's Boss Response block records
@@ -552,7 +562,7 @@ Payload:  Delta, new Power value, source (Gem match / Card / Relic / Boss)
    "match"   a Match-owned Power mutation       (GAME_RULES.md §17 step 13)
    "card"    a Card-owned Power mutation        (GAME_RULES.md §17 step 14)
    "relic"   a Relic-owned Power mutation       (GAME_RULES.md §17 step 11)
-   "boss"    a Boss-owned Power mutation        (GAME_RULES.md §17 step 18b)
+   "boss"    a Boss-owned Power mutation        (GAME_RULES.md §17 step 18c)
    ```
 
    `"card"` is **not** a cost-only value: it covers any Power mutation a Card
@@ -576,9 +586,12 @@ Payload:  Delta, new Power value, source (Gem match / Card / Relic / Boss)
    stage that performs the mutation is the stage that emits it: the Power stage
    for a Match's resource generation, the Card stage for a cast's cost and its
    Power effects, the Relic stage for a Relic's `Power` effect
-   (`GAME_RULES.md` §17 step 11), and the Boss Response stage for a Boss Skill's
-   Power-draining secondary effect (§17 step 18b). No separate or centralized
-   emission step exists, and no stage emits on another stage's behalf.
+   (`GAME_RULES.md` §17 step 11), and the Boss Response stage for a Boss
+   ability's Power-draining effect — the `drain-power` ability, whether it
+   resolves through the transitional `BossSkill` path (§17 step 18c) or through
+   its Boss Card form's `PowerDrain` effect (§17 step 18c; TASK-309). No
+   separate or centralized emission step exists, and no stage emits on another
+   stage's behalf.
    `SIGNALR_PROTOCOL.md` §3.2.24 fixes only this event's wire shape; the
    sequencing position is `GAME_EVENTS.md` §3 item 7's.
 
@@ -591,6 +604,16 @@ Payload:  Delta, new Power value, source (Gem match / Card / Relic / Boss)
    delivered order reaches the same `Power` the state holds
    (`SIGNALR_PROTOCOL.md` §3.2.24 item 6). A mutation that does not occur emits
    nothing.
+5. **A Boss Card cast's Power drain is a Pet-side mutation; the Boss's own Power
+   spend is not.** `PowerDrain` mutates the active Pet's `PetState.Power`, so it
+   emits this event for that mutation — carried by the Boss Response stage inside
+   the round's single ordered batch, before that cast's `BossCardCast` — under
+   item 4's one-mutation-one-event rule. The Boss's own cast cost mutates
+   `BossState.Power`, a different resource (`BOSS_RULES.md` §4.1); this event
+   reports the Player-side `PetState.Power` only, so the Boss's spend emits
+   **no** `PowerChanged`. No new discriminator and no new payload member are
+   introduced, and the Player `CardCast`/`PetSkillCast` contracts are unchanged
+   (`CARD_RULES.md` §6, `ADR-029`).
 
 ## PassiveCharged / PassiveTriggered
 ```text

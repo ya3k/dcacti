@@ -107,6 +107,41 @@ public class BattleStartServiceTests
     }
 
     [Fact]
+    public async Task Start_WithTheFullProvisionedBossCardSet_ShouldResolveTheMigratedFormForEveryMvpBoss()
+    {
+        // TASK-309 Slice 4 / BOSS_RULES.md §4.4 item 6 / ADR-029 §2.5 (as amended):
+        // after the migration chain every MVP Boss has its provisioned BossCard row, so
+        // the active form is the Boss Card for all five — resolved once at creation,
+        // keyed by the ability SkillId, with the authored cast-priority score present.
+        foreach (var definition in BossDefinitions.All)
+        {
+            var harness = new Harness();
+
+            foreach (var card in ProvisionedBossCardContent.All)
+            {
+                harness.CardDefinitions.Definitions[card.CardDefinitionId] = card;
+            }
+
+            var result = await harness.StartAsync(
+                cardLoadout: [BasicA, BasicB, BasicC],
+                relicLoadout: ["relic_1", "relic_2", "relic_3"],
+                bossId: definition.BossId.Value);
+
+            Assert.True(result.Succeeded, $"boss '{definition.BossId.Value}' must start");
+
+            // The form resolved exactly once, by the ability SkillId.
+            Assert.Equal([definition.SkillId], harness.CardDefinitions.Reads);
+
+            // A BossCard form requires the authored, non-negative score (BOSS_RULES.md
+            // §4.3 item 5; ADR-024 §2.4). The values are the provisioned ones.
+            Assert.NotNull(definition.CastPriorityScore);
+            Assert.True(definition.CastPriorityScore >= 0);
+
+            Assert.Equal(1, harness.ActiveStateStore.RecordCount);
+        }
+    }
+
+    [Fact]
     public async Task Start_WithAProvisionedBossCardOfTheWrongCategory_ShouldFailClosed()
     {
         // Present-but-invalid content must fail the creation rather than falling
@@ -1131,9 +1166,11 @@ public class BattleStartServiceTests
             ActiveStateStore = new InMemoryBattleStateRepository();
 
             // The Boss Card content read the creation path uses to resolve the
-            // active form (TASK-308). Empty by default, so every existing
-            // scenario keeps the transitional BossSkill form; a test seeds the
-            // provisioned `earthquake` definition to exercise the migrated form.
+            // active form (TASK-308, extended by TASK-309). Empty by default, so a
+            // scenario that does not seed content keeps the transitional BossSkill
+            // form — the explicit transitional composition. The post-migration
+            // database holds all five BossCard rows; a test seeds them (see the
+            // full-provisioned-set scenario above) to exercise the migrated form.
             CardDefinitions = new FakeBossCardDefinitionLookup();
 
             Battles = new BattleStateService(

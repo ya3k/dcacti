@@ -31,12 +31,20 @@ namespace GameServer.Application.Tests;
 ///
 /// <b>These use the real <see cref="BattleStateService"/> pipeline</b> over the
 /// in-memory active-state double and a fake content read that returns the real
-/// provisioned <c>earthquake</c> definition. The only test-side substitutions are
-/// the two documented ones: the store (a test double, as everywhere in this
-/// suite) and the cast-priority score where a scenario must force one branch
-/// deterministically. The authored score's own <c>15/16</c> boundary is a Domain
-/// policy concern tested with <c>BossActionPolicyTests</c>; the integrated test
-/// below uses the real scored definition on a searched board.
+/// provisioned Boss Card definitions (<see cref="ProvisionedBossCardContent"/>). The
+/// only test-side substitutions are the two documented ones: the store (a test
+/// double, as everywhere in this suite) and the cast-priority score where a scenario
+/// must force one branch deterministically. The authored score's own <c>15/16</c>
+/// boundary is a Domain policy concern tested with <c>BossActionPolicyTests</c>; the
+/// integrated test below uses the real scored definition on a searched board, and
+/// <c>TASK309BossCardEffectRuntimeTests</c> proves the TASK-309 <c>85</c> gate
+/// through committed rounds.
+///
+/// <b>The legacy form keeps its coverage through an explicitly unmigrated fixture.</b>
+/// A composition whose content read exposes no <c>BossCard</c> row is the
+/// transitional position (<c>BOSS_RULES.md</c> §4.4 item 6) and still resolves the
+/// legacy <c>BossSkill</c> form; that scenario is exercised deliberately rather than
+/// by weakening the migrated-form coverage.
 /// </summary>
 public class BossCardCastRuntimeTests
 {
@@ -79,7 +87,7 @@ public class BossCardCastRuntimeTests
         // lookup (identity = the ability SkillId), and cached with the Boss
         // content input. No turn re-reads it.
         var repository = new InMemoryBattleStateRepository();
-        var lookup = new FakeCardDefinitionLookup().With(EarthquakeCard());
+        var lookup = new TestCardDefinitionLookup().With(EarthquakeCard());
 
         var service = new BattleStateService(
             repository,
@@ -109,12 +117,53 @@ public class BossCardCastRuntimeTests
     }
 
     [Fact]
+    public async Task CreateBattle_WithThePostMigrationBossCardSet_ShouldResolveTheBossCardFormForEveryMvpBoss()
+    {
+        // TASK-309 Slice 4: after the four data-only migrations every MVP Boss has its
+        // provisioned BossCard row, so the active form is the Boss Card for all five,
+        // resolved once at creation and keyed by the ability SkillId
+        // (BOSS_RULES.md §4.4 item 6; ADR-029 §2.5 as amended).
+        foreach (var definition in BossDefinitions.All)
+        {
+            var repository = new InMemoryBattleStateRepository();
+            var lookup = new TestCardDefinitionLookup().WithProvisionedBossCards();
+
+            var service = new BattleStateService(
+                repository,
+                new FixedRngSeedSource(),
+                cardDefinitions: lookup);
+
+            var battleId = $"battle-boss-card-provisioned-{definition.SkillId}";
+            var created = await service.CreateBattleAsync(battleId, Owner, Pet, definition);
+
+            // The form resolved exactly once, by the ability's SkillId, and the battle
+            // carries the Boss's own canonical identity.
+            Assert.Equal([definition.SkillId], lookup.Reads);
+            Assert.Equal(definition.BossId.Value, created.BossState.BossId.Value);
+
+            // The authored score the selection reads (TASK-309 B-1): 16 for the
+            // TASK-308 Boss and 85 for the four Slice 4 Bosses.
+            Assert.Equal(
+                definition.SkillId == EarthquakeCardId ? 16 : 85,
+                definition.CastPriorityScore);
+
+            // A committed round does not re-read the frozen content input.
+            var pair = FindMatchProducingPair(created.BoardState);
+            var round = await service.ExecuteSwapAsync(battleId, pair);
+
+            Assert.NotNull(round);
+            Assert.True(round.Value.IsAccepted);
+            Assert.Single(lookup.Reads);
+        }
+    }
+
+    [Fact]
     public async Task CreateBattle_WithACardOfTheWrongCategory_ShouldFailClosed()
     {
         // Present-but-invalid content fails creation closed — the legacy Skill
         // form is never substituted (OD-1c; AGENTS.md §7).
         var repository = new InMemoryBattleStateRepository();
-        var lookup = new FakeCardDefinitionLookup()
+        var lookup = new TestCardDefinitionLookup()
             .With(EarthquakeCard(CardCategory.Basic));
 
         var service = new BattleStateService(
@@ -138,7 +187,7 @@ public class BossCardCastRuntimeTests
         // (BOSS_RULES.md §4.3 item 5; ADR-024 §2.4). No default, no board-only
         // degradation, no fallback form.
         var repository = new InMemoryBattleStateRepository();
-        var lookup = new FakeCardDefinitionLookup().With(EarthquakeCard());
+        var lookup = new TestCardDefinitionLookup().With(EarthquakeCard());
 
         var service = new BattleStateService(
             repository,
@@ -159,7 +208,7 @@ public class BossCardCastRuntimeTests
     {
         // The authored cost must be non-negative (CARD_RULES.md §3.6 item 4).
         var repository = new InMemoryBattleStateRepository();
-        var lookup = new FakeCardDefinitionLookup()
+        var lookup = new TestCardDefinitionLookup()
             .With(EarthquakeCard(powerCost: -1));
 
         var service = new BattleStateService(
@@ -175,27 +224,25 @@ public class BossCardCastRuntimeTests
     }
 
     [Fact]
-    public async Task CreateBattle_WithoutProvisionedBossCard_ShouldKeepTheLegacySkillForm()
+    public async Task CreateBattle_WithAnUnmigratedBossFixture_ShouldKeepTheLegacySkillForm()
     {
-        // Content presence is the signal: no provisioned card means the
-        // transitional BossSkill form, whose legacy cast still fires on its
-        // documented charge/cooldown condition.
-        var repository = new InMemoryBattleStateRepository();
-        var lookup = new FakeCardDefinitionLookup();
-        var service = new BattleStateService(
-            repository,
-            new FixedRngSeedSource(),
-            cardDefinitions: lookup);
+        // Content presence is the signal (BOSS_RULES.md §4.4 item 6): this is the
+        // explicit UNMIGRATED fixture — a content composition that exposes no BossCard
+        // row — so the Boss keeps the transitional BossSkill form and its legacy cast
+        // still fires on the documented charge/cooldown condition. The legacy form's
+        // coverage is therefore retained on purpose, not by weakening the migrated-form
+        // scenarios (see the post-migration test above for those).
+        var harness = BossCardTestHarness.CreateWithoutProvisionedCards();
 
-        var created = await service.CreateBattleAsync(
+        var created = await harness.Service.CreateBattleAsync(
             "battle-boss-card-legacy",
             Owner,
             Pet,
             BossDefinitions.SonThachVe);
 
         await PinBossStateAsync(
-            service,
-            repository,
+            harness.Service,
+            harness.Store,
             "battle-boss-card-legacy",
             created.BossState with
             {
@@ -204,13 +251,17 @@ public class BossCardCastRuntimeTests
                 SkillCooldown = 0,
             });
 
-        var state = (await service.GetBattleAsync("battle-boss-card-legacy"))!;
-        var round = await service.ExecuteSwapAsync(
+        var state = (await harness.Service.GetBattleAsync("battle-boss-card-legacy"))!;
+        var round = await harness.Service.ExecuteSwapAsync(
             "battle-boss-card-legacy",
             FindMatchProducingPair(state.BoardState));
 
         Assert.NotNull(round);
         Assert.True(round.Value.IsAccepted);
+
+        // The unmigrated fixture exposed no card row, so the creation-time form
+        // resolution asked for the ability identity and found nothing.
+        Assert.Equal([BossDefinitions.SonThachVe.SkillId], harness.CardDefinitions.Reads);
 
         Assert.Contains(round.Value.Events, e => e.Type == BattleEventType.BossSkillCast);
         Assert.DoesNotContain(round.Value.Events, e => e.Type == BattleEventType.BossCardCast);
@@ -523,7 +574,7 @@ public class BossCardCastRuntimeTests
         // Boss actor's. A Boss Card in content changes neither the Player's
         // CardCast event nor its Power accounting.
         var repository = new InMemoryBattleStateRepository();
-        var lookup = new FakeCardDefinitionLookup()
+        var lookup = new TestCardDefinitionLookup()
             .With(EarthquakeCard())
             .With(PlayerPowerChargeCard());
 
@@ -601,7 +652,7 @@ public class BossCardCastRuntimeTests
             new BattleStateService(
                 repository,
                 new FixedRngSeedSource(),
-                cardDefinitions: new FakeCardDefinitionLookup().With(EarthquakeCard())),
+                cardDefinitions: new TestCardDefinitionLookup().With(EarthquakeCard())),
             repository);
     }
 
@@ -671,34 +722,4 @@ public class BossCardCastRuntimeTests
         }
     }
 
-    /// <summary>
-    /// A fake content read for the Boss Card resolution and the Player cast path.
-    /// It records what was requested so a test can assert the creation-time
-    /// resolution happened exactly once and was keyed by the ability
-    /// <c>SkillId</c>.
-    /// </summary>
-    private sealed class FakeCardDefinitionLookup : ICardDefinitionLookup
-    {
-        private readonly Dictionary<string, CardDefinition> _definitions = new(StringComparer.Ordinal);
-
-        internal List<string> Reads { get; } = [];
-
-        internal FakeCardDefinitionLookup With(CardDefinition definition)
-        {
-            _definitions[definition.CardDefinitionId] = definition;
-
-            return this;
-        }
-
-        public Task<CardDefinition?> GetDefinitionAsync(
-            string cardDefinitionId,
-            CancellationToken cancellationToken = default)
-        {
-            Reads.Add(cardDefinitionId);
-
-            _definitions.TryGetValue(cardDefinitionId, out var definition);
-
-            return Task.FromResult(definition);
-        }
-    }
 }

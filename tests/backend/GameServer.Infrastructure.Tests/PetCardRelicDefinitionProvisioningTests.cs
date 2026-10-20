@@ -412,6 +412,21 @@ public class PetCardRelicDefinitionProvisioningTests
         Assert.DoesNotContain("earthquake", operations);
         Assert.DoesNotContain("Earthquake", operations);
         Assert.DoesNotContain("\"BossCard\"", operations);
+
+        // TASK-309 Slice 4's four Boss Cards are supplied by their own four
+        // data-only migrations (20261020111406/…11411/…11415/…11419), never by this
+        // historical migration either — the same "completed migrations are
+        // historical records" rule (AGENTS.md §16).
+        foreach (var slice4Row in new[]
+                 {
+                     "flame-burst", "Flame Burst",
+                     "root",
+                     "drain-power", "Drain Power",
+                     "thunder-strike", "Thunder Strike",
+                 })
+        {
+            Assert.DoesNotContain(slice4Row, operations, StringComparison.Ordinal);
+        }
     }
 
     // -----------------------------------------------------------------------

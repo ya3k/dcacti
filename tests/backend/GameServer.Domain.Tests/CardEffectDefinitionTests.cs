@@ -22,20 +22,59 @@ public class CardEffectDefinitionTests
     // -----------------------------------------------------------------------
 
     [Fact]
-    public void EffectType_ShouldBeExactlyTheSixDocumentedIdentities()
+    public void EffectType_ShouldBeExactlyTheTenDocumentedIdentities()
     {
-        // DATABASE.md §1 item 1 closes the set at Heal | Shield | Power | Damage |
-        // Burn | Crit, and §3 restates it. The first three are CARD_RULES.md §2's
-        // Basic Card effects; the last three are the ones the same owner named for
-        // §4.1's Pet Skill Cards (TASK-111 D-2), which also confirmed the first
-        // three remain. A seventh identity is a gameplay rule no document authors
-        // (AGENTS.md §7), not an engineering choice.
+        // DATABASE.md §1 item 1 closes the Player set at Heal | Shield | Power |
+        // Damage | Burn | Crit, and TASK-309 decision D-1 adds exactly four
+        // Boss-only identities — AtkBuff | PowerDrain | AtkDebuff | NextAtkBuff
+        // (the operator-approved vocabulary recorded in the TASK-309 Operator
+        // Decision Record). The first three Player identities are CARD_RULES.md
+        // §2's Basic Card effects; Damage/Burn/Crit are the §4.1 Pet Skill effects
+        // (TASK-111 D-2); the four Boss-only identities are the BOSS_RULES.md
+        // §6.3.1 ability effects of the four migrated Boss Cards. An eleventh
+        // identity is a gameplay rule no document authors (AGENTS.md §7), not an
+        // engineering choice.
         var identities = Enum.GetNames<CardEffectType>();
 
         Assert.Equal(
-            new[] { "Burn", "Crit", "Damage", "Heal", "Power", "Shield" },
+            new[]
+            {
+                "AtkBuff", "AtkDebuff", "Burn", "Crit", "Damage",
+                "Heal", "NextAtkBuff", "Power", "PowerDrain", "Shield",
+            },
             identities.OrderBy(n => n, StringComparer.Ordinal));
-        Assert.Equal(6, identities.Length);
+        Assert.Equal(10, identities.Length);
+    }
+
+    [Fact]
+    public void EffectType_ShouldKeepTheBossOnlyIdentitiesDistinctFromThePlayerSet()
+    {
+        // The four Boss-only members are additive vocabulary, not a relabelling:
+        // each is a distinct member from every Player identity, so a Boss effect
+        // can never be stored under a Player effect's identity (which would make
+        // the Player resolver apply it). This is the vocabulary half of TASK-309
+        // D-1's "Player Cards must not use the Boss-only effects" rule.
+        foreach (var bossOnly in new[]
+                 {
+                     CardEffectType.AtkBuff,
+                     CardEffectType.PowerDrain,
+                     CardEffectType.AtkDebuff,
+                     CardEffectType.NextAtkBuff,
+                 })
+        {
+            foreach (var playerIdentity in new[]
+                     {
+                         CardEffectType.Heal,
+                         CardEffectType.Shield,
+                         CardEffectType.Power,
+                         CardEffectType.Damage,
+                         CardEffectType.Burn,
+                         CardEffectType.Crit,
+                     })
+            {
+                Assert.NotEqual(playerIdentity, bossOnly);
+            }
+        }
     }
 
     [Fact]
@@ -165,6 +204,75 @@ public class CardEffectDefinitionTests
     }
 
     [Fact]
+    public void AtkBuff_ShouldCarryThePercentagePointMagnitudeAndTheDuration()
+    {
+        // BOSS_RULES.md §6.3.1 item 1 (Flame Burst) / TASK-309 §1 B-2: the approved
+        // Boss Card value is +50% Boss ATK for 3 Turns. DATABASE.md §1 item 1/§3 as
+        // extended by TASK-309 D-1 fixes the members: `value` is the percentage-point
+        // increase and the extra `duration` is the number of Turns.
+        var effect = CardEffectDefinition.AtkBuff(50, 3);
+
+        Assert.Equal(CardEffectType.AtkBuff, effect.EffectType);
+        Assert.Equal(CardEffectValueType.PercentagePoints, effect.ValueType);
+        Assert.Equal(50, effect.Value);
+        Assert.Equal(3, effect.Duration);
+
+        // A Turn-based ATK modifier carries no scope: §3 defines `scope` on a Crit
+        // or NextAtkBuff element only.
+        Assert.Null(effect.Scope);
+    }
+
+    [Fact]
+    public void AtkDebuff_ShouldCarryThePercentagePointMagnitudeAndTheDuration()
+    {
+        // BOSS_RULES.md §6.3.1 item 3 (Root) / TASK-309 §1 B-3: the approved Boss
+        // Card value is -30% Pet ATK for 3 Turns, stored as the applied magnitude 30
+        // and the duration 3 (COMBAT_RULES.md §5.6.6 item 2 maps the reduction to
+        // -|Magnitude|, so the stored number does not encode the sign).
+        var effect = CardEffectDefinition.AtkDebuff(30, 3);
+
+        Assert.Equal(CardEffectType.AtkDebuff, effect.EffectType);
+        Assert.Equal(CardEffectValueType.PercentagePoints, effect.ValueType);
+        Assert.Equal(30, effect.Value);
+        Assert.Equal(3, effect.Duration);
+        Assert.Null(effect.Scope);
+    }
+
+    [Fact]
+    public void NextAtkBuff_ShouldCarryThePercentagePointMagnitudeAndTheNextAttackScope()
+    {
+        // BOSS_RULES.md §6.3.1 item 5 (Thunder Strike) / TASK-309 §1: the approved
+        // Boss Card value is +50% Boss ATK consumed by the next qualifying attack.
+        // DATABASE.md §1 item 1/§3 as extended by TASK-309 D-1 fixes the members:
+        // `value` is the percentage-point increase and `scope` is NextAttack.
+        var effect = CardEffectDefinition.NextAtkBuff(50);
+
+        Assert.Equal(CardEffectType.NextAtkBuff, effect.EffectType);
+        Assert.Equal(CardEffectValueType.PercentagePoints, effect.ValueType);
+        Assert.Equal(50, effect.Value);
+        Assert.Equal(CardEffectDefinition.NextAttackScope, effect.Scope);
+
+        // A trigger-based instance has no Turn countdown (GAME_STATE.md §2.3.1 item
+        // 3), so the element carries no duration.
+        Assert.Null(effect.Duration);
+    }
+
+    [Fact]
+    public void PowerDrain_ShouldCarryTheFlatMagnitudeAndNoExtraMember()
+    {
+        // BOSS_RULES.md §6.3.1 item 2 (Drain Power) / TASK-309 §1: the approved Boss
+        // Card value is an instant flat -20 Pet Power, with "Duration: None", so the
+        // element fixes Flat and carries neither a duration nor a scope.
+        var effect = CardEffectDefinition.PowerDrain(20);
+
+        Assert.Equal(CardEffectType.PowerDrain, effect.EffectType);
+        Assert.Equal(CardEffectValueType.Flat, effect.ValueType);
+        Assert.Equal(20, effect.Value);
+        Assert.Null(effect.Duration);
+        Assert.Null(effect.Scope);
+    }
+
+    [Fact]
     public void NextAttack_ShouldBeAScopeValueAndNeverAnEffectIdentity()
     {
         // TASK-111 D-3 stores `scope: "NextAttack"`. It is a member VALUE of the
@@ -215,7 +323,8 @@ public class CardEffectDefinitionTests
     {
         // DATABASE.md §3 states the bound as "int, > 0", and 0 is the CLR default
         // of an unset int — admitting it would let a missing value pass as a real
-        // one (no default).
+        // one (no default). The four Boss-only factories obey the same bound
+        // (TASK-309 D-1).
         Assert.Throws<ArgumentOutOfRangeException>(
             () => CardEffectDefinition.Create(CardEffectType.Heal, CardEffectValueType.Flat, value));
 
@@ -224,6 +333,18 @@ public class CardEffectDefinitionTests
 
         Assert.Throws<ArgumentOutOfRangeException>(
             () => CardEffectDefinition.Crit(value, CardEffectDefinition.NextAttackScope));
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => CardEffectDefinition.AtkBuff(value, 3));
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => CardEffectDefinition.AtkDebuff(value, 3));
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => CardEffectDefinition.NextAtkBuff(value));
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => CardEffectDefinition.PowerDrain(value));
     }
 
     [Theory]
@@ -236,6 +357,57 @@ public class CardEffectDefinitionTests
         // missing required extra member §1 item 6 rejects.
         Assert.Throws<ArgumentOutOfRangeException>(
             () => CardEffectDefinition.Burn(CardEffectValueType.Flat, 50, duration));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void BossOnlyTurnBasedEffects_ShouldRejectANonPositiveDuration(int duration)
+    {
+        // DATABASE.md §3 as extended by TASK-309 D-1: duration is "int, > 0, present
+        // iff effectType = AtkBuff | AtkDebuff". It is never defaulted, so a
+        // Boss-only ATK modifier without a real duration is rejected by its factory
+        // exactly as a Burn without one is.
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => CardEffectDefinition.AtkBuff(50, duration));
+
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => CardEffectDefinition.AtkDebuff(30, duration));
+    }
+
+    [Fact]
+    public void BossOnlyEffects_ShouldBeRejectedByThePlainAndUndeterminedPaths()
+    {
+        // TASK-309 D-1 fixes each Boss-only effect's interpretation and shape, so
+        // each has exactly one representation — its dedicated factory. The
+        // plain-value path could not carry the required duration/scope (and could
+        // choose the wrong interpretation for PowerDrain), and an undetermined
+        // magnitude would make the fixed Flat/PercentagePoints interpretation
+        // unrepresentable; both paths reject rather than normalize (AGENTS.md §7).
+        foreach (var effectType in new[]
+                 {
+                     CardEffectType.AtkBuff,
+                     CardEffectType.PowerDrain,
+                     CardEffectType.AtkDebuff,
+                     CardEffectType.NextAtkBuff,
+                 })
+        {
+            Assert.Throws<ArgumentException>(
+                () => CardEffectDefinition.Create(
+                    effectType,
+                    CardEffectValueType.PercentagePoints,
+                    50));
+
+            Assert.Throws<ArgumentException>(
+                () => CardEffectDefinition.Undetermined(effectType));
+        }
+
+        // The plain path also cannot invent PowerDrain's unit.
+        Assert.Throws<ArgumentException>(
+            () => CardEffectDefinition.Create(
+                CardEffectType.PowerDrain,
+                CardEffectValueType.Flat,
+                20));
     }
 
     [Theory]
@@ -376,6 +548,32 @@ public class CardEffectDefinitionTests
     }
 
     [Fact]
+    public void ToPersistedPayload_ShouldWriteTheBossOnlyEffectsInTheCanonicalMemberOrder()
+    {
+        // DATABASE.md §1 item 1/§3 as extended by TASK-309 D-1, and the exact
+        // literals the four TASK-309 data-only migrations embed: member order is
+        // effectType -> valueType -> value -> duration|scope, with no whitespace.
+        // These are the approved values (TASK-309 §1): flame-burst AtkBuff 50/3,
+        // root AtkDebuff 30/3, drain-power PowerDrain 20 flat, thunder-strike
+        // NextAtkBuff 50 scope NextAttack.
+        Assert.Equal(
+            """{"effectType":"AtkBuff","valueType":"PercentagePoints","value":50,"duration":3}""",
+            CardEffectDefinition.AtkBuff(50, 3).ToPersistedPayload());
+
+        Assert.Equal(
+            """{"effectType":"AtkDebuff","valueType":"PercentagePoints","value":30,"duration":3}""",
+            CardEffectDefinition.AtkDebuff(30, 3).ToPersistedPayload());
+
+        Assert.Equal(
+            """{"effectType":"PowerDrain","valueType":"Flat","value":20}""",
+            CardEffectDefinition.PowerDrain(20).ToPersistedPayload());
+
+        Assert.Equal(
+            """{"effectType":"NextAtkBuff","valueType":"PercentagePoints","value":50,"scope":"NextAttack"}""",
+            CardEffectDefinition.NextAtkBuff(50).ToPersistedPayload());
+    }
+
+    [Fact]
     public void Elements_ShouldRoundTripEveryValidShape()
     {
         // DATABASE.md §1: the round trip is LOSSLESS — every member and its exact
@@ -388,6 +586,10 @@ public class CardEffectDefinitionTests
             CardEffectDefinition.Create(CardEffectType.Damage, CardEffectValueType.Flat, 120),
             CardEffectDefinition.Burn(CardEffectValueType.Flat, 50, 2),
             CardEffectDefinition.Crit(10, CardEffectDefinition.NextAttackScope),
+            CardEffectDefinition.AtkBuff(50, 3),
+            CardEffectDefinition.AtkDebuff(30, 3),
+            CardEffectDefinition.PowerDrain(20),
+            CardEffectDefinition.NextAtkBuff(50),
             CardEffectDefinition.Undetermined(CardEffectType.Heal),
         };
 
@@ -701,6 +903,44 @@ public class CardEffectDefinitionTests
     }
 
     [Theory]
+    // AtkBuff: duration required; scope forbidden; interpretation fixed.
+    [InlineData("{ \"effectType\": \"AtkBuff\", \"valueType\": \"PercentagePoints\", \"value\": 50 }")]
+    [InlineData("{ \"effectType\": \"AtkBuff\", \"valueType\": \"PercentagePoints\", \"value\": 50, \"duration\": 0 }")]
+    [InlineData("{ \"effectType\": \"AtkBuff\", \"valueType\": \"PercentagePoints\", \"value\": 50, \"duration\": 3, \"scope\": \"NextAttack\" }")]
+    [InlineData("{ \"effectType\": \"AtkBuff\", \"valueType\": \"Flat\", \"value\": 50, \"duration\": 3 }")]
+    // AtkDebuff: duration required; scope forbidden; interpretation fixed.
+    [InlineData("{ \"effectType\": \"AtkDebuff\", \"valueType\": \"PercentagePoints\", \"value\": 30 }")]
+    [InlineData("{ \"effectType\": \"AtkDebuff\", \"valueType\": \"PercentagePoints\", \"value\": 30, \"duration\": 0 }")]
+    [InlineData("{ \"effectType\": \"AtkDebuff\", \"valueType\": \"PercentagePoints\", \"value\": 30, \"duration\": 3, \"scope\": \"NextAttack\" }")]
+    [InlineData("{ \"effectType\": \"AtkDebuff\", \"valueType\": \"Flat\", \"value\": 30, \"duration\": 3 }")]
+    // NextAtkBuff: scope required; duration forbidden; interpretation fixed.
+    [InlineData("{ \"effectType\": \"NextAtkBuff\", \"valueType\": \"PercentagePoints\", \"value\": 50 }")]
+    [InlineData("{ \"effectType\": \"NextAtkBuff\", \"valueType\": \"PercentagePoints\", \"value\": 50, \"scope\": \"AllAttacks\" }")]
+    [InlineData("{ \"effectType\": \"NextAtkBuff\", \"valueType\": \"PercentagePoints\", \"value\": 50, \"duration\": 3, \"scope\": \"NextAttack\" }")]
+    [InlineData("{ \"effectType\": \"NextAtkBuff\", \"valueType\": \"Flat\", \"value\": 50, \"scope\": \"NextAttack\" }")]
+    // PowerDrain: neither extra member; interpretation fixed to Flat.
+    [InlineData("{ \"effectType\": \"PowerDrain\", \"valueType\": \"Flat\", \"value\": 20, \"duration\": 3 }")]
+    [InlineData("{ \"effectType\": \"PowerDrain\", \"valueType\": \"Flat\", \"value\": 20, \"scope\": \"NextAttack\" }")]
+    [InlineData("{ \"effectType\": \"PowerDrain\", \"valueType\": \"PercentagePoints\", \"value\": 20 }")]
+    [InlineData("{ \"effectType\": \"PowerDrain\", \"valueType\": \"PercentMaxHp\", \"value\": 20 }")]
+    // The four Boss-only identities have no undetermined-magnitude form.
+    [InlineData("{ \"effectType\": \"AtkBuff\", \"valueType\": \"Undetermined\" }")]
+    [InlineData("{ \"effectType\": \"AtkDebuff\", \"valueType\": \"Undetermined\" }")]
+    [InlineData("{ \"effectType\": \"NextAtkBuff\", \"valueType\": \"Undetermined\" }")]
+    [InlineData("{ \"effectType\": \"PowerDrain\", \"valueType\": \"Undetermined\" }")]
+    public void FromPersistedPayload_ShouldEnforceTheBossOnlyPresentIffConditions(string payload)
+    {
+        // DATABASE.md §1 item 1/§3 as extended by TASK-309 D-1: AtkBuff/AtkDebuff
+        // require duration > 0 and may not carry scope; NextAtkBuff requires scope
+        // NextAttack and may not carry duration; PowerDrain is Flat with neither
+        // extra member. duration/scope on the wrong effect, an unknown scope, or a
+        // wrong/undetermined interpretation is definition data no document authors,
+        // so the read fails closed (DATABASE.md §1 item 6, AGENTS.md §7).
+        Assert.ThrowsAny<ArgumentException>(
+            () => CardEffectDefinition.FromPersistedPayload(payload));
+    }
+
+    [Theory]
     // An extra member on an effect that defines none.
     [InlineData("{ \"effectType\": \"Heal\", \"valueType\": \"PercentMaxHp\", \"value\": 20, \"duration\": 2 }")]
     [InlineData("{ \"effectType\": \"Heal\", \"valueType\": \"PercentMaxHp\", \"value\": 20, \"scope\": \"NextAttack\" }")]
@@ -743,6 +983,10 @@ public class CardEffectDefinitionTests
                      """{ "effectType": "Damage", "valueType": "Flat", "value": 100 }""",
                      """{ "effectType": "Burn", "valueType": "Flat", "value": 50, "duration": 2 }""",
                      """{ "effectType": "Crit", "valueType": "PercentagePoints", "value": 10, "scope": "NextAttack" }""",
+                     """{ "effectType": "AtkBuff", "valueType": "PercentagePoints", "value": 50, "duration": 3 }""",
+                     """{ "effectType": "AtkDebuff", "valueType": "PercentagePoints", "value": 30, "duration": 3 }""",
+                     """{ "effectType": "PowerDrain", "valueType": "Flat", "value": 20 }""",
+                     """{ "effectType": "NextAtkBuff", "valueType": "PercentagePoints", "value": 50, "scope": "NextAttack" }""",
                      """{ "effectType": "Damage", "valueType": "Undetermined" }""",
                  })
         {

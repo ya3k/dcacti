@@ -41,9 +41,20 @@ internal static class TestProvisionedContent
         ["pet-xich-lang", "pet-bach-ho", "pet-huyen-quy", "pet-thanh-xa", "pet-son-hung"];
 
     /// <summary>
-    /// The nine Card definitions the provisioning migrations created — the three
+    /// The thirteen Card definitions the provisioning migrations created — the three
     /// Basic Cards (<c>CARD_RULES.md</c> §2), the five Pet Skill Cards (§4.1, one
-    /// per Pet), and the one Boss Card (§1.1; <c>earthquake</c>, TASK-308).
+    /// per Pet), and the five Boss Cards (§1.1; <c>earthquake</c> from TASK-308 and
+    /// <c>flame-burst</c>/<c>root</c>/<c>drain-power</c>/<c>thunder-strike</c> from
+    /// TASK-309 Slice 4).
+    ///
+    /// <b>Why the Boss Card rows matter to the Api hosts.</b> A Boss ability's active
+    /// form is provisioned-content presence (<c>BOSS_RULES.md</c> §4.4 item 6;
+    /// <c>ADR-029</c> §2.5 as amended by TASK-308): a <c>BossCard</c>
+    /// <c>CardDefinition</c> whose identity equals the ability's <c>SkillId</c> makes
+    /// the Boss resolve the Boss Card form at battle creation. Production has all
+    /// five rows after TASK-309's migrations, so a host that supplies only the
+    /// TASK-085/TASK-173 set would exercise a battle configuration production no
+    /// longer has.
     /// </summary>
     internal static readonly string[] ProvisionedCardDefinitionIds =
     [
@@ -51,6 +62,7 @@ internal static class TestProvisionedContent
         "card-inferno", "card-tidal-barrier", "card-iron-fang",
         "card-venomous-bloom", "card-earthshaker",
         "earthquake",
+        "flame-burst", "root", "drain-power", "thunder-strike",
     ];
 
     /// <summary>
@@ -229,6 +241,44 @@ internal static class TestProvisionedContent
                 30,
                 CardEffectDefinitions.Create(
                     CardEffectDefinition.Create(CardEffectType.Shield, CardEffectValueType.Flat, 150))),
+
+            // TASK-309 Slice 4: the four remaining MVP Boss abilities migrated to the
+            // Boss Card form (CARD_RULES.md §1.1; BOSS_RULES.md §4.2, §6.3.1;
+            // ADR-029 Slice 4; TASK-309 §1's approved Power Cost table and D-1's
+            // effect vocabulary). Each row is the Domain factories' own value —
+            // the same structured effect the migration's InsertData stores — so a
+            // test host resolves the documented BossCard form and the documented
+            // effect rather than a payload string restated here. The identity is the
+            // ability SkillId (the CARD_RULES.md §1.1 item 3 exception), and no row
+            // has a PlayerUnlockedCard row: a Boss Card is never in a loadout.
+            (
+                "flame-burst",
+                "Flame Burst",
+                CardCategory.BossCard,
+                40,
+                CardEffectDefinitions.Create(
+                    CardEffectDefinition.AtkBuff(50, duration: 3))),
+            (
+                "root",
+                "Root",
+                CardCategory.BossCard,
+                35,
+                CardEffectDefinitions.Create(
+                    CardEffectDefinition.AtkDebuff(30, duration: 3))),
+            (
+                "drain-power",
+                "Drain Power",
+                CardCategory.BossCard,
+                25,
+                CardEffectDefinitions.Create(
+                    CardEffectDefinition.PowerDrain(20))),
+            (
+                "thunder-strike",
+                "Thunder Strike",
+                CardCategory.BossCard,
+                40,
+                CardEffectDefinitions.Create(
+                    CardEffectDefinition.NextAtkBuff(50))),
         };
 
         foreach (var (id, name, category, powerCost, effects) in cards)

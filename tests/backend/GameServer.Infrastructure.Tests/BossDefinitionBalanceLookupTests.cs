@@ -62,7 +62,7 @@ public class BossDefinitionBalanceLookupTests
                     ATK = 222,
                     DEF = 33,
                     EnrageThreshold = 0.42,
-                    // Hỏa Long's baseline score is null (no Boss Card yet); the
+                    // Hỏa Long's baseline score is 85 after TASK-309 Slice 4; the
                     // row's authored value is what the overlay must return.
                     CastPriorityScore = 21,
                 });
@@ -123,12 +123,13 @@ public class BossDefinitionBalanceLookupTests
                 Assert.Equal(baseline.DEF, resolved.DEF);
                 Assert.Equal(baseline.EnrageThreshold, resolved.EnrageThreshold);
 
-                // The fifth overlay value (TASK-308): only Sơn Thạch Vệ's baseline
-                // is authored (16); the other four are NULL, and a NULL row is
-                // overlaid as NULL rather than answered from anything else.
+                // The fifth overlay value: every MVP Boss is authored after
+                // TASK-309 B-1 — Sơn Thạch Vệ's Slice 3 value 16 (`earthquake`)
+                // and 85 for the other four Slice 4 Boss Cards — and the row's
+                // value is overlaid as stored rather than re-derived.
                 Assert.Equal(baseline.CastPriorityScore, resolved.CastPriorityScore);
                 Assert.Equal(
-                    baseline.BossId.Value == "boss-son-thach-ve" ? (int?)16 : null,
+                    baseline.BossId.Value == "boss-son-thach-ve" ? (int?)16 : 85,
                     resolved.CastPriorityScore);
             }
         }
@@ -361,7 +362,10 @@ public class BossDefinitionBalanceLookupTests
 
         Assert.Equal(before, after);
         Assert.Equal(5000, BossDefinitions.HoaLong.MaxHP);
-        Assert.Null(BossDefinitions.HoaLong.CastPriorityScore);
+        // BOSS_RULES.md §4.3 item 5 / TASK-309 B-1: all five MVP Bosses now carry
+        // their approved score — 85 for the Slice 4 Boss Cards and 16 for
+        // `earthquake` — and none is authored by a row rather than the baseline.
+        Assert.Equal(85, BossDefinitions.HoaLong.CastPriorityScore);
         Assert.Equal(16, BossDefinitions.SonThachVe.CastPriorityScore);
     }
 

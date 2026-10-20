@@ -2,6 +2,24 @@
 
 **Status:** Accepted
 **Date:** 2026-10-18
+**Amended:** 2026-10-20 (TASK-309 / Slice 4) — the operator approved the four
+remaining abilities' Boss Card content and the vocabulary that carries it,
+resolving §3's U-2/U-3/U-4/U-5 for those abilities: `flame-burst`
+(`PowerCost 40`, `+50%` Boss ATK for `3` Turns, cooldown `2`), `drain-power`
+(`25`, `−20` flat active-Pet Power with no transfer to the Boss, cooldown `3`),
+`root` (`35`, `−30%` active-Pet ATK for `3` Turns, cooldown `2`) and
+`thunder-strike` (`40`, `+50%` on the next qualifying Boss attack, cooldown
+`0`), all with `BaseDamage = 0`; `CastPriorityScore = 85` for Hỏa Long, Thủy Ma,
+Mộc Yêu and Kim Lôi Vương (`Sơn Thạch Vệ` keeps `16`); and four Boss-only
+`CardEffectType` identities (`AtkBuff`, `PowerDrain`, `AtkDebuff`,
+`NextAtkBuff`, TASK-309 D-1). The Boss Card forms of `flame-burst`/`root` carry
+the re-authored 3-Turn durations, while the transitional legacy `BossSkill` path
+keeps its historical persisted 2-Turn values until Slice 5 — an explicitly
+documented divergence, not a silent substitution. Multiplicative ATK stacking is
+preserved unchanged (`1.20 × 1.50 = 1.80`, TASK-309 B-4); additive stacking is
+not authorized. §2.7 items 19–20, §3 (U-2/U-3/U-4/U-5), §4 (Slice 4) and §7 are
+amended in place; the decision itself, Slice 5's gate and the fifth Gem's FUTURE
+status are unchanged.
 **Amended:** 2026-10-19 (TASK-308 / Slice 3) — the operator approved the initial
 Boss Card content and the remaining Slice 3 decisions: the nullable
 `BossDefinition.CastPriorityScore` carrier (ADR-024's overlay extends from four
@@ -137,7 +155,7 @@ record.
    is generated **only** from POWER Gems the Boss itself matched, and Player POWER
    matches must not generate Boss Power. The decision's "specific charge units and
    threshold values remain balance-tuning decisions" clause carries forward as
-   this record's unresolved balance items (§3).
+   this record's balance items (§3; U-2/U-5 were since resolved by TASK-309).
 3. **The state rule is not owned here.** The member's shape, initial value,
    write points and lifecycle are `GAME_STATE.md` §2.4/§2.4.3's; the gameplay
    rules are `BOSS_RULES.md` §4.1's; the generation rate table is
@@ -252,15 +270,19 @@ record.
     phase has no Boss board resolution, the Boss generates no board resources and
     no Boss attack occurs that phase (the attack is gated on a confirmed ATK match
     in the Boss's own resolution, `ADR-026` D1). That is a deliberate consequence
-    of the one-action policy, and its pacing effect is an unresolved balance item
-    (§3, U-3).
+    of the one-action policy, and its pacing effect is the balance item §3's U-3
+    covered — resolved for the Slice 4 abilities by TASK-309's approved
+    cast-priority score (item 20).
 20. **The cast-priority score's carrier and initial value are approved
-    (TASK-308; amended).** The score is the nullable
+    (TASK-308; amended by TASK-309).** The score is the nullable
     `BossDefinition.CastPriorityScore` overlay value (`NULL` = not authored,
     otherwise an integer `>= 0`); a Boss with a Boss Card requires a non-null
-    value or battle creation fails closed (`BOSS_RULES.md` §4.3 item 5). The
-    approved initial value is `earthquake = 16`; the other four Bosses stay
-    `NULL` until Slice 4. The gates, ordering, tie-break and determinism above
+    value or battle creation fails closed (`BOSS_RULES.md` §4.3 item 5). TASK-308
+    approved `earthquake = 16`; TASK-309 approves `85` for Hỏa Long, Thủy Ma,
+    Mộc Yêu and Kim Lôi Vương as a starting value to be monitored and adjusted
+    from real gameplay data (not globally optimal, and no in-battle cast-rate
+    guarantee — the 10,000-board baseline is a board-only empirical
+    probability). The gates, ordering, tie-break and determinism above
     remain decided and unchanged.
 
 ### 2.8 A dedicated Boss action event; the Player `CardCast` contract is preserved
@@ -324,18 +346,19 @@ record.
 
 ## 3. Unresolved Balance Choices (Explicitly Preserved)
 
-The following are **not decided** by this record, are **not** transcribed as rules
-in any authoritative document, and block the slice named against each. None of
-them is satisfied by reference to an audit report, which does not exist in this
-repository.
+The following were **not decided** by this record as originally written. `U-1`
+was resolved under TASK-304; `U-2`/`U-3`/`U-4`/`U-5` are resolved for the
+Slice 3/4 abilities by the TASK-308/TASK-309 in-place amendments, and `U-6`
+remains gated by §2.9's parity gate. None of them is satisfied by reference to
+an audit report, which does not exist in this repository.
 
 | # | Unresolved value | Blocks | Notes |
 |---|---|---|---|
-| U-1 | **The Boss's Power grant basis.** (Resolved under TASK-304: Option A approved). The Boss receives the shared Player Power per-Gem output unchanged: `+10 Power per uniquely matched POWER cell` (`BaseOutput(POWER) × unique matched count`, clamped to `[0, 100]`, actor-relative attribution). | Resolved (Slice 1 unblocked) | Decided explicitly under TASK-304 (Option A). Future ability cadence and per-ability cost tuning (U-2) remain open. |
-| U-2 | **Per-ability Power costs.** The `PowerCost` of each Boss Card, and whether any legacy `ChargeRequirement` re-tuning is required to preserve cadence. | Slice 4 (the initial card's approved cost, `earthquake = 30`, unblocks Slice 3) | TASK-308 authors `earthquake = 30`; the other four costs remain open and no re-tuning is authorized. |
-| U-3 | **The Boss Card cast-priority score** (its authored form and its values) and the resulting cast/board action cadence, including the pacing effect of a cast phase producing no Boss attack (§2.7 item 19). | Slice 3 | The structure is decided; TASK-308 approves the nullable carrier and `earthquake = 16`, leaving the other four Bosses open. |
-| U-4 | **The outstanding ability magnitudes** that `ADR-026`'s Unresolved Balance Choices #3–#4 and `BOSS_RULES.md` §6.3.1 items 1/4/5 already record as unresolved — Shield points for `earthquake`, buff percentages and durations for `flame-burst` and `thunder-strike`, and the compounding behavior of `flame-burst` with `boss-hoa-long-rage`. | Slice 4 | TASK-308 approves `earthquake`'s Shield as `150 Flat`; the other magnitudes and the compounding question remain open. |
-| U-5 | **Whether the migrated abilities keep their current cooldowns.** The values are carried over unchanged by this decision (`BOSS_RULES.md` §6.3); any re-tuning is a balance decision that is not made here. | Slice 4 | The cooldown *handling* rule is decided; the values are only carried over. |
+| U-1 | **The Boss's Power grant basis.** (Resolved under TASK-304: Option A approved). The Boss receives the shared Player Power per-Gem output unchanged: `+10 Power per uniquely matched POWER cell` (`BaseOutput(POWER) × unique matched count`, clamped to `[0, 100]`, actor-relative attribution). | Resolved (Slice 1 unblocked) | Decided explicitly under TASK-304 (Option A). Future ability cadence re-tuning remains open; per-ability cost tuning (U-2) is resolved by TASK-309. |
+| U-2 | **Per-ability Power costs.** The `PowerCost` of each Boss Card, and whether any legacy `ChargeRequirement` re-tuning is required to preserve cadence. | **Resolved — Slice 4 unblocked** | TASK-308 authored `earthquake = 30`; TASK-309 approves `flame-burst = 40`, `drain-power = 25`, `root = 35` and `thunder-strike = 40`, and no legacy `ChargeRequirement` re-tuning is authorized (the cooldowns are carried over unchanged under U-5). |
+| U-3 | **The Boss Card cast-priority score** (its authored form and its values) and the resulting cast/board action cadence, including the pacing effect of a cast phase producing no Boss attack (§2.7 item 19). | **Resolved — Slice 4 unblocked** | The structure is decided; TASK-308 approved the nullable carrier and `earthquake = 16`, and TASK-309 approves `85` for the other four Bosses. `85` is a starting value to be monitored and adjusted from real gameplay data, not a globally optimal value; no in-battle cast-rate guarantee follows — in particular no `38%` in-battle cast rate — and the 10,000-board simulation baseline (TASK-309 V-1) is a board-only empirical probability, not an in-battle measurement. |
+| U-4 | **The outstanding ability magnitudes** that `ADR-026`'s Unresolved Balance Choices #3–#4 and `BOSS_RULES.md` §6.3.1 items 1/4/5 already record as unresolved — Shield points for `earthquake`, buff percentages and durations for `flame-burst` and `thunder-strike`, and the compounding behavior of `flame-burst` with `boss-hoa-long-rage`. | **Resolved — Slice 4 unblocked** | TASK-308 approved `earthquake`'s Shield as `150 Flat` (that point is resolved). TASK-309 approves `flame-burst` as `+50%` Boss ATK for `3` Turns, `root` as `−30%` active-Pet ATK for `3` Turns and `thunder-strike` as `+50%` on the next qualifying Boss attack. The compounding question is resolved by TASK-309 B-4: multiplicative stacking is preserved unchanged (`1.20 × 1.50 = 1.80`) and additive stacking is **not authorized**. |
+| U-5 | **Whether the migrated abilities keep their current cooldowns.** The values are carried over unchanged by this decision (`BOSS_RULES.md` §6.3); any re-tuning is a balance decision that is not made here. | **Resolved — Slice 4 unblocked** | The cooldown *handling* rule is decided; TASK-309 confirms the migrated abilities keep their current cooldowns unchanged — `flame-burst 2`, `drain-power 3`, `root 2`, `thunder-strike 0` — and authorizes no re-tuning. |
 | U-6 | **The retirement of `SkillCharge`'s own unit-metric and clamp questions.** They are closed by retirement rather than answered, and the retirement is gated by §2.9's parity gate. | Slice 5 (removal) | `ADR-026` Unresolved Balance Choices #1–#2 are reformulated, not resolved, by this record. |
 
 ---
@@ -343,8 +366,11 @@ repository.
 ## 4. Staged Implementation Plan (Documented, Not Executed)
 
 Each slice is a separate future task with its own declared file set and review
-gate. No slice is authorized to start by this record; each requires the
-unresolved values it depends on to be approved first (§3).
+gate. At the time of writing no slice was authorized to start by this record;
+each required the values it depended on to be approved first (§3).
+Slices 1–3 were delivered by TASK-304/TASK-305/TASK-308, and Slice 4 is
+delivered by TASK-309 under the approved values §3 now records; Slice 5 remains
+gated and is not started.
 
 ```text
 SLICE 1 — Boss Power foundation
@@ -386,16 +412,28 @@ SLICE 3 — Boss Card end to end: definition/provisioning, policy, event
   cast; Player CardCast/PetSkillCast contracts are byte-identical; unmigrated
   Bosses' behavior and suites are unchanged.
 
-SLICE 4 — Ability migration
-  Migrate Earthquake, then Flame Burst, then Root, then Drain Power; migrate
-  Thunder Strike LAST.
+SLICE 4 — Ability migration (delivered by TASK-309; approved values in §3)
+  Migrate Flame Burst, then Root, then Drain Power; migrate Thunder Strike
+  LAST. (Earthquake was already migrated by Slice 3 / TASK-308.)
   Per-ability comparison requirement: compare old and new behavior, especially
   the exact qualifying attack and the modifier-consumption timing (Thunder
   Strike's NextQualifyingAttack expiry is the reason it goes last).
-  Exit: each ability resolves as a Boss Card with the same authored effect,
-  target and duration, with costs and any magnitudes approved (U-2, U-4, U-5).
+  Approved content (TASK-309): flame-burst PowerCost 40, cooldown 2, +50% Boss
+  ATK for 3 Turns; drain-power 25, cooldown 3, −20 flat active-Pet Power (no
+  transfer to the Boss); root 35, cooldown 2, −30% active-Pet ATK for 3 Turns;
+  thunder-strike 40, cooldown 0, +50% on the next qualifying Boss attack;
+  BaseDamage 0 for all four; CastPriorityScore 85 for the four Bosses.
+  Deviation from the original exit criterion's "same ... duration" wording: the
+  Boss Card forms of flame-burst and root carry the re-authored duration of
+  3 Turns (operator decision B-2/B-3), while the transitional legacy BossSkill
+  path keeps its historical persisted values (flame-burst 2, root 2) until
+  Slice 5 retirement — an explicit documented divergence, not a silent
+  substitution. Multiplicative ATK stacking is preserved unchanged (B-4:
+  1.20 × 1.50 = 1.80); additive stacking is not authorized.
+  Exit: each ability resolves as a Boss Card with the approved effect, target
+  and duration, and the approved costs/magnitudes (U-2, U-3, U-4, U-5).
 
-SLICE 5 — Removal (gated, not scheduled)
+SLICE 5 — Removal (gated, not scheduled; not started by TASK-309)
   Remove SkillCharge and the legacy handlers only after §2.9's four-part parity
   gate is met and every consumer is reconciled.
 ```
@@ -506,8 +544,9 @@ SUPERSEDED IN FULL by this ADR
     · Reversed: BossState.Power is introduced and is the Boss's resource.
     · Preserved: Boss Power comes only from the Boss's own POWER matches; Player
       POWER matches still never charge the Boss.
-    · Carried forward as unresolved: "specific charge units and threshold values
-      remain balance-tuning decisions" (§3, U-1/U-2/U-5).
+    · Carried forward as unresolved at that time: "specific charge units and
+      threshold values remain balance-tuning decisions" (§3; U-1 was resolved
+      under TASK-304, and U-2/U-5 were resolved under TASK-309).
   The TASK-258 record itself is a completed, immutable historical record
   (tasks/TASK_LIFECYCLE.md §3) and is NOT edited; this ADR is the authorization
   that supersedes its D2 clause.
@@ -529,6 +568,22 @@ AMENDED (in place) by TASK-308 / Slice 3
     nullable CastPriorityScore column; PostgreSQL authority, the static
     baseline, structural preservation and the fail-closed/no-fallback validation
     are unchanged.
+
+AMENDED (in place) by TASK-309 / Slice 4
+  This record — §3's U-2/U-3/U-4/U-5 are resolved for the four remaining
+    abilities by the operator-approved TASK-309 values: costs flame-burst 40,
+    drain-power 25, root 35, thunder-strike 40; magnitudes +50% Boss ATK for
+    3 Turns, −20 flat active-Pet Power, −30% active-Pet ATK for 3 Turns, and
+    +50% on the next qualifying Boss attack; cooldowns 2/3/2/0 carried over
+    unchanged; CastPriorityScore 85 for the four Bosses; BaseDamage 0 throughout.
+    §4's Slice 4 is recorded as delivered with the re-authored 3-Turn durations
+    for flame-burst/root on the Boss Card form only, while the transitional
+    legacy BossSkill path retains its historical 2-Turn persisted values until
+    Slice 5. TASK-309 B-4 preserves multiplicative ATK stacking unchanged
+    (1.20 × 1.50 = 1.80); additive stacking is not authorized. No prior decision
+    is reversed: the one-action policy, the cast-strictly-greater-than-board
+    rule, §2.9's four-part Slice 5 gate and the fifth Gem's FUTURE status are
+    unchanged.
 
 UNAFFECTED
   ADR-021 (one Card cast per committed Turn) — remains the Player's allowance and

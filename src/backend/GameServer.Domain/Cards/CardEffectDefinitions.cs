@@ -160,6 +160,8 @@ public readonly struct CardEffectDefinitions
     /// <code>
     /// [{"effectType":"Heal","valueType":"PercentMaxHp","value":20}]
     /// [{"effectType":"Damage","valueType":"Flat","value":100},{"effectType":"Burn","valueType":"Flat","value":50,"duration":2}]
+    /// [{"effectType":"AtkBuff","valueType":"PercentagePoints","value":50,"duration":3}]
+    /// [{"effectType":"PowerDrain","valueType":"Flat","value":20}]
     /// </code>
     ///
     /// <b>The element order is the stored order, and it is not normalized.</b> The
@@ -211,7 +213,8 @@ public readonly struct CardEffectDefinitions
     /// <item>an empty array, which states no effect;</item>
     /// <item>an element that is not a well-formed effect object, names an
     /// unrecognized <c>effectType</c> or <c>valueType</c>, omits a required
-    /// magnitude, or omits <c>duration</c> on a Burn / <c>scope</c> on a Crit.
+    /// magnitude, or omits <c>duration</c> on a Burn/AtkBuff/AtkDebuff element /
+    /// <c>scope</c> on a Crit/NextAtkBuff element.
     /// </item>
     /// </list>
     ///

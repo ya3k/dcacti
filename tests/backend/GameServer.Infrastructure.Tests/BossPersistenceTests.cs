@@ -34,7 +34,12 @@ namespace GameServer.Infrastructure.Tests;
 /// the two TASK-172 authored, and neither may touch the other's rows. The two
 /// TASK-308 migrations are asserted the same way: <c>AddBossCastPriorityScore</c>
 /// owns the fifth overlay column and its one populated value, and
-/// <c>ProvisionBossCardContent</c> owns the one Boss Card row.
+/// <c>ProvisionBossCardContent</c> owns the one Boss Card row. TASK-309 Slice 4's
+/// four data-only Boss Card migrations (<c>ProvisionFlameBurstBossCard</c>,
+/// <c>ProvisionRootBossCard</c>, <c>ProvisionDrainPowerBossCard</c>,
+/// <c>ProvisionThunderStrikeBossCard</c>) are asserted by their own file,
+/// <see cref="TASK309BossCardProvisioningMigrationTests"/>, because each writes
+/// both a <c>CardDefinition</c> row and a <c>BossDefinition</c> overlay value.
 ///
 /// Nothing here exercises Boss gameplay: no Skill fires, no Passive triggers,
 /// and no combat stat is read. The type under test is persistence only.

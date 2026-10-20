@@ -4020,6 +4020,13 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                     // terminal outcomes, on the same batch (§3 item 1: the batch is
                     // atomic).
                     "BossSkillCast", "BattleWon", "BattleLost",
+                    // §3.2.30: the migrated Boss Card form's dedicated Boss action
+                    // event. Every MVP Boss now has a provisioned BossCard row
+                    // (TASK-308, TASK-309 Slice 4), so a committed round can carry
+                    // this discriminator — never a fifth *message*, and never
+                    // alongside the legacy BossSkillCast for the same ability
+                    // (BOSS_RULES.md §4.4; ADR-029).
+                    "BossCardCast",
                     // §3.2.20–§3.2.21: the cast stages' two events. They travel in this
                     // same batch on this same path — a Swap does not emit them, but a
                     // batch that does must not be rejected for carrying a documented
@@ -4101,6 +4108,14 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                 // §3.2.18: the Skill's identity and the Boss's identity, and nothing
                 // else — the Skill's damage travels on the damage events that follow.
                 "BossSkillCast" => new[] { "type", "skillId", "sourceId" },
+                // §3.2.30: the Boss Card's identity (`cardId`, the ability SkillId)
+                // and the Boss's canonical technical Identity (`sourceId`), and
+                // nothing else. No cost, no Power value, no cooldown, no effect
+                // summary — the resulting Power/cooldown are the `bossState`
+                // projection's (§4.4 item 12), and a Power-draining cast's Pet-side
+                // mutation travels on the separate `PowerChanged` item (§3.2.24,
+                // GAME_EVENTS.md §2 item 5).
+                "BossCardCast" => new[] { "type", "cardId", "sourceId" },
                 // §3.2.19: the outcome constant and the two terminal HP values. No
                 // `reward summary`, whose absence item 3 records as deferred.
                 "BattleWon" => new[] { "type", "outcome", "finalBossHp", "finalPlayerHp" },
@@ -4410,6 +4425,15 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             BattleEventType.BossSkillCast => BattleEventWireDto.BossSkillCast(
                 e.BossSkillCast.SkillId,
                 e.BossSkillCast.SourceId),
+
+            // §3.2.30: the migrated Boss Card form's action event — the Boss Card's
+            // definition identity (equal to the ability SkillId, CARD_RULES.md §1.1
+            // item 3) and the Boss's canonical technical Identity, and nothing else.
+            // No cost/Power/cooldown/effect member is written here, exactly as the
+            // production projection writes none.
+            BattleEventType.BossCardCast => BattleEventWireDto.BossCardCast(
+                e.BossCardCast.CardId,
+                e.BossCardCast.SourceId),
 
             BattleEventType.BattleWon => BattleEventWireDto.BattleWon(
                 e.BattleWon.FinalBossHp,

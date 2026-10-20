@@ -24,7 +24,9 @@ namespace GameServer.Domain.Tests.Cards;
 /// the <b>unchanged</b> two-argument entry point that every existing caller uses.
 /// It also pins the one Player-visible consequence of the new
 /// <see cref="CardCategory.BossCard"/> value: the Player path rejects it as
-/// <see cref="CardCastRejectionReason.InvalidCard"/>.
+/// <see cref="CardCastRejectionReason.InvalidCard"/> — and the consequence of
+/// TASK-309 decision D-1's four Boss-only effect identities: a Player cast refuses
+/// them with an <see cref="InvalidOperationException"/> before spending any Power.
 ///
 /// Card definitions here are the documented <c>CARD_RULES.md</c> §2/§4.1 content
 /// (Heal, Power Charge, Inferno) plus synthetic fixtures where a case needs one.
@@ -74,6 +76,58 @@ public sealed class CardCastPlayerCompatibilityTests
         LoadoutCopyLimit = 1,
         EffectDefinition = CardEffectDefinitions.Create(
             CardEffectDefinition.Create(CardEffectType.Heal, CardEffectValueType.PercentMaxHp, 20)),
+    };
+
+    /// <summary>
+    /// A <c>Basic</c>-category definition carrying the Boss-only
+    /// <c>AtkBuff</c> effect — the shape a misplaced Boss effect would take. The
+    /// Player's cast must refuse it before any state change (TASK-309 D-1).
+    /// </summary>
+    private static readonly CardDefinition PlayerAtkBuffBossOnlyCard = new()
+    {
+        CardDefinitionId = "fixture-player-card-atkbuff",
+        Name = "Player AtkBuff (Boss-only) Fixture",
+        Category = CardCategory.Basic,
+        PowerCost = 10,
+        LoadoutCopyLimit = 1,
+        EffectDefinition = CardEffectDefinitions.Create(
+            CardEffectDefinition.AtkBuff(50, 3)),
+    };
+
+    /// <summary>A <c>Basic</c>-category definition carrying the Boss-only <c>PowerDrain</c> effect.</summary>
+    private static readonly CardDefinition PlayerPowerDrainBossOnlyCard = new()
+    {
+        CardDefinitionId = "fixture-player-card-powerdrain",
+        Name = "Player PowerDrain (Boss-only) Fixture",
+        Category = CardCategory.Basic,
+        PowerCost = 10,
+        LoadoutCopyLimit = 1,
+        EffectDefinition = CardEffectDefinitions.Create(
+            CardEffectDefinition.PowerDrain(20)),
+    };
+
+    /// <summary>A <c>Basic</c>-category definition carrying the Boss-only <c>AtkDebuff</c> effect.</summary>
+    private static readonly CardDefinition PlayerAtkDebuffBossOnlyCard = new()
+    {
+        CardDefinitionId = "fixture-player-card-atkdebuff",
+        Name = "Player AtkDebuff (Boss-only) Fixture",
+        Category = CardCategory.Basic,
+        PowerCost = 10,
+        LoadoutCopyLimit = 1,
+        EffectDefinition = CardEffectDefinitions.Create(
+            CardEffectDefinition.AtkDebuff(30, 3)),
+    };
+
+    /// <summary>A <c>Basic</c>-category definition carrying the Boss-only <c>NextAtkBuff</c> effect.</summary>
+    private static readonly CardDefinition PlayerNextAtkBuffBossOnlyCard = new()
+    {
+        CardDefinitionId = "fixture-player-card-nextatkbuff",
+        Name = "Player NextAtkBuff (Boss-only) Fixture",
+        Category = CardCategory.Basic,
+        PowerCost = 10,
+        LoadoutCopyLimit = 1,
+        EffectDefinition = CardEffectDefinitions.Create(
+            CardEffectDefinition.NextAtkBuff(50)),
     };
 
     private static BattleState CreateTestBattleState(
@@ -347,5 +401,71 @@ public sealed class CardCastPlayerCompatibilityTests
         Assert.True(explicitPlayer.IsRejected);
         Assert.Equal(legacy.Reason, explicitPlayer.Reason);
         Assert.Equal(CardCastRejectionReason.InsufficientPower, explicitPlayer.Reason);
+    }
+
+    // =======================================================================
+    // The Boss-only effects are refused for a Player cast (TASK-309 D-1)
+    // =======================================================================
+
+    [Fact]
+    public void Execute_PlayerEntryPoint_RefusesTheBossOnlyAtkBuffEffect()
+    {
+        AssertBossOnlyEffectIsRefused(PlayerAtkBuffBossOnlyCard);
+    }
+
+    [Fact]
+    public void Execute_PlayerEntryPoint_RefusesTheBossOnlyPowerDrainEffect()
+    {
+        AssertBossOnlyEffectIsRefused(PlayerPowerDrainBossOnlyCard);
+    }
+
+    [Fact]
+    public void Execute_PlayerEntryPoint_RefusesTheBossOnlyAtkDebuffEffect()
+    {
+        AssertBossOnlyEffectIsRefused(PlayerAtkDebuffBossOnlyCard);
+    }
+
+    [Fact]
+    public void Execute_PlayerEntryPoint_RefusesTheBossOnlyNextAtkBuffEffect()
+    {
+        AssertBossOnlyEffectIsRefused(PlayerNextAtkBuffBossOnlyCard);
+    }
+
+    /// <summary>
+    /// The shared assertion for the four Boss-only refusals: the Player cast throws
+    /// (it does not resolve the effect, and it is not converted into a rejection
+    /// reason), the message names the effect and that it is Boss-only, and the
+    /// refusal writes nothing — proven by resolving a normal Player cast from the
+    /// same pre-cast state and observing that its Power, allowance and Sequence all
+    /// start from the documented pre-cast values.
+    /// </summary>
+    private static void AssertBossOnlyEffectIsRefused(CardDefinition card)
+    {
+        var state = CreateTestBattleState(
+            power: 100,
+            equippedCards:
+            [
+                new EquippedCardIdentity(card.CardDefinitionId),
+                new EquippedCardIdentity(HealCard.CardDefinitionId),
+            ]);
+
+        var effectType = card.EffectDefinition[0].EffectType;
+
+        var exception = Assert.Throws<InvalidOperationException>(
+            () => CardCastExecutor.Execute(state, card));
+
+        Assert.Contains("Boss-only", exception.Message, StringComparison.Ordinal);
+        Assert.Contains(effectType.ToString(), exception.Message, StringComparison.Ordinal);
+
+        // CARD_RULES.md §3 item 3: a refused/resolved-nothing cast changes nothing.
+        // The state is a value type and the refusal wrote none of it, so the same
+        // state still resolves a normal Player cast from its own pre-cast values.
+        var valid = CardCastExecutor.Execute(state, HealCard);
+
+        Assert.True(valid.IsAccepted);
+        Assert.Equal(80, valid.State.PetState.Power); // 100 - 20: no Power was spent
+        Assert.Equal(1, valid.State.CardCastsUsedThisTurn); // the allowance was not spent
+        Assert.Equal(state.Sequence + 1, valid.State.Sequence); // one advance, not two
+        Assert.Equal(state.Turn, valid.State.Turn);
     }
 }

@@ -236,21 +236,63 @@ public class BossWireProjectionTests
         Assert.DoesNotContain("null", wire.GetRawText(), StringComparison.Ordinal);
     }
 
-    [Fact]
-    public void BossCardCast_ShouldCarryTheDefinitionsIdentities()
+    [Theory]
+    // The five provisioned Boss Cards after TASK-308 and TASK-309 Slice 4
+    // (DATABASE.md §1; CARD_RULES.md §1.1 item 3): the Card identity is the
+    // ability's SkillId and the source identity is the Boss's canonical technical
+    // Identity (BOSS_RULES.md §6.4) — the two strings SIGNALR_PROTOCOL.md §3.2.30
+    // says must equal BossSkillCast's for the same ability.
+    [InlineData("boss-hoa-long", "flame-burst")]
+    [InlineData("boss-thuy-ma", "drain-power")]
+    [InlineData("boss-moc-yeu", "root")]
+    [InlineData("boss-son-thach-ve", "earthquake")]
+    [InlineData("boss-kim-loi-vuong", "thunder-strike")]
+    public void BossCardCast_ShouldCarryTheDefinitionsIdentities(string bossId, string cardId)
     {
-        // The Card identity is the ability's SkillId and the source identity is the
-        // Boss's canonical technical Identity (BOSS_RULES.md §6.4): the two strings
-        // SIGNALR_PROTOCOL.md §3.2.30 says must equal BossSkillCast's for the same
-        // ability.
-        var definition = BossDefinitions.SonThachVe;
+        var definition = BossDefinitions.All.Single(b => b.BossId.Value == bossId);
 
-        Assert.Equal("earthquake", definition.SkillId);
+        Assert.Equal(cardId, definition.SkillId);
 
         var wire = Serialize(BattleEvent.ForBossCardCast(definition.SkillId, definition.BossId.Value));
 
-        Assert.Equal("earthquake", wire.GetProperty("cardId").GetString());
-        Assert.Equal("boss-son-thach-ve", wire.GetProperty("sourceId").GetString());
+        Assert.Equal("BossCardCast", wire.GetProperty("type").GetString());
+        Assert.Equal(cardId, wire.GetProperty("cardId").GetString());
+        Assert.Equal(bossId, wire.GetProperty("sourceId").GetString());
+
+        Assert.Equal(["cardId", "sourceId", "type"], Members(wire));
+    }
+
+    [Fact]
+    public void BossCardCast_ShouldProjectTheMigratedAbilityIdentity_NotTheLegacySkillEventsMembers()
+    {
+        // §3.2.30 item 2: the Boss Card identity is the ability identity the
+        // transitional `BossSkillCast.skillId` reports — the same string, under the
+        // migrated event's own member name. TASK-309's four migrated abilities must
+        // therefore project to `cardId` with the SAME value the legacy event would
+        // have reported for them, and never carry the legacy member name.
+        foreach (var ability in new[]
+                 {
+                     "flame-burst", "drain-power", "root", "thunder-strike",
+                 })
+        {
+            var definition = BossDefinitions.All.Single(b => b.SkillId == ability);
+
+            var cardWire = Serialize(
+                BattleEvent.ForBossCardCast(definition.SkillId, definition.BossId.Value));
+            var skillWire = Serialize(
+                BattleEvent.ForBossSkillCast(definition.SkillId, definition.BossId.Value));
+
+            Assert.Equal(
+                skillWire.GetProperty("skillId").GetString(),
+                cardWire.GetProperty("cardId").GetString());
+            Assert.Equal(
+                skillWire.GetProperty("sourceId").GetString(),
+                cardWire.GetProperty("sourceId").GetString());
+
+            // §3.2.30 item 7: BossCardCast is never a CardCast and carries no `skillId`.
+            Assert.False(cardWire.TryGetProperty("skillId", out _));
+            Assert.NotEqual("CardCast", cardWire.GetProperty("type").GetString());
+        }
     }
 
     [Fact]
@@ -276,6 +318,95 @@ public class BossWireProjectionTests
         Assert.Equal(
             ["PassiveCharged", "BossCardCast", "BossSkillCast"],
             wire.Select(w => w.Type));
+    }
+
+    // =======================================================================
+    // PowerChanged — SIGNALR_PROTOCOL.md §3.2.24 (TASK-309: the drain's
+    // Pet-side mutation travels beside BossCardCast in the round's one batch)
+    // =======================================================================
+
+    [Fact]
+    public void PowerChanged_ShouldProjectTheBossSourceAndTheSignedPetDelta()
+    {
+        // §3.2.24: exactly four members — the discriminator, the signed delta, the
+        // resulting Power, and the stage that owns the mutation projected to its
+        // lowercase contract name. A Power-draining Boss Card cast is the Boss
+        // Response stage's mutation, so its value is "boss" and its delta is the
+        // negative drain (item 1: the sign is the mutation's, not the source's).
+        var wire = Serialize(BattleEvent.ForPowerChanged(new PowerChangedEvent(
+            PowerChangeSource.Boss,
+            Delta: -20,
+            Power: 30)));
+
+        Assert.Equal("PowerChanged", wire.GetProperty("type").GetString());
+        Assert.Equal("boss", wire.GetProperty("source").GetString());
+        Assert.Equal(-20, wire.GetProperty("delta").GetInt32());
+        Assert.Equal(30, wire.GetProperty("power").GetInt32());
+
+        Assert.Equal(["delta", "power", "source", "type"], Members(wire));
+    }
+
+    [Fact]
+    public void PowerChanged_ShouldWriteTheZeroPowerAsZero_NotOmitIt()
+    {
+        // §3.2.24 items 1–2 / §3.2.5: a drain clamped at the 0 floor is a real
+        // resulting value and is written as 0 — the member's presence never depends
+        // on its value. A drain the floor absorbs whole still reports the delta it
+        // produced.
+        var wire = Serialize(BattleEvent.ForPowerChanged(new PowerChangedEvent(
+            PowerChangeSource.Boss,
+            Delta: 0,
+            Power: 0)));
+
+        Assert.Equal(0, wire.GetProperty("delta").GetInt32());
+        Assert.Equal(0, wire.GetProperty("power").GetInt32());
+        Assert.DoesNotContain("null", wire.GetRawText(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Projection_WithTheDrainPowerChangedBeforeBossCardCast_ShouldRemainOneToOneAndOrdered()
+    {
+        // GAME_EVENTS.md §1 / §2 item 5: the PowerDrain's PowerChanged is carried in
+        // the same ordered batch BEFORE that cast's BossCardCast, after the step-18b
+        // Passive items. §3.2.1 item 3 / §3.2.12 item 4 make the projection
+        // one-to-one and order-preserving, so the position the resolution produced is
+        // the position the client receives — and neither item is merged, reordered, or
+        // dropped.
+        var events = new[]
+        {
+            BattleEvent.ForPassiveCharged(
+                new PassiveChargedEvent(
+                    new PassiveId("boss-moc-yeu-regen"), 1, 8,
+                    PassiveEventSource.Boss, "boss-moc-yeu")),
+            BattleEvent.ForPowerChanged(new PowerChangedEvent(
+                PowerChangeSource.Boss,
+                Delta: -20,
+                Power: 30)),
+            BattleEvent.ForBossCardCast("drain-power", "boss-thuy-ma"),
+        };
+
+        var wire = BattleEventWireProjection.Project(events);
+
+        Assert.Equal(events.Length, wire.Count);
+
+        Assert.Equal(
+            ["PassiveCharged", "PowerChanged", "BossCardCast"],
+            wire.Select(item => item.Type));
+
+        // The two TASK-309 items keep their own documented member sets — the drain is
+        // not folded into the cast, and the cast does not repeat the Power value.
+        var changed = wire[1];
+        Assert.Equal(-20, changed.Delta);
+        Assert.Equal(30, changed.Power);
+        Assert.Equal("boss", changed.Source);
+        Assert.Null(changed.CardId);
+        Assert.Null(changed.SourceId);
+
+        var cast = wire[2];
+        Assert.Equal("drain-power", cast.CardId);
+        Assert.Equal("boss-thuy-ma", cast.SourceId);
+        Assert.Null(cast.Delta);
+        Assert.Null(cast.Power);
     }
 
     // =======================================================================

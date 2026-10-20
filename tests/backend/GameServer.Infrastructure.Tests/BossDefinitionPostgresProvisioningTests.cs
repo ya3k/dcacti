@@ -366,13 +366,14 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
         var rows = await ReadProvisionedRowsAsync();
         if (rows is null) return;
 
-        // DATABASE.md §1/§3 (TASK-308 / OD-3a/OD-3b) against the applied schema:
-        // exactly one row carries an authored score — Sơn Thạch Vệ's approved 16,
-        // the Boss whose Boss Card is provisioned in Slice 3 — and the other four
-        // hold the documented NULL "not authored" marker. The four NULL rows are
-        // spell-checked individually so a migration that populated the wrong row,
-        // or guessed a score for an unmigrated Boss, fails here rather than
-        // silently shifting the cast-priority balance.
+        // DATABASE.md §1/§3 (TASK-308 OD-3a/OD-3b; TASK-309 §1 B-1) against the
+        // applied schema: every MVP Boss now carries an authored score — Sơn Thạch
+        // Vệ's approved 16 (`earthquake`, Slice 3) and the approved 85 on Hỏa Long
+        // (`flame-burst`), Thủy Ma (`drain-power`), Mộc Yêu (`root`), and Kim Lôi
+        // Vương (`thunder-strike`) — so no row is left NULL after Slice 4. The rows
+        // are spell-checked individually so a migration that populated the wrong
+        // row, or that guessed a different score, fails here rather than silently
+        // shifting the cast-priority balance.
         var byId = rows.ToDictionary(r => r.BossDefinitionId, StringComparer.Ordinal);
 
         Assert.Equal(16, byId["boss-def-son-thach-ve"].CastPriorityScore);
@@ -383,7 +384,7 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
                      "boss-def-kim-loi-vuong",
                  })
         {
-            Assert.Null(byId[id].CastPriorityScore);
+            Assert.Equal(85, byId[id].CastPriorityScore);
         }
 
         // The applied value equals the authoritative Domain baseline's, so the
@@ -403,8 +404,8 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
 
         // DATABASE.md §3 / ADR-024 §2.4 as amended by TASK-308: the database refuses
         // a negative score outright, naming the constraint. The statement is
-        // rejected, so the canonical row keeps its NULL value and nothing has to be
-        // restored.
+        // rejected, so the canonical row keeps its authored value and nothing has to
+        // be restored.
         await using var command = _dataSource!.CreateCommand(
             "UPDATE \"BossDefinition\" SET \"CastPriorityScore\" = -1 "
             + "WHERE \"BossDefinitionId\" = 'boss-def-hoa-long'");
@@ -424,7 +425,8 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
             .AsNoTracking()
             .SingleAsync(d => d.BossDefinitionId == "boss-def-hoa-long");
 
-        Assert.Null(row.CastPriorityScore);
+        // The row keeps the value the Slice 4 migration authored.
+        Assert.Equal(85, row.CastPriorityScore);
     }
 
     [Fact]
@@ -435,8 +437,21 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
         // The inclusive lower bound of the nullable range invariant: 0 is a legal
         // authored score (the board action's documented win threshold is above it,
         // which is selection's concern, not the schema's). A probe on an existing
-        // canonical row then resets it to NULL, so the shared database is left in
-        // its documented state.
+        // canonical row then restores its applied authored value, so the shared
+        // database is left in its documented state.
+        int? canonical;
+
+        await using (var arrange = CreateContext())
+        {
+            canonical = (await arrange.BossDefinitions
+                .AsNoTracking()
+                .SingleAsync(d => d.BossDefinitionId == "boss-def-kim-loi-vuong"))
+                .CastPriorityScore;
+        }
+
+        // TASK-309 B-1: the Slice 4 migration authored 85 on this row.
+        Assert.Equal(85, canonical);
+
         try
         {
             await using (var command = _dataSource!.CreateCommand(
@@ -458,8 +473,10 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
         finally
         {
             await using var restore = _dataSource!.CreateCommand(
-                "UPDATE \"BossDefinition\" SET \"CastPriorityScore\" = NULL "
+                "UPDATE \"BossDefinition\" SET \"CastPriorityScore\" = $1 "
                 + "WHERE \"BossDefinitionId\" = 'boss-def-kim-loi-vuong'");
+
+            restore.Parameters.AddWithValue(canonical!);
 
             await restore.ExecuteNonQueryAsync();
         }
@@ -470,7 +487,7 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
             .AsNoTracking()
             .SingleAsync(d => d.BossDefinitionId == "boss-def-kim-loi-vuong");
 
-        Assert.Null(restored.CastPriorityScore);
+        Assert.Equal(canonical, restored.CastPriorityScore);
     }
 
     [Fact]
@@ -708,8 +725,9 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
             Assert.Equal(baseline.DEF, resolved.DEF);
             Assert.Equal(baseline.EnrageThreshold, resolved.EnrageThreshold);
 
-            // TASK-308's fifth overlay value: Sơn Thạch Vệ's authored 16 is read
-            // back through the real provider, and the other four remain NULL.
+            // TASK-308's fifth overlay value as extended by TASK-309 B-1: every
+            // MVP Boss's authored score (16 for `earthquake`, 85 for the four
+            // Slice 4 Boss Cards) is read back through the real provider.
             Assert.Equal(baseline.CastPriorityScore, resolved.CastPriorityScore);
 
             // BOSS_RULES.md §6.3.1: the secondary effects are not stored, so this
@@ -728,7 +746,9 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
         Assert.Equal(100, hoaLong.ATK);
         Assert.Equal(50, hoaLong.DEF);
         Assert.Equal(0.30, hoaLong.EnrageThreshold, precision: 9);
-        Assert.Null(hoaLong.CastPriorityScore);
+        // BOSS_RULES.md §4.3 item 5 / TASK-309 B-1: Hỏa Long's `flame-burst` Boss
+        // Card carries the approved initial score 85.
+        Assert.Equal(85, hoaLong.CastPriorityScore);
         Assert.NotNull(hoaLong.SkillDefinition.SecondaryEffect);
 
         // BOSS_RULES.md §4.3 item 5 / TASK-308 OD-3b: the one migrated Boss's
@@ -749,16 +769,28 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
         if (!_available || !_schemaApplied) return;
 
         // TASK-308's fifth overlay value is read from the row, exactly like the
-        // four balance values. Hỏa Long's baseline score is NULL, so a temporary
-        // stored 21 proves the projection reads the column rather than the
-        // baseline. The row is reset to its canonical NULL in the finally block, so
-        // the shared development database is left as it was.
+        // four balance values. Hỏa Long's authored score is 85 (TASK-309 B-1), so a
+        // temporary stored 21 proves the projection reads the column rather than the
+        // baseline. The row is restored to its applied authored value in the finally
+        // block, so the shared development database is left as it was.
         const string identity = "boss-hoa-long";
         const string key = "boss-def-hoa-long";
 
         var baseline = BossDefinitions.All.Single(d => d.BossId.Value == identity);
 
-        Assert.Null(baseline.CastPriorityScore);
+        Assert.Equal(85, baseline.CastPriorityScore);
+
+        int? canonical;
+
+        await using (var arrange = CreateContext())
+        {
+            canonical = (await arrange.BossDefinitions
+                .AsNoTracking()
+                .SingleAsync(d => d.BossDefinitionId == key))
+                .CastPriorityScore;
+        }
+
+        Assert.Equal(baseline.CastPriorityScore, canonical);
 
         try
         {
@@ -782,8 +814,10 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
         finally
         {
             await using var restore = _dataSource!.CreateCommand(
-                "UPDATE \"BossDefinition\" SET \"CastPriorityScore\" = NULL "
+                "UPDATE \"BossDefinition\" SET \"CastPriorityScore\" = $1 "
                 + "WHERE \"BossDefinitionId\" = 'boss-def-hoa-long'");
+
+            restore.Parameters.AddWithValue(canonical!);
 
             await restore.ExecuteNonQueryAsync();
         }
@@ -794,7 +828,7 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
             .AsNoTracking()
             .SingleAsync(d => d.BossDefinitionId == key);
 
-        Assert.Null(restored.CastPriorityScore);
+        Assert.Equal(canonical, restored.CastPriorityScore);
     }
 
     [Fact]
