@@ -2,6 +2,19 @@
 
 **Status:** Accepted
 **Date:** 2026-10-18
+**Amended:** 2026-10-20 (TASK-311 / Slice 5 Removal-Readiness Reconciliation) — the
+four-part removal gate of §2.9 item 25 is formally reconciled following the delivery
+of Slices 1–4 (TASK-304, TASK-305, TASK-308, TASK-309) and the closure of TASK-310:
+(a) all five abilities are migrated to Boss Cards and test-verified; (b) old-vs-new
+behavior comparisons for all five Bosses are recorded in artifact
+`tasks/artifacts/TASK-311-adr-029-slice-5-removal-readiness-reconciliation.md`,
+specifically evaluating the `thunder-strike` same-round attack consumption divergence
+and the `flame-burst`/`root` duration divergence; (c) every affected consumer across
+Domain, Application, Infrastructure, Api, SignalR, Redis, and Frontend presentation is
+audited and enumerated with reconciliation requirements; (d) this record (§7) and the
+ADR index are amended in place under documentation-first governance. Slice 5 is
+confirmed reviewable and registrable, but remains unauthorized and unimplemented. The
+Fifth Gem remains FUTURE.
 **Amended:** 2026-10-20 (TASK-309 / Slice 4) — the operator approved the four
 remaining abilities' Boss Card content and the vocabulary that carries it,
 resolving §3's U-2/U-3/U-4/U-5 for those abilities: `flame-burst`
@@ -304,11 +317,16 @@ record.
     approved**.
 25. **`SkillCharge` and the legacy handlers are removed only after parity has been
     demonstrated by tests and all consumers have been reconciled.** The gate is:
-    (a) all five abilities migrated and covered by tests; (b) old and new
-    behavior compared, including the **exact qualifying attack** and the
-    **modifier-consumption timing** of the trigger-based ability; (c) every
-    consumer reconciled — event presenters, wire tests, state readers, and
-    documentation; (d) the removal's ADR/index amendments recorded.
+    (a) all five abilities migrated and covered by tests (satisfied by Slices 3–4);
+    (b) old and new behavior compared, including the **exact qualifying attack** and
+    the **modifier-consumption timing** of the trigger-based ability (recorded under
+    TASK-311; artifact `tasks/artifacts/TASK-311-adr-029-slice-5-removal-readiness-reconciliation.md`);
+    (c) every consumer reconciled — event presenters, wire tests, state readers, and
+    documentation (audited under TASK-311);
+    (d) the removal's ADR/index amendments recorded (amended under TASK-311).
+    *Status under TASK-311:* The prerequisites of this gate are satisfied, making
+    Slice 5 reviewable and registrable. Physical removal remains gated behind the
+    separate, future Slice 5 implementation task.
 26. **Until the gate is met, both the target contract and the transitional path
     are documented, and no third variant is permitted.** The target contract is
     authoritative for new work; `SkillCharge`, the charge requirement and
@@ -433,9 +451,13 @@ SLICE 4 — Ability migration (delivered by TASK-309; approved values in §3)
   Exit: each ability resolves as a Boss Card with the approved effect, target
   and duration, and the approved costs/magnitudes (U-2, U-3, U-4, U-5).
 
-SLICE 5 — Removal (gated, not scheduled; not started by TASK-309)
-  Remove SkillCharge and the legacy handlers only after §2.9's four-part parity
-  gate is met and every consumer is reconciled.
+SLICE 5 — Removal (reconciled readiness under TASK-311; implementation gated)
+  Remove SkillCharge, the legacy BossSkill handlers, and BossSkillCast once the
+  future implementation task is registered and authorized. TASK-311 satisfies
+  §2.9's four-part prerequisite gate (5-Boss test coverage verified, old-vs-new
+  behavior compared, consumer inventory audited, and ADR/index amendments
+  prepared). Slice 5 remains an independent future task; TASK-311 executes no
+  runtime code removal.
 ```
 
 Ordering constraints that are not negotiable: Slice 2 before Slice 4 (an ability
@@ -584,6 +606,24 @@ AMENDED (in place) by TASK-309 / Slice 4
     is reversed: the one-action policy, the cast-strictly-greater-than-board
     rule, §2.9's four-part Slice 5 gate and the fifth Gem's FUTURE status are
     unchanged.
+
+AMENDED (in place) by TASK-311 / Slice 5 Removal-Readiness Reconciliation
+  This record — §2.9's four-part removal gate is audited and reconciled:
+    · Gate (a): All five abilities migrated to Boss Cards and test-covered (Slices 3–4).
+    · Gate (b): Old vs. new behavior across all five Bosses compared and recorded in
+      tasks/artifacts/TASK-311-adr-029-slice-5-removal-readiness-reconciliation.md,
+      including the thunder-strike same-round consumption divergence (legacy allowed
+      same-round attack consumption; Boss Card cast occupies the response phase and
+      suppresses the attack) and the flame-burst/root duration divergence (legacy 2
+      Turns; Boss Card 3 Turns, yielding an effective 2-attack window without a
+      guarantee of two attacks).
+    · Gate (c): Every consumer across Domain, Application, Infrastructure, Api,
+      SignalR, Redis, and Frontend audited and enumerated; gate terminology in
+      BOSS_RULES, COMBAT_RULES, GAME_EVENTS, SIGNALR_PROTOCOL, and GAME_STATE
+      reconciled from "Slice 4 parity gate" to "Slice 5 removal gate".
+    · Gate (d): ADR-029 and ADR index amendments recorded.
+  Slice 5 is reviewable and registrable, but remains unauthorized and unimplemented.
+  No runtime code, database schema, or serialized contracts are changed.
 
 UNAFFECTED
   ADR-021 (one Card cast per committed Turn) — remains the Player's allowance and

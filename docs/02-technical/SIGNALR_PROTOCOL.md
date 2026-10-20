@@ -1,6 +1,6 @@
 # SignalR Protocol
 
-**Version:** 2.28 (§3.2.2, **§3.2.30 added**, and §4.4 extended per **ADR-029 /
+**Version:** 2.29 (§3.2.18 annotated with Slice 5 removal expectations, §3.2.30 item 8 gate terminology reconciled to the Slice 5 removal gate per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; wire contracts and schemas unchanged). Prior 2.28: (§3.2.2, **§3.2.30 added**, and §4.4 extended per **ADR-029 /
 TASK-303**, applying the explicit Product Owner decision that the Boss is a
 genuine opponent using the same cast principles as the Player: `BossCardCast`
 becomes the twenty-first member of the closed discriminator set — a dedicated
@@ -1062,6 +1062,13 @@ under ADR-028.
    `DamageTaken` in the same `ReceiveEvents` batch, with `source = "boss"`
    and `target = "player"` (a fixed wire label meaning the player's side /
 active Pet — `GAME_EVENTS.md` §1, ADR-011).
+4. **Transitional status and future removal (ADR-029, TASK-311).** `BossSkillCast`
+   is retained strictly as the compatibility path for unmigrated or legacy ability
+   resolutions. Under ADR-029 Slices 3–4, all five MVP Boss abilities are migrated to
+   Boss Cards, which emit `BossCardCast` (§3.2.30) instead. `BossSkillCast` is slated
+   for removal from this discriminator set under the future Slice 5 task once its
+   consumers (`BattleScene.ts`, `BattleEventPresenter.ts`, wire projection, and
+   tests) are reconciled. No payload or schema change is made in TASK-311.
 
 ### 3.2.19 `BattleWon` / `BattleLost`
 
@@ -1769,7 +1776,7 @@ Each `gems` entry:
    used for a Boss cast; the discriminator is the only distinction a consumer
    needs (`CARD_RULES.md` §6, `GAME_RULES.md` §16).
 8. **`BossSkillCast` remains the transitional path's event.** It reports the
-   pre-migration ability form until `ADR-029`'s Slice 4 parity gate is met
+   pre-migration ability form until `ADR-029`'s Slice 5 removal gate is met
    (`BOSS_RULES.md` §4.4); the two are never emitted for the same ability
    resolution, because a Boss carries only one form of an ability at a time.
 9. **Compatibility is the tolerant-reader rule and nothing else.** The name is

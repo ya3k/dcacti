@@ -1,6 +1,6 @@
 # Boss Rules
 
-**Version:** 2.16 (§4.3 item 5, §4.4 items 5–6, §6.3, §6.3.1 items 1/3/5, and
+**Version:** 2.17 (§6 overview table reconciled to authoritative Boss Card mechanics and zero-direct-damage rules, line 40 gate terminology reconciled to the Slice 5 removal gate, and §4.4 annotated with the five-Boss comparison evidence per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; historical direct-damage/Burn table values preserved as historical context only; no runtime code or effect value changes). Prior 2.16: (§4.3 item 5, §4.4 items 5–6, §6.3, §6.3.1 items 1/3/5, and
 the §6 closing note amended per **TASK-309 / ADR-029 Slice 4**, applying the
 operator-approved values for the four remaining Boss abilities: all four are
 migrated to the Boss Card form (§4.2) with `PowerCost` `flame-burst = 40`,
@@ -37,7 +37,7 @@ Cards (§5), and the Boss's cast is reported by the dedicated **`BossCardCast`**
 event (§7). This **reverses TASK-258 §2 D2** (which forbade `BossState.Power`)
 and is reconciled with `ADR-026` by `ADR-029`; the legacy `SkillCharge`/Skill
 route is retained only as the documented **transitional** path until `ADR-029`'s
-Slice 4 parity gate is met (§4.4, §6.3). **No magnitude, duration, threshold,
+Slice 5 removal gate is met (§2.9, §4.4, §6.3). **No magnitude, duration, threshold,
 trigger, Element, stat, Passive, cooldown value, event ordering of an existing
 event, or content row changes**, and **no numeric balance value is authored
 here** — every Boss Card cost, any generation-rate tuning and the outstanding
@@ -483,15 +483,17 @@ Transitional path: BossState.SkillCharge + §6.3's charge/cooldown gate, and the
    event, balance value or code path may be built on `SkillCharge`, the charge
    requirement, or `BossSkillCast`; those are a compatibility path being retired,
    not a second live design.
-2. **The transitional path stays in force until the removal gate is met**, and
+2. **The transitional path stays in force until the Slice 5 removal gate is met**, and
    `SkillCharge` is removed only after parity has been demonstrated by tests and
    all consumers have been reconciled. The gate is all four of:
    (a) all five MVP abilities migrated to Boss Cards and covered by tests;
    (b) old and new behavior compared, including the **exact qualifying attack**
-   and the **modifier-consumption timing** of the trigger-based ability;
+   and the **modifier-consumption timing** of the trigger-based ability
+   (recorded under TASK-311; artifact `tasks/artifacts/TASK-311-adr-029-slice-5-removal-readiness-reconciliation.md`);
    (c) every consumer reconciled — event presenters, wire tests, state readers,
-   and every documentation reference;
-   (d) the ADR/index amendments for the removal recorded.
+   and every documentation reference (audited under TASK-311);
+   (d) the ADR/index amendments for the removal recorded (`ADR-029` §7 / `docs/03-decisions/README.md` amended in TASK-311).
+   *Note:* Fulfilling the documentation prerequisites under TASK-311 does not itself implement or authorize the removal; Slice 5 remains a separate, future implementation task.
 3. **Migration order** (`ADR-029` Slice 4): `Flame Burst` (`flame-burst`), then
    `Root` (`root`), then `Drain Power` (`drain-power`), and **`Thunder Strike`
    (`thunder-strike`) last**, because it is the only trigger-based,
@@ -565,15 +567,30 @@ Transitional path: BossState.SkillCharge + §6.3's charge/cooldown gate, and the
 
 # 6. MVP Boss Reference
 
+**Status of this reference section (ADR-026, ADR-029, TASK-311).** The table below
+reflects the authoritative MVP Boss mechanics established by `ADR-026` and `ADR-029`.
+Boss abilities deal **zero direct damage** (`BaseDamage = 0` on all five abilities) and
+Burn DoT is retired (ADR-026 D3). Under ADR-029, all five MVP abilities are migrated to
+the canonical **Boss Card** form (`earthquake` in Slice 3 / TASK-308; `flame-burst`,
+`drain-power`, `root`, and `thunder-strike` in Slice 4 / TASK-309). Each Boss Card spends
+the Boss's `Power` (§4.1) under the response-phase one-action policy (§4.3) with its
+approved Power cost and cooldown. The transitional legacy `BossSkill` path and its charge
+requirement remain documented in §6.3 until the Slice 5 removal gate is met (§4.4);
+historical direct-damage and Burn values from the pre-ADR-026 baseline (Flame Burst 150
+Dmg + Burn, Drain Power 120 Dmg, Root 100 Dmg, Earthquake 150 Dmg, Thunder Strike 180
+Dmg) were retired by ADR-026 and are preserved as historical background only.
+
 ```text
-Boss        Element   Passive (trigger)                          Skill (Effect Magnitudes)                                  Skill Timing
----------   -------   -----------------------------------------  ---------------------------------------------------------  ----------------------
-Hỏa Long    Hỏa       Every 5 Player Matches → gain Rage          Flame Burst → 150 Dmg + Burn (50 dmg/tick, 2 Turns)       Charge: 5 matches, CD: 2T
-Thủy Ma     Thủy      Battle Start → healing received reduced    Drain Power → 120 Dmg + −20 flat Pet Power                Charge: 4 matches, CD: 3T
-Mộc Yêu     Mộc       Every 8 Player Matches → Regen HP           Root → 100 Dmg + −30% Pet ATK (2 Turns)                   Charge: 6 matches, CD: 2T
-Sơn Thạch Vệ Thổ      Boss HP ≤ 50% → gain Rage                    Earthquake → 150 Dmg                                       Charge: 5 matches, CD: 0T
-Kim Lôi Vương Kim     Player Combo ≥ 4 → gain Rage                Thunder Strike → 180 Dmg                                   Charge: 5 matches, CD: 0T
+Boss          Element   Passive (trigger)                          Boss Ability & Effect (BaseDamage = 0)                     Timing (Power Cost, CD)
+---------     -------   -----------------------------------------  ---------------------------------------------------------  -----------------------
+Hỏa Long      Hỏa       Every 5 Player Matches → gain Rage         Flame Burst → +50% Boss ATK for 3 Turns (Boss Card)*       Cost: 40 Power, CD: 2T
+Thủy Ma       Thủy      Battle Start → healing received reduced   Drain Power → −20 flat Pet Power (no transfer to Boss)     Cost: 25 Power, CD: 3T
+Mộc Yêu       Mộc       Every 8 Player Matches → Regen HP          Root → −30% active-Pet ATK for 3 Turns (Boss Card)*        Cost: 35 Power, CD: 2T
+Sơn Thạch Vệ  Thổ       Boss HP ≤ 50% → gain Rage                  Earthquake → 150 Flat temporary Boss Shield                Cost: 30 Power, CD: 0T
+Kim Lôi Vương Kim       Player Combo ≥ 4 → gain Rage               Thunder Strike → +50% Boss ATK on next qualifying attack   Cost: 40 Power, CD: 0T
 ```
+
+*\* Note on transitional duration divergence: Boss Card forms of `flame-burst` and `root` carry the approved 3-Turn durations (TASK-309 B-2/B-3) to yield an effective 2-attack window under the one-action policy; the transitional legacy `BossSkill` path retains its historical 2-Turn persisted values until Slice 5 retirement (§4.4, §6.3.1). Legacy charge requirements (Hỏa Long 5, Thủy Ma 4, Mộc Yêu 6, Sơn Thạch Vệ 5, Kim Lôi Vương 5 match groups) apply solely to the transitional path (§6.3).*
 
 Skill effect targets (`−Pet Power`, `−Pet ATK`) are the active Pet's
 stats in `PetState` — not a separate Player entity.

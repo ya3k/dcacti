@@ -1,6 +1,6 @@
 # Database
 
-**Version:** 1.41 (§1's `CardDefinition` block, §1 "Card `EffectDefinition`
+**Version:** 1.42 (§1 `BossDefinition.SkillDefinition` annotated with Slice 5 removal scope and persistence disposition per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; no database schemas, tables, columns, constraints, or migrations changed). Prior 1.41: (§1's `CardDefinition` block, §1 "Card `EffectDefinition`
 contract" items 1/6/8, §3's constraints, and §5 item 4 **synchronized with the
 approved TASK-309 / ADR-029 Slice 4 content contract**: the `effectType` closed
 set gains the four **Boss-only** identities `AtkBuff` | `PowerDrain` |
@@ -1152,6 +1152,14 @@ value)
    These storage member names are fixed by TASK-045; battle-state
    member names (`GAME_STATE.md` §2.4) are a separate contract and are
    unchanged.
+
+   *Slice 5 Removal Scope Note (TASK-311):* When the eventual Slice 5 task
+   retires the runtime `SkillCharge` and legacy `BossSkill` path, whether the
+   persisted `chargeRequirement` (and legacy `baseDamage = 0`) JSON member in
+   PostgreSQL `BossDefinition.SkillDefinition` is physically removed via an EF Core
+   data migration or retained as an ignored/deprecated field is an unresolved
+   operator decision (OD-311-1). In TASK-311, no database schema, column, or
+   migration is modified.
 5. **Rows and provisioning.** Rows are static content derived from the
    canonical Boss definitions: provisioning must be deterministic, must
    be idempotent, and must never depend on a player's runtime battle.

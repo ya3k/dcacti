@@ -1,6 +1,6 @@
 # Redis State
 
-**Version:** 1.16 (§2 extended per **ADR-029 / TASK-303**: `BossState.Power` is
+**Version:** 1.17 (§2.1 annotated with future Slice 5 `BossState.SkillCharge` retirement, tolerant-reader deserialization basis, and battle drain expectations per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; no Redis keys, state structures, or serialization code changed). Prior 1.16: (§2 extended per **ADR-029 / TASK-303**: `BossState.Power` is
 an ordinary serialized member of the `battle:{battleId}:state` record — no new
 key, no Redis-only field, no lifecycle or compare-and-set change — and an active
 battle record written before the member existed deserializes it to `0`, the
@@ -234,6 +234,20 @@ field, no key, no second record, and no new serialization mechanism.
 6. **The delivered projection does not change storage.** `SIGNALR_PROTOCOL.md`
    §4.4's `bossState.power` reads this member; it adds no Redis key and no
    Redis-only field (`SIGNALR_PROTOCOL.md` §4.4 item 9, item 12).
+7. **Future Slice 5 retirement of `SkillCharge` (TASK-311):** When the eventual
+   Slice 5 task removes `SkillCharge` from `BossState`:
+   - *Tolerant-Reader Deserialization:* Under Decision B-2, `BattleStateSerializer`
+     uses default `System.Text.Json` deserialization (no
+     `JsonUnmappedMemberHandling.Disallow`), so any in-flight active battle JSON
+     payload in Redis containing `"SkillCharge"` will safely deserialize into the
+     new `BossState` struct without error.
+   - *Active Battle Drain:* Per Decision B-2 and general repository deployment
+     policy, active battles should be drained prior to joint deployment of the
+     Slice 5 server release to ensure no lingering legacy state fields exist.
+   - *No in-place Redis script:* No offline data migration or Redis rewrite script
+     will be used; the drain policy cleanly settles active battles.
+   - *`SkillCooldown` retained:* The `SkillCooldown` member remains an active
+     serialized integer in `BossState`.
 
 ---
 

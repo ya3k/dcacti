@@ -1,6 +1,6 @@
 # Game Events
 
-**Version:** 2.19 (§2 `PowerChanged` extended per **ADR-029 / TASK-309**, applying
+**Version:** 2.20 (§2 `BossSkillCast` gate terminology reconciled to the Slice 5 removal gate and future removal requirements annotated per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; no event definitions or wire payloads changed). Prior 2.19: (§2 `PowerChanged` extended per **ADR-029 / TASK-309**, applying
 the operator-approved Slice 4 behavior: a Boss Card cast's `PowerDrain` effect
 emits the existing authoritative `PowerChanged` for the **active Pet's** Power,
 inside the round's single ordered batch and before that cast's `BossCardCast`,
@@ -789,9 +789,14 @@ player's side / active Pet — ADR-011).
 
 **`BossSkillCast` is the transitional path's event.** It is emitted by the
 pre-migration Boss ability form only, and it is retired together with
-`BossState.SkillCharge` when `ADR-029`'s Slice 4 parity gate is met
+`BossState.SkillCharge` when `ADR-029`'s Slice 5 removal gate is met
 (`BOSS_RULES.md` §4.4). No new feature, consumer, or balance value may be built
 on it.
+
+*Slice 5 Removal Requirements (TASK-311):*
+1. **Intended Future Removal:** The event discriminator `BossSkillCast = 9`, the `BossSkillCastEvent` payload struct, and `BattleEvent.ForBossSkillCast` factory are slated for deletion in Slice 5 once all consumers are reconciled.
+2. **Affected Consumers:** Wire projection (`BattleEventWireProjection.cs`), wire contract (`SIGNALR_PROTOCOL.md` §3.2.18), client presentation (`BattleScene.ts`, `BattleEventPresenter.ts`), and legacy tests (`AtomicRoundOrchestrationTests.cs`).
+3. **Current State:** Unchanged in TASK-311. All five MVP Bosses are migrated to Boss Cards at runtime, so `BossCardCast` is the only event emitted in production MVP battles; `BossSkillCast` remains available in the codebase solely as the transitional compatibility path until Slice 5 execution.
 
 ## BossCardCast
 ```text

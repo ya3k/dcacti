@@ -1,6 +1,6 @@
 # Game State
 
-**Version:** 2.33 (§2.4 and §2.4.3 **clarified** per **TASK-308 / ADR-029
+**Version:** 2.34 (§2.4 and §2.4.3 `SkillCharge` gate terminology reconciled to the Slice 5 removal gate per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; no state members added, removed, or retyped). Prior 2.33: (§2.4 and §2.4.3 **clarified** per **TASK-308 / ADR-029
 Slice 3** without changing the state model: the Boss Card definition, its active
 form and its cast-priority score are battle-start **content inputs** resolved
 exactly once at creation and cached with the Boss content input — they are **not**
@@ -2200,7 +2200,7 @@ BossState
 │                                 BOSS_RULES.md §4.1, ADR-029; §2.4.3 below)
 ├── SkillCharge                  (TRANSITIONAL ONLY — current charge vs. skill
 │                                 charge requirement, BOSS_RULES.md §4.4;
-│                                 retired once ADR-029's Slice 4 parity gate
+│                                 retired once ADR-029's Slice 5 removal gate
 │                                 is met)
 ├── SkillCooldown                (turns remaining before the boss ability can
 │                                 fire/cast — BOSS_RULES.md §4.3, §6.3)
@@ -2255,7 +2255,7 @@ Documented by §2.4, runtime implementation staged (ADR-029 Slice 1):
   "not yet implemented", never "not required" (§0 item 4). Slice 1 owns its
   generation, clamping, serialization, Redis round trip, projection, HUD
   delivery and reconnect recovery; the transitional SkillCharge path above
-  remains in force until ADR-029's Slice 4 parity gate is met.
+  remains in force until ADR-029's Slice 5 removal gate is met.
 ```
 
 `Power` is the Boss's own resource and is **not** a second spelling of
@@ -2352,7 +2352,7 @@ why the Boss gained a resource of its own.
 BossState
 ├── Power            (int; 0 at battle creation; range 0–100, clamped)
 ├── SkillCharge      (int; 0 at battle creation; TRANSITIONAL — retired with
-│                      ADR-029's Slice 4 parity gate)
+│                      ADR-029's Slice 5 removal gate)
 └── SkillCooldown    (int; 0 at battle creation; the Boss ability's cooldown)
 ```
 
@@ -2389,7 +2389,7 @@ BossState
    subsection.
 
 **`SkillCharge` — transitional only.** `SkillCharge` tracks progress toward the
-legacy Boss Skill's charge requirement, and until `ADR-029`'s Slice 4 parity gate
+legacy Boss Skill's charge requirement, and until `ADR-029`'s Slice 5 removal gate
 is met it remains the runtime gate for any ability not yet migrated. It is
 charged exclusively from POWER Gems matched in the Boss's own board match action
 (player matches never charge the Boss); when `SkillCharge ≥
