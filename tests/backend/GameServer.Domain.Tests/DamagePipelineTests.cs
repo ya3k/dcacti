@@ -591,7 +591,7 @@ public class DamagePipelineTests
         Assert.Equal(before.State, writtenBack.State);
         Assert.Equal(before.PassiveId, writtenBack.PassiveId);
         Assert.Equal(before.PassiveProgress, writtenBack.PassiveProgress);
-        Assert.Equal(before.SkillCharge, writtenBack.SkillCharge);
+        Assert.Equal(before.Power, writtenBack.Power);
         Assert.Equal(before.SkillCooldown, writtenBack.SkillCooldown);
     }
 
@@ -835,46 +835,25 @@ public class DamagePipelineTests
     }
 
     [Fact]
-    public void BossSkill_BaseDamage_ShouldBeBossAtkPlusSkillBaseDamage()
+    public void BossAttack_BaseDamage_ShouldAddTheAtkGemPool()
     {
-        // COMBAT_RULES.md §3.4 / ADR-026 D3: Boss Skill direct BaseDamage is 0.
-        // Step 1 Base Damage equals EffectiveBossATK + SkillBaseDamage (100 + 0 = 100).
-        var boss = BossDefinitions.HoaLong;
-
-        var effectiveBossAtk = StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, []);
-
-        Assert.Equal(boss.ATK, effectiveBossAtk);
-
-        var result = DamagePipeline.Calculate(
-            BossAttackInputs(
-                attack: effectiveBossAtk + boss.SkillBaseDamage, baseDamagePool: 0,
-                bossElement: boss.Element, petElement: Element.Hoa, playerDefense: 0, playerHp: 1000),
-            ComboModifiers.Default,
-            ElementModifiers.Default);
-
-        Assert.Equal(0, boss.SkillBaseDamage);
-        Assert.Equal(100, result.Calculation.Base);
-    }
-
-    [Fact]
-    public void BossSkill_BaseDamage_ShouldDifferFromABasicAttackOfTheSameBoss()
-    {
-        // §3.4 defines the two instances separately: the Basic Attack's Step 1 is
-        // Boss.ATK and the Skill's adds the Skill's base value. Against an identical
-        // defending side the Skill must therefore deal strictly more.
+        // §3.4 step 1: Base Damage = ATK + BaseDamagePool, and the ATK-Gem pool is
+        // the player-side generation the Boss's own match action produces. The
+        // authored Skill base-damage term this test pair used to carry was removed
+        // with ADR-029 Slice 5 / TASK-313; a Boss ability cast resolves a Boss Card
+        // and produces no damage instance (ADR-026 D3).
         var basic = DamagePipeline.Calculate(
             BossAttackInputs(100, 0, Element.Hoa, Element.Hoa, playerDefense: 25, playerHp: 1000),
             ComboModifiers.Default,
             ElementModifiers.Default);
 
-        var skill = DamagePipeline.Calculate(
-            BossAttackInputs(100 + 150, 0, Element.Hoa, Element.Hoa, playerDefense: 25, playerHp: 1000),
+        var withPool = DamagePipeline.Calculate(
+            BossAttackInputs(100, 30, Element.Hoa, Element.Hoa, playerDefense: 25, playerHp: 1000),
             ComboModifiers.Default,
             ElementModifiers.Default);
 
         Assert.Equal(100, basic.Calculation.Base);
-        Assert.Equal(250, skill.Calculation.Base);
-        Assert.True(skill.Calculation.FinalDamage > basic.Calculation.FinalDamage);
+        Assert.Equal(130, withPool.Calculation.Base);
     }
 
     [Fact]

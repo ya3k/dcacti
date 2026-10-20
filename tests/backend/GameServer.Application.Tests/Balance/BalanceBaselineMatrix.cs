@@ -368,8 +368,6 @@ internal static class BalanceBaselineMatrix
         ["passiveThreshold"] = boss.PassiveDefinition.Threshold,
         ["passiveResetBehavior"] = boss.PassiveDefinition.ResetBehavior,
         ["skillId"] = boss.SkillId,
-        ["skillBaseDamage"] = boss.SkillBaseDamage,
-        ["skillChargeRequirement"] = boss.SkillChargeRequirement,
         ["skillCooldownTurns"] = boss.SkillCooldownTurns,
     };
 
@@ -441,7 +439,7 @@ internal static class BalanceBaselineMatrix
                 ["M-11_elementDisadvantageCount"] = metrics.ElementDisadvantageCount,
                 ["M-12_bossRegenerationTotal"] = metrics.BossRegenerationTotal,
                 ["M-12_bossRegenerationTurns"] = metrics.BossRegenerationTurns,
-                ["M-13_bossSkillCastCount"] = metrics.BossSkillCastCount,
+                ["M-13_bossCardCastCount"] = metrics.BossCardCastCount,
                 ["M-13_bossPassiveTriggerCount"] = metrics.BossPassiveTriggerCount,
                 ["M-13_bossEnrageTurn"] = metrics.BossEnrageTurn,
                 ["M-15_resourceTrace"] = metrics.ResourceTrace.Select(checkpoint => new Dictionary<string, object?>(

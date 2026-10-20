@@ -2576,7 +2576,6 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
       'Boss Element',
       'Boss State',
       'Boss Passive',
-      'SkillCharge',
       'SkillCooldown',
     ]) {
       expect(rendered).not.toContain(hiddenBossMember);
@@ -3038,7 +3037,7 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
 
   it('presents one selective callout per delivered batch, not one per event', () => {
     // TASK-210 §7: the player is told the most important thing the resolution
-    // produced. A Combo outranks the Match that carried it, a Boss Skill outranks
+    // produced. A Combo outranks the Match that carried it, a Boss Card cast outranks
     // the Power the same boss drained, and an event with nothing to say to a player
     // (`GemMatched`, `CascadeCreated`, `DamageCalculated`) produces no line at all.
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
@@ -3084,11 +3083,11 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
       battleId: 'b-210',
       serverSequence: 11,
       events: [
-        { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+        { type: 'BossCardCast', cardId: 'flame-burst', sourceId: 'boss-hoa-long' },
         { type: 'PowerChanged', delta: -20, power: 5, source: 'boss' },
       ],
     });
-    expect(callout().text, 'the Boss acting outranks the Power it drained').toBe('BOSS SKILL: Flame Burst');
+    expect(callout().text, 'the Boss acting outranks the Power it drained').toBe('BOSS CARD: Flame Burst');
     expect(callout().color).toBe('#f87171');
   });
 
@@ -3207,38 +3206,38 @@ describe('BattleScene — Board Foundation presentation (GAME_STATE.md §2.0.5)'
     expect(field<StyledLine>(ctx, 'castText').y).toBeGreaterThan(BOARD_BOTTOM);
   });
 
-  it('presents canonical display names for all five MVP Boss Skills in callout feed (TASK-231)', () => {
+  it('presents canonical display names for all five MVP Boss Cards in callout feed (TASK-231)', () => {
     const { harness, scene, ctx } = createBattle(INITIAL_RUNTIME_STATE, true, serverState());
     runScene(scene, ctx, 'create');
 
     const callout = () => field<{ text: string; color?: string }>(ctx, 'calloutText');
 
-    const canonicalSkills = [
-      { skillId: 'flame-burst', bossId: 'boss-hoa-long', expected: 'BOSS SKILL: Flame Burst' },
-      { skillId: 'drain-power', bossId: 'boss-thuy-ma', expected: 'BOSS SKILL: Drain Power' },
-      { skillId: 'root', bossId: 'boss-moc-yeu', expected: 'BOSS SKILL: Root' },
-      { skillId: 'earthquake', bossId: 'boss-son-thach-ve', expected: 'BOSS SKILL: Earthquake' },
-      { skillId: 'thunder-strike', bossId: 'boss-kim-loi-vuong', expected: 'BOSS SKILL: Thunder Strike' },
+    const canonicalCards = [
+      { cardId: 'flame-burst', bossId: 'boss-hoa-long', expected: 'BOSS CARD: Flame Burst' },
+      { cardId: 'drain-power', bossId: 'boss-thuy-ma', expected: 'BOSS CARD: Drain Power' },
+      { cardId: 'root', bossId: 'boss-moc-yeu', expected: 'BOSS CARD: Root' },
+      { cardId: 'earthquake', bossId: 'boss-son-thach-ve', expected: 'BOSS CARD: Earthquake' },
+      { cardId: 'thunder-strike', bossId: 'boss-kim-loi-vuong', expected: 'BOSS CARD: Thunder Strike' },
     ];
 
-    for (let i = 0; i < canonicalSkills.length; i++) {
-      const { skillId, bossId, expected } = canonicalSkills[i];
+    for (let i = 0; i < canonicalCards.length; i++) {
+      const { cardId, bossId, expected } = canonicalCards[i];
       harness.emitBattleEvents({
         battleId: 'b-231',
         serverSequence: 20 + i,
-        events: [{ type: 'BossSkillCast', skillId, sourceId: bossId }],
+        events: [{ type: 'BossCardCast', cardId, sourceId: bossId }],
       });
       expect(callout().text).toBe(expected);
       expect(callout().color).toBe('#f87171');
     }
 
-    // Unrecognized skill falls back safely to 'BOSS SKILL'
+    // Unrecognized identity falls back safely to 'BOSS CARD'
     harness.emitBattleEvents({
       battleId: 'b-231',
       serverSequence: 30,
-      events: [{ type: 'BossSkillCast', skillId: 'unknown-cataclysm', sourceId: 'boss-hoa-long' }],
+      events: [{ type: 'BossCardCast', cardId: 'unknown-cataclysm', sourceId: 'boss-hoa-long' }],
     });
-    expect(callout().text).toBe('BOSS SKILL');
+    expect(callout().text).toBe('BOSS CARD');
     expect(callout().color).toBe('#f87171');
   });
 
@@ -4182,7 +4181,7 @@ describe('BattleScene — cascade presentation timeline (TASK-245, GAME_EVENTS.m
     { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
     { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
     { type: 'PassiveCharged', passiveId: 'boss-hoa-long-rage', source: 'boss', sourceId: 'boss-hoa-long', progress: 1, threshold: 5 },
-    { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+    { type: 'BossCardCast', cardId: 'flame-burst', sourceId: 'boss-hoa-long' },
     { type: 'DamageCalculated', base: 80, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 80 },
     { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
     { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
@@ -4196,10 +4195,10 @@ describe('BattleScene — cascade presentation timeline (TASK-245, GAME_EVENTS.m
     'settle',
     'damage player->boss',
     // TASK-252: the Boss Response's own delivered events reach their phases
-    // through the same adapter — the Boss Skill cast (GAME_EVENTS.md §1,
+    // through the same adapter — the Boss Card cast (GAME_EVENTS.md §1,
     // GAME_RULES.md §17 step 18b) is its own step, and the Boss Passive charge
     // that precedes it is carried by the damage phase it was delivered in.
-    'boss-skill flame-burst',
+    'boss-card flame-burst',
     'retaliation boss->player',
   ];
 
@@ -4330,7 +4329,7 @@ describe('BattleScene — cascade presentation timeline (TASK-245, GAME_EVENTS.m
       battleState({ sequence: 1 }),
       CASCADE_BATCH.slice(11).filter((event) => {
         const type = (event as { type: string }).type;
-        return type.startsWith('Damage') || type === 'BossSkillCast';
+        return type.startsWith('Damage') || type === 'BossCardCast';
       })
     );
     settle();
@@ -5897,7 +5896,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
     { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
     { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
     { type: 'PassiveCharged', passiveId: 'boss-hoa-long-rage', source: 'boss', sourceId: 'boss-hoa-long', progress: 1, threshold: 5 },
-    { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+    { type: 'BossCardCast', cardId: 'flame-burst', sourceId: 'boss-hoa-long' },
     { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
     { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
   ];
@@ -5910,7 +5909,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
     'cascade depth=2',
     'settle',
     'damage player->boss',
-    'boss-skill flame-burst',
+    'boss-card flame-burst',
     'retaliation boss->player',
   ];
 
@@ -6028,7 +6027,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
 
     // The attribution each step reaches is the one the delivered members name: the
     // board cycle to the committed Swap, the player's hit to the player, the Boss's
-    // Skill and retaliation to the Boss, and the Power mutation to its stage.
+    // Card cast and retaliation to the Boss, and the Power mutation to its stage.
     const phaseOf = (detail: string) => phases.filter((phase) => phase.detail === detail)[0];
 
     expect([phaseOf('swap 20->21').actor, phaseOf('swap 20->21').action]).toEqual(['swap', 'swap']);
@@ -6042,7 +6041,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
     ]);
     expect([phaseOf('settle').actor, phaseOf('settle').action]).toEqual(['swap', 'settle']);
     expect(phaseOf('damage player->boss').actor).toBe('player');
-    expect(phaseOf('boss-skill flame-burst').actor).toBe('boss');
+    expect(phaseOf('boss-card flame-burst').actor).toBe('boss');
     expect(phaseOf('retaliation boss->player').actor).toBe('boss');
 
     // The steps the board phase carries are attributed individually, so the Combo,
@@ -6082,7 +6081,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
   });
 
   it('produces a Boss action\u2019s phases and a cast\u2019s phases through the same adapter as a Swap', () => {
-    // A Boss-only resolution: its Passive trigger, its Skill cast and its
+    // A Boss-only resolution: its Passive trigger, its Card cast and its
     // retaliation each reach a phase of their own.
     const boss = createBattle();
     boss.harness.emitBattleEvents({
@@ -6090,7 +6089,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       serverSequence: 4,
       events: [
         { type: 'PassiveTriggered', passiveId: 'boss-hoa-long-rage', source: 'boss', sourceId: 'boss-hoa-long', progress: 5, threshold: 5 },
-        { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+        { type: 'BossCardCast', cardId: 'flame-burst', sourceId: 'boss-hoa-long' },
         { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
         { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
       ],
@@ -6100,15 +6099,15 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       timelinePhases(boss.ctx).map((phase) => [phase.kind, phase.actor, phase.action])
     ).toEqual([
       // The Boss Passive charge is delivered inside the phase that was open (a
-      // readout step), and the Boss Skill cast is its own step.
+      // readout step), and the Boss Card cast is its own step.
       ['feedback', 'boss', 'passive-trigger'],
-      ['boss-skill', 'boss', 'boss-skill'],
+      ['boss-card', 'boss', 'boss-card-cast'],
       ['retaliation', 'boss', 'retaliation'],
     ]);
     boss.harness.flushTweens();
     expect(playedPhases(boss.ctx)).toEqual([
       'passive boss-hoa-long-rage',
-      'boss-skill flame-burst',
+      'boss-card flame-burst',
       'retaliation boss->player',
     ]);
 
@@ -6775,16 +6774,16 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       { kind: 'feedback', events: [{ type: 'DamageDealt', source: 'player', target: 'third-party', amount: 1 }], longestEffect: 400 },
       { kind: 'cast', events: [{ type: 'CardCast', cardId: 'card-heal' }], longestEffect: 0 },
       { kind: 'relic', events: [{ type: 'RelicTriggered', relicId: 'r' }], longestEffect: 0 },
-      // The Boss Skill step presents its own delivered cast, so its hold covers
+      // The Boss Card step presents its own delivered cast, so its hold covers
       // that callout's lifetime (`CALLOUT_HOLD_MS` + `CALLOUT_FADE_MS`) rather than
       // being held for nothing (TASK-254 AF-1).
-      { kind: 'boss-skill', events: [{ type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' }], longestEffect: 660 },
+      { kind: 'boss-card', events: [{ type: 'BossCardCast', cardId: 'flame-burst', sourceId: 'boss-hoa-long' }], longestEffect: 660 },
       // ...including when it carries effect-starting events of its own: the hold is
       // the longest of them, never the shortest.
       {
-        kind: 'boss-skill',
+        kind: 'boss-card',
         events: [
-          { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+          { type: 'BossCardCast', cardId: 'flame-burst', sourceId: 'boss-hoa-long' },
           { type: 'PowerChanged', delta: -20, power: 5, source: 'boss' },
         ],
         longestEffect: 660,
@@ -6810,19 +6809,19 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
 
     // Every delivered-action kind is now held for a non-zero time, so no effect it
     // starts can still be animating when the next, conflicting phase begins: the
-    // Boss Skill step presents its own cast and is held for it, and a cast / Relic
+    // Boss Card step presents its own cast and is held for it, and a cast / Relic
     // step is held for its own settle beat (TASK-254 AF-1/AF-4).
-    for (const kind of ['cast', 'relic', 'boss-skill']) {
+    for (const kind of ['cast', 'relic', 'boss-card']) {
       expect(statics.phaseHoldMs(kind, []), `${kind} must not be a zero-hold step`).toBeGreaterThan(
         0
       );
     }
 
-    // A Boss Skill step that carries its own delivered cast is held past that
+    // A Boss Card step that carries its own delivered cast is held past that
     // callout's whole lifetime, and non-zero whether or not it carries one.
     expect(
-      statics.phaseHoldMs('boss-skill', [
-        { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+      statics.phaseHoldMs('boss-card', [
+        { type: 'BossCardCast', cardId: 'flame-burst', sourceId: 'boss-hoa-long' },
       ])
     ).toBeGreaterThan(660);
 
@@ -6840,7 +6839,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
     //
     // TASK-254 updated this expectation deliberately. The delivered-action steps
     // were previously pinned at a zero-length hold, which is exactly the overrun
-    // AF-4 describes: a `cast` / `relic` / `boss-skill` phase that receives a
+    // AF-4 describes: a `cast` / `relic` / `boss-card` phase that receives a
     // delivered `PowerChanged` or damage instance starts a floater and a gauge
     // travel and was still held for 0 ms. The hold is now derived from the phase's
     // own events for **every** kind, so a step that starts no animation is held for
@@ -6902,7 +6901,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       'cascade',
       'settle',
       'damage',
-      'boss-skill',
+      'boss-card',
       'retaliation',
     ]);
 
@@ -7016,7 +7015,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
         'cascade',
         'settle',
         'damage',
-        'boss-skill',
+        'boss-card',
         'retaliation',
       ]);
       expect(kinds.lastIndexOf('cascade')).toBeLessThan(kinds.indexOf('settle'));
@@ -7036,11 +7035,11 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       }
 
       // The Boss's response is its own delivered steps, in the delivered order
-      // (GAME_RULES.md §17 steps 18a–18c): its Passive's step, its Skill, then the
-      // retaliation the two lead to.
+      // (GAME_RULES.md §17 steps 18a–18c): its Passive's step, its Card cast, then
+      // the retaliation the two lead to.
       expect(
         phases.filter((phase) => phase.actor === 'boss').map((phase) => phase.kind)
-      ).toEqual(['boss-skill', 'retaliation']);
+      ).toEqual(['boss-card', 'retaliation']);
 
       playToEnd(harness);
 
@@ -7114,7 +7113,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       expect(playedPhases(ctx)).toContain('damage player->boss');
     });
 
-    it('presents a Boss Skill step from its own delivered cast, before the retaliation', async () => {
+    it('presents a Boss Card step from its own delivered cast, before the retaliation', async () => {
       const { harness, ctx } = createBattle();
 
       const settle = submitHeldSwap(harness, 20, 21);
@@ -7126,35 +7125,35 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
         battleId: 'battle-252',
         serverSequence: 1,
         events: [
-          { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+          { type: 'BossCardCast', cardId: 'flame-burst', sourceId: 'boss-hoa-long' },
           { type: 'DamageCalculated', base: 80, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 80 },
           { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
           { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
         ],
       });
 
-      // The callout-bearing event is the Boss Skill step, and it is delivered
+      // The callout-bearing event is the Boss Card step, and it is delivered
       // before the damage phase: the line is not raised at batch arrival.
       expect(playedPhases(ctx)).toEqual(['swap 20->21']);
       expect(field<{ text: string }>(ctx, 'calloutText').text).toBe('');
 
       const phases = timelinePhases(ctx);
-      const skillIndex = phases.findIndex((phase) => phase.kind === 'boss-skill');
+      const cardIndex = phases.findIndex((phase) => phase.kind === 'boss-card');
       const retaliationIndex = phases.findIndex((phase) => phase.kind === 'retaliation');
-      expect(skillIndex).toBeGreaterThan(-1);
-      expect(skillIndex).toBeLessThan(retaliationIndex);
+      expect(cardIndex).toBeGreaterThan(-1);
+      expect(cardIndex).toBeLessThan(retaliationIndex);
 
       // The step's hold is non-zero and covers the presentation it raises: the
       // callout's own hold plus its fade, and the phase's settle beat.
-      expect(phases[skillIndex].holdMs).toBe(800);
-      expect(phases[skillIndex].holdMs).toBeGreaterThan(0);
+      expect(phases[cardIndex].holdMs).toBe(800);
+      expect(phases[cardIndex].holdMs).toBeGreaterThan(0);
 
-      // It presents its own delivered `skillId`, resolved through the one existing
+      // It presents its own delivered `cardId`, resolved through the one existing
       // transcription of BOSS_RULES.md §6.3/§6.4, on the Boss band's own colour.
       playUntil(harness, ctx, 2);
-      expect(playedPhases(ctx)).toEqual(['swap 20->21', 'boss-skill flame-burst']);
+      expect(playedPhases(ctx)).toEqual(['swap 20->21', 'boss-card flame-burst']);
       const callout = field<{ text: string; color?: string }>(ctx, 'calloutText');
-      expect(callout.text).toBe(`BOSS SKILL: ${resolveBossSkillDisplayName('flame-burst')}`);
+      expect(callout.text).toBe(`BOSS CARD: ${resolveBossSkillDisplayName('flame-burst')}`);
       expect(callout.color).toBe('#f87171');
       expect(callout.text).not.toContain('flame-burst');
 
@@ -7170,7 +7169,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
         serverSequence: 1,
         events: [
           { type: 'PassiveCharged', passiveId: 'boss-hoa-long-rage', source: 'boss', sourceId: 'boss-hoa-long', progress: 1, threshold: 5 },
-          { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+          { type: 'BossCardCast', cardId: 'flame-burst', sourceId: 'boss-hoa-long' },
           { type: 'DamageCalculated', base: 80, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 80 },
           { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
           { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
@@ -7180,17 +7179,17 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       const phases = timelinePhases(ctx);
 
       // GAME_RULES.md §17 steps 18a–18c, as delivered: the Boss Passive's step, the
-      // Boss Skill step, then the Boss's damage — all three the boss actor, through
+      // Boss Card step, then the Boss's damage — all three the boss actor, through
       // the same adapter a Swap and a cast use.
       expect(phases.map((phase) => phase.detail)).toEqual([
         'passive boss-hoa-long-rage',
-        'boss-skill flame-burst',
+        'boss-card flame-burst',
         'retaliation boss->player',
       ]);
-      expect(timelineKinds(ctx)).toEqual(['feedback', 'boss-skill', 'retaliation']);
+      expect(timelineKinds(ctx)).toEqual(['feedback', 'boss-card', 'retaliation']);
       expect(phases.map((phase) => phase.actor)).toEqual(['boss', 'boss', 'boss']);
 
-      // The Boss Skill step's own presentation is non-zero, and the Boss-owned
+      // The Boss Card step's own presentation is non-zero, and the Boss-owned
       // Passive change starts no animation on this panel (its pair is the Pet's) —
       // so that step is held for the shared settle beat alone.
       expect(phases[1].holdMs).toBeGreaterThan(0);
@@ -7200,13 +7199,13 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
 
       expect(playedPhases(ctx)).toEqual([
         'passive boss-hoa-long-rage',
-        'boss-skill flame-burst',
+        'boss-card flame-burst',
         'retaliation boss->player',
       ]);
       // The step's own presentation is what remains on the callout line when the
       // timeline ends (the line is hidden with the timeline, and its text is the
       // record of what was said).
-      expect(field<{ text: string }>(ctx, 'calloutText').text).toBe('BOSS SKILL: Flame Burst');
+      expect(field<{ text: string }>(ctx, 'calloutText').text).toBe('BOSS CARD: Flame Burst');
       expect(harness.pendingTweenCount()).toBe(0);
     });
 
@@ -7401,7 +7400,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       expect(inputLocked(scene, ctx)).toBe(false);
     });
 
-    it('cancels a Boss Skill step’s own presentation with the timeline it belongs to', async () => {
+    it('cancels a Boss Card step’s own presentation with the timeline it belongs to', async () => {
       const { harness, ctx } = createBattle();
 
       const settle = submitHeldSwap(harness, 20, 21);
@@ -7413,17 +7412,17 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
         battleId: 'battle-252',
         serverSequence: 1,
         events: [
-          { type: 'BossSkillCast', skillId: 'earthquake', sourceId: 'boss-son-thach-ve' },
+          { type: 'BossCardCast', cardId: 'earthquake', sourceId: 'boss-son-thach-ve' },
           { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
           { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
         ],
       });
 
-      // Play to the Boss Skill step: its own presentation is on the callout line.
+      // Play to the Boss Card step: its own presentation is on the callout line.
       playUntil(harness, ctx, 2);
-      expect(playedPhases(ctx)).toEqual(['swap 20->21', 'boss-skill earthquake']);
+      expect(playedPhases(ctx)).toEqual(['swap 20->21', 'boss-card earthquake']);
       const callout = field<object>(ctx, 'calloutText');
-      expect(field<{ text: string }>(ctx, 'calloutText').text).toBe('BOSS SKILL: Earthquake');
+      expect(field<{ text: string }>(ctx, 'calloutText').text).toBe('BOSS CARD: Earthquake');
       expect(pendingTweensFor(harness, [callout])).toHaveLength(1);
 
       // A newer delivered state supersedes the timeline: the step's own
@@ -7478,7 +7477,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       // Move Log is the one authorized surface and is not part of these lines).
       const rendered = playerFacingText(harness, ctx);
       expect(rendered).not.toMatch(/seq=|turn=|serverSequence|SignalR|RNG/i);
-      expect(rendered).toContain('BOSS SKILL');
+      expect(rendered).toContain('BOSS CARD');
     });
   });
 
@@ -7494,14 +7493,14 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
      * ```text
      * Player phase   its board cycle, its Passive and Power, its ATK-gated instance
      * Boss phase     the Boss's own board cycle on the same board, its Passive, its
-     *                non-damaging Skill, its own ATK-gated instance
+     *                non-damaging Card cast, its own ATK-gated instance
      * ```
      *
      * Both board cycles carry the same event shapes, and **none** of them names the
      * actor of a `MatchCreated`, `GemMatched`, `ComboChanged` or `CascadeCreated`
      * (`SIGNALR_PROTOCOL.md` §3.2.6–§3.2.12): that is why the timeline claims no
      * party for the board cycle and only the delivered damage parties, Passives and
-     * `BossSkillCast` are attributed to a side.
+     * `BossCardCast` are attributed to a side.
      *
      * **Only the Player's cycle reports a Combo.** `ComboChanged`'s payload is the
      * new value of `BattleState.Combo` (`GAME_EVENTS.md` §2,
@@ -7532,9 +7531,9 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       { type: 'CascadeCreated', cascadeDepth: 1 },
       { type: 'MatchCreated', shape: 'Straight', cells: [11, 12, 13], gemType: 'DEF', cascadeDepth: 2 },
       { type: 'GemMatched', cellIndex: 11, gemType: 'DEF' },
-      // §17 steps 18b–18d: the Boss's Passive, its Skill, and its own instance.
+      // §17 steps 18b–18d: the Boss's Passive, its Card cast, and its own instance.
       { type: 'PassiveCharged', passiveId: 'boss-hoa-long-rage', source: 'boss', sourceId: 'boss-hoa-long', progress: 1, threshold: 5 },
-      { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+      { type: 'BossCardCast', cardId: 'flame-burst', sourceId: 'boss-hoa-long' },
       { type: 'DamageCalculated', base: 80, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 80 },
       { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
       { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
@@ -7544,7 +7543,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
      * The whole timeline that round plays, in the delivered order: the Player's board
      * cycle, the Player's damage step, the Boss's own board cycle, the one supported
      * board transition **at the end of the round's board cycle**, then the Boss's own
-     * Passive/Skill/retaliation steps.
+     * Passive/Card/retaliation steps.
      */
     const SHARED_ROUND_PHASES = [
       'swap 20->21',
@@ -7553,7 +7552,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       'match depth=1',
       'cascade depth=1',
       'settle',
-      'boss-skill flame-burst',
+      'boss-card flame-burst',
       'retaliation boss->player',
     ];
 
@@ -7571,8 +7570,8 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
     ];
 
     /**
-     * The Boss's own board cycle, its Skill and its ATK-gated instance kill the active
-     * Pet: the round is terminal inside its Boss phase, and its outcome is last.
+     * The Boss's own board cycle, its Card cast and its ATK-gated instance kill the
+     * active Pet: the round is terminal inside its Boss phase, and its outcome is last.
      */
     const DEFEAT_ROUND: unknown[] = [
       { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
@@ -7580,7 +7579,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
       { type: 'MatchCreated', shape: 'Straight', cells: [3, 4, 5], gemType: 'ATK', cascadeDepth: 1 },
       { type: 'GemMatched', cellIndex: 3, gemType: 'ATK' },
-      { type: 'BossSkillCast', skillId: 'drain-power', sourceId: 'boss-thuy-ma' },
+      { type: 'BossCardCast', cardId: 'drain-power', sourceId: 'boss-thuy-ma' },
       { type: 'PowerChanged', delta: -20, power: 20, source: 'boss' },
       { type: 'DamageCalculated', base: 640, comboModifier: 1, elementModifier: 1, otherModifiers: 1, defense: 0, finalDamage: 640 },
       { type: 'DamageDealt', source: 'boss', target: 'player', amount: 640 },
@@ -7672,7 +7671,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
         details.lastIndexOf('cascade depth=1')
       );
       expect(details.indexOf('settle')).toBeGreaterThan(details.lastIndexOf('cascade depth=1'));
-      expect(details.indexOf('settle')).toBeLessThan(details.indexOf('boss-skill flame-burst'));
+      expect(details.indexOf('settle')).toBeLessThan(details.indexOf('boss-card flame-burst'));
 
       // One timeline, played in the order it was built.
       playToEnd(harness);
@@ -7735,9 +7734,9 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       const actorOf = (detail: string) =>
         phases.find((phase) => phase.detail === detail)?.actor;
 
-      // The Boss's own delivered steps are the Boss's: its Skill cast and the
+      // The Boss's own delivered steps are the Boss's: its Card cast and the
       // retaliation its ATK-gated instance opens.
-      expect(actorOf('boss-skill flame-burst')).toBe('boss');
+      expect(actorOf('boss-card flame-burst')).toBe('boss');
       expect(actorOf('retaliation boss->player')).toBe('boss');
       expect(actorOf('damage player->boss')).toBe('player');
 
@@ -8129,7 +8128,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
       await flush();
 
       // The Boss's own board cycle is the round's last board work, so the board
-      // converges after it; the Boss's Skill step and its retaliation follow, and the
+      // converges after it; the Boss's Card step and its retaliation follow, and the
       // delivered outcome is last.
       expect(timelinePhases(ctx).map((phase) => phase.detail)).toEqual([
         'swap 20->21',
@@ -8137,7 +8136,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
         'damage player->boss',
         'match depth=1',
         'settle',
-        'boss-skill drain-power',
+        'boss-card drain-power',
         'retaliation boss->player',
         'outcome defeat',
       ]);
@@ -8150,7 +8149,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
         'damage player->boss',
         'match depth=1',
         'settle',
-        'boss-skill drain-power',
+        'boss-card drain-power',
         'retaliation boss->player',
         'outcome defeat',
       ]);
@@ -11107,7 +11106,7 @@ describe('BattleScene — developer Move Log (TASK-253, operator decision D-1)',
     'DamageTaken',
     'PassiveCharged',
     'PassiveTriggered',
-    'BossSkillCast',
+    'BossCardCast',
     'CardCast',
     'PetSkillCast',
     'RelicTriggered',
@@ -11229,7 +11228,7 @@ describe('BattleScene — developer Move Log (TASK-253, operator decision D-1)',
       progress: 5,
       threshold: 5,
     },
-    { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+    { type: 'BossCardCast', cardId: 'flame-burst', sourceId: 'boss-hoa-long' },
     { type: 'CardCast', cardId: 'card-heal' },
     { type: 'PetSkillCast', cardId: 'card-inferno' },
     { type: 'RelicTriggered', relicId: 'relicinst_berserker_core' },
@@ -11326,7 +11325,7 @@ describe('BattleScene — developer Move Log (TASK-253, operator decision D-1)',
     // The actor/action comes from the one adapter, with the board-cycle actor the
     // delivered boundary named: the swap step is the delivered action's, the board
     // cycle that follows it is the actor that opened it, a cast is the player's, a
-    // Boss skill is the boss's, and `PowerChanged` is the mutation stage the
+    // Boss card cast is the boss's, and `PowerChanged` is the mutation stage the
     // delivered `source` names — never a side (SIGNALR_PROTOCOL.md §3.2.24 item 3).
     const actorOf = (type: string) => {
       const row = eventRows.find((entry) => entry.includes(`type=${type} `));
@@ -11343,7 +11342,7 @@ describe('BattleScene — developer Move Log (TASK-253, operator decision D-1)',
     expect(actorOf('PowerChanged')).toBe('power/power');
     expect(actorOf('PassiveCharged')).toBe('pet/passive-charge');
     expect(actorOf('PassiveTriggered')).toBe('boss/passive-trigger');
-    expect(actorOf('BossSkillCast')).toBe('boss/boss-skill');
+    expect(actorOf('BossCardCast')).toBe('boss/boss-card-cast');
     expect(actorOf('CardCast')).toBe('player/card-cast');
     expect(actorOf('PetSkillCast')).toBe('player/pet-skill-cast');
     expect(actorOf('RelicTriggered')).toBe('player/relic');
@@ -11364,7 +11363,7 @@ describe('BattleScene — developer Move Log (TASK-253, operator decision D-1)',
     expect(joined).toContain('DamageTaken: 150 on boss (from player)');
     expect(joined).toContain('PassiveCharged: xich-lang (pet:pet-instance-1) 4/5');
     expect(joined).toContain('PassiveTriggered: boss-hoa-long-rage (boss:boss-hoa-long) 5/5');
-    expect(joined).toContain('BossSkillCast: flame-burst by boss-hoa-long');
+    expect(joined).toContain('BossCardCast: flame-burst by boss-hoa-long');
     expect(joined).toContain('CardCast: card-heal');
     expect(joined).toContain('PetSkillCast: card-inferno');
     expect(joined).toContain('RelicTriggered: relicinst_berserker_core');
@@ -12538,10 +12537,10 @@ describe('BattleScene — authoritative recovery, action outcomes & synchronizat
 
       push(harness, battleState({ sequence: 1, turn: 2, board: deliveredBoard(1) }));
       emitBatch(harness, 1, [
-        { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
+        { type: 'BossCardCast', cardId: 'flame-burst', sourceId: 'boss-hoa-long' },
       ]);
 
-      expect(playedPhases(ctx)).toEqual(['boss-skill flame-burst']);
+      expect(playedPhases(ctx)).toEqual(['boss-card flame-burst']);
       expect(harness.pendingTweenCount()).toBeGreaterThan(0);
       expect(inputLocked(scene, ctx)).toBe(true);
 

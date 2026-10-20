@@ -165,8 +165,7 @@ public class HpGemMechanicsAuditTests
             pet,
             boss,
             pinned.Resources,
-            pinned.Resolution,
-            Boss.SkillChargeRequirement);
+            pinned.Resolution);
 
         var expectedBossHp = Math.Min(BossPinnedHp + pinned.Resources.HealPool, Boss.MaxHP);
 
@@ -182,8 +181,7 @@ public class HpGemMechanicsAuditTests
             pet,
             boss,
             pinned.Resources,
-            pinned.Resolution,
-            Boss.SkillChargeRequirement);
+            pinned.Resolution);
 
         Assert.Equal(Math.Min(PetPinnedHp + pinned.Resources.HealPool, PetMaxHp), petAfterPlayerAction.HP);
 

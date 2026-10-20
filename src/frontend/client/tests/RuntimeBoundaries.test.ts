@@ -593,7 +593,6 @@ describe('Frontend architectural boundaries', () => {
         'DamageCalculated',
         'DamageDealt',
         'DamageTaken',
-        'BossSkillCast',
         'TurnStarted',
         'TurnEnded',
         'BattleWon',

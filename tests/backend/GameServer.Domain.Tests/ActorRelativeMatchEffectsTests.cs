@@ -26,12 +26,11 @@ public class ActorRelativeMatchEffectsTests
             PassiveId: new Passives.PassiveId("test-passive"),
             PassiveProgress: Passives.PassiveProgress.AtStart(5));
 
-    private static BossState CreateBoss(int hp = 4000, int maxHp = 5000, int skillCharge = 0, int power = 0) =>
+    private static BossState CreateBoss(int hp = 4000, int maxHp = 5000, int power = 0) =>
         BossDefinitions.HoaLong.ToInitialState() with
         {
             HP = hp,
             MaxHP = maxHp,
-            SkillCharge = skillCharge,
             Power = power,
         };
 
@@ -204,7 +203,7 @@ public class ActorRelativeMatchEffectsTests
     {
         // Given: Player turn with POWER generation (30 power)
         var pet = CreatePet(power: 20);
-        var boss = CreateBoss(skillCharge: 1);
+        var boss = CreateBoss(power: 1);
         var generation = new ResourceGeneration(
             BaseDamagePool: 0,
             DefensePool: 0,
@@ -218,21 +217,23 @@ public class ActorRelativeMatchEffectsTests
             pet,
             boss,
             generation,
-            resolution: default,
-            bossSkillChargeRequirement: 5);
+            resolution: default);
 
-        // Then: Pet Power increases (20 + 30 = 50); Boss SkillCharge is UNCHANGED (1); Boss Power is UNCHANGED (0)
+        // Then: Pet Power increases (20 + 30 = 50); the Boss's Power is UNCHANGED
+        // (1). ADR-029 §2.2 / COMBAT_RULES.md §2: the shared generation rule is
+        // actor-relative, so the Player's POWER Gems never fund the Boss's ability
+        // resource. The retired SkillCharge accumulator this test also covered was
+        // removed with ADR-029 Slice 5 / TASK-313.
         Assert.Equal(50, updatedPet.Power);
-        Assert.Equal(1, updatedBoss.SkillCharge);
-        Assert.Equal(0, updatedBoss.Power);
+        Assert.Equal(1, updatedBoss.Power);
     }
 
     [Fact]
-    public void ApplyActorMatchEffects_BossTurn_ShouldOnlyChargeBossSkillChargeAndBossPower()
+    public void ApplyActorMatchEffects_BossTurn_ShouldOnlyGrantBossPower()
     {
-        // Given: Boss turn with 2 POWER match groups (6 unique POWER cells)
+        // Given: Boss turn with 60 generated Power (6 unique POWER cells)
         var pet = CreatePet(power: 40);
-        var boss = CreateBoss(skillCharge: 2, power: 10);
+        var boss = CreateBoss(power: 10);
         var generation = new ResourceGeneration(
             BaseDamagePool: 0,
             DefensePool: 0,
@@ -240,24 +241,19 @@ public class ActorRelativeMatchEffectsTests
             Power: 60,
             ClearedGemCounts: new ClearedGemCounts(0, 0, 0, 6));
 
-        // Create a board with 2 separate horizontal POWER matches
-        var board = TestBoard.Background().WithGems(
-            (0, GemType.Power), (1, GemType.Power), (2, GemType.Power),
-            (16, GemType.Power), (17, GemType.Power), (18, GemType.Power));
-        var resolution = CascadeResolver.Resolve(board, Pcg32.FromSeed(1));
-
         // When: Actor match effects applied for Boss
         var (updatedPet, updatedBoss) = ResourceGenerator.ApplyActorMatchEffects(
             DamageParty.Boss,
             pet,
             boss,
             generation,
-            resolution,
-            bossSkillChargeRequirement: 5);
+            resolution: default);
 
-        // Then: Pet Power is UNCHANGED (40); Boss SkillCharge increments by +2 (2 + 2 = 4); Boss Power increments by +60 (10 + 60 = 70)
+        // Then: Pet Power is UNCHANGED (40); Boss Power increments by +60
+        // (10 + 60 = 70). ADR-029 §2.2 / COMBAT_RULES.md §2: the Boss's POWER Gems
+        // generate its own Power and nothing else — the retired SkillCharge
+        // accumulator was removed with ADR-029 Slice 5 / TASK-313.
         Assert.Equal(40, updatedPet.Power);
-        Assert.Equal(4, updatedBoss.SkillCharge);
         Assert.Equal(70, updatedBoss.Power);
     }
 
@@ -297,7 +293,7 @@ public class ActorRelativeMatchEffectsTests
     public void ApplyActorMatchEffects_BossTurn_NonPowerMatch_ShouldNotGrantPower()
     {
         var pet = CreatePet(power: 50);
-        var boss = CreateBoss(power: 20, skillCharge: 0);
+        var boss = CreateBoss(power: 20);
         var generation = new ResourceGeneration(
             BaseDamagePool: 30,
             DefensePool: 15,
@@ -310,24 +306,9 @@ public class ActorRelativeMatchEffectsTests
             pet,
             boss,
             generation,
-            resolution: default,
-            bossSkillChargeRequirement: 5);
+            resolution: default);
 
         Assert.Equal(50, updatedPet.Power);
         Assert.Equal(20, updatedBoss.Power);
-        Assert.Equal(0, updatedBoss.SkillCharge);
-    }
-
-    [Fact]
-    public void BossSkillCharge_ShouldClampToRequirement()
-    {
-        // Given: Boss with 4 charge, requirement 5, matching 3 POWER match groups
-        var boss = CreateBoss(skillCharge: 4);
-
-        // When: 3 POWER match groups added
-        var updated = ResourceGenerator.ApplyBossSkillCharge(boss, powerMatchGroups: 3, chargeRequirement: 5);
-
-        // Then: Charge clamps to 5, never overflows (ADR-026 T2)
-        Assert.Equal(5, updated.SkillCharge);
     }
 }

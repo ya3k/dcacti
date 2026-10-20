@@ -397,7 +397,6 @@ public static class BattleStateSerializer
             PassiveId = bossState.PassiveId.Value,
             PassiveProgress = ToPassiveProgressJson(bossState.PassiveProgress),
             Power = bossState.Power,
-            SkillCharge = bossState.SkillCharge,
             SkillCooldown = bossState.SkillCooldown,
 
             // §2.4.1: the Boss's collection uses the same element shape, the same
@@ -799,7 +798,6 @@ public static class BattleStateSerializer
             new PassiveId(dto.PassiveId),
             FromPassiveProgressJson(dto.PassiveProgress),
             dto.Power,
-            dto.SkillCharge,
             dto.SkillCooldown)
         {
             // §2.4.1 / §2.3.2 item 1: the Boss's collection is restored by the same

@@ -62,7 +62,7 @@ public sealed class BalanceBaselineMatrixTests
         "M-11_elementDisadvantageCount",
         "M-12_bossRegenerationTotal",
         "M-12_bossRegenerationTurns",
-        "M-13_bossSkillCastCount",
+        "M-13_bossCardCastCount",
         "M-13_bossPassiveTriggerCount",
         "M-13_bossEnrageTurn",
         "M-15_resourceTrace",
@@ -235,7 +235,7 @@ public sealed class BalanceBaselineMatrixTests
             Assert.True(metrics.BossRegenerationTurns >= 0);
 
             // M-13 — an Enrage Turn, when recorded, lies inside the run.
-            Assert.True(metrics.BossSkillCastCount >= 0);
+            Assert.True(metrics.BossCardCastCount >= 0);
             Assert.True(metrics.BossPassiveTriggerCount >= 0);
 
             if (metrics.BossEnrageTurn is { } enrageTurn)
@@ -470,7 +470,7 @@ public sealed class BalanceBaselineMatrixTests
         Assert.Equal(a.ElementDisadvantageCount, b.ElementDisadvantageCount);
         Assert.Equal(a.BossRegenerationTotal, b.BossRegenerationTotal);
         Assert.Equal(a.BossRegenerationTurns, b.BossRegenerationTurns);
-        Assert.Equal(a.BossSkillCastCount, b.BossSkillCastCount);
+        Assert.Equal(a.BossCardCastCount, b.BossCardCastCount);
         Assert.Equal(a.BossPassiveTriggerCount, b.BossPassiveTriggerCount);
         Assert.Equal(a.BossEnrageTurn, b.BossEnrageTurn);
         Assert.Equal(a.ResourceTrace, b.ResourceTrace);

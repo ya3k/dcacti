@@ -1,6 +1,6 @@
 # Core Game Rules
 
-**Version:** 3.11 (§11, §12, §15, §16 and §17 step 18 updated per **ADR-029 / TASK-303**, applying the explicit Product Owner decision that the Boss behaves as a genuine opponent using the same resource and cast principles as the Player: **§12's Power is actor-relative** (the active Pet and the Boss each hold their own integer 0–100 Power), **§15** routes Boss POWER-Gem matches into `BossState.Power` instead of `SkillCharge` and fixes the one-action-per-response-phase policy, **§16** gains the dedicated `BossCardCast` Boss action event (the Player `CardCast` contract is unchanged), and **§17 step 18** becomes action selection plus an either/or board action or Boss Card cast. This explicitly reverses the TASK-258 §2 **D2** rule that forbade `BossState.Power`; `ADR-026`'s POWER bullet is reconciled by `ADR-029`. **No step is added, removed, or reordered; no damage, healing, combo, Element, Relic or Passive value changes; no numeric balance value is authored by this revision** — the grant basis U-1 is resolved under ADR-029 / TASK-304 adopting the shared per-Gem output unchanged (+10 Power per uniquely matched POWER cell), while remaining balance values (U-2 through U-6) remain UNRESOLVED and recorded in `ADR-029`. Runtime implementation is staged behind `ADR-029`'s Slices 1–4; the transitional `SkillCharge` path remains in force until the migration's parity gate is met. Prior 3.10: (§16's canonical event list gains `MatchedGemSummary` — one
+**Version:** 3.12 (§12, §16 and §17 step 18 updated per **TASK-313 / ADR-029 Slice 5**: `BossSkillCast` is removed from §16's canonical event list and is retired (breaking) in favour of `BossCardCast`, which remains unchanged; §16's `MatchedGemSummary` note no longer lists a `SkillCharge` output; §12's Power pointer and §17's step-18 prose record that the legacy Boss Skill form, its charge gate and its charge-based activation **no longer exist**, so a Boss's only ability action is a Boss Card cast. No step is added, removed, or reordered; no damage, healing, combo, Element, Relic, Passive or Boss Card value changes, and nothing is rebalanced). Prior 3.11: (§11, §12, §15, §16 and §17 step 18 updated per **ADR-029 / TASK-303**, applying the explicit Product Owner decision that the Boss behaves as a genuine opponent using the same resource and cast principles as the Player: **§12's Power is actor-relative** (the active Pet and the Boss each hold their own integer 0–100 Power), **§15** routes Boss POWER-Gem matches into `BossState.Power` instead of `SkillCharge` and fixes the one-action-per-response-phase policy, **§16** gains the dedicated `BossCardCast` Boss action event (the Player `CardCast` contract is unchanged), and **§17 step 18** becomes action selection plus an either/or board action or Boss Card cast. This explicitly reverses the TASK-258 §2 **D2** rule that forbade `BossState.Power`; `ADR-026`'s POWER bullet is reconciled by `ADR-029`. **No step is added, removed, or reordered; no damage, healing, combo, Element, Relic or Passive value changes; no numeric balance value is authored by this revision** — the grant basis U-1 is resolved under ADR-029 / TASK-304 adopting the shared per-Gem output unchanged (+10 Power per uniquely matched POWER cell), while remaining balance values (U-2 through U-6) remain UNRESOLVED and recorded in `ADR-029`. Runtime implementation is staged behind `ADR-029`'s Slices 1–4; the transitional `SkillCharge` path remains in force until the migration's parity gate is met. Prior 3.10: (§16's canonical event list gains `MatchedGemSummary` — one
 additive, presentation-only Battle Event that reports, once per committed board
 action, how many Gems of each Gem type that action's board cycle matched. It is
 emitted after the cycle's whole cascade resolution and adds no step, no ordering
@@ -297,8 +297,9 @@ including any reduction a Relic applies — is owned by `CARD_RULES.md` §3.6
 and is not restated here.
 
 Exact generation rates: see `COMBAT_RULES.md` §2. The Boss's own Power rules
-(its acquisition, its spend and its transitional relationship to the legacy
-`SkillCharge`) are owned by `BOSS_RULES.md` §4.1.
+(its acquisition and its spend) are owned by `BOSS_RULES.md` §4.1; there is no
+charge resource — the legacy `SkillCharge` member was removed under TASK-313
+(`BOSS_RULES.md` §4.4).
 
 ---
 
@@ -395,7 +396,7 @@ PassiveCharged, PassiveTriggered
 RelicTriggered
 CardCast, PetSkillCast
 DamageCalculated, DamageDealt, DamageTaken
-BossSkillCast, BossCardCast
+BossCardCast
 BattleWon, BattleLost
 ```
 
@@ -406,8 +407,8 @@ committed board action — the Player's committed Swap and the Boss Response
 Phase's board action — after that cycle's whole cascade resolution and inside the
 round's existing single `ReceiveEvents` batch. It reports the accounting that
 already exists (`COMBAT_RULES.md` §2 item 6; `MATCH3_RULES.md` §5.7, §5.8.2) and
-creates no value of its own: it is not damage, healing, DEF buff magnitude, Power
-gain, or Boss SkillCharge. Its meaning and payload are owned by `GAME_EVENTS.md`
+creates no value of its own: it is not damage, healing, DEF buff magnitude, or
+Power gain. Its meaning and payload are owned by `GAME_EVENTS.md`
 §2; its wire schema by `SIGNALR_PROTOCOL.md` §3.2.29; the cascade cycle it closes
 by `MATCH3_RULES.md` §4.
 
@@ -429,8 +430,10 @@ Player's Card-cast event with its existing payload unchanged — the Boss's cast
 is never reported as a `CardCast`, so a consumer always distinguishes the two by
 the discriminator, and no actor/source member is added to `CardCast`. Its
 meaning and payload are owned by `GAME_EVENTS.md` §2; its wire schema by
-`SIGNALR_PROTOCOL.md` §3.2.30. `BossSkillCast` remains the event of the
-transitional, pre-migration Boss ability path (`BOSS_RULES.md` §4.4).
+`SIGNALR_PROTOCOL.md` §3.2.30. `BossSkillCast` was the retired transitional,
+pre-migration Boss ability path's event: it was removed under **TASK-313**
+(breaking, OD-311-2 = A) and is not a canonical event name any more
+(`BOSS_RULES.md` §4.4, `GAME_EVENTS.md` §2's retirement note).
 
 Events exist to decouple gameplay systems from each other.
 
@@ -543,6 +546,13 @@ Step 18 ("Resolve Boss Response") expands to the Boss response phase on the shar
      it is a fixed protocol label, not a separate Player HP pool
      (SIGNALR_PROTOCOL.md §3.2).
 ```
+
+**There is no charge-based skill activation in this step.** The legacy Boss Skill
+form and its charge requirement were removed under TASK-313 (`BOSS_RULES.md`
+§4.4): 18c is the only way the Boss's ability resolves, it is gated by
+`BossState.Power` and the ability's cooldown, and it emits `BossCardCast`. No
+step here reads, resets, or emits a charge value, and the retired
+`BossSkillCast` event cannot occur.
 
 Step 19 ("End Turn") expands to:
 

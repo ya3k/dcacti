@@ -448,7 +448,7 @@ const BOSS_PARTY = DAMAGE_PARTY_BOSS;
  *              refillMs           one re-label / spawn entrance           refill-spawn/settle
  * gauge        travelMs           one HUD gauge travel                    damage/retaliation
  * floater      lifeMs             one floating number                     damage/feedback
- * callout      holdMs + fadeMs    the one batch callout                   boss-skill / boss-card
+ * callout      holdMs + fadeMs    the one batch callout                   boss-card
  * banner       enter+hold+exit    the turn banner's three beats            banner
  * beatMs       —                  the beat every hold ends with            every phase
  * ```
@@ -663,7 +663,7 @@ interface GemView {
  * never a second event stream.
  *
  * `actor` and `action` come from the single delivered-event adapter
- * (`BattleEventPresenter.adaptPresentedEvent`), so a Swap, a Boss Skill, a Boss
+ * (`BattleEventPresenter.adaptPresentedEvent`), so a Swap, a Boss Card cast, a Boss
  * Passive and a Card / Pet-Skill cast carry the same two members and reach their
  * phases through the same call (`AGENTS.md` §9). `actor` is `null` when the
  * delivered members name no actor this contract defines; it is never guessed
@@ -839,12 +839,12 @@ const PRESENTATION_LOG_CAP = 256;
  * The terminal outcome is the only one (§3.2.19 item 1; TASK-246 finding L-1): it
  * hands the battle off and is padded with nothing.
  *
- * The delivered-action kinds (`cast` / `relic` / `boss-skill` / `boss-card`) are
+ * The delivered-action kinds (`cast` / `relic` / `boss-card`) are
  * deliberately **not** here (TASK-254 AF-1/AF-4). A phase's hold is derived from
  * the events that phase actually carries (`phaseHoldMs` → `phaseEffectMs`), and a
  * delivered-action step can carry — and start — the readouts and floaters of
- * events delivered alongside it, and the `boss-skill` / `boss-card` steps present
- * their own delivered `BossSkillCast` / `BossCardCast`. Holding such a phase for
+ * events delivered alongside it, and the `boss-card` step presents
+ * its own delivered `BossCardCast`. Holding such a phase for
  * zero time would let its own effect still be animating when the next, conflicting
  * phase begins, which is exactly the overlap this rule forbids: a hold is never
  * shorter than the longest animation its phase starts.
@@ -4887,8 +4887,8 @@ export class BattleScene extends Phaser.Scene {
    * belongs to, either extending the phase already open or opening the next one,
    * so the delivered order is preserved exactly and nothing is re-sorted,
    * filtered, or re-derived (`ARCHITECTURE.md` §2.2.1 rule 4,
-   * `SIGNALR_PROTOCOL.md` §3.1 item 5). A committed board action, a Boss Skill, a
-   * Boss Passive, a Relic trigger and a Card / Pet-Skill cast all reach their
+   * `SIGNALR_PROTOCOL.md` §3.1 item 5). A committed board action, a Boss Card
+   * cast, a Boss Passive, a Relic trigger and a Card / Pet-Skill cast all reach their
    * phases through that same adapter call — there is no per-actor branch,
    * pipeline, registry, interface or event bus (`AGENTS.md` §9).
    *
@@ -4918,10 +4918,10 @@ export class BattleScene extends Phaser.Scene {
    *               drives
    * retaliation  the Boss's response, classified the same way; it owns the Pet
    *               `hp / maxHp` pair
-   * cast / relic / boss-skill / boss-card
+   * cast / relic / boss-card
    *               the delivered action's own step, attributed to the actor the
-   *               adapter derived; a `boss-skill` / `boss-card` step presents its
-   *               own delivered `BossSkillCast` / `BossCardCast`, so it is held for
+   *               adapter derived; a `boss-card` step presents its
+   *               own delivered `BossCardCast`, so it is held for
    *               that presentation
    * settle        the gravity/refill interpolation onto the authoritative board
    *               (PD-1/PD-8), played where the board cycle ends — and only when
@@ -5313,8 +5313,8 @@ export class BattleScene extends Phaser.Scene {
    * (the terminal outcome handoff) is held for no time at all. That is what keeps
    * the relationship true for every batch shape rather than only for the common
    * one — a `feedback` event joins the phase already open, so the phase that
-   * receives it must grow to cover it (TASK-246 §5), and a `boss-skill` /
-   * `boss-card` step is held for the Boss cast presentation it raises rather than
+   * receives it must grow to cover it (TASK-246 §5), and a `boss-card`
+   * step is held for the Boss cast presentation it raises rather than
    * for nothing at all (TASK-254 AF-1/AF-4).
    */
   private static phaseHoldMs(
@@ -5336,7 +5336,7 @@ export class BattleScene extends Phaser.Scene {
    * cells they name, a damage instance draws a floater and moves an HP panel,
    * `PowerChanged` draws a signed floater over a travelling Power gauge, the
    * active Pet's own Passive change travels the Passive gauge, the swap tweens two
-   * views, the settle phase plays the refill, and a `BossSkillCast` / `BossCardCast`
+   * views, the settle phase plays the refill, and a `BossCardCast`
    * raises the Boss cast callout the step is presented with. No value is computed
    * from any of them.
    */
@@ -5413,14 +5413,11 @@ export class BattleScene extends Phaser.Scene {
             longest = Math.max(longest, GAUGE_TWEEN_MS);
           }
           break;
-        case 'BossSkillCast':
         case 'BossCardCast':
           // The Boss cast step presents its own delivered cast on the Boss band's
           // callout row, whose lifetime is the callout's hold plus its fade: the
           // hold must cover it, or the next phase would replace the printout
-          // before it has been read (TASK-254 AF-1). `BossCardCast` is the migrated
-          // Boss form's event and is presented on the same row
-          // (SIGNALR_PROTOCOL.md §3.2.30).
+          // before it has been read (TASK-254 AF-1).
           longest = Math.max(longest, CALLOUT_HOLD_MS + CALLOUT_FADE_MS);
           break;
         default:
@@ -5561,7 +5558,7 @@ export class BattleScene extends Phaser.Scene {
    * the readouts the phase's events own are presented by it
    * (`presentPhaseReadouts`), the settle phase applies the authoritative board,
    * the two combat phases move the side the delivered events name — and the Boss's
-   * Enrage label with the Boss's HP — a `boss-skill` / `boss-card` step presents its
+   * Enrage label with the Boss's HP — a `boss-card` step presents its
    * own delivered cast, and the outcome phase hands off. No step computes a gameplay
    * value, and none is conditioned on one.
    *
@@ -5634,17 +5631,11 @@ export class BattleScene extends Phaser.Scene {
           this.presentPetHp(this.currentBattleState);
         }
         break;
-      case 'boss-skill':
-        // The step presents its own delivered cast: without this arm a step that
-        // carries only its `BossSkillCast` would render nothing at all, whatever
-        // its hold (TASK-254 AF-1).
-        this.presentBossSkillStep(phase);
-        break;
       case 'boss-card':
-        // The migrated Boss form's own step (SIGNALR_PROTOCOL.md §3.2.30): its
-        // delivered `BossCardCast` is presented on the same Boss band callout row,
-        // for the same reason — a step that carries only that event would
-        // otherwise render nothing at all whatever its hold.
+        // The Boss's own selected action (SIGNALR_PROTOCOL.md §3.2.30): its
+        // delivered `BossCardCast` is presented on the Boss band callout row,
+        // because a step that carries only that event would otherwise render
+        // nothing at all whatever its hold.
         this.presentBossCardStep(phase);
         break;
       case 'outcome':
@@ -5694,7 +5685,7 @@ export class BattleScene extends Phaser.Scene {
    *
    * **Nothing is derived from the counts.** The chips are the item's own entries,
    * in the item's own order; a Gem type it did not name has no chip, and no count,
-   * total, damage, heal, DEF buff, Power, or SkillCharge value is computed from
+   * total, damage, heal, DEF buff, or Power value is computed from
    * them (`§3.2.29` item 8, `AGENTS.md` §10).
    *
    * **It is positioned away from the turn banner and held for its own beats.** The
@@ -5762,51 +5753,14 @@ export class BattleScene extends Phaser.Scene {
   }
 
   /**
-   * Presents a delivered `BossSkillCast` step on the Boss band's own callout row.
-   *
-   * It is the Boss acting, so it is presented where every Boss-originated message
-   * already is: the callout row directly beneath the Boss band, in the Boss band's
-   * own colour (`CALLOUT_BOSS_COLOR` — the same line and colour `BOSS ENRAGED`
-   * uses) (`BOSS_RULES.md` §6.3/§6.4; `SIGNALR_PROTOCOL.md` §3.2.18).
-   *
-   * **Everything shown is delivered or already transcribed.** The line comes from
-   * the one existing formatter (`describeEventCallout`), which resolves the
-   * delivered `skillId` through `resolveBossSkillDisplayName`'s transcription of
-   * `BOSS_RULES.md` §6.3/§6.4. No catalog, asset, per-Boss animation or guessed
-   * name is introduced, and an unrecognised `skillId` keeps that formatter's
-   * existing fallback line rather than an invented one (TASK-254 DR-2). `sourceId`
-   * is what the formatter reports the caster from; nothing is inferred from it.
-   */
-  private presentBossSkillStep(phase: PresentationPhase): void {
-    const cast = phase.events.find((event) => event.type === 'BossSkillCast');
-    if (!cast) {
-      return;
-    }
-
-    const callout = describeEventCallout(
-      cast,
-      (cardId) => this.cardDisplayName(cardId),
-      (relicId) => this.relicDisplayName(relicId)
-    );
-
-    if (!callout) {
-      return;
-    }
-
-    this.showCallout(callout.message, callout.color);
-    this.timelineCalloutShown = true;
-  }
-
-  /**
    * Presents a delivered `BossCardCast` step on the Boss band's own callout row.
    *
    * It is the Boss's one selected action for the response phase
    * (`SIGNALR_PROTOCOL.md` §3.2.30, `BOSS_RULES.md` §4.2–§4.3), so it is presented
    * exactly where every Boss-originated message already is: the callout row directly
    * beneath the Boss band, in the Boss band's own colour (`CALLOUT_BOSS_COLOR`) —
-   * the same line and colour `BOSS ENRAGED` and `BOSS SKILL` use. One formatter
-   * serves both Boss cast forms; only the delivered discriminator and the identity
-   * that names the card differ.
+   * the same line and colour `BOSS ENRAGED` uses. One formatter serves it; the
+   * delivered identity names the card.
    *
    * **Everything shown is delivered or already transcribed.** The line comes from
    * the one existing formatter (`describeEventCallout`), which resolves the
@@ -7096,9 +7050,9 @@ export class BattleScene extends Phaser.Scene {
    * `relicId` is the Relic's owned **instance** identity — an internal handle, not
    * a label (`RELIC_RULES.md` §2.2 item 3, `SIGNALR_PROTOCOL.md` §3.2.23 item 1) —
    * so an unresolvable instance yields `null` and the caller shows nothing, rather
-   * than falling back to the identity as the Card path does. `BossSkillCast`'s
-   * precedent already declines a technical identity rather than rendering it
-   * (TASK-210 §7), and no name is ever derived from the Relic's `trigger`,
+   * than falling back to the identity as the Card path does. A technical identity
+   * is declined rather than rendered (TASK-210 §7), and no name is ever derived
+   * from the Relic's `trigger`,
    * `condition`, or `effectDefinition` (`RELIC_RULES.md` §8.2 item 1).
    */
   private relicDisplayName(relicId: string): string | null {

@@ -30,10 +30,11 @@ namespace GameServer.Application.Tests;
 /// <b>What this suite asserts NOW.</b> The legacy fallback basic attack
 /// ("Step 1 — Base Damage = Boss.ATK", independent of the board) is RETIRED
 /// (<c>ADR-026</c> §5, "Elimination of Default Fixed-Damage Attacks";
-/// <c>COMBAT_RULES.md</c> §3.4 item 1), and every MVP Boss Skill declares
-/// <c>BaseDamage = 0</c> (<c>ADR-026</c> D3; <c>BOSS_RULES.md</c> §6.3/§6.3.1), so
-/// the retired "Boss Skill Step-1 = EffectiveBossATK + authored SkillBaseDamage"
-/// composition no longer has an authored term to compose. What survives, and is
+/// <c>COMBAT_RULES.md</c> §3.4 item 1). The legacy <c>BossSkill</c> path's
+/// charge-driven secondary effect was retired with ADR-029 Slice 5 / TASK-313,
+/// and a Boss ability is now its provisioned Boss Card; that effect's canonical
+/// coverage is <c>TASK309BossCardEffectRuntimeTests</c> /
+/// <c>BossCardCastRuntimeTests</c>. What survives, and is
 /// what this file tests, is:
 /// <list type="number">
 /// <item><c>EffectiveBossATK</c> — <c>BossState.ATK</c> composed with the Boss's own
@@ -47,10 +48,7 @@ namespace GameServer.Application.Tests;
 /// (<c>COMBAT_RULES.md</c> §5.5.3): a DoT, a Shield, a State, or a BuffDebuff
 /// naming another stat is not an ATK modifier;</item>
 /// <item>the instance's Step 2 Combo Modifier of <c>1</c> and Step 4 of
-/// <c>1.0</c> (<c>COMBAT_RULES.md</c> §3.4 item 1);</item>
-/// <item>a fired Skill applying its declared non-damaging secondary effect in the
-/// same round as, and independently of, that attack instance (<c>ADR-026</c>
-/// D3/D5; <c>BOSS_RULES.md</c> §6.3.1 item 1).</item>
+/// <c>1.0</c> (<c>COMBAT_RULES.md</c> §3.4 item 1).</item>
 /// </list>
 ///
 /// <b>Every Boss instance is located by <c>DamageDealt.Source</c>.</b>
@@ -143,10 +141,6 @@ public class BossSkillStep1CompositionTests
 
         // Exactly one instance, and it is the Boss's: the gate opened once.
         Assert.Equal(1, BossAttackInstanceCount(round.Result));
-
-        // ADR-026 D3: the Skill contributes no authored Step-1 value, so nothing
-        // resembling the retired "+150" can be part of the composed Base.
-        Assert.Equal(0, boss.SkillBaseDamage);
     }
 
     // =======================================================================
@@ -478,130 +472,6 @@ public class BossSkillStep1CompositionTests
     }
 
     // =======================================================================
-    // 9. A fired Skill applies its secondary effect in the same round, and
-    //    contributes no Step-1 damage of its own (ADR-026 D3/D5)
-    // =======================================================================
-
-    [Fact]
-    public async Task FiredBossSkill_ShouldApplyItsSecondaryEffectInTheSameRound()
-    {
-        // BOSS_RULES.md §6.3: the Skill fires iff SkillCharge ≥ ChargeRequirement AND
-        // SkillCooldown = 0, and "after the Skill fires: SkillCharge resets to 0,
-        // SkillCooldown resets to the Boss's cooldown value". Pin the charge at the
-        // definition's own requirement — a state the Boss genuinely reaches by
-        // accumulating its own POWER matches (ADR-026 D2, BOSS_RULES.md §6.3).
-        //
-        // ADR-026 D5 (Option 5B) / BOSS_RULES.md §6.3.1 item 1: Flame Burst's direct
-        // damage and Burn DoT are removed and replaced by a temporary Boss ATK buff on
-        // BossState.ActiveStatusEffects — applied here, in the same round, and
-        // independently of whether the round produced an ATK-gated attack instance.
-        var boss = BossDefinitions.HoaLong;
-        var round = await ResolveBossAtkRoundAsync(
-            "boss-attack-skill-secondary",
-            bossClearsAtkGem: false,
-            boss,
-            arrangeBoss: state => state with
-            {
-                SkillCharge = boss.SkillChargeRequirement,
-                SkillCooldown = 0,
-            });
-
-        Assert.Contains(round.Result.Events, e => e.Type == BattleEventType.BossSkillCast);
-
-        // The buff is a Turn-based TargetStat="ATK" BuffDebuff on the BOSS, with the
-        // definition's own declared magnitude (BOSS_RULES.md §6.3.1 item 1; the
-        // magnitude is a preserved balance parameter, so it is read from the
-        // definition rather than authored here).
-        var declared = boss.SkillDefinition.SecondaryEffect!.Value;
-
-        var buff = Assert.Single(
-            round.Committed.BossState.ActiveStatusEffects,
-            e => e.Id == declared.StatusEffectId);
-
-        Assert.Equal(StatusEffectType.BuffDebuff, buff.Type);
-        Assert.Equal(StatusEffectSource.Boss, buff.Source);
-        Assert.Equal("ATK", buff.TargetStat);
-        Assert.Equal(declared.Magnitude, buff.Magnitude);
-
-        // 2 declared Turns, one consumed by this same round's step 19a — an instance
-        // applied before GAME_RULES.md §17 step 19a consumes one Turn of duration at
-        // that Turn's step 19a (COMBAT_RULES.md §5.3.1/DR6, §5.5.5).
-        Assert.Equal(declared.DurationTurns!.Value - 1, buff.RemainingTurns);
-
-        // BOSS_RULES.md §6.3's post-cast reset, applied in the same write-back.
-        Assert.Equal(0, round.Committed.BossState.SkillCharge);
-        Assert.Equal(boss.SkillCooldownTurns, round.Committed.BossState.SkillCooldown);
-
-        // ADR-026 D3: the fired Skill produced NO damage instance of its own. The
-        // round's Boss instance count is exactly the ATK gate's answer, never one more.
-        Assert.Equal(
-            RoundTestSupport.BossClearedAtkGem(round.Result) ? 1 : 0,
-            BossAttackInstanceCount(round.Result));
-        Assert.Equal(0, boss.SkillBaseDamage);
-
-        // NOTE (ADR-026 D5): because the buff is applied at step 18c and the Boss's
-        // ATK-gated instance is resolved at step 18d of the SAME round, a round in
-        // which the Boss also cleared an ATK Gem already carries this buff into that
-        // instance's EffectiveBossATK (COMBAT_RULES.md §5.5.1). This scenario pins a
-        // gate-closed round so the buff's own committed state is what is asserted;
-        // FiredBossSkill_ShouldReachTheSameRoundsAtkGatedInstance covers the
-        // gate-open case.
-    }
-
-    [Fact]
-    public async Task FiredBossSkill_ShouldReachTheSameRoundsAtkGatedInstance_ThroughEffectiveBossAtk()
-    {
-        // ADR-026 D5 / BOSS_RULES.md §6.3.1 item 1: the buff "modifies Boss ATK but
-        // deals no damage independently; Boss damage is applied only when Hỏa Long
-        // produces a valid ATK-gem match (D1)". Applied at step 18c, it is in force
-        // for the §18d instance resolved later in the same round, through
-        // COMBAT_RULES.md §5.5.1's EffectiveBossATK — so the instance's Step 1 is
-        // truncate(100 × (100 + 50) / 100) + the ATK-Gem pool = 150 + pool.
-        var boss = BossDefinitions.HoaLong;
-
-        var withoutSkill = await ResolveBossAtkRoundAsync("boss-attack-same-round-off", bossClearsAtkGem: true, boss);
-        var withSkill = await ResolveBossAtkRoundAsync(
-            "boss-attack-same-round-on",
-            bossClearsAtkGem: true,
-            boss,
-            arrangeBoss: state => state with
-            {
-                SkillCharge = boss.SkillChargeRequirement,
-                SkillCooldown = 0,
-            });
-
-        // Same board action in both runs, so the pool is identical and the increase
-        // below is the buff's alone.
-        Assert.Equal(withoutSkill.BossGeneration.BaseDamagePool, withSkill.BossGeneration.BaseDamagePool);
-
-        // The no-Skill run carries no ATK modifier at all — Hỏa Long's match-charged
-        // Passive (BOSS_RULES.md §6.2.1, threshold 5) did not trigger on this board —
-        // so the buffed run's arithmetic is fully determined by Flame Burst.
-        Assert.Empty(AtkModifiers(withoutSkill.Committed.BossState));
-
-        var bonus = (int)boss.SkillDefinition.SecondaryEffect!.Value.Magnitude;
-
-        Assert.Equal(100 + bonus, StatusEffectLifecycle.EffectiveBossAttack(100, [FlameBurst()]));
-        Assert.Equal(
-            100 + bonus + withSkill.BossGeneration.BaseDamagePool,
-            BossAttackCalculation(withSkill.Result).Base);
-        Assert.Equal(
-            100 + withoutSkill.BossGeneration.BaseDamagePool,
-            BossAttackCalculation(withoutSkill.Result).Base);
-
-        // The attack instance count is unchanged by the Skill: the buff adds no
-        // damage of its own (ADR-026 D3, D5).
-        Assert.Equal(
-            BossAttackInstanceCount(withoutSkill.Result),
-            BossAttackInstanceCount(withSkill.Result));
-
-        // And the buff is still on the Boss afterwards, on the step 19a countdown.
-        var buff = Assert.Single(withSkill.Committed.BossState.ActiveStatusEffects, e => e.Id == "flame-burst");
-
-        Assert.Equal(1, buff.RemainingTurns);
-    }
-
-    // =======================================================================
     // Helpers
     // =======================================================================
 
@@ -647,24 +517,6 @@ public class BossSkillStep1CompositionTests
             "Weaken", StatusEffectType.BuffDebuff, StatusEffectSource.Boss, magnitude, 3, "ATK");
 
     /// <summary>
-    /// Flame Burst's declared secondary effect as the instance the Skill applies
-    /// (<c>BOSS_RULES.md</c> §6.3.1 item 1): the same +50% Boss ATK modifier, built
-    /// from the definition's own declaration.
-    /// </summary>
-    private static StatusEffect FlameBurst()
-    {
-        var effect = BossDefinitions.HoaLong.SkillDefinition.SecondaryEffect!.Value;
-
-        return StatusEffect.TurnBased(
-            effect.StatusEffectId!,
-            effect.StatusEffectType!.Value,
-            StatusEffectSource.Boss,
-            effect.Magnitude,
-            effect.DurationTurns!.Value,
-            effect.TargetStat!);
-    }
-
-    /// <summary>
     /// The Boss's active ATK modifiers — the <c>Type</c> + <c>TargetStat</c>
     /// selection <c>COMBAT_RULES.md</c> §5.5.1/§5.5.3 defines, restated here for
     /// assertions only (the production consumer is
@@ -699,7 +551,7 @@ public class BossSkillStep1CompositionTests
     /// <param name="definition">The Boss definition, defaulting to Hỏa Long.</param>
     /// <param name="arrangeBoss">
     /// Pins the Boss combat state — its <c>ActiveStatusEffects</c>, its
-    /// <c>ATK</c>, and its <c>SkillCharge</c>/<c>SkillCooldown</c> — through
+    /// <c>ATK</c>, and its <c>SkillCooldown</c> — through
     /// <see cref="RoundTestSupport.PinAsync"/>.
     /// </param>
     /// <param name="playerMatchType">

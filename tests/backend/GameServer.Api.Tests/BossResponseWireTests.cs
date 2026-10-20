@@ -18,13 +18,15 @@ using Xunit;
 namespace GameServer.Api.Tests;
 
 /// <summary>
-/// End-to-end transport tests for the TASK-022 events — the Boss Response's
-/// <c>BossSkillCast</c>, the shared Passive events' <c>source</c>/<c>sourceId</c>,
-/// and the terminal <c>BattleWon</c>/<c>BattleLost</c> — over the real
-/// <c>Swap</c> → <c>ReceiveEvents</c> path.
+/// End-to-end transport tests for the TASK-022 events — the shared Passive
+/// events' <c>source</c>/<c>sourceId</c>, the Boss Response's damage, and the
+/// terminal <c>BattleWon</c>/<c>BattleLost</c> — over the real
+/// <c>Swap</c> → <c>ReceiveEvents</c> path. (The legacy <c>BossSkillCast</c>
+/// discriminator was retired with ADR-029 Slice 5 / TASK-313; the canonical
+/// <c>BossCardCast</c> wire contract is covered by <c>TASK309BossCardWireTests</c>.)
 ///
 /// <code>
-/// Rule (SIGNALR_PROTOCOL.md §3.2.16, §3.2.18, §3.2.19; BOSS_RULES.md §7)
+/// Rule (SIGNALR_PROTOCOL.md §3.2.16, §3.2.19, §3.2.30; BOSS_RULES.md §7)
 ///  ↓
 /// Scenario (Given a battle whose Boss reaches the documented condition, When the
 ///           client commits a Swap, Then the batch carries the documented event)
@@ -41,15 +43,14 @@ namespace GameServer.Api.Tests;
 /// <b>This suite's host provisions no content rows, and that is deliberate.</b>
 /// A Boss ability's active form is provisioned-content presence
 /// (<c>BOSS_RULES.md</c> §4.4 item 6; <c>ADR-029</c> §2.5 as amended by
-/// TASK-308): with no <c>BossCard</c> row present, every Boss here is in the
-/// documented transitional <c>BossSkill</c> form, which is what the
-/// <c>BossSkillCast</c> and no-outcome scenarios below assert. The migrated
-/// form — all five MVP Bosses after the TASK-308/TASK-309 provisioning — needs
-/// the provisioned rows and is covered by
-/// <c>TASK309BossCardWireTests</c> (the §3.2.30 wire contract for every
-/// provisioned Boss Card) and by <c>ApiIntegrationTests</c>' battle-start form
-/// resolution cases. Keeping this suite content-free is what makes the
-/// transitional coverage deterministic instead of dependent on test order.
+/// TASK-308): with no <c>BossCard</c> row present, no Boss ability is castable
+/// here, so the batch is the board action's alone — which is what the
+/// no-outcome scenario below asserts. The migrated form — all five MVP Bosses
+/// after the TASK-308/TASK-309 provisioning — needs the provisioned rows and is
+/// covered by <c>TASK309BossCardWireTests</c> (the §3.2.30 wire contract for
+/// every provisioned Boss Card) and by <c>ApiIntegrationTests</c>' battle-start
+/// form resolution cases. Keeping this suite content-free is what makes its
+/// coverage deterministic instead of dependent on test order.
 /// </summary>
 public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWireFactory>
 {
@@ -167,11 +168,11 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
     /// genuinely produces rather than from an invented one
     /// (<c>REDIS_STATE.md</c> §4 items 1–3).
     ///
-    /// <b>Why the wire suite needs it.</b> Under <c>ADR-026</c> D2 the Boss's
-    /// <c>SkillCharge</c> is fed only by the Boss's own POWER matches, so no single
-    /// round can be relied on to reach a Skill's ChargeRequirement; pinning the
-    /// counter is how a test drives the documented eligibility condition
-    /// (<c>GAME_STATE.md</c> §2.4.3) deterministically.
+    /// <b>Why the wire suite needs it.</b> A scenario that has to start from a
+    /// non-default <c>BossState</c> value (for example the terminal HP of a Boss the
+    /// Player just killed) states that value directly rather than waiting several
+    /// rounds for the real path to reach it; the value is the documented state's, not
+    /// an invented one.
     /// </summary>
     private async Task PinBossStateAsync(string battleId, BossState bossState)
     {
@@ -337,73 +338,6 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
     }
 
     // =======================================================================
-    // BossSkillCast — SIGNALR_PROTOCOL.md §3.2.18
-    // =======================================================================
-
-    [Fact]
-    public async Task ReceiveEvents_BossSkillCast_ShouldCarrySkillIdAndSourceId()
-    {
-        // §3.2.18: `skillId` and `sourceId`, both always present. The Skill is driven
-        // to fire through the documented condition — SkillCharge at the requirement
-        // with SkillCooldown at 0 (GAME_STATE.md §2.4.3) — by pinning the counter,
-        // because ADR-026 D2 feeds it only from the Boss's own POWER matches.
-        const string battleId = "wire-boss-skill-cast";
-
-        var boss = BossDefinitions.HoaLong;
-        var created = await CreateBattleWithStateAsync(battleId, boss);
-
-        await PinBossStateAsync(
-            battleId,
-            created.BossState with
-            {
-                SkillCharge = boss.SkillChargeRequirement,
-                SkillCooldown = 0,
-            });
-
-        var payload = await SwapOnceAndReadTheBatch(battleId, FindMatchProducingPair(created.BoardState));
-
-        var events = payload.GetProperty("events").EnumerateArray().ToArray();
-
-        var casts = events
-            .Where(e => e.GetProperty("type").GetString() == "BossSkillCast")
-            .ToArray();
-
-        Assert.Single(casts);
-
-        Assert.Equal("flame-burst", casts[0].GetProperty("skillId").GetString());
-        Assert.Equal("boss-hoa-long", casts[0].GetProperty("sourceId").GetString());
-
-        // §3.2.18: the cast carries exactly the discriminator and its two members.
-        Assert.Equal(
-            new[] { "skillId", "sourceId", "type" },
-            casts[0].EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
-
-        // ADR-026 D3: the Skill deals no direct damage of its own, so the cast is not
-        // promised a damage instance. What the round does promise is the order
-        // GAME_EVENTS.md §1 / §3.2.18 item 3 fixes: the cast precedes any Boss-sourced
-        // damage the round carries — which is the ATK-match-gated board instance of
-        // step 18d (ADR-026 D1), never the Skill's own.
-        var castIndex = Array.FindIndex(events, e => e.GetProperty("type").GetString() == "BossSkillCast");
-        var bossDamageIndex = Array.FindIndex(
-            events,
-            e => e.GetProperty("type").GetString() == "DamageDealt"
-                && e.GetProperty("source").GetString() == "boss");
-
-        if (bossDamageIndex >= 0)
-        {
-            Assert.True(castIndex < bossDamageIndex);
-            Assert.Equal("player", events[bossDamageIndex].GetProperty("target").GetString());
-        }
-
-        // At most one Boss-sourced damage instance exists in the round: the ATK-gated
-        // board instance of step 18d. The retired Burn effect would have added a
-        // second one at step 19a (ADR-026 D3/D5).
-        Assert.True(
-            events.Count(e => e.GetProperty("type").GetString() == "DamageDealt"
-                && e.GetProperty("source").GetString() == "boss") <= 1);
-    }
-
-    // =======================================================================
     // BossCardCast — SIGNALR_PROTOCOL.md §3.2.30
     // =======================================================================
     //
@@ -529,7 +463,7 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
         // And no Boss Response occurred at all: no cast, no Boss-sourced damage, and
         // no Boss board cycle — the Boss phase was skipped whole (GAME_RULES.md §17
         // step 18, ADR-026 §2).
-        Assert.DoesNotContain(events, e => e.GetProperty("type").GetString() == "BossSkillCast");
+        Assert.DoesNotContain(events, e => e.GetProperty("type").GetString() == "BossCardCast");
         Assert.DoesNotContain(
             events,
             e => e.GetProperty("type").GetString() == "DamageDealt"
@@ -556,8 +490,6 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
             // A Boss the Player cannot remove, so the loop cannot end the other way
             // while it waits for the Boss's instance.
             MaxHP = 1_000_000,
-            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition
-                with { ChargeRequirement = int.MaxValue },
             PassiveDefinition = BossDefinitions.HoaLong.PassiveDefinition
                 with { Threshold = null },
         };
@@ -589,22 +521,12 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
         // stats neither does in one round, so neither outcome event is emitted — the
         // absence is the documented statement that the round was not terminal.
         //
-        // The round is made deterministic in what it DOES emit by pinning the Boss's
-        // SkillCharge: the Skill fires (its eligibility condition is
-        // GAME_STATE.md §2.4.3's), and it is a non-damaging Skill (ADR-026 D3), so the
-        // batch still carries no outcome.
+        // The batch is asserted to be a non-empty, resolved round rather than an empty
+        // one, so the absence of an outcome is a statement about the round.
         const string battleId = "wire-no-outcome";
 
         var boss = BossDefinitions.HoaLong;
         var created = await CreateBattleWithStateAsync(battleId, boss);
-
-        await PinBossStateAsync(
-            battleId,
-            created.BossState with
-            {
-                SkillCharge = boss.SkillChargeRequirement,
-                SkillCooldown = 0,
-            });
 
         var payload = await SwapOnceAndReadTheBatch(battleId, FindMatchProducingPair(created.BoardState));
 
@@ -615,11 +537,12 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
         Assert.DoesNotContain("BattleWon", types);
         Assert.DoesNotContain("BattleLost", types);
 
-        // The round genuinely ran and resolved the board, and the Skill fired: the
-        // absence of an outcome is a statement about the round, not about an empty
-        // batch.
+        // The round genuinely ran and resolved the board: the absence of an outcome is
+        // a statement about the round, not about an empty batch. No Boss ability cast
+        // occurs in this content-free host (Boss Card casts need the provisioned rows;
+        // the legacy BossSkillCast was removed with ADR-029 Slice 5 / TASK-313).
         Assert.Contains("MatchCreated", types);
-        Assert.Contains("BossSkillCast", types);
+        Assert.DoesNotContain("BossCardCast", types);
     }
 
     [Fact]
@@ -641,6 +564,9 @@ public class BossResponseWireTests : IClassFixture<BossResponseWireTests.BossWir
                  {
                      "BossPassiveCharged", "BossPassiveTriggered", "BossBasicAttack",
                      "BossEnraged", "BossStateChanged", "Enrage",
+                     // Retired discriminator (ADR-029 Slice 5 / TASK-313): it must never
+                     // appear on the wire again.
+                     "BossSkillCast",
                  })
         {
             Assert.DoesNotContain(forbidden, types);

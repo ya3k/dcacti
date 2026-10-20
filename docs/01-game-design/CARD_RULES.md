@@ -1,6 +1,6 @@
 # Card Rules
 
-**Version:** 1.12 (§1.1 items 3 and 5 amended per **TASK-308 / ADR-029
+**Version:** 1.13 (§1.1 item 3 and §6 updated per **TASK-313 / ADR-029 Slice 5**: a Boss Card's identity is reported solely as `BossCardCast.cardId`, and the transitional `BossSkillCast` event — including its `skillId` member — no longer exists, so no transitional-event sentence or second identity report remains. No category rule, cost, boss-card behaviour or event schema changes). Prior 1.12: (§1.1 items 3 and 5 amended per **TASK-308 / ADR-029
 Slice 3**, recording the operator-approved Boss Card provisioning contract: a
 Boss Card is provisioned as one `CardDefinition` row of category `BossCard`
 whose `CardDefinitionId` is the ability `SkillId` — the approved exception to
@@ -171,9 +171,11 @@ restated, here. This subsection fixes only the category-level contract:
 3. **Exactly one representation of its identity.** A Boss Card's
    `CardDefinitionId` is the ability identity already recorded in
    `BOSS_RULES.md` §6.4's `SkillId` column for that Boss (e.g. `"flame-burst"`).
-   No second identifier is introduced for the same ability, so the identity the
-   transitional `BossSkillCast.skillId` reports and the identity
-   `BossCardCast.cardId` reports are the same string for the same Boss ability.
+   No second identifier is introduced for the same ability: that one string is
+   the identity `BossCardCast.cardId` reports (§6, `SIGNALR_PROTOCOL.md`
+   §3.2.30). The former transitional `BossSkillCast` event — which carried the
+   same string as a `skillId` member — was retired under TASK-313, so no
+   transitional event remains and there is no second spelling to reconcile.
    This is the approved exception to `DATABASE.md` §1/§3's
    `card-<ascii-kebab-case-name>` value form: it applies to `BossCard` rows
    only and never changes a Player Card's existing identity.
@@ -653,6 +655,7 @@ so `CardCast`'s existing payload is unchanged by the Boss Card category.
 
 A `BossCardCast` fires at `GAME_RULES.md` §17 step 18c — the Boss response
 phase's cast step — after the cost is deducted from `BossState.Power` and the
-effect applied, in the same order item 4 above fixes for the Player. The
-Boss Skill's transitional `BossSkillCast` event remains in force until
-`ADR-029`'s Slice 4 migration and its parity gate.
+effect applied, in the same order item 4 above fixes for the Player. The Boss
+Skill's transitional `BossSkillCast` event **no longer exists**: it was retired
+(breaking) under **TASK-313 / ADR-029 Slice 5** and `BossCardCast` is the only
+Boss cast event (`SIGNALR_PROTOCOL.md` §3.2.18's retirement note, §3.2.30).

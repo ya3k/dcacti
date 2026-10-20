@@ -69,16 +69,16 @@ public class BossPersistenceTests
         int? threshold = 5,
         string resetBehavior = "Default",
         string skillId = "flame-burst",
-        int baseDamage = 150,
-        int chargeRequirement = 5,
         int cooldownTurns = 2) => new(
             BossDefinitionId: bossDefinitionId,
             BossId: new BossId(identity),
             Element: element,
             PassiveDefinition: new BossPassiveDefinition(
                 new PassiveId(passiveId), threshold, resetBehavior),
-            SkillDefinition: new BossSkillDefinition(
-                skillId, baseDamage, chargeRequirement, cooldownTurns));
+            // OD-311-1 = B / ADR-029 Slice 5: the Domain's SkillDefinition carries
+            // only the two members the runtime reads; the persisted document keeps
+            // baseDamage / chargeRequirement as storage compatibility.
+            SkillDefinition: new BossSkillDefinition(skillId, cooldownTurns));
 
     // -----------------------------------------------------------------------
     // DATABASE.md §1 — the field set
@@ -113,8 +113,6 @@ public class BossPersistenceTests
                 "PassiveId",
                 "PassiveResetBehavior",
                 "PassiveThreshold",
-                "SkillBaseDamage",
-                "SkillChargeRequirement",
                 "SkillCooldownTurns",
                 "SkillDefinition",
                 "SkillId",
@@ -511,8 +509,6 @@ public class BossPersistenceTests
             Assert.Equal(5, stored.PassiveDefinition.Threshold);
             Assert.Equal("Default", stored.PassiveDefinition.ResetBehavior);
             Assert.Equal("flame-burst", stored.SkillDefinition.SkillId);
-            Assert.Equal(150, stored.SkillDefinition.BaseDamage);
-            Assert.Equal(5, stored.SkillDefinition.ChargeRequirement);
             Assert.Equal(2, stored.SkillDefinition.CooldownTurns);
         }
     }
@@ -671,11 +667,14 @@ public class BossPersistenceTests
     }
 
     [Fact]
-    public async Task SkillDefinition_ShouldRoundTripAllFourDocumentedMembers()
+    public async Task SkillDefinition_ShouldRoundTripTheTwoLiveMembersAndKeepTheStoredDocumentShape()
     {
-        // DATABASE.md §1 note item 4: exactly skillId, baseDamage,
-        // chargeRequirement, cooldownTurns — all required, no other member.
-        var storeName = nameof(SkillDefinition_ShouldRoundTripAllFourDocumentedMembers);
+        // DATABASE.md §1 note item 4 fixes the stored document to skillId,
+        // baseDamage, chargeRequirement, cooldownTurns. OD-311-1 = B / ADR-029
+        // Slice 5: the Domain carries only the two members the runtime reads, and the
+        // two legacy members are written back as compatibility placeholders (0) and
+        // ignored on read — never round-tripped as Domain values.
+        var storeName = nameof(SkillDefinition_ShouldRoundTripTheTwoLiveMembersAndKeepTheStoredDocumentShape);
 
         await using (var context = CreateContext(storeName))
         {
@@ -686,8 +685,6 @@ public class BossPersistenceTests
                     Element.Moc,
                     passiveId: "boss-moc-yeu-regen",
                     skillId: "root",
-                    baseDamage: 100,
-                    chargeRequirement: 6,
                     cooldownTurns: 2));
             await context.SaveChangesAsync();
         }
@@ -697,10 +694,31 @@ public class BossPersistenceTests
             var stored = await context.BossDefinitions.SingleAsync();
 
             Assert.Equal("root", stored.SkillDefinition.SkillId);
-            Assert.Equal(100, stored.SkillDefinition.BaseDamage);
-            Assert.Equal(6, stored.SkillDefinition.ChargeRequirement);
             Assert.Equal(2, stored.SkillDefinition.CooldownTurns);
+
+            // The retained members are emitted as the documented placeholders, so the
+            // stored document's shape stays stable without carrying a live value.
+            using var document = JsonDocument.Parse(
+                BossDefinitionJson.WriteSkill(stored.SkillDefinition));
+
+            Assert.Equal(0, document.RootElement.GetProperty("baseDamage").GetInt32());
+            Assert.Equal(0, document.RootElement.GetProperty("chargeRequirement").GetInt32());
         }
+    }
+
+    [Fact]
+    public void ReadSkill_ShouldIgnoreTheRetainedLegacyBaseDamageAndChargeRequirement()
+    {
+        // OD-311-1 = B / ADR-029 Slice 5: a historical stored document may still carry
+        // a baseDamage / chargeRequirement value (the retired legacy baseline, e.g.
+        // 150 / 5). The reader must tolerate it and discard it, so no stored value can
+        // reactivate the removed legacy Boss Skill behaviour.
+        const string legacyDocument =
+            """{"skillId":"flame-burst","baseDamage":150,"chargeRequirement":5,"cooldownTurns":2}""";
+
+        var skill = BossDefinitionJson.ReadSkill(legacyDocument);
+
+        Assert.Equal(new BossSkillDefinition("flame-burst", 2), skill);
     }
 
     [Fact]
@@ -1041,20 +1059,24 @@ public class BossPersistenceTests
     [Fact]
     public void ProvisioningMigration_ShouldWriteTheDocumentedPassiveAndSkillDocuments()
     {
-        // DATABASE.md §1 note items 3–4 fix the JSON member lists, and note item
-        // 3 states the JSON/storage names are the contract. The inserted text is
-        // produced by BossDefinitionJson over the authoritative Domain
-        // definitions, so the migration and the converters cannot drift; this
-        // asserts the exact document each row must carry.
+        // DATABASE.md §1 note items 3–4 fix the JSON member lists, and note item 3
+        // states the JSON/storage names are the contract. The historical migration is
+        // immutable and still writes the legacy baseDamage / chargeRequirement values,
+        // which OD-311-1 = B / ADR-029 Slice 5 retain as storage compatibility only:
+        // the exact inserted document is asserted here, and the strict reader is then
+        // shown to tolerate it and discard the two legacy values.
         var migration = ReadMigrationOperations("ProvisionBossDefinitions");
 
         foreach (var definition in FirstThreeDefinitions)
         {
             var passiveJson = BossDefinitionJson.WritePassive(definition.PassiveDefinition);
-            var skillJson = BossDefinitionJson.WriteSkill(definition.SkillDefinition);
 
             Assert.Contains(PassAsCSharpStringLiteral(passiveJson), migration);
-            Assert.Contains(PassAsCSharpStringLiteral(skillJson), migration);
+
+            var historical = HistoricalSkillDocument(definition);
+
+            Assert.Contains(PassAsCSharpStringLiteral(historical), migration);
+            Assert.Equal(definition.SkillDefinition, BossDefinitionJson.ReadSkill(historical));
         }
     }
 
@@ -1225,18 +1247,24 @@ public class BossPersistenceTests
     [Fact]
     public void Task172ProvisioningMigration_ShouldWriteTheDocumentedPassiveAndSkillDocuments()
     {
-        // DATABASE.md §1 note items 3–4 fix the JSON member lists. The stored
-        // text must equal what BossDefinitionJson writes over the authoritative
-        // Domain definitions, so the migration and the converters cannot drift.
+        // DATABASE.md §1 note items 3–4 fix the JSON member lists. The historical
+        // migration is immutable and still writes the legacy baseDamage /
+        // chargeRequirement values, retained as storage compatibility only
+        // (OD-311-1 = B / ADR-029 Slice 5): the exact inserted document is asserted,
+        // and the strict reader is shown to tolerate it and discard the two legacy
+        // values.
         var migration = ReadMigrationOperations(Task172ProvisioningMigration);
 
         foreach (var definition in TwoRemainingDefinitions)
         {
             var passiveJson = BossDefinitionJson.WritePassive(definition.PassiveDefinition);
-            var skillJson = BossDefinitionJson.WriteSkill(definition.SkillDefinition);
 
             Assert.Contains(PassAsCSharpStringLiteral(passiveJson), migration);
-            Assert.Contains(PassAsCSharpStringLiteral(skillJson), migration);
+
+            var historical = HistoricalSkillDocument(definition);
+
+            Assert.Contains(PassAsCSharpStringLiteral(historical), migration);
+            Assert.Equal(definition.SkillDefinition, BossDefinitionJson.ReadSkill(historical));
         }
     }
 
@@ -1919,6 +1947,34 @@ public class BossPersistenceTests
     /// </summary>
     private static string PassAsCSharpStringLiteral(string json) =>
         json.Replace("\"", "\\\"", StringComparison.Ordinal);
+
+    /// <summary>
+    /// The historical <c>SkillDefinition</c> document a provisioning migration wrote
+    /// for <paramref name="definition"/> — transcribed from the immutable migration,
+    /// including the legacy <c>baseDamage</c> / <c>chargeRequirement</c> values that
+    /// OD-311-1 = B / ADR-029 Slice 5 retain as storage compatibility only. The
+    /// Domain's writer emits <c>0</c> placeholders for those two members and its
+    /// reader ignores them, so the migration is compared against this literal and
+    /// then read through the strict reader to prove read tolerance.
+    /// </summary>
+    private static string HistoricalSkillDocument(BossDefinition definition)
+    {
+        var (baseDamage, chargeRequirement) = definition.SkillId switch
+        {
+            "flame-burst" => (150, 5),
+            "drain-power" => (120, 4),
+            "root" => (100, 6),
+            "earthquake" => (150, 5),
+            "thunder-strike" => (180, 5),
+            _ => throw new InvalidOperationException(
+                $"No provisioned migration writes the Skill '{definition.SkillId}'."),
+        };
+
+        return $"{{\"skillId\":\"{definition.SkillId}\","
+            + $"\"baseDamage\":{baseDamage},"
+            + $"\"chargeRequirement\":{chargeRequirement},"
+            + $"\"cooldownTurns\":{definition.SkillCooldownTurns}}}";
+    }
 
     private static int CountOccurrences(string haystack, string needle)
     {

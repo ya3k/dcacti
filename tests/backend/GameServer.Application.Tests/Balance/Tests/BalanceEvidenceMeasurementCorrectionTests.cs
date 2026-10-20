@@ -21,7 +21,9 @@ namespace GameServer.Application.Tests.Balance.Tests;
 /// 1. M-03: Damage retention across rejected Swap proposals (Finding D-194-3).
 /// 2. Per-Turn Series: Strict dimensional invariant series.Count == Turns on cast-terminated runs (Finding D-194-4).
 /// 3. Mode identity: BalanceSimulationConfiguration.Mode threading and default Baseline behavior (Finding D-194-2).
-/// 4. PowerSpentTotal: Accounting for Boss Drain Power resource sink without player casts (Finding D-194-7).
+/// 4. PowerSpentTotal: a Boss ability's drain reaches M-07 only through its negative
+///    `PowerChanged` delta, and M-13 counts the canonical `BossCardCast` exactly once per
+///    event (Finding D-194-7, retargeted under ADR-029 Slice 5 / TASK-313).
 /// 5. Card damage element: Verification of Pet-element attribution for Card damage (Finding D-194-8).
 /// 6. Pet passives: Isolation of BossPassiveTriggerCount from Pet passive triggers (Finding D-194-6).
 /// </summary>
@@ -205,39 +207,121 @@ public sealed class BalanceEvidenceMeasurementCorrectionTests
     }
 
     /// <summary>
-    /// Requirement 4 / Finding D-194-7:
-    /// Assert that Power drain deltas from Thủy Ma skill are recorded in PowerSpentTotal
-    /// in passive runs without player card casts.
-    /// Under approved match-only rules:
-    /// - Seed 20261001: 1 cast, draining 20 Power (Pet Power before drain was 30).
-    /// - Seed 20261002: 3 casts, 2 zero-power casts (draining 0) + 1 cast draining 20 Power; total 20.
-    /// - Seed 20261003: 2 casts, draining 20 Power each; total 40.
-    /// - Seed 20261004: 2 casts, both zero-power casts (draining 0); total 0.
-    /// - Seed 20261005: 3 casts, draining 20 Power each; total 60.
+    /// Requirement 4 / Finding D-194-7, retargeted under ADR-029 Slice 5 / TASK-313.
+    ///
+    /// M-13 counts the canonical <c>BossCardCast</c> event <b>exactly once per event</b>,
+    /// and a Boss ability's drain reaches M-07's <c>PowerSpentTotal</c> only through the
+    /// negative <c>PowerChanged</c> delta the same round reports — so a zero-effect /
+    /// zero-damage cast still counts as a cast while adding nothing to
+    /// <c>PowerSpentTotal</c>, and a real drain contributes exactly its negative delta.
+    ///
+    /// <b>Why this is accumulated directly from events.</b> The retired legacy path made
+    /// the offline balance harness produce a <c>BossSkillCast</c> by itself. With that
+    /// path removed (ADR-029 Slice 5 / TASK-313) and no provisioned Boss Card definitions
+    /// in <c>BalanceBaselineMatrix.Cards</c>, the Boss cannot cast inside a simulated
+    /// battle at all — and adding Boss Cards to that content set would change combat
+    /// balance, which ADR-029 §4 places out of scope. The metric's own contract is
+    /// therefore asserted on the events the production pipeline emits, through the same
+    /// <see cref="MetricAccumulator"/> the matrix uses:
+    ///
+    /// <code>
+    /// BossCardCast              -> BossCardCastCount +1 (M-13), never CastsTotal (M-08)
+    /// PowerChanged(Boss, -20)   -> PowerSpentTotal +20 (M-07)
+    /// PowerChanged(Boss,   0)   -> neither spent nor generated
+    /// (no PowerChanged at all on a no-op drain: GAME_EVENTS.md §2 — "a mutation that
+    ///  does not occur emits nothing")
+    /// </code>
     /// </summary>
     [Theory]
-    [InlineData(20261001UL, 20, 1)]
-    [InlineData(20261002UL, 20, 3)]
-    [InlineData(20261003UL, 40, 2)]
-    [InlineData(20261004UL, 0, 2)]
-    [InlineData(20261005UL, 60, 3)]
-    public async Task TASK195_PowerSpentTotal_RecordsDrainPowerWithoutPlayerCardCasts(
-        ulong seed,
-        int expectedPowerSpent,
-        int expectedBossSkillCasts)
+    [InlineData("one-cast-no-drain-report", 1, null, 0)]
+    [InlineData("three-casts-no-drain-report", 3, null, 0)]
+    [InlineData("zero-delta-drain-report", 1, 0, 0)]
+    [InlineData("real-drain-of-20", 1, -20, 20)]
+    public void TASK195_PowerSpentTotal_RecordsTheDrainDeltaAndCountsEachBossCardCastOnce(
+        string scenario,
+        int castCount,
+        int? drainDelta,
+        int expectedPowerSpent)
     {
-        var thuyMa = BossDefinitions.All.First(b => b.BossId.Value == "boss-thuy-ma");
-        var result = await BalanceBaselineMatrix.RunAsync(thuyMa, BalancePolicies.PassiveName, seed);
+        _ = scenario;
 
-        // Zero player card casts:
-        Assert.Equal(0, result.Metrics.CastsTotal);
-        Assert.Empty(result.Metrics.CastsByCard);
+        var configuration = BalanceBaselineMatrix.Configuration(
+            BossDefinitions.ThuyMa, BalancePolicies.PassiveName, seed: 20261001UL);
+        var accumulator = new MetricAccumulator(configuration);
 
-        // Power spent reflects Thủy Ma Drain Power skill:
-        Assert.Equal(expectedBossSkillCasts, result.Metrics.BossSkillCastCount);
-        Assert.Equal(expectedPowerSpent, result.Metrics.PowerSpentTotal);
-        Assert.True(result.Metrics.PowerSpentTotal <= result.Metrics.PowerGeneratedTotal);
-        Assert.Equal(result.Metrics.PowerFinal, result.Metrics.PowerGeneratedTotal - result.Metrics.PowerSpentTotal);
+        const int petPowerBeforeDrain = 30;
+
+        var events = new List<BattleEvent>(castCount + 1);
+
+        for (var cast = 0; cast < castCount; cast++)
+        {
+            // The canonical Boss ability event (SIGNALR_PROTOCOL.md §3.2.30): the
+            // ability's identity and the Boss's canonical technical Identity.
+            events.Add(BattleEvent.ForBossCardCast("drain-power", "boss-thuy-ma"));
+        }
+
+        if (drainDelta is { } delta)
+        {
+            // The drain's own authoritative mutation report (GAME_EVENTS.md §2,
+            // SIGNALR_PROTOCOL.md §3.2.24): the signed pet-Power delta and the
+            // resulting value. A zero delta is the no-op mutation the metric must not
+            // read as a spend.
+            events.Add(BattleEvent.ForPowerChanged(new PowerChangedEvent(
+                PowerChangeSource.Boss,
+                delta,
+                Math.Max(0, petPowerBeforeDrain + delta))));
+        }
+
+        accumulator.BeginTurn(1);
+        accumulator.RecordResolution(events);
+
+        var powerFinal = Math.Max(0, petPowerBeforeDrain + (drainDelta ?? 0));
+        var metrics = accumulator.Build(StateWithPetPower(powerFinal), BalanceSimulationOutcome.Victory);
+
+        // M-13: one count per canonical cast event — no more, no fewer — and the same
+        // event is never also read as an M-08 Player Card cast.
+        Assert.Equal(castCount, metrics.BossCardCastCount);
+        Assert.Equal(0, metrics.CastsTotal);
+        Assert.Empty(metrics.CastsByCard);
+
+        // M-07: only a negative delta is a spend; a zero delta moves neither total.
+        Assert.Equal(expectedPowerSpent, metrics.PowerSpentTotal);
+        Assert.Equal(0, metrics.PowerGeneratedTotal);
+        Assert.Equal(powerFinal, metrics.PowerFinal);
+    }
+
+    /// <summary>
+    /// A committed state carrying <paramref name="petPower"/>, used only as the state
+    /// carrier <see cref="MetricAccumulator.Build"/> reads its per-Turn values from (the
+    /// event-derived metrics under test do not depend on it).
+    /// </summary>
+    private static BattleState StateWithPetPower(int petPower)
+    {
+        var board = BoardState.FromCells(
+            [.. Enumerable.Repeat(GemType.Atk, BoardState.CellCount)]);
+
+        return new BattleState(
+            BattleId: "balance-m13-metric",
+            PlayerId: Owner,
+            Turn: 1,
+            Sequence: 1,
+            RngSeed: 0UL,
+            RngState: default,
+            BoardState: board,
+            Combo: 0,
+            MatchCount: 0,
+            PetState: new PetState(
+                new PetId("petinstance-balance"),
+                HP: 1000,
+                MaxHP: 1000,
+                ATK: 50,
+                DEF: 50,
+                Crit: 0,
+                Power: petPower,
+                Element.Hoa,
+                new PassiveId("passive-xich-lang"),
+                PassiveProgress.AtStart(5)),
+            BossState: BossDefinitions.ThuyMa.ToInitialState());
     }
 
     /// <summary>

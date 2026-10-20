@@ -53,7 +53,7 @@ using Xunit.Abstractions;
 /// <item>
 /// <b>Phase-start Boss Power</b> is the committed pre-round <c>BossState.Power</c>.
 /// The Player action phase writes no Boss resource and step 18b's Boss Passive
-/// effects change HP / ATK status / SkillCharge / PassiveProgress only, so the value
+/// effects change HP / ATK status / Power / PassiveProgress only, so the value
 /// the 18a selection reads is the committed value entering the round. This is
 /// cross-checked on every cast: the committed post-round Power must equal it minus
 /// the authored cost exactly.
@@ -115,7 +115,7 @@ using Xunit.Abstractions;
 /// <para>
 /// <b>What this test asserts — and what it deliberately does not.</b> Only
 /// contractually guaranteed invariants are asserted: fractions lie in [0, 1]; every
-/// cast round emits exactly one <c>BossCardCast</c>, no <c>BossSkillCast</c>, and
+/// cast round emits exactly one <c>BossCardCast</c> and
 /// spends exactly the authored Power cost; every response phase resolves exactly one
 /// Boss action; cast eligibility implies both hard gates; the eligibility accounting
 /// sums to the phase count; and the module's own cross-checks found no violation.
@@ -259,7 +259,7 @@ public class BossCardCastFrequencyAnalysisTests
             Assert.Equal(boss.Battles, boss.Victories + boss.Defeats + boss.Stalemates);
 
             // The module's own per-phase cross-checks: one Boss action per response
-            // phase, exactly one BossCardCast and no BossSkillCast per cast, the
+            // phase, exactly one BossCardCast per cast, the
             // authored cost spent once, the authored cooldown set, and the
             // phase-start readings consistent with committed state.
             Assert.True(
@@ -429,11 +429,6 @@ public class BossCardCastFrequencyAnalysisTests
         IReadOnlyList<BattleEvent> events,
         bool won)
     {
-        foreach (var legacy in events.Where(e => e.Type == BattleEventType.BossSkillCast))
-        {
-            counters.Violations.Add($"{battleId} round {round}: a migrated Boss emitted BossSkillCast ('{legacy.BossSkillCast.SkillId}').");
-        }
-
         var castEvents = events.Where(e => e.Type == BattleEventType.BossCardCast).ToArray();
         var bossSwapStarts = events
             .Where(e => e.Type == BattleEventType.SwapStarted && e.SwapStarted.Actor == DamageParty.Boss)
@@ -471,7 +466,7 @@ public class BossCardCastFrequencyAnalysisTests
         counters.ResponsePhases++;
 
         // Phase-start readings: Boss Power is invariant across the Player phase and
-        // the 18b Passives (they write HP / ATK status / SkillCharge / PassiveProgress,
+        // the 18b Passives (they write HP / ATK status / Power / PassiveProgress,
         // never Power), and the cooldown the 18a selection reads is step 3's
         // once-per-begun-Turn decrement (BOSS_RULES.md §6.3).
         var phaseStartPower = previous.BossState.Power;

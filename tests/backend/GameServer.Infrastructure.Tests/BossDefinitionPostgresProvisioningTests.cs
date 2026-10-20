@@ -174,18 +174,13 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
 
             Assert.Equal(definition.PassiveDefinition, row.PassiveDefinition);
 
-            // DATABASE.md §1 note item 4 fixes the stored SkillDefinition
-            // document to exactly skillId, baseDamage, chargeRequirement, and
-            // cooldownTurns ("fixed by TASK-045 … unchanged"), so the comparison
-            // is scoped to those four persisted members. The Skill's secondary
-            // effect (BOSS_RULES.md §6.3.1) is Domain configuration on the same
-            // record but is deliberately NOT a stored member — the same
-            // treatment the combat stats MaxHP/ATK/DEF/EnrageThreshold receive —
-            // so it is excluded from the persisted comparison rather than being
-            // silently absent from it.
-            Assert.Equal(
-                definition.SkillDefinition with { SecondaryEffect = null },
-                row.SkillDefinition);
+            // DATABASE.md §1 note item 4 fixes the stored SkillDefinition document to
+            // exactly skillId, baseDamage, chargeRequirement, and cooldownTurns ("fixed
+            // by TASK-045 … unchanged"). OD-311-1 = B / ADR-029 Slice 5: the Domain
+            // carries only skillId and cooldownTurns, and the reader ignores the two
+            // retained legacy members, so the Domain round trip is asserted over the
+            // live members while the stored document's four names are asserted below.
+            Assert.Equal(definition.SkillDefinition, row.SkillDefinition);
 
             Assert.Equal(
                 BossDefinitionJson.WritePassive(definition.PassiveDefinition),
@@ -703,9 +698,10 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
         // The end-to-end proof of ADR-024 §2.2 against the real provider and the
         // real applied schema: the same BossDefinitionLookup the application
         // resolves reads the five provisioned rows over Npgsql, overlays the four
-        // balance columns, and returns each Boss with its structural definition —
-        // including the Skill's SecondaryEffect, which PostgreSQL has no column
-        // for.
+        // balance columns, and returns each Boss with its structural definition.
+        // The Skill's legacy secondary-effect declaration no longer exists (ADR-029
+        // Slice 5 / TASK-313); the stored document's legacy baseDamage /
+        // chargeRequirement members are ignored by the reader (OD-311-1 = B).
         await using var context = CreateContext();
         var lookup = new BossDefinitionLookup(context);
 
@@ -730,12 +726,13 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
             // Slice 4 Boss Cards) is read back through the real provider.
             Assert.Equal(baseline.CastPriorityScore, resolved.CastPriorityScore);
 
-            // BOSS_RULES.md §6.3.1: the secondary effects are not stored, so this
-            // asserts the overlay preserved them from the Domain baseline rather
-            // than reading them back.
-            Assert.Equal(
-                baseline.SkillDefinition.SecondaryEffect,
-                resolved.SkillDefinition.SecondaryEffect);
+            // BOSS_RULES.md §6.3.1 as amended by ADR-029 Slice 5 / TASK-313: the
+            // legacy secondary-effect declaration no longer exists. The overlay reads
+            // the two live Skill members from the stored document and preserves them
+            // unchanged; the retained baseDamage / chargeRequirement members are
+            // ignored by the reader (OD-311-1 = B).
+            Assert.Equal(baseline.SkillId, resolved.SkillId);
+            Assert.Equal(baseline.SkillCooldownTurns, resolved.SkillCooldownTurns);
         }
 
         // BOSS_RULES.md §6.1 spelled out for the Boss the invariants name.
@@ -747,9 +744,11 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
         Assert.Equal(50, hoaLong.DEF);
         Assert.Equal(0.30, hoaLong.EnrageThreshold, precision: 9);
         // BOSS_RULES.md §4.3 item 5 / TASK-309 B-1: Hỏa Long's `flame-burst` Boss
-        // Card carries the approved initial score 85.
+        // Card carries the approved initial score 85, and its ability identity and
+        // cooldown survive the round trip (the two live Skill members).
         Assert.Equal(85, hoaLong.CastPriorityScore);
-        Assert.NotNull(hoaLong.SkillDefinition.SecondaryEffect);
+        Assert.Equal("flame-burst", hoaLong.SkillId);
+        Assert.Equal(2, hoaLong.SkillCooldownTurns);
 
         // BOSS_RULES.md §4.3 item 5 / TASK-308 OD-3b: the one migrated Boss's
         // authored cast-priority score reaches the hydrated definition.
@@ -982,7 +981,7 @@ public class BossDefinitionPostgresProvisioningTests : IAsyncLifetime
             BossId: new BossId($"boss-t251-{suffix}"),
             Element: Element.Hoa,
             PassiveDefinition: new BossPassiveDefinition(new PassiveId("probe"), 5, "Default"),
-            SkillDefinition: new BossSkillDefinition("probe-skill", 1, 1, 0))
+            SkillDefinition: new BossSkillDefinition("probe-skill", 0))
         {
             MaxHP = maxHp,
             ATK = atk,

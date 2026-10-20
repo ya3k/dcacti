@@ -18,7 +18,7 @@ namespace GameServer.Api.Hubs;
 /// <c>CascadeCreated</c> / <c>ComboChanged</c> /
 /// <c>GemMatched</c> / <c>PassiveCharged</c> / <c>PassiveTriggered</c> /
 /// <c>DamageCalculated</c> / <c>DamageDealt</c> / <c>DamageTaken</c> /
-/// <c>BossSkillCast</c> / <c>BossCardCast</c> / <c>BattleWon</c> / <c>BattleLost</c> / <c>CardCast</c> /
+/// <c>BossCardCast</c> / <c>BattleWon</c> / <c>BattleLost</c> / <c>CardCast</c> /
 /// <c>PetSkillCast</c> / <c>RelicTriggered</c> / <c>PowerChanged</c> /
 /// <c>MatchedGemSummary</c> — never
 /// the Domain enum's ordinal, which is a Domain identity and not part of the
@@ -27,8 +27,8 @@ namespace GameServer.Api.Hubs;
 /// resolution's events (<c>§3.2.6–§3.2.9</c>); the next two are the Passive
 /// stage's (<c>§3.3</c>, the shared Pet/Boss events; <c>§3.2.16–§3.2.17</c>);
 /// the three after them are the Damage Pipeline's (<c>§3.2.13–§3.2.15</c>); the
-/// next two are the Boss Response's own cast forms
-/// (<c>§3.2.18</c>, <c>§3.2.30</c>) and the one after them is the outcome's
+/// next one is the Boss Response's own cast form
+/// (<c>§3.2.30</c>) and the one after it is the outcome's
 /// (<c>§3.2.19</c>); the two after those are the Player cast stages'
 /// (<c>§3.2.20–§3.2.21</c>); and the last two are the Relic stage's and the Power
 /// stage's (<c>§3.2.23–§3.2.24</c>).
@@ -49,8 +49,8 @@ namespace GameServer.Api.Hubs;
 /// <c>"pet"</c>/<c>"boss"</c> discriminator (<c>§3.2.16</c> item 1) — the same
 /// spelling and the same string vocabulary, so one slot carries it and each event
 /// populates it from its own payload. <c>sourceId</c> is likewise shared by the
-/// two Passive events and <c>BossSkillCast</c> (<c>§3.2.16</c> item 2,
-/// <c>§3.2.18</c>), where it always means the same thing: the owning entity's
+/// two Passive events and <c>BossCardCast</c> (<c>§3.2.16</c> item 2,
+/// <c>§3.2.30</c>), where it always means the same thing: the owning entity's
 /// identity.
 ///
 /// <b>Omission, never <c>null</c>.</b> A member that is not applicable to an
@@ -158,22 +158,18 @@ namespace GameServer.Api.Hubs;
 /// <c>DamageDealt</c> and <c>DamageTaken</c> (<c>§3.2.14</c>, <c>§3.2.15</c>): the Final Damage amount.
 /// </param>
 /// <param name="SourceId">
-/// <c>PassiveCharged</c>, <c>PassiveTriggered</c>, <c>BossSkillCast</c>, and
-/// <c>BossCardCast</c>
-/// (<c>§3.2.16</c> item 2, <c>§3.2.17</c>, <c>§3.2.18</c>, <c>§3.2.30</c>): the
+/// <c>PassiveCharged</c>, <c>PassiveTriggered</c>, and <c>BossCardCast</c>
+/// (<c>§3.2.16</c> item 2, <c>§3.2.17</c>, <c>§3.2.30</c>): the
 /// identity of the owning entity — <c>PetState.PetId</c> or
 /// <c>BossState.BossId</c>. It is the same fact — "which entity owns this event"
-/// — and the same wire name on all four events, so it is one member, and it is
+/// — and the same wire name on all three events, so it is one member, and it is
 /// always present on each of them.
 /// For a Boss it is the canonical technical Identity <c>BossState.BossId</c>
 /// (e.g. <c>"boss-hoa-long"</c>), never a display name
 /// (<c>BOSS_RULES.md</c> §6.4). The damage events have no such member, so no
 /// <c>DamageDealt</c>/<c>DamageTaken</c> item writes it.
 /// </param>
-/// <param name="SkillId">
-/// <c>BossSkillCast</c> only (<c>§3.2.18</c>): the Boss Skill's identity
-/// (<c>BOSS_RULES.md</c> §4, §6.4).
-/// </param>
+
 /// <param name="CardId">
 /// <c>CardCast</c>, <c>PetSkillCast</c>, and <c>BossCardCast</c> (<c>§3.2.20</c>,
 /// <c>§3.2.21</c>, <c>§3.2.30</c>): the cast Card definition's identity. For a
@@ -238,8 +234,7 @@ public sealed record BattleEventWireDto(
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Amount = null,
     [property: JsonPropertyName("sourceId")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SourceId = null,
-    [property: JsonPropertyName("skillId")]
-    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? SkillId = null,
+
     [property: JsonPropertyName("outcome")]
     [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Outcome = null,
     [property: JsonPropertyName("finalBossHp")]
@@ -436,25 +431,6 @@ public sealed record BattleEventWireDto(
             Source: source,
             SourceId: sourceId);
 
-    /// <summary>
-    /// The wire item for one <c>BossSkillCast</c>
-    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.18) — the Skill's identity and the Boss's
-    /// identity, and nothing else.
-    /// </summary>
-    /// <param name="skillId">
-    /// The Boss Skill's identity (<c>BOSS_RULES.md</c> §4, §6.4) — the value the
-    /// definition carries, reported rather than re-derived (§3.2.18 item 1).
-    /// </param>
-    /// <param name="sourceId">
-    /// The Boss's identity — the canonical technical Identity
-    /// <c>BossState.BossId</c> (e.g. <c>"boss-hoa-long"</c>), never a display
-    /// name (<c>BOSS_RULES.md</c> §6.4, §3.2.18 item 2).
-    /// </param>
-    public static BattleEventWireDto BossSkillCast(string skillId, string sourceId) =>
-        new(
-            Type: "BossSkillCast",
-            SkillId: skillId,
-            SourceId: sourceId);
 
     /// <summary>
     /// The wire item for one <c>BossCardCast</c>
@@ -462,7 +438,7 @@ public sealed record BattleEventWireDto(
     /// Boss's identity, and nothing else.
     ///
     /// <b>No cost, Power, cooldown, or effect summary is carried.</b> §3.2.30 fixes
-    /// the payload to the same two identity members <c>BossSkillCast</c> carries;
+    /// the payload to two identity members;
     /// the resulting Boss Power and cooldown are authoritative in the
     /// <c>bossState</c> projection (<c>§4.4</c> item 12), and the cast's effect is
     /// settled state rather than a wire member (<c>GAME_EVENTS.md</c> §2). The
@@ -695,7 +671,7 @@ public sealed record BattleEventWireDto(
     /// <c>SwapStarted</c>'s member (§3.2.26 item 2), which the client already
     /// carries forward for every item of the cycle, and the board travels in the
     /// state push and the snapshot alone (§3.1 item 3). The item also carries no
-    /// damage, healing, DEF buff, Power, or SkillCharge value: it reports counts
+    /// damage, healing, DEF buff, Power, or charge value: it reports counts
     /// only (<c>GAME_EVENTS.md</c> §2 item 6).
     /// </summary>
     /// <param name="gems">
@@ -866,7 +842,7 @@ public static class BattleEventWireProjection
             BattleEventType.DamageCalculated => ProjectDamageCalculated(battleEvent.DamageCalculated),
             BattleEventType.DamageDealt => ProjectDamageDealt(battleEvent.DamageDealt),
             BattleEventType.DamageTaken => ProjectDamageTaken(battleEvent.DamageTaken),
-            BattleEventType.BossSkillCast => ProjectBossSkillCast(battleEvent.BossSkillCast),
+
             BattleEventType.BossCardCast => ProjectBossCardCast(battleEvent.BossCardCast),
             BattleEventType.BattleWon => ProjectBattleWon(battleEvent.BattleWon),
             BattleEventType.BattleLost => ProjectBattleLost(battleEvent.BattleLost),
@@ -990,18 +966,6 @@ public static class BattleEventWireProjection
             source: triggered.Source,
             sourceId: triggered.SourceId);
 
-    /// <summary>
-    /// Projects the <c>BossSkillCast</c> payload (<c>SIGNALR_PROTOCOL.md</c>
-    /// §3.2.18) — the Skill's identity and the Boss's identity.
-    /// </summary>
-    private static BattleEventWireDto ProjectBossSkillCast(BossSkillCastEvent skill) =>
-        BattleEventWireDto.BossSkillCast(
-            // §3.2.18 item 1 / §3.2.18 item 2: both members are identities the
-            // resolution read off the Boss's definition and state. Neither is
-            // re-derived here, and no effect detail is added — §3.2.18 item 3 leaves
-            // the Skill's damage to the damage events that follow it in this batch.
-            skillId: skill.SkillId,
-            sourceId: skill.SourceId);
 
     /// <summary>
     /// Projects the <c>BossCardCast</c> payload (<c>SIGNALR_PROTOCOL.md</c>

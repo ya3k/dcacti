@@ -1610,7 +1610,7 @@ public sealed class BattleStateService
         // every cascade pass of this committed Swap, one per unique cleared cell
         // (COMBAT_RULES.md §2 item 6, MATCH3_RULES.md §5.7, §5.8.2). Nothing is
         // re-counted here, and the event reports counts only — no damage, heal, DEF
-        // buff, Power, or SkillCharge value is taken from it or put on it.
+        // buff, Power, or charge value is taken from it or put on it.
         events.Add(BattleEvent.ForMatchedGemSummary(result.Resources.ClearedGemCounts));
 
         events.AddRange(charged.Charges.Select(BattleEvent.ForPassiveCharged));
@@ -2033,18 +2033,19 @@ public sealed class BattleStateService
             // ADR-026 §4: cell type determines the effect and the acting side determines
             // ownership and target — for the Boss's DEF Gems the temporary DEF buff is the
             // Boss's (COMBAT_RULES.md §5.5.6, TASK-299), for its HP Gems the heal is the
-            // Boss's, and its POWER Gems (and only its
-            // POWER Gems) charge BossState.SkillCharge, +1 per match group and clamped to
-            // the Skill's ChargeRequirement (D2, T1, T2). The Player's POWER matches never
-            // reach this call. ResourceGenerator owns every one of those rules; this
-            // boundary only orders the call and writes back what it returned.
+            // Boss's, and its POWER Gems (and only its POWER Gems) generate the Boss's own
+            // BossState.Power under the shared generation rule (ADR-029 §2.2;
+            // COMBAT_RULES.md §2). The Player's POWER matches never reach this call. The
+            // retired SkillCharge accumulator is gone (ADR-029 Slice 5 / TASK-313), so this
+            // call takes no charge-requirement argument. ResourceGenerator owns every one
+            // of those rules; this boundary only orders the call and writes back what it
+            // returned.
             var bossMatchEffects = ResourceGenerator.ApplyActorMatchEffects(
                 DamageParty.Boss,
                 resolved.PetState,
                 bossState,
                 bossGeneration,
-                bossResolution,
-                bossDefinition.SkillChargeRequirement);
+                bossResolution);
 
             resolved = resolved with
             {
@@ -2277,238 +2278,19 @@ public sealed class BattleStateService
         // ===================================================================
         // Step 18c is where the action step 18a selected resolves
         // (BOSS_RULES.md §4.3; ADR-029 §2.7). Exactly ONE form is active per
-        // ability (BOSS_RULES.md §4.4; ADR-029 §2.5 as amended by TASK-308), so the
-        // legacy Skill gate below runs only for the transitional BossSkill form: a
-        // migrated Boss never reads SkillCharge as a gate and never emits
-        // BossSkillCast for the same ability resolution. Its SkillCharge stays
-        // inert — written only by the transitional generator on a board-selected
-        // phase, never read (TASK-307 §2.2 C-7).
+        // ability (BOSS_RULES.md §4.4; ADR-029 §2.5 as amended by TASK-308): a
+        // migrated Boss's ability is its provisioned Boss Card, resolved by the
+        // canonical 18c branch below. The retired legacy Boss Skill path — the
+        // SkillCharge eligibility gate, the BossSkillCast emission, and the
+        // BossSkillSecondaryEffect application — was removed by ADR-029 Slice 5 /
+        // TASK-313 (operator decisions OD-311-1 = B, OD-311-2 = A), so this step
+        // has no second branch, no charge accumulator and no fallback.
         //
-        // GAME_STATE.md §2.4.3 / BOSS_RULES.md §6.3: the Skill is eligible on BOTH
-        // documented conditions — SkillCharge has reached the ChargeRequirement AND
-        // SkillCooldown is 0. The charge itself is the Boss's own POWER matches',
-        // accumulated at step 18a above (ADR-026 D2): this step no longer adds the
-        // Player's Matches to the counter, because Player POWER matches never charge
-        // the Boss and the Player's other Matches never did under D2.
-        //
-        // A Boss skill deals NO direct damage (ADR-026 D3): it modifies the boss's
-        // own combat modifiers, the Pet's Power, or the Pet's combat modifiers, and
-        // the only damage a Boss deals is the ATK-match-gated instance at §18d below.
-        var skillFires = bossCard is null
-            && bossState.SkillCharge >= bossDefinition.SkillChargeRequirement
-            && bossState.SkillCooldown == 0;
-
-        if (skillFires)
-        {
-            // SIGNALR_PROTOCOL.md §3.2.18: the Skill is announced when it fires. Both
-            // identities are the Boss's own — the definition's SkillId and the
-            // canonical technical Identity BossState.BossId.
-            events.Add(BattleEvent.ForBossSkillCast(bossDefinition.SkillId, bossState.BossId.Value));
-
-            // -------------------------------------------------------------------
-            // Step 10b: Boss Skill secondary effect — BOSS_RULES.md §6.3.1, ADR-026 D5–D7
-            // -------------------------------------------------------------------
-            // GAME_RULES.md §17 step 18c: a Skill that fires applies its declared
-            // non-damage effect, "outside the pipeline" (COMBAT_RULES.md §3.4). The
-            // declaration is read from the Boss's own definition
-            // (BossSkillDefinition.SecondaryEffect), so no SkillId string dispatch
-            // occurs here and every magnitude and duration stays the definition's.
-            //
-            // The five MVP Skills' effects are the ADR-026-approved ones:
-            //   flame-burst     AtkBuff      temporary Boss ATK buff (D5)
-            //   drain-power     PowerDrain   -20 flat Pet Power (instant)
-            //   root            AtkDebuff    -30% Pet ATK for 2 Turns
-            //   earthquake      BossShield   temporary Boss Shield (D6)
-            //   thunder-strike  NextAtkBuff  next qualifying Boss ATK buff (D7)
-            // Burn DoT execution is retired (ADR-026 D3/D5) and no longer appears in
-            // this resolution: no DoT tick is executed at step 19a either.
-            //
-            // No event is emitted for an effect: GAME_RULES.md §16's canonical list is
-            // closed and BOSS_RULES.md §7 enumerates step 18's events. The effects are
-            // authoritative BattleState mutation and reach the client as settled state
-            // through the existing BattleStateUpdated projection
-            // (SIGNALR_PROTOCOL.md §4.3 item 14). Drain Power is the one exception
-            // below, and only because an existing PowerChanged event owns every
-            // authoritative Power mutation (GAME_EVENTS.md §2).
-            if (bossDefinition.SkillDefinition.SecondaryEffect is { } skillEffect)
-            {
-                // The Status Effect instance the declaration builds, or null for the one
-                // instance-less kind (Drain Power, GAME_STATE.md §2.3.1 item 9).
-                // BossSkillDefinition.ToStatusEffect owns the construction — including the
-                // Turn-based / trigger-based choice its ExpiryCondition or DurationTurns
-                // selects — so no magnitude, duration, identity, or source is authored
-                // here.
-                var declaredInstance = skillEffect.ToStatusEffect();
-
-                if (declaredInstance is null && skillEffect.Kind != BossSkillSecondaryEffectKind.PowerDrain)
-                {
-                    throw new InvalidOperationException(
-                        $"Boss Skill '{bossDefinition.SkillId}' declares a '{skillEffect.Kind}' "
-                        + "secondary effect without the instance values BOSS_RULES.md §6.3.1 requires.");
-                }
-
-                switch (skillEffect.Kind)
-                {
-                    case BossSkillSecondaryEffectKind.AtkBuff:
-                    {
-                        // ADR-026 D5 (Option 5B): Hỏa Long's Flame Burst applies a
-                        // temporary Boss ATK buff to the Boss's own
-                        // ActiveStatusEffects. COMBAT_RULES.md §5.5.1 consumes a
-                        // Turn-based TargetStat="ATK" BuffDebuff at the Boss attack's
-                        // Step 1, so the buff reaches the Boss's next qualifying ATK
-                        // match and never deals damage on its own.
-                        //
-                        // COMBAT_RULES.md §5.2 item 2 / GAME_STATE.md §2.3.1 item 6:
-                        // re-applying an already-active identity refreshes that one
-                        // instance (duration and magnitude re-set) rather than
-                        // appending a second, which is exactly Apply.
-                        bossState = bossState with
-                        {
-                            ActiveStatusEffects = StatusEffectLifecycle.Apply(
-                                bossState.ActiveStatusEffects,
-                                declaredInstance.GetValueOrDefault()),
-                        };
-                        break;
-                    }
-
-                    case BossSkillSecondaryEffectKind.NextAtkBuff:
-                    {
-                        // ADR-026 D7 (Option 3A): Kim Lôi Vương's Thunder Strike
-                        // installs a trigger-based TargetStat="ATK" BuffDebuff on the
-                        // Boss whose ExpiryCondition is "NextQualifyingAttack". It is
-                        // not on the step 19a countdown (GAME_STATE.md §5.1.1 item 7),
-                        // so it survives every Turn on which the Boss produces no ATK
-                        // match and is consumed only by the qualifying attack
-                        // AttackResolution resolves — COMBAT_RULES.md §5.5.1 composes
-                        // it into that instance's Step 1 in the meantime.
-                        bossState = bossState with
-                        {
-                            ActiveStatusEffects = StatusEffectLifecycle.ApplyTriggerBased(
-                                bossState.ActiveStatusEffects,
-                                declaredInstance.GetValueOrDefault()),
-                        };
-                        break;
-                    }
-
-                    case BossSkillSecondaryEffectKind.BossShield:
-                    {
-                        // ADR-026 D6 (Option 2A): Sơn Thạch Vệ's Earthquake grants the
-                        // Boss a temporary Shield on its own ActiveStatusEffects. It is
-                        // the same trigger-based absorption pool COMBAT_RULES.md §4
-                        // defines and the Damage Pipeline already consumes when the
-                        // Boss is the defending target, and the same
-                        // "at most one Shield per entity, refreshed not accumulated"
-                        // operation (§4 item 3).
-                        bossState = bossState with
-                        {
-                            ActiveStatusEffects = StatusEffectLifecycle.ApplyShield(
-                                bossState.ActiveStatusEffects,
-                                declaredInstance.GetValueOrDefault()),
-                        };
-                        break;
-                    }
-
-                    case BossSkillSecondaryEffectKind.PowerDrain:
-                    {
-                        // BOSS_RULES.md §6.3.1 item 2: "Instantly subtracts 20 flat
-                        // Power from the active Pet (PetState.Power = max(0,
-                        // PetState.Power - 20))". The floor at 0 is that item's own
-                        // formula and GAME_RULES.md §12's 0-100 range.
-                        //
-                        // GAME_STATE.md §2.3.1 item 9: this creates NO Status Effect
-                        // instance — it is an immediate PetState.Power mutation — so
-                        // nothing is written to StatusEffects[] here. No duration,
-                        // stacking, refresh, or reset behavior is invented: §6.3.1
-                        // item 2 gives the reduction none.
-                        var powerBeforeDrain = resolved.PetState.Power;
-                        var powerAfterDrain = Math.Max(
-                            0,
-                            resolved.PetState.Power - (int)skillEffect.Magnitude);
-
-                        resolved = resolved with
-                        {
-                            PetState = resolved.PetState with { Power = powerAfterDrain },
-                        };
-
-                        var drained = powerBeforeDrain - powerAfterDrain;
-                        if (drained > 0)
-                        {
-                            events.Add(BattleEvent.ForPowerChanged(new PowerChangedEvent(
-                                PowerChangeSource.Boss,
-                                -drained,
-                                powerAfterDrain)));
-                        }
-                        break;
-                    }
-
-                    case BossSkillSecondaryEffectKind.AtkDebuff:
-                    {
-                        // BOSS_RULES.md §6.3.1 item 3: Root applied to the active Pet —
-                        // Id "Root", Type BuffDebuff, Source Boss, TargetStat "ATK",
-                        // Magnitude 30, RemainingTurns 2.
-                        //
-                        // StatusEffect.TurnBased enforces the TargetStat-iff-BuffDebuff
-                        // pairing at construction, and Apply carries the refresh
-                        // semantics (COMBAT_RULES.md §5.3 DR3/DR4). Its one-Turn-of-
-                        // duration consumption is the existing step 19a pass
-                        // (COMBAT_RULES.md §5.3.2 — Root is Turn-based); no second
-                        // consumption path is added.
-                        //
-                        // COMBAT_RULES.md §5.4 owns what the instance's Magnitude then
-                        // does: §5.4.1 consumes it at the Player → Boss Damage Pipeline
-                        // Step 1 Attack input through StatusEffectLifecycle.EffectiveAttack.
-                        // §5.4.3 places this application AFTER the Player's own step-15
-                        // attack, so Root does not retroactively modify the attack this
-                        // same round already resolved — it applies to the next round's
-                        // Player attack, and step 19a's 2 → 1 is the first of its two
-                        // documented consumption Turns.
-                        resolved = resolved with
-                        {
-                            PetState = resolved.PetState with
-                            {
-                                ActiveStatusEffects = StatusEffectLifecycle.Apply(
-                                    resolved.PetState.ActiveStatusEffects,
-                                    declaredInstance.GetValueOrDefault()),
-                            },
-                        };
-                        break;
-                    }
-
-                    case BossSkillSecondaryEffectKind.Burn:
-                        throw new InvalidOperationException(
-                            "BOSS_RULES.md §6.3.1 item 1's Burn is retired by ADR-026 D3/D5: "
-                            + "no MVP Boss declares it. A definition that still did would need its own "
-                            + "recorded decision, not an implementation here.");
-
-                    default:
-                        throw new InvalidOperationException(
-                            $"Unhandled Boss Skill secondary effect kind '{skillEffect.Kind}'.");
-                }
-            }
-
-            // BOSS_RULES.md §6.3 / GAME_STATE.md §2.4.3: "After the Skill fires:
-            // SkillCharge resets to 0, SkillCooldown resets to the Boss's cooldown
-            // value."
-            //
-            // Cooldown ordering is the documented decrement → check → set sequence
-            // (GAME_STATE.md §2.4.3, BOSS_RULES.md §6.3): each committed Round's
-            // step 3 decrements the stored value by exactly 1, the gate above then
-            // reads it, and a successful cast sets the authored value in this same
-            // write-back. An authored N therefore blocks the N−1 subsequent rounds
-            // whose post-decrement value is still > 0; the Nth round is eligible
-            // again, and N = 0 is eligible every round. The value set here is the
-            // authored one — the next Round's step-3 decrement is its first tick.
-            //
-            // The reset discards the charge the Boss's POWER matches accumulated: the
-            // cast consumes it. It does not touch PassiveProgress — §2.4.3 makes the
-            // two independent counters, and neither resets the other.
-            bossState = bossState with
-            {
-                SkillCharge = 0,
-                SkillCooldown = bossDefinition.SkillCooldownTurns,
-            };
-        }
-        else if (bossCastSelected)
+        // A Boss ability deals NO direct damage (ADR-026 D3): a Boss Card modifies
+        // the Boss's own combat state, the Pet's Power, or the Pet's combat
+        // modifiers, and the only damage a Boss deals is the ATK-match-gated
+        // instance at §18d below.
+        if (bossCastSelected)
         {
             // -------------------------------------------------------------------
             // Step 10c: Boss Card cast — GAME_RULES.md §17 step 18c, ADR-029 §2.7
@@ -2590,10 +2372,6 @@ public sealed class BattleStateService
                 bossState.BossId.Value));
         }
 
-        // When the legacy Skill did not fire (and no action was selected), the charge
-        // simply carries what step 18a accumulated — the case BOSS_RULES.md §6.3
-        // describes, where the Skill becomes eligible on a later round. A migrated
-        // Boss's SkillCharge is inert and is never read as a gate.
 
         // ===================================================================
         // Step 11: Boss → Pet damage — GAME_RULES.md §17 step 18d, ADR-026 D1

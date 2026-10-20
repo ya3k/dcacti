@@ -254,11 +254,14 @@ internal sealed record BalanceSimulationMetrics
     // ------------------------------------------------------------------
 
     /// <summary>
-    /// M-13 — how many Boss Skill casts fired, counted from <c>BossSkillCast</c>
-    /// (<c>BOSS_RULES.md</c> §4, §6.3). This is the documented Skill cadence
-    /// measurement.
+    /// M-13 — how many Boss ability casts fired, counted from the canonical
+    /// <c>BossCardCast</c> event (<c>BOSS_RULES.md</c> §4.3, §6.3;
+    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.30; <c>ADR-029</c> §2.8). This is the
+    /// documented cast-cadence measurement: the retired legacy <c>BossSkillCast</c>
+    /// event was removed with ADR-029 Slice 5 / TASK-313, and the JSON projection
+    /// key is <c>M-13_bossCardCastCount</c>.
     /// </summary>
-    public required int BossSkillCastCount { get; init; }
+    public required int BossCardCastCount { get; init; }
 
     /// <summary>
     /// M-13 — how many Boss Passive triggers fired, counted from

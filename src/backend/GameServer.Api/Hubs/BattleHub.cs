@@ -368,7 +368,7 @@ public record StatusEffectPayload(
 /// nothing else (§4.4 item 2), and referring to the state field as a whole does
 /// not widen it. Every other §2.4 member stays server-side: <c>Element</c>,
 /// <c>ATK</c>, <c>DEF</c>, <c>State</c>, <c>PassiveId</c>,
-/// <c>PassiveProgress</c>, <c>SkillCharge</c>, <c>SkillCooldown</c>, and
+/// <c>PassiveProgress</c>, <c>Power</c>, <c>SkillCooldown</c>, and
 /// <c>StatusEffects[]</c> (§4.4 item 3). A client must not read this object as
 /// the Boss's state.
 ///

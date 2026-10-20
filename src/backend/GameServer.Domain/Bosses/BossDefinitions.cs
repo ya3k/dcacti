@@ -72,32 +72,22 @@ namespace GameServer.Domain.Bosses;
 /// MVP Boss is left absent after Slice 4.
 ///
 /// <b>The Passive mechanics are configuration; their effects are not
-/// implemented here.</b> §6.2–§6.3 give each Boss a Passive trigger and a Skill
-/// timing, and this type carries those values so the resolution can charge,
+/// implemented here.</b> §6.2–§6.3 give each Boss a Passive trigger and a cast
+/// cooldown, and this type carries those values so the resolution can charge,
 /// trigger, and cast. For the three earlier Bosses the Passive <i>effects</i> —
 /// Hỏa Long's Rage, Thủy Ma's healing reduction, Mộc Yêu's regeneration — are
 /// owned by their own stages (<c>BOSS_RULES.md</c> §3 item 3). The two Bosses
 /// authored by TASK-172 declare their effects in §6.2.4/§6.2.5, and their Passive
 /// <i>effects</i> — both a Turn-based +20% ATK Rage modifier — are likewise a
-/// separate implementation stage; this type carries the declaration only. The Skill
-/// <i>effects</i> — Burn, Power drain, ATK reduction — are carried here as each
-/// Skill's <see cref="BossSkillDefinition.SecondaryEffect"/> declaration and
-/// are applied by the step 18b resolution (<c>BOSS_RULES.md</c> §4 item 4,
-/// §6.3.1); the Root declaration's <c>-30%</c> is consumed by the Pet's own
-/// attack through <c>COMBAT_RULES.md</c> §5.4. Earthquake and Thunder Strike
-/// declare no secondary effect (§6.3.1 items 4–5), so their
-/// <see cref="BossSkillDefinition.SecondaryEffect"/> is absent — an explicit
-/// declaration of "None", not an omission. Nothing here applies an effect.
+/// separate implementation stage; this type carries the declaration only.
 ///
-/// <b>The legacy <c>BossSkill</c> values are historical and unchanged.</b>
-/// TASK-309/ADR-029 Slice 4 migrates the four remaining abilities to the
-/// <c>BossCard</c> form through provisioned content, but the transitional
-/// <c>BossSkillDefinition</c> declarations below keep their historical
-/// <c>SecondaryEffect</c> magnitudes and durations (e.g. <c>flame-burst</c> /
-/// <c>root</c> duration 2) until Slice 5 retires that form. The approved
-/// <c>BossCard</c> durations (3 Turns) live in the provisioned
-/// <c>CardDefinition</c> effects, not here — the documented, intentional
-/// divergence.
+/// <b>The legacy <c>BossSkill</c> effect declarations were removed by
+/// ADR-029 Slice 5 / TASK-313.</b> The five Boss abilities are canonical Boss
+/// Cards whose effects are provisioned <c>CardDefinition</c> content
+/// (Slices 3–4); nothing here declares a Skill effect any more. The persisted
+/// <c>SkillDefinition</c> document keeps its historical
+/// <c>baseDamage</c>/<c>chargeRequirement</c> members as storage compatibility
+/// only (OD-311-1 = B) — the Domain neither declares nor reads them.
 ///
 /// <b><c>PassiveThreshold</c> is <c>null</c> for every non-match-charged
 /// Passive.</b> §6.2 gives Thủy Ma the <b>Battle Start</b> trigger, Sơn Thạch Vệ
@@ -128,8 +118,8 @@ public static class BossDefinitions
     /// Hỏa Long — persistence key <c>"boss-def-hoa-long"</c>, canonical technical
     /// Identity <c>"boss-hoa-long"</c> (display name "Hỏa Long"),
     /// <c>Element = Hỏa</c>, Passive <c>"boss-hoa-long-rage"</c> every 5 Player
-    /// Matches, Skill <c>"flame-burst"</c> at 5 Matches / 2 Turn cooldown / 150
-    /// base damage (<c>BOSS_RULES.md</c> §6.1–§6.4; <c>DATABASE.md</c> §1).
+    /// Matches. The <c>"flame-burst"</c> ability is a provisioned Boss Card with a
+    /// 2 Turn cooldown (<c>BOSS_RULES.md</c> §6.1–§6.4; <c>DATABASE.md</c> §1).
     /// </summary>
     public static readonly BossDefinition HoaLong = new(
         BossDefinitionId: "boss-def-hoa-long",
@@ -140,24 +130,8 @@ public static class BossDefinitions
         PassiveDefinition: new BossPassiveDefinition(
             new PassiveId("boss-hoa-long-rage"), 5, "Default"),
         SkillDefinition: new BossSkillDefinition(
-            // §6.3: Charge Req. 5, CD 2T, Skill Base Dmg 0 (ADR-026 D3).
             SkillId: "flame-burst",
-            BaseDamage: 0,
-            ChargeRequirement: 5,
-            CooldownTurns: 2)
-        {
-            // ADR-026 D5 (Option 5B): Temporary Boss ATK buff (+50% for 2 Turns).
-            // Direct damage and Burn DoT are removed.
-            SecondaryEffect = new BossSkillSecondaryEffect
-            {
-                Kind = BossSkillSecondaryEffectKind.AtkBuff,
-                StatusEffectId = "flame-burst",
-                StatusEffectType = Battle.StatusEffectType.BuffDebuff,
-                TargetStat = "ATK",
-                Magnitude = 50,
-                DurationTurns = 2,
-            },
-        })
+            CooldownTurns: 2))
     {
         // §6.1: MaxHP 5000, ATK 100, DEF 50, Enrage "1500 (30%)" — the shared
         // MVP base configuration (the Domain defaults, not persisted columns).
@@ -177,9 +151,8 @@ public static class BossDefinitions
     /// Thủy Ma — persistence key <c>"boss-def-thuy-ma"</c>, canonical technical
     /// Identity <c>"boss-thuy-ma"</c> (display name "Thủy Ma"),
     /// <c>Element = Thủy</c>, Passive <c>"boss-thuy-ma-heal"</c> Always Active
-    /// (<c>PassiveThreshold = 0</c>), Skill <c>"drain-power"</c> at 4 Matches /
-    /// 3 Turn cooldown / 0 base damage (<c>BOSS_RULES.md</c> §6.1–§6.4;
-    /// <c>DATABASE.md</c> §1).
+    /// (<c>PassiveThreshold = 0</c>). The <c>"drain-power"</c> ability is a
+    /// provisioned Boss Card with a 3 Turn cooldown (<c>BOSS_RULES.md</c> §6.1–§6.4;
     /// </summary>
     public static readonly BossDefinition ThuyMa = new(
         BossDefinitionId: "boss-def-thuy-ma",
@@ -193,24 +166,8 @@ public static class BossDefinitions
         PassiveDefinition: new BossPassiveDefinition(
             new PassiveId("boss-thuy-ma-heal"), null, "Default"),
         SkillDefinition: new BossSkillDefinition(
-            // §6.3: Charge Req. 4, CD 3T, Skill Base Dmg 0 (ADR-026 D3).
             SkillId: "drain-power",
-            BaseDamage: 0,
-            ChargeRequirement: 4,
-            CooldownTurns: 3)
-        {
-            // §6.3.1 item 2: "Instantly subtracts 20 flat Power from the active
-            // Pet (PetState.Power = max(0, PetState.Power - 20))". No
-            // StatusEffectId/Type/TargetStat and no DurationTurns: §6.3.1 item 2
-            // states the representation is a flat reduction and the duration is
-            // "None (instant stat reduction, not a persistent status effect)",
-            // which GAME_STATE.md §2.3.1 item 9 records as creating no instance.
-            SecondaryEffect = new BossSkillSecondaryEffect
-            {
-                Kind = BossSkillSecondaryEffectKind.PowerDrain,
-                Magnitude = 20,
-            },
-        })
+            CooldownTurns: 3))
     {
         // §6.1 base stats — the shared MVP configuration.
         MaxHP = 5000,
@@ -229,8 +186,8 @@ public static class BossDefinitions
     /// Mộc Yêu — persistence key <c>"boss-def-moc-yeu"</c>, canonical technical
     /// Identity <c>"boss-moc-yeu"</c> (display name "Mộc Yêu"),
     /// <c>Element = Mộc</c>, Passive <c>"boss-moc-yeu-regen"</c> every 8 Player
-    /// Matches, Skill <c>"root"</c> at 6 Matches / 2 Turn cooldown / 0 base
-    /// damage (<c>BOSS_RULES.md</c> §6.1–§6.4; <c>DATABASE.md</c> §1).
+    /// Matches. The <c>"root"</c> ability is a provisioned Boss Card with a
+    /// 2 Turn cooldown (<c>BOSS_RULES.md</c> §6.1–§6.4; <c>DATABASE.md</c> §1).
     /// </summary>
     public static readonly BossDefinition MocYeu = new(
         BossDefinitionId: "boss-def-moc-yeu",
@@ -240,34 +197,8 @@ public static class BossDefinitions
         PassiveDefinition: new BossPassiveDefinition(
             new PassiveId("boss-moc-yeu-regen"), 8, "Default"),
         SkillDefinition: new BossSkillDefinition(
-            // §6.3: Charge Req. 6, CD 2T, Skill Base Dmg 0 (ADR-026 D3).
             SkillId: "root",
-            BaseDamage: 0,
-            ChargeRequirement: 6,
-            CooldownTurns: 2)
-        {
-            // §6.3.1 item 3: "-30% Pet ATK debuff for 2 Turns ... Percentage-based
-            // ATK reduction (-30% active Pet ATK)", applied as a Turn-based
-            // Buff/Debuff (COMBAT_RULES.md §5.1) whose TargetStat is "ATK"
-            // (GAME_STATE.md §2.3.1's example for Type = BuffDebuff).
-            //
-            // How that magnitude reaches the Pet's own damage is owned by
-            // COMBAT_RULES.md §5.4 (TASK-119): §5.4.1 consumes it at the
-            // Player → Boss Damage Pipeline Step 1 Attack input, §5.4.2 fixes
-            // truncate-toward-zero rounding, and §5.4.4 keeps PetState.ATK
-            // untouched. The consumer is StatusEffectLifecycle.EffectiveAttack.
-            // This declaration therefore carries the instance's values only and
-            // still decides no rule.
-            SecondaryEffect = new BossSkillSecondaryEffect
-            {
-                Kind = BossSkillSecondaryEffectKind.AtkDebuff,
-                StatusEffectId = "Root",
-                StatusEffectType = Battle.StatusEffectType.BuffDebuff,
-                TargetStat = "ATK",
-                Magnitude = 30,
-                DurationTurns = 2,
-            },
-        })
+            CooldownTurns: 2))
     {
         // §6.1 base stats — the shared MVP configuration.
         MaxHP = 5000,
@@ -286,8 +217,8 @@ public static class BossDefinitions
     /// technical Identity <c>"boss-son-thach-ve"</c> (display name
     /// "Sơn Thạch Vệ"), <c>Element = Thổ</c>, Passive
     /// <c>"son-thach-ve-enrage"</c> on the <c>Boss HP ≤ 50%</c> trigger, Skill
-    /// <c>"earthquake"</c> at 5 Matches / 0 Turn cooldown / 0 base damage
-    /// (<c>BOSS_RULES.md</c> §6.1–§6.4; <c>DATABASE.md</c> §1).
+    /// <c>"son-thach-ve-enrage"</c> on the <c>Boss HP ≤ 50%</c> trigger. The
+    /// <c>"earthquake"</c> ability is a provisioned Boss Card with a 0 Turn cooldown
     /// </summary>
     public static readonly BossDefinition SonThachVe = new(
         BossDefinitionId: "boss-def-son-thach-ve",
@@ -307,23 +238,8 @@ public static class BossDefinitions
         PassiveDefinition: new BossPassiveDefinition(
             new PassiveId("son-thach-ve-enrage"), null, "Persistent"),
         SkillDefinition: new BossSkillDefinition(
-            // §6.3: Charge Req. 5, CD 0T, Skill Base Dmg 0 (ADR-026 D3).
             SkillId: "earthquake",
-            BaseDamage: 0,
-            ChargeRequirement: 5,
-            CooldownTurns: 0)
-        {
-            // ADR-026 D6 (Option 2A): Temporary Boss Shield (150 absorption pool).
-            // Direct damage is removed.
-            SecondaryEffect = new BossSkillSecondaryEffect
-            {
-                Kind = BossSkillSecondaryEffectKind.BossShield,
-                StatusEffectId = "Shield",
-                StatusEffectType = Battle.StatusEffectType.Shield,
-                Magnitude = 150,
-                ExpiryCondition = Battle.StatusEffect.ShieldDepletedCondition,
-            },
-        })
+            CooldownTurns: 0))
     {
         // §6.1: MaxHP 3000, ATK 120, DEF 0, Enrage "1500 (50%)".
         MaxHP = 3000,
@@ -344,8 +260,8 @@ public static class BossDefinitions
     /// technical Identity <c>"boss-kim-loi-vuong"</c> (display name
     /// "Kim Lôi Vương"), <c>Element = Kim</c>, Passive
     /// <c>"kim-loi-vuong-combo"</c> on the <c>Player Combo ≥ 4</c> trigger, Skill
-    /// <c>"thunder-strike"</c> at 5 Matches / 0 Turn cooldown / 0 base damage
-    /// (<c>BOSS_RULES.md</c> §6.1–§6.4; <c>DATABASE.md</c> §1).
+    /// <c>"kim-loi-vuong-combo"</c> on the <c>Player Combo ≥ 4</c> trigger. The
+    /// <c>"thunder-strike"</c> ability is a provisioned Boss Card with a 0 Turn cooldown
     /// </summary>
     public static readonly BossDefinition KimLoiVuong = new(
         BossDefinitionId: "boss-def-kim-loi-vuong",
@@ -362,24 +278,8 @@ public static class BossDefinitions
         PassiveDefinition: new BossPassiveDefinition(
             new PassiveId("kim-loi-vuong-combo"), null, "Default"),
         SkillDefinition: new BossSkillDefinition(
-            // §6.3: Charge Req. 5, CD 0T, Skill Base Dmg 0 (ADR-026 D3).
             SkillId: "thunder-strike",
-            BaseDamage: 0,
-            ChargeRequirement: 5,
-            CooldownTurns: 0)
-        {
-            // ADR-026 D7 (Option 3A): Buffs next qualifying Boss ATK match (+50% ATK).
-            // Direct damage is removed.
-            SecondaryEffect = new BossSkillSecondaryEffect
-            {
-                Kind = BossSkillSecondaryEffectKind.NextAtkBuff,
-                StatusEffectId = "thunder-strike",
-                StatusEffectType = Battle.StatusEffectType.BuffDebuff,
-                TargetStat = "ATK",
-                Magnitude = 50,
-                ExpiryCondition = Battle.StatusEffect.NextQualifyingAttackCondition,
-            },
-        })
+            CooldownTurns: 0))
     {
         // §6.1: MaxHP 2800, ATK 140, DEF 0, Enrage "2100 (75%)".
         MaxHP = 2800,

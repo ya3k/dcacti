@@ -448,13 +448,27 @@ internal static class RoundTestSupport
 
     /// <summary>
     /// The number of POWER match groups the Boss's board action produced — one per
-    /// detected POWER Match, which is the unit <c>BossState.SkillCharge</c>
-    /// accumulates in (<c>ADR-026</c> T1, T2, D2;
-    /// <see cref="ResourceGenerator.CountPowerMatchGroups"/>).
+    /// detected POWER Match. It is a diagnostic reading of the Boss's own cycle; the
+    /// retired legacy charge counter it used to feed
+    /// (<see cref="ResourceGenerator.CountPowerMatchGroups"/>, removed with ADR-029
+    /// Slice 5 / TASK-313) no longer exists.
     /// </summary>
     public static int BossPowerMatchGroups(SwapExecutionResult result) =>
         BossBoardEvents(result).Count(
             e => e.Type == BattleEventType.MatchCreated && e.Match.Shape.GemType == GemType.Power);
+
+    /// <summary>
+    /// The Power the Boss's own board action generated — the
+    /// <c>ResourceGeneration.Power</c> the Boss branch of
+    /// <see cref="ResourceGenerator.ApplyActorMatchEffects"/> writes into
+    /// <c>BossState.Power</c>: <see cref="ResourceGenerator.PowerGemBasePower"/> per
+    /// unique cleared POWER cell of the Boss's own cycle (<c>COMBAT_RULES.md</c> §2,
+    /// <c>ADR-029</c> §2.2).
+    /// </summary>
+    public static int BossPowerGeneration(SwapExecutionResult result) =>
+        BossBoardEvents(result).Count(
+            e => e.Type == BattleEventType.GemMatched && e.Gem.GemType == GemType.Power)
+        * ResourceGenerator.PowerGemBasePower;
 
     /// <summary>
     /// Whether a Battle Event is part of a Match-3 board cycle

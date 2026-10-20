@@ -292,50 +292,50 @@ public class EffectiveBossAttackTests
     // =======================================================================
 
     [Fact]
-    public void BossSkillStepOne_ShouldBeEffectiveBossAtkPlusTheAuthoredBaseDamage()
+    public void BossAttackStepOne_ShouldBeEffectiveBossAtkPlusTheAtkGemPool()
     {
-        // COMBAT_RULES.md §3.4 "Boss Skill Step-1 composition", asserted against
+        // COMBAT_RULES.md §3.4 "Boss attack Step-1 composition", asserted against
         // the authored content rather than literals where possible:
-        //   Step 1 Base Damage = EffectiveBossATK + authored Skill Base Damage
+        //   Step 1 Base Damage = EffectiveBossATK + ATK-Gem pool
         //
-        // The authored value comes from the Boss definition (§6.3/§6.3.1 of
-        // BOSS_RULES.md), and it is passed through UNCHANGED — §5.5.2 makes the
-        // modifier reach the Skill's Step-1 damage only through the
-        // EffectiveBossATK contribution.
+        // The authored Skill base-damage term this test used to compose was removed
+        // with ADR-029 Slice 5 / TASK-313: a Boss ability resolves a Boss Card and
+        // produces no damage instance (ADR-026 D3, preserved), so the only Boss
+        // damage instance is the ATK-match-gated attack, whose Step 1 is the
+        // EffectiveBossATK contribution plus the round's ATK-Gem pool.
         var boss = BossDefinitions.HoaLong;
+        const int atkGemPool = 30;
 
-        Assert.Equal(0, boss.SkillBaseDamage);   // ADR-026 D3: SkillBaseDamage = 0
+        // Rage inactive (ATK 100 + 30 = 130).
+        var withoutRage = StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, []) + atkGemPool;
 
-        // Rage inactive (ATK 100 + 0 = 100).
-        var withoutRage = StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, []) + boss.SkillBaseDamage;
+        Assert.Equal(130, withoutRage);
 
-        Assert.Equal(100, withoutRage);
+        // Rage active (EffectiveBossATK 120 + 30 = 150).
+        var withRage = StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, [Rage()]) + atkGemPool;
 
-        // Rage active (EffectiveBossATK 120 + 0 = 120).
-        var withRage = StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, [Rage()]) + boss.SkillBaseDamage;
-
-        Assert.Equal(120, withRage);
+        Assert.Equal(150, withRage);
 
         // The entire +20 increase is the EffectiveBossATK contribution: the delta
         // between the two composed values is Rage's own effect on the stat, and the
-        // authored term is identical in both.
+        // ATK-Gem pool term is identical in both.
         Assert.Equal(20, withRage - withoutRage);
     }
 
     [Fact]
-    public void BossSkillStepOne_ShouldCarryADecreaseThroughEffectiveBossAtkAlone()
+    public void BossAttackStepOne_ShouldCarryADecreaseThroughEffectiveBossAtkAlone()
     {
         // §5.5.1 item 4's decrease, composed under §3.4 exactly as the increase is:
-        // an active Magnitude = -30 gives EffectiveBossATK = 70, so the same Skill's
-        // Step 1 is 70 + 0 = 70 — and the authored 0 is still 0, because
-        // §5.5.2 lets the modifier reach the Skill's damage only through the
-        // EffectiveBossATK contribution.
+        // an active Magnitude = -30 gives EffectiveBossATK = 70, so the same attack's
+        // Step 1 is 70 + 20 = 90 against a 20-point ATK-Gem pool — the whole -30 is
+        // the ATK modifier's, and the pool term is untouched.
         var boss = BossDefinitions.HoaLong;
         var decrease = BuffDebuff("Weaken", "ATK", -30, 2);
+        const int atkGemPool = 20;
 
+        Assert.Equal(120, StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, []) + atkGemPool);
         Assert.Equal(70, StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, [decrease]));
-        Assert.Equal(70, StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, [decrease]) + boss.SkillBaseDamage);
-        Assert.Equal(0, boss.SkillBaseDamage);
+        Assert.Equal(90, StatusEffectLifecycle.EffectiveBossAttack(boss.ATK, [decrease]) + atkGemPool);
     }
 
     // =======================================================================

@@ -328,8 +328,13 @@ public static class BossDefinitionJson
             new SkillDocument
             {
                 SkillId = skill.SkillId,
-                BaseDamage = skill.BaseDamage,
-                ChargeRequirement = skill.ChargeRequirement,
+                // OD-311-1 = B: the two legacy members stay part of the stored
+                // document's shape, but they are no longer Domain configuration.
+                // The application never writes a BossDefinition row —
+                // provisioning is migration-only — so these placeholders only
+                // keep the document contract stable for a caller that does.
+                BaseDamage = 0,
+                ChargeRequirement = 0,
                 CooldownTurns = skill.CooldownTurns,
             },
             Options);
@@ -338,10 +343,13 @@ public static class BossDefinitionJson
     {
         var document = JsonSerializer.Deserialize<SkillDocument>(json, Options)!;
 
+        // OD-311-1 = B: `baseDamage` and `chargeRequirement` are read off the
+        // document and deliberately discarded. The Domain has no runtime or
+        // Domain responsibility for them (ADR-029 Slice 5 / TASK-313), and a
+        // stored value — including the historical 150/180 baseline drift — must
+        // never reactivate the removed legacy Boss Skill behaviour.
         return new BossSkillDefinition(
             document.SkillId,
-            document.BaseDamage,
-            document.ChargeRequirement,
             document.CooldownTurns);
     }
 
@@ -360,17 +368,31 @@ public static class BossDefinitionJson
     }
 
     /// <summary>
-    /// The stored members of the <c>SkillDefinition</c> document — exactly
+    /// The stored members of the <c>SkillDefinition</c> document —
     /// <c>skillId</c>, <c>baseDamage</c>, <c>chargeRequirement</c>,
     /// <c>cooldownTurns</c>.
+    ///
+    /// <b><c>baseDamage</c> and <c>chargeRequirement</c> are storage compatibility
+    /// only (OD-311-1 = B, ADR-029 Slice 5 / TASK-313).</b> They are optional on
+    /// read so both the historical documents and any newer document without them
+    /// deserialize, and they are never mapped into the Domain — the Domain's
+    /// <c>BossSkillDefinition</c> carries only <c>skillId</c> and
+    /// <c>cooldownTurns</c>. No cleanup migration exists for them and no
+    /// historical migration was rewritten.
     /// </summary>
     private sealed record SkillDocument
     {
         public required string SkillId { get; init; }
 
-        public required int BaseDamage { get; init; }
+        /// <summary>
+        /// Retained storage-compatibility member. Not read by the Domain.
+        /// </summary>
+        public int BaseDamage { get; init; }
 
-        public required int ChargeRequirement { get; init; }
+        /// <summary>
+        /// Retained storage-compatibility member. Not read by the Domain.
+        /// </summary>
+        public int ChargeRequirement { get; init; }
 
         public required int CooldownTurns { get; init; }
     }

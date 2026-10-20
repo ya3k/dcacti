@@ -125,11 +125,11 @@ public class Task172BossDefinitionsContentTests
             Assert.Equal(boss.Element, state.Element);
             Assert.Equal(boss.BossId, state.BossId);
 
-            // §2.4.2/§2.4.3: the Passive's identity is carried and the Skill
-            // begins neither charged nor on cooldown.
+            // §2.4.2/§2.4.3: the Passive's identity is carried and the Boss Card
+            // begins off cooldown. (The legacy SkillCharge member was removed with
+            // ADR-029 Slice 5 / TASK-313.)
             Assert.Equal(boss.PassiveId, state.PassiveId);
             Assert.Equal(0, state.PassiveProgress.Current);
-            Assert.Equal(0, state.SkillCharge);
             Assert.Equal(0, state.SkillCooldown);
         }
     }
@@ -263,65 +263,35 @@ public class Task172BossDefinitionsContentTests
     // =======================================================================
 
     [Theory]
-    // §6.3's Skill table, transcribed per Boss: Charge Req. / CD (T) / Base Dmg (ADR-026 D3: BaseDamage = 0).
-    [InlineData("boss-son-thach-ve", "earthquake", 5, 0, 0)]
-    [InlineData("boss-kim-loi-vuong", "thunder-strike", 5, 0, 0)]
-    public void BothNewSkills_ShouldCarryTheDocumentedTimingAndBaseDamage(
+    // §6.3's Skill cooldown (CD) column, transcribed per Boss. The legacy Charge
+    // Requirement / Base Damage columns this theory used to assert were removed
+    // with ADR-029 Slice 5 / TASK-313; the persisted JSONB document retains them as
+    // storage compatibility only (OD-311-1 = B).
+    [InlineData("boss-son-thach-ve", "earthquake", 0)]
+    [InlineData("boss-kim-loi-vuong", "thunder-strike", 0)]
+    public void BothNewSkills_ShouldCarryTheDocumentedCooldown(
         string bossId,
         string skillId,
-        int chargeRequirement,
-        int cooldownTurns,
-        int baseDamage)
+        int cooldownTurns)
     {
         var boss = BossDefinitions.All.Single(b => b.BossId.Value == bossId);
 
         Assert.Equal(skillId, boss.SkillId);
-        Assert.Equal(chargeRequirement, boss.SkillChargeRequirement);
         Assert.Equal(cooldownTurns, boss.SkillCooldownTurns);
-        Assert.Equal(baseDamage, boss.SkillBaseDamage);
     }
 
-    [Fact]
-    public void BothNewSkills_ShouldDeclareTheirApprovedSecondaryEffects()
-    {
-        // ADR-026 D6 / D7:
-        // Sơn Thạch Vệ declares BossShield (150 magnitude).
-        // Kim Lôi Vương declares NextAtkBuff (50 magnitude, NextQualifyingAttack).
-        var sonThachVeEffect = BossDefinitions.SonThachVe.SkillDefinition.SecondaryEffect;
-        Assert.NotNull(sonThachVeEffect);
-        Assert.Equal(BossSkillSecondaryEffectKind.BossShield, sonThachVeEffect!.Value.Kind);
-        Assert.Equal(150, sonThachVeEffect.Value.Magnitude);
-
-        var kimLoiVuongEffect = BossDefinitions.KimLoiVuong.SkillDefinition.SecondaryEffect;
-        Assert.NotNull(kimLoiVuongEffect);
-        Assert.Equal(BossSkillSecondaryEffectKind.NextAtkBuff, kimLoiVuongEffect!.Value.Kind);
-        Assert.Equal(50, kimLoiVuongEffect.Value.Magnitude);
-        Assert.Equal(StatusEffect.NextQualifyingAttackCondition, kimLoiVuongEffect.Value.ExpiryCondition);
-    }
-
-    [Fact]
-    public void BothNewSkills_ShouldCarryExpectedSecondaryEffectKinds()
-    {
-        // ADR-026 D3, D5, D6, D7:
-        // Flame Burst: AtkBuff, Drain Power: PowerDrain, Root: AtkDebuff,
-        // Earthquake: BossShield, Thunder Strike: NextAtkBuff.
-        var documented = new Dictionary<string, BossSkillSecondaryEffectKind>(StringComparer.Ordinal)
-        {
-            ["boss-hoa-long"] = BossSkillSecondaryEffectKind.AtkBuff,
-            ["boss-thuy-ma"] = BossSkillSecondaryEffectKind.PowerDrain,
-            ["boss-moc-yeu"] = BossSkillSecondaryEffectKind.AtkDebuff,
-            ["boss-son-thach-ve"] = BossSkillSecondaryEffectKind.BossShield,
-            ["boss-kim-loi-vuong"] = BossSkillSecondaryEffectKind.NextAtkBuff,
-        };
-
-        foreach (var boss in BossDefinitions.All)
-        {
-            var effect = boss.SkillDefinition.SecondaryEffect;
-
-            Assert.NotNull(effect);
-            Assert.Equal(documented[boss.BossId.Value], effect!.Value.Kind);
-        }
-    }
+    // The former "secondary effect declarations" tests were retired with ADR-029
+    // Slice 5 / TASK-313: `BossSkillSecondaryEffect` / `BossSkillSecondaryEffectKind`
+    // no longer exist, because each ability's effect is now authored as the Boss
+    // Card's `CardEffectDefinition`. The canonical equivalents are:
+    //   * the content itself — TASK309BossCardProvisioningMigrationTests
+    //     (the four Slice 4 rows, exact payload bytes) and the TASK-308
+    //     earthquake provisioning tests;
+    //   * the effect-factory contract — CardEffectDefinitionTests.AtBuff(50, 3),
+    //     AtkDebuff(30, 3), NextAtkBuff(50), PowerDrain(20), Shield;
+    //   * the runtime resolution — TASK309BossCardEffectRuntimeTests and
+    //     BossCardCastRuntimeTests.Round_WhenCastSelected_... (earthquake Shield
+    //     150 on the Boss's own state).
 
     // =======================================================================
     // Cast-priority score — BOSS_RULES.md §4.3 item 5, §4.4 item 5 (TASK-308)

@@ -2,7 +2,22 @@
 
 **Status:** Accepted
 **Date:** 2026-10-18
-**Amended:** 2026-10-20 (TASK-311 / Slice 5 Removal-Readiness Reconciliation) — the
+**Amended:** 2026-10-20 (TASK-313 / Slice 5 Implementation) — the operator resolved the two
+outstanding decisions and authorized physical removal: **OD-311-1 = B** (retain
+`chargeRequirement` and `baseDamage` inside the persisted
+`BossDefinition.SkillDefinition` JSONB as compatibility fields, remove their runtime and
+Domain responsibility, add no cleanup migration and rewrite no historical migration) and
+**OD-311-2 = A** (remove `BossSkillCast` from the wire contract as a coordinated breaking
+release, after the active-battle drain procedure in `REDIS_STATE.md`). Under that
+authorization TASK-313 physically removed `BossState.SkillCharge`,
+`ResourceGenerator.ApplyBossSkillCharge`, the legacy `BossSkill` execution and
+`bossCard is null` fallback path with its `BossSkillSecondaryEffect` declarations,
+`BattleEventType.BossSkillCast` with its payload struct, factory, wire projection and client
+presentation, and the obsolete M-13 skill-cast telemetry source. `BossState.Power`,
+`SkillCooldown`, the canonical `BossCardCast` contract, the one-action policy with its
+cast-priority score and tie-break, and every combat balance value are preserved unchanged.
+§2.8 item 23, §2.9 items 25–27, §2.11 item 32, §3 (U-6) and §4 (Slice 5) are amended in
+place; the fifth Gem remains FUTURE. Prior amendment: 2026-10-20 (TASK-311 / Slice 5 Removal-Readiness Reconciliation) — the
 four-part removal gate of §2.9 item 25 is formally reconciled following the delivery
 of Slices 1–4 (TASK-304, TASK-305, TASK-308, TASK-309) and the closure of TASK-310:
 (a) all five abilities are migrated to Boss Cards and test-verified; (b) old-vs-new
@@ -307,8 +322,10 @@ record.
     `type` + `cardId` only; it gains no actor/source member and no cost member; it
     is never emitted for a Boss cast. The discriminator is the distinction, so no
     consumer migration of the existing payload is required.
-23. **`BossSkillCast` remains the transitional path's event** until the removal
-    gate in §2.9 is met, and no new work may build on it.
+23. **`BossSkillCast` was the transitional path's event** until the removal
+    gate in §2.9 was met, and no work may build on it. The gate is met and the
+    event was removed under TASK-313 (OD-311-2 = A): `BossCardCast` is now the
+    sole Boss ability event on the wire.
 
 ### 2.9 Staged migration and the `SkillCharge` removal gate
 
@@ -325,18 +342,19 @@ record.
     documentation (audited under TASK-311);
     (d) the removal's ADR/index amendments recorded (amended under TASK-311).
     *Status under TASK-311:* The prerequisites of this gate are satisfied, making
-    Slice 5 reviewable and registrable. Physical removal remains gated behind the
-    separate, future Slice 5 implementation task.
-26. **Until the gate is met, both the target contract and the transitional path
-    are documented, and no third variant is permitted.** The target contract is
-    authoritative for new work; `SkillCharge`, the charge requirement and
-    `BossSkillCast` are a compatibility path being retired, never a second live
-    design.
-27. **This task implements no code.** No runtime code, database schema, test code
-    or protocol implementation changes are authorized by this decision; the
-    documents were amended first and this ADR is the historical record of the
-    decision, per `docs/03-decisions/README.md` §1 and
-    `.ai/workflow/architecture/adr-change.md` §2.
+    Slice 5 reviewable and registrable. *Status under TASK-313:* The gate is met
+    and the removal is executed — implementation is authorized by the operator
+    under TASK-313, and the physical removal is committed with its tests and
+    documentation. The persisted `chargeRequirement`/`baseDamage` JSONB members
+    are retained as storage compatibility only (OD-311-1 = B); no runtime or
+    Domain behaviour reads them.
+26. **The removal gate is met, so the transitional path is retired and the
+    target contract is the only live design.** `BossSkillCast`, `SkillCharge`, the
+    charge requirement and the legacy `BossSkill` handlers no longer exist in
+    runtime code; no third variant was ever permitted and none exists.
+27. **This record authorizes no code by itself.** The removal was delivered by
+    TASK-313 under the operator's explicit implementation authorization and the
+    `AGENTS.md` §18 / `.ai/workflow/architecture/adr-change.md` §2 process.
 
 ### 2.10 MVP scope move and the fifth Gem
 
@@ -356,9 +374,10 @@ record.
 31. **No new delivery path exists for it.** There is no `BossPowerChanged` event,
     no new hub method, no subscription, and no second projection. Reconnect is
     snapshot resynchronization (`ADR-008`), unchanged.
-32. **It is not `SkillCharge`.** `SkillCharge` and `SkillCooldown` stay
-    server-side; the two values are never conflated on the wire, and no consumer
-    may reconstruct one from the other.
+32. **It is not `SkillCharge`.** `SkillCooldown` stays server-side. `SkillCharge`
+    was removed from the state model under TASK-313 (Slice 5), so no
+    charge value exists to conflate with Power and no consumer may reconstruct
+    one from the other.
 
 ---
 
@@ -366,9 +385,9 @@ record.
 
 The following were **not decided** by this record as originally written. `U-1`
 was resolved under TASK-304; `U-2`/`U-3`/`U-4`/`U-5` are resolved for the
-Slice 3/4 abilities by the TASK-308/TASK-309 in-place amendments, and `U-6`
-remains gated by §2.9's parity gate. None of them is satisfied by reference to
-an audit report, which does not exist in this repository.
+Slice 3/4 abilities by the TASK-308/TASK-309 in-place amendments, and `U-6` was
+closed by retirement under TASK-313 (Slice 5). None of them is satisfied by
+reference to an audit report, which does not exist in this repository.
 
 | # | Unresolved value | Blocks | Notes |
 |---|---|---|---|
@@ -377,7 +396,7 @@ an audit report, which does not exist in this repository.
 | U-3 | **The Boss Card cast-priority score** (its authored form and its values) and the resulting cast/board action cadence, including the pacing effect of a cast phase producing no Boss attack (§2.7 item 19). | **Resolved — Slice 4 unblocked** | The structure is decided; TASK-308 approved the nullable carrier and `earthquake = 16`, and TASK-309 approves `85` for the other four Bosses. `85` is a starting value to be monitored and adjusted from real gameplay data, not a globally optimal value; no in-battle cast-rate guarantee follows — in particular no `38%` in-battle cast rate — and the 10,000-board simulation baseline (TASK-309 V-1) is a board-only empirical probability, not an in-battle measurement. |
 | U-4 | **The outstanding ability magnitudes** that `ADR-026`'s Unresolved Balance Choices #3–#4 and `BOSS_RULES.md` §6.3.1 items 1/4/5 already record as unresolved — Shield points for `earthquake`, buff percentages and durations for `flame-burst` and `thunder-strike`, and the compounding behavior of `flame-burst` with `boss-hoa-long-rage`. | **Resolved — Slice 4 unblocked** | TASK-308 approved `earthquake`'s Shield as `150 Flat` (that point is resolved). TASK-309 approves `flame-burst` as `+50%` Boss ATK for `3` Turns, `root` as `−30%` active-Pet ATK for `3` Turns and `thunder-strike` as `+50%` on the next qualifying Boss attack. The compounding question is resolved by TASK-309 B-4: multiplicative stacking is preserved unchanged (`1.20 × 1.50 = 1.80`) and additive stacking is **not authorized**. |
 | U-5 | **Whether the migrated abilities keep their current cooldowns.** The values are carried over unchanged by this decision (`BOSS_RULES.md` §6.3); any re-tuning is a balance decision that is not made here. | **Resolved — Slice 4 unblocked** | The cooldown *handling* rule is decided; TASK-309 confirms the migrated abilities keep their current cooldowns unchanged — `flame-burst 2`, `drain-power 3`, `root 2`, `thunder-strike 0` — and authorizes no re-tuning. |
-| U-6 | **The retirement of `SkillCharge`'s own unit-metric and clamp questions.** They are closed by retirement rather than answered, and the retirement is gated by §2.9's parity gate. | Slice 5 (removal) | `ADR-026` Unresolved Balance Choices #1–#2 are reformulated, not resolved, by this record. |
+| U-6 | **The retirement of `SkillCharge`'s own unit-metric and clamp questions.** They are closed by retirement rather than answered, and the retirement is gated by §2.9's parity gate. | **Closed — Slice 5 delivered** | TASK-313 removed `BossState.SkillCharge` and every charge consumer under the operator's authorization (OD-311-1 = B, OD-311-2 = A), so the unit-metric and clamp questions no longer have a subject. `ADR-026` Unresolved Balance Choices #1–#2 are reformulated, not resolved, by this record. |
 
 ---
 
@@ -386,9 +405,9 @@ an audit report, which does not exist in this repository.
 Each slice is a separate future task with its own declared file set and review
 gate. At the time of writing no slice was authorized to start by this record;
 each required the values it depended on to be approved first (§3).
-Slices 1–3 were delivered by TASK-304/TASK-305/TASK-308, and Slice 4 is
-delivered by TASK-309 under the approved values §3 now records; Slice 5 remains
-gated and is not started.
+Slices 1–3 were delivered by TASK-304/TASK-305/TASK-308, Slice 4 by TASK-309
+under the approved values §3 records, and Slice 5 by TASK-313 under the
+operator's OD-311-1 = B / OD-311-2 = A decisions and explicit authorization.
 
 ```text
 SLICE 1 — Boss Power foundation
@@ -451,13 +470,22 @@ SLICE 4 — Ability migration (delivered by TASK-309; approved values in §3)
   Exit: each ability resolves as a Boss Card with the approved effect, target
   and duration, and the approved costs/magnitudes (U-2, U-3, U-4, U-5).
 
-SLICE 5 — Removal (reconciled readiness under TASK-311; implementation gated)
-  Remove SkillCharge, the legacy BossSkill handlers, and BossSkillCast once the
-  future implementation task is registered and authorized. TASK-311 satisfies
-  §2.9's four-part prerequisite gate (5-Boss test coverage verified, old-vs-new
-  behavior compared, consumer inventory audited, and ADR/index amendments
-  prepared). Slice 5 remains an independent future task; TASK-311 executes no
-  runtime code removal.
+SLICE 5 — Removal (delivered by TASK-313)
+  Removed SkillCharge, the legacy BossSkill handlers and BossSkillCast under the
+  operator's decisions OD-311-1 = B (retain the legacy JSONB members as storage
+  compatibility, no cleanup migration) and OD-311-2 = A (coordinated breaking
+  wire-contract removal), authorized by TASK-313. Delivered: the BossState member
+  and its serialization mapping; ResourceGenerator.ApplyBossSkillCharge and the
+  Boss branch's charge write-back; the bossCard-is-null legacy execution branch
+  with BossSkillSecondaryEffect/BossSkillSecondaryEffectKind and the charge/base
+  damage projections; BattleEventType.BossSkillCast, BossSkillCastEvent,
+  ForBossSkillCast and BattleEvent.BossSkillCast; the wire projection/DTO and the
+  client presentation; and the M-13 skill-cast telemetry source, which now counts
+  the canonical BossCardCast. Preserved: BossState.Power, SkillCooldown, the
+  canonical BossCardCast contract, the one-action policy with its
+  CastPriorityScore and board-action tie-break, the shared cast contract, and
+  every combat balance value. §2.9's four-part prerequisite gate was met under
+  TASK-311; this slice executes the removal only.
 ```
 
 Ordering constraints that are not negotiable: Slice 2 before Slice 4 (an ability
@@ -606,6 +634,30 @@ AMENDED (in place) by TASK-309 / Slice 4
     is reversed: the one-action policy, the cast-strictly-greater-than-board
     rule, §2.9's four-part Slice 5 gate and the fifth Gem's FUTURE status are
     unchanged.
+
+AMENDED (in place) by TASK-313 / Slice 5 Implementation
+  This record — the operator resolved OD-311-1 = B and OD-311-2 = A and
+    authorized implementation. §2.8 item 23, §2.9 items 25–27, §2.11 item 32,
+    §3 U-6 and §4's Slice 5 are amended to record the delivered removal:
+    · Removed: BossState.SkillCharge (and its battle-state JSON mapping),
+      ResourceGenerator.ApplyBossSkillCharge and its Boss-branch call,
+      BossSkillSecondaryEffect/BossSkillSecondaryEffectKind with
+      BossDefinition.SkillChargeRequirement/SkillBaseDamage, the
+      `bossCard is null` legacy execution branch and its BossSkillCast emission,
+      BattleEventType.BossSkillCast with BossSkillCastEvent/ForBossSkillCast/
+      BattleEvent.BossSkillCast, the BattleEventWireDto.BossSkillCast projection,
+      the client's BossSkillCast parsing/presentation, and M-13's
+      BossSkillCastCount (now BossCardCastCount, sourced from the canonical event).
+    · Retained by decision: chargeRequirement and baseDamage inside the persisted
+      BossDefinition.SkillDefinition JSONB (OD-311-1 = B). No cleanup migration
+      exists and no historical migration was rewritten; the persisted values are
+      storage compatibility only and no runtime or Domain behaviour reads them.
+    · Preserved unchanged: BossState.Power, SkillCooldown, the BossCardCast
+      contract and event, the one-action policy, CastPriorityScore values,
+      the board-action tie-break, the shared cast contract, and combat balance.
+    · Breaking wire contract: a coordinated client/server deployment after
+      draining active battles is required (REDIS_STATE.md). The fifth Gem remains
+      FUTURE and nothing here authorizes it.
 
 AMENDED (in place) by TASK-311 / Slice 5 Removal-Readiness Reconciliation
   This record — §2.9's four-part removal gate is audited and reconciled:

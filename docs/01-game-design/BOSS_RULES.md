@@ -1,6 +1,6 @@
 # Boss Rules
 
-**Version:** 2.17 (§6 overview table reconciled to authoritative Boss Card mechanics and zero-direct-damage rules, line 40 gate terminology reconciled to the Slice 5 removal gate, and §4.4 annotated with the five-Boss comparison evidence per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; historical direct-damage/Burn table values preserved as historical context only; no runtime code or effect value changes). Prior 2.16: (§4.3 item 5, §4.4 items 5–6, §6.3, §6.3.1 items 1/3/5, and
+**Version:** 2.18 (§4, §4.1, §4.4, §5 item 2, §6 status/table, §6.2.6, §6.3, §6.4 and §7 updated per **TASK-313 / ADR-029 Slice 5**: the legacy `BossSkill` form, its charge gate, the `BossState.SkillCharge` member and the `BossSkillCast` event **no longer exist**; all five MVP abilities are canonical Boss Cards, and `BossCardCast` is the only Boss cast event. Every Boss Card behaviour, cost, cooldown, cast-priority value, tie-break and effect magnitude is unchanged, and the earlier duration-divergence note is preserved as history only. No rebalance and no Fifth Gem change). Prior 2.17: (§6 overview table reconciled to authoritative Boss Card mechanics and zero-direct-damage rules, line 40 gate terminology reconciled to the Slice 5 removal gate, and §4.4 annotated with the five-Boss comparison evidence per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; historical direct-damage/Burn table values preserved as historical context only; no runtime code or effect value changes). Prior 2.16: (§4.3 item 5, §4.4 items 5–6, §6.3, §6.3.1 items 1/3/5, and
 the §6 closing note amended per **TASK-309 / ADR-029 Slice 4**, applying the
 operator-approved values for the four remaining Boss abilities: all four are
 migrated to the Boss Card form (§4.2) with `PowerCost` `flame-burst = 40`,
@@ -262,7 +262,7 @@ Boss Passive fires at Step 18 of GAME_RULES.md §17, after Player Damage
    and that attack remains gated on a confirmed valid ATK-gem match in the
    Boss's own board resolution (ADR-026, D1; the legacy fallback basic attack is
    retired).
-4. **Boss Skill damage does not re-trigger the Boss Passive.** The Passive
+4. **Boss ability damage does not re-trigger the Boss Passive.** The Passive
    resolves once at Step 18 and does not re-evaluate after the cast (step 18c)
    or Attack (step 18d). If a Boss Passive triggers on "Boss HP below threshold,"
    it evaluates once against the post-player-damage state — not again after the
@@ -274,36 +274,36 @@ Boss Passive fires at Step 18 of GAME_RULES.md §17, after Player Damage
 
 ---
 
-# 4. Boss Action: Boss Skill and Boss Card
+# 4. Boss Action: Boss Cards
 
 This section is the canonical owner of **what the Boss does in its response
 phase** — the resource it spends, the action it may take, and how it chooses.
 
-Two ability forms exist, and they are not interchangeable:
+One ability form is live, and it is the Boss Card form:
 
 ```text
-Boss Skill   the transitional ability form (§4, in force today)
-Boss Card    the target ability form (§4.2, ADR-029)
+Boss Card    the Boss ability form (§4.2) — the only live form (ADR-029)
+Boss Skill   the former transitional form — RETIRED, no longer exists (§4.4)
 ```
 
-Both are the *same authored ability* for a Boss; `ADR-029`'s migration moves each
-Boss's ability from the Skill form to the Card form, one ability at a time, and
-retires the `SkillCharge` resource that gates the Skill form only after parity
-has been demonstrated. Until that gate is met, the Skill form stays in force for
-the abilities not yet migrated (§4.4). No Boss ever carries both forms of the
-same ability at once.
+Both names described the *same authored ability* for a Boss. `ADR-029`'s staged
+migration moved each Boss's ability from the Skill form to the Card form, and the
+Skill form — together with the `SkillCharge` resource that gated it, its charge
+requirement, the legacy `BossSkill` execution handlers and the `BossSkillCast`
+event — was physically removed under **TASK-313** (Slice 5). No Boss carries,
+and no runtime can resolve, the Skill form any more; there is no second live
+design and no fallback to one.
 
-1. A Boss Skill is a distinct, usually stronger action the Boss performs,
+1. A Boss ability is a distinct, usually stronger action the Boss performs,
    analogous to a Pet's Signature Skill but Boss-initiated rather than
-   player-cast.
-2. Boss abilities are triggered by the Boss's own timing rule — for the Skill
-   form, its charge requirement and cooldown (§6.3); for the Card form, its
+   player-cast. It resolves as that Boss's one Boss Card (§4.2).
+2. Boss abilities are triggered by the Boss's own timing rule — the Card form's
    Power cost, its cooldown and the action policy (§4.2–§4.4) — and that timing
    rule is itself part of the Boss's design and must be explicit, not implicit.
 3. Boss ability damage (if any) goes through the full Damage Pipeline
    (COMBAT_RULES.md §3), including the Boss's Element for Element Modifier
-   purposes (ELEMENT_RULES.md §5). All five MVP abilities have `BaseDamage = 0`
-   (ADR-026, D3), so no MVP Boss Card or Boss Skill deals direct damage.
+   purposes (ELEMENT_RULES.md §5). No MVP ability deals direct damage
+   (ADR-026, D3), so no MVP Boss Card deals direct damage.
 4. Boss abilities may apply non-damage effects (debuffs, resource drain, etc.)
    as shown in the MVP examples below.
 
@@ -331,18 +331,19 @@ all referenced, not restated.
 5. **Pet Power and Boss Power are separate resources.** Neither is derived from,
    converted to, transferred to, or clamped by the other; there is no shared
    pool and no second spelling of either (`GAME_STATE.md` §0 item 5).
-6. **`SkillCharge` is not Power and is not converted into it.** The transitional
-   `SkillCharge` member (§6.3) and `Power` coexist during the migration; no
-   resolution writes one from the other, and no conversion arithmetic is
-   authorised (`ADR-029`).
+6. **There is no charge resource — `SkillCharge` was removed.** The retired
+   `BossState.SkillCharge` member and its charge requirement were removed under
+   TASK-313 (§4.4), so `Power` is the Boss's only ability resource; no
+   resolution reads, writes, or converts a charge value, and no arithmetic
+   relates Power to any charge (`ADR-029`).
 7. **U-1 resolved (Option A approved under ADR-029 / TASK-304).** The Boss
    generates Power using the shared per-Gem rate table owned by `COMBAT_RULES.md`
    §2 (`+10 Power per uniquely matched POWER cell`, `BaseOutput(POWER) × unique matched count`,
    clamped to `[0, 100]`, actor-relative). Whether the shared output needs future
    cadence re-tuning alongside the per-ability costs remains a future balance
-   question; the per-ability costs and the legacy `ChargeRequirement` re-tuning
-   question (U-2) are resolved by TASK-309 (`ADR-029` §3). This section authors
-   no rate and no cost.
+   question; the per-ability costs (U-2) are resolved by TASK-309 (`ADR-029`
+   §3), and no legacy `ChargeRequirement` re-tuning exists because that member
+   was retired under TASK-313. This section authors no rate and no cost.
 
 ## 4.2 Boss Card Capability (MVP minimum, ADR-029)
 
@@ -470,65 +471,66 @@ Tie-break (fixed; not a tuning parameter)
    `16` or greater can win. The *structure* above — gates, ordering,
    tie-break, determinism — is decided and is not open.
 
-## 4.4 Staged Migration of the Boss Ability (ADR-029)
+## 4.4 Retirement of the Legacy Boss Skill Path (ADR-029)
 
 ```text
-Target contract:   §4.1–§4.3 with one Boss Card per Boss.
-Transitional path: BossState.SkillCharge + §6.3's charge/cooldown gate, and the
-                   pre-migration response order for the abilities not yet
-                   migrated.
+Live contract:      §4.1–§4.3 with one Boss Card per Boss.
+Removed (TASK-313): BossState.SkillCharge, the charge requirement, the legacy
+                    BossSkill execution handlers, the BossSkillCast event, and
+                    the pre-migration response order they used.
 ```
 
-1. **The target contract is authoritative for new work.** No new feature, Card,
-   event, balance value or code path may be built on `SkillCharge`, the charge
-   requirement, or `BossSkillCast`; those are a compatibility path being retired,
-   not a second live design.
-2. **The transitional path stays in force until the Slice 5 removal gate is met**, and
-   `SkillCharge` is removed only after parity has been demonstrated by tests and
-   all consumers have been reconciled. The gate is all four of:
+1. **Only the target contract exists.** No new feature, Card, event, balance
+   value or code path may be built on `SkillCharge`, a charge requirement, or
+   `BossSkillCast`; those names describe a mechanism that has been removed, not
+   a live or compatibility path. There is no second live design, no alias, and
+   no fallback to the legacy form (`ADR-029` §2.9).
+2. **The Slice 5 removal gate was met before the removal was executed**
+   (`ADR-029` §2.9; the comparison evidence is recorded under TASK-311 in
+   `tasks/artifacts/TASK-311-adr-029-slice-5-removal-readiness-reconciliation.md`):
    (a) all five MVP abilities migrated to Boss Cards and covered by tests;
    (b) old and new behavior compared, including the **exact qualifying attack**
-   and the **modifier-consumption timing** of the trigger-based ability
-   (recorded under TASK-311; artifact `tasks/artifacts/TASK-311-adr-029-slice-5-removal-readiness-reconciliation.md`);
+   and the **modifier-consumption timing** of the trigger-based ability;
    (c) every consumer reconciled — event presenters, wire tests, state readers,
-   and every documentation reference (audited under TASK-311);
-   (d) the ADR/index amendments for the removal recorded (`ADR-029` §7 / `docs/03-decisions/README.md` amended in TASK-311).
-   *Note:* Fulfilling the documentation prerequisites under TASK-311 does not itself implement or authorize the removal; Slice 5 remains a separate, future implementation task.
-3. **Migration order** (`ADR-029` Slice 4): `Flame Burst` (`flame-burst`), then
-   `Root` (`root`), then `Drain Power` (`drain-power`), and **`Thunder Strike`
-   (`thunder-strike`) last**, because it is the only trigger-based,
-   modifier-consuming ability and its `NextQualifyingAttack` expiry and
-   modifier-consumption timing need the closest old/new comparison.
-   `Earthquake` (`earthquake`) was migrated earlier by Slice 3 (TASK-308) and is
-   not part of this Slice 4 order.
+   and every documentation reference; (d) the `ADR-029` / index amendments for
+   the removal recorded. **TASK-313 then executed the physical removal** under
+   the operator decisions OD-311-1 = B (retain the legacy `chargeRequirement`/
+   `baseDamage` JSONB members as storage compatibility only — `DATABASE.md` §1
+   note item 4) and OD-311-2 = A (a coordinated breaking wire-contract removal
+   — `SIGNALR_PROTOCOL.md` §3.2.18).
+3. **Migration order (historical record; completed).** `Flame Burst`
+   (`flame-burst`), then `Root` (`root`), then `Drain Power` (`drain-power`), and
+   **`Thunder Strike` (`thunder-strike`) last**, because it is the only
+   trigger-based, modifier-consuming ability and its `NextQualifyingAttack`
+   expiry and modifier-consumption timing needed the closest old/new comparison.
+   `Earthquake` (`earthquake`) was migrated earlier by Slice 3 (TASK-308).
 4. **No encounter mechanic is turned into a Card by this migration**
    (§4.2 item 7).
-5. **Authored content for the migrated abilities.** All five MVP abilities now
-   carry their approved Boss Card content. `earthquake`'s approved Power cost is
+5. **Authored content for the migrated abilities.** All five MVP abilities carry
+   their approved Boss Card content. `earthquake`'s approved Power cost is
    `30` and its Shield magnitude is `150 Flat` (§6.3.1 item 4); the four
    remaining abilities' approved Power costs are `flame-burst = 40`,
    `drain-power = 25`, `root = 35` and `thunder-strike = 40`, with their effects
    recorded in §6.3.1 (TASK-309 / `ADR-029` Slice 4). No `ADR-029` §3
    U-2/U-3/U-4/U-5 balance item remains open for these four; U-1's future
-   cadence note and Slice 5's removal gate are unchanged.
+   cadence note remains a balance question.
 6. **One active form per ability, resolved from content presence.** An ability
-   has exactly one active form: `BossCard` iff a provisioned `CardDefinition`
-   row exists with `Category = BossCard` and `CardDefinitionId` = that Boss's
-   `SkillId`; `BossSkill` (the documented transitional path) otherwise. The
-   form is resolved exactly once at battle creation from the same
+   has exactly one live form: `BossCard` iff a provisioned `CardDefinition` row
+   exists with `Category = BossCard` and `CardDefinitionId` = that Boss's
+   `SkillId`. The form is resolved exactly once at battle creation from the same
    content-input path that supplies the Boss definition, is cached with it, is
    never re-derived per round, is never stored in `BattleState`/Redis, and is
-   never inferred from `SkillCharge` or `SkillCooldown`. There is no fallback:
-   if a provisioned Boss Card or the score its form requires is present but
-   invalid, battle creation fails closed. All five MVP abilities are migrated as
-   of TASK-309 / Slice 4: Sơn Thạch Vệ (`boss-son-thach-ve`, `earthquake`) in
-   Slice 3 (TASK-308), and Hỏa Long (`flame-burst`), Thủy Ma (`drain-power`),
-   Mộc Yêu (`root`) and Kim Lôi Vương (`thunder-strike`) in Slice 4 (TASK-309).
-   No MVP Boss's runtime form therefore resolves the legacy `BossSkill` path any
-   more; that path is retired only by Slice 5, and until then its persisted
-   `SecondaryEffect` values remain unchanged — including the historical
-   `flame-burst`/`root` 2-Turn values that deliberately diverge from the Boss
-   Card forms' re-authored 3-Turn durations (§6.3.1 items 1 and 3).
+   never inferred from `SkillCooldown`. There is no fallback: if a provisioned
+   Boss Card or the score its form requires is present but invalid, battle
+   creation fails closed — and the former `BossSkill` fallback no longer exists
+   to fall back to (TASK-313). All five MVP abilities are migrated: Sơn Thạch Vệ
+   (`boss-son-thach-ve`, `earthquake`) in Slice 3 (TASK-308), and Hỏa Long
+   (`flame-burst`), Thủy Ma (`drain-power`), Mộc Yêu (`root`) and Kim Lôi Vương
+   (`thunder-strike`) in Slice 4 (TASK-309). The historical duration divergence
+   between the legacy `BossSkill` form's persisted 2-Turn values and the Boss
+   Card forms' re-authored 3-Turn values is **history only**: the legacy form
+   and its persisted values were retired with the legacy declarations, so the
+   Boss Card values in §6.3.1 items 1 and 3 are the only live values.
 
 ---
 
@@ -538,7 +540,7 @@ Transitional path: BossState.SkillCharge + §6.3's charge/cooldown gate, and the
    currently active (e.g. a Boss might be Idle until a Passive-triggered
    condition flips it to Enraged, changing its Skill behavior).
 2. State is entirely server-authoritative (GAME_RULES.md §15 item 8) and must be
-   exposed to the client only through emitted events (e.g. `BossSkillCast`)
+   exposed to the client only through emitted events (e.g. `BossCardCast`)
    and rendered state, never computed client-side.
 3. MVP Bosses may use State minimally (e.g. a simple Idle/Casting toggle); a
    full multi-phase State machine is a Boss Phases feature explicitly
@@ -567,21 +569,22 @@ Transitional path: BossState.SkillCharge + §6.3's charge/cooldown gate, and the
 
 # 6. MVP Boss Reference
 
-**Status of this reference section (ADR-026, ADR-029, TASK-311).** The table below
+**Status of this reference section (ADR-026, ADR-029, TASK-313).** The table below
 reflects the authoritative MVP Boss mechanics established by `ADR-026` and `ADR-029`.
-Boss abilities deal **zero direct damage** (`BaseDamage = 0` on all five abilities) and
-Burn DoT is retired (ADR-026 D3). Under ADR-029, all five MVP abilities are migrated to
-the canonical **Boss Card** form (`earthquake` in Slice 3 / TASK-308; `flame-burst`,
-`drain-power`, `root`, and `thunder-strike` in Slice 4 / TASK-309). Each Boss Card spends
-the Boss's `Power` (§4.1) under the response-phase one-action policy (§4.3) with its
-approved Power cost and cooldown. The transitional legacy `BossSkill` path and its charge
-requirement remain documented in §6.3 until the Slice 5 removal gate is met (§4.4);
-historical direct-damage and Burn values from the pre-ADR-026 baseline (Flame Burst 150
+Boss abilities deal **zero direct damage** and Burn DoT is retired (ADR-026 D3).
+All five MVP abilities are canonical **Boss Cards** (`earthquake` in Slice 3 / TASK-308;
+`flame-burst`, `drain-power`, `root`, and `thunder-strike` in Slice 4 / TASK-309). Each
+Boss Card spends the Boss's `Power` (§4.1) under the response-phase one-action policy
+(§4.3) with its approved Power cost and cooldown. The former transitional legacy
+`BossSkill` form, its charge requirement and its `BossSkillCast` event **were removed**
+under **TASK-313 / ADR-029 Slice 5** (§4.4) and no longer exist; §6.3 retains the
+ability/cooldown reference for the Card form. Historical direct-damage and Burn values
+from the pre-ADR-026 baseline (Flame Burst 150
 Dmg + Burn, Drain Power 120 Dmg, Root 100 Dmg, Earthquake 150 Dmg, Thunder Strike 180
 Dmg) were retired by ADR-026 and are preserved as historical background only.
 
 ```text
-Boss          Element   Passive (trigger)                          Boss Ability & Effect (BaseDamage = 0)                     Timing (Power Cost, CD)
+Boss          Element   Passive (trigger)                          Boss Ability & Effect (no direct damage)                   Timing (Power Cost, CD)
 ---------     -------   -----------------------------------------  ---------------------------------------------------------  -----------------------
 Hỏa Long      Hỏa       Every 5 Player Matches → gain Rage         Flame Burst → +50% Boss ATK for 3 Turns (Boss Card)*       Cost: 40 Power, CD: 2T
 Thủy Ma       Thủy      Battle Start → healing received reduced   Drain Power → −20 flat Pet Power (no transfer to Boss)     Cost: 25 Power, CD: 3T
@@ -590,7 +593,7 @@ Sơn Thạch Vệ  Thổ       Boss HP ≤ 50% → gain Rage                  Ea
 Kim Lôi Vương Kim       Player Combo ≥ 4 → gain Rage               Thunder Strike → +50% Boss ATK on next qualifying attack   Cost: 40 Power, CD: 0T
 ```
 
-*\* Note on transitional duration divergence: Boss Card forms of `flame-burst` and `root` carry the approved 3-Turn durations (TASK-309 B-2/B-3) to yield an effective 2-attack window under the one-action policy; the transitional legacy `BossSkill` path retains its historical 2-Turn persisted values until Slice 5 retirement (§4.4, §6.3.1). Legacy charge requirements (Hỏa Long 5, Thủy Ma 4, Mộc Yêu 6, Sơn Thạch Vệ 5, Kim Lôi Vương 5 match groups) apply solely to the transitional path (§6.3).*
+*\* Note: the Boss Card forms of `flame-burst` and `root` carry the approved 3-Turn durations (TASK-309 B-2/B-3) to yield an effective 2-attack window under the one-action policy; these are the **only live durations**. The legacy `BossSkill` form's historical 2-Turn persisted values and its charge requirements (Hỏa Long 5, Thủy Ma 4, Mộc Yêu 6, Sơn Thạch Vệ 5, Kim Lôi Vương 5 match groups) were retired with that form under TASK-313 and are historical background only (§4.4, §6.3).*
 
 Skill effect targets (`−Pet Power`, `−Pet ATK`) are the active Pet's
 stats in `PetState` — not a separate Player entity.
@@ -661,7 +664,7 @@ Thủy Ma's is event-triggered.
   remains 150 and does **not** itself receive the +20%; the Skill's Step-1
   damage carries the modifier only through its `EffectiveBossATK`
   contribution. The `+20%` is applied to that Step-1 input, **not** to Step 4.
-  Composition owner: `COMBAT_RULES.md` §3.4 ("Boss Skill Step-1 composition");
+  Composition owner: `COMBAT_RULES.md` §3.4 ("Boss ability Step-1 composition");
   consumption rule: `COMBAT_RULES.md` §5.5.
 - **When it applies:** at Boss Response step 18a (`GAME_RULES.md` §17 step
   18a). The application does not retroactively modify damage already resolved
@@ -888,14 +891,16 @@ are owned by `SIGNALR_PROTOCOL.md` §4.4; this document states the visibility
 constraint and does not restate the wire contract. `BossState` itself is **not**
 exposed: the Identity travels as an identity only, with no display name,
 Element label, portrait, or asset key attached, and `Element`, `ATK`, `DEF`,
-`State`, `PassiveId`, `PassiveProgress`, `SkillCharge`, `SkillCooldown`, and
+`State`, `PassiveId`, `PassiveProgress`, `SkillCooldown`, and
 the Boss's `StatusEffects[]` stay server-side (`GAME_STATE.md` §2.4), so the
 effects above
 remain **not** directly client-visible as state — the player sees their
 consequences through the Boss's changing HP and through the emitted events
-(§7), not by reading a status list. `SkillCharge` and `SkillCooldown` remain
+(§7), not by reading a status list. `SkillCooldown` remains
 undelivered in particular: the delivered `power` member is the Boss's **Power**
-(§4.1), is not `SkillCharge`, and the two are never conflated on the wire.
+(§4.1). The retired `SkillCharge` member is not merely undelivered — it was
+removed from `BossState` under TASK-313, so no charge value exists in state or on
+the wire to conflate with Power.
 
 **Boss `StatusEffects[]` is explicitly not authorized for delivery**, then or
 now: D-2A named it among the excluded members, and delivering it would be a
@@ -905,49 +910,39 @@ instance (e.g. `Root`'s ATK debuff, §6.3.1 item 3, sits in
 `PetState.StatusEffects[]`) — that is the Pet's collection being delivered, not
 the Boss's, and it does not widen this boundary.
 
-### 6.3 Boss Skill Timing & Effect Details
+### 6.3 Boss Ability Timing & Effect Details
 
-**Status of this subsection (ADR-029).** This subsection owns the
-**transitional** Skill form's timing parameters and each ability's effect
-magnitudes, and it is also the canonical owner of each Boss ability's
-**cooldown value** in Turns — which the Boss Card form (§4.2) carries over
-unchanged. The **target** form replaces the charge requirement with a Power cost
-paid from `BossState.Power` (§4.1); each migrated ability's Power cost is
-authored with that ability's migration — `earthquake = 30` (§6.3.1 item 4), and
-from TASK-309 / `ADR-029` Slice 4 `flame-burst = 40`, `drain-power = 25`,
-`root = 35` and `thunder-strike = 40` — so all five MVP abilities' costs are
-authored and no per-ability cost remains **UNRESOLVED** (`ADR-029` §3 U-2
-resolved by TASK-309). Until §4.4's removal gate is met, the charge/cooldown gate
-below remains the documented transitional path, and no new work may build on it.
+**Status of this subsection (ADR-029, TASK-313).** This subsection is the
+canonical owner of each Boss ability's **cooldown value** in Turns and records
+each ability's effect magnitudes. The ability resolves as that Boss's **Boss
+Card** (§4.2), which spends a **Power cost** paid from `BossState.Power` (§4.1).
+The approved costs are `earthquake = 30` (§6.3.1 item 4), and from TASK-309 /
+`ADR-029` Slice 4 `flame-burst = 40`, `drain-power = 25`, `root = 35` and
+`thunder-strike = 40`, so no per-ability cost remains **UNRESOLVED**
+(`ADR-029` §3 U-2 resolved by TASK-309). The former charge gate was retired
+under **TASK-313** (§4.4): it has no runtime, state, or event presence, and no
+new work may build on it.
 
-Each Boss Skill has two timing parameters:
+The ability's timing parameters are therefore:
 
-- **Charge Requirement**: amount of charge required before the Skill is eligible
-  to fire. Under ADR-026 (D2), POWER gems matched by the Boss during the Boss's
-  turn increment `BossState.SkillCharge` (`GAME_STATE.md` §2.4.3); player matches
-  never charge the Boss. When `SkillCharge ≥ Charge Requirement` AND
-  `SkillCooldown = 0`, the Skill fires. *This is the transitional path —
-  `ADR-029` replaces it with the Boss's Power and the §4.3 action policy, and
-  removes it once §4.4's gate is met.*
-- **Cooldown (CD)**: turns remaining after each Skill use before the Skill
-  can fire again. Decrements by 1 at each Turn increment
+- **Power Cost**: the approved `PowerCost` of the ability's Boss Card, validated
+  against and deducted from `BossState.Power` when the cast resolves
+  (`CARD_RULES.md` §3 item 9, §3.6; `GAME_STATE.md` §2.4.3).
+- **Cooldown (CD)**: turns remaining after each cast before the ability
+  can be used again. Decrements by 1 at each Turn increment
   (`MATCH3_RULES.md` §8.1 — one committed Round begins exactly one Turn;
   the stored Turn advances once in that resolution's single write-back,
-  `GAME_STATE.md` §5.1). The Skill is blocked while `CD > 0`. **The cooldown
-  values below are retained unchanged by `ADR-029` and apply to the ability
-  after it is migrated to its Boss Card.**
+  `GAME_STATE.md` §5.1). The ability is blocked while `CD > 0`. **The cooldown
+  values below are unchanged by `ADR-029`.**
 
-After the Skill fires: `SkillCharge` resets to 0, `SkillCooldown` resets to
-the Boss's cooldown value.
-
-After a **Boss Card cast** (§4.2) the analogous rules are: the
+After a **Boss Card cast** (§4.2) the rules are: the
 `EffectiveCardCost` is deducted from `BossState.Power`, the effect resolves, and
 the ability's cooldown is set to the value in the table below in the same single
-write-back. There is no charge to reset, because the Card form has no
-`SkillCharge`.
+write-back. There is no charge to reset — the charge resource was removed under
+TASK-313.
 
 ```text
-Boss          Skill           Charge Req.*  CD (T)   Base Dmg   Secondary Effect & Magnitude
+Boss          Ability         Charge Req.*  CD (T)   Base Dmg*  Effect & Magnitude
 ---------     -----------     ------------  ------   --------   --------------------------------------------------------
 Hỏa Long      Flame Burst     5 matches*    2        0          Temporary Boss ATK buff (ADR-026, D5; Option 5B)
 Thủy Ma       Drain Power     4 matches*    3        0          -20 flat Pet Power (instant, no duration)
@@ -956,7 +951,7 @@ Sơn Thạch Vệ  Earthquake      5 matches*    0        0          Temporary B
 Kim Lôi Vương Thunder Strike  5 matches*    0        0          Buff next qualifying Boss ATK match (ADR-026, D7; Option 3A)
 ```
 
-*\* Charge Requirement is the **transitional** gate, charged solely by POWER gems matched by the Boss during the Boss's board action (D2). Under ADR-029 the target form spends the Boss's `Power` (§4.1) instead, and the charge requirement, its unit metric and its overflow clamp policy are retired with `SkillCharge` (ADR-026 Unresolved Balance Choices #1–#2). The Boss's **Power** economy is not subject to that legacy question; the grant basis U-1 is resolved under ADR-029 / TASK-304 adopting the shared per-Gem output unchanged, and the per-ability costs and the legacy `ChargeRequirement` re-tuning question (U-2) are resolved by TASK-309 (`ADR-029` §3). The cooldown column above is retained unchanged by ADR-029 for every ability — U-5 is resolved by TASK-309 — and applies to the ability after migration.*
+*\* The **Charge Req.** and **Base Dmg** columns are retained as a **historical record of the retired legacy `BossSkill` form** (TASK-313). The charge gate, its unit metric and its overflow clamp policy were retired with `SkillCharge` (ADR-026 Unresolved Balance Choices #1–#2), and nothing in the runtime or Domain reads a charge requirement or a base-damage value any more. The live values are the **CD** column, retained unchanged by `ADR-029` for every ability (U-5 resolved by TASK-309), and the approved **Power costs** (U-2 resolved by TASK-309); the grant basis U-1 is the shared per-Gem output under ADR-029 / TASK-304. The persisted `chargeRequirement`/`baseDamage` JSONB members exist solely for storage compatibility (OD-311-1 = B, `DATABASE.md` §1 note item 4).*
 
 These are **MVP base configuration** — not universal balance invariants. The
 project owner approved these values. They are configuration defaults used at
@@ -965,23 +960,25 @@ battle creation; they do not represent formulas or scaling rules.
 **Boss Card Power costs (approved; `ADR-029` §3 U-2 resolved by TASK-309).**
 `earthquake = 30` (TASK-308); `flame-burst = 40`, `drain-power = 25`,
 `root = 35`, `thunder-strike = 40` (TASK-309). The cooldowns are the ones in the
-table above, carried over unchanged (U-5); no legacy `ChargeRequirement`
-re-tuning is authorized, and the charge column is the transitional gate alone.
-The table's Secondary Effect column records the transitional `BossSkill` form's
-persisted values; the Boss Card form's re-authored `flame-burst`/`root` durations
-of 3 Turns are stated in §6.3.1 items 1 and 3.
+table above, unchanged (U-5); no legacy charge re-tuning exists, because that
+mechanism and its member were retired under TASK-313.
+The table's Effect column records the ability's authored effect; the
+`flame-burst`/`root` durations are the re-authored 3-Turn Boss Card values stated
+in §6.3.1 items 1 and 3 (the legacy form's historical 2-Turn values are retired
+with it).
 
-#### 6.3.1 Boss Skill Effect Magnitudes & Duration Semantics
+#### 6.3.1 Boss Ability Effect Magnitudes & Duration Semantics
 
 **These effect definitions belong to the ability, not to its form.** Each item
 below is the authored effect of that Boss's one MVP ability; `ADR-029`'s
-migration moves the ability from the Skill form to its Boss Card form. For
-`drain-power`, `earthquake` and `thunder-strike` that migration changes neither
-the effect, its target, nor its duration semantics; for `flame-burst` and `root`
-the **Boss Card form's duration is intentionally re-authored to 3 Turns** by the
-TASK-309 operator decision (B-2/B-3), while the transitional legacy `BossSkill`
-form keeps its historical persisted value of 2 Turns until Slice 5 retirement —
-the divergence is stated in each item below, not silently substituted. The
+migration moved the ability from the retired Skill form to its Boss Card form.
+For `drain-power`, `earthquake` and `thunder-strike` that migration changed
+neither the effect, its target, nor its duration semantics; for `flame-burst` and
+`root` the **Boss Card form's duration was intentionally re-authored to 3 Turns**
+by the TASK-309 operator decision (B-2/B-3). These 3-Turn values are the only
+live values: the legacy `BossSkill` form's historical 2-Turn values were retired
+with that form under TASK-313 (§4.4) and are history only — the divergence was
+stated explicitly at the time and never silently substituted. The
 magnitudes this revision records are the operator-approved TASK-309 values
 (`ADR-029` §3 U-4 resolved); nothing beyond that decision is promoted here.
 
@@ -989,7 +986,7 @@ magnitudes this revision records are the operator-approved TASK-309 values
    - **Base Damage:** 0 (D3, direct damage removed).
    - **Secondary Effect (Boss ATK Buff, Option 5B, D5):** Applies a temporary Boss ATK buff to `BossState.ActiveStatusEffects` — the Boss-only `AtkBuff` effect identity (`DATABASE.md` §1). The buff modifies Boss ATK but deals no damage independently; Boss damage is applied only when Hỏa Long produces a valid ATK-gem match (D1). Burn DoT is removed.
    - **Compounding Interaction:** resolved by TASK-309 B-4: multiple ATK modifiers keep compounding **multiplicatively** — `1.20 × 1.50 = 1.80` for `flame-burst` and `boss-hoa-long-rage` — and additive stacking is **not authorized** (a future evaluation would require its own task, impact analysis and regression tests).
-   - **Magnitude & Duration:** Boss Card form: `+50%` Boss ATK for **3 Turns**, Power Cost `40`, Cooldown `2` (TASK-309 B-2; `ADR-029` §3 U-2/U-4/U-5 resolved). The transitional legacy `BossSkill` form keeps its historical persisted duration of **2 Turns** until Slice 5 retirement; that value is not the Boss Card form's value.
+   - **Magnitude & Duration:** `+50%` Boss ATK for **3 Turns**, Power Cost `40`, Cooldown `2` (TASK-309 B-2; `ADR-029` §3 U-2/U-4/U-5 resolved). This is the only live duration; the legacy `BossSkill` form's historical 2-Turn value was retired with that form under TASK-313.
 2. **Drain Power (Thủy Ma):**
    - **Base Damage:** 0 (D3, direct damage removed).
    - **Secondary Effect (Drain Power):** Instantly subtracts 20 flat Power from the active Pet (`PetState.Power = max(0, PetState.Power - 20)` per `GAME_RULES.md` §12) — the Boss-only `PowerDrain` effect identity (`DATABASE.md` §1). **No Power is transferred to, or granted to, the Boss**: the Boss's own `Power` is not increased by this effect.
@@ -1000,7 +997,7 @@ magnitudes this revision records are the operator-approved TASK-309 values
    - **Base Damage:** 0 (D3, direct damage removed).
    - **Secondary Effect (Root):** Applies a -30% Pet ATK debuff to the active Pet (`COMBAT_RULES.md` §5.1 Buff/Debuff) — the Boss-only `AtkDebuff` effect identity (`DATABASE.md` §1).
    - **Representation:** Percentage-based ATK reduction (-30% active Pet ATK).
-   - **Root Duration:** The **Boss Card form** carries the TASK-309-approved duration of **3 Turns** (B-3); the transitional legacy `BossSkill` form keeps its historical persisted value of **2 Turns** until Slice 5 retirement — an explicit divergence, not a silent substitution. Both use the authoritative Turn model (`MATCH3_RULES.md` §8.1 / `GAME_RULES.md` §17). Root is a Turn-based Buff/Debuff, so its one-Turn-of-duration consumption point is governed by the canonical rule in `COMBAT_RULES.md` §5.3 and is not restated here.
+   - **Root Duration:** `3 Turns`, per the TASK-309 operator decision (B-3). This is the only live duration; the legacy `BossSkill` form's historical 2-Turn value was retired with that form under TASK-313 (an explicitly recorded divergence at the time, never a silent substitution). Root uses the authoritative Turn model (`MATCH3_RULES.md` §8.1 / `GAME_RULES.md` §17). Root is a Turn-based Buff/Debuff, so its one-Turn-of-duration consumption point is governed by the canonical rule in `COMBAT_RULES.md` §5.3 and is not restated here.
    - **Magnitude & Timing:** `−30%` active Pet ATK, Power Cost `35`, Cooldown `2` (TASK-309; `ADR-029` §3 U-2/U-4/U-5 resolved).
 4. **Earthquake (Sơn Thạch Vệ):**
    - **Base Damage:** 0 (D3, direct damage removed).
@@ -1011,7 +1008,7 @@ magnitudes this revision records are the operator-approved TASK-309 values
 5. **Thunder Strike (Kim Lôi Vương):**
    - **Base Damage:** 0 (D3, direct damage removed).
    - **Secondary Effect (Next-ATK Buff, Option 3A, D7):** Applies a trigger-based modifier on `BossState.ActiveStatusEffects` (`ExpiryCondition = "NextQualifyingAttack"`) buffing the Boss's next valid ATK match — the Boss-only `NextAtkBuff` effect identity (`DATABASE.md` §1). Never deals damage independently and is not consumed on turns with zero ATK matches.
-   - **Magnitude & Timing:** `+50%` Boss ATK on the next qualifying Boss attack, Power Cost `40`, Cooldown `0`, `BaseDamage = 0` (TASK-309; `ADR-029` §3 U-2/U-4/U-5 resolved). The modifier survives non-qualifying rounds and is consumed exactly once by the next qualifying attack.
+   - **Magnitude & Timing:** `+50%` Boss ATK on the next qualifying Boss attack, Power Cost `40`, Cooldown `0` (TASK-309; `ADR-029` §3 U-2/U-4/U-5 resolved). No direct damage. The modifier survives non-qualifying rounds and is consumed exactly once by the next qualifying attack.
    - **Board Effect:** None.
 
 **All five MVP Bosses are now content-defined.** The set is complete at five
@@ -1036,7 +1033,7 @@ note item 5).
 Canonical string identities for the five content-defined MVP Bosses. These
 are the values the Domain `BossDefinition` / `BossState` identity fields carry
 and the values emitted on events (`PassiveCharged`/`PassiveTriggered.sourceId`,
-`BossSkillCast.sourceId`, `BattleStarted.BossId`). They are fixed here so no
+`BossCardCast.sourceId`, `BattleStarted.BossId`). They are fixed here so no
 task invents its own.
 
 Three distinct Boss identity concepts exist and are never collapsed
@@ -1046,7 +1043,7 @@ Three distinct Boss identity concepts exist and are never collapsed
   game-level Boss ID. Owned by this section. Used by `BossState.BossId`
   (`GAME_STATE.md` §2.4), `BossDefinition.Identity` (`DATABASE.md` §1),
   event `sourceId` when `source = "boss"` (`GAME_EVENTS.md` §2,
-  `SIGNALR_PROTOCOL.md` §3.2.16–§3.2.18), and `POST /api/battle/start`'s
+  `SIGNALR_PROTOCOL.md` §3.2.16, §3.2.30), and `POST /api/battle/start`'s
   `bossId` (`API_CONTRACTS.md` §3).
 - **Display name** — the human-readable content name (this document's §6
   reference tables). Presentation only; never a technical identifier in
@@ -1092,9 +1089,10 @@ Kim Lôi Vương "boss-kim-loi-vuong"        "Kim Lôi Vương" "kim-loi-vuong-c
   Both remain recorded exactly as the table above holds them and as source and
   tests carry them; neither is normalized to the earlier rows' observed
   spellings.
-- **SkillId** identifies the Boss Skill in `BossSkillCast.skillId`
-  (`SIGNALR_PROTOCOL.md` §3.2.18).
-- Examples in `SIGNALR_PROTOCOL.md` §3.2.16–§3.2.18 use these exact values.
+- **SkillId** identifies the Boss ability: it resolves that Boss's provisioned
+  Boss Card (`CardDefinitionId`, `CARD_RULES.md` §1.1 item 3) and is reported on
+  the wire as `BossCardCast.cardId` (`SIGNALR_PROTOCOL.md` §3.2.30).
+- Examples in `SIGNALR_PROTOCOL.md` §3.2.16 and §3.2.30 use these exact values.
 - Source and tests carry these exact values. The three Domain Boss definitions
   authored before this contract's completion use these canonical Identities and
   emit them as `sourceId`, so source code, tests, and this contract are aligned
@@ -1118,10 +1116,6 @@ PassiveTriggered   emitted when Boss Passive threshold is crossed
                    (shared event with Pet Passive — GAME_EVENTS.md §2,
                     SIGNALR_PROTOCOL.md §3.2.17; source = "boss")
 
-BossSkillCast      emitted when a Boss Skill resolves — the transitional
-                   ability form (§4.4)
-                   (SIGNALR_PROTOCOL.md §3.2.18)
-
 BossCardCast       emitted when the Boss resolves a Boss Card cast — the
                    dedicated Boss action event (§4.2, ADR-029)
                    (SIGNALR_PROTOCOL.md §3.2.30)
@@ -1144,15 +1138,15 @@ action was selected from the events it received, and no new discriminator is
 added for the selection step.
 
 Boss state changes (Idle → Enraged, Idle → Stunned) are inferable from the
-sequence of `DamageDealt`, `DamageTaken`, `BossSkillCast`, and `PassiveTriggered`
+sequence of `DamageDealt`, `DamageTaken`, `BossCardCast`, and `PassiveTriggered`
 events — no dedicated `BossStateChanged` event exists.
 
 ---
 
 # 8. Server Authority
 
-All Boss HP, Power, State, Passive progress, Boss Card eligibility and
-resolution, Skill resolution and cooldown are server authoritative
+All Boss HP, Power, State, Passive progress, Boss Card eligibility, cast
+resolution and cooldown are server authoritative
 (GAME_RULES.md §15.8, §18; ADR-001, ADR-029). The client never determines when a
 Boss acts, which action it selects, when a cast is eligible, or what it does — it
 only renders the resulting events and the delivered `bossState` projection

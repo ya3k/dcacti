@@ -989,17 +989,18 @@ public sealed class BossCardCastExecutorTests
     }
 
     [Fact]
-    public void Execute_BossActor_DoesNotChangeSkillChargeSkillCooldownTurnOrRng()
+    public void Execute_BossActor_DoesNotChangeSkillCooldownTurnOrRng()
     {
         // BOSS_RULES.md §4.3 item 3 / GAME_STATE.md §2.4.3: cooldown gating and
-        // setting are Slice 3's, and this slice only guarantees it writes neither
-        // SkillCharge nor SkillCooldown. Turn, RNG and the board are untouched too.
+        // setting are Slice 3's, and this executor only guarantees it does not write
+        // SkillCooldown (the cast itself does spend the card's Power cost). Turn, RNG
+        // and the board are untouched too. (The retired SkillCharge member was
+        // removed with ADR-029 Slice 5 / TASK-313.)
         var state = CreateTestBattleState(bossPower: 50);
 
         var result = CardCastExecutor.Execute(state, BossBurnCard, CardCastActor.Boss);
 
         Assert.True(result.IsAccepted);
-        Assert.Equal(state.BossState.SkillCharge, result.State.BossState.SkillCharge);
         Assert.Equal(state.BossState.SkillCooldown, result.State.BossState.SkillCooldown);
         Assert.Equal(state.BossState.State, result.State.BossState.State);
         Assert.Equal(state.Turn, result.State.Turn);

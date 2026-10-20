@@ -363,189 +363,6 @@ public sealed class PowerChangedEmissionTests
         Assert.True(relicIndex < matchIndex, "step 11 precedes step 13");
     }
 
-    // =======================================================================
-    // 5. Boss Drain (step 18b)
-    // =======================================================================
-
-    /// <summary>
-    /// A Boss whose Skill declares <c>BOSS_RULES.md</c> §6.3.1 item 2's Drain Power
-    /// — the provisioned case is Thủy Ma's <c>drain-power</c>. The fixture runs the
-    /// real definition; the charge requirement is lowered so the Skill actually
-    /// fires within one Swap while every other value stays §6.3.1's.
-    /// </summary>
-    private static BossDefinition DrainBoss()
-    {
-        var thuyMa = BossDefinitions.ThuyMa;
-
-        return thuyMa with
-        {
-            SkillDefinition = thuyMa.SkillDefinition with
-            {
-                ChargeRequirement = 1,
-                CooldownTurns = 0,
-            },
-        };
-    }
-
-    /// <summary>
-    /// Creates a Thủy Ma battle, pins the Turn fixture and the Boss Skill's
-    /// eligibility, and returns the one committed Swap of that Turn.
-    ///
-    /// <b>Why the board is pinned.</b> <c>ADR-026</c> D1 gates the Player's attack on a
-    /// cleared ATK Gem, so a drawn board gives the scenario no control over the round's
-    /// Player part; the DEF fixture clears DEF Gems only, which is what keeps this
-    /// Turn's Power movement the Skill's own and the Power-Gem stage's.
-    ///
-    /// <b>Why the charge is pinned.</b> The Skill is eligible only when
-    /// <c>SkillCharge ≥ ChargeRequirement</c> AND <c>SkillCooldown == 0</c>
-    /// (<c>GAME_STATE.md</c> §2.4.3 / <c>BOSS_RULES.md</c> §6.3), and
-    /// <c>ADR-026</c> D2 makes that counter increment exclusively from the BOSS's own
-    /// POWER matches. A real battle reaches the requirement by accumulating those over
-    /// several Turns; the fixture states that state directly, so the Skill under test
-    /// really fires rather than the assertion passing vacuously.
-    /// </summary>
-    private static async Task<SwapRequest> PinDrainTurnAsync(
-        InMemoryBattleStateRepository repository,
-        BattleState state)
-    {
-        var pinned = RoundTestSupport.PlayerMatch(
-            GemType.Def,
-            state.RngState,
-            state.LastCommittedSwapPair);
-
-        await RoundTestSupport.PinAsync(
-            repository,
-            state,
-            pinned.Board,
-            bossState: state.BossState with
-            {
-                SkillCharge = DrainBoss().SkillChargeRequirement,
-                SkillCooldown = 0,
-            });
-
-        return pinned.Swap;
-    }
-
-    [Fact]
-    public async Task CommittedSwap_ShouldEmitPowerChangedForBossDrain_WithSourceBoss()
-    {
-        // D-6 / GAME_EVENTS.md §2 item 4 / SIGNALR_PROTOCOL.md §3.2.24 item 5: Boss
-        // Drain Power is an authoritative PetState.Power mutation owned by the Boss
-        // Response stage (GAME_RULES.md §17 step 18b), so that stage emits it with
-        // source "boss". It must NOT be mapped to "relic".
-        var (service, repository) = NewService(PowerChargeCard);
-        var created = await service.CreateBattleAsync(
-            BattleId,
-            Owner,
-            PetConfig,
-            DrainBoss());
-
-        var setup = created with
-        {
-            PetState = created.PetState with { Power = 50, HP = 5000, DEF = 1000 },
-        };
-        await repository.TryUpdateAsync(setup, setup.Sequence);
-
-        var swap = await PinDrainTurnAsync(repository, setup);
-        var result = await service.ExecuteSwapAsync(BattleId, swap);
-
-        Assert.NotNull(result);
-
-        // The Skill really fired: without this the "no event" and "one event"
-        // assertions below would hold for a Turn in which no drain ran at all.
-        Assert.Contains(result.Value.Events, e => e.Type == BattleEventType.BossSkillCast);
-
-        var committed = result!.Value.State;
-
-        var change = Assert.Single(
-            result.Value.Events,
-            e => e.Type == BattleEventType.PowerChanged
-                && e.PowerChanged.Source == PowerChangeSource.Boss).PowerChanged;
-
-        // BOSS_RULES.md §6.3.1 item 2: -20 flat. The reported delta is the change
-        // the mutation applied; the resulting Power is the authoritative value.
-        Assert.Equal(-20, change.Delta);
-        Assert.Equal(committed.PetState.Power, change.Power);
-
-        // No Boss-sourced mutation was mislabelled as a Relic-owned one.
-        Assert.DoesNotContain(
-            result.Value.Events,
-            e => e.Type == BattleEventType.PowerChanged
-                && e.PowerChanged.Source == PowerChangeSource.Relic);
-    }
-
-    [Fact]
-    public async Task CommittedSwap_ShouldReportBossDrainAsTheActualClampedMutation_NotTheRequestedMagnitude()
-    {
-        // BOSS_RULES.md §6.3.1 item 2 / GAME_RULES.md §12: the drain's own formula
-        // floors the result at 0. A 20 drain against a Power of 10 therefore removes
-        // only 10, and the event must reflect the ACTUAL mutation — delta -10 at
-        // power 0 — never the requested delta -20.
-        var (service, repository) = NewService(PowerChargeCard);
-        var created = await service.CreateBattleAsync(
-            BattleId,
-            Owner,
-            PetConfig,
-            DrainBoss());
-
-        var setup = created with
-        {
-            // Power 10 is below the 20 the drain requests, so the floor binds.
-            PetState = created.PetState with { Power = 10, HP = 5000, DEF = 1000 },
-        };
-        await repository.TryUpdateAsync(setup, setup.Sequence);
-
-        var swap = await PinDrainTurnAsync(repository, setup);
-        var result = await service.ExecuteSwapAsync(BattleId, swap);
-
-        Assert.NotNull(result);
-        Assert.Contains(result.Value.Events, e => e.Type == BattleEventType.BossSkillCast);
-        Assert.Equal(0, result!.Value.State.PetState.Power);
-
-        var change = Assert.Single(
-            result.Value.Events,
-            e => e.Type == BattleEventType.PowerChanged
-                && e.PowerChanged.Source == PowerChangeSource.Boss).PowerChanged;
-
-        Assert.Equal(-10, change.Delta);
-        Assert.Equal(0, change.Power);
-    }
-
-    [Fact]
-    public async Task CommittedSwap_ShouldEmitNoBossPowerChanged_WhenPowerIsAlreadyZero()
-    {
-        // GAME_EVENTS.md §2 item 4: "a mutation that does not occur emits nothing".
-        // A drain against a Power of 0 changes nothing, so no PowerChanged is
-        // emitted for it — no event is invented for a no-op.
-        var (service, repository) = NewService(PowerChargeCard);
-        var created = await service.CreateBattleAsync(
-            BattleId,
-            Owner,
-            PetConfig,
-            DrainBoss());
-
-        var setup = created with
-        {
-            PetState = created.PetState with { Power = 0, HP = 5000, DEF = 1000 },
-        };
-        await repository.TryUpdateAsync(setup, setup.Sequence);
-
-        var swap = await PinDrainTurnAsync(repository, setup);
-        var result = await service.ExecuteSwapAsync(BattleId, swap);
-
-        Assert.NotNull(result);
-
-        // The Skill fired and its drain is a no-op on a Power of 0 — which is the case
-        // the assertion below is about, so it is stated rather than left vacuous. The
-        // pinned DEF board clears no POWER Gem either, so the Match generation moved
-        // nothing either.
-        Assert.Contains(result.Value.Events, e => e.Type == BattleEventType.BossSkillCast);
-        Assert.Equal(0, result!.Value.State.PetState.Power);
-        Assert.DoesNotContain(
-            result.Value.Events,
-            e => e.Type == BattleEventType.PowerChanged
-                && e.PowerChanged.Source == PowerChangeSource.Boss);
-    }
 
     // =======================================================================
     // 6. Payload and ordering invariants
@@ -556,8 +373,10 @@ public sealed class PowerChangedEmissionTests
     {
         // GAME_RULES.md §17 / GAME_EVENTS.md §2 item 4: the batch preserves the
         // resolution's order, so a Relic's step-11 grant is reported before the
-        // step-13 Match generation, which is reported before the step-18b Boss
-        // drain. Applying the events in delivered order reaches the committed Power.
+        // step-13 Match generation. Applying the events in delivered order reaches the
+        // committed Power. (The legacy step-18b Skill drain that used to add a third,
+        // Boss-sourced report was removed with ADR-029 Slice 5 / TASK-313; its
+        // canonical Boss Card form is covered by TASK309BossCardEffectRuntimeTests.)
         var manaCrystal = new RelicDefinition
         {
             RelicDefinitionId = "relic-mana-crystal",
@@ -578,39 +397,30 @@ public sealed class PowerChangedEmissionTests
             BattleId,
             Owner,
             Configuration(PetConfig.EquippedCards!, [new EquippedRelicIdentity("relic_slot_1")]),
-            DrainBoss(),
+            BossDefinitions.ThuyMa,
             equippedRelicDefinitions: [manaCrystal]);
 
         var setup = created with
         {
             PetState = created.PetState with { Power = 0, HP = 5000, DEF = 1000 },
             BoardState = PowerBoard(),
-            // The Boss Skill's eligibility is pinned (GAME_STATE.md §2.4.3): ADR-026 D2
-            // charges SkillCharge from the BOSS's own POWER matches only, so the charge
-            // a battle accumulates over several Turns is stated rather than waited for.
-            BossState = created.BossState with
-            {
-                SkillCharge = DrainBoss().SkillChargeRequirement,
-                SkillCooldown = 0,
-            },
         };
         await repository.TryUpdateAsync(setup, setup.Sequence);
 
         var result = await service.ExecuteSwapAsync(BattleId, new SwapRequest(26, 34));
 
         Assert.NotNull(result);
-        Assert.Contains(result.Value.Events, e => e.Type == BattleEventType.BossSkillCast);
 
         var changes = result!.Value.Events
             .Where(e => e.Type == BattleEventType.PowerChanged)
             .Select(e => e.PowerChanged)
             .ToArray();
 
-        Assert.Equal(3, changes.Length);
+        Assert.Equal(2, changes.Length);
 
-        // Step 11 (Relic) → step 13 (Match) → step 18b (Boss).
+        // Step 11 (Relic) → step 13 (Match).
         Assert.Equal(
-            [PowerChangeSource.Relic, PowerChangeSource.Match, PowerChangeSource.Boss],
+            [PowerChangeSource.Relic, PowerChangeSource.Match],
             changes.Select(c => c.Source).ToArray());
 
         // Each event's `power` is the running total of the deltas before it, which

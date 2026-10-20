@@ -19,7 +19,6 @@ namespace GameServer.Domain.Battle;
 ///     ├── State        Idle / Charging / Enraged / Stunned          (§2.4)
 ///     ├── PassiveId    which Boss Passive (BOSS_RULES.md §3)        (§2.4)
 ///     ├── PassiveProgress  charging position (§2.4, §2.4.2)        (§2.4)
-///     ├── SkillCharge  matches charged toward the Skill (§2.4.3)    (§2.4)
 ///     ├── SkillCooldown turns remaining before the Skill can fire    (§2.4)
 ///     └── StatusEffects[]  active Status Effect instances         (§2.3.1)
 /// </code>
@@ -45,20 +44,26 @@ namespace GameServer.Domain.Battle;
 /// <c>PetState</c>'s combat stats come from <c>COMBAT_RULES.md</c> §1.1's
 /// configuration (<c>GAME_STATE.md</c> §2.3, <c>ADR-011</c> item 3).
 ///
-/// <b>All §2.4 fields now exist.</b> The eleven fields §2.4.1 marks "Implement
+/// <b>All remaining §2.4 fields exist.</b> The fields §2.4.1 marks "Implement
 /// now" are above, and <c>StatusEffects[]</c> — which §2.4.1 lists as deferred to
 /// the Status Effects system's own task — is implemented by that task
 /// (<c>GAME_STATE.md</c> §2.3.1, §5.1.1). Nothing §2.4 lists is now absent from
 /// this type.
 ///
-/// <b>The Boss's Passive and Skill charging state are carried, not resolved.</b>
-/// §2.4.1 lists <c>PassiveId</c>, <c>PassiveProgress</c>, <c>SkillCharge</c>,
-/// and <c>SkillCooldown</c> as the fields implemented by the Boss Response
+/// <b>The Boss's Passive and Skill cooldown state are carried, not resolved.</b>
+/// §2.4.1 lists <c>PassiveId</c>, <c>PassiveProgress</c>, and
+/// <c>SkillCooldown</c> as the fields implemented by the Boss Response
 /// stage, and §2.4.2/§2.4.3 give their meaning. This type holds them as state:
-/// it does not charge the Passive, evaluate its Threshold, increment
-/// <c>SkillCharge</c>, decrement <c>SkillCooldown</c>, or decide whether the
-/// Skill fires. Those are the resolution's steps, owned by
+/// it does not charge the Passive, evaluate its Threshold, decrement
+/// <c>SkillCooldown</c>, or decide whether a Boss Card is cast. Those are the
+/// resolution's steps, owned by
 /// <c>BattleStateService.ExecuteSwap</c> (<c>GAME_RULES.md</c> §17 step 18a–18c).
+///
+/// <b><c>SkillCharge</c> no longer exists (ADR-029 Slice 5, TASK-313).</b> The
+/// legacy charge accumulator was retired with the legacy Boss Skill path; the
+/// Boss's ability resource is <see cref="Power"/> and its only cast mechanism is
+/// the canonical Boss Card (<c>BOSS_RULES.md</c> §4.1, §4.3; <c>ADR-029</c>).
+/// Do not reintroduce a second Boss ability resource.
 ///
 /// <b>No Boss mechanic is implemented by this type.</b> <c>BOSS_RULES.md</c>
 /// §3's Passive, §4's Skill, §5's State transitions, the Damage Pipeline
@@ -230,17 +235,6 @@ namespace GameServer.Domain.Battle;
 /// and spent on Boss Cards. Clamping to 0–100 belongs to the write site that owns it
 /// (<see cref="ResourceGenerator.ApplyBossPower"/>).
 /// </param>
-/// <param name="SkillCharge">
-/// The matches charged toward the Boss Skill's charge requirement
-/// (<c>GAME_STATE.md</c> §2.4, §2.4.3; <c>BOSS_RULES.md</c> §6.3).
-///
-/// It starts at <c>0</c> — no Match has been counted at battle creation — and is
-/// incremented by the committed Swap's Player Match total. It is
-/// <b>independent</b> of <see cref="PassiveProgress"/>: neither resets the other.
-/// The Skill fires when this reaches <see cref="BossDefinition.SkillChargeRequirement"/>
-/// <b>and</b> <see cref="SkillCooldown"/> is <c>0</c>, at which point it resets
-/// to <c>0</c>. The firing decision is the resolution's, not this type's.
-/// </param>
 /// <param name="SkillCooldown">
 /// The turns remaining before the Boss Skill can fire again
 /// (<c>GAME_STATE.md</c> §2.4, §2.4.3; <c>BOSS_RULES.md</c> §6.3).
@@ -261,7 +255,6 @@ public readonly record struct BossState(
     PassiveId PassiveId,
     PassiveProgress PassiveProgress,
     int Power,
-    int SkillCharge,
     int SkillCooldown)
 {
     /// <summary>
@@ -328,7 +321,6 @@ public readonly record struct BossState(
         && PassiveId == other.PassiveId
         && PassiveProgress.Equals(other.PassiveProgress)
         && Power == other.Power
-        && SkillCharge == other.SkillCharge
         && SkillCooldown == other.SkillCooldown
         && StatusEffectsEqual(other);
 
@@ -345,7 +337,6 @@ public readonly record struct BossState(
         hash.Add(PassiveId);
         hash.Add(PassiveProgress);
         hash.Add(Power);
-        hash.Add(SkillCharge);
         hash.Add(SkillCooldown);
         return hash.ToHashCode();
     }
@@ -354,7 +345,7 @@ public readonly record struct BossState(
     /// The documented <c>BossState</c> of a newly created battle: the Boss's
     /// identity, its Element, and its stats at full health, in the Initial State,
     /// with its Passive's identity and the start of that Passive's progress, and
-    /// no Skill charge or cooldown yet (<c>GAME_STATE.md</c> §2.4, §2.4.1–§2.4.3;
+    /// no cooldown yet (<c>GAME_STATE.md</c> §2.4, §2.4.1–§2.4.3;
     /// <c>BOSS_RULES.md</c> §6.1).
     ///
     /// <code>
@@ -362,7 +353,7 @@ public readonly record struct BossState(
     /// State         = Idle                           (§2.4 / BOSS §6.1)
     /// PassiveId     = passiveId                      (§2.4.2)
     /// PassiveProgress = AtStart(passiveThreshold)    (§2.4.2)
-    /// SkillCharge   = 0                              (§2.4.3)
+    /// Power         = 0                              (§2.4.3, ADR-029)
     /// SkillCooldown = 0                              (§2.4.3)
     /// </code>
     ///
@@ -383,8 +374,8 @@ public readonly record struct BossState(
     ///
     /// Battle creation is not a resolution and starts no Turn
     /// (<c>MATCH3_RULES.md</c> §8.1 item 4), so no Boss mechanic has run: the
-    /// returned State is <see cref="InitialState"/>, the Skill is neither charged
-    /// nor cooling down, and no event is emitted.
+    /// returned State is <see cref="InitialState"/>, no Boss Card is on cooldown,
+    /// and no event is emitted.
     /// </summary>
     /// <param name="bossId">
     /// The Boss's identity (<c>GAME_STATE.md</c> §2.4) — the value the battle was
@@ -425,8 +416,8 @@ public readonly record struct BossState(
     {
         // §2.4 / BOSS_RULES.md §6.1: a battle begins with the Boss at full health
         // and in the Idle State. §2.4.2–§2.4.3: the Passive's identity is set at
-        // creation with its progress at the start of its first charge, and the
-        // Skill is neither charged nor on cooldown. All are the documented initial
+        // creation with its progress at the start of its first charge, and no
+        // Boss Card is on cooldown. All are the documented initial
         // values, not chosen here, and nothing is derived from the player's stats.
         var initialEffects = Array.Empty<StatusEffect>();
 
@@ -456,7 +447,6 @@ public readonly record struct BossState(
             passiveId,
             PassiveProgress.AtStart(passiveThreshold),
             Power: 0,
-            SkillCharge: 0,
             SkillCooldown: 0)
         {
             ActiveStatusEffects = initialEffects,

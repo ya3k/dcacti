@@ -1124,7 +1124,6 @@ describe('GameRuntime', () => {
             state: 'Idle',
             passiveId: 'boss-hoa-long-rage',
             passiveProgress: { threshold: 3, current: 1 },
-            skillCharge: 2,
             skillCooldown: 0,
             power: 0,
             statusEffects: [],
@@ -1172,7 +1171,6 @@ describe('GameRuntime', () => {
         'state',
         'passiveId',
         'passiveProgress',
-        'skillCharge',
         'skillCooldown',
         'statusEffects',
       ]) {

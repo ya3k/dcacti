@@ -768,17 +768,19 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         }
 
         // §4.4 item 3: every other BossState member stays server-side. The `bossState`
-        // projection is `bossId`/`hp`/`maxHp` and nothing else, so the Boss's Element,
-        // ATK/DEF, State, Passive, Skill charge/cooldown, and its own StatusEffects[]
-        // are all absent — and their absence is a property of this projection, not of an
-        // empty Domain state, because the created battle's BossState really holds them.
-        // (`bossId` is delivered per §4.4 item 10 / TASK-208 D-208-03, so it is no
-        // longer part of this exclusion list.)
+        // projection is `bossId`/`hp`/`maxHp`/`power` and nothing else, so the Boss's
+        // Element, ATK/DEF, State, Passive, its Skill cooldown, and its own
+        // StatusEffects[] are all absent — and their absence is a property of this
+        // projection, not of an empty Domain state, because the created battle's
+        // BossState really holds them. (`bossId` is delivered per §4.4 item 10 /
+        // TASK-208 D-208-03, and `power` per ADR-029 §2.11 item 30. `skillCharge` was
+        // retired with ADR-029 Slice 5 / TASK-313, so it is no longer a state member to
+        // exclude.)
         foreach (var hiddenBossField in new[]
                  {
                      "identity", "element", "state", "passiveId",
                      "passiveProgress", "threshold", "current",
-                     "skillCharge", "skillCooldown", "statusEffects",
+                     "skillCooldown", "statusEffects",
                  })
         {
             Assert.DoesNotContain(
@@ -1247,7 +1249,7 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                  {
                      "bossDefinitionId", "identity", "name", "displayName", "element", "atk", "def",
                      "state", "passiveId", "passiveProgress", "threshold", "current",
-                     "skillCharge", "skillCooldown", "statusEffects",
+                     "skillCooldown", "statusEffects",
                  })
         {
             Assert.False(
@@ -2359,7 +2361,7 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         foreach (var hiddenBossMember in new[]
                  {
                      "element", "atk", "def", "state", "passiveId",
-                     "passiveProgress", "skillCharge", "skillCooldown", "statusEffects",
+                     "passiveProgress", "skillCooldown", "statusEffects",
                  })
         {
             Assert.False(bossState.TryGetProperty(hiddenBossMember, out _));
@@ -3237,8 +3239,7 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             Assert.NotEmpty(expected);
 
             // The Player action's Match total (MATCH3_RULES.md §6.3 item 1): the count
-            // both Passive systems charge over, and a unit the Boss's SkillCharge no
-            // longer accumulates (ADR-026 D2).
+            // both Passive systems charge over.
             playerMatchTotal = resolved.Value.Resolution.TotalMatches;
         }
 
@@ -4016,16 +4017,15 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                     // and travel in the same batch (GAME_EVENTS.md §1, §2). Both
                     // directions use these same three names (§3.4).
                     "DamageCalculated", "DamageDealt", "DamageTaken",
-                    // §3.2.18–§3.2.19: the Boss Response's Skill cast and the two
-                    // terminal outcomes, on the same batch (§3 item 1: the batch is
-                    // atomic).
-                    "BossSkillCast", "BattleWon", "BattleLost",
-                    // §3.2.30: the migrated Boss Card form's dedicated Boss action
-                    // event. Every MVP Boss now has a provisioned BossCard row
-                    // (TASK-308, TASK-309 Slice 4), so a committed round can carry
-                    // this discriminator — never a fifth *message*, and never
-                    // alongside the legacy BossSkillCast for the same ability
-                    // (BOSS_RULES.md §4.4; ADR-029).
+                    // §3.2.19: the Boss Response's two terminal outcomes, on the same
+                    // batch (§3 item 1: the batch is atomic).
+                    "BattleWon", "BattleLost",
+                    // §3.2.30: the Boss Card form's dedicated Boss action event. Every
+                    // MVP Boss now has a provisioned BossCard row (TASK-308, TASK-309
+                    // Slice 4), so a committed round can carry this discriminator —
+                    // never a fifth *message*, and it is the Boss's SOLE cast event
+                    // (the legacy BossSkillCast was removed with ADR-029 Slice 5 /
+                    // TASK-313; BOSS_RULES.md §4.4; ADR-029).
                     "BossCardCast",
                     // §3.2.20–§3.2.21: the cast stages' two events. They travel in this
                     // same batch on this same path — a Swap does not emit them, but a
@@ -4105,9 +4105,7 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                 "DamageCalculated" => new[] { "type", "base", "comboModifier", "elementModifier", "otherModifiers", "defense", "finalDamage" },
                 "DamageDealt" => new[] { "type", "source", "target", "amount" },
                 "DamageTaken" => new[] { "type", "source", "target", "amount" },
-                // §3.2.18: the Skill's identity and the Boss's identity, and nothing
-                // else — the Skill's damage travels on the damage events that follow.
-                "BossSkillCast" => new[] { "type", "skillId", "sourceId" },
+
                 // §3.2.30: the Boss Card's identity (`cardId`, the ability SkillId)
                 // and the Boss's canonical technical Identity (`sourceId`), and
                 // nothing else. No cost, no Power value, no cooldown, no effect
@@ -4419,13 +4417,11 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
                 e.DamageTaken.Target.ToString().ToLowerInvariant(),
                 e.DamageTaken.Amount),
 
-            // §3.2.18 / §3.2.19: the Boss Response's three events, with the members
-            // the contract gives them. `outcome` is the constant of the event's own
-            // type (item 1), not a value read off the payload.
-            BattleEventType.BossSkillCast => BattleEventWireDto.BossSkillCast(
-                e.BossSkillCast.SkillId,
-                e.BossSkillCast.SourceId),
-
+            // §3.2.19: the Boss Response's terminal events, with the members the
+            // contract gives them. `outcome` is the constant of the event's own type
+            // (item 1), not a value read off the payload. (The legacy §3.2.18
+            // BossSkillCast arm was removed with ADR-029 Slice 5 / TASK-313.)
+            //
             // §3.2.30: the migrated Boss Card form's action event — the Boss Card's
             // definition identity (equal to the ability SkillId, CARD_RULES.md §1.1
             // item 3) and the Boss's canonical technical Identity, and nothing else.
@@ -4702,15 +4698,13 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         var battles = scope.ServiceProvider.GetRequiredService<BattleStateService>();
         var repository = scope.ServiceProvider.GetRequiredService<IBattleStateRepository>();
 
-        // The migrated form is observable: hold the legacy Skill's own
-        // eligibility conditions true (charge at the requirement, cooldown 0) and
-        // make the Boss Card unaffordable so the board action is selected. A
-        // legacy-form Boss would emit BossSkillCast; a migrated one must not.
+        // The migrated form is observable: make the Boss Card unaffordable so the
+        // board action is selected. The Boss responds with its board action only and
+        // emits no ability cast event.
         var created = (await battles.GetBattleAsync(battleId))!;
         var pinned = created.BossState with
         {
             Power = 0,
-            SkillCharge = BossDefinitions.SonThachVe.SkillChargeRequirement,
             SkillCooldown = 0,
         };
 
@@ -4722,7 +4716,6 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
         Assert.NotNull(round);
         Assert.True(round.Value.IsAccepted);
-        Assert.DoesNotContain(round.Value.Events, e => e.Type == BattleEventType.BossSkillCast);
         Assert.DoesNotContain(round.Value.Events, e => e.Type == BattleEventType.BossCardCast);
         Assert.Contains(
             round.Value.Events,

@@ -224,14 +224,14 @@ public class BossCardCastRuntimeTests
     }
 
     [Fact]
-    public async Task CreateBattle_WithAnUnmigratedBossFixture_ShouldKeepTheLegacySkillForm()
+    public async Task CreateBattle_WithAnUnmigratedBossFixture_ShouldCastNothingAndResolveTheBoardAction()
     {
-        // Content presence is the signal (BOSS_RULES.md §4.4 item 6): this is the
+        // Content presence is the signal (BOSS_RULES.md §4.4 item 5–6): this is the
         // explicit UNMIGRATED fixture — a content composition that exposes no BossCard
-        // row — so the Boss keeps the transitional BossSkill form and its legacy cast
-        // still fires on the documented charge/cooldown condition. The legacy form's
-        // coverage is therefore retained on purpose, not by weakening the migrated-form
-        // scenarios (see the post-migration test above for those).
+        // row — so the Boss has no castable ability. Its form resolution finds nothing,
+        // no cast event of any kind is emitted, and the response phase is the board
+        // action alone. The retired legacy BossSkill fallback that used to fire on the
+        // charge/cooldown condition was removed with ADR-029 Slice 5 / TASK-313.
         var harness = BossCardTestHarness.CreateWithoutProvisionedCards();
 
         var created = await harness.Service.CreateBattleAsync(
@@ -246,8 +246,7 @@ public class BossCardCastRuntimeTests
             "battle-boss-card-legacy",
             created.BossState with
             {
-                Power = 0,
-                SkillCharge = BossDefinitions.SonThachVe.SkillChargeRequirement,
+                Power = 100,
                 SkillCooldown = 0,
             });
 
@@ -263,8 +262,13 @@ public class BossCardCastRuntimeTests
         // resolution asked for the ability identity and found nothing.
         Assert.Equal([BossDefinitions.SonThachVe.SkillId], harness.CardDefinitions.Reads);
 
-        Assert.Contains(round.Value.Events, e => e.Type == BattleEventType.BossSkillCast);
+        // No cast: the Boss Card form is absent and the legacy form no longer exists.
         Assert.DoesNotContain(round.Value.Events, e => e.Type == BattleEventType.BossCardCast);
+
+        // The board action still resolves (the Boss's own boundary pair is present).
+        Assert.Contains(
+            round.Value.Events,
+            e => e.Type == BattleEventType.SwapStarted && e.SwapStarted.Actor == DamageParty.Boss);
     }
 
     // =======================================================================
@@ -356,16 +360,19 @@ public class BossCardCastRuntimeTests
             e => e.Type == BattleEventType.PowerChanged
                 && e.PowerChanged.Source == PowerChangeSource.Boss);
 
-        // One form per ability: no legacy event accompanies the Card event.
-        Assert.DoesNotContain(events, e => e.Type == BattleEventType.BossSkillCast);
+        // One form per ability: the Card event is the only Boss cast event the wire
+        // contract defines (the legacy BossSkillCast was removed with ADR-029 Slice 5 /
+        // TASK-313, so no second event can accompany it).
     }
 
     [Fact]
-    public async Task Round_WhenBoardActionSelectedForTheMigratedBoss_ShouldNotEmitBossSkillCastAndShouldTickCooldown()
+    public async Task Round_WhenBoardActionSelectedForTheMigratedBoss_ShouldEmitNoBossCastEventAndShouldTickCooldown()
     {
-        // The migrated Boss never runs the legacy Skill gate, even when its
-        // SkillCharge has reached the requirement and the decremented cooldown is
-        // 0. The cooldown simply ticks (BOSS_RULES.md §4.4 item 3; §4.3 rows 2/3/5).
+        // The migrated Boss casts only through its Boss Card, and a cast needs its
+        // Power cost. With the Power unaffordable the board action is selected, so no
+        // cast event is emitted and the cooldown simply ticks (BOSS_RULES.md §4.4
+        // item 3; §4.3 rows 2/3/5). The legacy charge-driven Skill gate this test used
+        // to contrast with was removed with ADR-029 Slice 5 / TASK-313.
         var boss = BossDefinitions.SonThachVe with
         {
             MaxHP = 1_000_000,
@@ -375,10 +382,8 @@ public class BossCardCastRuntimeTests
         var (service, repository) = NewMigratedHarness();
         var created = await service.CreateBattleAsync("battle-boss-card-board", Owner, Pet, boss);
 
-        // Cooldown 1 decrements to 0 in this round, so the legacy gate's
-        // SkillCooldown condition would hold; the charge is above the
-        // requirement; the cast is made unaffordable so the board action is
-        // selected.
+        // The cast is made unaffordable, so the board action is selected; the
+        // cooldown is a live value that ticks in this round.
         await PinBossStateAsync(
             service,
             repository,
@@ -386,7 +391,6 @@ public class BossCardCastRuntimeTests
             created.BossState with
             {
                 Power = 0,
-                SkillCharge = boss.SkillChargeRequirement,
                 SkillCooldown = 1,
             });
 
@@ -398,7 +402,6 @@ public class BossCardCastRuntimeTests
         Assert.NotNull(round);
         Assert.True(round.Value.IsAccepted);
 
-        Assert.DoesNotContain(round.Value.Events, e => e.Type == BattleEventType.BossSkillCast);
         Assert.DoesNotContain(round.Value.Events, e => e.Type == BattleEventType.BossCardCast);
 
         // The cooldown ticked once for the committed Round and was not reset.
@@ -563,6 +566,52 @@ public class BossCardCastRuntimeTests
 
         return BoardState.FromCells(cells);
     }
+    [Fact]
+    public async Task Round_WhenTheBossCardIsOnCooldown_ShouldNotCastAndShouldTickTheCooldown()
+    {
+        // BOSS_RULES.md §4.3 item 5 / §4.4 item 3: a cast is available only when its
+        // cooldown has reached 0. With Power affordable but the cooldown running, the
+        // migrated Boss therefore takes the board action instead: no Boss Card event is
+        // emitted and the cooldown ticks down by exactly one for the committed round.
+        var boss = BossDefinitions.SonThachVe with
+        {
+            MaxHP = 1_000_000,
+            ATK = 0,
+        };
+
+        var (service, repository) = NewMigratedHarness();
+        var created = await service.CreateBattleAsync("battle-boss-card-cooldown", Owner, Pet, boss);
+
+        await PinBossStateAsync(
+            service,
+            repository,
+            "battle-boss-card-cooldown",
+            created.BossState with
+            {
+                Power = 100,
+                SkillCooldown = 2,
+            });
+
+        var state = (await service.GetBattleAsync("battle-boss-card-cooldown"))!;
+        var round = await service.ExecuteSwapAsync(
+            "battle-boss-card-cooldown",
+            FindMatchProducingPair(state.BoardState));
+
+        Assert.NotNull(round);
+        Assert.True(round.Value.IsAccepted, $"reason={round.Value.Reason}");
+
+        Assert.DoesNotContain(round.Value.Events, e => e.Type == BattleEventType.BossCardCast);
+
+        // The cooldown ticked once and was not reset by a cast.
+        Assert.Equal(1, round.Value.State.BossState.SkillCooldown);
+
+        // The board action ran instead: the Boss's own boundary pair is present.
+        Assert.Contains(
+            round.Value.Events,
+            e => e.Type == BattleEventType.SwapStarted
+                && e.SwapStarted.Actor == DamageParty.Boss);
+    }
+
     // =======================================================================
     // Player cast contracts remain byte-identical
     // =======================================================================

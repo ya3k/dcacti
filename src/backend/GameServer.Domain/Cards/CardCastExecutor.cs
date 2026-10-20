@@ -656,9 +656,11 @@ public static class CardCastExecutor
     /// <c>CardCost</c> modifier (§3.6's modifiers are the Pet-state carrier of a
     /// Relic effect and Relics are Player-only, <c>ADR-029</c> §2.4 item 11),
     /// advances no <c>Sequence</c> (<c>GAME_STATE.md</c> §5.1 item 9 — the round's
-    /// single write-back owns it), and writes neither <c>SkillCharge</c> nor
-    /// <c>SkillCooldown</c> (<c>BOSS_RULES.md</c> §4.3 item 3 is the policy's
-    /// concern, <c>ADR-029</c> Slice 3). It emits no cast event: the
+    /// single write-back owns it), and writes no <c>SkillCooldown</c>
+    /// (<c>BOSS_RULES.md</c> §4.3 item 3 is the policy's
+    /// concern, <c>ADR-029</c> Slice 3). The retired legacy
+    /// <c>SkillCharge</c> member no longer exists at all (ADR-029 Slice 5 /
+    /// TASK-313), so nothing here could write it. It emits no cast event: the
     /// <c>BossCardCast</c> event is Slice 3's, and <c>CardCast</c>/<c>PetSkillCast</c>
     /// are the Player's (<c>GAME_EVENTS.md</c> §2, <c>CARD_RULES.md</c> §6). Its
     /// <b>only</b> events are the authoritative <c>PowerChanged</c> reports a

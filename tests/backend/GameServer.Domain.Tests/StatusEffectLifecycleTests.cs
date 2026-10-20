@@ -483,7 +483,7 @@ public class StatusEffectLifecycleTests
         Assert.Equal(state.BattleId, after.BattleId);
         Assert.Equal(state.RngSeed, after.RngSeed);
         Assert.Equal(state.BossState.HP, after.BossState.HP);
-        Assert.Equal(state.BossState.SkillCharge, after.BossState.SkillCharge);
+        Assert.Equal(state.BossState.Power, after.BossState.Power);
 
         // GAME_STATE.md §5.1.1 item 2 / COMBAT_RULES.md §5.3.4: SkillCooldown's
         // "decrements by 1 at each Turn increment" rule is a separate Boss Skill

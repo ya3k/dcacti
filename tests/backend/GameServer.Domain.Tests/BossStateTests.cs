@@ -90,17 +90,20 @@ public class BossStateTests
     }
 
     [Fact]
-    public void Initial_ShouldStartTheSkillUnchargedAndOffCooldown()
+    public void Initial_ShouldStartTheBossCardOffCooldown()
     {
-        // GAME_STATE.md §2.4.3: SkillCharge counts Matches toward the charge
-        // requirement and SkillCooldown counts Turns until the Skill can fire again.
-        // No Match and no Turn has occurred at battle creation, so both begin at 0.
+        // GAME_STATE.md §2.4.3: SkillCooldown counts Turns until the Boss's ability
+        // can be cast again. No Turn has occurred at battle creation, so it begins
+        // at 0. The legacy SkillCharge accumulator this test also covered was
+        // removed with ADR-029 Slice 5 / TASK-313 (BOSS_RULES.md §4.1, ADR-029
+        // §2.9): the Boss's ability resource is BossState.Power, and
+        // Initial_ShouldSetPowerToZero covers its initial value.
         var boss = BossState.Initial(
             new BossId("b"), Element.Hoa, maxHp: 5000, atk: 100, def: 50,
             passiveId: new PassiveId("p"), passiveThreshold: 5);
 
-        Assert.Equal(0, boss.SkillCharge);
         Assert.Equal(0, boss.SkillCooldown);
+        Assert.Equal(0, boss.Power);
     }
 
     [Fact]
@@ -126,7 +129,7 @@ public class BossStateTests
         // GAME_STATE.md §2.4 / BOSS_RULES.md §6.1: the identity, the Element, and
         // the stats come from the Boss's definition and are carried across
         // unchanged. The factory applies exactly the documented initial values
-        // (HP = MaxHP, State = Idle, progress = 0, Skill uncharged, cooldown 0) and
+        // (HP = MaxHP, State = Idle, progress = 0, Power 0, cooldown 0) and
         // decides nothing else.
         var bossId = new BossId("test-boss");
 
@@ -143,7 +146,6 @@ public class BossStateTests
         Assert.Equal("test-passive", boss.PassiveId.Value);
         Assert.Equal(7, boss.PassiveProgress.Threshold);
         Assert.Equal(0, boss.PassiveProgress.Current);
-        Assert.Equal(0, boss.SkillCharge);
         Assert.Equal(0, boss.SkillCooldown);
     }
 
@@ -194,8 +196,9 @@ public class BossStateTests
     public void BossState_ShouldCarryExactlyTheDocumentedFields()
     {
         // GAME_STATE.md §2.4 / §2.4.1: BossId, Element, HP, MaxHP, ATK, DEF, State,
-        // PassiveId, PassiveProgress, SkillCharge, SkillCooldown — the eleven fields
-        // §2.4.1 marks "Implement now" — plus StatusEffects[], which §2.4.1 lists as
+        // PassiveId, PassiveProgress, Power, SkillCooldown — the ten fields §2.4.1
+        // marks "Implement now" (the legacy SkillCharge member was removed with
+        // ADR-029 Slice 5 / TASK-313) — plus StatusEffects[], which §2.4.1 lists as
         // deferred to the Status Effects system's own task and which that task
         // (TASK-095) now implements (§2.3.1, §5.1.1). It appears as
         // ActiveStatusEffects, the never-null member §2.3.2 item 1 requires.
@@ -209,7 +212,7 @@ public class BossStateTests
             new[]
             {
                 "ATK", "BossId", "DEF", "Element", "HP", "MaxHP", "PassiveId",
-                "PassiveProgress", "Power", "SkillCharge", "SkillCooldown", "State",
+                "PassiveProgress", "Power", "SkillCooldown", "State",
             },
             dataMembers);
 
@@ -228,7 +231,7 @@ public class BossStateTests
             new[]
             {
                 "ATK", "ActiveStatusEffects", "BossId", "DEF", "Element", "HP", "IsIdle",
-                "MaxHP", "PassiveId", "PassiveProgress", "Power", "SkillCharge", "SkillCooldown",
+                "MaxHP", "PassiveId", "PassiveProgress", "Power", "SkillCooldown",
                 "State",
             },
             declared);
@@ -546,27 +549,27 @@ public class BossStateTests
     }
 
     [Theory]
-    // BOSS_RULES.md §6.3's Skill timing and Base Damage, transcribed per Boss (ADR-026 D3: BaseDamage = 0).
-    // CD 0 (Sơn Thạch Vệ, Kim Lôi Vương) needs no special case: §6.3's post-fire
-    // reset stores the Boss's cooldown value (0), so `SkillCooldown = 0` is
-    // immediately satisfiable on recharge and the "blocked while CD > 0" rule
-    // simply never binds.
-    [InlineData("boss-hoa-long", 5, 2, 0)]
-    [InlineData("boss-thuy-ma", 4, 3, 0)]
-    [InlineData("boss-moc-yeu", 6, 2, 0)]
-    [InlineData("boss-son-thach-ve", 5, 0, 0)]
-    [InlineData("boss-kim-loi-vuong", 5, 0, 0)]
-    public void Definitions_ShouldCarryTheDocumentedSkillTiming(
+    // BOSS_RULES.md §6.3's Skill cooldown (CD), transcribed per Boss and carried
+    // over unchanged by ADR-029 §3 U-5. CD 0 (Sơn Thạch Vệ, Kim Lôi Vương) needs
+    // no special case: the post-cast reset stores the Boss's cooldown value (0), so
+    // `SkillCooldown = 0` is immediately satisfiable and the "blocked while CD > 0"
+    // rule simply never binds. The legacy Charge Requirement and Skill Base Damage
+    // columns this theory used to assert were removed with ADR-029 Slice 5 /
+    // TASK-313; the persisted JSONB document retains them as storage compatibility
+    // only (OD-311-1 = B) and no Domain projection exists to assert.
+    [InlineData("boss-hoa-long", 2)]
+    [InlineData("boss-thuy-ma", 3)]
+    [InlineData("boss-moc-yeu", 2)]
+    [InlineData("boss-son-thach-ve", 0)]
+    [InlineData("boss-kim-loi-vuong", 0)]
+    public void Definitions_ShouldCarryTheDocumentedSkillCooldown(
         string bossId,
-        int chargeRequirement,
-        int cooldownTurns,
-        int skillBaseDamage)
+        int cooldownTurns)
     {
         var boss = BossDefinitions.All.Single(b => b.BossId.Value == bossId);
 
-        Assert.Equal(chargeRequirement, boss.SkillChargeRequirement);
+        Assert.NotEmpty(boss.SkillId);
         Assert.Equal(cooldownTurns, boss.SkillCooldownTurns);
-        Assert.Equal(skillBaseDamage, boss.SkillBaseDamage);
     }
 
     [Fact]
@@ -643,11 +646,11 @@ public class BossStateTests
                     matchCount: 3,
                     boss.PassiveId));
 
-            // Each one's Skill timing is nonetheless fully declared — a
-            // non-match-charged Passive is not an absent Passive (ADR-026 D3: SkillBaseDamage = 0).
+            // Each one's ability is nonetheless fully declared — a
+            // non-match-charged Passive is not an absent Passive (ADR-029 Slice 5 /
+            // TASK-313 retired the legacy Skill Base Damage term, so the ability's
+            // live declaration is its SkillId and the Boss Card it resolves).
             Assert.NotEmpty(boss.SkillId);
-            Assert.True(boss.SkillChargeRequirement > 0);
-            Assert.Equal(0, boss.SkillBaseDamage);
         }
 
         // The documented set: exactly the three alternate-trigger Bosses.
@@ -675,7 +678,6 @@ public class BossStateTests
                 Assert.Equal(boss.PassiveId, state.PassiveId);
                 Assert.Equal(boss.PassiveThreshold, state.PassiveProgress.Threshold);
                 Assert.Equal(0, state.PassiveProgress.Current);
-                Assert.Equal(0, state.SkillCharge);
                 Assert.Equal(0, state.SkillCooldown);
                 Assert.Equal(BossStateKind.Idle, state.State);
                 Assert.Equal(boss.MaxHP, state.HP);

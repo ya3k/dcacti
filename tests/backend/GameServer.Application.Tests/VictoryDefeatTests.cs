@@ -76,11 +76,8 @@ public class VictoryDefeatTests
         BossDefinitions.HoaLong with
         {
             ATK = 100_000,
-            // Keep the Skill out of the way so the instance under test is the §18d one,
-            // and keep the Passive from charging or triggering by recording the
+            // Keep the Passive from charging or triggering by recording the
             // documented "no match-charging threshold" marker (BOSS_RULES.md §6.2).
-            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition
-                with { ChargeRequirement = int.MaxValue },
             PassiveDefinition = BossDefinitions.HoaLong.PassiveDefinition
                 with { Threshold = null },
         };
@@ -177,7 +174,7 @@ public class VictoryDefeatTests
             e => e.Type == BattleEventType.PassiveTriggered
                 && e.PassiveTriggered.Source == PassiveEventSource.Boss);
 
-        Assert.DoesNotContain(events, e => e.Type == BattleEventType.BossSkillCast);
+        Assert.DoesNotContain(events, e => e.Type == BattleEventType.BossCardCast);
 
         Assert.DoesNotContain(
             events,

@@ -321,7 +321,7 @@ public sealed class TASK298ExperimentTests
         Assert.Equal(left.ElementDisadvantageCount, right.ElementDisadvantageCount);
         Assert.Equal(left.BossRegenerationTotal, right.BossRegenerationTotal);
         Assert.Equal(left.BossRegenerationTurns, right.BossRegenerationTurns);
-        Assert.Equal(left.BossSkillCastCount, right.BossSkillCastCount);
+        Assert.Equal(left.BossCardCastCount, right.BossCardCastCount);
         Assert.Equal(left.BossPassiveTriggerCount, right.BossPassiveTriggerCount);
         Assert.Equal(left.BossEnrageTurn, right.BossEnrageTurn);
         Assert.Equal(left.RejectedSwaps, right.RejectedSwaps);
@@ -343,7 +343,7 @@ public sealed class TASK298ExperimentTests
 
         // The terminal authoritative state is part of the reproduction contract.
         Assert.Equal(expected.FinalState!.BossState.HP, actual.FinalState!.BossState.HP);
-        Assert.Equal(expected.FinalState.BossState.SkillCharge, actual.FinalState.BossState.SkillCharge);
+        Assert.Equal(expected.FinalState.BossState.Power, actual.FinalState.BossState.Power);
         Assert.Equal(expected.FinalState.BossState.SkillCooldown, actual.FinalState.BossState.SkillCooldown);
         Assert.Equal(expected.FinalState.PetState.HP, actual.FinalState.PetState.HP);
         Assert.Equal(expected.FinalState.PetState.Power, actual.FinalState.PetState.Power);

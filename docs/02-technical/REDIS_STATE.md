@@ -1,6 +1,6 @@
 # Redis State
 
-**Version:** 1.17 (§2.1 annotated with future Slice 5 `BossState.SkillCharge` retirement, tolerant-reader deserialization basis, and battle drain expectations per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; no Redis keys, state structures, or serialization code changed). Prior 1.16: (§2 extended per **ADR-029 / TASK-303**: `BossState.Power` is
+**Version:** 1.18 (§2.1 updated per **TASK-313 / ADR-029 Slice 5**: the `BossState.SkillCharge` retirement is now **DONE** — the member is gone from `BossState` and from the serialized `battle:{battleId}:state` record, so a stored snapshot containing a legacy `skillCharge` member is an ignored legacy member that deserializes under the existing tolerant-reader basis with the value discarded; the active-battle drain is recorded as a **PENDING OPERATIONS prerequisite, not an executed step**; `Power` and `SkillCooldown` are unchanged, and no key, structure, TTL, lifecycle, or compare-and-set rule changes). Prior 1.17: (§2.1 annotated with future Slice 5 `BossState.SkillCharge` retirement, tolerant-reader deserialization basis, and battle drain expectations per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; no Redis keys, state structures, or serialization code changed). Prior 1.16: (§2 extended per **ADR-029 / TASK-303**: `BossState.Power` is
 an ordinary serialized member of the `battle:{battleId}:state` record — no new
 key, no Redis-only field, no lifecycle or compare-and-set change — and an active
 battle record written before the member existed deserializes it to `0`, the
@@ -195,7 +195,7 @@ verbatim and complete: this section adds no `BattleState` member, removes
 none, and renames none. It states only that the record's Element *spelling*
 is unbound — a statement about encoding, not about shape.
 
-## 2.1 `BossState.Power` — Added Member, Tolerant Reader, No Migration (ADR-029)
+## 2.1 `BossState.Power` — Added Member, Tolerant Reader, No Migration; and the `SkillCharge` Removal (ADR-029)
 
 `BossState.Power` (`GAME_STATE.md` §2.4, §2.4.3; `BOSS_RULES.md` §4.1) is an
 ordinary member of the serialized record. It is the Boss's own integer 0–100
@@ -219,35 +219,46 @@ field, no key, no second record, and no new serialization mechanism.
    `0` is a real, valid state ("the Boss has no Power banked"), never an
    "invalid" or "unknown" marker, so no reader may treat it as a degraded record
    or as evidence of a different battle.
-4. **No migration, no rewrite, no drain.** This addition is not a retirement: the
-   transitional `SkillCharge`/`SkillCooldown` members are retained
-   (`BOSS_RULES.md` §4.4), so a battle carried across the deployment continues on
-   the documented path for the abilities not yet migrated. Nothing in the stored
-   record is mutated, re-serialized offline, or discarded. The Decision B-2
-   battle-drain policy remains in force as this document's general deployment
-   policy; it is not required *by* this addition, and no battle is invalidated by
-   it.
-5. **`Power` is never `SkillCharge` in storage either.** The two are separate
-   members with separate meanings; no reader derives one from the other, and no
-   migration converts the stored `SkillCharge` into `Power` (`ADR-029`: no
-   conversion is authorised).
+4. **No migration, no rewrite, and no drain was required *by this addition*.** The
+   `Power` addition itself is not a retirement: `SkillCooldown` is retained
+   unchanged, so a battle carried across that deployment continues on the same
+   documented path. Nothing in the stored record is mutated, re-serialized
+   offline, or discarded. (The later `SkillCharge` removal in item 7 *is* a
+   retirement and does carry the drain prerequisite; the two are separate events.)
+5. **`Power` is never a charge value in storage either.** It is a separate member
+   with its own meaning; no reader derives it from any other member, and no
+   migration ever converted the stored `SkillCharge` into `Power` (`ADR-029`: no
+   conversion is authorised). That conversion question is now moot: the legacy
+   member was removed (item 7).
 6. **The delivered projection does not change storage.** `SIGNALR_PROTOCOL.md`
    §4.4's `bossState.power` reads this member; it adds no Redis key and no
    Redis-only field (`SIGNALR_PROTOCOL.md` §4.4 item 9, item 12).
-7. **Future Slice 5 retirement of `SkillCharge` (TASK-311):** When the eventual
-   Slice 5 task removes `SkillCharge` from `BossState`:
-   - *Tolerant-Reader Deserialization:* Under Decision B-2, `BattleStateSerializer`
-     uses default `System.Text.Json` deserialization (no
-     `JsonUnmappedMemberHandling.Disallow`), so any in-flight active battle JSON
-     payload in Redis containing `"SkillCharge"` will safely deserialize into the
-     new `BossState` struct without error.
-   - *Active Battle Drain:* Per Decision B-2 and general repository deployment
-     policy, active battles should be drained prior to joint deployment of the
-     Slice 5 server release to ensure no lingering legacy state fields exist.
-   - *No in-place Redis script:* No offline data migration or Redis rewrite script
-     will be used; the drain policy cleanly settles active battles.
-   - *`SkillCooldown` retained:* The `SkillCooldown` member remains an active
-     serialized integer in `BossState`.
+7. **`SkillCharge` retirement — DONE under TASK-313 (ADR-029 Slice 5).** The
+   member has been removed from `BossState` and from the serialized
+   `battle:{battleId}:state` record, which therefore no longer contains any
+   `skillCharge` member. The consequences for storage are these:
+   - *Record shape.* The record's shape is `GAME_STATE.md` §2's, so the removal
+     retires exactly one documented member. No key, structure, TTL, lifecycle,
+     or compare-and-set rule changes, and no other member is touched.
+   - *A stored `skillCharge` is an ignored legacy member.* Under the Decision B-2
+     tolerance basis (default `System.Text.Json` deserialization; no
+     `JsonUnmappedMemberHandling.Disallow`; zero `[JsonRequired]` members), a
+     Redis value written by a pre-TASK-313 build that still contains
+     `"skillCharge"` deserializes into the current `BossState` without error, and
+     the legacy value is **discarded**. This is a tolerant read, not a shim: no
+     `SkillCharge` property, alias, or conversion is reintroduced in the Domain,
+     and a serialization lifecycle test proves the read.
+   - *Active Battle Drain — PENDING OPERATIONS, not executed.* Per Decision B-2
+     and general repository deployment policy, active battles must be drained
+     **before** the joint server/client deploy of the TASK-313 removal (the wire
+     contract also changes — `SIGNALR_PROTOCOL.md` §3.2.18). This is a required
+     operational prerequisite recorded here; it has **not** been executed, and
+     this document neither claims nor verifies a drain or a deployment.
+   - *No in-place Redis script.* No offline data migration, backfill, rewrite, or
+     `SCAN`-and-patch job is used: stored Redis state is not mutated, discarded,
+     or migrated, per §7 item 10's deployment policy.
+   - *`SkillCooldown` retained.* The `SkillCooldown` member remains an active
+     serialized integer in `BossState`, unchanged by the removal.
 
 ---
 

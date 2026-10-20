@@ -1,6 +1,6 @@
 # SignalR Protocol
 
-**Version:** 2.29 (§3.2.18 annotated with Slice 5 removal expectations, §3.2.30 item 8 gate terminology reconciled to the Slice 5 removal gate per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; wire contracts and schemas unchanged). Prior 2.28: (§3.2.2, **§3.2.30 added**, and §4.4 extended per **ADR-029 /
+**Version:** 2.30 (§3.2.2 and §3.2.30 updated and **§3.2.18 RETIRED IN PLACE** per **TASK-313 / ADR-029 Slice 5** (OD-311-2 = A): the `BossSkillCast` discriminator is removed from the closed set and its DTO — including the `skillId` member — no longer exists, while the section number is retained with a retirement note so existing cross-references stay valid and no section is renumbered; `BossCardCast` (§3.2.30) is the sole Boss cast event and its schema is unchanged; §3.2.25, §3.2.29, §4.4 and §8 item 10 are reconciled with the removal, and the breaking-deploy active-battle drain prerequisite is recorded as a required but unexecuted operational step). Prior 2.29: (§3.2.18 annotated with Slice 5 removal expectations, §3.2.30 item 8 gate terminology reconciled to the Slice 5 removal gate per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; wire contracts and schemas unchanged). Prior 2.28: (§3.2.2, **§3.2.30 added**, and §4.4 extended per **ADR-029 /
 TASK-303**, applying the explicit Product Owner decision that the Boss is a
 genuine opponent using the same cast principles as the Player: `BossCardCast`
 becomes the twenty-first member of the closed discriminator set — a dedicated
@@ -555,7 +555,7 @@ discriminator member and that event's own payload members at the same level.
 
 | Member | Type | Value |
 | --- | --- | --- |
-| `type` | string | one of `SwapStarted`, `SwapResolved`, `MatchCreated`, `CascadeCreated`, `ComboChanged`, `GemMatched`, `CascadeStepResolved`, `MatchedGemSummary`, `DamageCalculated`, `DamageDealt`, `DamageTaken`, `PassiveCharged`, `PassiveTriggered`, `BossSkillCast`, `BossCardCast`, `BattleWon`, `BattleLost`, `CardCast`, `PetSkillCast`, `RelicTriggered`, `PowerChanged` |
+| `type` | string | one of `SwapStarted`, `SwapResolved`, `MatchCreated`, `CascadeCreated`, `ComboChanged`, `GemMatched`, `CascadeStepResolved`, `MatchedGemSummary`, `DamageCalculated`, `DamageDealt`, `DamageTaken`, `PassiveCharged`, `PassiveTriggered`, `BossCardCast`, `BattleWon`, `BattleLost`, `CardCast`, `PetSkillCast`, `RelicTriggered`, `PowerChanged` |
 
 1. **The property name is `type`.** The string spelling matches the event name
    `GAME_RULES.md` §16 lists and `GAME_EVENTS.md` §2 defines.
@@ -812,9 +812,10 @@ under ADR-028.
 ### 3.2.12 No Member Outside This Schema
 
 1. **The events tabulated above carry exactly the members this section gives
-   them** — the twelve of §3.2.6–§3.2.19 plus the four of §3.2.20, §3.2.21,
+   them** — the eleven live events of §3.2.6–§3.2.19 (§3.2.18 is retired in
+   place and defines no event) plus the four of §3.2.20, §3.2.21,
    §3.2.23, and §3.2.24, plus the two of §3.2.26 and §3.2.27, plus the one of
-   §3.2.28, plus the one of §3.2.29 (§3.2.22 owns their
+   §3.2.28, plus the one of §3.2.29, plus the one of §3.2.30 (§3.2.22 owns their
    order and §3.2.25 owns the `effect summary` convention; neither is an event).
    No
    event carries a `battleId`, a `serverSequence`, a `turn`, a board, a `combo`,
@@ -1032,43 +1033,43 @@ under ADR-028.
    member is not yet populated — its absence must not be read as "no effect
    occurred": it means the effect is not yet reported (§3.2.25 item 5).
 
-### 3.2.18 `BossSkillCast`
+### 3.2.18 `BossSkillCast` — RETIRED IN PLACE (TASK-313 / ADR-029 Slice 5)
 
-```json
-{
-    "type": "BossSkillCast",
-    "skillId": "flame-burst",
-    "sourceId": "boss-hoa-long"
-}
+**This subsection defines no live wire schema. Its number is retained so that
+existing cross-references stay resolvable and no section in this document is
+renumbered.** The `BossSkillCast` discriminator, its DTO and its `skillId` member
+were physically removed from the wire contract under **TASK-313** (operator
+decision **OD-311-2 = A**: a coordinated **breaking** removal), together with the
+legacy `BossSkill` execution path and `BossState.SkillCharge` it reported.
+
+```text
+Removed (no longer part of events[]):
+  · the `BossSkillCast` discriminator — gone from §3.2.2's closed set
+  · the event DTO, including its `skillId` member — no `skillId` wire member
+    exists anywhere in `events[]`
+  · the server-side projection that produced it and the client-side parsing
+    and presentation that consumed it
+
+Replacement (sole Boss cast event):
+  `BossCardCast` — §3.2.30. Its `cardId` + `sourceId` schema is unchanged.
 ```
 
-| Member | Type | Presence | Meaning |
-| --- | --- | --- | --- |
-| `type` | string | always | `"BossSkillCast"` |
-| `skillId` | string | always | the Boss Skill's identity (`BOSS_RULES.md` §4) |
-| `sourceId` | string | always | the Boss's canonical technical Identity (`BossState.BossId` — `BOSS_RULES.md` §6.4; never a display name) |
-
-1. **`skillId` identifies which Boss Skill was used.** It is the same
-   identity the boss definition carries (`BOSS_RULES.md` §6.4 — e.g.
-   `"flame-burst"`) — the client uses it to look up the
-   skill's visual and effect description (`BOSS_RULES.md` §4, §6).
-2. **`sourceId` identifies the Boss.** In MVP there is exactly one Boss per
-   battle, but the field is present for future-proofing and consistency with
-   `PassiveCharged`/`PassiveTriggered` (§3.2.16). The value is the Boss's
-   canonical technical Identity (`BossState.BossId`, e.g. `"boss-hoa-long"`)
-   per `BOSS_RULES.md` §6.4 — never the display name.
-3. **Effect details are carried by subsequent damage events.** The skill's
-   damage (if any) is reported by `DamageCalculated`/`DamageDealt`/
-   `DamageTaken` in the same `ReceiveEvents` batch, with `source = "boss"`
-   and `target = "player"` (a fixed wire label meaning the player's side /
-active Pet — `GAME_EVENTS.md` §1, ADR-011).
-4. **Transitional status and future removal (ADR-029, TASK-311).** `BossSkillCast`
-   is retained strictly as the compatibility path for unmigrated or legacy ability
-   resolutions. Under ADR-029 Slices 3–4, all five MVP Boss abilities are migrated to
-   Boss Cards, which emit `BossCardCast` (§3.2.30) instead. `BossSkillCast` is slated
-   for removal from this discriminator set under the future Slice 5 task once its
-   consumers (`BattleScene.ts`, `BattleEventPresenter.ts`, wire projection, and
-   tests) are reconciled. No payload or schema change is made in TASK-311.
+1. **Nothing may be emitted, expected, or reconstructed.** There is no
+   `BossSkillCast` trigger, payload, ordering rule, alias, or compatibility
+   fallback in this protocol; a server must not send the item and a consumer must
+   not expect it (`GAME_EVENTS.md` §2's retirement note, `GAME_RULES.md` §16).
+   The retired discriminator's numeric enum value `9` is retired and not reused.
+2. **The removal is a breaking contract change with a deployment prerequisite.**
+   An older client cannot parse the retired item and an older server would still
+   emit it, so the server and client must be deployed together, and **active
+   battles must be drained before that joint deploy** (`REDIS_STATE.md` §2.1
+   item 7; the general Decision B-2 deployment policy). This is a **required,
+   pending operational step**: this document records the requirement only and
+   makes no claim that a drain or a deployment has been executed.
+3. **The unknown-`type` tolerance rule is not a shim.** §3.2.2 item 6's
+   tolerant-reader rule governs an unrecognized item reaching an older consumer;
+   it is not a compatibility path for `BossSkillCast`, and no server built after
+   TASK-313 emits one.
 
 ### 3.2.19 `BattleWon` / `BattleLost`
 
@@ -1197,8 +1198,9 @@ active Pet — `GAME_EVENTS.md` §1, ADR-011).
 3. **The client resolves the confirmation from the value it already holds.**
    `cardId` alone suffices for a client that knows the active Pet's loadout from
    the §4 push; the event needs no second member to be decodable, and this is
-   the same "identity member" shape §3.2.16/§3.2.18 establish for
-   `passiveId`/`skillId`/`sourceId`.
+   the same "identity member" shape §3.2.16 establishes for
+   `passiveId`/`sourceId` (the former `skillId` of §3.2.18 was retired with that
+   event under TASK-313).
 4. **Omitted `effect summary`, as in §3.2.20 item 3 (§3.2.25).**
 5. **It is emitted only when the cast Card is the Signature Skill, and always
    in addition to `CardCast`** — never instead of it (`CARD_RULES.md` §6: "in
@@ -1385,15 +1387,15 @@ different answers to the same question.
 3. **This supersedes §3.2.17 item 3's deferral wording.** The prior revision
    declared `effect summary` "deferred … and is not a wire member yet" on
    `PassiveTriggered`, while §3.2.18 disposed of the same element on
-   `BossSkillCast` by silent omission and §3.2.19 item 3 used a third wording.
+   `BossSkillCast` by silent omission (that event has since been retired in
+   place — TASK-313) and §3.2.19 item 3 used a third wording.
    Under this ruling **one** convention governs: where such an element is
    omitted, it is omitted, and this subsection is the single statement of that
-   fact. §3.2.17 and §3.2.18 are not otherwise changed — their member tables
-   already carry exactly what is sent, which is what the ruling requires.
-4. **It applies to every event with such an element**, including
+   fact. §3.2.17 and §3.2.18's number are not otherwise changed — the live
+   member tables carry exactly what is sent, which is what the ruling requires.
+4. **It applies to every live event with such an element**, including
    `CardCast`/`PetSkillCast` (§3.2.20 item 3, §3.2.21 item 4),
-   `RelicTriggered` (§3.2.23 item 2), `PassiveTriggered` (§3.2.17), and
-   `BossSkillCast` (§3.2.18).
+   `RelicTriggered` (§3.2.23 item 2), and `PassiveTriggered` (§3.2.17).
 5. **Absence means "not reported yet", never "no effect occurred."** This
    preserves `GAME_EVENTS.md` §2 item 3's substantive point for
    `PassiveTriggered` — a reader must not read a missing `effect summary` as
@@ -1700,7 +1702,7 @@ Each `gems` entry:
    §3.2.26 item 2 — the same rule every other board-cycle item follows, and a
    second spelling of it here would state one fact twice), **no board**, no
    `clearedCells`, and no damage, healing, DEF buff magnitude, Power delta,
-   resulting Power, Boss SkillCharge, Combo, or Match count: those are separate
+   resulting Power, Combo, or Match count: those are separate
    gameplay effects with their own events or their own state
    (`GAME_EVENTS.md` §2, `GAME_STATE.md` §2.4.3). It also carries no
    `battleId`/`serverSequence` (the envelope's, §3), no turn, no timestamp, GUID,
@@ -1715,8 +1717,8 @@ Each `gems` entry:
    entry is absent. It derives no count of its own — it does not re-count the
    cycle's `GemMatched` items and does not read a board, a state snapshot, or a
    match rule to produce the number — and it uses the counts for presentation
-   only: they are not damage, healing, DEF buff magnitude, Power gain, or Boss
-   SkillCharge, and no HUD value is computed from them
+   only: they are not damage, healing, DEF buff magnitude, or Power gain, and no
+   HUD value is computed from them
    (`GAME_RULES.md` §18, `AGENTS.md` §10). A **missing or malformed** item is
    skipped: the presentation simply shows no summary for that cycle, which never
    changes gameplay state, never holds input, and never weakens the §6 sequence
@@ -1755,7 +1757,7 @@ Each `gems` entry:
    identifier for the same ability (`GAME_STATE.md` §0 item 5).
 3. **`sourceId` identifies the Boss** — the canonical technical Identity
    (`BossState.BossId`, e.g. `"boss-hoa-long"`), never a display name, matching
-   `BossSkillCast.sourceId` (§3.2.18 item 2) and
+   `BattleStarted.bossId` (`GAME_EVENTS.md` §2) and
    `PassiveCharged`/`PassiveTriggered` with `source = "boss"` (§3.2.16).
 4. **The event carries no cost, no Power value, no cooldown, and no other
    member.** The cost actually paid is a Card-side runtime value
@@ -1775,10 +1777,11 @@ Each `gems` entry:
    `type` + `cardId` payload, gains no actor/source/cost member, and is never
    used for a Boss cast; the discriminator is the only distinction a consumer
    needs (`CARD_RULES.md` §6, `GAME_RULES.md` §16).
-8. **`BossSkillCast` remains the transitional path's event.** It reports the
-   pre-migration ability form until `ADR-029`'s Slice 5 removal gate is met
-   (`BOSS_RULES.md` §4.4); the two are never emitted for the same ability
-   resolution, because a Boss carries only one form of an ability at a time.
+8. **It is the sole Boss cast event.** `BossSkillCast` — the transitional
+   pre-migration form's event — was retired and removed under TASK-313
+   (§3.2.18's retirement note, `BOSS_RULES.md` §4.4), so a Boss cast is never
+   reported by a second discriminator and no two events can describe the same
+   ability resolution.
 9. **Compatibility is the tolerant-reader rule and nothing else.** The name is
    in §3.2.2's set; a consumer built before it ignores the item (§3.2.2 item 6)
    — not a desync and not evidence about the resolution. **No version
@@ -2493,7 +2496,7 @@ bossState
    object as the Boss's state.
 3. **Which `BossState` fields are NOT delivered — explicitly.** Every other
    §2.4 member stays server-side: `Element`, `ATK`, `DEF`,
-   `State`, `PassiveId`, `PassiveProgress`, `SkillCharge`, `SkillCooldown`, and
+   `State`, `PassiveId`, `PassiveProgress`, `SkillCooldown`, and
    `StatusEffects[]`. This list is exhaustive for the current tree, and no
    member of it may be added to `bossState` without a protocol change owned by
    its own task. In particular **Boss `StatusEffects[]` is not delivered**: the
@@ -2501,9 +2504,12 @@ bossState
    Identity is a separate authorization (item 11, `TASK-208` **D-208-03**), and
    the Boss **Power** is a third, separate authorization (item 12, `TASK-303` /
    `ADR-029`) — each was decided on its own and none widens another.
-   **`SkillCharge` and `SkillCooldown` remain undelivered**, and the delivered
-   `power` is the Boss's Power, not `SkillCharge`: the two are never conflated on
-   the wire, and a consumer must not reconstruct one from the other. §4 item 17
+   **`SkillCooldown` remains undelivered**, and the delivered
+   `power` is the Boss's Power — necessarily distinct from `SkillCooldown` and
+   never reconstructed from it. The legacy `SkillCharge` member is not merely
+   undelivered: it was removed from `BossState` under TASK-313 / ADR-029 Slice 5,
+   so it is not a state value at all and no consumer may reconstruct one
+   (`GAME_STATE.md` §2.4.3, `BOSS_RULES.md` §4.4). §4 item 17
    records the same boundary from the Pet side. `BossState` is
    therefore still not a wire member — `bossState` is a four-member projection
    *of* it, which is the opposite of exposing it.
@@ -2583,7 +2589,7 @@ bossState
     - **Identity only — never a second copy of the Boss's content and never
       `BossDefinitionId`.** No display name, localization text, `Element`,
       portrait, asset key, boss type, `ATK`/`DEF`, `State`, Passive or Skill
-      metadata, `SkillCharge`/`SkillCooldown`, or Boss `StatusEffects[]` travels
+      metadata, `SkillCooldown`, or Boss `StatusEffects[]` travels
       with it (item 3), and the three identity concepts `BOSS_RULES.md` §6.4
       keeps distinct — the canonical technical Identity, the display name, and
       the persistence `BossDefinitionId` — are not collapsed here.
@@ -2597,9 +2603,9 @@ bossState
       server-resolved (`GAME_RULES.md` §18, `ELEMENT_RULES.md`, `ADR-001`), and
       an unrecognized identity is rendered as the identity or a neutral
       placeholder — never as a guessed name.
-    - **It is the same identity the events already report.** `BossSkillCast`'s
+    - **It is the same identity the events already report.** `BossCardCast`'s
       `sourceId` and `PassiveCharged`/`PassiveTriggered`'s `sourceId` when
-      `source = "boss"` already carry it (`§3.2.16`–`§3.2.18`). This member
+      `source = "boss"` already carry it (`§3.2.16`, `§3.2.30`). This member
       therefore discloses nothing new: it moves an already-delivered fact onto
       the path that survives a resync, exactly as §4.3 item 3 delivers
       `petState.passiveId` as the identity the events already report. The state
@@ -2635,11 +2641,11 @@ bossState
       published value, not an absent member (item 4). The client must not compute
       the Boss's Power from `BossCardCast` items, from any delta, from a Card
       definition, or from the Pet's Power (`GAME_RULES.md` §18, `ADR-001`).
-    - **It is not `SkillCharge`, and it does not deliver the charge.** The
-      transitional `SkillCharge`/`SkillCooldown` members stay server-side
-      (item 3). The two are separate values for the whole of the documented
-      migration (`BOSS_RULES.md` §4.4), and no consumer may treat `power` as a
-      renamed charge.
+    - **It is not the retired `SkillCharge`, and it delivers no charge.** The
+      `SkillCharge` member was removed from `BossState` under TASK-313 /
+      `ADR-029` Slice 5, so no charge value exists to deliver, conflate, or
+      reconstruct; `SkillCooldown` stays server-side (item 3). No consumer may
+      treat `power` as a renamed charge.
     - **No persistence change.** `Power` is already part of `BossState` and
       serializes with it under the existing round-trip obligation
       (`REDIS_STATE.md` §2 item 1, §7 item 9); this section adds no Redis key and
@@ -3002,3 +3008,13 @@ is the answer to the gap it opened.
 10. **Wire protocol version negotiation.** Per `ADR-028`, no wire protocol version
     negotiation exists. Server and client are deployed together following the
     Decision B-2 active battle drain deployment policy.
+
+    **The TASK-313 `BossSkillCast` removal is a breaking contract change, and the
+    drain is its prerequisite.** No negotiation, version header, fallback
+    discriminator, or dual-emit window exists to soften it, so an older client
+    and a post-TASK-313 server (or the reverse) are not interoperable for that
+    event. Before the joint server/client deploy, active battles must therefore
+    be drained exactly as the Decision B-2 policy requires
+    (`REDIS_STATE.md` §2.1 item 7, which states the procedure). This document
+    records the operational requirement; it does **not** claim that the drain or
+    the deployment has happened, and neither is verified here.

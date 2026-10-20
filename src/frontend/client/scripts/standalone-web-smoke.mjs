@@ -298,7 +298,7 @@ function isSettledCastAcknowledgement(text) {
  * CARD: <name>                 CardCast
  * PET SKILL: <name>            PetSkillCast
  * RELIC: <name>                RelicTriggered      (TASK-218B, §3.2.23)
- * BOSS SKILL[: <name>]         BossSkillCast (TASK-231)
+ * BOSS CARD[: <name>]          BossCardCast (§3.2.30)
  * BOSS ENRAGED                 Boss Enrage transition (TASK-231)
  * PASSIVE … / BOSS PASSIVE …   PassiveCharged / PassiveTriggered
  * ```
@@ -314,8 +314,8 @@ function isPlayerFacingCallout(callout) {
     /^PET SKILL: \S/.test(callout) ||
     // TASK-218B: the Relic's own delivered name, and nothing else on that line.
     /^RELIC: \S/.test(callout) ||
-    callout === 'BOSS SKILL' ||
-    /^BOSS SKILL: \S/.test(callout) ||
+    callout === 'BOSS CARD' ||
+    /^BOSS CARD: \S/.test(callout) ||
     callout === 'BOSS ENRAGED' ||
     /^(?:Swap|Cast) rejected/.test(callout) ||
     /^(?:Swap does not create a match|Invalid swap|Invalid board position|Board has changed|Not enough Power|Only one card can be cast per turn|Card is not in your current loadout|Invalid card|Pet skill is not available|Battle session not found)/.test(callout) ||
@@ -340,7 +340,7 @@ function carriesTechnicalIdentity(callout) {
   return (
     /relicinst/i.test(callout) ||
     /relic-[a-z0-9-]+/i.test(callout) ||
-    /RelicTriggered|PowerChanged|DamageDealt|DamageTaken|MatchCreated|ComboChanged|CardCast|PetSkillCast|BossSkillCast|PassiveCharged|PassiveTriggered/.test(
+    /RelicTriggered|PowerChanged|DamageDealt|DamageTaken|MatchCreated|ComboChanged|CardCast|PetSkillCast|BossCardCast|PassiveCharged|PassiveTriggered/.test(
       callout
     ) ||
     /On(?:Match|MatchCount|Combo|Cascade|HpBelow|PowerGain|DamageTaken|DamageDealt|CardCast|BattleStart|TurnStart|TurnEnd)\b/.test(

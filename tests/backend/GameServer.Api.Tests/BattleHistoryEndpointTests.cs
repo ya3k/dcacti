@@ -820,8 +820,6 @@ public class BattleHistoryEndpointTests
                 {
                     ATK = 100_000,
                     MaxHP = 1_000_000,
-                    SkillDefinition = BossDefinitions.HoaLong.SkillDefinition
-                        with { ChargeRequirement = int.MaxValue },
                     PassiveDefinition = BossDefinitions.HoaLong.PassiveDefinition
                         with { Threshold = null },
                 };

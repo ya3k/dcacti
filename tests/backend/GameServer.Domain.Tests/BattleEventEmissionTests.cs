@@ -1,4 +1,5 @@
 using GameServer.Domain.Battle;
+using GameServer.Domain.Bosses;
 using GameServer.Domain.Combat;
 using GameServer.Domain.Match3;
 using GameServer.Domain.Passives;
@@ -1429,7 +1430,6 @@ public class BattleEventEmissionTests
                 "BattleLost",
                 "BattleWon",
                 "BossCardCast",
-                "BossSkillCast",
                 "CardCast",
                 "CascadeDepth",
                 "CascadeStep",
@@ -1514,31 +1514,13 @@ public class BattleEventEmissionTests
 
         // The Boss Response's payloads are here for the same reason the Damage
         // payloads are: GAME_EVENTS.md §2 gives them documented identities and terminal
-        // values, and nothing generated. BossSkillCast's SourceId is the same
-        // documented BossId member the Passive events carry (SIGNALR_PROTOCOL.md
-        // §3.2.18), so it is asserted by name rather than through the `Id` filter.
-        foreach (var type in new[] { typeof(BossSkillCastEvent) })
-        {
-            var names = type
-                .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
-                .Select(p => p.Name)
-                .OrderBy(n => n, StringComparer.Ordinal)
-                .ToArray();
-
-            Assert.Equal(["SkillId", "SourceId"], names);
-
-            Assert.DoesNotContain(names, n =>
-                n.Contains("Time", StringComparison.Ordinal)
-                || n.Contains("Guid", StringComparison.Ordinal)
-                || n.Contains("Hash", StringComparison.Ordinal));
-        }
-
-        // The Boss Card form's payload is the same two documented identities under the
-        // names SIGNALR_PROTOCOL.md §3.2.30 fixes — cardId and sourceId — and nothing
-        // else: no cost, Power value, cooldown, or effect summary, because the Boss
-        // Power/cooldown it produces are authoritative state in the bossState
-        // projection (GAME_EVENTS.md §2, §4.4 item 12), and a Boss Power spend emits
-        // no PowerChanged.
+        // values, and nothing generated. The Boss Card form's payload is the same two
+        // documented identities under the names SIGNALR_PROTOCOL.md §3.2.30 fixes —
+        // cardId and sourceId — and nothing else: no cost, Power value, cooldown, or
+        // effect summary, because the Boss Power/cooldown it produces are
+        // authoritative state in the bossState projection (GAME_EVENTS.md §2, §4.4
+        // item 12), and a Boss Power spend emits no PowerChanged. (The legacy
+        // BossSkillCast payload was removed with ADR-029 Slice 5 / TASK-313.)
         foreach (var type in new[] { typeof(BossCardCastEvent) })
         {
             var names = type
@@ -1948,10 +1930,9 @@ public class BattleEventEmissionTests
         Assert.Equal(BattleEventType.BossCardCast, cardCast.Type);
         Assert.Equal(20, (int)cardCast.Type);
 
-        // It is its own event kind: not the Player CardCast and not the legacy
-        // BossSkillCast (GAME_EVENTS.md §2; SIGNALR_PROTOCOL.md §3.2.30).
+        // It is its own event kind: not the Player CardCast (GAME_EVENTS.md §2;
+        // SIGNALR_PROTOCOL.md §3.2.30).
         Assert.NotEqual(BattleEventType.CardCast, cardCast.Type);
-        Assert.NotEqual(BattleEventType.BossSkillCast, cardCast.Type);
     }
 
     [Fact]
@@ -1970,11 +1951,9 @@ public class BattleEventEmissionTests
         Assert.Equal(new BossCardCastEvent(BossCardId, BossSourceId), payload);
 
         // One identity, one spelling: the value the Boss Card event reports as
-        // cardId is the same string the legacy BossSkillCast reports as skillId for
-        // the same ability (SIGNALR_PROTOCOL.md §3.2.30 item 1; BOSS_RULES.md §6.4).
-        Assert.Equal(
-            BattleEvent.ForBossSkillCast(BossCardId, BossSourceId).BossSkillCast.SkillId,
-            payload.CardId);
+        // cardId is the ability's canonical SkillId (BOSS_RULES.md §6.4;
+        // SIGNALR_PROTOCOL.md §3.2.30 item 1) — "earthquake" for Sơn Thạch Vệ.
+        Assert.Equal(BossDefinitions.SonThachVe.SkillId, payload.CardId);
     }
 
     [Fact]
@@ -2027,7 +2006,6 @@ public class BattleEventEmissionTests
         Assert.Throws<InvalidOperationException>(() => eventValue.DamageCalculated);
         Assert.Throws<InvalidOperationException>(() => eventValue.DamageDealt);
         Assert.Throws<InvalidOperationException>(() => eventValue.DamageTaken);
-        Assert.Throws<InvalidOperationException>(() => eventValue.BossSkillCast);
         Assert.Throws<InvalidOperationException>(() => eventValue.BattleWon);
         Assert.Throws<InvalidOperationException>(() => eventValue.BattleLost);
         Assert.Throws<InvalidOperationException>(() => eventValue.CardCast);
@@ -2050,11 +2028,9 @@ public class BattleEventEmissionTests
         // wrong-kind read is a defect and never a silent empty cast — the same
         // contract BoundaryPayloads_ShouldBeReadableOnlyOnTheirOwnEvent pins for the
         // board boundary.
-        var skillCast = BattleEvent.ForBossSkillCast("flame-burst", "boss-hoa-long");
         var playerCardCast = BattleEvent.CreateCardCast("card-x", powerCost: 5);
         var swapStarted = BattleEvent.ForSwapStarted(DamageParty.Player, 25, 33);
 
-        Assert.Throws<InvalidOperationException>(() => skillCast.BossCardCast);
         Assert.Throws<InvalidOperationException>(() => playerCardCast.BossCardCast);
         Assert.Throws<InvalidOperationException>(() => swapStarted.BossCardCast);
 
@@ -2080,8 +2056,8 @@ public class BattleEventEmissionTests
         // PASSIVE_RULES.md §7 defines: PassiveCharged and PassiveTriggered. The
         // Damage Pipeline (TASK-021) adds the three GAME_RULES.md §16 / GAME_EVENTS.md
         // §2 Damage names — DamageCalculated, DamageDealt, DamageTaken. The Boss
-        // Response stage (TASK-022) adds the three BOSS_RULES.md §7 names —
-        // BossSkillCast, BattleWon, BattleLost. The Card stages add the two
+        // Response stage (TASK-022) adds the two BOSS_RULES.md §7 names —
+        // BattleWon, BattleLost. The Card stages add the two
         // CARD_RULES.md §6 names — CardCast and PetSkillCast. The Relic stage
         // (GAME_RULES.md §17 step 11, RELIC_RULES.md §7) adds RelicTriggered, and the
         // Power stage's PowerChanged is its payload (GAME_EVENTS.md §2,
@@ -2098,9 +2074,9 @@ public class BattleEventEmissionTests
         // item 9, §2; SIGNALR_PROTOCOL.md §3.2.29) — and the same cycle is its home.
         // The Boss Card action completes the Boss Response's two-form surface with the
         // one name GAME_EVENTS.md §2 and SIGNALR_PROTOCOL.md §3.2.30 already define —
-        // BossCardCast (TASK-308, ADR-029 Slice 3) — the counterpart of BossSkillCast
-        // for a migrated Boss; it replaces none of the names above and adds no second
-        // Boss event. No
+        // BossCardCast (TASK-308, ADR-029 Slice 3); after ADR-029 Slice 5 / TASK-313
+        // it is the Boss's sole cast event, replacing the retired BossSkillCast rather
+        // than adding a second Boss event. No
         // undocumented name may be added
         // (AGENTS.md §7). In particular no MatchCountChanged, TurnChanged,
         // SequenceChanged, or BoardChanged exists.
@@ -2122,7 +2098,6 @@ public class BattleEventEmissionTests
                 "BattleLost",
                 "BattleWon",
                 "BossCardCast",
-                "BossSkillCast",
                 "CardCast",
                 "CascadeCreated",
                 "CascadeStepResolved",

@@ -19,13 +19,13 @@ namespace GameServer.Domain.Match3;
 /// a resolution emits, not the board stage's private list.
 ///
 /// <b>It is not one member per stage.</b> The Boss Response stage
-/// adds <see cref="BossSkillCast"/>, <see cref="BattleWon"/>, and
+/// adds <see cref="BossCardCast"/>, <see cref="BattleWon"/>, and
 /// <see cref="BattleLost"/>, and <b>no</b> Boss-specific Passive or State event:
 /// <c>BOSS_RULES.md</c> §7 states that Boss Passive triggers "use the general
 /// Passive events (<c>PASSIVE_RULES.md</c> §7) with <c>source = "boss"</c>", that
 /// "no Boss-specific passive event name is needed", and that Boss state changes
 /// are inferable from the sequence <c>DamageDealt</c>, <c>DamageTaken</c>,
-/// <c>BossSkillCast</c>, and <c>PassiveTriggered</c>. There is therefore no
+/// <c>BossCardCast</c>, and <c>PassiveTriggered</c>. There is therefore no
 /// <c>BossPassiveCharged</c>, <c>BossPassiveTriggered</c>, <c>BossBasicAttack</c>,
 /// or <c>BossEnraged</c>. A Boss Basic Attack is reported by its damage instance
 /// (<c>COMBAT_RULES.md</c> §3.4), and Enrage is state, not an event
@@ -145,21 +145,18 @@ public enum BattleEventType
     DamageTaken = 8,
 
     /// <summary>
-    /// A Boss Skill resolved (<c>GAME_EVENTS.md</c> §2 <c>BossSkillCast</c>,
-    /// <c>BOSS_RULES.md</c> §4, §7; <c>SIGNALR_PROTOCOL.md</c> §3.2.18).
+    /// Retired by ADR-029 Slice 5 / TASK-313.
     ///
-    /// Its payload is the Skill's identity and the Boss's identity. It is emitted
-    /// <b>only when the Skill actually fires</b> — when
-    /// <c>SkillCharge ≥ SkillChargeRequirement</c> and <c>SkillCooldown == 0</c>
-    /// (<c>GAME_STATE.md</c> §2.4.3, <c>BOSS_RULES.md</c> §6.3) — and it
-    /// <b>precedes</b> the damage instance the Skill produced, whose reports carry
-    /// <c>source = "boss"</c> and <c>target = "player"</c>
-    /// (<c>SIGNALR_PROTOCOL.md</c> §3.2.18 item 3). A Boss Basic Attack emits
-    /// <b>no</b> <c>BossSkillCast</c>: it is reported by its damage instance
-    /// alone, because no such event as <c>BossBasicAttack</c> exists
-    /// (<c>BOSS_RULES.md</c> §7).
+    /// This enumeration position was the legacy Boss Skill cast event. The event,
+    /// its payload, its factory and its wire projection were removed with the
+    /// legacy Boss Skill path; the Boss's only cast event is
+    /// <see cref="BossCardCast"/>. The numeric value is left unused rather than
+    /// reassigned, because a discriminator value is a stable identity and
+    /// renumbering the events after it would rewrite the contract for no
+    /// functional gain.
     /// </summary>
-    BossSkillCast = 9,
+    /// <remarks>9 is retired and must not be reused.</remarks>
+    // 9 = retired legacy Boss Skill cast discriminator (ADR-029 Slice 5 / TASK-313).
 
     /// <summary>
     /// The battle ended with the Boss defeated (<c>GAME_EVENTS.md</c> §2
@@ -336,7 +333,7 @@ public enum BattleEventType
     /// action (it emits nothing at all).
     ///
     /// It carries <b>counts only</b>. Damage, healing, DEF buff magnitude, Power,
-    /// Boss SkillCharge, the board, and the actor are all elsewhere — the actor is
+    /// the board, and the actor are all elsewhere — the actor is
     /// the sibling <see cref="SwapStarted"/>, exactly as for every other
     /// board-cycle event — and none of them is a substitute for a matched-Gem
     /// count (<c>GAME_EVENTS.md</c> §2).
@@ -352,8 +349,8 @@ public enum BattleEventType
     /// identity. It is emitted <b>only</b> when a Boss Card cast is the action
     /// the response-phase policy selected and the shared cast contract resolved
     /// it (<c>BOSS_RULES.md</c> §4.3 item 2) — never for a board action, never
-    /// for a Player <c>CardCast</c>, and never concurrently with
-    /// <see cref="BossSkillCast"/> for the same ability resolution. It reports
+    /// for a Player <c>CardCast</c>, and never concurrently with a
+    /// legacy Boss Skill event for the same ability resolution. It reports
     /// no cost, no Power value and no effect summary: the resulting Boss
     /// Power/cooldown are authoritative state delivered by the <c>bossState</c>
     /// projection (<c>SIGNALR_PROTOCOL.md</c> §4.4 item 12, §3.2.30).
@@ -449,7 +446,7 @@ public readonly record struct MatchedGemCount(GemType GemType, int Count)
 /// re-derive (<c>AGENTS.md</c> §10, <c>SIGNALR_PROTOCOL.md</c> §3.2.29 item 8).
 ///
 /// <b>It is not a combat report.</b> No damage, healing, DEF buff magnitude,
-/// Power, or Boss SkillCharge member exists on it, because those are separate
+/// Power, or a legacy charge member exists on it, because those are separate
 /// gameplay effects with their own events or state and are not substitutes for a
 /// matched-Gem count (<c>GAME_EVENTS.md</c> §2 item 6).
 /// </summary>
@@ -548,48 +545,6 @@ public readonly record struct CardCastEvent(string CardId, int PowerCost = 0)
 }
 
 /// <summary>
-/// The <c>BossSkillCast</c> payload — the Boss Skill that resolved
-/// (<c>GAME_EVENTS.md</c> §2, <c>BOSS_RULES.md</c> §4, §7;
-/// <c>SIGNALR_PROTOCOL.md</c> §3.2.18).
-///
-/// <code>
-/// BossSkillCast: skillId, sourceId   (SIGNALR_PROTOCOL.md §3.2.18)
-/// </code>
-///
-/// <b>Both members are identities, and neither is re-derived.</b> <c>SkillId</c>
-/// is the value the Boss's definition carries (<c>BOSS_RULES.md</c> §6.4 — e.g.
-/// <c>"flame-burst"</c>), which the client uses to look up the Skill's visual and
-/// effect description; <c>SourceId</c> is the Boss's <c>BossState.BossId</c> —
-/// the canonical technical Identity (e.g. <c>"boss-hoa-long"</c>), never a
-/// display name (<c>§6.4</c>, <c>SIGNALR_PROTOCOL.md</c> §3.2.18 item 2).
-///
-/// <b>It carries no effect detail.</b> §3.2.18 item 3 leaves the Skill's damage to
-/// the <c>DamageCalculated</c>/<c>DamageDealt</c>/<c>DamageTaken</c> events that
-/// follow it in the same batch, with <c>source = "boss"</c> and
-/// <c>target = "player"</c>. The Skill's non-damage effects are unimplemented
-/// (<c>BOSS_RULES.md</c> §4 item 4), so there is no effect summary member to
-/// populate.
-///
-/// <b>Domain value, not a wire type</b> (<c>GAME_EVENTS.md</c> §3 item 1): the
-/// transport layer owns serialization, exactly as for the other payloads here.
-/// </summary>
-/// <param name="SkillId">
-/// The Boss Skill's identity (<c>BOSS_RULES.md</c> §4, §6.4) — the definition's
-/// own <c>SkillId</c>, reported rather than recomputed.
-/// </param>
-/// <param name="SourceId">
-/// The Boss's identity (<c>BOSS_RULES.md</c> §6.4,
-/// <c>SIGNALR_PROTOCOL.md</c> §3.2.18 item 2) — the canonical technical
-/// Identity <c>BossState.BossId</c> (e.g. <c>"boss-hoa-long"</c>), never a
-/// display name.
-/// </param>
-public readonly record struct BossSkillCastEvent(string SkillId, string SourceId)
-{
-    /// <summary>"BossSkillCast (boss-hoa-long → flame-burst)" — for test diagnostics only.</summary>
-    public override string ToString() => $"BossSkillCast ({SourceId} -> {SkillId})";
-}
-
-/// <summary>
 /// The <c>BossCardCast</c> payload — the Boss Card that resolved
 /// (<c>GAME_EVENTS.md</c> §2, <c>BOSS_RULES.md</c> §4.2 item 6, §7;
 /// <c>SIGNALR_PROTOCOL.md</c> §3.2.30; <c>ADR-029</c> §2.8 item 21).
@@ -601,8 +556,8 @@ public readonly record struct BossSkillCastEvent(string SkillId, string SourceId
 /// <b>Both members are identities, and neither is re-derived.</b> <c>CardId</c>
 /// is the Boss Card definition's identity — the ability <c>SkillId</c>
 /// (<c>CARD_RULES.md</c> §1.1 item 3; <c>BOSS_RULES.md</c> §6.4), e.g.
-/// <c>"earthquake"</c> — which is the same string the transitional
-/// <see cref="BossSkillCastEvent.SkillId"/> reports for the same ability.
+/// <c>"earthquake"</c> — which is the same string the retired transitional
+/// <c>BossSkillCast.skillId</c> reported for the same ability.
 /// <c>SourceId</c> is the Boss's canonical technical Identity
 /// <c>BossState.BossId</c> (e.g. <c>"boss-son-thach-ve"</c>), never a display
 /// name.
@@ -732,7 +687,7 @@ public readonly record struct BattleLostEvent(int FinalBossHp, int FinalPlayerHp
 /// │                      DamageCalculated          (GAME_EVENTS.md §2)
 /// ├── DamageDealt        the DamageDealt payload, when Type is DamageDealt
 /// ├── DamageTaken        the DamageTaken payload, when Type is DamageTaken
-/// ├── BossSkillCast      the BossSkillCast payload, when Type is BossSkillCast
+/// ├── BossCardCast       the BossCardCast payload, when Type is BossCardCast
 /// ├── BattleWon          the BattleWon payload, when Type is BattleWon
 /// ├── BattleLost         the BattleLost payload, when Type is BattleLost
 /// ├── SwapStarted        the SwapStarted payload, when Type is SwapStarted
@@ -784,7 +739,6 @@ public readonly record struct BattleEvent
         DamageCalculation? damageCalculated,
         DamageDealtEvent? damageDealt,
         DamageTakenEvent? damageTaken,
-        BossSkillCastEvent? bossSkillCast,
         BattleWonEvent? battleWon,
         BattleLostEvent? battleLost,
         CardCastEvent? cardCast,
@@ -807,7 +761,6 @@ public readonly record struct BattleEvent
         _damageCalculated = damageCalculated;
         _damageDealt = damageDealt;
         _damageTaken = damageTaken;
-        _bossSkillCast = bossSkillCast;
         _battleWon = battleWon;
         _battleLost = battleLost;
         _cardCast = cardCast;
@@ -830,7 +783,6 @@ public readonly record struct BattleEvent
     private readonly DamageCalculation? _damageCalculated;
     private readonly DamageDealtEvent? _damageDealt;
     private readonly DamageTakenEvent? _damageTaken;
-    private readonly BossSkillCastEvent? _bossSkillCast;
     private readonly BattleWonEvent? _battleWon;
     private readonly BattleLostEvent? _battleLost;
     private readonly CardCastEvent? _cardCast;
@@ -956,18 +908,6 @@ public readonly record struct BattleEvent
         _damageTaken ?? throw new InvalidOperationException(
             $"A {Type} event carries no DamageTaken payload (GAME_EVENTS.md §2). "
             + "Check Type before reading DamageTaken.");
-
-    /// <summary>
-    /// The <c>BossSkillCast</c> payload — the Skill's identity and the Boss's
-    /// identity (<c>GAME_EVENTS.md</c> §2, <c>SIGNALR_PROTOCOL.md</c> §3.2.18).
-    /// </summary>
-    /// <exception cref="InvalidOperationException">
-    /// This event is not a <see cref="BattleEventType.BossSkillCast"/>.
-    /// </exception>
-    public BossSkillCastEvent BossSkillCast =>
-        _bossSkillCast ?? throw new InvalidOperationException(
-            $"A {Type} event carries no BossSkillCast payload (GAME_EVENTS.md §2). "
-            + "Check Type before reading BossSkillCast.");
 
     /// <summary>
     /// The <c>BattleWon</c> payload — the terminal Boss HP and the active Pet's HP
@@ -1118,7 +1058,7 @@ public readonly record struct BattleEvent
     /// (<c>GAME_EVENTS.md</c> §1.1 item 2, <c>MATCH3_RULES.md</c> §3.2).
     /// </param>
     internal static BattleEvent ForMatch(MatchResolution match) =>
-        new(BattleEventType.MatchCreated, match, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        new(BattleEventType.MatchCreated, match, null, null, null, null, null, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>CascadeCreated</c> event for one Cascade pass.
@@ -1128,7 +1068,7 @@ public readonly record struct BattleEvent
     /// 1 for the Swap's second pass (<c>MATCH3_RULES.md</c> §4.2 item 2).
     /// </param>
     internal static BattleEvent ForCascade(int cascadeDepth) =>
-        new(BattleEventType.CascadeCreated, null, cascadeDepth, null, null, null, null, null, null, null, null, null, null, null, null);
+        new(BattleEventType.CascadeCreated, null, cascadeDepth, null, null, null, null, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>ComboChanged</c> event carrying the Combo value the Match it follows
@@ -1139,7 +1079,7 @@ public readonly record struct BattleEvent
     /// <c>MATCH3_RULES.md</c> §6.6 item 2).
     /// </param>
     internal static BattleEvent ForCombo(int combo) =>
-        new(BattleEventType.ComboChanged, null, null, combo, null, null, null, null, null, null, null, null, null, null, null);
+        new(BattleEventType.ComboChanged, null, null, combo, null, null, null, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>GemMatched</c> event for one consumed Gem.
@@ -1149,7 +1089,7 @@ public readonly record struct BattleEvent
     /// §1.0 cell-index enumeration order of <c>GAME_EVENTS.md</c> §1.3.
     /// </param>
     internal static BattleEvent ForGem(GemMatchedEvent gem) =>
-        new(BattleEventType.GemMatched, null, null, null, gem, null, null, null, null, null, null, null, null, null, null);
+        new(BattleEventType.GemMatched, null, null, null, gem, null, null, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>PassiveCharged</c> event for one Match's charge
@@ -1168,7 +1108,7 @@ public readonly record struct BattleEvent
     /// increment produced, and the Threshold.
     /// </param>
     public static BattleEvent ForPassiveCharged(PassiveChargedEvent charged) =>
-        new(BattleEventType.PassiveCharged, null, null, null, null, charged, null, null, null, null, null, null, null, null, null);
+        new(BattleEventType.PassiveCharged, null, null, null, null, charged, null, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>PassiveTriggered</c> event for one threshold crossing
@@ -1186,7 +1126,7 @@ public readonly record struct BattleEvent
     /// </param>
     public static BattleEvent ForPassiveTriggered(
         PassiveTriggeredEvent triggered) =>
-        new(BattleEventType.PassiveTriggered, null, null, null, null, null, triggered, null, null, null, null, null, null, null, null);
+        new(BattleEventType.PassiveTriggered, null, null, null, null, null, triggered, null, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>DamageCalculated</c> event carrying the full pipeline breakdown
@@ -1204,7 +1144,7 @@ public readonly record struct BattleEvent
     /// Modifiers, Defense, Final Damage.
     /// </param>
     public static BattleEvent ForDamageCalculated(DamageCalculation calculation) =>
-        new(BattleEventType.DamageCalculated, null, null, null, null, null, null, calculation, null, null, null, null, null, null, null);
+        new(BattleEventType.DamageCalculated, null, null, null, null, null, null, calculation, null, null, null, null, null, null);
 
     /// <summary>
     /// A <c>DamageDealt</c> event for one damage instance
@@ -1216,7 +1156,7 @@ public readonly record struct BattleEvent
     /// The pipeline's own report — source, target, and the Final Damage amount.
     /// </param>
     public static BattleEvent ForDamageDealt(DamageDealtEvent dealt) =>
-        new(BattleEventType.DamageDealt, null, null, null, null, null, null, null, dealt, null, null, null, null, null, null);
+        new(BattleEventType.DamageDealt, null, null, null, null, null, null, null, dealt, null, null, null, null, null);
 
     /// <summary>
     /// A <c>DamageTaken</c> event for one damage instance
@@ -1228,46 +1168,14 @@ public readonly record struct BattleEvent
     /// The pipeline's own report — source, target, and the Final Damage amount.
     /// </param>
     public static BattleEvent ForDamageTaken(DamageTakenEvent taken) =>
-        new(BattleEventType.DamageTaken, null, null, null, null, null, null, null, null, taken, null, null, null, null, null);
-
-    /// <summary>
-    /// A <c>BossSkillCast</c> event for one Boss Skill that fired
-    /// (<c>GAME_EVENTS.md</c> §2, <c>BOSS_RULES.md</c> §4, §7,
-    /// <c>SIGNALR_PROTOCOL.md</c> §3.2.18).
-    ///
-    /// Public for the same reason as the Damage factories: the Boss Response is the
-    /// Application-layer step that owns <c>GAME_RULES.md</c> §17 step 18b, and it
-    /// hands the assembled list back through
-    /// <see cref="SwapExecutionResult.WithEvents"/>. Both members are identities
-    /// carried unchanged from the Boss's configuration and state — neither is
-    /// derived here.
-    /// </summary>
-    /// <param name="skillId">
-    /// The Boss Skill's identity, from the Boss's definition
-    /// (<c>BOSS_RULES.md</c> §6.4).
-    /// </param>
-    /// <param name="sourceId">
-    /// The Boss's identity — the canonical technical Identity
-    /// <c>BossState.BossId</c> (e.g. <c>"boss-hoa-long"</c>), never a display
-    /// name (<c>BOSS_RULES.md</c> §6.4, <c>SIGNALR_PROTOCOL.md</c> §3.2.18
-    /// item 2).
-    /// </param>
-    public static BattleEvent ForBossSkillCast(string skillId, string sourceId) =>
-        new(
-            BattleEventType.BossSkillCast,
-            null, null, null, null, null, null, null, null, null,
-            new BossSkillCastEvent(skillId, sourceId),
-            null,
-            null,
-            null,
-            null);
+        new(BattleEventType.DamageTaken, null, null, null, null, null, null, null, null, taken, null, null, null, null);
 
     /// <summary>
     /// A <c>BossCardCast</c> event for one resolved Boss Card cast
     /// (<c>GAME_EVENTS.md</c> §2, <c>BOSS_RULES.md</c> §4.2 item 6, §7;
     /// <c>SIGNALR_PROTOCOL.md</c> §3.2.30).
     ///
-    /// Public for the same reason as <see cref="ForBossSkillCast"/>: the Boss
+    /// Public for the same reason as the other Boss factories: the Boss
     /// Response is the Application-layer step that owns <c>GAME_RULES.md</c>
     /// §17 step 18c, and it hands the assembled list back through
     /// <see cref="SwapExecutionResult.WithEvents"/>. Both members are identities
@@ -1287,7 +1195,7 @@ public readonly record struct BattleEvent
     public static BattleEvent ForBossCardCast(string cardId, string sourceId) =>
         new(
             BattleEventType.BossCardCast,
-            null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null, null, null, null, null, null, null, null, null,
             bossCardCast: new BossCardCastEvent(cardId, sourceId));
 
     /// <summary>
@@ -1311,7 +1219,7 @@ public readonly record struct BattleEvent
     public static BattleEvent ForBattleWon(int finalBossHp, int finalPlayerHp) =>
         new(
             BattleEventType.BattleWon,
-            null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null, null, null, null, null,
             new BattleWonEvent(finalBossHp, finalPlayerHp),
             null,
             null,
@@ -1341,7 +1249,7 @@ public readonly record struct BattleEvent
     public static BattleEvent ForBattleLost(int finalBossHp, int finalPlayerHp) =>
         new(
             BattleEventType.BattleLost,
-            null, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null, null, null, null, null, null,
             new BattleLostEvent(finalBossHp, finalPlayerHp),
             null,
             null);
@@ -1356,7 +1264,7 @@ public readonly record struct BattleEvent
     public static BattleEvent CreateCardCast(string cardId, int powerCost = 0) =>
         new(
             BattleEventType.CardCast,
-            null, null, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null, null, null, null, null, null, null,
             new CardCastEvent(cardId, powerCost),
             null);
 
@@ -1369,7 +1277,7 @@ public readonly record struct BattleEvent
     public static BattleEvent CreatePetSkillCast(string cardId) =>
         new(
             BattleEventType.PetSkillCast,
-            null, null, null, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null, null, null, null, null, null, null, null,
             new PetSkillCastEvent(cardId));
 
     /// <summary>
@@ -1397,7 +1305,7 @@ public readonly record struct BattleEvent
     public static BattleEvent ForRelicTriggered(RelicTriggeredEvent triggered) =>
         new(
             BattleEventType.RelicTriggered,
-            null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null, null, null, null, null, null, null, null, null,
             triggered,
             null);
 
@@ -1424,7 +1332,7 @@ public readonly record struct BattleEvent
     public static BattleEvent ForPowerChanged(PowerChangedEvent changed) =>
         new(
             BattleEventType.PowerChanged,
-            null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null, null, null, null, null, null, null, null, null,
             null,
             changed);
 
@@ -1451,7 +1359,7 @@ public readonly record struct BattleEvent
     public static BattleEvent ForSwapStarted(DamageParty actor, int fromCell, int toCell) =>
         new(
             BattleEventType.SwapStarted,
-            null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null, null, null, null, null, null, null, null, null,
             null,
             null,
             new SwapStartedEvent(actor, fromCell, toCell));
@@ -1473,7 +1381,7 @@ public readonly record struct BattleEvent
     public static BattleEvent ForSwapResolved(bool committed) =>
         new(
             BattleEventType.SwapResolved,
-            null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null, null, null, null, null, null, null, null, null,
             null,
             null,
             null,
@@ -1504,7 +1412,7 @@ public readonly record struct BattleEvent
         IReadOnlyList<SpawnedGem> spawnedGems) =>
         new(
             BattleEventType.CascadeStepResolved,
-            null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null, null, null, null, null, null, null, null, null,
             null,
             null,
             null,
@@ -1553,7 +1461,7 @@ public readonly record struct BattleEvent
 
         return new(
             BattleEventType.MatchedGemSummary,
-            null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null, null, null, null, null, null, null, null, null,
             null,
             null,
             null,
@@ -1588,7 +1496,6 @@ public readonly record struct BattleEvent
             $"DamageCalculated (base {DamageCalculated.Base}, final {DamageCalculated.FinalDamage})",
         BattleEventType.DamageDealt => DamageDealt.ToString(),
         BattleEventType.DamageTaken => DamageTaken.ToString(),
-        BattleEventType.BossSkillCast => BossSkillCast.ToString(),
         BattleEventType.BattleWon => BattleWon.ToString(),
         BattleEventType.BattleLost => BattleLost.ToString(),
         BattleEventType.CardCast => CardCast.ToString(),

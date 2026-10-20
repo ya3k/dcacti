@@ -15,8 +15,7 @@ namespace GameServer.Domain.Bosses;
 /// ├── Element      exactly one of the Five Elements (§1, §6.1)
 /// ├── HP / MaxHP / ATK / DEF              (§6.1)
 /// ├── PassiveId / PassiveThreshold / PassiveResetBehavior   (§3, §6.2, §6.4)
-/// ├── SkillId / SkillBaseDamage / SkillChargeRequirement /
-/// │   SkillCooldownTurns                                    (§4, §6.3, §6.4)
+/// ├── SkillId / SkillCooldownTurns                        (§4, §6.3, §6.4)
 /// └── EnrageThreshold                     (§5 item 4, §6.1)
 /// </code>
 ///
@@ -25,7 +24,7 @@ namespace GameServer.Domain.Bosses;
 /// Passive/Skill configuration. The <see cref="BossState"/> a battle carries is
 /// that definition applied at battle creation (<see cref="BossState.Initial"/>),
 /// plus the values a resolution changes (current HP, State, Passive progress,
-/// Skill charge and cooldown). The identity wrapper <see cref="BossId"/> holds
+/// Power and cooldown). The identity wrapper <see cref="BossId"/> holds
 /// only the name, and this type holds only the numbers and identities, so neither
 /// duplicates the other (<c>GAME_STATE.md</c> §0 item 5).
 ///
@@ -35,7 +34,10 @@ namespace GameServer.Domain.Bosses;
 /// configuration defaults used at battle creation; they do not represent
 /// formulas or scaling rules." They are therefore data on this record and are
 /// deliberately not expressed as formulas over the player's stats. §6.3 states
-/// the same for the Skill's charge requirement, cooldown, and base damage.
+/// the same for the Skill's cooldown. The legacy charge requirement and skill
+/// base damage were removed from this type by ADR-029 Slice 5 (TASK-313); their
+/// values survive only inside the persisted JSONB document as storage
+/// compatibility (OD-311-1 = B).
 ///
 /// <b>No registry, service, or repository abstraction.</b> The MVP definitions
 /// are the static values of <see cref="BossDefinitions"/> — plain in-code
@@ -55,10 +57,8 @@ namespace GameServer.Domain.Bosses;
 /// <see cref="EnrageThreshold"/>, and its Passive/Skill configuration
 /// (<c>ADR-024</c>, Domain Overlay). <c>BossDefinitions.All</c> stays the
 /// structural baseline: the identity set, the Element affinity, and the
-/// Passive/Skill mechanics — including
-/// <see cref="BossSkillDefinition.SecondaryEffect"/>, which is deliberately not
-/// a stored column — are read from it, while the four balance values are read
-/// from PostgreSQL and overlaid at battle creation
+/// Passive/Skill mechanics are read from it, while the five balance values are
+/// read from PostgreSQL and overlaid at battle creation
 /// (<c>ADR-024</c> §2.2). Both live on this one type: the Domain record is the
 /// type the overlay produces, and no field is removed from it because the table
 /// stores only a subset.
@@ -140,33 +140,15 @@ namespace GameServer.Domain.Bosses;
 /// assumed.
 /// </param>
 /// <param name="SkillId">
-/// The identity of the Boss's Skill (<c>BOSS_RULES.md</c> §4, §6.4) — the value
-/// <c>BossSkillCast</c> reports as <c>skillId</c>
-/// (<c>SIGNALR_PROTOCOL.md</c> §3.2.18). Canonical MVP values are §6.4's
+/// The identity of the Boss's Skill (<c>BOSS_RULES.md</c> §4, §6.4) — the identity
+/// that resolves the Boss's one provisioned Boss Card (<c>ADR-029</c> §2.5
+/// item 14) and the canonical MVP values are §6.4's
 /// (<c>"flame-burst"</c>, <c>"drain-power"</c>, <c>"root"</c>).
 /// </param>
-/// <param name="SkillBaseDamage">
-/// The Skill/Card base value term of the Boss Skill's Base Damage
-/// (<c>COMBAT_RULES.md</c> §3 step 1, §3.4: the Skill's Step 1 is "defined per
-/// Skill"). The Boss Skill's Step-1 Base Damage is
-/// <c>EffectiveBossATK + SkillBaseDamage</c> — the authored value is a separate
-/// additive Step-1 contribution, not a replacement for the ATK term. A Boss ATK
-/// modifier reaches the Skill's damage only through the <c>EffectiveBossATK</c>
-/// contribution and never modifies this authored value (<c>COMBAT_RULES.md</c>
-/// §3.4 "Boss Skill Step-1 composition", §5.5.2). MVP values are
-/// <c>BOSS_RULES.md</c> §6.3's.
-/// </param>
-/// <param name="SkillChargeRequirement">
-/// The number of Player Matches required before the Skill is eligible to fire
-/// (<c>BOSS_RULES.md</c> §6.3). The Skill fires when
-/// <c>SkillCharge ≥ SkillChargeRequirement</c> <b>and</b> <c>SkillCooldown == 0</c>
-/// (<c>GAME_STATE.md</c> §2.4.3). It is independent of
-/// <paramref name="PassiveThreshold"/>.
-/// </param>
 /// <param name="SkillCooldownTurns">
-/// The turns the Skill is blocked for after it fires (<c>BOSS_RULES.md</c> §6.3).
-/// <c>SkillCooldown</c> is set to this value when the Skill fires and decrements
-/// by 1 per Turn increment.
+/// The turns the Boss Card is blocked for after it is cast (<c>BOSS_RULES.md</c>
+/// §6.3). <c>SkillCooldown</c> is set to this value on a successful cast and
+/// decrements by 1 per Turn increment.
 /// </param>
 /// <param name="EnrageThreshold">
 /// The fraction of <paramref name="MaxHP"/> below which the Boss becomes Enraged
@@ -278,28 +260,14 @@ public sealed record class BossDefinition(
 
     /// <summary>
     /// The identity of the Boss's Skill (<c>BOSS_RULES.md</c> §4, §6.4) — the
-    /// value <c>BossSkillCast</c> reports as <c>skillId</c>. A projection of
-    /// <see cref="BossSkillDefinition.SkillId"/>.
+    /// ability identity that resolves the Boss's one provisioned Boss Card. A
+    /// projection of <see cref="BossSkillDefinition.SkillId"/>.
     /// </summary>
     public string SkillId => SkillDefinition.SkillId;
 
     /// <summary>
-    /// The Skill/Card base value term of the Boss Skill's Base Damage
-    /// (<c>COMBAT_RULES.md</c> §3 step 1, §3.4: the Skill's Step 1 is "defined
-    /// per Skill"). A projection of <see cref="BossSkillDefinition.BaseDamage"/>.
-    /// </summary>
-    public int SkillBaseDamage => SkillDefinition.BaseDamage;
-
-    /// <summary>
-    /// The number of Player Matches required before the Skill is eligible to
-    /// fire (<c>BOSS_RULES.md</c> §6.3). A projection of
-    /// <see cref="BossSkillDefinition.ChargeRequirement"/>.
-    /// </summary>
-    public int SkillChargeRequirement => SkillDefinition.ChargeRequirement;
-
-    /// <summary>
-    /// The turns the Skill is blocked for after it fires
-    /// (<c>BOSS_RULES.md</c> §6.3). A projection of
+    /// The turns the Boss Card is blocked for after a cast
+    /// (<c>BOSS_RULES.md</c> §4.3 item 5, §6.3). A projection of
     /// <see cref="BossSkillDefinition.CooldownTurns"/>.
     /// </summary>
     public int SkillCooldownTurns => SkillDefinition.CooldownTurns;
@@ -371,245 +339,27 @@ public readonly record struct BossPassiveDefinition(
 /// { "skillId": "…", "baseDamage": 0, "chargeRequirement": 0, "cooldownTurns": 0 }
 /// </code>
 ///
-/// Exactly four members, all required (§1 note item 4). No <c>damageType</c>,
-/// <c>element</c>, <c>name</c>, <c>description</c>, <c>target</c>, or
-/// <c>effects</c> member exists. The battle-state member names
-/// (<c>GAME_STATE.md</c> §2.4) are a separate contract and are not used here.
+/// <b>The Domain carries only the two members the runtime still reads.</b>
+/// <see cref="SkillId"/> resolves the Boss's provisioned Boss Card
+/// (<c>ADR-029</c> §2.5 item 14) and <see cref="CooldownTurns"/> is the cooldown
+/// the step-18c cast sets (<c>BOSS_RULES.md</c> §4.3 item 5).
 ///
-/// <b>The Skill's secondary effect is Domain configuration, not a persisted
-/// member.</b> <see cref="SecondaryEffect"/> is declared outside the
-/// constructor — the persisted surface — and is excluded from the persistence
-/// model, exactly as <see cref="BossDefinition.MaxHP"/> and its siblings are.
-/// <c>DATABASE.md</c> §1 note item 4 fixes the stored document to the four
-/// members above and states those names are "fixed by TASK-045 … unchanged",
-/// so the effect declaration must not become a fifth stored member; adding one
-/// would change the database contract.
+/// <b><c>baseDamage</c> and <c>chargeRequirement</c> are storage compatibility
+/// only (operator decision OD-311-1 = B, recorded under ADR-029 Slice 5 /
+/// TASK-313).</b> They remain member names of the persisted
+/// <c>SkillDefinition</c> document — no cleanup migration exists and no
+/// historical migration was rewritten — but the Domain no longer declares,
+/// projects or reads them: the legacy Boss Skill path that authored a Step-1
+/// skill base damage or charged toward a requirement was removed with
+/// ADR-029 Slice 5, and the Boss's ability resource is now
+/// <c>BossState.Power</c>. The persistence adapter
+/// (<c>BossDefinitionConfiguration.cs</c>) tolerates their presence on read.
 /// </summary>
 /// <param name="SkillId">The Boss's canonical SkillId (<c>BOSS_RULES.md</c> §6.4).</param>
-/// <param name="BaseDamage">Skill Base Dmg (<c>BOSS_RULES.md</c> §6.3).</param>
-/// <param name="ChargeRequirement">Charge Requirement (<c>BOSS_RULES.md</c> §6.3).</param>
 /// <param name="CooldownTurns">Cooldown (CD) in turns (<c>BOSS_RULES.md</c> §6.3).</param>
 public readonly record struct BossSkillDefinition(
     string SkillId,
-    int BaseDamage,
-    int ChargeRequirement,
-    int CooldownTurns)
-{
-    /// <summary>
-    /// The Skill's documented secondary effect, or <c>null</c> when the Skill
-    /// declares none — the <c>BOSS_RULES.md</c> §6.3
-    /// <c>Secondary Effect &amp; Magnitude</c> column, per Skill.
-    ///
-    /// <b>Every value is <c>BOSS_RULES.md</c> §6.3.1's, transcribed.</b> §6.3.1
-    /// owns each effect's representation, magnitude, and duration semantics;
-    /// this member carries the declaration so the step 18b resolution can apply
-    /// it without dispatching on <see cref="SkillId"/>. §6.3.1 authors no value
-    /// here and this member decides none.
-    ///
-    /// <b>It is Domain configuration, not a persisted column.</b> Like
-    /// <see cref="BossDefinition.MaxHP"/>, it is excluded from the persistence
-    /// model (<c>DATABASE.md</c> §1 note item 4 fixes the stored
-    /// <c>SkillDefinition</c> document to its four members), so no migration
-    /// and no schema change is introduced.
-    ///
-    /// <b>It is not a registry and not a dispatch table.</b> It is one
-    /// per-Boss datum on the definition the Boss already carries
-    /// (<c>ARCHITECTURE.md</c> §5 item 1), so the resolution reads the Skill's
-    /// own declaration rather than comparing SkillId strings.
-    /// </summary>
-    public BossSkillSecondaryEffect? SecondaryEffect { get; init; }
-}
-
-/// <summary>
-/// A Boss Skill's documented secondary effect (<c>BOSS_RULES.md</c> §6.3.1).
-///
-/// <code>
-/// BOSS_RULES.md §6.3.1        Effect
-/// --------------------------  ------------------------------------------
-/// item 1  Flame Burst         Burn: 50 fixed damage/tick for 2 Turns
-/// item 2  Drain Power         -20 flat Pet Power (instant, no duration)
-/// item 3  Root                -30% Pet ATK debuff for 2 Turns
-/// </code>
-///
-/// <b>Exactly one effect per Skill.</b> §6.3's
-/// <c>Secondary Effect &amp; Magnitude</c> column gives each of the three
-/// content-defined Skills exactly one secondary effect, so this type carries
-/// one declaration rather than a collection. A Skill that declares none leaves
-/// <see cref="BossSkillDefinition.SecondaryEffect"/> absent.
-///
-/// <b>The shape is the union of the three documented effects, and nothing
-/// more.</b> The three differ in kind: two create a Status Effect instance
-/// (Burn, Root) and one is an instant stat mutation that creates no instance
-/// (<c>GAME_STATE.md</c> §2.3.1 item 9 for Drain Power). The two instance
-/// kinds are described by their identity, type, targeted stat, magnitude, and
-/// duration; the instant kind by its stat and flat amount. No other member
-/// exists, because no other value is documented for any of the three.
-///
-/// <b>This type authors no gameplay rule.</b> Every magnitude and duration is
-/// §6.3.1's and is transcribed at the declaration site in
-/// <see cref="BossDefinitions"/>; the resolution applies what is declared and
-/// decides nothing.
-/// </summary>
-public readonly record struct BossSkillSecondaryEffect
-{
-    /// <summary>
-    /// The effect's kind — which of §6.3.1's three documented behaviors this
-    /// declaration is.
-    /// </summary>
-    public required BossSkillSecondaryEffectKind Kind { get; init; }
-
-    /// <summary>
-    /// The <c>StatusEffect.Id</c> of the instance the effect applies
-    /// (<c>GAME_STATE.md</c> §2.3.1 item 1), e.g. <c>"Burn"</c> or
-    /// <c>"Root"</c>. Absent for <see cref="BossSkillSecondaryEffectKind.PowerDrain"/>,
-    /// which creates no instance (§2.3.1 item 9).
-    /// </summary>
-    public string? StatusEffectId { get; init; }
-
-    /// <summary>
-    /// The <c>StatusEffect.Type</c> of the instance the effect applies
-    /// (<c>GAME_STATE.md</c> §2.3.1 item 3) — <c>DoT</c> for Burn,
-    /// <c>BuffDebuff</c> for Root. Absent for
-    /// <see cref="BossSkillSecondaryEffectKind.PowerDrain"/>.
-    /// </summary>
-    public Battle.StatusEffectType? StatusEffectType { get; init; }
-
-    /// <summary>
-    /// The <c>StatusEffect.TargetStat</c> of the instance
-    /// (<c>GAME_STATE.md</c> §2.3.1 item 7) — present iff the effect applies a
-    /// <c>BuffDebuff</c>, e.g. <c>"ATK"</c> for Root. Absent for Burn and for
-    /// Drain Power. It is a value the declaration carries, not a rule this type
-    /// interprets.
-    /// </summary>
-    public string? TargetStat { get; init; }
-
-    /// <summary>
-    /// The effect's magnitude as §6.3.1 defines it — the applied
-    /// <c>StatusEffect.Magnitude</c> for an instance-applying effect (Burn's
-    /// 50 per tick, Root's 30 percent), or the flat reduction for
-    /// <see cref="BossSkillSecondaryEffectKind.PowerDrain"/> (20).
-    ///
-    /// It is typed but not interpreted here (<c>GAME_STATE.md</c> §2.3.1
-    /// item 2): what the number means is owned by <c>BOSS_RULES.md</c> §6.3.1.
-    /// </summary>
-    public required double Magnitude { get; init; }
-
-    /// <summary>
-    /// The applied or refreshed <c>StatusEffect.RemainingTurns</c> in Turns
-    /// (<c>COMBAT_RULES.md</c> §5.3 DR1) — 2 for both Burn and Root. Absent for
-    /// <see cref="BossSkillSecondaryEffectKind.PowerDrain"/>, whose §6.3.1
-    /// item 2 duration is "None (instant stat reduction, not a persistent
-    /// status effect)", and for trigger-based effects.
-    /// </summary>
-    public int? DurationTurns { get; init; }
-
-    /// <summary>
-    /// The trigger-based expiry condition for a trigger-based instance
-    /// (e.g. <see cref="Battle.StatusEffect.ShieldDepletedCondition"/> or
-    /// <see cref="Battle.StatusEffect.NextQualifyingAttackCondition"/>).
-    /// </summary>
-    public string? ExpiryCondition { get; init; }
-
-    /// <summary>
-    /// Converts this secondary effect declaration into a <see cref="Battle.StatusEffect"/> instance,
-    /// or <c>null</c> if this effect does not produce an instance (e.g. PowerDrain).
-    /// </summary>
-    public Battle.StatusEffect? ToStatusEffect()
-    {
-        if (Kind == BossSkillSecondaryEffectKind.PowerDrain)
-        {
-            return null;
-        }
-
-        if (StatusEffectId == null || StatusEffectType == null)
-        {
-            return null;
-        }
-
-        if (!string.IsNullOrEmpty(ExpiryCondition))
-        {
-            return Battle.StatusEffect.TriggerBased(
-                StatusEffectId,
-                StatusEffectType.Value,
-                Battle.StatusEffectSource.Boss,
-                Magnitude,
-                ExpiryCondition,
-                TargetStat);
-        }
-
-        if (DurationTurns.HasValue)
-        {
-            if (!string.IsNullOrEmpty(TargetStat))
-            {
-                return Battle.StatusEffect.TurnBased(
-                    StatusEffectId,
-                    StatusEffectType.Value,
-                    Battle.StatusEffectSource.Boss,
-                    Magnitude,
-                    DurationTurns.Value,
-                    TargetStat);
-            }
-
-            return Battle.StatusEffect.TurnBased(
-                StatusEffectId,
-                StatusEffectType.Value,
-                Battle.StatusEffectSource.Boss,
-                Magnitude,
-                DurationTurns.Value);
-        }
-
-        return null;
-    }
-}
-
-/// <summary>
-/// Which of <c>BOSS_RULES.md</c> §6.3.1's documented secondary effects a
-/// <see cref="BossSkillSecondaryEffect"/> declaration describes (<c>ADR-026</c>).
-///
-/// <code>
-/// Burn        retired — DoT instance (ADR-026 D3/D5)
-/// PowerDrain  §6.3.1 item 2 — an instant flat PetState.Power reduction
-/// AtkDebuff   §6.3.1 item 3 — a Turn-based BuffDebuff instance on the Pet
-/// AtkBuff     ADR-026 D5 — Flame Burst: temporary Boss ATK buff
-/// BossShield  ADR-026 D6 — Earthquake: temporary Boss Shield
-/// NextAtkBuff ADR-026 D7 — Thunder Strike: next qualifying Boss ATK match buff
-/// </code>
-/// </summary>
-public enum BossSkillSecondaryEffectKind
-{
-    /// <summary>
-    /// Retired Burn DoT (<c>ADR-026</c> D3/D5). Kept for historical enumeration compatibility.
-    /// </summary>
-    Burn = 0,
-
-    /// <summary>
-    /// <c>BOSS_RULES.md</c> §6.3.1 item 2 — Drain Power's instantaneous flat
-    /// Power reduction. It creates no Status Effect instance
-    /// (<c>GAME_STATE.md</c> §2.3.1 item 9).
-    /// </summary>
-    PowerDrain = 1,
-
-    /// <summary>
-    /// <c>BOSS_RULES.md</c> §6.3.1 item 3 — Root's Turn-based
-    /// <c>BuffDebuff</c> instance applied to the active Pet.
-    /// </summary>
-    AtkDebuff = 2,
-
-    /// <summary>
-    /// <c>ADR-026</c> D5 — Flame Burst's temporary Boss ATK buff applied to <c>BossState.ActiveStatusEffects</c>.
-    /// </summary>
-    AtkBuff = 3,
-
-    /// <summary>
-    /// <c>ADR-026</c> D6 — Earthquake's temporary Shield applied to <c>BossState.ActiveStatusEffects</c>.
-    /// </summary>
-    BossShield = 4,
-
-    /// <summary>
-    /// <c>ADR-026</c> D7 — Thunder Strike's next-qualifying-ATK match buff applied to <c>BossState.ActiveStatusEffects</c>.
-    /// </summary>
-    NextAtkBuff = 5,
-}
+    int CooldownTurns);
 
 /// <summary>
 /// The <c>BOSS_RULES.md</c> §6.1 MVP Boss base-stat defaults that the three

@@ -219,11 +219,11 @@ public class AtomicRoundOrchestrationTests
 
         var boss = BossDefinitions.HoaLong with
         {
-            // Neither side can end the battle inside the observation window, and the
-            // Skill never fires — the round's only Player-sourced damage is the
-            // ATK-gated instance under test.
+            // Neither side can end the battle inside the observation window, so the
+            // round's only Player-sourced damage is the ATK-gated instance under test.
+            // (This suite's content carries no provisioned Boss Card, so no Boss
+            // ability cast can occur either.)
             MaxHP = 100_000,
-            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 100_000 },
         };
 
         const string battleId = "round-player-own-atk-match";
@@ -317,14 +317,9 @@ public class AtomicRoundOrchestrationTests
         var repository = new InMemoryBattleStateRepository();
         var service = new BattleStateService(repository, new FixedRngSeedSource());
 
-        var boss = BossDefinitions.HoaLong with
-        {
-            // No Skill fires in this scenario: the Skill's own (non-damaging) effect
-            // must not be confused with the ATK-gated instance under test.
-            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 1000 },
-        };
-
         const string battleId = "round-boss-atk-gate";
+        var boss = BossDefinitions.HoaLong;
+
         var created = await service.CreateBattleAsync(battleId, Owner, Pet, boss);
 
         var state = created;
@@ -374,26 +369,23 @@ public class AtomicRoundOrchestrationTests
     }
 
     // =======================================================================
-    // 3–4. SkillCharge: Boss POWER match groups only, +1 each, clamped
-    //      (ADR-026 D2, T1, T2; BOSS_RULES.md §6.3)
+    // 3–4. Boss POWER match groups fund the Boss's own Power only
+    //      (ADR-029 §2.2, Slice 1; COMBAT_RULES.md §2)
     // =======================================================================
 
     [Fact]
-    public async Task PlayerPowerMatch_ShouldNotChargeTheBoss()
+    public async Task PlayerPowerMatch_ShouldNotFundTheBossesPower()
     {
-        // ADR-026 D2 / GAME_STATE.md §2.4.3: "it increments exclusively from POWER
-        // gems matched by the Boss during the Boss's turn (player matches never
-        // charge the Boss)".
+        // ADR-029 §2.2 / COMBAT_RULES.md §2: the shared generation rule is
+        // actor-relative. The Player's POWER Gems fund the Pet's Power
+        // (GAME_RULES.md §17 step 13); the Boss's Power is only ever what the Boss's
+        // own POWER matches produced. (The legacy SkillCharge counter this test used
+        // to assert was removed with ADR-029 Slice 5 / TASK-313.)
         var repository = new InMemoryBattleStateRepository();
         var service = new BattleStateService(repository, new FixedRngSeedSource());
 
-        var boss = BossDefinitions.HoaLong with
-        {
-            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 1000 },
-        };
-
         const string battleId = "round-player-power-no-charge";
-        var created = await service.CreateBattleAsync(battleId, Owner, Pet, boss);
+        var created = await service.CreateBattleAsync(battleId, Owner, Pet, BossDefinitions.HoaLong);
 
         var pinned = RoundTestSupport.PlayerMatch(GemType.Power, created.RngState, created.LastCommittedSwapPair);
         Assert.True(pinned.Resources.ClearedGemCounts.Power > 0);
@@ -404,31 +396,32 @@ public class AtomicRoundOrchestrationTests
         Assert.True(result.IsAccepted);
 
         // The Player's POWER Gems charged the Pet's Power (GAME_RULES.md §17 step 13)
-        // and reached the Boss's counter in no way at all: the Boss's charge is only
-        // ever what the Boss's own POWER matches produced (ADR-026 D2).
-        Assert.Equal(
-            RoundTestSupport.BossPowerMatchGroups(result),
-            result.State.BossState.SkillCharge);
+        // and reached the Boss's resource in no way beyond its own matching.
         Assert.True(result.State.PetState.Power > created.PetState.Power);
+        Assert.Equal(
+            Math.Min(
+                created.BossState.Power + RoundTestSupport.BossPowerGeneration(result),
+                ResourceGenerator.MaxPower),
+            result.State.BossState.Power);
     }
 
     [Fact]
-    public async Task BossPowerMatchGroups_ShouldChargeOneEach_AndClampAtTheChargeRequirement()
+    public async Task BossPowerMatchGroups_ShouldGrantBossPowerAndClampAt100()
     {
-        // ADR-026 T1/T2 + D2: +1 SkillCharge per Boss POWER match group, clamped at
-        // the Skill's ChargeRequirement. The group count is read from the Boss's own
-        // MatchCreated reports, which is the unit
-        // ResourceGenerator.CountPowerMatchGroups counts.
+        // ADR-029 §2.2 / Slice 1: the Boss's own POWER Gems generate its Power at
+        // PowerGemBasePower (10) per unique cleared cell, clamped to 0–100
+        // (COMBAT_RULES.md §2; ADR-029 §2.11). The generation is read from the Boss's
+        // own board action's cleared POWER cells — the same unit
+        // ResourceGenerator.Generate charges the Boss branch with. The retired
+        // SkillCharge counter clamped at a ChargeRequirement instead; that mechanism
+        // was removed with ADR-029 Slice 5 / TASK-313.
         var repository = new InMemoryBattleStateRepository();
         var service = new BattleStateService(repository, new FixedRngSeedSource());
 
         var boss = BossDefinitions.HoaLong with
         {
-            // Unreachable requirement: the Skill never fires, so the accumulated
-            // charge is observable rather than reset.
-            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 100_000 },
             // Both sides are given room to survive the observation window: this
-            // scenario asserts the counter, not who wins.
+            // scenario asserts the resource, not who wins.
             MaxHP = 1_000_000,
         };
 
@@ -441,7 +434,7 @@ public class AtomicRoundOrchestrationTests
         };
         await RoundTestSupport.PinAsync(repository, created, created.BoardState, petState: state.PetState);
 
-        var sawPowerGroups = false;
+        var sawPowerGeneration = false;
 
         for (var round = 0; round < 24; round++)
         {
@@ -455,16 +448,16 @@ public class AtomicRoundOrchestrationTests
 
             await RoundTestSupport.PinAsync(repository, state with { RngState = rngState }, pinned.Board);
 
-            var previousCharge = state.BossState.SkillCharge;
+            var previousPower = state.BossState.Power;
             var result = (await service.ExecuteSwapAsync(battleId, pinned.Swap))!.Value;
             Assert.True(result.IsAccepted);
 
-            var groups = RoundTestSupport.BossPowerMatchGroups(result);
-            var expected = Math.Min(previousCharge + groups, boss.SkillChargeRequirement);
+            var generated = RoundTestSupport.BossPowerGeneration(result);
+            var expected = Math.Min(previousPower + generated, ResourceGenerator.MaxPower);
 
-            Assert.Equal(expected, result.State.BossState.SkillCharge);
+            Assert.Equal(expected, result.State.BossState.Power);
 
-            sawPowerGroups |= groups > 0;
+            sawPowerGeneration |= generated > 0;
             state = result.State;
 
             if (state.BossState.HP <= 0 || state.PetState.HP <= 0)
@@ -473,251 +466,30 @@ public class AtomicRoundOrchestrationTests
             }
         }
 
-        Assert.True(sawPowerGroups, "the Boss must have matched POWER Gems at least once across the rounds");
+        Assert.True(sawPowerGeneration, "the Boss must have matched POWER Gems at least once across the rounds");
 
-        // The clamp: with an unreachable requirement the counter never exceeds it,
-        // and with a requirement of 1 the counter is held at exactly 1 — it is a
-        // floor-of-the-requirement value, never the accumulated total
-        // (ADR-026 T2).
-        var clamped = BossDefinitions.HoaLong with
-        {
-            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 1 },
-        };
-
+        // The clamp: a Boss already at the 100 ceiling stays there, so the authored
+        // 0–100 range is never exceeded (COMBAT_RULES.md §2, GAME_RULES.md §12).
         var clampedRepository = new InMemoryBattleStateRepository();
         var clampedService = new BattleStateService(clampedRepository, new FixedRngSeedSource());
         const string clampedBattleId = "round-boss-power-clamp";
-        var clampedCreated = await clampedService.CreateBattleAsync(clampedBattleId, Owner, Pet, clamped);
+        var clampedCreated = await clampedService.CreateBattleAsync(clampedBattleId, Owner, Pet, boss);
 
         var (clampedRngState, clampedPinned) = RoundTestSupport.PinnedForStream(
             GemType.Def,
             clampedCreated.RngState,
             clampedCreated.LastCommittedSwapPair);
 
-        // A running cooldown keeps the Skill from firing, so the clamped charge is
-        // what the round leaves observable rather than a reset 0.
         await RoundTestSupport.PinAsync(
             clampedRepository,
             clampedCreated with { RngState = clampedRngState },
             clampedPinned.Board,
-            bossState: clampedCreated.BossState with { SkillCharge = 1, SkillCooldown = 2 });
+            bossState: clampedCreated.BossState with { Power = ResourceGenerator.MaxPower });
 
         var clampedResult = (await clampedService.ExecuteSwapAsync(clampedBattleId, clampedPinned.Swap))!.Value;
         Assert.True(clampedResult.IsAccepted);
 
-        Assert.DoesNotContain(clampedResult.Events, e => e.Type == BattleEventType.BossSkillCast);
-        Assert.Equal(
-            Math.Min(1 + RoundTestSupport.BossPowerMatchGroups(clampedResult), 1),
-            clampedResult.State.BossState.SkillCharge);
-        Assert.Equal(1, clampedResult.State.BossState.SkillCharge);
-    }
-
-    // =======================================================================
-    // 5. The five MVP Boss skills apply their approved secondary effect and no
-    //    direct damage (ADR-026 D3, D5, D6, D7; BOSS_RULES.md §6.3.1)
-    // =======================================================================
-
-    [Fact]
-    public async Task FlameBurst_ShouldApplyATemporaryBossAtkBuff_AndNoDirectDamage()
-    {
-        // ADR-026 D5 (Option 5B) / BOSS_RULES.md §6.3.1 item 1: Flame Burst's direct
-        // damage and Burn DoT are removed and replaced by a temporary Boss ATK buff
-        // on BossState.ActiveStatusEffects.
-        var (result, definition) = await FireTheSkillAsync(
-            "round-skill-flame-burst",
-            BossDefinitions.HoaLong);
-
-        var buff = Assert.Single(result.State.BossState.ActiveStatusEffects, e => e.Id == "flame-burst");
-
-        Assert.Equal(StatusEffectType.BuffDebuff, buff.Type);
-        Assert.Equal(StatusEffectSource.Boss, buff.Source);
-        Assert.Equal("ATK", buff.TargetStat);
-        Assert.Equal(50, buff.Magnitude);
-
-        // Applied at step 18c and ticked by step 19a in the same round: the second
-        // and last of its two Turns of duration is what remains.
-        Assert.Equal(1, buff.RemainingTurns);
-
-        // Retired: no Burn instance, of either owner (ADR-026 D3/D5).
-        Assert.DoesNotContain(result.State.PetState.ActiveStatusEffects, e => e.Type == StatusEffectType.DoT);
-        Assert.DoesNotContain(result.State.BossState.ActiveStatusEffects, e => e.Type == StatusEffectType.DoT);
-
-        AssertNoDirectSkillDamage(result);
-        Assert.Equal(0, definition.SkillBaseDamage);
-    }
-
-    [Fact]
-    public async Task DrainPower_ShouldSubtractFlatPetPower_AndCreateNoStatusEffect()
-    {
-        // BOSS_RULES.md §6.3.1 item 2 / GAME_STATE.md §2.3.1 item 9: an instant flat
-        // Pet Power reduction that creates no Status Effect instance.
-        var (result, definition) = await FireTheSkillAsync(
-            "round-skill-drain-power",
-            BossDefinitions.ThuyMa,
-            petPower: 30);
-
-        var drain = Assert.Single(
-            result.Events,
-            e => e.Type == BattleEventType.PowerChanged && e.PowerChanged.Source == PowerChangeSource.Boss);
-
-        Assert.Equal(-20, drain.PowerChanged.Delta);
-        Assert.Equal(10, drain.PowerChanged.Power);
-        Assert.Equal(10, result.State.PetState.Power);
-
-        Assert.DoesNotContain(
-            result.State.PetState.ActiveStatusEffects,
-            e => e.Source == StatusEffectSource.Boss);
-
-        AssertNoDirectSkillDamage(result);
-        Assert.Equal(0, definition.SkillBaseDamage);
-    }
-
-    [Fact]
-    public async Task Root_ShouldApplyAMinusThirtyPercentPetAtkDebuffForTwoTurns()
-    {
-        // BOSS_RULES.md §6.3.1 item 3: a Turn-based BuffDebuff applied to the active
-        // Pet with TargetStat "ATK", magnitude 30, duration 2 Turns.
-        var (result, definition) = await FireTheSkillAsync(
-            "round-skill-root",
-            BossDefinitions.MocYeu);
-
-        var root = Assert.Single(result.State.PetState.ActiveStatusEffects, e => e.Id == "Root");
-
-        Assert.Equal(StatusEffectType.BuffDebuff, root.Type);
-        Assert.Equal(StatusEffectSource.Boss, root.Source);
-        Assert.Equal("ATK", root.TargetStat);
-        Assert.Equal(30, root.Magnitude);
-
-        // Applied at step 18c: step 19a's 2 -> 1 is the first of its two documented
-        // consumption Turns (COMBAT_RULES.md §5.3.2).
-        Assert.Equal(1, root.RemainingTurns);
-
-        // COMBAT_RULES.md §5.4: the stored stat is never written.
-        Assert.Equal(Pet.ToPetState().ATK, result.State.PetState.ATK);
-
-        AssertNoDirectSkillDamage(result);
-        Assert.Equal(0, definition.SkillBaseDamage);
-    }
-
-    [Fact]
-    public async Task Earthquake_ShouldGrantTheBossATemporaryShield_AndNoDirectDamage()
-    {
-        // ADR-026 D6 (Option 2A) / BOSS_RULES.md §6.3.1 item 4: a temporary Shield on
-        // the Boss's own ActiveStatusEffects — the same trigger-based absorption pool
-        // COMBAT_RULES.md §4 defines.
-        var (result, definition) = await FireTheSkillAsync(
-            "round-skill-earthquake",
-            BossDefinitions.SonThachVe);
-
-        var shield = Assert.Single(result.State.BossState.ActiveStatusEffects, e => e.Type == StatusEffectType.Shield);
-
-        Assert.Equal(StatusEffectSource.Boss, shield.Source);
-        Assert.Equal(150, shield.Magnitude);
-        Assert.Equal(StatusEffect.ShieldDepletedCondition, shield.ExpiryCondition);
-
-        // A trigger-based instance is not on the step 19a countdown
-        // (GAME_STATE.md §5.1.1 item 7).
-        Assert.Null(shield.RemainingTurns);
-
-        AssertNoDirectSkillDamage(result);
-        Assert.Equal(0, definition.SkillBaseDamage);
-    }
-
-    [Fact]
-    public async Task ThunderStrike_ShouldBuffTheNextQualifyingBossAttack_AndBeConsumedOnlyByIt()
-    {
-        // ADR-026 D7 (Option 3A) / BOSS_RULES.md §6.3.1 item 5: a trigger-based
-        // modifier buffing the Boss's next qualifying ATK match. It carries the
-        // "NextQualifyingAttack" expiry condition, so it is not ticked by step 19a —
-        // it survives every round in which the Boss matched no ATK Gem and is
-        // consumed by the round in which the Boss's §18d instance resolves.
-        var (result, definition) = await FireTheSkillAsync(
-            "round-skill-thunder-strike",
-            BossDefinitions.KimLoiVuong);
-
-        var bossQualified = RoundTestSupport.BossClearedAtkGem(result);
-        var hasBuff = result.State.BossState.ActiveStatusEffects.Any(e => e.Id == "thunder-strike");
-
-        if (bossQualified)
-        {
-            // Consumed by the attack instance this same round resolved
-            // (AttackResolution.ResolveAndApplyBossAttack).
-            Assert.False(hasBuff);
-        }
-        else
-        {
-            Assert.True(hasBuff);
-
-            var buff = result.State.BossState.ActiveStatusEffects
-                .First(e => e.Id == "thunder-strike");
-
-            Assert.Equal(StatusEffectType.BuffDebuff, buff.Type);
-            Assert.Equal(StatusEffectSource.Boss, buff.Source);
-            Assert.Equal("ATK", buff.TargetStat);
-            Assert.Equal(50, buff.Magnitude);
-            Assert.Equal(StatusEffect.NextQualifyingAttackCondition, buff.ExpiryCondition);
-
-            // Not on the step 19a countdown (GAME_STATE.md §5.1.1 item 7).
-            Assert.Null(buff.RemainingTurns);
-        }
-
-        AssertNoDirectSkillDamage(result);
-        Assert.Equal(0, definition.SkillBaseDamage);
-
-        // The invariant over the rounds that follow: whatever is present at the end
-        // of a round cannot have survived a qualifying Boss attack — the modifier is
-        // consumed exactly by the attack it buffs.
-        var repository = new InMemoryBattleStateRepository();
-        var service = new BattleStateService(repository, new FixedRngSeedSource());
-
-        const string battleId = "round-skill-thunder-strike-follow-up";
-        var created = await service.CreateBattleAsync(battleId, Owner, Pet, BossDefinitions.KimLoiVuong);
-        var state = created;
-
-        for (var round = 0; round < 6; round++)
-        {
-            var pinned = RoundTestSupport.PlayerMatch(
-                GemType.Def,
-                state.RngState,
-                state.LastCommittedSwapPair);
-
-            await RoundTestSupport.PinAsync(repository, state, pinned.Board);
-
-            var followUp = (await service.ExecuteSwapAsync(battleId, pinned.Swap))!.Value;
-            Assert.True(followUp.IsAccepted);
-
-            var stillActive = followUp.State.BossState.ActiveStatusEffects
-                .Any(e => e.Id == "thunder-strike");
-
-            if (stillActive)
-            {
-                Assert.False(
-                    RoundTestSupport.BossClearedAtkGem(followUp),
-                    "a qualifying Boss attack consumes the next-qualifying modifier in the same round");
-            }
-
-            state = followUp.State;
-
-            if (state.BossState.HP <= 0 || state.PetState.HP <= 0)
-            {
-                break;
-            }
-        }
-    }
-
-    [Fact]
-    public async Task FiredBossSkill_ShouldNeverProduceAnAttackInstanceOfItsOwn()
-    {
-        // ADR-026 D3 / COMBAT_RULES.md §3.4: all five MVP Skills declare
-        // BaseDamage = 0, so a Boss's only damage instance is the ATK-gated board
-        // instance. Asserted for the whole MVP set at once.
-        foreach (var definition in BossDefinitions.All)
-        {
-            var (result, _) = await FireTheSkillAsync($"round-skill-no-damage-{definition.SkillId}", definition);
-
-            Assert.Contains(result.Events, e => e.Type == BattleEventType.BossSkillCast);
-            AssertNoDirectSkillDamage(result);
-        }
+        Assert.Equal(ResourceGenerator.MaxPower, clampedResult.State.BossState.Power);
     }
 
     // =======================================================================
@@ -736,7 +508,6 @@ public class AtomicRoundOrchestrationTests
         var boss = BossDefinitions.HoaLong with
         {
             MaxHP = 100,
-            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 1 },
         };
 
         const string battleId = "round-player-kills-boss";
@@ -753,7 +524,7 @@ public class AtomicRoundOrchestrationTests
         var won = Assert.Single(result.Events, e => e.Type == BattleEventType.BattleWon);
         Assert.Equal(0, won.BattleWon.FinalBossHp);
 
-        Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.BossSkillCast);
+        Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.BossCardCast);
         Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.PassiveCharged
             && e.PassiveCharged.Source == PassiveEventSource.Boss);
 
@@ -780,7 +551,6 @@ public class AtomicRoundOrchestrationTests
             // Unreachable by the Player: this scenario is about the Pet dying, not
             // about who wins the race.
             MaxHP = 100_000,
-            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 1000 },
         };
 
         const string battleId = "round-boss-kills-pet";
@@ -860,7 +630,6 @@ public class AtomicRoundOrchestrationTests
         Assert.Equal(before.PetState.HP, after.PetState.HP);
         Assert.True(before.BoardState.CellsEqual(after.BoardState));
     }
-
     [Fact]
     public async Task LostCompareAndSet_ShouldPersistNothingAndReportNoCommittedRound()
     {
@@ -1079,9 +848,9 @@ public class AtomicRoundOrchestrationTests
 
         var boss = BossDefinitions.HoaLong with
         {
-            // No Skill fires: the only effects present are the ones this scenario pins.
-            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition with { ChargeRequirement = 1000 },
-            // No Passive triggers either (its Threshold is far beyond one round's Matches).
+            // No Passive triggers (its Threshold is far beyond one round's Matches), so
+            // the only effects present are the ones this scenario pins. This suite's
+            // content carries no provisioned Boss Card, so no ability cast occurs.
             PassiveDefinition = BossDefinitions.HoaLong.PassiveDefinition with { Threshold = 1000 },
         };
 
@@ -1168,15 +937,11 @@ public class AtomicRoundOrchestrationTests
             repository,
             created,
             pinned.Board,
-            bossState: created.BossState with
-            {
-                SkillCharge = boss.SkillChargeRequirement,
-                SkillCooldown = 0,
-            });
+            bossState: created.BossState with { SkillCooldown = 0 });
 
         var result = (await service.ExecuteSwapAsync(battleId, pinned.Swap))!.Value;
         Assert.True(result.IsAccepted);
-        Assert.Contains(result.Events, e => e.Type == BattleEventType.BossSkillCast);
+        Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.BossCardCast);
 
         var snapshot = (await service.GetBattleAsync(battleId))!;
 
@@ -1243,51 +1008,6 @@ public class AtomicRoundOrchestrationTests
     // =======================================================================
 
     /// <summary>
-    /// Commits one atomic round in which the named Boss's Skill fires — the Skill's
-    /// charge is pinned to the definition's own ChargeRequirement, a state the game
-    /// genuinely produces by accumulating Boss POWER matches — and returns the
-    /// committed result.
-    /// </summary>
-    /// <param name="battleId">The battle session to create.</param>
-    /// <param name="definition">The Boss whose Skill is under test.</param>
-    /// <param name="petPower">
-    /// The Pet's Power before the round, for the instance-less Drain Power scenario.
-    /// </param>
-    private static async Task<(SwapExecutionResult Result, BossDefinition Definition)> FireTheSkillAsync(
-        string battleId,
-        BossDefinition definition,
-        int petPower = 0)
-    {
-        var repository = new InMemoryBattleStateRepository();
-        var service = new BattleStateService(repository, new FixedRngSeedSource());
-
-        var created = await service.CreateBattleAsync(battleId, Owner, Pet, definition);
-
-        // A board whose Swap clears a non-ATK Gem only, so the Skill is the round's
-        // only effect under scrutiny and no ATK-gated instance can be mistaken for
-        // the Skill's damage.
-        var pinned = RoundTestSupport.PlayerMatch(GemType.Def, created.RngState, created.LastCommittedSwapPair);
-
-        await RoundTestSupport.PinAsync(
-            repository,
-            created,
-            pinned.Board,
-            bossState: created.BossState with
-            {
-                SkillCharge = definition.SkillChargeRequirement,
-                SkillCooldown = 0,
-            },
-            petState: created.PetState with { Power = petPower });
-
-        var result = (await service.ExecuteSwapAsync(battleId, pinned.Swap))!.Value;
-
-        Assert.True(result.IsAccepted);
-        Assert.Contains(result.Events, e => e.Type == BattleEventType.BossSkillCast);
-
-        return (result, definition);
-    }
-
-    /// <summary>
     /// The index of the <paramref name="occurrence"/>-th event of
     /// <paramref name="type"/> in the round's ordered list — the position the
     /// documented ordering is asserted against (<c>GAME_EVENTS.md</c> §1).
@@ -1313,19 +1033,6 @@ public class AtomicRoundOrchestrationTests
 
         throw new InvalidOperationException(
             $"GAME_EVENTS.md §1: the round produced fewer than {occurrence + 1} {type} events.");
-    }
-
-    /// <summary>
-    /// Asserts that the fired Boss Skill produced no attack instance of its own: the
-    /// round carries the ATK-gated Boss instance when the Boss's board action cleared
-    /// an ATK Gem, and none otherwise (<c>ADR-026</c> D3, D1).
-    /// </summary>
-    private static void AssertNoDirectSkillDamage(SwapExecutionResult result)
-    {
-        var bossDamageInstances = result.Events.Count(
-            e => e.Type == BattleEventType.DamageDealt && e.DamageDealt.Source == DamageParty.Boss);
-
-        Assert.Equal(RoundTestSupport.BossClearedAtkGem(result) ? 1 : 0, bossDamageInstances);
     }
 }
 

@@ -1937,36 +1937,22 @@ public class BattleStateServiceTests
 
         Assert.Equal(ExpectedBossHpAfterRound(before, result.Value, playerDamage), after.HP);
 
-        // And the Skill charge followed the documented rule (GAME_STATE.md §2.4.3 /
-        // BOSS_RULES.md §6.3 / ADR-026 D2), whichever branch this board lands on:
-        //
-        //   the Skill did not fire -> the charge accumulated +1 per POWER match group
-        //                             the BOSS's own swap produced, clamped at the
-        //                             Skill's ChargeRequirement
-        //   the Skill fired        -> the charge was reset to 0
-        //
-        // The Player's POWER matches never charge the Boss (D2), so the PLAYER's Match
-        // total is not this counter's unit; the branch is read from the events, not
-        // assumed.
-        var skillFired = result.Value.Events.Any(e => e.Type == BattleEventType.BossSkillCast);
-        var bossPowerMatchGroups = RoundTestSupport.BossPowerMatchGroups(result.Value);
+        // And the Boss's own Power followed the documented rule (ADR-029 §2.2,
+        // Slice 1; COMBAT_RULES.md §2): the Boss's POWER Gems generate its own Power at
+        // PowerGemBasePower per unique cleared cell, clamped to the authored 0–100
+        // range. The Player's POWER matches never fund the Boss (the rule is
+        // actor-relative), so the PLAYER's Match total is not this counter's unit.
+        // (The legacy SkillCharge accumulation/reset this assertion used to read was
+        // removed with ADR-029 Slice 5 / TASK-313.)
+        var bossPowerGeneration = RoundTestSupport.BossPowerGeneration(result.Value);
 
-        var expectedSkillCharge = skillFired
-            ? 0
-            : Math.Min(before.BossState.SkillCharge + bossPowerMatchGroups, BossDefinition.SkillChargeRequirement);
+        Assert.Equal(
+            Math.Min(before.BossState.Power + bossPowerGeneration, ResourceGenerator.MaxPower),
+            after.Power);
 
-        Assert.Equal(expectedSkillCharge, after.SkillCharge);
-
-        // A fired Skill must have met both documented conditions before it did
-        // (GAME_STATE.md §2.4.3: SkillCharge ≥ ChargeRequirement AND SkillCooldown = 0).
-        if (skillFired)
-        {
-            Assert.True(
-                before.BossState.SkillCharge + bossPowerMatchGroups
-                    >= BossDefinition.SkillChargeRequirement);
-
-            Assert.Equal(BossDefinition.SkillCooldownTurns, after.SkillCooldown);
-        }
+        // This content carries no provisioned Boss Card, so no cast can spend it.
+        Assert.DoesNotContain(result.Value.Events, e => e.Type == BattleEventType.BossCardCast);
+        Assert.Equal(before.BossState.SkillCooldown, after.SkillCooldown);
     }
 
     [Fact]

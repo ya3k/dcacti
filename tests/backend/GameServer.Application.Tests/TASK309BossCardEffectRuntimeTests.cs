@@ -162,8 +162,6 @@ public class TASK309BossCardEffectRuntimeTests
         Assert.Equal(boss.BossId.Value, cast.BossCardCast.SourceId);
         Assert.Equal(BattleEventType.BossCardCast, events[^1].Type);
 
-        // One form per ability: the migrated Boss never emits the legacy event.
-        Assert.DoesNotContain(events, e => e.Type == BattleEventType.BossSkillCast);
 
         // A cast phase suppresses the Boss board action and its §18d attack.
         AssertCastPhaseSuppressesTheBossBoardAction(events);
@@ -233,7 +231,6 @@ public class TASK309BossCardEffectRuntimeTests
 
         Assert.Single(events, e => e.Type == BattleEventType.BossCardCast);
         Assert.Equal(BattleEventType.BossCardCast, events[^1].Type);
-        Assert.DoesNotContain(events, e => e.Type == BattleEventType.BossSkillCast);
         AssertCastPhaseSuppressesTheBossBoardAction(events);
     }
 
@@ -303,7 +300,6 @@ public class TASK309BossCardEffectRuntimeTests
 
         Assert.Single(events, e => e.Type == BattleEventType.BossCardCast);
         Assert.Equal(BattleEventType.BossCardCast, events[^1].Type);
-        Assert.DoesNotContain(events, e => e.Type == BattleEventType.BossSkillCast);
         AssertCastPhaseSuppressesTheBossBoardAction(events);
     }
 
@@ -396,7 +392,6 @@ public class TASK309BossCardEffectRuntimeTests
 
         Assert.Single(round.Events, e => e.Type == BattleEventType.BossCardCast);
         Assert.Equal(BattleEventType.BossCardCast, round.Events[^1].Type);
-        Assert.DoesNotContain(round.Events, e => e.Type == BattleEventType.BossSkillCast);
         AssertCastPhaseSuppressesTheBossBoardAction(round.Events);
     }
 

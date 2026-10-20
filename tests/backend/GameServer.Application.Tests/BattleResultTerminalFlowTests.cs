@@ -59,8 +59,6 @@ public class BattleResultTerminalFlowTests
         BossDefinitions.HoaLong with
         {
             ATK = 100_000,
-            SkillDefinition = BossDefinitions.HoaLong.SkillDefinition
-                with { ChargeRequirement = int.MaxValue },
             PassiveDefinition = BossDefinitions.HoaLong.PassiveDefinition
                 with { Threshold = null },
         };

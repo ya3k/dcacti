@@ -1,7 +1,7 @@
 /**
  * BattleEventPresenter — Scene-local interpretation and formatting of in-battle server events.
  *
- * Implements interpretation for the nineteen non-outcome event types of the closed wire discriminator
+ * Implements interpretation for the eighteen non-outcome event types of the closed wire discriminator
  * (SIGNALR_PROTOCOL.md §3.2.2, §3.2.6–§3.2.30, GAME_EVENTS.md §2):
  *
  *   1. SwapStarted
@@ -15,14 +15,13 @@
  *   9. DamageTaken
  *  10. PassiveCharged
  *  11. PassiveTriggered
- *  12. BossSkillCast
- *  13. CardCast
- *  14. PetSkillCast
- *  15. RelicTriggered
- *  16. PowerChanged
- *  17. CascadeStepResolved
- *  18. MatchedGemSummary
- *  19. BossCardCast
+ *  12. CardCast
+ *  13. PetSkillCast
+ *  14. RelicTriggered
+ *  15. PowerChanged
+ *  16. CascadeStepResolved
+ *  17. MatchedGemSummary
+ *  18. BossCardCast
  *
  * Server-authoritative boundary (GAME_RULES.md §18, AGENTS.md §10):
  * - Presents only delivered members verbatim.
@@ -136,12 +135,6 @@ export interface PresentedPassiveTriggered {
   readonly threshold: number;
 }
 
-export interface PresentedBossSkillCast {
-  readonly type: 'BossSkillCast';
-  readonly skillId: string;
-  readonly sourceId: string;
-}
-
 export interface PresentedCardCast {
   readonly type: 'CardCast';
   readonly cardId: string;
@@ -240,7 +233,7 @@ export interface PresentedMatchedGemCount {
  * unique cleared cell — as the server already accounted it, so the client
  * **sums nothing**: it presents the counts the item carries, for the Gem types it
  * names, and omits a type the item omits. The counts are not damage, healing, DEF
- * buff magnitude, Power, or Boss SkillCharge, and no HUD value is computed from
+ * buff magnitude, Power, and no HUD value is computed from
  * them (`§3.2.29` item 8, `AGENTS.md` §10).
  *
  * The reported cycle is attributed exactly as every other board-cycle event is:
@@ -271,8 +264,7 @@ export interface PresentedMatchedGemSummary {
  * (§3.2.30 item 4): they reach the client through the `bossState` projection
  * (`§4.4`), and a client that recomputed one would be authoritatively calculating
  * gameplay state (`GAME_RULES.md` §18, `AGENTS.md` §10). The event is never a
- * `CardCast` and never accompanies a `BossSkillCast` for the same ability
- * (§3.2.30 items 7–8): the discriminator is the only distinction.
+ * `CardCast`: the discriminator is the only distinction.
  */
 export interface PresentedBossCardCast {
   readonly type: 'BossCardCast';
@@ -294,7 +286,6 @@ export type InBattleServerEvent =
   | PresentedDamageTaken
   | PresentedPassiveCharged
   | PresentedPassiveTriggered
-  | PresentedBossSkillCast
   | PresentedCardCast
   | PresentedPetSkillCast
   | PresentedRelicTriggered
@@ -340,8 +331,6 @@ export function parseInBattleEvent(raw: unknown): InBattleServerEvent | null {
       return parsePassiveCharged(raw);
     case 'PassiveTriggered':
       return parsePassiveTriggered(raw);
-    case 'BossSkillCast':
-      return parseBossSkillCast(raw);
     case 'CardCast':
       return parseCardCast(raw);
     case 'PetSkillCast':
@@ -818,18 +807,6 @@ function parsePassiveTriggered(raw: unknown): PresentedPassiveTriggered | null {
   };
 }
 
-function parseBossSkillCast(raw: unknown): PresentedBossSkillCast | null {
-  const p = raw as Partial<PresentedBossSkillCast>;
-  if (typeof p.skillId !== 'string' || typeof p.sourceId !== 'string') {
-    return null;
-  }
-  return {
-    type: 'BossSkillCast',
-    skillId: p.skillId,
-    sourceId: p.sourceId,
-  };
-}
-
 /**
  * Parses one delivered `BossCardCast` (`SIGNALR_PROTOCOL.md` §3.2.30).
  *
@@ -958,8 +935,6 @@ export function formatInBattleEvent(event: InBattleServerEvent): string {
       return `PassiveCharged: ${event.passiveId} (${event.source}:${event.sourceId}) ${event.progress}/${event.threshold}`;
     case 'PassiveTriggered':
       return `PassiveTriggered: ${event.passiveId} (${event.source}:${event.sourceId}) ${event.progress}/${event.threshold}`;
-    case 'BossSkillCast':
-      return `BossSkillCast: ${event.skillId} by ${event.sourceId}`;
     case 'CardCast':
       return `CardCast: ${event.cardId}`;
     case 'PetSkillCast':
@@ -997,7 +972,7 @@ export function formatInBattleEvent(event: InBattleServerEvent): string {
  * value the event did not carry, and the colour is a display choice.
  */
 export interface EventCallout {
-  /** The line a player reads, e.g. `COMBO ×4`, `BOSS SKILL`, `CARD: Heal`. */
+  /** The line a player reads, e.g. `COMBO ×4`, `BOSS CARD`, `CARD: Heal`. */
   readonly message: string;
   /** The display colour for the callout. */
   readonly color: string;
@@ -1171,7 +1146,7 @@ export function resolveDamagePresentationPhase(
  * pet      a PassiveCharged / PassiveTriggered whose delivered `source` is
  *          `"pet"` — the active Pet's own Passive (§3.2.16 item 1).
  * boss     a PassiveCharged / PassiveTriggered whose `source` is `"boss"`, a
- *          BossSkillCast (§3.2.18), a BossCardCast (§3.2.30), a `SwapStarted`
+ *          BossCardCast (§3.2.30), a `SwapStarted`
  *          whose delivered `actor` is `"boss"`, and a damage report whose
  *          `source` is `"boss"` — the Boss acting.
  * power    PowerChanged — the Pet Power **mutation stage** the delivered
@@ -1213,7 +1188,6 @@ export type PresentationAction =
   | 'relic'
   | 'passive-charge'
   | 'passive-trigger'
-  | 'boss-skill'
   | 'boss-card-cast'
   | 'damage'
   | 'retaliation'
@@ -1241,7 +1215,6 @@ export type PresentationPhaseKind =
   | 'gem-summary'
   | 'cast'
   | 'relic'
-  | 'boss-skill'
   | 'boss-card'
   | 'settle'
   | 'damage'
@@ -1351,7 +1324,7 @@ export function isPetPassiveEvent(event: {
  * The one adapter from a delivered event to its presentation step.
  *
  * It is the **single** place a delivered event is interpreted into the actor/
- * action vocabulary: a Swap, a Boss Skill, a Boss Passive, a Card cast and a Pet
+ * action vocabulary: a Swap, a Boss Card cast, a Boss Passive, a Card cast and a Pet
  * Skill cast all reach their phases through this one call and through no branch,
  * pipeline, registry, interface or event bus (`AGENTS.md` §9). It reads only
  * delivered members, performs no gameplay derivation, and returns `null` for an
@@ -1483,14 +1456,6 @@ export function adaptPresentedEvent(
         action: 'passive-trigger',
         kind: 'feedback',
         detail: `passive ${event.passiveId}`,
-      };
-
-    case 'BossSkillCast':
-      return {
-        actor: 'boss',
-        action: 'boss-skill',
-        kind: 'boss-skill',
-        detail: `boss-skill ${event.skillId}`,
       };
 
     case 'BossCardCast':
@@ -1827,9 +1792,7 @@ export function formatCardCastRejection(reason?: string | null): string {
  * 1  a meaningful Combo   the cascade the player's own Swap produced
  * 2  a Card / Pet Skill   the player's own cast
  * 2  a Relic trigger      the player's own build paying off
- * 3  a Boss Skill         the Boss acting
- * 3  a Boss Card cast     the Boss's own selected action — the same news in the
- *                         migrated form, so it shares the Boss Skill's slot
+ * 3  a Boss Card cast     the Boss's own selected action
  * 4  a Passive triggering the effect the player was building toward
  * 5  a Passive charging   progress toward that effect
  * 6  a Match              an ordinary single-Match Swap's result
@@ -1866,9 +1829,6 @@ const CALLOUT_PRIORITY_MATCH = 6;
  * PetSkillCast      `cardId`           — as above
  * RelicTriggered    `relicId`          — resolved to the Relic's own display name
  *                                        through the caller's lookup (below)
- * BossSkillCast     `skillId`          — resolved to canonical display name from
- *                                        BOSS_RULES.md §6.3/§6.4; falls back to
- *                                        'BOSS SKILL' when unrecognized
  * BossCardCast      `cardId`           — the Boss Card's definition identity,
  *                                        which is the ability `SkillId`
  *                                        (SIGNALR_PROTOCOL.md §3.2.30 item 2), so
@@ -1945,14 +1905,6 @@ export function describeEventCallout(
             color: CALLOUT_RELIC_COLOR,
             priority: CALLOUT_PRIORITY_RELIC,
           };
-    }
-    case 'BossSkillCast': {
-      const skillName = resolveBossSkillName(event.skillId);
-      return {
-        message: skillName !== null ? `BOSS SKILL: ${skillName}` : 'BOSS SKILL',
-        color: CALLOUT_BOSS_COLOR,
-        priority: CALLOUT_PRIORITY_BOSS,
-      };
     }
     case 'BossCardCast': {
       // The Boss Card is identified by the ability `SkillId`

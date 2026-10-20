@@ -42,7 +42,7 @@ internal sealed class MetricAccumulator
     private int _elementAdvantage;
     private int _elementNeutral;
     private int _elementDisadvantage;
-    private int _bossSkillCasts;
+    private int _bossCardCasts;
     private int _bossPassiveTriggers;
     private int _bossRegenerationTotal;
     private int _bossRegenerationTurns;
@@ -182,8 +182,8 @@ internal sealed class MetricAccumulator
                     break;
                 }
 
-                case BattleEventType.BossSkillCast:
-                    _bossSkillCasts++;
+                case BattleEventType.BossCardCast:
+                    _bossCardCasts++;
                     break;
 
                 case BattleEventType.PassiveTriggered:
@@ -382,7 +382,7 @@ internal sealed class MetricAccumulator
 
             BossRegenerationTotal = _bossRegenerationTotal,
             BossRegenerationTurns = _bossRegenerationTurns,
-            BossSkillCastCount = _bossSkillCasts,
+            BossCardCastCount = _bossCardCasts,
             BossPassiveTriggerCount = _bossPassiveTriggers,
             BossEnrageTurn = _bossEnrageTurn,
 
@@ -424,7 +424,7 @@ internal sealed class MetricAccumulator
         ElementDisadvantageCount = 0,
         BossRegenerationTotal = 0,
         BossRegenerationTurns = 0,
-        BossSkillCastCount = 0,
+        BossCardCastCount = 0,
         BossPassiveTriggerCount = 0,
         BossEnrageTurn = null,
         ResourceTrace = [],

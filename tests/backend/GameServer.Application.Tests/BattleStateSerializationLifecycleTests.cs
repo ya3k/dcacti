@@ -133,6 +133,58 @@ public class BattleStateSerializationLifecycleTests
     }
 
     [Fact]
+    public async Task LegacySnapshot_WithTheRetiredSkillCharge_ShouldDeserializeAndDiscardIt()
+    {
+        // ADR-029 Slice 5 / TASK-313 / REDIS_STATE.md §2.1: the `skillCharge` member
+        // was removed from BossState, but an existing Redis snapshot written before
+        // the removal still carries it. The tolerant reader must deserialize that
+        // snapshot (unknown members are ignored) and discard the value — it is never
+        // mapped back into the state and must not reactivate anything.
+        var service = SeededService();
+
+        var created = await service.CreateBattleAsync(
+            "battle-lifecycle-legacy-charge",
+            Owner,
+            RepresentativePetConfiguration(),
+            BossDefinitions.HoaLong);
+
+        // A played state, so the restored value is distinguishable from the initial one.
+        var played = created with
+        {
+            BossState = created.BossState with { Power = 45, SkillCooldown = 2 },
+        };
+
+        var json = BattleStateSerializer.Serialize(played);
+
+        // Write the retired member into the persisted document exactly as a legacy
+        // snapshot holds it.
+        var node = System.Text.Json.Nodes.JsonNode.Parse(json)!;
+        var bossObject = node["bossState"]!.AsObject();
+
+        Assert.False(bossObject.ContainsKey("skillCharge"));
+        bossObject["skillCharge"] = 3;
+
+        var restored = BattleStateSerializer.Deserialize(node.ToJsonString());
+
+        // The rest of the snapshot round-tripped...
+        Assert.Equal(played.BattleId, restored.BattleId);
+        Assert.Equal(played.Sequence, restored.Sequence);
+        Assert.Equal(played.BossState.BossId, restored.BossState.BossId);
+        Assert.Equal(played.BossState.Power, restored.BossState.Power);
+        Assert.Equal(played.BossState.SkillCooldown, restored.BossState.SkillCooldown);
+        Assert.True(played.BossState.StatusEffectsEqual(restored.BossState));
+
+        // ...and the retired value is discarded: re-serializing the restored state
+        // emits no `skillCharge` member at all (and no second Boss ability resource).
+        var rewritten = BattleStateSerializer.Serialize(restored);
+
+        using var document = System.Text.Json.JsonDocument.Parse(rewritten);
+
+        Assert.False(document.RootElement.GetProperty("bossState").TryGetProperty("skillCharge", out _));
+        Assert.Equal(45, document.RootElement.GetProperty("bossState").GetProperty("power").GetInt32());
+    }
+
+    [Fact]
     public async Task CreatedBattle_ShouldRoundTripBothLoadoutSnapshots()
     {
         // The post-TASK-027/028 members: the state created by the lifecycle carries
@@ -213,7 +265,7 @@ public class BattleStateSerializationLifecycleTests
         Assert.Equal(created.BossState.BossId, restored.BossState.BossId);
         Assert.Equal(created.BossState.HP, restored.BossState.HP);
         Assert.Equal(created.BossState.State, restored.BossState.State);
-        Assert.Equal(created.BossState.SkillCharge, restored.BossState.SkillCharge);
+        Assert.Equal(created.BossState.Power, restored.BossState.Power);
         Assert.Equal(created.BossState.SkillCooldown, restored.BossState.SkillCooldown);
         Assert.Equal(created.BossState.PassiveProgress, restored.BossState.PassiveProgress);
     }
@@ -300,7 +352,7 @@ public class BattleStateSerializationLifecycleTests
         Assert.True(committed.BossState.StatusEffectsEqual(restored.BossState));
         Assert.Equal(committed.BossState.BossId, restored.BossState.BossId);
         Assert.Equal(committed.BossState.HP, restored.BossState.HP);
-        Assert.Equal(committed.BossState.SkillCharge, restored.BossState.SkillCharge);
+        Assert.Equal(committed.BossState.Power, restored.BossState.Power);
     }
 
     [Fact]

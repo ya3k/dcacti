@@ -958,7 +958,7 @@ public sealed class CardCastExecutorTests
     {
         // Scenario 8: CARD_RULES.md §3 item 5 — a cast does not independently
         // trigger the normal Boss response. Nothing the cast emits targets the
-        // player, and the Boss's HP/cooldown/charge are untouched by a non-damaging
+        // player, and the Boss's HP/cooldown/Power are untouched by a non-damaging
         // cast, so the Step-18 pipeline is never reached (GAME_RULES.md §17).
         var state = CreateTestBattleState(power: 50);
         var bossBefore = state.BossState;
@@ -967,15 +967,16 @@ public sealed class CardCastExecutorTests
 
         Assert.True(result.IsAccepted);
 
-        // No damage was dealt to the player, and no boss skill was cast.
+        // No damage was dealt to the player, and no Boss ability cast event (the
+        // canonical BossCardCast) was emitted.
         Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.DamageDealt);
-        Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.BossSkillCast);
+        Assert.DoesNotContain(result.Events, e => e.Type == BattleEventType.BossCardCast);
 
         // The Boss State is carried across unchanged — the cast did not advance
-        // its cooldown, charge, or HP.
+        // its cooldown, spend its Power, or change its HP.
         Assert.Equal(bossBefore.HP, result.State.BossState.HP);
         Assert.Equal(bossBefore.SkillCooldown, result.State.BossState.SkillCooldown);
-        Assert.Equal(bossBefore.SkillCharge, result.State.BossState.SkillCharge);
+        Assert.Equal(bossBefore.Power, result.State.BossState.Power);
     }
 
     [Fact]

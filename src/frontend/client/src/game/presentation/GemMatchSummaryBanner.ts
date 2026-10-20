@@ -12,7 +12,7 @@
  * delivered `gems` entry: the type, its label and colour are the game's existing
  * board palette (passed in — this module keeps no second palette), and the count
  * is the delivered integer. Nothing is summed, scaled, converted into damage,
- * healing, DEF buff magnitude, Power, or Boss SkillCharge, and a Gem type the item
+ * healing, DEF buff magnitude, or Power, and a Gem type the item
  * did not name simply has no chip (`§3.2.29` items 3, 8; `AGENTS.md` §10).
  *
  * **It is a transient presentation effect, not a HUD region and not a second

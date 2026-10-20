@@ -23,8 +23,9 @@ namespace GameServer.Infrastructure.Tests;
 /// the five overlay values — <c>MaxHP</c>, <c>ATK</c>, <c>DEF</c>,
 /// <c>EnrageThreshold</c>, and the nullable <c>CastPriorityScore</c> (the fifth,
 /// added in place by TASK-308 / OD-3a) — the structural definition — Identity,
-/// Element, Passive, Skill, and the Skill's <c>SecondaryEffect</c> — is the
-/// Domain baseline's and survives the overlay intact; an Identity outside the
+/// Element, Passive, and Skill — is the Domain baseline's and survives the overlay
+/// intact (the legacy Skill <c>SecondaryEffect</c> declaration was removed with
+/// ADR-029 Slice 5 / TASK-313); an Identity outside the
 /// content-defined MVP set is the client-visible miss; an absent or out-of-range
 /// provisioned row fails closed with an exception rather than being answered from
 /// the static baseline; a <c>CastPriorityScore</c> of <c>null</c> is the
@@ -175,9 +176,10 @@ public class BossDefinitionBalanceLookupTests
     [Fact]
     public async Task GetDefinitionByIdentityAsync_ShouldPreserveEveryStructuralField()
     {
-        // ADR-024 §2.2 item 4: "SecondaryEffect (Burn, Drain Power, Root), Element,
-        // PassiveDefinition, and SkillDefinition mechanical typings remain intact
-        // from the Domain definition". The overlaid definition must equal the
+        // ADR-024 §2.2 item 4: Element, PassiveDefinition, and SkillDefinition
+        // mechanical typings remain intact from the Domain definition (the Skill's
+        // legacy SecondaryEffect declaration was removed with ADR-029 Slice 5 /
+        // TASK-313). The overlaid definition must equal the
         // baseline in every member except the four balance values — asserted
         // member by member, because a materialized row would null the
         // non-persisted members rather than change them.
@@ -206,16 +208,18 @@ public class BossDefinitionBalanceLookupTests
                 Assert.Equal(baseline.PassiveDefinition, resolved.PassiveDefinition);
                 Assert.Equal(baseline.SkillDefinition, resolved.SkillDefinition);
 
-                // The Passive's projections and the Skill's four stored members
-                // plus its declared secondary effect.
+                // The Passive's projections and the Skill's two live members. The
+                // legacy Skill base damage / charge requirement projections and the
+                // SecondaryEffect declaration were removed with ADR-029 Slice 5 /
+                // TASK-313; the stored JSONB document retains baseDamage /
+                // chargeRequirement as storage compatibility only (OD-311-1 = B), and
+                // the deserializer discards them (see
+                // GetDefinitionByIdentityAsync_ShouldReadTheStoredFourMemberSkillDocument).
                 Assert.Equal(baseline.PassiveId, resolved.PassiveId);
                 Assert.Equal(baseline.PassiveThreshold, resolved.PassiveThreshold);
                 Assert.Equal(baseline.PassiveResetBehavior, resolved.PassiveResetBehavior);
                 Assert.Equal(baseline.SkillId, resolved.SkillId);
-                Assert.Equal(baseline.SkillBaseDamage, resolved.SkillBaseDamage);
-                Assert.Equal(baseline.SkillChargeRequirement, resolved.SkillChargeRequirement);
                 Assert.Equal(baseline.SkillCooldownTurns, resolved.SkillCooldownTurns);
-                Assert.Equal(baseline.SkillDefinition.SecondaryEffect, resolved.SkillDefinition.SecondaryEffect);
 
                 // The fifth overlay value is overlaid (the row here holds the
                 // canonical value) and is never re-derived by the overlay.
@@ -236,17 +240,18 @@ public class BossDefinitionBalanceLookupTests
     }
 
     [Fact]
-    public async Task GetDefinitionByIdentityAsync_ShouldPreserveTheNonPersistedSecondaryEffects()
+    public async Task GetDefinitionByIdentityAsync_ShouldReadTheStoredFourMemberSkillDocument()
     {
-        // The hazard ADR-024 §1 names: BossSkillDefinition.SecondaryEffect has no
-        // column, so a definition materialized from the row alone would carry
-        // null and silently drop Flame Burst's Burn, Drain Power's Power
-        // reduction, and Root's ATK debuff (BOSS_RULES.md §6.3.1). The stored
-        // document is verified to carry no secondary effect, and the overlaid
-        // definition is verified to carry the declared one — which is exactly what
-        // the Domain Overlay exists to achieve.
+        // OD-311-1 = B / ADR-029 Slice 5: the persisted SkillDefinition document
+        // keeps its four member names as the storage contract, but the Domain carries
+        // only two of them (skillId, cooldownTurns) and the deserializer ignores
+        // baseDamage / chargeRequirement, so a historical stored value cannot
+        // reactivate the removed legacy Boss Skill behaviour (the retired
+        // SecondaryEffect declaration is gone entirely). The stored document is
+        // asserted through the persistence converter — the component that owns the
+        // mapping — because the InMemory provider stores no column text.
         const string store =
-            nameof(GetDefinitionByIdentityAsync_ShouldPreserveTheNonPersistedSecondaryEffects);
+            nameof(GetDefinitionByIdentityAsync_ShouldReadTheStoredFourMemberSkillDocument);
 
         await using (var context = CreateContext(store))
         {
@@ -274,36 +279,34 @@ public class BossDefinitionBalanceLookupTests
                     .OrderBy(name => name, StringComparer.Ordinal)
                     .ToArray());
 
+            // The stored document's legacy members are emitted as the compatibility
+            // placeholders (0) and are never mapped into the Domain.
+            var storedSkill = JsonDocument.Parse(storedSkillJson).RootElement;
+
+            Assert.Equal(0, storedSkill.GetProperty("baseDamage").GetInt32());
+            Assert.Equal(0, storedSkill.GetProperty("chargeRequirement").GetInt32());
+
             var lookup = CreateLookup(context);
 
             var flameBurst = (await lookup.GetDefinitionByIdentityAsync("boss-hoa-long"))!;
             var drainPower = (await lookup.GetDefinitionByIdentityAsync("boss-thuy-ma"))!;
             var root = (await lookup.GetDefinitionByIdentityAsync("boss-moc-yeu"))!;
 
-            // §6.3.1 item 1 — Flame Burst's Burn: 50 fixed damage/tick for 2 Turns.
-            var burn = flameBurst.SkillDefinition.SecondaryEffect;
+            // The overlay carries each Boss's canonical ability identity and cooldown
+            // unchanged, and the Domain's SkillDefinition exposes exactly those two
+            // members: no legacy base damage, charge requirement, or secondary-effect
+            // member survives to be read.
+            Assert.Equal("flame-burst", flameBurst.SkillId);
+            Assert.Equal("drain-power", drainPower.SkillId);
+            Assert.Equal("root", root.SkillId);
 
-            Assert.NotNull(burn);
-            Assert.Equal(BossSkillSecondaryEffectKind.Burn, burn!.Value.Kind);
-            Assert.Equal(50, burn.Value.Magnitude);
-            Assert.Equal(2, burn.Value.DurationTurns);
-
-            // §6.3.1 item 2 — Drain Power's instant flat Pet Power reduction.
-            var drain = drainPower.SkillDefinition.SecondaryEffect;
-
-            Assert.NotNull(drain);
-            Assert.Equal(BossSkillSecondaryEffectKind.PowerDrain, drain!.Value.Kind);
-            Assert.Equal(20, drain.Value.Magnitude);
-            Assert.Null(drain.Value.DurationTurns);
-
-            // §6.3.1 item 3 — Root's Turn-based Pet ATK debuff.
-            var atkDebuff = root.SkillDefinition.SecondaryEffect;
-
-            Assert.NotNull(atkDebuff);
-            Assert.Equal(BossSkillSecondaryEffectKind.AtkDebuff, atkDebuff!.Value.Kind);
-            Assert.Equal(30, atkDebuff.Value.Magnitude);
-            Assert.Equal(2, atkDebuff.Value.DurationTurns);
-            Assert.Equal("ATK", atkDebuff.Value.TargetStat);
+            Assert.Equal(
+                new[] { "CooldownTurns", "SkillId" },
+                typeof(BossSkillDefinition)
+                    .GetProperties()
+                    .Select(property => property.Name)
+                    .OrderBy(name => name, StringComparer.Ordinal)
+                    .ToArray());
         }
     }
 

@@ -481,7 +481,7 @@ public sealed class BalanceSimulatorTests
         // M-13 — Boss regeneration / healing (under ADR-026 shared-board rules,
         // all Bosses act via swaps and can match HP gems), Skill cadence, Passive triggers, and Enrage.
         Assert.True(m.BossRegenerationTotal >= 0);
-        Assert.True(m.BossSkillCastCount >= 0);
+        Assert.True(m.BossCardCastCount >= 0);
         Assert.True(m.BossPassiveTriggerCount >= 0);
 
         // M-14 — the outcome is one of the four documented values.

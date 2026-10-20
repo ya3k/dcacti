@@ -50,7 +50,6 @@ import type {
   PresentedDamageTaken,
   PresentedPassiveCharged,
   PresentedPassiveTriggered,
-  PresentedBossSkillCast,
   PresentedBossCardCast,
   PresentedRelicTriggered,
   PresentedPowerChanged,
@@ -708,18 +707,6 @@ describe('TASK-088 — BattleEventPresenter parser & formatter', () => {
     );
   });
 
-  it('parses and formats BossSkillCast with verbatim skillId and sourceId', () => {
-    const raw: PresentedBossSkillCast = {
-      type: 'BossSkillCast',
-      skillId: 'flame-burst-mega',
-      sourceId: 'boss-hoa-long',
-    };
-
-    const parsed = parseInBattleEvent(raw);
-    expect(parsed).toEqual(raw);
-    expect(formatInBattleEvent(parsed!)).toBe('BossSkillCast: flame-burst-mega by boss-hoa-long');
-  });
-
   it('parses and formats BossCardCast with verbatim cardId and sourceId (SIGNALR_PROTOCOL.md §3.2.30)', () => {
     // The Boss's one selected action for the response phase: the Boss Card's
     // definition identity (the ability SkillId) and the Boss's canonical Identity,
@@ -1180,8 +1167,8 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
 
   /**
    * One delivered payload per name of `SIGNALR_PROTOCOL.md` §3.2.2's closed
-   * twenty-one-name discriminator set, in the order that section's table lists
-   * them: nineteen in-battle names plus the two outcome names. The two outcome
+   * twenty-name discriminator set, in the order that section's table lists
+   * them: eighteen in-battle names plus the two outcome names. The two outcome
    * names are delivered the same way but are not `InBattleServerEvent`s, so they
    * are asserted as "no in-battle presentation step of their own".
    */
@@ -1216,7 +1203,6 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
     { name: 'DamageTaken', event: { type: 'DamageTaken', source: 'boss', target: 'player', amount: 77 } },
     { name: 'PassiveCharged', event: { type: 'PassiveCharged', passiveId: 'pet-passive', source: 'pet', sourceId: 'pet-inst-1', progress: 1, threshold: 3 } },
     { name: 'PassiveTriggered', event: { type: 'PassiveTriggered', passiveId: 'pet-passive', source: 'pet', sourceId: 'pet-inst-1', progress: 3, threshold: 3 } },
-    { name: 'BossSkillCast', event: { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' } },
     { name: 'BossCardCast', event: { type: 'BossCardCast', cardId: 'earthquake', sourceId: 'boss-son-thach-ve' } },
     { name: 'CardCast', event: { type: 'CardCast', cardId: 'card-shield' } },
     { name: 'PetSkillCast', event: { type: 'PetSkillCast', cardId: 'card-inferno' } },
@@ -1229,7 +1215,7 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
   /** The closed discriminator set §3.2.2 fixes. */
   const DISCRIMINATOR_SET = DELIVERED_PAYLOADS.map((payload) => payload.name);
 
-  it('keeps the closed discriminator set at exactly the twenty-one documented names', () => {
+  it('keeps the closed discriminator set at exactly the twenty documented names', () => {
     expect(DISCRIMINATOR_SET).toEqual([
       'SwapStarted',
       'SwapResolved',
@@ -1244,7 +1230,6 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       'DamageTaken',
       'PassiveCharged',
       'PassiveTriggered',
-      'BossSkillCast',
       'BossCardCast',
       'CardCast',
       'PetSkillCast',
@@ -1254,7 +1239,7 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       'BattleLost',
     ]);
 
-    // The parser's own switch admits exactly the nineteen in-battle names — no
+    // The parser's own switch admits exactly the eighteen in-battle names — no
     // more (a phase, status or turn name would be a wire change) and no fewer.
     // `SwapStarted` and `SwapResolved` are the two ADR-026 / TASK-259 proposal
     // formalized by SIGNALR_PROTOCOL.md §3.2.26–§3.2.27, which GAME_EVENTS.md §1/§2
@@ -1280,7 +1265,6 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       'DamageTaken',
       'PassiveCharged',
       'PassiveTriggered',
-      'BossSkillCast',
       'BossCardCast',
       'CardCast',
       'PetSkillCast',
@@ -1330,7 +1314,6 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       DamageTaken: { actor: 'boss', action: 'retaliation', kind: 'retaliation' },
       PassiveCharged: { actor: 'pet', action: 'passive-charge', kind: 'feedback' },
       PassiveTriggered: { actor: 'pet', action: 'passive-trigger', kind: 'feedback' },
-      BossSkillCast: { actor: 'boss', action: 'boss-skill', kind: 'boss-skill' },
       BossCardCast: { actor: 'boss', action: 'boss-card-cast', kind: 'boss-card' },
       CardCast: { actor: 'player', action: 'card-cast', kind: 'cast' },
       PetSkillCast: { actor: 'player', action: 'pet-skill-cast', kind: 'cast' },
@@ -1338,9 +1321,9 @@ describe('TASK-252 — the delivered event → (actor, action, kind) adapter', (
       PowerChanged: { actor: 'power', action: 'power', kind: 'feedback' },
     });
 
-    // Seventeen of the nineteen in-battle names adapt; the other two are
+    // Sixteen of the eighteen in-battle names adapt; the other two are
     // `DamageCalculated` and `SwapResolved`, which present nothing of their own.
-    expect(steps.size).toBe(17);
+    expect(steps.size).toBe(16);
   });
 
   it('attributes a board cycle to the actor of the delivered SwapStarted that opened it', () => {
@@ -1540,7 +1523,6 @@ describe('TASK-275 — the turn banner is scene presentation, never a delivered 
     { type: 'DamageTaken', source: 'player', target: 'boss', amount: 100 },
     { type: 'PassiveCharged', passiveId: 'pet-passive', source: 'pet', sourceId: 'pet-inst-1', progress: 1, threshold: 3 },
     { type: 'PassiveTriggered', passiveId: 'pet-passive', source: 'pet', sourceId: 'pet-inst-1', progress: 3, threshold: 3 },
-    { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' },
     { type: 'BossCardCast', cardId: 'earthquake', sourceId: 'boss-son-thach-ve' },
     { type: 'CardCast', cardId: 'card-shield' },
     { type: 'PetSkillCast', cardId: 'card-inferno' },
@@ -1718,7 +1700,7 @@ describe('TASK-210 — the player-facing combat callout (SIGNALR_PROTOCOL.md §3
     });
   });
 
-  it('names a cast from the loaded definition and never leaks a Boss skill identity', () => {
+  it('names a cast from the loaded definition', () => {
     expect(
       describeEventCallout(
         parseInBattleEvent({ type: 'CardCast', cardId: 'card-heal' })!,
@@ -1743,16 +1725,6 @@ describe('TASK-210 — the player-facing combat callout (SIGNALR_PROTOCOL.md §3
         resolveRelicName
       )?.message
     ).toBe('PET SKILL: card-inferno');
-
-    // `skillId` is a technical identity with no client-visible definition: the
-    // event's own existence is what the player is told.
-    const bossSkill = describeEventCallout(
-      parseInBattleEvent({ type: 'BossSkillCast', skillId: 'flame-burst-mega', sourceId: 'boss-hoa-long' })!,
-      resolveCardName,
-      resolveRelicName
-    );
-    expect(bossSkill).toEqual({ message: 'BOSS SKILL', color: '#f87171', priority: 3 });
-    expect(bossSkill?.message).not.toContain('flame-burst-mega');
   });
 
   it('attributes a Passive callout to the entity the delivered source names', () => {
@@ -1877,7 +1849,7 @@ describe('TASK-210 — the player-facing combat callout (SIGNALR_PROTOCOL.md §3
       })!,
       parseInBattleEvent({ type: 'ComboChanged', combo: 4 })!,
       parseInBattleEvent({ type: 'PowerChanged', delta: 10, power: 10, source: 'match' })!,
-      parseInBattleEvent({ type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' })!,
+      parseInBattleEvent({ type: 'BossCardCast', cardId: 'flame-burst', sourceId: 'boss-hoa-long' })!,
       parseInBattleEvent({ type: 'DamageDealt', source: 'player', target: 'boss', amount: 120 })!,
     ];
 
@@ -1926,7 +1898,7 @@ describe('TASK-210 — the player-facing combat callout (SIGNALR_PROTOCOL.md §3
     expect(selectBatchCallout(comboBatch, resolveCardName, resolveRelicName)?.message).toBe('COMBO ×3');
 
     const bossBatch = [
-      parseInBattleEvent({ type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' })!,
+      parseInBattleEvent({ type: 'BossCardCast', cardId: 'flame-burst', sourceId: 'boss-hoa-long' })!,
       parseInBattleEvent({ type: 'RelicTriggered', relicId: 'relicinst_a1' })!,
       parseInBattleEvent({ type: 'MatchCreated', shape: 'Straight', cells: [0, 1, 2], gemType: 'ATK', cascadeDepth: 0 })!,
     ];
@@ -2057,15 +2029,6 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
         threshold: 10,
       },
       expectedTokens: ['pet-phoenix-rebirth', 'pet:pet-inst-99', '10/10'],
-    },
-    {
-      name: 'BossSkillCast',
-      event: {
-        type: 'BossSkillCast',
-        skillId: 'flame-burst-mega',
-        sourceId: 'boss-hoa-long',
-      },
-      expectedTokens: ['flame-burst-mega', 'boss-hoa-long'],
     },
     {
       name: 'BossCardCast',
@@ -2407,8 +2370,8 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
       serverSequence: 10,
       events: [
         {
-          type: 'BossSkillCast',
-          skillId: 'flame-burst',
+          type: 'BossCardCast',
+          cardId: 'flame-burst',
           sourceId: 'boss-hoa-long',
         },
         {
@@ -2513,7 +2476,7 @@ describe('TASK-218B — the Relic trigger callout reaches the player (SIGNALR_PR
     // one carrying a callout vocabulary word is the callout.
     const callouts = text
       .map((entry) => entry.text)
-      .filter((value) => /^(MATCH|COMBO ×\d+|CARD: |PET SKILL: |BOSS SKILL|RELIC: |PASSIVE)/.test(value));
+      .filter((value) => /^(MATCH|COMBO ×\d+|CARD: |PET SKILL: |BOSS CARD|RELIC: |PASSIVE)/.test(value));
     return callouts[callouts.length - 1] ?? '';
   }
 
@@ -2654,49 +2617,6 @@ describe('TASK-218B — the Relic trigger callout reaches the player (SIGNALR_PR
     const resolveCardName = (id: string) => id;
     const resolveRelicName = (id: string) => id;
 
-    it('maps all five canonical BossSkillCast.skillId values to display names from BOSS_RULES.md §6.3/§6.4', () => {
-      const skills = [
-        { skillId: 'flame-burst', expectedName: 'Flame Burst' },
-        { skillId: 'drain-power', expectedName: 'Drain Power' },
-        { skillId: 'root', expectedName: 'Root' },
-        { skillId: 'earthquake', expectedName: 'Earthquake' },
-        { skillId: 'thunder-strike', expectedName: 'Thunder Strike' },
-      ];
-
-      for (const { skillId, expectedName } of skills) {
-        expect(BOSS_SKILL_NAMES[skillId]).toBe(expectedName);
-        expect(resolveBossSkillDisplayName(skillId)).toBe(expectedName);
-
-        const callout = describeEventCallout(
-          parseInBattleEvent({ type: 'BossSkillCast', skillId, sourceId: 'boss-test' })!,
-          resolveCardName,
-          resolveRelicName
-        );
-
-        expect(callout).toEqual({
-          message: `BOSS SKILL: ${expectedName}`,
-          color: '#f87171',
-          priority: 3,
-        });
-      }
-    });
-
-    it('falls back safely to BOSS SKILL when skillId is unknown', () => {
-      expect(resolveBossSkillDisplayName('unknown-skill')).toBeNull();
-
-      const callout = describeEventCallout(
-        parseInBattleEvent({ type: 'BossSkillCast', skillId: 'unknown-skill', sourceId: 'boss-test' })!,
-        resolveCardName,
-        resolveRelicName
-      );
-
-      expect(callout).toEqual({
-        message: 'BOSS SKILL',
-        color: '#f87171',
-        priority: 3,
-      });
-    });
-
     it('maps a BossCardCast to BOSS CARD through the same canonical display-name resolver (§3.2.30)', () => {
       // The Boss Card's definition identity IS the ability `SkillId` (§3.2.30 item
       // 2), so the one transcription BOSS_RULES.md §6.3/§6.4 owns names it. This
@@ -2708,6 +2628,7 @@ describe('TASK-218B — the Relic trigger callout reaches the player (SIGNALR_PR
         { cardId: 'earthquake', expectedName: 'Earthquake' },
         { cardId: 'thunder-strike', expectedName: 'Thunder Strike' },
       ]) {
+        expect(BOSS_SKILL_NAMES[cardId]).toBe(expectedName);
         expect(resolveBossSkillDisplayName(cardId)).toBe(expectedName);
 
         const callout = describeEventCallout(
@@ -2743,7 +2664,7 @@ describe('TASK-218B — the Relic trigger callout reaches the player (SIGNALR_PR
     });
 
     it('presents the delivered BossCardCast on the Boss band callout row, from its own event', async () => {
-      // The migrated Boss form's step: the scene presents the cast its own event
+      // The Boss's own delivered step: the scene presents the cast its own event
       // reports — the canonical name, never the technical `sourceId` — and reads no
       // cost, Power or cooldown from it (SIGNALR_PROTOCOL.md §3.2.30 item 4).
       const { harness, scene, ctx } = createBattle();
@@ -2977,7 +2898,7 @@ describe('TASK-253 — the developer Move Log row formatter (operator decision D
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/(^|[^:])\/\/.*$/gm, '$1');
 
-  /** The nineteen non-outcome names of the closed discriminator set (§3.2.2). */
+  /** The eighteen non-outcome names of the closed discriminator set (§3.2.2). */
   const IN_BATTLE_TYPES = [
     'SwapStarted',
     'SwapResolved',
@@ -2992,7 +2913,6 @@ describe('TASK-253 — the developer Move Log row formatter (operator decision D
     'DamageTaken',
     'PassiveCharged',
     'PassiveTriggered',
-    'BossSkillCast',
     'BossCardCast',
     'CardCast',
     'PetSkillCast',
@@ -3032,7 +2952,6 @@ describe('TASK-253 — the developer Move Log row formatter (operator decision D
     { name: 'DamageTaken', event: { type: 'DamageTaken', source: 'boss', target: 'player', amount: 77 } },
     { name: 'PassiveCharged', event: { type: 'PassiveCharged', passiveId: 'pet-passive', source: 'pet', sourceId: 'pet-inst-1', progress: 1, threshold: 3 } },
     { name: 'PassiveTriggered', event: { type: 'PassiveTriggered', passiveId: 'boss-rage', source: 'boss', sourceId: 'boss-1', progress: 3, threshold: 3 } },
-    { name: 'BossSkillCast', event: { type: 'BossSkillCast', skillId: 'flame-burst', sourceId: 'boss-hoa-long' } },
     { name: 'BossCardCast', event: { type: 'BossCardCast', cardId: 'earthquake', sourceId: 'boss-son-thach-ve' } },
     { name: 'CardCast', event: { type: 'CardCast', cardId: 'card-shield' } },
     { name: 'PetSkillCast', event: { type: 'PetSkillCast', cardId: 'card-inferno' } },
@@ -3067,9 +2986,6 @@ describe('TASK-253 — the developer Move Log row formatter (operator decision D
     );
     expect(eventRow('MatchCreated')).toBe(
       '#1 seq=9 turn=4 type=MatchCreated swap/match | Match: Lt POWER [7, 15, 23] depth: 4'
-    );
-    expect(eventRow('BossSkillCast')).toBe(
-      '#1 seq=9 turn=4 type=BossSkillCast boss/boss-skill | BossSkillCast: flame-burst by boss-hoa-long'
     );
     expect(eventRow('BossCardCast')).toBe(
       '#1 seq=9 turn=4 type=BossCardCast boss/boss-card-cast | BossCardCast: earthquake by boss-son-thach-ve'

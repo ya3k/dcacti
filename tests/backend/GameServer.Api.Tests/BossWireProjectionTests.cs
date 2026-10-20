@@ -13,7 +13,8 @@ namespace GameServer.Api.Tests;
 
 /// <summary>
 /// The TASK-022 wire projections — <c>SIGNALR_PROTOCOL.md</c> §3.2.16 (Passive
-/// <c>source</c>/<c>sourceId</c>), §3.2.18 (<c>BossSkillCast</c>), and §3.2.19
+/// <c>source</c>/<c>sourceId</c>), §3.2.30 (<c>BossCardCast</c>, the sole Boss
+/// ability event after ADR-029 Slice 5 / TASK-313 retired §3.2.18), and §3.2.19
 /// (<c>BattleWon</c>/<c>BattleLost</c>).
 ///
 /// <code>
@@ -149,54 +150,10 @@ public class BossWireProjectionTests
         Assert.Equal("xich-lang", charged.GetProperty("sourceId").GetString());
     }
 
-    // =======================================================================
-    // BossSkillCast — §3.2.18
-    // =======================================================================
-
-    [Fact]
-    public void BossSkillCast_ShouldCarrySkillIdAndSourceId()
-    {
-        // §3.2.18: exactly two members plus the discriminator — the Skill's identity
-        // and the Boss's canonical technical Identity (BOSS_RULES.md §6.4).
-        var wire = Serialize(BattleEvent.ForBossSkillCast("flame-burst", "boss-hoa-long"));
-
-        Assert.Equal("BossSkillCast", wire.GetProperty("type").GetString());
-        Assert.Equal("flame-burst", wire.GetProperty("skillId").GetString());
-        Assert.Equal("boss-hoa-long", wire.GetProperty("sourceId").GetString());
-
-        Assert.Equal(["skillId", "sourceId", "type"], Members(wire));
-    }
-
-    [Theory]
-    // BOSS_RULES.md §6.4's identity contract, as the wire examples of
-    // SIGNALR_PROTOCOL.md §3.2.18 use them.
-    [InlineData("flame-burst", "boss-hoa-long")]
-    [InlineData("drain-power", "boss-thuy-ma")]
-    [InlineData("root", "boss-moc-yeu")]
-    public void BossSkillCast_ShouldCarryTheDefinitionsIdentities(string skillId, string bossId)
-    {
-        var definition = BossDefinitions.All.Single(b => b.SkillId == skillId);
-
-        Assert.Equal(bossId, definition.BossId.Value);
-
-        var wire = Serialize(BattleEvent.ForBossSkillCast(definition.SkillId, definition.BossId.Value));
-
-        Assert.Equal(skillId, wire.GetProperty("skillId").GetString());
-        Assert.Equal(bossId, wire.GetProperty("sourceId").GetString());
-    }
-
-    [Fact]
-    public void BossSkillCast_ShouldCarryNoEffectOrDamageDetail()
-    {
-        // §3.2.18 item 3: "Effect details are carried by subsequent damage events."
-        // So the cast itself carries no amount, no element, and no effect summary —
-        // and no `source` member, which belongs to the damage and Passive events.
-        var wire = Serialize(BattleEvent.ForBossSkillCast("flame-burst", "boss-hoa-long"));
-        var members = Members(wire);
-
-        Assert.DoesNotContain(members, m => m is "amount" or "finalDamage" or "effect" or "effectSummary"
-            or "element" or "source" or "target" or "burn" or "damage");
-    }
+    // The former `BossSkillCast` wire contract (§3.2.18) was removed with ADR-029
+    // Slice 5 / TASK-313 (OD-311-2 = A): the event, its DTO factory and its `skillId`
+    // member no longer exist, and `BossCardCast` is the sole Boss ability event. Its
+    // two-identity payload is covered by the §3.2.30 tests below.
 
     // =======================================================================
     // BossCardCast — SIGNALR_PROTOCOL.md §3.2.30 (TASK-308)
@@ -241,7 +198,7 @@ public class BossWireProjectionTests
     // (DATABASE.md §1; CARD_RULES.md §1.1 item 3): the Card identity is the
     // ability's SkillId and the source identity is the Boss's canonical technical
     // Identity (BOSS_RULES.md §6.4) — the two strings SIGNALR_PROTOCOL.md §3.2.30
-    // says must equal BossSkillCast's for the same ability.
+    // fixes for the Boss Card event.
     [InlineData("boss-hoa-long", "flame-burst")]
     [InlineData("boss-thuy-ma", "drain-power")]
     [InlineData("boss-moc-yeu", "root")]
@@ -263,13 +220,13 @@ public class BossWireProjectionTests
     }
 
     [Fact]
-    public void BossCardCast_ShouldProjectTheMigratedAbilityIdentity_NotTheLegacySkillEventsMembers()
+    public void BossCardCast_ShouldProjectTheAbilityIdentityUnderItsOwnMemberName()
     {
-        // §3.2.30 item 2: the Boss Card identity is the ability identity the
-        // transitional `BossSkillCast.skillId` reports — the same string, under the
-        // migrated event's own member name. TASK-309's four migrated abilities must
-        // therefore project to `cardId` with the SAME value the legacy event would
-        // have reported for them, and never carry the legacy member name.
+        // §3.2.30 item 2: the Boss Card identity IS the ability identity
+        // (CARD_RULES.md §1.1 item 3), projected under the Boss Card event's own
+        // member name `cardId`. TASK-309's four migrated abilities must therefore
+        // project to that same string, and the retired legacy `skillId` member name
+        // (removed with ADR-029 Slice 5 / TASK-313) must not appear at all.
         foreach (var ability in new[]
                  {
                      "flame-burst", "drain-power", "root", "thunder-strike",
@@ -279,14 +236,10 @@ public class BossWireProjectionTests
 
             var cardWire = Serialize(
                 BattleEvent.ForBossCardCast(definition.SkillId, definition.BossId.Value));
-            var skillWire = Serialize(
-                BattleEvent.ForBossSkillCast(definition.SkillId, definition.BossId.Value));
 
+            Assert.Equal(ability, cardWire.GetProperty("cardId").GetString());
             Assert.Equal(
-                skillWire.GetProperty("skillId").GetString(),
-                cardWire.GetProperty("cardId").GetString());
-            Assert.Equal(
-                skillWire.GetProperty("sourceId").GetString(),
+                definition.BossId.Value,
                 cardWire.GetProperty("sourceId").GetString());
 
             // §3.2.30 item 7: BossCardCast is never a CardCast and carries no `skillId`.
@@ -308,7 +261,6 @@ public class BossWireProjectionTests
                     new PassiveId("son-thach-ve-enrage"), 1, 5,
                     PassiveEventSource.Boss, "boss-son-thach-ve")),
             BattleEvent.ForBossCardCast("earthquake", "boss-son-thach-ve"),
-            BattleEvent.ForBossSkillCast("flame-burst", "boss-hoa-long"),
         };
 
         var wire = BattleEventWireProjection.Project(events);
@@ -316,7 +268,7 @@ public class BossWireProjectionTests
         Assert.Equal(events.Length, wire.Count);
 
         Assert.Equal(
-            ["PassiveCharged", "BossCardCast", "BossSkillCast"],
+            ["PassiveCharged", "BossCardCast"],
             wire.Select(w => w.Type));
     }
 
@@ -616,7 +568,7 @@ public class BossWireProjectionTests
         // the same order. The three new types must not be an exception.
         var events = new[]
         {
-            BattleEvent.ForBossSkillCast("flame-burst", "boss-hoa-long"),
+            BattleEvent.ForBossCardCast("earthquake", "boss-son-thach-ve"),
             BattleEvent.ForBattleWon(0, 85),
             BattleEvent.ForBattleLost(120, 0),
         };
@@ -626,7 +578,7 @@ public class BossWireProjectionTests
         Assert.Equal(events.Length, wire.Count);
 
         Assert.Equal(
-            ["BossSkillCast", "BattleWon", "BattleLost"],
+            ["BossCardCast", "BattleWon", "BattleLost"],
             wire.Select(w => w.Type));
     }
 
@@ -634,13 +586,13 @@ public class BossWireProjectionTests
     public void Projection_ShouldNotTouchANonApplicableSlot()
     {
         // §3.2.1 item 2: the discriminator is read first and only that event's own
-        // payload is then read. A BattleWon carries no SkillId and a BossSkillCast
-        // carries no HP pair — asserted through the serializer, which would otherwise
-        // have to read a throwing accessor.
+        // payload is then read. A BattleWon carries no card identity and a
+        // BossCardCast carries no HP pair — asserted through the serializer, which
+        // would otherwise have to read a throwing accessor.
         var won = Serialize(BattleEvent.ForBattleWon(0, 85));
-        var cast = Serialize(BattleEvent.ForBossSkillCast("flame-burst", "boss-hoa-long"));
+        var cast = Serialize(BattleEvent.ForBossCardCast("earthquake", "boss-son-thach-ve"));
 
-        Assert.False(won.TryGetProperty("skillId", out _));
+        Assert.False(won.TryGetProperty("cardId", out _));
         Assert.False(cast.TryGetProperty("finalBossHp", out _));
         Assert.False(cast.TryGetProperty("outcome", out _));
     }
@@ -676,8 +628,8 @@ public class BossWireProjectionTests
         // its properties.
         foreach (var (wire, expected) in new (JsonElement Wire, string[] Expected)[]
                  {
-                     (Serialize(BattleEvent.ForBossSkillCast("flame-burst", "boss-hoa-long")),
-                         ["skillId", "sourceId"]),
+                     (Serialize(BattleEvent.ForBossCardCast("earthquake", "boss-son-thach-ve")),
+                         ["cardId", "sourceId"]),
                      (Serialize(BattleEvent.ForBattleWon(0, 85)),
                          ["outcome", "finalBossHp", "finalPlayerHp"]),
                      (Serialize(BattleEvent.ForBattleLost(120, 0)),
@@ -706,7 +658,7 @@ public class BossWireProjectionTests
         // JSON contains a null value at all.
         var items = new[]
         {
-            Serialize(BattleEvent.ForBossSkillCast("flame-burst", "boss-hoa-long")),
+            Serialize(BattleEvent.ForBossCardCast("earthquake", "boss-son-thach-ve")),
             Serialize(BattleEvent.ForBattleWon(0, 85)),
             Serialize(BattleEvent.ForBattleLost(120, 0)),
             Serialize(BattleEvent.ForPassiveCharged(
@@ -726,13 +678,13 @@ public class BossWireProjectionTests
         }
 
         // The inapplicable members are absent rather than null on a concrete item: a
-        // BossSkillCast carries no outcome and no HP pair, and a BattleWon carries no
-        // skillId.
+        // BossCardCast carries no outcome and no HP pair, and a BattleWon carries no
+        // card identity.
         var cast = items[0];
         var won = items[1];
 
         Assert.False(cast.TryGetProperty("outcome", out _));
         Assert.False(cast.TryGetProperty("finalBossHp", out _));
-        Assert.False(won.TryGetProperty("skillId", out _));
+        Assert.False(won.TryGetProperty("cardId", out _));
     }
 }

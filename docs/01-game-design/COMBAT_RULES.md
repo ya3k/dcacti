@@ -1,6 +1,6 @@
 # Combat Rules
 
-**Version:** 3.2 (§2 POWER bullet and preamble gate terminology reconciled to the Slice 5 removal gate per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; no gameplay or combat values changed). Prior 3.1: (§1.2 and §2 updated per **ADR-029 / TASK-303**, applying the
+**Version:** 3.3 (§2 POWER bullet and §2 item 6's actor-ownership bounds updated, and §3.4's Boss-ability wording reconciled, per **TASK-313 / ADR-029 Slice 5**: the legacy `SkillCharge` output target, its clamp/bound and the per-ability `BaseDamage` contribution **no longer exist** — POWER Gems generate `Power` for the acting actor only, and every MVP Boss ability deals no direct damage. No generation rate, per-Gem output, damage value, modifier, status-effect rule or other combat value changes). Prior 3.2: (§2 POWER bullet and preamble gate terminology reconciled to the Slice 5 removal gate per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; no gameplay or combat values changed). Prior 3.1: (§1.2 and §2 updated per **ADR-029 / TASK-303**, applying the
 explicit Product Owner decision that the Boss uses the same resource-generation
 principles as the Player: the POWER-Gem output is **actor-relative to a Power
 resource for both actors** — `PetState.Power` for a Player action and
@@ -301,7 +301,7 @@ The type of cells matched determines the effect; the acting side determines owne
 - **ATK Gems:** Generates `BaseDamagePool`. Attack damage may be calculated and applied if and only if the acting side's own resolution contains at least one confirmed valid ATK-gem match (OD-6, ADR-026 D1). Cleared-gem accounting is reporting-only and is never the eligibility predicate. If no valid ATK-gem match is confirmed, no attack occurs, the Damage Pipeline does not execute, and zero damage is dealt.
 - **DEF Gems:** Grants the acting actor a temporary **`TargetStat = "DEF"` stat buff** (`PetState.ActiveStatusEffects` for Player; `BossState.ActiveStatusEffects` for Boss), increasing that actor's **effective DEF** — the value §3.2's mitigation step reads — through the opponent's next attack and expiring at the §5.3 Turn boundary (§5.4.6 for the Pet, §5.5.6 for the Boss). The instance is a `BuffDebuff`, **not** a `Shield`: it creates no absorption pool and absorbs no damage. **DEF Gems no longer create Shield effects** (TASK-299); a Shield still comes only from the effects that §4 items 2–5 own.
 - **HP Gems:** Generates Heal pool restoring HP to the acting actor (Pet HP for Player; Boss HP for Boss), passing through Heal Resolution (§4 item 7) and clamped to MaxHP (§4 item 1).
-- **POWER Gems:** Generates **Power for the acting actor** — `PetState.Power` for the active Pet during the Player's action, or `BossState.Power` for the Boss during the Boss's own board match action (`BOSS_RULES.md` §4.1, `ADR-029`). Both actors use the same generation rule and the same integer 0–100 range; the two values are separate resources and neither actor's matches generate the other's (`GAME_RULES.md` §12). Player POWER matches never generate Boss Power. **The Boss's Power is generated only by its own board match action** — a response phase in which the Boss chooses a Boss Card cast generates no Boss Power, because it has no board action (`BOSS_RULES.md` §4.3 item 4). **`SkillCharge` is no longer a POWER output target**: the legacy `BossState.SkillCharge` path is transitional only and is retired with its unit-metric and clamp questions (ADR-026 Unresolved Balance Choices #1–#2) when `ADR-029`'s Slice 5 removal gate is met. **Grant basis resolved (ADR-029 U-1 / TASK-304):** The Boss receives the shared +10 Power per uniquely matched POWER cell (`BaseOutput(POWER) × unique matched count`, clamped to `[0, 100]`, actor-relative). The per-ability Boss Card Power costs and the legacy `ChargeRequirement` re-tuning question (U-2) are resolved by TASK-309 (`ADR-029` §3); whether the resulting economy requires future cadence re-tuning remains a balance question, and this document authors no Boss-specific rate.
+- **POWER Gems:** Generates **Power for the acting actor** — `PetState.Power` for the active Pet during the Player's action, or `BossState.Power` for the Boss during the Boss's own board match action (`BOSS_RULES.md` §4.1, `ADR-029`). Both actors use the same generation rule and the same integer 0–100 range; the two values are separate resources and neither actor's matches generate the other's (`GAME_RULES.md` §12). Player POWER matches never generate Boss Power. **The Boss's Power is generated only by its own board match action** — a response phase in which the Boss chooses a Boss Card cast generates no Boss Power, because it has no board action (`BOSS_RULES.md` §4.3 item 4). **`SkillCharge` is not a POWER output target and no longer exists**: the legacy charge target, its unit metric and its overflow clamp were removed under TASK-313, so the acting actor's `Power` is the only POWER-Gem output for either side (`BOSS_RULES.md` §4.4). **Grant basis resolved (ADR-029 U-1 / TASK-304):** The Boss receives the shared +10 Power per uniquely matched POWER cell (`BaseOutput(POWER) × unique matched count`, clamped to `[0, 100]`, actor-relative). The per-ability Boss Card Power costs (U-2) are resolved by TASK-309 (`ADR-029` §3), and no legacy charge re-tuning exists; whether the resulting economy requires future cadence re-tuning remains a balance question, and this document authors no Boss-specific rate.
 
 5. **The HP Gem heal pool is a healing source.** The HP Gem's generated output
    is a Heal pool: `GAME_RULES.md` §17 step 12 generates it and step 14
@@ -350,8 +350,7 @@ The type of cells matched determines the effect; the acting side determines owne
      Crit (§3.3), ATK modifiers (§5.4–§5.6), Shield application and absorption (§4 items 2–3), the
      Heal clamp and overheal discard (§4 item 1), and the per-actor Power 0–100 bounds
      (`PetState.Power` for the Player, `BossState.Power` for the Boss — `GAME_RULES.md` §12,
-     `BOSS_RULES.md` §4.1, `ADR-029`; the transitional `SkillCharge` bound remains until the
-     migration's parity gate is met) remain
+     `BOSS_RULES.md` §4.1, `ADR-029`; the retired `SkillCharge` bound no longer exists) remain
      exactly as their own sections own them. None of them depended on a match tier.
    - **Superseded content:** This item previously defined a Special Gem combat contribution
      contract — per-gem contribution values (×1 ordinary, ×2 Match-4 Special Gem), a Decision-A
@@ -640,16 +639,17 @@ Under the shared-board contract (ADR-026, D1, D3):
   - Step 6 — Final Damage applied to active Pet HP (PetState.HP)
   If no valid ATK-gem match is confirmed, zero attack damage is dealt.
 
-2. **Boss Skills Deal Zero Direct Damage:** Direct damage from Boss skills is prohibited by default (D3). Boss skills configure `BaseDamage = 0` and modify the board, resources, or combat modifiers (BOSS_RULES.md §6.3).
+2. **Boss Abilities Deal Zero Direct Damage:** Direct damage from Boss abilities is prohibited by default (D3). A Boss ability deals no direct damage and instead modifies the board, resources, or combat modifiers (`BOSS_RULES.md` §6.3); the legacy `BossSkillDefinition.BaseDamage` member that used to carry the per-ability value was removed under TASK-313.
 
-**Boss Skill Step-1 composition.** A Boss Skill's Step 1 Base Damage is 0 by default (D3), so the skill deals no direct damage. Any temporary Boss ATK modifier applied by a skill (e.g. Hỏa Long Flame Burst, ADR-026, D5) contributes to `EffectiveBossATK` (§5.5.1) and is realized only when the Boss produces a valid ATK-gem match. Both of the following contribute:
+**Boss ability Step-1 composition.** A Boss ability's Step 1 Base Damage is 0 by default (D3), so the ability deals no direct damage. Any temporary Boss ATK modifier applied by an ability (e.g. Hỏa Long Flame Burst, ADR-026, D5) contributes to `EffectiveBossATK` (§5.5.1) and is realized only when the Boss produces a valid ATK-gem match. Both of the following contribute:
 
 ```text
 1. EffectiveBossATK  — the Boss's `ATK` for this attack, after any applicable
                        Boss ATK modifier (§5.5.1). Derived at attack
                        resolution; not stored.
-2. The Skill's authored Base Damage — the per-Skill value §3.4 names above,
-                       owned by BOSS_RULES.md §6.3/§6.3.1.
+2. The retired per-ability base-damage contribution — `0` for every MVP
+                       ability (D3; the former `BaseDamage` member was removed
+                       under TASK-313, so only its zero contribution remains).
 ```
 
 ```text
@@ -692,7 +692,7 @@ separate Step-1 contributions under §3 step 1:
 
 **Worked example** — Rage active, using the documents' existing values
 (`§1.1`'s MVP `ATK` default, `BOSS_RULES.md` §6.2's `+20%`, and
-`ADR-026` / `D3`'s `BaseDamage = 0`):
+`ADR-026` / `D3`'s zero direct damage):
 
 ```text
 BossState.ATK                = 100
@@ -1554,7 +1554,7 @@ Reaches        the Boss BASIC ATTACK — §3.4's "Step 1 — Base Damage =
                Boss.ATK", whose Step-1 input is EffectiveBossATK under this
                rule
 Reaches        a Boss SKILL — through its EffectiveBossATK Step-1
-               contribution only (§3.4 "Boss Skill Step-1 composition")
+               contribution only (§3.4 "Boss ability Step-1 composition")
 Does NOT       the Skill's authored Base Damage. That authored value is a
 reach          separate Step-1 contribution (§3 step 1) and does not receive
                the modifier; it is not scaled by Boss ATK
@@ -1565,7 +1565,7 @@ because every one has an `EffectiveBossATK` Step-1 contribution. What it never
 reaches is an independently authored Skill Base Damage value, which stays at
 its authored magnitude (`BOSS_RULES.md` §6.3.1).
 
-This makes explicit what §3.4's Boss Skill Step-1 composition, and its
+This makes explicit what §3.4's Boss ability Step-1 composition, and its
 Boss-side counterpart §5.4.1 item 2 for the Pet, already establish: the
 modifier applies to the stat **alone**, and a Skill/Card base value is a
 separate Step-1 contribution that is **not** modified. `§3.4` is referenced,
@@ -1594,7 +1594,7 @@ Does NOT apply  to a BuffDebuff naming any stat other than "ATK"; the
                 modifies no ATK
 Does NOT apply  to a Boss Skill's independently authored Base Damage value,
                 which stays at its authored magnitude and is not scaled by
-                Boss ATK (§5.5.2; §3.4 "Boss Skill Step-1 composition")
+                Boss ATK (§5.5.2; §3.4 "Boss ability Step-1 composition")
 Does NOT apply  to a DoT tick or a Shield: those Types have their own rules
                 (§5.2 item 3, §4) and are not ATK modifiers
 Does NOT        change §3.1's six-step order, §3.4's Boss-side value, §5.4's

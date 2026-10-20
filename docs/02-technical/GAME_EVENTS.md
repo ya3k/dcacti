@@ -1,6 +1,6 @@
 # Game Events
 
-**Version:** 2.20 (§2 `BossSkillCast` gate terminology reconciled to the Slice 5 removal gate and future removal requirements annotated per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; no event definitions or wire payloads changed). Prior 2.19: (§2 `PowerChanged` extended per **ADR-029 / TASK-309**, applying
+**Version:** 2.21 (§2 `BossSkillCast` **deleted** per **TASK-313 / ADR-029 Slice 5** (OD-311-2 = A): the retired event's definition is replaced by a retirement note, the name is removed from §1's canonical list, and `BossCardCast` remains the sole Boss cast event with its definition unchanged; §1.1, §2 `MatchedGemSummary`/`PassiveCharged`/`BossCardCast` mentions of the retired event and of `SkillCharge` are reconciled. No other event, payload, ordering rule, or delivery path changes). Prior 2.20: (§2 `BossSkillCast` gate terminology reconciled to the Slice 5 removal gate and future removal requirements annotated per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; no event definitions or wire payloads changed). Prior 2.19: (§2 `PowerChanged` extended per **ADR-029 / TASK-309**, applying
 the operator-approved Slice 4 behavior: a Boss Card cast's `PowerDrain` effect
 emits the existing authoritative `PowerChanged` for the **active Pet's** Power,
 inside the round's single ordered batch and before that cast's `BossCardCast`,
@@ -152,7 +152,6 @@ DamageTaken                     (player→boss, only iff valid ATK match produce
   PassiveCharged / PassiveTriggered   (Boss Passive, source="boss"; evaluated
                                        whichever action was selected)
   BossCardCast                        (only when a Boss Card cast resolves; ADR-029)
-  BossSkillCast                       (only on the transitional legacy path; BOSS_RULES.md §4.4)
   DamageCalculated                     (boss→player, only iff Boss produced valid ATK match; D1)
   DamageDealt                          (boss→player, source="boss", target="player")
   DamageTaken                          (boss→player, source="boss", target="player")
@@ -230,7 +229,7 @@ committed Swap                                  MATCH3_RULES.md §2.1.6
    and nothing else, so two cycles in one round (the Player's and the Boss
    Response Phase's, `ADR-026` §2) produce two summaries whose counts are never
    combined. It reports counts only — not damage, healing, DEF buff magnitude,
-   Power, or Boss SkillCharge — and it is the only event that reports a
+   Power — and it is the only event that reports a
    per-cycle matched-Gem total. What it carries is §2's; its wire schema is
    `SIGNALR_PROTOCOL.md` §3.2.29.
 
@@ -531,10 +530,10 @@ accounting of its own, and not a combat report.
    `AGENTS.md` §10). The member order is the fixed display/read order of
    `MATCH3_RULES.md` §1.1 and is not an implementation choice.
 6. **It reports counts only.** It carries no damage, healing, DEF buff
-   magnitude, Power delta or resulting Power, Boss SkillCharge, Combo, Match
+   magnitude, Power delta or resulting Power, Combo, Match
    count, board, or actor. Those are separate gameplay effects with their own
    events or state (`§2` `DamageCalculated`/`DamageDealt`/`DamageTaken`,
-   `PowerChanged`; `GAME_STATE.md` §2.4.3 for SkillCharge) and are not
+   `PowerChanged`) and are not
    substitutes for a matched-Gem count; presenting them from this event would
    report a value it does not carry.
 7. **It is presentation input, not gameplay input.** No stage consumes it, it
@@ -587,9 +586,9 @@ Payload:  Delta, new Power value, source (Gem match / Card / Relic / Boss)
    for a Match's resource generation, the Card stage for a cast's cost and its
    Power effects, the Relic stage for a Relic's `Power` effect
    (`GAME_RULES.md` §17 step 11), and the Boss Response stage for a Boss
-   ability's Power-draining effect — the `drain-power` ability, whether it
-   resolves through the transitional `BossSkill` path (§17 step 18c) or through
-   its Boss Card form's `PowerDrain` effect (§17 step 18c; TASK-309). No
+   ability's Power-draining effect — the `drain-power` ability's `PowerDrain`
+   Boss Card effect (§17 step 18c; TASK-309). The transitional `BossSkill` path
+   that could once have applied the same effect was removed under TASK-313. No
    separate or centralized emission step exists, and no stage emits on another
    stage's behalf.
    `SIGNALR_PROTOCOL.md` §3.2.24 fixes only this event's wire shape; the
@@ -636,7 +635,7 @@ Payload:  PassiveCharged: PassiveId, Source (pet | boss),
    state holds, read and reported — never re-derived, re-numbered, or
    invented by the emitting stage. It is the identity member the sibling
    trigger events already carry (`RelicTriggered`'s `RelicId`, `CardCast`'s
-   `CardId`, `BossSkillCast`'s `SkillId`), and it is what lets the client
+   `CardId`, `BossCardCast`'s `CardId`), and it is what lets the client
    attribute a charge or a trigger to the Passive it belongs to.
 2. **`Source` discriminates between Pet Passive and Boss Passive.** This
    event is shared by both systems (`PASSIVE_RULES.md` §7, `BOSS_RULES.md`
@@ -770,33 +769,28 @@ Payload:  DamageCalculated: Base, Combo Modifier, Element Modifier, Other
           DamageDealt / DamageTaken: source, target, Final Damage amount
 ```
 
-## BossSkillCast
+## BossSkillCast (RETIRED — TASK-313 / ADR-029 Slice 5)
+
+**This event no longer exists.** `BossSkillCast` was the transitional pre-migration
+Boss ability form's event. It was retired and physically removed under **TASK-313**
+(operator decision OD-311-2 = A — a coordinated **breaking** wire-contract
+removal), together with the legacy `BossSkill` execution path and
+`BossState.SkillCharge` it reported.
+
 ```text
-Trigger:  The Boss's TRANSITIONAL Skill timing rule fires
-          (BOSS_RULES.md §4, §4.4) — Charge ≥ Requirement AND Cooldown = 0
-          (GAME_STATE.md §2.4.3)
-Payload:  SkillId, SourceId (BossId), effect summary
+Retired:        the `BossSkillCast` discriminator (enum value 9 — retired and not
+                reused), the `BossSkillCastEvent` payload, and the
+                `BattleEvent.ForBossSkillCast` factory
+Replacement:    `BossCardCast` (§2 below, `SIGNALR_PROTOCOL.md` §3.2.30) — the
+                sole Boss cast event on the wire
+No definition:  there is no trigger, payload, or ordering rule for this name; a
+                consumer must not produce or expect it (`GAME_RULES.md` §16,
+                `BOSS_RULES.md` §4.4, §7)
 ```
 
-`SourceId` carries the canonical technical Boss Identity (`BOSS_RULES.md`
-§6.4, e.g. `boss-hoa-long`), never the display name — `source` is always
-`"boss"` for this event.
-
-The Skill's damage (if any) is reported by separate `DamageCalculated`/
-`DamageDealt`/`DamageTaken` events in the same batch, with
-`source = "boss"` and `target = "player"` (a fixed wire label meaning the
-player's side / active Pet — ADR-011).
-
-**`BossSkillCast` is the transitional path's event.** It is emitted by the
-pre-migration Boss ability form only, and it is retired together with
-`BossState.SkillCharge` when `ADR-029`'s Slice 5 removal gate is met
-(`BOSS_RULES.md` §4.4). No new feature, consumer, or balance value may be built
-on it.
-
-*Slice 5 Removal Requirements (TASK-311):*
-1. **Intended Future Removal:** The event discriminator `BossSkillCast = 9`, the `BossSkillCastEvent` payload struct, and `BattleEvent.ForBossSkillCast` factory are slated for deletion in Slice 5 once all consumers are reconciled.
-2. **Affected Consumers:** Wire projection (`BattleEventWireProjection.cs`), wire contract (`SIGNALR_PROTOCOL.md` §3.2.18), client presentation (`BattleScene.ts`, `BattleEventPresenter.ts`), and legacy tests (`AtomicRoundOrchestrationTests.cs`).
-3. **Current State:** Unchanged in TASK-311. All five MVP Bosses are migrated to Boss Cards at runtime, so `BossCardCast` is the only event emitted in production MVP battles; `BossSkillCast` remains available in the codebase solely as the transitional compatibility path until Slice 5 execution.
+Because the removal is a breaking wire change, the deploy requires active battles
+to be drained first (`REDIS_STATE.md` §2.1 item 7); that operational step is a
+documented prerequisite, not a claim that it has been executed.
 
 ## BossCardCast
 ```text
@@ -817,11 +811,11 @@ Payload:  CardId, SourceId (BossId), effect summary
    re-derived one (`GAME_STATE.md` §0 item 5, `CARD_RULES.md` §1.1 item 3).
 3. **`SourceId` identifies the Boss.** It is the Boss's canonical technical
    Identity (`BossState.BossId`, `BOSS_RULES.md` §6.4), never a display name —
-   the same convention `BossSkillCast.sourceId` and
-   `PassiveCharged`/`PassiveTriggered.sourceId` already use with
+   the same convention `BattleStarted.bossId` and
+   `PassiveCharged`/`PassiveTriggered.sourceId` use with
    `source = "boss"`.
 4. **The effect's consequences are carried by their own events and by state.**
-   Damage (none in MVP — every MVP ability has `BaseDamage = 0`, `ADR-026` D3),
+   Damage (none in MVP — no MVP ability deals direct damage, `ADR-026` D3),
    applied Status Effects, and the resulting Boss Power and cooldown are reported
    by the events their own owners define and by the state push
    (`GAME_STATE.md` §2.4, `SIGNALR_PROTOCOL.md` §4). This event reports the cast

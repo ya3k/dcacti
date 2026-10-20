@@ -1,6 +1,6 @@
 # Database
 
-**Version:** 1.42 (§1 `BossDefinition.SkillDefinition` annotated with Slice 5 removal scope and persistence disposition per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; no database schemas, tables, columns, constraints, or migrations changed). Prior 1.41: (§1's `CardDefinition` block, §1 "Card `EffectDefinition`
+**Version:** 1.43 (§1 `BossDefinition.SkillDefinition` and its note items 1/4, §1's `CardDefinition` identity block, and §5 item 4 updated per **TASK-313 / ADR-029 Slice 5** (OD-311-1 = **B**): the persisted `SkillDefinition` JSONB document keeps its four member names — `skillId`, `baseDamage`, `chargeRequirement`, `cooldownTurns` — as **storage compatibility only**, while the Domain maps only `skillId` + `cooldownTurns` and the persistence adapter ignores the two legacy values on read and writes them as `0` placeholders; **no cleanup migration exists and no historical migration is rewritten**, the legacy `BossSkillDefinition.SecondaryEffect` declaration is retired, and no schema, table, column, constraint, index, or provisioned row changes). Prior 1.42: (§1 `BossDefinition.SkillDefinition` annotated with Slice 5 removal scope and persistence disposition per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; no database schemas, tables, columns, constraints, or migrations changed). Prior 1.41: (§1's `CardDefinition` block, §1 "Card `EffectDefinition`
 contract" items 1/6/8, §3's constraints, and §5 item 4 **synchronized with the
 approved TASK-309 / ADR-029 Slice 4 content contract**: the `effectType` closed
 set gains the four **Boss-only** identities `AtkBuff` | `PowerDrain` |
@@ -476,7 +476,7 @@ CardDefinition                    (static content — MVP scope target
 │                                  `card-<kebab>`; the
 │                                  identity is the ability's, so
 │                                  `BossCardCast.cardId` equals
-│                                  `BossSkillCast.skillId` for the same
+│                                  that Boss's `SkillId` for the same
 │                                  ability (`CARD_RULES.md` §1.1 item 3). The
 │                                  exception is confined to `BossCard` rows;
 │                                  see §3.)
@@ -1022,12 +1022,12 @@ value)
    `boss-hoa-long`) — it is **not** the display name, and it is **not**
    `BossDefinitionId`: the three are never collapsed (TASK-046). The display name
    is presentation content owned by `BOSS_RULES.md` §6 and is not a column.
-   `BossSkillDefinition.SecondaryEffect` (`BOSS_RULES.md` §6.3.1 — Flame Burst
-   Burn, Drain Power, Root) **remains Domain configuration and is not stored in
-   PostgreSQL**: the Domain Overlay model preserves it intact from the static
-   Domain baseline (`BossDefinitions.All`) when hydrating the runtime definition,
-   avoiding complex polymorphic JSON migrations for MVP while keeping secondary
-   skill mechanics 100% functional. Static `BossDefinitions.All` provides canonical
+   The legacy `BossSkillDefinition.SecondaryEffect` declaration (Flame Burst
+   Burn, Drain Power, Root) was **retired from the Domain under TASK-313**
+   (ADR-029 Slice 5) and is not stored in PostgreSQL: each ability's effect is
+   carried by that ability's provisioned Boss Card content (`CARD_RULES.md`
+   §1.1; §5 item 4 below), never by a `BossDefinition` JSON member. Static
+   `BossDefinitions.All` provides canonical
    baseline defaults for migration seeding and offline unit test fixtures; it is
    strictly prohibited from acting as a silent runtime fallback during battle
    creation (fail-closed semantics). At battle creation, the server snapshots the
@@ -1141,25 +1141,49 @@ value)
      "cooldownTurns": 0 }
    ```
    - `skillId` (string) — the Boss's canonical SkillId
-     (`BOSS_RULES.md` §6.4).
-   - `baseDamage` (int) — Skill Base Dmg (`BOSS_RULES.md` §6.3).
-   - `chargeRequirement` (int) — Charge Requirement (`BOSS_RULES.md`
-     §6.3; battle-state member `SkillChargeRequirement`,
-     `GAME_STATE.md` §2.4.3).
+     (`BOSS_RULES.md` §6.4). **Read by the Domain**; it resolves the
+     Boss's provisioned Boss Card.
+   - `baseDamage` (int) — *legacy storage member.* The Domain
+     `BossSkillDefinition.BaseDamage` property was removed under TASK-313;
+     the stored member is **not read**.
+   - `chargeRequirement` (int) — *legacy storage member.* The Domain
+     `BossSkillDefinition.ChargeRequirement`/`SkillChargeRequirement`
+     properties and the `SkillCharge` battle-state member they gated were
+     removed under TASK-313; the stored member is **not read**.
    - `cooldownTurns` (int) — Cooldown (CD) in turns (`BOSS_RULES.md`
-     §6.3).
+     §6.3). **Read by the Domain**; it sets the Boss ability's cooldown.
 
    These storage member names are fixed by TASK-045; battle-state
    member names (`GAME_STATE.md` §2.4) are a separate contract and are
-   unchanged.
+   unchanged apart from the TASK-313 `skillCharge` removal.
 
-   *Slice 5 Removal Scope Note (TASK-311):* When the eventual Slice 5 task
-   retires the runtime `SkillCharge` and legacy `BossSkill` path, whether the
-   persisted `chargeRequirement` (and legacy `baseDamage = 0`) JSON member in
-   PostgreSQL `BossDefinition.SkillDefinition` is physically removed via an EF Core
-   data migration or retained as an ignored/deprecated field is an unresolved
-   operator decision (OD-311-1). In TASK-311, no database schema, column, or
-   migration is modified.
+   **OD-311-1 = B — storage compatibility only (TASK-313).** The persisted
+   document retains its **four member names** (`skillId`, `baseDamage`,
+   `chargeRequirement`, `cooldownTurns`), but retention is a storage fact and
+   not a runtime/Domain responsibility:
+
+   - **No cleanup migration exists.** No EF Core migration removes, renames,
+     back-fills, or re-writes the two legacy members in existing rows. The
+     stored values stay exactly as the historical migrations inserted them.
+   - **Historical migrations are immutable.** The migrations that provisioned
+     the rows are not edited or re-run; neither their content nor their
+     migration-history identity changes.
+   - **The Domain maps only `skillId` + `cooldownTurns`.** `BossDefinitionJson`
+     reads those two into `BossSkillDefinition`; `baseDamage` and
+     `chargeRequirement` have no Domain property to map to.
+   - **Read tolerance and write placeholders.** On read the persistence adapter
+     **ignores** the two legacy values (their presence, absence, or historical
+     value is irrelevant); on write it emits them as `0` placeholders, because
+     the application has **no boss-definition write path** — provisioning is
+     migration-only (`§5` item 4). The stored historical values are therefore
+     **not authoritative balance values**: `baseDamage`/`chargeRequirement`
+     are not read by any runtime or Domain behaviour, and the abilities deal no
+     direct damage and spend `BossState.Power`, not a charge
+     (`BOSS_RULES.md` §4.1, §4.4; `CARD_RULES.md` §3 item 9).
+   - **Not a compatibility path.** Retaining the member names is not a
+     reintroduction of the legacy mechanism and creates no fallback: no
+     execution branch, event, or state member reads them, and `BossSkillCast`
+     is retired (`SIGNALR_PROTOCOL.md` §3.2.18).
 5. **Rows and provisioning.** Rows are static content derived from the
    canonical Boss definitions: provisioning must be deterministic, must
    be idempotent, and must never depend on a player's runtime battle.
@@ -1213,8 +1237,10 @@ value)
      `PASSIVE_RULES.md` §4 item 3 — whose storage token is the existing
      `Persistent`, no new token being introduced);
      `SkillDefinition` per item 4's
-     member list with `skillId`, `baseDamage`, `chargeRequirement`, and
-     `cooldownTurns` from `BOSS_RULES.md` §6.3/§6.4. The authoritative
+     storage member list (item 4): the migration writes the four retained member
+     names, but only `skillId` and `cooldownTurns` carry live content —
+     `baseDamage` and `chargeRequirement` are storage-compatibility members the
+     Domain does not read (OD-311-1 = B). The authoritative
      documents own the values and remain the only source for them —
      nothing is duplicated here as a second source. Combat stats
      (`BOSS_RULES.md` §6.1) and display names are **not** columns

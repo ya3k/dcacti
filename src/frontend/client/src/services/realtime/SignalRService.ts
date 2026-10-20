@@ -432,7 +432,7 @@ export interface StatusEffectPayload {
  *
  * It is a **three-member projection of `BossState`, not `BossState`** (§4.4
  * item 2). Every other §2.4 member stays server-side — `Element`, `ATK`, `DEF`,
- * `State`, `PassiveId`, `PassiveProgress`, `SkillCharge`, `SkillCooldown`, and
+ * `State`, `PassiveId`, `PassiveProgress`, `SkillCooldown`, and
  * the Boss's own `StatusEffects[]` (§4.4 item 3) — and a consumer must not read
  * this object as the Boss's state.
  *

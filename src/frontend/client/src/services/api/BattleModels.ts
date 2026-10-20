@@ -358,7 +358,7 @@ export interface BattleStartPetState {
  * ```
  *
  * The Boss's Passive/Skill charging members (`PassiveId`, `PassiveProgress`,
- * `SkillCharge`, `SkillCooldown`) are §2.4 members but resolution state, and
+ * `SkillCooldown`) are §2.4 members but resolution state, and
  * starting a battle resolves no action — so they are not part of this summary
  * and are not modelled here. `StatusEffects[]` is likewise not yet implemented
  * (§2.4.1). This is the "at creation" projection §3 defines, not a reduced

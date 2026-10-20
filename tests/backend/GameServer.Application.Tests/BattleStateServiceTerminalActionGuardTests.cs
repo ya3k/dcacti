@@ -265,7 +265,7 @@ public class BattleStateServiceTerminalActionGuardTests
 
         var stored = (await arranged.Service.GetBattleAsync(arranged.BattleId))!;
 
-        Assert.Equal(before.BossState.SkillCharge, stored.BossState.SkillCharge);
+        Assert.Equal(before.BossState.Power, stored.BossState.Power);
         Assert.Equal(before.BossState.SkillCooldown, stored.BossState.SkillCooldown);
         Assert.Equal(before.PetState.Power, stored.PetState.Power);
         Assert.Equal(before.MatchCount, stored.MatchCount);
@@ -689,7 +689,7 @@ public class BattleStateServiceTerminalActionGuardTests
 
         var stored = (await arranged.Service.GetBattleAsync(arranged.BattleId))!;
 
-        Assert.Equal(before.BossState.SkillCharge, stored.BossState.SkillCharge);
+        Assert.Equal(before.BossState.Power, stored.BossState.Power);
         Assert.Equal(before.BossState.SkillCooldown, stored.BossState.SkillCooldown);
         Assert.Equal(before.BossState.PassiveProgress, stored.BossState.PassiveProgress);
         Assert.Equal(before.Turn, stored.Turn);

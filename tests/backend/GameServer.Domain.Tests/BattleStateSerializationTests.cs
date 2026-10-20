@@ -128,7 +128,6 @@ public class BattleStateSerializationTests
             PassiveId: new PassiveId("boss-thuy-ma-heal"),
             PassiveProgress: new PassiveProgress(Threshold: 5, Current: 4),
             Power: 45,
-            SkillCharge: 3,
             SkillCooldown: 2);
 
     /// <summary>
@@ -584,9 +583,10 @@ public class BattleStateSerializationTests
     public void RoundTrip_ShouldPreserveEveryBossMember()
     {
         // GAME_STATE.md §2.4: BossId, Element, HP/MaxHP/ATK/DEF, State, PassiveId,
-        // PassiveProgress, SkillCharge, SkillCooldown. The fixture is mid-battle —
-        // damaged, Enraged, charged, and on cooldown — so no member round-trips by
-        // accident of its initial value.
+        // PassiveProgress, Power, SkillCooldown. The fixture is mid-battle —
+        // damaged, Enraged, holding Power, and on cooldown — so no member
+        // round-trips by accident of its initial value. (The legacy SkillCharge
+        // member was removed with ADR-029 Slice 5 / TASK-313.)
         var restored = BattleStateSerializer.Deserialize(
             BattleStateSerializer.Serialize(RepresentativeState()));
 
@@ -603,7 +603,6 @@ public class BattleStateSerializationTests
         Assert.Equal(5, boss.PassiveProgress.Threshold);
         Assert.Equal(4, boss.PassiveProgress.Current);
         Assert.Equal(45, boss.Power);
-        Assert.Equal(3, boss.SkillCharge);
         Assert.Equal(2, boss.SkillCooldown);
     }
 
@@ -623,7 +622,7 @@ public class BattleStateSerializationTests
         Assert.Equal(0, restored.BossState.Power);
         Assert.Equal(new BossId("boss-thuy-ma"), restored.BossState.BossId);
         Assert.Equal(3117, restored.BossState.HP);
-        Assert.Equal(3, restored.BossState.SkillCharge);
+        Assert.Equal(2, restored.BossState.SkillCooldown);
     }
 
     [Theory]
@@ -655,7 +654,6 @@ public class BattleStateSerializationTests
                 HP = 1,
                 MaxHP = 5000,
                 State = BossStateKind.Idle,
-                SkillCharge = 999,
                 SkillCooldown = 7,
                 PassiveProgress = new PassiveProgress(Threshold: 5, Current: 900),
             },
@@ -666,7 +664,6 @@ public class BattleStateSerializationTests
         Assert.Equal(1, restored.BossState.HP);
         Assert.Equal(5000, restored.BossState.MaxHP);
         Assert.Equal(BossStateKind.Idle, restored.BossState.State);
-        Assert.Equal(999, restored.BossState.SkillCharge);
         Assert.Equal(7, restored.BossState.SkillCooldown);
         Assert.Equal(900, restored.BossState.PassiveProgress.Current);
     }
@@ -1031,7 +1028,10 @@ public class BattleStateSerializationTests
         Assert.True(progress.TryGetProperty("threshold", out _));
         Assert.True(progress.TryGetProperty("current", out _));
 
-        Assert.True(root.GetProperty("bossState").TryGetProperty("skillCharge", out _));
+        // ADR-029 §2.11 item 30: the Boss's own Power is part of the persisted
+        // bossState document. (The legacy skillCharge member was removed with
+        // ADR-029 Slice 5 / TASK-313 and is no longer written.)
+        Assert.True(root.GetProperty("bossState").TryGetProperty("power", out _));
         Assert.True(root.GetProperty("bossState").TryGetProperty("skillCooldown", out _));
     }
 
@@ -1815,7 +1815,7 @@ public class BattleStateSerializationTests
         Assert.Equal(original.BossState.State, restored.BossState.State);
         Assert.Equal(original.BossState.PassiveId, restored.BossState.PassiveId);
         Assert.Equal(original.BossState.PassiveProgress, restored.BossState.PassiveProgress);
-        Assert.Equal(original.BossState.SkillCharge, restored.BossState.SkillCharge);
+        Assert.Equal(original.BossState.Power, restored.BossState.Power);
 
         // The Skill cooldown is a separate Boss Skill counter and is carried as
         // state (§2.4.3); it is not the Status Effect duration model (§5.1.1

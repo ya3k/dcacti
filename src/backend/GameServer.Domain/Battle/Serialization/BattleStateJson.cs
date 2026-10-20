@@ -149,7 +149,10 @@ internal static class BattleStateJsonNames
     public const string BossPassiveId = "passiveId";
     public const string BossPassiveProgress = "passiveProgress";
     public const string BossPower = "power";
-    public const string BossSkillCharge = "skillCharge";
+    // "skillCharge" (ADR-026's legacy Boss charge member) is retired by ADR-029
+    // Slice 5 / TASK-313 and has no name constant. Existing Redis snapshots that
+    // still carry it deserialize because unknown members are ignored; the value
+    // is discarded and never mapped back into the state.
     public const string BossSkillCooldown = "skillCooldown";
 
     // LastCommittedSwapPair (GAME_STATE.md §2.1.10) — the canonical (min, max) pair.
@@ -790,13 +793,7 @@ internal sealed record BossStateJson
     public int Power { get; init; }
 
     /// <summary>
-    /// Matches charged toward the Skill's requirement (§2.4.3).
-    /// </summary>
-    [JsonPropertyName(BattleStateJsonNames.BossSkillCharge)]
-    public required int SkillCharge { get; init; }
-
-    /// <summary>
-    /// Turns remaining before the Skill can fire (§2.4.3).
+    /// Turns remaining before the Boss Card can be cast again (§2.4.3).
     /// </summary>
     [JsonPropertyName(BattleStateJsonNames.BossSkillCooldown)]
     public required int SkillCooldown { get; init; }

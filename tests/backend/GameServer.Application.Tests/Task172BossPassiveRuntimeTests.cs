@@ -657,9 +657,10 @@ public class Task172BossPassiveRuntimeTests
     /// match-producing pair on it is tried, because a single pair's Combo alone would
     /// not reach the higher bands.
     ///
-    /// The Skill never fires here because a fresh Boss has <c>SkillCharge = 0</c> and
-    /// the assertion reads the Basic Attack fallback (step 18c); a Turn that did cast
-    /// is skipped so the two bands compare like with like.
+    /// No Boss ability cast occurs here: this suite's content carries no provisioned
+    /// Boss Card, so the assertion reads the step-18d ATK-gated board attack alone (the
+    /// legacy fallback attack and the charge-driven Skill were removed with ADR-026 §5
+    /// and ADR-029 Slice 5 / TASK-313).
     /// </summary>
     private static async Task<BossBasicAttackSample> BossBasicAttackSampleAtComboAsync(
         InMemoryBattleStateRepository repository,
@@ -694,12 +695,6 @@ public class Task172BossPassiveRuntimeTests
             var result = await service.ExecuteSwapAsync(battleId, pair);
 
             if (result is null || !result.Value.IsAccepted)
-            {
-                continue;
-            }
-
-            // A Boss Skill would replace the Basic Attack (step 18b over 18c).
-            if (result.Value.Events.Any(e => e.Type == BattleEventType.BossSkillCast))
             {
                 continue;
             }
