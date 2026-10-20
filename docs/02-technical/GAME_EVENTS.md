@@ -673,9 +673,10 @@ Payload:  PassiveCharged: PassiveId, Source (pet | boss),
    states only *why* the element is unpopulated and what its absence means; it
    is not a wire rule, and this document does not keep a second convention
    (`GAME_EVENTS.md` §3 item 1).
-4. **Boss Passive timing.** Boss Passive fires at Step 18a of
-   `GAME_RULES.md` §17, after Player Damage (Steps 15–17) and before Boss
-   Skill (Step 18b) and Boss Attack (Step 18c). The Passive evaluates
+4. **Boss Passive timing.** Boss Passive fires at step 18b of
+   `GAME_RULES.md` §17 — after the Player Damage steps (15–17) and the 18a
+   selection/board action, before the 18c Boss Card cast or legacy Skill, and
+   before the 18d Boss attack. The Passive evaluates
    against the post-damage battle state. Boss Passive uses the same event
    (`PassiveCharged`/`PassiveTriggered`) with `source = "boss"` — no
    Boss-specific passive event exists (`BOSS_RULES.md` §7).

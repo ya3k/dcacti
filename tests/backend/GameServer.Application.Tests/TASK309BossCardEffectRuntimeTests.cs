@@ -460,10 +460,77 @@ public class TASK309BossCardEffectRuntimeTests
             laterCalculation.DamageCalculated.Base);
     }
 
+    [Fact]
+    public async Task ThunderStrike_ShouldSurviveANonQualifyingBossRoundAndBeConsumedByTheNextQualifyingAttack()
+    {
+        // TASK-310 (closing the TASK-309 review's V-2 evidence gap; ADR-026 D7 /
+        // BOSS_RULES.md §6.3.1 item 5 / TASK-309 D-1): the whole cast-to-consumption
+        // lifecycle includes a Boss board-action round whose resolution contains NO
+        // confirmed ATK match. The modifier must survive that round untouched and be
+        // consumed by the first qualifying attack, exactly once.
+        var nonAttackFixture = BossNonAttackRoundFixture.Value;
+
+        Assert.False(nonAttackFixture.BossAttackQualifies);
+        Assert.False(nonAttackFixture.PlayerClearsAtkGem);
+
+        var harness = BossCardTestHarness.CreateProvisioned();
+        var boss = Migrated(BossDefinitions.KimLoiVuong);
+
+        const string battleId = "task309-thunder-strike-non-qualifying-survival";
+        var created = await harness.Service.CreateBattleAsync(battleId, Owner, Pet, boss);
+
+        var castRound = await harness.CastRoundAsync(
+            battleId,
+            created,
+            created.BossState with { Power = 100, SkillCooldown = 0 },
+            Surviving(created.PetState));
+
+        Assert.Single(
+            castRound.State.BossState.ActiveStatusEffects,
+            e => e.Id == ProvisionedBossCardContent.ThunderStrikeCardId);
+
+        // The next round: the cast is unaffordable (Power 0), so the Boss's board action
+        // resolves; neither side produces a qualifying ATK match this round, so no
+        // damage instance exists and nothing may consume the trigger-based modifier.
+        var afterCast = castRound.State;
+        var nonQualifyingRound = await harness.ExecuteFixtureRoundAsync(
+            battleId,
+            nonAttackFixture,
+            afterCast.BossState with { Power = 0 },
+            afterCast.PetState);
+
+        Assert.Single(
+            nonQualifyingRound.Events,
+            e => e.Type == BattleEventType.SwapStarted && e.SwapStarted.Actor == DamageParty.Boss);
+        Assert.DoesNotContain(nonQualifyingRound.Events, e => e.Type == BattleEventType.DamageCalculated);
+        Assert.Single(
+            nonQualifyingRound.State.BossState.ActiveStatusEffects,
+            e => e.Id == ProvisionedBossCardContent.ThunderStrikeCardId);
+
+        // The first qualifying attack still consumes it exactly once, at the buffed
+        // EffectiveBossATK (100 × 150% = 150) plus the Boss's own ATK-Gem pool.
+        var attackFixture = BossAttackRoundFixture.Value;
+        var consumingRound = await harness.ExecuteFixtureRoundAsync(
+            battleId,
+            attackFixture,
+            nonQualifyingRound.State.BossState with { Power = 0 },
+            nonQualifyingRound.State.PetState);
+
+        var consumingCalculation = Assert.Single(
+            consumingRound.Events,
+            e => e.Type == BattleEventType.DamageCalculated);
+
+        Assert.Equal(
+            150 + attackFixture.BossResources.BaseDamagePool,
+            consumingCalculation.DamageCalculated.Base);
+        Assert.DoesNotContain(
+            consumingRound.State.BossState.ActiveStatusEffects,
+            e => e.Id == ProvisionedBossCardContent.ThunderStrikeCardId);
+    }
+
     // =======================================================================
     // Selection — the real authored score 85, through committed rounds
     // =======================================================================
-
     [Fact]
     public async Task Selection_WithTheAuthoredScore85_ShouldCastWhenTheBoardScoresStrictlyBelow85()
     {
@@ -583,6 +650,15 @@ public class TASK309BossCardEffectRuntimeTests
     /// </summary>
     private static readonly Lazy<BossRoundFixture> BossAttackRoundFixture =
         new(() => BossRoundFixtures.Find(f => !f.PlayerClearsAtkGem && f.BossAttackQualifies));
+
+    /// <summary>
+    /// A deterministic real-board fixture on which neither the Player's Swap nor the
+    /// Boss's selected board action produces a qualifying ATK match — the round in
+    /// which a trigger-based <c>NextQualifyingAttack</c> modifier must survive
+    /// untouched (<c>BOSS_RULES.md</c> §6.3.1 item 5; TASK-310).
+    /// </summary>
+    private static readonly Lazy<BossRoundFixture> BossNonAttackRoundFixture =
+        new(() => BossRoundFixtures.Find(f => !f.PlayerClearsAtkGem && !f.BossAttackQualifies));
 
     /// <summary>
     /// The Pet at its documented base stats with a survivable HP pool

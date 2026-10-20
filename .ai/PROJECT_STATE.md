@@ -1,6 +1,6 @@
 # .ai/PROJECT_STATE.md — Project State Snapshot
 
-**Version:** 1.4
+**Version:** 1.5
 
 **Notice:** This document is an AI navigation cache, not a source of truth. It records compact, verifiable project status to prevent repetitive whole-repository audits. Authoritative sources remain `docs/` (rules/architecture), `AGENTS.md` (contract), and `tasks/` (lifecycle state).
 
@@ -11,12 +11,12 @@
 | Property | Value |
 | :--- | :--- |
 | **Audited Branch** | `master` |
-| **Audited HEAD SHA** | `081f9d76a97e4ad964fa69b5a844a23785ebdc97` (`081f9d7`) — TASK-309's changes are **uncommitted**; its Phase A/Phase B commits do not exist yet |
-| **Upstream** | `origin/master` resolves to the same commit (`081f9d7`); branch is neither ahead nor behind. Nothing from TASK-309 is pushed. |
+| **Audited HEAD SHA** | `857aa985a67caabb2f7aa85e973482e79237e970` (`857aa98`) — TASK-309's Phase A (`4d97c74`, 46 files) and Phase B (`857aa98`, completion record) commits are filed |
+| **Upstream** | `origin/master` is at `081f9d7`; the branch is ahead by the two TASK-309 commits. Nothing is pushed. |
 | **Audit Timestamp** | 2026-10-20 |
-| **Audit Depth** | INCREMENTAL — the previous cache recorded `f6ddbd9`; the delta was TASK-308's Phase A/Phase B commits (`242c0d7` implementation, `081f9d7` completion record, reaching 310 completed records) plus TASK-309's uncommitted implementation slice. Multi-boundary work (docs + Domain + Application + Infrastructure migrations + Api tests) is bounded to the TASK-309 declared file set. |
-| **Freshness Status** | `STALE` — the audit baseline is `081f9d7`; TASK-309's Phase A/Phase B commits will advance HEAD. Re-run baseline collection before the next selection. |
-| **Working Tree Baseline** | HEAD `081f9d7` tree; TASK-309's declared implementation files, its two V-1 artifacts, its task record and this cache are the uncommitted in-flight set. No client file is changed. |
+| **Audit Depth** | INCREMENTAL — the previous cache recorded `081f9d7`; the delta is TASK-309's two commits and TASK-310's uncommitted review-finding reconciliation. Bounded to the TASK-309/TASK-310 declared file sets. |
+| **Freshness Status** | `STALE` — the audit baseline is `857aa98`; TASK-310's Phase A/Phase B commits will advance HEAD. Re-run baseline collection before the next selection. |
+| **Working Tree Baseline** | HEAD `857aa98` tree; TASK-310's declared reconciliation files (5 docs, one comment-only Domain file, one Application test addition, this cache) and its task record are the uncommitted/in-flight set. No client file is changed. |
 
 ---
 
@@ -24,13 +24,13 @@
 
 | Category | Count | Task IDs & Summary |
 | :--- | :--- | :--- |
-| **Last Verified Completed Task** | 1 | [TASK-308](../tasks/completed/TASK-308-adr-029-slice-3-boss-card-end-to-end.md) (`adr-029-slice-3-boss-card-end-to-end`; implementation `242c0d7`, completion record `081f9d7`) |
-| **Active Tasks (`tasks/active/`)** | 1 | [TASK-309](../tasks/active/TASK-309-adr-029-slice-4-remaining-boss-card-abilities.md) (`adr-029-slice-4-remaining-boss-card-abilities`) — **IN REVIEW**: implementation + validation complete; two-stage commit pending |
+| **Last Verified Completed Task** | 1 | [TASK-309](../tasks/completed/TASK-309-adr-029-slice-4-remaining-boss-card-abilities.md) (`adr-029-slice-4-remaining-boss-card-abilities`; implementation `4d97c74`, completion record `857aa98`) |
+| **Active Tasks (`tasks/active/`)** | 1 | [TASK-310](../tasks/active/TASK-310-reconcile-task-309-review-findings.md) (`reconcile-task-309-review-findings`) — **IN PROGRESS**: closing the independent review's documentation-consistency findings; two-stage commit pending |
 | **Blocked Tasks (`tasks/blocked/`)** | 0 | None |
 | **Backlog Candidates (`tasks/backlog/`)** | 0 | None |
-| **Total Completed Tasks (`tasks/completed/`)** | 310 | Records through TASK-308 |
-| **Highest Completed Task ID** | 308 | TASK-308 (completed record filed at `081f9d7`) |
-| **Highest Existing Task ID** | 309 | TASK-309 allocated (308 + 1, active); next sequential ID = 310 |
+| **Total Completed Tasks (`tasks/completed/`)** | 311 | Records through TASK-309 |
+| **Highest Completed Task ID** | 309 | TASK-309 (implementation `4d97c74`, completion record `857aa98`) |
+| **Highest Existing Task ID** | 310 | TASK-310 allocated (309 + 1, active); next sequential ID = 311 |
 
 ### TASK-309 approved values and delivered scope (task record §1)
 
@@ -39,6 +39,12 @@
 - New Boss-only `CardEffectType` identities `AtkBuff` / `PowerDrain` / `AtkDebuff` / `NextAtkBuff` (D-1), extending the `duration` member to `AtkBuff`/`AtkDebuff` and the `scope` member to `NextAtkBuff` (`NextAttack` only) with no new member name. Player Card casts may not use the four; `PowerDrain` transfers no Power.
 - The Boss Card forms of `flame-burst`/`root` carry the current-approved duration `3`; the transitional legacy `BossSkill` form keeps its historical persisted `2` until Slice 5 retirement (explicit documented divergence).
 - B-4 preserves multiplicative ATK stacking unchanged (`1.20 × 1.50 = 1.80`); additive stacking is not authorized.
+
+### TASK-310 review-finding reconciliation (in flight)
+
+- The independent TASK-309 review passed implementation, migrations, tests, scope, security, determinism and performance; its only blocking finding was documentation consistency: `CARD_RULES.md` §3 item 9, `COMBAT_RULES.md` §2 and `GAME_STATE.md` §2.4.3 item 8 still called ADR-029 §3 U-2 (per-ability Boss Card `PowerCost`) unresolved after TASK-309 resolved it.
+- TASK-310 (BUG, LOW risk) corrects those three statements to the approved values (`earthquake 30`; `flame-burst 40`, `drain-power 25`, `root 35`, `thunder-strike 40`), fixes `BOSS_RULES.md` §4.4 item 3's stale Slice 4 migration order and `GAME_EVENTS.md` §2's pre-ADR-029 Boss-phase step labels, corrects a comment-only stale enum example in `CardEffectDefinition.cs`, and adds the migrated-card `thunder-strike` no-ATK-round survival/consumption test the review found missing.
+- TASK-309's completed record is immutable and is not edited.
 
 ---
 
@@ -97,7 +103,7 @@
 
 ## 6. Known Blockers
 
-- **None for TASK-309.** All operator decisions and gate evidence are recorded; the only remaining step is the two-stage commit.
+- **None for TASK-310.** Its input findings are recorded in its task record; the only remaining step is the two-stage commit.
 - **Pre-existing test failures (confirmed unchanged at HEAD; not introduced by TASK-309):**
   - `GameServer.Infrastructure.Tests`: 4 failures — `BossPersistenceTests.ProvisioningMigration_ShouldWriteTheDocumentedPassiveAndSkillDocuments`, `BossPersistenceTests.Task172ProvisioningMigration_ShouldWriteTheDocumentedPassiveAndSkillDocuments`, `BossDefinitionPostgresProvisioningTests.Postgres_ShouldRoundTripBothJsonDocumentsToTheDomainDefinitions`, `BossDefinitionBalanceLookupTests.GetDefinitionByIdentityAsync_ShouldPreserveTheNonPersistedSecondaryEffects` (historical `BaseDamage` 150/180 vs Domain `0` drift; flame-burst `Burn` vs `AtkBuff` expectation).
   - `GameServer.Application.Tests`: 2 balance-evidence failures — `BalanceEvidenceMeasurementCorrectionTests.TASK195_PerTurnSeries_ReconcilesTerminalCardCastWithoutPhantomTurn`, `TASK296_ReviewD_Canonical75RunCandidate_Verification` (pre-existing historical-evidence mismatch; unchanged by TASK-309).
@@ -107,6 +113,6 @@
 
 ## 7. Next Recommended Action
 
-- **Status:** `TASK-309_COMMIT_PENDING`
-- **Action:** complete TASK-309's two-stage commit — Phase A with the exact declared implementation set (implementation slice, including this cache refresh), then Phase B with the completion record filed under its own bookkeeping commit.
-- **After TASK-309:** Slice 5 remains gated by ADR-029 §2.9's four-part parity gate; the fifth Gem remains FUTURE. Do not push without explicit authorization.
+- **Status:** `TASK-310_COMMIT_PENDING`
+- **Action:** complete TASK-310's two-stage commit — Phase A with the exact declared reconciliation set (5 docs + comment-only Domain file + one Application test addition + this cache refresh), then Phase B with its completion record.
+- **After TASK-310:** Slice 5 remains gated by ADR-029 §2.9's four-part parity gate; the fifth Gem remains FUTURE. Do not push without explicit authorization.

@@ -2382,9 +2382,11 @@ BossState
 8. **U-1 resolved (Option A approved under ADR-029 / TASK-304).** The Boss
    generates Power from its own board match action at the shared rate owned by
    `COMBAT_RULES.md` §2 (+10 Power per uniquely matched POWER cell, clamped to
-   `[0, 100]`, actor-relative attribution). Whether future cadence re-tuning
-   alongside per-ability costs (U-2) is required remains an unresolved balance
-   decision recorded in `ADR-029`. No numeric value is owned by this subsection.
+   `[0, 100]`, actor-relative attribution). The per-ability Boss Card Power
+   costs and the legacy `ChargeRequirement` re-tuning question (U-2) are
+   resolved by TASK-309 (`ADR-029` §3); whether future cadence re-tuning is
+   required remains a balance question. No numeric value is owned by this
+   subsection.
 
 **`SkillCharge` — transitional only.** `SkillCharge` tracks progress toward the
 legacy Boss Skill's charge requirement, and until `ADR-029`'s Slice 4 parity gate

@@ -492,12 +492,13 @@ Transitional path: BossState.SkillCharge + §6.3's charge/cooldown gate, and the
    (c) every consumer reconciled — event presenters, wire tests, state readers,
    and every documentation reference;
    (d) the ADR/index amendments for the removal recorded.
-3. **Migration order** (`ADR-029` Slice 4): `Earthquake` (`earthquake`), then
-   `Flame Burst` (`flame-burst`), then `Root` (`root`), then `Drain Power`
-   (`drain-power`), and **`Thunder Strike` (`thunder-strike`) last**, because it
-   is the only trigger-based, modifier-consuming ability and its
-   `NextQualifyingAttack` expiry and modifier-consumption timing need the
-   closest old/new comparison.
+3. **Migration order** (`ADR-029` Slice 4): `Flame Burst` (`flame-burst`), then
+   `Root` (`root`), then `Drain Power` (`drain-power`), and **`Thunder Strike`
+   (`thunder-strike`) last**, because it is the only trigger-based,
+   modifier-consuming ability and its `NextQualifyingAttack` expiry and
+   modifier-consumption timing need the closest old/new comparison.
+   `Earthquake` (`earthquake`) was migrated earlier by Slice 3 (TASK-308) and is
+   not part of this Slice 4 order.
 4. **No encounter mechanic is turned into a Card by this migration**
    (§4.2 item 7).
 5. **Authored content for the migrated abilities.** All five MVP abilities now

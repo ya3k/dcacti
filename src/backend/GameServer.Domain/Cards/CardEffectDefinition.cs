@@ -221,7 +221,7 @@ public readonly record struct CardEffectDefinition
     /// <param name="effectType">
     /// Which domain effect applies. It must be a defined
     /// <see cref="CardEffectType"/> member: an undefined value (e.g.
-    /// <c>(CardEffectType)7</c>) names an effect no document authors, and
+    /// <c>(CardEffectType)99</c>) names an effect no document authors, and
     /// admitting it would turn a content typo into a silent no-op.
     /// </param>
     /// <param name="valueType">

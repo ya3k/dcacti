@@ -350,9 +350,11 @@ Rules:
    * **Timing.** A Boss Card cast is selected and resolved inside
      `GAME_RULES.md` §17 step 18 (18a selection, 18c resolution), not as the
      auxiliary between-Swap action item 5 describes.
-   * **Balance.** Every Boss Card's `PowerCost` and every cost re-tuning are
-     **UNRESOLVED** balance values recorded in `ADR-029`; this section authors
-     no numeric value.
+   * **Balance.** The Boss Card Power costs are authored and approved:
+     `earthquake = 30` (TASK-308), and `flame-burst = 40`, `drain-power = 25`,
+     `root = 35`, `thunder-strike = 40` (TASK-309; `ADR-029` §3's U-2 is
+     resolved). No further cost re-tuning is authorized; this section authors no
+     numeric value of its own.
 
 **"Card Cost" in items 2 and 4 is the Effective Card Cost**, defined in §3.6 —
 not the authored `CardDefinition.PowerCost` on its own. §3.6 owns that value's
