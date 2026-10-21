@@ -143,10 +143,77 @@ tests/backend/GameServer.Application.Tests/Balance/Tests/ModernBossCardCadenceMe
 - `dotnet test tests/backend/GameServer.Domain.Tests/GameServer.Domain.Tests.csproj` — **PASS** (1674/1674 passed)
 - `dotnet test tests/backend/GameServer.Infrastructure.Tests/GameServer.Infrastructure.Tests.csproj` — **PASS** (507/507 passed)
 - `dotnet test tests/backend/GameServer.Api.Tests/GameServer.Api.Tests.csproj` — **PASS** (399/399 passed)
-- `dotnet test tests/backend/GameServer.Application.Tests/GameServer.Application.Tests.csproj` — **PASS** (783/783 passed)
+- `dotnet test tests/backend/GameServer.Application.Tests/GameServer.Application.Tests.csproj` — **PASS** (788/788 passed)
 - `npm run test:run` (`src/frontend/client`) — **PASS** (24 files, 1267 passed)
 - `npm run build` (`src/frontend/client`) — **PASS** (`tsc && vite build`, exit 0)
 - `git diff --check` — **PASS** (0 errors)
+
+> **Evidence correction (TASK-319).** This section previously reported the
+> Application suite as `783/783 passed`, which made the four per-project counts
+> sum to 3363. Re-measured at TASK-319, the Application suite executes **788**
+> tests, and the backend aggregate is **3368**, not 3363.
+>
+> **Reproduced counts (TASK-319).** Each recorded project command was invoked in
+> turn on this tree. The Application figure was reproduced twice independently:
+> once by a full run of this exact command (`Passed: 788`), and once by
+> discovery over the TASK-314 tree (`--list-tests`, with TASK-318's later edits
+> removed, listed exactly 788 cases of which 12 belong to this task's cadence
+> suite):
+>
+> ```text
+> Domain           1674 passed
+> Infrastructure    507 passed
+> Api               399 passed
+> Application       788 passed   (12 of them from ModernBossCardCadenceMeasurementTests)
+> ------------------------------
+> aggregate        3368 passed, 0 failed, 0 skipped
+> ```
+>
+> **The cause is a transcription error in the record, not discovery,
+> configuration, or environment.** The reproduction above is decisive on that
+> point: the same tree, the same project configuration and the same command
+> produce 788, and the cadence suite this task added accounts for 12 of them.
+> The executed-test count of a test file equals its `[Fact]` methods plus its
+> `[InlineData]` rows; that rule was validated against a project this
+> correction did not touch (Infrastructure: 457 `[Fact]` + 50 `[InlineData]` =
+> 507, exactly the number the suite executes).
+>
+> ```text
+> TASK-314 (Phase A 1f110bb) — the two files this task declares
+>   ModernBossCardCadenceMeasurementTests   2 [Fact] + 10 [InlineData] = 12 cases (new)
+>   BalanceEvidenceMeasurementCorrectionTests   methods retargeted in place,
+>                                              0 cases added or removed,
+>                                              suite still executes 15 cases
+>   ----------------------------------------------------------------------
+>   cases newly executable by this task                                   = 12
+>
+> observed Application total on the TASK-314 tree                          = 788
+> observed Application total with TASK-318's edits applied (current tree)   = 785
+>   (TASK-318 replaced the five-range TASK314_InBattleExecution Theory with
+>    two Facts: 12 - 5 + 2 = 9 cadence cases, so 788 - 3 = 785)
+> ```
+>
+> The figure previously recorded, `783`, is 788 − 5: it equals the current tree's
+> cadence count substituted into a total that belongs to the earlier tree. It is
+> therefore a transcription slip rather than a count produced by any
+> configuration of this repository, and `788` is the reproducible figure now
+> recorded above.
+>
+> **Residual discrepancy, disclosed rather than absorbed.** TASK-313's record
+> states a pre-TASK-314 Application count of 785. That base plus this task's
+> twelve new cases predicts 797 for the TASK-314 tree, while the tree actually
+> executes 788. This correction cannot attribute the 9-case gap without
+> re-measuring the historical commit, and that earlier figure belongs to a
+> completed task this correction does not own. It is reported here as an open
+> evidence discrepancy for follow-up; it does not change the reproducible
+> figures above, and it is not silently reconciled.
+>
+> **Scope of the correction.** Only the recorded numeric evidence changed. This
+> task's implementation decisions, declared file set, acceptance criteria, and
+> the Phase A commit `1f110bb` are unchanged (`TASK_LIFECYCLE.md` §3 — completed
+> tasks are otherwise immutable). The tree after TASK-318 measures **3365**
+> backend tests (Domain 1674, Infrastructure 507, Api 399, Application 785);
+> those additions are recorded in TASK-318, not retroactively here.
 
 ### Server Authority & Scope Verification
 - [x] Confirmed zero client-authoritative gameplay logic

@@ -123,9 +123,27 @@ The release associated with the breaking wire contract retirement of `BossSkillC
 Per operator decision **OD-316-1 = PREPARATION ONLY**, automated agent sessions are strictly prohibited from draining active production battles, executing deployments, or pushing commits. Therefore, the task cannot transition to DONE and must remain BLOCKED in `tasks/blocked/`.
 
 ### Completed So Far
-- Authoritative operational runbook and deployment checklist authored at `docs/02-technical/RUNBOOK_BREAKING_WIRE_RELEASE.md` (Implementation commit `8424a9e5251648a474fe5e0cb2aa55c28591a27e`).
-- Ingress freeze procedure, natural battle drain window (15-minute sliding TTL), coordinated deployment ordering, smoke test procedure, and rollback criteria fully specified.
+- Authoritative operational runbook and deployment checklist authored at `docs/02-technical/RUNBOOK_BREAKING_WIRE_RELEASE.md` (Implementation commit `8424a9e2d0a432281b3d67cc528af901fdae4497`).
+- Ingress freeze procedure, battle drain window derived from the documented inactivity expiry (`REDIS_STATE.md` §3 — 30 minutes, refreshed on every successful resolution and not on a rejected action), an explicit verified zero-active-battle confirmation gate, coordinated deployment ordering, smoke test procedure, and rollback criteria fully specified.
 - Confirmed repository facts separated from operational assumptions.
+
+> **Evidence correction (TASK-319).** This section previously recorded the runbook
+> implementation commit as `8424a9e5251648a474fe5e0cb2aa55c28591a27e`. Git reported
+> no object for that identifier (`git cat-file` failed), so it was not a valid
+> commit ID. It has been replaced with the exact full SHA Git reports,
+> `8424a9e2d0a432281b3d67cc528af901fdae4497` (`git rev-parse`, verified with
+> `git show --stat` to be the commit that added
+> `docs/02-technical/RUNBOOK_BREAKING_WIRE_RELEASE.md` — 1 file, 143 insertions).
+> Nothing else in this record's lifecycle state changed: the task remains
+> **BLOCKED** pending explicit production release authorization.
+>
+> The runbook's drain guidance was corrected under TASK-317 after a
+> post-release-readiness audit found that it had been written against an
+> unsupported 15-minute expiry. The corrected runbook derives its drain gate
+> from `REDIS_STATE.md` §1/§3 and requires an explicit, verified
+> zero-active-battle confirmation before Phase 3, and it no longer treats any
+> elapsed wait as proof that the drain completed. TASK-317 remains preparation
+> documentation only; no production operation was performed.
 
 ### What Is Needed to Unblock
 - Operator schedules production maintenance window.
