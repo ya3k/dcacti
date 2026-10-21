@@ -11,12 +11,12 @@
 | Property | Value |
 | :--- | :--- |
 | **Audited Branch** | `master` |
-| **Audited HEAD SHA** | `c6e2c918ee0851ecab58c56ef2ebcf3ae9097746` (`c6e2c91`) — TASK-313 Phase A (`a5e90a3`) / Phase B (`3a74edd`) and TASK-314 Phase A (`1f110bb`) / Phase B (`c6e2c91`) commits are filed. |
-| **Upstream** | `origin/master` is at `3a74edd`; local `master` is ahead by TASK-314 Phase A and Phase B commits. Nothing is pushed. |
+| **Audited HEAD SHA** | `3e164d9` — TASK-313, TASK-314, TASK-315 Phase A/B commits filed; TASK-316 runbook and blocked state recorded. |
+| **Upstream** | `origin/master` is at `3a74edd`; local `master` is ahead by 6 commits. Nothing is pushed. |
 | **Audit Timestamp** | 2026-10-21 |
-| **Audit Depth** | INCREMENTAL — base commit is `c6e2c91`; delta is the TASK-315 documentation-only declared set (`BOSS_RULES.md`, `COMBAT_RULES.md`, `GAME_STATE.md`, `.ai/PROJECT_STATE.md`). |
-| **Freshness Status** | `FRESH` for baseline `c6e2c91`; updated inline under TASK-315. |
-| **Working Tree Baseline** | Clean repository baseline with TASK-315 active in `tasks/active/`. |
+| **Audit Depth** | INCREMENTAL — base commit is `3a74edd`; deltas are TASK-314, TASK-315, and TASK-316. |
+| **Freshness Status** | `FRESH`. |
+| **Working Tree Baseline** | Clean repository baseline with TASK-316 recorded in `tasks/blocked/`. |
 
 ---
 
@@ -24,13 +24,13 @@
 
 | Category | Count | Task IDs & Summary |
 | :--- | :--- | :--- |
-| **Last Verified Completed Task** | 1 | [TASK-314](../tasks/completed/TASK-314-preserve-balance-baseline-and-measure-modern-boss-cadence.md) (`preserve-balance-baseline-and-measure-modern-boss-cadence`; implementation `1f110bb`, completion record `c6e2c91`) |
-| **Active Tasks (`tasks/active/`)** | 1 | [TASK-315](../tasks/active/TASK-315-reconcile-stale-boss-skill-specifications.md) (`reconcile-stale-boss-skill-specifications`) — documentation-only reconciliation in progress |
-| **Blocked Tasks (`tasks/blocked/`)** | 0 | None (TASK-316 to be registered as preparation-only / blocked on production authorization) |
+| **Last Verified Completed Task** | 1 | [TASK-315](../tasks/completed/TASK-315-reconcile-stale-boss-skill-specifications.md) (`reconcile-stale-boss-skill-specifications`; implementation `590c7a6`, completion record `09f2bf8`) |
+| **Active Tasks (`tasks/active/`)** | 0 | None |
+| **Blocked Tasks (`tasks/blocked/`)** | 1 | [TASK-316](../tasks/blocked/TASK-316-breaking-wire-contract-release-preparation.md) (`breaking-wire-contract-release-preparation`) — runbook authored (`docs/02-technical/RUNBOOK_BREAKING_WIRE_RELEASE.md`); live deployment blocked on production authorization |
 | **Backlog Candidates (`tasks/backlog/`)** | 0 | None |
-| **Total Completed Tasks (`tasks/completed/`)** | 315 | Records through TASK-314 |
-| **Highest Completed Task ID** | 314 | TASK-314 |
-| **Highest Existing Task ID** | 315 | TASK-315 active |
+| **Total Completed Tasks (`tasks/completed/`)** | 316 | Records through TASK-315 |
+| **Highest Completed Task ID** | 315 | TASK-315 |
+| **Highest Existing Task ID** | 316 | TASK-316 in `tasks/blocked/` |
 
 ---
 
@@ -63,9 +63,9 @@
 
 | Candidate Task ID | Lifecycle State | Dependencies Satisfied | Scope / Docs Aligned | Readiness Verdict |
 | :--- | :--- | :--- | :--- | :--- |
-| TASK-314 | DONE | TASK-313 DONE; OD-314-1 = C | Satisfied; verified at HEAD `c6e2c91` | COMPLETED (`1f110bb` / `c6e2c91`) |
-| TASK-315 | IN PROGRESS | TASK-313, TASK-314 DONE; OD-315-1 = AUTHORIZED | Documentation-only declared set | **IN PROGRESS** |
-| TASK-316 | PREPARATION ONLY | TASK-313 DONE; OD-316-1 = PREPARATION ONLY | Runbook/checklist preparation | READY FOR REGISTRATION (blocked on production authorization) |
+| TASK-314 | DONE | TASK-313 DONE; OD-314-1 = C | Satisfied; verified at commit `c6e2c91` | COMPLETED (`1f110bb` / `c6e2c91`) |
+| TASK-315 | DONE | TASK-313, TASK-314 completed | Satisfied; verified at commit `09f2bf8` | COMPLETED (`590c7a6` / `09f2bf8`) |
+| TASK-316 | BLOCKED | TASK-313, TASK-315 DONE; OD-316-1 = PREPARATION ONLY | Runbook authored; live deployment blocked | **BLOCKED** in `tasks/blocked/` |
 | Fifth Gem / Power-drain Gem | **FUTURE** | — | `MVP_SCOPE.md` §3 | Out of scope until separate authorization |
 
 ---
@@ -95,11 +95,10 @@
 
 ## 7. Next Recommended Action
 
-- **Status:** `TASK_315_EXECUTION`
+- **Status:** `RELEASE_PREREQUISITES_BLOCKED`
 - **Action:**
-  1. Complete TASK-315 Phase A commit (documentation slice: `BOSS_RULES.md`, `COMBAT_RULES.md`, `GAME_STATE.md`, `.ai/PROJECT_STATE.md`).
-  2. File TASK-315 Phase B completion record in `tasks/completed/`.
-  3. Register TASK-316 for breaking wire-contract runbook and checklist preparation, recording operational prerequisites and leaving the task in the appropriate lifecycle state (`BLOCKED` on production deployment authorization).
-  4. Perform final verification and compile audit report; do not push.
+  1. TASK-314 and TASK-315 are completed and verified (commits `1f110bb`/`c6e2c91` and `590c7a6`/`09f2bf8`).
+  2. TASK-316 breaking wire-contract runbook and operational checklist authored at `docs/02-technical/RUNBOOK_BREAKING_WIRE_RELEASE.md` (commit `8424a9e`).
+  3. Production deployment remains strictly prohibited within automated sessions (OD-316-1 = PREPARATION ONLY). Task is held BLOCKED in `tasks/blocked/` pending operator scheduling of production maintenance window and deployment execution. Do not push.
 
 - **Standing constraints:** the Fifth Gem remains FUTURE; no database cleanup migration exists for the retained JSONB members; no tolerant-reader/no-op compatibility path was added for the removed wire event; do not claim deployment readiness while the drain/deploy prerequisite is unexecuted.
