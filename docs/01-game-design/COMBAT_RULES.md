@@ -1,6 +1,6 @@
 # Combat Rules
 
-**Version:** 3.3 (§2 POWER bullet and §2 item 6's actor-ownership bounds updated, and §3.4's Boss-ability wording reconciled, per **TASK-313 / ADR-029 Slice 5**: the legacy `SkillCharge` output target, its clamp/bound and the per-ability `BaseDamage` contribution **no longer exist** — POWER Gems generate `Power` for the acting actor only, and every MVP Boss ability deals no direct damage. No generation rate, per-Gem output, damage value, modifier, status-effect rule or other combat value changes). Prior 3.2: (§2 POWER bullet and preamble gate terminology reconciled to the Slice 5 removal gate per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; no gameplay or combat values changed). Prior 3.1: (§1.2 and §2 updated per **ADR-029 / TASK-303**, applying the
+**Version:** 3.4 (§3.4, §4 item 1, §5.3.3, §5.3.4, §5.4.3, §5.5.2, and §5.5.3 updated per **TASK-315**: reconciled active specifications and worked examples to reflect that Boss abilities deal zero direct damage (D3); the legacy Boss Skill form and its authored Base Damage were retired under TASK-313; Root lifecycle worked example updated to step 18c cast with canonical 3-Turn duration; `SkillCooldown` explicitly described as the Boss ability cooldown counter; obsolete Boss Skill terminology removed while preserving historical changelogs). Prior 3.3: (§2 POWER bullet and §2 item 6's actor-ownership bounds updated, and §3.4's Boss-ability wording reconciled, per **TASK-313 / ADR-029 Slice 5**: the legacy `SkillCharge` output target, its clamp/bound and the per-ability `BaseDamage` contribution **no longer exist** — POWER Gems generate `Power` for the acting actor only, and every MVP Boss ability deals no direct damage. No generation rate, per-Gem output, damage value, modifier, status-effect rule or other combat value changes). Prior 3.2: (§2 POWER bullet and preamble gate terminology reconciled to the Slice 5 removal gate per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; no gameplay or combat values changed). Prior 3.1: (§1.2 and §2 updated per **ADR-029 / TASK-303**, applying the
 explicit Product Owner decision that the Boss uses the same resource-generation
 principles as the Player: the POWER-Gem output is **actor-relative to a Power
 resource for both actors** — `PetState.Power` for a Player action and
@@ -641,16 +641,7 @@ Under the shared-board contract (ADR-026, D1, D3):
 
 2. **Boss Abilities Deal Zero Direct Damage:** Direct damage from Boss abilities is prohibited by default (D3). A Boss ability deals no direct damage and instead modifies the board, resources, or combat modifiers (`BOSS_RULES.md` §6.3); the legacy `BossSkillDefinition.BaseDamage` member that used to carry the per-ability value was removed under TASK-313.
 
-**Boss ability Step-1 composition.** A Boss ability's Step 1 Base Damage is 0 by default (D3), so the ability deals no direct damage. Any temporary Boss ATK modifier applied by an ability (e.g. Hỏa Long Flame Burst, ADR-026, D5) contributes to `EffectiveBossATK` (§5.5.1) and is realized only when the Boss produces a valid ATK-gem match. Both of the following contribute:
-
-```text
-1. EffectiveBossATK  — the Boss's `ATK` for this attack, after any applicable
-                       Boss ATK modifier (§5.5.1). Derived at attack
-                       resolution; not stored.
-2. The retired per-ability base-damage contribution — `0` for every MVP
-                       ability (D3; the former `BaseDamage` member was removed
-                       under TASK-313, so only its zero contribution remains).
-```
+**Boss ability Step-1 composition.** A Boss ability's Step 1 Base Damage is 0 by default (D3), so the ability deals no direct damage. Any temporary Boss ATK modifier applied by an ability (e.g. Hỏa Long Flame Burst, ADR-026, D5) contributes to `EffectiveBossATK` (§5.5.1) and is realized only when the Boss produces a valid ATK-gem match.
 
 ```text
 BossState.ATK
@@ -659,34 +650,32 @@ Boss ATK modifiers (e.g. Hỏa Long Rage, BOSS_RULES.md §6.2)
       ↓
 EffectiveBossATK            derived at attack resolution — NOT stored
       ↓
-Boss Skill Step 1
-      ↓
-+ the Skill's authored Base Damage
++ BaseDamagePool            derived from confirmed valid Boss ATK-gem matches
       ↓
 Step 1 Base Damage
 ```
 
-The composition is therefore:
+The composition for a Boss attack is therefore:
 
 ```text
-Boss Skill Step 1 Base Damage = EffectiveBossATK + authored Skill Base Damage
+Step 1 Base Damage = EffectiveBossATK + BaseDamagePool
 ```
 
-Consequences, all of which follow from the two contributions above being
-separate Step-1 contributions under §3 step 1:
+Consequences, all of which follow from the shared-board contract (ADR-026, D1, D3):
 
-- **A Boss ATK modifier reaches a Boss Skill's damage through
-  `EffectiveBossATK`.** Hỏa Long's Rage (`BOSS_RULES.md` §6.2) therefore
-  affects a Boss Skill's Step-1 damage — it modifies the `EffectiveBossATK`
-  contribution (§5.5.1), not the Skill's authored value.
-- **The Skill's authored Base Damage is unchanged by a Boss ATK modifier.**
-  The percentage applies to `BossState.ATK` **alone** (§5.5.1 item 3), exactly
-  as §5.4.1 item 2 applies the Pet-side modifier to `PetState.ATK` alone; a
-  Skill/Card base value is a separate Step-1 contribution and is not modified.
+- **A Boss ATK modifier reaches Boss attack damage through `EffectiveBossATK`.**
+  Hỏa Long's Rage (`BOSS_RULES.md` §6.2) modifies the `EffectiveBossATK`
+  contribution (§5.5.1), which is realized when the Boss produces a confirmed
+  valid ATK-gem match.
+- **Boss abilities deal zero direct damage.** Direct damage from Boss abilities
+  is prohibited by default (D3). All five MVP Boss abilities are canonical
+  Boss Cards that deal 0 direct damage and instead modify the board, resources,
+  or combat modifiers (`BOSS_RULES.md` §6.3); the former `BaseDamage` member
+  was retired under TASK-313.
 - **This is the Boss-side counterpart of §5.4.1 item 2**, which spells the
-  same sum out for the Pet (`EffectiveATK + Skill/Card base value +
-  ATK-Gem-generated damage pool`). Under the shared-board contract (ADR-026),
-  a Boss attack contributes `BaseDamagePool` when the Boss produces an ATK match.
+  same sum out for the Pet (`EffectiveATK + ATK-Gem-generated damage pool`).
+  Under the shared-board contract (ADR-026), a Boss attack contributes
+  `BaseDamagePool` when the Boss produces an ATK match.
 - **Step 4 is unaffected.** The Boss side's `Step 4 = 1.0` (above) stands; a
   Boss ATK modifier is a Step-1 input, never a Step-4 factor (§5.5.3).
 
@@ -699,10 +688,9 @@ BossState.ATK                = 100
 Hỏa Long Rage                = +20%
 EffectiveBossATK             = truncate(100 × (100 + 20) / 100) = 120
 
-Flame Burst authored Base Damage = 0          (D3, direct damage removed)
 ATK-Gem BaseDamagePool       = 30             (e.g. 3 ATK gems matched by Boss)
 
-Step 1 Base Damage = 120 + 0 + 30 = 150
+Step 1 Base Damage = 120 + 30 = 150
 ```
 
 If the Boss matched zero ATK gems (`BaseDamagePool = 0`), no attack occurs and
@@ -742,7 +730,7 @@ Turn countdown (§5.3.2).
    longer a valid healing target: ordinary healing applies to a living target
    only, and a heal resolved against a dead one leaves its HP unchanged. This is
    a guard on the Heal Resolution step (item 7), not a second revival mechanic;
-   no MVP card, Relic, Passive, Boss Skill, or Gem may revive a dead entity, and
+   no MVP card, Relic, Passive, Boss Card, or Gem may revive a dead entity, and
    none authors an exception.
 2. Shield effects grant an absorption pool that reduces incoming damage before
    HP is affected. The pool is consumed **before HP** on any Final Damage
@@ -1080,7 +1068,7 @@ This section fixes the consumption point for **duration-based Buff/Debuff**
 Status Effects. It does not change Burn's tick schedule, which
 `BOSS_RULES.md` §6.3.1 item 1 owns and which is consistent with DR1–DR5. It
 does not change `BossState.SkillCooldown`'s separate decrement rule
-(`BOSS_RULES.md` §6.3, `GAME_STATE.md` §2.4.3) — that is a Boss Skill counter,
+(`BOSS_RULES.md` §6.3, `GAME_STATE.md` §2.4.3) — that is a Boss ability cooldown counter,
 not a Status Effect, and no state field here adopts it.
 
 ## 5.4 Stat Modifiers (`BuffDebuff` Consumption)
@@ -1192,15 +1180,18 @@ Buff/Debuff application before step 19a, an instance applied at a later step
 of the **same** Turn cannot affect that Turn's already-resolved attack:
 
 ```text
-Root applied at Turn N step 18b (Boss Skill secondary effect)
+Root applied at Turn N step 18c (Boss Card cast, BossCardCast):
   Turn N   step 15   Root NOT yet applied — this attack is unaffected
-           step 18b  Root applied, RemainingTurns = 2
+           step 18c  Root applied, RemainingTurns = 3 (BOSS_RULES.md §6.3.1 item 3)
+           step 19a  RemainingTurns: 3 → 2
+
+  Turn N+1 step 15   Root IS active — Pet ATK reduced by 30% (first debuffed attack)
            step 19a  RemainingTurns: 2 → 1
 
-  Turn N+1 step 15   Root IS active — Pet ATK reduced by 30%
+  Turn N+2 step 15   Root IS active — Pet ATK reduced by 30% (second debuffed attack)
            step 19a  RemainingTurns: 1 → 0 → expires (§5.3 DR5)
 
-  Turn N+2           inactive — Pet ATK is its normal derived value again
+  Turn N+3           inactive — Pet ATK is its normal derived value again
 ```
 
 An instance whose `RemainingTurns` reaches 0 at step 19a is inactive from that
@@ -1550,35 +1541,31 @@ The modifier enters through **the Step-1 `Attack` input derived from
 that contribution only.
 
 ```text
-Reaches        the Boss BASIC ATTACK — §3.4's "Step 1 — Base Damage =
-               Boss.ATK", whose Step-1 input is EffectiveBossATK under this
-               rule
-Reaches        a Boss SKILL — through its EffectiveBossATK Step-1
-               contribution only (§3.4 "Boss ability Step-1 composition")
-Does NOT       the Skill's authored Base Damage. That authored value is a
-reach          separate Step-1 contribution (§3 step 1) and does not receive
-               the modifier; it is not scaled by Boss ATK
+Reaches        the Boss board-action attack — §3.4's "Step 1 — Base Damage =
+               EffectiveBossATK + BaseDamagePool", where EffectiveBossATK is
+               the stat input under this rule
+Does NOT       Boss abilities — Boss abilities deal zero direct damage (D3;
+apply to       `BOSS_RULES.md` §6.3); the former Boss Skill Base Damage was
+               retired under TASK-313, so no ability damage exists to modify
 ```
 
-The modifier's contribution is present in **every** Boss damage instance,
-because every one has an `EffectiveBossATK` Step-1 contribution. What it never
-reaches is an independently authored Skill Base Damage value, which stays at
-its authored magnitude (`BOSS_RULES.md` §6.3.1).
+The modifier's contribution is present in **every** Boss attack damage instance
+derived from confirmed valid ATK-gem matches, because every one has an
+`EffectiveBossATK` Step-1 contribution. Direct damage from Boss abilities is
+prohibited by default (D3; `BOSS_RULES.md` §6.3), and the legacy Boss Skill form
+and its authored Base Damage were retired under TASK-313.
 
-This makes explicit what §3.4's Boss ability Step-1 composition, and its
+This makes explicit what §3.4's Boss damage composition, and its
 Boss-side counterpart §5.4.1 item 2 for the Pet, already establish: the
-modifier applies to the stat **alone**, and a Skill/Card base value is a
+modifier applies to the stat **alone**, and a base damage pool is a
 separate Step-1 contribution that is **not** modified. `§3.4` is referenced,
 not restated, and is not amended.
 
 Composition: this rule fixes **which** pipeline invocations the modifier feeds,
-and how it reaches them. A Boss Skill's Step 1 is composed of two separate
-Step-1 contributions — `EffectiveBossATK` and the Skill's authored Base Damage
-— and this modifier changes the `EffectiveBossATK` contribution only. The
-composition and its consequences are owned by `§3.4` ("Boss Skill Step-1
-composition") and are referenced, not restated, here. The Skill's authored
-value does not receive the modifier; the Skill's Step-1 damage does, through
-the `EffectiveBossATK` contribution.
+and how it reaches them. A Boss attack's Step 1 is composed of `EffectiveBossATK`
+and `BaseDamagePool` (`§3.4`), and this modifier changes the `EffectiveBossATK`
+contribution only. The composition and its consequences are owned by `§3.4`
+and are referenced, not restated, here.
 
 ### 5.5.3 Scope and Boundaries
 
@@ -1592,9 +1579,8 @@ Does NOT apply  to Step 4 — §3.4 pins the Boss side's Step 4 to 1.0 and is
 Does NOT apply  to a BuffDebuff naming any stat other than "ATK"; the
                 consumer reads TargetStat explicitly and a non-"ATK" value
                 modifies no ATK
-Does NOT apply  to a Boss Skill's independently authored Base Damage value,
-                which stays at its authored magnitude and is not scaled by
-                Boss ATK (§5.5.2; §3.4 "Boss ability Step-1 composition")
+Does NOT apply  to Boss abilities — Boss abilities deal zero direct damage
+                (D3; `BOSS_RULES.md` §6.3; §3.4)
 Does NOT apply  to a DoT tick or a Shield: those Types have their own rules
                 (§5.2 item 3, §4) and are not ATK modifiers
 Does NOT        change §3.1's six-step order, §3.4's Boss-side value, §5.4's

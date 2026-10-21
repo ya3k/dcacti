@@ -1,6 +1,6 @@
 # Boss Rules
 
-**Version:** 2.18 (§4, §4.1, §4.4, §5 item 2, §6 status/table, §6.2.6, §6.3, §6.4 and §7 updated per **TASK-313 / ADR-029 Slice 5**: the legacy `BossSkill` form, its charge gate, the `BossState.SkillCharge` member and the `BossSkillCast` event **no longer exist**; all five MVP abilities are canonical Boss Cards, and `BossCardCast` is the only Boss cast event. Every Boss Card behaviour, cost, cooldown, cast-priority value, tie-break and effect magnitude is unchanged, and the earlier duration-divergence note is preserved as history only. No rebalance and no Fifth Gem change). Prior 2.17: (§6 overview table reconciled to authoritative Boss Card mechanics and zero-direct-damage rules, line 40 gate terminology reconciled to the Slice 5 removal gate, and §4.4 annotated with the five-Boss comparison evidence per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; historical direct-damage/Burn table values preserved as historical context only; no runtime code or effect value changes). Prior 2.16: (§4.3 item 5, §4.4 items 5–6, §6.3, §6.3.1 items 1/3/5, and
+**Version:** 2.19 (§6.2.1 updated per **TASK-315**: reconciled Damage Scope to reflect that Boss abilities deal zero direct damage (D3); Rage modifies `EffectiveBossATK`, which is realized on confirmed ATK-gem match attacks, removing obsolete references to retired Boss Skill Base Damage. Historical records preserved). Prior 2.18: (§4, §4.1, §4.4, §5 item 2, §6 status/table, §6.2.6, §6.3, §6.4 and §7 updated per **TASK-313 / ADR-029 Slice 5**: the legacy `BossSkill` form, its charge gate, the `BossState.SkillCharge` member and the `BossSkillCast` event **no longer exist**; all five MVP abilities are canonical Boss Cards, and `BossCardCast` is the only Boss cast event. Every Boss Card behaviour, cost, cooldown, cast-priority value, tie-break and effect magnitude is unchanged, and the earlier duration-divergence note is preserved as history only. No rebalance and no Fifth Gem change). Prior 2.17: (§6 overview table reconciled to authoritative Boss Card mechanics and zero-direct-damage rules, line 40 gate terminology reconciled to the Slice 5 removal gate, and §4.4 annotated with the five-Boss comparison evidence per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; historical direct-damage/Burn table values preserved as historical context only; no runtime code or effect value changes). Prior 2.16: (§4.3 item 5, §4.4 items 5–6, §6.3, §6.3.1 items 1/3/5, and
 the §6 closing note amended per **TASK-309 / ADR-029 Slice 4**, applying the
 operator-approved values for the four remaining Boss abilities: all four are
 migrated to the Boss Card form (§4.2) with `PowerCost` `flame-burst = 40`,
@@ -657,15 +657,13 @@ Thủy Ma's is event-triggered.
   `BossState` field (the existing Status Effect model — `GAME_STATE.md` §2.3.1,
   §2.4.1).
 - **Damage scope:** Rage reaches Boss damage through the Step-1 `EffectiveBossATK`
-  input — the contribution derived from `BossState.ATK`. That contribution is
-  present in every Boss damage instance, the basic attack included, so Rage
-  reaches both the basic attack and a Boss Skill. What it never reaches is a
-  Skill's **authored Base Damage** value: Flame Burst's 150 (§6.3.1 item 1)
-  remains 150 and does **not** itself receive the +20%; the Skill's Step-1
-  damage carries the modifier only through its `EffectiveBossATK`
-  contribution. The `+20%` is applied to that Step-1 input, **not** to Step 4.
-  Composition owner: `COMBAT_RULES.md` §3.4 ("Boss ability Step-1 composition");
-  consumption rule: `COMBAT_RULES.md` §5.5.
+  input — the contribution derived from `BossState.ATK` (`COMBAT_RULES.md` §3.4,
+  §5.5.1). That contribution is present in every Boss attack damage instance
+  derived from confirmed valid ATK-gem matches. Direct damage from Boss abilities
+  is prohibited by default (D3; `COMBAT_RULES.md` §3.4 item 2), and the legacy
+  Boss Skill form and its authored Base Damage were retired under TASK-313. Rage
+  applies solely to `BossState.ATK` as a Step-1 input (`+20%`), never to Step 4.
+  Composition owner: `COMBAT_RULES.md` §3.4; consumption rule: `COMBAT_RULES.md` §5.5.
 - **When it applies:** at Boss Response step 18a (`GAME_RULES.md` §17 step
   18a). The application does not retroactively modify damage already resolved
   earlier in that Turn.

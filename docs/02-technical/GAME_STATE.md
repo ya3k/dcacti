@@ -1,6 +1,6 @@
 # Game State
 
-**Version:** 2.35 (§2.4, §2.4.1 and §2.4.3 updated per **TASK-313 / ADR-029 Slice 5**: the retired `BossState.SkillCharge` member is removed from the §2.4 tree, and the persisted battle-state JSON no longer carries a `skillCharge` member — a legacy Redis snapshot that still contains one deserializes under the existing tolerant-reader basis (unknown members ignored; verified by a serialization lifecycle test) with the value discarded, and no shim or migration is added; **`Power` and `SkillCooldown` are preserved unchanged**, and every other member, lifecycle, write-back and delivery rule stays as it was). Prior 2.34: (§2.4 and §2.4.3 `SkillCharge` gate terminology reconciled to the Slice 5 removal gate per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; no state members added, removed, or retyped). Prior 2.33: (§2.4 and §2.4.3 **clarified** per **TASK-308 / ADR-029
+**Version:** 2.36 (§2.4.5 and §5.1.1 updated per **TASK-315**: reconciled Stun behavior description to match the one-action response policy (prevents both Boss Card casting and board match swap actions); updated status effect lifecycle text to refer to Boss response step 18 and the Boss ability cooldown counter; historical records preserved). Prior 2.35: (§2.4, §2.4.1 and §2.4.3 updated per **TASK-313 / ADR-029 Slice 5**: the retired `BossState.SkillCharge` member is removed from the §2.4 tree, and the persisted battle-state JSON no longer carries a `skillCharge` member — a legacy Redis snapshot that still contains one deserializes under the existing tolerant-reader basis (unknown members ignored; verified by a serialization lifecycle test) with the value discarded, and no shim or migration is added; **`Power` and `SkillCooldown` are preserved unchanged**, and every other member, lifecycle, write-back and delivery rule stays as it was). Prior 2.34: (§2.4 and §2.4.3 `SkillCharge` gate terminology reconciled to the Slice 5 removal gate per **TASK-311 / ADR-029 Slice 5 Removal-Readiness Reconciliation**; no state members added, removed, or retyped). Prior 2.33: (§2.4 and §2.4.3 **clarified** per **TASK-308 / ADR-029
 Slice 3** without changing the state model: the Boss Card definition, its active
 form and its cast-priority score are battle-start **content inputs** resolved
 exactly once at creation and cached with the Boss content input — they are **not**
@@ -2423,9 +2423,9 @@ BOSS_RULES.md §5.
 
 ### 2.4.5 Stunned
 
-Stunned is a temporary state that prevents the Boss from acting (no Skill,
-no basic attack). Stun duration is measured in Turns and is tracked by
-`StatusEffects[]` (§2.3.1, §5.1.1 — `Type = "State"`, Turn-countdown model).
+Stunned is a temporary state that prevents the Boss from acting (neither a Boss
+Card cast nor a board match action). Stun duration is measured in Turns and is
+tracked by `StatusEffects[]` (§2.3.1, §5.1.1 — `Type = "State"`, Turn-countdown model).
 When Stun is applied, `State` becomes `Stunned`; when the duration expires,
 `State` reverts to `Idle`. `State` is a materialized reflection of the Stun
 instance, not a second duration counter: the instance's `RemainingTurns` is
@@ -2868,7 +2868,7 @@ reinterpreted here. The resolution position it runs at is
 ```text
 Turn N resolution (one accepted action)
   ↓
-... steps 1–18, including step 18b Boss Skill apply/refresh
+... steps 1–18, including step 18 Boss response (action selection & resolution)
   ↓
 step 19a — Status Effect tick and duration consumption
     for each active instance using the Turn countdown:
@@ -2891,7 +2891,7 @@ Sequence (§5.1)
    regardless of how many apply/refresh operations occurred earlier in that
    same Turn (`COMBAT_RULES.md` §5.3 DR2). No other resolution step mutates
    `RemainingTurns`; in particular the Turn increment does **not** (§2.4.3's
-   `SkillCooldown` rule is a separate Boss Skill counter and is not adopted
+   `SkillCooldown` rule is a separate Boss ability cooldown counter and is not adopted
    here).
 3. **Apply timing within the Turn does not change the count.** An instance
    applied or refreshed before step 19a is decremented at that same Turn's
