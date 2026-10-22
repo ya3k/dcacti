@@ -867,8 +867,10 @@ Payload:  Outcome, final BattleState summary, reward summary (BattleWon
    the wire schema (discriminator, property casing, enum representation,
    optionality, and each event's members); this document owns what each event
    means and what its payload contains (§2) and does not restate the wire
-   shape. The split is *semantics here, wire schema there* — neither document
-   defers to the other, and the schema is not an implementation detail.
+   shape. The `ReceiveEvents` envelope carries `intermediatePetHp` alongside
+   `events[]` as transient resolution metadata for intermediate HP presentation
+   (`SIGNALR_PROTOCOL.md` §3 item 4). The split is *semantics here, wire schema there* —
+   neither document defers to the other, and the schema is not an implementation detail.
 2. Whether/how events are persisted as a log: not persisted in MVP (see
    `ARCHITECTURE.md` §5.2 — no event sourcing).
 3. Client-side handling of each event: client implementation detail, not a

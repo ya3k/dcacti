@@ -36,7 +36,8 @@ public readonly record struct SwapExecutionResult
         CascadeResolver.CascadeResult resolution,
         IReadOnlyList<BattleEvent> events,
         ResourceGeneration? resources,
-        bool isIdempotentReplay = false)
+        bool isIdempotentReplay = false,
+        int? intermediatePetHp = null)
     {
         IsAccepted = isAccepted;
         Reason = reason;
@@ -45,12 +46,20 @@ public readonly record struct SwapExecutionResult
         _events = events;
         _resources = resources;
         IsIdempotentReplay = isIdempotentReplay;
+        IntermediatePetHp = intermediatePetHp;
     }
 
     private readonly BattleState? _state;
     private readonly CascadeResolver.CascadeResult _resolution;
     private readonly IReadOnlyList<BattleEvent>? _events;
     private readonly ResourceGeneration? _resources;
+
+    /// <summary>
+    /// The Pet's actual authoritative HP after player-cycle healing and HP modifiers have been
+    /// applied, and before Boss retaliation changes Pet HP.
+    /// Present only for accepted Swap actions.
+    /// </summary>
+    public int? IntermediatePetHp { get; }
 
     /// <summary>
     /// True when this result is an idempotent response to a previously committed action (ADR-025).
@@ -221,7 +230,7 @@ public readonly record struct SwapExecutionResult
 
         // Every other member is carried across unchanged: this replaces the event
         // list and nothing else.
-        return new SwapExecutionResult(true, Reason, _state, _resolution, events, _resources!.Value);
+        return new SwapExecutionResult(true, Reason, _state, _resolution, events, _resources!.Value, isIdempotentReplay: IsIdempotentReplay, intermediatePetHp: IntermediatePetHp);
     }
 
     /// <summary>
@@ -261,7 +270,7 @@ public readonly record struct SwapExecutionResult
                 + "(MATCH3_RULES.md §2.1.5).");
         }
 
-        return new SwapExecutionResult(true, Reason, state, _resolution, _events ?? [], _resources!.Value);
+        return new SwapExecutionResult(true, Reason, state, _resolution, _events ?? [], _resources!.Value, isIdempotentReplay: IsIdempotentReplay, intermediatePetHp: IntermediatePetHp);
     }
 
     /// <summary>
@@ -298,8 +307,9 @@ public readonly record struct SwapExecutionResult
         BattleState state,
         CascadeResolver.CascadeResult resolution,
         IReadOnlyList<BattleEvent> events,
-        ResourceGeneration resources) =>
-        new(true, SwapRejectionReason.None, state, resolution, events, resources);
+        ResourceGeneration resources,
+        int? intermediatePetHp = null) =>
+        new(true, SwapRejectionReason.None, state, resolution, events, resources, intermediatePetHp: intermediatePetHp);
 }
 
 /// <summary>
@@ -559,7 +569,7 @@ public static class SwapExecutor
             LastCommittedSwapPair = CommittedSwapPair.FromCells(request.From, request.To, state.Sequence + 1, request.ActionId),
         };
 
-        return SwapExecutionResult.Committed(resolved, resolution, events, generation);
+        return SwapExecutionResult.Committed(resolved, resolution, events, generation, intermediatePetHp: petState.HP);
     }
 
     /// <summary>

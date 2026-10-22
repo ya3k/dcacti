@@ -310,6 +310,179 @@ public class HpGemMechanicsAuditTests
     }
 
     // =======================================================================
+    // 3. Intermediate Pet HP capture and presentation invariants
+    // =======================================================================
+
+    [Fact]
+    public async Task HpGems_ShouldCaptureIntermediatePetHp_AfterHealingAndBeforeRetaliation()
+    {
+        var (repository, service, created) = await NewBattleAsync();
+
+        var pinned = RoundTestSupport.PlayerMatch(GemType.Hp, created.RngState);
+        await RoundTestSupport.PinAsync(
+            repository,
+            created,
+            pinned.Board,
+            bossState: created.BossState with { HP = BossPinnedHp },
+            petState: created.PetState with { HP = PetPinnedHp, MaxHP = PetMaxHp });
+
+        var result = await service.ExecuteSwapAsync(BattleId, pinned.Swap);
+
+        Assert.NotNull(result);
+        var round = result!.Value;
+
+        var playerHpCells = HpCellsMatchedIn(RoundTestSupport.PlayerBoardEvents(round));
+        Assert.True(playerHpCells > 0, "the Player fixture must clear at least one HP Gem");
+
+        var healAmount = playerHpCells * ResourceGenerator.HpGemBaseHeal;
+        var expectedIntermediateHp = Math.Min(PetPinnedHp + healAmount, PetMaxHp);
+        var bossDamage = DamageDealtBy(round, DamageParty.Boss);
+        var expectedFinalHp = Math.Max(0, expectedIntermediateHp - bossDamage);
+
+        Assert.Equal(expectedIntermediateHp, round.IntermediatePetHp);
+        Assert.Equal(expectedFinalHp, round.State.PetState.HP);
+        if (bossDamage > 0)
+        {
+            Assert.NotEqual(round.IntermediatePetHp, round.State.PetState.HP);
+        }
+    }
+
+    [Fact]
+    public async Task IntermediatePetHp_ShouldRespectMaxHpClamping()
+    {
+        var (repository, service, created) = await NewBattleAsync();
+
+        var pinned = RoundTestSupport.PlayerMatch(GemType.Hp, created.RngState);
+        // Pet is 5 HP away from MaxHP; cleared HP gems (+60) will exceed MaxHP.
+        await RoundTestSupport.PinAsync(
+            repository,
+            created,
+            pinned.Board,
+            bossState: created.BossState with { HP = BossPinnedHp },
+            petState: created.PetState with { HP = PetMaxHp - 5, MaxHP = PetMaxHp });
+
+        var result = await service.ExecuteSwapAsync(BattleId, pinned.Swap);
+
+        Assert.NotNull(result);
+        var round = result!.Value;
+
+        Assert.Equal(PetMaxHp, round.IntermediatePetHp);
+        var bossDamage = DamageDealtBy(round, DamageParty.Boss);
+        Assert.Equal(Math.Max(0, PetMaxHp - bossDamage), round.State.PetState.HP);
+    }
+
+    [Fact]
+    public async Task IntermediatePetHp_ShouldNotBeCorruptedByShieldAbsorption()
+    {
+        var (repository, service, created) = await NewBattleAsync();
+
+        var pinned = RoundTestSupport.PlayerMatch(GemType.Hp, created.RngState);
+        var shield = StatusEffect.TriggerBased(
+            "Shield",
+            StatusEffectType.Shield,
+            StatusEffectSource.Player,
+            magnitude: 500,
+            expiryCondition: StatusEffect.ShieldDepletedCondition);
+
+        await RoundTestSupport.PinAsync(
+            repository,
+            created,
+            pinned.Board,
+            bossState: created.BossState with { HP = BossPinnedHp },
+            petState: created.PetState with
+            {
+                HP = PetPinnedHp,
+                MaxHP = PetMaxHp,
+                ActiveStatusEffects = [shield]
+            });
+
+        var result = await service.ExecuteSwapAsync(BattleId, pinned.Swap);
+
+        Assert.NotNull(result);
+        var round = result!.Value;
+
+        var playerHpCells = HpCellsMatchedIn(RoundTestSupport.PlayerBoardEvents(round));
+        var expectedIntermediateHp = Math.Min(PetPinnedHp + (playerHpCells * ResourceGenerator.HpGemBaseHeal), PetMaxHp);
+
+        // Shield absorbed the retaliation damage, so Pet HP was not reduced by Boss damage.
+        // Under client-side reversal, adding pre-mitigation damage to settled HP would have corrupted intermediate HP.
+        // Server intermediatePetHp remains exact.
+        Assert.Equal(expectedIntermediateHp, round.IntermediatePetHp);
+        Assert.Equal(expectedIntermediateHp, round.State.PetState.HP);
+    }
+
+    [Fact]
+    public async Task IntermediatePetHp_OnLethalRetaliation_ShouldPreservePreRetaliationHpWhileFinalHpIsZero()
+    {
+        var (repository, service, created) = await NewBattleAsync();
+
+        var state = created with
+        {
+            PetState = created.PetState with { HP = 10, MaxHP = PetMaxHp },
+            BossState = created.BossState with { ATK = 5000, HP = BossPinnedHp }
+        };
+
+        SwapExecutionResult? lethalRound = null;
+        var expectedIntermediate = 0;
+
+        for (var i = 0; i < 40; i++)
+        {
+            var pinned = RoundTestSupport.PlayerMatch(GemType.Hp, state.RngState, state.LastCommittedSwapPair);
+            await RoundTestSupport.PinAsync(
+                repository,
+                state,
+                pinned.Board,
+                bossState: state.BossState with { ATK = 5000, HP = BossPinnedHp },
+                petState: state.PetState with { HP = 10, MaxHP = PetMaxHp });
+
+            var result = (await service.ExecuteSwapAsync(BattleId, pinned.Swap))!.Value;
+            var playerHpCells = HpCellsMatchedIn(RoundTestSupport.PlayerBoardEvents(result));
+            expectedIntermediate = 10 + (playerHpCells * ResourceGenerator.HpGemBaseHeal);
+
+            if (result.Events.Any(e => e.Type == BattleEventType.BattleLost))
+            {
+                lethalRound = result;
+                break;
+            }
+
+            state = result.State with
+            {
+                PetState = result.State.PetState with { HP = 10 }
+            };
+        }
+
+        Assert.NotNull(lethalRound);
+        Assert.Equal(expectedIntermediate, lethalRound!.Value.IntermediatePetHp);
+        Assert.Equal(0, lethalRound.Value.State.PetState.HP);
+    }
+
+    [Fact]
+    public async Task IntermediatePetHp_InNoHealRound_ShouldMatchPreRoundHpWithoutFalseInflation()
+    {
+        var (repository, service, created) = await NewBattleAsync();
+
+        var pinned = RoundTestSupport.PlayerMatch(GemType.Atk, created.RngState);
+        await RoundTestSupport.PinAsync(
+            repository,
+            created,
+            pinned.Board,
+            bossState: created.BossState with { HP = BossPinnedHp },
+            petState: created.PetState with { HP = PetPinnedHp, MaxHP = PetMaxHp });
+
+        var result = await service.ExecuteSwapAsync(BattleId, pinned.Swap);
+
+        Assert.NotNull(result);
+        var round = result!.Value;
+
+        // No HP gems cleared: intermediatePetHp matches pre-round HP exactly
+        Assert.Equal(0, round.Resources.ClearedGemCounts.Hp);
+        Assert.Equal(PetPinnedHp, round.IntermediatePetHp);
+
+        var bossDamage = DamageDealtBy(round, DamageParty.Boss);
+        Assert.Equal(Math.Max(0, PetPinnedHp - bossDamage), round.State.PetState.HP);
+    }
+
+    // =======================================================================
     // Fixtures
     // =======================================================================
 

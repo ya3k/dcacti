@@ -429,7 +429,7 @@ Ping(clientSequence?)
 # 3. Server → Client (Event Delivery)
 
 ```text
-ReceiveEvents(battleId, serverSequence, events[])
+ReceiveEvents(battleId, serverSequence, events[], intermediatePetHp?)
 ```
 
 1. All events produced by resolving one action (`GAME_EVENTS.md` §1) are
@@ -443,6 +443,23 @@ ReceiveEvents(battleId, serverSequence, events[])
    `ReceiveEvents` call (MVP is single-player-vs-Boss, so in practice this
    is the one connected client, but the group mechanism is what allows a
    reconnect to simply rejoin).
+4. `intermediatePetHp` is an optional integer member of the `ReceiveEvents` payload
+   envelope (`int?`, omitted when `null` via `WhenWritingNull`):
+   - **Meaning:** Authoritative Pet HP at the intermediate point in round resolution:
+     after player-cycle healing and HP modifiers have been applied (`GAME_RULES.md`
+     §17 step 14), and before Boss retaliation changes Pet HP (step 18d).
+   - **Lifecycle point:** Captured during Swap resolution after player-side healing
+     (with MaxHP clamping and active healing modifiers applied) and prior to Boss attack / retaliation.
+   - **Optionality:** Present on accepted `Swap` actions. Omitted (`null` / absent)
+     for non-Swap resolutions (e.g. `CardCast`, `PetSkillCast`) or when no intermediate
+     player board cycle exists.
+   - **Client presentation:** Presented at the phase closing the player's board cycle,
+     after player matches and cascades, before the Boss turn banner and retaliation.
+     The client renders this exact value directly and never reconstructs intermediate
+     HP from damage or matched gems. If the field is omitted, absent, or malformed,
+     the client safely falls back to holding presentation until retaliation/convergence.
+   - **Non-persistence:** Carried strictly on the event batch envelope as transient
+     resolution metadata. It is never stored in `BattleState`, Redis, or PostgreSQL.
 
 ## 3.1 Delivery on a Board Resolution
 
@@ -455,7 +472,7 @@ half of a Swap's events without the second half on the same call.
 server                                        client
   ├── resolve the Swap  (MATCH3_RULES.md §2–§8)
   ├── write BattleState back under the new Sequence   (GAME_STATE.md §5.1)
-  ├── ReceiveEvents(battleId, newSequence, events[])  →  §3
+  ├── ReceiveEvents(battleId, newSequence, events[], intermediatePetHp?)  →  §3
   └── write-back result to the caller                 →  §5
 ```
 
@@ -511,15 +528,15 @@ the single owner: `GAME_EVENTS.md` owns what each event *means* and what each
 payload *contains* (§2) and defers its wire shape here (`GAME_EVENTS.md` §3
 item 1); this section fixes that shape and does not restate §2's semantics.
 
-The envelope of §3 is unchanged by this section: three members, `battleId`,
-`serverSequence`, `events[]`. What follows defines the array's items.
+The envelope of §3 carries four members: `battleId`, `serverSequence`, `events[]`,
+and the optional `intermediatePetHp` (§3 item 4). What follows defines the array's items.
 
 ### 3.2.1 The Serialization Boundary
 
 ```text
 BattleEvent                    Domain (GameServer.Domain.Match3)
         ↓  transport projection       Application / API — a pure field mapping
-ReceiveEvents payload          { battleId, serverSequence, events[] }
+ReceiveEvents payload          { battleId, serverSequence, events[], intermediatePetHp? }
         ↓  SignalR JSON
 Frontend                       opaque (ARCHITECTURE.md §2.2.1 rule 4)
 ```
@@ -849,8 +866,13 @@ under ADR-028.
 4. **Event ordering is unchanged.** This section defines item *shapes*, never
    their order: the array remains the resolution's own order
    (`GAME_RULES.md` §17, `GAME_EVENTS.md` §1.1, §1.3).
-5. **The envelope is unchanged.** `ReceiveEvents(battleId, serverSequence,
-   events[])` keeps exactly its three members (§3, §3.3).
+5. **The envelope shape is owned by §3.** `ReceiveEvents(battleId, serverSequence,
+   events[], intermediatePetHp?)` carries the core members (`battleId`, `serverSequence`,
+   `events[]`) and the optional `intermediatePetHp` (§3 item 4). The optional field conveys
+   transient intermediate presentation metadata for the player's board cycle; it is omitted
+   when absent or non-applicable, preserving backward compatibility. It is never part of
+   persistent battle state (`BattleState`, Redis, PostgreSQL) and does not alter settled
+   authoritative battle state.
 
 ### 3.2.13 `DamageCalculated`
 
@@ -2442,7 +2464,11 @@ petState
       §3.2.13–§3.2.15) or expect a heal event (none exists), and does not
       re-derive `power` from `PowerChanged` (§3.2.24) or from any event: §7
       item 2 discards events on resync and never replays them, so the state
-      projection is the reconstruction-safe carrier. `power` also does **not**
+      projection is the reconstruction-safe carrier. For intermediate Pet HP
+      presentation between player-cycle healing and Boss retaliation, the client
+      consumes the server-authoritative `intermediatePetHp` delivered on the
+      `ReceiveEvents` envelope (§3 item 4) and never reconstructs HP by adding
+      Boss damage or counting matched gems. `power` also does **not**
       authorize a client-side cost, affordability, or cast-legality
       computation: the effective cost is composed server-side
       (`CARD_RULES.md` §3.6), `CardCostModifiers[]` remains undelivered (§4

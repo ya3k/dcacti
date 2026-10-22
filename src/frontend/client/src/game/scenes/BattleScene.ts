@@ -738,6 +738,28 @@ interface PresentationPhase {
    * place in the timeline (`selectBatchCalloutEvent`).
    */
   readonly callout?: EventCallout;
+  /**
+   * The Pet `hp / maxHp` pair the phase that closes the player's board cycle
+   * presents, or absent for every other phase.
+   *
+   * **It exists because the Pet's healing is a state-only change.** An HP-Gem
+   * heal emits no Battle Event and the protocol delivers no heal amount
+   * (`GAME_EVENTS.md` §2, `SIGNALR_PROTOCOL.md` §4.3 item 15); a round's single
+   * `BattleStateUpdated` push carries only the **settled** post-round
+   * `petState.hp`, which already includes the Boss's step-18d damage when the
+   * Boss attacks in that same round (`GAME_RULES.md` §17 steps 12–18d). A player
+   * who matched HP Gems therefore sees nothing of the heal until the
+   * `retaliation` phase — or, when the Boss does not attack, until convergence
+   * at the timeline's end.
+   *
+   * To present the heal authoritatively at the correct lifecycle boundary, the
+   * server supplies `intermediatePetHp` on the `ReceiveEvents` envelope
+   * representing the Pet's actual HP after player-cycle healing and before Boss
+   * retaliation. The scene reads this server-authoritative value directly and
+   * pairs it with the delivered `maxHp`. It never computes, derives, or
+   * reconstructs HP from damage or matched gems, and never mutates battle state.
+   */
+  readonly resolvedPetHp?: { readonly hp: number; readonly maxHp: number };
 }
 
 /**
@@ -1245,8 +1267,11 @@ export class BattleScene extends Phaser.Scene {
    * HP panels' delivered values are held at their previous presentation and
    * released by the timeline — by the settle phase for the board, by the damage
    * and retaliation phases for the panels, and by the timeline's own end, an
-   * abort, or a newer push for anything left over. Nothing is ever computed: the
-   * held values are the delivered ones, released later rather than derived.
+   * abort, or a newer push for anything left over. Nothing authoritative is ever
+   * computed: the held values are the delivered ones, released later rather than
+   * derived, and the Pet pair the player's board-cycle phase presents
+   * (`PresentationPhase.resolvedPetHp`) is the server-authoritative intermediate
+   * value — never replaces or writes back the delivered values.
    */
   private heldSequence: number | null = null;
   /**
@@ -2393,7 +2418,9 @@ export class BattleScene extends Phaser.Scene {
    * board                  the settle phase converges it (PD-1/PD-8)
    * Boss hp / maxHp        the damage phase presents the pair, and the Boss
    *                        Enraged label and callout with it
-   * Pet hp / maxHp         the retaliation phase presents the pair
+   * Pet hp / maxHp         the phase closing the player's board cycle presents
+   *                        the intermediate pair (`PresentationPhase.resolvedPetHp`),
+   *                        and the retaliation phase presents the settled pair
    * Combo / Match count    the combo phase presents them (ComboChanged)
    * Pet Power value/gauge  the power phase presents them (PowerChanged)
    * Passive progress/gauge the Pet's own passive phase presents them
@@ -2917,8 +2944,21 @@ export class BattleScene extends Phaser.Scene {
 
   /** Presents the active Pet's delivered `hp / maxHp` — the readout and its gauge. */
   private presentPetHp(state: RuntimeBattleState, animate = true): void {
-    this.petHpText?.setText(`${state.petState.hp} / ${state.petState.maxHp}`);
-    this.updateGauge(this.petHpGauge, state.petState.hp, state.petState.maxHp, animate);
+    this.presentPetHpValues(state.petState.hp, state.petState.maxHp, animate);
+  }
+
+  /**
+   * Presents one Pet `hp / maxHp` pair as text and as its gauge.
+   *
+   * The **delivered** pair is passed by `presentPetHp`; the one other caller is
+   * the player's board-cycle phase, which passes the server-authoritative
+   * intermediate pair (see `PresentationPhase.resolvedPetHp`). Either way the
+   * numbers are written as given and nothing here damages, heals, clamps, or
+   * reconstructs state — the gauge is the only thing derived from them.
+   */
+  private presentPetHpValues(hp: number, maxHp: number, animate = true): void {
+    this.petHpText?.setText(`${hp} / ${maxHp}`);
+    this.updateGauge(this.petHpGauge, hp, maxHp, animate);
   }
 
   /**
@@ -3041,11 +3081,13 @@ export class BattleScene extends Phaser.Scene {
    * refreshed, decremented, expired, or removed (§4.3 item 14).
    *
    * `hold` decides *when* the timeline-owned readouts are presented (operator
-   * decision D-2): the delivered `hp / maxHp` pair is presented by the retaliation
-   * phase, the Power value and gauge by the power phase, the Passive progress and
-   * gauge by the Pet's own passive phase, and the Status Effect instances by
-   * convergence at the timeline's end. The Pet's identity is presented
-   * immediately, because it is not one of them.
+   * decision D-2): the intermediate `hp / maxHp` pair is presented by the phase that
+   * closes the player's board cycle — as the server-authoritative
+   * `PresentationPhase.resolvedPetHp` — and then by the retaliation phase as the
+   * delivered settled pair, the Power value and gauge by the power phase, the
+   * Passive progress and gauge by the Pet's own passive phase, and the Status
+   * Effect instances by convergence at the timeline's end. The Pet's identity is
+   * presented immediately, because it is not one of them.
    */
   private renderPetHud(
     state: RuntimeBattleState | null,
@@ -4623,7 +4665,7 @@ export class BattleScene extends Phaser.Scene {
       this.settleHeldPresentation();
     }
 
-    const phases = this.buildPresentationPhases(presented);
+    const phases = this.buildPresentationPhases(presented, envelope);
 
     // **Presentability is decided before the resolution is committed.** The
     // batch has been recorded and it is strictly newer than the newest accepted
@@ -4916,8 +4958,8 @@ export class BattleScene extends Phaser.Scene {
    *               `source`/`target` (`SIGNALR_PROTOCOL.md` §3.2.14); it also owns
    *               the Boss `hp / maxHp` pair and the Enrage label/callout the pair
    *               drives
-   * retaliation  the Boss's response, classified the same way; it owns the Pet
-   *               `hp / maxHp` pair
+   * retaliation  the Boss's response, classified the same way; it owns the
+   *               delivered (settled) Pet `hp / maxHp` pair
    * cast / relic / boss-card
    *               the delivered action's own step, attributed to the actor the
    *               adapter derived; a `boss-card` step presents its
@@ -4944,7 +4986,8 @@ export class BattleScene extends Phaser.Scene {
    * compared with the other.
    */
   private buildPresentationPhases(
-    presented: readonly InBattleServerEvent[]
+    presented: readonly InBattleServerEvent[],
+    envelope?: BattleEventsEnvelope
   ): PresentationPhase[] {
     const phases: PresentationPhase[] = [];
 
@@ -5300,6 +5343,41 @@ export class BattleScene extends Phaser.Scene {
       });
     }
 
+    // **The Pet HP presentation point** (`PresentationPhase.resolvedPetHp`).
+    //
+    // The player's intermediate Pet HP is authoritatively delivered by the server
+    // in `envelope.intermediatePetHp` representing the Pet's actual HP after
+    // player-cycle healing and HP modifiers have been applied, and before Boss
+    // retaliation changes Pet HP (`GAME_RULES.md` §17 steps 12–18d).
+    //
+    // It is presented by the phase that closes the player's board cycle: after its
+    // Matches and cascades, and before the Boss's turn banner and its retaliation.
+    // The scene does not compute or infer this value from damage or matched gems;
+    // it displays the server-authoritative value directly. The delivered settled pair
+    // still owns the `retaliation` phase and convergence. If intermediatePetHp is
+    // absent or invalid, the safe fallback holds presentation until retaliation/convergence.
+    const resolvedState = this.currentBattleState;
+    const petHpPhase = BattleScene.playerBoardCycleEndIndex(phases);
+
+    if (
+      resolvedState !== null &&
+      petHpPhase !== -1 &&
+      phases[petHpPhase].events.length > 0 &&
+      envelope?.intermediatePetHp !== undefined &&
+      envelope?.intermediatePetHp !== null &&
+      typeof envelope.intermediatePetHp === 'number' &&
+      Number.isFinite(envelope.intermediatePetHp) &&
+      envelope.intermediatePetHp >= 0
+    ) {
+      phases[petHpPhase] = {
+        ...phases[petHpPhase],
+        resolvedPetHp: {
+          hp: envelope.intermediatePetHp,
+          maxHp: resolvedState.petState.maxHp,
+        },
+      };
+    }
+
     return phases;
   }
 
@@ -5456,21 +5534,61 @@ export class BattleScene extends Phaser.Scene {
     let last = -1;
 
     for (let index = 0; index < phases.length; index++) {
-      const kind = phases[index].kind;
-
-      if (
-        kind === 'swap' ||
-        kind === 'match' ||
-        kind === 'cascade' ||
-        kind === 'gravity-drop' ||
-        kind === 'refill-spawn' ||
-        kind === 'gem-summary'
-      ) {
+      if (BattleScene.isBoardCyclePhaseKind(phases[index].kind)) {
         last = index;
       }
     }
 
     return last;
+  }
+
+  /**
+   * The position of the phase that closes the **player's** board cycle, or `-1`
+   * when this batch presents no board phase at all.
+   *
+   * It is the earliest phase boundary after the player's Matches and cascades have
+   * been presented at which the resolved Pet HP can be shown: the player's board
+   * cycle is the first run of board-cycle phases the delivered batch opens
+   * (`swap` / `match` / `cascade` / `gravity-drop` / `refill-spawn` /
+   * `gem-summary`), and the step that closes it is the last phase of that run.
+   * The run ends at the first phase that is not board work: the player's damage
+   * report, the Boss's turn banner, the settle transition, or the Boss's
+   * retaliation — all of which come after the step-12/14 heal and after the
+   * board work that produced it (`GAME_EVENTS.md` §1, `GAME_RULES.md` §17).
+   *
+   * A batch with no board cycle at all — a Card / Pet-Skill cast — returns `-1`:
+   * no Match produced a heal, so no Pet HP presentation point exists for it. A
+   * synthetic step that carries no delivered event (the submitted-pair fallback
+   * swap) is not a presentation point either; the caller requires the selected
+   * phase to hold at least one delivered event.
+   */
+  private static playerBoardCycleEndIndex(phases: readonly PresentationPhase[]): number {
+    let last = -1;
+
+    for (let index = 0; index < phases.length; index++) {
+      if (BattleScene.isBoardCyclePhaseKind(phases[index].kind)) {
+        last = index;
+        continue;
+      }
+
+      if (last !== -1) {
+        break;
+      }
+    }
+
+    return last;
+  }
+
+  /** Whether one phase kind belongs to a board cycle (the delivered board work). */
+  private static isBoardCyclePhaseKind(kind: PresentationPhaseKind): boolean {
+    return (
+      kind === 'swap' ||
+      kind === 'match' ||
+      kind === 'cascade' ||
+      kind === 'gravity-drop' ||
+      kind === 'refill-spawn' ||
+      kind === 'gem-summary'
+    );
   }
 
   /**
@@ -5559,8 +5677,11 @@ export class BattleScene extends Phaser.Scene {
    * (`presentPhaseReadouts`), the settle phase applies the authoritative board,
    * the two combat phases move the side the delivered events name — and the Boss's
    * Enrage label with the Boss's HP — a `boss-card` step presents its
-   * own delivered cast, and the outcome phase hands off. No step computes a gameplay
-   * value, and none is conditioned on one.
+   * own delivered cast, and the outcome phase hands off. The Pet HP pair the
+   * player's board-cycle phase carries (`PresentationPhase.resolvedPetHp`) is the
+   * server-authoritative intermediate value: delivered on the resolution envelope,
+   * shown once, and never stored as persistent battle state. No step computes an
+   * **authoritative** gameplay value, and no presentation is conditioned on one.
    *
    * **Order inside the phase.** The batch's single callout is raised first, then
    * the step's own presentation. That keeps one statement on the callout line —
@@ -5645,6 +5766,15 @@ export class BattleScene extends Phaser.Scene {
         // `match`, `cascade`, `feedback`, `cast` and `relic` present through the
         // readouts and floaters their own events carry, below.
         break;
+    }
+
+    // The intermediate Pet `hp / maxHp` pair, presented by the phase that closes the
+    // player's board cycle (`PresentationPhase.resolvedPetHp`). It is the
+    // server-authoritative intermediate value delivered on the resolution envelope
+    // (`intermediatePetHp`), shown once before the Boss's retaliation; the delivered
+    // settled pair is still what the `retaliation` phase and convergence present.
+    if (phase.resolvedPetHp) {
+      this.presentPetHpValues(phase.resolvedPetHp.hp, phase.resolvedPetHp.maxHp);
     }
 
     this.presentPhaseReadouts(phase);

@@ -2139,10 +2139,16 @@ export class GameRuntime implements GameRuntimePort {
       return null;
     }
 
+    const intermediatePetHp =
+      typeof candidate.intermediatePetHp === 'number' && Number.isFinite(candidate.intermediatePetHp)
+        ? candidate.intermediatePetHp
+        : null;
+
     return {
       battleId: candidate.battleId,
       serverSequence: candidate.serverSequence,
       events: candidate.events,
+      ...(intermediatePetHp !== null ? { intermediatePetHp } : {}),
     };
   }
 

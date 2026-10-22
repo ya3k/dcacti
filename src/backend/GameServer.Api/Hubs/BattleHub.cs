@@ -701,7 +701,8 @@ public record GetBattleStateResponse(
 public record ReceiveEventsPayload(
     [property: JsonPropertyName("battleId")] string BattleId,
     [property: JsonPropertyName("serverSequence")] int ServerSequence,
-    [property: JsonPropertyName("events")] IReadOnlyList<BattleEventWireDto> Events);
+    [property: JsonPropertyName("events")] IReadOnlyList<BattleEventWireDto> Events,
+    [property: JsonPropertyName("intermediatePetHp")] [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? IntermediatePetHp = null);
 
 /// <summary>
 /// Thin realtime communication boundary (SIGNALR_PROTOCOL.md, ARCHITECTURE.md §1/§2.1).
@@ -1374,7 +1375,10 @@ public class BattleHub : Hub
             // resolution produced it — not re-sorted, not filtered, not regrouped,
             // and not derived from the final board — mapped onto the §3.2 wire
             // schema, which is the only transformation applied to it.
-            BattleEventWireProjection.Project(result.Events));
+            BattleEventWireProjection.Project(result.Events),
+
+            // Authoritative Pet HP after player-cycle healing and before Boss retaliation.
+            result.IntermediatePetHp);
 
     /// <summary>
     /// Projects the domain state onto the §4 wire payload.

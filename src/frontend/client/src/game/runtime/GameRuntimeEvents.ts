@@ -85,6 +85,14 @@ export interface BattleEventsEnvelope {
   readonly serverSequence: number;
   /** Ordered events produced by resolving one action. Opaque to the runtime. */
   readonly events: readonly unknown[];
+  /**
+   * The Pet's actual authoritative HP after player-cycle healing and HP modifiers have
+   * been applied, and before Boss retaliation changes Pet HP (`GAME_RULES.md` §17
+   * steps 12–18d, `SIGNALR_PROTOCOL.md` §3).
+   *
+   * Present on accepted Swap resolutions; omitted or null when not applicable.
+   */
+  readonly intermediatePetHp?: number | null;
 }
 
 /** Listener signature for runtime (technical) lifecycle events. */

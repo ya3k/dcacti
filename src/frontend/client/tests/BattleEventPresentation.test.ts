@@ -966,17 +966,16 @@ describe('TASK-245 — the SignalR wire contract is unchanged (PD-3, PD-4)', () 
     'utf8'
   );
 
-  it('keeps the ReceiveEvents envelope at exactly its three documented members', () => {
-    // SIGNALR_PROTOCOL.md §3: `ReceiveEvents(battleId, serverSequence, events[])`.
-    // The presentation timeline reads those three and nothing else, and it adds
-    // no member to the envelope.
+  it('keeps the ReceiveEvents envelope at exactly its documented members', () => {
+    // SIGNALR_PROTOCOL.md §3: `ReceiveEvents(battleId, serverSequence, events[], intermediatePetHp?)`.
+    // The presentation timeline reads those members and nothing else.
     const body =
       /export interface BattleEventsEnvelope \{([\s\S]*?)\n\}/.exec(runtimeEventsSource)?.[1] ?? '';
     // Member declarations are the interface's own two-space-indented lines; the
     // `readonly unknown[]` in the `events` member's type is not one of them.
     const members = [...body.matchAll(/^ {2}readonly (\w+)/gm)].map((match) => match[1]);
 
-    expect(members).toEqual(['battleId', 'serverSequence', 'events']);
+    expect(members).toEqual(['battleId', 'serverSequence', 'events', 'intermediatePetHp']);
   });
 
   it('keeps CascadeCreated at exactly { type, cascadeDepth }', () => {
@@ -2446,6 +2445,13 @@ describe('TASK-088 — BattleScene In-Battle Event Presentation (SIGNALR_PROTOCO
     ]) {
       expect(source, `BattleScene must not contain "${forbidden}"`).not.toContain(forbidden);
     }
+
+    // The scene never calculates or reconstructs Pet HP from damage or matched gems;
+    // intermediate Pet HP is authoritatively delivered by the server on the
+    // resolution envelope and presented directly without arithmetic.
+    expect(source.match(/\.hp\s*\+/g) ?? []).toHaveLength(0);
+    expect(source).not.toContain('resolvedPetHpForPresentation');
+    expect(source).toContain('resolvedPetHp');
   });
 });
 

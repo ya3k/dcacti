@@ -3941,9 +3941,11 @@ describe('BattleScene — Swap input (MATCH3_RULES.md §2, SIGNALR_PROTOCOL.md �
       expect(source, `BattleScene must not reference "${forbidden}"`).not.toContain(forbidden);
     }
 
-    // The scene never computes with a delivered combat value: `hp`, `maxHp` and
-    // `power` reach the HUD as text, and a damage `amount` is formatted into a
-    // floater. None of them is an operand of anything.
+    // The scene never mutates a delivered combat value: `hp`, `maxHp` and `power`
+    // reach the HUD as text, and a damage `amount` is formatted into a floater.
+    // Intermediate Pet HP is delivered authoritatively on the resolution envelope
+    // and never reconstructed on the client; no compound assignment or arithmetic
+    // touches a delivered HP value or the delivered `amount`.
     expect(source, 'BattleScene must not compute with the delivered HP').not.toMatch(
       /\.(hp|maxHp|power)\s*(\+\+|--|\+=|-=|\*=|\/=)/
     );
@@ -5841,13 +5843,15 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
   function deliverResolution(
     harness: ReturnType<typeof createSceneHarness>,
     next: RuntimeBattleState,
-    events: unknown[]
+    events: unknown[],
+    intermediatePetHp?: number
   ): void {
     harness.setBattleState(next);
     harness.emitBattleEvents({
       battleId: next.battleId,
       serverSequence: next.sequence,
       events,
+      ...(intermediatePetHp !== undefined ? { intermediatePetHp } : {}),
     });
   }
 
@@ -6372,7 +6376,7 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
     const before = readouts(harness, ctx);
 
     const settle = submitHeldSwap(harness, 20, 21);
-    deliverResolution(harness, resolvedState(), TASK_252_BATCH);
+    deliverResolution(harness, resolvedState(), TASK_252_BATCH, 720);
     settle();
 
     const observed: Array<{ phase: string; readout: ReturnType<typeof readouts> }> = [];
@@ -6405,13 +6409,17 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
     // Nothing is presented before the phase that owns it. The Combo, the Power
     // value and the Pet's own Passive pair are owned by the board phase the server
     // delivered them in; the Boss pair and its Enrage label by the damage phase;
-    // the Pet pair by the retaliation phase.
+    // the Pet pair by the phase that closes the player's board cycle — after the
+    // Matches and cascades, and before the Boss's retaliation. The retaliation
+    // phase then presents the delivered settled pair again (here the pushed
+    // 640 after the Boss's 80 damage, so the board-cycle phase presents 720).
     expect(powerAt).toBe('cascade depth=2');
     expect(passiveAt).toBe('cascade depth=2');
     expect(comboAt).toBe('cascade depth=2');
     expect(matchesAt).toBe('cascade depth=2');
     expect(phases.indexOf(bossHpAt)).toBeGreaterThanOrEqual(phases.indexOf('damage player->boss'));
-    expect(phases.indexOf(petHpAt)).toBeGreaterThanOrEqual(
+    expect(petHpAt).toBe('cascade depth=2');
+    expect(phases.indexOf(petHpAt)).toBeLessThan(
       phases.indexOf('retaliation boss->player')
     );
     expect(bossNameAt).toBe('damage player->boss');
@@ -6564,6 +6572,529 @@ describe('BattleScene — actor/action orchestration & timeline-owned readouts (
     settle();
     await flush();
     expect(inputLocked(scene, ctx)).toBe(false);
+  });
+
+  // ---------------------------------------------------------------------------
+  // HP-Gem heal presentation (the round's one state-only change)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * One delivered HP-Gem board cycle for the Player: the committed Swap, three
+   * matched HP Gems and the cycle's closing summary
+   * (`SIGNALR_PROTOCOL.md` §3.2.6, §3.2.9, §3.2.29).
+   */
+  const HP_GEM_PLAYER_CYCLE: unknown[] = [
+    { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+    { type: 'SwapResolved', outcome: 'committed' },
+    { type: 'MatchCreated', shape: 'Straight', cells: [0, 1, 2], gemType: 'HP', cascadeDepth: 1 },
+    { type: 'GemMatched', cellIndex: 0, gemType: 'HP' },
+    { type: 'GemMatched', cellIndex: 1, gemType: 'HP' },
+    { type: 'GemMatched', cellIndex: 2, gemType: 'HP' },
+    { type: 'MatchedGemSummary', gems: [{ gemType: 'HP', count: 3 }] },
+  ];
+
+  /** The player's delivered damage instance against the Boss. */
+  const PLAYER_HIT: unknown[] = [
+    { type: 'DamageDealt', source: 'player', target: 'boss', amount: 150 },
+    { type: 'DamageTaken', source: 'player', target: 'boss', amount: 150 },
+  ];
+
+  /** The Boss's delivered retaliation instance against the Pet (`§17` step 18d). */
+  const BOSS_RETALIATION: unknown[] = [
+    { type: 'DamageDealt', source: 'boss', target: 'player', amount: 80 },
+    { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
+  ];
+
+  /** A battle whose active Pet begins injured. */
+  function injuredBattle() {
+    return createBattle(battleState({ petState: { ...battleState().petState, hp: 500 } }));
+  }
+
+  it('presents an injured Pet’s healed HP during the player’s board cycle, before the retaliation', () => {
+    // 500/1000 + three HP Gems (3 x 20, COMBAT_RULES.md §2 item 5, §4 item 1) is
+    // 560; the Boss's step-18d attack then deals 80, so the round's settled
+    // `petState.hp` is 480 (GAME_RULES.md §17). The server provides intermediatePetHp = 560,
+    // so the scene presents the intermediate pair at the phase that closes the player's
+    // board cycle — after its Matches and cascade, and before the Boss's response.
+    const { harness, ctx } = injuredBattle();
+    const settle = submitHeldSwap(harness, 20, 21);
+
+    deliverResolution(
+      harness,
+      resolvedState({ petState: { ...resolvedState().petState, hp: 480 } }),
+      [...HP_GEM_PLAYER_CYCLE, ...PLAYER_HIT, ...BOSS_RETALIATION],
+      560
+    );
+    settle();
+
+    // The push is held: the pair on screen is still the previous one.
+    expect(readouts(harness, ctx).petHp).toBe('500 / 1000');
+
+    const observed: Array<{ phase: string; hp: string | null }> = [];
+    const observe = () =>
+      observed.push({
+        phase: playedPhases(ctx).slice(-1)[0] ?? '',
+        hp: readouts(harness, ctx).petHp,
+      });
+    observe();
+    for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+      harness.flushTweens(1);
+      observe();
+    }
+
+    const healedAt = observed.findIndex((entry) => entry.hp === '560 / 1000');
+    const finalAt = observed.findIndex((entry) => entry.hp === '480 / 1000');
+
+    expect(healedAt).toBeGreaterThanOrEqual(0);
+    expect(finalAt).toBeGreaterThan(healedAt);
+    expect(observed[healedAt].phase).toBe('gem summary');
+    expect(observed[finalAt].phase).toBe('retaliation boss->player');
+    // The delivered settled pair is what the scene ends on: the projection never
+    // becomes the state it converges to.
+    expect(readouts(harness, ctx).petHp).toBe('480 / 1000');
+  });
+
+  it('presents the healed HP during the timeline when the Boss does not retaliate', () => {
+    // Without a retaliation phase the pair used to be released only by
+    // convergence at the timeline's end. It is presented by the player's
+    // board-cycle phase instead from server-provided intermediatePetHp = 560,
+    // while the resolution still owns input.
+    const { harness, scene, ctx } = injuredBattle();
+    const settle = submitHeldSwap(harness, 20, 21);
+
+    deliverResolution(
+      harness,
+      resolvedState({ petState: { ...resolvedState().petState, hp: 560 } }),
+      [...HP_GEM_PLAYER_CYCLE, ...PLAYER_HIT],
+      560
+    );
+    settle();
+
+    let healedWhilePlaying = false;
+    for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+      harness.flushTweens(1);
+      if (readouts(harness, ctx).petHp === '560 / 1000') {
+        healedWhilePlaying = inputLocked(scene, ctx);
+        break;
+      }
+    }
+
+    expect(healedWhilePlaying).toBe(true);
+    playToEnd(harness);
+    expect(readouts(harness, ctx).petHp).toBe('560 / 1000');
+  });
+
+  it('presents no false HP increase when the Pet is already at MaxHP', () => {
+    // A full-HP HP-Gem match heals nothing (COMBAT_RULES.md §4 item 1) and the
+    // Boss's 80 damage is the round's only HP change: the settled pair is
+    // 920/1000. Server-authoritative intermediatePetHp is 1000. The board-cycle
+    // presentation shows the pair already on screen (1000), so no increase is
+    // invented and no heal amount is claimed.
+    const { harness, ctx } = createBattle();
+    const settle = submitHeldSwap(harness, 20, 21);
+
+    deliverResolution(
+      harness,
+      resolvedState({ petState: { ...resolvedState().petState, hp: 920 } }),
+      [...HP_GEM_PLAYER_CYCLE, ...PLAYER_HIT, ...BOSS_RETALIATION],
+      1000
+    );
+    settle();
+
+    const observed: string[] = [];
+    const observe = () => observed.push(readouts(harness, ctx).petHp ?? '');
+    observe();
+    for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+      harness.flushTweens(1);
+      observe();
+    }
+
+    expect(observed.filter((hp) => hp !== '1000 / 1000' && hp !== '920 / 1000')).toEqual([]);
+    expect(observed).toContain('920 / 1000');
+    // No floating number claims a healing the server never produced.
+    expect(harness.texts.filter((entry) => /^\+\d+$/.test(entry.text))).toEqual([]);
+  });
+
+  it('keeps a full-HP match at MaxHP, with no invented increase and no heal amount', () => {
+    const { harness, ctx } = createBattle();
+    const settle = submitHeldSwap(harness, 20, 21);
+
+    deliverResolution(
+      harness,
+      resolvedState({ petState: { ...resolvedState().petState, hp: 1000 } }),
+      [...HP_GEM_PLAYER_CYCLE, ...PLAYER_HIT],
+      1000
+    );
+    settle();
+    playToEnd(harness);
+
+    expect(readouts(harness, ctx).petHp).toBe('1000 / 1000');
+    expect(harness.texts.filter((entry) => /^\+\d+$/.test(entry.text))).toEqual([]);
+  });
+
+  it('presents no false increase when the round’s damage was absorbed by a Shield', () => {
+    // A delivered damage `amount` is the pre-absorption Final Damage
+    // (COMBAT_RULES.md §4 items 2–5), so while the delivered Pet state still
+    // carries a Shield the projection is declined: the settled pair is the only
+    // pair presented, and no absorbable hit is re-added as an invented heal. The
+    // fixture is authority-plausible: a 100-point pool absorbs the 80-point hit
+    // and survives with 20, so the Pet's HP does not move (500/1000).
+    const shield = {
+      id: 'Shield',
+      type: 'Shield',
+      source: 'player',
+      magnitude: 20,
+      expiryCondition: 'ShieldDepleted',
+    };
+    const shielded = battleState({
+      petState: { ...battleState().petState, hp: 500, statusEffects: [shield] },
+    });
+    const { harness, ctx } = createBattle(shielded);
+    const settle = submitHeldSwap(harness, 20, 21);
+
+    deliverResolution(
+      harness,
+      resolvedState({
+        petState: { ...resolvedState().petState, hp: 500, statusEffects: [shield] },
+      }),
+      [...HP_GEM_PLAYER_CYCLE, ...PLAYER_HIT, ...BOSS_RETALIATION],
+      500
+    );
+    settle();
+
+    const observed: string[] = [];
+    const observe = () => observed.push(readouts(harness, ctx).petHp ?? '');
+    observe();
+    for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+      harness.flushTweens(1);
+      observe();
+    }
+
+    expect(observed.every((hp) => hp === '500 / 1000')).toBe(true);
+  });
+
+  it('presents accurate intermediate HP when Shield absorption occurs alongside healing', () => {
+    // Pet starts at 500, heals to 560 via HP gems (intermediatePetHp = 560).
+    // The Boss's 80 damage is absorbed by a Shield of 100, leaving settled hp = 560.
+    // Under client-side damage reversing, 560 + 80 would have corrupted the display to 640.
+    // With server-authoritative intermediate HP, the board cycle presents 560 and final is 560.
+    const shield = {
+      id: 'Shield',
+      type: 'Shield',
+      source: 'player',
+      magnitude: 100,
+      expiryCondition: 'ShieldDepleted',
+    };
+    const shielded = battleState({
+      petState: { ...battleState().petState, hp: 500, statusEffects: [shield] },
+    });
+    const { harness, ctx } = createBattle(shielded);
+    const settle = submitHeldSwap(harness, 20, 21);
+
+    deliverResolution(
+      harness,
+      resolvedState({
+        petState: { ...resolvedState().petState, hp: 560, statusEffects: [shield] },
+      }),
+      [...HP_GEM_PLAYER_CYCLE, ...PLAYER_HIT, ...BOSS_RETALIATION],
+      560
+    );
+    settle();
+
+    const observed: string[] = [];
+    const observe = () => observed.push(readouts(harness, ctx).petHp ?? '');
+    observe();
+    for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+      harness.flushTweens(1);
+      observe();
+    }
+
+    expect(observed).toContain('560 / 1000');
+    expect(observed.some((hp) => hp === '640 / 1000')).toBe(false);
+    expect(readouts(harness, ctx).petHp).toBe('560 / 1000');
+  });
+
+  it('presents no increase when a depleted Shield absorbed the round’s only hit', () => {
+    // A Shield fully consumed in the round is removed from the settled state
+    // (COMBAT_RULES.md §4 item 5), so its absorption is no longer visible. The
+    // round matched no HP Gem, so the player's cycle healed nothing: no projection
+    // is attached at all, and the settle-then-damage pair can never read as an
+    // invented increase (without the cycle gate it would have shown 580).
+    const { harness, ctx } = createBattle(
+      battleState({ petState: { ...battleState().petState, hp: 500, statusEffects: [] } })
+    );
+    const settle = submitHeldSwap(harness, 20, 21);
+
+    deliverResolution(
+      harness,
+      resolvedState({
+        petState: { ...resolvedState().petState, hp: 500, statusEffects: [] },
+      }),
+      [
+        { type: 'SwapStarted', actor: 'player', fromCell: 20, toCell: 21 },
+        { type: 'SwapResolved', outcome: 'committed' },
+        { type: 'MatchCreated', shape: 'Straight', cells: [24, 25, 26], gemType: 'ATK', cascadeDepth: 1 },
+        { type: 'MatchedGemSummary', gems: [{ gemType: 'ATK', count: 3 }] },
+        ...PLAYER_HIT,
+        ...BOSS_RETALIATION,
+      ]
+    );
+    settle();
+
+    const phases = timelinePhases(ctx);
+    expect(
+      phases.some((phase) =>
+        Object.prototype.hasOwnProperty.call(phase, 'resolvedPetHp')
+      )
+    ).toBe(false);
+
+    const observed: string[] = [];
+    const observe = () => observed.push(readouts(harness, ctx).petHp ?? '');
+    observe();
+    for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+      harness.flushTweens(1);
+      observe();
+    }
+
+    expect(observed.every((hp) => hp === '500 / 1000')).toBe(true);
+  });
+
+  it('presents no invented HP on a lethal round whose damage is clamped at zero', () => {
+    // Pet begins at 120, matches HP Gems (+60), reaching authoritative intermediatePetHp = 180.
+    // The killing blow of 300 reduces settled Pet HP to 0.
+    // The board-cycle presentation shows the actual heal (180/1000) and drops to 0 at
+    // retaliation — never inventing 300 HP from pre-clamp Final Damage.
+    const { harness, ctx } = createBattle(
+      battleState({ petState: { ...battleState().petState, hp: 120 } })
+    );
+    const settle = submitHeldSwap(harness, 20, 21);
+
+    deliverResolution(
+      harness,
+      resolvedState({ petState: { ...resolvedState().petState, hp: 0 } }),
+      [
+        ...HP_GEM_PLAYER_CYCLE,
+        ...PLAYER_HIT,
+        { type: 'DamageDealt', source: 'boss', target: 'player', amount: 300 },
+        { type: 'DamageTaken', source: 'boss', target: 'player', amount: 300 },
+        { type: 'BattleLost', outcome: 'defeat', finalBossHp: 1250, finalPlayerHp: 0 },
+      ],
+      180
+    );
+    settle();
+
+    const observed: Array<{ phase: string; hp: string | null }> = [];
+    const observe = () =>
+      observed.push({
+        phase: playedPhases(ctx).slice(-1)[0] ?? '',
+        hp: readouts(harness, ctx).petHp,
+      });
+    observe();
+    for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+      harness.flushTweens(1);
+      observe();
+    }
+
+    expect(observed[0].hp).toBe('120 / 1000');
+    expect(observed.some((entry) => entry.hp === '180 / 1000')).toBe(true);
+    expect(observed.some((entry) => entry.hp === '300 / 1000')).toBe(false);
+    const healed = observed.find((entry) => entry.hp === '180 / 1000');
+    expect(healed?.phase).toBe('gem summary');
+    const final = observed.find((entry) => entry.hp === '0 / 1000');
+    expect(final?.phase).toBe('retaliation boss->player');
+  });
+
+  it('presents server-provided intermediate Pet HP regardless of event shape', () => {
+    // The presentation relies on server-authoritative intermediatePetHp (560),
+    // not on counting or pairing DamageDealt / DamageTaken events.
+    const { harness, ctx } = injuredBattle();
+    const settle = submitHeldSwap(harness, 20, 21);
+
+    deliverResolution(
+      harness,
+      resolvedState({ petState: { ...resolvedState().petState, hp: 480 } }),
+      [
+        ...HP_GEM_PLAYER_CYCLE,
+        ...PLAYER_HIT,
+        { type: 'DamageTaken', source: 'boss', target: 'player', amount: 80 },
+      ],
+      560
+    );
+    settle();
+
+    const observed: string[] = [];
+    const observe = () => observed.push(readouts(harness, ctx).petHp ?? '');
+    observe();
+    for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+      harness.flushTweens(1);
+      observe();
+    }
+
+    expect(observed).toContain('560 / 1000');
+    expect(readouts(harness, ctx).petHp).toBe('480 / 1000');
+  });
+
+  it('falls back safely to holding HP when intermediatePetHp is absent or omitted', () => {
+    // When intermediatePetHp is absent (e.g. older server or un-correlated batch),
+    // the scene uses the safe presentation fallback: no intermediate value is invented,
+    // and the HP readout stays held until the retaliation phase.
+    const { harness, ctx } = injuredBattle();
+    const settle = submitHeldSwap(harness, 20, 21);
+
+    deliverResolution(
+      harness,
+      resolvedState({ petState: { ...resolvedState().petState, hp: 480 } }),
+      [...HP_GEM_PLAYER_CYCLE, ...PLAYER_HIT, ...BOSS_RETALIATION]
+    );
+    settle();
+
+    const phases = timelinePhases(ctx);
+    expect(
+      phases.some((phase) =>
+        Object.prototype.hasOwnProperty.call(phase, 'resolvedPetHp')
+      )
+    ).toBe(false);
+
+    const observed: Array<{ phase: string; hp: string | null }> = [];
+    const observe = () =>
+      observed.push({
+        phase: playedPhases(ctx).slice(-1)[0] ?? '',
+        hp: readouts(harness, ctx).petHp,
+      });
+    observe();
+    for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+      harness.flushTweens(1);
+      observe();
+    }
+
+    // Never shows 560 or invented HP; stays at 500 until retaliation
+    expect(observed.some((entry) => entry.hp === '560 / 1000')).toBe(false);
+    const final = observed.find((entry) => entry.hp === '480 / 1000');
+    expect(final?.phase).toBe('retaliation boss->player');
+    expect(readouts(harness, ctx).petHp).toBe('480 / 1000');
+  });
+
+  it('presents no board-cycle projection for a Card cast', () => {
+    // A Card cast delivers no board event; the only board-cycle step is the
+    // synthetic submitted-pair fallback swap, which carries no delivered event and
+    // is therefore not a presentation point. The delivered pair is presented by
+    // convergence exactly as before, and no phase carries a projected pair.
+    const { harness, ctx } = injuredBattle();
+    const settle = submitHeldSwap(harness, 20, 21);
+
+    deliverResolution(harness, resolvedState({ petState: { ...resolvedState().petState, hp: 700 } }), [
+      { type: 'CardCast', cardId: 'card-heal' },
+    ]);
+    settle();
+
+    const phases = timelinePhases(ctx);
+    expect(phases.some((phase) => phase.kind === 'cast')).toBe(true);
+    expect(
+      phases.some((phase) =>
+        Object.prototype.hasOwnProperty.call(phase, 'resolvedPetHp')
+      )
+    ).toBe(false);
+
+    playToEnd(harness);
+    expect(readouts(harness, ctx).petHp).toBe('700 / 1000');
+  });
+
+  it('presents the healed HP at the player’s cycle, not the Boss’s, in a two-cycle round', () => {
+    // The round carries both actors' board cycles (ADR-026 §2). The heal belongs
+    // to the player's cycle, so its pair is presented there — before the Boss's
+    // turn banner, its own board cycle and its retaliation.
+    const { harness, ctx } = injuredBattle();
+    const settle = submitHeldSwap(harness, 20, 21);
+
+    deliverResolution(
+      harness,
+      resolvedState({ petState: { ...resolvedState().petState, hp: 480 } }),
+      [
+        ...HP_GEM_PLAYER_CYCLE,
+        ...PLAYER_HIT,
+        { type: 'SwapStarted', actor: 'boss', fromCell: 27, toCell: 28 },
+        { type: 'SwapResolved', outcome: 'committed' },
+        { type: 'MatchCreated', shape: 'Straight', cells: [32, 33, 34], gemType: 'ATK', cascadeDepth: 1 },
+        { type: 'MatchedGemSummary', gems: [{ gemType: 'ATK', count: 3 }] },
+        ...BOSS_RETALIATION,
+      ],
+      560
+    );
+    settle();
+
+    const observed: Array<{ phase: string; played: readonly string[]; hp: string | null }> = [];
+    const observe = () =>
+      observed.push({
+        phase: playedPhases(ctx).slice(-1)[0] ?? '',
+        played: playedPhases(ctx),
+        hp: readouts(harness, ctx).petHp,
+      });
+    observe();
+    for (let step = 0; step < 500 && harness.pendingTweenCount() > 0; step++) {
+      harness.flushTweens(1);
+      observe();
+    }
+
+    const healed = observed.find((entry) => entry.hp === '560 / 1000');
+    expect(healed?.phase).toBe('gem summary');
+    expect(healed?.played).not.toContain('banner BOSS TURN');
+
+    const final = observed.find((entry) => entry.hp === '480 / 1000');
+    expect(final?.phase).toBe('retaliation boss->player');
+    expect(readouts(harness, ctx).petHp).toBe('480 / 1000');
+  });
+
+  it('lets a newer authoritative state supersede the healed pair', async () => {
+    const { harness, ctx } = injuredBattle();
+    const settle = submitHeldSwap(harness, 20, 21);
+
+    deliverResolution(
+      harness,
+      resolvedState({ petState: { ...resolvedState().petState, hp: 480 } }),
+      [...HP_GEM_PLAYER_CYCLE, ...PLAYER_HIT, ...BOSS_RETALIATION],
+      560
+    );
+    settle();
+    await flush();
+
+    for (let step = 0; step < 50 && readouts(harness, ctx).petHp !== '560 / 1000'; step++) {
+      harness.flushTweens(1);
+    }
+    expect(readouts(harness, ctx).petHp).toBe('560 / 1000');
+
+    // A newer state supersedes the timeline: the projected pair is abandoned and
+    // the delivered pair is presented directly (the same supersession contract
+    // every other timeline-owned readout has).
+    harness.setBattleState(
+      resolvedState({ sequence: 2, petState: { ...resolvedState().petState, hp: 700 } })
+    );
+
+    expect(readouts(harness, ctx).petHp).toBe('700 / 1000');
+    expect(field<unknown>(ctx, 'presentationTimeline')).toBeNull();
+
+    settle();
+    await flush();
+  });
+
+  it('converges a recovery snapshot on its delivered pair, with no projection', () => {
+    const { harness, ctx } = injuredBattle();
+    const settle = submitHeldSwap(harness, 20, 21);
+
+    deliverResolution(
+      harness,
+      resolvedState({ petState: { ...resolvedState().petState, hp: 480 } }),
+      [...HP_GEM_PLAYER_CYCLE, ...PLAYER_HIT, ...BOSS_RETALIATION]
+    );
+    settle();
+
+    // A recovery snapshot is authoritative and is presented directly (ADR-008):
+    // nothing is held and nothing is projected.
+    harness.setBattleState(resolvedState({ petState: { ...resolvedState().petState, hp: 460 } }), {
+      source: 'recovery',
+    });
+
+    expect(readouts(harness, ctx).petHp).toBe('460 / 1000');
+    expect(field<unknown>(ctx, 'presentationTimeline')).toBeNull();
   });
 
   // ---------------------------------------------------------------------------

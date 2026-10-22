@@ -1672,7 +1672,7 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         // The envelope still carries the documented members, so the absence above is
         // a real exclusion rather than an empty payload.
         Assert.Equal(
-            new[] { "battleId", "events", "serverSequence" },
+            new[] { "battleId", "events", "intermediatePetHp", "serverSequence" },
             payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
         await hubConnection.StopAsync();
@@ -1924,6 +1924,25 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
         using var scope = _factory.Services.CreateScope();
         await scope.ServiceProvider.GetRequiredService<BattleStateService>()
             .CreateBattleAsync(battleId, Owner, PetConfiguration, BossDefinition);
+    }
+
+    private async Task CreateBattleOnServerWithPowerAsync(string battleId, int power, int hp = 500, int maxHp = 1000)
+    {
+        _ = _factory.CreateClient();
+        TestProvisionedContent.Seed(_factory.Services);
+        await CreateBattleOnServerAsync(battleId);
+        using var scope = _factory.Services.CreateScope();
+        var battles = scope.ServiceProvider.GetRequiredService<BattleStateService>();
+        var repo = scope.ServiceProvider.GetRequiredService<IBattleStateRepository>();
+        var state = (await battles.GetBattleAsync(battleId))!;
+        var updatedPetState = state.PetState with
+        {
+            HP = hp,
+            MaxHP = maxHp,
+            Power = power,
+        };
+        var modifiedState = state with { PetState = updatedPetState };
+        Assert.True(await repo.TryUpdateAsync(modifiedState, state.Sequence));
     }
 
     /// <summary>
@@ -3038,11 +3057,11 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
     // -----------------------------------------------------------------------
 
     [Fact]
-    public async Task Swap_ShouldSendExactlyOneReceiveEventsBatch_WithTheDocumentedThreeMembers()
+    public async Task Swap_ShouldSendExactlyOneReceiveEventsBatch_WithTheDocumentedMembers()
     {
         // SIGNALR_PROTOCOL.md §3: one ReceiveEvents call per resolved action, whose
-        // payload is exactly { battleId, serverSequence, events[] } — no fourth
-        // member, no state, no board, no Status (§3.1 item 3, §8.3).
+        // payload carries battleId, serverSequence, events[], and intermediatePetHp
+        // — no state, no board, no Status (§3.1 item 3, §8.3).
         const string battleId = "battle-events-accepted";
         var pair = await CreateBattleOnServerWithValidPairAsync(battleId);
 
@@ -3077,9 +3096,9 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
 
             Assert.Equal(battleId, payload.GetProperty("battleId").GetString());
 
-            // Exactly the three documented members and no others (§3).
+            // Exactly the documented envelope members (§3).
             Assert.Equal(
-                new[] { "battleId", "events", "serverSequence" },
+                new[] { "battleId", "events", "intermediatePetHp", "serverSequence" },
                 payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
 
             // No board snapshot, no Combo/Match duplication, no client sequence, no
@@ -3091,6 +3110,93 @@ public class ApiIntegrationTests : IClassFixture<ApiIntegrationTests.ApiIntegrat
             Assert.False(payload.TryGetProperty("playerState", out _));
             Assert.False(payload.TryGetProperty("turn", out _));
         }
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task CardCast_ReceiveEvents_ShouldOmitIntermediatePetHp_FromSerializedPayload()
+    {
+        // SIGNALR_PROTOCOL.md §3 item 4: intermediatePetHp is an optional integer member
+        // present on accepted Swap actions, and omitted (null, ignored via WhenWritingNull)
+        // for non-Swap resolutions such as CardCast.
+        const string battleId = "battle-events-cardcast-omit-hp";
+        await CreateBattleOnServerWithPowerAsync(battleId, power: 50, hp: 500, maxHp: 1000);
+
+        var hubConnection = BuildHubConnection();
+        var received = new TaskCompletionSource<JsonElement>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        hubConnection.On<JsonElement>("ReceiveEvents", payload => received.TrySetResult(payload));
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+        var result = await hubConnection.InvokeAsync<CardCastResponse>(
+            "CardCast", battleId, "card-heal", "client-seq-card-omit");
+
+        Assert.True(result.Accepted);
+        Assert.Null(result.Reason);
+
+        var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // The serialized envelope must completely omit intermediatePetHp
+        Assert.False(payload.TryGetProperty("intermediatePetHp", out _));
+        Assert.DoesNotContain("intermediatePetHp", payload.GetRawText(), StringComparison.Ordinal);
+
+        // Exactly the three core envelope members (§3, §3.2.12 item 5)
+        Assert.Equal(
+            new[] { "battleId", "events", "serverSequence" },
+            payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        // Verify it was a genuine CardCast resolution payload
+        Assert.Equal(JsonValueKind.Array, payload.GetProperty("events").ValueKind);
+        Assert.Contains(
+            payload.GetProperty("events").EnumerateArray(),
+            e => e.GetProperty("type").GetString() == "CardCast");
+
+        await hubConnection.StopAsync();
+    }
+
+    [Fact]
+    public async Task PetSkillCast_ReceiveEvents_ShouldOmitIntermediatePetHp_FromSerializedPayload()
+    {
+        // SIGNALR_PROTOCOL.md §3 item 4: intermediatePetHp is omitted for non-Swap resolutions,
+        // including PetSkillCast.
+        const string battleId = "battle-events-petskill-omit-hp";
+        await CreateBattleOnServerWithPowerAsync(battleId, power: 50, hp: 500, maxHp: 1000);
+
+        var hubConnection = BuildHubConnection();
+        var received = new TaskCompletionSource<JsonElement>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        hubConnection.On<JsonElement>("ReceiveEvents", payload => received.TrySetResult(payload));
+
+        await hubConnection.StartAsync();
+        await hubConnection.InvokeAsync("JoinBattle", battleId);
+
+        var result = await hubConnection.InvokeAsync<PetSkillCastResponse>(
+            "PetSkillCast", battleId, "client-seq-petskill-omit");
+
+        Assert.True(result.Accepted);
+        Assert.Null(result.Reason);
+
+        var payload = await received.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        // The serialized envelope must completely omit intermediatePetHp
+        Assert.False(payload.TryGetProperty("intermediatePetHp", out _));
+        Assert.DoesNotContain("intermediatePetHp", payload.GetRawText(), StringComparison.Ordinal);
+
+        // Exactly the three core envelope members (§3, §3.2.12 item 5)
+        Assert.Equal(
+            new[] { "battleId", "events", "serverSequence" },
+            payload.EnumerateObject().Select(p => p.Name).OrderBy(n => n, StringComparer.Ordinal));
+
+        // Verify it was a genuine PetSkillCast resolution payload
+        Assert.Equal(JsonValueKind.Array, payload.GetProperty("events").ValueKind);
+        Assert.Contains(
+            payload.GetProperty("events").EnumerateArray(),
+            e => e.GetProperty("type").GetString() == "PetSkillCast");
 
         await hubConnection.StopAsync();
     }

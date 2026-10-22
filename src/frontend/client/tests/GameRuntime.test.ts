@@ -543,6 +543,208 @@ describe('GameRuntime', () => {
 
       expect(received).toHaveLength(0);
     });
+
+    describe('intermediatePetHp envelope parsing and forwarding', () => {
+      it('forwards a valid finite numeric intermediatePetHp on ReceiveEvents batches', async () => {
+        const { runtime, transport } = createRuntime();
+        await runtime.initialize();
+
+        const received: BattleEventsEnvelope[] = [];
+        runtime.onBattleEvents((envelope) => received.push(envelope));
+
+        transport.emit('BattleStateUpdated', payload({ battleId: 'b', sequence: 1 }));
+
+        transport.emit('ReceiveEvents', {
+          battleId: 'b',
+          serverSequence: 1,
+          events: [{ type: 'SwapStarted' }],
+          intermediatePetHp: 560,
+        });
+
+        expect(received).toHaveLength(1);
+        expect(received[0].intermediatePetHp).toBe(560);
+        expect(received[0].battleId).toBe('b');
+        expect(received[0].serverSequence).toBe(1);
+
+        // Also covers zero as a valid finite numeric value
+        transport.emit('ReceiveEvents', {
+          battleId: 'b',
+          serverSequence: 1,
+          events: [{ type: 'BattleLost' }],
+          intermediatePetHp: 0,
+        });
+
+        expect(received).toHaveLength(2);
+        expect(received[1].intermediatePetHp).toBe(0);
+      });
+
+      it('remains backward-compatible when intermediatePetHp is absent or null', async () => {
+        const { runtime, transport } = createRuntime();
+        await runtime.initialize();
+
+        const received: BattleEventsEnvelope[] = [];
+        runtime.onBattleEvents((envelope) => received.push(envelope));
+
+        transport.emit('BattleStateUpdated', payload({ battleId: 'b', sequence: 1 }));
+
+        // Older server payload: field is absent
+        transport.emit('ReceiveEvents', {
+          battleId: 'b',
+          serverSequence: 1,
+          events: [{ type: 'SwapStarted' }],
+        });
+
+        expect(received).toHaveLength(1);
+        expect('intermediatePetHp' in received[0]).toBe(false);
+        expect(received[0].intermediatePetHp).toBeUndefined();
+
+        // Older or nullable server payload: field is explicitly null
+        transport.emit('ReceiveEvents', {
+          battleId: 'b',
+          serverSequence: 1,
+          events: [{ type: 'CardCast' }],
+          intermediatePetHp: null,
+        });
+
+        expect(received).toHaveLength(2);
+        expect('intermediatePetHp' in received[1]).toBe(false);
+        expect(received[1].intermediatePetHp).toBeUndefined();
+      });
+
+      it('sanitizes string values of intermediatePetHp according to the parser contract', async () => {
+        const { runtime, transport } = createRuntime();
+        await runtime.initialize();
+
+        const received: BattleEventsEnvelope[] = [];
+        runtime.onBattleEvents((envelope) => received.push(envelope));
+
+        transport.emit('BattleStateUpdated', payload({ battleId: 'b', sequence: 1 }));
+
+        // A string value must not be forwarded as intermediatePetHp; the parser omits it
+        transport.emit('ReceiveEvents', {
+          battleId: 'b',
+          serverSequence: 1,
+          events: [{ type: 'SwapStarted' }],
+          intermediatePetHp: '560',
+        });
+
+        expect(received).toHaveLength(1);
+        expect('intermediatePetHp' in received[0]).toBe(false);
+        expect(received[0].intermediatePetHp).toBeUndefined();
+      });
+
+      it('rejects non-finite values (NaN, positive infinity, negative infinity)', async () => {
+        const { runtime, transport } = createRuntime();
+        await runtime.initialize();
+
+        const received: BattleEventsEnvelope[] = [];
+        runtime.onBattleEvents((envelope) => received.push(envelope));
+
+        transport.emit('BattleStateUpdated', payload({ battleId: 'b', sequence: 1 }));
+
+        // NaN
+        transport.emit('ReceiveEvents', {
+          battleId: 'b',
+          serverSequence: 1,
+          events: [{ type: 'SwapStarted' }],
+          intermediatePetHp: Number.NaN,
+        });
+
+        // Positive Infinity
+        transport.emit('ReceiveEvents', {
+          battleId: 'b',
+          serverSequence: 1,
+          events: [{ type: 'SwapStarted' }],
+          intermediatePetHp: Number.POSITIVE_INFINITY,
+        });
+
+        // Negative Infinity
+        transport.emit('ReceiveEvents', {
+          battleId: 'b',
+          serverSequence: 1,
+          events: [{ type: 'SwapStarted' }],
+          intermediatePetHp: Number.NEGATIVE_INFINITY,
+        });
+
+        expect(received).toHaveLength(3);
+        expect('intermediatePetHp' in received[0]).toBe(false);
+        expect('intermediatePetHp' in received[1]).toBe(false);
+        expect('intermediatePetHp' in received[2]).toBe(false);
+      });
+
+      it('maintains distinct parser responsibilities from BattleScene domain validation', async () => {
+        const { runtime, transport } = createRuntime();
+        await runtime.initialize();
+
+        const received: BattleEventsEnvelope[] = [];
+        runtime.onBattleEvents((envelope) => received.push(envelope));
+
+        transport.emit('BattleStateUpdated', payload({ battleId: 'b', sequence: 1 }));
+
+        // The parser validates only type and finiteness (SIGNALR_PROTOCOL.md §3).
+        // It does not enforce domain constraints such as non-negativity (intermediatePetHp >= 0),
+        // MaxHP clamping, or phase correlation, which are owned by BattleScene.
+        transport.emit('ReceiveEvents', {
+          battleId: 'b',
+          serverSequence: 1,
+          events: [{ type: 'SwapStarted' }],
+          intermediatePetHp: -10,
+        });
+
+        expect(received).toHaveLength(1);
+        expect(received[0].intermediatePetHp).toBe(-10);
+
+        // Direct parser invocation confirms the contract on readBattleEventsEnvelope
+        const parse = (p: unknown): BattleEventsEnvelope | null =>
+          (runtime as unknown as { readBattleEventsEnvelope: (payload: unknown) => BattleEventsEnvelope | null }).readBattleEventsEnvelope(p);
+
+        expect(parse({ battleId: 'b', serverSequence: 1, events: [], intermediatePetHp: 560 })).toEqual({
+          battleId: 'b',
+          serverSequence: 1,
+          events: [],
+          intermediatePetHp: 560,
+        });
+        expect(parse({ battleId: 'b', serverSequence: 1, events: [], intermediatePetHp: -10 })).toEqual({
+          battleId: 'b',
+          serverSequence: 1,
+          events: [],
+          intermediatePetHp: -10,
+        });
+        expect(parse({ battleId: 'b', serverSequence: 1, events: [] })).toEqual({
+          battleId: 'b',
+          serverSequence: 1,
+          events: [],
+        });
+        expect(parse({ battleId: 'b', serverSequence: 1, events: [], intermediatePetHp: null })).toEqual({
+          battleId: 'b',
+          serverSequence: 1,
+          events: [],
+        });
+        expect(parse({ battleId: 'b', serverSequence: 1, events: [], intermediatePetHp: 'invalid' })).toEqual({
+          battleId: 'b',
+          serverSequence: 1,
+          events: [],
+        });
+        expect(parse({ battleId: 'b', serverSequence: 1, events: [], intermediatePetHp: Number.NaN })).toEqual({
+          battleId: 'b',
+          serverSequence: 1,
+          events: [],
+        });
+        expect(parse({ battleId: 'b', serverSequence: 1, events: [], intermediatePetHp: Number.POSITIVE_INFINITY })).toEqual({
+          battleId: 'b',
+          serverSequence: 1,
+          events: [],
+        });
+        expect(parse({ battleId: 'b', serverSequence: 1, events: [], intermediatePetHp: Number.NEGATIVE_INFINITY })).toEqual({
+          battleId: 'b',
+          serverSequence: 1,
+          events: [],
+        });
+        expect(parse(null)).toBeNull();
+        expect(parse('not-an-object')).toBeNull();
+        expect(parse({ battleId: 123 })).toBeNull();
+      });
+    });
   });
 
   describe('subscriptions', () => {
